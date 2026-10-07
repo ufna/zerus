@@ -16,6 +16,8 @@ pkgbase = zerus-ade-git
 	depends = tmux>=3.7
 	depends = openssh
 	depends = python
+	depends = curl
+	depends = procps-ng
 	depends = libgcc
 	depends = libstdc++
 	depends = glibc
@@ -24,6 +26,8 @@ pkgbase = zerus-ade-git
 	optdepends = wl-clipboard: clipboard transfers on Wayland
 	optdepends = xclip: clipboard transfers on X11
 	optdepends = nodejs: separately installed native agents and DeepSeek Harness
+	optdepends = npm: install Codex and DeepSeek Harness from Accounts
+	optdepends = git: Git repository and worktree features
 	provides = zerus-ade
 	provides = hgs
 	provides = hgs-tray

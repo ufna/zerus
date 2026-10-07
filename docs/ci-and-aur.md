@@ -121,6 +121,10 @@ Each flavor installs the same ADE bundle:
   license texts under `/usr/share/licenses/<package-name>`.
 
 Qt, Qt WebEngine and KDE libraries are dynamically linked system dependencies.
+The runtime also declares curl for native account HTTP requests and procps-ng
+for process inspection. Optional Node.js/npm enable agent installation from
+Accounts; Git enables repository/worktree features. Arch's Node.js package does
+not include npm, so both optional dependencies are listed.
 The package does not bundle their distributions, native agent executables,
 accounts, credentials or configuration. Package installation does not start or
 stop services, edit user homes or replace the user's tmux configuration.
@@ -320,10 +324,18 @@ submission guidelines again on publication day.
 
 ## Validation record
 
-The first preparation validated Rust 1.85 unit tests, the Linux terminal smoke
-suite, the complete Qt/CTest suite in a clean Arch container and production
-packaging with test targets disabled. Migration helper tests cover idempotence,
-conflict preservation, dangling links, missing targets and root refusal.
-CI/release run links and final package results are recorded below after the first
-remote runs. Public AUR installation, owner account/signing choices and source
-visibility remain separate first-publication requirements.
+On **2026-10-08**, the first complete
+[main CI run](https://github.com/ufna/zerus/actions/runs/37704073894) passed every
+job at commit `7cc3900`, including both CLI platforms, both desktop platforms,
+Rust 1.85 and the installed Arch bundle check. Linux CLI validation covered 135
+Rust unit tests, 202 terminal smoke checks and 398 Python cases across 33 modules;
+native authenticated tests remain opt-in. Desktop coverage includes 30 Linux
+and 32 macOS CTest suites. The corrected account fixture also passed ten
+consecutive runs on each platform.
+
+Production packaging with `BUILD_TESTING=OFF` and all three package flavors was
+tested in a disposable Arch container. Migration helper tests cover idempotence,
+conflict preservation, dangling links, missing targets and root refusal. Updated
+dependency metadata and the final private release candidate are checked separately
+after that initial green run. Public AUR installation, owner account/signing
+choices and source visibility remain separate first-publication requirements.
