@@ -213,13 +213,16 @@ EOF
     touch "$tmp/go"
     for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do [ -e "$tmp/pane.rc" ] && break; sleep 0.2; done
     sleep 0.3   # the last bytes are still on their way through tmux
-    flags="$(t display -p -t term '#{alternate_on}#{keypad_cursor_flag}#{mouse_any_flag}#{mouse_sgr_flag}#{bracket_paste_flag}')"
+    # tmux 3.4 does not expose bracket_paste_flag. Keep a stable-width flag
+    # projection there; the raw teardown below still verifies bracketed paste.
+    flags="$(t display -p -t term '#{alternate_on}#{keypad_cursor_flag}#{mouse_any_flag}#{mouse_sgr_flag}#{?bracket_paste_flag,1,0}')"
     t kill-server 2>/dev/null || true
   }
   esc="$(printf '\033')"
   run_pane
   if [ "$(cat "$tmp/pane.rc" 2>/dev/null)" = 3 ] && [ "$flags" = 00000 ] && grep -q "link to nowhere dropped" "$tmp/pane.err" \
-     && LC_ALL=C grep -q "${esc}\[?1003l" "$tmp/pane.raw" && LC_ALL=C grep -q "${esc}\[?1049l" "$tmp/pane.raw"; then
+     && LC_ALL=C grep -q "${esc}\[?1003l" "$tmp/pane.raw" && LC_ALL=C grep -q "${esc}\[?1049l" "$tmp/pane.raw" \
+     && LC_ALL=C grep -q "${esc}\[?2004l" "$tmp/pane.raw"; then
     pass=$((pass+1)); echo "ok   link drop: modes restored, alt screen left, rc 3"
   else
     fail=$((fail+1)); echo "FAIL link drop: rc=$(cat "$tmp/pane.rc" 2>/dev/null) flags=$flags"; sed 's/^/     /' "$tmp/pane.err" 2>/dev/null
@@ -272,7 +275,7 @@ EOF
     for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do [ -e "$tmp/pane2.rc" ] && break; sleep 0.2; done
     sleep 0.3   # the last bytes are still on their way through tmux
   }
-  flags2() { t display -p -t term2 '#{alternate_on}#{mouse_any_flag}#{mouse_sgr_flag}#{bracket_paste_flag}'; }
+  flags2() { t display -p -t term2 '#{alternate_on}#{mouse_any_flag}#{mouse_sgr_flag}#{?bracket_paste_flag,1,0}'; }
 
   t2 kill-server 2>/dev/null || true
   run_pane2 "sh wl"
@@ -289,6 +292,7 @@ EOF
   after="$(flags2)"
   if [ "$(cat "$tmp/pane2.rc" 2>/dev/null)" = 1 ] && [ "${before%???}" = 1 ] && [ "$after" = 0000 ] \
      && LC_ALL=C grep -q "${esc}\[?1000l" "$tmp/pane2.raw" && LC_ALL=C grep -q "${esc}\[?1049l" "$tmp/pane2.raw" \
+     && LC_ALL=C grep -q "${esc}\[?2004l" "$tmp/pane2.raw" \
      && grep -q "tmux server died" "$tmp/pane2.err"; then
     pass=$((pass+1)); echo "ok   server death: modes restored, alt screen left, rc 1"
   else

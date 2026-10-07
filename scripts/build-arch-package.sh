@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 if [ "$(id -u)" = 0 ]; then echo 'makepkg must run as an unprivileged user.' >&2; exit 1; fi
 repo_root="$PWD"
+git rev-parse --verify HEAD > /dev/null
 package_build="$repo_root/.ci-build/arch-package"
 mkdir -p "$package_build" artifacts/test-results
 (

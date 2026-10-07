@@ -27,6 +27,8 @@ def main():
     version = (ROOT / "VERSION").read_text().strip()
     if not re.fullmatch(r"\d+\.\d+\.\d+", args.version) or args.version != version:
         parser.error("candidate version must match VERSION exactly")
+    if subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=normal"], cwd=ROOT, text=True).strip():
+        parser.error("commit the reviewed checkout before preparing an exact-source candidate")
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     epoch = int(subprocess.check_output(["git", "show", "-s", "--format=%ct", "HEAD"], cwd=ROOT, text=True))
     args.output.mkdir(parents=True, exist_ok=True)

@@ -15,10 +15,10 @@ optdepends=('konsole: external KDE terminal integration'
 provides=('zerus-ade' 'hgs' 'hgs-tray')
 conflicts=('zerus-ade' 'zerus-ade-git')
 options=('!strip' '!debug')
-source=("https://github.com/ufna/zerus/releases/download/v${pkgver}/zerus-${pkgver}-arch-x86_64.tar.gz")
+source=("https://github.com/ufna/zerus/releases/download/v${pkgver}/zerus-${pkgver}-arch-${CARCH}.tar.gz")
 sha256sums=('@BINARY_SHA256@')
 
 package() {
-    cp -a "$srcdir/zerus-$pkgver-arch-x86_64/usr" "$pkgdir/"
+    cp -a "$srcdir/zerus-$pkgver-arch-$CARCH/usr" "$pkgdir/"
     mv "$pkgdir/usr/share/licenses/zerus-ade-git" "$pkgdir/usr/share/licenses/$pkgname"
 }

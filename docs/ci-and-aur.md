@@ -15,7 +15,7 @@ dispatches. The release workflow reuses the same checks.
 | Rust minimum | Yes | Yes | Locked unit tests on Rust 1.85.0 |
 | Linux CLI | Yes | Yes | Stable Rust unit tests, terminal smoke tests, all Python integration modules, release build |
 | macOS CLI | Yes | Yes | Same CLI checks on the macOS 15 ARM runner |
-| Arch desktop and package | Yes | Yes | Qt desktop build, all CTest suites, production build without test targets, pacman package, namcap, executable/layout checks |
+| Arch desktop and package | Yes | Yes | Qt desktop build, all CTest suites, production build without test targets, pacman package, namcap, staged and installed bundle checks |
 | macOS desktop | No | Yes | Native Qt build and all CTest suites |
 | CI gate | Yes | Yes | Requires every applicable job to succeed |
 
@@ -123,6 +123,8 @@ The product package version currently follows the desktop version: `VERSION`
 and `tray/CMakeLists.txt` are **0.36.2**. The independently versioned compatible
 CLI remains **1.46.1**. CI rejects a product/desktop version mismatch; packaging
 records both versions and the source commit in `build-info.json`.
+Increase the product/desktop version for each new public bundle, including a
+CLI-only bundle change, so published archive URLs and hashes remain immutable.
 
 Existing runtime paths and IDs remain `hgs`/`HGS_*`/`hgs-tray`. In particular,
 remote SSH protocols call `~/.local/bin/hgs`. Pacman cannot install into arbitrary
@@ -187,6 +189,12 @@ The source and binary recipes are actually rebuilt against the local candidate
 archives with makepkg as an unprivileged user. namcap errors and staged executable,
 desktop entry or license checks stop the candidate. Public recipe URLs stay
 unchanged; local fixture sources exist only in disposable copies.
+
+Arch CI also installs the built package inside its disposable container and tests
+system binaries, repeated per-user setup and a terminal-only session in a private
+home/socket. This does not exercise a live desktop's tray or an authenticated
+native agent. namcap warnings about dynamically invoked tools and interpreter
+references are retained in the logs; runtime dependencies are declared explicitly.
 
 `create_draft=true` additionally creates a **draft** GitHub release under the
 `release` environment with narrowly scoped write permission. Configure that

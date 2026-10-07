@@ -37,7 +37,7 @@ class ArchSetup(unittest.TestCase):
         for name in ("hgs", "hgs-tray", "hgs_state.py"):
             link = self.home / ".local/bin" / name
             self.assertTrue(link.is_symlink())
-            self.assertEqual(link.resolve(), self.prefix / "bin" / name)
+            self.assertEqual(link.resolve(), (self.prefix / "bin" / name).resolve())
             first[name] = link.lstat().st_mtime_ns
         self.assertEqual(self.run_setup(), 0)
         self.assertEqual(first, {name: (self.home / ".local/bin" / name).lstat().st_mtime_ns for name in first})

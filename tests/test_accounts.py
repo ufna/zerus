@@ -24,13 +24,13 @@ class Accounts(unittest.TestCase):
         # HGS prepends HOME/.local/bin, /opt/homebrew/bin and /usr/local/bin.
         # Put mocks in the first of those, so Homebrew can never win on macOS.
         self.bin = self.home/'.local/bin'; self.bin.mkdir(parents=True)
-        for executable in ('codex','claude','kimi','ssh','security','tmux'):
+        for executable in ('codex','claude','kimi','dsh','ssh','security','tmux'):
             script = self.bin/executable
             script.write_text('#!/bin/sh\nexit '+('1' if executable == 'tmux' else '99')+'\n')
             script.chmod(0o755)
         self.env['PATH'] = str(self.bin) + os.pathsep + self.env['PATH']
         prepared_path = os.pathsep.join((str(self.home/'.local/bin'), '/opt/homebrew/bin', '/usr/local/bin', self.env['PATH']))
-        for executable in ('codex','claude','kimi','ssh','security','tmux'):
+        for executable in ('codex','claude','kimi','dsh','ssh','security','tmux'):
             resolved = shutil.which(executable, path=prepared_path)
             self.assertIsNotNone(resolved)
             self.assertEqual(Path(resolved).resolve(), (self.bin/executable).resolve(),
