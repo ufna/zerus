@@ -1,6 +1,6 @@
 # Contributing
 
-Build requirements are documented in `README.md`. Keep fixtures synthetic and
+Build requirements are documented in `docs/installation.md`. Keep fixtures synthetic and
 machine connection settings local. `AGENTS.md` describes the Beads workflow.
 
 ## Local checks

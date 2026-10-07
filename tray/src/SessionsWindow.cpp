@@ -513,6 +513,7 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         const QString host = entry->host, machine = entry->machine;
         const bool local = host.isEmpty();
         const QString path = SessionFileReference::resolve(target, m_subagentId.isEmpty() ? selectedDirectory() : m_subagentCwd, local ? QDir::homePath() : QString());
+        QUrl desktopTarget;
         QDialog dialog(this); dialog.setObjectName("sessionFileDialog");
         dialog.setWindowTitle(tr("File reference — hgs zerus")); dialog.resize(560, 210);
         auto *layout = new QVBoxLayout(&dialog); layout->setContentsMargins(20, 20, 20, 20); layout->setSpacing(12);
@@ -524,7 +525,7 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         configureWorkspaceIconButton(copy,"copy",tr("Copy path"),m_dark);
         copy->setAutoDefault(false);
         auto *pathRow=new QHBoxLayout;pathRow->setSpacing(8);pathRow->addWidget(address,1);pathRow->addWidget(copy);layout->addLayout(pathRow);
-        connect(copy, &QPushButton::clicked, &dialog, [this, address, &dialog] { emit copyTextRequested(address->text()); dialog.accept(); });
+        connect(copy, &QPushButton::clicked, &dialog, [this, address] { emit copyTextRequested(address->text()); });
         if (!target.location.isEmpty()) {
             auto *position = new QLabel(tr("Source position: %1").arg(target.location));
             position->setTextFormat(Qt::PlainText); layout->addWidget(position);
@@ -536,15 +537,17 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         auto *buttons = new QDialogButtonBox; layout->addWidget(buttons);
         if (local && !path.isEmpty()) {
             auto *open = buttons->addButton(tr("Open file"), QDialogButtonBox::ActionRole); open->setObjectName("openSessionFile");
-            connect(open, &QPushButton::clicked, &dialog, [path, hint, &dialog] {
+            connect(open, &QPushButton::clicked, &dialog, [path, hint, &dialog, &desktopTarget] {
                 if (!QFileInfo::exists(path)) { hint->setText(tr("This file is no longer available at this path.")); return; }
-                if (!QDesktopServices::openUrl(QUrl::fromLocalFile(path))) hint->setText(tr("No application could open this file. You can copy its path."));
-                else dialog.accept();
+                desktopTarget = QUrl::fromLocalFile(path);
+                dialog.accept();
             });
-            auto *folder = buttons->addButton(tr("Open folder"), QDialogButtonBox::ActionRole);
-            connect(folder, &QPushButton::clicked, &dialog, [path, hint, &dialog] {
-                if (!QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath()))) hint->setText(tr("Could not open the folder."));
-                else dialog.accept();
+            auto *folder = buttons->addButton(tr("Open folder"), QDialogButtonBox::ActionRole); folder->setObjectName("openSessionFileFolder");
+            connect(folder, &QPushButton::clicked, &dialog, [path, hint, &dialog, &desktopTarget] {
+                const auto directory = QFileInfo(path).absolutePath();
+                if (!QFileInfo(directory).isDir()) { hint->setText(tr("This folder is no longer available at this path.")); return; }
+                desktopTarget = QUrl::fromLocalFile(directory);
+                dialog.accept();
             });
         } else if (!local) {
             auto *ssh = buttons->addButton(tr("Open SSH terminal"), QDialogButtonBox::ActionRole); ssh->setObjectName("openSessionFileSsh");
@@ -552,6 +555,15 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         }
         connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
         dialog.exec();
+        if (!desktopTarget.isEmpty()) {
+            // Wayland defers launch until the focused window receives an
+            // activation token. Destroying that window cancels the callback.
+            // Dispatch after the modal has gone, using the persistent workspace.
+            QTimer::singleShot(0, this, [this, desktopTarget] {
+                if (!QDesktopServices::openUrl(desktopTarget))
+                    showNotice(tr("Could not open %1 with its default application. You can copy the path.").arg(desktopTarget.toLocalFile()), true);
+            });
+        }
     };
     connect(m_activityView, &ActivityView::fileReferenceActivated, this, openFileReference);
     m_nativeSignIn = new QWidget; m_nativeSignIn->setObjectName("nativeSignInBanner");

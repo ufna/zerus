@@ -4,6 +4,9 @@ Zerus provides a desktop UI and the `hgs` CLI for persistent local and remote
 agent sessions. The CLI lives in `src/`; the Qt GUI lives in `tray/src/`.
 `design/` contains prototypes and original artwork, not runtime dependencies.
 
+The repository language is English. Write documentation and other project-facing
+text in English; conversations may use the user's preferred language.
+
 ## Work tracking and memory
 
 Use the `beads` skill in `.agents/skills/beads/SKILL.md` and run `bd prime` at

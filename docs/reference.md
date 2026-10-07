@@ -1,0 +1,898 @@
+# Zerus reference
+
+[Product overview](../README.md) | [Installation](installation.md)
+
+This reference covers session lifecycle, desktop workflows and native integration
+limits. Run `hgs -h` for the complete command syntax.
+
+## CLI sessions
+
+`hgs` starts a command in a named project tmux session and attaches locally or
+through SSH. The session survives a closed terminal, an SSH interruption or a
+sleeping client while its host remains running. Terminal windows, tabs and splits
+belong to your terminal emulator; tmux provides the persistent session.
+
+```sh
+hgs claude sample-project           # attach if present; otherwise start Claude
+hgs @mac claude sample-project      # the same operation over SSH
+hgs ls                             # local and peer sessions
+hgs a claude/sample-project/review  # attach by full name
+hgs kill claude/sample-project      # remove the hgs binding; keep native history
+hgs pause --all                     # pause verified idle sessions
+hgs resume --all                    # restore saved sessions in the background
+hgs project ls                     # legacy local folder aliases
+hgs claude sample-project -c        # continue the latest conversation in the folder
+hgs --dry-run claude sample-project # show the tmux/SSH command
+```
+
+Pass an absolute folder path when no alias is configured. `--new` generates a
+fresh session name; `--new -n review` uses your label and rejects an occupied name.
+Arguments after `--` go to the agent or project wrapper. Arbitrary terminal commands
+can run through `hgs`; native lifecycle and Activity functions require an adapter.
+
+<a id="recovery"></a>
+
+## Pause, resume and reboot
+
+```sh
+hgs pause claude/sample-project/review
+hgs pause --all
+# Reboot the machine running the agents after checking the pause result.
+hgs ls
+hgs resume claude/sample-project/review
+hgs resume --all
+hgs a claude/sample-project/review
+hgs @mac pause --all
+```
+
+Pause preserves an exact native conversation binding. It does not preserve open
+network connections, child processes or an unsent native terminal draft. Supported
+integrations include Claude Code, Codex, Kimi Code and the official DeepSeek Harness;
+the latter uses its native engine instead of a terminal-agent process.
+
+For terminal agents, pause verifies the live pane, run and conversation identity,
+native history, supported resume arguments and an idle state. It sends SIGTERM only
+to the verified agent process, checking its PID and start time, and waits up to ten
+seconds. It never kills the tmux server or escalates a failed pause to SIGKILL.
+`pause --all` preflights every live session on the host: an untracked agent, busy
+session or ordinary shell blocks the operation before the first signal. Once
+stopping begins, some sessions can fail independently; inspect the nonzero result
+before rebooting.
+
+Restore uses `claude --resume ID`, `codex resume ID`, `kimi --session ID` or the
+supported native DeepSeek operation. It preserves the original folder, account
+and project wrapper. There is no fallback to the latest conversation or a new
+conversation when exact restore fails. `resume -d` and `resume --all` run in the
+background; use `hgs a ...` when native startup needs input. A normal launch with a
+saved name restores it; `--fresh` explicitly replaces its binding.
+
+You can also resume native history created outside `hgs`:
+
+```sh
+hgs codex -c 01a0e955-b037-73f0-bc6c-36622a8c27b7
+hgs codex /path/to/project --resume=01a0e955-b037-73f0-bc6c-36622a8c27b7 -n review
+```
+
+After `-c`, IDs are recognized as UUIDs; Kimi also accepts `session_UUID`. Without
+an ID, `-c` continues the latest conversation in the project. An already tracked
+conversation keeps its session name; another gets `resume-ID` unless `-n` is set.
+An occupied name bound to another conversation is an error. Native history must
+remain on the selected host: project synchronization does not move conversations.
+
+Before the agent confirms its conversation and creates native history, pause is
+unavailable. Codex and Kimi may defer creation until the first message. Codex can
+also defer `SessionStart` after resume; Activity may send the first resumed message
+only after verifying the exact process, matching history and empty native input.
+Unknown flags or noninteractive modes such as `codex exec` are not guessed.
+The original positional prompt is never replayed during resume.
+
+A launch interrupted before conversation confirmation is not a Saved session.
+Repeat the same command without `--fresh`; the diagnostic attempt is preserved in
+`attempts/`, and native history is retained. Old untracked sessions cannot be safely
+paused: launch the intended conversation with its explicit native ID to bind it.
+
+### Tracking and durable state
+
+At launch, `hgs` adds handlers to Claude `settings.json`, Codex `hooks.json` and
+Kimi `config.toml`, preserving other hooks and making a `.pre-hgs` backup before the
+first edit. It respects `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `KIMI_CODE_HOME`.
+Handlers do nothing outside an `hgs` run. `HGS_TRACKING=0` disables registration for
+new launches. Native hook trust still requires an explicit user choice in Codex.
+Tracked Codex needs `--no-daemon`; the integration has been verified with 0.160.0,
+while 0.155.1 lacks that required flag.
+
+New hooks call `hgs __state hook`. Existing trusted Python commands are retained:
+`hgs_state.py` forwards them to the Rust CLI, so keep Python for legacy hooks.
+The CLI and session core are Rust; SQLite is bundled and requires a C compiler at
+build time. Existing session bindings and provider history remain compatible.
+
+Session records live in `${XDG_STATE_HOME:-~/.local/state}/hgs/sessions`, or
+`HGS_STATE_DIR`. Writes are atomic and synchronized to disk. Records contain the
+command and arguments, folder, conversation ID and run identity; environment
+secrets are not saved. A secret passed directly as an argument is still an argument
+and can appear in the private record. Native agents retain their full history.
+Late events from a previous run and child-agent events cannot rebind the parent.
+
+`runtime_state`, `process_state` and `conversation_state` distinguish the tmux
+terminal, agent process and native conversation. `SessionEnd` alone does not prove
+process exit. A live process without verified activity shows **Status unknown**;
+**Agent exited** means the process ended while its tmux terminal still exists.
+
+### Rename, Saved and Archive
+
+**Rename…** changes the label after the project name without replacing the process
+or working folder. Tracking and journal history follow the new name; attached
+terminals receive updated titles. Archive renaming targets only the selected ID.
+
+```sh
+hgs rename codex/project-docs/review codex/project-docs/database-review
+hgs @mac rename claude/sample-project/review claude/sample-project/deploy
+hgs rename codex/project-docs/review codex/project-docs/database-review --archive ID
+```
+
+Live and Saved names must be free. Archive names may repeat. Labels accept Unicode
+and internal spaces, but reject `/`, `:`, `.`, control characters and surrounding
+whitespace. `--dry-run` validates without mutation; `HGS_TAB=0` disables title updates.
+
+**Saved sessions** are unfinished conversations paused explicitly or left after
+process interruption, tmux loss or reboot. **Archive** contains completed
+conversations. For automatic archiving, a tracked run needs both native main
+conversation completion and a successful process exit without evidence of pause
+or an external signal. `SessionEnd`, an SSH disconnect or a completed reply alone
+is insufficient. Older ambiguous records are not reclassified automatically.
+
+```sh
+hgs archive codex/my-project/review                 # stopped sessions only
+hgs ls --local --json
+hgs inspect codex/my-project/review --archive ID
+hgs resume codex/my-project/review --archive ID -d
+hgs kill codex/my-project/review --archive ID        # forget only this binding
+```
+
+Archives live in `archives/`, each with an independent ID. A new launch with the
+same name preserves the archive. Restore refuses an occupied live or Saved name
+and removes an archive binding only after the native agent confirms the expected
+conversation. Failed restore keeps it. **Forget archive** preserves native history;
+`resume --all` excludes archives.
+
+## Project wrappers
+
+An executable `run_COMMAND.sh` in the project folder runs inside the tmux session.
+Use it to prepare the environment and launch the native agent.
+
+```sh
+hgs codex sample-project                 # run_codex.sh starts a new conversation
+hgs codex sample-project -c              # run_codex.sh resume --last
+hgs codex sample-project -- resume ID     # continue this exact conversation
+hgs codex sample-project --bare          # bypass the wrapper
+```
+
+Explicit arguments after `--` suppress automatic Codex `resume --last` insertion,
+even with `-c`. Use `-- resume --last --model MODEL` when needed. Claude and Kimi
+forward `-c` to their wrapper. Existing sessions attach without rerunning the
+wrapper. Interactive setup needs an attached launch; detached mode assumes the
+required environment is already available. Never put private keys in wrappers.
+
+<a id="desktop"></a>
+
+## Desktop workspace
+
+The tray's **Open hgs**, a left click or `hgs-tray --sessions` opens the workspace.
+On macOS, use `~/Applications/hgs-tray.app/Contents/MacOS/hgs-tray --sessions`.
+Repeated launch raises the existing window. Closing it leaves the tray and agents
+running. The installed application and service names remain `hgs-tray` for
+compatibility; the title is `hgs zerus`.
+
+The tray has two counters: all sessions and **Needs attention**. Attention includes
+input, approvals, errors and unread main-agent replies. An offline host retains
+its last total but adds no live attention requests; a dot marks incomplete data.
+Linux application badges and the macOS Dock show the attention count, hiding zero.
+
+Notifications open Activity for the exact requesting run and conversation,
+including remote or renamed sessions. Polling and restarts do not repeat the same
+request; resolved notifications are removed. Main-agent replies and explicit child
+questions can notify; ordinary child results and errors stay with the parent.
+Delivery failures show a reason and retry after a minute while still relevant.
+macOS uses Notification Center and needs its system permission; Focus and OS
+notification settings still apply.
+
+**Sessions**, **Projects**, **Machines** and **Accounts** share the navigation rail;
+click the logo for **Overview**. Overview shows attention, work in progress,
+online machines, CPU, memory and load, plus account limits. Counts open the matching
+filter, sessions open Activity, and machine settings lead to Machines. Native
+account quotas are grouped by verified identity instead of adding machine usage.
+
+Session rows show provider, machine, current action, model, effort and Git context.
+**Ready** means a reply ended, not that a long-running task is complete. Working
+and compacting timers use native start evidence and update locally without extra
+host requests. Theme, density, animation and machine/project label appearance are
+local preferences. Missing Git metadata does not turn a folder into a repository.
+
+Search names, folders, branches and models immediately. From two characters,
+content search also reads public Codex, Claude and Kimi messages and saved tool
+events on each host. Machine and state filters narrow results; the all-sessions
+view includes archives. Results open the recorded message; **Back to latest
+activity** returns to the live timeline. **Limited history searched**, **Some
+history unavailable** and excerpt labels describe incomplete coverage. Internal
+reasoning and system instructions are excluded.
+
+**New reply** stays unread until its latest result is visible in an active window
+or an attached Terminal at the bottom. Background windows and old search results
+do not clear it. Read state survives rename and resume on this device. Viewing
+never answers an approval. **Mark as read** clears the current reminder without
+answering the agent; **Mark needs attention** creates a local review reminder.
+Opening the conversation does not clear an explicit review reminder.
+
+Ctrl/Command-click selects multiple sessions while preserving the open conversation
+and draft. Batch actions include read/review later, pause, resume, archive, project
+move, termination and forgetting. Applicability is shown per selection. Ctrl-click
+does not select project headers or subagents. Escape or the selection close button
+clears selection. Context menus and shortcuts preserve the target identity.
+**Clear archive…** requires confirmation, preserves offline records and excludes
+new records created after the confirmation snapshot; native history remains.
+
+Common shortcuts: Ctrl/Command-F searches, Ctrl/Command-R refreshes, Enter opens the
+selected live session and Escape closes the workspace or its current transient UI.
+An archive needs explicit **Restore**; Enter does not start it.
+
+<a id="activity"></a>
+
+## Activity, messages and native controls
+
+Activity shows recorded public messages and tool events rather than a full copy
+of native history. User messages preserve literal text, Markdown markers and
+line breaks; agent replies render Markdown. Adjacent tool events collapse into
+groups. Reading older history preserves scroll and selection; **Jump to latest**
+returns to live events without resizing the timeline.
+
+The owner-only `events.sqlite3` journal sits with session records on the agent host
+and retains about 50,000 events per machine. Excerpts can contain project data.
+Pause/resume continues the same conversation journal. Selected Activity normally
+polls every 2.5 seconds while visible; host lists poll every five seconds, and the
+tray keeps its background polling when the workspace is closed.
+
+Kimi replies and intermediate public messages come from the exact conversation's
+`agents/main/wire.jsonl` when Stop lacks text. Transcript reads are bounded to an
+8 MiB tail, 50 replies and 32,000 characters per reply. Late copies do not duplicate
+cards. Nested `codex exec` runs with verified `source: exec` register as children
+instead of changing the parent conversation. `/new` and `/clear` still change the
+main native conversation.
+
+### Sending and attachments
+
+Enter sends, Shift-Enter inserts a line and Escape releases focus while keeping
+the draft. Paste images, drag local files or use the attachment button. Labels
+such as `[Image #1]` and `[File #2]` preserve attachment placement within the text;
+removing one does not renumber the rest. Drafts and attachments stay with the
+session while the workspace is open.
+
+Delivery verifies the exact run, process, conversation and native input state.
+Confirmed receipts are idempotent by request ID. An uncertain result is never
+retried automatically; inspect the native UI before submitting again. A session
+change or stale request cannot send into another conversation. Busy-session queue
+controls follow the native agent's capabilities; unsupported operations remain
+in Terminal or Native UI. Codex ordinary deferred follow-ups remain read-only
+unless its native UI offers the supported promotion operation.
+
+**Stop** interrupts the current turn and cancels recovery without terminating the
+session. Claude, Codex and Kimi use verified native Escape; supported DeepSeek
+hosts use native cancel. Native queue behavior still applies: Codex Escape may
+start a queued follow-up. Uncertain interruption is not repeated.
+
+File links retain their visible path and source position. Relative references
+resolve against that session's folder. Local references can open the file or its
+parent folder; remote references identify the host and offer an SSH terminal
+instead of treating the remote path as local. Display alone downloads or launches
+nothing. Copying the path keeps the dialog open so you can copy first and then
+choose an opening action. Desktop dispatch happens after the reference dialog is
+destroyed so Wayland activation does not depend on a disappearing window.
+
+### Questions and approvals
+
+Activity exposes supported native questions with their full visible disclosure,
+options, queue position and request time. It never submits a highlighted option
+without a user action. Answers are scoped to the unchanged run, process,
+conversation and request hash; uncertain input is not automatically retried.
+Unsupported or truncated native prompts remain in Terminal.
+
+Supported startup prompts include Claude workspace trust and auto-mode consent,
+Codex folder access and **Hooks need review**, and Kimi folder/MCP trust. These
+can appear before a conversation exists, but only with verified startup identity.
+Claude workspace trust preserves its full permissions warning; Kimi includes the
+visible MCP commands. Trust persistence belongs to the native agent.
+For Codex hooks, **Review hooks** opens the native browser in Terminal;
+**Trust all and continue** and **Continue without trusting** are explicit choices.
+Review input with an uncertain result is never retried automatically.
+
+Optional Codex questions preserve the regular composer and support **Skip**.
+Queue arrows navigate optional requests from newest to oldest while retaining
+answers and the current multipart section. A required approval temporarily takes
+priority. Confirmed answers appear as **You (answer)** in Activity.
+
+### Models, effort, context, goals and subagents
+
+The Activity model selector changes supported per-session model/effort settings,
+leaving account defaults intact. Codex/Kimi options come from the selected
+account's native catalog. Before the first message, verified empty native input
+can allow selection without creating a conversation. Startup prompts, drafts,
+unconfirmed resume and an already submitted first message block that operation.
+Claude controls and unverified states fall back to Terminal with an explanation.
+
+Busy-session choices remain **Pending** until the agent is ready, including after
+navigation away. A message sent before application uses the current model.
+**Save for resume** stores a stopped session's choice without starting it. A stale
+queued setting cannot replace a newer choice from another device.
+`hgs [@host] settings SESSION --json` exposes the same scoped operation.
+
+Native clear/compact operations are capability-gated and require exact identity.
+**Clear session** requires confirmation naming the session and host, preserves
+unsent drafts and rechecks identity. DeepSeek context reset is unavailable until
+its native Session Controller provides the supported operation. **Compact and
+continue** sends only after confirmed successful compaction with the same
+unedited draft; errors, cancellation or identity/draft changes cancel submission.
+Context metrics use native telemetry, without guessing a capacity from a model name.
+
+**Tasks & agents**, **Details** and **Worktrees** occupy the resizable inspector.
+Its width, tab and open state are local; toggling it preserves Activity, drafts and
+Terminal attachment. Successful native task/plan tools supply recorded pending,
+in-progress and completed items. Tool failures and Stop do not complete tasks.
+There are up to 100 items per list and 65 lists, with truncation disclosed.
+Old data shows **Last recorded**; unavailable history is not reconstructed.
+
+Goals remain independent of turn state. Codex uses `goals_1.sqlite`, Claude uses
+`goal_status` in the exact transcript, and Kimi uses native `goal.create/update/clear`
+wire events. DeepSeek exposes its native phase and continuation permission.
+Only recorded usage and budgets are shown; missing data is never inferred from a
+prompt. Ready does not complete a goal.
+
+Subagents open their own Activity and return through **Main activity**, preserving
+the parent's draft. Individual child IDs and profile groups are distinguished;
+unknown counts remain unknown. Ordinary child results/errors stay out of the
+attention count, while explicit input/approval requests remain visible. DeepSeek
+continuable children can receive messages through the native API with parent
+verification; other adapters and one-shot children may expose history only.
+
+**Fork session…** creates an independent native conversation in the same folder,
+next to the original session in its group. Files remain shared. The CLI is
+`hgs [@host] fork SESSION [-n NAME] [-d] [--archive ID]`; support depends on the agent.
+DeepSeek native fork remains in Native UI.
+
+<a id="projects"></a>
+
+## Projects and P2P synchronization
+
+A project has a stable ID, name, color, folders on multiple computers and session
+membership. Drag sessions between projects without moving folders or replacing
+agent processes. Drag headers, use the context menu or Alt-Up/Down to change local
+order. Empty-project visibility, collapse state and default project are local.
+**All swarm projects** explicitly shows the full shared catalog.
+
+Folder entries contain a machine, path and optional label. Browse works for local
+and remote folders, including ordinary non-Git directories. Project switches in
+**New session** keep the machine and select that project's folder. Only a path
+explicitly chosen through **Browse…** stays pinned per machine within that dialog;
+closing it clears this temporary choice. Selecting a listed folder unpins it.
+A folder outside the project shows a warning and is added only after a successful
+launch with the matching launch ID. Cancellation and launch failure add nothing.
+
+New launches immediately show **Starting…** until the matching session appears.
+Controls stay disabled before confirmation. Errors remove the placeholder and
+show a reason; **Hide launch status** hides it while preserving a late session's
+project placement. Existing names and unrelated sessions are never repurposed.
+**Open terminal window** is off by default and remembered separately from the tray
+open mode; DeepSeek uses its embedded native interface.
+
+To join a swarm, configure SSH access and open Zerus on the initial machines so
+existing projects import once. Use **Projects → Swarm… → Connect computer**,
+**Preview connection**, review project mapping and **Join and merge projects**.
+Names alone do not merge projects. Existing swarm membership wins by default;
+turn off that preference to compare conflicting assignments. HGS backs up the
+catalog before a merge. **Connect this member** adds a route to an existing member.
+
+There is no permanent leader: each member stores the shared catalog and can relay
+changes. One configured SSH connection is enough for exchange in both directions;
+the other side needs no reverse SSH connection. Learning a machine ID through the
+catalog does not create local transport access to it.
+
+Shared fields are machine IDs/names, project IDs/names/colors, folder locations and
+session membership. SSH hosts, users, ports, keys, proxies, credentials, transport
+bindings, local order, filters, collapse/appearance and the default project stay
+local. File contents and agent history are not copied. Offline hosts do not hide
+projects with locally configured access.
+
+The catalog and local bindings live in `~/.config/hgs/swarm/catalog.json`; do not
+copy that complete file between machines because it contains node identity and
+local transport bindings. `hgs swarm export` exports only shared fields. Original
+Zerus settings stay in `workspace/organizationBeforeSwarm`; import/merge backups
+use `~/.config/hgs/swarm/backup-*.json`.
+
+The independent `hgs-swarm` service (`com.hgdev.hgs-swarm` on macOS) makes no network
+requests without members. Local changes normally trigger exchange within three
+seconds; unchanged peers are checked every 30 seconds, backing off to five minutes
+on failure. Zerus reads the local catalog every five seconds without SSH. Offline
+members catch up later. Independent fields merge; conflicts remain in the Swarm
+review UI. Deletion records prevent old replicas from resurrecting data; this
+version does not prune old journal records.
+
+```sh
+hgs swarm get
+hgs swarm preview mac
+hgs swarm sync
+hgs swarm disconnect mac
+```
+
+Disconnect stops outbound exchange through that connection while retaining the
+catalog and session access. It does not deny inbound exchange from an existing
+member; SSH controls transport access. `HGS_SWARM_SERVICE=0 ./install.sh` skips
+worker installation.
+
+### Legacy CLI folder aliases
+
+`~/.config/hgs/projects.local` retains `NAME=FOLDER` aliases for CLI compatibility.
+The old infrastructure-owned `~/.config/hgs/projects` is no longer read. Aliases
+import into Zerus once per machine; later project edits belong in Projects.
+
+```sh
+hgs project ls --json
+hgs project add infra ~/work/infra
+hgs project set infra ~/work/other
+hgs project rm infra
+```
+
+Alias names reject spaces, `/` and `=`; logical project names are not restricted
+that way. Absolute paths remain available directly from the CLI.
+
+### Worktrees and ordinary folders
+
+Existing Git worktrees appear in Projects and the session inspector. Clicking a
+checkout filters Sessions while preserving the open conversation and draft.
+**Other worktrees…** selects an existing checkout without changing machine, project
+or account. Bare or unavailable copies cannot launch; ordinary Browse remains
+available even without Git or after metadata errors.
+
+**New worktree…** is an explicit user operation. Choose a new branch, base ref
+(default `HEAD`) and unused destination under an existing parent directory. The
+CLI is `hgs [@host] worktrees create --path /repo --branch feature/task
+--destination /repo-task --base HEAD --json`. Zerus also verifies `--common-dir`
+and a request ID. Creation uses normal `git worktree add -b`, including configured
+checkout hooks, with no force, fetch or deletion. The ref is resolved before
+creation. The five-minute operation can leave partial results after failure;
+inspect the destination before retrying. Cancelling the session form preserves
+the created folder and branch. Closing or archiving a session never removes them.
+
+Catalog reads are on demand, with a 30-second repository cache; `--refresh`
+bypasses it. Identity is machine plus canonical Git common directory, not equal
+paths or repository names. Limits are three seconds, 1 MiB of Git output and
+512 worktrees. Errors distinguish `not_repo`, `git_unavailable`, `metadata_error`,
+`timeout`, `too_large` and `folder_unavailable`; previous data is explicitly stale.
+The UI caches at most 64 snapshots and 8 MiB. See the
+[worktree design](../design/worktree-support/index.html) for future cleanup ideas.
+
+## Machines and accounts
+
+**Machines** edits local SSH aliases and overrides in
+`~/.config/hgs/machines.local.json`, leaving the shared `config` intact. Blank
+fields inherit OpenSSH configuration. Effective values come from `ssh -G`
+without connecting; `hgs machine resolve ALIAS` exposes the same result.
+**Test connection** checks SSH and hgs/tmux versions. **Open SSH terminal** supports
+interactive host-key verification. **Install hgs** builds the CLI remotely from
+a selected checkout while preserving existing state. Unsaved machine drafts do
+not change configuration; **Discard draft** removes the draft explicitly.
+
+Multiple machine filters narrow both sessions and content search. Label color,
+Bright/Soft mode and appearance previews are local. **All machines** clears the
+restriction. A temporary connectivity error retains the last snapshot and makes
+unavailable controls explicit.
+
+<a id="accounts"></a>
+
+### Accounts
+
+Accounts collects provider profiles from connected machines. Verified provider
+account ID, or email with organization, groups the same account across hosts;
+matching display names alone do not. Providers, organizations and conflicting
+IDs remain separate. Local results appear first; remote profiles arrive
+incrementally. Known rows and selection survive refresh, failure and offline
+hosts. Limits use one current account snapshot, never the sum of machine usage.
+
+**Add account** creates a separate profile on the selected host and starts native
+sign-in. Default/native profiles retain existing authorization. **New session**
+selects an account for the chosen provider and machine. **Make default on…** sets
+the default for new sessions; explicit `--account` wins, and attach, resume and fork
+retain the original profile. Ordinary agent commands outside `hgs` keep their
+native sign-in. Use `hgs [@host] account default native-claude` to restore the native
+Claude default; removing a profile also removes its default assignment.
+
+```sh
+hgs account ls
+hgs @mac account add work --provider codex --label Work
+hgs @mac account login work
+hgs @mac codex /path/to/project --new --account work
+hgs account copy native-codex --from @local --to mac --as codex-work --label Work
+```
+
+`accounts.json` stores metadata and selected permission modes; authorization stays
+in the profile's own directory. Managed profiles clear inherited API tokens;
+native defaults keep the user's normal environment. Tokens are not displayed in
+UI, and the mere presence of a file does not prove valid sign-in. Claude managed
+profiles support claude.ai login; shared Claude Console authorization is not
+isolated by this mechanism. Completed native sign-in finalizes profile setup
+without altering permissions or workspace trust.
+
+Managed Claude profiles inherit behavioral settings from `~/.claude/settings.json`,
+including permission default, model and effort, at launch/resume. Profile overrides
+remain. Auth, API keys, endpoints, directory overrides and other hooks are not
+copied. OAuth, token renewal, limits and connectors stay native.
+
+**Permissions → Change…** sets provider defaults or bypass for future launches
+and resume on that host. Explicit launch flags take precedence. Current agents
+continue unchanged; account labels describe launch settings, not every running
+session's effective permissions. Bypass maps to Codex full access without sandbox,
+Claude `bypassPermissions`, Kimi Never Ask/`--auto` and DeepSeek's native
+`danger-full-access`. The CLI is `hgs [@host] account permissions ID --mode
+provider|bypass`. Permissions do not accompany copied sign-in credentials.
+An older running DeepSeek host needs the newer adapter on its next ordinary start.
+
+**Copy existing sign-in over SSH** copies Codex/Kimi credentials and necessary
+provider/model settings into a new profile, without replacing another one or
+copying history, tools or hooks. Claude's system Keychain cannot be transferred:
+sign in on the destination. Providers can require new sign-in even after copying.
+**Remove from…** requires confirmation naming the account and machine. Native
+history and active session ownership remain separate from catalog removal.
+
+On macOS, HGS does not unlock Keychain. The per-user
+`com.hgdev.hgs.user-session` service allows a same-UID HGS process started through
+SSH/tmux to join the existing graphical security session before Claude login,
+inspection or launch. It passes system session authority, not passwords or tokens,
+starts on demand and exits after a minute idle. A logged-in desktop session is
+required; screen lock differs from logout. If Keychain is actually locked in that
+session, unlock it there. Authentication diagnostics distinguish these cases.
+
+<a id="deepseek"></a>
+
+## Official DeepSeek Harness
+
+The native adapter is pinned to `@deepseek-ai/dsh@0.2.0-rc.2`. Install it on the
+agent host, sign in and choose **DeepSeek Harness** in New session:
+
+```sh
+npm install -g @deepseek-ai/dsh@0.2.0-rc.2
+hgs account login native-dsh
+hgs dsh /path/to/project --new -n work
+```
+
+Zerus launches the official native engine and its tools, access rules and history.
+A versioned adapter connects its Session Controller through a private Unix socket.
+The official web host uses a separate `hgs` profile through `--patch`; sign-in and
+secrets stay in `DSH_HOME`. The web endpoint is loopback-only; remote access uses
+SSH. `~/.npm-global/bin` is discoverable from service and SSH launches.
+
+A new session waits for its first message. API-key `deepseek-official` connections
+work independently of account sign-in. If `deepseek-account` needs login, Activity
+shows **Sign in** and keeps the draft until native authorization finishes.
+
+**Native UI** embeds the official web interface beside Activity and opens the
+host workspace's native session list, including sessions created through Zerus.
+Navigation preserves its screen and draft. The header can also open it in a
+browser. Questions and approvals for Zerus-managed sessions remain in Activity;
+**Respond in Activity** points there when needed. Native cookie exchange supplies
+authentication, and ports/tunnels are discovered automatically. Embedded cookies
+and cache are memory-only. Qt WebEngine is required.
+`hgs native-ui SESSION --json` returns a private connection URL containing a token;
+keep that output private.
+
+Activity supports creation, messages/images, busy-session submission, questions,
+approvals, per-session model/effort, pause/resume, rename, goals, todos and child
+views. Request receipts prevent duplicate submission. Uncertain delivery requires
+inspection. Model changes do not replace profile defaults. Stopping one session
+does not terminate neighboring agents or the shared host. Closing Zerus leaves
+the host running; Forget retains native history. Linux user systemd runs the host
+in an independent scope so GUI service restart cannot kill the engine.
+
+Native fork, global DeepSeek history search, schedule management and account
+transfer are currently handled in Native UI. Native context reset awaits a
+supported Session Controller operation. Other harness versions need contract
+verification; updates never restart live hosts or agents automatically.
+`python3 tests/test_dsh_native.py -v` exercises the official engine with a local
+keyless model, covering history, lifecycle, questions, settings and browser login.
+
+## Automatic recovery
+
+**Settings → Automatic recovery** shares rules for temporary overload, rate limits
+and network failures. Automation is off by default. Each class has its own delays:
+`15, 30, 60, 300, -1` stops after four attempts; `15, 30, 60, 0` repeats the previous
+60-second delay indefinitely after the first two attempts; `-1` alone does nothing.
+Small jitter is applied. Class counters persist within an episode when errors change.
+
+Native agent retries finish first. Claude, Codex and Kimi receive an explicitly
+marked `[HGS automatic recovery]` continuation in the same conversation; HGS does
+not replay the original request or tool command. The newer DeepSeek adapter retries
+the failed model request; an older host uses continuation messages. Sign-in,
+balance, quota and context exhaustion require manual action. Questions, new input,
+Stop, session termination and identity changes cancel waiting; a native draft
+blocks delivery. Unknown providers do not receive automatic input.
+
+Activity shows countdown, attempt number, **Attempts**, **Retry now** and
+**Cancel retry**. Retry now respects a known Retry-After. Policy edits apply to new
+episodes; already scheduled episodes retain their delays. Disabling recovery
+cancels automatic continuation. Uncertain delivery stops the episode rather than
+sending Enter again.
+
+An independent `hgs-recovery.service` / `com.hgdev.hgs-recovery` worker runs without
+GUI. Custom installs can run `hgs recovery worker`. Episodes and receipts live on
+the agent host under `sessions/recovery/`, guarded by policy revision and a single
+executor lock. CLI operations are `hgs [@host] recovery get|set|sync|action`, with
+JSON writes on stdin. Adapters register explicitly in `src/state/recovery.rs`.
+
+Open Zerus clients synchronize policy versions over HGS/SSH every 15 seconds;
+offline machines catch up later and executors keep their saved local policy.
+Revision and writer identity establish deterministic order. Saving a stale form
+requires Reload. No external cloud service is involved.
+
+<a id="processes"></a>
+
+## Processes launched by agents
+
+**Processes** is off by default; enable it in **Settings → Processes**. It appears
+beside Activity and Terminal, or Native UI for DeepSeek. When disabled, its list,
+count and output are not polled; normal Activity, fleet and account updates continue.
+
+**Live shells / processes** shows verified shells and independent command trees.
+Recorded tool calls appear separately, with completed history collapsed. Equal
+command text does not prove that a tool record and OS tree are the same task.
+Rows expose owner, state, elapsed time and available folder/progress/output. OS
+trees show PID and child count; their stdout is not independently captured.
+The active count uses the maximum of confirmed tool records and OS trees, not
+the sum of overlapping sources. Unconfirmed records do not count as active.
+
+| Agent | Observation and output | Targeted control |
+|---|---|---|
+| Claude | Hooks, Bash/tool_result, backgroundTaskId and native output files | Verified live OS trees |
+| Codex | Hooks and rollout CommandExecution, including code-mode and write_stdin | Verified live OS trees |
+| Kimi | Hooks, main/child process-task registry and tasks/ID/output.log | Verified live OS trees |
+| DeepSeek | tools/execute and ctx.jobs in the native bridge | Session-owned native jobs |
+
+**Stop selected** verifies every selected target, run, conversation and ownership
+before dispatch. Native jobs also require host generation and job identity. OS
+trees require PID/start-time and ancestry checks, use TERM and escalate the selected
+tree to KILL after two seconds if needed. Linux uses PID handles; macOS rechecks
+start times. The agent and neighboring trees are excluded. Stale generations and
+offline snapshots cannot stop a newly reused target. Requests are sequential,
+with no automatic retry; identity changes cancel unsent ones. **Stopping** remains
+until completion is confirmed. Whole-turn Stop in Activity is a separate action.
+
+`hgs [@host] processes SESSION --json` reads records. `--output ID` and `--stop ID`
+require `--run RUN --conversation ID`; native jobs additionally use
+`--generation GENERATION`. Archives accept `--archive ID` for read-only history.
+Older DeepSeek hosts retain history until their ordinary next start; live registry
+and targeted stopping need the newer bridge. GUI updates do not restart hosts.
+
+Default intervals are 2.5 seconds for open Processes, 30 seconds for background
+counts, ten seconds for Unconfirmed output and 0.5 seconds before a loading
+indicator. Detailed polling covers only the selected visible session. Output is
+read only for the visible selected command, immediately on opening, and refreshed
+on meaningful state/output changes. Disabling the feature uses
+`hgs inspect --skip-processes`; explicit CLI reads remain available. Terminal/Native
+UI inspection also follows the background interval. These reads use local state,
+OS/native registry or SSH, never a model call.
+
+Lost foreground hooks become Unconfirmed rather than staying Starting through
+another command. Codex completion beyond the normal 8 MiB transcript window can
+be read incrementally up to 16 MiB per poll and cached privately. Completion needs
+the exact call ID in the verified conversation; absence of an event is not success.
+
+## Terminal, SSH and clipboard
+
+The built-in Terminal is a real PTY client attached to an existing tmux session,
+locally or over SSH. It supports ANSI/VT, UTF-8, colors, fullscreen applications,
+keys, selection, scrollback, paste and resize. Connect, Disconnect and Reconnect
+change only that client. Closing the window detaches it and leaves the agent alive.
+The client uses `hgs a SESSION --existing [--run-id ID]`; disappearance does not
+restore a session automatically. Ordinary `hgs a SESSION` retains Saved restore
+behavior. The vendored terminal engine is libvterm 0.3.3 under MIT; builds do not
+download it. Rendering updates changed cells and the cursor rather than scanning
+the full screen for every small change.
+
+Dropping files into Terminal inserts paths without Enter. Remote drops first copy
+files to the session host, limited to eight files, 10 MiB each and 20 MiB total.
+Changing tab, session or connection during transfer cancels insertion.
+**Open externally** and **Copy connect command** retain access from other clients.
+
+If SSH drops, tmux on the remote host continues running. Reattach normally. If the
+local tmux server dies, its sessions are gone; `hgs` restores the terminal mode and
+reports this instead of leaving the alternate screen active:
+
+```text
+hgs: the tmux server died; terminal restored, sessions on this box are gone
+```
+
+A client failure while tmux remains alive does not trigger terminal reset sequences
+that could corrupt the normal screen. Saved conversation bindings can still be
+restored after server loss, but tmux is not a reboot-persistence mechanism.
+
+The optional `tmux.conf` binds Ctrl-V to `hgs paste` for the remote image clipboard
+bridge. At attach, `HGS_CLIENT` records the viewing host; an SSH hop forwards it
+through `--client`. The session host fetches PNG from the client's `hgs clip`, puts
+it in its own native clipboard and forwards Ctrl-V so the agent reads its usual
+clipboard. Local sessions need no SSH. Errors still forward the key, with a short
+status and a best-effort line in `${XDG_STATE_HOME:-~/.local/state}/hgs/paste.log`.
+The log is not rotated automatically. Clipboard synchronization is specific to
+the image-paste bridge, not general desktop synchronization. A remote host needs
+a working graphical clipboard environment; choose the viewing peer explicitly
+when several clients attach to the same session.
+
+New sessions created through a peer obtain the host's graphical environment rather
+than inheriting an unrelated SSH display. Terminal client environment and macOS
+graphical security context are handled separately from agent conversation state.
+
+### External terminal modes
+
+Linux defaults to Konsole with `auto`, `tab`, `window` or `clipboard`. macOS offers
+Terminal.app or clipboard. A custom `--terminal` template substitutes `{cmd}`.
+Konsole tab insertion needs its security-sensitive D-Bus API and an available
+window; automatic mode may open a new window when a usable tab is unavailable.
+Enabling that API grants other session-bus processes control of terminal tabs.
+Terminal.app remains the native macOS backend; alternate terminal bundles need a
+supported explicit launch template, not an executable path guessed from a bundle.
+
+Clipboard mode copies the shell-safe connect/restore command instead of launching
+a terminal. Explicit **Open terminal** still opens one without changing that mode.
+Linux uses its desktop clipboard; macOS uses the native clipboard. New-session
+**Open terminal window** remains an independent preference.
+
+The tray config lives at `~/.config/hgs/tray.conf` unless overridden. CLI flags win
+at startup; a later tray-menu selection takes effect immediately and writes the
+config for subsequent runs. A later launch with the same explicit flag wins again.
+
+<a id="installation"></a>
+
+## Installation, configuration and diagnostics
+
+See [installation.md](installation.md) for dependency and install commands.
+`~/.local/bin/hgs` must exist on peers because SSH calls use that path.
+Configurations are data assignments, not executable shell scripts:
+
+```sh
+HGS_SELF="workstation"       # aliases that identify this host
+HGS_PEERS="macbook build-01"  # SSH aliases to poll and target
+HGS_TAB=1                    # enable terminal title updates
+HGS_TAB_COLORS="macbook=#80ff80"
+```
+
+The CLI config is `~/.config/hgs/config`; `HGS_CONFIG_DIR` and `HGS_STATE_DIR` permit
+isolated setups. Runtime storage, `HGS_*` variables and application/service IDs
+stay compatible with existing installations. Source is [MIT](../LICENSE); see
+[third-party notices](../THIRD_PARTY_NOTICES.md) for dependency licensing.
+
+The GUI installer updates only Zerus and its desktop integration. It never
+restarts native agents, tmux servers or DeepSeek hosts. Use
+`HGS_TRAY_RESTART=0 ./tray/install.sh` to stage a GUI update while keeping a running
+workspace and its unsaved drafts. The new UI starts on the next launch.
+
+Linux installs the binary under `~/.local/bin`, a systemd user service under
+`~/.config/systemd/user` and a launcher under `~/.local/share/applications`.
+The launcher is not a second autostart entry. The service belongs to
+`graphical-session.target`, restarts after crashes and does not loop on exit code 4
+(system tray unavailable). Compare `systemctl --user status hgs-tray.service` and
+`journalctl --user -u hgs-tray.service` when startup fails.
+
+On macOS the installer uses Qt/Homebrew, builds and ad-hoc-signs an app bundle,
+and installs it under `~/Applications/hgs-tray.app` with
+`~/Library/LaunchAgents/com.hgdev.hgs-tray.plist`. A graphical login is required
+for the tray. Signing precedes bundle replacement; matching code hashes avoid
+unnecessary replacement. Ad-hoc signing is not a Developer ID distribution
+signature. LaunchAgent crash recovery is independent of native agent engines.
+
+```sh
+launchctl list | grep com.hgdev.hgs-tray
+~/Applications/hgs-tray.app/Contents/MacOS/hgs-tray --selftest --hgs ~/.local/bin/hgs
+```
+
+A PID means the agent is running; `-` means it exited and the next field is its last
+exit code. `mac-install.sh` requires an explicit target SSH alias, installs source
+under `~/.local/src/hgs` and builds on that host. `--no-tray` updates only the CLI.
+No reverse connection is created by default. Explicit peer setup uses
+`HGS_MAC_PEER`, `HGS_MAC_PEER_HOST` and optional `HGS_MAC_PEER_USER`,
+`HGS_MAC_PEER_KEY`, `HGS_MAC_PEER_COLOR` through local configuration.
+
+| Desktop option | Purpose / default |
+|---|---|
+| `--hgs PATH` | CLI executable, normally discovered through PATH |
+| `--local-poll MS` | Local tray polling, 2000 ms |
+| `--peer-poll MS` | Peer tray polling, 60000 ms |
+| `--terminal TEMPLATE` | External terminal launcher with `{cmd}` |
+| `--icon-color COLOR` | Override tray mark/counter foreground |
+| `--open-mode MODE` | Linux auto/tab/window/clipboard; macOS terminal/clipboard |
+| `--selftest` | Headless hgs connectivity check |
+| `--sessions` | Open the workspace |
+
+A single-instance socket forwards repeated launches to the running GUI.
+The version appears in the rail and Settings. Closing a workspace never owns
+agent process lifetime. Local machine settings, credentials, runtime journals and
+personal connection values belong outside the repository.
+
+## JSON and external clients
+
+```sh
+hgs ls --json --local
+hgs inspect codex/sample-project/review
+hgs inspect codex/sample-project/review --after 123
+hgs @mac inspect claude/sample-project/review
+hgs @mac dirs '~'
+```
+
+`ls --json --local` is one host snapshot without SSH; an empty tmux server returns
+an empty array. A minimal shape is:
+
+```json
+{
+  "host": "workstation",
+  "ok": true,
+  "projects": {"sample-project": "/workspace/sample-project"},
+  "sessions": [{
+    "name": "claude/sample-project/review",
+    "cmd": "claude",
+    "project": "sample-project",
+    "tag": "review",
+    "attached": 1,
+    "clients": ["/dev/pts/2"],
+    "created": 1787840176
+  }]
+}
+```
+
+Tracked live sessions add resumability and activity. Saved sessions use
+`state: paused|stopped`, zero attached clients and an empty clients array.
+Archives add `archive_id` and `archived_at`; missing state remains compatible with
+older live-session snapshots. `ok: false` indicates an unavailable host.
+
+`inspect` includes conversation, phase/activity, prompt/last message, tools,
+subagents, events and cursor. Initial reads return recent events; `--after` advances
+the cursor. Reset it when conversation ID changes. `history_truncated` discloses
+journal limits; `tracked: false` identifies an unbound session. Folder/Git fields
+include `cwd`, `cwd_source`, `cwd_canonical`, `git_root`, `git_common_dir`, branch,
+worktree, detached state and metadata status. Git metadata has a bounded read and
+15-second cache, independent of pause eligibility.
+
+Subagent count fields distinguish active, completed, total, completeness and
+source; unknown totals are null. Up to six active/unreviewed previews accompany
+the available full roster. Profile groups without individual IDs remain groups.
+
+`hgs [@host] send SESSION --json` accepts stdin containing a UUID `request_id`,
+`text`, `expected_run_id`, `expected_conversation_id` and optional attachments
+`{name, mime, data_base64, reference?}`. Unique `[Image #1]` / `[File #2]` references
+place attachments at their first marker; otherwise they append. IDs come from a
+fresh inspection. `status: submitted` confirms native input delivery, not a model
+reply. Saved receipts make identical requests idempotent. An uncertain result
+needs manual inspection before another request. `agent_id` is supported only for
+verified DeepSeek continuable children. Questions carry request identity/hash
+through `pending_questions`; answers use the exact unchanged request.
+
+## Validation
+
+Use [CONTRIBUTING.md](../CONTRIBUTING.md) for standard checks. Integration tests
+use synthetic fixtures and isolated tmux servers; do not run them against live
+agent state. A separately installed native CLI or real desktop may be required.
+
+```sh
+cargo build --locked
+cargo test --locked
+HGS_TEST_BIN="$PWD/target/debug/hgs" bash tests/test_hgs.sh
+HGS_TEST_BIN="$PWD/target/debug/hgs" python3 tests/test_pause.py
+HGS_TEST_BIN="$PWD/target/debug/hgs" python3 tests/test_accounts.py
+HGS_TEST_BIN="$PWD/target/debug/hgs" python3 tests/test_account_lifecycle.py
+```
+
+On macOS, the last suite can also verify SSH/tmux entry into the graphical security
+session and needs the installed HGS desktop session service. The Mach protocol
+can be checked without accessing Keychain:
+
+```sh
+clang -Wno-deprecated-declarations tests/test_macos_session_protocol.c \
+  -framework Security -framework CoreFoundation -lbsm -o /tmp/hgs-session-protocol-test
+/tmp/hgs-session-protocol-test
+```
+
+Process coverage includes exact call identity, background tasks, stale generations,
+independent output cursors, targeted stopping and offline/read-position behavior.
+Native DeepSeek tests use a local keyless model rather than paid API requests.

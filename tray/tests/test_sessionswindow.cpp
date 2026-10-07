@@ -124,6 +124,8 @@ private slots:
     void detailsPollingPreservesReadingPosition();
     void nativeGoalIsIndependentOfTurnState();
     void fileReferencesKeepMachineAndWorkspace();
+    void fileReferenceOpeningOutlivesDialog_data();
+    void fileReferenceOpeningOutlivesDialog();
     void buttonFocusFollowsKeyboardAndNotClicks();
     void separatesConversationProcessAndTerminal();
     void activityEscapingAndActions();
@@ -2299,7 +2301,8 @@ void TestSessionsWindow::fileReferencesKeepMachineAndWorkspace()
         QVERIFY(!dialog->findChild<QPushButton *>("openSessionFileSsh"));
         auto *copy=dialog->findChild<QPushButton *>("copySessionFilePath");
         QVERIFY(copy->text().isEmpty());QVERIFY(!copy->icon().isNull());
-        copy->click();QVERIFY(!dialog->isVisible());
+        copy->click();QVERIFY(dialog->isVisible());
+        dialog->reject();
     });
     activity->fileReferenceActivated("docs/README.md:12");
     QCOMPARE(copied.takeFirst().at(0).toString(), QString("/local/project/docs/README.md"));
@@ -2309,10 +2312,50 @@ void TestSessionsWindow::fileReferencesKeepMachineAndWorkspace()
         auto *dialog = window.findChild<QDialog *>("sessionFileDialog"); QVERIFY(dialog);
         QCOMPARE(dialog->findChild<QLineEdit *>("sessionFilePath")->text(), QString("/Users/remote/project/docs/README.md"));
         QVERIFY(!dialog->findChild<QPushButton *>("openSessionFile"));
+        dialog->findChild<QPushButton *>("copySessionFilePath")->click();QVERIFY(dialog->isVisible());
         dialog->findChild<QPushButton *>("openSessionFileSsh")->click();QVERIFY(!dialog->isVisible());
     });
     activity->fileReferenceActivated("docs/README.md");
+    QCOMPARE(copied.size(), 1); QCOMPARE(copied.takeFirst().at(0).toString(), QString("/Users/remote/project/docs/README.md"));
     QCOMPARE(ssh.size(), 1); QCOMPARE(ssh.takeFirst().at(0).toString(), QString("mac"));
+}
+
+void TestSessionsWindow::fileReferenceOpeningOutlivesDialog_data()
+{
+    QTest::addColumn<bool>("folder");
+    QTest::newRow("file") << false;
+    QTest::newRow("folder") << true;
+}
+
+void TestSessionsWindow::fileReferenceOpeningOutlivesDialog()
+{
+    QFETCH(bool, folder);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto path = directory.filePath("sample image.png");
+    QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly)); file.write("synthetic file"); file.close();
+    FolderUrlRecorder opened;
+    SessionsWindow window(script()); window.setFleet(fleet()); window.show(); QTest::qWait(80);
+    auto *activity = window.findChild<ActivityView *>("mainActivity");
+    QSignalSpy copied(&window, &SessionsWindow::copyTextRequested);
+    QPointer<QDialog> dialog;
+    QTimer::singleShot(0, &window, [&] {
+        dialog = window.findChild<QDialog *>("sessionFileDialog"); QVERIFY(dialog);
+        dialog->findChild<QPushButton *>("copySessionFilePath")->click();
+        QVERIFY(dialog->isVisible());
+        QCOMPARE(copied.size(), 1); QCOMPARE(copied.first().at(0).toString(), path);
+        QVERIFY(opened.urls.isEmpty());
+        auto *button = dialog->findChild<QPushButton *>(folder ? "openSessionFileFolder" : "openSessionFile");
+        QVERIFY(button); button->click();
+        QVERIFY(!dialog->isVisible());
+        // The desktop request must not belong to the disappearing modal window.
+        QVERIFY(opened.urls.isEmpty());
+    });
+    activity->fileReferenceActivated(path);
+    QVERIFY(dialog.isNull());
+    QVERIFY(opened.urls.isEmpty());
+    QTRY_COMPARE(opened.urls.size(), 1);
+    QCOMPARE(opened.urls.first(), QUrl::fromLocalFile(folder ? directory.path() : path));
 }
 
 void TestSessionsWindow::nativeSessionUsageStaysWithSelectedConversation()
