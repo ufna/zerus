@@ -84,6 +84,49 @@ QString userMessage(const QString &text)
     return "<p style='white-space:pre-wrap;'>" + escaped(text) + "</p>";
 }
 
+QJsonArray questionReplies(QString text)
+{
+    text = text.trimmed();
+    if (text.startsWith("# Context from my IDE setup:\n")) {
+        const QString marker = "\n## My request for Codex:\n";
+        const auto request = text.lastIndexOf(marker);
+        if (request < 0) return {};
+        text = text.mid(request + marker.size()).trimmed();
+    }
+    const QString start = "<send_user_message_question_reply>";
+    const QString end = "</send_user_message_question_reply>";
+    if (!text.startsWith(start) || !text.endsWith(end)) return {};
+    QJsonParseError error;
+    const auto document = QJsonDocument::fromJson(text.mid(start.size(), text.size() - start.size() - end.size()).toUtf8(), &error);
+    if (error.error != QJsonParseError::NoError) return {};
+    const auto replies = document.isObject() ? QJsonArray{document.object()} : document.array();
+    for (const auto &value : replies) {
+        if (!value.isObject()) return {};
+        const auto reply = value.toObject();
+        if (!reply.value("questionItemId").isString() || reply.value("questionItemId").toString().isEmpty()
+            || !reply.value("question").isString() || reply.value("question").toString().trimmed().isEmpty()
+            || !reply.value("answer").isString()) return {};
+    }
+    return replies;
+}
+
+QString questionReplyBody(const QJsonArray &replies, const QString &muted, const QString &accent,
+                          const QString &surface, const QString &border)
+{
+    QString html;
+    for (const auto &value : replies) {
+        const auto reply = value.toObject();
+        html += QString("<p style='font-size:10px;color:%1;margin-bottom:3px;'>%2</p>"
+            "<p style='color:%1;white-space:pre-wrap;margin-top:0;margin-bottom:10px;'>%3</p>"
+            "<table width='100%' cellspacing='0' cellpadding='10' style='border:1px solid %4;'><tr><td bgcolor='%5'>"
+            "<p style='font-size:10px;color:%6;margin-top:0;margin-bottom:4px;'><b>%7</b></p>"
+            "<p style='white-space:pre-wrap;margin:0;'>%8</p></td></tr></table>")
+            .arg(muted, escaped(QObject::tr("Question")), escaped(reply.value("question").toString()),
+                 border, surface, accent, escaped(QObject::tr("Your answer")), escaped(reply.value("answer").toString()));
+    }
+    return html;
+}
+
 QString eventKey(const QJsonObject &event)
 {
     if (!event.value("activity_key").toString().isEmpty()) return event.value("activity_key").toString();
@@ -697,15 +740,21 @@ void ActivityView::render(bool contentUpdate)
     if (!prompt.isEmpty() || !answer.isEmpty()) {
         html += QString("<p style='font-size:10px;color:%1;margin:12px 0 8px;'>%2</p>")
             .arg(muted, tr("RECORDED CONTEXT — Outside the available timeline"));
-        if (!prompt.isEmpty()) html += card("prompt-snapshot", tr("You (recorded request)"), {}, userMessage(prompt), true);
+        if (!prompt.isEmpty()) {
+            const auto replies = questionReplies(prompt);
+            html += card("prompt-snapshot", replies.isEmpty() ? tr("You (recorded request)") : tr("You (recorded answer)"), {},
+                replies.isEmpty() ? userMessage(prompt) : questionReplyBody(replies, muted, accent, codeSurface, border), true);
+        }
         if (!answer.isEmpty()) html += card("answer-snapshot", tr("Agent (recorded response)"), {}, markdown(answer, codeSurface, accent, m_fileLinks), false);
     }
     m_toggleKeys.clear();m_processLinks.clear();
     for (int i = 0; i < events.size();) {
         const auto event = events[i]; const auto role = messageRole(event);
         if (!role.isEmpty()) {
+            const auto text = event.value("detail").toString();
+            const auto replies = role == "user" ? questionReplies(text) : QJsonArray();
             const QString label = role == "user" ? (event.value("type") == "UserPromptQueued" ? tr("You (queued)") :
-                event.value("type") == "QuestionAnswered" ? tr("You (answer)") : tr("You")) : tr("Agent");
+                event.value("type") == "QuestionAnswered" || !replies.isEmpty() ? tr("You (answer)") : tr("You")) : tr("Agent");
             auto stamp=timeText(event);
             if (role == "user" && event["type"] != "LocalMessage") {
                 bool accepted = event["type"] != "UserPromptQueued";
@@ -715,8 +764,8 @@ void ActivityView::render(bool contentUpdate)
                 }
                 stamp += "  " + (accepted ? tr("Sent") : tr("Queued at this time"));
             }
-            const auto text=event.value("detail").toString();
-            auto body=role=="user" ? userMessage(text) : markdown(text,codeSurface,accent,m_fileLinks);
+            auto body = role == "user" ? (replies.isEmpty() ? userMessage(text) : questionReplyBody(replies, muted, accent, codeSurface, border))
+                                       : markdown(text, codeSurface, accent, m_fileLinks);
             if(event.value("type")=="LocalMessage") {
                 const auto state=event.value("status").toString();stamp=state=="sending"?tr("Sending…"):state=="error"?tr("Not sent"):tr("Submitted to terminal");
                 if(state=="error" && event.value("uncertain").toBool())stamp=tr("Delivery not confirmed");

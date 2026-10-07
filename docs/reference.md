@@ -307,7 +307,9 @@ Review input with an uncertain result is never retried automatically.
 Optional Codex questions preserve the regular composer and support **Skip**.
 Queue arrows navigate optional requests from newest to oldest while retaining
 answers and the current multipart section. A required approval temporarily takes
-priority. Confirmed answers appear as **You (answer)** in Activity.
+priority. Confirmed answers appear as **You (answer)** in Activity. Codex optional
+question replies show the question and your answer in separate sections,
+preserving the literal answer text.
 
 ### Models, effort, context, goals and subagents
 

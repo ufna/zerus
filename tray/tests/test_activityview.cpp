@@ -4,6 +4,7 @@
 #include "WorkspaceFocus.h"
 
 #include <QDir>
+#include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
 #include <QProgressBar>
@@ -63,6 +64,11 @@ private slots:
     void rejectsMarkupResourcesAndUnsafeLinks();
     void preservesLiteralUserMessages_data();
     void preservesLiteralUserMessages();
+    void nativeQuestionReplies_data();
+    void nativeQuestionReplies();
+    void unknownQuestionReplyMessages_data();
+    void unknownQuestionReplyMessages();
+    void nativeQuestionRepliesPreserveLiteralText();
     void preservesSessionFileReferences();
     void expandsMatchingSnapshotWithoutDuplicate();
     void kimiTurnStartedKeepsRequestBeforeTools();
@@ -789,6 +795,110 @@ void TestActivityView::confirmedQuestionAnswerStaysInTimeline()
     QVERIFY(plain.indexOf("AskUserQuestion") < plain.indexOf("Which scope?"));
     QVERIFY(plain.indexOf("Which scope?") < plain.indexOf("I will inspect"));
     QCOMPARE(plain.count("Which scope?"), 1);
+}
+
+void TestActivityView::nativeQuestionReplies_data()
+{
+    QTest::addColumn<QString>("source");
+    QTest::addColumn<QString>("format");
+    QTest::addColumn<bool>("dark");
+    for (const auto &source : QStringList{"journal", "snapshot", "local", "search"})
+        for (const auto &format : QStringList{"array", "object", "ide"})
+            for (bool dark : {false, true})
+                QTest::newRow(qPrintable(source + '-' + format + (dark ? "-dark" : "-light"))) << source << format << dark;
+}
+
+void TestActivityView::nativeQuestionReplies()
+{
+    QFETCH(QString, source);
+    QFETCH(QString, format);
+    QFETCH(bool, dark);
+    const QString question = "Which review should run before the release?";
+    const QString answer = "Review API compatibility and the migration notes.";
+    const QJsonObject reply{{"questionItemId", "[\"request_user_input_async\",\"call_scope\",0]"},
+        {"question", question}, {"answer", answer}};
+    const QJsonObject second{{"questionItemId", "[\"request_user_input_async\",\"call_scope\",1]"},
+        {"question", "Include macOS in the checks?"}, {"answer", "Yes, include the desktop client."}};
+    const auto payload = format == "object" ? QJsonDocument(reply) : QJsonDocument(QJsonArray{reply, second});
+    QString text = "<send_user_message_question_reply>\n" + QString::fromUtf8(payload.toJson(QJsonDocument::Compact))
+        + "\n</send_user_message_question_reply>";
+    if (format == "ide") text.prepend("# Context from my IDE setup:\nOpen files: src/example.rs\n## My request for Codex:\n");
+    ActivityView view; view.resize(560, 500); view.setTheme(dark); view.setSessionKey("codex/sample/review"); view.show();
+    if (source == "snapshot") view.setActivity({{"prompt", text}}, {});
+    else if (source == "local") view.setTimeline({}, {}, {QJsonObject{{"id", "reply"}, {"text", text}, {"status", "sent"}}});
+    else if (source == "search") view.showSearchResult(journalEvent(1, "UserPromptSubmit", text), "compatibility");
+    else view.setActivity({{"prompt", text}}, {journalEvent(1, "UserPromptSubmit", text)});
+    auto *browser = view.browser();
+    const auto plain = browser->toPlainText();
+    QVERIFY(plain.contains(source == "snapshot" ? "You (recorded answer)" : "You (answer)"));
+    QCOMPARE(plain.count(question), 1); QCOMPARE(plain.count(answer), 1);
+    QVERIFY(plain.indexOf(question) < plain.indexOf("Your answer"));
+    QVERIFY(plain.indexOf("Your answer") < plain.indexOf(answer));
+    if (format != "object") {
+        QCOMPARE(plain.count("Include macOS in the checks?"), 1);
+        QCOMPARE(plain.count("Yes, include the desktop client."), 1);
+        QVERIFY(plain.indexOf(answer) < plain.indexOf("Include macOS"));
+    }
+    QVERIFY(!plain.contains("send_user_message_question_reply"));
+    QVERIFY(!plain.contains("questionItemId")); QVERIFY(!plain.contains("call_scope"));
+    QVERIFY(!plain.contains("Context from my IDE"));
+    QVERIFY(links(browser).isEmpty());
+    const auto revision = browser->document()->revision();
+    if (source == "journal") {
+        view.setActivity({{"prompt", text}}, {journalEvent(1, "UserPromptSubmit", text)});
+        QCOMPARE(browser->document()->revision(), revision);
+    }
+    const auto preview = qEnvironmentVariable("HGS_QUESTION_REPLY_PREVIEW");
+    if (!preview.isEmpty() && source == "journal" && format == "array") {
+        QDir().mkpath(preview); QTest::qWait(30);
+        QVERIFY(view.grab().save(preview + (dark ? "/question-reply-dark.png" : "/question-reply-light.png")));
+    }
+}
+
+void TestActivityView::unknownQuestionReplyMessages_data()
+{
+    QTest::addColumn<QString>("text");
+    const QString start = "<send_user_message_question_reply>\n";
+    const QString end = "\n</send_user_message_question_reply>";
+    const QString valid = "{\"questionItemId\":\"reply-1\",\"question\":\"Which scope?\",\"answer\":\"Full review\"}";
+    QTest::newRow("ordinary-prose") << "Review **these** changes.\nKeep the original text.";
+    QTest::newRow("invalid-json") << start + "not json" + end;
+    QTest::newRow("truncated") << start + valid;
+    QTest::newRow("empty-array") << start + "[]" + end;
+    QTest::newRow("missing-id") << start + "{\"question\":\"Which scope?\",\"answer\":\"Full review\"}" + end;
+    QTest::newRow("non-text-answer") << start + "{\"questionItemId\":\"reply-1\",\"question\":\"Which scope?\",\"answer\":[\"Full review\"]}" + end;
+    QTest::newRow("mixed-validity") << start + '[' + valid + ",false]" + end;
+    QTest::newRow("surrounding-prose") << "An example reply:\n" + start + valid + end;
+    QTest::newRow("code-example") << "```text\n" + start + valid + end + "\n```";
+}
+
+void TestActivityView::unknownQuestionReplyMessages()
+{
+    QFETCH(QString, text);
+    ActivityView view;
+    view.setActivity({}, {journalEvent(1, "UserPromptSubmit", text)});
+    const auto plain = view.browser()->toPlainText();
+    QVERIFY2(plain.contains(text), qPrintable(plain));
+    QVERIFY(!plain.contains("You (answer)"));
+    QVERIFY(!plain.contains("Your answer"));
+}
+
+void TestActivityView::nativeQuestionRepliesPreserveLiteralText()
+{
+    const QString question = "<img src='file:///private/missing.png'>\nChoose **scope** & priority";
+    const QString answer = "> Keep <b>literal markup</b> & `code`\n1. Keep numbering\n[Docs](https://example.com)";
+    const auto payload = QJsonDocument(QJsonObject{{"questionItemId", "reply-literal"}, {"question", question}, {"answer", answer}});
+    const QString text = "<send_user_message_question_reply>\n" + QString::fromUtf8(payload.toJson(QJsonDocument::Compact))
+        + "\n</send_user_message_question_reply>";
+    for (bool dark : {false, true}) {
+        ActivityView view; view.setTheme(dark);
+        view.setActivity({}, {journalEvent(1, "UserPromptSubmit", text)});
+        const auto plain = view.browser()->toPlainText();
+        QVERIFY(plain.contains(question)); QVERIFY(plain.contains(answer));
+        QVERIFY(links(view.browser()).isEmpty());
+        for (auto block = view.browser()->document()->begin(); block.isValid(); block = block.next())
+            for (auto it = block.begin(); !it.atEnd(); ++it) QVERIFY(!it.fragment().charFormat().isImageFormat());
+    }
 }
 
 void TestActivityView::unmatchedContextPrecedesTimeline()
