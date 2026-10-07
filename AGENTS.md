@@ -12,7 +12,8 @@ Use `bd remember --key <key> "<decision>"` for concise, shareable project memory
 Do not create separate TODO or MEMORY files. Read current source before carrying
 forward a historical limitation.
 
-The source of truth is `.beads/dolt/`. Synchronize with `bd dolt push/pull` over
+The source of truth is the Dolt database inside `.beads/` (currently
+`.beads/embeddeddolt/` with the embedded backend). Synchronize with `bd dolt push/pull` over
 `refs/dolt/data`; `.beads/issues.jsonl` is a passive export, not a sync protocol.
 New clones should run `bd init --non-interactive --prefix zerus`, then `bd prime`.
 Never replace an existing database with a JSONL import during normal operation.
