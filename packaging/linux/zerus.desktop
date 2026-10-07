@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Zerus
+GenericName=Agent development environment
+Comment=Manage persistent local and remote terminal agents
+Exec=hgs-tray --sessions
+Icon=hgs-zerus-swarm-symbolic
+Terminal=false
+Categories=Development;
+Keywords=zerus;hgs;tmux;claude;codex;kimi;deepseek;agents;
+StartupNotify=false
+StartupWMClass=hgs-tray

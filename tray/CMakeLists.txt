@@ -116,9 +116,18 @@ if(LINUX)
     target_link_libraries(hgs-tray PRIVATE Qt6::DBus KF6::StatusNotifierItem KF6::WindowSystem)
 endif()
 
-enable_testing()
-hgs_add_terminal_tests()
-add_subdirectory(tests)
+include(CTest)
+if(BUILD_TESTING)
+    hgs_add_terminal_tests()
+    add_subdirectory(tests)
+endif()
+
+include(GNUInstallDirs)
+if(APPLE)
+    install(TARGETS hgs-tray BUNDLE DESTINATION .)
+else()
+    install(TARGETS hgs-tray RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 
 # Regenerate the monochrome window/Linux icon sizes from the same blade geometry.
 # The native macOS application icon uses tools/export-macos-icon.sh instead.

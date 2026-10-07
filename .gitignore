@@ -11,6 +11,9 @@ makepkg-builddir/
 compile_commands.json
 __pycache__/
 /target/
+/artifacts/
+/.ci-build/
+/dist/
 
 .rust-build/
 

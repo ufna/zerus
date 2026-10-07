@@ -98,6 +98,6 @@ hgs a codex/orbit/api                  # attach from any terminal
 **On the roadmap: a mobile client** to follow agents, receive notifications and
 reply from your phone.
 
-[Command and settings reference](docs/reference.md) | [MIT](LICENSE)
+[Command and settings reference](docs/reference.md) | [CI and Arch packages](docs/ci-and-aur.md) | [MIT](LICENSE)
 
 <sub>Screenshots show the real Zerus interface with synthetic projects, machines and messages.</sub>

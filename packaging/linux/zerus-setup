@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+"""Create opt-in per-user compatibility links for a system Zerus package.
+
+Existing SSH protocols use ~/.local/bin/hgs. Pacman cannot install into a user's
+home, so this explicit command supplies that link without replacing existing
+executables, changing agent state, or starting any service.
+"""
+import argparse
+import os
+from pathlib import Path
+import sys
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--prefix", type=Path, default=Path("/usr"),
+                        help="system installation prefix (default: /usr)")
+    args = parser.parse_args()
+    if os.geteuid() == 0:
+        parser.error("run this command as the desktop user, without sudo")
+    directory = Path.home() / ".local/bin"
+    # Check every conflict before making any change. An existing source install
+    # may own these stable paths; migration is an explicit user decision.
+    links = [(directory / name, args.prefix.resolve() / "bin" / name)
+             for name in ("hgs", "hgs-tray", "hgs_state.py")]
+    for destination, target in links:
+        if not target.is_file():
+            parser.error(f"packaged file is missing: {target}")
+        if os.path.lexists(destination) and destination.resolve() != target:
+            parser.error(f"existing file kept: {destination}. Move it aside deliberately before migrating.")
+    directory.mkdir(parents=True, exist_ok=True)
+    for destination, target in links:
+        if not os.path.lexists(destination):
+            destination.symlink_to(target)
+    print("Compatibility links ready. Existing agent sessions and services were left running.")
+    print("Optional desktop autostart: systemctl --user enable --now hgs-tray.service")
+    print("Optional background workers: systemctl --user enable --now hgs-swarm.service hgs-recovery.service")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

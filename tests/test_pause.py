@@ -215,6 +215,16 @@ class Harness(unittest.TestCase):
                 return r
         return {}
 
+    def assertInspectionEqual(self, actual, expected):
+        # Process sampling is a fresh observation, even for immutable archives.
+        # Compare every durable field and job, allowing only its sampling clock.
+        actual, expected = json.loads(json.dumps(actual)), json.loads(json.dumps(expected))
+        for value in (actual, expected):
+            if isinstance(value.get("processes"), dict):
+                sampled = value["processes"].pop("sampled_at", None)
+                self.assertIsInstance(sampled, (int, float))
+        self.assertEqual(actual, expected)
+
     def wait(self, predicate):
         until = time.monotonic() + 6
         while time.monotonic() < until:
@@ -1127,6 +1137,8 @@ class FailedStartup(Harness):
         self.launcher.write_text("#!" + sys.executable + r'''
 import os, pathlib, signal, sys
 home = pathlib.Path.home()
+if sys.argv[1:] == ["--help"]:
+    os.execvp("codex", ["codex", "--help"])
 gate = home / "launch-gate"
 if gate.exists():
     status = gate.read_text()
@@ -1287,7 +1299,7 @@ class RequestedConversation(Harness):
         requested = str(uuid.uuid4())
         name = f"codex/p/resume-{requested}"
         log = self.root / "failed-native-launches"
-        self.script("codex", "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + shlex.quote(str(log)) + "\nexit 7\n")
+        self.script("codex", "#!/bin/sh\nif [ \"$1\" = --help ]; then echo --no-daemon; exit 0; fi\nprintf '%s\\n' \"$*\" >> " + shlex.quote(str(log)) + "\nexit 7\n")
         self.hgs("codex", "p", "--continue", requested, "-d")
         self.wait(lambda: self.binding(name).get("exit_code") == 7)
         self.assertEqual(len(log.read_text().splitlines()), 1)
@@ -1592,7 +1604,7 @@ class Archive(Harness):
         self.assertEqual(self.archive_info(name, archived["archive_id"], "--after", str(info["cursor"]))["events"], [])
         self.assertFalse(self.binding(name), "archived records must not remain an automatic resume binding")
         self.hgs("kill", name, "--archive", archived["archive_id"], "--dry-run")
-        self.assertEqual(self.archive_info(name, archived["archive_id"]), info)
+        self.assertInspectionEqual(self.archive_info(name, archived["archive_id"]), info)
 
     def test_name_reuse_keeps_both_archives_and_their_conversations(self):
         name, old, first = self.save_archive()
@@ -1636,7 +1648,7 @@ class Archive(Harness):
                 before = self.archive_info(name, archive_id)
                 dry = self.hgs("resume", name, "--archive", archive_id, "--dry-run")
                 self.assertIn(old["conversation_id"], dry)
-                self.assertEqual(self.archive_info(name, archive_id), before)
+                self.assertInspectionEqual(self.archive_info(name, archive_id), before)
                 self.assertFalse(self.binding(name))
                 self.hgs("resume", name, "--archive", archive_id, "-d")
                 self.wait(lambda: self.binding(name).get("conversation_id") == old["conversation_id"] and
@@ -1663,10 +1675,15 @@ class Archive(Harness):
         before = self.archive_info(name, archive_id)
         self.hgs("resume", "claude/p/other", "--archive", archive_id, "-d", rc=1)
         self.hgs("kill", "claude/p/other", "--archive", archive_id, rc=1)
-        self.assertEqual(self.archive_info(name, archive_id), before)
+        self.assertInspectionEqual(self.archive_info(name, archive_id), before)
         Path(old["transcript"]).unlink()
+        without_history = self.archive_info(name, archive_id)
+        self.assertEqual(without_history["processes"]["notes"], ["Native process history is unavailable"])
         self.hgs("resume", name, "--archive", archive_id, "-d", rc=1)
-        self.assertEqual(self.archive_info(name, archive_id), before)
+        self.assertInspectionEqual(self.archive_info(name, archive_id), without_history)
+        expected = json.loads(json.dumps(before))
+        expected["processes"]["notes"] = without_history["processes"]["notes"]
+        self.assertInspectionEqual(without_history, expected)
         self.assertFalse(self.binding(name))
 
     def test_new_session_can_reuse_a_name_that_exists_only_in_archive(self):
@@ -1864,6 +1881,8 @@ class Rename(Harness):
         launcher.write_text("#!" + sys.executable + r'''
 import os, pathlib, sys, time
 home = pathlib.Path.home()
+if sys.argv[1:] == ["--help"]:
+    os.execvp("codex", ["codex", "--help"])
 (home / "rename-ready").touch()
 while (home / "rename-gate").exists():
     time.sleep(0.01)
@@ -2013,16 +2032,16 @@ os.execvp("codex", ["codex", *sys.argv[1:]])
         second_before = json.loads(self.hgs("inspect", old_name, "--archive", second["archive_id"]))
         new_name = "codex/p/archived-review"
         self.hgs("rename", old_name, new_name, "--archive", first["archive_id"], "--dry-run")
-        self.assertEqual(json.loads(self.hgs("inspect", old_name, "--archive", first["archive_id"])), before)
+        self.assertInspectionEqual(json.loads(self.hgs("inspect", old_name, "--archive", first["archive_id"])), before)
         self.hgs("rename", old_name, new_name, "--archive", first["archive_id"])
         renamed = json.loads(self.hgs("inspect", new_name, "--archive", first["archive_id"]))
         for key in ("archive_id", "archived_at", "run_id", "conversation_id", "prompt", "events"):
             self.assertEqual(renamed[key], before[key], key)
-        self.assertEqual(json.loads(self.hgs("inspect", old_name, "--archive", second["archive_id"])), second_before)
+        self.assertInspectionEqual(json.loads(self.hgs("inspect", old_name, "--archive", second["archive_id"])), second_before)
         self.hgs("resume", new_name, "--archive", first["archive_id"], "-d")
         self.wait(lambda: self.binding(new_name).get("conversation_id") == before["conversation_id"])
         self.assertEqual(self.binding(new_name)["conversation_id"], before["conversation_id"])
-        self.assertEqual(json.loads(self.hgs("inspect", old_name, "--archive", second["archive_id"])), second_before)
+        self.assertInspectionEqual(json.loads(self.hgs("inspect", old_name, "--archive", second["archive_id"])), second_before)
 
     def test_archive_rename_can_coexist_with_live_and_saved_names(self):
         old_name = self.start()

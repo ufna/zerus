@@ -6,15 +6,23 @@ machine connection settings local. `AGENTS.md` describes the Beads workflow.
 ## Local checks
 
 ```sh
-cargo test --locked
-cargo build --locked
-HGS_TEST_BIN="$PWD/target/debug/hgs" bash tests/test_hgs.sh
-python3 -m unittest discover -s tests -p 'test_mac_install.py' -v
-cmake -S tray -B tray/build -DBUILD_TESTING=ON
-cmake --build tray/build --parallel 4
-QT_QPA_PLATFORM=offscreen ctest --test-dir tray/build --output-on-failure
-python3 scripts/check-source-privacy.py
+python3 scripts/ci/check-source.py
+bash scripts/ci/cli.sh
+bash scripts/ci/gui.sh
 ```
+
+The CLI script clears inherited `HGS_*` session/account context, runs Rust unit
+tests and terminal smoke tests, then runs each Python integration module in a
+fresh process and builds a release binary. The desktop script builds with
+`BUILD_TESTING=ON` and runs the complete Qt suite headlessly. Test logs live in
+ignored `artifacts/test-results/`. Set `ZERUS_BUILD_JOBS` to limit desktop build
+parallelism. Run `cargo +1.85.0 test --locked` for the minimum supported Rust.
+
+On Arch, `bash scripts/ci/arch.sh` also builds and validates the pacman package
+as an unprivileged user. It substitutes a local Git source only in its disposable
+build directory; it never installs the package or enables services.
+See [CI and Arch publication](docs/ci-and-aur.md) for the workflow matrix,
+candidate release commands and publication requirements.
 
 Native integration tests may need separately installed agent CLIs or a real desktop;
 read each suite's setup before running it. Do not run tests against live agent state.

@@ -1,0 +1,11 @@
+[Unit]
+Description=Zerus project and configuration synchronization
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/hgs swarm worker
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

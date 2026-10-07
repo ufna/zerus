@@ -1,0 +1,187 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source:
+    name: Source checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - run: python3 scripts/ci/check-source.py
+      - name: Validate GitHub Actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          lint_dir=$(mktemp -d)
+          cd "$lint_dir"
+          curl -fsSLO https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          curl -fsSLO https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_checksums.txt
+          sha256sum --check --ignore-missing actionlint_1.7.12_checksums.txt
+          tar xzf actionlint_1.7.12_linux_amd64.tar.gz actionlint
+          cd "$GITHUB_WORKSPACE"
+          "$lint_dir/actionlint" -color
+
+  msrv:
+    name: Rust 1.85 minimum
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install 1.85.0 --profile minimal
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: msrv-${{ runner.os }}-1.85-${{ hashFiles('Cargo.lock') }}
+      - run: cargo +1.85.0 test --locked
+
+  cli:
+    name: CLI (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Linux test dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: macOS test dependencies
+        if: runner.os == 'macOS'
+        run: brew install tmux python
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cli-${{ runner.os }}-${{ runner.arch }}-stable-${{ hashFiles('Cargo.lock') }}
+      - name: Keyless official DeepSeek contract fixture
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          npm install --prefix "$RUNNER_TEMP/dsh" --no-audit --no-fund @deepseek-ai/dsh@0.2.0-rc.2
+          echo "$RUNNER_TEMP/dsh/node_modules/.bin" >> "$GITHUB_PATH"
+      - run: bash scripts/ci/cli.sh
+      - name: Retain test logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cli-results-${{ runner.os }}-${{ runner.arch }}
+          path: artifacts/test-results
+          retention-days: 7
+
+  arch:
+    name: Arch desktop and package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: archlinux@sha256:996c3a1d6b0d87b01242f6fcd8cfa3ad3eece1a67ab5c8f108e20af1d7b97bdd
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Arch dependencies and unprivileged builder
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git rust cmake ninja qt6-base qt6-webengine kstatusnotifieritem kwindowsystem tmux openssh python ccache dbus namcap desktop-file-utils
+          useradd -m user
+          chown -R user:user "$GITHUB_WORKSPACE"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            /home/user/.cargo/registry
+            /home/user/.cargo/git
+            /home/user/.cache/ccache
+          key: arch-${{ hashFiles('Cargo.lock', 'tray/CMakeLists.txt') }}
+      - name: Test desktop and build package
+        run: |
+          chown -R user:user /home/user
+          runuser -u user -- env QTWEBENGINE_DISABLE_SANDBOX=1 bash scripts/ci/arch.sh
+      - name: Retain Arch package and test logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: arch-x86_64-${{ github.sha }}
+          path: artifacts
+          retention-days: 7
+
+  mac-desktop:
+    name: macOS desktop
+    # The expensive native desktop build runs on main and manual checks.
+    if: github.event_name != 'pull_request'
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: 1
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - run: brew install cmake qt qtwebengine ccache
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/Library/Caches/ccache
+          key: mac-desktop-${{ runner.arch }}-${{ hashFiles('tray/CMakeLists.txt') }}
+      - run: bash scripts/ci/gui.sh
+      - name: Retain desktop test logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mac-desktop-results
+          path: artifacts/test-results
+          retention-days: 7
+
+  gate:
+    name: CI gate
+    if: always()
+    needs: [source, msrv, cli, arch, mac-desktop]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      RESULTS: ${{ toJSON(needs) }}
+      EVENT: ${{ github.event_name }}
+    steps:
+      - run: |
+          python3 - <<'PY'
+          import json, os
+          results = json.loads(os.environ['RESULTS'])
+          for name, result in results.items():
+              allowed = {'success'}
+              if name == 'mac-desktop' and os.environ['EVENT'] == 'pull_request':
+                  allowed.add('skipped')
+              if result['result'] not in allowed:
+                  raise SystemExit(f"{name}: {result['result']}")
+          print('All required CI jobs passed.')
+          PY

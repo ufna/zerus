@@ -45,7 +45,7 @@ def main():
             if not name.startswith('tray/vendor/'):
                 for address in EMAIL.findall(line):
                     domain = address.rsplit('@', 1)[1].lower()
-                    if address == 'git@github.com' or domain.endswith(('.png', '.svg', '.icns')):
+                    if address in {'git@github.com', 'aur@aur.archlinux.org'} or domain.endswith(('.png', '.svg', '.icns')):
                         continue
                     if not (domain in {'example.com', 'example.org', 'example.net', 'example.test',
                                        'users.noreply.github.com'} or domain.endswith(('.example', '.test', '.invalid'))):

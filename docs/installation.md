@@ -49,6 +49,18 @@ The repository's `tmux.conf` is a suggested configuration. If you already have
 your own, merge the settings you need manually: `hgs` uses the machine's shared
 tmux server.
 
+## Arch package preparation
+
+An Arch system bundle and AUR recipes are prepared, but the packages are **not yet
+published**. See [CI and Arch publication](ci-and-aur.md) for candidate builds and
+the first-publication requirements. The proposed package names are `zerus-ade`,
+`zerus-ade-bin` and `zerus-ade-git`.
+
+After installing a reviewed pacman package, run `zerus-setup` once as your normal
+user to create the `~/.local/bin/hgs` compatibility links used by SSH. Existing
+source-install files are preserved and require deliberate migration. Services
+and autostart remain opt-in; package installation does not restart native agents.
+
 ## Other machines
 
 Add an SSH connection in **Machines**. The agent's machine needs `hgs` installed

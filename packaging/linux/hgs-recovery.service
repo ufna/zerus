@@ -1,0 +1,11 @@
+[Unit]
+Description=Zerus automatic recovery worker
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/hgs recovery worker
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

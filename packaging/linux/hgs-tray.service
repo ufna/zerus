@@ -1,0 +1,15 @@
+[Unit]
+Description=Zerus desktop agent development environment
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/hgs-tray
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=4
+KillMode=process
+
+[Install]
+WantedBy=graphical-session.target

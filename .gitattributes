@@ -3,3 +3,9 @@ tests/fixtures/*.txt -whitespace
 
 # Keep vendored libvterm byte-for-byte identical to the documented upstream.
 tray/vendor/libvterm/** -whitespace
+
+.beads export-ignore
+.agents export-ignore
+.github export-ignore
+AGENTS.md export-ignore
+CLAUDE.md export-ignore

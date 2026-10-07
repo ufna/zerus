@@ -22,9 +22,17 @@ Qt WebEngine includes Chromium and additional third-party components. See the
 [Qt WebEngine licensing documentation](https://doc.qt.io/qt-6.8/qtwebengine-licensing.html)
 and the notices supplied by the exact Qt distribution used to build the application.
 
-This repository does not distribute Qt/KDE binaries or a bundled public installer.
-Before publishing binary packages, collect license texts, notices and any required
-source/relinking materials for the exact dependency versions shipped. MIT licensing
-of Zerus itself does not relicense these dependencies.
+The Arch package links Qt/KDE dynamically and requires their system packages; it
+does not bundle Qt, KDE or Chromium. Their distribution supplies their notices
+and corresponding source. `scripts/collect-licenses.py` collects the exact
+host-target Cargo dependency license texts and inventory into the package,
+alongside the Zerus and vendored libvterm licenses. A missing dependency notice
+fails packaging. Review notices and any source/relinking obligations again if
+the linkage or bundled components change. MIT licensing of Zerus itself does
+not relicense its dependencies.
+
+The CLI's `rusqlite` build includes SQLite through `libsqlite3-sys`. The collected
+notices also preserve its upstream public-domain dedication, separate from the
+Rust binding's MIT notice. [SQLite copyright](https://www.sqlite.org/copyright.html).
 
 Native agent CLIs are installed separately by the user and are not included here.

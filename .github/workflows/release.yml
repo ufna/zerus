@@ -1,0 +1,103 @@
+name: Release candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Product version matching VERSION (without v)
+        required: true
+        type: string
+      create_draft:
+        description: Create a GitHub draft release after all checks pass
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Check requested release version
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, re
+          version = os.environ['REQUESTED_VERSION']
+          assert re.fullmatch(r'\d+\.\d+\.\d+', version), 'Use a stable semantic version.'
+          assert version == pathlib.Path('VERSION').read_text().strip(), 'Update VERSION first.'
+          PY
+  verify:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+  assemble:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: archlinux@sha256:996c3a1d6b0d87b01242f6fcd8cfa3ad3eece1a67ab5c8f108e20af1d7b97bdd
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: arch-x86_64-${{ github.sha }}
+          path: artifacts/arch
+      - name: Arch release dependencies
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git rust cmake ninja qt6-base qt6-webengine kstatusnotifieritem kwindowsystem tmux openssh python namcap desktop-file-utils
+          useradd -m user
+          chown -R user:user "$GITHUB_WORKSPACE"
+      - name: Assemble exact verified candidate
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          packages=(artifacts/arch/*.pkg.tar.zst)
+          test "${#packages[@]}" = 1
+          runuser -u user -- python3 scripts/prepare-release.py --version "$RELEASE_VERSION" --package "${packages[0]}" --output dist
+          runuser -u user -- bash scripts/check-release-packages.sh dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: zerus-${{ inputs.version }}-candidate
+          path: dist
+          retention-days: 14
+  draft:
+    if: inputs.create_draft
+    needs: assemble
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: zerus-${{ inputs.version }}-candidate
+          path: dist
+      - name: Create reviewed draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "v$RELEASE_VERSION" --draft --target "$RELEASE_COMMIT" \
+            --title "Zerus $RELEASE_VERSION" \
+            --notes "Arch Linux x86_64 release candidate. Verify the artifacts and publication checklist before publishing." \
+            dist/*.tar.gz dist/*.pkg.tar.zst dist/SHA256SUMS dist/release-info.json
