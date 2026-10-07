@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Name=hgs zerus
+GenericName=Agent session manager
+Comment=Сессии агентов, их активность и управление контекстом
+# %h ниже -- не поле спецификации Desktop Entry (desktop-file-validate его отвергает),
+# это плейсхолдер под install.sh: он подставляет туда реальный $HOME при установке
+# файла в ~/.local/share/applications, с подстановкой пути при установке
+# использует для собственного Exec=.
+Exec=%h/.local/bin/hgs-tray --sessions
+Icon=hgs-zerus-swarm-symbolic
+Terminal=false
+Categories=Development;System;
+Keywords=hgs;tmux;claude;codex;sessions;
+StartupNotify=false
+StartupWMClass=hgs-tray
+X-GNOME-Autostart-enabled=true
+X-KDE-autostart-phase=2

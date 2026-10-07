@@ -1,0 +1,13 @@
+ ────────────────────────────────────────────────────────────────────────────────────────────
+  This session has been idle for 2d 13h and is ~217k tokens.
+  ↑↓ navigate · Enter select · Esc cancel
+
+  Cache expired — the next message re-sends the entire history at full price.
+   ❯ Compact and continue    one-time compact cost · cheapest way to keep this topic
+     Start a new session     zero context cost · best for a new task
+     Continue as-is          full history kept · highest cost per turn
+     Don't ask me again
+
+ ────────────────────────────────────────────────────────────────────────────────────────────
+ Ask When Needed  K3 thinking: max  [1 task running]  /work/example  main
+                                                                       context: 22% (217k/1M)

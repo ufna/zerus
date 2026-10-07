@@ -1,0 +1,89 @@
+//! Shared metadata only. Transport credentials and presentation preferences never
+//! enter the catalog. All commands use one locked, atomically replaced store.
+mod catalog;
+mod model;
+mod store;
+mod transport;
+
+use crate::{cli, config::Config};
+use anyhow::{bail, ensure, Result};
+use serde_json::{json, Value};
+use std::io::Read;
+use store::LockedStore;
+
+fn input() -> Result<Value> {
+    let mut bytes = Vec::new();
+    std::io::stdin()
+        .take(transport::MAX_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() as u64 <= transport::MAX_BYTES,
+        "swarm request is too large"
+    );
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+pub fn dispatch(config: &Config, args: &[String], dry: bool) -> cli::Result<i32> {
+    if dry {
+        return Err(cli::Error::new(
+            1,
+            "swarm commands do not support --dry-run",
+        ));
+    }
+    match execute(config, args) {
+        Ok(value) => {
+            println!("{}", value);
+            Ok(0)
+        }
+        Err(error) => Err(cli::Error::new(1, format!("{error:#}"))),
+    }
+}
+
+fn execute(config: &Config, args: &[String]) -> Result<Value> {
+    let action = args.first().map(String::as_str).unwrap_or("get");
+    let alias = || {
+        args.get(1)
+            .map(String::as_str)
+            .ok_or_else(|| anyhow::anyhow!("choose a configured machine"))
+    };
+    match action {
+        "worker" => { transport::worker()?; Ok(Value::Null) }
+        "hello" | "inventory" => transport::hello(config,action == "inventory"),
+        "preview" => transport::preview(config,alias()?),
+        "bind" => transport::bind(config,alias()?),
+        "join" => transport::join(config,alias()?,serde_json::from_value(input()?)?),
+        "exchange" => transport::exchange(config,serde_json::from_value(input()?)?),
+        "sync" => transport::sync(config),
+        "get" | "initialize" | "apply" | "export" | "resolve" | "disconnect" => {
+            // Read stdin before taking the lock: slow clients cannot monopolize it.
+            let request = if matches!(action,"initialize"|"apply"|"resolve") { input()? } else { Value::Null };
+            let mut store = LockedStore::load(config)?;
+            let previous: std::collections::BTreeSet<_> = store.data.catalog.operations.keys().cloned().collect();
+            match action {
+                "initialize" => {
+                    if !store.data.imported { store.backup("before-import")?; }
+                    store.data.initialize(&request)?;
+                }
+                "apply" => { ensure!(store.data.imported,"initialize the local project catalog first"); store.data.apply(serde_json::from_value(request)?)?; }
+                "resolve" => {
+                    let key: catalog::Key = serde_json::from_str(request["key"].as_str().unwrap_or_default())?;
+                    let versions: Vec<String> = serde_json::from_value(request["versions"].clone())?;
+                    let actor = store.data.node_id.clone();
+                    store.data.catalog.write(&actor,key,request["value"].clone(),versions)?;
+                }
+                "disconnect" => { store.data.peers.remove(alias()?); }
+                _ => {}
+            }
+            store.save()?;
+            if action == "export" { return Ok(json!({"schema":1,"node_id":store.data.node_id,"initialized":store.data.imported,"catalog":store.data.catalog})); }
+            let mut snapshot = store.data.snapshot(config);
+            let mut written: std::collections::BTreeMap<String,Vec<String>> = std::collections::BTreeMap::new();
+            for op in store.data.catalog.operations.values().filter(|op| !previous.contains(&op.id)) {
+                written.entry(store.data.catalog.canonical_key(&op.key).token()).or_default().push(op.id.clone());
+            }
+            snapshot["written"] = json!(written);
+            Ok(snapshot)
+        }
+        _ => bail!("usage: hgs swarm get | initialize | apply | preview PEER | join PEER | sync | worker | resolve | disconnect PEER"),
+    }
+}

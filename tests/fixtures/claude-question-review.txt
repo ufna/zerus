@@ -1,0 +1,23 @@
+▐▛███▛█   Claude Code v2.1.289
+▝▜██████▀  Sonnet 4.6 · API Usage Billing
+ ▝▝   ▝▝   ~/work
+
+
+❯ Ask questions with the tool now.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Release  ☒ Checks  ☒ Notes  ✔ Submit  →
+
+Review your answers
+
+ ● Which release should we prepare?
+   → Preview
+ ● Which checks should we run?
+   → Unit, UI
+ ● What else should we know?
+   → Привет from Zerus
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel

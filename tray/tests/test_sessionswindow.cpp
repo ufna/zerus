@@ -1,0 +1,3785 @@
+#include <QtTest>
+#include <QApplication>
+#include <QFrame>
+#include <QToolButton>
+#include <QComboBox>
+#include <QCheckBox>
+#include <QDateTime>
+#include <QContextMenuEvent>
+#include <QDir>
+#include <QClipboard>
+#include <QDesktopServices>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QMimeData>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QFile>
+#include <QJsonDocument>
+#include <QLineEdit>
+#include <QLabel>
+#include <QMessageBox>
+#include <QMenu>
+#include <QStackedWidget>
+#include <QSplitter>
+#include <QScrollBar>
+#include <QListWidget>
+#include <QPushButton>
+#include <QPlainTextEdit>
+#include <QSettings>
+#include <QStandardItemModel>
+#include <QUuid>
+#include <memory>
+#include <QTemporaryDir>
+#include <QTextBrowser>
+#include <QTextTable>
+#include <QTabWidget>
+#include <QTabBar>
+#include <QVBoxLayout>
+#include <QTableWidget>
+#include "SessionsWindow.h"
+#include "ActivityView.h"
+#include "QuestionCard.h"
+#include "RecoveryWidgets.h"
+#include "SettingsPage.h"
+#include "TerminalView.h"
+#include "TerminalScreen.h"
+#include "NewSessionDialog.h"
+#include "DirectoryDialog.h"
+#include "ProjectsDialog.h"
+#include "MessageComposer.h"
+#include "SessionList.h"
+#include "SessionOrganization.h"
+#include "MachineFilter.h"
+#include "DashboardPage.h"
+#include "AccountUsage.h"
+#include "WorktreePanel.h"
+#include "AccountUsageStore.h"
+#include "MachinesPage.h"
+#include "AccountsPage.h"
+
+class FolderUrlRecorder : public QObject {
+    Q_OBJECT
+public:
+    FolderUrlRecorder() { QDesktopServices::setUrlHandler("file",this,"record"); }
+    ~FolderUrlRecorder() override { QDesktopServices::unsetUrlHandler("file"); }
+    QList<QUrl> urls;
+public slots:
+    void record(const QUrl &url) { urls<<url; }
+};
+
+class TestSessionsWindow : public QObject {
+    Q_OBJECT
+private slots:
+    void initTestCase();
+    void init() { QSettings().remove("workspace"); QSettings().remove("processes"); }
+    void groupsPersistFilterAndRevealAttention();
+    void emptyProjectsSettingPreservesArchiveAndProjects();
+    void unreadRepliesNeedAnActiveVisibleResult();
+    void markAllReadIgnoresFiltersAndKeepsCurrentDraft();
+    void compactWorkspaceGeometry();
+    void worktreeFilterKeepsConversationDraftAndSearchScope();
+    void worktreePreview();
+    void workingCardsKeepTurnClockAcrossUpdates();
+    void accountUsageRejectsOtherSessionReplies();
+    void dashboardAndMultiMachineNavigation();
+    void multiSelectionKeepsConversationAndGroupMenu_data();
+    void multiSelectionKeepsConversationAndGroupMenu();
+    void selectionCommandsKeepPinnedTargets();
+    void clearArchiveKeepsLiveAndNewEntries();
+    void projectFolderActionsKeepTargets();
+    void projectFolderNewSessionPrefillsExactTarget();
+    void dashboardActivityRowsStayReadable_data();
+    void dashboardActivityRowsStayReadable();
+    void filtersSelectionAndOffline();
+    void connectionStatusSurvivesNoticesAndRetries();
+    void backgroundPollKeepsActivityAndComposerStable();
+    void processPollingFollowsVisibilityAndSettings();
+    void recoveryCountdownKeepsHistoryDraftAndFocus();
+    void recoverySettingsValidateAndSaveForSelectedMachine();
+    void sharedRecoverySyncCatchesUpOfflinePeer();
+    void coldCacheConfirmationPreservesDraftAndPinsConversation();
+    void coldCacheClearKeepsDraftAndPinsIdentity();
+    void coldCacheCompactWaitsForSuccess_data();
+    void coldCacheCompactWaitsForSuccess();
+    void composerNavigationDuringPolling();
+    void attentionNavigationResetsFiltersAndTab();
+    void sessionContextMenuSignalsAndKeyboard();
+    void sessionAttentionMenuPersistsWithoutSelection();
+    void sessionAttentionMenuSurvivesRoutinePoll();
+    void activityMarkReadKeepsReadingPosition_data();
+    void activityMarkReadKeepsReadingPosition();
+    void fileDropsAcrossSessionPanelKeepDraftAndTarget();
+    void terminalDropKeepsActivityDraftAndDoesNotSubmit();
+    void sessionContextMenuGuardsIdentityAndChanges();
+    void sessionContextMenuSavedAndArchive();
+    void compactMetadataAndSubagentRoster();
+    void nativeSessionUsageStaysWithSelectedConversation();
+    void subagentActivityKeepsMainDraftAndRejectsStaleHistory();
+    void childTreeKeepsRoutineResultsQuiet();
+    void sessionsRailResetsFiltersAndShowsAttention();
+    void sessionRowsHaveNoHoverPopup();
+    void subagentGroupsAndUnavailableActivity();
+    void inspectorPreservesWorkspaceAndReportsTasks();
+    void detailsPollingPreservesReadingPosition();
+    void nativeGoalIsIndependentOfTurnState();
+    void fileReferencesKeepMachineAndWorkspace();
+    void buttonFocusFollowsKeyboardAndNotClicks();
+    void separatesConversationProcessAndTerminal();
+    void activityEscapingAndActions();
+    void messageDeliveryKeepsSessionIdentityAndDrafts_data();
+    void messageDeliveryKeepsSessionIdentityAndDrafts();
+    void providerErrorWaitsForNativePrompt_data();
+    void providerErrorWaitsForNativePrompt();
+    void firstMessageWaitsForNativePrompt_data();
+    void firstMessageWaitsForNativePrompt();
+    void failedMessagesReconcileAndRetryWithoutLosingDrafts();
+    void modelSettingsKeepSessionIdentity_data();
+    void modelSettingsKeepSessionIdentity();
+    void questionAnswersStayWithOriginalSession();
+    void optionalQuestionKeepsComposerAvailable();
+    void questionCompletionKeepsInputFocus_data();
+    void questionCompletionKeepsInputFocus();
+    void questionFooterHasRoomAndKeepsAnswers_data();
+    void questionFooterHasRoomAndKeepsAnswers();
+    void startupTrustAnswerBeforeConversation_data();
+    void startupTrustAnswerBeforeConversation();
+    void archiveFiltersIdentityRestoreAndForget();
+    void savedSessionsCanMoveToArchive();
+    void renameValidationCancelAndSelection();
+    void forkValidationCancelAndPinnedPayload();
+    void forkKeepsSourceAndGroup_data();
+    void forkKeepsSourceAndGroup();
+    void forkDisabledForUnavailableSources();
+    void renameOtherSessionKinds();
+    void renameFailureKeepsSelection();
+    void launchInitialFolderFollowsProject_data();
+    void launchInitialFolderFollowsProject();
+    void launchFoldersFollowProject();
+    void arbitraryFolderAndTerminalPreference_data();
+    void arbitraryFolderAndTerminalPreference();
+    void terminationProgress_data();
+    void terminationProgress();
+    void remoteFolderLaunch();
+    void nativeLaunchStaysInWorkspace_data();
+    void nativeLaunchStaysInWorkspace();
+    void nativeSignInPreservesDraftAndUnblocks();
+    void newSessionGroupFollowsLaunchIdentity_data();
+    void newSessionGroupFollowsLaunchIdentity();
+    void folderBrowserIgnoresStaleResponses();
+    void projectOrderAndDefaultBadge();
+    void projectsEmbeddedAndRemote();
+    void projectColorsApplyOrCancel();
+    void legacyProjectsMigrateWithBackupAndLocalFolders();
+    void batchActionsAndReturnToSessions();
+    void searchResultKeepsItsSessionAndSnapshot();
+    void blankListContextMenu();
+    void contextMenuAcrossSessionPanelBackground();
+    void preview();
+private:
+    FleetState fleet() const;
+    QString script() const { return m_dir.filePath("hgs"); }
+    QTemporaryDir m_dir;
+};
+
+void TestSessionsWindow::initTestCase()
+{
+    QVERIFY(m_dir.isValid());
+    QCoreApplication::setOrganizationName("hgs-tests");
+    QCoreApplication::setApplicationName("sessions-window");
+    QCoreApplication::setApplicationVersion(QLatin1String(HGS_TRAY_VERSION));
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, m_dir.path());
+    QFile file(script()); QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("#!/bin/sh\nprintf '%s\\n' \"$@\" >&2\ncase \"$1\" in @*) shift;; esac\ncase \"$1\" in\n"
+        "inspect) echo '{\"tracked\":true,\"conversation_id\":\"conversation-one\",\"events\":[],\"cursor\":0}';;\n"
+        "project) if [ \"$2\" = ls ]; then echo '[{\"name\":\"infra\",\"dir\":\"/remote/infra\",\"exists\":true,\"src\":\"ansible\"}]'; fi;;\n"
+        "worktrees) cat \"$0.worktrees\";;\n"
+        "dirs) echo '{\"path\":\"/remote/work tree\",\"parent\":\"/remote\",\"home\":\"/remote\",\"directories\":[{\"name\":\"docs\",\"path\":\"/remote/work tree/docs\"}]}';;\n"
+        "ls) echo '{\"host\":\"mac\",\"ok\":true,\"sessions\":[]}';;\nesac\n");
+    file.close(); QVERIFY(file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+    QFile catalogFile(script()+".worktrees");QVERIFY(catalogFile.open(QIODevice::WriteOnly));
+    auto catalog=QJsonDocument::fromJson(R"({"state":"ok","path":"/repo","selected_root":"/repo","common_dir":"/repo/.git","worktrees":[{"path":"/repo","kind":"main","branch":"main","available":true},{"path":"/linked","kind":"linked","branch":"feat/worktree-catalog","available":true},{"path":"/empty","kind":"linked","branch":"fix/empty-copy","available":true}]})").object();catalog["sampled_at"]=QDateTime::currentSecsSinceEpoch();catalogFile.write(QJsonDocument(catalog).toJson());
+}
+
+FleetState TestSessionsWindow::fleet() const
+{
+    SessionInfo codex; codex.name = "codex/hgs/dashboard"; codex.cmd = "codex"; codex.project = "hgs"; codex.tag = "dashboard";
+    codex.tracked = true; codex.resumable = true; codex.activity = "busy"; codex.phase = "tool";
+    codex.currentTool = "Bash"; codex.toolDetail = "ctest --test-dir tray/build"; codex.model = "gpt-6.1-sol"; codex.effort = "high";
+    codex.prompt = "Build a clear view of every agent across our machines.";
+    auto kimi = codex; kimi.name = "kimi/docs/research"; kimi.cmd = "kimi"; kimi.project = "docs"; kimi.tag = "research";
+    kimi.currentTool.clear(); kimi.activity = "idle"; kimi.phase = "idle"; kimi.prompt = "Compare the session lifecycle across our CLI agents.";
+    auto saved = codex; saved.name = "codex/website/navigation"; saved.project = "website"; saved.tag = "navigation";
+    saved.state = "paused"; saved.currentTool.clear(); saved.prompt = "Simplify the mobile navigation.";
+    SessionInfo old; old.name = "sh/scratch"; old.cmd = "sh"; old.project = "scratch";
+    BoxState arch; arch.host = "arch"; arch.ok = true; arch.sessions = {codex, kimi, saved, old};
+    auto approval = codex; approval.name = "claude/infra/review"; approval.cmd = "claude"; approval.project = "infra";
+    approval.tag = "review"; approval.phase = "approval"; approval.currentTool = "Bash";
+    approval.toolDetail = "terraform plan"; approval.prompt = "Review infrastructure changes before the next deployment.";
+    BoxState mac; mac.host = "mac"; mac.ok = true; mac.sessions = {approval};
+    FleetState result; result.setLocal(arch, QDateTime::currentMSecsSinceEpoch()); result.setPeer(mac, QDateTime::currentMSecsSinceEpoch());
+    return result;
+}
+
+void TestSessionsWindow::workingCardsKeepTurnClockAcrossUpdates()
+{
+    auto state=fleet(); auto box=state.local();
+    const double started=QDateTime::currentSecsSinceEpoch()-1076;
+    box.sessions[0].turnStarted=started; state.setLocal(box,QDateTime::currentMSecsSinceEpoch());
+    SessionsWindow window(script()); window.setFleet(state); window.show(); window.showSession({},"codex/hgs/dashboard");
+    auto *list=window.findChild<SessionList *>("sessionList"); auto *row=list->currentItem(); QVERIFY(row);
+    QCOMPARE(row->data(SessionRoles::WorkingSince).toDouble(),started);
+    QVERIFY(row->data(SessionRoles::Working).toBool()); QVERIFY(list->elapsedTimerRunning());
+    list->setActivityAnimationEnabled(false); QVERIFY(list->elapsedTimerRunning());
+    QSignalSpy reset(list->model(),&QAbstractItemModel::modelReset);
+    QTest::qWait(1100); QCOMPARE(list->currentItem(),row); QCOMPARE(reset.size(),0);
+    QCOMPARE(row->data(SessionRoles::WorkingSince).toDouble(),started);
+    box.sessions[0].phase="compacting"; box.sessions[0].lastEventAt=QDateTime::currentSecsSinceEpoch();
+    const double compactStarted=QDateTime::currentSecsSinceEpoch()-83;
+    box.sessions[0].compactionStarted=compactStarted;
+    state.setLocal(box,QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    QCOMPARE(list->currentItem(),row); QCOMPARE(row->data(SessionRoles::WorkingSince).toDouble(),compactStarted);
+    QCOMPARE(row->data(SessionRoles::Status).toString(),QString("Compacting"));
+    const auto preview=qEnvironmentVariable("HGS_ELAPSED_PREVIEW");
+    if(!preview.isEmpty()) { QDir().mkpath(preview); QVERIFY(list->grab().save(preview+"/working-timer.png")); }
+    box.sessions[0].phase="working";
+    state.setLocal(box,QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    QCOMPARE(row->data(SessionRoles::WorkingSince).toDouble(),started);
+    box.sessions[0].activity="idle"; box.sessions[0].phase="idle";
+    state.setLocal(box,QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    QVERIFY(!row->data(SessionRoles::Working).toBool()); QVERIFY(!list->elapsedTimerRunning());
+}
+
+void TestSessionsWindow::dashboardAndMultiMachineNavigation()
+{
+    SessionsWindow window(script()); auto state=fleet(); auto third=state.local(); third.host="build"; state.setPeer(third,0);
+    window.setFleet(state); window.show();
+    auto *filter=window.findChild<MachineFilter *>(); auto *list=window.findChild<SessionList *>("sessionList");
+    QVERIFY(filter); QVERIFY(list); filter->setSelection({"mac","build"}); QCOMPARE(list->count(),5);
+    for(int i=0;i<list->count();++i) QVERIFY(!list->item(i)->data(SessionRoles::Identity).toString().startsWith("arch\n"));
+    auto *brand=window.findChild<QPushButton *>("brandMark"); QVERIFY(brand); brand->click();
+    auto *dashboard=window.findChild<DashboardPage *>(); QVERIFY(dashboard->isVisible()); QVERIFY(brand->isChecked()); brand->click(); QVERIFY(brand->isChecked());
+    QVERIFY(!window.findChild<QPushButton *>("organizeGroups"));
+    bool launchDialogOpened = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto *dialog = qobject_cast<NewSessionDialog *>(QApplication::activeModalWidget());
+        launchDialogOpened = dialog != nullptr;
+        if (dialog) dialog->reject();
+    });
+    QVERIFY(!dashboard->findChild<QPushButton *>("dashboardNewSession"));
+    auto *create=window.findChild<QPushButton *>("newSession");QVERIFY(create->isVisible());
+    QCOMPARE(create->parentWidget()->objectName(),QString("sidebar"));
+    create->click(); QVERIFY(launchDialogOpened);
+    dashboard->filterRequested("@all","attention"); QVERIFY(list->isVisible()); QCOMPARE(list->count(),1);
+    QVERIFY(filter->selection().isEmpty()); QVERIFY(!brand->isChecked());
+    brand->click(); dashboard->filterRequested("@local","all"); QCOMPARE(list->count(),4);
+    QCOMPARE(filter->selection(),QSet<QString>{"@local"});
+    brand->click(); dashboard->sessionRequested("mac","claude/infra/review");
+    QVERIFY(list->currentItem()->data(SessionRoles::Identity).toString().startsWith("mac\n"));
+    brand->click(); dashboard->machinesRequested("mac"); auto *machines=window.findChild<MachinesPage *>(); QVERIFY(machines->isVisible());
+    machines->accountsRequested("mac"); auto *accounts=window.findChild<AccountsPage *>(); QVERIFY(accounts->isVisible());
+    QCOMPARE(accounts->findChild<QComboBox *>("accountMachineFilter")->currentData().toString(),QString("mac"));
+}
+
+void TestSessionsWindow::dashboardActivityRowsStayReadable_data()
+{
+    QTest::addColumn<QString>("theme");
+    QTest::newRow("dark") << QString("dark");
+    QTest::newRow("light") << QString("light");
+}
+
+void TestSessionsWindow::dashboardActivityRowsStayReadable()
+{
+    QFETCH(QString, theme);
+    QSettings().setValue("workspace/theme", theme);
+    SessionsWindow window(script()); window.resize(1170, 660); window.show();
+    window.findChild<QPushButton *>("brandMark")->click();
+    auto state = fleet(); auto local = state.local(); auto &session = local.sessions[0];
+    session.gitBranch = "main"; session.turnStarted = QDateTime::currentSecsSinceEpoch() - 76;
+    session.subagentSource = "hooks"; session.subagentCountsComplete = true;
+    session.subagentActiveCount = 2; session.subagentTotalCount = 4;
+    state.setLocal(local, QDateTime::currentMSecsSinceEpoch());
+    QPointer<QPushButton> workingRow;
+    // The real window stylesheet and repeated fleet updates must retain both
+    // card geometry and identity/focus. Dashboard cards have no roster control.
+    for (int poll = 0; poll < 3; ++poll) {
+        window.setFleet(state); QTest::qWait(20);
+        const auto rows = window.findChildren<QPushButton *>("dashboardSessionRow");
+        QCOMPARE(rows.size(), 2);
+        for (auto *row : rows) {
+            QVERIFY2(row->height() >= 104, qPrintable(QString("Activity row collapsed to %1px").arg(row->height())));
+            auto *model = row->findChild<QStandardItemModel *>("dashboardSessionModel");
+            QVERIFY(model); const auto index = model->index(0, 0);
+            for (const int role : {SessionRoles::Title, SessionRoles::Meta, SessionRoles::Status,
+                    SessionRoles::Agent, SessionRoles::Host, SessionRoles::Detail, SessionRoles::Model, SessionRoles::Effort})
+                QVERIFY(!index.data(role).toString().isEmpty());
+            QVERIFY(!index.data(SessionRoles::HasChildren).toBool());
+            if (index.data(SessionRoles::Working).toBool()) {
+                QCOMPARE(index.data(SessionRoles::Title).toString(), QString("dashboard"));
+                QCOMPARE(index.data(SessionRoles::Meta).toString(), QString("hgs / main"));
+                QCOMPARE(index.data(SessionRoles::WorkingSince).toDouble(), session.turnStarted);
+                QCOMPARE(index.data(SessionRoles::Children).toString(), QString("2/4"));
+                if (poll == 0) { workingRow = row; row->setFocus(); }
+                else { QCOMPARE(row, workingRow.data()); QVERIFY(row->hasFocus()); }
+            }
+        }
+    }
+    const auto directory = qEnvironmentVariable("HGS_DASHBOARD_PREVIEW");
+    if (!directory.isEmpty()) { QDir().mkpath(directory); QVERIFY(window.grab().save(directory + "/integrated-" + theme + ".png")); QVERIFY(workingRow->grab().save(directory + "/card-" + theme + ".png")); }
+    QVERIFY(workingRow);
+    // Even the subagent-count area navigates; it never expands a dashboard row.
+    QTest::mouseClick(workingRow, Qt::LeftButton, Qt::NoModifier, QPoint(workingRow->width() - 30, workingRow->height() - 20));
+    auto *list = window.findChild<SessionList *>("sessionList");
+    QVERIFY(list->isVisible());
+    QVERIFY(list->currentItem()->data(SessionRoles::Identity).toString().contains("codex/hgs/dashboard"));
+
+}
+
+void TestSessionsWindow::multiSelectionKeepsConversationAndGroupMenu_data()
+{
+    QTest::addColumn<QString>("theme");QTest::addColumn<int>("width");
+    QTest::newRow("dark")<<QString("dark")<<1100;QTest::newRow("light-narrow")<<QString("light")<<840;
+}
+void TestSessionsWindow::multiSelectionKeepsConversationAndGroupMenu()
+{
+    QFETCH(QString,theme);QFETCH(int,width);QSettings().setValue("workspace/theme",theme);
+    auto state=fleet();SessionsWindow window(script());window.resize(width,760);window.setFleet(state);window.show();
+    if(width<900)window.findChild<QSplitter *>()->setSizes({270,width-270});
+    auto *list=window.findChild<SessionList *>("sessionList");auto *composer=window.findChild<MessageComposer *>();
+    const auto open=list->currentItem()->data(SessionRoles::Key).toString();
+    composer->editor()->setPlainText("Keep this draft");
+    const auto select=[&](int row){QTest::mouseClick(list->viewport(),Qt::LeftButton,Qt::ControlModifier,list->visualItemRect(list->item(row)).center());};
+    select(1);QCOMPARE(list->selectedItems().size(),2);QCOMPARE(list->currentItem()->data(SessionRoles::Key).toString(),open);
+    QCOMPARE(composer->editor()->toPlainText(),QString("Keep this draft"));
+    auto *bar=window.findChild<QFrame *>("sessionSelectionBar");QVERIFY(bar);QVERIFY(bar->isVisible());
+    for(auto *button:bar->findChildren<QToolButton *>())if(button->isVisible()) {
+        QVERIFY(button->width()>=24);QVERIFY(bar->rect().contains(QRect(button->mapTo(bar,QPoint()),button->size())));
+    }
+    QSet<QString> keys;for(auto *item:list->selectedItems())keys.insert(item->data(SessionRoles::Key).toString());
+    // Reordering the actual rows must preserve the chosen identities.
+    auto local=state.local();std::swap(local.sessions[1],local.sessions[2]);state.setLocal(local,QDateTime::currentMSecsSinceEpoch());window.setFleet(state);
+    QSet<QString> after;for(auto *item:list->selectedItems())after.insert(item->data(SessionRoles::Key).toString());QCOMPARE(after,keys);
+    QCOMPARE(list->currentItem()->data(SessionRoles::Key).toString(),open);QCOMPARE(composer->editor()->toPlainText(),QString("Keep this draft"));
+    const auto point=list->visualItemRect(list->item(2)).center();
+    QTest::mouseClick(list->viewport(),Qt::RightButton,{},point);
+    QContextMenuEvent event(QContextMenuEvent::Mouse,point,list->viewport()->mapToGlobal(point));QApplication::sendEvent(list->viewport(),&event);
+    auto *menu=window.findChild<QMenu *>("sessionContextMenu");QVERIFY(menu->isVisible());
+    QVERIFY(!menu->findChild<QAction *>("contextOpenTerminal"));QVERIFY(menu->findChild<QMenu *>("moveSelectionToProject"));
+    QVERIFY(menu->findChild<QAction *>("selectionattention"));QCOMPARE(list->selectedItems().size(),2);menu->hide();
+    const auto preview=qEnvironmentVariable("HGS_BULK_PREVIEW");if(!preview.isEmpty()){QDir().mkpath(preview);QVERIFY(window.grab().save(preview+"/selection-"+theme+".png"));}
+    bar->findChild<QPushButton *>("clearSessionSelection")->click();QVERIFY(list->selectedItems().isEmpty());QVERIFY(!bar->isVisible());
+    window.setFleet(state);QVERIFY(list->selectedItems().isEmpty());QCOMPARE(composer->editor()->toPlainText(),QString("Keep this draft"));
+    QTest::mouseClick(list->viewport(),Qt::LeftButton,{},list->visualItemRect(list->item(0)).center());QCOMPARE(list->selectedItems().size(),1);
+    select(1);QCOMPARE(list->selectedItems().size(),2);QTest::keyClick(list,Qt::Key_Escape);QVERIFY(list->selectedItems().isEmpty());
+}
+
+void TestSessionsWindow::selectionCommandsKeepPinnedTargets()
+{
+    auto state=fleet();auto box=state.local();box.sessions[0].activity="idle";box.sessions[0].phase="idle";
+    state.setLocal(box,QDateTime::currentMSecsSinceEpoch());auto remote=*state.peer("mac");remote.sessions[0].activity="idle";remote.sessions[0].phase="idle";
+    remote.sessions[0].runId="original";state.setPeer(remote,QDateTime::currentMSecsSinceEpoch());
+    SessionsWindow window(script());window.resize(1100,850);window.setFleet(state);window.show();
+    auto *list=window.findChild<SessionList *>("sessionList");
+    QTest::mouseClick(list->viewport(),Qt::LeftButton,Qt::ControlModifier,list->visualItemRect(list->item(4)).center());
+    QCOMPARE(list->selectedItems().size(),2);
+    QTest::keyClick(list,Qt::Key_Menu);auto *menu=window.findChild<QMenu *>("sessionContextMenu");
+    auto *pause=menu->findChild<QAction *>("selectionpause");QVERIFY(pause);QCOMPARE(pause->text(),QString("Pause (2)"));
+    auto *client=window.findChild<HgsClient *>();QSignalSpy writes(client,&HgsClient::writeDone);
+    // A native restart after opening the group menu must not retarget its action.
+    remote.sessions[0].runId="replacement";state.setPeer(remote,QDateTime::currentMSecsSinceEpoch());window.setFleet(state);
+    pause->trigger();menu->hide();QTRY_COMPARE(writes.size(),1);
+    QCOMPARE(writes[0][2].toString(),QString("pause\ncodex/hgs/dashboard"));
+    QTRY_VERIFY(window.findChild<QLabel *>("notice")->text().contains("1 failed or changed"));
+    // A fresh selection is allowed to act on both current instances.
+    auto *control=window.findChild<QAction *>("selectionpause");QVERIFY(control);QTRY_VERIFY(control->isEnabled());control->trigger();
+    QTRY_COMPARE(writes.size(),3);QCOMPARE(writes[2][2].toString(),QString("@mac\npause\nclaude/infra/review"));
+}
+
+void TestSessionsWindow::clearArchiveKeepsLiveAndNewEntries()
+{
+    auto state=fleet();auto box=state.local();auto archived=box.sessions[0];archived.state="archived";archived.archiveId="one";
+    auto second=archived;second.archiveId="two";box.sessions<<archived<<second;state.setLocal(box,QDateTime::currentMSecsSinceEpoch());
+    auto remote=*state.peer("mac");auto remoteArchive=archived;remoteArchive.archiveId="remote";remote.sessions<<remoteArchive;state.setPeer(remote,QDateTime::currentMSecsSinceEpoch());
+    remote.ok=false;state.setPeer(remote,QDateTime::currentMSecsSinceEpoch());
+    SessionsWindow window(script());window.setFleet(state);window.show();
+    auto *clear=window.findChild<QAction *>("clearArchive");QVERIFY(clear);
+    auto *context=window.findChild<QMenu *>("sessionProjectsMenu");QVERIFY(context);QVERIFY(context->actions().contains(clear));
+    auto *batch=window.findChild<QPushButton *>("batchActions")->menu();
+    // Archive cleanup is available from every filter, including the live list.
+    for(auto *button:window.findChildren<QPushButton *>("sessionFilter")) {
+        button->click();QVERIFY(clear->isVisible());QVERIFY(clear->isEnabled());
+        QMetaObject::invokeMethod(batch,"aboutToShow");QVERIFY(batch->actions().contains(clear));
+    }
+    window.showSession({},box.sessions.first().name);
+    window.findChild<MachineFilter *>()->setSelection({"mac"});QVERIFY(clear->isVisible());QVERIFY(!clear->isEnabled());
+    window.findChild<MachineFilter *>()->setSelection({});QVERIFY(clear->isEnabled());
+    auto *client=window.findChild<HgsClient *>();QSignalSpy writes(client,&HgsClient::writeDone);
+    QTimer::singleShot(0,&window,[&]{auto *dialog=window.findChild<QMessageBox *>("confirmSelectionAction");QVERIFY(dialog);dialog->reject();});clear->trigger();QCOMPARE(writes.size(),0);
+    QTimer::singleShot(0,&window,[&]{
+        auto *dialog=window.findChild<QMessageBox *>("confirmSelectionAction");QVERIFY(dialog);
+        QVERIFY(dialog->text().contains("2 archived"));QVERIFY(dialog->text().contains("1 unavailable"));
+        auto newer=archived;newer.archiveId="created-during-confirmation";box.sessions<<newer;state.setLocal(box,QDateTime::currentMSecsSinceEpoch());window.setFleet(state);
+        for(auto *button:dialog->buttons())if(dialog->buttonRole(button)==QMessageBox::DestructiveRole){button->click();break;}
+    });clear->trigger();QTRY_COMPARE(writes.size(),2);
+    QStringList payloads;for(const auto &write:writes)payloads<<write[2].toString();
+    QVERIFY(payloads.contains("kill\ncodex/hgs/dashboard\n--archive\none"));QVERIFY(payloads.contains("kill\ncodex/hgs/dashboard\n--archive\ntwo"));
+    QTest::qWait(30);QCOMPARE(writes.size(),2);
+}
+
+void TestSessionsWindow::groupsPersistFilterAndRevealAttention()
+{
+    SessionOrganization org;
+    const auto work = org.createGroup("Release"), docs = org.createGroup("Research");
+    const auto local = org.observe("arch", "codex/hgs/dashboard", ""), remote = org.observe("mac", "claude/infra/review", "");
+    org.moveSession(local, work); org.moveSession(remote, work); org.setCollapsed(work, true);
+    QSettings().setValue("workspace/organization", QJsonDocument(org.toJson()).toJson(QJsonDocument::Compact));
+    SessionsWindow window(script()); window.setFleet(fleet()); window.show();
+    auto *list = window.findChild<SessionList *>("sessionList"); QVERIFY(list);
+    const auto header = [&](const QString &id) -> QListWidgetItem * {
+        for (int i = 0; i < list->count(); ++i) if (list->item(i)->data(SessionRoles::Header).toBool() && list->item(i)->data(SessionRoles::Group).toString() == id) return list->item(i);
+        return nullptr;
+    };
+    QVERIFY(header(work)); QCOMPARE(header(work)->data(SessionRoles::Attention).toInt(), 1);
+    window.showAttentionSession("mac", "claude/infra/review");
+    QCOMPARE(list->currentItem()->data(SessionRoles::Identity).toString(), remote);
+    QVERIFY(!list->currentItem()->isHidden()); QVERIFY(!header(work)->data(SessionRoles::Collapsed).toBool());
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier, list->visualItemRect(header(work)).center());
+    QVERIFY(header(work)->data(SessionRoles::Collapsed).toBool());
+    QCOMPARE(list->currentItem()->data(SessionRoles::Identity).toString(), remote); // Keep the working pane when collapsing its group.
+    auto *search = window.findChild<QLineEdit *>("search"); search->setText("review");
+    auto *results = window.findChild<QListWidget *>("searchResults"); QVERIFY(results->isVisible()); QCOMPARE(results->count(), 1);
+    search->clear(); QVERIFY(list->currentItem()->isHidden());
+    list->sessionMoved(remote, docs, {}); list->groupMoved(docs, work);
+    auto persisted = SessionOrganization(QJsonDocument::fromJson(QSettings().value("workspace/organization").toByteArray()).object());
+    QCOMPARE(persisted.groupFor(remote), docs); QCOMPARE(persisted.groups().at(0).id, docs);
+    auto offline = fleet(); BoxState unavailable; unavailable.host = "mac"; offline.setPeer(unavailable, QDateTime::currentMSecsSinceEpoch()); window.setFleet(offline);
+    QCOMPARE(header(docs)->data(SessionRoles::Attention).toInt(), 0); QCOMPARE(list->currentItem()->data(SessionRoles::Identity).toString(), remote);
+    window.close(); SessionsWindow reopened(script()); reopened.setFleet(fleet()); reopened.show();
+    reopened.showAttentionSession("mac", "claude/infra/review");
+    auto *newList = reopened.findChild<SessionList *>("sessionList"); QCOMPARE(newList->currentItem()->data(SessionRoles::Group).toString(), docs);
+    QVERIFY(!newList->currentItem()->isHidden());
+}
+
+void TestSessionsWindow::emptyProjectsSettingPreservesArchiveAndProjects()
+{
+    SessionOrganization org;
+    const auto active = org.createGroup("Active"), empty = org.createGroup("Empty"), archived = org.createGroup("Archived");
+    auto state = fleet(); auto box = state.local();
+    auto past = box.sessions.first(); past.name = "codex/hgs/old"; past.state = "archived"; past.archiveId = "old-run"; past.runId = "old-run";
+    box.sessions.append(past); state.setLocal(box, QDateTime::currentMSecsSinceEpoch());
+    org.moveSession(org.observe("arch", box.sessions.first().name, box.sessions.first().runId), active);
+    org.moveSession(org.observe("arch", past.name, past.runId, past.archiveId), archived);
+    QSettings().setValue("workspace/organization", QJsonDocument(org.toJson()).toJson(QJsonDocument::Compact));
+    SessionsWindow window(script()); window.setFleet(state); window.show();
+    auto *list = window.findChild<SessionList *>("sessionList");
+    const auto hasHeader = [&](const QString &id) {
+        for (int i = 0; i < list->count(); ++i) if (list->item(i)->data(SessionRoles::Header).toBool() && list->item(i)->data(SessionRoles::Group).toString() == id) return true;
+        return false;
+    };
+    QVERIFY(hasHeader(active)); QVERIFY(!hasHeader(empty)); QVERIFY(!hasHeader(archived));
+    const auto changeSetting = [&](bool enabled, bool save) {
+        window.findChild<QPushButton *>("workspaceSettings")->click();
+        QVERIFY(!QApplication::activeModalWidget());auto *page=window.findChild<QWidget *>("settingsPage");QVERIFY(page&&page->isVisible());
+        page->findChild<QListWidget *>("settingsSections")->setCurrentRow(1);
+        auto *check=page->findChild<QCheckBox *>("workspaceHideEmptyProjects");QVERIFY(check);
+        if(save)check->setChecked(enabled);
+        window.showSession({},"codex/hgs/dashboard");
+    };
+    changeSetting(false, false); QVERIFY(!hasHeader(empty));
+    changeSetting(false, true); QVERIFY(hasHeader(empty)); QVERIFY(hasHeader(archived));
+    QVERIFY(!QSettings().value("workspace/hideEmptyProjects").toBool());
+    { SessionsWindow reopened(script()); reopened.setFleet(state); reopened.show();
+      auto *rows = reopened.findChild<SessionList *>("sessionList"); bool found = false;
+      for (int i = 0; i < rows->count(); ++i) found |= rows->item(i)->data(SessionRoles::Group).toString() == empty;
+      QVERIFY(found); }
+    changeSetting(true, true); QVERIFY(!hasHeader(empty)); QVERIFY(!hasHeader(archived));
+    for (auto *button : window.findChildren<QPushButton *>("sessionFilter")) if (button->property("filter") == "archived") button->click();
+    QVERIFY(hasHeader(archived)); QVERIFY(!hasHeader(active));
+    window.showSession({}, box.sessions.first().name);
+    box.sessions.first().activity = "idle"; box.sessions.first().phase = "idle"; box.sessions.first().state = "paused";
+    state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state); QVERIFY(hasHeader(active));
+    box.sessions.removeFirst(); state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state); QVERIFY(!hasHeader(active));
+    const SessionOrganization stored(QJsonDocument::fromJson(QSettings().value("workspace/organization").toByteArray()).object());
+    QVERIFY(stored.group(empty)); QVERIFY(stored.group(active)); QVERIFY(stored.group(archived));
+}
+
+void TestSessionsWindow::unreadRepliesNeedAnActiveVisibleResult()
+{
+    auto state = fleet(); auto box = state.local(); auto &session = box.sessions[0];
+    session.activity = "idle"; session.phase = "idle"; session.conversationId = "read-conversation";
+    session.replyId = "10:100"; session.runId = "read-run"; session.currentTool.clear();
+    state.setLocal(box, QDateTime::currentMSecsSinceEpoch());
+    SessionOrganization org; const auto group = org.createGroup("Results");
+    org.moveSession(org.observe("arch", session.name, session.runId), group); org.setCollapsed(group, true);
+    QSettings().setValue("workspace/organization", QJsonDocument(org.toJson()).toJson(QJsonDocument::Compact));
+    const QString fixture = m_dir.filePath("unread-hgs"); QFile file(fixture); QVERIFY(file.open(QIODevice::WriteOnly));
+    const QJsonObject details{{"tracked", true}, {"run_id", session.runId}, {"conversation_id", session.conversationId}, {"reply_id", session.replyId},
+        {"activity", "idle"}, {"phase", "idle"}, {"cursor", 10}, {"events", QJsonArray{QJsonObject{{"seq", 10}, {"type", "Stop"}, {"at", 100},
+        {"detail", QString("A long response paragraph.\n\n").repeated(90)}}}}};
+    file.write("#!/usr/bin/env python3\nimport json\nprint(" + QJsonDocument(QJsonArray{QString::fromUtf8(QJsonDocument(details).toJson(QJsonDocument::Compact))}).toJson(QJsonDocument::Compact) + "[0])\n");
+    file.close(); QVERIFY(file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+    SessionsWindow window(fixture); window.setFleet(state); window.show(); window.findChild<QPushButton *>("brandMark")->click();
+    QSignalSpy seen(&window, &SessionsWindow::replyViewed);
+    auto *list = window.findChild<SessionList *>("sessionList");
+    const auto row = [&]() -> QListWidgetItem * { for (int i = 0; i < list->count(); ++i) if (list->item(i)->data(SessionRoles::Identity).toString() == org.observe("arch", session.name, session.runId)) return list->item(i); return nullptr; };
+    QVERIFY(row()); QVERIFY(row()->data(SessionRoles::Unread).toBool()); QVERIFY(row()->isHidden());
+    for (int i = 0; i < list->count(); ++i) if (list->item(i)->data(SessionRoles::Header).toBool() && list->item(i)->data(SessionRoles::Group) == group)
+        QCOMPARE(list->item(i)->data(SessionRoles::Unread).toInt(), 1);
+    auto *dash = window.findChild<DashboardPage *>(); QVERIFY(dash->findChild<QPushButton *>("dashboardAttention")->text().startsWith("2"));
+    window.showSession({}, session.name); window.hide(); QTest::qWait(1650); QCOMPARE(seen.size(), 0);
+    window.show(); window.activateWindow(); QApplication::setActiveWindow(&window);
+    auto *activity = window.findChild<ActivityView *>("mainActivity"); auto *scroll = activity->browser()->verticalScrollBar();
+    QTRY_VERIFY(scroll->maximum() > 0); scroll->setValue(0); QTest::qWait(1650); QCOMPARE(seen.size(), 0);
+    // A result loaded behind another app is still unread.
+    QWidget other; other.show(); other.activateWindow(); QApplication::setActiveWindow(&other);
+    activity->jumpToLatest(); QTest::qWait(1650); QCOMPARE(seen.size(), 0); other.hide();
+    window.activateWindow(); QApplication::setActiveWindow(&window);
+    for (auto *button : window.findChildren<QPushButton *>()) if (button->property("filter") == "attention") button->click();
+    QTRY_COMPARE_WITH_TIMEOUT(seen.size(), 1, 3500);
+    QCOMPARE(seen[0], QVariantList({QString(), session.name, session.conversationId, session.replyId}));
+    QVERIFY(row()); QVERIFY(!row()->data(SessionRoles::Unread).toBool());
+    QCOMPARE(list->currentItem()->data(SessionRoles::Identity), row()->data(SessionRoles::Identity));
+    QVERIFY(state.markReplyRead({}, session.name, session.conversationId, session.replyId));
+    window.setFleet(state); QVERIFY(!row()->data(SessionRoles::Unread).toBool());
+    window.hide(); box.sessions[0].replyId = "11:101"; state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    window.show(); window.findChild<QPushButton *>("brandMark")->click();
+    QVERIFY(row()->data(SessionRoles::Unread).toBool());
+    // A previous unread reply must not hide the next turn's live activity.
+    box.sessions[0].activity = "busy"; box.sessions[0].phase = "tool";
+    box.sessions[0].activitySummary = "Bash"; box.sessions[0].activityDetail = "Check the next deployment";
+    state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    QVERIFY(row()->data(SessionRoles::Unread).toBool()); QVERIFY(row()->data(SessionRoles::Working).toBool());
+    QCOMPARE(row()->data(SessionRoles::Detail).toString(), QString("Bash: Check the next deployment"));
+    QVERIFY(window.findChild<QLabel *>("listSummary")->text().contains("1 working"));
+}
+
+void TestSessionsWindow::markAllReadIgnoresFiltersAndKeepsCurrentDraft()
+{
+    auto state = fleet(); auto box = state.local();
+    for (int i : {0, 1, 2}) {
+        box.sessions[i].conversationId = QString("bulk-%1").arg(i); box.sessions[i].replyId = "10:100";
+    }
+    state.setLocal(box, QDateTime::currentMSecsSinceEpoch());
+    auto remote = *state.peer("mac"); remote.sessions[0].conversationId = "bulk-remote"; remote.sessions[0].replyId = "20:200";
+    state.setPeer(remote, QDateTime::currentMSecsSinceEpoch());
+    remote.host = "sleeping"; state.setPeer(remote, 0); remote.ok = false; state.setPeer(remote, 1);
+    SessionOrganization org; const auto group = org.createGroup("Collapsed");
+    org.moveSession(org.observe("arch", box.sessions[1].name, box.sessions[1].runId), group); org.setCollapsed(group, true);
+    QSettings().setValue("workspace/organization", QJsonDocument(org.toJson()).toJson(QJsonDocument::Compact));
+    SessionsWindow window(script()); window.setFleet(state); window.show(); window.showSession({}, box.sessions[0].name);
+    window.findChild<MachineFilter *>()->setSelection({"@local"});
+    for (auto *button : window.findChildren<QPushButton *>()) if (button->property("filter") == "attention") button->click();
+    auto *composer = window.findChild<MessageComposer *>("messageComposer"); composer->editor()->setPlainText("Keep this draft");
+    auto *list = window.findChild<SessionList *>("sessionList"); const auto selectedKey = list->currentItem()->data(SessionRoles::Key);
+    auto *action = window.findChild<QAction *>("markAllSessionsRead"); QVERIFY(action); QVERIFY(action->isEnabled());
+    QVERIFY(action->text().contains("(5)"));
+    auto *context = window.findChild<QMenu *>("sessionProjectsMenu"); QVERIFY(context); QVERIFY(context->actions().contains(action));
+    auto *batch = window.findChild<QPushButton *>("batchActions")->menu(); QMetaObject::invokeMethod(batch, "aboutToShow");
+    QVERIFY(batch->actions().contains(action));
+    QSignalSpy seen(&window, &SessionsWindow::repliesMarkedRead);
+    QSignalSpy writes(window.findChild<HgsClient *>(), &HgsClient::writeDone);
+    // Model the root's persisted read state and its next regular fleet update.
+    connect(&window, &SessionsWindow::repliesMarkedRead, &window, [&](const QJsonObject &replies) {
+        QCOMPARE(state.markRepliesRead(replies), replies.size());
+        QSettings().setValue("attention/readReplies", QJsonDocument(state.readReplies()).toJson(QJsonDocument::Compact));
+        window.setFleet(state);
+    });
+    action->trigger(); QCOMPARE(seen.size(), 1); QCOMPARE(seen[0][0].toJsonObject().size(), 5);
+    QVERIFY(!action->isEnabled()); QVERIFY(state.unreadReplies().isEmpty()); QCOMPARE(writes.size(), 0);
+    QCOMPARE(list->currentItem()->data(SessionRoles::Key), selectedKey); QCOMPARE(composer->editor()->toPlainText(), QString("Keep this draft"));
+    QVERIFY(window.findChild<DashboardPage *>()->findChild<QPushButton *>("dashboardAttention")->text().startsWith("1"));
+    window.findChild<MachineFilter *>()->setSelection({});
+    window.findChild<QLineEdit *>("search")->setText("review");
+    QCOMPARE(window.findChild<QListWidget *>("searchResults")->count(), 1); // The real approval still needs attention.
+    FleetState restarted; restarted.setReadReplies(QJsonDocument::fromJson(QSettings().value("attention/readReplies").toByteArray()).object());
+    restarted.setLocal(box, QDateTime::currentMSecsSinceEpoch()); QVERIFY(restarted.unreadReplies().isEmpty());
+    box.sessions[0].replyId = "11:101"; state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    QVERIFY(action->isEnabled()); QVERIFY(action->text().contains("(1)")); // Even when that session is hidden by search.
+    action->trigger(); QCOMPARE(seen.size(), 2); QCOMPARE(seen[1][0].toJsonObject().size(), 1); QVERIFY(!action->isEnabled());
+    QSettings().remove("attention/readReplies");
+}
+
+void TestSessionsWindow::compactWorkspaceGeometry()
+{
+    SessionsWindow window(script()); window.setFleet(fleet()); window.resize(960, 650); window.show(); QTest::qWait(30);
+    window.showSession({}, "codex/hgs/dashboard");
+    const auto *sidebar = window.findChild<QWidget *>("sidebar"); QCOMPARE(sidebar->width(), 56);
+    for (const auto *button : sidebar->findChildren<QPushButton *>("railButton")) {
+        QVERIFY(button->height() >= 44); QCOMPARE(button->iconSize(), QSize(24, 24));
+    }
+    const auto *search = window.findChild<QLineEdit *>("search"); const auto *list = window.findChild<QListWidget *>("sessionList");
+    QVERIFY(qAbs(search->width() - list->width()) < 8);
+    const auto *tabs = window.findChild<QTabWidget *>("sessionDetailTabs");
+    QVERIFY2(tabs->mapTo(&window, QPoint()).y() < 100, "Normal session header must leave the workspace near the top");
+    QVERIFY(tabs->height() > 500);
+    QVERIFY(window.findChild<QPushButton *>("pauseAction")->toolTip().contains("Pause"));
+    QVERIFY(window.findChild<QLabel *>("sessionMeta")->toolTip().contains("gpt-6.1-sol"));
+}
+
+void TestSessionsWindow::accountUsageRejectsOtherSessionReplies()
+{
+    SessionsWindow window(script());window.setFleet(fleet());window.show();window.showSession({},"codex/hgs/dashboard");
+    auto *client=window.findChild<AccountUsageStore *>()->findChild<HgsClient *>();auto *usage=window.findChild<QPushButton *>("sessionAccountUsage");
+    const QJsonObject first{{"id","native-codex"},{"identity",QJsonObject{{"email","first@example.test"}}},{"status","ok"}};
+    auto *refresh=static_cast<AccountUsage::RefreshButton *>(window.findChild<QPushButton *>("sessionUsageRefresh"));
+    QVERIFY(refresh->isRefreshing());QVERIFY(!refresh->isEnabled());
+    client->accountsReady(1,{},first);QVERIFY(usage->toolTip().contains("first@example.test"));QVERIFY(!refresh->isRefreshing());QVERIFY(refresh->isEnabled());
+    window.showSession("mac","claude/infra/review");QVERIFY(!usage->toolTip().contains("first@example.test"));
+    client->accountsReady(1,{},first);QVERIFY(!usage->toolTip().contains("first@example.test"));
+    const QJsonObject second{{"id","native-claude"},{"identity",QJsonObject{{"email","second@example.test"}}},{"status","ok"}};
+    client->accountsReady(2,"mac",second);QVERIFY(usage->toolTip().contains("second@example.test"));
+    refresh->click();QVERIFY(refresh->isRefreshing());QVERIFY(!refresh->isEnabled());QVERIFY(usage->toolTip().contains("second@example.test"));
+    client->accountsFailed(3,"mac","offline");QVERIFY(!refresh->isRefreshing());QVERIFY(refresh->isEnabled());QVERIFY(usage->toolTip().contains("second@example.test"));
+}
+
+void TestSessionsWindow::separatesConversationProcessAndTerminal()
+{
+    SessionInfo session; session.tracked = true; session.state = "running";
+    session.activity = "unknown"; session.phase = "unknown";
+    session.processState = "running"; session.conversationState = "ended";
+    QCOMPARE(SessionsWindow::status(session), QString("Status unknown"));
+    session.activity = "idle";
+    QCOMPARE(SessionsWindow::status(session), QString("Ready"));
+    session.processState = "exited";
+    QCOMPARE(SessionsWindow::status(session), QString("Agent exited"));
+    session.state = "stopped";
+    QCOMPARE(SessionsWindow::status(session), QString("Stopped"));
+    session.state = "paused";
+    QCOMPARE(SessionsWindow::status(session), QString("Paused"));
+    QCOMPARE(SessionsWindow::status(session, false), QString("Offline"));
+}
+
+void TestSessionsWindow::attentionNavigationResetsFiltersAndTab()
+{
+    SessionsWindow window(script()); window.setFleet(fleet()); window.show();
+    auto *search = window.findChild<QLineEdit *>("search"); QVERIFY(search);
+    search->setText("does-not-match");
+    auto *tabs = window.findChild<QTabWidget *>("sessionDetailTabs"); QVERIFY(tabs);
+    tabs->setCurrentIndex(1);
+    window.showProjects("mac");
+    window.showAttentionSession("mac", "claude/infra/review");
+    QCOMPARE(tabs->currentIndex(), 0); QVERIFY(search->text().isEmpty());
+    auto *list = window.findChild<QListWidget *>("sessionList"); QVERIFY(list->currentItem());
+    QCOMPARE(list->currentItem()->data(Qt::UserRole).toString(), QString("mac\nclaude/infra/review"));
+    QVERIFY(list->isVisible());
+}
+
+void TestSessionsWindow::backgroundPollKeepsActivityAndComposerStable()
+{
+    class StyleCounter : public QObject {
+    public:
+        int changes = 0;
+        bool eventFilter(QObject *, QEvent *event) override {
+            if (event->type() == QEvent::StyleChange) ++changes;
+            return false;
+        }
+    } styles;
+    SessionsWindow window(script()); window.setFleet(fleet()); window.show();
+    auto *client = window.findChild<HgsClient *>(); QSignalSpy inspections(client, &HgsClient::inspectionReady);
+    window.showSession({}, "codex/hgs/dashboard"); QTRY_VERIFY(!inspections.isEmpty());
+    QJsonArray events;
+    for (int i = 1; i <= 24; ++i) events.append(QJsonObject{{"seq", i}, {"at", 1791018000 + i},
+        {"type", i % 2 ? "UserPromptSubmit" : "Stop"}, {"detail", QString("Persistent message %1\n\nText to keep visible during a background update.").arg(i)}});
+    QJsonObject details{{"tracked", true}, {"conversation_id", "conversation-one"}, {"run_id", "run-one"},
+        {"activity", "busy"}, {"phase", "working"}, {"last_event_at", 1791018024}, {"cursor", 24}, {"events", events}};
+    client->inspectionReady({}, "codex/hgs/dashboard", details);
+    auto *activity = window.findChild<ActivityView *>("mainActivity"); QVERIFY(activity); auto *browser = activity->browser();
+    auto *composer = window.findChild<MessageComposer *>("messageComposer"); QVERIFY(composer);
+    composer->editor()->setPlainText("Unsent draft");
+    QTest::qWait(30);
+    auto selection = browser->document()->find("Persistent message 1"); browser->setTextCursor(selection);
+    browser->verticalScrollBar()->setValue(0); QTest::qWait(20);
+    const auto text = browser->textCursor().selectedText(); QVERIFY(!text.isEmpty());
+    const auto geometry = browser->geometry(); const int scroll = browser->verticalScrollBar()->value();
+    const int revision = browser->document()->revision();
+    window.findChild<QLabel *>("badge")->installEventFilter(&styles);
+    composer->findChild<QLabel *>("messageStatus")->installEventFilter(&styles);
+    details["events"] = QJsonArray();
+    for (int i = 0; i < 4; ++i) {
+        window.setConnectionError({}); window.setFleet(fleet());
+        details["updated"] = 1791018025 + i; client->inspectionReady({}, "codex/hgs/dashboard", details);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+        QCOMPARE(browser->document()->revision(), revision);
+        QCOMPARE(browser->geometry(), geometry); QCOMPARE(browser->verticalScrollBar()->value(), scroll);
+        QCOMPARE(browser->textCursor().selectedText(), text); QCOMPARE(composer->editor()->toPlainText(), QString("Unsent draft"));
+    }
+    QCOMPARE(styles.changes, 0);
+    details["cursor"] = 25;
+    details["events"] = QJsonArray{QJsonObject{{"seq", 25}, {"at", 1791018025}, {"type", "AgentMessage"}, {"detail", "A new live response"}}};
+    client->inspectionReady({}, "codex/hgs/dashboard", details);
+    QVERIFY(browser->updatesEnabled()); QVERIFY(browser->toPlainText().contains("A new live response"));
+    QCOMPARE(browser->textCursor().selectedText(), text); QCOMPARE(browser->verticalScrollBar()->value(), scroll);
+    QCOMPARE(composer->editor()->toPlainText(), QString("Unsent draft"));
+}
+
+void TestSessionsWindow::recoveryCountdownKeepsHistoryDraftAndFocus()
+{
+    SessionsWindow window(script()); window.resize(1280,900); window.setFleet(fleet()); window.show();
+    auto *client=window.findChild<HgsClient *>(); QSignalSpy inspections(client,&HgsClient::inspectionReady);
+    window.showSession({},"codex/hgs/dashboard");QTRY_VERIFY(!inspections.isEmpty());
+    const auto at=QDateTime::currentMSecsSinceEpoch()/1000.0;
+    QJsonObject job{{"id","episode"},{"name","codex/hgs/dashboard"},{"state","waiting"},{"action","continue_message"},
+        {"due_at",at+20},{"attempt",0},{"delays",QJsonArray{15,30,60,300}},
+        {"history",QJsonArray{QJsonObject{{"at",at},{"state","waiting"},{"attempt",0}}}}};
+    QJsonObject details{{"tracked",true},{"conversation_id","conversation-one"},{"run_id","run-one"},
+        {"activity","attention"},{"phase","error"},{"last_event_at",at},{"cursor",1},{"recovery",job},
+        {"events",QJsonArray{QJsonObject{{"seq",1},{"at",at},{"type","StopFailure"},{"detail","503 Service unavailable"}}}}};
+    client->inspectionReady({},"codex/hgs/dashboard",details);
+    auto *browser=window.findChild<ActivityView *>("mainActivity")->browser();
+    auto *editor=window.findChild<MessageComposer *>("messageComposer")->editor();
+    auto *panel=window.findChild<QFrame *>("recoveryPanel");QVERIFY(panel->isVisible());
+    editor->setPlainText("Keep my draft");window.activateWindow();editor->setFocus();QTRY_VERIFY(editor->hasFocus());
+    QTest::qWait(30);const int revision=browser->document()->revision();const auto geometry=browser->geometry();
+    QTest::qWait(1100);
+    QVERIFY(editor->hasFocus());QCOMPARE(editor->toPlainText(),QString("Keep my draft"));
+    QCOMPARE(browser->document()->revision(),revision);QCOMPARE(browser->geometry(),geometry);
+    QVERIFY(panel->findChild<QPushButton *>("recoveryNow")->isEnabled());
+    const auto preview=qEnvironmentVariable("HGS_RECOVERY_PREVIEW");
+    if(!preview.isEmpty()){QDir().mkpath(preview);QVERIFY(window.grab().save(preview+"/activity.png"));}
+    QTimer::singleShot(0,&window,[&]{
+        auto *dialog=qobject_cast<QDialog *>(QApplication::activeModalWidget());QVERIFY(dialog);
+        auto *history=dialog->findChild<QPlainTextEdit *>();QVERIFY(history);QVERIFY(history->toPlainText().contains("Retry scheduled"));dialog->reject();
+    });
+    panel->findChild<QPushButton *>("recoveryHistory")->click();
+    window.activateWindow();QTest::qWait(20);
+    details["events"]=QJsonArray();job["state"]="cancelled";job["reason"]="Cancelled by you";details["recovery"]=job;
+    panel->findChild<QPushButton *>("recoveryNow")->setFocus();
+    QTRY_VERIFY(panel->findChild<QPushButton *>("recoveryNow")->hasFocus());
+    client->inspectionReady({},"codex/hgs/dashboard",details);
+    QVERIFY(panel->hasFocus());QVERIFY(!panel->findChild<QPushButton *>("recoveryNow")->isVisible());
+    job["state"]="succeeded";details["recovery"]=job;client->inspectionReady({},"codex/hgs/dashboard",details);
+    QVERIFY(!panel->isVisible());QVERIFY(editor->hasFocus());QCOMPARE(editor->toPlainText(),QString("Keep my draft"));
+}
+
+void TestSessionsWindow::coldCacheConfirmationPreservesDraftAndPinsConversation()
+{
+    const auto program=m_dir.filePath("cache-hgs"),capture=m_dir.filePath("cache-send.json");
+    QFile fixture(program);QVERIFY(fixture.open(QIODevice::WriteOnly));
+    fixture.write("#!/usr/bin/env python3\nimport sys,json\na=sys.argv[1:]\nif a[0].startswith('@'):a=a[1:]\nif a[0]=='send':\n p=json.load(sys.stdin)\n open("+QJsonDocument(QJsonArray{capture}).toJson(QJsonDocument::Compact)+"[0],'w').write(json.dumps(p))\n print(json.dumps(dict(status='submitted',request_id=p['request_id'],name=a[1],run_id=p['expected_run_id'],conversation_id=p['expected_conversation_id'])))\nelse:print('{}')\n");
+    fixture.close();QVERIFY(fixture.setPermissions(QFileDevice::ReadOwner|QFileDevice::WriteOwner|QFileDevice::ExeOwner));
+    SessionsWindow window(program);window.setFleet(fleet());window.show();window.showSession({},"codex/hgs/dashboard");
+    QTest::qWait(100);auto *client=window.findChild<HgsClient *>();
+    QJsonObject details{{"tracked",true},{"run_id","run-cache"},{"conversation_id","conversation-cache"},{"runtime_state","live"},{"process_state","running"},
+        {"activity","idle"},{"phase","idle"},{"cache_hint",QJsonObject{{"status","cold"},{"tokens",756000}}}};
+    client->inspectionReady({},"codex/hgs/dashboard",details);
+    auto *composer=window.findChild<MessageComposer *>("messageComposer");auto *send=composer->findChild<QPushButton *>("sendMessage");
+    composer->editor()->setPlainText("Preserve this draft");QVERIFY(send->isEnabled());
+    bool shown=false;QTimer::singleShot(0,&window,[&]{auto *dialog=window.findChild<QMessageBox *>("coldCacheConfirm");shown=dialog!=nullptr;if(dialog)dialog->button(QMessageBox::Cancel)->click();});
+    send->click();QVERIFY(shown);QVERIFY(!QFileInfo::exists(capture));QCOMPARE(composer->editor()->toPlainText(),QString("Preserve this draft"));
+    QTimer::singleShot(0,&window,[&]{details["conversation_id"]="conversation-new";client->inspectionReady({},"codex/hgs/dashboard",details);auto *dialog=window.findChild<QMessageBox *>("coldCacheConfirm");for(auto *b:dialog->buttons())if(dialog->buttonRole(b)==QMessageBox::AcceptRole)b->click();});
+    send->click();QVERIFY(!QFileInfo::exists(capture));QCOMPARE(composer->editor()->toPlainText(),QString("Preserve this draft"));
+    QTimer::singleShot(0,&window,[&]{auto *dialog=window.findChild<QMessageBox *>("coldCacheConfirm");for(auto *b:dialog->buttons())if(dialog->buttonRole(b)==QMessageBox::AcceptRole)b->click();});
+    send->click();QTRY_VERIFY(QFileInfo::exists(capture));QFile sent(capture);QVERIFY(sent.open(QIODevice::ReadOnly));
+    const auto payload=QJsonDocument::fromJson(sent.readAll()).object();QCOMPARE(payload["expected_conversation_id"].toString(),QString("conversation-new"));QCOMPARE(payload["text"].toString(),QString("Preserve this draft"));
+}
+
+void TestSessionsWindow::coldCacheClearKeepsDraftAndPinsIdentity()
+{
+    QTemporaryDir temp;const auto program=temp.filePath("hgs"),capture=temp.filePath("clear.json");
+    QFile fixture(program);QVERIFY(fixture.open(QIODevice::WriteOnly));
+    fixture.write(R"PY(#!/usr/bin/env python3
+import sys,json,pathlib,time
+root=pathlib.Path(__file__).parent
+args=sys.argv[1:]
+if 'clear-context' in args:
+ p=json.load(sys.stdin);p['args']=args;(root/'clear.json').write_text(json.dumps(p));time.sleep(.2);print(json.dumps(dict(request_id=p['request_id'],name=args[2],run_id=p['expected_run_id'],conversation_id=p['expected_conversation_id'],status='confirmed')))
+elif 'inspect' in args: print((root/'details.json').read_text() if (root/'details.json').exists() else '{}')
+else: print('{}')
+)PY");fixture.close();fixture.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner);
+    SessionsWindow window(program);window.resize(1080,760);window.setFleet(fleet());window.show();window.showSession("mac","claude/infra/review");QTest::qWait(150);
+    auto *client=window.findChild<HgsClient *>();
+    QJsonObject details{{"tracked",true},{"run_id","run-one"},{"phase","idle"},{"activity","idle"},{"runtime_state","live"},{"process_state","running"},
+        {"conversation_id","conversation-one"},{"clear_context_supported",true},{"cache_hint",QJsonObject{{"status","cold"},{"tokens",756000}}}};
+    const auto applyDetails=[&]{QFile data(temp.filePath("details.json"));QVERIFY(data.open(QIODevice::WriteOnly));data.write(QJsonDocument(details).toJson());data.close();client->inspectionReady("mac","claude/infra/review",details);};
+    applyDetails();
+    auto *composer=window.findChild<MessageComposer *>("messageComposer");composer->editor()->setPlainText("Keep this draft");
+    auto *clear=window.findChild<QPushButton *>("clearContextFromCache");QVERIFY(clear->isVisible());QVERIFY(clear->isEnabled());QCOMPARE(clear->text(),QString("Clear context"));
+    QSignalSpy launched(&window,&SessionsWindow::newSessionRequested);QSignalSpy finished(client,&HgsClient::sessionActionFinished);
+    const auto confirmClear=[&]{QTimer::singleShot(0,&window,[&]{
+        auto *dialog=window.findChild<QMessageBox *>("clearSessionConfirm");QVERIFY(dialog);
+        QCOMPARE(dialog->defaultButton(),dialog->button(QMessageBox::Cancel));
+        QCOMPARE(dialog->escapeButton(),dialog->button(QMessageBox::Cancel));
+        QVERIFY(dialog->text().contains("claude/infra/review"));QVERIFY(dialog->text().contains("mac"));QVERIFY(dialog->text().contains("draft"));
+        for(auto *button:dialog->buttons())if(dialog->buttonRole(button)==QMessageBox::DestructiveRole){button->click();return;}QFAIL("Missing clear confirmation");
+    });};
+    QTimer::singleShot(0,&window,[&]{auto *dialog=window.findChild<QMessageBox *>("clearSessionConfirm");QVERIFY(dialog);dialog->button(QMessageBox::Cancel)->click();});
+    clear->click();QVERIFY(!QFileInfo::exists(capture));QCOMPARE(composer->editor()->toPlainText(),QString("Keep this draft"));
+    QTimer::singleShot(0,&window,[&]{details["conversation_id"]="changed";applyDetails();});confirmClear();
+    clear->click();QVERIFY(!QFileInfo::exists(capture));details["conversation_id"]="conversation-one";applyDetails();
+    confirmClear();clear->click();QVERIFY(!clear->isEnabled());QTRY_VERIFY(QFileInfo::exists(capture));
+    QFile sent(capture);QVERIFY(sent.open(QIODevice::ReadOnly));const auto payload=QJsonDocument::fromJson(sent.readAll()).object();sent.close();
+    QCOMPARE(payload["expected_run_id"].toString(),QString("run-one"));QCOMPARE(payload["expected_conversation_id"].toString(),QString("conversation-one"));
+    QCOMPARE(payload["args"].toArray(),QJsonArray({"@mac","clear-context","claude/infra/review","--json"}));
+    QCOMPARE(composer->editor()->toPlainText(),QString("Keep this draft"));QVERIFY(!window.findChild<NewSessionDialog *>());QCOMPARE(launched.size(),0);
+    QTRY_COMPARE(finished.size(),1);QVERIFY(finished[0][1].toBool());QVERIFY(QFile::remove(capture));applyDetails();
+    // The send warning offers the same reset, without sending the draft.
+    QTimer::singleShot(0,&window,[&]{auto *dialog=window.findChild<QMessageBox *>("coldCacheConfirm");QVERIFY(dialog);QVERIFY(dialog->text().contains("token usage"));
+        for(auto *button:dialog->buttons())if(button->text()=="Clear context"){confirmClear();button->click();return;}QFAIL("Missing clear option");});
+    composer->findChild<QPushButton *>("sendMessage")->click();QTRY_VERIFY(QFileInfo::exists(capture));QCOMPARE(composer->editor()->toPlainText(),QString("Keep this draft"));
+    QTRY_COMPARE(finished.size(),2);QVERIFY(QFile::remove(capture));
+    // The permanent Details action works with Terminal selected and a warm cache.
+    details.remove("cache_hint");applyDetails();
+    window.findChild<QPushButton *>("toggleInspector")->setChecked(true);
+    auto *inspector=window.findChild<QTabWidget *>("sessionInspector");inspector->setCurrentIndex(1);
+    auto *tabs=window.findChild<QTabWidget *>("sessionDetailTabs");tabs->setCurrentIndex(1);QTest::qWait(30);
+    auto *detailsClear=window.findChild<QPushButton *>("clearSessionFromDetails");QVERIFY(detailsClear->isVisible());QVERIFY(detailsClear->isEnabled());
+    QTimer::singleShot(0,&window,[&]{auto *dialog=window.findChild<QMessageBox *>("clearSessionConfirm");QVERIFY(dialog);dialog->button(QMessageBox::Cancel)->click();});
+    detailsClear->click();QVERIFY(!QFileInfo::exists(capture));QCOMPARE(tabs->currentIndex(),1);
+    QTimer::singleShot(0,&window,[&]{details["run_id"]="new-run";applyDetails();});confirmClear();
+    detailsClear->click();QVERIFY(!QFileInfo::exists(capture));
+    // Drain an inspection started before the simulated run change, then obtain
+    // a fresh snapshot. A stale reply arriving inside the next dialog must
+    // correctly cancel it, so it cannot be part of the successful-send case.
+    QSignalSpy inspections(client,&HgsClient::inspectionReady);
+    bool inspectionStarted=false;
+    QTRY_VERIFY((inspectionStarted=inspectionStarted || client->requestInspection("mac","claude/infra/review")));
+    QTRY_VERIFY(std::any_of(inspections.cbegin(),inspections.cend(),[](const QList<QVariant> &args){return args[2].toJsonObject()["run_id"]=="new-run";}));
+    confirmClear();detailsClear->click();QTRY_VERIFY(QFileInfo::exists(capture));QCOMPARE(tabs->currentIndex(),1);
+    QCOMPARE(composer->editor()->toPlainText(),QString("Keep this draft"));QCOMPARE(launched.size(),0);
+    QTRY_COMPARE(finished.size(),3);tabs->setCurrentIndex(0);window.findChild<QPushButton *>("toggleInspector")->setChecked(false);
+    QTest::qWait(350);details["phase"]="compacting";details["activity"]="busy";details["clear_context_supported"]=false;details.remove("cache_hint");details["session_usage"]=QJsonObject{{"status","ok"},{"context",QJsonObject{{"used",215900},{"limit",258400}}}};
+    applyDetails();QTest::qWait(50);
+    auto *progress=window.findChild<ActivityView *>("mainActivity")->compactionIndicator();auto *context=window.findChild<QWidget *>("activityContext");
+    QVERIFY(progress->isVisible());QVERIFY(qAbs(progress->mapToGlobal(progress->rect().center()).y()-context->mapToGlobal(context->rect().center()).y())<=2);
+    const auto preview=qEnvironmentVariable("HGS_WORKTREE_PREVIEW");if(!preview.isEmpty()){QDir().mkpath(preview);QVERIFY(window.grab().save(preview+"/compaction-footer.png"));}
+}
+
+void TestSessionsWindow::processPollingFollowsVisibilityAndSettings()
+{
+    QTemporaryDir temp;const auto program=temp.filePath("hgs");QFile fixture(program);QVERIFY(fixture.open(QIODevice::WriteOnly));
+    fixture.write(R"PY(#!/usr/bin/env python3
+import sys,json,pathlib
+root=pathlib.Path(__file__).parent
+a=sys.argv[1:]
+if a and a[0].startswith('@'):a=a[1:]
+if a and a[0]=='inspect':
+ with (root/'inspections.jsonl').open('a') as f:f.write(json.dumps(a)+'\n')
+ value=dict(tracked=True,run_id='run',conversation_id='conversation',activity='idle',phase='idle',events=[],cursor=0)
+ if '--skip-processes' not in a:value['processes']=dict(active_count=1,items=[dict(id='job',command='sleep 300',status='running',owner='main',capabilities=dict(output=False,stop=False))])
+ print(json.dumps(value))
+else:print('{}')
+)PY");fixture.close();fixture.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner);
+    SessionsWindow window(program);window.setFleet(fleet());window.show();window.showSession({},"codex/hgs/dashboard");
+    auto log=[&]{QList<QJsonArray> result;QFile file(temp.filePath("inspections.jsonl"));if(file.open(QIODevice::ReadOnly))while(!file.atEnd())result<<QJsonDocument::fromJson(file.readLine()).array();return result;};
+    auto *tabs=window.findChild<QTabWidget *>("sessionDetailTabs");QVERIFY(tabs);
+    QTRY_VERIFY(!log().isEmpty());QTest::qWait(200);
+    QVERIFY(!tabs->isTabVisible(3));for(const auto &call:log())QVERIFY(call.contains("--skip-processes"));
+    auto *settings=window.findChild<QWidget *>("settingsPage");
+    settings->findChild<QDoubleSpinBox *>("activeSeconds")->setValue(1);
+    settings->findChild<QDoubleSpinBox *>("backgroundSeconds")->setValue(5);
+    QCOMPARE(QSettings().value("processes/activeSeconds").toDouble(),1.);
+    const auto before=log().size();QTRY_VERIFY_WITH_TIMEOUT(log().size()>before,3500);
+    QVERIFY(log().last().contains("--skip-processes"));QCOMPARE(tabs->tabText(3),QString("Processes"));
+    auto *enabled=settings->findChild<QCheckBox *>("processesEnabled");QVERIFY(enabled);enabled->setChecked(true);QVERIFY(tabs->isTabVisible(3));
+    tabs->setCurrentIndex(3);QTRY_VERIFY(!log().last().contains("--skip-processes"));
+    const auto active=log().size();QTRY_VERIFY_WITH_TIMEOUT(log().size()>active,1800);QVERIFY(!log().last().contains("--skip-processes"));
+    tabs->setCurrentIndex(1);QTest::qWait(200);const auto terminal=log().size();QTest::qWait(2800);QCOMPARE(log().size(),terminal);
+    for(const auto &call:log())QCOMPARE(call[1].toString(),QString("codex/hgs/dashboard"));
+    tabs->setCurrentIndex(0);QTRY_VERIFY(log().size()>terminal); // Activity refreshes immediately on return.
+    tabs->setCurrentIndex(3);QTest::qWait(200);enabled->setChecked(false);QVERIFY(!tabs->isTabVisible(3));QCOMPARE(tabs->currentIndex(),0);
+    QTest::qWait(200);const auto disabled=log().size();QTest::qWait(5600);
+    QVERIFY(log().size()>disabled);for(const auto &call:log().sliced(disabled))QVERIFY(call.contains("--skip-processes"));
+    window.hide();QTest::qWait(200);const auto hidden=log().size();QTest::qWait(2800);QCOMPARE(log().size(),hidden);
+}
+
+void TestSessionsWindow::coldCacheCompactWaitsForSuccess_data()
+{
+    QTest::addColumn<QString>("outcome");
+    for (const auto &value:{"completed","failed","cancelled","unchanged","draft","identity","cancel"}) QTest::newRow(value)<<QString(value);
+}
+void TestSessionsWindow::coldCacheCompactWaitsForSuccess()
+{
+    QFETCH(QString,outcome);
+    QTemporaryDir temp;const auto program=temp.filePath("hgs");QFile fixture(program);QVERIFY(fixture.open(QIODevice::WriteOnly));
+    fixture.write(R"PY(#!/usr/bin/env python3
+import sys,json,pathlib
+root=pathlib.Path(__file__).parent
+a=sys.argv[1:]
+if a[0].startswith('@'):a=a[1:]
+if a[0] in ['compact-context','send']:
+ p=json.load(sys.stdin);(root/(a[0]+'.json')).write_text(json.dumps(p))
+ print(json.dumps(dict(request_id=p['request_id'],name=a[1],run_id=p['expected_run_id'],conversation_id=p['expected_conversation_id'],status='submitted')))
+elif a[0]=='inspect':print((root/'details.json').read_text() if (root/'details.json').exists() else '{}')
+else:print('{}')
+)PY");fixture.close();fixture.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner);
+    QJsonObject details{{"tracked",true},{"run_id","run-one"},{"conversation_id","conversation-one"},{"activity","idle"},{"phase","idle"},
+        {"runtime_state","live"},{"process_state","running"},{"compact_context_supported",true},{"cache_hint",QJsonObject{{"status","cold"},{"tokens",756000}}}};
+    {QFile initial(temp.filePath("details.json"));QVERIFY(initial.open(QIODevice::WriteOnly));initial.write(QJsonDocument(details).toJson());}
+    SessionsWindow window(program);window.setFleet(fleet());window.show();window.showSession("mac","claude/infra/review");QTest::qWait(100);
+    auto *client=window.findChild<HgsClient *>();
+    const auto apply=[&]{QFile data(temp.filePath("details.json"));QVERIFY(data.open(QIODevice::WriteOnly));data.write(QJsonDocument(details).toJson());data.close();client->inspectionReady("mac","claude/infra/review",details);};apply();
+    auto *composer=window.findChild<MessageComposer *>("messageComposer");composer->editor()->setPlainText("Keep until compacted");
+    QSignalSpy finished(client,&HgsClient::sessionActionFinished);
+    QTimer::singleShot(0,&window,[&]{auto *dialog=window.findChild<QMessageBox *>("coldCacheConfirm");QVERIFY(dialog);
+        for(auto *button:dialog->buttons())if(button->text()=="Compact and continue"){QVERIFY(button->isEnabled());button->click();return;}QFAIL("No compact option");});
+    QVERIFY(composer->findChild<QPushButton *>("sendMessage")->isEnabled());
+    composer->findChild<QPushButton *>("sendMessage")->click();QTRY_COMPARE(finished.size(),1);QVERIFY(finished[0][1].toBool());
+    QCOMPARE(composer->editor()->toPlainText(),QString("Keep until compacted"));QVERIFY(!QFileInfo::exists(temp.filePath("send.json")));
+    QFile request(temp.filePath("compact-context.json"));QVERIFY(request.open(QIODevice::ReadOnly));const auto payload=QJsonDocument::fromJson(request.readAll()).object();
+    const auto id=payload.value("request_id").toString();
+    details["compact_context_request"]=QJsonObject{{"request_id",id},{"status","compacting"}};details["activity"]="busy";details["phase"]="compacting";apply();
+    QVERIFY(window.findChild<QPushButton *>("cancelCompactSend")->isVisible());QVERIFY(window.findChild<QPushButton *>("cancelCompactSend")->height()<=24);QVERIFY(!QFileInfo::exists(temp.filePath("send.json")));
+    if(!qEnvironmentVariable("HGS_COMPACT_PREVIEW").isEmpty())QVERIFY(window.grab().save(qEnvironmentVariable("HGS_COMPACT_PREVIEW")));
+    if(outcome=="draft")composer->editor()->setPlainText("Edited draft");
+    if(outcome=="identity")details["conversation_id"]="another";
+    if(outcome=="cancel")window.findChild<QPushButton *>("cancelCompactSend")->click();
+    details["compact_context_request"]=QJsonObject{{"request_id",id},{"status",outcome=="draft"||outcome=="identity"||outcome=="cancel"?"completed":outcome}};
+    details["activity"]="idle";details["phase"]="idle";apply();
+    if(outcome=="completed") {
+        QTRY_VERIFY(QFileInfo::exists(temp.filePath("send.json")));QFile sent(temp.filePath("send.json"));QVERIFY(sent.open(QIODevice::ReadOnly));
+        const auto message=QJsonDocument::fromJson(sent.readAll()).object();QCOMPARE(message["text"].toString(),QString("Keep until compacted"));QCOMPARE(message["expected_compaction_id"].toString(),id);
+    } else {QTest::qWait(100);QVERIFY(!QFileInfo::exists(temp.filePath("send.json")));QCOMPARE(composer->editor()->toPlainText(),outcome=="draft"?QString("Edited draft"):QString("Keep until compacted"));}
+}
+
+void TestSessionsWindow::sharedRecoverySyncCatchesUpOfflinePeer()
+{
+    QTemporaryDir temp;const auto program=temp.filePath("sync-hgs");QFile fixture(program);QVERIFY(fixture.open(QIODevice::WriteOnly));
+    fixture.write(QByteArray("#!/usr/bin/env python3\n")+R"PY(import sys,json,pathlib
+root=pathlib.Path(__file__).parent
+args=sys.argv[1:];host='local'
+if args[0].startswith('@'):host=args.pop(0)[1:]
+if host=='mac' and (root/'offline').exists():sys.exit(1)
+path=root/(host+'.json')
+p=json.loads(path.read_text())
+def order(p):return [p['revision'],p['writer']]
+if args[1]=='sync':
+ incoming=json.load(sys.stdin)
+ if order(incoming)>order(p):p=incoming;path.write_text(json.dumps(p))
+print(json.dumps({'policy':p,'order':order(p)}))
+)PY");fixture.close();fixture.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner);
+    const QJsonObject latest{{"version",2},{"revision",4},{"writer","local-writer"},{"enabled",false},{"service",true},{"network",true},{"rate_limit",true},
+        {"delays",QJsonArray{15,30,-1}},{"schedules",QJsonObject{{"network",QJsonArray{5,0}}}}};
+    auto older=latest;older["revision"]=2;older["writer"]="peer";
+    for(const auto &host:QStringList{"local","mac"}){QFile file(temp.filePath(host+".json"));QVERIFY(file.open(QIODevice::WriteOnly));file.write(QJsonDocument(host=="local"?latest:older).toJson());}
+    QFile offline(temp.filePath("offline"));QVERIFY(offline.open(QIODevice::WriteOnly));offline.close();QSettings().remove("recovery/sharedPolicy");
+    QObject parent;RecoverySync sync(program,&parent);sync.setPeers({"mac"});QTRY_VERIFY(!sync.busy());
+    QCOMPARE(sync.envelope().value("policy").toObject(),latest);QVERIFY(sync.status().contains("mac"));
+    QVERIFY(QFile::remove(offline.fileName()));sync.refresh();QTRY_VERIFY(!sync.busy());
+    QFile remote(temp.filePath("mac.json"));QVERIFY(remote.open(QIODevice::ReadOnly));QCOMPARE(QJsonDocument::fromJson(remote.readAll()).object(),latest);remote.close();
+    auto newer=latest;newer["revision"]=5;newer["writer"]="remote-writer";newer["service"]=false;
+    QVERIFY(remote.open(QIODevice::WriteOnly));remote.write(QJsonDocument(newer).toJson());remote.close();sync.refresh();QTRY_VERIFY(!sync.busy());
+    QFile local(temp.filePath("local.json"));QVERIFY(local.open(QIODevice::ReadOnly));QCOMPARE(QJsonDocument::fromJson(local.readAll()).object(),newer);
+    sync.save(latest,{{"policy",latest},{"order",QJsonArray{4,"local-writer"}}});QVERIFY(sync.error().contains("another Zerus"));
+}
+
+void TestSessionsWindow::recoverySettingsValidateAndSaveForSelectedMachine()
+{
+    const auto program=m_dir.filePath("recovery-hgs"), capture=m_dir.filePath("recovery-policy.json");
+    QFile fixture(program); QVERIFY(fixture.open(QIODevice::WriteOnly));
+    fixture.write("#!/bin/sh\nif [ \"$1\" = '@mac' ]; then shift; fi\nif [ \"$1\" != 'recovery' ]; then exit 2; fi\n"
+                  "if [ \"$2\" = 'set' ]; then cat > '"+capture.toUtf8()+"'; fi\n"
+                  "echo '{\"order\":[7,\"writer\"],\"policy\":{\"version\":2,\"revision\":7,\"writer\":\"writer\",\"enabled\":false,\"enabled_at\":0,\"service\":true,\"network\":true,\"rate_limit\":true,\"delays\":[15,30,60,300]}}'\n");
+    fixture.close(); fixture.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner);
+    QSettings().remove("recovery/sharedPolicy");
+    QSettings().setValue("workspace/theme","dark");SessionsWindow window(program);window.resize(1100,900);window.setFleet(fleet());window.show();
+    window.findChild<QPushButton *>("workspaceSettings")->click();auto &page=*static_cast<SettingsPage *>(window.findChild<QWidget *>("settingsPage"));page.openRecovery();
+    auto *enabled=page.findChild<QCheckBox *>("recoveryEnabled");QTRY_VERIFY(enabled->isEnabled());QVERIFY(!enabled->isChecked());
+    auto *save=page.findChild<QPushButton *>("recoverySave");QTRY_VERIFY(save->isEnabled());
+    auto *delays=page.findChild<QLineEdit *>("recoveryDelays_network");QCOMPARE(delays->text(),QString("15, 30, 60, 300, -1"));
+    const auto before=page.size();page.refresh();QTRY_VERIFY(save->isEnabled());QCOMPARE(page.size(),before);
+    const auto preview=qEnvironmentVariable("HGS_SETTINGS_PREVIEW");if(!preview.isEmpty()){QDir().mkpath(preview);QVERIFY(window.grab().save(preview+"/recovery.png"));window.resize(850,600);QTest::qWait(30);QVERIFY(window.grab().save(preview+"/recovery-narrow.png"));}
+    enabled->setChecked(true);delays->setText("0");save->click();QVERIFY(!QFile::exists(capture));
+    delays->setText("5, 20, 0");save->click();QTRY_VERIFY(QFile::exists(capture));
+    const auto readPolicy=[&]{QFile saved(capture);if(!saved.open(QIODevice::ReadOnly))return QJsonObject();return QJsonDocument::fromJson(saved.readAll()).object();};
+    QTRY_VERIFY(!readPolicy().isEmpty());const auto policy=readPolicy();
+    QVERIFY(policy.value("enabled").toBool());QCOMPARE(policy.value("revision").toInt(),7);
+    QCOMPARE(policy.value("schedules").toObject().value("network").toArray(),QJsonArray({5,20,0}));
+    QCOMPARE(policy.value("schedules").toObject().value("service").toArray(),QJsonArray({15,30,60,300,-1}));
+}
+
+void TestSessionsWindow::composerNavigationDuringPolling()
+{
+    SessionsWindow window(script()); window.resize(1400, 900); window.setFleet(fleet()); window.show();
+    auto *client = window.findChild<HgsClient *>(); QSignalSpy inspections(client, &HgsClient::inspectionReady);
+    window.showSession({}, "codex/hgs/dashboard"); QTRY_VERIFY(!inspections.isEmpty());
+    auto *composer = window.findChild<MessageComposer *>("messageComposer");
+    auto *editor = composer->editor(); window.activateWindow(); editor->setFocus(); QTRY_VERIFY(editor->hasFocus());
+    const QString draft = QString::fromUtf8("1. вышел новый релиз zrok / ziti -- посмотри не надо ли обновить на сервере 2. посмотри йф");
+    editor->insertPlainText(draft);
+    const auto end = editor->cursorRect();
+    QTest::keyClick(editor, Qt::Key_Home);
+    QCOMPARE(editor->textCursor().position(), 0);
+    for (int i = 0; i < 5; ++i) {
+        window.setFleet(fleet());
+        QTest::qWait(100);
+        QCOMPARE(editor->textCursor().position(), 0);
+        QVERIFY(editor->hasFocus());
+    }
+    QTest::keyClicks(editor, "X"); QCOMPARE(editor->toPlainText(), "X" + draft);
+    QTest::mouseClick(editor->viewport(), Qt::LeftButton, Qt::NoModifier, end.center());
+    const int position = editor->textCursor().position();
+    QVERIFY(position > 1);
+    window.setFleet(fleet()); QTest::qWait(200);
+    QCOMPARE(editor->textCursor().position(), position);
+    auto expected = editor->toPlainText(); expected.insert(position, "Y");
+    QTest::keyClicks(editor, "Y"); QCOMPARE(editor->toPlainText(), expected);
+}
+
+void TestSessionsWindow::connectionStatusSurvivesNoticesAndRetries()
+{
+    SessionsWindow window(script()); window.setFleet(fleet()); window.show();
+    auto *status = window.findChild<QLabel *>("workspaceConnectionStatus");
+    auto *retry = window.findChild<QPushButton *>("connectionRetry");
+    QVERIFY(status); QVERIFY(retry); QVERIFY(status->text().isEmpty()); QVERIFY(retry->isHidden());
+    window.setConnectionError("timed out");
+    QVERIFY(status->text().contains("arch: session update timed out"));
+    QVERIFY(status->text().contains("automatic retry pending"));
+    QSignalSpy refresh(&window, &SessionsWindow::refreshRequested); retry->click(); QCOMPARE(refresh.size(), 1);
+    window.setPollingHosts({QString()});
+    QVERIFY(status->text().contains("retrying…")); QVERIFY(status->text().contains("timed out")); QVERIFY(!retry->isEnabled());
+    window.showNotificationNotice("Path copied");
+    QTRY_VERIFY_WITH_TIMEOUT(window.findChild<QLabel *>("notice")->text().isEmpty(), 6000);
+    QVERIFY(status->text().contains("timed out"));
+    auto state = fleet(); BoxState unavailable; unavailable.host = "mac"; unavailable.error = "ssh: Could not resolve hostname <mac>";
+    state.setPeer(unavailable, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    QVERIFY(status->text().contains("<mac>")); QVERIFY(status->toolTip().contains("&lt;mac&gt;"));
+    window.setConnectionError({}); window.setPollingHosts({});
+    QVERIFY(!status->text().contains("arch:")); QVERIFY(status->text().contains("Could not resolve")); QVERIFY(retry->isEnabled());
+    window.setPollingHosts({"mac"}); QVERIFY(status->text().contains("retrying…")); QVERIFY(!retry->isEnabled());
+    window.setFleet(fleet()); window.setPollingHosts({});
+    QVERIFY(status->text().isEmpty()); QVERIFY(retry->isHidden());
+    state = fleet(); state.registerPeer("new-machine"); window.setFleet(state); window.setPollingHosts({"new-machine"});
+    QVERIFY(status->text().contains("new-machine: connecting…"));
+    const auto preview = qEnvironmentVariable("HGS_CONNECTION_PREVIEW");
+    if (!preview.isEmpty()) { window.setConnectionError("timed out"); QTest::qWait(50); QVERIFY(window.grab().save(preview)); }
+}
+
+void TestSessionsWindow::filtersSelectionAndOffline()
+{
+    SessionsWindow window(script()); window.setFleet(fleet()); window.show();
+    auto *list = window.findChild<QListWidget *>("sessionList"); QVERIFY(list);
+    QCOMPARE(list->count(), 5); list->setCurrentRow(2);
+    const auto key = list->currentItem()->data(Qt::UserRole);
+    window.setFleet(fleet()); QCOMPARE(list->currentItem()->data(Qt::UserRole), key);
+    auto *search = window.findChild<QLineEdit *>("search"); search->setText("navigation"); auto *results = window.findChild<QListWidget *>("searchResults"); QCOMPARE(results->count(), 1);
+    search->setText("nothing matches"); QCOMPARE(results->count(), 0); search->clear();
+    for (auto *button : window.findChildren<QPushButton *>()) if (button->property("filter") == "attention") button->click();
+    QCOMPARE(list->count(), 1); QVERIFY(list->item(0)->data(Qt::UserRole).toString().startsWith("mac\n"));
+    auto state = fleet(); BoxState offline; offline.host = "mac"; offline.ok = false;
+    state.setPeer(offline, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state); QCOMPARE(list->count(), 0);
+    for (auto *button : window.findChildren<QPushButton *>()) if (button->property("filter") == "all") button->click();
+    QCOMPARE(list->count(), 5); list->setCurrentRow(4);
+    QVERIFY(!window.findChild<QPushButton *>("pauseAction")->isEnabled());
+    QSignalSpy opened(&window, &SessionsWindow::sessionActivated);
+    QTest::keyClick(list, Qt::Key_Return); QCOMPARE(opened.size(), 0);
+    window.close(); // Closing a dashboard never invokes a session command.
+}
+
+void TestSessionsWindow::messageDeliveryKeepsSessionIdentityAndDrafts_data()
+{
+    QTest::addColumn<QString>("promptEvent");
+    QTest::addColumn<bool>("busy");
+    QTest::addColumn<bool>("providerFailure");
+    QTest::newRow("submitted") << QString("UserPromptSubmit") << false << false;
+    QTest::newRow("working") << QString("UserPromptSubmit") << true << false;
+    QTest::newRow("queued") << QString("UserPromptQueued") << true << false;
+    QTest::newRow("kimi-turn-started") << QString("TurnStarted") << false << false;
+    QTest::newRow("provider-error-retry") << QString("UserPromptSubmit") << false << true;
+}
+
+void TestSessionsWindow::modelSettingsKeepSessionIdentity_data()
+{
+    QTest::addColumn<QString>("state"); QTest::addColumn<bool>("failApply");
+    QTest::newRow("paused") << QString("paused") << false;
+    QTest::newRow("stopped") << QString("stopped") << false;
+    QTest::newRow("busy-background-applied") << QString("running") << false;
+    QTest::newRow("busy-background-failed-once") << QString("running") << true;
+}
+
+void TestSessionsWindow::modelSettingsKeepSessionIdentity()
+{
+    QFETCH(QString, state); QFETCH(bool, failApply);
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const QString program = directory.filePath("hgs"), snapshot = directory.filePath("snapshot.json"), capture = directory.filePath("calls.jsonl");
+    QJsonObject details{{"tracked", true}, {"run_id", "run-original"}, {"conversation_id", "conversation-one"},
+        {"activity", "busy"}, {"phase", "tool"}, {"model", "gpt-6.1-sol"}, {"effort", "high"},
+        {"settings_change_supported", true}, {"settings_apply_when", state == "running" ? "ready" : "resume"},
+        {"model_options", QJsonArray{QJsonObject{{"id", "gpt-6.1-sol"}, {"effort_options", QJsonArray{"high", "xhigh"}}}}},
+        {"cursor", 0}, {"events", QJsonArray{}}};
+    const auto saveSnapshot = [&] { QFile data(snapshot); if (!data.open(QIODevice::WriteOnly)) return false; data.write(QJsonDocument(details).toJson()); return true; };
+    QVERIFY(saveSnapshot());
+    QFile executable(program); QVERIFY(executable.open(QIODevice::WriteOnly));
+    QByteArray body = "#!/usr/bin/env python3\nimport json,sys,pathlib,time\nroot=pathlib.Path(__file__).parent\nargs=sys.argv[1:]\n";
+    body += failApply ? "fail=True\n" : "fail=False\n";
+    body += R"PY(if args[0]=='inspect':
+ print((root/'snapshot.json').read_text())
+elif args[0]=='settings':
+ p=json.load(sys.stdin)
+ calls=root/'calls.jsonl'
+ previous=calls.read_text().count('\n') if calls.exists() else 0
+ with calls.open('a') as out: out.write(json.dumps({'args':args,'payload':p})+'\n')
+ time.sleep(.12)
+ if previous and fail:
+  print('Native model picker unavailable',file=sys.stderr);sys.exit(1)
+ result='applied' if previous else 'scheduled'
+ data=json.loads((root/'snapshot.json').read_text())
+ if result=='scheduled':
+  data['pending_model']=p['model'];data['pending_effort']=p['effort'];data['pending_settings_id']=p['request_id']
+ else:
+  data['model']=p['model'];data['effort']=p['effort'];data.pop('pending_model',None);data.pop('pending_effort',None)
+ (root/'snapshot.json').write_text(json.dumps(data))
+ print(json.dumps({'status':result,'request_id':p['request_id'],'name':args[1],'run_id':p['expected_run_id'],
+ 'conversation_id':p['expected_conversation_id'],'model':p['model'],'effort':p['effort']}))
+)PY";
+    executable.write(body); executable.close(); QVERIFY(executable.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+    auto current = fleet(); auto box = current.local(); box.sessions[0].state = state; box.sessions[0].runId = "run-original";
+    current.setLocal(box, QDateTime::currentMSecsSinceEpoch());
+    SessionsWindow window(program); window.setFleet(current); window.show(); window.showSession({}, "codex/hgs/dashboard");
+    auto *client = window.findChild<HgsClient *>(); QSignalSpy inspections(client, &HgsClient::inspectionReady), changes(client, &HgsClient::settingsFinished);
+    QTRY_VERIFY(!inspections.isEmpty());
+    auto *composer = window.findChild<MessageComposer *>("messageComposer"); composer->editor()->setPlainText("Saved draft for original session");
+    QVERIFY(composer->addAttachment("notes.txt", "text/plain", "keep"));
+    auto *settings = window.findChild<MessageComposer *>("messageComposer")->findChild<QPushButton *>("sessionModelSettings"); settings->click();
+    auto *efforts = window.findChild<MessageComposer *>("messageComposer")->findChild<QComboBox *>("sessionEffortChoice"); efforts->setCurrentIndex(efforts->findData("xhigh"));
+    auto *apply = window.findChild<MessageComposer *>("messageComposer")->findChild<QPushButton *>("applySessionSettings"); QVERIFY(apply->isEnabled()); apply->click();
+    window.showSession({}, "kimi/docs/research"); composer->editor()->setPlainText("Other session draft");
+    QTRY_COMPARE(changes.size(), 1); QVERIFY(changes[0][1].toBool()); QCOMPARE(composer->editor()->toPlainText(), QString("Other session draft"));
+    if (state == "running") {
+        box.sessions[0].phase = "idle"; box.sessions[0].activity = "idle"; box.sessions[0].processState = "running";
+        current.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(current);
+        QTRY_COMPARE(changes.size(), 2); QCOMPARE(changes[1][1].toBool(), !failApply);
+        window.setFleet(current); window.setFleet(current); QTest::qWait(80); QCOMPARE(changes.size(), 2);
+        QCOMPARE(composer->editor()->toPlainText(), QString("Other session draft"));
+    } else {
+        window.setFleet(current); QTest::qWait(80); QCOMPARE(changes.size(), 1);
+    }
+    QFile recorded(capture); QVERIFY(recorded.open(QIODevice::ReadOnly));
+    QString originalRequest;
+    for (const auto &line : recorded.readAll().split('\n')) {
+        if (line.isEmpty()) continue;
+        const auto call = QJsonDocument::fromJson(line).object(), payload = call.value("payload").toObject();
+        QCOMPARE(call.value("args").toArray(), QJsonArray({"settings", "codex/hgs/dashboard", "--json"}));
+        QCOMPARE(payload.value("expected_run_id").toString(), QString("run-original"));
+        QCOMPARE(payload.value("expected_conversation_id").toString(), QString("conversation-one"));
+        QCOMPARE(payload.value("effort").toString(), QString("xhigh"));
+        if (originalRequest.isEmpty()) { QVERIFY(!payload.contains("expected_pending_id")); originalRequest = payload.value("request_id").toString(); }
+        else QCOMPARE(payload.value("expected_pending_id").toString(), originalRequest);
+    }
+    window.showSession({}, "codex/hgs/dashboard");
+    QCOMPARE(composer->editor()->toPlainText(), QString("[File #1] Saved draft for original session"));
+    QCOMPARE(composer->findChildren<QPushButton *>("removeAttachment").size(), 1);
+    QTest::qWait(80); QCOMPARE(changes.size(), state == "running" ? 2 : 1);
+}
+
+void TestSessionsWindow::messageDeliveryKeepsSessionIdentityAndDrafts()
+{
+    QFETCH(QString, promptEvent);
+    QFETCH(bool, busy);
+    QFETCH(bool, providerFailure);
+    const QString capture = m_dir.filePath("message-capture.json");
+    const QString program = m_dir.filePath("message-hgs");
+    QFile file(program); QVERIFY(file.open(QIODevice::WriteOnly));
+    const QByteArray captureLiteral = QJsonDocument(QJsonArray{capture}).toJson(QJsonDocument::Compact);
+    QByteArray body = "#!/usr/bin/env python3\nimport sys,json,time\nargs=sys.argv[1:]\nif args[0].startswith('@'): args=args[1:]\n";
+    body += "capture=" + captureLiteral + "[0]\n";
+    body += R"PY(if args[0]=='inspect':
+ print(json.dumps({'tracked':True,'run_id':'run-ready','conversation_id':'conversation-ready','runtime_state':'live','process_state':'running','activity':'idle','phase':'idle','last_event_at':2000000000,'events':[],'cursor':0}))
+elif args[0]=='send':
+ payload=json.load(sys.stdin)
+ with open(capture,'w') as f: json.dump({'args':args,'payload':payload},f)
+ time.sleep(0.15)
+ print(json.dumps({'status':'submitted','request_id':payload['request_id'],'name':args[1],'run_id':payload['expected_run_id'],'conversation_id':payload['expected_conversation_id'],'submitted_text':payload['text'],'submitted_at':time.time()}))
+)PY";
+    if (busy) body.replace("'activity':'idle','phase':'idle'", "'activity':'busy','phase':'tool'");
+    if (providerFailure) body.replace("'activity':'idle','phase':'idle'",
+        "'activity':'attention','phase':'error','provider_error':{'error_kind':'capacity'},'error_message_can_send':True");
+    file.write(body); file.close(); QVERIFY(file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+    SessionsWindow window(program); window.setFleet(fleet()); window.show(); window.showSession({}, "codex/hgs/dashboard");
+    auto *composer = window.findChild<MessageComposer *>("messageComposer"); QVERIFY(composer);
+    auto *send = window.findChild<MessageComposer *>("messageComposer")->findChild<QPushButton *>("sendMessage"); QVERIFY(send);
+    auto *client = window.findChild<HgsClient *>(); QVERIFY(client);
+    QSignalSpy delivered(client, &HgsClient::messageSent);
+    const QString message = QString::fromUtf8("Review this screenshot.\nКавычки: '$HOME' `whoami`");
+    composer->editor()->setPlainText(message);
+    QVERIFY(composer->addAttachment("notes.txt", "text/plain", QByteArray("review notes")));
+    QTRY_VERIFY(send->isEnabled()); send->click(); QVERIFY(!send->isEnabled());
+    QCOMPARE(delivered.size(), 0); // The transport has not acknowledged this request yet.
+    QVERIFY(composer->editor()->toPlainText().isEmpty());
+    QCOMPARE(composer->findChildren<QPushButton *>("removeAttachment").size(), 0);
+    QVERIFY(window.findChild<QTextBrowser *>("activity")->toPlainText().contains("Review this screenshot."));
+    window.showSession({}, "kimi/docs/research"); composer->editor()->setPlainText("Separate Kimi draft");
+    QTRY_COMPARE(delivered.size(), 1);
+    QCOMPARE(composer->editor()->toPlainText(), QString("Separate Kimi draft"));
+    QFile captured(capture); QVERIFY(captured.open(QIODevice::ReadOnly));
+    const auto result = QJsonDocument::fromJson(captured.readAll()).object();
+    QCOMPARE(result.value("args").toArray().at(1).toString(), QString("codex/hgs/dashboard"));
+    const auto payload = result.value("payload").toObject();
+    QCOMPARE(payload.value("text").toString(), "[File #1] " + message);
+    QCOMPARE(payload.value("attachments").toArray()[0].toObject().value("reference").toString(), QString("[File #1]"));
+    QCOMPARE(payload.value("expected_run_id").toString(), QString("run-ready"));
+    QCOMPARE(payload.value("expected_conversation_id").toString(), QString("conversation-ready"));
+    QCOMPARE(QByteArray::fromBase64(payload.value("attachments").toArray().at(0).toObject().value("data_base64").toString().toLatin1()), QByteArray("review notes"));
+    window.showSession({}, "codex/hgs/dashboard");
+    QCOMPARE(composer->editor()->toPlainText(), QString());
+    QJsonObject details{{"tracked", true}, {"run_id", "run-ready"}, {"conversation_id", "conversation-ready"},
+        {"runtime_state", "live"}, {"process_state", "running"}, {"activity", "idle"}, {"phase", "idle"}, {"last_event_at", 2000000000},
+        {"cursor", 1}, {"events", QJsonArray{QJsonObject{{"seq", 1}, {"at", QDateTime::currentMSecsSinceEpoch() / 1000.0},
+        {"type", promptEvent}, {"detail", payload.value("text")}}}}};
+    client->inspectionReady({}, "codex/hgs/dashboard", details);
+    auto *activity = window.findChild<QTextBrowser *>("activity"); QVERIFY(activity);
+    QCOMPARE(activity->toPlainText().count("Review this screenshot."), 1);
+    // The native attachment receipt replaces the local acknowledgement in one
+    // poll. Only the file's storage metadata changes; the visible card should
+    // not be replaced at all, and must never transiently appear twice.
+    auto attachment = QJsonObject{{"name","notes.txt"},{"mime","text/plain"},{"bytes",12},
+        {"reference","[File #1]"},{"request_id",payload["request_id"]},{"index",0}};
+    details["attachment_messages"] = QJsonArray{QJsonObject{{"type","UserPromptSubmit"},{"source","hgs_delivery"},
+        {"message_id",payload["request_id"]},{"at",QDateTime::currentMSecsSinceEpoch()/1000.0},
+        {"detail",payload["text"]},{"submitted_text",payload["text"]},{"attachments",QJsonArray{attachment}}}};
+    details["events"] = QJsonArray{};
+    QSignalSpy documentChanges(activity, &QTextBrowser::textChanged);
+    client->inspectionReady({}, "codex/hgs/dashboard", details);
+    QCOMPARE(documentChanges.size(), 0);
+    QCOMPARE(activity->toPlainText().count("Review this screenshot."), 1);
+    window.showSession({}, "codex/website/navigation");
+    composer->editor()->setPlainText("Draft for a saved session");
+    QVERIFY(!send->isEnabled());
+    window.showSession({}, "kimi/docs/research");
+    QCOMPARE(composer->editor()->toPlainText(), QString("Separate Kimi draft"));
+}
+
+void TestSessionsWindow::failedMessagesReconcileAndRetryWithoutLosingDrafts()
+{
+    QTemporaryDir directory;const auto program=directory.filePath("hgs");QFile script(program);QVERIFY(script.open(QIODevice::WriteOnly));
+    script.write(R"PY(#!/usr/bin/env python3
+import json,pathlib,sys,time
+root=pathlib.Path(__file__).parent;args=sys.argv[1:]
+if args[0]=='inspect':print((root/'inspect.json').read_text())
+elif args[0]=='send':
+ p=json.load(sys.stdin)
+ with (root/'requests.jsonl').open('a') as f:f.write(json.dumps(p)+'\n')
+ time.sleep(.15)
+ if not (root/'succeed').exists():print('terminal not ready',file=sys.stderr);sys.exit(1)
+ print(json.dumps({'status':'submitted','request_id':p['request_id'],'name':args[1],'run_id':p['expected_run_id'],'conversation_id':p['expected_conversation_id'],'submitted_text':p['text'],'submitted_at':time.time()}))
+)PY");script.close();QVERIFY(script.setPermissions(QFileDevice::ReadOwner|QFileDevice::WriteOwner|QFileDevice::ExeOwner));
+    QJsonObject details{{"tracked",true},{"run_id","run-ready"},{"conversation_id","conversation-ready"},{"runtime_state","live"},{"process_state","running"},{"activity","idle"},{"phase","idle"},{"events",QJsonArray{}},{"cursor",0}};
+    const auto save=[&]{QFile f(directory.filePath("inspect.json"));if(!f.open(QIODevice::WriteOnly))return false;return f.write(QJsonDocument(details).toJson())>0;};QVERIFY(save());
+    SessionsWindow window(program);window.setFleet(fleet());window.show();window.showSession({},"codex/hgs/dashboard");
+    auto *composer=window.findChild<MessageComposer *>("messageComposer");auto *send=composer->findChild<QPushButton *>("sendMessage");
+    auto *client=window.findChild<HgsClient *>();auto *view=composer->parentWidget()->findChild<ActivityView *>();QVERIFY(view);
+    QSignalSpy failures(client,&HgsClient::messageFailed),sent(client,&HgsClient::messageSent);
+    composer->editor()->setPlainText("Original request");QTRY_VERIFY(send->isEnabled());send->click();QTRY_COMPARE(failures.size(),1);
+    QTRY_VERIFY(view->browser()->toPlainText().contains("Not sent"));
+    composer->editor()->setPlainText("Keep this different draft");
+    const auto now=QDateTime::currentMSecsSinceEpoch()/1000.;
+    QJsonArray events{QJsonObject{{"seq",1},{"type","TurnStarted"},{"detail","Original request"},{"at",now-600}},
+        QJsonObject{{"seq",2},{"type","TurnStarted"},{"detail","Original request"},{"at",now+1},{"agent_id","child"}}};
+    details["events"]=events;details["cursor"]=2;QVERIFY(save());client->inspectionReady({},"codex/hgs/dashboard",details);
+    QVERIFY(view->browser()->toPlainText().contains("Not sent"));
+    events.append(QJsonObject{{"seq",3},{"type","TurnStarted"},{"detail","Original request"},{"at",now+2}});
+    details["events"]=events;details["cursor"]=3;QVERIFY(save());client->inspectionReady({},"codex/hgs/dashboard",details);
+    QVERIFY(!view->browser()->toPlainText().contains("Not sent"));QCOMPARE(composer->editor()->toPlainText(),QString("Keep this different draft"));
+    composer->editor()->setPlainText("Retry with a file");QVERIFY(composer->addAttachment("original.txt","text/plain","original"));send->click();QTRY_COMPARE(failures.size(),2);
+    const auto id=QString::number(failures[1][0].toULongLong());QVERIFY(view->browser()->toPlainText().contains("Not sent"));
+    composer->editor()->setPlainText("Next draft");composer->findChild<QPushButton *>("removeAttachment")->click();QVERIFY(composer->addAttachment("next.txt","text/plain","next"));
+    QFile success(directory.filePath("succeed"));QVERIFY(success.open(QIODevice::WriteOnly));success.close();
+    view->messageActionRequested(id,"retry");view->messageActionRequested(id,"retry");
+    window.showSession({},"kimi/docs/research");composer->editor()->setPlainText("Other session draft");view->messageActionRequested(id,"retry");
+    QTRY_COMPARE(sent.size(),1);QCOMPARE(composer->editor()->toPlainText(),QString("Other session draft"));
+    window.showSession({},"codex/hgs/dashboard");
+    QTRY_COMPARE(composer->editor()->toPlainText(),QString("[File #2] Next draft"));
+    QVERIFY(composer->draftMatches(window.findChild<QListWidget *>("sessionList")->currentItem()->data(Qt::UserRole).toString(),"[File #2] Next draft",{{"next.txt","text/plain","next","[File #2]"}}));
+    QFile calls(directory.filePath("requests.jsonl"));QVERIFY(calls.open(QIODevice::ReadOnly));const auto requests=calls.readAll().trimmed().split('\n');QCOMPARE(requests.size(),3);
+    const auto retried=QJsonDocument::fromJson(requests.last()).object();QCOMPARE(retried["text"].toString(),QString("[File #1] Retry with a file"));
+    QCOMPARE(retried["attachments"].toArray()[0].toObject()["reference"].toString(),QString("[File #1]"));
+    QCOMPARE(QByteArray::fromBase64(retried["attachments"].toArray()[0].toObject()["data_base64"].toString().toLatin1()),QByteArray("original"));
+    QVERIFY(!view->browser()->toPlainText().contains("Not sent"));
+    QFile::remove(directory.filePath("succeed"));QTRY_VERIFY(send->isEnabled());send->click();QTRY_COMPARE(failures.size(),3);
+    const auto deletedId=QString::number(failures[2][0].toULongLong());view->messageActionRequested(deletedId,"delete");
+    QVERIFY(!view->browser()->toPlainText().contains("Not sent"));QCOMPARE(composer->editor()->toPlainText(),QString("[File #2] Next draft"));
+    composer->findChild<QPushButton *>("removeAttachment")->click();composer->editor()->setPlainText("Sent through Terminal");
+    send->click();QTRY_COMPARE(failures.size(),4);
+    events.append(QJsonObject{{"seq",4},{"type","TurnStarted"},{"detail","Sent through Terminal"},{"at",QDateTime::currentMSecsSinceEpoch()/1000.+2}});
+    details["events"]=events;details["cursor"]=4;QVERIFY(save());client->inspectionReady({},"codex/hgs/dashboard",details);
+    QVERIFY(!view->browser()->toPlainText().contains("Not sent"));QVERIFY(composer->editor()->toPlainText().isEmpty());
+}
+
+void TestSessionsWindow::providerErrorWaitsForNativePrompt_data()
+{
+    QTest::addColumn<QString>("state");
+    QTest::newRow("provider-error")<<QString("error");
+    QTest::newRow("interrupted")<<QString("interrupted");
+}
+void TestSessionsWindow::providerErrorWaitsForNativePrompt()
+{
+    QFETCH(QString,state);
+    SessionsWindow window(script()); window.setFleet(fleet()); window.show(); window.showSession({}, "codex/hgs/dashboard");
+    auto *client = window.findChild<HgsClient *>();
+    auto *composer = window.findChild<MessageComposer *>("messageComposer");
+    auto *send = composer->findChild<QPushButton *>("sendMessage");
+    auto *status = composer->findChild<QLabel *>("messageStatus");
+    QTRY_VERIFY(status->text().contains("starting"));
+    composer->editor()->setPlainText("повтори");
+    QJsonObject details{{"tracked", true}, {"run_id", "run-one"}, {"conversation_id", "conversation-one"},
+        {"runtime_state", "live"}, {"process_state", "running"}, {"activity", state=="error"?"attention":"unknown"}, {"phase", state},
+        {"events", QJsonArray{}}, {"cursor", 0}};
+    if(state=="error")details["provider_error"]=QJsonObject{{"error_kind","capacity"}};
+    const auto update = [&] { client->inspectionReady({}, "codex/hgs/dashboard", details, {}); };
+    update(); QVERIFY(!send->isEnabled()); // Older/absent evidence never enables retry.
+    details[state+"_message_can_send"] = false; details[state+"_message_reason"] = "Terminal has a draft";
+    update(); QVERIFY(!send->isEnabled()); QCOMPARE(status->text(), QString("Terminal has a draft"));
+    details[state+"_message_can_send"] = true; details[state+"_message_reason"] = "";
+    update(); QVERIFY(send->isEnabled()); QCOMPARE(composer->editor()->toPlainText(), QString("повтори"));
+    for (const QString &phase : {QString("approval"), QString("input"), QString("unknown")}) {
+        details["phase"] = phase; update(); QVERIFY(!send->isEnabled());
+    }
+    details["phase"] = state; details["error"] = "Tracking mismatch"; update(); QVERIFY(!send->isEnabled());
+    details.remove("error"); details["process_state"] = "exited"; update(); QVERIFY(!send->isEnabled());
+    QCOMPARE(composer->editor()->toPlainText(), QString("повтори"));
+}
+
+void TestSessionsWindow::firstMessageWaitsForNativePrompt_data()
+{
+    QTest::addColumn<bool>("resumed");
+    QTest::newRow("new") << false;
+    QTest::newRow("resumed") << true;
+}
+
+void TestSessionsWindow::firstMessageWaitsForNativePrompt()
+{
+    QFETCH(bool, resumed);
+    QFile::remove(m_dir.filePath("first-payload.json"));
+    const QString program = m_dir.filePath("first-message-hgs");
+    QFile file(program); QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(R"PY(#!/usr/bin/env python3
+import sys,json,pathlib
+root=pathlib.Path(__file__).parent
+args=sys.argv[1:]
+if args[0]=='inspect': print((root/'first-state.json').read_text())
+elif args[0]=='send':
+ p=json.load(sys.stdin)
+ (root/'first-payload.json').write_text(json.dumps(p))
+ print(json.dumps({'status':'submitted','request_id':p['request_id'],'name':args[1],'run_id':p['expected_run_id'],'conversation_id':p['expected_conversation_id'],'first_message':not p['expected_conversation_id'],'submitted_text':p['text']}))
+)PY");
+    file.close(); QVERIFY(file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+    QJsonObject state{{"tracked", true}, {"run_id", "fresh-run"}, {"conversation_id", ""},
+        {"runtime_state", "live"}, {"process_state", "running"}, {"activity", "unknown"}, {"phase", "unknown"},
+        {"first_message_can_send", false}, {"first_message_reason", "Finish login in Terminal"}, {"events", QJsonArray{}}, {"cursor", 0}};
+    if (resumed) {
+        state["conversation_id"] = "saved-conversation"; state["expected_id"] = "saved-conversation";
+        state["resume_message_can_send"] = false; state["resume_message_reason"] = "Finish login in Terminal";
+    }
+    const auto save = [&] { QFile f(m_dir.filePath("first-state.json")); if (!f.open(QIODevice::WriteOnly)) return false; return f.write(QJsonDocument(state).toJson()) > 0; };
+    QVERIFY(save());
+    SessionsWindow window(program); window.setFleet(fleet()); window.show(); window.showSession({}, "codex/hgs/dashboard");
+    auto *client = window.findChild<HgsClient *>(); auto *composer = window.findChild<MessageComposer *>("messageComposer");
+    auto *send = window.findChild<MessageComposer *>("messageComposer")->findChild<QPushButton *>("sendMessage"); auto *status = window.findChild<MessageComposer *>("messageComposer")->findChild<QLabel *>("messageStatus");
+    QTRY_COMPARE(status->text(), QString("Finish login in Terminal"));
+    composer->editor()->setPlainText("First message after login"); QVERIFY(composer->addAttachment("notes.txt", "text/plain", "keep attachment"));
+    QVERIFY(!send->isEnabled()); QTest::keyClick(composer->editor(), Qt::Key_Return);
+    QVERIFY(!QFile::exists(m_dir.filePath("first-payload.json")));
+    state["first_message_can_send"] = true; state["first_message_reason"] = ""; state["model"] = "gpt-6-astra"; state["effort"] = "xhigh"; QVERIFY(save());
+    if (resumed) { state["resume_message_can_send"] = true; state["resume_message_reason"] = ""; QVERIFY(save()); }
+    client->requestInspection({}, "codex/hgs/dashboard", 0); QTRY_VERIFY(send->isEnabled());
+    QVERIFY(window.findChild<MessageComposer *>("messageComposer")->findChild<QPushButton *>("sessionModelSettings")->text().contains("gpt-6-astra"));
+    QSignalSpy delivered(client, &HgsClient::messageSent); QTest::keyClick(composer->editor(), Qt::Key_Return); QTRY_COMPARE(delivered.size(), 1);
+    QFile captured(m_dir.filePath("first-payload.json")); QVERIFY(captured.open(QIODevice::ReadOnly));
+    const auto payload = QJsonDocument::fromJson(captured.readAll()).object();
+    QCOMPARE(payload["expected_run_id"].toString(), "fresh-run");
+    QCOMPARE(payload["expected_conversation_id"].toString(), resumed ? "saved-conversation" : "");
+    QCOMPARE(payload["text"].toString(), "[File #1] First message after login"); QCOMPARE(payload["attachments"].toArray().size(), 1);
+    QCOMPARE(composer->editor()->toPlainText(), QString());
+    state.remove("expected_id"); state.remove("resume_message_can_send");
+    state["conversation_id"] = resumed ? "saved-conversation" : "confirmed-first";
+    state["activity"] = "busy"; state["phase"] = "working"; QVERIFY(save());
+    client->requestInspection({}, "codex/hgs/dashboard", 0);
+    composer->editor()->setPlainText("Next message"); QTRY_VERIFY(send->isEnabled());
+}
+
+void TestSessionsWindow::questionAnswersStayWithOriginalSession()
+{
+    QTemporaryDir directory;
+    const QString program = directory.filePath("hgs");
+    QFile file(program); QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(R"PY(#!/usr/bin/env python3
+import json,pathlib,sys,time
+args=sys.argv[1:]
+root=pathlib.Path(__file__).parent
+question={'question_id':'interaction-one','question_hash':'exact-hash','run_id':'run-one','conversation_id':'conv-one','can_answer':True,
+ 'questions':[{'id':'q_0','header':'Scope','question':'Which area should I inspect?','multi_select':False,'allow_other':True,
+ 'options':[{'id':'opt_0_0','label':'Documents','description':'Read the project docs'},{'id':'opt_0_1','label':'Source','description':'Read source files'}]}]}
+if args[0]=='inspect':
+ pending=args[1]=='kimi/docs/research' and not (root/'done').exists()
+ print(json.dumps({'tracked':True,'run_id':'run-one','conversation_id':'conv-one','runtime_state':'live','process_state':'running',
+ 'activity':'busy' if pending else 'idle','phase':'input' if pending else 'idle','last_event_at':2000000000,
+ 'pending_questions':[question] if pending else [],'events':[],'cursor':0}))
+elif args[0]=='answer':
+ payload=json.load(sys.stdin)
+ (root/'answer.json').write_text(json.dumps({'args':args,'payload':payload}))
+ with (root/'calls').open('a') as f:f.write('call\n')
+ time.sleep(.15)
+ (root/'done').touch()
+ print(json.dumps({'status':'answered','request_id':payload['request_id'],'name':args[1],
+ 'run_id':payload['expected_run_id'],'conversation_id':payload['expected_conversation_id'],
+ 'question_id':payload['question_id'],'question_hash':payload['expected_question_hash']}))
+)PY");
+    file.close(); QVERIFY(file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+    SessionsWindow window(program); window.setFleet(fleet()); window.show(); window.showSession({}, "kimi/docs/research");
+    auto *card = window.findChild<QuestionCard *>(); QVERIFY(card);
+    auto *composer = window.findChild<MessageComposer *>("messageComposer"); QVERIFY(composer);
+    auto *client = window.findChild<HgsClient *>(); QVERIFY(client);
+    auto *list = window.findChild<QListWidget *>("sessionList"); QVERIFY(list);
+    QSignalSpy answered(client, &HgsClient::questionAnswered);
+    QTRY_VERIFY(card->isVisible()); QVERIFY(!composer->isVisible());
+    if (!qEnvironmentVariable("HGS_PREVIEW_DIR").isEmpty()) {
+        window.resize(1240, 900); QTest::qWait(30);
+        QVERIFY(window.grab().save(qEnvironmentVariable("HGS_PREVIEW_DIR") + "/sessions-question.png"));
+    }
+    const QString key = list->currentItem()->data(Qt::UserRole).toString();
+    const QJsonArray choices{QJsonObject{{"question_id", "q_0"}, {"selected_option_ids", QJsonArray{"opt_0_1"}}, {"text", ""}}};
+    card->answerRequested(key, "interaction-one", choices);
+    window.showSession({}, "codex/hgs/dashboard"); composer->editor()->setPlainText("Keep this other-session draft");
+    card->answerRequested(key, "interaction-one", choices); // stale selection cannot send again
+    QTRY_COMPARE(answered.size(), 1);
+    QCOMPARE(composer->editor()->toPlainText(), QString("Keep this other-session draft"));
+    QFile captured(directory.filePath("answer.json")); QVERIFY(captured.open(QIODevice::ReadOnly));
+    const auto record = QJsonDocument::fromJson(captured.readAll()).object();
+    QCOMPARE(record["args"].toArray(), QJsonArray({"answer", "kimi/docs/research", "--json"}));
+    const auto payload = record["payload"].toObject();
+    QCOMPARE(payload["answers"].toArray(), choices);
+    QCOMPARE(payload["expected_question_hash"].toString(), QString("exact-hash"));
+    QCOMPARE(payload["expected_run_id"].toString(), QString("run-one"));
+    window.showSession({}, "kimi/docs/research");
+    QTRY_VERIFY(!card->isVisible()); QVERIFY(composer->isVisible());
+    card->answerRequested(key, "interaction-one", choices); // resolved question is no longer actionable
+    QTest::qWait(30);
+    QFile calls(directory.filePath("calls")); QVERIFY(calls.open(QIODevice::ReadOnly)); QCOMPARE(calls.readAll(), QByteArray("call\n"));
+}
+
+void TestSessionsWindow::optionalQuestionKeepsComposerAvailable()
+{
+    SessionsWindow window(script());window.setFleet(fleet());window.show();window.showSession({},"codex/hgs/dashboard");QTest::qWait(100);
+    auto *client=window.findChild<HgsClient *>();auto *composer=window.findChild<MessageComposer *>("messageComposer");auto *card=window.findChild<QuestionCard *>();
+    composer->editor()->setPlainText("An unrelated follow-up");
+    QJsonObject question{{"question_id","optional-one"},{"question_hash","hash"},{"run_id","run-one"},{"conversation_id","conversation-one"},
+        {"optional",true},{"can_answer",false},{"can_skip",true},{"questions",QJsonArray{QJsonObject{{"id","q_0"},{"question","Which option?"},{"required",false},{"allow_other",true},{"options",QJsonArray{}}}}}};
+    QJsonObject details{{"tracked",true},{"run_id","run-one"},{"conversation_id","conversation-one"},{"runtime_state","live"},{"process_state","running"},
+        {"activity","idle"},{"phase","idle"},{"pending_questions",QJsonArray{question}}};
+    client->inspectionReady({},"codex/hgs/dashboard",details);
+    QVERIFY(card->isVisible());QVERIFY(composer->isVisible());QVERIFY(composer->findChild<QPushButton *>("sendMessage")->isEnabled());
+    QVERIFY(card->findChild<QPushButton *>("skipQuestion")->isEnabled());
+    client->inspectionReady({},"codex/hgs/dashboard",details);QCOMPARE(composer->editor()->toPlainText(),QString("An unrelated follow-up"));
+    auto latest=question;latest["question_id"]="latest";latest["created_at"]=20;
+    latest["questions"]=QJsonArray{QJsonObject{{"id","q_0"},{"question","Most recent question?"},{"required",false},{"allow_other",true},{"options",QJsonArray{}}}};
+    question["created_at"]=10;question["can_answer"]=true;
+    auto olderItems=question["questions"].toArray();auto secondItem=olderItems.first().toObject();secondItem["id"]="q_1";secondItem["question"]="Another older question?";olderItems.append(secondItem);question["questions"]=olderItems;
+    details["pending_questions"]=QJsonArray{question,latest,question,QJsonObject{}};client->inspectionReady({},"codex/hgs/dashboard",details);
+    QCOMPARE(card->findChild<QLabel *>("questionPendingCount")->text(),QString("3 pending"));
+    QStringList labels;for(auto *label:card->findChildren<QLabel *>())labels<<label->text();
+    QVERIFY(labels.contains("Most recent question?"));QVERIFY(!labels.contains("Which option?"));
+    auto *previous=card->findChild<QToolButton *>("questionQueuePrevious"),*next=card->findChild<QToolButton *>("questionQueueNext");
+    QVERIFY(previous->isVisible());QVERIFY(!previous->isEnabled());QVERIFY(next->isEnabled());
+    QCOMPARE(card->findChild<QLabel *>("questionHeading")->text(),QString("Optional question #1/2"));
+    QSignalSpy answers(card,&QuestionCard::answerRequested);
+    const auto firstAnswer=[card] {
+        for(auto *editor:card->findChildren<QLineEdit *>("questionFreeText"))
+            if(editor->property("questionId").toString()=="q_0")return editor;
+        return static_cast<QLineEdit *>(nullptr);
+    };
+    firstAnswer()->setText("Latest draft");
+    next->click();
+    labels.clear();for(auto *label:card->findChildren<QLabel *>("questionPrompt"))labels<<label->text();
+    QVERIFY(labels.contains("Which option?"));QVERIFY(!labels.contains("Most recent question?"));
+    QVERIFY(previous->isEnabled());QVERIFY(!next->isEnabled());
+    QCOMPARE(card->findChild<QLabel *>("questionHeading")->text(),QString("Optional question #2/2"));
+    firstAnswer()->setText("Older draft");
+    auto *pages=card->findChild<QTabBar *>("questionTabs");pages->setCurrentIndex(1);
+    previous->click();
+    QCOMPARE(firstAnswer()->text(),QString("Latest draft"));
+    next->click();
+    QCOMPARE(firstAnswer()->text(),QString("Older draft"));
+    QCOMPARE(card->findChild<QTabBar *>("questionTabs")->currentIndex(),1);
+    auto newest=latest;newest["question_id"]="newest";newest["created_at"]=30;
+    details["pending_questions"]=QJsonArray{newest,question,latest};client->inspectionReady({},"codex/hgs/dashboard",details);
+    QCOMPARE(card->findChild<QLabel *>("questionPendingCount")->text(),QString("4 pending"));
+    QCOMPARE(card->findChild<QLabel *>("questionHeading")->text(),QString("Optional question #3/3"));
+    QCOMPARE(firstAnswer()->text(),QString("Older draft"));
+    // A required confirmation preempts browsing, then returns to the chosen draft.
+    auto required=latest;required["optional"]=false;required["question_id"]="required";required["can_answer"]=true;
+    details["pending_questions"]=QJsonArray{newest,question,required,latest};client->inspectionReady({},"codex/hgs/dashboard",details);
+    QVERIFY(previous->isHidden());QVERIFY(next->isHidden());QVERIFY(composer->isHidden());
+    QCOMPARE(card->findChild<QLabel *>("questionHeading")->text(),QString("Agent needs your answer"));
+    card->queueNavigationRequested(1); // Stale navigation cannot bypass a required request.
+    QVERIFY(composer->isHidden());QVERIFY(next->isHidden());
+    details["pending_questions"]=QJsonArray{newest,question,latest};client->inspectionReady({},"codex/hgs/dashboard",details);
+    QCOMPARE(firstAnswer()->text(),QString("Older draft"));
+    QVERIFY(composer->isVisible());QCOMPARE(answers.size(),0);
+    // A different conversation must start from its own newest question.
+    details["conversation_id"]="conversation-two";client->inspectionReady({},"codex/hgs/dashboard",details);
+    client->inspectionReady({},"codex/hgs/dashboard",details); // Initial history fetch after the conversation changed.
+    QCOMPARE(firstAnswer()->text(),QString());
+    QVERIFY(!previous->isEnabled());
+    details["conversation_id"]="conversation-one";client->inspectionReady({},"codex/hgs/dashboard",details);
+    client->inspectionReady({},"codex/hgs/dashboard",details);
+    QCOMPARE(firstAnswer()->text(),QString("Older draft"));
+    // When the selected request resolves elsewhere, fall back to a pending one.
+    details["pending_questions"]=QJsonArray{latest};client->inspectionReady({},"codex/hgs/dashboard",details);
+    QCOMPARE(firstAnswer()->text(),QString("Latest draft"));
+    QVERIFY(previous->isHidden());QVERIFY(next->isHidden());
+    details["pending_questions"]=QJsonArray{};client->inspectionReady({},"codex/hgs/dashboard",details);
+    QVERIFY(card->isHidden());QVERIFY(composer->isVisible());QCOMPARE(composer->editor()->toPlainText(),QString("An unrelated follow-up"));
+}
+
+void TestSessionsWindow::questionCompletionKeepsInputFocus_data()
+{
+    QTest::addColumn<QString>("action");
+    for (const auto &action : {"mouse", "keyboard", "navigate", "external"}) QTest::newRow(action) << QString(action);
+}
+
+void TestSessionsWindow::questionCompletionKeepsInputFocus()
+{
+    QFETCH(QString, action);
+    QTemporaryDir directory;
+    QFile program(directory.filePath("hgs")); QVERIFY(program.open(QIODevice::WriteOnly));
+    program.write(R"PY(#!/usr/bin/env python3
+import json,pathlib,sys,time
+root=pathlib.Path(__file__).parent
+if sys.argv[1]=='inspect':
+ data=json.loads((root/'details.json').read_text())
+ if (root/'done').exists(): data['pending_questions']=[]
+ print(json.dumps(data))
+elif sys.argv[1]=='answer':
+ p=json.load(sys.stdin)
+ (root/'submitted').touch()
+ for _ in range(1000):
+  if (root/'complete').exists(): break
+  time.sleep(.01)
+ (root/'done').touch()
+ print(json.dumps({'status':'answered','request_id':p['request_id'],'name':sys.argv[2],
+  'run_id':p['expected_run_id'],'conversation_id':p['expected_conversation_id'],
+  'question_id':p['question_id'],'question_hash':p['expected_question_hash']}))
+)PY");
+    program.close(); QVERIFY(program.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+    const QJsonObject question{{"question_id","question-one"},{"question_hash","hash-one"},{"run_id","run-one"},
+        {"conversation_id","conversation-one"},{"can_answer",true},{"questions",QJsonArray{QJsonObject{
+            {"id","q_0"},{"header","Scope"},{"question","Which area?"},{"allow_other",true},
+            {"options",QJsonArray{QJsonObject{{"id","opt_0_0"},{"label","Documents"}}}}}}}};
+    QJsonObject details{{"tracked",true},{"run_id","run-one"},{"conversation_id","conversation-one"},
+        {"runtime_state","live"},{"process_state","running"},{"pending_questions",QJsonArray{question}},
+        {"session_usage",QJsonObject{{"context",QJsonObject{{"used",236000}}}}},{"events",QJsonArray{}},{"cursor",0}};
+    QFile fixture(directory.filePath("details.json")); QVERIFY(fixture.open(QIODevice::WriteOnly));
+    fixture.write(QJsonDocument(details).toJson()); fixture.close();
+    SessionsWindow window(program.fileName()); window.setFleet(fleet()); window.show(); window.activateWindow();
+    window.showSession({},"kimi/docs/research");
+    auto *card=window.findChild<QuestionCard *>(); auto *composer=window.findChild<MessageComposer *>("messageComposer");
+    auto *client=window.findChild<HgsClient *>(); auto *context=window.findChild<QPushButton *>("activityContext");
+    auto *submit=card->findChild<QPushButton *>("submitQuestionAnswer");
+    QSignalSpy answered(client,&HgsClient::questionAnswered);
+    QTRY_VERIFY(card->isVisible()); QTRY_VERIFY(window.isActiveWindow());
+    auto *option=card->findChild<QAbstractButton *>("questionOption"); QVERIFY(option);
+    option->click(); option->setFocus(Qt::TabFocusReason); QTRY_VERIFY(option->hasFocus());
+    composer->editor()->setPlainText("Keep this draft");
+    composer->editor()->moveCursor(QTextCursor::End);
+    if(action=="external") {
+        details["pending_questions"]=QJsonArray{};
+        client->inspectionReady({},"kimi/docs/research",details);
+    } else {
+        submit->setFocus(Qt::TabFocusReason);
+        if(action=="keyboard") QTest::keyClick(submit,Qt::Key_Space);
+        else QTest::mouseClick(submit,Qt::LeftButton);
+        QVERIFY(!context->hasFocus());
+        QTRY_VERIFY(QFile::exists(directory.filePath("submitted")));
+        if(action=="navigate") {context->setFocus(Qt::TabFocusReason); QVERIFY(context->hasFocus());}
+        QFile complete(directory.filePath("complete")); QVERIFY(complete.open(QIODevice::WriteOnly)); complete.close();
+        QTRY_COMPARE(answered.size(),1);
+    }
+    QTRY_VERIFY(card->isHidden()); QVERIFY(composer->isVisible());
+    if(action=="navigate") QVERIFY(context->hasFocus());
+    else {QVERIFY(composer->editor()->hasFocus()); QTest::keyClicks(composer->editor()," + next");}
+    QCOMPARE(composer->editor()->toPlainText(),action=="navigate" ? QString("Keep this draft") : QString("Keep this draft + next"));
+    // Ordinary polling must preserve the chosen target after the card disappears.
+    details["pending_questions"]=QJsonArray{}; client->inspectionReady({},"kimi/docs/research",details);
+    QVERIFY(action=="navigate" ? context->hasFocus() : composer->editor()->hasFocus());
+}
+
+void TestSessionsWindow::questionFooterHasRoomAndKeepsAnswers_data()
+{
+    QTest::addColumn<QString>("theme");QTest::addColumn<QSize>("size");
+    for(const auto *theme:{"dark","light"})for(const auto size:{QSize(1100,780),QSize(960,600)})
+        QTest::newRow(qPrintable(QString("%1-%2").arg(theme).arg(size.height())))<<QString(theme)<<size;
+}
+
+void TestSessionsWindow::questionFooterHasRoomAndKeepsAnswers()
+{
+    QFETCH(QString,theme);QFETCH(QSize,size);QSettings().setValue("workspace/theme",theme);
+    auto state=fleet();auto box=state.local();auto &session=box.sessions[0];
+    session.conversationId="conversation-one";session.runId="run-one";session.phase="input";session.activity="waiting";session.attentionId="question-one";
+    state.setLocal(box,QDateTime::currentMSecsSinceEpoch());
+    SessionsWindow window(script());window.resize(size);window.setFleet(state);window.show();
+    auto *client=window.findChild<HgsClient *>();QSignalSpy inspections(client,&HgsClient::inspectionReady);
+    window.showSession({},session.name);QTRY_VERIFY(!inspections.isEmpty());
+    QJsonArray questions;
+    for(int i=0;i<3;++i)questions<<QJsonObject{{"id",QString("q_%1").arg(i)},{"header",QString("Choice %1").arg(i+1)},
+        {"question","Choose the intended behavior when the requested font weight is unavailable and the text uses the regular face."},{"allow_other",true},
+        {"options",QJsonArray{QJsonObject{{"id",QString("opt_%1_0").arg(i)},{"label","Show a warning (Recommended)"},{"description","Report the missing font weight once for each family and weight, while keeping the current font files."}},
+            QJsonObject{{"id",QString("opt_%1_1").arg(i)},{"label","Include another font face"},{"description","Ship an additional font file with the application."}}}}};
+    QJsonObject question{{"question_id","question-one"},{"question_hash","hash-one"},{"run_id","run-one"},{"conversation_id","conversation-one"},
+        {"can_answer",false},{"answer_unavailable_reason","The visible Claude question differs from this request"},{"questions",questions}};
+    QJsonObject details{{"tracked",true},{"conversation_id","conversation-one"},{"run_id","run-one"},{"process_state","running"},{"runtime_state","live"},
+        {"activity","waiting"},{"phase","input"},{"pending_questions",QJsonArray{question}},{"session_usage",QJsonObject{{"context",QJsonObject{{"used",236000}}}}}};
+    client->inspectionReady({},session.name,details);
+    auto *card=window.findChild<QuestionCard *>();auto *tabs=card->findChild<QTabBar *>("questionTabs");
+    for(int i=0;i<3;++i){tabs->setCurrentIndex(i);for(auto *option:card->findChildren<QAbstractButton *>("questionOption"))if(option->property("optionId")==QString("opt_%1_0").arg(i))option->click();}
+    auto *submit=card->findChild<QPushButton *>("submitQuestionAnswer");QVERIFY(!submit->isEnabled());
+    // A refreshed capability unlocks submission without rebuilding the user's answers.
+    question["can_answer"]=true;question["answer_unavailable_reason"]="";details["pending_questions"]=QJsonArray{question};
+    client->inspectionReady({},session.name,details);QVERIFY(submit->isEnabled());QCOMPARE(tabs->currentIndex(),2);
+    QCOMPARE(card->findChild<QLabel *>("questionProgress")->text(),QString("3 of 3 answered"));
+    auto *read=window.findChild<QPushButton *>("activityMarkRead");auto *context=window.findChild<QPushButton *>("activityContext");
+    QTest::qWait(30);QVERIFY(card->isVisible());QVERIFY(read->isVisible());
+    const auto bounds=[&](QWidget *widget){return QRect(widget->mapTo(&window,QPoint()),widget->size());};
+    QVERIFY(bounds(read).top()-bounds(card).bottom()>=8);QVERIFY(bounds(context).top()-bounds(card).bottom()>=8);
+    QVERIFY(bounds(read).right()<bounds(context).left());QVERIFY(bounds(read).bottom()<window.height());
+    const auto preview=qEnvironmentVariable("HGS_QUESTION_FOOTER_PREVIEW");if(!preview.isEmpty()){QDir().mkpath(preview);QVERIFY(window.grab().save(preview+QString("/question-footer-%1-%2.png").arg(theme).arg(size.height())));}
+}
+
+void TestSessionsWindow::startupTrustAnswerBeforeConversation_data()
+{
+    QTest::addColumn<bool>("nullConversation"); QTest::addColumn<QString>("choice"); QTest::addColumn<QString>("provider"); QTest::addColumn<bool>("permissionMode");
+    QTest::newRow("null-trust") << true << QString("trust_0") << QString("kimi") << false;
+    QTest::newRow("codex-null-trust") << true << QString("trust_0") << QString("codex") << false;
+    QTest::newRow("codex-empty-decline") << false << QString("trust_1") << QString("codex") << false;
+    QTest::newRow("claude-null-trust") << true << QString("trust_0") << QString("claude") << false;
+    QTest::newRow("null-decline") << true << QString("trust_1") << QString("kimi") << false;
+    QTest::newRow("claude-null-decline") << true << QString("trust_1") << QString("claude") << false;
+    QTest::newRow("empty-trust") << false << QString("trust_0") << QString("kimi") << false;
+    QTest::newRow("claude-empty-trust") << false << QString("trust_0") << QString("claude") << false;
+    QTest::newRow("empty-decline") << false << QString("trust_1") << QString("kimi") << false;
+    QTest::newRow("claude-empty-decline") << false << QString("trust_1") << QString("claude") << false;
+    QTest::newRow("claude-permission-auto") << true << QString("mode_0") << QString("claude") << true;
+    QTest::newRow("claude-permission-keep") << false << QString("mode_1") << QString("claude") << true;
+}
+
+void TestSessionsWindow::startupTrustAnswerBeforeConversation()
+{
+    QFETCH(bool, nullConversation); QFETCH(QString, choice); QFETCH(QString, provider); QFETCH(bool, permissionMode);
+    QTemporaryDir directory;
+    const QString hash(64, QChar('a')), id = (permissionMode ? "claude-permissions:" : provider + "-trust:") + hash;
+    const QString item = permissionMode ? "permission_mode" : "trust";
+    const QJsonValue conversation = nullConversation ? QJsonValue(QJsonValue::Null) : QJsonValue(permissionMode ? "started-conversation" : "");
+    const QJsonObject question{{"question_id", id}, {"question_hash", hash}, {"run_id", "startup-run"},
+        {"conversation_id", conversation}, {"can_answer", true}, {"source", permissionMode ? "claude_permission_mode" : provider + "_folder_trust"},
+        {"answer_transport", provider + "_tui"}, {"questions", QJsonArray{QJsonObject{{"id", item},
+            {"question", permissionMode ? "Make auto mode your default permission mode?" : "Trust this folder?"}, {"body", "/work/example\nProject MCP targets:\ntracker (stdio): command=example"},
+            {"allow_other", false}, {"options", QJsonArray{
+                QJsonObject{{"id", permissionMode ? "mode_0" : "trust_0"}, {"label", permissionMode ? "Yes, set auto mode as my default permission mode" : "Trust this folder"}},
+                QJsonObject{{"id", permissionMode ? "mode_1" : "trust_1"}, {"label", permissionMode ? "No, keep bypass permissions" : "Don't trust"}}}}}}}};
+    QFile snapshot(directory.filePath("inspect.json")); QVERIFY(snapshot.open(QIODevice::WriteOnly));
+    snapshot.write(QJsonDocument(QJsonObject{{"tracked", true}, {"run_id", "startup-run"},
+        {"conversation_id", conversation}, {"runtime_state", "live"}, {"process_state", "running"},
+        {"activity", "busy"}, {"phase", "approval"}, {"pending_questions", QJsonArray{question}},
+        {"events", QJsonArray{}}, {"cursor", 0}}).toJson()); snapshot.close();
+    QFile program(directory.filePath("hgs")); QVERIFY(program.open(QIODevice::WriteOnly));
+    program.write(R"PY(#!/usr/bin/env python3
+import json,pathlib,sys
+root=pathlib.Path(__file__).parent
+if sys.argv[1]=='inspect':
+ data=json.loads((root/'inspect.json').read_text())
+ if (root/'answer.json').exists(): data['pending_questions']=[]
+ print(json.dumps(data))
+elif sys.argv[1]=='answer':
+ p=json.load(sys.stdin);(root/'answer.json').write_text(json.dumps(p))
+ with (root/'calls').open('a') as f:f.write('call\n')
+ print(json.dumps({'status':'answered','request_id':p['request_id'],'name':sys.argv[2],
+  'run_id':p['expected_run_id'],'conversation_id':p['expected_conversation_id'],
+  'question_id':p['question_id'],'question_hash':p['expected_question_hash']}))
+)PY"); program.close();
+    QVERIFY(program.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+    SessionsWindow window(program.fileName()); window.setFleet(fleet()); window.show(); window.showSession({}, "kimi/docs/research");
+    auto *card = window.findChild<QuestionCard *>(); auto *client = window.findChild<HgsClient *>();
+    QSignalSpy answered(client, &HgsClient::questionAnswered), failed(client, &HgsClient::questionAnswerFailed);
+    QTRY_VERIFY(card->isVisible());
+    auto *submit = card->findChild<QPushButton *>("submitQuestionAnswer");
+    QVERIFY(!submit->isEnabled()); // Native highlighted option is not consent.
+    QAbstractButton *selected = nullptr;
+    for (auto *button : card->findChildren<QAbstractButton *>("questionOption")) {
+        QVERIFY(!button->isChecked());
+        if (button->property("optionId").toString() == choice) selected = button;
+    }
+    QVERIFY(selected); selected->click(); QVERIFY(submit->isEnabled()); submit->click();
+    QTRY_COMPARE(answered.size(), 1); QCOMPARE(failed.size(), 0);
+    QFile sent(directory.filePath("answer.json")); QVERIFY(sent.open(QIODevice::ReadOnly));
+    const auto payload = QJsonDocument::fromJson(sent.readAll()).object();
+    QCOMPARE(payload["expected_run_id"].toString(), "startup-run");
+    QVERIFY(payload["expected_conversation_id"].isString());
+    QCOMPARE(payload["expected_conversation_id"].toString(), conversation.toString());
+    QCOMPARE(payload["question_id"].toString(), id); QCOMPARE(payload["expected_question_hash"].toString(), hash);
+    const QJsonArray expected{QJsonObject{{"question_id", item},
+        {"selected_option_ids", QJsonArray{choice}}, {"text", ""}}};
+    QCOMPARE(payload["answers"].toArray(), expected);
+    QTRY_VERIFY(!card->isVisible());
+    QFile calls(directory.filePath("calls")); QVERIFY(calls.open(QIODevice::ReadOnly)); QCOMPARE(calls.readAll(), QByteArray("call\n"));
+}
+
+void TestSessionsWindow::activityEscapingAndActions()
+{
+    SessionsWindow window(script()); window.setFleet(fleet()); window.show(); QTest::qWait(50);
+    auto *list = window.findChild<QListWidget *>("sessionList"); list->setCurrentRow(0);
+    auto *client = window.findChild<HgsClient *>(); QVERIFY(client);
+    QJsonObject data{{"tracked", true}, {"conversation_id", "conversation-one"}, {"phase", "idle"}, {"activity", "idle"},
+        {"cwd", "/workspace/zerus"}, {"prompt", "<b>literal request</b>"}, {"cursor", 4},
+        {"events", QJsonArray{QJsonObject{{"seq", 4}, {"at", 1790928000}, {"type", "PostToolUse"}, {"tool", "Bash"}, {"detail", "<img src='file:///not-loaded'>"}}}}};
+    client->inspectionReady({}, "codex/hgs/dashboard", data);
+    auto *activity = window.findChild<QTextBrowser *>("activity");
+    QVERIFY(activity->toPlainText().contains("<b>literal request</b>"));
+    QVERIFY(activity->toPlainText().contains("<img src='file:///not-loaded'>"));
+    QVERIFY(window.findChild<QPushButton *>("pauseAction")->isEnabled());
+    QSignalSpy opened(&window, &SessionsWindow::sessionActivated);
+    QTest::keyClick(list, Qt::Key_Return); QCOMPARE(opened.size(), 1);
+    QCOMPARE(opened[0][1].toString(), QStringLiteral("codex/hgs/dashboard"));
+    QSignalSpy completed(client, &HgsClient::writeDone);
+    auto *pause = window.findChild<QPushButton *>("pauseAction"); pause->click();
+    QVERIFY(!pause->isEnabled()); QTRY_COMPARE(completed.size(), 1);
+    QVERIFY(completed[0][1].toBool());
+}
+
+void TestSessionsWindow::sessionContextMenuSignalsAndKeyboard()
+{
+    auto state = fleet(); auto box = state.local(); box.sessions[0].cwd = "/work/a folder";
+    box.sessions[0].attached = 1; box.sessions[0].clients = {"/dev/pts/42"};
+    state.setLocal(box, QDateTime::currentMSecsSinceEpoch());
+    SessionsWindow window(script()); window.setFleet(state); window.setClipboardMode(true); window.show();
+    auto *list = window.findChild<QListWidget *>("sessionList"); auto *menu = window.findChild<QMenu *>("sessionContextMenu"); QVERIFY(menu);
+    QSignalSpy terminal(&window, &SessionsWindow::terminalOpenRequested), normal(&window, &SessionsWindow::sessionActivated), shell(&window, &SessionsWindow::folderShellRequested);
+    QSignalSpy commands(&window, &SessionsWindow::copySessionCommandRequested), texts(&window, &SessionsWindow::copyTextRequested);
+    const auto showMouseMenu = [&](int row) {
+        const QPoint point = list->visualItemRect(list->item(row)).center();
+        QContextMenuEvent event(QContextMenuEvent::Mouse, point, list->viewport()->mapToGlobal(point));
+        QApplication::sendEvent(list->viewport(), &event);
+    };
+    list->setCurrentRow(1);
+    const auto targetPoint = list->visualItemRect(list->item(0)).center();
+    QTest::mousePress(list->viewport(), Qt::RightButton, {}, targetPoint);
+    QTest::mouseRelease(list->viewport(), Qt::RightButton, {}, targetPoint);
+    QCOMPARE(list->currentRow(), 1);
+    showMouseMenu(0); QVERIFY(menu->isVisible()); QCOMPARE(list->currentRow(), 1);
+    auto action = [&](const char *name) { return menu->findChild<QAction *>(name); };
+    QVERIFY(!action("contextChangeSession")->isEnabled()); // Busy stays busy.
+    action("contextCopyName")->trigger(); QCOMPARE(texts.size(), 1); QCOMPARE(texts[0][0].toString(), QString("codex/hgs/dashboard"));
+    action("contextCopyFolder")->trigger(); QCOMPARE(texts.size(), 2); QCOMPARE(texts[1][0].toString(), QString("/work/a folder"));
+    action("contextFolderShell")->trigger(); QCOMPARE(shell.size(),1); QCOMPARE(shell.last()[1].toString(),QString("/work/a folder"));
+    QCOMPARE(list->currentRow(), 1); // Passive actions leave the conversation and draft in place.
+    action("contextCopyCommand")->trigger(); QCOMPARE(commands.size(), 1); QCOMPARE(commands[0][0].toString(), QString());
+    QCOMPARE(commands[0][1].toString(), QString("codex/hgs/dashboard")); QVERIFY(commands[0][2].toString().isEmpty());
+    action("contextOpenTerminal")->trigger(); QCOMPARE(terminal.size(), 1); QCOMPARE(normal.size(), 0);
+    QCOMPARE(terminal[0][2].toString(), QString("/dev/pts/42")); // Explicit open ignores clipboard default.
+    menu->hide(); list->setFocus(); QTest::keyClick(list, Qt::Key_F10, Qt::ShiftModifier); QVERIFY(menu->isVisible());
+    menu->hide(); QTest::keyClick(list, Qt::Key_Menu); QVERIFY(menu->isVisible()); menu->hide();
+    const QPoint emptyPoint(5, list->viewport()->height() - 1);
+    QContextMenuEvent empty(QContextMenuEvent::Mouse, emptyPoint, list->viewport()->mapToGlobal(emptyPoint));
+    QApplication::sendEvent(list->viewport(), &empty); QVERIFY(!menu->isVisible());
+    showMouseMenu(4); action("contextOpenTerminal")->trigger(); QCOMPARE(terminal.size(), 2);
+    QCOMPARE(terminal[1][0].toString(), QString("mac")); QVERIFY(terminal[1][2].toString().isEmpty()); menu->hide();
+    BoxState offline; offline.host = "mac"; offline.ok = false; state.setPeer(offline, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    showMouseMenu(4); QVERIFY(!action("contextOpenTerminal")->isEnabled()); QVERIFY(!action("contextRenameSession")->isEnabled());
+    QVERIFY(!action("contextTerminateSession")->isEnabled()); QVERIFY(action("contextCopyCommand")->isEnabled());
+    action("contextCopyCommand")->trigger(); QCOMPARE(commands.size(), 2); QCOMPARE(commands[1][0].toString(), QString("mac"));
+    QVERIFY(!action("contextCopyFolder")->isEnabled()); // Missing path is not guessed from a project label.
+}
+
+void TestSessionsWindow::activityMarkReadKeepsReadingPosition_data()
+{
+    QTest::addColumn<QString>("theme");QTest::newRow("dark")<<QString("dark");QTest::newRow("light")<<QString("light");
+}
+void TestSessionsWindow::activityMarkReadKeepsReadingPosition()
+{
+    QFETCH(QString,theme);QSettings().setValue("workspace/theme",theme);
+    auto state=fleet();auto box=state.local();auto &session=box.sessions[0];session.conversationId="conversation-one";
+    state.setLocal(box,QDateTime::currentMSecsSinceEpoch());QVERIFY(state.setReviewLater({},session,true));
+    QSettings().setValue("attention/sessionMarks",QJsonDocument(state.attentionMarks()).toJson(QJsonDocument::Compact));
+    SessionsWindow window(script());window.resize(1000,760);window.setFleet(state);window.show();
+    auto *client=window.findChild<HgsClient *>();QSignalSpy inspections(client,&HgsClient::inspectionReady);
+    window.showSession({},session.name);QTRY_VERIFY(!inspections.isEmpty());
+    QJsonArray events;for(int i=1;i<=30;++i)events<<QJsonObject{{"seq",i},{"at",1791018000+i},{"type","AgentMessage"},{"detail",QString("Read message %1\n\nKeep this position and selection.").arg(i)}};
+    client->inspectionReady({},session.name,{{"tracked",true},{"conversation_id",session.conversationId},{"phase","working"},{"activity","busy"},{"cursor",30},{"events",events},
+        {"session_usage",QJsonObject{{"context",QJsonObject{{"used",139000},{"limit",258400}}}}}});
+    auto *button=window.findChild<QPushButton *>("activityMarkRead");QVERIFY(button);QVERIFY(button->isVisible());QVERIFY(!button->icon().isNull());
+    auto *browser=window.findChild<ActivityView *>("mainActivity")->browser();auto *composer=window.findChild<MessageComposer *>("messageComposer");
+    composer->editor()->setPlainText("Unsent draft");QTest::qWait(30);
+    const auto initialGeometry=browser->geometry();
+    browser->setTextCursor(browser->document()->find("Read message 1"));browser->verticalScrollBar()->setValue(0);QTest::qWait(20);
+    const auto selection=browser->textCursor().selectedText();QVERIFY(!selection.isEmpty());
+    const auto geometry=browser->geometry();const auto revision=browser->document()->revision();
+    auto *context=window.findChild<QPushButton *>("activityContext");
+    auto *latest=window.findChild<ActivityView *>("mainActivity")->jumpButton();QVERIFY(latest->isVisible());
+    const auto bounds=[&](QWidget *widget){return QRect(widget->mapTo(&window,QPoint()),widget->size());};
+    QVERIFY(bounds(latest).top()>bounds(browser).bottom());
+    QVERIFY(qAbs(bounds(latest).center().y()-bounds(button).center().y())<=1);
+    QVERIFY(qAbs(bounds(latest).center().x()-bounds(composer).center().x())<=1);
+    QVERIFY(bounds(button).right()<bounds(latest).left());QVERIFY(bounds(latest).right()<bounds(context).left());
+    QCOMPARE(browser->geometry(),initialGeometry);QCOMPARE(latest->height(),24);
+    QVERIFY(bounds(button).right()<bounds(context).left());
+    QCOMPARE(button->height(),24);
+    QVERIFY(qAbs(bounds(context).right()-bounds(composer).right())<=2);
+    for(int poll=0;poll<3;++poll){window.setFleet(state);QVERIFY(button->isVisible());}
+    for(auto *filter:window.findChildren<QPushButton *>("sessionFilter"))if(filter->property("filter")=="attention")filter->click();
+    const auto preview=qEnvironmentVariable("HGS_ATTENTION_PREVIEW");
+    if(!preview.isEmpty()){QDir().mkpath(preview);QVERIFY(window.grab().save(preview+"/mark-read-"+theme+".png"));}
+    QSignalSpy marks(&window,&SessionsWindow::attentionMarksChanged);button->click();QCOMPARE(marks.size(),1);QVERIFY(button->isHidden());
+    QCoreApplication::sendPostedEvents(nullptr,QEvent::LayoutRequest);
+    QCOMPARE(browser->geometry(),geometry);QCOMPARE(browser->document()->revision(),revision);QCOMPARE(browser->verticalScrollBar()->value(),0);
+    QCOMPARE(browser->textCursor().selectedText(),selection);QCOMPARE(composer->editor()->toPlainText(),QString("Unsent draft"));
+    QVERIFY(qAbs(bounds(latest).center().x()-bounds(composer).center().x())<=1);
+    auto *list=window.findChild<SessionList *>("sessionList");QVERIFY(list->currentItem()->data(SessionRoles::Key).toString().contains(session.name));
+    window.setFleet(state);QVERIFY(button->isHidden());
+    session.phase="input";session.activity="waiting";session.attentionId="new-question";state.setLocal(box,QDateTime::currentMSecsSinceEpoch());window.setFleet(state);QVERIFY(button->isVisible());
+    button->click();QVERIFY(button->isHidden());
+    // Manual reminders remain actionable even while the machine is offline.
+    QVERIFY(state.setReviewLater({},session,true));QSettings().setValue("attention/sessionMarks",QJsonDocument(state.attentionMarks()).toJson(QJsonDocument::Compact));
+    box.ok=false;state.setLocal(box,QDateTime::currentMSecsSinceEpoch());window.setFleet(state);QVERIFY(button->isVisible());button->click();QVERIFY(button->isHidden());
+    QTest::qWait(20);const auto beforeJump=browser->geometry();
+    latest->click();QTest::qWait(20);QVERIFY(latest->isHidden());QCOMPARE(browser->geometry(),beforeJump);
+    QCOMPARE(browser->verticalScrollBar()->value(),browser->verticalScrollBar()->maximum());
+}
+
+void TestSessionsWindow::fileDropsAcrossSessionPanelKeepDraftAndTarget()
+{
+    QTemporaryDir temporary;QVERIFY(temporary.isValid());QFile file(temporary.filePath("report #1.pdf"));
+    QVERIFY(file.open(QIODevice::WriteOnly));file.write("%PDF-1.4\nA test report");file.close();
+    QMimeData mime;mime.setUrls({QUrl::fromLocalFile(file.fileName())});
+    SessionsWindow window(script());window.resize(1100,760);window.setFleet(fleet());window.show();window.showSession({},"codex/hgs/dashboard");
+    auto *composer=window.findChild<MessageComposer *>("messageComposer");composer->editor()->setPlainText("Keep every word of this draft");
+    auto cursor=composer->editor()->textCursor();cursor.select(QTextCursor::Document);composer->editor()->setTextCursor(cursor);
+    auto *panel=window.findChild<QWidget *>("sessionDetailPanel");auto *overlay=window.findChild<QWidget *>("sessionFileDropOverlay");QVERIFY(panel);QVERIFY(overlay);
+    auto *browser=window.findChild<ActivityView *>("mainActivity")->browser();
+    QSignalSpy sent(composer,&MessageComposer::sendRequested);int count=0;
+    for(auto *target:QList<QWidget *>{panel,window.findChild<QLabel *>("detailTitle"),browser->viewport()}) {
+        QDragEnterEvent enter(QPoint(10,10),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(target,&enter);
+        QVERIFY(enter.isAccepted());QVERIFY(overlay->isVisible());QCOMPARE(overlay->geometry(),panel->rect());
+        const auto preview=qEnvironmentVariable("HGS_DROP_PREVIEW");if(!preview.isEmpty()&&count==0){QDir().mkpath(preview);QVERIFY(window.grab().save(preview+"/session-file-drop.png"));}
+        QDropEvent drop(QPointF(10,10),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(target,&drop);
+        QVERIFY(drop.isAccepted());QVERIFY(overlay->isHidden());QCOMPARE(composer->findChildren<QWidget *>("attachmentTile").size(),++count);
+        QVERIFY(composer->editor()->toPlainText().contains("Keep every word of this draft"));
+    }
+    auto *tabs=window.findChild<QTabWidget *>("sessionDetailTabs");
+    window.findChild<QPushButton *>("toggleInspector")->setChecked(true);window.findChild<QTabWidget *>("sessionInspector")->setCurrentIndex(1);
+    for(auto *target:QList<QWidget *>{window.findChild<QTextBrowser *>("sessionInfo")->viewport()}) {
+        if(target==tabs->widget(1))tabs->setCurrentIndex(1);
+        QDragEnterEvent enter(QPoint(10,10),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(target,&enter);QVERIFY(enter.isAccepted());
+        QDropEvent drop(QPointF(10,10),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(target,&drop);
+        QVERIFY(drop.isAccepted());QCOMPARE(tabs->currentIndex(),0);QCOMPARE(composer->findChildren<QWidget *>("attachmentTile").size(),++count);
+    }
+    QCOMPARE(sent.size(),0);QVERIFY(QFileInfo::exists(file.fileName()));
+    QDragEnterEvent enter(QPoint(10,10),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(panel,&enter);QVERIFY(enter.isAccepted());
+    window.showSession("mac","claude/infra/review");
+    QDropEvent stale(QPointF(10,10),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(panel,&stale);
+    QVERIFY(!stale.isAccepted());QCOMPARE(composer->findChildren<QWidget *>("attachmentTile").size(),0);
+    window.showSession({},"codex/hgs/dashboard");QCOMPARE(composer->findChildren<QWidget *>("attachmentTile").size(),count);
+    QMimeData web;web.setUrls({QUrl("https://example.test/file.pdf")});
+    QDragEnterEvent remote(QPoint(10,10),Qt::CopyAction,&web,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(panel,&remote);QVERIFY(!remote.isAccepted());
+    // A visible subagent composer owns the panel's drop; the parent draft stays intact.
+    auto *client=window.findChild<HgsClient *>();QTest::qWait(60);
+    client->inspectionReady({},"codex/hgs/dashboard",{{"tracked",true},{"conversation_id","conversation-one"},{"run_id","run-one"},
+        {"subagents",QJsonObject{{"child-1",QJsonObject{{"name","Review"},{"state","working"}}}}}});
+    window.findChild<QTextBrowser *>("subagents")->anchorClicked(QUrl("hgs-agent:child-1"));
+    client->subagentInspectionReady({},"codex/hgs/dashboard","child-1",{},{{"parent_conversation_id","conversation-one"},{"conversation_id","child-one"},{"run_id","run-one"},{"send_supported",true}});
+    auto *child=window.findChild<MessageComposer *>("subagentComposer");QVERIFY(child->isVisible());child->editor()->setPlainText("Child draft");
+    QDragEnterEvent childEnter(QPoint(10,10),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(panel,&childEnter);QVERIFY(childEnter.isAccepted());
+    QDropEvent childDrop(QPointF(10,10),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(panel,&childDrop);QVERIFY(childDrop.isAccepted());
+    QCOMPARE(child->findChildren<QWidget *>("attachmentTile").size(),1);QVERIFY(child->editor()->toPlainText().contains("Child draft"));
+    QCOMPARE(composer->findChildren<QWidget *>("attachmentTile").size(),count);QCOMPARE(sent.size(),0);
+}
+
+void TestSessionsWindow::terminalDropKeepsActivityDraftAndDoesNotSubmit()
+{
+    const auto program=m_dir.filePath("terminal-drop-hgs");QFile fixture(program);QVERIFY(fixture.open(QIODevice::WriteOnly));
+    fixture.write("#!/bin/sh\ncase \"$1\" in @*) shift;; esac\nif [ \"$1\" = a ]; then stty raw -echo; printf '\\033[?2004h'; exec cat >/dev/null; fi\nexec '"+script().toUtf8()+"' \"$@\"\n");
+    fixture.close();fixture.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner);
+    const auto path=m_dir.filePath("report's draft.pdf");QFile file(path);QVERIFY(file.open(QIODevice::WriteOnly));file.write("fixture");file.close();
+    SessionsWindow window(program);window.setFleet(fleet());window.resize(1100,760);window.show();window.showSession({},"codex/hgs/dashboard");
+    auto *composer=window.findChild<MessageComposer *>("messageComposer");composer->editor()->setPlainText("Keep Activity draft");
+    auto *terminal=window.findChild<TerminalView *>();auto *tabs=window.findChild<QTabWidget *>("sessionDetailTabs");
+    tabs->setCurrentWidget(terminal);QTRY_VERIFY(terminal->isConnected());QTest::qWait(150);
+    QSignalSpy output(terminal->terminalScreen(),&TerminalScreen::output);QSignalSpy sent(composer,&MessageComposer::sendRequested);
+    QMimeData mime;mime.setUrls({QUrl::fromLocalFile(path)});
+    auto *panel=window.findChild<QWidget *>("sessionDetailPanel");
+    QDragEnterEvent enter(QPoint(10,10),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(panel,&enter);QVERIFY(enter.isAccepted());
+    QDropEvent drop(QPointF(10,10),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(panel,&drop);QVERIFY(drop.isAccepted());
+    QCOMPARE(tabs->currentWidget(),terminal);QCOMPARE(composer->editor()->toPlainText(),QString("Keep Activity draft"));
+    QCOMPARE(composer->findChildren<QWidget *>("attachmentTile").size(),0);QCOMPARE(sent.size(),0);
+    QByteArray pasted;for(const auto &item:output)pasted+=item.first().toByteArray();
+    QVERIFY(pasted.contains("report'\\''s draft.pdf"));QVERIFY(!pasted.contains('\r'));QVERIFY(!pasted.contains('\n'));
+    output.clear();QDragEnterEvent second(QPoint(10,10),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(panel,&second);
+    tabs->setCurrentIndex(0);QDropEvent stale(QPointF(10,10),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(panel,&stale);
+    QVERIFY(!stale.isAccepted());QCOMPARE(output.size(),0);QCOMPARE(composer->findChildren<QWidget *>("attachmentTile").size(),0);
+}
+
+void TestSessionsWindow::sessionAttentionMenuPersistsWithoutSelection()
+{
+    auto state = fleet(); auto box = state.local();
+    box.sessions[0].conversationId = "review-conversation"; box.sessions[0].runId = "run";
+    box.sessions[0].phase = "approval"; box.sessions[0].activity = "waiting";
+    state.setLocal(box, QDateTime::currentMSecsSinceEpoch());
+    SessionsWindow window(script()); window.setFleet(state); window.show();
+    auto *list = window.findChild<QListWidget *>("sessionList");
+    auto *menu = window.findChild<QMenu *>("sessionContextMenu");
+    QSignalSpy marks(&window, &SessionsWindow::attentionMarksChanged);
+    list->setCurrentRow(1);
+    const auto open = [&] {
+        menu->hide(); const auto point = list->visualItemRect(list->item(0)).center();
+        QContextMenuEvent event(QContextMenuEvent::Mouse, point, list->viewport()->mapToGlobal(point));
+        QApplication::sendEvent(list->viewport(), &event);
+    };
+    open(); QVERIFY(!menu->findChild<QAction *>("contextReviewLater"));
+    menu->findChild<QAction *>("contextMarkRead")->trigger();
+    QCOMPARE(list->currentRow(), 1); QCOMPARE(marks.size(), 1);
+    QVERIFY(!list->item(0)->data(SessionRoles::Attention).toBool());
+    open(); QVERIFY(!menu->findChild<QAction *>("contextMarkRead"));
+    menu->findChild<QAction *>("contextReviewLater")->trigger();
+    QCOMPARE(list->currentRow(), 1); QCOMPARE(marks.size(), 2);
+    QVERIFY(list->item(0)->data(SessionRoles::ReviewLater).toBool());
+    window.setFleet(state); // Native polls do not contain UI reminders.
+    QVERIFY(list->item(0)->data(SessionRoles::ReviewLater).toBool());
+    open(); QVERIFY(menu->findChild<QAction *>("contextMarkRead")->isEnabled());
+    QVERIFY(!menu->findChild<QAction *>("contextReviewLater"));
+    menu->findChild<QAction *>("contextMarkRead")->trigger();
+    QCOMPARE(list->currentRow(), 1); QCOMPARE(marks.size(), 3);
+    QVERIFY(!list->item(0)->data(SessionRoles::ReviewLater).toBool());
+    QVERIFY(!list->item(0)->data(SessionRoles::Attention).toBool());
+    window.setFleet(state); QVERIFY(!list->item(0)->data(SessionRoles::Attention).toBool());
+    open(); menu->findChild<QAction *>("contextReviewLater")->trigger(); menu->hide();
+    SessionsWindow reopened(script()); reopened.setFleet(state); reopened.show();
+    QVERIFY(reopened.findChild<QListWidget *>("sessionList")->item(0)->data(SessionRoles::ReviewLater).toBool());
+}
+
+void TestSessionsWindow::sessionAttentionMenuSurvivesRoutinePoll()
+{
+    auto state = fleet(); auto box = state.local(); auto &session = box.sessions[0];
+    session.conversationId = "poll-conversation"; session.runId = "run";
+    session.phase = "input"; session.activity = "waiting";
+    session.attentionId = "question-1"; session.lastEventAt = 100;
+    state.setLocal(box, 1000);
+    SessionsWindow window(script()); window.setFleet(state); window.show();
+    auto *list = window.findChild<QListWidget *>("sessionList");
+    auto *menu = window.findChild<QMenu *>("sessionContextMenu");
+    QSignalSpy marks(&window, &SessionsWindow::attentionMarksChanged);
+    list->setCurrentRow(1);
+    const auto open = [&] {
+        menu->hide(); const auto point = list->visualItemRect(list->item(0)).center();
+        QContextMenuEvent event(QContextMenuEvent::Mouse, point, list->viewport()->mapToGlobal(point));
+        QApplication::sendEvent(list->viewport(), &event);
+    };
+    open(); auto *read = menu->findChild<QAction *>("contextMarkRead"); QVERIFY(read);
+    session.lastEventAt = 101;
+    session.subagents = {{"worker", QJsonObject{{"state", "working"}, {"summary", "Another tool"}}}};
+    state.setLocal(box, 2000); window.setFleet(state); read->trigger();
+    QCOMPARE(marks.size(), 1); QCOMPARE(list->currentRow(), 1);
+    QVERIFY(!list->item(0)->data(SessionRoles::Attention).toBool());
+    session.lastEventAt = 102; state.setLocal(box, 3000); window.setFleet(state);
+    QVERIFY(!list->item(0)->data(SessionRoles::Attention).toBool());
+    session.attentionId = "question-2"; state.setLocal(box, 4000); window.setFleet(state);
+    open(); read = menu->findChild<QAction *>("contextMarkRead"); QVERIFY(read);
+    session.attentionId = "question-3"; state.setLocal(box, 5000); window.setFleet(state);
+    read->trigger(); QCOMPARE(marks.size(), 1);
+    QVERIFY(list->item(0)->data(SessionRoles::Attention).toBool());
+    QVERIFY(window.findChild<QLabel *>("notice")->text().contains("A new reply or question arrived"));
+    menu->hide();
+}
+
+void TestSessionsWindow::sessionContextMenuGuardsIdentityAndChanges()
+{
+    auto state = fleet(); auto box = state.local(); box.sessions[0].activity = "idle"; box.sessions[0].phase = "idle"; box.sessions[0].created = 100;
+    state.setLocal(box, QDateTime::currentMSecsSinceEpoch());
+    SessionsWindow window(script()); window.setFleet(state); window.show();
+    auto *list = window.findChild<QListWidget *>("sessionList"); auto *menu = window.findChild<QMenu *>("sessionContextMenu");
+    auto show = [&]() { menu->hide(); list->setCurrentRow(0); QTest::keyClick(list, Qt::Key_Menu); };
+    auto action = [&](const char *name) { return menu->findChild<QAction *>(name); };
+    auto *client = window.findChild<HgsClient *>(); QSignalSpy writes(client, &HgsClient::writeDone), copies(&window, &SessionsWindow::copySessionCommandRequested);
+    show(); QVERIFY(action("contextChangeSession")->isEnabled()); list->setCurrentRow(1);
+    action("contextChangeSession")->trigger(); QTRY_COMPARE(writes.size(), 1);
+    QCOMPARE(writes[0][2].toString(), QString("pause\ncodex/hgs/dashboard")); QCOMPARE(list->currentRow(), 0);
+    show(); auto *pause = action("contextChangeSession"); box.sessions[0].activity = "busy";
+    state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state); pause->trigger(); QTest::qWait(30); QCOMPARE(writes.size(), 1);
+    box.sessions[0].activity = "idle"; state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    show(); pause = action("contextChangeSession"); box.sessions[0].state = "paused";
+    state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state); pause->trigger(); QTest::qWait(30); QCOMPARE(writes.size(), 1);
+    // A removed row cannot redirect a saved QAction to the newly selected row.
+    show(); auto *copy = action("contextCopyCommand"); const auto removed = box.sessions.takeFirst();
+    state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state); copy->trigger(); QCOMPARE(copies.size(), 0);
+    QVERIFY(window.findChild<QLabel *>("notice")->text().contains("no longer available"));
+    box.sessions.prepend(removed); state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    show(); copy = action("contextCopyCommand"); box.sessions[0].created = 200;
+    state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state); copy->trigger(); QCOMPARE(copies.size(), 0);
+    // Polling inside a confirmation dialog must also preserve the target.
+    show(); QTimer::singleShot(0, &window, [&]() {
+        auto *dialog = qobject_cast<QMessageBox *>(QApplication::activeModalWidget()); QVERIFY(dialog);
+        box.sessions.removeFirst(); state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+        dialog->button(QMessageBox::Yes)->click();
+    });
+    action("contextTerminateSession")->trigger(); QTest::qWait(30); QCOMPARE(writes.size(), 1);
+}
+
+void TestSessionsWindow::sessionContextMenuSavedAndArchive()
+{
+    auto state = fleet(); auto box = state.local(); auto older = box.sessions[2];
+    older.state = "archived"; older.archiveId = "older"; older.archivedAt = 100; older.cwd = "/saved/folder";
+    auto recent = older; recent.archiveId = "recent"; recent.archivedAt = 200;
+    box.sessions.append(older); box.sessions.append(recent); state.setLocal(box, QDateTime::currentMSecsSinceEpoch());
+    SessionsWindow window(script()); window.setFleet(state); window.show(); window.showSession({}, "codex/website/navigation");
+    auto *list = window.findChild<QListWidget *>("sessionList"); auto *menu = window.findChild<QMenu *>("sessionContextMenu");
+    auto show = [&]() { menu->hide(); QTest::keyClick(list, Qt::Key_Menu); };
+    auto action = [&](const char *name) { return menu->findChild<QAction *>(name); };
+    QSignalSpy copies(&window, &SessionsWindow::copySessionCommandRequested);
+    auto *client = window.findChild<HgsClient *>(); QSignalSpy writes(client, &HgsClient::writeDone);
+    show(); QCOMPARE(action("contextChangeSession")->text(), QString("Resume session")); QVERIFY(action("contextArchiveSession"));
+    QCOMPARE(action("contextTerminateSession")->text(), QString("Forget saved session…"));
+    QTimer::singleShot(0, &window, [&]() {
+        auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget()); QVERIFY(dialog);
+        QCOMPARE(dialog->findChild<QLineEdit *>("renameSessionName")->text(), QString("navigation")); dialog->reject();
+    });
+    action("contextRenameSession")->trigger(); QCOMPARE(writes.size(), 0); menu->hide();
+    for (auto *button : window.findChildren<QPushButton *>()) if (button->property("filter") == "archived") button->click();
+    show(); QVERIFY(!action("contextOpenTerminal")); QVERIFY(!action("contextArchiveSession"));
+    QCOMPARE(action("contextCopyCommand")->text(), QString("Copy restore command"));
+    QCOMPARE(action("contextChangeSession")->text(), QString("Restore session")); QVERIFY(!action("contextChangeSession")->isEnabled()); // Saved name collision.
+    list->setCurrentRow(1); action("contextCopyCommand")->trigger(); QCOMPARE(copies.size(), 1);
+    QCOMPARE(copies[0][1].toString(), QString("codex/website/navigation")); QCOMPARE(copies[0][2].toString(), QString("recent"));
+    QTimer::singleShot(0, &window, [&]() {
+        auto *dialog = qobject_cast<QMessageBox *>(QApplication::activeModalWidget()); QVERIFY(dialog); dialog->button(QMessageBox::Yes)->click();
+    });
+    list->setCurrentRow(1); action("contextTerminateSession")->trigger(); QTRY_COMPARE(writes.size(), 1);
+    QCOMPARE(writes[0][2].toString(), QString("kill\ncodex/website/navigation\n--archive\nrecent"));
+}
+
+void TestSessionsWindow::sessionRowsHaveNoHoverPopup()
+{
+    auto state = fleet(); auto box = state.local();
+    auto &session = box.sessions[0];
+    session.cwd = "/workspace/" + QString(6000, 'p');
+    session.gitBranch = "feature/" + QString(6000, 'b');
+    session.activitySummary = "<img src='file:///private'> " + QString(12000, 'x');
+    session.activityDetail = QString(12000, 'y');
+    state.setLocal(box, QDateTime::currentMSecsSinceEpoch());
+    SessionsWindow window(script()); window.setFleet(state); window.showSession({}, session.name);
+    auto *list = window.findChild<QListWidget *>("sessionList");
+    QVERIFY(list->currentItem());
+    QVERIFY(list->currentItem()->toolTip().isEmpty());
+    const auto accessible = list->currentItem()->data(Qt::AccessibleTextRole).toString();
+    QVERIFY(accessible.size() < 1200); QVERIFY(accessible.count('\n') <= 11);
+    QVERIFY(accessible.contains(session.name));
+    window.setFleet(state);
+    QVERIFY(list->currentItem()->toolTip().isEmpty());
+}
+
+void TestSessionsWindow::buttonFocusFollowsKeyboardAndNotClicks()
+{
+    SessionsWindow window(script()); window.setFleet(fleet()); window.show(); QTest::qWait(50);
+    auto *toggle = window.findChild<QPushButton *>("toggleInspector");
+    QTest::mouseClick(toggle, Qt::LeftButton);
+    QCOMPARE(toggle->property("keyboardFocus").toBool(), false);
+    toggle->setFocus(Qt::TabFocusReason); QTest::keyClick(toggle, Qt::Key_Tab);
+    auto *focused = qobject_cast<QPushButton *>(QApplication::focusWidget());
+    QVERIFY(focused); QVERIFY(focused->property("keyboardFocus").toBool());
+    QTest::mouseClick(focused, Qt::LeftButton);
+    QVERIFY(!focused->property("keyboardFocus").toBool());
+    // Pressing a key on an already focused button restores its keyboard ring.
+    QTest::keyClick(focused, Qt::Key_Shift); QVERIFY(!focused->property("keyboardFocus").toBool());
+    QTest::keyClick(focused, Qt::Key_Right); QVERIFY(focused->property("keyboardFocus").toBool());
+
+    // Refresh disables itself while connecting. Qt then transfers focus to
+    // the next enabled button, even though the user has not pressed Tab.
+    QWidget controls; QVBoxLayout layout(&controls);
+    QPushButton refresh("Refresh"), details("Details");
+    layout.addWidget(&refresh); layout.addWidget(&details);
+    connect(&refresh, &QPushButton::clicked, &refresh, [&] { refresh.setEnabled(false); });
+    controls.show(); controls.activateWindow(); QTest::qWait(20);
+    QTest::mouseClick(&refresh, Qt::LeftButton);
+    QVERIFY(details.hasFocus()); QVERIFY(!details.property("keyboardFocus").toBool());
+    refresh.setEnabled(true); refresh.setFocus(Qt::MouseFocusReason);
+    QTest::keyClick(&refresh, Qt::Key_Space);
+    QVERIFY(details.hasFocus()); QVERIFY(details.property("keyboardFocus").toBool());
+}
+
+void TestSessionsWindow::inspectorPreservesWorkspaceAndReportsTasks()
+{
+    QSettings().setValue("processes/enabled",true);
+    SessionsWindow window(script()); window.setFleet(fleet()); window.resize(1120, 760); window.show(); QTest::qWait(80);
+    auto *tabs = window.findChild<QTabWidget *>("sessionDetailTabs");
+    auto *inspector = window.findChild<QTabWidget *>("sessionInspector");
+    auto *toggle = window.findChild<QPushButton *>("toggleInspector");
+    auto *panel = window.findChild<QFrame *>("sessionInspectorPanel");
+    auto *splitter = window.findChild<QSplitter *>("sessionWorkSplitter");
+    auto *editor = window.findChild<MessageComposer *>("messageComposer")->findChild<QPlainTextEdit *>("messageInput");
+    QVERIFY(tabs && inspector && toggle && panel && splitter && editor);
+    QCOMPARE(tabs->count(), 4); QCOMPARE(tabs->tabText(0), QString("Activity")); QCOMPARE(tabs->tabText(1), QString("Terminal"));
+    QCOMPARE(tabs->tabText(3),QString("Processes"));QVERIFY(tabs->isTabVisible(3));
+    QVERIFY(tabs->isTabVisible(1)); QVERIFY(!tabs->isTabVisible(2));
+    QVERIFY(panel->isHidden()); QCOMPARE(tabs->cornerWidget(), toggle);
+    editor->setPlainText("Keep this draft"); const int originalWidth = tabs->width();
+    QTest::mouseClick(toggle, Qt::LeftButton); QTest::qWait(40);
+    QVERIFY(inspector->isVisible()); QVERIFY(tabs->width() < originalWidth); QVERIFY(panel->width() >= 240);
+    QVERIFY(!tabs->cornerWidget()); QCOMPARE(inspector->cornerWidget(), toggle);
+    QCOMPARE(tabs->currentIndex(), 0); QCOMPARE(editor->toPlainText(), QString("Keep this draft"));
+    QJsonObject data{{"tracked", true}, {"run_id", "run-1"}, {"conversation_id", "conversation-one"},
+        {"subagent_source", "hooks"}, {"subagents", QJsonObject{{"review", QJsonObject{{"name", "Reviewer"}, {"state", "working"}}}}},
+        {"task_lists", QJsonObject{
+            {"main", QJsonObject{{"run_id", "run-1"}, {"items", QJsonArray{
+                QJsonObject{{"title", "Inspect <source> & hooks"}, {"status", "completed"}},
+                QJsonObject{{"title", "Implement right panel"}, {"status", "in_progress"}}}}}},
+            {"agent:review", QJsonObject{{"run_id", "older-run"}, {"items", QJsonArray{
+                QJsonObject{{"title", "Verify boundaries"}, {"status", "pending"}}}}}}
+        }}};
+    auto *client = window.findChild<HgsClient *>(); client->inspectionReady({}, "codex/hgs/dashboard", data);
+    auto *roster = window.findChild<QTextBrowser *>("subagents"); const auto text = roster->toPlainText();
+    QVERIFY(text.contains("Inspect <source> & hooks")); QVERIFY(text.contains("1 of 2 completed"));
+    QVERIFY(text.contains("In progress")); QVERIFY(text.contains("Reviewer")); QVERIFY(text.contains("Last recorded"));
+    inspector->setCurrentIndex(2); QCOMPARE(tabs->currentIndex(), 0);
+    splitter->setSizes({420, 310});
+    QTest::mouseClick(toggle, Qt::LeftButton); QTest::qWait(40);
+    QVERIFY(panel->isHidden()); QVERIFY(!toggle->isChecked()); QCOMPARE(editor->toPlainText(), QString("Keep this draft"));
+    QCOMPARE(tabs->cornerWidget(), toggle); QVERIFY(!inspector->cornerWidget()); QVERIFY(toggle->isVisible());
+    tabs->setCurrentIndex(1); QTest::mouseClick(toggle, Qt::LeftButton); QCOMPARE(tabs->currentIndex(), 1);
+    QCOMPARE(inspector->currentIndex(), 2);
+    data["processes"]=QJsonObject{{"active_count",1},{"items",QJsonArray{
+        QJsonObject{{"id","build"},{"command","cargo build --release"},{"description","Build the updated CLI"},{"owner","main"},{"cwd","/workspace/zerus"},{"status","running"},{"started_at",QDateTime::currentSecsSinceEpoch()-23}},
+        QJsonObject{{"id","tests"},{"command","python3 tests/test_dsh_native.py -v"},{"owner","main"},{"cwd","/workspace/zerus"},{"status","completed"},{"started_at",QDateTime::currentSecsSinceEpoch()-65},{"ended_at",QDateTime::currentSecsSinceEpoch()-12},{"exit_code",0}}
+    }}};
+    client->inspectionReady({},"codex/hgs/dashboard",data);QCOMPARE(tabs->tabText(3),QString("Processes (1)"));
+    tabs->setCurrentIndex(3);QVERIFY(window.findChild<QTreeWidget*>("processList")->isVisible());QCOMPARE(editor->toPlainText(),QString("Keep this draft"));
+    if(!qEnvironmentVariable("HGS_PROCESSES_WINDOW_PREVIEW").isEmpty()){
+        QTest::mouseClick(toggle,Qt::LeftButton);QTest::qWait(80);QVERIFY(window.grab().save(qEnvironmentVariable("HGS_PROCESSES_WINDOW_PREVIEW")));QTest::mouseClick(toggle,Qt::LeftButton);
+    }
+    window.close();
+    SessionsWindow reopened(script()); reopened.setFleet(fleet()); reopened.show(); QTest::qWait(60);
+    auto *restored = reopened.findChild<QTabWidget *>("sessionInspector"); QVERIFY(restored->isVisible()); QCOMPARE(restored->currentIndex(), 2);
+    // A smaller window still gives both panels a usable width and no overlay.
+    reopened.resize(960, 650); QTest::qWait(40);
+    auto *main = reopened.findChild<QTabWidget *>("sessionDetailTabs"); QVERIFY(main->width() >= 280);
+    auto *restoredPanel = reopened.findChild<QFrame *>("sessionInspectorPanel");
+    QCOMPARE(main->parentWidget(), restoredPanel->parentWidget());
+    QVERIFY(main->geometry().right() < restoredPanel->geometry().left());
+    auto *bar=restored->tabBar();
+    QCOMPARE(bar->elideMode(),Qt::ElideNone);QVERIFY(!bar->usesScrollButtons());
+    restored->setStyleSheet("QTabBar { font-size:24px; } QTabBar::tab { font-size:24px; }");QTest::qWait(50);
+    for(int i=0;i<bar->count();++i)QVERIFY2(bar->tabRect(i).width()>=bar->fontMetrics().horizontalAdvance(QString(bar->tabText(i)).replace("&&","&"))+12,qPrintable(QString("%1 rect=%2 text=%3").arg(bar->tabText(i)).arg(bar->tabRect(i).width()).arg(bar->fontMetrics().horizontalAdvance(QString(bar->tabText(i)).replace("&&","&")))));
+    for(int i=0;i<bar->count();++i){QVERIFY(bar->tabRect(i).left()>=0);QVERIFY(bar->tabRect(i).right()<bar->width());}
+    QVERIFY(bar->geometry().right()<restored->cornerWidget()->geometry().left());
+    QVERIFY(restoredPanel->mapTo(&reopened,restoredPanel->rect().topRight()).x()<reopened.width());
+    const auto inspectorPreview=qEnvironmentVariable("HGS_INSPECTOR_PREVIEW");if(!inspectorPreview.isEmpty())QVERIFY(reopened.grab().save(inspectorPreview));
+    reopened.showSession({}, "kimi/docs/research"); QTest::qWait(50);
+    QVERIFY(!reopened.findChild<QTextBrowser *>("subagents")->toPlainText().contains("Implement right panel"));
+}
+
+void TestSessionsWindow::detailsPollingPreservesReadingPosition()
+{
+    SessionsWindow window(script()); window.resize(1150, 650); window.setFleet(fleet()); window.show();
+    auto *client = window.findChild<HgsClient *>(); QSignalSpy inspections(client, &HgsClient::inspectionReady);
+    window.showSession({}, "codex/hgs/dashboard"); QTRY_VERIFY(!inspections.isEmpty());
+    auto *inspector = window.findChild<QTabWidget *>("sessionInspector");
+    window.findChild<QPushButton *>("toggleInspector")->setChecked(true); inspector->setCurrentIndex(1);
+    auto *info = window.findChild<QTextBrowser *>("sessionInfo");
+    auto *scroll = info->verticalScrollBar();
+    QTest::qWait(60); // Drain the fake backend's initial inspection and panel layout.
+    QJsonObject totals{{"total", 4280764}, {"input", 4169472}, {"uncached_input", 64},
+        {"cache_read", 3770489}, {"cache_write", 398919}, {"output", 111292},
+        {"reasoning", 62310}, {"web_searches", 0}, {"web_fetches", 0}};
+    QJsonObject usage{{"status", "ok"}, {"totals", totals}, {"requests", 32},
+        {"context", QJsonObject{{"used", 233246}}}};
+    QJsonObject details{{"tracked", true}, {"conversation_id", "conversation-one"}, {"run_id", "run-one"},
+        {"cwd", "/work/project"}, {"git_root", "/work/project"}, {"git_branch", "main"},
+        {"last_event_at", 1791266000}, {"session_usage", usage}};
+    client->inspectionReady({}, "codex/hgs/dashboard", details);
+    QTRY_VERIFY(scroll->maximum() > 100);
+    auto selected = info->document()->find("Session usage"); QVERIFY(!selected.isNull());
+    info->setTextCursor(selected);
+    scroll->setValue(scroll->maximum() - 40); const int position = scroll->value();
+    const int revision = info->document()->revision();
+    // Identical polls must not replace the document at all.
+    client->inspectionReady({}, "codex/hgs/dashboard", details);
+    QCOMPARE(info->document()->revision(), revision); QCOMPARE(scroll->value(), position);
+    for (int i = 0; i < 4; ++i) {
+        details["last_event_at"] = 1791266001 + i;
+        totals["total"] = 10000000 + i; usage["totals"] = totals;
+        usage["requests"] = 100 + i; details["session_usage"] = usage;
+        client->inspectionReady({}, "codex/hgs/dashboard", details);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+        QCOMPARE(scroll->value(), position);
+        QCOMPARE(info->textCursor().selectedText(), QString("Session usage"));
+        QVERIFY(info->toPlainText().simplified().contains(QLocale().toString(10000000 + i).simplified()));
+        QVERIFY(info->updatesEnabled());
+    }
+    // Polls of a hidden Details tab and closing/reopening the inspector are
+    // still updates to the same reading context.
+    inspector->setCurrentIndex(0);
+    details["last_event_at"] = 1791266010; client->inspectionReady({}, "codex/hgs/dashboard", details);
+    inspector->setCurrentIndex(1); QTest::qWait(20); QCOMPARE(scroll->value(), position);
+    auto *toggle = window.findChild<QPushButton *>("toggleInspector");
+    toggle->setChecked(false);
+    details["last_event_at"] = 1791266011; client->inspectionReady({}, "codex/hgs/dashboard", details);
+    toggle->setChecked(true); QTest::qWait(20); QCOMPARE(scroll->value(), position);
+    // A different conversation in the same terminal starts at the top.
+    details["conversation_id"] = "conversation-two";
+    client->inspectionReady({}, "codex/hgs/dashboard", details);
+    client->inspectionReady({}, "codex/hgs/dashboard", details);
+    QCOMPARE(scroll->value(), 0); QVERIFY(!info->textCursor().hasSelection());
+    scroll->setValue(scroll->maximum()); QVERIFY(scroll->value() > 0);
+    window.showSession("mac", "claude/infra/review");
+    QCOMPARE(scroll->value(), 0); QVERIFY(!info->textCursor().hasSelection());
+}
+
+void TestSessionsWindow::nativeGoalIsIndependentOfTurnState()
+{
+    SessionsWindow window(script()); window.setFleet(fleet()); window.show(); QTest::qWait(80);
+    auto *client = window.findChild<HgsClient *>();
+    auto *goalButton = window.findChild<QPushButton *>("sessionGoal");
+    QVERIFY(goalButton->isHidden());
+    QJsonObject goal{{"id", "goal-one"}, {"objective", "Finish <migration> & verify restore"}, {"status", "active"},
+        {"tokens_used", 1000}, {"token_budget", 9000}, {"time_used_seconds", 154800}};
+    QJsonObject data{{"tracked", true}, {"conversation_id", "conversation-one"}, {"activity", "idle"}, {"goal", goal}};
+    client->inspectionReady({}, "codex/hgs/dashboard", data);
+    QVERIFY(goalButton->isVisible()); QVERIFY(goalButton->text().contains("Pursuing goal"));
+    QVERIFY(goalButton->text().contains("1d 19h"));
+    QTest::mouseClick(goalButton, Qt::LeftButton);
+    auto *inspector = window.findChild<QTabWidget *>("sessionInspector");
+    QVERIFY(inspector->isVisible()); QCOMPARE(inspector->currentIndex(), 0);
+    auto *roster = window.findChild<QTextBrowser *>("subagents");
+    QVERIFY(roster->toPlainText().contains("Finish <migration> & verify restore"));
+    QVERIFY(roster->toPlainText().contains("tokens"));
+    for (const auto &state : {"paused", "blocked", "usage_limited", "budget_limited", "complete"}) {
+        goal["status"] = state; data["goal"] = goal; client->inspectionReady({}, "codex/hgs/dashboard", data);
+        QVERIFY(goalButton->isVisible()); QVERIFY(!goalButton->text().contains("Pursuing goal"));
+    }
+    data["goal"] = QJsonValue::Null; data["goal_source"] = "unavailable";
+    client->inspectionReady({}, "codex/hgs/dashboard", data);
+    QVERIFY(goalButton->isHidden()); QVERIFY(roster->toPlainText().contains("Goal data is unavailable"));
+    window.showSession({}, "kimi/docs/research"); QTest::qWait(40);
+    QVERIFY(goalButton->isHidden()); QVERIFY(!roster->toPlainText().contains("Finish <migration>"));
+}
+
+void TestSessionsWindow::fileReferencesKeepMachineAndWorkspace()
+{
+    SessionsWindow window(script()); window.setFleet(fleet()); window.show(); QTest::qWait(80);
+    auto *client = window.findChild<HgsClient *>();
+    auto *activity = window.findChild<ActivityView *>("mainActivity");
+    QSignalSpy copied(&window, &SessionsWindow::copyTextRequested);
+    QSignalSpy ssh(&window, &SessionsWindow::machineSshRequested);
+    client->inspectionReady({}, "codex/hgs/dashboard", {{"cwd", "/local/project"}, {"conversation_id", "conversation-one"}});
+    QTimer::singleShot(0, &window, [&] {
+        auto *dialog = window.findChild<QDialog *>("sessionFileDialog"); QVERIFY(dialog);
+        QCOMPARE(dialog->findChild<QLineEdit *>("sessionFilePath")->text(), QString("/local/project/docs/README.md"));
+        QVERIFY(dialog->findChild<QPushButton *>("openSessionFile"));
+        QVERIFY(!dialog->findChild<QPushButton *>("openSessionFileSsh"));
+        auto *copy=dialog->findChild<QPushButton *>("copySessionFilePath");
+        QVERIFY(copy->text().isEmpty());QVERIFY(!copy->icon().isNull());
+        copy->click();QVERIFY(!dialog->isVisible());
+    });
+    activity->fileReferenceActivated("docs/README.md:12");
+    QCOMPARE(copied.takeFirst().at(0).toString(), QString("/local/project/docs/README.md"));
+    window.showSession("mac", "claude/infra/review"); QTest::qWait(50);
+    client->inspectionReady("mac", "claude/infra/review", {{"cwd", "/Users/remote/project"}, {"conversation_id", "conversation-one"}});
+    QTimer::singleShot(0, &window, [&] {
+        auto *dialog = window.findChild<QDialog *>("sessionFileDialog"); QVERIFY(dialog);
+        QCOMPARE(dialog->findChild<QLineEdit *>("sessionFilePath")->text(), QString("/Users/remote/project/docs/README.md"));
+        QVERIFY(!dialog->findChild<QPushButton *>("openSessionFile"));
+        dialog->findChild<QPushButton *>("openSessionFileSsh")->click();QVERIFY(!dialog->isVisible());
+    });
+    activity->fileReferenceActivated("docs/README.md");
+    QCOMPARE(ssh.size(), 1); QCOMPARE(ssh.takeFirst().at(0).toString(), QString("mac"));
+}
+
+void TestSessionsWindow::nativeSessionUsageStaysWithSelectedConversation()
+{
+    SessionsWindow window(script());window.setFleet(fleet());window.show();QTest::qWait(60);
+    auto *client=window.findChild<HgsClient *>();auto *info=window.findChild<QTextBrowser *>("sessionInfo");
+    const QJsonObject usage{{"status","ok"},{"totals",QJsonObject{{"total",12345},{"input",12000},{"cache_read",10000},{"output",345},{"reasoning",100}}},
+        {"context",QJsonObject{{"used",1500},{"limit",10000}}}};
+    client->inspectionReady({},"codex/hgs/dashboard",{{"conversation_id","conversation-one"},{"session_usage",usage}});
+    const auto text=info->toPlainText().simplified();QVERIFY(text.contains("Session usage"));QVERIFY2(text.contains(QLocale().toString(12345).simplified()),qPrintable(text));
+    QVERIFY(text.contains("Reasoning (in output)"));QVERIFY(window.findChild<QLabel *>("detailsContext")->text().contains("15"));QVERIFY(text.contains("Not reported"));
+    auto *context=window.findChild<QPushButton *>("activityContext");QVERIFY(context->isVisible());
+    QCOMPARE(context->property("contextPercent").toDouble(),15.);QVERIFY(context->toolTip().contains(QLocale().toString(1500)));
+    const auto indicatorSize=context->size();context->click();QCOMPARE(window.findChild<QTabWidget *>("sessionInspector")->currentIndex(),1);
+    window.findChild<QPushButton *>("toggleInspector")->setChecked(false);
+
+    const auto preview=qEnvironmentVariable("HGS_SESSION_USAGE_PREVIEW");
+    if(!preview.isEmpty()) {
+        window.resize(1260,920);window.findChild<QPushButton *>("toggleInspector")->setChecked(true);
+        window.findChild<QTabWidget *>("sessionInspector")->setCurrentIndex(1);QTest::qWait(40);QVERIFY(window.grab().save(preview));
+    }
+    window.showSession("mac","claude/infra/review");
+    QVERIFY(!info->toPlainText().simplified().contains(QLocale().toString(12345).simplified()));
+    client->inspectionReady("mac","claude/infra/review",{{"conversation_id","conversation-one"}});
+    QVERIFY(info->toPlainText().contains("No native usage reported"));
+    QVERIFY(!context->property("contextPercent").isValid());QCOMPARE(context->size(),indicatorSize);
+    QVERIFY(context->text().isEmpty());QVERIFY(!context->isEnabled());
+    auto noCapacity=usage;noCapacity["context"]=QJsonObject{{"used",32000}};
+    client->inspectionReady("mac","claude/infra/review",{{"conversation_id","conversation-one"},{"session_usage",noCapacity}});
+    QVERIFY(context->text().contains("32"));QVERIFY(!context->property("contextPercent").isValid());
+    QVERIFY(context->toolTip().contains("Percentage is unavailable"));
+    QVERIFY(!context->text().contains('%')); QVERIFY(!context->text().contains('/'));
+    QVERIFY(!context->text().contains(QChar(0x2014))); QVERIFY(!context->icon().isNull());
+    QVERIFY(context->accessibleName().contains("capacity unknown")); QVERIFY(context->isEnabled());
+    client->inspectionReady("mac","claude/infra/review",{{"conversation_id","conversation-one"},{"session_usage",usage}});
+    QVERIFY(context->text().contains('%')); QVERIFY(context->icon().isNull());
+}
+
+void TestSessionsWindow::compactMetadataAndSubagentRoster()
+{
+    auto state = fleet(); auto box = state.local(); auto &session = box.sessions[0];
+    session.gitBranch = "feat/compact"; session.gitWorktree = true; session.gitWorktreeName = "ui-tree";
+    session.cwd = "/work/ui-tree"; session.gitRoot = session.cwd; session.activitySummary = "Read"; session.activityDetail = "view.cpp";
+    session.subagentSource = "hooks"; session.subagentCountsComplete = true; session.subagentActiveCount = 2; session.subagentTotalCount = 14;
+    state.setLocal(box, QDateTime::currentMSecsSinceEpoch());
+    SessionsWindow window(script()); window.setFleet(state); window.show(); QTest::qWait(60);
+    auto *list = window.findChild<QListWidget *>("sessionList"); QVERIFY(list->sizeHintForRow(0) <= 96);
+    QCOMPARE(list->item(0)->data(Qt::UserRole + 1).toString(), QString("dashboard"));
+    QCOMPARE(list->item(0)->data(Qt::UserRole + 7).toString(), QString("2/14"));
+    const auto accessible = list->item(0)->data(Qt::AccessibleTextRole).toString();
+    QVERIFY(accessible.contains("feat/compact")); QVERIFY(accessible.contains("worktree: ui-tree")); QVERIFY(accessible.contains("/work/ui-tree"));
+    QVERIFY(accessible.contains("Read: view.cpp")); QVERIFY(accessible.contains("2 active / 14 total"));
+    auto *search = window.findChild<QLineEdit *>("search"); search->setText("feat/compact"); QCOMPARE(window.findChild<QListWidget *>("searchResults")->count(), 1); search->clear();
+    QJsonObject children;
+    for (int i = 0; i < 14; ++i) children[QString("agent-%1").arg(i)] = QJsonObject{{"label", QString("Child %1").arg(i)}, {"state", i < 2 ? "working" : "finished"}, {"detail", "Review code"}};
+    children["unknown"] = QJsonObject{{"label", "Uncertain"}, {"state", "working"}, {"display_state", "unknown"}};
+    QJsonObject details{{"tracked", true}, {"conversation_id", "conversation-one"}, {"subagent_source", "hooks"}, {"subagents", children},
+        {"subagent_active_count", 2}, {"subagent_total_count", 15}, {"subagent_counts_complete", false}};
+    auto *client = window.findChild<HgsClient *>(); client->inspectionReady({}, session.name, details);
+    auto *roster = window.findChild<QTextBrowser *>("subagents"); const auto text = roster->toPlainText();
+    QVERIFY(text.contains("Child 13")); QVERIFY(text.contains("Ready")); QVERIFY(text.contains("Uncertain")); QVERIFY(text.contains("Unknown"));
+    QVERIFY(!text.contains("completed tasks"));
+    QVERIFY(text.contains("some states unknown"));
+    bool hasFullTooltip = false;
+    for (auto *frame : roster->document()->rootFrame()->childFrames()) if (auto *table = qobject_cast<QTextTable *>(frame)) {
+        auto cursor = table->cellAt(0, 0).firstCursorPosition(); cursor.movePosition(QTextCursor::NextCharacter);
+        hasFullTooltip = cursor.charFormat().toolTip().contains("Review code");
+    }
+    QVERIFY(!hasFullTooltip);
+    QVERIFY(roster->toHtml().contains("hgs-agent:"));
+    // A cached busy hook on a stopped terminal must not imply current activity.
+    box.sessions[0].processState = "exited"; state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    QVERIFY(list->item(0)->data(Qt::UserRole + 7).toString().isEmpty());
+    QCOMPARE(list->item(0)->data(Qt::UserRole + 4).toString(), QString("Agent exited"));
+    for (auto *button : window.findChildren<QPushButton *>()) if (button->property("filter") == "working") QVERIFY(button->text().endsWith("0"));
+    client->inspectionReady({}, session.name, details); QVERIFY(roster->toPlainText().contains("Last recorded"));
+    QVERIFY(!roster->toPlainText().contains("2 active /"));
+}
+
+void TestSessionsWindow::subagentActivityKeepsMainDraftAndRejectsStaleHistory()
+{
+    SessionsWindow window(script()); window.setFleet(fleet()); window.show(); QTest::qWait(80);
+    auto *client = window.findChild<HgsClient *>();
+    auto *composer = window.findChild<MessageComposer *>("messageComposer"); auto *editor = composer->findChild<QPlainTextEdit *>();
+    editor->setPlainText("Keep my main draft");
+    QJsonObject details{{"tracked",true},{"conversation_id","conversation-one"},{"run_id","run-one"},
+        {"subagents",QJsonObject{{"child-1",QJsonObject{{"name","Review"},{"state","finished"},{"detail",QString(10000,'x')}}}}}};
+    details["session_usage"]=QJsonObject{{"context",QJsonObject{{"used",8000},{"limit",10000}}}};
+    client->inspectionReady({},"codex/hgs/dashboard",details);
+    auto *roster = window.findChild<QTextBrowser *>("subagents");
+    auto *stack = window.findChild<QStackedWidget *>("activityStack");
+    roster->anchorClicked(QUrl("hgs-agent:unknown")); QCOMPARE(stack->currentIndex(),0);
+    roster->anchorClicked(QUrl("hgs-agent:child-1")); QCOMPARE(stack->currentIndex(),1); QVERIFY(!composer->isVisible());
+    auto *view = window.findChild<ActivityView *>("subagentActivity");
+    QJsonObject child{{"parent_conversation_id","conversation-one"},{"conversation_id","conversation-one/child-1"},{"run_id","run-one"},
+        {"history_scope","Native subagent history"},{"events",QJsonArray{QJsonObject{{"type","AgentMessage"},{"detail","Review finished"},{"at",1700000000}}}}};
+    child["session_usage"]=QJsonObject{{"context",QJsonObject{{"used",500},{"limit",2000}}}};
+    client->subagentInspectionReady({},"codex/hgs/dashboard","child-1",{},child);
+    QVERIFY(view->browser()->toPlainText().contains("Review finished"));
+    QCOMPARE(window.findChild<QPushButton *>("subagentContext")->property("contextPercent").toDouble(),25.);
+    QCOMPARE(window.findChild<QPushButton *>("activityContext")->property("contextPercent").toDouble(),80.);
+    window.findChild<QPushButton *>("subagentBack")->click(); QCOMPARE(stack->currentIndex(),0);
+    QCOMPARE(editor->toPlainText(),QString("Keep my main draft"));
+    roster->anchorClicked(QUrl("hgs-agent:child-1"));
+    window.showSession({},"kimi/docs/research"); QCOMPARE(stack->currentIndex(),0);
+    client->subagentInspectionReady({},"codex/hgs/dashboard","child-1",{},child);
+    QCOMPARE(stack->currentIndex(),0);
+}
+
+void TestSessionsWindow::childTreeKeepsRoutineResultsQuiet()
+{
+    FleetState state; auto box = fleet().local(); auto session = box.sessions[0];
+    session.conversationId = "tree-conversation"; session.runId = "tree-run";
+    session.subagents = {{"agent-a", QJsonObject{{"name","Review"},{"state","working"},{"detail","Checking changes"}}},
+        {"agent-b", QJsonObject{{"name","Tests"},{"state","finished"},{"detail","All tests pass"},{"reply_id","first-result"}}}};
+    box.sessions = {session};
+    state.setLocal(box, QDateTime::currentMSecsSinceEpoch());
+    SessionsWindow window(script()); window.setFleet(state); window.show(); QTest::qWait(60);
+    auto *list = window.findChild<SessionList *>("sessionList"); QVERIFY(list);
+    auto *parent = list->item(0); QVERIFY(parent->data(SessionRoles::HasChildren).toBool());
+    QVERIFY(!parent->data(SessionRoles::Unread).toBool());
+    QVERIFY(!parent->data(SessionRoles::Attention).toBool());
+    auto *brand = window.findChild<QPushButton *>("brandMark");
+    auto *badge = window.findChild<QLabel *>("railAttentionBadge");
+    QCOMPARE(brand->property("attentionCount").toInt(), 0); QVERIFY(!badge->isVisible());
+    const auto rootKey = parent->data(SessionRoles::Key).toString();
+    const auto count = list->count();
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier, list->visualItemRect(parent).topLeft() + QPoint(16, 21));
+    QCOMPARE(list->count(), count); // The title selects the root; only the trailing counter expands it.
+    const auto togglePoint = [&] { return list->visualItemRect(list->item(0)).bottomRight() - QPoint(20, 18); };
+    QTest::mouseMove(list->viewport(), togglePoint());
+    QCOMPARE(list->viewport()->cursor().shape(), Qt::PointingHandCursor);
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier, togglePoint());
+    QCOMPARE(list->count(), count + 2);
+    QCOMPARE(list->item(1)->data(SessionRoles::ChildId).toString(), QString("agent-a"));
+    QVERIFY(!list->item(1)->flags().testFlag(Qt::ItemIsDragEnabled));
+    QVERIFY(!list->item(2)->data(SessionRoles::Unread).toBool());
+    QVERIFY(list->item(2)->data(Qt::AccessibleTextRole).toString().contains("Ready"));
+    auto *composer = window.findChild<MessageComposer *>("messageComposer"); composer->editor()->setPlainText("Parent draft");
+    list->setCurrentRow(1);
+    QCOMPARE(window.findChild<QStackedWidget *>("activityStack")->currentIndex(), 1);
+    QVERIFY(!composer->isVisible());
+    QVERIFY(!window.findChild<QPushButton *>("pauseAction")->isVisible());
+    window.setFleet(state);
+    QCOMPARE(list->currentItem()->data(SessionRoles::ChildId).toString(), QString("agent-a"));
+    QTest::keyClick(list, Qt::Key_Left);
+    QCOMPARE(list->currentItem()->data(SessionRoles::Key).toString(), rootKey);
+    QCOMPARE(composer->editor()->toPlainText(), QString("Parent draft"));
+    QTest::keyClick(list, Qt::Key_Left); QCOMPARE(list->count(), count);
+    list->setProperty("compact", false); list->doItemsLayout();
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, Qt::NoModifier, togglePoint());
+    QCOMPARE(list->count(), count + 2);
+    QTest::keyClick(list, Qt::Key_Left); QCOMPARE(list->count(), count);
+    QAction *readAll = nullptr;
+    for (auto *action : window.findChildren<QAction *>()) if (action->text().startsWith("Mark all as read")) readAll = action;
+    QVERIFY(readAll); QVERIFY(!readAll->isEnabled());
+    // New child results and routine failures remain quiet without opening them.
+    for (const auto &status : {"finished", "ready", "idle", "error"}) {
+        box.sessions[0].subagents["agent-b"] = QJsonObject{{"name","Tests"},{"state",status},{"detail","New internal result"},{"reply_id","second-result"}};
+        state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+        QVERIFY(!list->item(0)->data(SessionRoles::Unread).toBool());
+        QVERIFY(!list->item(0)->data(SessionRoles::Attention).toBool());
+        QCOMPARE(brand->property("attentionCount").toInt(), 0); QVERIFY(!readAll->isEnabled());
+    }
+    auto *filter = [&]() -> QPushButton * { for (auto *button : window.findChildren<QPushButton *>())
+        if (button->property("filter") == "attention") return button; return nullptr; }();
+    QVERIFY(filter); filter->click(); QCOMPARE(list->count(), 0);
+    // An explicit child approval still reaches the attention filter and rail.
+    box.sessions[0].subagents["agent-b"] = QJsonObject{{"name","Tests"},{"state","working"},{"display_state","approval"}};
+    state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    QCOMPARE(list->count(), 1); QVERIFY(list->item(0)->data(SessionRoles::Attention).toBool());
+    QCOMPARE(brand->property("attentionCount").toInt(), 1); QVERIFY(badge->isVisible()); QVERIFY(!readAll->isEnabled());
+    box.sessions[0].subagents["agent-b"] = QJsonObject{{"name","Tests"},{"state","finished"}};
+    state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    QCOMPARE(list->count(), 0); QCOMPARE(brand->property("attentionCount").toInt(), 0);
+    // Parent replies still need to be read and participate in Mark all as read.
+    box.sessions[0].replyId = "12:120";
+    state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    QCOMPARE(list->count(), 1); QVERIFY(list->item(0)->data(SessionRoles::Unread).toBool());
+    QVERIFY(readAll->isEnabled()); QSignalSpy read(&window, &SessionsWindow::repliesMarkedRead);
+    readAll->trigger(); QCOMPARE(read.size(), 1); QCOMPARE(read[0][0].toJsonObject().size(), 1);
+    QVERIFY(!list->item(0)->data(SessionRoles::Unread).toBool()); QVERIFY(!readAll->isEnabled());
+}
+
+void TestSessionsWindow::sessionsRailResetsFiltersAndShowsAttention()
+{
+    SessionsWindow window(script()); auto state=fleet(); window.setFleet(state); window.show(); QTest::qWait(70);
+    QPushButton *sessions=nullptr;
+    for (auto *button:window.findChildren<QPushButton *>()) if (button->property("glyph")=="sessions" && button->objectName()=="railButton") sessions=button;
+    QVERIFY(sessions);
+    auto *brand=window.findChild<QPushButton *>("brandMark");
+    QVERIFY(brand->property("attentionCount").toInt()>0);
+    QVERIFY(window.findChild<QLabel *>("railAttentionBadge")->isVisible());
+    auto *search=window.findChild<QLineEdit *>("search");search->setText("no matching sessions");
+    for (auto *button:window.findChildren<QPushButton *>()) if (button->property("filter")=="working") button->click();
+    sessions->click();QVERIFY(search->text().isEmpty());
+    for (auto *button:window.findChildren<QPushButton *>()) if (button->property("filter")=="all") QVERIFY(button->isChecked());
+    auto box=state.local();for(auto &session:box.sessions){session.phase="idle";session.activity="idle";session.unreadReply=false;}
+    state.setLocal(box,QDateTime::currentMSecsSinceEpoch());
+    for(const auto &host:state.peerNames()){auto peer=*state.peer(host);for(auto &session:peer.sessions){session.phase="idle";session.activity="idle";session.unreadReply=false;}state.setPeer(peer,QDateTime::currentMSecsSinceEpoch());}
+    window.setFleet(state);QCOMPARE(brand->property("attentionCount").toInt(),0);
+    QVERIFY(window.findChild<QLabel *>("railAttentionBadge")->isHidden());
+}
+
+void TestSessionsWindow::subagentGroupsAndUnavailableActivity()
+{
+    auto state = fleet(); auto box = state.local(); auto &session = box.sessions[0];
+    session.subagentSource = "hook_profiles"; session.subagentTotalCount = 3; session.subagentActiveCount = 3;
+    session.subagentCountsComplete = false;
+    state.setLocal(box, QDateTime::currentMSecsSinceEpoch());
+    SessionsWindow window(script()); window.setFleet(state); window.show(); QTest::qWait(60);
+    auto *list = window.findChild<QListWidget *>("sessionList"); QCOMPARE(list->item(0)->data(Qt::UserRole + 7).toString(), QString("?"));
+    QVERIFY(list->item(0)->toolTip().isEmpty());
+    QVERIFY(list->item(0)->data(Qt::AccessibleTextRole).toString().contains("incomplete counts"));
+    auto *client = window.findChild<HgsClient *>();
+    QJsonObject details{{"tracked", true}, {"conversation_id", "conversation-one"}, {"subagent_source", "hook_profiles"},
+        {"subagent_counts_complete", true}, {"subagent_active_count", 2}, {"subagent_total_count", 8},
+        {"subagents", QJsonObject{{"collapsed", QJsonObject{{"label", "Do not invent a child"}, {"state", "working"}}}}},
+        {"subagent_groups", QJsonObject{
+            {"code", QJsonObject{{"label", "code"}, {"active_count", 2}, {"total_count", 5}, {"detail", "Review implementation"}}},
+            {"review", QJsonObject{{"label", "review"}, {"active_count", 0}, {"total_count", 3}, {"detail", "Read final diff"}}}}}};
+    client->inspectionReady({}, session.name, details);
+    auto *roster = window.findChild<QTextBrowser *>("subagents"); auto text = roster->toPlainText();
+    QVERIFY(text.contains("Profile groups")); QVERIFY(text.contains("2 active / 8 observed runs"));
+    QVERIFY(text.contains("code")); QVERIFY(text.contains("review")); QVERIFY(!text.contains("Do not invent a child"));
+    details["subagent_counts_complete"] = false; client->inspectionReady({}, session.name, details);
+    text = roster->toPlainText(); QVERIFY(text.contains("incomplete counts")); QVERIFY(!text.contains("2/5"));
+    details["subagent_groups"] = QJsonObject{}; details["subagents"] = QJsonObject{};
+    client->inspectionReady({}, session.name, details);
+    QVERIFY(roster->toPlainText().contains("Exact subagent counts are unavailable"));
+    QVERIFY(!roster->toPlainText().contains("No subagent activity has been reported yet"));
+    details["subagent_source"] = "unavailable"; client->inspectionReady({}, session.name, details);
+    QVERIFY(roster->toPlainText().contains("activity is unavailable")); QVERIFY(!roster->toPlainText().contains("0 active"));
+}
+
+void TestSessionsWindow::batchActionsAndReturnToSessions()
+{
+    SessionsWindow window(script()); auto state = fleet(); window.setFleet(state); window.show();
+    QCOMPARE(window.windowTitle(), QString("hgs zerus"));
+    auto *button = window.findChild<QPushButton *>("batchActions"); QVERIFY(button);
+    auto *menu = button->menu(); QVERIFY(menu);
+    auto refreshMenu = [&]() { QMetaObject::invokeMethod(menu, "aboutToShow"); };
+    refreshMenu();
+    QCOMPARE(menu->actions().size(), 5); // Machines, separator, mark-all-read and archive cleanup.
+    auto *clear=window.findChild<QAction *>("clearArchive");QVERIFY(menu->actions().contains(clear));
+    QVERIFY(clear->isVisible());QVERIFY(!clear->isEnabled()); // No archived entries yet.
+    auto *arch = menu->actions()[0]->menu(); auto *mac = menu->actions()[1]->menu();
+    QVERIFY(!arch->actions().first()->isEnabled()); // Busy and untracked sessions block pause-all.
+    QVERIFY(arch->actions().last()->isEnabled());
+    QVERIFY(!mac->actions().first()->isEnabled()); // Awaiting approval is not idle.
+    auto ready = *state.peer("mac"); ready.sessions[0].activity = "idle";
+    state.setPeer(ready, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state); refreshMenu();
+    mac = menu->actions()[1]->menu(); QVERIFY(mac->actions().first()->isEnabled());
+    auto *client = window.findChild<HgsClient *>(); QSignalSpy done(client, &HgsClient::writeDone);
+    mac->actions().first()->trigger(); refreshMenu();
+    QVERIFY(!menu->actions()[0]->menu()->actions().last()->isEnabled()); // Another write is pending.
+    QTRY_COMPARE(done.size(), 1); QVERIFY(done[0][1].toBool());
+    QCOMPARE(done[0][2].toString().trimmed(), QString("@mac\npause\n--all"));
+    refreshMenu(); menu->actions()[0]->menu()->actions().last()->trigger();
+    QTRY_COMPARE(done.size(), 2); QVERIFY(done[1][1].toBool());
+    QCOMPARE(done[1][2].toString().trimmed(), QString("resume\n--all\n-d"));
+    state.setPeer(ready, QDateTime::currentMSecsSinceEpoch() - FleetState::kPeerStaleMs - 1);
+    window.setFleet(state); refreshMenu(); QVERIFY(!menu->actions()[1]->isEnabled());
+    window.setConnectionError("offline"); refreshMenu(); QVERIFY(!menu->actions()[0]->isEnabled());
+    for (int i = 0; i < 5; ++i) refreshMenu();
+    QCOMPARE(menu->findChildren<QMenu *>().size(), 2);
+    window.showProjects("mac");
+    auto *projects = window.findChild<ProjectsDialog *>(); QVERIFY(projects->isVisible());
+    window.showSessionList(); QVERIFY(!projects->isVisible());
+    auto *list = window.findChild<QListWidget *>("sessionList"); QVERIFY(list->isVisible());
+    window.findChild<QLineEdit *>("search")->setText("nothing matches");
+    window.showProjects(); window.showSession({}, "codex/website/navigation");
+    QVERIFY(!projects->isVisible());
+    QCOMPARE(list->currentItem()->data(Qt::UserRole).toString(), QString("\ncodex/website/navigation"));
+}
+
+void TestSessionsWindow::archiveFiltersIdentityRestoreAndForget()
+{
+    auto state = fleet(); auto local = state.local();
+    auto old = local.sessions[0]; old.state = "archived"; old.archiveId = "older"; old.archivedAt = 1790928000;
+    auto recent = old; recent.archiveId = "recent"; recent.archivedAt += 10;
+    local.sessions.append(old); local.sessions.append(recent); state.setLocal(local, QDateTime::currentMSecsSinceEpoch());
+    SessionsWindow window(script()); window.setFleet(state); window.show();
+    auto *list = window.findChild<QListWidget *>("sessionList");
+    auto filter = [&](const QString &id) -> QPushButton * {
+        for (auto *button : window.findChildren<QPushButton *>()) if (button->property("filter") == id) return button;
+        return nullptr;
+    };
+    QCOMPARE(list->count(), 5); QVERIFY(filter("all")->text().endsWith("5"));
+    QVERIFY(filter("archived")->text().endsWith("2"));
+    filter("paused")->click(); QCOMPARE(list->count(), 1);
+    filter("archived")->click(); QCOMPARE(list->count(), 2);
+    QCOMPARE(list->item(0)->data(Qt::UserRole).toString(), QString("\ncodex/hgs/dashboard\nrecent"));
+    QCOMPARE(list->item(1)->data(Qt::UserRole).toString(), QString("\ncodex/hgs/dashboard\nolder"));
+    auto *restore = window.findChild<QPushButton *>("pauseAction");
+    QCOMPARE(restore->accessibleName(), QString("Restore session")); QVERIFY(!restore->isEnabled());
+    QVERIFY(window.findChild<QLabel *>("hint")->text().contains("uses this name"));
+    QVERIFY(!window.findChild<QAction *>("archiveSessionAction")->isVisible());
+    QSignalSpy terminal(&window, &SessionsWindow::sessionActivated);
+    auto *client = window.findChild<HgsClient *>(); QSignalSpy writes(client, &HgsClient::writeDone);
+    QTest::keyClick(list, Qt::Key_Return); QCOMPARE(terminal.size(), 0); QCOMPARE(writes.size(), 0);
+    QTest::mouseDClick(list->viewport(), Qt::LeftButton, {}, list->visualItemRect(list->item(0)).center());
+    QCOMPARE(terminal.size(), 0); QCOMPARE(writes.size(), 0);
+    QTest::qWait(50); // Let the automatic fixture inspection settle before injecting late replies.
+    auto *activity = window.findChild<QTextBrowser *>("activity");
+    QJsonObject details{{"tracked", true}, {"conversation_id", "conversation-one"}, {"prompt", "wrong live request"}, {"events", QJsonArray{}}, {"cursor", 0}};
+    client->inspectionReady({}, recent.name, details); QVERIFY(!activity->toPlainText().contains("wrong live request"));
+    details["prompt"] = "wrong older archive";
+    client->inspectionReady({}, recent.name, details, "older"); QVERIFY(!activity->toPlainText().contains("wrong older archive"));
+    details["prompt"] = "selected archived request";
+    client->inspectionReady({}, recent.name, details, "recent"); QVERIFY(activity->toPlainText().contains("selected archived request"));
+    client->inspectionFailed({}, recent.name, "wrong failure", "older");
+    QVERIFY(!window.findChild<QLabel *>("hint")->text().contains("wrong failure"));
+    // A paused binding occupies the name just as a live terminal does.
+    local.sessions[0].state = "paused"; state.setLocal(local, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    QVERIFY(!restore->isEnabled());
+    // Free the current name; Archive restoration still requires its dedicated button.
+    local.sessions.removeFirst(); state.setLocal(local, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    QVERIFY(restore->isEnabled()); restore->click(); QTRY_COMPARE(writes.size(), 1);
+    QCOMPARE(writes[0][2].toString(), QString("resume\ncodex/hgs/dashboard\n--archive\nrecent\n-d"));
+    QVERIFY(filter("all")->isChecked()); QCOMPARE(terminal.size(), 0);
+    auto restored = recent; restored.state = "running"; restored.archiveId.clear(); restored.archivedAt = 0;
+    local.sessions.removeLast(); local.sessions.append(restored);
+    state.setLocal(local, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    QCOMPARE(list->currentItem()->data(Qt::UserRole).toString(), QString("\ncodex/hgs/dashboard"));
+    filter("archived")->click(); QCOMPARE(list->count(), 1);
+    QVERIFY(!restore->isEnabled()); // The newly restored terminal occupies the name.
+    QTimer::singleShot(0, [&]() {
+        if (auto *dialog = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) dialog->button(QMessageBox::Yes)->click();
+    });
+    window.findChild<QAction *>("forgetSessionAction")->trigger(); QTRY_COMPARE(writes.size(), 2);
+    QCOMPARE(writes[1][2].toString(), QString("kill\ncodex/hgs/dashboard\n--archive\nolder"));
+    // Archive-only machines never enable Resume all.
+    BoxState archiveOnly; archiveOnly.host = "arch"; archiveOnly.ok = true; archiveOnly.sessions = {old};
+    FleetState finalState; finalState.setLocal(archiveOnly, QDateTime::currentMSecsSinceEpoch()); window.setFleet(finalState);
+    auto *menu = window.findChild<QPushButton *>("batchActions")->menu(); QMetaObject::invokeMethod(menu, "aboutToShow");
+    QCOMPARE(menu->actions()[0]->menu()->actions().last()->text(), QString("Resume all in background (0)"));
+    QVERIFY(!menu->actions()[0]->menu()->actions().last()->isEnabled());
+}
+
+void TestSessionsWindow::savedSessionsCanMoveToArchive()
+{
+    SessionsWindow window(script()); window.setFleet(fleet()); window.show();
+    window.showSession({}, "codex/website/navigation");
+    auto *action = window.findChild<QAction *>("archiveSessionAction"); QVERIFY(action->isVisible());
+    auto *client = window.findChild<HgsClient *>(); QSignalSpy writes(client, &HgsClient::writeDone);
+    action->trigger(); QTRY_COMPARE(writes.size(), 1);
+    QCOMPARE(writes[0][2].toString(), QString("archive\ncodex/website/navigation"));
+    window.showSession({}, "codex/hgs/dashboard"); QVERIFY(!action->isVisible());
+    action->trigger(); QTest::qWait(25); QCOMPARE(writes.size(), 1); // Live sessions cannot be archived from this action.
+}
+
+void TestSessionsWindow::forkValidationCancelAndPinnedPayload()
+{
+    auto state = fleet(); auto box = state.local();
+    box.sessions[0].runId = "source-run";
+    for (int i = 1; i <= 3; ++i) {
+        auto collision = box.sessions[0];
+        collision.tag = i == 1 ? "dashboard-fork" : QString("dashboard-fork-%1").arg(i);
+        collision.name = "codex/hgs/" + collision.tag; collision.runId = QString("collision-%1").arg(i);
+        collision.state = i == 3 ? "archived" : i == 2 ? "paused" : "running";
+        collision.archiveId = i == 3 ? "occupied-archive-name" : "";
+        box.sessions.append(collision);
+    }
+    state.setLocal(box, QDateTime::currentMSecsSinceEpoch());
+    SessionsWindow window(script()); window.setFleet(state); window.show(); window.showSession({}, "codex/hgs/dashboard");
+    auto *client = window.findChild<HgsClient *>(); QSignalSpy inspected(client, &HgsClient::inspectionReady);
+    QSignalSpy writes(client, &HgsClient::writeDone); QTRY_VERIFY(!inspected.isEmpty());
+    const QJsonObject details{{"tracked", true}, {"run_id", "source-run"}, {"conversation_id", "conversation-one"},
+        {"fork_supported", true}, {"runtime_state", "live"}, {"activity", "idle"}, {"phase", "idle"},
+        {"last_event_at", 2000000000}, {"events", QJsonArray{}}, {"cursor", 0}};
+    client->inspectionReady({}, "codex/hgs/dashboard", details);
+    auto *action = window.findChild<QAction *>("forkSessionAction"); QVERIFY(action && action->isEnabled());
+    QTimer::singleShot(0, &window, [&]() {
+        auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget()); QVERIFY(dialog);
+        QTimer::singleShot(1000, dialog, &QDialog::reject);
+        QCOMPARE(dialog->objectName(), QString("forkSessionDialog"));
+        auto *name = dialog->findChild<QLineEdit *>("forkSessionName"); QVERIFY(name);
+        QCOMPARE(name->text(), QString("dashboard-fork-4"));
+        auto *create = dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok); QVERIFY(create->isEnabled());
+        for (const QString &invalid : {QString(), QString(" leading"), QString("a/b"), QString("dashboard-fork"), QString("dashboard-fork-2"), QString("dashboard-fork-3")}) {
+            name->setText(invalid); QVERIFY(!create->isEnabled());
+        }
+        name->setText("Новая ветка"); QVERIFY(create->isEnabled()); dialog->reject();
+    });
+    action->trigger(); QCOMPARE(writes.size(), 0);
+    QCOMPARE(window.findChild<QListWidget *>("sessionList")->currentItem()->data(Qt::UserRole).toString(), QString("\ncodex/hgs/dashboard"));
+    client->inspectionReady({}, "codex/hgs/dashboard", details);
+    QTimer::singleShot(0, &window, [&]() {
+        auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget()); QVERIFY(dialog);
+        dialog->findChild<QLineEdit *>("forkSessionName")->setText("Новая ветка");
+        dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok)->click();
+    });
+    action->trigger(); QVERIFY(!action->isEnabled()); QTRY_COMPARE(writes.size(), 1);
+    QVERIFY(writes[0][1].toBool());
+    QCOMPARE(writes[0][2].toString(), QString("fork\ncodex/hgs/dashboard\n-n\nНовая ветка\n-d\n--expected-run-id\nsource-run\n--expected-conversation-id\nconversation-one"));
+}
+
+void TestSessionsWindow::forkKeepsSourceAndGroup_data()
+{
+    QTest::addColumn<QString>("sourceState");
+    QTest::newRow("running") << QString("running");
+    QTest::newRow("paused-filter") << QString("paused");
+    QTest::newRow("archive-filter") << QString("archived");
+}
+
+void TestSessionsWindow::forkKeepsSourceAndGroup()
+{
+    QFETCH(QString, sourceState);
+    SessionInfo original; original.name = "codex/project/topic"; original.tag = "topic";
+    original.cmd = "codex"; original.project = "project"; original.tracked = true; original.resumable = true;
+    original.runId = "original-run"; original.state = sourceState; original.activity = "idle"; original.phase = "idle";
+    original.archiveId = sourceState == "archived" ? "source-archive" : ""; original.cwd = "/work/project";
+    original.prompt = "Original public request";
+    auto sibling = original; sibling.name = "codex/project/tail"; sibling.tag = "tail"; sibling.runId = "sibling-run";
+    sibling.archiveId.clear(); sibling.state = "running";
+    SessionOrganization org; const auto group = org.createGroup("My release");
+    const auto sourceIdentity = org.observe("arch", original.name, original.runId, original.archiveId);
+    const auto siblingIdentity = org.observe("arch", sibling.name, sibling.runId, {});
+    org.moveSession(sourceIdentity, group); org.moveSession(siblingIdentity, group);
+    QSettings().setValue("workspace/organization", QJsonDocument(org.toJson()).toJson(QJsonDocument::Compact));
+    BoxState box; box.host = "arch"; box.ok = true; box.sessions = {original, sibling};
+    FleetState state; state.setLocal(box, QDateTime::currentMSecsSinceEpoch());
+    SessionsWindow window(script()); window.setFleet(state); window.show();
+    if (sourceState != "running") for (auto *button : window.findChildren<QPushButton *>())
+        if (button->property("filter") == (sourceState == "archived" ? "archived" : "paused")) button->click();
+    auto *list = window.findChild<SessionList *>("sessionList"); QVERIFY(list->currentItem());
+    QCOMPARE(list->currentItem()->data(SessionRoles::Identity).toString(), sourceIdentity);
+    auto *client = window.findChild<HgsClient *>(); QSignalSpy inspected(client, &HgsClient::inspectionReady);
+    QSignalSpy writes(client, &HgsClient::writeDone); QTRY_VERIFY(!inspected.isEmpty());
+    client->inspectionReady({}, original.name, QJsonObject{{"tracked", true}, {"run_id", original.runId},
+        {"conversation_id", "conversation-one"}, {"fork_supported", true}, {"cwd", original.cwd},
+        {"activity", "idle"}, {"phase", "idle"}, {"last_event_at", 2000000000}, {"events", QJsonArray{}}, {"cursor", 0}}, original.archiveId);
+    auto *action = window.findChild<QAction *>("forkSessionAction"); QVERIFY(action->isEnabled());
+    QTimer::singleShot(0, &window, [&]() {
+        auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget()); QVERIFY(dialog);
+        QCOMPARE(dialog->findChild<QLineEdit *>("forkSessionName")->text(), QString("topic-fork"));
+        dialog->accept();
+    });
+    action->trigger(); QTRY_COMPARE(writes.size(), 1); QVERIFY(writes[0][1].toBool());
+    if (sourceState == "archived") QVERIFY(writes[0][2].toString().contains("--archive\nsource-archive"));
+    auto created = original; created.name = "codex/project/topic-fork"; created.tag = "topic-fork";
+    created.runId = "independent-fork-run"; created.archiveId.clear(); created.state = "running";
+    box.sessions.append(created); state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    QTRY_VERIFY(list->currentItem());
+    QCOMPARE(list->currentItem()->data(Qt::UserRole).toString(), QString("\ncodex/project/topic-fork"));
+    QVERIFY(!list->currentItem()->isHidden());
+    const auto persisted = SessionOrganization(QJsonDocument::fromJson(QSettings().value("workspace/organization").toByteArray()).object());
+    const QString createdIdentity = "arch\ncodex/project/topic-fork";
+    QCOMPARE(persisted.groupFor(sourceIdentity), group); QCOMPARE(persisted.groupFor(createdIdentity), group);
+    QVERIFY(persisted.group(group));
+    QCOMPARE(persisted.group(group)->sessions, QStringList({sourceIdentity, createdIdentity, siblingIdentity}));
+    QVERIFY(!persisted.group(group)->collapsed);
+    QTRY_COMPARE(window.findChild<QTabWidget *>("sessionDetailTabs")->currentWidget()->objectName(), QString("terminalView"));
+    QCOMPARE(state.local().sessions[0].name, original.name); QCOMPARE(state.local().sessions[0].runId, original.runId);
+    QCOMPARE(state.local().sessions[0].archiveId, original.archiveId); QCOMPARE(state.local().sessions[0].prompt, original.prompt);
+    if (sourceState == "archived") {
+        for (auto *button : window.findChildren<QPushButton *>()) if (button->property("filter") == "archived") button->click();
+        QVERIFY(list->currentItem()); QCOMPARE(list->currentItem()->data(SessionRoles::Identity).toString(), sourceIdentity);
+    }
+}
+
+void TestSessionsWindow::forkDisabledForUnavailableSources()
+{
+    SessionsWindow window(script()); auto state = fleet(); window.setFleet(state); window.show();
+    window.showSession({}, "codex/hgs/dashboard");
+    auto *client = window.findChild<HgsClient *>(); QSignalSpy inspected(client, &HgsClient::inspectionReady);
+    QSignalSpy writes(client, &HgsClient::writeDone); QTRY_VERIFY(!inspected.isEmpty());
+    auto *action = window.findChild<QAction *>("forkSessionAction"); QVERIFY(!action->isEnabled());
+    QJsonObject details{{"tracked", true}, {"run_id", "source-run"}, {"conversation_id", "conversation-one"},
+        {"fork_supported", false}, {"fork_reason", "Wait for Ready to fork"}, {"activity", "busy"}, {"phase", "tool"},
+        {"last_event_at", 2000000000}, {"events", QJsonArray{}}, {"cursor", 0}};
+    client->inspectionReady({}, "codex/hgs/dashboard", details); QVERIFY(!action->isEnabled());
+    action->trigger(); QCOMPARE(writes.size(), 0); QVERIFY(!window.findChild<QDialog *>("forkSessionDialog"));
+    details["fork_reason"] = "Provider does not support independent forks";
+    client->inspectionReady({}, "codex/hgs/dashboard", details); QVERIFY(!action->isEnabled());
+    QVERIFY(action->toolTip().contains("Provider"));
+    details["fork_supported"] = true; details["activity"] = "idle"; details["phase"] = "idle";
+    client->inspectionReady({}, "codex/hgs/dashboard", details); QVERIFY(action->isEnabled());
+    auto box = state.local(); box.ok = false; state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    QVERIFY(!action->isEnabled()); action->trigger(); QCOMPARE(writes.size(), 0);
+    QVERIFY(!window.findChild<QDialog *>("forkSessionDialog"));
+}
+
+void TestSessionsWindow::renameValidationCancelAndSelection()
+{
+    auto state = fleet(); auto box = state.local();
+    auto occupied = box.sessions[0]; occupied.name = "codex/hgs/taken"; occupied.tag = "taken"; box.sessions.append(occupied);
+    state.setLocal(box, QDateTime::currentMSecsSinceEpoch());
+    SessionsWindow window(script()); window.setFleet(state); window.show(); window.showSession({}, "codex/hgs/dashboard");
+    auto *action = window.findChild<QAction *>("renameSessionAction"); QVERIFY(action->isEnabled()); // Busy is allowed.
+    auto *client = window.findChild<HgsClient *>(); QSignalSpy writes(client, &HgsClient::writeDone);
+    QTimer::singleShot(0, &window, [&]() {
+        auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget()); QVERIFY(dialog);
+        QTimer::singleShot(1000, dialog, &QDialog::reject);
+        auto *name = dialog->findChild<QLineEdit *>("renameSessionName"); QCOMPARE(name->text(), QString("dashboard"));
+        auto *save = dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Save); QVERIFY(!save->isEnabled());
+        for (const auto &invalid : QStringList{"", " leading", "trailing ", "a/b", "a:b", "a.b", "a\tb", "taken"}) {
+            name->setText(invalid); QVERIFY(!save->isEnabled());
+            QVERIFY(!dialog->findChild<QLabel *>("renameError")->text().isEmpty());
+        }
+        name->setText("Новый план"); QVERIFY(save->isEnabled());
+        QCOMPARE(dialog->findChild<QLabel *>("renameFullName")->text(), QString("codex/hgs/Новый план"));
+        dialog->reject();
+    });
+    action->trigger(); QCOMPARE(writes.size(), 0);
+    QTimer::singleShot(0, &window, [&]() {
+        auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget()); QVERIFY(dialog); dialog->accept();
+    });
+    action->trigger(); QCOMPARE(writes.size(), 0); // Even a programmatic unchanged accept is a no-op.
+    QTest::qWait(50);
+    client->inspectionReady({}, "codex/hgs/dashboard", QJsonObject{{"tracked", true}, {"conversation_id", "conversation-one"},
+        {"cursor", 500}, {"events", QJsonArray{QJsonObject{{"seq", 500}, {"type", "Stop"}, {"detail", "old activity"}}}}});
+    QTimer::singleShot(0, &window, [&]() {
+        auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget()); QVERIFY(dialog);
+        dialog->findChild<QLineEdit *>("renameSessionName")->setText("Новый <план>");
+        dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Save)->click();
+    });
+    action->trigger(); QVERIFY(!window.findChild<QPushButton *>("more")->isEnabled());
+    QTRY_COMPARE(writes.size(), 1); QVERIFY(writes[0][1].toBool());
+    QCOMPARE(writes[0][2].toString(), QString("rename\ncodex/hgs/dashboard\ncodex/hgs/Новый <план>"));
+    auto *activity = window.findChild<QTextBrowser *>("activity");
+    const QJsonObject late{{"tracked", true}, {"conversation_id", "conversation-one"}, {"cursor", 501},
+        {"events", QJsonArray{QJsonObject{{"seq", 501}, {"type", "Stop"}, {"detail", "stale rename response"}}}}};
+    client->inspectionReady({}, "codex/hgs/dashboard", late);
+    QVERIFY(!activity->toPlainText().contains("stale rename response"));
+    box.sessions[0].name = "codex/hgs/Новый <план>"; box.sessions[0].tag = "Новый <план>";
+    state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    QCOMPARE(window.findChild<QListWidget *>("sessionList")->currentItem()->data(Qt::UserRole).toString(), QString("\ncodex/hgs/Новый <план>"));
+    auto *title = window.findChild<QLabel *>("detailTitle"); QCOMPARE(title->accessibleName(), QString("General / Новый <план>"));
+    QCOMPARE(title->textFormat(), Qt::PlainText);
+    QTest::qWait(50);
+    client->inspectionReady({}, box.sessions[0].name, QJsonObject{{"tracked", true}, {"conversation_id", "conversation-one"},
+        {"cursor", 1}, {"events", QJsonArray{QJsonObject{{"seq", 1}, {"type", "Stop"}, {"detail", "new inspection starts at zero"}}}}});
+    QVERIFY(activity->toPlainText().contains("new inspection starts at zero"));
+    client->inspectionReady({}, "codex/hgs/dashboard", late);
+    client->inspectionFailed({}, "codex/hgs/dashboard", "late old failure");
+    QVERIFY(!activity->toPlainText().contains("stale rename response"));
+    QVERIFY(!window.findChild<QLabel *>("hint")->text().contains("late old failure"));
+}
+
+void TestSessionsWindow::renameOtherSessionKinds()
+{
+    for (const QString kind : {QString("untracked"), QString("paused"), QString("stopped"), QString("archived")}) {
+        const bool archived = kind == "archived", remote = kind == "stopped";
+        SessionInfo session; session.name = "codex/project"; session.cmd = "codex"; session.project = "project";
+        session.state = kind == "untracked" ? "running" : kind; session.tracked = kind != "untracked";
+        session.archiveId = archived ? "archive-original" : "";
+        BoxState box; box.host = remote ? "mac" : "arch"; box.ok = true; box.sessions = {session};
+        if (archived) { auto live = session; live.name = "codex/project/new label"; live.state = "running"; live.archiveId.clear(); box.sessions.append(live); }
+        FleetState state;
+        if (remote) { BoxState local; local.host = "arch"; local.ok = true; state.setLocal(local, QDateTime::currentMSecsSinceEpoch()); state.setPeer(box, QDateTime::currentMSecsSinceEpoch()); }
+        else state.setLocal(box, QDateTime::currentMSecsSinceEpoch());
+        SessionsWindow window(script()); window.setFleet(state); window.show();
+        if (archived) for (auto *button : window.findChildren<QPushButton *>()) if (button->property("filter") == "archived") button->click();
+        auto *action = window.findChild<QAction *>("renameSessionAction"); QVERIFY(action->isEnabled());
+        auto *client = window.findChild<HgsClient *>(); QSignalSpy writes(client, &HgsClient::writeDone);
+        QTimer::singleShot(0, &window, [&]() {
+            auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget()); QVERIFY(dialog);
+            QTimer::singleShot(1000, dialog, &QDialog::reject);
+            auto *name = dialog->findChild<QLineEdit *>("renameSessionName"); QVERIFY(name->text().isEmpty());
+            name->setText("new label"); auto *save = dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Save);
+            QVERIFY(save->isEnabled()); save->click();
+        });
+        action->trigger(); QTRY_COMPARE(writes.size(), 1); QVERIFY(writes[0][1].toBool());
+        QCOMPARE(writes[0][2].toString(), (remote ? QString("@mac\n") : QString()) + "rename\ncodex/project\ncodex/project/new label" + (archived ? "\n--archive\narchive-original" : ""));
+        box.sessions[0].name = "codex/project/new label"; box.sessions[0].tag = "new label";
+        if (remote) state.setPeer(box, QDateTime::currentMSecsSinceEpoch()); else state.setLocal(box, QDateTime::currentMSecsSinceEpoch());
+        window.setFleet(state);
+        QCOMPARE(window.findChild<QListWidget *>("sessionList")->currentItem()->data(Qt::UserRole).toString(),
+                 (remote ? QString("mac") : QString()) + "\ncodex/project/new label" + (archived ? "\narchive-original" : ""));
+    }
+}
+
+void TestSessionsWindow::renameFailureKeepsSelection()
+{
+    QTemporaryDir dir; QFile fake(dir.filePath("hgs")); QVERIFY(fake.open(QIODevice::WriteOnly));
+    fake.write("#!/bin/sh\nif [ \"$1\" = inspect ]; then echo '{\"events\":[],\"cursor\":0}'; else echo 'Name is already used by another session' >&2; exit 1; fi\n"); fake.close();
+    QVERIFY(fake.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+    SessionsWindow window(fake.fileName()); window.setFleet(fleet()); window.show(); window.showSession({}, "codex/hgs/dashboard");
+    auto *client = window.findChild<HgsClient *>(); QSignalSpy writes(client, &HgsClient::writeDone);
+    QTimer::singleShot(0, &window, [&]() {
+        auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget()); QVERIFY(dialog);
+        dialog->findChild<QLineEdit *>("renameSessionName")->setText("racing collision"); dialog->accept();
+    });
+    window.findChild<QAction *>("renameSessionAction")->trigger(); QTRY_COMPARE(writes.size(), 1);
+    QVERIFY(!writes[0][1].toBool()); QVERIFY(window.findChild<QPushButton *>("more")->isEnabled());
+    QCOMPARE(window.findChild<QListWidget *>("sessionList")->currentItem()->data(Qt::UserRole).toString(), QString("\ncodex/hgs/dashboard"));
+    QVERIFY(window.findChild<QLabel *>("notice")->text().contains("already used"));
+}
+
+void TestSessionsWindow::searchResultKeepsItsSessionAndSnapshot()
+{
+    SessionsWindow window(script()); window.setFleet(fleet()); window.show();
+    auto *search = window.findChild<QLineEdit *>("search"); search->setText("review");
+    auto *results = window.findChild<QListWidget *>("searchResults"); QCOMPARE(results->count(), 1);
+    results->setCurrentRow(0);
+    auto *title = window.findChild<QLabel *>("detailTitle"); QVERIFY(title->text().contains("review"));
+    window.setFleet(fleet()); QVERIFY(title->text().contains("review")); // Poll must not select hidden regular-list row.
+    search->clear(); QVERIFY(window.findChild<QListWidget *>("sessionList")->isVisible());
+    QCOMPARE(window.findChild<QListWidget *>("sessionList")->currentItem()->data(Qt::UserRole).toString(), QString("mac\nclaude/infra/review"));
+}
+
+void TestSessionsWindow::blankListContextMenu()
+{
+    SessionsWindow window(script()); FleetState empty; BoxState box; box.ok = true; box.host = "arch"; empty.setLocal(box, QDateTime::currentMSecsSinceEpoch());
+    window.setFleet(empty); window.show();
+    auto *list = window.findChild<QListWidget *>("sessionList"); auto *menu = window.findChild<QMenu *>("sessionProjectsMenu");
+    QVERIFY(menu); list->customContextMenuRequested(QPoint(20,80));
+    QVERIFY(menu->isVisible()); QVERIFY(menu->actions().first()->text().contains("New session"));
+    QVERIFY(menu->actions().at(1)->text().contains("New project")); menu->hide();
+}
+
+void TestSessionsWindow::contextMenuAcrossSessionPanelBackground()
+{
+    SessionsWindow window(script()); window.setFleet(fleet()); window.resize(1000, 750); window.show();
+    auto *filter = window.findChild<MachineFilter *>(); filter->setSelection({"mac"});
+    QTest::qWait(20);
+    auto *list = window.findChild<SessionList *>("sessionList");
+    auto *panel = window.findChild<QWidget *>("sessionListPanel");
+    auto *groups = window.findChild<QMenu *>("sessionProjectsMenu"); QVERIFY(groups);
+    auto *session = window.findChild<QMenu *>("sessionContextMenu");
+    const auto sendContext = [](QWidget *target, const QPoint &point) {
+        QContextMenuEvent event(QContextMenuEvent::Mouse, point, target->mapToGlobal(point));
+        QApplication::sendEvent(target, &event);
+    };
+    const auto expectGroups = [&](QWidget *target, const QPoint &point) {
+        sendContext(target, point);
+        const bool correct = groups->isVisible() && !session->isVisible();
+        groups->hide(); session->hide(); return correct;
+    };
+    QCOMPARE(list->count(), 1);
+    const auto row = list->visualItemRect(list->item(0));
+    const int panelY = list->viewport()->mapTo(panel, row.center()).y();
+    QVERIFY2(expectGroups(panel, QPoint(1, panelY)), "Left panel gutter");
+    QVERIFY2(expectGroups(panel, QPoint(panel->width() - 2, panelY)), "Right panel gutter");
+    QVERIFY2(expectGroups(list->viewport(), QPoint(row.left(), row.center().y())), "Left card gutter");
+    QVERIFY2(expectGroups(list->viewport(), QPoint(row.right(), row.center().y())), "Right card gutter");
+    QVERIFY2(expectGroups(list->viewport(), QPoint(row.center().x(), row.top())), "Gap above card");
+    QVERIFY2(expectGroups(list->viewport(), QPoint(20, row.bottom() + 20)), "Below last session");
+    QVERIFY2(expectGroups(filter, QPoint(filter->width() - 2, 10)), "Empty tag strip");
+    auto *chip = filter->findChild<QPushButton *>("machineFilterChip"); QVERIFY(chip);
+    QVERIFY2(expectGroups(chip, chip->rect().center()), "Machine filter chip");
+    QCOMPARE(filter->selection(), QSet<QString>{"mac"});
+    sendContext(list->viewport(), row.center()); QVERIFY(session->isVisible()); QVERIFY(!groups->isVisible()); session->hide();
+
+    // Text fields retain their native editing menu instead of the panel menu.
+    auto *search = window.findChild<QLineEdit *>("search"); bool nativeMenu = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto *popup = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+        nativeMenu = popup && popup != groups && popup != session && !groups->isVisible();
+        if (popup) popup->close();
+    });
+    sendContext(search, search->rect().center()); QCoreApplication::processEvents();
+    QVERIFY(nativeMenu);
+}
+
+void TestSessionsWindow::preview()
+{
+    const QString destination = qEnvironmentVariable("HGS_PREVIEW_DIR");
+    if (destination.isEmpty()) QSKIP("Set HGS_PREVIEW_DIR to render design previews");
+    QDir().mkpath(destination);
+    const QPalette original = qApp->palette();
+    for (bool dark : {false, true}) {
+        QPalette palette = original;
+        palette.setColor(QPalette::Window, QColor(dark ? "#161b21" : "#f5f7f9"));
+        palette.setColor(QPalette::Base, QColor(dark ? "#1c2229" : "#ffffff"));
+        palette.setColor(QPalette::Text, QColor(dark ? "#e8edf4" : "#1a2733"));
+        palette.setColor(QPalette::WindowText, palette.color(QPalette::Text)); qApp->setPalette(palette);
+        auto previewFleet = fleet(); auto previewBox = previewFleet.local();
+        auto &main = previewBox.sessions[0]; main.cwd = "/workspace/zerus-ui"; main.gitRoot = main.cwd;
+        main.gitBranch = "feat/zerus"; main.gitWorktree = true; main.gitWorktreeName = "zerus-ui";
+        main.activitySummary = "Bash"; main.activityDetail = "ctest --test-dir tray/build";
+        main.subagentSource = "hooks"; main.subagentCountsComplete = true; main.subagentActiveCount = 6; main.subagentTotalCount = 14;
+        const QStringList projects{"api", "project-docs", "project-docs", "hgs", "sample-project", "website", "api"};
+        const QStringList names{"auth-flow", "dashboard", "wheel", "persistence", "research", "content", "search"};
+        const QStringList commands{"claude", "codex", "codex", "codex", "kimi", "claude", "kimi"};
+        const QStringList branches{"feat/auth", "feat/operations", "fix/wheel", "main", "chore/hooks", "main", "feat/search"};
+        const QStringList actionTexts{"Read: Validate token expiry", "Read: Review service configuration", "apply_patch: Add keyboard navigation", "Ready: Waiting for your next message", "ReadFile: Compare deployment patterns", "Ready: Content review finished", "Shell: Check search indexes"};
+        for (int i = 0; i < names.size(); ++i) {
+            auto row = previewBox.sessions[0]; row.project = projects[i]; row.tag = names[i]; row.cmd = commands[i]; row.name = row.cmd + '/' + row.project + '/' + row.tag;
+            row.gitBranch = branches[i]; row.gitWorktree = i == 1 || i == 2; row.gitWorktreeName = i == 1 ? "w2" : "wheel";
+            row.cwd = "/workspace/" + (row.gitWorktree ? row.gitWorktreeName : row.project); row.gitRoot = row.cwd;
+            row.activitySummary = actionTexts[i]; row.activityDetail.clear(); row.subagentActiveCount = 0; row.subagentTotalCount = 0;
+            if (i == 3 || i == 5) { row.activity = "idle"; row.phase = "idle"; row.currentTool.clear(); }
+            if (i == 3) { row.conversationId = "preview-reply"; row.replyId = "3:1790928000"; }
+            if (i == 4) { row.subagentSource = "hook_profiles"; row.subagentActiveCount = 3; row.subagentTotalCount = 12; }
+            if (i == 6) { row.subagentSource = "hook_profiles"; row.subagentTotalCount = -1; row.subagentCountsComplete = false; }
+            previewBox.sessions.append(row);
+        }
+        previewFleet.setLocal(previewBox, QDateTime::currentMSecsSinceEpoch());
+        SessionOrganization previewOrg;
+        const auto releaseGroup = previewOrg.createGroup("Release / Zerus"), infraGroup = previewOrg.createGroup("Infrastructure"), experimentsGroup = previewOrg.createGroup("Research & experiments");
+        previewOrg.setColor(releaseGroup,"#4ba3ff"); previewOrg.setColor(infraGroup,"#ffcc00"); previewOrg.setColor(experimentsGroup,"#bb86fc");
+        previewOrg.addFolder(releaseGroup,"arch","/workspace/zerus","Linux checkout");
+        previewOrg.addFolder(releaseGroup,"mac","/Users/example/work/hgs","Mac checkout");
+        for (const auto &row : previewBox.sessions) {
+            const auto id = previewOrg.observe("arch", row.name, "");
+            previewOrg.moveSession(id, row.project == "hgs" ? releaseGroup : row.project == "sample-project" ? infraGroup : experimentsGroup);
+        }
+        previewOrg.moveSession(previewOrg.observe("mac", "claude/infra/review", ""), infraGroup); previewOrg.setCollapsed(infraGroup, true);
+        QSettings().setValue("workspace/organization", QJsonDocument(previewOrg.toJson()).toJson(QJsonDocument::Compact));
+        SessionsWindow window(script()); window.setFleet(previewFleet); window.resize(1240, 800); window.show(); QTest::qWait(100);
+        window.showSession({}, "codex/hgs/dashboard"); QTest::qWait(100);
+        auto *client = window.findChild<HgsClient *>();
+        QJsonObject data{{"tracked", true}, {"conversation_id", "conversation-one"}, {"phase", "tool"}, {"activity", "busy"},
+            {"cwd", "/workspace/zerus"}, {"model", "gpt-6.1-sol"}, {"prompt", "Build a clear view of every agent across our machines.\nKeep the interface quiet, with attention where it matters."}, {"cursor", 3},
+            {"events", QJsonArray{
+                QJsonObject{{"seq", 1}, {"at", 1790927810}, {"type", "UserPromptSubmit"}, {"detail", "Build the session dashboard."}},
+                QJsonObject{{"seq", 2}, {"at", 1790927990}, {"type", "PostToolUse"}, {"tool", "apply_patch"}, {"detail", "Updated tray/src/SessionsWindow.cpp"}},
+                QJsonObject{{"seq", 3}, {"at", 1790928000}, {"type", "PreToolUse"}, {"tool", "Bash"}, {"detail", "ctest --test-dir tray/build --output-on-failure"}}}}};
+        QJsonObject children;
+        const QStringList childNames{"UI layout", "Session state", "macOS parity", "Search", "Git metadata", "Accessibility", "Concurrency", "Hooks", "Archive", "Projects", "Packaging", "Tests", "Docs", "Terminal"};
+        const QStringList childActions{"Check compact row geometry", "Verify saved context recovery", "Build native menu integration", "Test branch and label filters", "Read linked worktree roots", "Check keyboard focus order", "Review lock ordering", "Inspect activity event contract", "Test archive identity", "Verify remote folder browser", "Check release bundle", "Run focused regression tests", "Update session examples", "Verify attached title changes"};
+        for (int i = 0; i < childNames.size(); ++i) children[QString("child-%1").arg(i)] = QJsonObject{{"label", childNames[i]}, {"state", i < 6 ? "working" : "finished"}, {"detail", childActions[i]}, {"updated", 1790928000 - i}};
+        data["task_lists"] = QJsonObject{{"main", QJsonObject{{"items", QJsonArray{
+            QJsonObject{{"title", "Inspect the workspace and existing hooks"}, {"status", "completed"}},
+            QJsonObject{{"title", "Build the collapsible session inspector"}, {"status", "in_progress"}},
+            QJsonObject{{"title", "Verify native behavior on Arch and macOS"}, {"status", "pending"}}
+        }}}}};
+        data["goal"] = QJsonObject{{"id", "preview-goal"}, {"objective", "Complete the migration and verify restore on both machines"},
+            {"status", "active"}, {"tokens_used", 24000}, {"token_budget", 100000}, {"time_used_seconds", 154800}};
+        data["subagents"] = children; data["subagent_source"] = "hooks"; data["subagent_active_count"] = 6; data["subagent_total_count"] = 14;
+        data["cwd"] = "/workspace/zerus-ui"; data["git_root"] = "/workspace/zerus-ui"; data["git_branch"] = "feat/zerus";
+        data["git_worktree"] = true; data["git_worktree_name"] = "zerus-ui";
+        data["effort"] = "high"; data["settings_change_supported"] = true; data["settings_apply_when"] = "ready";
+        data["model_options"] = QJsonArray{
+            QJsonObject{{"id", "gpt-6.1-sol"}, {"effort_options", QJsonArray{"low", "medium", "high", "xhigh"}}},
+            QJsonObject{{"id", "gpt-6-astra"}, {"effort_options", QJsonArray{"high", "xhigh", "ultra"}}}};
+        client->inspectionReady({}, "codex/hgs/dashboard", data); QTest::qWait(50);
+        auto *tree = window.findChild<SessionList *>("sessionList");
+        for (int i = 0; i < tree->count(); ++i) if (tree->item(i)->data(SessionRoles::HasChildren).toBool()) { tree->childrenToggled(tree->item(i)->data(SessionRoles::Key).toString()); break; }
+        QTest::qWait(30);
+        auto *usage=static_cast<AccountUsage::Button *>(window.findChild<QPushButton *>("sessionAccountUsage"));
+        usage->setData(QJsonObject{{"provider","codex"},{"status","ok"},{"windows",QJsonArray{
+            QJsonObject{{"used_percent",78},{"window_minutes",300}},QJsonObject{{"used_percent",94},{"window_minutes",10080}}}}});
+        QVERIFY(window.grab().save(destination + (dark ? "/tree-dark.png" : "/tree-light.png")));
+        for (int i = 0; i < tree->count(); ++i) if (tree->item(i)->data(SessionRoles::HasChildren).toBool()) { tree->childrenToggled(tree->item(i)->data(SessionRoles::Key).toString()); break; }
+        auto *tabs = window.findChild<QTabWidget *>("sessionDetailTabs");
+        auto *inspectorToggle = window.findChild<QPushButton *>("toggleInspector");
+        inspectorToggle->setChecked(true); QTest::qWait(50);
+        QVERIFY(window.grab().save(destination + (dark ? "/swarm-dark.png" : "/swarm-light.png")));
+        inspectorToggle->setChecked(false); QTest::qWait(30);
+        QVERIFY(window.grab().save(destination + (dark ? "/sessions-dark.png" : "/sessions-light.png")));
+        window.showNotificationNotice("Session updated. Refreshing…");
+        QVERIFY(window.grab().save(destination + (dark ? "/status-dark.png" : "/status-light.png")));
+        window.findChild<MessageComposer *>("messageComposer")->findChild<QPushButton *>("sessionModelSettings")->click(); QTest::qWait(30);
+        auto *modelPopup = window.findChild<MessageComposer *>("messageComposer")->findChild<QWidget *>("sessionSettingsPopup");
+        QVERIFY(modelPopup->grab().save(destination + (dark ? "/model-settings-dark.png" : "/model-settings-light.png"))); modelPopup->hide();
+        auto *sessionList = window.findChild<QListWidget *>("sessionList");
+        QTest::keyClick(sessionList, Qt::Key_Menu); QTest::qWait(50);
+        auto *contextMenu = window.findChild<QMenu *>("sessionContextMenu");
+        QVERIFY(contextMenu->grab().save(destination + (dark ? "/session-menu-dark.png" : "/session-menu-light.png")));
+        contextMenu->hide();
+        auto *groupsMenu = window.findChild<QMenu *>("sessionProjectsMenu");
+        groupsMenu->popup(sessionList->mapToGlobal(QPoint(8, 8))); QTest::qWait(30);
+        groupsMenu->setActiveAction(window.findChild<QAction *>("markAllSessionsRead"));
+        QVERIFY(groupsMenu->grab().save(destination + (dark ? "/mark-all-read-dark.png" : "/mark-all-read-light.png"))); groupsMenu->hide();
+        QTimer::singleShot(0, &window, [&]() {
+            auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget()); QVERIFY(dialog);
+            QTimer::singleShot(1000, dialog, &QDialog::reject);
+            dialog->findChild<QLineEdit *>("renameSessionName")->setText("release planning");
+            QTest::qWait(50);
+            QVERIFY(dialog->grab().save(destination + (dark ? "/rename-dark.png" : "/rename-light.png")));
+            dialog->reject();
+        });
+        window.findChild<QAction *>("renameSessionAction")->trigger();
+        auto *actions = window.findChild<QPushButton *>("batchActions");
+        auto *menu = actions->menu(); menu->popup(actions->mapToGlobal(QPoint(0, actions->height())));
+        QTest::qWait(50); menu->setActiveAction(menu->actions().first());
+        QVERIFY(menu->grab().save(destination + (dark ? "/actions-dark.png" : "/actions-light.png")));
+        auto *machineMenu = menu->actions().first()->menu();
+        machineMenu->popup(menu->mapToGlobal(menu->actionGeometry(menu->actions().first()).topRight())); QTest::qWait(50);
+        QVERIFY(machineMenu->grab().save(destination + (dark ? "/machine-actions-dark.png" : "/machine-actions-light.png")));
+        machineMenu->hide(); menu->hide();
+        window.resize(960, 650); QTest::qWait(50);
+        QVERIFY(window.grab().save(destination + (dark ? "/sessions-dark-compact.png" : "/sessions-light-compact.png")));
+        inspectorToggle->setChecked(true); QTest::qWait(50);
+        QVERIFY(window.grab().save(destination + (dark ? "/swarm-dark-compact.png" : "/swarm-light-compact.png")));
+        inspectorToggle->setChecked(false);
+        window.showSession("mac", "claude/infra/review"); QTest::qWait(50);
+        QVERIFY(window.grab().save(destination + (dark ? "/attention-dark.png" : "/attention-light.png")));
+        auto archiveFleet = fleet(); auto archiveBox = archiveFleet.local();
+        auto archived = archiveBox.sessions[0]; archived.name = "codex/website/navigation";
+        archived.project = "website"; archived.tag = "navigation"; archived.state = "archived";
+        archived.archiveId = "preview-archive"; archived.archivedAt = 1790928000;
+        archived.currentTool.clear(); archived.prompt = "Simplify the mobile navigation and document the final design.";
+        // The older completed instance has its own identity; no active binding occupies its name.
+        archiveBox.sessions.removeAt(2); archiveBox.sessions.append(archived);
+        archiveFleet.setLocal(archiveBox, QDateTime::currentMSecsSinceEpoch()); window.setFleet(archiveFleet);
+        window.resize(1240, 800);
+        for (auto *button : window.findChildren<QPushButton *>()) if (button->property("filter") == "archived") { button->click(); button->setFocus(); }
+        QTest::qWait(60);
+        auto archiveDetails = data; archiveDetails["prompt"] = archived.prompt; archiveDetails["phase"] = "ended";
+        archiveDetails["activity"] = "ended"; archiveDetails["cwd"] = "/workspace/projects/website";
+        archiveDetails["last_message"] = "Navigation updated. The mobile menu now preserves focus and the design notes are in place.";
+        archiveDetails["completion_reason"] = "clean_exit";
+        client->inspectionReady({}, archived.name, archiveDetails, archived.archiveId); QTest::qWait(50);
+        QVERIFY(window.grab().save(destination + (dark ? "/archive-dark.png" : "/archive-light.png")));
+        window.setFleet(fleet()); window.showSession({}, "codex/hgs/dashboard");
+        NewSessionDialog launch(script(), fleet(), "mac", "codex", {}, &window); launch.show(); QTest::qWait(100);
+        SessionOrganization launchProjects; const auto launchId=launchProjects.createGroup("Zerus");
+        launchProjects.addFolder(launchId,"mac","/Users/example/work/new project"); launchProjects.addFolder(launchId,"arch","/workspace/zerus");
+        launch.setGroups(launchProjects,launchId);
+        QVERIFY(launch.grab().save(destination + (dark ? "/new-session-dark.png" : "/new-session-light.png"))); launch.close();
+        DirectoryDialog browser(script(), "mac", "~", &window); browser.show(); QTest::qWait(100);
+        QVERIFY(browser.grab().save(destination + (dark ? "/folders-dark.png" : "/folders-light.png"))); browser.close();
+        window.resize(1240, 800); window.showProjects("mac"); QTest::qWait(100);
+        QVERIFY(window.grab().save(destination + (dark ? "/projects-dark.png" : "/projects-light.png")));
+        // Compare selection, activity, unread and action states at the smallest
+        // supported sidebar width, using the real delegate in both densities.
+        QSettings().remove("workspace/organization");
+        BoxState states; states.host = "arch"; states.ok = true;
+        const QStringList stateNames{"nebula", "infrastructure-rollout-with-a-long-name", "persistence", "deploy", "research", "tests", "navigation", "content", "legacy"};
+        for (int i = 0; i < stateNames.size(); ++i) {
+            auto row = fleet().local().sessions[0]; row.tag = stateNames[i]; row.name = "codex/hgs/" + row.tag;
+            row.gitBranch = "main"; row.activitySummary = "Bash"; row.activityDetail = "Run the deployment checks";
+            row.model = "gpt-6-astra"; row.effort = "xhigh";
+            if (i == 0) {
+                row.turnStarted = QDateTime::currentSecsSinceEpoch() - 2729;
+                row.subagentSource = "hooks"; row.subagentCountsComplete = true;
+                row.subagentActiveCount = 2; row.subagentTotalCount = 3;
+                row.subagents = {{"review", QJsonObject{{"name", "Review"}, {"state", "working"}}}};
+            }
+            if (i == 1 || i == 2) { row.conversationId = "preview-" + row.tag; row.replyId = "1:1790928000"; }
+            if (i == 2 || i >= 6) { row.activity = "idle"; row.phase = "idle"; row.activitySummary.clear(); row.activityDetail.clear(); row.currentTool.clear(); row.prompt.clear(); }
+            if (i == 3) { row.phase = "approval"; row.activityDetail = "Approve the deployment command"; }
+            if (i == 4) { row.phase = "input"; row.activityDetail = "Choose the target environment"; }
+            if (i == 5) { row.phase = "error"; row.activityDetail = "Connection timed out"; }
+            if (i == 6) row.state = "paused";
+            if (i == 8) { row.tracked = false; row.activity.clear(); row.phase.clear(); }
+            states.sessions.append(row);
+        }
+        FleetState stateFleet; stateFleet.setLocal(states, QDateTime::currentMSecsSinceEpoch());
+        SessionsWindow stateWindow(script()); stateWindow.setFleet(stateFleet); stateWindow.resize(1000, 1180); stateWindow.show();
+        stateWindow.showSession({}, states.sessions[0].name);
+        auto *stateList = stateWindow.findChild<SessionList *>("sessionList");
+        auto *railSplitter = qobject_cast<QSplitter *>(stateWindow.findChild<QWidget *>("sessionListPanel")->parentWidget());
+        QVERIFY(railSplitter);
+        for (const int railWidth : {270, 380}) for (bool compact : {true, false}) {
+            railSplitter->setSizes({railWidth, railSplitter->width() - railSplitter->handleWidth() - railWidth});
+            stateList->setProperty("compact", compact); stateList->doItemsLayout(); QTest::qWait(60);
+            QPixmap rendered(stateList->size() * stateList->devicePixelRatioF()); rendered.setDevicePixelRatio(stateList->devicePixelRatioF());
+            rendered.fill(QColor(dark ? "#161b21" : "#f5f7f9")); stateList->render(&rendered);
+            QVERIFY(rendered.save(destination + QString("/states-%1-%2%3.png").arg(dark ? "dark" : "light", compact ? "compact" : "comfortable", railWidth == 270 ? "" : "-wide")));
+        }
+        for (const auto *pageName : {"dashboardPage", "machinesPage", "accountsPage"}) {
+            auto *page = stateWindow.findChild<QWidget *>(pageName); QVERIFY(page);
+            auto *stack = qobject_cast<QStackedWidget *>(page->parentWidget()); QVERIFY(stack);
+            stack->setCurrentWidget(page); QTest::qWait(30);
+            QVERIFY(page->grab(QRect(0, 0, page->width(), 90)).save(destination + QString("/header-%1-%2.png").arg(dark ? "dark" : "light", pageName)));
+        }
+    }
+    qApp->setPalette(original);
+}
+
+void TestSessionsWindow::launchInitialFolderFollowsProject_data()
+{
+    QTest::addColumn<bool>("hasFolder");
+    QTest::newRow("project-folder")<<true;
+    QTest::newRow("empty-project")<<false;
+}
+void TestSessionsWindow::launchInitialFolderFollowsProject()
+{
+    QFETCH(bool,hasFolder);
+    SessionOrganization projects;
+    const auto first=projects.createGroup("Default"),target=projects.createGroup("Selected");
+    projects.setDefaultProject(first);
+    projects.addFolder(first,"arch","/default/unrelated");
+    const auto expected=hasFolder?QString("/selected/work"):QString();
+    if(hasFolder)projects.addFolder(target,"arch",expected);
+    projects.moveSession("arch\ncodex/hgs/dashboard",target);
+    QSettings().setValue("workspace/organization",QJsonDocument(projects.toJson()).toJson(QJsonDocument::Compact));
+
+    // Callers may supply a fresher organization after construction. An automatic
+    // constructor default is not a folder explicitly chosen by the user.
+    NewSessionDialog dialog(script(),fleet());
+    dialog.setGroups(projects,target);
+    QCOMPARE(dialog.findChild<QComboBox *>("launchProjectFolder")->currentData(Qt::UserRole+2).toString(),expected);
+    QVERIFY(!dialog.findChild<QLabel *>("muted")->property("outsideProject").toBool());
+
+    // The global action derives the project from the selected session.
+    SessionsWindow window(script());window.setFleet(fleet());window.show();
+    window.showSession({},"codex/hgs/dashboard");
+    bool checked=false;
+    QTimer::singleShot(0,&window,[&]{
+        auto *launch=qobject_cast<NewSessionDialog *>(QApplication::activeModalWidget());
+        if(!launch)return;
+        const auto actualProject=launch->findChild<QComboBox *>("launchProject")->currentData().toString();
+        const auto actualPath=launch->findChild<QComboBox *>("launchProjectFolder")->currentData(Qt::UserRole+2).toString();
+        const bool outside=launch->findChild<QLabel *>("muted")->property("outsideProject").toBool();
+        launch->reject();checked=true;
+        QCOMPARE(actualProject,target);QCOMPARE(actualPath,expected);QVERIFY(!outside);
+    });
+    window.showNewSession();QVERIFY(checked);
+}
+
+void TestSessionsWindow::launchFoldersFollowProject()
+{
+    SessionOrganization projects;const auto first=projects.createGroup("First"),second=projects.createGroup("Second"),empty=projects.createGroup("Empty");
+    const auto original=projects.addFolder(first,"mac","/remote/chosen");
+    const auto alternative=projects.addFolder(first,"mac","/remote/list-choice");
+    projects.addFolder(second,"mac","/remote/different");projects.addFolder(second,"arch","/local/second");
+    NewSessionDialog dialog(script(),fleet(),"mac","codex");dialog.setGroups(projects,first);QVERIFY(dialog.selectFolder(original));dialog.show();
+    auto *project=dialog.findChild<QComboBox *>("launchProject");auto *machine=dialog.findChild<QComboBox *>("launchComputer");auto *folder=dialog.findChild<QComboBox *>("launchProjectFolder");auto *account=dialog.findChild<QComboBox *>("launchAccount");
+    auto *hint=dialog.findChild<QLabel *>("muted");QVERIFY(hint);QTRY_VERIFY(account->count()>0);
+    auto *agent=dialog.findChild<QComboBox *>("launchAgent");QTest::qWait(1);const auto agentTop=agent->geometry().top();
+    auto change=[&](const QString &id){project->setCurrentIndex(project->findData(id));};
+    folder->setCurrentIndex(folder->findData(alternative));dialog.setFleet(fleet());
+    QCOMPARE(folder->currentData(Qt::UserRole+2).toString(),QString("/remote/list-choice"));
+    change(second);QCOMPARE(machine->currentData().toString(),QString("mac"));QCOMPARE(folder->currentData(Qt::UserRole+2).toString(),QString("/remote/different"));
+    QVERIFY(!hint->property("outsideProject").toBool());QCOMPARE(account->currentData().toString(),QString("native-codex"));
+    change(empty);QVERIFY(folder->currentData(Qt::UserRole+2).toString().isEmpty());
+    QTest::qWait(1);QCOMPARE(agent->geometry().top(),agentTop);
+    dialog.setFleet(fleet());QVERIFY(folder->currentData(Qt::UserRole+2).toString().isEmpty());
+    change(first);QCOMPARE(folder->currentData().toString(),original);QVERIFY(!hint->property("outsideProject").toBool());QVERIFY(hint->styleSheet().isEmpty());
+    dialog.selectPath("/remote/contextual");dialog.setFleet(fleet());QCOMPARE(folder->currentData(Qt::UserRole+2).toString(),QString("/remote/contextual"));
+    QTest::qWait(1);QCOMPARE(agent->geometry().top(),agentTop);
+    auto *worktrees=dialog.findChild<QPushButton *>("chooseLaunchWorktree");
+    auto *newWorktree=dialog.findChild<QPushButton *>("newLaunchWorktree");
+    worktrees->show();newWorktree->show();QTest::qWait(1);QCOMPARE(agent->geometry().top(),agentTop);
+    worktrees->hide();newWorktree->hide();QTest::qWait(1);QCOMPARE(agent->geometry().top(),agentTop);
+    change(second);QCOMPARE(folder->currentData(Qt::UserRole+2).toString(),QString("/remote/different"));
+    machine->setCurrentIndex(machine->findData(QString()));QCOMPARE(folder->currentData(Qt::UserRole+2).toString(),QString("/local/second"));
+    change(empty);QCOMPARE(machine->currentData().toString(),QString());QVERIFY(folder->currentData(Qt::UserRole+2).toString().isEmpty());
+    machine->setCurrentIndex(machine->findData("mac"));QVERIFY(folder->currentData(Qt::UserRole+2).toString().isEmpty());
+    const auto offline=projects.addFolder(first,"missing","/offline/project");dialog.setGroups(projects,first);QVERIFY(dialog.selectFolder(offline));change(empty);
+    QCOMPARE(machine->currentData().toString(),QString("missing"));QVERIFY(folder->currentData(Qt::UserRole+2).toString().isEmpty());QVERIFY(!dialog.findChild<QPushButton *>("primary")->isEnabled());
+}
+
+void TestSessionsWindow::arbitraryFolderAndTerminalPreference_data()
+{
+    QTest::addColumn<QString>("theme");
+    QTest::newRow("dark")<<QString("dark");QTest::newRow("light")<<QString("light");
+}
+void TestSessionsWindow::arbitraryFolderAndTerminalPreference()
+{
+    QFETCH(QString,theme);QSettings().setValue("workspace/theme",theme);
+    QTemporaryDir folderFixture; QFile folderScript(folderFixture.filePath("hgs"));
+    QFile original(script()); QVERIFY(original.open(QIODevice::ReadOnly)); QVERIFY(folderScript.open(QIODevice::WriteOnly));
+    folderScript.write(original.readAll().replace("\"path\":\"/remote/work tree\"", "\"path\":\"/remote/work tree/\"")); folderScript.close();
+    QVERIFY(folderScript.setPermissions(QFileDevice::ReadOwner|QFileDevice::WriteOwner|QFileDevice::ExeOwner));
+    SessionsWindow parent(script());parent.setFleet(fleet());parent.show();
+    SessionOrganization projects;const auto id=projects.createGroup("infra"),other=projects.createGroup("Other");
+    projects.addFolder(other,"mac","/remote/other");
+    NewSessionDialog dialog(folderScript.fileName(),fleet(),"mac","codex",{},&parent);dialog.setGroups(projects,id);dialog.show();
+    auto *folders=dialog.findChild<QComboBox *>("launchProjectFolder");auto *start=dialog.findChild<QPushButton *>("primary");
+    auto *terminal=dialog.findChild<QCheckBox *>("launchOpenTerminal");auto *browse=dialog.findChild<QPushButton *>("browseLaunchFolder");
+    QCOMPARE(folders->count(),0);QVERIFY(!start->isEnabled());QVERIFY(!terminal->isChecked());
+    QTimer::singleShot(0,&dialog,[&]{
+        auto *browser=qobject_cast<DirectoryDialog *>(QApplication::activeModalWidget());QVERIFY(browser);browser->reject();
+    });browse->click();QCOMPARE(folders->count(),0);
+    QTimer::singleShot(0,&dialog,[&]{
+        auto *browser=qobject_cast<DirectoryDialog *>(QApplication::activeModalWidget());QVERIFY(browser);
+        QTimer::singleShot(3000,browser,&QDialog::reject);
+        auto *choose=browser->findChild<QPushButton *>("chooseFolder");QTRY_VERIFY(choose->isEnabled());choose->click();
+    });browse->click();QCOMPARE(folders->count(),1);QTRY_VERIFY(start->isEnabled());
+    QCOMPARE(folders->currentText(),QString("work tree"));
+    auto *project=dialog.findChild<QComboBox *>("launchProject");
+    project->setCurrentIndex(project->findData(other));
+    QCOMPARE(folders->currentData(Qt::UserRole+2).toString(),QString("/remote/work tree"));
+    QVERIFY(dialog.findChild<QLabel *>("muted")->property("outsideProject").toBool());
+    project->setCurrentIndex(project->findData(id));
+    QCOMPARE(dialog.findChild<QLabel *>("launchFolderPath")->text(),QString("/remote/work tree"));
+    QVERIFY(projects.group(id)->folders.isEmpty());
+    dialog.setFleet(fleet());QCOMPARE(folders->currentData(Qt::UserRole+2).toString(),QString("/remote/work tree"));
+    auto *machine=dialog.findChild<QComboBox *>("launchComputer");machine->setCurrentIndex(machine->findData(QString()));
+    QCOMPARE(folders->count(),0);QVERIFY(!start->isEnabled());machine->setCurrentIndex(machine->findData("mac"));QCOMPARE(folders->count(),1);
+    const auto preview=qEnvironmentVariable("HGS_NAVIGATION_PREVIEW");
+    if(!preview.isEmpty()){QDir().mkpath(preview);QTest::qWait(40);QVERIFY(dialog.grab().save(preview+"/new-session-folder-"+theme+".png"));}
+    QSignalSpy launches(&dialog,&NewSessionDialog::launchRequested);terminal->setChecked(true);QTRY_VERIFY(start->isEnabled());start->click();QTRY_COMPARE(launches.size(),1);
+    QCOMPARE(launches[0][0].toString(),QString("mac"));QVERIFY(launches[0][6].toBool());
+    NewSessionDialog second(script(),fleet(),"mac");QVERIFY(second.findChild<QCheckBox *>("launchOpenTerminal")->isChecked());
+    second.setGroups(projects,id);QCOMPARE(second.findChild<QComboBox *>("launchProjectFolder")->count(),0);
+    projects.addFolder(id,"mac","/remote/work tree");second.setGroups(projects,id);
+    second.findChild<QCheckBox *>("launchOpenTerminal")->setChecked(false);
+    QSignalSpy secondLaunch(&second,&NewSessionDialog::launchRequested);QTRY_VERIFY(second.findChild<QPushButton *>("primary")->isEnabled());second.findChild<QPushButton *>("primary")->click();QTRY_COMPARE(secondLaunch.size(),1);
+    QVERIFY(!secondLaunch[0][6].toBool());
+    NewSessionDialog third(script(),fleet());QVERIFY(!third.findChild<QCheckBox *>("launchOpenTerminal")->isChecked());
+    // Selecting a project folder explicitly replaces the earlier Browse choice.
+    project->setCurrentIndex(project->findData(other));
+    folders->setCurrentIndex(folders->findData(QString("/remote/other"),Qt::UserRole+2));
+    project->setCurrentIndex(project->findData(id));QCOMPARE(folders->count(),0);
+}
+
+void TestSessionsWindow::terminationProgress_data()
+{
+    QTest::addColumn<QString>("mode");
+    for(const auto &mode:{"success","failure","offline","replacement","archive"})QTest::newRow(mode)<<QString(mode);
+}
+void TestSessionsWindow::terminationProgress()
+{
+    QFETCH(QString,mode);
+    QTemporaryDir directory;QFile fake(directory.filePath("hgs"));QVERIFY(fake.open(QIODevice::WriteOnly));
+    fake.write(R"(#!/usr/bin/env python3
+import json,sys,time,pathlib
+args=sys.argv[1:]
+if args and args[0].startswith('@'):args=args[1:]
+if args and args[0] in ('kill','terminate'):
+ time.sleep(0.3)
+ if pathlib.Path(__file__).with_name('fail').exists():
+  print('Could not stop this session',file=sys.stderr);sys.exit(1)
+print(json.dumps({'tracked':True,'events':[],'cursor':0}))
+)");fake.close();QVERIFY(fake.setPermissions(QFileDevice::ReadOwner|QFileDevice::WriteOwner|QFileDevice::ExeOwner));
+    if(mode=="failure"){QFile failure(directory.filePath("fail"));QVERIFY(failure.open(QIODevice::WriteOnly));}
+    SessionOrganization organization;const auto group=organization.createGroup("Work");organization.moveSession("arch\ncodex/hgs/dashboard",group);
+    QSettings().setValue("workspace/organization",QJsonDocument(organization.toJson()).toJson(QJsonDocument::Compact));
+    SessionsWindow window(fake.fileName());auto state=fleet();window.setFleet(state);window.show();window.showSession({},"codex/hgs/dashboard");
+    auto *list=window.findChild<SessionList *>("sessionList");auto *client=window.findChild<HgsClient *>();
+    QSignalSpy writes(client,&HgsClient::writeDone);QSignalSpy refresh(&window,&SessionsWindow::refreshRequested);
+    const auto row=[&]() -> QListWidgetItem * {for(int i=0;i<list->count();++i)if(list->item(i)->data(SessionRoles::Key).toString()=="\ncodex/hgs/dashboard")return list->item(i);return nullptr;};
+    QTimer::singleShot(0,&window,[&]{auto *question=qobject_cast<QMessageBox *>(QApplication::activeModalWidget());QVERIFY(question);question->button(QMessageBox::Yes)->click();});
+    window.findChild<QAction *>("forgetSessionAction")->trigger();
+    QVERIFY(row());QCOMPARE(row()->data(SessionRoles::Status).toString(),QString("Terminating…"));
+    QCOMPARE(window.findChild<QLabel *>("badge")->text(),QString("Terminating…"));
+    QVERIFY(!window.findChild<QPushButton *>("pauseAction")->isEnabled());
+    window.setFleet(state);QCOMPARE(row()->data(SessionRoles::Status).toString(),QString("Terminating…"));
+    QTRY_COMPARE(writes.size(),1);QVERIFY(!refresh.isEmpty());
+    if(mode=="failure"){
+        QVERIFY(row()->data(SessionRoles::Status).toString()!="Terminating…");
+        bool error=false;for(auto *label:window.findChildren<QLabel *>())error|=label->text().contains("Could not stop this session");QVERIFY(error);return;
+    }
+    window.setFleet(state);QCOMPARE(row()->data(SessionRoles::Status).toString(),QString("Terminating…"));
+    // A second activation while waiting for the next snapshot must not issue another kill.
+    window.findChild<QAction *>("forgetSessionAction")->trigger();QCOMPARE(writes.size(),1);
+    auto local=state.local();
+    if(mode=="offline"){
+        local.ok=false;state.setLocal(local,QDateTime::currentMSecsSinceEpoch());window.setFleet(state);
+        QCOMPARE(row()->data(SessionRoles::Status).toString(),QString("Terminating…"));local.ok=true;
+    }
+    if(mode=="replacement"){
+        local.sessions[0].runId="replacement-run";local.sessions[0].created+=1;
+        state.setLocal(local,QDateTime::currentMSecsSinceEpoch());window.setFleet(state);
+        QVERIFY(row());QVERIFY(row()->data(SessionRoles::Status).toString()!="Terminating…");return;
+    }
+    if(mode=="archive"){
+        auto archived=local.sessions[0];archived.state="archived";archived.archiveId="terminated-archive";local.sessions.append(archived);
+    }
+    local.sessions.removeFirst();state.setLocal(local,QDateTime::currentMSecsSinceEpoch());window.setFleet(state);QVERIFY(!row());
+    if(mode=="archive"){
+        SessionOrganization saved(QJsonDocument::fromJson(QSettings().value("workspace/organization").toByteArray()).object());
+        QCOMPARE(saved.groupFor("arch\narchive\nterminated-archive"),group);
+    }
+}
+
+void TestSessionsWindow::remoteFolderLaunch()
+{
+    NewSessionDialog dialog(script(), fleet(), "mac"); dialog.show();
+    auto *projects = dialog.findChild<QComboBox *>("launchProject"); QTRY_COMPARE(projects->count(), 1);
+    SessionOrganization organization; organization.addFolder("ungrouped","mac","/remote/work tree");
+    dialog.setGroups(organization,"ungrouped");
+    const auto name = dialog.findChild<QLineEdit *>("launchName")->text(); QVERIFY(name.startsWith("work-"));
+    QSignalSpy launched(&dialog, &NewSessionDialog::launchRequested);
+    auto *start = dialog.findChild<QPushButton *>("primary"); QTRY_VERIFY(start->isEnabled()); start->click();
+    QTRY_COMPARE(launched.size(), 1);
+    QCOMPARE(launched[0][0].toString(), QStringLiteral("mac"));
+    QCOMPARE(launched[0][1].toString(), QStringLiteral("codex"));
+    QCOMPARE(launched[0][2].toString(), QStringLiteral("/remote/work tree"));
+    QCOMPARE(launched[0][3].toString(), name);
+    QCOMPARE(launched[0][5].toString(), QString("ungrouped"));
+    NewSessionDialog second(script(), fleet(), {}, "martty-dsh", "infra");
+    QVERIFY(second.findChild<QLineEdit *>("launchName")->text() != name);
+    QCOMPARE(second.findChild<QComboBox *>("launchAgent")->currentText(), QStringLiteral("martty-dsh"));
+}
+
+void TestSessionsWindow::nativeLaunchStaysInWorkspace_data()
+{
+    QTest::addColumn<QString>("agent");
+    QTest::newRow("native")<<QString("dsh");QTest::newRow("codex-detached")<<QString("codex");
+}
+void TestSessionsWindow::nativeLaunchStaysInWorkspace()
+{
+    QFETCH(QString,agent);
+    SessionOrganization projects; projects.addFolder("ungrouped","arch","/workspace/infra");
+    QSettings().setValue("workspace/organization",QJsonDocument(projects.toJson()).toJson(QJsonDocument::Compact));
+    SessionsWindow window(script());auto state=fleet();window.setFleet(state);window.show();
+    QSignalSpy terminal(&window,&SessionsWindow::newSessionRequested);
+    auto *client=window.findChild<HgsClient *>();QSignalSpy launched(client,&HgsClient::nativeSessionLaunched);
+    QTimer::singleShot(0,&window,[&] {
+        auto *dialog=qobject_cast<NewSessionDialog *>(QApplication::activeModalWidget());QVERIFY(dialog);
+        QTimer::singleShot(3000,dialog,&QDialog::reject);
+        QTRY_VERIFY(dialog->findChild<QPushButton *>("primary")->isEnabled());
+        dialog->findChild<QLineEdit *>("launchName")->setText("native-created");
+        dialog->findChild<QComboBox *>("launchProject")->setCurrentIndex(0);
+        dialog->findChild<QPushButton *>("primary")->click();
+    });
+    window.showNewSession(agent,"infra",{});
+    QTRY_COMPARE(launched.size(),1);QCOMPARE(terminal.size(),0);QVERIFY(launched[0][1].toBool());
+    const QString token=launched[0][0].toString();QVERIFY(!token.isEmpty());
+    auto box=state.local();SessionInfo created;created.name=agent+"/infra/native-created";created.cmd=agent;created.project="infra";created.tag="native-created";
+    created.launchId=token;created.runtimeState="live";created.processState="running";created.tracked=true;created.resumable=true;
+    box.sessions.append(created);state.setLocal(box,QDateTime::currentMSecsSinceEpoch());window.setFleet(state);
+    QCOMPARE(window.findChild<SessionList *>("sessionList")->currentItem()->data(SessionRoles::Identity).toString(),"arch\n"+created.name);
+    QTest::qWait(20);
+    auto *list = window.findChild<SessionList *>("sessionList");
+    const auto bounds = [&] { return QRect(list->mapTo(&window, QPoint()), list->size()); };
+    const auto originalBounds = bounds();
+    auto *statusBar = window.findChild<QFrame *>("workspaceStatus"); QVERIFY(statusBar); QCOMPARE(statusBar->height(), 28);
+    window.showNotificationNotice(QString(2000, 'x') + "\nRefreshing…"); QCoreApplication::processEvents();
+    QCOMPARE(bounds(), originalBounds);
+    // A native failure must stay visible after the previous success notice expires.
+    client->nativeSessionLaunched("failed-launch",false,"Cannot find official dsh");
+    QLabel *notice=nullptr;
+    for(auto *label:window.findChildren<QLabel *>()) if(label->text().contains("Cannot find official dsh")) notice=label;
+    QVERIFY(notice);QVERIFY(notice->isVisible());QTest::qWait(5100);QVERIFY(notice->isVisible());
+    QCOMPARE(bounds(), originalBounds);
+    window.showNotificationNotice("Session updated.");
+    QTRY_VERIFY_WITH_TIMEOUT(notice->text().isEmpty(), 6500);
+    QVERIFY(statusBar->isVisible()); QCOMPARE(bounds(), originalBounds);
+}
+
+void TestSessionsWindow::nativeSignInPreservesDraftAndUnblocks()
+{
+    auto state = fleet(); auto box = state.local();
+    SessionInfo session; session.name = "dsh/infra/new"; session.cmd = "dsh"; session.project = "infra"; session.tag = "new";
+    session.tracked = true; session.resumable = true; session.state = "running"; session.runtimeState = "live"; session.processState = "running";
+    box.sessions = {session}; state.setLocal(box, QDateTime::currentMSecsSinceEpoch());
+    SessionsWindow window(script()); window.setFleet(state); window.show(); window.showSession({}, session.name);
+    auto *client = window.findChild<HgsClient *>(); QSignalSpy inspected(client, &HgsClient::inspectionReady);
+    QTRY_VERIFY(!inspected.isEmpty());
+    QJsonObject details{{"backend", "dsh"}, {"tracked", true}, {"conversation_id", "conversation-one"}, {"run_id", "native-run"},
+        {"runtime_state", "live"}, {"process_state", "running"}, {"phase", "input"}, {"activity", "attention"},
+        {"activity_summary", "Sign in required"}, {"auth_required", true}, {"replace_events", true}, {"events", QJsonArray{}}};
+    client->inspectionReady({}, session.name, details);
+    auto *banner = window.findChild<QWidget *>("nativeSignInBanner"); QVERIFY(banner); QVERIFY(banner->isVisible());
+    auto *composer = window.findChild<MessageComposer *>("messageComposer"); auto *editor = composer->findChild<QPlainTextEdit *>(); QVERIFY(editor);
+    editor->setPlainText("Keep this first message");
+    auto *send = composer->findChild<QPushButton *>("sendMessage"); QVERIFY(send); QVERIFY(!send->isEnabled());
+    auto *activity = window.findChild<ActivityView *>("mainActivity")->browser();
+    QVERIFY(activity->toPlainText().contains("After signing in"));
+    // The native tab requests a private URL; this fixture intentionally has
+    // no browser endpoint. It must not open an external browser automatically.
+    QSignalSpy external(client, &HgsClient::writeDone), connection(client, &HgsClient::nativeUiFailed);
+    auto *tabs = window.findChild<QTabWidget *>("sessionDetailTabs");
+    QVERIFY(!tabs->isTabVisible(1)); QVERIFY(tabs->isTabVisible(2));
+    window.findChild<QPushButton *>("nativeSignInButton")->click();
+    QCOMPARE(tabs->currentWidget()->objectName(), QString("nativeUiView"));
+    QTRY_COMPARE(connection.size(), 1); QCOMPARE(external.size(), 0);
+    tabs->setCurrentIndex(0);
+    details["auth_required"] = false; details["phase"] = "idle"; details["activity"] = "idle"; details["activity_summary"] = "Ready";
+    client->inspectionReady({}, session.name, details);
+    QVERIFY(!banner->isVisible()); QVERIFY(send->isEnabled()); QCOMPARE(editor->toPlainText(), QString("Keep this first message"));
+    QVERIFY(activity->toPlainText().contains("Ready for your first message"));
+}
+
+void TestSessionsWindow::newSessionGroupFollowsLaunchIdentity_data()
+{
+    QTest::addColumn<QString>("host"); QTest::addColumn<QString>("mode");
+    QTest::newRow("local-success") << QString() << QString("success");
+    QTest::newRow("remote-success") << QString("mac") << QString("success");
+    QTest::newRow("restart") << QString("mac") << QString("restart");
+    QTest::newRow("deleted-group") << QString() << QString("deleted");
+    QTest::newRow("failed-open") << QString("mac") << QString("failed");
+    QTest::newRow("empty-project") << QString() << QString("empty");
+    QTest::newRow("dismissed") << QString() << QString("dismissed");
+    QTest::newRow("legacy-intent") << QString() << QString("legacy");
+}
+
+void TestSessionsWindow::newSessionGroupFollowsLaunchIdentity()
+{
+    QFETCH(QString, host); QFETCH(QString, mode);
+    SessionOrganization organization;
+    const QString group = organization.createGroup("Design");
+    organization.addFolder(group,host.isEmpty()?QString("arch"):host,"/remote/infra");
+    if (mode != "empty") organization.moveSession(organization.observe("arch", "codex/hgs/dashboard", ""), group);
+    QSettings().setValue("workspace/organization", QJsonDocument(organization.toJson()).toJson(QJsonDocument::Compact));
+    auto state = fleet();
+    auto window = std::make_unique<SessionsWindow>(script()); window->setFleet(state); window->show(); window->showSession({}, "codex/hgs/dashboard");
+    QSignalSpy launches(window.get(), &SessionsWindow::newSessionRequested);
+    const QString destination = group;
+    QTimer::singleShot(0, window.get(), [&] {
+        auto *dialog = qobject_cast<NewSessionDialog *>(QApplication::activeModalWidget()); QVERIFY(dialog);
+        QTimer::singleShot(3000, dialog, &QDialog::reject);
+        auto *groups = dialog->findChild<QComboBox *>("launchProject"); QVERIFY(groups);
+        QCOMPARE(groups->currentData().toString(), group);
+        QVERIFY(groups->findData("pinned") < 0); QVERIFY(groups->findData("ungrouped") >= 0);
+        groups->setCurrentIndex(groups->findData(destination));
+        QCOMPARE(dialog->findChild<QComboBox *>("launchProjectFolder")->count(), 1);
+        dialog->findChild<QCheckBox *>("launchOpenTerminal")->setChecked(true);
+        dialog->findChild<QLineEdit *>("launchName")->setText("grouped");
+        auto *start = dialog->findChild<QPushButton *>("primary"); QTRY_VERIFY(start->isEnabled()); start->click();
+    });
+    window->showNewSession("codex", group, host); QCOMPARE(launches.size(), 1);
+    const QString token = launches[0][5].toString(); QVERIFY(!QUuid(token).isNull()); QCOMPARE(launches[0][0].toString(), host);
+    auto placeholder = [&]() -> QListWidgetItem * {
+        auto *list = window->findChild<SessionList *>("sessionList");
+        for (int i = 0; i < list->count(); ++i) if (list->item(i)->data(SessionRoles::LaunchId).toString() == token) return list->item(i);
+        return nullptr;
+    };
+    QVERIFY(placeholder()); QCOMPARE(placeholder()->data(SessionRoles::Title).toString(), QString("grouped"));
+    QCOMPARE(placeholder()->data(SessionRoles::Status).toString(), QString("Starting…"));
+    QCOMPARE(placeholder()->data(SessionRoles::Group).toString(), destination);
+    QVERIFY(!placeholder()->isHidden()); QVERIFY(!(placeholder()->flags() & Qt::ItemIsSelectable));
+    QVERIFY(!(placeholder()->flags() & Qt::ItemIsDragEnabled));
+    const auto preview = qEnvironmentVariable("HGS_NAVIGATION_PREVIEW");
+    if (mode == "empty" && !preview.isEmpty()) { QDir().mkpath(preview); QVERIFY(window->grab().save(preview + "/starting-session.png")); }
+    auto pending = QJsonDocument::fromJson(QSettings().value("workspace/pendingLaunches").toByteArray()).object();
+    QCOMPARE(pending.value(token).toObject().value("group").toString(), destination);
+    QCOMPARE(SessionOrganization(QJsonDocument::fromJson(QSettings().value("workspace/organization").toByteArray()).object()).group(destination)->folders.size(),1);
+    SessionInfo created; created.name = "codex/infra/grouped"; created.cmd = "codex"; created.project = "infra"; created.tag = "grouped";
+    created.runId = "run-created"; created.state = "running"; created.launchId = "different-launch";
+    auto box = host.isEmpty() ? state.local() : *state.peer(host);
+    const QString machine = host.isEmpty() ? box.host : host;
+    const auto deliver = [&] {
+        box.sessions.removeIf([&](const SessionInfo &s) { return s.name == created.name; }); box.sessions.append(created);
+        if (host.isEmpty()) state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); else state.setPeer(box, QDateTime::currentMSecsSinceEpoch());
+        window->setFleet(state);
+    };
+    deliver(); // A matching name from someone else's launch is never moved.
+    QVERIFY(placeholder());
+    auto stored = SessionOrganization(QJsonDocument::fromJson(QSettings().value("workspace/organization").toByteArray()).object());
+    QCOMPARE(stored.groupFor(machine + '\n' + created.name), QString("ungrouped"));
+    QVERIFY(QJsonDocument::fromJson(QSettings().value("workspace/pendingLaunches").toByteArray()).object().contains(token));
+    if (mode == "failed") { window->newSessionLaunchFailed(token); QVERIFY(!placeholder()); }
+    if (mode == "dismissed") {
+        auto *list = window->findChild<SessionList *>("sessionList");
+        list->customContextMenuRequested(list->visualItemRect(placeholder()).center());
+        auto *menu = window->findChild<QMenu *>("pendingLaunchMenu"); QVERIFY(menu);
+        menu->actions().first()->trigger(); menu->hide(); QVERIFY(!placeholder());
+    }
+    if (mode == "restart" || mode == "deleted" || mode == "legacy") {
+        window.reset();
+        if (mode == "legacy") {
+            auto launch = pending.value(token).toObject(); launch.remove("show_pending"); pending[token] = launch;
+            QSettings().setValue("workspace/pendingLaunches", QJsonDocument(pending).toJson(QJsonDocument::Compact));
+        }
+        if (mode == "deleted") {
+            stored.removeGroup(group); QSettings().setValue("workspace/organization", QJsonDocument(stored.toJson()).toJson(QJsonDocument::Compact));
+        }
+        window = std::make_unique<SessionsWindow>(script()); window->setFleet(state); window->show();
+        QCOMPARE(placeholder() != nullptr, mode != "legacy");
+    }
+    created.launchId = token; created.runId = "run-receipt"; deliver();
+    QVERIFY(!placeholder());
+    stored = SessionOrganization(QJsonDocument::fromJson(QSettings().value("workspace/organization").toByteArray()).object());
+    QCOMPARE(stored.groupFor(machine + '\n' + created.name), mode == "deleted" || mode == "failed" ? QString("ungrouped") : destination);
+    QVERIFY(!QJsonDocument::fromJson(QSettings().value("workspace/pendingLaunches").toByteArray()).object().contains(token));
+    const auto *resultGroup=stored.group(mode=="deleted"?stored.defaultProject():destination);QVERIFY(resultGroup);
+    const bool added=std::any_of(resultGroup->folders.cbegin(),resultGroup->folders.cend(),[&](const SessionOrganization::Folder &f){return f.machine==machine&&f.path=="/remote/work tree";});
+    QCOMPARE(added,mode!="failed");
+}
+
+void TestSessionsWindow::folderBrowserIgnoresStaleResponses()
+{
+    DirectoryDialog dialog(script(), "mac", "~"); dialog.show();
+    auto *list = dialog.findChild<QListWidget *>("folderList"); QTRY_COMPARE(list->count(), 1);
+    auto *client = dialog.findChild<HgsClient *>();
+    client->directoriesReady(999, "mac", {{"path", "/stale"}, {"directories", QJsonArray{}}});
+    QCOMPARE(list->count(), 1); QCOMPARE(dialog.directory(), QStringLiteral("/remote/work tree"));
+    auto *path = dialog.findChild<QLineEdit *>("folderPath"); path->setFocus(); QTest::keyClicks(path, "/typed");
+    QVERIFY(!dialog.findChild<QPushButton *>("chooseFolder")->isEnabled());
+}
+
+void TestSessionsWindow::legacyProjectsMigrateWithBackupAndLocalFolders()
+{
+    const auto legacy=QJsonDocument(QJsonObject{{"version",1},{"groups",QJsonArray{
+        QJsonObject{{"id","work"},{"name","Work"},{"collapsed",true},{"sessions",QJsonArray{"mac\nclaude/infra/review"}}},
+        QJsonObject{{"id","pinned"},{"name","Pinned"},{"sessions",QJsonArray{"arch\ncodex/hgs/dashboard"}}}}},
+        {"before_pin",QJsonObject{{"arch\ncodex/hgs/dashboard","work"}}}}).toJson(QJsonDocument::Compact);
+    QSettings().setValue("workspace/organization",legacy);
+    SessionsWindow window(script());window.setFleet(fleet());
+    auto *client=window.findChild<HgsClient *>("projectClient");QVERIFY(client);
+    ProjectInfo local;local.name="Work";local.dir="/workspace/shared";local.exists=true;
+    auto ignored=local;ignored.name="Ansible";ignored.fromAnsible=true;
+    client->projectsForHostReady({}, {local,ignored});
+    auto remote=local;remote.dir="/Users/test/shared";client->projectsForHostReady("mac",{remote});
+    QCOMPARE(QSettings().value("workspace/organizationBeforeProjects").toByteArray(),legacy);
+    SessionOrganization migrated(QJsonDocument::fromJson(QSettings().value("workspace/organization").toByteArray()).object());
+    QCOMPARE(migrated.groups().size(),2);QVERIFY(!migrated.group("pinned"));
+    QCOMPARE(migrated.groupFor("arch\ncodex/hgs/dashboard"),QString("work"));
+    QCOMPARE(migrated.group("work")->folders.size(),2);QVERIFY(migrated.group("work")->collapsed);
+    QCOMPARE(migrated.group("work")->folders[0].machine,QString("arch"));
+    QCOMPARE(migrated.group("work")->folders[1].machine,QString("mac"));
+    local.dir="/unexpected";client->projectsForHostReady({}, {local});
+    SessionOrganization unchanged(QJsonDocument::fromJson(QSettings().value("workspace/organization").toByteArray()).object());
+    QCOMPARE(unchanged.group("work")->folders.size(),2);
+    auto offline=fleet();BoxState sleeping;sleeping.host="mac";offline.setPeer(sleeping,QDateTime::currentMSecsSinceEpoch());
+    NewSessionDialog launch(script(),offline,"mac");launch.setGroups(migrated,"work");
+    auto *start=launch.findChild<QPushButton *>("primary");QVERIFY(!start->isEnabled());
+    launch.findChild<QLineEdit *>("launchName")->setText("preserved-name");launch.setFleet(fleet());
+    QTRY_VERIFY(start->isEnabled());QCOMPARE(launch.findChild<QLineEdit *>("launchName")->text(),QString("preserved-name"));
+    QCOMPARE(launch.findChild<QComboBox *>("launchProjectFolder")->currentData(Qt::UserRole+1).toString(),QString("mac"));
+}
+
+void TestSessionsWindow::projectOrderAndDefaultBadge()
+{
+    SessionOrganization projects;const auto first=projects.createGroup("infra"),second=projects.createGroup("sample-app");
+    projects.addFolder(first,"arch","/workspace/infra");projects.moveSession(projects.observe("arch","codex/hgs/dashboard",{}),first);
+    QSettings().setValue("workspace/hideEmptyProjects",false);
+    QSettings().setValue("workspace/organization",QJsonDocument(projects.toJson()).toJson(QJsonDocument::Compact));
+    QSettings().setValue("workspace/theme","dark");
+    SessionsWindow window(script());window.setFleet(fleet());window.show();window.showProjects();
+    auto *page=window.findChild<ProjectsDialog *>();auto *list=page->findChild<QListWidget *>("logicalProjects");
+    QCOMPARE(list->dragDropMode(),QAbstractItemView::InternalMove);QVERIFY(list->showDropIndicator());
+    QCOMPARE(list->count(),3);QVERIFY(list->item(2)->data(Qt::UserRole+3).toBool());
+    QVERIFY(list->item(2)->data(Qt::AccessibleTextRole).toString().contains("default project"));
+    list->setCurrentRow(2);QVERIFY(list->model()->moveRow({},2,{},0));
+    const auto stored=[] {return SessionOrganization(QJsonDocument::fromJson(QSettings().value("workspace/organization").toByteArray()).object());};
+    QTRY_COMPARE(stored().groups().first().id,QString("ungrouped"));
+    QCOMPARE(list->currentItem()->data(Qt::UserRole).toString(),QString("ungrouped"));
+    page->selectProject(first);page->findChild<QCheckBox *>("defaultProject")->click();
+    QCOMPARE(stored().defaultProject(),first);QVERIFY(!list->item(0)->data(Qt::UserRole+3).toBool());
+    QVERIFY(list->currentItem()->data(Qt::UserRole+3).toBool());
+    page->findChild<QAction *>("moveProjectDown")->trigger();
+    QCOMPARE(stored().groups().last().id,first);QCOMPARE(list->currentItem()->data(Qt::UserRole).toString(),first);
+    QVERIFY(!page->findChild<QAction *>("moveProjectDown")->isEnabled());
+    page->findChild<QAction *>("moveProjectUp")->trigger();QCOMPARE(stored().groups()[1].id,first);
+    // Order and default are shared with Sessions and survive reopening the page.
+    page->refresh();QCOMPARE(list->item(1)->data(Qt::UserRole).toString(),first);QVERIFY(list->item(1)->data(Qt::UserRole+3).toBool());
+    auto *sessions=window.findChild<SessionList *>("sessionList");QStringList headers;
+    for(int i=0;i<sessions->count();++i)if(sessions->item(i)->data(SessionRoles::Header).toBool())headers.append(sessions->item(i)->data(SessionRoles::Group).toString());
+    QCOMPARE(headers,QStringList({"ungrouped",first,second}));QCOMPARE(stored().group(first)->folders.size(),1);
+    const auto preview=qEnvironmentVariable("HGS_NAVIGATION_PREVIEW");
+    if(!preview.isEmpty()){QDir().mkpath(preview);QTest::qWait(30);QVERIFY(page->grab().save(preview+"/projects-default-order.png"));}
+}
+
+void TestSessionsWindow::projectsEmbeddedAndRemote()
+{
+    SessionOrganization projects; const auto id=projects.createGroup("Shared infrastructure");
+    projects.setColor(id,"#ffcc00");projects.addFolder(id,"arch","/workspace/infra","Backend");projects.addFolder(id,"mac","/Users/test/infra","Mac checkout");
+    QSettings().setValue("workspace/organization",QJsonDocument(projects.toJson()).toJson(QJsonDocument::Compact));
+    SessionsWindow window(script()); window.setFleet(fleet()); window.show(); window.showProjects("mac");
+    auto *page=window.findChild<ProjectsDialog *>();QVERIFY(page);QVERIFY(!page->isWindow());page->selectProject(id);
+    auto *table=page->findChild<QTableWidget *>("projectFolders");QCOMPARE(table->rowCount(),2);
+    QCOMPARE(table->item(1,1)->text(),QString("mac"));QCOMPARE(table->item(1,2)->text(),QString("/Users/test/infra"));
+    auto *name=page->findChild<QLineEdit *>("projectName");name->setText("Infrastructure / renamed");name->editingFinished();
+    const auto restored=SessionOrganization(QJsonDocument::fromJson(QSettings().value("workspace/organization").toByteArray()).object());
+    QCOMPARE(restored.group(id)->name,QString("Infrastructure / renamed"));QCOMPARE(restored.group(id)->folders.size(),2);
+    QCOMPARE(restored.group(id)->color,QString("#ffcc00"));
+    NewSessionDialog launch(script(),fleet(),"mac");launch.setGroups(restored,id);
+    QCOMPARE(launch.findChild<QComboBox *>("launchProjectFolder")->count(),1);
+    auto *computer=launch.findChild<QComboBox *>("launchComputer");computer->setCurrentIndex(computer->findData(QString()));
+    QCOMPARE(launch.findChild<QComboBox *>("launchProjectFolder")->currentData(Qt::UserRole+2).toString(),QString("/workspace/infra"));
+    computer->setCurrentIndex(computer->findData("mac"));
+    QCOMPARE(launch.findChild<QComboBox *>("launchProjectFolder")->currentData(Qt::UserRole+1).toString(),QString("mac"));
+    for(auto *button:window.findChildren<QPushButton *>())if(button->property("filter")=="all")button->click();
+    QVERIFY(!table->isVisible());
+}
+
+void TestSessionsWindow::projectFolderNewSessionPrefillsExactTarget()
+{
+    QTemporaryDir local;QVERIFY(local.isValid());
+    SessionOrganization projects;const auto project=projects.createGroup("Chosen project");
+    const auto localId=projects.addFolder(project,"arch",local.path(),"Local folder");
+    projects.addFolder(project,"mac","/remote/other","Other remote folder");
+    const auto remoteId=projects.addFolder(project,"mac","/remote/work tree","Chosen remote folder");
+    projects.markImported("arch");projects.markImported("mac");
+    QSettings().setValue("workspace/organization",QJsonDocument(projects.toJson()).toJson(QJsonDocument::Compact));
+    SessionsWindow window(script());window.resize(1150,760);window.setFleet(fleet());window.show();window.showProjects();
+    auto *page=window.findChild<ProjectsDialog *>();page->selectProject(project);
+    auto *table=page->findChild<QTableWidget *>("projectFolders");auto *create=page->findChild<QPushButton *>("newProjectFolderSession");
+    QVERIFY(!create->isEnabled());table->setCurrentCell(0,0);QVERIFY(create->isEnabled());
+    auto *metadata=page->findChild<QPushButton *>("projectColor");auto *defaultProject=page->findChild<QCheckBox *>("defaultProject");
+    for(int height:{760,1100}) {
+        window.resize(1150,height);table->clearSelection();QTest::qWait(30);
+        QVERIFY(defaultProject->mapTo(page,QPoint()).y()-metadata->mapTo(page,QPoint(0,metadata->height())).y()<45);
+        const int full=table->height();table->setCurrentCell(0,0);QTest::qWait(30);QVERIFY(table->height()<=230);QVERIFY(full>=table->height());
+        QVERIFY(defaultProject->mapTo(page,QPoint()).y()-metadata->mapTo(page,QPoint(0,metadata->height())).y()<45);
+    }
+    bool localOpened=false;
+    QTimer::singleShot(0,&window,[&]{auto *dialog=window.findChild<NewSessionDialog *>();QVERIFY(dialog);QTimer::singleShot(3000,dialog,&QDialog::reject);
+        QCOMPARE(dialog->findChild<QComboBox *>("launchProject")->currentData().toString(),project);
+        QCOMPARE(dialog->findChild<QComboBox *>("launchComputer")->currentData().toString(),QString());
+        QCOMPARE(dialog->findChild<QComboBox *>("launchProjectFolder")->currentData().toString(),localId);
+        QCOMPARE(dialog->findChild<QLabel *>("launchFolderPath")->text(),local.path());localOpened=true;dialog->reject();});
+    create->click();QVERIFY(localOpened);QVERIFY(page->isVisible());
+    table->customContextMenuRequested(table->visualItemRect(table->item(2,0)).center());
+    QPointer<QMenu> menu=page->findChild<QMenu *>("projectFolderMenu");QVERIFY(menu);auto *launch=menu->findChild<QAction *>("contextNewProjectFolderSession");
+    QVERIFY(launch->isEnabled());table->setCurrentCell(0,0);
+    QSignalSpy launched(&window,&SessionsWindow::newSessionRequested);bool remoteOpened=false;
+    QTimer::singleShot(0,&window,[&]{auto *dialog=window.findChild<NewSessionDialog *>();QVERIFY(dialog);QTimer::singleShot(3000,dialog,&QDialog::reject);
+        QCOMPARE(dialog->findChild<QComboBox *>("launchProject")->currentData().toString(),project);
+        QCOMPARE(dialog->findChild<QComboBox *>("launchComputer")->currentData().toString(),QString("mac"));
+        auto *folders=dialog->findChild<QComboBox *>("launchProjectFolder");QCOMPARE(folders->currentData().toString(),remoteId);
+        window.setFleet(fleet());QCOMPARE(folders->currentData().toString(),remoteId);
+        QCOMPARE(dialog->findChild<QLabel *>("launchFolderPath")->text(),QString("/remote/work tree"));remoteOpened=true;
+        dialog->findChild<QComboBox *>("launchAgent")->setCurrentText("claude");dialog->findChild<QCheckBox *>("launchOpenTerminal")->setChecked(true);
+        const auto preview=qEnvironmentVariable("HGS_PROJECT_LAUNCH_PREVIEW");if(!preview.isEmpty()){QDir().mkpath(preview);QTest::qWait(30);QVERIFY(dialog->grab().save(preview+"/launch.png"));}
+        auto *start=dialog->findChild<QPushButton *>("primary");QTRY_VERIFY(start->isEnabled());start->click();});
+    launch->trigger();QVERIFY(remoteOpened);QCOMPARE(launched.size(),1);QCOMPARE(launched[0][0].toString(),QString("mac"));
+    QCOMPARE(launched[0][1].toString(),QString("claude"));QCOMPARE(launched[0][2].toString(),QString("/remote/work tree"));delete menu.data();
+    window.showProjects();page->selectProject(project);table->setCurrentCell(2,0);
+    table->customContextMenuRequested(table->visualItemRect(table->item(2,0)).center());menu=page->findChild<QMenu *>("projectFolderMenu");
+    auto offline=fleet();BoxState missing;missing.host="mac";missing.error="offline";offline.setPeer(missing,QDateTime::currentMSecsSinceEpoch());window.setFleet(offline);
+    QVERIFY(!create->isEnabled());QSignalSpy requests(page,&ProjectsDialog::newSessionRequested);
+    menu->findChild<QAction *>("contextNewProjectFolderSession")->trigger();QCOMPARE(requests.size(),0);delete menu.data();
+}
+
+void TestSessionsWindow::projectFolderActionsKeepTargets()
+{
+    QTemporaryDir temporary;QVERIFY(temporary.isValid());
+    const auto path=temporary.path()+"/folder #1";QVERIFY(QDir().mkpath(path));
+    SessionOrganization projects;const auto first=projects.createGroup("First"),second=projects.createGroup("Second");
+    projects.addFolder(first,"arch",path,"Local");projects.addFolder(first,"mac",path,"Remote");
+    projects.addFolder(first,"arch",path+"/missing","Missing");projects.addFolder(second,"arch",path);
+    projects.markImported("arch");projects.markImported("mac");
+    QSettings().setValue("workspace/organization",QJsonDocument(projects.toJson()).toJson(QJsonDocument::Compact));
+    SessionsWindow window(script());window.setFleet(fleet());window.show();window.showProjects();
+    auto *page=window.findChild<ProjectsDialog *>();page->selectProject(first);
+    auto *table=page->findChild<QTableWidget *>("projectFolders");
+    auto *open=page->findChild<QPushButton *>("openProjectFolder");QVERIFY(open);QVERIFY(!open->isEnabled());
+    FolderUrlRecorder files;table->setCurrentCell(0,0);QVERIFY(open->isEnabled());open->click();
+    QCOMPARE(files.urls.size(),1);QCOMPARE(files.urls[0].toLocalFile(),path);
+    const auto preview=qEnvironmentVariable("HGS_BULK_PREVIEW");
+    if(!preview.isEmpty()){QDir().mkpath(preview);QTest::qWait(30);QVERIFY(page->grab().save(preview+"/project-folders.png"));}
+    table->setCurrentCell(1,0);QVERIFY(!open->isEnabled());QVERIFY(open->toolTip().contains("mac"));
+    table->customContextMenuRequested(table->visualItemRect(table->item(1,0)).center());
+    QPointer<QMenu> menu=page->findChild<QMenu *>("projectFolderMenu");QVERIFY(menu);
+    QVERIFY(!menu->findChild<QAction *>("contextOpenProjectFolder")->isEnabled());
+    menu->findChild<QAction *>("contextCopyProjectFolder")->trigger();QCOMPARE(QApplication::clipboard()->text(),path);
+    table->setCurrentCell(0,0); // A menu command still edits the folder it was opened on.
+    bool editedRemote=false;
+    QTimer::singleShot(0,&window,[&]{auto *dialog=page->findChild<QDialog *>("projectFolderDialog");QVERIFY(dialog);
+        editedRemote=dialog->findChild<QComboBox *>("projectFolderMachine")->currentData().toString()=="mac";
+        QCOMPARE(dialog->findChild<QLineEdit *>("projectFolderPath")->text(),path);dialog->reject();});
+    menu->findChild<QAction *>("contextEditProjectFolder")->trigger();QVERIFY(editedRemote);delete menu.data();
+    table->setCurrentCell(2,0);QVERIFY(!open->isEnabled());
+    table->customContextMenuRequested(table->visualItemRect(table->item(0,0)).center());
+    menu=page->findChild<QMenu *>("projectFolderMenu");QVERIFY(menu);
+    menu->findChild<QAction *>("contextOpenProjectFolder")->trigger();QCOMPARE(files.urls.size(),2);
+    page->selectProject(second);menu->findChild<QAction *>("contextRemoveProjectFolder")->trigger();
+    QSignalSpy launches(page,&ProjectsDialog::newSessionRequested);menu->findChild<QAction *>("contextNewProjectFolderSession")->trigger();QCOMPARE(launches.size(),0);delete menu.data();
+    const SessionOrganization saved(QJsonDocument::fromJson(QSettings().value("workspace/organization").toByteArray()).object());
+    QCOMPARE(saved.group(first)->folders.size(),2);QCOMPARE(saved.group(second)->folders.size(),1);QVERIFY(QDir(path).exists());
+    table->customContextMenuRequested(QPoint(5,table->viewport()->height()-5));
+    menu=page->findChild<QMenu *>("projectFolderMenu");QVERIFY(menu);QCOMPARE(menu->actions().size(),1);
+    QVERIFY(menu->findChild<QAction *>("contextAddProjectFolder"));delete menu.data();
+    QTimer::singleShot(0,&window,[&]{auto *dialog=page->findChild<QDialog *>("deleteProjectDialog");QVERIFY(dialog);
+        if(!preview.isEmpty()){QTest::qWait(30);QVERIFY(dialog->grab().save(preview+"/delete-project.png"));}dialog->reject();});
+    page->deleteProject(first);
+}
+
+void TestSessionsWindow::projectColorsApplyOrCancel()
+{
+    SessionOrganization model;const auto id=model.createGroup("Release");model.setColor(id,"#00aa7f");
+    QSettings().setValue("workspace/organization",QJsonDocument(model.toJson()).toJson(QJsonDocument::Compact));
+    SessionsWindow window(script());window.setFleet(fleet());window.show();window.showProjects();
+    auto *page=window.findChild<ProjectsDialog *>();page->selectProject(id);
+    bool opened=false;
+    const auto edit=[&](bool apply){
+        QTimer::singleShot(0,[&]{
+            auto *dialog=qobject_cast<QDialog *>(QApplication::activeModalWidget());
+            if(!dialog)return;
+            auto *hex=dialog->findChild<QLineEdit *>("projectColorHex");
+            opened=hex&&dialog->findChild<QWidget *>("projectFillPreview");
+            if(hex)hex->setText("#ffe100");
+            const auto path=qEnvironmentVariable("HGS_PREVIEW_DIR");
+            if(!path.isEmpty())dialog->grab().save(path+"/project-color-dialog.png");
+            if(apply)dialog->accept();else dialog->reject();
+        });
+        page->findChild<QPushButton *>("projectColor")->click();
+    };
+    edit(false);QVERIFY(opened);
+    auto restored=SessionOrganization(QJsonDocument::fromJson(QSettings().value("workspace/organization").toByteArray()).object());
+    QCOMPARE(restored.group(id)->color,QString("#00aa7f"));
+    edit(true);restored=SessionOrganization(QJsonDocument::fromJson(QSettings().value("workspace/organization").toByteArray()).object());
+    QCOMPARE(restored.group(id)->color,QString("#ffe100"));QVERIFY(!restored.group(id)->vivid);
+}
+
+QTEST_MAIN(TestSessionsWindow)
+#include "test_sessionswindow.moc"
+
+void TestSessionsWindow::worktreeFilterKeepsConversationDraftAndSearchScope()
+{
+    auto state=fleet();auto local=state.local();local.sessions[0].cwd="/repo";local.sessions[0].canonicalCwd="/repo";local.sessions[0].gitRoot="/repo";
+    local.sessions[1].cwd="/linked";local.sessions[1].canonicalCwd="/linked";local.sessions[1].gitRoot="/linked";state.setLocal(local,QDateTime::currentMSecsSinceEpoch());
+    auto remote=*state.peer("mac");remote.sessions[0].cwd="/linked";remote.sessions[0].gitRoot="/linked";state.setPeer(remote,QDateTime::currentMSecsSinceEpoch());
+    SessionsWindow window(script());window.setFleet(state);window.resize(1200,850);window.show();window.showSession({},"codex/hgs/dashboard");
+    auto *composer=window.findChild<MessageComposer *>("messageComposer");composer->editor()->setPlainText("Keep my draft");window.activateWindow();QTest::qWait(30);composer->editor()->setFocus();QTRY_COMPARE(QApplication::focusWidget(),composer->editor());
+    auto *title=window.findChild<QLabel *>("detailTitle");const auto selected=title->text();
+    auto *page=window.findChild<ProjectsDialog *>("projectsPage");page->folderSessionsRequested({},"/linked",true);
+    auto *list=window.findChild<SessionList *>("sessionList");QStringList keys;
+    for(int i=0;i<list->count();++i)if(!list->item(i)->data(SessionRoles::Key).toString().isEmpty())keys<<list->item(i)->data(SessionRoles::Key).toString();
+    QCOMPARE(keys,QStringList{"\nkimi/docs/research"});QCOMPARE(title->text(),selected);QCOMPARE(composer->editor()->toPlainText(),QString("Keep my draft"));QCOMPARE(QApplication::focusWidget(),composer->editor());
+    window.setFleet(state);QCOMPARE(title->text(),selected);QCOMPARE(composer->editor()->toPlainText(),QString("Keep my draft"));
+    window.findChild<QLineEdit *>("search")->setText("research");QTest::qWait(300);
+    auto *hits=window.findChild<QListWidget *>("searchResults");QVERIFY(hits->count()>0);for(int i=0;i<hits->count();++i)QVERIFY(hits->item(i)->data(Qt::AccessibleTextRole).toString().contains("research"));
+    window.findChild<QLineEdit *>("search")->clear();window.findChild<QPushButton *>("clearFolderFilter")->click();QCOMPARE(title->text(),selected);QCOMPARE(composer->editor()->toPlainText(),QString("Keep my draft"));
+    page->folderSessionsRequested({},"/empty",true);QCOMPARE(title->text(),selected);QCOMPARE(composer->editor()->toPlainText(),QString("Keep my draft"));
+    page->relatedSessionRequested({},"kimi/docs/research",{});QVERIFY(title->text()!=selected);QVERIFY(!window.findChild<QPushButton *>("clearFolderFilter")->isVisible());
+    window.showSession({},"codex/hgs/dashboard");QCOMPARE(composer->editor()->toPlainText(),QString("Keep my draft"));
+    page->folderSessionsRequested({},"/empty",true);window.findChild<DashboardPage *>()->filterRequested("@all","all");QVERIFY(!window.findChild<QPushButton *>("clearFolderFilter")->isVisible());
+}
+
+void TestSessionsWindow::worktreePreview()
+{
+    const auto destination=qEnvironmentVariable("HGS_WORKTREE_PREVIEW");if(destination.isEmpty())QSKIP("Set HGS_WORKTREE_PREVIEW to write screenshots");QDir().mkpath(destination);
+    const auto original=qApp->palette();
+    for(bool dark:{true,false}){
+        auto palette=original;palette.setColor(QPalette::Window,QColor(dark?"#161b21":"#f5f7f9"));palette.setColor(QPalette::Base,QColor(dark?"#1c2229":"#ffffff"));palette.setColor(QPalette::Text,QColor(dark?"#e8edf4":"#1a2733"));palette.setColor(QPalette::WindowText,palette.color(QPalette::Text));qApp->setPalette(palette);
+        auto state=fleet();auto local=state.local();local.sessions[0].cwd="/repo";local.sessions[0].canonicalCwd="/repo";local.sessions[0].gitRoot="/repo";local.sessions[1].cwd="/linked";local.sessions[1].canonicalCwd="/linked";local.sessions[1].gitRoot="/linked";state.setLocal(local,QDateTime::currentMSecsSinceEpoch());
+        SessionOrganization org;const auto project=org.createGroup("Worktree catalog");org.addFolder(project,"arch","/repo");QSettings().setValue("workspace/organization",QJsonDocument(org.toJson()).toJson(QJsonDocument::Compact));
+        SessionsWindow window(script());window.setFleet(state);window.resize(1260,900);window.show();window.showSession({},"codex/hgs/dashboard");
+        window.findChild<QPushButton *>("toggleInspector")->setChecked(true);window.findChild<QTabWidget *>("sessionInspector")->setCurrentIndex(1);QTest::qWait(100);
+        QVERIFY(window.grab().save(destination+(dark?"/details-dark.png":"/details-light.png")));
+        window.findChild<QTabWidget *>("sessionInspector")->setCurrentIndex(2);QTest::qWait(100);
+        QVERIFY(window.grab().save(destination+(dark?"/worktrees-dark.png":"/worktrees-light.png")));
+        window.showProjects();auto *page=window.findChild<ProjectsDialog *>("projectsPage");page->selectProject(project);QTest::qWait(100);
+        QVERIFY(window.grab().save(destination+(dark?"/projects-unselected-dark.png":"/projects-unselected-light.png")));
+        page->findChild<QTableWidget *>("projectFolders")->setCurrentCell(0,0);QTest::qWait(100);
+        QVERIFY(window.grab().save(destination+(dark?"/projects-dark.png":"/projects-light.png")));
+        NewSessionDialog launch(script(),state,{},"codex",project,&window);launch.setGroups(org,project);launch.show();QTest::qWait(100);QVERIFY(launch.grab().save(destination+(dark?"/launch-dark.png":"/launch-light.png")));
+        QTimer::singleShot(0,&launch,[&]{auto *form=launch.findChild<QDialog *>("newWorktreeDialog");QVERIFY(form);QTest::qWait(50);QVERIFY(form->grab().save(destination+(dark?"/create-dark.png":"/create-light.png")));form->reject();});launch.findChild<QPushButton *>("newLaunchWorktree")->click();
+        QTimer::singleShot(0,&launch,[&]{auto *picker=launch.findChild<QDialog *>("chooseWorktreeDialog");QVERIFY(picker);QTest::qWait(100);QVERIFY(picker->grab().save(destination+(dark?"/picker-dark.png":"/picker-light.png")));picker->reject();});launch.findChild<QPushButton *>("chooseLaunchWorktree")->click();launch.reject();
+    }
+    qApp->setPalette(original);
+}

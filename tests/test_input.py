@@ -1,0 +1,705 @@
+#!/usr/bin/env python3
+"""Message transport tests. Private tmux socket + scripted raw-terminal agent only."""
+import base64
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import time
+import unittest
+import uuid
+
+REPO = Path(__file__).resolve().parents[1]
+HGS = Path(os.environ.get("HGS_TEST_BIN", REPO / "target/debug/hgs")).resolve()
+TMUX = shutil.which("tmux")
+
+FAKE_AGENT = r'''
+import json, os, pathlib, signal, sys, termios, time, tty
+root = pathlib.Path(os.environ['INPUT_FIXTURE'])
+fd = sys.stdin.fileno()
+original = termios.tcgetattr(fd)
+tty.setraw(fd)
+os.write(1, b'\x1b[?2004h\x1b[2J\x1b[H' + '\u203a '.encode())
+def screen(*args):
+    os.write(1, (root / 'screen').read_bytes())
+signal.signal(signal.SIGUSR1, screen)
+(root / 'agent-pid').write_text(str(os.getpid()))
+try:
+    while True:
+        value = os.read(fd, 65536)
+        if not value: break
+        with (root / 'received').open('ab') as file: file.write(value)
+finally:
+    termios.tcsetattr(fd, termios.TCSANOW, original)
+'''
+
+
+class InputTransport(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="hgs-input-")
+        self.root = Path(self.temp.name)
+        self.bin = self.root / ".local/bin"
+        self.bin.mkdir(parents=True)
+        self.socket = self.root / "socket"
+        self.state = self.root / "state"
+        self.state.mkdir()
+        self.env = dict(os.environ, HOME=str(self.root), INPUT_FIXTURE=str(self.root),
+                        HGS_CONFIG_DIR=str(self.root / "config"), HGS_STATE_DIR=str(self.state),
+                        HGS_SELF="test", HGS_PEERS="remote", HGS_TAB="0",
+                        PATH=str(self.bin) + ":" + os.environ["PATH"])
+        for variable in ("TMUX", "TMUX_PANE", "HGS_RUN_ID", "HGS_SESSION", "HGS_EXECUTABLE"):
+            self.env.pop(variable, None)
+        (self.bin / "hgs").symlink_to(HGS)
+        self.script("tmux", '#!/bin/sh\nexec ' + TMUX + ' -S "' + str(self.socket) + '" -f /dev/null "$@"\n')
+        (self.root / "agent.py").write_text(FAKE_AGENT)
+        self.name = "codex/input-test"
+        self.run_id = str(uuid.uuid4())
+        self.conversation_id = str(uuid.uuid4())
+        self.addCleanup(lambda: subprocess.run([TMUX, "-S", str(self.socket), "kill-server"], capture_output=True))
+        self.tmux("new-session", "-d", "-s", self.name, "-x", "100", "-y", "30",
+                  "python3", str(self.root / "agent.py"))
+        self.wait_for(lambda: (self.root / "agent-pid").exists())
+        pid = int((self.root / "agent-pid").read_text())
+        start = subprocess.check_output(["ps", "-p", str(pid), "-o", "lstart="],
+                                       env=dict(self.env, LC_ALL="C", TZ="UTC"), text=True).strip()
+        self.pane = self.tmux("display-message", "-p", "-t", "=" + self.name + ":", "#{pane_id}").strip()
+        self.tmux("set-option", "-t", "=" + self.name + ":", "@hgs_run", self.run_id)
+        self.record_path = self.state / (hashlib.sha256(self.name.encode()).hexdigest() + ".json")
+        self.record = dict(version=1, name=self.name, agent="codex", run_id=self.run_id,
+                           conversation_id=self.conversation_id, pane=self.pane, pid=pid,
+                           process_start=start, activity="idle", phase="idle", active_tools={},
+                           subagents={}, last_event_at=time.time(), created=time.time())
+        self.write_record()
+
+    def tearDown(self):
+        self.tmux("kill-server", check=False)
+        self.temp.cleanup()
+
+    def script(self, name, value):
+        path = self.bin / name
+        path.write_text(value)
+        path.chmod(0o755)
+
+    def write_record(self):
+        self.record_path.write_text(json.dumps(self.record))
+
+    def tmux(self, *args, check=True):
+        result = subprocess.run([str(self.bin / "tmux"), *args], env=self.env,
+                                capture_output=True, text=True, timeout=5)
+        if check: self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def wait_for(self, callback):
+        for _ in range(100):
+            if callback(): return
+            time.sleep(.02)
+        self.fail("fixture timed out")
+
+    def payload(self, **updates):
+        value = dict(request_id=str(uuid.uuid4()), text="hello", attachments=[],
+                     expected_run_id=self.run_id, expected_conversation_id=self.conversation_id)
+        value.update(updates)
+        return value
+
+    def send(self, payload=None, remote=False, success=True):
+        payload = payload or self.payload()
+        result = subprocess.run([str(HGS), *( ["@remote"] if remote else []), "send", self.name, "--json"],
+                                input=json.dumps(payload), text=True, capture_output=True,
+                                env=self.env, timeout=10)
+        if success:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+        self.assertNotEqual(result.returncode, 0)
+        return result.stderr
+
+    def received(self):
+        path = self.root / "received"
+        return path.read_bytes() if path.exists() else b""
+
+    def screen(self, value, cursor):
+        import signal
+        (self.root / "screen").write_bytes(value.encode())
+        os.kill(self.record["pid"], signal.SIGUSR1)
+        self.wait_for(lambda: self.tmux("display-message", "-p", "-t", self.pane,
+                                      "#{cursor_x}:#{cursor_y}").strip() == cursor)
+
+    def fresh_unconfirmed(self):
+        self.record.update(run_identity_version=1,
+                           supervisor=dict(pid=self.record['pid'],start=self.record['process_start']),
+                           conversation_id=None,conversation_state='unknown',activity='unknown',phase='unknown',
+                           startup_kind='new')
+        self.record.pop('last_event_at',None)
+        self.write_record()
+
+    def resumed_unconfirmed(self):
+        # A native executable name, exact parent PID and an open rollout are
+        # all checked by the bridge. No real provider or model call is involved.
+        self.tmux('kill-session', '-t', self.name)
+        (self.root / 'agent-pid').unlink()
+        self.rollout = self.root / 'saved.jsonl'
+        self.rollout.write_text(json.dumps(dict(type='session_meta', payload=dict(id=self.conversation_id)))+'\n')
+        source = self.root / 'codex.c'
+        source.write_text(r'''
+#include <fcntl.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <termios.h>
+#include <unistd.h>
+static void screen(int ignored) {
+    char b[8192]; int fd=open("screen",O_RDONLY); ssize_t n;
+    while(fd>=0 && (n=read(fd,b,sizeof(b)))>0) write(1,b,n);
+    if(fd>=0)close(fd);
+}
+int main(int argc,char **argv) {
+    if(argc!=3 || chdir(argv[1]) || open(argv[2],O_RDONLY)<0)return 2;
+    struct termios t;tcgetattr(0,&t);cfmakeraw(&t);tcsetattr(0,TCSANOW,&t);
+    signal(SIGUSR1,screen);
+    printf("\033[?2004h\033[2J\033[H› ");fflush(stdout);
+    FILE *f=fopen("agent-pid","w");fprintf(f,"%d",getpid());fclose(f);
+    char b[65536];ssize_t n;
+    while((n=read(0,b,sizeof(b)))>0) {
+        int out=open("received",O_CREAT|O_APPEND|O_WRONLY,0600);
+        write(out,b,n);close(out);
+    }
+    return 0;
+}
+''')
+        native = self.bin / 'codex'
+        subprocess.run(['cc', str(source), '-o', str(native)], check=True, capture_output=True)
+        self.tmux('new-session','-d','-s',self.name,'-x','100','-y','30',str(native),str(self.root),str(self.rollout))
+        self.wait_for(lambda:(self.root/'agent-pid').exists())
+        pid = int((self.root/'agent-pid').read_text())
+        parent = int(subprocess.check_output(['ps','-p',str(pid),'-o','ppid='],text=True).strip())
+        def start(p):
+            return subprocess.check_output(['ps','-p',str(p),'-o','lstart='],env=dict(self.env,LC_ALL='C',TZ='UTC'),text=True).strip()
+        self.pane=self.tmux('display-message','-p','-t','='+self.name+':','#{pane_id}').strip()
+        self.tmux('set-option','-t','='+self.name+':','@hgs_run',self.run_id)
+        self.record.update(run_identity_version=1,startup_kind='resume',pid=pid,process_start=start(pid),
+            supervisor=dict(pid=parent,start=start(parent)),expected_id=self.conversation_id,
+            transcript=str(self.rollout),activity='unknown',phase='unknown',pane=self.pane,last_event_at=0)
+        self.write_record()
+
+    def test_send_now_uses_native_queue_shortcuts_without_repasting(self):
+        self.record.update(run_identity_version=1, supervisor=dict(pid=self.record['pid'], start=self.record['process_start']),
+                           activity='busy', phase='working')
+        samples = [
+            ('claude', '❯ queued message\r\nctrl+x ctrl+s to send now\r\n\r\n❯ ', '2:3', b'\x18\x13'),
+            ('kimi', '──────────────────────────────\r\n  ❯ queued message\r\n  ↑ to edit · ctrl-s to steer immediately\r\n ╭──────────────────╮\r\n │ >                │\r\n ╰──────────────────╯\x1b[5;6H', '5:4', b'\x13'),
+            ('codex', '• Messages to be submitted after next tool call\r\n  (press esc to interrupt and send immediately)\r\n  ↳ queued message\r\n\r\n› ', '2:4', b'\x1b'),
+        ]
+        for provider, screen, cursor, keys in samples:
+            with self.subTest(provider=provider):
+                self.record['agent'] = provider; self.write_record()
+                self.screen('\x1b[2J\x1b[H' + screen, cursor)
+                queue = self.inspect().get('input_queue')
+                self.assertIsNotNone(queue)
+                self.assertTrue(queue['can_send_now'], queue)
+                payload = dict(request_id=str(uuid.uuid4()), expected_run_id=self.run_id,
+                               expected_conversation_id=self.conversation_id, queue_id=queue['id'])
+                def send(value):
+                    return subprocess.run([str(HGS), 'send-now', self.name, '--json'], input=json.dumps(value),
+                                          text=True, capture_output=True, env=self.env, timeout=10)
+                before = self.received()
+                rejected = send(dict(payload, queue_id='stale'))
+                self.assertNotEqual(rejected.returncode, 0); self.assertEqual(self.received(), before)
+                result = send(payload); self.assertEqual(result.returncode, 0, result.stderr)
+                self.wait_for(lambda: len(self.received()) == len(before)+len(keys))
+                self.assertEqual(self.received(), before+keys)
+                self.assertNotEqual(send(payload).returncode, 0)
+                self.assertEqual(self.received(), before+keys)
+                # Queue still visible but another draft must never go with it.
+                self.screen('\x1b[2J\x1b[H' + screen + 'draft', str(int(cursor.split(':')[0])+5)+':'+cursor.split(':')[1])
+                self.assertFalse(self.inspect()['input_queue']['can_send_now'])
+                self.assertNotEqual(send(dict(payload, request_id=str(uuid.uuid4()))).returncode, 0)
+                self.assertEqual(self.received(), before+keys)
+
+    def test_resumed_codex_can_send_before_deferred_session_start(self):
+        self.resumed_unconfirmed()
+        info=self.inspect()
+        self.assertTrue(info['resume_message_can_send'])
+        self.assertEqual(info['phase'],'idle')
+        self.assertEqual(info['expected_id'],self.conversation_id)
+        self.assertFalse(info['fork_supported'])
+        self.assertEqual(info['events'],[])
+        receipt=self.send()
+        self.assertEqual(receipt['conversation_id'],self.conversation_id)
+        self.assertFalse(receipt['first_message'])
+        self.wait_for(lambda:self.received().endswith(b'\r'))
+        before=self.received()
+        self.assertFalse(self.inspect()['resume_message_can_send'])
+        self.send(success=False)
+        self.assertEqual(self.received(),before)
+        # Only the provider hook clears the expected identity.
+        self.assertEqual(json.loads(self.record_path.read_text())['expected_id'],self.conversation_id)
+        env=dict(self.env,HGS_SESSION=self.name,HGS_RUN_ID=self.run_id)
+        event=dict(hook_event_name='SessionStart',session_id=self.conversation_id,transcript_path=str(self.rollout))
+        hook=subprocess.run([str(HGS),'__state','hook'],env=env,input=json.dumps(event),capture_output=True,text=True)
+        self.assertEqual(hook.returncode,0,hook.stderr)
+        self.assertNotIn('expected_id',self.inspect())
+
+    def test_resume_input_rejects_wrong_history_process_dialog_and_stale_run(self):
+        self.resumed_unconfirmed(); initial=self.record.copy()
+        other=self.root/'other.jsonl';other.write_bytes(self.rollout.read_bytes())
+        for patch in [dict(transcript=str(other)),dict(expected_id=str(uuid.uuid4())),
+                      dict(process_start='old process'),dict(run_id='replaced'),
+                      dict(supervisor=dict(pid=os.getpid(),start=initial['supervisor']['start'])),
+                      dict(activity='busy',phase='tool'),dict(error='wrong conversation'),
+                      dict(last_event_at=time.time()),dict(input_pending_at=time.time())]:
+            with self.subTest(patch=patch):
+                self.record=dict(initial,**patch);self.write_record()
+                self.assertFalse(self.inspect().get('resume_message_can_send',False))
+                self.send(success=False);self.assertEqual(self.received(),b'')
+        self.record=initial;self.write_record()
+        self.rollout.write_text(json.dumps(dict(type='session_meta',payload=dict(id='different')))+'\n')
+        self.assertFalse(self.inspect()['resume_message_can_send']);self.send(success=False)
+        self.rollout.write_text(json.dumps(dict(type='session_meta',payload=dict(id=self.conversation_id)))+'\n')
+        self.screen('\x1b[2J\x1b[HTrust this folder? ','19:0')
+        self.assertFalse(self.inspect()['resume_message_can_send']);self.send(success=False)
+        self.assertEqual(self.received(),b'')
+
+    def inspect(self):
+        r=subprocess.run([str(HGS),'inspect',self.name],env=self.env,capture_output=True,text=True,timeout=10)
+        self.assertEqual(r.returncode,0,r.stderr)
+        return json.loads(r.stdout)
+
+    def test_first_message_with_image_starts_lazy_conversation(self):
+        self.fresh_unconfirmed()
+        info=self.inspect()
+        self.assertTrue(info['first_message_can_send'])
+        self.assertIsNone(info['conversation_id'])
+        data=b'fixture image'
+        payload=self.payload(expected_conversation_id='',attachments=[dict(name='screenshot.png',mime='image/png',data_base64=base64.b64encode(data).decode())])
+        receipt=self.send(payload)
+        self.assertTrue(receipt['first_message'])
+        self.assertEqual(receipt['conversation_id'],'')
+        self.assertEqual(receipt['run_id'],self.run_id)
+        self.assertEqual(Path(receipt['attachments'][0]['path']).read_bytes(),data)
+        self.wait_for(lambda:self.received().endswith(b'\r'))
+        before=self.received();self.assertEqual(self.send(payload),receipt);self.assertEqual(self.received(),before)
+        self.assertIsNone(json.loads(self.record_path.read_text())['conversation_id'])
+        self.assertFalse(self.inspect()['first_message_can_send'])
+        self.send(self.payload(expected_conversation_id=''),success=False)
+        self.assertEqual(self.received(),before)
+        # The real provider emits SessionStart only after receiving that first turn.
+        event=dict(hook_event_name='SessionStart',session_id=self.conversation_id)
+        env=dict(self.env,HGS_SESSION=self.name,HGS_RUN_ID=self.run_id)
+        hook=subprocess.run([str(HGS),'__state','hook'],env=env,input=json.dumps(event),capture_output=True,text=True,timeout=10)
+        self.assertEqual(hook.returncode,0,hook.stderr)
+        confirmed=self.inspect()
+        self.assertEqual(confirmed['conversation_id'],self.conversation_id)
+        self.assertFalse(confirmed['first_message_can_send'])
+        # A stale initial-composer request cannot follow a newly confirmed ID.
+        self.assertIn('identity changed',self.send(self.payload(expected_conversation_id=''),success=False))
+        self.assertEqual(self.received(),before)
+
+    def test_mixed_provider_hooks_preserve_parent_and_scope_activity(self):
+        for parent,provider,sid,path in [('codex','kimi','session_'+str(uuid.uuid4()),'/tmp/wire.jsonl'),
+                                         ('kimi','codex',str(uuid.uuid4()),'/tmp/rollout-child.jsonl')]:
+            self.record.update(agent=parent,model='parent-model',conversation_id=self.conversation_id,
+                               main_done=False,active_tools={},subagents={},subagent_groups={})
+            self.write_record()
+            env=dict(self.env,HGS_SESSION=self.name,HGS_RUN_ID=self.run_id)
+            for kind in ['SessionStart','PreToolUse','PostToolUse','Stop','SessionEnd']:
+                event=dict(hook_event_name=kind,session_id=sid,transcript_path=path,cwd='/tmp',
+                           model='child-model',tool_name='Bash',last_assistant_message='Only child response')
+                done=subprocess.run([str(HGS),'__state','hook'],env=env,input=json.dumps(event),capture_output=True,text=True,timeout=10)
+                self.assertEqual(done.returncode,0,done.stderr)
+            current=self.inspect()
+            self.assertEqual(current['conversation_id'],self.conversation_id)
+            self.assertEqual(current['model'],'parent-model')
+            children=current['subagents'];self.assertEqual(len(children),1)
+            child_id,child=next(iter(children.items()));self.assertEqual(child['provider'],provider)
+            self.assertEqual(child['state'],'finished')
+            raw=json.loads(self.record_path.read_text());self.assertFalse(raw['main_done'])
+            result=subprocess.run([str(HGS),'inspect',self.name,'--agent',child_id],env=self.env,capture_output=True,text=True,timeout=10)
+            self.assertEqual(result.returncode,0,result.stderr)
+            child_view=json.loads(result.stdout);self.assertEqual(child_view['provider'],provider)
+            self.assertTrue(child_view['read_only']);self.assertTrue(any(e.get('detail')=='Only child response' for e in child_view['events']))
+            self.assertTrue(all(not e.get('agent_id') for e in child_view['events']))
+
+    def test_login_delay_cannot_receive_first_prompt_until_native_composer(self):
+        self.fresh_unconfirmed()
+        self.screen('\x1b[2J\x1b[HPassword: ','10:0')
+        self.assertFalse(self.inspect()['first_message_can_send'])
+        self.assertIn('draft',self.send(self.payload(expected_conversation_id=''),success=False))
+        self.assertEqual(self.received(),b'')
+        self.screen('\x1b[2J\x1b[H› ','2:0')
+        self.assertTrue(self.inspect()['first_message_can_send'])
+        self.send(self.payload(expected_conversation_id=''))
+        self.wait_for(lambda:self.received().endswith(b'\r'))
+
+    def test_bootstrap_never_bypasses_stale_or_requested_identity(self):
+        self.fresh_unconfirmed();initial=self.record.copy()
+        cases=[dict(expected_id='saved-conversation'),dict(requested_id='saved-conversation'),
+               dict(startup_kind='resume'),dict(fork_parent_id='source-conversation'),
+               dict(last_event_at=time.time()),dict(run_identity_version=0),dict(supervisor=None),
+               dict(error='provider resumed wrong conversation'),dict(phase='approval'),
+               dict(process_start='reused process'),dict(run_id='replaced run')]
+        for patch in cases:
+            with self.subTest(patch=patch):
+                self.record=dict(initial,**patch);self.write_record()
+                self.assertFalse(self.inspect().get('first_message_can_send',False))
+                self.send(self.payload(expected_conversation_id=''),success=False)
+                self.assertEqual(self.received(),b'')
+
+    def test_initial_model_is_observed_from_this_terminal_not_default_config(self):
+        self.fresh_unconfirmed()
+        codex=self.root/'.codex';codex.mkdir()
+        (codex/'models_cache.json').write_text(json.dumps(dict(models=[dict(slug='observed-model',display_name='Observed model',supported_reasoning_levels=[dict(effort='high')]),dict(slug='default-model',display_name='Default model',supported_reasoning_levels=[dict(effort='low')])])))
+        (codex/'config.toml').write_text('model="default-model"\nmodel_reasoning_effort="low"\n')
+        # Native model footer is authoritative; no provider API or input is used.
+        self.screen('\x1b[2J\x1b[27;1H\x1b[48;5;234m› '+ ' '*80 +'\x1b[28;1H   \x1b[49m\x1b[29;1H  Observed model high · /fixture\x1b[30;1H  ? for shortcuts\x1b[27;3H','2:26')
+        info=self.inspect()
+        self.assertEqual(info['model'],'observed-model');self.assertEqual(info['effort'],'high')
+        self.assertEqual(self.received(),b'')
+        self.assertFalse(info['settings_change_supported']) # no invented conversation binding
+        self.screen('\x1b[0m\x1b[2J\x1b[HPassword: ','10:0')
+        self.assertEqual(self.inspect()['model'],'')
+
+    def test_terminal_draft_and_missing_bracketed_paste_mode_are_refused(self):
+        self.screen("\x1b[2J\x1b[H› existing draft", "16:0")
+        self.assertIn("draft", self.send(success=False))
+        self.screen("\x1b[2J\x1b[H› \x1b[?2004l", "2:0")
+        self.assertIn("input mode", self.send(success=False))
+        self.assertEqual(self.received(), b"")
+
+    def test_empty_claude_prompt_is_supported(self):
+        self.record["agent"] = "claude"
+        self.write_record()
+        self.screen("\x1b[2J\x1b[H❯ ", "2:0")
+        self.send()
+        self.wait_for(lambda: self.received().endswith(b"\r"))
+
+    def test_claude_nbsp_prompt_accepts_docx_without_overwriting_drafts(self):
+        self.record['agent']='claude';self.write_record()
+        self.screen('\x1b[2J\x1b[H❯\u00a0existing\r\n──────────────\x1b[1;3H','2:0')
+        self.assertIn('draft',self.send(success=False));self.assertEqual(self.received(),b'')
+        self.screen('\x1b[2J\x1b[H❯\u00a0\r\n──────────────\r\n auto mode on\x1b[1;3H','2:0')
+        data=b'fake docx test content'
+        receipt=self.send(self.payload(text='[File #1] Изучи документ',attachments=[dict(name='review.docx',
+            mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            reference='[File #1]',data_base64=base64.b64encode(data).decode())]))
+        self.wait_for(lambda:self.received().endswith(b'\r'))
+        self.assertIn('Изучи документ'.encode(),self.received());self.assertIn(b'review.docx',self.received())
+
+    def test_multiline_draft_is_refused_when_cursor_returns_to_empty_first_line(self):
+        for agent, prompt in (("codex", "›"), ("claude", "❯")):
+            self.record["agent"] = agent
+            self.write_record()
+            self.screen(f"\x1b[2J\x1b[H{prompt} \r\n  existing second line\x1b[1;3H", "2:0")
+            self.wait_for(lambda: "existing second line" in self.tmux("capture-pane", "-p", "-t", self.pane))
+            self.assertIn("draft", self.send(success=False))
+            self.assertEqual(self.received(), b"")
+        self.record["agent"] = "kimi"
+        self.write_record()
+        self.screen("\x1b[2J\x1b[H ╭──────────────────────╮\r\n │ >                    │\r\n │   existing second line│\r\n ╰──────────────────────╯\x1b[2;6H", "5:1")
+        self.assertIn("draft", self.send(success=False))
+        self.assertEqual(self.received(), b"")
+
+    def test_kimi_vertical_bar_draft_is_not_mistaken_for_border(self):
+        self.record["agent"] = "kimi"
+        self.write_record()
+        self.screen("\x1b[2J\x1b[H ╭──────────────╮\r\n │ > │          │\r\n ╰──────────────╯\x1b[2;6H", "5:1")
+        self.assertIn("draft", self.send(success=False))
+        self.assertEqual(self.received(), b"")
+
+    def test_kimi_boxed_agent_prompt_and_shell_mode(self):
+        self.record["agent"] = "kimi"
+        self.write_record()
+        self.screen("\x1b[2J\x1b[H ╭──────────────╮\r\n │ !          │\r\n ╰──────────────╯\x1b[2;6H", "5:1")
+        self.send(success=False)
+        self.assertEqual(self.received(), b"")
+        self.screen("\x1b[2J\x1b[H ╭──────────────╮\r\n │ >          │\r\n ╰──────────────╯\x1b[2;6H", "5:1")
+        # Cursor coordinates did not change; wait until the updated glyph is visible.
+        self.wait_for(lambda: "│ >" in self.tmux("capture-pane", "-p", "-t", self.pane))
+        self.send()
+        self.wait_for(lambda: self.received().endswith(b"\r"))
+
+    def test_unicode_multiline_is_one_literal_paste_and_one_submission(self):
+        text = 'Привет\nsecond line\t$(touch /tmp/no-hgs-input-test) `literal`'
+        receipt = self.send(self.payload(text=text))
+        self.wait_for(lambda: self.received().endswith(b"\r"))
+        self.assertEqual(self.received(), b"\x1b[200~" + text.encode() + b"\x1b[201~\r")
+        self.assertEqual(receipt["status"], "submitted")
+        self.assertEqual(receipt["submitted_text"], text)
+        self.assertFalse(Path("/tmp/no-hgs-input-test").exists())
+        self.assertEqual(self.tmux("list-buffers", "-F", "#{buffer_name}"), "")
+
+    def test_attachments_transferred_privately_and_referenced_on_agent_host(self):
+        data = b"\x89PNG\r\n\x1a\n" + bytes(range(256))
+        payload = self.payload(attachments=[dict(name="../../screen shot.png", mime="image/png",
+                                             data_base64=base64.b64encode(data).decode())])
+        receipt = self.send(payload)
+        path = Path(receipt["attachments"][0]["path"])
+        self.assertEqual(path.read_bytes(), data)
+        self.assertTrue(path.resolve().is_relative_to((self.state / "attachments").resolve()))
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
+        self.assertIn("Inspect the attached image at", receipt["submitted_text"])
+        self.assertIn(str(path), receipt["submitted_text"])
+
+    def test_attachment_history_fetch_and_conversation_binding(self):
+        data=b"downloaded attachment"
+        payload=self.payload(text="",attachments=[dict(name="file.txt",mime="text/plain",data_base64=base64.b64encode(data).decode())])
+        receipt=self.send(payload)
+        def fetch(conversation=None):
+            return subprocess.run([str(HGS),"attachment",self.name,"--request",receipt["request_id"],"--index","0","--conversation",conversation or self.conversation_id],env=self.env,capture_output=True,text=True,timeout=5)
+        result=fetch();self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(base64.b64decode(json.loads(result.stdout)["data_base64"]),data)
+        self.assertNotIn("path",json.loads(result.stdout))
+        inspected=json.loads(subprocess.check_output([str(HGS),"inspect",self.name],env=self.env,text=True))
+        message=inspected["attachment_messages"][0]
+        self.assertEqual(message["detail"],"");self.assertEqual(message["attachments"][0]["request_id"],receipt["request_id"])
+        self.assertNotEqual(fetch("another conversation").returncode,0)
+        self.record["conversation_id"]="another";self.write_record()
+        self.assertNotEqual(fetch("another").returncode,0)
+        self.record["conversation_id"]=self.conversation_id;self.write_record()
+        Path(receipt["attachments"][0]["path"]).unlink();self.assertNotEqual(fetch().returncode,0)
+
+    def test_inline_attachment_labels_preserve_order_on_terminal_and_in_history(self):
+        text = 'До [Image #2]\nмежду [Image #1] после; ещё раз [Image #2]'
+        files = [dict(name='same.png', mime='image/png', reference=f'[Image #{i}]',
+                      data_base64=base64.b64encode(f'file-{i}'.encode()).decode()) for i in (1, 2)]
+        receipt = self.send(self.payload(text=text, attachments=files))
+        paths = [f['path'] for f in receipt['attachments']]
+        expected = f'До [Image #2] (Inspect the attached image at {json.dumps(paths[1])})\nмежду [Image #1] (Inspect the attached image at {json.dumps(paths[0])}) после; ещё раз [Image #2]'
+        self.assertEqual(receipt['submitted_text'], expected)
+        self.wait_for(lambda: self.received().endswith(b'\r'))
+        self.assertEqual(self.received(), b'\x1b[200~' + expected.encode() + b'\x1b[201~\r')
+        inspected = json.loads(subprocess.check_output([str(HGS), 'inspect', self.name], env=self.env, text=True))
+        saved = inspected['attachment_messages'][0]
+        self.assertEqual(saved['detail'], text)
+        self.assertEqual([f['reference'] for f in saved['attachments']], ['[Image #1]', '[Image #2]'])
+
+    def test_duplicate_or_invalid_attachment_labels_are_rejected_before_input(self):
+        file = dict(name='same.png', mime='image/png', reference='[Image #1]', data_base64=base64.b64encode(b'image').decode())
+        for files in ([file, file], [dict(file, reference='\x1b[201~')], [dict(file, reference='text')]):
+            self.assertIn('attachment reference', self.send(self.payload(attachments=files), success=False))
+        self.assertEqual(self.received(), b'')
+
+    def test_kimi_native_process_can_own_a_shell_named_pane(self):
+        self.record["agent"]="kimi";self.write_record()
+        real_ps=shutil.which("ps")
+        self.script("ps", "#!/usr/bin/env python3\nimport subprocess,sys\nr=subprocess.run("+repr([real_ps])+"+sys.argv[1:],capture_output=True,text=True)\nout=r.stdout\nif 'tty=,pgid=,tpgid=,comm=' in sys.argv: out=' '.join(out.split()[:3])+ ' kimi\\n'\nsys.stdout.write(out);sys.exit(r.returncode)\n")
+        self.script("tmux","#!/usr/bin/env python3\nimport subprocess,sys\nr=subprocess.run("+repr([TMUX,"-S",str(self.socket),"-f","/dev/null"])+"+sys.argv[1:],capture_output=True)\nout=r.stdout\nif 'display-message' in sys.argv and b'\\t' in out:\n f=out.split(b'\\t')\n if len(f)==9:f[4]=b'bash';out=b'\\t'.join(f)\nsys.stdout.buffer.write(out);sys.stderr.buffer.write(r.stderr);sys.exit(r.returncode)\n")
+        self.screen("\x1b[2J\x1b[H ╭──────────────╮\r\n │ >          │\r\n ╰──────────────╯\x1b[2;6H", "5:1")
+        self.send();self.wait_for(lambda:self.received().endswith(b"\r"))
+        before=self.received();self.record["agent"]="codex";self.write_record()
+        self.assertIn("expected agent input mode",self.send(success=False));self.assertEqual(self.received(),before)
+
+    def test_remote_stdin_payload_never_becomes_shell_or_argv(self):
+        self.script("ssh", """#!/usr/bin/env python3
+import json, os, pathlib, sys
+pathlib.Path(os.environ['INPUT_FIXTURE'], 'ssh-args').write_text(json.dumps(sys.argv[1:]))
+os.execv('/bin/sh', ['sh', '-c', sys.argv[-1]])
+""")
+        payload = self.payload(text="remote secret\nsecond line", attachments=[dict(name="doc.txt",
+                    mime="text/plain", data_base64=base64.b64encode(b"remote bytes").decode())])
+        receipt = self.send(payload, remote=True)
+        args = json.loads((self.root / "ssh-args").read_text())
+        self.assertNotIn("-t", args)
+        self.assertNotIn("remote secret", " ".join(args))
+        self.assertEqual(args[-1], "~/.local/bin/hgs send codex/input-test --json")
+        self.assertEqual(Path(receipt["attachments"][0]["path"]).read_bytes(), b"remote bytes")
+        self.wait_for(lambda: self.received().endswith(b"\r"))
+
+    def test_duplicate_request_is_acknowledged_without_resending(self):
+        payload = self.payload()
+        first = self.send(payload)
+        self.wait_for(lambda: self.received().endswith(b"\r"))
+        before = self.received()
+        self.assertEqual(self.send(payload), first)
+        self.assertEqual(self.received(), before)
+        altered = dict(payload, text="different")
+        self.assertIn("already used", self.send(altered, success=False))
+
+    def test_approval_unconfirmed_and_changed_identity_never_receive_input(self):
+        cases = [dict(activity="unknown"), dict(phase="approval"), dict(phase="input"),
+                 dict(conversation_id=""), dict(expected_id="pending"), dict(error="bad tracking"),
+                 dict(run_id="new run"), dict(process_start="different start")]
+        original = self.record.copy()
+        for updates in cases:
+            with self.subTest(updates=updates):
+                self.record = dict(original, **updates)
+                self.write_record()
+                self.send(success=False)
+                self.assertEqual(self.received(), b"")
+
+    def test_working_agent_accepts_next_message_without_interrupting(self):
+        self.record.update(activity="busy", phase="tool", active_tools={"one": {}},
+                           subagents={"one": {"state": "working"}})
+        self.write_record()
+        receipt = self.send(self.payload(text="next instruction"))
+        self.assertEqual(receipt["status"], "submitted")
+        self.wait_for(lambda: self.received().endswith(b"\r"))
+        self.assertEqual(self.received(), b"\x1b[200~next instruction\x1b[201~\r")
+
+    def provider_failure(self, native=False):
+        message = 'Selected model is at capacity. Please try a different model.'
+        if native:
+            import sqlite3
+            directory = self.root / '.codex'
+            directory.mkdir()
+            at = time.time() - 1
+            self.record.update(activity='busy', phase='compacting', last_main_progress_at=at - 1)
+            self.write_record()
+            with sqlite3.connect(directory / 'logs_2.sqlite') as db:
+                db.execute('CREATE TABLE logs(id INTEGER, ts INTEGER, ts_nanos INTEGER, thread_id TEXT, target TEXT, feedback_log_body TEXT)')
+                db.execute('INSERT INTO logs VALUES(1,?,?,?,?,?)', (int(at), int((at % 1) * 1e9),
+                           self.conversation_id, 'codex_core::session::turn', 'run_turn: Turn error: ' + message))
+        else:
+            self.record['agent'] = 'claude'
+            self.write_record()
+            self.screen('\x1b[2J\x1b[H❯ ', '2:0')
+            event = dict(hook_event_name='StopFailure', session_id=self.conversation_id,
+                         error=message, error_type='model_capacity')
+            hook = subprocess.run([str(HGS), '__state', 'hook'],
+                                  env=dict(self.env, HGS_SESSION=self.name, HGS_RUN_ID=self.run_id),
+                                  input=json.dumps(event), capture_output=True, text=True, timeout=10)
+            self.assertEqual(hook.returncode, 0, hook.stderr)
+            self.record = json.loads(self.record_path.read_text())
+
+    def interrupted_turn(self):
+        event = dict(hook_event_name='Interrupt', session_id=self.conversation_id)
+        hook = subprocess.run([str(HGS), '__state', 'hook'],
+                              env=dict(self.env, HGS_SESSION=self.name, HGS_RUN_ID=self.run_id),
+                              input=json.dumps(event), capture_output=True, text=True, timeout=10)
+        self.assertEqual(hook.returncode, 0, hook.stderr)
+        self.record = json.loads(self.record_path.read_text())
+
+    def test_interrupted_turn_accepts_message_at_verified_prompt_without_clearing_history(self):
+        self.interrupted_turn()
+        before = self.record_path.read_bytes()
+        info = self.inspect()
+        self.assertEqual(info['phase'], 'interrupted')
+        self.assertEqual(info['activity'], 'unknown')
+        self.assertTrue(info.get('interrupted_message_can_send'), info.get('interrupted_message_reason'))
+        self.assertEqual(self.record_path.read_bytes(), before)
+        self.assertEqual(self.received(), b'')
+        self.assertEqual(self.send(self.payload(text='continue'))['status'], 'submitted')
+        self.wait_for(lambda: self.received().endswith(b'\r'))
+        self.assertEqual(self.received(), b'\x1b[200~continue\x1b[201~\r')
+        self.assertFalse(self.inspect()['interrupted_message_can_send'])
+        self.send(success=False)
+
+    def test_interrupted_turn_cannot_bypass_terminal_or_identity_checks(self):
+        self.interrupted_turn()
+        for screen, cursor in [('› existing draft', '16:0'), ('Password: ', '10:0'),
+                               ('Working…', '8:0'), ('› \x1b[?2004l', '2:0')]:
+            with self.subTest(screen=screen):
+                self.screen('\x1b[2J\x1b[H' + screen, cursor)
+                self.assertFalse(self.inspect().get('interrupted_message_can_send', False))
+                self.send(success=False)
+                self.assertEqual(self.received(), b'')
+        self.screen('\x1b[?2004h\x1b[2J\x1b[H› ', '2:0')
+        original = self.record.copy()
+        for patch in [dict(phase='unknown'), dict(phase='approval'), dict(phase='input'),
+                      dict(expected_id='pending'), dict(error='bad tracking'),
+                      dict(run_id='different run'), dict(process_start='different start'),
+                      dict(conversation_id=''), dict(input_pending_at=time.time()+1),
+                      dict(pausing=dict(pid=original['pid'], start=original['process_start']))]:
+            with self.subTest(patch=patch):
+                self.record = dict(original, **patch)
+                self.write_record()
+                self.assertFalse(self.inspect().get('interrupted_message_can_send', False))
+                self.send(success=False)
+                self.assertEqual(self.received(), b'')
+
+    def assert_provider_failure_retry(self):
+        before = self.record_path.read_bytes()
+        info = self.inspect()
+        self.assertEqual(info['phase'], 'error')
+        self.assertEqual(info['activity'], 'attention')
+        self.assertEqual(info['provider_error']['error_kind'], 'capacity')
+        self.assertTrue(info['error_message_can_send'], info.get('error_message_reason'))
+        self.assertEqual(self.record_path.read_bytes(), before)
+        receipt = self.send(self.payload(text='повтори'))
+        self.assertEqual(receipt['status'], 'submitted')
+        self.wait_for(lambda: self.received().endswith(b'\r'))
+        self.assertEqual(self.received(), b'\x1b[200~' + 'повтори'.encode() + b'\x1b[201~\r')
+        self.assertFalse(self.inspect()['error_message_can_send'])
+        self.send(success=False)
+
+    def test_native_capacity_error_accepts_retry_without_clearing_attention(self):
+        self.provider_failure(native=True)
+        self.assert_provider_failure_retry()
+
+    def test_hook_failure_accepts_retry_without_clearing_attention(self):
+        self.provider_failure()
+        self.assert_provider_failure_retry()
+
+    def test_provider_failure_cannot_bypass_terminal_or_identity_checks(self):
+        self.provider_failure()
+        for screen, cursor in [("❯ existing draft", '16:0'), ('Password: ', '10:0'),
+                               ('❯ \x1b[?2004l', '2:0')]:
+            with self.subTest(screen=screen):
+                self.screen('\x1b[2J\x1b[H' + screen, cursor)
+                self.assertFalse(self.inspect()['error_message_can_send'])
+                self.send(success=False)
+                self.assertEqual(self.received(), b'')
+        self.screen('\x1b[?2004h\x1b[2J\x1b[H❯ ', '2:0')
+        original = self.record.copy()
+        for patch in [dict(phase='approval'), dict(phase='input'), dict(expected_id='pending'),
+                      dict(error='bad tracking'), dict(process_start='different start'),
+                      dict(conversation_id=''),
+                      dict(pausing=dict(pid=original['pid'], start=original['process_start']))]:
+            with self.subTest(patch=patch):
+                self.record = dict(original, **patch)
+                self.write_record()
+                self.assertFalse(self.inspect().get('error_message_can_send', False))
+                self.send(success=False)
+                self.assertEqual(self.received(), b'')
+
+    def test_working_codex_unshaded_composer_and_custom_status_line(self):
+        self.record.update(activity="busy", phase="tool", active_tools={"one": {}})
+        self.write_record()
+        self.screen("\x1b[0m\x1b[2J\x1b[27;1H\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m"
+                    "\r\n\r\n  GPT-6-Astra xhigh · /project · Session title · Pursuing goal (1h)"
+                    "\r\n  \x1b[1m?\x1b[0m for shortcuts\x1b[27;3H", "2:26")
+        receipt = self.send(self.payload(text="когда это завершится, то что потом?"))
+        self.assertEqual(receipt["status"], "submitted")
+        self.wait_for(lambda: self.received().endswith(b"\r"))
+        self.assertEqual(self.received(), b"\x1b[200~" + "когда это завершится, то что потом?".encode() + b"\x1b[201~\r")
+
+    def test_control_sequences_slash_commands_and_invalid_attachment_are_refused(self):
+        for text in ("\x1b[201~bad", "test\rnext", "\x00", " /exit", "!ls"):
+            self.send(self.payload(text=text), success=False)
+        self.send(self.payload(attachments=[dict(name="img.png", mime="image/png", data_base64="bad===")]), success=False)
+        self.assertEqual(self.received(), b"")
+
+    def test_multiple_panes_and_dead_process_are_refused(self):
+        self.tmux("split-window", "-t", "=" + self.name + ":", "sleep", "30")
+        self.send(success=False)
+        self.assertEqual(self.received(), b"")
+        self.tmux("kill-session", "-t", "=" + self.name)
+        self.send(success=False)
+
+    def test_uncertain_submission_is_never_retried(self):
+        self.script("tmux", '#!/bin/sh\nif [ "$1" = send-keys ]; then exit 1; fi\nexec '
+                    + TMUX + ' -S "' + str(self.socket) + '" -f /dev/null "$@"\n')
+        payload = self.payload()
+        self.assertIn("delivery uncertain", self.send(payload, success=False))
+        self.wait_for(lambda: b"\x1b[201~" in self.received())
+        first = self.received()
+        self.assertIn("delivery uncertain", self.send(payload, success=False))
+        self.assertEqual(self.received(), first)
+        self.assertIn("previous input", self.send(success=False))
+
+    def test_existing_attach_never_resumes_missing_or_replaced_session(self):
+        wrong = subprocess.run([str(HGS), "a", self.name, "--existing", "--run-id", "wrong"],
+                               env=self.env, text=True, capture_output=True, timeout=5)
+        self.assertNotEqual(wrong.returncode, 0)
+        self.assertIn("session run changed", wrong.stderr)
+        self.tmux("kill-session", "-t", "=" + self.name)
+        missing = subprocess.run([str(HGS), "a", self.name, "--existing"],
+                                 env=self.env, text=True, capture_output=True, timeout=5)
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("no longer running", missing.stderr)
+        self.assertEqual(self.tmux("list-sessions", check=False), "")
+
+
+if __name__ == "__main__": unittest.main()

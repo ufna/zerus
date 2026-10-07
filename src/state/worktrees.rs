@@ -1,0 +1,535 @@
+//! On-demand checkout catalog and explicit creation of a new branch/worktree.
+use super::*;
+use fs2::FileExt;
+use sha2::{Digest, Sha256};
+use std::fs::{self, OpenOptions};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::process::CommandExt;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+const MAX_OUTPUT: usize = 1024 * 1024;
+const MAX_TREES: usize = 512;
+const TTL: f64 = 30.0;
+
+struct GitError {
+    state: &'static str,
+    detail: String,
+}
+fn error(state: &'static str, detail: impl Into<String>) -> GitError {
+    GitError {
+        state,
+        detail: detail.into(),
+    }
+}
+
+fn git(cwd: &Path, args: &[&str], deadline: Instant) -> std::result::Result<Vec<u8>, GitError> {
+    let mut command = Command::new("git");
+    command
+        .process_group(0)
+        .args(["--no-optional-locks", "-c", "core.fsmonitor=false", "-C"])
+        .arg(cwd)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("LC_ALL", "C")
+        .env("GIT_OPTIONAL_LOCKS", "0");
+    for key in [
+        "GIT_DIR",
+        "GIT_COMMON_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CONFIG_COUNT",
+    ] {
+        command.env_remove(key);
+    }
+    let mut child = command.spawn().map_err(|e| {
+        error(
+            if e.kind() == io::ErrorKind::NotFound {
+                "git_unavailable"
+            } else {
+                "metadata_error"
+            },
+            e.to_string(),
+        )
+    })?;
+    let mut stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+    for fd in [stdout.as_raw_fd(), stderr.as_raw_fd()] {
+        // Both pipes must be drained while Git runs, including large catalogs.
+        unsafe {
+            libc::fcntl(
+                fd,
+                libc::F_SETFL,
+                libc::fcntl(fd, libc::F_GETFL) | libc::O_NONBLOCK,
+            );
+        }
+    }
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let mut status = None;
+    let result = loop {
+        let mut eof = true;
+        for (pipe, buffer, limit) in [
+            (&mut stdout as &mut dyn Read, &mut out, MAX_OUTPUT),
+            (&mut stderr as &mut dyn Read, &mut err, 8192),
+        ] {
+            loop {
+                let mut chunk = [0; 4096];
+                match pipe.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        buffer.extend_from_slice(&chunk[..n]);
+                        if buffer.len() > limit {
+                            break;
+                        }
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        eof = false;
+                        break;
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(_) => {
+                        eof = false;
+                        break;
+                    }
+                }
+            }
+        }
+        if out.len() > MAX_OUTPUT || err.len() > 8192 {
+            break Err(error(
+                "too_large",
+                "Git operation exceeded the output limit",
+            ));
+        }
+        if status.is_none() {
+            status = child
+                .try_wait()
+                .map_err(|e| error("metadata_error", e.to_string()))?;
+        }
+        if let Some(status) = status {
+            if eof {
+                break if status.success() {
+                    Ok(out)
+                } else {
+                    let detail = String::from_utf8_lossy(&err).trim().to_owned();
+                    Err(error(
+                        if detail.contains("not a git repository") {
+                            "not_repo"
+                        } else {
+                            "metadata_error"
+                        },
+                        detail,
+                    ))
+                };
+            }
+        }
+        if Instant::now() >= deadline {
+            break Err(error("timeout", "Git operation timed out"));
+        }
+        std::thread::sleep(Duration::from_millis(3));
+    };
+    if result.is_err() {
+        // A checkout hook/filter can outlive Git. Stop the whole operation on
+        // timeout instead of leaving it writing after an error was reported.
+        unsafe {
+            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    result
+}
+
+fn cache_file(kind: &str, identity: &str) -> PathBuf {
+    root().join("worktree-cache").join(format!(
+        "{}-{:x}.json",
+        kind,
+        Sha256::digest(identity.as_bytes())
+    ))
+}
+fn load(path: &Path) -> Option<Value> {
+    fs::metadata(path)
+        .ok()
+        .filter(|m| m.len() <= 2 * MAX_OUTPUT as u64)?;
+    serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+fn canonical(path: &str) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path))
+}
+
+fn parse(bytes: &[u8]) -> std::result::Result<(Vec<Value>, bool), GitError> {
+    let mut trees = Vec::new();
+    let mut row = serde_json::Map::new();
+    let mut partial = false;
+    for field in bytes.split(|b| *b == 0) {
+        if field.is_empty() {
+            if row.is_empty() {
+                continue;
+            }
+            if !row.contains_key("path") {
+                return Err(error("metadata_error", "Invalid worktree record"));
+            }
+            if trees.len() == MAX_TREES {
+                partial = true;
+                row.clear();
+                break;
+            }
+            let path = row["path"].as_str().unwrap();
+            let root = canonical(path);
+            row.insert("available".into(), json!(root.is_dir()));
+            row.insert("path".into(), json!(root));
+            row.insert(
+                "kind".into(),
+                json!(if row.get("bare") == Some(&json!(true)) {
+                    "bare"
+                } else if trees.is_empty() {
+                    "main"
+                } else {
+                    "linked"
+                }),
+            );
+            trees.push(Value::Object(std::mem::take(&mut row)));
+            continue;
+        }
+        let value = std::str::from_utf8(field)
+            .map_err(|_| error("metadata_error", "Git returned a path that is not UTF-8"))?;
+        let (key, value) = value.split_once(' ').unwrap_or((value, ""));
+        match key {
+            "worktree" => {
+                if !Path::new(value).is_absolute() {
+                    return Err(error(
+                        "metadata_error",
+                        "Git returned a relative worktree path",
+                    ));
+                }
+                row.insert("path".into(), json!(value));
+            }
+            "HEAD" => {
+                row.insert("head".into(), json!(value));
+            }
+            "branch" => {
+                row.insert(
+                    "branch".into(),
+                    json!(value.strip_prefix("refs/heads/").unwrap_or(value)),
+                );
+            }
+            "bare" | "detached" => {
+                row.insert(key.into(), json!(true));
+            }
+            "locked" | "prunable" => {
+                row.insert(key.into(), json!(true));
+                row.insert(format!("{key}_reason"), json!(value));
+            }
+            _ => {}
+        }
+    }
+    if !row.is_empty() {
+        return Err(error("metadata_error", "Incomplete worktree record"));
+    }
+    if trees.is_empty() {
+        return Err(error(
+            "metadata_error",
+            "Git returned an empty worktree catalog",
+        ));
+    }
+    Ok((trees, partial))
+}
+
+pub(super) fn catalog(path: &Path, refresh: bool) -> Value {
+    let requested = path.to_string_lossy();
+    let path_cache = cache_file("path", &requested);
+    let previous = load(&path_cache);
+    let path = match fs::canonicalize(path) {
+        Ok(p) if p.is_dir() => p,
+        _ => {
+            return json!({"path":requested,"state":"folder_unavailable","detail":"Folder is missing or inaccessible","worktrees":[],"sampled_at":now()})
+        }
+    };
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let result = (|| {
+        let common = git(
+            &path,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            deadline,
+        )?;
+        let common = std::str::from_utf8(&common)
+            .map_err(|_| error("metadata_error", "Invalid repository path"))?
+            .trim_end_matches('\n');
+        let common =
+            fs::canonicalize(common).map_err(|e| error("metadata_error", e.to_string()))?;
+        let identity = common.to_string_lossy();
+        let cache = cache_file("repo", &identity);
+        let mut snapshot = load(&cache);
+        let fresh = |v: &Value| {
+            let age = now() - v["sampled_at"].as_f64().unwrap_or(0.);
+            (0.0..TTL).contains(&age) && v["state"] == "ok"
+        };
+        if refresh || !snapshot.as_ref().is_some_and(fresh) {
+            let _ = private_dir(cache.parent().unwrap());
+            let guard = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .mode(0o600)
+                .open(cache.with_extension("lock"))
+                .ok();
+            if let Some(guard) = &guard {
+                while guard.try_lock_exclusive().is_err() {
+                    if Instant::now() >= deadline {
+                        return Err(error("timeout", "Catalog is being refreshed"));
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                if !refresh {
+                    snapshot = load(&cache);
+                }
+            }
+            if refresh || !snapshot.as_ref().is_some_and(fresh) {
+                let bytes = git(&path, &["worktree", "list", "--porcelain", "-z"], deadline)?;
+                let (mut trees, partial) = parse(&bytes)?;
+                // Git's porcelain reports the gitdir for a submodule's main
+                // checkout. Resolve core.worktree through Git; never offer the
+                // metadata directory itself as a working folder.
+                if trees[0]["kind"] == "main" && trees[0]["path"] == json!(common) {
+                    let working = git(&common, &["rev-parse", "--show-toplevel"], deadline)
+                        .ok()
+                        .and_then(|b| String::from_utf8(b).ok())
+                        .map(|s| canonical(s.trim_end_matches('\n')));
+                    if let Some(working) = working.filter(|p| p.is_absolute() && p != &common) {
+                        trees[0]["available"] = json!(working.is_dir());
+                        trees[0]["path"] = json!(working);
+                    } else {
+                        trees[0]["available"] = json!(false);
+                    }
+                }
+                let value = json!({"state":"ok","common_dir":common,"worktrees":trees,"partial":partial,"sampled_at":now()});
+                let _ = atomic(&cache, &value.to_string());
+                snapshot = Some(value);
+            }
+            if let Some(guard) = guard {
+                let _ = FileExt::unlock(&guard);
+            }
+        }
+        let mut snapshot =
+            snapshot.ok_or_else(|| error("metadata_error", "No worktree snapshot"))?;
+        // Discovery is on the agent's machine and identifies nested cwd and symlinks.
+        snapshot["selected_root"] = git(&path, &["rev-parse", "--show-toplevel"], deadline)
+            .ok()
+            .and_then(|b| String::from_utf8(b).ok())
+            .map(|p| json!(canonical(p.trim_end_matches('\n'))))
+            .unwrap_or(Value::Null);
+        snapshot["path"] = json!(path);
+        snapshot["stale"] = json!(false);
+        Ok::<_, GitError>(snapshot)
+    })();
+    match result {
+        Ok(snapshot) => {
+            let _ = atomic(&path_cache, &snapshot.to_string());
+            snapshot
+        }
+        Err(e) => {
+            let mut value = if e.state != "not_repo" {
+                previous
+                    .filter(|v| v["state"] == "ok")
+                    .unwrap_or(json!({"worktrees":[],"sampled_at":now()}))
+            } else {
+                json!({"worktrees":[],"sampled_at":now()})
+            };
+            value["path"] = json!(path);
+            value["state"] = json!(e.state);
+            value["detail"] = json!(e.detail);
+            value["stale"] = json!(!value["worktrees"].as_array().is_none_or(|a| a.is_empty()));
+            value
+        }
+    }
+}
+
+pub(super) fn dispatch(args: &[String]) -> Result<i32> {
+    if args.first().is_some_and(|s| s == "create") {
+        let value = create(&args[1..])?;
+        println!("{value}");
+        return Ok(0);
+    }
+    let mut path = None;
+    let mut refresh = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--path" => {
+                i += 1;
+                path = Some(PathBuf::from(args.get(i).ok_or("--path needs a folder")?));
+            }
+            "--refresh" => refresh = true,
+            "--json" => {}
+            _ => return Err("usage: hgs worktrees --path PATH [--refresh] [--json]".into()),
+        }
+        i += 1;
+    }
+    let path = path.ok_or("--path is required")?;
+    if !path.is_absolute() {
+        return Err("worktree catalog requires an absolute folder path".into());
+    }
+    let mut value = catalog(&path, refresh);
+    value["machine"] = json!(crate::config::Config::load()
+        .map_err(|e| e.to_string())?
+        .host());
+    println!("{value}");
+    Ok(0)
+}
+
+fn create(args: &[String]) -> Result<Value> {
+    let mut options = BTreeMap::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => {}
+            key @ ("--path" | "--destination" | "--branch" | "--base" | "--common-dir" | "--request-id") => {
+                i += 1;
+                let value = args.get(i).ok_or_else(|| format!("{key} needs a value"))?;
+                if value.is_empty() || value.chars().any(char::is_control) {
+                    return Err(format!("{key} cannot be empty or contain control characters"));
+                }
+                if options.insert(key, value.as_str()).is_some() { return Err(format!("duplicate {key}")); }
+            }
+            _ => return Err("usage: hgs worktrees create --path REPO --destination FOLDER --branch NEW_BRANCH [--base HEAD] [--json]".into()),
+        }
+        i += 1;
+    }
+    let required = |key| {
+        options
+            .get(key)
+            .copied()
+            .ok_or_else(|| format!("{key} is required"))
+    };
+    let source = Path::new(required("--path")?);
+    let destination = Path::new(required("--destination")?);
+    if !source.is_absolute() || !destination.is_absolute() {
+        return Err("Repository and destination must be absolute folder paths".into());
+    }
+    let source = fs::canonicalize(source).map_err(|e| format!("Repository: {e}"))?;
+    let parent = fs::canonicalize(destination.parent().ok_or("Choose a destination folder")?)
+        .map_err(|e| format!("Destination parent must already exist: {e}"))?;
+    let destination = parent.join(
+        destination
+            .file_name()
+            .ok_or("Choose a destination folder")?,
+    );
+    if fs::symlink_metadata(&destination).is_ok() {
+        return Err("Destination already exists. Choose a new folder.".into());
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let read = |args: &[&str]| -> Result<String> {
+        String::from_utf8(git(&source, args, deadline).map_err(|e| e.detail)?)
+            .map(|s| s.trim_end_matches('\n').to_owned())
+            .map_err(|e| e.to_string())
+    };
+    let common = fs::canonicalize(read(&[
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+    ])?)
+    .map_err(|e| e.to_string())?;
+    if let Some(expected) = options.get("--common-dir") {
+        if fs::canonicalize(expected).ok().as_ref() != Some(&common) {
+            return Err("Repository changed. Refresh its worktrees before creating one.".into());
+        }
+    }
+    if destination.starts_with(&common) {
+        return Err("Destination cannot be inside Git metadata".into());
+    }
+    let branch = required("--branch")?;
+    if branch.starts_with('-') {
+        return Err("Branch name cannot start with '-'".into());
+    }
+    let reference = format!("refs/heads/{branch}");
+    read(&["check-ref-format", &reference]).map_err(|_| "Invalid new branch name".to_string())?;
+    read(&["check-ref-format", "--branch", branch])
+        .map_err(|_| "Invalid new branch name".to_string())?;
+    if read(&["for-each-ref", "--format=%(refname)", "refs/heads"])?
+        .lines()
+        .any(|r| {
+            r == reference
+                || r.starts_with(&format!("{reference}/"))
+                || reference.starts_with(&format!("{r}/"))
+        })
+    {
+        return Err(format!(
+            "Branch '{branch}' already exists or conflicts with an existing branch. Choose a new branch name."
+        ));
+    }
+    let base = options.get("--base").copied().unwrap_or("HEAD");
+    let head = read(&[
+        "rev-parse",
+        "--verify",
+        "--end-of-options",
+        &format!("{base}^{{commit}}"),
+    ])
+    .map_err(|e| format!("Cannot resolve starting revision '{base}': {e}"))?;
+    let cache = cache_file("repo", &common.to_string_lossy());
+    fs::create_dir_all(cache.parent().unwrap()).map_err(|e| e.to_string())?;
+    let guard = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .open(cache.with_extension("lock"))
+        .map_err(|e| e.to_string())?;
+    while guard.try_lock_exclusive().is_err() {
+        if Instant::now() >= deadline {
+            return Err(
+                "Another worktree operation is running. Try again after it finishes.".into(),
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Atomic reservation rejects simultaneous creators and existing/symlinked
+    // destinations. Git accepts this empty directory but never overwrites files.
+    fs::create_dir(&destination).map_err(|e| format!("Cannot reserve destination: {e}"))?;
+    let outcome = git(
+        &source,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            branch,
+            "--",
+            &destination.to_string_lossy(),
+            &head,
+        ],
+        Instant::now() + Duration::from_secs(300),
+    );
+    let _ = fs::remove_file(cache);
+    outcome.map_err(|e| format!("{}\nCheck {} and branch '{branch}' before retrying. Any created files and branch have been kept.", e.detail, destination.display()))?;
+    // Confirm the resulting checkout, not merely the exit code (hooks may fail
+    // after creation, or another process may have changed the destination).
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let actual = git(
+        &destination,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        deadline,
+    )
+    .map_err(|e| e.detail)?;
+    let actual = fs::canonicalize(String::from_utf8_lossy(&actual).trim_end_matches('\n'))
+        .map_err(|e| e.to_string())?;
+    let actual_branch =
+        git(&destination, &["symbolic-ref", "--quiet", "HEAD"], deadline).map_err(|e| e.detail)?;
+    if actual != common
+        || String::from_utf8_lossy(&actual_branch).trim_end_matches('\n') != reference
+    {
+        return Err(
+            "Worktree creation could not be confirmed. Inspect the destination before retrying."
+                .into(),
+        );
+    }
+    Ok(
+        json!({"status":"created", "path":destination, "branch":branch, "base":base, "head":head,
+        "common_dir":common, "request_id":options.get("--request-id"),
+        "machine":crate::config::Config::load().map_err(|e|e.to_string())?.host()}),
+    )
+}

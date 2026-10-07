@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Zerus — папки сессий и необязательные worktree</title>
+<style>
+:root{color-scheme:dark;--bg:#161b21;--card:#1c2229;--line:#35414c;--text:#e8edf4;--muted:#a2adbc;--accent:#8bdfc0;--soft:#233d35;--amber:#ffda76}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 system-ui,sans-serif}main{max-width:1340px;margin:40px auto;padding:0 24px}h1{font-size:clamp(28px,4vw,40px);line-height:1.2;max-width:900px;margin:14px 0}h2{font-size:24px;margin:38px 0 16px}h3{font-size:16px;margin:0 0 12px}p{max-width:1000px;margin:10px 0 16px}a{color:var(--accent)}small,.muted{color:var(--muted)}small{font-size:12px}.eyebrow{color:var(--accent);font-size:12px;letter-spacing:.1em}.lead{font-size:19px;max-width:960px}.note{border-left:3px solid var(--accent);padding:10px 16px;background:#1b2926}.note p{margin:4px 0}.facts,.spec{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:22px 0}.facts article,.spec article{padding:18px;border:1px solid var(--line);border-radius:10px;background:var(--card)}.facts p,.spec p{margin-bottom:0}.facts strong{color:var(--accent)}
+button,input,select{font:inherit;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:7px;padding:8px 11px}button{cursor:pointer;line-height:1.3;min-height:34px}button:hover:enabled{background:#2d3b3d}button:disabled{opacity:.45;cursor:default}button[aria-pressed=true],button.active{background:var(--soft);border-color:#6dab98}button.primary{background:var(--accent);color:#10231b;border-color:var(--accent)}button.primary:hover:enabled{background:#a5ebd3}:focus-visible{outline:2px solid var(--accent);outline-offset:3px}[hidden]{display:none!important}.toolbar,.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.toolbar{margin:16px 0}.spacer{flex:1}.toolbar label{display:flex;gap:8px;align-items:center}input[type=checkbox]{accent-color:var(--accent)}.demo-toolbar{font-size:13px}.demo-label{font-size:12px;letter-spacing:.07em;color:var(--muted)}
+.app{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--card)}.appbar{padding:12px 16px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--line)}.appbar button{font-size:13px}.workspace{display:grid;grid-template-columns:290px minmax(240px,1fr) 310px;min-height:490px}.sessions{padding:14px;background:#171d24;min-width:0}.section-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;font-weight:600;font-size:14px}.project-header{background:#254332;color:#b4e6ca;border-radius:6px;padding:5px 9px;margin:12px 0 5px;font-size:12px;display:flex;justify-content:space-between}.project-header.inbox{background:#263f53;color:#acd6ef}.session{display:block;width:100%;text-align:left;background:transparent;border-color:transparent;padding:10px;margin:3px 0}.session.active{background:#2d3945;border-color:#8195a7}.session-top,.session-meta{display:flex;align-items:center;gap:8px;min-width:0}.session-top strong{font-size:14px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.session-top .state{margin-left:auto}.session-meta{margin-top:5px;font-size:11px;color:var(--muted)}.session-meta>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.session-meta .badge{margin-left:auto;flex-shrink:0}.state,.badge{display:inline-block;font-size:11px;line-height:1.5;border-radius:4px;padding:1px 6px;background:#2b343f;color:var(--muted)}.badge.machine{background:#24403d;color:#a7ded4}.badge.mac{background:#434520;color:#e2dd97}.state.working{background:#20503d;color:#a7edc4}.state.ready{color:var(--accent)}.folder-kind{font-size:11px;color:var(--muted)}
+.conversation{padding:20px;border-left:1px solid var(--line);min-width:0;display:flex;flex-direction:column;gap:14px}.conversation h3{margin:0}.context{display:flex;gap:9px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--muted)}.tabs{display:flex;gap:20px;font-size:13px;color:var(--muted);border-bottom:1px solid var(--line);padding:0 2px 8px}.tabs strong{color:var(--text);font-weight:500}.bubble{padding:16px;border-left:3px solid #98bde8;background:#242e37;font-size:14px}.bubble small{display:block;color:#aac9f0;margin-bottom:8px}.composer{margin-top:auto;padding:12px;border:1px solid var(--line);border-radius:9px;min-height:74px;font-size:13px;color:var(--muted)}.status-note{font-size:12px;color:var(--amber);padding:8px 10px;background:#342e22;border-radius:6px}.inspector{padding:18px;border-left:1px solid var(--line);background:#171e25;min-width:0;font-size:13px}.inspector h3{margin-top:18px}.path{display:block;overflow-wrap:anywhere;font:12px/1.6 ui-monospace,monospace;color:var(--muted);margin:10px 0}.tree{display:block;width:100%;text-align:left;margin:7px 0;font-size:12px;background:transparent}.tree b,.tree small{display:block}.tree small{font-size:11px;margin-top:3px}.tree.current{border-color:#6d927f}.alert{background:#403724;color:var(--amber);padding:8px 10px;border-radius:6px;font-size:12px;margin:12px 0}.empty{padding:14px 4px;font-size:13px;color:var(--muted)}.footer{border-top:1px solid var(--line);padding:8px 16px;font-size:11px;color:var(--muted);min-height:34px}
+.projects-view{display:grid;grid-template-columns:240px minmax(0,1fr);min-height:490px}.project-nav{padding:18px;border-right:1px solid var(--line)}.project-nav button{display:block;width:100%;text-align:left;margin-bottom:8px}.project-detail{padding:22px;min-width:0}.folder-card{border:1px solid var(--line);border-radius:8px;padding:15px;margin:12px 0}.folder-card summary{cursor:pointer;margin-top:12px;color:var(--accent);font-size:13px}.folder-card .tree{max-width:650px}.folder-card>small{display:block;margin-top:10px}.project-detail h3{margin:0}.spec{grid-template-columns:repeat(2,minmax(0,1fr))}.specification{max-width:1100px}table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;padding:12px;border-bottom:1px solid var(--line);vertical-align:top}th{width:25%}code{font-size:.9em;overflow-wrap:anywhere}li{margin:8px 0}footer{margin:40px 0;color:var(--muted);border-top:1px solid var(--line);padding-top:20px;font-size:13px}
+dialog{color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:24px;width:min(560px,calc(100% - 28px));max-height:calc(100dvh - 36px);overflow:auto}dialog::backdrop{background:#050b12b8}dialog h2{margin:0 0 6px;font-size:22px}dialog p{font-size:13px;color:var(--muted)}.form-grid{display:grid;grid-template-columns:130px minmax(0,1fr);gap:14px 12px;align-items:start;margin:22px 0}.form-grid>label{font-size:13px;padding-top:8px}.form-grid input,.form-grid select{width:100%;min-width:0;font-size:13px}.folder-choice{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px}.form-grid small{display:block;margin-top:6px}.form-grid .path{margin:6px 0}.form-grid .optional{padding:7px 0;border:0;color:var(--accent);background:none;font-size:12px;min-height:26px}.dialog-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:18px}.dialog-actions button{font-size:13px}#folderPicker{margin-top:8px;padding:10px;border:1px solid var(--line);border-radius:8px}.form-status{font-size:13px;min-height:24px;color:var(--muted)}.form-status.error{color:var(--amber)}#browseChoice{display:block;width:100%;margin:20px 0}#feedback{color:var(--accent);font-size:13px;min-height:32px;padding:10px 0}
+@media(max-width:1100px){.workspace{grid-template-columns:250px minmax(240px,1fr)}.inspector{grid-column:1/-1;border-left:0;border-top:1px solid var(--line);display:grid;grid-template-columns:1fr 1fr;gap:24px}.facts{grid-template-columns:1fr}.facts article{padding:14px 18px}.conversation{min-height:390px}}
+@media(max-width:650px){main{padding:0 12px;margin:24px auto}.workspace,.projects-view{display:block}.conversation{border-left:0;border-top:1px solid var(--line)}.inspector{display:block}.spec{grid-template-columns:1fr}.project-nav{border:0;border-bottom:1px solid var(--line)}.appbar{flex-wrap:wrap}.form-grid{grid-template-columns:1fr;gap:6px}.form-grid>label{margin-top:8px}.form-grid>div,.form-grid>select,.form-grid>input{margin-bottom:4px}dialog{padding:18px}.toolbar label{width:100%}th{width:34%}td,th{padding:10px 6px}.session-meta{font-size:12px}}
+</style>
+</head>
+<body>
+<main>
+<div class="eyebrow">HGS ZERUS / ДИЗАЙН / 06.10.2026</div>
+<h1>Сначала папка.<br>Worktree — по необходимости.</h1>
+<p class="lead">Агент может работать с документами, конфигами или кодом в любой доступной папке. Git и отдельная рабочая копия дополняют этот сценарий, когда они нужны.</p>
+<div class="note"><p><strong>Реализовано в Zerus 0.32.0 и HGS 1.42.0.</strong> Уже есть логические проекты, папки на разных машинах, выбор аккаунта и запуск в произвольной папке. Уже определяется Git-контекст сессии.</p><p>Каталог worktree находится в отдельной вкладке Worktrees и в Projects. При запуске можно выбрать существующую копию или явно создать новую через New worktree… с новой веткой, исходным ref и путём на выбранной машине. Удаление остаётся будущим этапом. Это интерактивный макет: кнопки меняют примеры на странице, реальные файлы и агенты не затрагиваются.</p></div>
+<div class="facts">
+<article><strong>Обычная папка</strong><p>Выбрать папку и запустить агента. Репозиторий, ветка и Git на машине не требуются со стороны Zerus.</p></article>
+<article><strong>Основной checkout</strong><p>Работать в существующем репозитории как обычно. Создавать отдельный worktree для сессии необязательно.</p></article>
+<article><strong>Linked worktree</strong><p>Выбрать отдельную рабочую копию, когда хочется разнести изменения параллельных задач по папкам.</p></article>
+</div>
+<div class="toolbar demo-toolbar"><span class="demo-label">ПОПРОБУЙТЕ</span><button id="caseFolder" aria-pressed="true">Папка без Git</button><button id="caseRepo" aria-pressed="false">Основной checkout</button><button id="caseTree" aria-pressed="false">Linked worktree</button><span class="spacer"></span><label><input id="macOffline" type="checkbox"> mac недоступен</label></div>
+<div class="app">
+<div class="appbar"><button id="showSessions" aria-pressed="true">Sessions</button><button id="showProjects" aria-pressed="false">Projects</button><span class="spacer"></span><button id="refresh" aria-label="Обновить каталог">↻</button><button id="newSession" class="primary">+ New session</button></div>
+<div id="sessionView" class="workspace">
+<aside class="sessions"><div class="section-title">Sessions <small id="sessionCount"></small></div><label for="machineFilter" class="muted" style="font-size:12px">Машина</label><select id="machineFilter" style="width:100%;margin:6px 0"><option value="all">Все машины</option><option value="arch">arch</option><option value="mac">mac</option></select><div id="filterLabel" class="muted" style="font-size:12px"></div><button id="resetFilter" hidden style="font-size:12px;margin-top:8px">Все сессии</button><div id="rows"></div></aside>
+<section class="conversation"><div class="row"><h3 id="sessionTitle"></h3><span class="spacer"></span><span id="sessionState" class="state"></span></div><div id="sessionContext" class="context"></div><div class="tabs"><strong>Activity</strong><span id="nativeTab">Terminal</span></div><div id="connectionNote" class="status-note" hidden></div><div id="outsideFilter" class="muted" hidden style="font-size:12px">Открытая сессия вне фильтра. Выберите строку для перехода.</div><div class="bubble"><small>Agent</small><span id="activity"></span></div><div id="composer" class="composer">Message this agent…</div></section>
+<aside class="inspector"><div><small>Worktrees</small><h3>Рабочая папка</h3><span id="kind" class="badge"></span><code id="path" class="path"></code><p id="folderDescription" class="muted"></p><div class="row"><button id="copy">Копировать путь</button><button id="openFolder">Открыть папку</button></div><div id="overlap" class="alert" hidden></div><small id="sample"></small></div><div><section id="gitContext" hidden><h3>Git</h3><b id="branch"></b><p class="muted" id="repository"></p><h3>Рабочие копии репозитория</h3><div id="trees"></div></section><section id="plainContext"><h3>Сессии в этой папке</h3><div id="folderSessions"></div></section></div></aside>
+</div>
+<div id="projectView" class="projects-view" hidden><aside class="project-nav"><h3>Projects</h3><div id="projectButtons"></div></aside><section class="project-detail"><h3 id="projectTitle"></h3><p class="muted">Папки проекта на всех машинах</p><div id="projectFolders"></div></section></div>
+<div id="appStatus" class="footer"></div>
+</div>
+<div id="feedback" role="status" aria-live="polite"></div>
+<small>В примере Zerus открыт на arch. Переключайтесь между тремя сценариями, откройте Projects или создайте демонстрационную сессию через New session.</small>
+
+<div class="specification">
+<h2>Как связаны сущности</h2>
+<table><tbody>
+<tr><th>Проект Zerus</th><td>Название, цвет, список папок и сессий. Может объединять разные репозитории и папки без Git на Arch и Mac. Каждая сессия принадлежит одному проекту. Проект по умолчанию принимает внешние сессии; Inbox — пример такого проекта.</td></tr>
+<tr><th>Папка проекта</th><td>Стабильный ID, машина, путь и необязательное название. Одна физическая папка может входить в несколько проектов. Добавление папки не создаёт репозиторий.</td></tr>
+<tr><th>Сессия агента</th><td>Конкретный агент, аккаунт на выбранной машине и рабочая папка. Перенос сессии в другой проект меняет её организацию в Zerus, сохраняя процесс, папку и ветку.</td></tr>
+<tr><th>Git-контекст</th><td>Необязательные сведения о папке: репозиторий, ветка, основной checkout или linked worktree. У папки без Git этих полей нет; это обычное рабочее состояние.</td></tr>
+</tbody></table>
+<p class="muted">Проекты и их порядок сейчас сохраняются на устройстве с Zerus. Этот дизайн не добавляет синхронизацию организации проектов между Arch и Mac. Каталог аккаунтов остаётся аккаунто-центричным: для запуска используется профиль выбранного аккаунта на выбранной машине.</p>
+<h2>Запуск сессии</h2>
+<div class="spec">
+<article><h3>Обычный путь по умолчанию</h3><p><strong>Проект → машина → рабочая папка → агент и аккаунт → запуск.</strong> В поле папки — сохранённые папки проекта и результат Browse. Локально используется системный выбор папки, удалённо — браузер по SSH.</p><p>Папка без Git и основной checkout запускаются этим же способом. Zerus не делает <code>git init</code>, не создаёт ветку и не переносит файлы. Новая папка добавляется в проект после подтверждённого запуска, как сейчас; отмена и ошибка ничего не добавляют.</p></article>
+<article><h3>Необязательный выбор worktree</h3><p>Если папка относится к Git-репозиторию, рядом доступно <strong>«Другие worktree…»</strong>. Выбор существующей копии меняет рабочую папку будущей сессии и оставляет выбранные проект, машину и аккаунт.</p><p>Обычный Browse также позволяет сразу выбрать linked worktree. Ни выбор модели, ни отправка сообщений, ни отображение Activity не зависят от наличия Git.</p></article>
+<article><h3>Что действительно проверяем</h3><p>Машина доступна, папка существует и доступна для работы, агент установлен, аккаунт доступен на этой машине, имя сессии допустимо. Собственные требования и запросы доверия провайдера сохраняются.</p><p>Отсутствие Git или ошибка чтения Git-метаданных не блокируют запуск в доступной папке. Для выбора <em>соседнего worktree</em> нужна подтверждённая запись каталога. Запуск в недоступной или удалённой папке запрещён. Запись bare-репозитория в каталоге не предлагается как рабочая копия.</p></article>
+<article><h3>Что показывает New session</h3><p>Выбранная папка остаётся в самом поле выбора. Ниже — полный путь и принадлежность проекту. Для обычной папки не нужны пустая строка ветки, предупреждение или предложение инициализировать Git.</p><p>В макете можно выбрать папку с недоступными Git-данными: кнопка запуска остаётся доступной. Offline отключает запуск и объясняет причину.</p></article>
+</div>
+<h2>Где виден каталог</h2>
+<div class="spec">
+<article><h3>Sessions и Worktrees</h3><p>В строке сессии — папка или репозиторий, ветка при наличии, машина и компактная пометка linked worktree. Все основные сессии выровнены одинаково. Разворачивание подагентов остаётся отдельным действием.</p><p>В отдельной вкладке Worktrees всегда есть рабочая папка, полный путь и связанные сессии. При наличии Git добавляется список рабочих копий этого репозитория, в том числе пустых. Клик по копии фильтрует список, сохраняя открытую беседу. Явный выбор сессии открывает её; «Все сессии» снимает фильтры.</p></article>
+<article><h3>Projects</h3><p><strong>Выбранный логический проект → его папки с метками машин.</strong> В карточке Git-папки можно раскрыть соседние worktree её репозитория. Они не добавляются автоматически в проект: это обнаруженные места работы, доступные для выбора.</p><p>Карточка папки без Git показывает саму папку и связанные сессии. Machines отвечает за подключение и настройку компьютеров. Каталог проектов не превращается в дерево «машина → репозиторий → проект».</p></article>
+</div>
+<p>Если агенты используют одну рабочую копию, показываем число сессий с общими файлами. Для папки без Git показываем сессии в той же подтверждённой папке. Это информация о совместной работе, а не доказательство конфликта. Подагент без собственного cwd не становится отдельным worktree.</p>
+<h2>Этапы</h2>
+<table><thead><tr><th>Этап</th><th>Объём</th></tr></thead><tbody>
+<tr><th>Уже работает</th><td>Проекты и папки на разных машинах, Browse, выбор аккаунта, запуск в обычной папке и существующем checkout, определение текущего Git-контекста. Эти сценарии сохраняются.</td></tr>
+<tr><th>1. Каталог</th><td>Соседние worktree во вкладке Worktrees и в Projects, связанные сессии, фильтр и время снимка. Полноценное отображение папок без Git и недоступных метаданных.</td></tr>
+<tr><th>2. Выбор при запуске</th><td>«Другие worktree…» в New session. Проверка папки перед стартом. Именно этот этап вместе с первым иллюстрирует макет.</td></tr>
+<tr><th>3. Создание</th><td>Явное «New worktree…» только для Git-репозитория: исходный ref, новая ветка, путь на выбранной машине, затем запуск агента. Это дополнительное действие. Если запуск не удался, копия остаётся и предлагается повторить запуск.</td></tr>
+<tr><th>Отдельно позже</th><td>Ручная очистка, перенос изменений, merge и другие операции Git. Закрытие Zerus, остановка или архивирование сессии не удаляют папку, worktree или ветку. Удаление потребует явного подтверждения, повторной проверки изменений и всех зависимых сессий, включая паузу. Основной checkout, locked-копии, несохранённые изменения и живые процессы защищены. Удаление ветки — отдельный выбор.</td></tr>
+</tbody></table>
+<details style="margin-top:30px"><summary style="cursor:pointer;color:var(--accent)">Контракт данных и особые состояния</summary>
+<ol>
+<li><strong>Базовая сущность — папка на машине.</strong> Стабильный ID папки проекта хранится в организации Zerus. Обнаружение фактического cwd и Git-контекста выполняется на машине агента. Связь сессии с проектом не вычисляется из Git remote, имени ветки или basename.</li>
+<li><strong>Состояния Git различаются:</strong> <code>not_repo</code> означает обычную папку; отсутствие исполняемого Git, timeout, права и временная недоступность метаданных обозначаются отдельно. Это не ошибка запуска агента, если сама папка доступна. Нельзя выдавать неудачное чтение за успешный пустой каталог.</li>
+<li><strong>Репозиторий:</strong> машина + canonical git common directory. <strong>Worktree:</strong> репозиторий + canonical root. Независимые клоны и одинаковые пути на разных машинах не смешиваются. Cwd внутри подпапки определяется через Git-discovery; сравнения строковых префиксов недостаточно.</li>
+<li><strong>API:</strong> каталог для известной папки: <code>hgs worktrees --path /absolute/folder --json</code>; удалённая машина задаётся через <code>@host</code>. Данные из <code>git worktree list --porcelain -z</code>: root, common_dir, branch, head, main/linked/bare, detached, locked, prunable, availability, sampled_at. Связанные сессии сопоставляются в Zerus с каноническими путями из снимка той же машины. Аргументы передаются без shell-интерполяции; ограничиваются время и размер ответа. Частичный результат помечается явно.</li>
+<li><strong>Обновление по потребности:</strong> при открытии Worktrees/Projects, явном обновлении и выборе папки/репозитория; кэш и объединение запросов на один репозиторий. Нет fetch, обхода файлов, полного Git status или каталога worktree на каждом тике списка. Для папки без Git каталог worktree не запрашивается.</li>
+<li><strong>Offline:</strong> последнее наблюдение с машиной и временем, действия запуска отключены. Старый Working не показывается как текущий прогресс. Поздний ответ другой машины или сессии не меняет открытую карточку, выбранную папку и черновик.</li>
+<li><strong>Detached / bare / locked:</strong> короткий SHA вместо ветки; bare не имеет рабочей папки; locked показывает причину и защищён от удаления. Missing / prunable остаются видны как недоступные, без автоматического удаления из Git.</li>
+<li><strong>Symlink, submodule, Unicode, пробелы и одинаковые названия:</strong> определение через Git и canonical paths на нужной машине, полный путь для различения. После перемещения worktree путь обновляется при следующем снимке; принадлежность сессии проекту сохраняется.</li>
+</ol></details>
+<h2>Критерии готовности</h2>
+<ul>
+<li>Агент запускается в доступной папке без <code>.git</code>, в основном checkout и в существующем linked worktree на Arch и Mac, локально и по SSH. Zerus не навязывает создание ветки или установку Git.</li>
+<li>Отсутствие Git и ошибка его метаданных не ломают выбор папки, аккаунта, запуск, Activity, отправку сообщений или обычные действия с сессией; ограничения самого провайдера видны отдельно.</li>
+<li>Проект объединяет обычные папки и Git-копии с разных машин. Одна папка может входить в несколько проектов; у сессии остаётся ровно один проект. Выбор соседнего worktree не переносит существующую сессию.</li>
+<li>После Browse папка видна в поле. Выбор worktree сохраняет проект, машину и аккаунт. Отмена, ошибка запуска и чтение каталога не добавляют папку в проект и не меняют файлы.</li>
+<li>Фильтры папок/worktree сочетаются с машиной и поиском. Пустые копии доступны для обзора, недоступные — помечены. Обновления сохраняют открытый разговор, прокрутку, фокус и черновик.</li>
+</ul>
+</div>
+<footer>Папка — обязательный контекст работы агента. Git и worktree — необязательные возможности. Дизайн дополняет нынешнюю модель проектов Zerus.</footer>
+</main>
+<dialog id="launchDialog" aria-labelledby="launchTitle">
+<h2 id="launchTitle">New session</h2><p>Выберите, где будет работать агент.</p>
+<form id="launchForm"><div class="form-grid">
+<label for="launchProject">Project</label><select id="launchProject"></select>
+<label for="launchMachine">Machine</label><select id="launchMachine"><option value="arch">arch</option><option value="mac">mac</option></select>
+<label for="launchFolder">Working folder</label><div><div class="folder-choice"><select id="launchFolder"></select><button id="browse" type="button">Browse…</button></div><code id="launchPath" class="path"></code><small id="launchMembership"></small><button id="chooseTree" class="optional" type="button" hidden>Другие worktree…</button><div id="folderPicker" hidden></div><small id="launchKind"></small></div>
+<label for="launchAgent">Agent</label><select id="launchAgent"><option>Codex</option><option>Claude</option><option>Kimi</option><option>DeepSeek</option></select>
+<label for="launchAccount">Account</label><select id="launchAccount"></select>
+<label for="launchName">Session name</label><input id="launchName" value="review-docs" required autocomplete="off">
+</div><div id="launchStatus" class="form-status" role="status"></div>
+<div class="dialog-actions"><button id="cancelLaunch" type="button">Cancel</button><button id="startSession" class="primary" type="submit">Start session</button></div>
+</form></dialog>
+<dialog id="browseDialog" aria-labelledby="browseTitle"><h2 id="browseTitle">Выбрать папку</h2><p>Демонстрационные папки выбранной машины. В приложении здесь откроется системный диалог или браузер по SSH.</p><label for="browseChoice">Папка</label><select id="browseChoice"></select><code id="browsePath" class="path"></code><div class="dialog-actions"><button id="cancelBrowse">Cancel</button><button id="acceptBrowse" class="primary">Выбрать</button></div></dialog>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+const folders=[
+{id:'docs-arch',machine:'arch',name:'ExampleDocs',path:'/workspace/Documents/ExampleDocs',kind:'folder'},
+{id:'hgs-arch',machine:'arch',name:'hgs',path:'/workspace/zerus',kind:'repo',repo:'arch-hgs',branch:'main'},
+{id:'composer',machine:'arch',name:'zerus-composer',path:'/workspace/zerus-composer',kind:'worktree',repo:'arch-hgs',branch:'fix/composer'},
+{id:'accounts',machine:'arch',name:'zerus-accounts',path:'/workspace/zerus-accounts',kind:'worktree',repo:'arch-hgs',branch:'feat/accounts'},
+{id:'scratch',machine:'arch',name:'Заметки',path:'/workspace/Notes',kind:'folder'},
+{id:'unknown-git',machine:'arch',name:'Материалы',path:'/workspace/Materials',kind:'unknown'},
+{id:'docs-mac',machine:'mac',name:'ExampleDocs',path:'/Users/example/Documents/ExampleDocs',kind:'folder'},
+{id:'hgs-mac',machine:'mac',name:'hgs',path:'/Users/example/dev/hgs',kind:'repo',repo:'mac-hgs',branch:'main'}];
+const projects=[
+{id:'inbox',name:'Inbox',folders:['docs-arch','docs-mac'],isDefault:true},
+{id:'zerus',name:'Zerus',folders:['hgs-arch','hgs-mac']}];
+const sessions=[
+{id:'docs',name:'review-docs',project:'inbox',folder:'docs-arch',agent:'Claude',model:'claude-opus-5-5',working:false,text:'Правки к договору собраны в папке ExampleDocs. Подготовлю разбор документа и список спорных пунктов.'},
+{id:'release',name:'release',project:'zerus',folder:'hgs-arch',agent:'Codex',model:'gpt-6-astra',working:false,text:'Основная рабочая копия готова. Можно продолжать работу здесь или выбрать отдельную папку для следующей задачи.'},
+{id:'composer-session',name:'composer',project:'zerus',folder:'composer',agent:'Codex',model:'gpt-6-astra',working:true,text:'Проверяю перемещение каретки после перетаскивания вложения. Изменения находятся в отдельной рабочей копии.'},
+{id:'review-session',name:'review',project:'zerus',folder:'composer',agent:'Claude',model:'claude-opus-5-5',working:true,text:'Проверяю те же изменения в поле ввода. Мы с основной сессией работаем с общими файлами.'},
+{id:'mac-docs',name:'document-notes',project:'inbox',folder:'docs-mac',agent:'Kimi',model:'kimi-code/k3',working:false,text:'Собрал заметки по документам на Mac. Папка доступна для дальнейшей работы.'},
+{id:'mac-release',name:'mac-check',project:'zerus',folder:'hgs-mac',agent:'Codex',model:'gpt-6-astra',working:false,text:'Проверка приложения на Mac завершена.'}];
+let selected='docs',folderFilter='',projectView='inbox',view='sessions',sequence=1;
+const folder=id=>folders.find(f=>f.id===id),project=id=>projects.find(p=>p.id===id);
+const online=machine=>machine!=='mac'||!$('macOffline').checked;
+const kind=f=>({folder:'Папка без Git',repo:'Основной checkout',worktree:'Linked worktree',unknown:'Git-данные недоступны'})[f.kind];
+const members=f=>sessions.filter(s=>s.folder===f.id);
+function el(tag,text='',className=''){const n=document.createElement(tag);n.textContent=text;if(className)n.className=className;return n;}
+function badge(machine){return el('span',machine,'badge machine'+(machine==='mac'?' mac':''));}
+function status(s){return !online(folder(s.folder).machine)?['Offline','offline']:s.working?['Working','working']:['Ready','ready'];}
+function feedback(text){$('feedback').textContent=text;}
+function showView(next){view=next;$('sessionView').hidden=next!=='sessions';$('projectView').hidden=next!=='projects';$('showSessions').setAttribute('aria-pressed',next==='sessions');$('showProjects').setAttribute('aria-pressed',next==='projects');render();}
+function passes(s){const f=folder(s.folder),machine=$('machineFilter').value;return(!folderFilter||f.id===folderFilter)&&(machine==='all'||f.machine===machine);}
+function selectSession(id){selected=id;showView('sessions');feedback('');}
+function filterFolder(id){folderFilter=id;$('machineFilter').value=folder(id).machine;showView('sessions');feedback('Показаны сессии этой папки. Открытая беседа сохранена.');}
+function folderButton(f){const b=el('button','','tree');b.type='button';b.classList.toggle('active',folderFilter===f.id);b.setAttribute('aria-pressed',folderFilter===f.id);b.append(el('b',f.branch||f.name),el('small',kind(f)+' ('+members(f).length+' сессий)'),el('small',f.path));b.onclick=()=>filterFolder(f.id);return b;}
+function render(){
+ const s=sessions.find(s=>s.id===selected),f=folder(s.folder),p=project(s.project),connected=online(f.machine);
+ $('rows').replaceChildren();
+ for(const group of projects){
+  const rows=sessions.filter(s=>s.project===group.id&&passes(s));if(!rows.length)continue;
+  const title=el('div',group.name,'project-header '+group.id);title.append(el('span',String(rows.length)));$('rows').append(title);
+  for(const item of rows){
+   const itemFolder=folder(item.folder),button=el('button','','session'+(item.id===selected?' active':''));button.dataset.session=item.id;button.setAttribute('aria-pressed',item.id===selected);
+   const top=el('div','','session-top'),meta=el('div','','session-meta'),st=status(item);
+   top.append(el('strong',item.name),el('span',st[0],'state '+st[1]));meta.append(el('span',itemFolder.name+(itemFolder.branch?' / '+itemFolder.branch:'')),badge(itemFolder.machine));
+   button.append(top,meta,el('div',item.agent+' / '+item.model,'session-meta'));
+   if(itemFolder.kind==='worktree')button.append(el('span','Linked worktree','folder-kind'));
+   button.onclick=()=>selectSession(item.id);$('rows').append(button);
+  }
+ }
+ const shown=sessions.filter(passes).length;$('sessionCount').textContent=String(shown);if(!shown)$('rows').append(el('p','В этой папке ещё нет сессий.','empty'));
+ $('filterLabel').textContent=folderFilter?'Папка: '+folder(folderFilter).name:'';$('resetFilter').hidden=!folderFilter&&$('machineFilter').value==='all';
+ $('sessionTitle').textContent=p.name+' / '+s.name;const st=status(s);$('sessionState').textContent=st[0];$('sessionState').className='state '+st[1];
+ $('sessionContext').replaceChildren(el('span',s.agent,'badge'),badge(f.machine),el('span',f.name+(f.branch?' / '+f.branch:'')));$('activity').textContent=s.text;$('nativeTab').textContent=s.agent==='DeepSeek'?'Native UI':'Terminal';
+ $('connectionNote').hidden=connected;$('connectionNote').textContent=f.machine+' недоступен. Показано последнее состояние; действия вернутся после подключения.';
+ $('outsideFilter').hidden=passes(s);$('composer').textContent=connected?'Message this agent…':'Машина недоступна. Черновик сохраняется.';
+ $('kind').textContent=kind(f);$('path').textContent=f.path;
+ $('folderDescription').textContent=f.kind==='folder'?'Обычная рабочая папка. Агент работает с её файлами.':f.kind==='unknown'?'Папка доступна. Git-метаданные сейчас прочитать не удалось.':f.kind==='repo'?'Основная рабочая копия репозитория.':'Дополнительная рабочая копия репозитория.';
+ $('openFolder').disabled=f.machine!=='arch'||!connected;$('openFolder').title=f.machine!=='arch'?'Открытие файлового менеджера доступно только для локальной машины':'Открыть в системном файловом менеджере';
+ const count=members(f).length;$('overlap').hidden=count<2;$('overlap').textContent=(connected?'':'Последнее наблюдение: ')+count+' агента работают с общими файлами';
+ $('sample').textContent=connected?'Обновлено только что':'Последнее наблюдение 12 минут назад';
+ $('gitContext').hidden=!f.repo;$('plainContext').hidden=!!f.repo;$('trees').replaceChildren();$('folderSessions').replaceChildren();
+ if(f.repo){$('branch').textContent=f.branch;$('repository').textContent='hgs на '+f.machine;for(const tree of folders.filter(t=>t.repo===f.repo)){const b=folderButton(tree);b.classList.toggle('current',tree.id===f.id);$('trees').append(b);}}
+ else for(const member of members(f)){const b=el('button',member.name,'tree');b.onclick=()=>selectSession(member.id);$('folderSessions').append(b);}
+ for(const[id,which]of[['caseFolder','folder'],['caseRepo','repo'],['caseTree','worktree']])$(id).setAttribute('aria-pressed',f.kind===which);
+ $('appStatus').textContent=$('macOffline').checked?'mac: нет связи. Последний снимок сохранён; ожидается повторное подключение.':'2 машины подключены. '+sessions.length+' сессий.';
+ renderProjects();
+}
+function renderProjects(){
+ $('projectButtons').replaceChildren();
+ for(const p of projects){const b=el('button',p.name+(p.isDefault?' (Default)':''));b.classList.toggle('active',p.id===projectView);b.setAttribute('aria-pressed',p.id===projectView);b.onclick=()=>{projectView=p.id;renderProjects();};$('projectButtons').append(b);}
+ const p=project(projectView);$('projectTitle').textContent=p.name;$('projectFolders').replaceChildren();
+ for(const id of p.folders){const f=folder(id),card=el('article','','folder-card'),head=el('div','','row');
+  head.append(el('strong',f.name),badge(f.machine),el('span',online(f.machine)?kind(f):'Offline','badge'));card.append(head,el('code',f.path,'path'));
+  const action=el('button','Сессии в папке ('+members(f).length+')');action.onclick=()=>filterFolder(f.id);card.append(action);
+  if(f.repo){const details=el('details'),summary=el('summary','Рабочие копии репозитория');details.append(summary);for(const t of folders.filter(t=>t.repo===f.repo))details.append(folderButton(t));card.append(details);}
+  else card.append(el('small',f.kind==='folder'?'Рабочая папка для агента. Git не требуется.':'Папка доступна, Git-метаданные неизвестны.'));
+  $('projectFolders').append(card);
+ }
+}
+function option(value,label){const o=el('option',label);o.value=value;return o;}
+function selectLaunchFolder(id){const f=folder(id);if(![...$('launchFolder').options].some(o=>o.value===id))$('launchFolder').append(option(id,f.name+' — '+kind(f)));$('launchFolder').value=id;$('folderPicker').hidden=true;updateLaunch();}
+function loadLaunchFolders(){const p=project($('launchProject').value),machine=$('launchMachine').value;$('launchFolder').replaceChildren();for(const id of p.folders){const f=folder(id);if(f.machine===machine)$('launchFolder').append(option(id,f.name));}if(!$('launchFolder').options.length)$('launchFolder').append(option('','Выберите папку через Browse…'));$('folderPicker').hidden=true;updateLaunch();}
+function updateAccounts(){
+ const agent=$('launchAgent').value,machine=$('launchMachine').value,previous=$('launchAccount').value,available=!(agent==='Claude'&&machine==='mac');
+ $('launchAccount').replaceChildren(option(available?'personal-'+agent:'',available?(agent==='DeepSeek'?'DeepSeek API':'Личный аккаунт')+' ('+machine+')':'Нет аккаунта на '+machine));
+ if([...$('launchAccount').options].some(o=>o.value===previous))$('launchAccount').value=previous;
+ $('launchAccount').disabled=!available;updateLaunch();
+}
+function updateLaunch(){
+ const f=folder($('launchFolder').value),machine=$('launchMachine').value,p=project($('launchProject').value),connected=online(machine);
+ $('launchPath').textContent=f?f.path:'';
+ $('launchMembership').textContent=!f?'Можно выбрать любую доступную папку.':p.folders.includes(f.id)?'Папка проекта '+p.name:'Будет добавлена в '+p.name+' после успешного запуска.';
+ $('launchKind').textContent=f?f.kind==='folder'?'Обычная папка. Можно запускать агента.':f.kind==='unknown'?'Git-данные недоступны. Можно запустить агента в этой папке.':kind(f)+' / '+f.branch:'';
+ $('chooseTree').hidden=!f?.repo;$('chooseTree').disabled=!connected;$('browse').disabled=!connected;
+ const nameValid=/^[^\s\/.:]+$/u.test($('launchName').value);
+ const reason=!connected?machine+' недоступен. Подключите машину для запуска.':!$('launchAccount').value?'Добавьте аккаунт '+$('launchAgent').value+' на '+machine+' в Agent accounts.':!f?'Выберите рабочую папку.':!nameValid?'Укажите имя без пробелов и / . :':'';
+ $('launchStatus').textContent=reason;$('launchStatus').className='form-status'+(reason?' error':'');$('startSession').disabled=!!reason;
+}
+function openLaunch(){
+ const s=sessions.find(s=>s.id===selected),f=folder(s.folder);
+ $('launchProject').replaceChildren(...projects.map(p=>option(p.id,p.name)));$('launchProject').value=view==='projects'?projectView:s.project;
+ $('launchMachine').value=f.machine;$('launchAgent').value=s.agent;$('launchName').value='work-'+sequence;loadLaunchFolders();if(view==='sessions')selectLaunchFolder(f.id);updateAccounts();$('launchDialog').showModal();
+}
+$('newSession').onclick=openLaunch;$('cancelLaunch').onclick=()=>$('launchDialog').close();
+$('launchProject').onchange=loadLaunchFolders;$('launchMachine').onchange=()=>{loadLaunchFolders();updateAccounts();};
+$('launchFolder').onchange=()=>{$('folderPicker').hidden=true;updateLaunch();};$('launchAgent').onchange=updateAccounts;$('launchName').oninput=updateLaunch;
+$('chooseTree').onclick=()=>{const f=folder($('launchFolder').value);$('folderPicker').replaceChildren();for(const t of folders.filter(t=>t.repo===f.repo)){const b=el('button',t.name+' / '+t.branch,'tree');b.type='button';b.onclick=()=>selectLaunchFolder(t.id);$('folderPicker').append(b);}$('folderPicker').hidden=!$('folderPicker').hidden;};
+$('browse').onclick=()=>{const machine=$('launchMachine').value;$('browseChoice').replaceChildren(...folders.filter(f=>f.machine===machine).map(f=>option(f.id,f.name+' — '+kind(f))));const current=$('launchFolder').value;if(current)$('browseChoice').value=current;$('browsePath').textContent=folder($('browseChoice').value).path;$('browseDialog').showModal();};
+$('browseChoice').onchange=()=>$('browsePath').textContent=folder($('browseChoice').value).path;
+$('cancelBrowse').onclick=()=>$('browseDialog').close();$('acceptBrowse').onclick=()=>{selectLaunchFolder($('browseChoice').value);$('browseDialog').close();};
+$('launchForm').onsubmit=e=>{
+ e.preventDefault();updateLaunch();if($('startSession').disabled)return;
+ const p=project($('launchProject').value),f=folder($('launchFolder').value),agent=$('launchAgent').value;
+ if(!p.folders.includes(f.id))p.folders.push(f.id);
+ const id='demo-'+sequence++;sessions.push({id,name:$('launchName').value,project:p.id,folder:f.id,agent,model:{Codex:'gpt-6-astra',Claude:'claude-opus-5-5',Kimi:'kimi-code/k3',DeepSeek:'deepseek'}[agent],working:false,text:'Готов к работе с файлами в выбранной папке.'});
+ selected=id;folderFilter='';$('machineFilter').value='all';$('launchDialog').close();showView('sessions');feedback('Макет: сессия добавлена в '+p.name+'. Реальный агент не запускался.');
+};
+$('showSessions').onclick=()=>showView('sessions');$('showProjects').onclick=()=>showView('projects');
+$('machineFilter').onchange=()=>{folderFilter='';render();};$('resetFilter').onclick=()=>{folderFilter='';$('machineFilter').value='all';render();feedback('Показаны все сессии.');};
+$('macOffline').onchange=()=>{render();if($('launchDialog').open)updateLaunch();};
+for(const[button,id]of[['caseFolder','docs'],['caseRepo','release'],['caseTree','composer-session']])$(button).onclick=()=>{folderFilter='';$('machineFilter').value='all';selectSession(id);};
+$('refresh').onclick=()=>{render();feedback($('macOffline').checked?'Макет: arch обновлён. mac недоступен, сохранено последнее наблюдение.':'Макет: каталог обновлён; выбор сессии сохранён.');};
+$('copy').onclick=async()=>{const value=folder(sessions.find(s=>s.id===selected).folder).path;try{await navigator.clipboard.writeText(value);feedback('Путь скопирован: '+value);}catch{feedback('Путь: '+value);}};
+$('openFolder').onclick=()=>feedback('Макет: системный файловый менеджер откроет '+folder(sessions.find(s=>s.id===selected).folder).path);
+render();
+</script>
+</body>
+</html>

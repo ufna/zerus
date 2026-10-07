@@ -1,0 +1,20 @@
+▐▛███▛█   Claude Code v2.1.289
+▝▜██████▀  Sonnet 4.6 · API Usage Billing
+ ▝▝   ▝▝   ~/work
+
+
+❯ Ask questions with the tool now.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Release  ☒ Checks  ☐ Notes  ✔ Submit  →
+
+What else should we know?
+
+  1. Nothing
+     No extra notes
+  2. Later
+     Discuss later
+❯ 3. Привет from Zerus
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · ctrl+g to edit in VS Code · Esc to cancel

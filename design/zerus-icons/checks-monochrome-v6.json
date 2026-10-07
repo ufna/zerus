@@ -1,0 +1,19 @@
+{
+  "preview": "monochrome-v6.html",
+  "passed": true,
+  "checks": [
+    "Two vector options and ten actual-size samples",
+    "Count 0, 12, 99+; hide/show; stale marker",
+    "Option switching updates window/tray previews and download",
+    "Zoom opens and Escape closes",
+    "Downloaded SVG matches source",
+    "Dark/light themes",
+    "No horizontal overflow at 390 and 320 px",
+    "No JavaScript errors or external requests"
+  ],
+  "screenshots": [
+    "/tmp/hgs-monochrome-v6-desktop.png",
+    "/tmp/hgs-monochrome-v6-light.png",
+    "/tmp/hgs-monochrome-v6-mobile.png"
+  ]
+}

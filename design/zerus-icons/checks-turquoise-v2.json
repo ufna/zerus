@@ -1,0 +1,13 @@
+{
+  "variants": 2,
+  "images": "loaded",
+  "largePreview": "passed",
+  "sculptedAndFlatModes": "passed",
+  "trayModes": "passed",
+  "selectionAndSettings": "persisted",
+  "download": "hgs-zerus-02-swarm-turquoise-v2-1024.png",
+  "copyFallback": "passed",
+  "prompts": "passed",
+  "mobile": "390px without overflow",
+  "consoleErrors": []
+}

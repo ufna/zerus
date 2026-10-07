@@ -1,0 +1,113 @@
+#include "AttentionTracker.h"
+
+#include <QJsonDocument>
+#include <QUuid>
+
+namespace {
+QString identity(const SessionInfo &s)
+{
+    return !s.runId.isEmpty() ? "run:" + s.runId : "name:" + s.name + ':' + QString::number(s.created);
+}
+QString concise(QString value, int limit)
+{
+    value = value.simplified();
+    for (qsizetype i = 0; i < value.size(); ++i)
+        if (value[i].category() == QChar::Other_Control) value[i] = ' ';
+    return value.size() > limit ? value.left(limit - 1) + QChar(0x2026) : value;
+}
+}
+
+AttentionChanges AttentionTracker::observe(const QString &host, const BoxState &box, qint64 now)
+{
+    AttentionChanges changes;
+    if (!box.ok) return changes;
+    const auto previous = m_hosts.value(host).toObject();
+    QJsonObject current;
+    const auto notice = [&](const SessionInfo &s, const QString &key, const QString &phase,
+                            const QString &request, const QString &reason, bool reply = false) {
+        const auto old = previous.value(key).toObject();
+        const auto retry = old.value("retry_at").toInteger();
+        if (old.value("phase").toString() == phase && old.value("request").toString() == request
+            && (!retry || retry > now)) {
+            current[key] = old;
+            return;
+        }
+        QJsonObject target{{"host", host}, {"name", s.name}, {"run", s.runId},
+            {"created", s.created}, {"notice", QUuid::createUuid().toString(QUuid::WithoutBraces)}};
+        if (reply) { target["reply"] = s.replyId; target["conversation"] = s.conversationId; target["agent"] = s.cmd; }
+        const QString token = QString::fromLatin1(QJsonDocument(target).toJson(QJsonDocument::Compact)
+            .toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals));
+        current[key] = QJsonObject{{"phase", phase}, {"request", request}, {"token", token}};
+        const QString body = concise(s.name, 120) + " / " + concise(host.isEmpty() ? box.host : host, 40)
+            + '\n' + reason;
+        changes.raised.append({token, reply ? QObject::tr("hgs zerus — New reply") : QObject::tr("hgs zerus — Needs attention"), body});
+    };
+    for (const auto &s : box.sessions) {
+        if (s.needsAction()) {
+            const QString reason = s.phase == "approval" ? QObject::tr("Approval needed")
+                : s.phase == "input" ? QObject::tr("Input needed")
+                : !s.recovery.value("reason").toString().isEmpty() ? concise(s.recovery.value("reason").toString(), 240)
+                : !s.activityDetail.isEmpty() ? concise(s.activityDetail, 240) : QObject::tr("Agent needs attention");
+            notice(s, identity(s), s.phase, s.attentionId, reason);
+        }
+        // Read state comes from FleetState, not the raw CLI snapshot. Replies
+        // belong to conversations so a rename/resume does not repeat a banner.
+        if (s.state != "archived" && s.unreadReply && !s.replyId.isEmpty() && !s.conversationId.isEmpty()) {
+            const auto key = "reply:" + s.cmd + ':' + s.conversationId;
+            if (!s.needsAction()) notice(s, key, "reply", s.replyId, QObject::tr("Agent has a new reply"), true);
+            else if (previous.value(key).toObject().value("request") == s.replyId) current[key] = previous.value(key);
+        }
+        if (s.state != "running" || s.processState == "exited" || s.activity == "unknown"
+            || (s.conversationState == "ended" && s.activity != "idle") || s.subagentSource == "hook_profiles") continue;
+        for (auto it = s.subagents.begin(); it != s.subagents.end(); ++it) {
+            const auto child = it.value().toObject();
+            const auto phase = child.value("display_state").toString(child.value("state").toString());
+            if (phase != "approval" && phase != "input" && phase != "attention") continue;
+            const auto request = child.value("attention_id").toString(child.value("question_id").toString());
+            const auto label = child.value("label").toString(child.value("name").toString(it.key()));
+            notice(s, "child:" + identity(s) + ':' + it.key(), phase, request,
+                QObject::tr("Subagent %1: %2").arg(concise(label, 100), phase == "approval" ? QObject::tr("Approval needed") : QObject::tr("Input needed")));
+        }
+    }
+    for (auto it = previous.begin(); it != previous.end(); ++it) {
+        const QString token = it.value().toObject().value("token").toString();
+        if (!token.isEmpty() && current.value(it.key()).toObject().value("token").toString() != token)
+            changes.cleared << token;
+    }
+    m_hosts[host] = current;
+    return changes;
+}
+
+void AttentionTracker::deliveryFailed(const QString &token, qint64 now)
+{
+    for (auto host = m_hosts.begin(); host != m_hosts.end(); ++host) {
+        auto entries = host.value().toObject();
+        for (auto entry = entries.begin(); entry != entries.end(); ++entry) {
+            auto value = entry.value().toObject();
+            if (value.value("token") != token) continue;
+            value["retry_at"] = now + 60;
+            entries[entry.key()] = value;
+            m_hosts[host.key()] = entries;
+            return;
+        }
+    }
+}
+
+QJsonObject AttentionTracker::target(const QString &token)
+{
+    if (token.size() > 8192) return {};
+    const auto result = QJsonDocument::fromJson(QByteArray::fromBase64(token.toLatin1(), QByteArray::Base64UrlEncoding)).object();
+    if (!result.value("host").isString() || result.value("name").toString().isEmpty()
+        || result.value("notice").toString().isEmpty()) return {};
+    return result;
+}
+
+bool AttentionTracker::matches(const QJsonObject &target, const SessionInfo &s)
+{
+    if (target.isEmpty() || s.state == "archived") return false;
+    if (!target.value("reply").toString().isEmpty())
+        return target.value("conversation").toString() == s.conversationId && target.value("agent").toString() == s.cmd;
+    const auto run = target.value("run").toString();
+    return run.isEmpty() ? target.value("name").toString() == s.name && target.value("created").toInteger() == s.created
+                         : run == s.runId;
+}

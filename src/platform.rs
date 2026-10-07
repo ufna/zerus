@@ -1,0 +1,611 @@
+//! Terminal, clipboard and graphical-session integration. External programs receive argv,
+//! never interpolated shell commands (the SSH peer and tmux pane are explicit exceptions).
+use crate::{
+    cli::{Error, Result},
+    config::Config,
+};
+use std::{
+    env, fs,
+    io::{self, IsTerminal, Write},
+    os::unix::{
+        fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+        process::ExitStatusExt,
+    },
+    path::{Path, PathBuf},
+    process::{Command, ExitStatus, Stdio},
+    sync::atomic::{AtomicI32, Ordering},
+    time::Instant,
+};
+
+pub fn prepare_environment() {
+    let home = env::var("HOME").unwrap_or_default();
+    env::set_var(
+        "PATH",
+        format!(
+            "{home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:{}:{home}/.npm-global/bin:{home}/.kimi-code/bin",
+            env::var("PATH").unwrap_or_default()
+        ),
+    );
+    let locale = ["LC_ALL", "LC_CTYPE", "LANG"]
+        .into_iter()
+        .filter_map(|key| env::var(key).ok())
+        .find(|v| !v.is_empty())
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    if !locale.contains("UTF-8") && !locale.contains("UTF8") {
+        let locale = env::var("HGS_LANG").unwrap_or_else(|_| "en_US.UTF-8".into());
+        env::set_var("LANG", &locale);
+        env::set_var("LC_CTYPE", locale);
+        env::remove_var("LC_ALL");
+    }
+}
+pub fn code(status: ExitStatus) -> i32 {
+    status
+        .code()
+        .unwrap_or_else(|| 128 + status.signal().unwrap_or(1))
+}
+pub fn capture(program: &str, args: &[&str]) -> Option<String> {
+    let out = Command::new(program)
+        .args(args)
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if out.status.success() {
+        Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        None
+    }
+}
+pub fn silent(program: &str, args: &[&str]) -> bool {
+    Command::new(program)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+pub fn executable(path: impl AsRef<Path>) -> bool {
+    fs::metadata(path)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+pub fn available(program: &str) -> bool {
+    if program.contains('/') {
+        return executable(program);
+    }
+    env::split_paths(&env::var_os("PATH").unwrap_or_default())
+        .any(|dir| executable(dir.join(program)))
+}
+pub fn is_macos() -> bool {
+    capture("uname", &[]).is_some_and(|name| name.trim() == "Darwin")
+}
+pub fn quote(word: &str) -> String {
+    if !word.is_empty()
+        && word
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"_./:=@%+,~-".contains(&c))
+    {
+        word.into()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    }
+}
+pub fn join<S: AsRef<str>>(args: &[S]) -> String {
+    args.iter()
+        .map(|s| quote(s.as_ref()))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn runtime_directory() -> PathBuf {
+    env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })))
+}
+pub fn wayland_env() -> Option<String> {
+    if let Ok(value) = env::var("WAYLAND_DISPLAY") {
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+    let mut entries: Vec<_> = fs::read_dir(runtime_directory())
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .collect();
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with("wayland-")
+            && !name.ends_with(".lock")
+            && entry.file_type().is_ok_and(|t| t.is_socket())
+        {
+            env::set_var("WAYLAND_DISPLAY", &name);
+            return Some(name);
+        }
+    }
+    None
+}
+pub fn gui_env() -> Vec<String> {
+    if is_macos() {
+        return Vec::new();
+    }
+    let mut result = Vec::new();
+    let mut system_env: Option<String> = None;
+    for key in ["WAYLAND_DISPLAY", "DISPLAY", "XAUTHORITY"] {
+        if env::var(key).is_ok_and(|v| !v.is_empty()) {
+            continue;
+        }
+        let sysenv = system_env.get_or_insert_with(|| {
+            capture("systemctl", &["--user", "show-environment"]).unwrap_or_default()
+        });
+        let mut value = sysenv
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{key}=")))
+            .unwrap_or("")
+            .to_owned();
+        if value.starts_with('"') && value.ends_with('"') && value.len() >= 2 {
+            value = value[1..value.len() - 1].into();
+        }
+        if value.is_empty() && key == "WAYLAND_DISPLAY" {
+            value = wayland_env().unwrap_or_default();
+        }
+        if value.is_empty() || (key == "XAUTHORITY" && fs::File::open(&value).is_err()) {
+            continue;
+        }
+        result.push(format!("{key}={value}"));
+    }
+    result
+}
+
+fn konsole_args(method: &str, args: &[&str]) -> Option<Vec<String>> {
+    let service = env::var("KONSOLE_DBUS_SERVICE")
+        .ok()
+        .filter(|s| !s.is_empty())?;
+    let session = env::var("KONSOLE_DBUS_SESSION")
+        .ok()
+        .filter(|s| !s.is_empty())?;
+    if !available("busctl") {
+        return None;
+    }
+    let mut result = vec![
+        "--user".into(),
+        "call".into(),
+        service,
+        session,
+        "org.kde.konsole.Session".into(),
+        method.into(),
+    ];
+    result.extend(args.iter().map(|s| s.to_string()));
+    Some(result)
+}
+fn konsole(method: &str, args: &[&str]) {
+    if let Some(args) = konsole_args(method, args) {
+        let _ = Command::new("busctl")
+            .args(args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+fn konsole_get(mode: &str) -> String {
+    let Some(args) = konsole_args("tabTitleFormat", &["i", mode]) else {
+        return String::new();
+    };
+    Command::new("busctl")
+        .args(args)
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .and_then(|out| {
+            let text = String::from_utf8_lossy(&out.stdout);
+            text.trim()
+                .strip_prefix("s \"")
+                .and_then(|s| s.strip_suffix('"'))
+                .map(String::from)
+        })
+        .unwrap_or_default()
+}
+/// POSIX cksum, retained so existing host colours do not change on migration.
+fn cksum(bytes: &[u8]) -> u32 {
+    let feed = |mut crc: u32, byte: u8| {
+        crc ^= u32::from(byte) << 24;
+        for _ in 0..8 {
+            crc = if crc & 0x8000_0000 != 0 {
+                (crc << 1) ^ 0x04c1_1db7
+            } else {
+                crc << 1
+            };
+        }
+        crc
+    };
+    let mut crc = bytes.iter().fold(0, |crc, &byte| feed(crc, byte));
+    let mut len = bytes.len();
+    while len != 0 {
+        crc = feed(crc, len as u8);
+        len >>= 8;
+    }
+    !crc
+}
+pub fn tab_color(config: &Config, host: &str) -> String {
+    for pair in config.tab_colors.split_whitespace() {
+        if let Some((key, value)) = pair.split_once('=') {
+            if key == host {
+                return value.into();
+            }
+        }
+    }
+    if host == "local" {
+        return String::new();
+    }
+    [
+        "#f5a623", "#7aa2f7", "#00c9a7", "#e06c9f", "#bb9af7", "#9ece6a",
+    ][(cksum(host.as_bytes()) % 6) as usize]
+        .into()
+}
+
+/// Title output goes to the attached client terminals, never to an agent's pane
+/// input. SSH relays the same OSC sequence to clients on another machine.
+pub fn refresh_session_title(session: &str) -> Result<()> {
+    if session.chars().any(char::is_control) {
+        return Err(Error::new(1, "terminal title contains control characters"));
+    }
+    let target = format!("={session}");
+    if !silent("tmux", &["has-session", "-t", &target]) {
+        return Ok(()); // Saved sessions have no attached terminals.
+    }
+    let option_target = format!("={session}:");
+    for (key, value) in [("set-titles-string", "#S"), ("set-titles", "on")] {
+        if !silent("tmux", &["set-option", "-t", &option_target, key, value]) {
+            return Err(Error::new(1, format!("cannot update tmux {key}")));
+        }
+    }
+    let terminals = capture(
+        "tmux",
+        &["list-clients", "-t", &target, "-F", "#{client_tty}"],
+    )
+    .ok_or_else(|| Error::new(1, "cannot list attached terminals"))?;
+    // Konsole's previous hgs attachment may use a literal tab format. %w makes
+    // it follow the window title; OSC 0 is also understood by macOS terminals.
+    let title = format!("\x1b]30;%w\x07\x1b]0;{session}\x07");
+    let mut seen = std::collections::BTreeSet::new();
+    for path in terminals.lines().filter(|path| !path.is_empty()) {
+        if !seen.insert(path) {
+            continue;
+        }
+        if !path.starts_with("/dev/") || path.chars().any(char::is_control) {
+            return Err(Error::new(1, "tmux returned an invalid client terminal"));
+        }
+        let mut terminal = fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK | libc::O_NOFOLLOW)
+            .open(path)?;
+        let metadata = terminal.metadata()?;
+        if !metadata.file_type().is_char_device() || metadata.uid() != unsafe { libc::getuid() } {
+            return Err(Error::new(1, "client terminal is not owned by this user"));
+        }
+        terminal.write_all(title.as_bytes())?;
+    }
+    Ok(())
+}
+
+pub struct TabGuard {
+    active: bool,
+    konsole: bool,
+    formats: [String; 2],
+}
+impl TabGuard {
+    pub fn begin(config: &Config, title: &str, color: &str) -> Self {
+        let mut guard = Self {
+            active: config.tab && io::stdout().is_terminal(),
+            konsole: false,
+            formats: Default::default(),
+        };
+        if !guard.active {
+            return guard;
+        }
+        guard.konsole = konsole_args("tabTitleFormat", &[]).is_some();
+        if guard.konsole {
+            guard.formats = [konsole_get("0"), konsole_get("1")];
+            konsole("setTabTitleFormat", &["is", "0", title]);
+            konsole("setTabTitleFormat", &["is", "1", title]);
+            if !color.is_empty() {
+                konsole("setTabColor", &["s", color]);
+            }
+        }
+        print!("\x1b]30;{title}\x07\x1b]0;{title}\x07");
+        let _ = io::stdout().flush();
+        guard
+    }
+}
+impl Drop for TabGuard {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        if self.konsole {
+            konsole("setTabColor", &["s", ""]);
+            for (i, value) in self.formats.iter().enumerate() {
+                if !value.is_empty() {
+                    konsole("setTabTitleFormat", &["is", &i.to_string(), value]);
+                }
+            }
+        } else {
+            print!("\x1b]30;%d : %n\x07\x1b]0;\x07");
+            let _ = io::stdout().flush();
+        }
+    }
+}
+pub fn restore_terminal() {
+    if io::stdout().is_terminal() {
+        print!("\x1b[r\x1b(B\x1b[m\x1b[?1l\x1b>\x1b[0 q\x1b[?25h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1005l\x1b[?2004l\x1b[?1004l\x1b[>4m\x1b[?69l\x1b[?2031l\x1b[?1049l");
+        let _ = io::stdout().flush();
+    }
+}
+pub fn client_done(rc: i32) -> bool {
+    if rc != 0 && !silent("tmux", &["list-sessions"]) {
+        restore_terminal();
+        eprintln!("hgs: the tmux server died; terminal restored, sessions on this box are gone");
+        true
+    } else {
+        false
+    }
+}
+static CHILD_PID: AtomicI32 = AtomicI32::new(0);
+static INTERRUPTED: AtomicI32 = AtomicI32::new(0);
+extern "C" fn forward_signal(signal: libc::c_int) {
+    INTERRUPTED.store(signal, Ordering::Relaxed);
+    let pid = CHILD_PID.load(Ordering::Relaxed);
+    if pid > 0 {
+        unsafe {
+            libc::kill(pid, signal);
+        }
+    }
+}
+/// Keep terminal restoration in normal Rust control flow even on SIGINT/TERM/HUP.
+pub fn wait_interactive(command: &mut Command) -> Result<i32> {
+    struct Handlers(Vec<(i32, libc::sighandler_t)>);
+    impl Drop for Handlers {
+        fn drop(&mut self) {
+            CHILD_PID.store(0, Ordering::Relaxed);
+            for &(sig, old) in &self.0 {
+                unsafe {
+                    libc::signal(sig, old);
+                }
+            }
+        }
+    }
+    INTERRUPTED.store(0, Ordering::Relaxed);
+    let _handlers = Handlers(
+        [libc::SIGINT, libc::SIGTERM, libc::SIGHUP]
+            .into_iter()
+            .map(|sig| {
+                (sig, unsafe {
+                    libc::signal(sig, forward_signal as *const () as libc::sighandler_t)
+                })
+            })
+            .collect(),
+    );
+    let mut child = command.spawn().map_err(|e| {
+        Error::new(
+            127,
+            format!("{}: {e}", command.get_program().to_string_lossy()),
+        )
+    })?;
+    CHILD_PID.store(child.id() as i32, Ordering::Relaxed);
+    let signal = INTERRUPTED.load(Ordering::Relaxed);
+    if signal != 0 {
+        unsafe {
+            libc::kill(child.id() as i32, signal);
+        }
+    }
+    let rc = code(child.wait()?);
+    let signal = INTERRUPTED.load(Ordering::Relaxed);
+    Ok(if signal == 0 { rc } else { 128 + signal })
+}
+
+fn applescript_string(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('"', "\\\"")
+}
+pub fn clip() -> Result<i32> {
+    if is_macos() {
+        if !available("osascript") {
+            eprintln!("hgs: clip: no osascript");
+            return Ok(2);
+        }
+        if capture("osascript", &["-e", "clipboard info for «class PNGf»"])
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+        {
+            return Ok(1);
+        }
+        let temporary = tempfile::NamedTempFile::new()?;
+        let path = applescript_string(&temporary.path().to_string_lossy());
+        if silent(
+            "osascript",
+            &[
+                "-e",
+                &format!("set f to open for access POSIX file \"{path}\" with write permission"),
+                "-e",
+                "set eof f to 0",
+                "-e",
+                "write (the clipboard as «class PNGf») to f",
+                "-e",
+                "close access f",
+            ],
+        ) {
+            io::copy(&mut fs::File::open(temporary.path())?, &mut io::stdout())?;
+            return Ok(0);
+        }
+        eprintln!("hgs: clip: osascript could not read the clipboard as PNG");
+        return Ok(2);
+    }
+    if !available("wl-paste") {
+        eprintln!("hgs: clip: no wl-paste (wl-clipboard)");
+        return Ok(2);
+    }
+    if wayland_env().is_none() {
+        eprintln!(
+            "hgs: clip: no Wayland socket in {}",
+            runtime_directory().display()
+        );
+        return Ok(2);
+    }
+    if !capture("wl-paste", &["-l"]).is_some_and(|types| types.lines().any(|t| t == "image/png")) {
+        return Ok(1);
+    }
+    Ok(code(
+        Command::new("wl-paste")
+            .args(["-t", "image/png"])
+            .status()?,
+    ))
+}
+fn clip_set(path: &Path) -> bool {
+    if is_macos() {
+        silent(
+            "osascript",
+            &[
+                "-e",
+                &format!(
+                    "set the clipboard to (read (POSIX file \"{}\") as «class PNGf»)",
+                    applescript_string(&path.to_string_lossy())
+                ),
+            ],
+        )
+    } else {
+        if !available("wl-copy") || wayland_env().is_none() {
+            return false;
+        }
+        let Ok(file) = fs::File::open(path) else {
+            return false;
+        };
+        Command::new("wl-copy")
+            .args(["-t", "image/png"])
+            .stdin(file)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+}
+fn paste_log(config: &Config, message: &str) {
+    let path = PathBuf::from(
+        env::var("XDG_STATE_HOME").unwrap_or_else(|_| format!("{}/.local/state", config.home)),
+    )
+    .join("hgs");
+    if fs::create_dir_all(&path).is_err() {
+        return;
+    }
+    if let Ok(mut file) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path.join("paste.log"))
+    {
+        let stamp = capture("date", &["+%Y-%m-%d %H:%M:%S"]).unwrap_or_default();
+        let _ = writeln!(file, "{} {message}", stamp.trim());
+    }
+}
+pub fn paste(config: &Config, session: &str, pane: &str, client: &str) -> Result<i32> {
+    let message = |text: String| {
+        if !client.is_empty() {
+            silent(
+                "tmux",
+                &[
+                    "display-message",
+                    "-c",
+                    client,
+                    "-d",
+                    "4000",
+                    &format!("hgs: {text}"),
+                ],
+            );
+        }
+    };
+    let environment = capture(
+        "tmux",
+        &[
+            "show-environment",
+            "-t",
+            &format!("={session}"),
+            "HGS_CLIENT",
+        ],
+    )
+    .unwrap_or_default();
+    let who = environment
+        .trim_end_matches('\n')
+        .strip_prefix("HGS_CLIENT=")
+        .unwrap_or(environment.trim_end_matches('\n'));
+    if matches!(who, "" | "-HGS_CLIENT" | "local") {
+        paste_log(
+            config,
+            &format!(
+                "sess={session} who={} local-passthrough",
+                if who.is_empty() { "unset" } else { who }
+            ),
+        );
+    } else {
+        message(format!("pulling clipboard from {who}"));
+        match tempfile::NamedTempFile::new() {
+            Ok(temporary) => {
+                let start = Instant::now();
+                let rc = temporary
+                    .reopen()
+                    .ok()
+                    .and_then(|file| {
+                        Command::new("ssh")
+                            .args(crate::machines::ssh_options(config, who))
+                            .args([
+                                "-o",
+                                "BatchMode=yes",
+                                "-o",
+                                "ConnectTimeout=3",
+                                who,
+                                "~/.local/bin/hgs clip",
+                            ])
+                            .stdout(file)
+                            .stderr(Stdio::null())
+                            .status()
+                            .ok()
+                    })
+                    .map(code)
+                    .unwrap_or(255);
+                let prefix = format!(
+                    "sess={session} who={who} rc={rc} ssh={}s",
+                    start.elapsed().as_secs()
+                );
+                match rc {
+                    0 if clip_set(temporary.path()) => paste_log(
+                        config,
+                        &format!(
+                            "{prefix} bytes={} set=ok",
+                            temporary.as_file().metadata().map(|m| m.len()).unwrap_or(0)
+                        ),
+                    ),
+                    0 => {
+                        message("cannot set clipboard on this box".into());
+                        paste_log(config, &format!("{prefix} set=FAIL"));
+                    }
+                    1 => {
+                        message(format!("no image in {who} clipboard"));
+                        paste_log(config, &format!("{prefix} no-image-on-{who}"));
+                    }
+                    2 => {
+                        message(format!("{who} has no clipboard tool (hgs clip rc 2)"));
+                        paste_log(config, &format!("{prefix} no-tool-on-{who}"));
+                    }
+                    _ => {
+                        message(format!("{who} unreachable, pasting local clipboard"));
+                        paste_log(config, &format!("{prefix} ssh-failed"));
+                    }
+                }
+            }
+            Err(_) => paste_log(config, &format!("sess={session} who={who} mktemp-failed")),
+        }
+    }
+    // A failed clipboard transfer must never swallow the agent's paste key.
+    let _ = Command::new("tmux")
+        .args(["send-keys", "-t", pane, "C-v"])
+        .status();
+    Ok(0)
+}

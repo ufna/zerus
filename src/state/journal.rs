@@ -1,0 +1,936 @@
+use super::*;
+use rusqlite::{params, Connection, OptionalExtension};
+use std::fs::OpenOptions;
+use std::os::unix::fs::OpenOptionsExt;
+use std::sync::OnceLock;
+
+pub(super) fn clipped(value: &Value, limit: usize) -> String {
+    let Some(value) = value.as_str() else {
+        return String::new();
+    };
+    static ANSI: OnceLock<regex::Regex> = OnceLock::new();
+    let stripped = ANSI
+        .get_or_init(|| regex::Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]").unwrap())
+        .replace_all(value, "");
+    let mut characters = stripped
+        .chars()
+        .filter(|c| *c == '\n' || *c == '\t' || *c >= ' ');
+    let mut result: String = characters.by_ref().take(limit).collect();
+    if characters.next().is_some() {
+        result.push('…');
+    }
+    result
+}
+
+fn detail(event: &Value) -> String {
+    if event["hook_event_name"] == "StopFailure" {
+        for key in [
+            "error_message",
+            "error_details",
+            "last_assistant_message",
+            "error",
+            "error_type",
+        ] {
+            if !string(event, key).is_empty() {
+                return clipped(&event[key], 1200);
+            }
+        }
+    }
+    let tool = &event["tool_input"];
+    [
+        &event["prompt"],
+        &event["error_message"],
+        &event["error"],
+        &tool["command"],
+        &tool["file_path"],
+        &tool["path"],
+        &tool["description"],
+        &event["last_assistant_message"],
+        &event["response"],
+        &event["body"],
+        &event["description"],
+    ]
+    .into_iter()
+    .find(|value| value.as_str().map(|s| !s.is_empty()).unwrap_or(false))
+    .map(|value| clipped(value, 1200))
+    .unwrap_or_default()
+}
+
+pub(super) fn event_db() -> Result<Connection> {
+    private_dir(&root())?;
+    let path = root().join("events.sqlite3");
+    OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|e| e.to_string())?;
+    let db = Connection::open(path).map_err(|e| e.to_string())?;
+    db.busy_timeout(std::time::Duration::from_secs(3))
+        .map_err(|e| e.to_string())?;
+    db.execute_batch("CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY, name TEXT, conversation TEXT, payload TEXT);
+        CREATE INDEX IF NOT EXISTS events_session ON events(name, conversation, seq);
+        CREATE INDEX IF NOT EXISTS events_main_replies ON events(name, conversation, seq)
+        WHERE json_extract(payload, '$.type') = 'Stop' AND json_extract(payload, '$.agent_id') = '';").map_err(|e| e.to_string())?;
+    Ok(db)
+}
+
+pub(super) fn log_event(record: &Value, event: &Value) -> Result<()> {
+    if string(event, "hook_event_name") == "SessionHeartbeat" {
+        return Ok(());
+    }
+    let mut data = json!({"type": event["hook_event_name"], "at": now(), "run_id": record["run_id"],
+        "agent_id": clipped(&event["agent_id"], 160), "tool": clipped(&event["tool_name"], 100), "detail": detail(event)});
+    if let Some(id)=processes::event_job(record,event) {data["process_id"]=json!(id);}
+    if string(record, "agent") == "kimi"
+        && string(event, "agent_id") == "main"
+        && !["SubagentStart", "SubagentStop"].contains(&string(event, "hook_event_name"))
+    {
+        data["agent_id"] = json!("");
+    }
+    if let Some(question) = questions::from_hook(record, event) {
+        data["question_request"] = question;
+    }
+    if string(event, "hook_event_name") == "QuestionAnswered" {
+        for key in ["question_id", "question_hash", "tool_call_id"] {
+            data[key] = event[key].clone();
+        }
+        if event["at"].as_f64().is_some_and(|at| at > 0.0) {
+            data["at"] = event["at"].clone();
+        }
+    }
+    let mut db = event_db()?;
+    let transaction = db.transaction().map_err(|e| e.to_string())?;
+    transaction
+        .execute(
+            "INSERT INTO events(name, conversation, payload) VALUES (?, ?, ?)",
+            params![
+                journal_name(record),
+                record["conversation_id"].as_str(),
+                data.to_string()
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    let seq = transaction.last_insert_rowid();
+    if seq % 100 == 0 {
+        transaction
+            .execute("DELETE FROM events WHERE seq <= ?", [seq - 50000])
+            .map_err(|e| e.to_string())?;
+    }
+    transaction.commit().map_err(|e| e.to_string())
+}
+
+pub(super) fn normalized_activity(record: &Value, live_pane: bool) -> Value {
+    let alive = live_pane && process_alive(record);
+    let mut activity = record.get("activity").cloned().unwrap_or(json!("unknown"));
+    let mut phase = record.get("phase").cloned().unwrap_or(json!("unknown"));
+    // Legacy SessionEnd was overloaded as process death. It is not evidence of
+    // either process death or idleness; old manifests remain restorable.
+    if live_pane && (activity == "ended" || phase == "ended") && alive {
+        activity = json!("unknown");
+        phase = json!("unknown");
+    }
+    if alive && telemetry::grouped_active(record) > 0 && activity == "idle" {
+        activity = json!("busy");
+        phase = json!("working");
+    }
+    json!({"activity": activity, "phase": phase,
+        "conversation_state": record.get("conversation_state").cloned().unwrap_or_else(||
+            json!(if string(record, "activity") == "ended" { "ended" } else { "active" })),
+        "runtime_state": if live_pane {"live"} else {"stopped"},
+        "process_state": if alive {"running"} else if string(record, "process_start").is_empty() {"unknown"} else {"exited"}})
+}
+
+// A durable Stop event identifies a response, even if busy/idle transitions were
+// missed between polls. Child stops and initial SessionStart are not replies.
+// Reading the retained journal also covers sessions created before this feature.
+fn latest_reply(record: &Value) -> Result<Value> {
+    let conversation = string(record, "conversation_id");
+    if conversation.is_empty() {
+        return Ok(json!({}));
+    }
+    let db = event_db()?;
+    let result: Option<(i64, String)> = db
+        .query_row(
+            "SELECT seq, payload FROM events WHERE name = ? AND conversation = ?
+         AND json_extract(payload, '$.type') = 'Stop' AND json_extract(payload, '$.agent_id') = ''
+         ORDER BY seq DESC LIMIT 1",
+            params![journal_name(record), conversation],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some((seq, payload)) = result else {
+        return Ok(json!({}));
+    };
+    let event: Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+    Ok(json!({"reply_id":format!("{}:{}", seq, event["at"]), "reply_at":event["at"]}))
+}
+
+pub(super) fn summary(record: &Value, live_pane: bool) -> Value {
+    let mut output = normalized_activity(record, live_pane);
+    output["conversation_id"] = record["conversation_id"].clone();
+    output
+        .as_object_mut()
+        .unwrap()
+        .extend(goals::summary(record).as_object().unwrap().clone());
+    if let Ok(reply) = latest_reply(record) {
+        output
+            .as_object_mut()
+            .unwrap()
+            .extend(reply.as_object().unwrap().clone());
+    }
+    if !string(record, "launch_id").is_empty() {
+        output["launch_id"] = record["launch_id"].clone();
+    }
+    let last_tool = record["active_tools"]
+        .as_object()
+        .filter(|_| live_pane && output["activity"] == "busy")
+        .and_then(|tools| {
+            tools.values().max_by(|a, b| {
+                a["started"]
+                    .as_f64()
+                    .unwrap_or_default()
+                    .total_cmp(&b["started"].as_f64().unwrap_or_default())
+            })
+        });
+    let tool = last_tool.map(|tool| string(tool, "name")).unwrap_or("");
+    let detail = last_tool.map(|tool| string(tool, "detail")).unwrap_or("");
+    let telemetry = telemetry::summary(record, &output, tool, detail);
+    output
+        .as_object_mut()
+        .unwrap()
+        .extend(telemetry.as_object().unwrap().clone());
+    output.as_object_mut().unwrap().extend(json!({"tracked": true, "run_id":record["run_id"], "model": string(record, "model"),
+        "cwd":record["cwd"].as_str().unwrap_or_else(||string(record,"launch_dir")), "cwd_source":if live_pane {"hook"} else {"saved"},
+        "prompt": clipped(&record["prompt"], 240), "last_event_at": record.get("last_event_at").unwrap_or(&json!(0)),
+        "turn_started": record.get("turn_started").unwrap_or(&json!(0)),
+        "compaction_started": if record["phase"] == "compacting" { record.get("compaction_started").or_else(||record.get("last_main_progress_at")).unwrap_or(&json!(0)).clone() } else { json!(0) },
+        "current_tool": last_tool.map(|tool| string(tool, "name")).unwrap_or(""),
+        "tool_detail": last_tool.map(|tool| string(tool, "detail")).unwrap_or("")}).as_object().unwrap().clone());
+    output.as_object_mut().unwrap().extend(
+        effort::summary(record, live_pane)
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
+    output.as_object_mut().unwrap().extend(
+        fork::summary(record, live_pane)
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
+    output["subagent_count"] = output["subagent_active_count"].clone();
+    let account = account_binding(record);
+    output["account_id"] = account["id"].clone();
+    output["account_home"] = account["home"].clone();
+    if ["input", "approval", "error"].contains(&string(&output, "phase")) {
+        // Stable across heartbeats, different for a new question even when the
+        // intervening working state fell between two desktop polls.
+        output["attention_id"] = json!(record["active_tools"]
+            .as_object()
+            .map(|tools| tools.keys().cloned().collect::<Vec<_>>().join("\n"))
+            .unwrap_or_default());
+    }
+    resume_input::enrich(record, &mut output, live_pane);
+    provider_errors::enrich(record, &mut output, live_pane);
+    if live_pane {
+        if let Some(question) = claude_permission::current(record) {
+            output["activity"] = json!("busy");
+            output["phase"] = json!("approval");
+            output["attention_id"] = question["question_id"].clone();
+            output["status_detail"] = json!("Claude is waiting for your default permission mode choice");
+        }
+        if let Some(question) = claude_trust::current(record) {
+            output["activity"] = json!("busy");
+            output["phase"] = json!("approval");
+            output["attention_id"] = question["question_id"].clone();
+            output["status_detail"] = json!("Claude is waiting for folder trust approval");
+        }
+        if let Some(question) = codex_trust::current(record) {
+            output["activity"] = json!("busy");
+            output["phase"] = json!("approval");
+            output["attention_id"] = question["question_id"].clone();
+            output["status_detail"] = json!("Codex is waiting for folder trust approval");
+        }
+        if let Some(question) = kimi_trust::current(record) {
+            output["activity"] = json!("busy");
+            output["phase"] = json!("approval");
+            output["attention_id"] = question["question_id"].clone();
+            output["status_detail"] = json!("Kimi is waiting for folder trust approval");
+        }
+        if let Some(question) = kimi_cache_hint::current(record) {
+            output["activity"] = json!("busy");
+            output["phase"] = json!("input");
+            output["attention_id"] = question["question_id"].clone();
+            output["status_detail"] = json!("Kimi is waiting for your context choice");
+        }
+    }
+    recovery::enrich(record, &mut output);
+    output
+}
+
+pub(super) fn inspection(name: &str, after: i64, archive_id: Option<&str>, include_processes: bool) -> Result<Value> {
+    let _guard = lock(None)?;
+    let untracked = || {
+        let mut value = json!({"name": name, "tracked": false, "events": [], "cursor": 0});
+        value
+            .as_object_mut()
+            .unwrap()
+            .extend(telemetry::unavailable().as_object().unwrap().clone());
+        workspace::enrich(std::slice::from_mut(&mut value), &workspace::pane_cwds());
+        value
+    };
+    if archive_id.is_none() && !record_path(name).exists() {
+        drop(_guard);
+        return Ok(untracked());
+    }
+    let record = if let Some(id) = archive_id {
+        archive::read_archive(name, id)?
+    } else {
+        read(name)?
+    };
+    let snapshot = live()?;
+    let panes = if archive_id.is_some() {
+        None
+    } else {
+        snapshot.get(name)
+    };
+    if panes.is_some() && !matches(&record, panes) {
+        drop(_guard);
+        return Ok(untracked());
+    }
+    let mut output = json!({});
+    for key in [
+        "name",
+        "conversation_id",
+        "run_id",
+        "cwd",
+        "agent",
+        "model",
+        "phase",
+        "activity",
+        "prompt",
+        "last_message",
+        "last_error",
+        "active_tools",
+        "subagents",
+        "subagent_groups",
+        "subagent_groups_complete",
+        "task_lists",
+        "last_event_at",
+        "turn_started",
+        "compaction_started",
+        "created",
+        "updated",
+        "archive_id",
+        "archived_at",
+        "completion_source",
+        "completion_reason",
+        "exit_code",
+        "termination_signal",
+        "exited_at",
+        "session_end",
+        "last_restore_error",
+        "error",
+        "expected_id",
+        "requested_id",
+    ] {
+        if let Some(value) = record.get(key) {
+            output[key] = value.clone();
+        }
+    }
+    output.as_object_mut().unwrap().extend(
+        summary(&record, panes.is_some())
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
+    // The compact list preview must not shorten the existing inspector field.
+    if let Some(prompt) = record.get("prompt") {
+        output["prompt"] = prompt.clone();
+    }
+    output["tracked"] = json!(true);
+    if archive_id.is_some() {
+        output["state"] = json!("archived");
+    }
+    drop(_guard);
+    if archive_id.is_none() {
+        output.as_object_mut().unwrap().extend(
+            input::first_message_summary(&record, panes.is_some())
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        input::attention_message_summary(&record, &mut output, panes.is_some());
+    }
+    match questions::inspection(&record, panes.is_some()) {
+        Ok(pending) => output["pending_questions"] = pending,
+        Err(error) => {
+            output["pending_questions"] = json!([]);
+            output["pending_questions_error"] = json!(error);
+        }
+    }
+    output["input_queue"] = if archive_id.is_none() { input_queue::inspection(&record, panes.is_some()).unwrap_or(Value::Null) } else { Value::Null };
+    output["session_usage"] = usage::read(&record);
+    if include_processes {
+        output["processes"] = processes::snapshot(&record, archive_id.is_none() && panes.is_some() && process_alive(&record));
+    }
+    output["compact_context_supported"] = json!(archive_id.is_none() && clear_context::available(&record,panes.is_some()));
+    output["compact_context_request"] = record["compact_context_request"].clone();
+    output["clear_context_supported"] = json!(archive_id.is_none() && clear_context::available(&record,panes.is_some()));
+    output["interrupt_supported"] = json!(archive_id.is_none() && interrupt::available(&record,panes.is_some()));
+    cache_hint::enrich(&record,&mut output,archive_id.is_none()&&panes.is_some());
+    match provider_messages::read(&record) {
+        Ok(messages) => output["provider_messages"] = json!(messages),
+        Err(error) => output["provider_messages_error"] = json!(error),
+    }
+    // Optional-question indexing must never suppress successfully read replies.
+    match codex_questions::messages(&record) {
+        Ok(questions) => {
+            let mut messages = output["provider_messages"].as_array().cloned().unwrap_or_default();
+            messages.extend(questions);
+            messages.sort_by(|a,b|a["at"].as_f64().unwrap_or(0.).total_cmp(&b["at"].as_f64().unwrap_or(0.)));
+            if messages.len()>100 { messages.drain(..messages.len()-100); }
+            output["provider_messages"] = json!(messages);
+        }
+        Err(error) => output["pending_questions_error"] = json!(error),
+    }
+    let db = event_db()?;
+    let journal_name = journal_name(&record);
+    let conversation = record["conversation_id"].as_str();
+    let oldest: Option<i64> = db
+        .query_row(
+            "SELECT MIN(seq) FROM events WHERE name=? AND conversation IS ?",
+            params![journal_name, conversation],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let mut statement = db.prepare(if after > 0 {
+        "SELECT seq, payload FROM events WHERE name=? AND conversation IS ? AND seq>? ORDER BY seq LIMIT 200"
+    } else { "SELECT seq, payload FROM events WHERE name=? AND conversation IS ? AND seq>? ORDER BY seq DESC LIMIT 100" }).map_err(|e| e.to_string())?;
+    let mut rows: Vec<(i64, String)> = statement
+        .query_map(params![journal_name, conversation, after], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+    if after == 0 {
+        rows.reverse();
+    }
+    output["cursor"] = json!(rows.last().map(|(seq, _)| *seq).unwrap_or(after));
+    output["history_truncated"] =
+        json!(after > 0 && oldest.map(|seq| after < seq - 1).unwrap_or(false));
+    let mut events = Vec::new();
+    for (seq, payload) in rows {
+        let mut event: Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+        event["seq"] = json!(seq);
+        events.push(event);
+    }
+    output["events"] = json!(events);
+    output["attachment_messages"] = attachments::messages(&record, "");
+    workspace::enrich(std::slice::from_mut(&mut output), &workspace::pane_cwds());
+    Ok(output)
+}
+
+pub(super) fn journal_name(record: &Value) -> &str {
+    if string(record, "journal_name").is_empty() {
+        string(record, "name")
+    } else {
+        string(record, "journal_name")
+    }
+}
+
+pub(super) fn update_activity(record: &mut Value, event: &Value) {
+    repair_kimi_main(record);
+    let was_busy = record["activity"] == "busy";
+    let kind = string(event, "hook_event_name");
+    let timestamp = now();
+    record["last_event_at"] = json!(timestamp);
+    let mut children = record["subagents"].as_object().cloned().unwrap_or_default();
+    let root_agent = string(record, "agent") == "kimi" && string(event, "agent_id") == "main";
+    if ["SubagentStart", "SubagentStop"].contains(&kind)
+        || (!root_agent && !string(event, "agent_id").is_empty())
+    {
+        let mut child = clipped(&event["agent_id"], 160);
+        if root_agent {
+            child.clear();
+        }
+        if child.is_empty() {
+            child = clipped(&event["agent_name"], 160);
+        }
+        if child.is_empty() {
+            child = "subagent".into();
+        }
+        let mut name = clipped(&event["agent_type"], 160);
+        if name.is_empty() {
+            name = clipped(&event["agent_name"], 160);
+        }
+        let has_label = !name.is_empty();
+        if name.is_empty() {
+            name = child.clone();
+        }
+        let info = children
+            .entry(child)
+            .or_insert_with(|| json!({"name": name, "started": timestamp}));
+        if has_label {
+            info["name"] = json!(name);
+        }
+        if ["Stop", "SubagentStop"].contains(&kind) {
+            let result = detail(event);
+            if string(info, "state") != "finished"
+                || (!result.is_empty() && result != string(info, "detail"))
+            {
+                info["reply_id"] = json!(format!("{timestamp}"));
+            }
+        }
+        info["state"] = json!(if ["SubagentStop", "SessionEnd", "Stop"].contains(&kind) {
+            "finished"
+        } else {
+            "working"
+        });
+        let snippet = detail(event);
+        if !snippet.is_empty() {
+            info["detail"] = json!(snippet);
+        }
+        if ["StopFailure", "Interrupt"].contains(&kind) {
+            info["display_state"] = json!("unknown");
+        } else {
+            info.as_object_mut().unwrap().remove("display_state");
+        }
+        if kind == "PreToolUse" {
+            info["current_tool"] = json!(clipped(&event["tool_name"], 120));
+        } else if [
+            "PostToolUse",
+            "PostToolUseFailure",
+            "SubagentStop",
+            "Stop",
+            "SessionEnd",
+            "StopFailure",
+            "Interrupt",
+        ]
+        .contains(&kind)
+        {
+            info["current_tool"] = json!("");
+        }
+        info["updated"] = json!(timestamp);
+        if record["main_done"].as_bool().unwrap_or(false) {
+            let tools_busy = record["active_tools"]
+                .as_object()
+                .map(|tools| !tools.is_empty())
+                .unwrap_or(false);
+            let busy = tools_busy
+                || children
+                    .values()
+                    .any(|child| string(child, "state") == "working");
+            record["activity"] = json!(if busy { "busy" } else { "idle" });
+            record["phase"] = json!(if tools_busy {
+                "tool"
+            } else if busy {
+                "working"
+            } else {
+                "idle"
+            });
+        }
+        if children.len() > 64 {
+            let remove: Vec<String> = children
+                .iter()
+                .filter(|(_, child)| string(child, "state") == "finished")
+                .take(children.len() - 64)
+                .map(|(key, _)| key.clone())
+                .collect();
+            for key in remove {
+                children.remove(&key);
+                record["subagents_completed_pruned"] =
+                    json!(record["subagents_completed_pruned"].as_u64().unwrap_or(0) + 1);
+            }
+        }
+        record["subagents"] = json!(children);
+        return;
+    }
+    record["subagents"] = json!(children);
+    if ["UserPromptSubmit", "UserPromptQueued"].contains(&kind) {
+        record["recovery_user_at"] = json!(timestamp);
+        record["recovery_user_text"] = json!(event["prompt"].as_str().map(str::to_owned).unwrap_or_else(||
+            event["prompt"].as_array().into_iter().flatten().filter(|v|v["type"]=="text")
+                .map(|v|string(v,"text")).collect::<Vec<_>>().join("\n")));
+    }
+    if kind == "Stop" { record["recovery_success_at"] = json!(timestamp); }
+    if ["Interrupt", "SessionEnd"].contains(&kind) { record["recovery_cancel_at"] = json!(timestamp); }
+    if [
+        "SessionStart",
+        "UserPromptSubmit",
+        "UserPromptQueued",
+        "TurnStarted",
+        "TaskStarted",
+        "PreToolUse",
+        "PostToolUse",
+        "PostToolUseFailure",
+        "PermissionRequest",
+        "PermissionResult",
+        "PreCompact",
+        "PostCompact",
+        "Stop",
+        "Interrupt",
+    ]
+    .contains(&kind)
+    {
+        record["last_main_progress_at"] = json!(timestamp);
+        record.as_object_mut().unwrap().remove("provider_error");
+    }
+    if event["model"].is_string() {
+        record["model"] = json!(clipped(&event["model"], 120));
+    }
+    for field in ["effort", "reasoning_effort", "thinking_effort"] {
+        if let Some(value) = event[field].as_str().filter(|value| effort::valid(value)) {
+            record["effort"] = json!(value);
+        }
+    }
+    let mut tools = record["active_tools"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    if matches!(
+        kind,
+        "UserPromptSubmit"
+            | "UserPromptQueued"
+            | "TurnStarted"
+            | "TaskStarted"
+            | "PreToolUse"
+            | "PostToolUse"
+            | "PostToolUseFailure"
+            | "PermissionRequest"
+            | "PermissionResult"
+    ) {
+        // Positive evidence of main-agent work invalidates a previous Stop,
+        // including providers that omit UserPromptSubmit before a tool call.
+        record["main_done"] = json!(false);
+    }
+    match kind {
+        "UserPromptSubmit" | "UserPromptQueued" | "TurnStarted" | "TaskStarted" => {
+            record["activity"] = json!("busy");
+            if kind != "UserPromptQueued" || record["phase"] != "compacting" {
+                record["phase"] = json!("working");
+            }
+            record["conversation_state"] = json!("active");
+            record["main_done"] = json!(false);
+            // Queuing another message while working must not restart the
+            // timer of the turn still executing in the native terminal.
+            if kind != "UserPromptQueued"
+                || !was_busy
+                || record["turn_started"].as_f64().unwrap_or(0.0) <= 0.0
+            {
+                record["turn_started"] = json!(timestamp);
+            }
+            record["last_error"] = json!("");
+            if !string(event, "prompt").is_empty() {
+                record["prompt"] = json!(clipped(&event["prompt"], 4000));
+            }
+        }
+        "PreToolUse" => {
+            let mut tool = clipped(&event["tool_name"], 120);
+            if tool.is_empty() {
+                tool = "Tool".into();
+            }
+            let key = ["tool_use_id", "tool_call_id"]
+                .iter()
+                .map(|key| string(event, key))
+                .find(|key| !key.is_empty())
+                .unwrap_or(&tool);
+            tools.insert(
+                key.to_owned(),
+                json!({"name": tool, "detail": detail(event), "started": timestamp}),
+            );
+            record["activity"] = json!("busy");
+            record["phase"] = json!(if ["AskUserQuestion", "request_user_input", "AskUser"]
+                .contains(&tool.as_str())
+            {
+                "input"
+            } else {
+                "tool"
+            });
+        }
+        "PermissionRequest" => {
+            record["activity"] = json!("busy");
+            record["phase"] = json!("approval");
+        }
+        "PermissionResult" => {
+            record["activity"] = json!("busy");
+            record["phase"] = json!(if tools.is_empty() { "working" } else { "tool" });
+        }
+        "PostToolUse" | "PostToolUseFailure" => {
+            let key = ["tool_use_id", "tool_call_id", "tool_name"]
+                .iter()
+                .map(|key| string(event, key))
+                .find(|key| !key.is_empty())
+                .unwrap_or("");
+            if tools.remove(key).is_none() {
+                tools.retain(|_, tool| string(tool, "name") != string(event, "tool_name"));
+            }
+            record["activity"] = json!("busy");
+            record["phase"] = json!(if tools.is_empty() { "working" } else { "tool" });
+            if kind == "PostToolUseFailure" {
+                record["last_error"] = json!(detail(event));
+            }
+        }
+        "PreCompact" => {
+            if record["phase"] != "compacting" {
+                record["phase_before_compact"] =
+                    record.get("phase").cloned().unwrap_or(json!("working"));
+                record["compaction_started"] = json!(timestamp);
+            }
+            record["activity"] = json!("busy");
+            record["phase"] = json!("compacting");
+        }
+        "PostCompact" => {
+            record.as_object_mut().unwrap().remove("compaction_started");
+            record["phase"] = record
+                .as_object_mut()
+                .unwrap()
+                .remove("phase_before_compact")
+                .unwrap_or(json!("working"));
+            record["activity"] = json!(if record["phase"] == "idle" {
+                "idle"
+            } else {
+                "busy"
+            });
+        }
+        "Stop" => {
+            record["main_done"] = json!(true);
+            tools.clear();
+            let busy = record["subagents"]
+                .as_object()
+                .unwrap()
+                .values()
+                .any(|child| string(child, "state") == "working");
+            record["activity"] = json!(if busy { "busy" } else { "idle" });
+            record["phase"] = json!(if busy { "working" } else { "idle" });
+            record["last_message"] = json!(clipped(
+                if string(event, "last_assistant_message").is_empty() {
+                    &event["response"]
+                } else {
+                    &event["last_assistant_message"]
+                },
+                4000
+            ));
+        }
+        "Interrupt" | "StopFailure" => {
+            record["activity"] = json!("unknown");
+            record["main_done"] = json!(false);
+            record["phase"] = json!(if kind == "Interrupt" {
+                "interrupted"
+            } else {
+                "error"
+            });
+            tools.clear();
+            record["last_error"] = json!(detail(event));
+            if kind == "StopFailure" {
+                let mut failure = provider_errors::event(
+                    &format!("{}:{timestamp}", string(record, "run_id")),
+                    timestamp,
+                    &detail(event),
+                    "provider_hook",
+                );
+                let category = provider_errors::category(&format!(
+                    "{} {}",
+                    string(event, "error_type"),
+                    string(event, "error")
+                ));
+                if category != "provider" {
+                    failure["error_kind"] = json!(category);
+                }
+                // Keep a provider deadline separate from the chosen backoff.
+                for (key,scale) in [("retry_after",1.0),("retry_after_seconds",1.0),("retry_after_ms",0.001)] {
+                    if let Some(delay)=event[key].as_f64().filter(|v|v.is_finite()&&*v>0.0) {
+                        failure["retry_not_before"]=json!(timestamp+delay*scale);
+                    }
+                }
+                record["provider_error"] = failure;
+            }
+        }
+        "SessionEnd" => {
+            record["conversation_state"] = json!("ended");
+            let children_busy = record["subagents"]
+                .as_object()
+                .unwrap()
+                .values()
+                .any(|child| string(child, "state") == "working");
+            // A hook ends a conversation scope, not necessarily the CLI process.
+            // Preserve positive idle evidence; never turn ongoing work into idle.
+            if record["activity"] != "idle" || !tools.is_empty() || children_busy {
+                record["activity"] = json!("unknown");
+                record["phase"] = json!("unknown");
+                record["main_done"] = json!(false);
+            }
+        }
+        "Notification"
+            if ["permission_prompt", "agent_needs_input"]
+                .contains(&string(event, "notification_type")) =>
+        {
+            record["activity"] = json!("busy");
+            record["phase"] = json!("input");
+        }
+        _ => {}
+    }
+    record["active_tools"] = json!(tools);
+}
+
+// Kimi's reserved "main" agent ID describes the root, not a Swarm child.
+// Older hooks left it permanently working, even after positive Stop evidence.
+pub(super) fn repair_kimi_main(record: &mut Value) {
+    if string(record, "agent") != "kimi" {
+        return;
+    }
+    let removed = record["subagents"]
+        .as_object_mut()
+        .and_then(|children| children.remove("main"))
+        .is_some();
+    if removed
+        && record["main_done"] == true
+        && record["phase"] == "working"
+        && record["active_tools"]
+            .as_object()
+            .is_none_or(|tools| tools.is_empty())
+        && record["subagents"].as_object().is_none_or(|children| {
+            !children
+                .values()
+                .any(|child| string(child, "state") == "working")
+        })
+        && telemetry::grouped_active(record) == 0
+    {
+        record["activity"] = json!("idle");
+        record["phase"] = json!("idle");
+    }
+}
+
+#[cfg(test)]
+mod attention_regressions {
+    use super::*;
+    #[test]
+    fn compaction_has_its_own_clock_and_survives_duplicate_start_and_queued_input() {
+        let mut record = json!({"agent":"codex","activity":"busy","phase":"tool","turn_started":123.0,"active_tools":{},"subagents":{}});
+        update_activity(&mut record, &json!({"hook_event_name":"PreCompact"}));
+        let started = record["compaction_started"].clone();
+        assert!(started.as_f64().unwrap() > 123.0);
+        for event in [
+            json!({"hook_event_name":"PreCompact"}),
+            json!({"hook_event_name":"SessionHeartbeat"}),
+            json!({"hook_event_name":"UserPromptQueued"}),
+        ] {
+            update_activity(&mut record, &event);
+            assert_eq!(record["phase"], "compacting");
+            assert_eq!(record["compaction_started"], started);
+            assert_eq!(record["turn_started"], 123.0);
+        }
+        update_activity(&mut record, &json!({"hook_event_name":"PostCompact"}));
+        assert_eq!(record["phase"], "tool");
+        assert!(record["compaction_started"].is_null());
+        assert_eq!(record["turn_started"], 123.0);
+    }
+    #[test]
+    fn turn_clock_survives_tools_queued_input_and_child_work() {
+        let mut record = json!({"agent":"codex","activity":"busy","phase":"working","turn_started":123.0,"active_tools":{},"subagents":{}});
+        for event in [
+            json!({"hook_event_name":"PreToolUse","tool_name":"Bash","tool_use_id":"tool"}),
+            json!({"hook_event_name":"PostToolUse","tool_use_id":"tool"}),
+            json!({"hook_event_name":"SessionHeartbeat"}),
+            json!({"hook_event_name":"UserPromptQueued","prompt":"follow-up"}),
+            json!({"hook_event_name":"TurnStarted","agent_id":"child"}),
+            json!({"hook_event_name":"PreCompact"}),
+            json!({"hook_event_name":"PostCompact"}),
+        ] {
+            update_activity(&mut record, &event);
+            assert_eq!(record["turn_started"], 123.0, "{event}");
+        }
+        update_activity(&mut record, &json!({"hook_event_name":"TurnStarted"}));
+        assert!(record["turn_started"].as_f64().unwrap() > 123.0);
+        record["activity"] = json!("idle");
+        record["turn_started"] = json!(123.0);
+        update_activity(&mut record, &json!({"hook_event_name":"UserPromptQueued"}));
+        assert!(record["turn_started"].as_f64().unwrap() > 123.0);
+    }
+    #[test]
+    fn provider_failure_survives_heartbeat_and_children_but_clears_on_new_work() {
+        for (agent, event, category) in [
+            (
+                "claude",
+                json!({"hook_event_name":"StopFailure","error":"rate_limit","error_details":"Usage limit reached. Try after reset."}),
+                "rate_limit",
+            ),
+            (
+                "kimi",
+                json!({"hook_event_name":"StopFailure","agent_id":"main","error_type":"AuthenticationError","error_message":"Sign in again"}),
+                "authentication",
+            ),
+        ] {
+            let mut record = json!({"agent":agent,"run_id":"run","main_done":false,"active_tools":{},"subagents":{}});
+            update_activity(&mut record, &json!({"hook_event_name":"TurnStarted"}));
+            update_activity(&mut record, &event);
+            assert_eq!(record["phase"], "error");
+            let failure = record["provider_error"].clone();
+            assert_eq!(failure["error_kind"], category);
+            assert_eq!(failure["detail"], detail(&event));
+            for event in [
+                json!({"hook_event_name":"SessionHeartbeat"}),
+                json!({"hook_event_name":"PostToolUse","agent_id":"child","tool_name":"Bash"}),
+                json!({"hook_event_name":"SessionEnd"}),
+            ] {
+                update_activity(&mut record, &event);
+                let mut output = json!({"process_state":"running"});
+                provider_errors::enrich(&record, &mut output, true);
+                assert_eq!(output["phase"], "error");
+                assert_eq!(output["provider_error"], failure);
+            }
+            update_activity(
+                &mut record,
+                &json!({"hook_event_name":"UserPromptSubmit","prompt":"Retry"}),
+            );
+            assert!(record["provider_error"].is_null());
+            assert_eq!(record["phase"], "working");
+            update_activity(
+                &mut record,
+                &json!({"hook_event_name":"PostToolUseFailure","tool_name":"Bash","error":"Test fixture contains: quota exceeded"}),
+            );
+            assert_ne!(record["phase"], "error");
+            assert!(record["provider_error"].is_null());
+            update_activity(&mut record, &event);
+            update_activity(&mut record, &json!({"hook_event_name":"SessionStart"}));
+            assert!(record["provider_error"].is_null());
+        }
+    }
+    #[test]
+    fn kimi_root_is_not_a_busy_child() {
+        let mut record = json!({"agent":"kimi","main_done":true,"activity":"busy","phase":"working",
+            "active_tools":{},"subagents":{"main":{"state":"working"}}});
+        repair_kimi_main(&mut record);
+        assert_eq!(record["phase"], "idle");
+        assert_eq!(record["subagents"], json!({}));
+        update_activity(
+            &mut record,
+            &json!({"hook_event_name":"PreToolUse","agent_id":"main", "tool_name":"Bash"}),
+        );
+        assert_eq!(record["phase"], "tool");
+        assert_eq!(record["subagents"], json!({}));
+        update_activity(
+            &mut record,
+            &json!({"hook_event_name":"Stop","agent_id":"main"}),
+        );
+        assert_eq!(record["phase"], "idle");
+    }
+    #[test]
+    fn real_children_and_approval_survive_repair() {
+        for phase in ["working", "approval", "input"] {
+            let mut record = json!({"agent":"kimi","main_done":true,"activity":"busy","phase":phase,
+                "active_tools":{},"subagents":{"main":{"state":"working"},"child":{"state":"working"}}});
+            repair_kimi_main(&mut record);
+            assert_eq!(record["phase"], phase);
+            assert_eq!(record["subagents"]["child"]["state"], "working");
+        }
+        let mut claude = json!({"agent":"claude","subagents":{"main":{"state":"working"}}});
+        repair_kimi_main(&mut claude);
+        assert_eq!(claude["subagents"]["main"]["state"], "working");
+    }
+}

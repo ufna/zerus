@@ -1,0 +1,12 @@
+{
+  "variants": 3,
+  "paletteLabels": "passed",
+  "images": "loaded",
+  "largePreview": "passed",
+  "selectionAndSettings": "persisted",
+  "copyFallback": "includes Swarm and palette",
+  "download": "hgs-zerus-swarm-carapace-v4-1024.png",
+  "prompts": "passed",
+  "mobile": "390px without overflow",
+  "consoleErrors": []
+}

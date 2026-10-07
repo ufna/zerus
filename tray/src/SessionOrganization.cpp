@@ -1,0 +1,195 @@
+#include "SessionOrganization.h"
+#include <QJsonArray>
+#include <QSet>
+#include <QUuid>
+#include <QColor>
+#include <QDir>
+
+SessionOrganization::SessionOrganization(const QJsonObject &data)
+{
+    QSet<QString> ids, sessions;
+    for (const auto &value : data.value(data.contains("projects") ? "projects" : "groups").toArray()) {
+        const auto obj = value.toObject();
+        Group g{obj.value("id").toString(), obj.value("name").toString().trimmed().left(80), obj.value("collapsed").toBool(), {}};
+        if (g.id.isEmpty() || g.name.isEmpty() || ids.contains(g.id)) continue;
+        ids.insert(g.id);
+        const auto color = QColor(obj.value("color").toString());
+        g.color = color.isValid() ? color.name() : QStringLiteral("#64b5f6");
+        g.vivid = obj.value("vivid").toBool(false);
+        g.accessible = obj.value("accessible").toBool(true);
+        QSet<QString> folders;
+        for (const auto &value : obj.value("folders").toArray()) {
+            const auto folder = value.toObject(); const auto machine = folder.value("machine").toString();
+            const auto path = folder.value("path").toString(); const auto key = machine + '\n' + path;
+            if (machine.isEmpty() || !path.startsWith('/') || folders.contains(key)) continue;
+            folders.insert(key);
+            const auto id = folder.value("id").toString(QUuid::createUuid().toString(QUuid::WithoutBraces));
+            g.folders.append({id, machine, path, folder.value("name").toString(), folder.value("machine_id").toString(), folder.value("machine_name").toString()});
+        }
+        for (const auto &item : obj.value("sessions").toArray()) {
+            const auto id = item.toString();
+            if (!id.isEmpty() && !sessions.contains(id)) { g.sessions.append(id); sessions.insert(id); }
+        }
+        m_groups.append(g);
+    }
+    if (m_groups.isEmpty() || (!data.contains("default_project") && !ids.contains("ungrouped")))
+        m_groups.append({"ungrouped", "General", false, {}, "#8d9baa", {}});
+    m_default = data.value("default_project").toString("ungrouped");
+    if (!group(m_default) || m_default == "pinned") {
+        for (const auto &g : m_groups) if (g.id != "pinned") { m_default = g.id; break; }
+    }
+    m_runs = data.value("runs").toObject();
+    const auto beforePin = data.value("before_pin").toObject();
+    for (const auto &v : data.value("imported_machines").toArray()) if (!v.toString().isEmpty()) m_imported.append(v.toString());
+    // Pinning used to move a session out of its group. Restore its real project
+    // before discarding that presentation bucket; every session keeps one owner.
+    QStringList pinned;
+    for (int i = m_groups.size() - 1; i >= 0; --i) if (m_groups[i].id == "pinned") pinned = m_groups.takeAt(i).sessions;
+    for (const auto &session : pinned) {
+        const auto previous = beforePin.value(session).toString();
+        moveSession(session, group(previous) ? previous : m_default);
+    }
+
+}
+
+const SessionOrganization::Group *SessionOrganization::group(const QString &id) const
+{
+    for (const auto &g : m_groups) if (g.id == id) return &g;
+    return nullptr;
+}
+
+QString SessionOrganization::groupFor(const QString &session) const
+{
+    for (const auto &g : m_groups) if (g.sessions.contains(session)) return g.id;
+    return m_default;
+}
+
+QString SessionOrganization::createGroup(const QString &name)
+{
+    const QString title = name.trimmed().left(80);
+    if (title.isEmpty()) return {};
+    const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    int position = 0;
+    while (position < m_groups.size() && m_groups[position].id != "ungrouped") ++position;
+    m_groups.insert(position, {id, title, false, {}, "#64b5f6", {}});
+    return id;
+}
+
+void SessionOrganization::renameGroup(const QString &id, const QString &name)
+{
+    if (name.trimmed().isEmpty()) return;
+    for (auto &g : m_groups) if (g.id == id) g.name = name.trimmed().left(80);
+}
+
+bool SessionOrganization::removeGroup(const QString &id, const QString &destination)
+{
+    const auto target = destination.isEmpty() ? m_default : destination;
+    if (id == target || !group(id) || !group(target)) return false;
+    QStringList displaced;
+    for (int i=0;i<m_groups.size();++i) if (m_groups[i].id==id) {displaced=m_groups.takeAt(i).sessions;break;}
+    if (m_default==id) m_default=target;
+    for (const auto &session:displaced) moveSession(session,target);
+    return true;
+}
+
+void SessionOrganization::setCollapsed(const QString &id, bool collapsed)
+{
+    for (auto &g : m_groups) if (g.id == id) g.collapsed = collapsed;
+}
+
+void SessionOrganization::moveGroup(const QString &id, const QString &before)
+{
+    if (id == before || (!before.isEmpty() && !group(before))) return;
+    int from = -1;
+    for (int i = 0; i < m_groups.size(); ++i) if (m_groups[i].id == id) from = i;
+    if (from < 0) return;
+    const auto g = m_groups.takeAt(from);
+    int to = 0;
+    while (to < m_groups.size() && m_groups[to].id != before) ++to;
+    m_groups.insert(to, g);
+}
+
+void SessionOrganization::moveSession(const QString &session, const QString &id, const QString &before)
+{
+    const auto *target = group(id);
+    if (session.isEmpty() || !target || session == before || (!before.isEmpty() && !target->sessions.contains(before))) return;
+
+    for (auto &g : m_groups) g.sessions.removeAll(session);
+    for (auto &g : m_groups) if (g.id == id) {
+        const int position = g.sessions.indexOf(before);
+        g.sessions.insert(position < 0 ? g.sessions.size() : position, session);
+    }
+}
+
+void SessionOrganization::renameSession(const QString &oldId, const QString &newId)
+{
+    if (oldId == newId || oldId.isEmpty() || newId.isEmpty()) return;
+    bool exists = false;
+    for (const auto &g : m_groups) exists |= g.sessions.contains(oldId);
+    if (!exists) return;
+    for (auto &g : m_groups) g.sessions.removeAll(newId);
+    for (auto &g : m_groups) for (auto &session : g.sessions) if (session == oldId) session = newId;
+    for (auto it = m_runs.begin(); it != m_runs.end(); ++it) if (it.value().toString() == oldId) it.value() = newId;
+}
+
+QString SessionOrganization::observe(const QString &machine, const QString &name, const QString &run, const QString &archive)
+{
+    const QString id = machine + '\n' + (archive.isEmpty() ? name : "archive\n" + archive);
+    if (!run.isEmpty() && archive.isEmpty()) {
+        const QString token = machine + '\n' + run;
+        const auto old = m_runs.value(token).toString();
+        if (!old.isEmpty()) renameSession(old, id);
+        m_runs.insert(token, id);
+    }
+    bool known = false;
+    for (const auto &g : m_groups) known |= g.sessions.contains(id);
+    if (!known) moveSession(id, m_default);
+    return id;
+}
+
+void SessionOrganization::setVivid(const QString &id, bool vivid)
+{
+    for (auto &g : m_groups) if (g.id == id) g.vivid = vivid;
+}
+void SessionOrganization::setColor(const QString &id, const QString &color)
+{
+    const QColor chosen(color); if (!chosen.isValid()) return;
+    for (auto &g : m_groups) if (g.id == id) g.color = chosen.name();
+}
+QString SessionOrganization::addFolder(const QString &project, const QString &machine, const QString &path, const QString &name)
+{
+    if (machine.trimmed().isEmpty() || !path.startsWith('/') || path.contains('\n')) return {};
+    const auto clean = QDir::cleanPath(path);
+    for (auto &g : m_groups) if (g.id == project) {
+        for (const auto &folder : g.folders) if (folder.machine == machine && folder.path == clean) return folder.id;
+        const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        g.folders.append({id, machine, clean, name.trimmed().left(80)}); return id;
+    }
+    return {};
+}
+bool SessionOrganization::editFolder(const QString &project, const QString &id, const QString &machine, const QString &path, const QString &name)
+{
+    if (machine.isEmpty() || !path.startsWith('/') || path.contains('\n')) return false;
+    const auto clean = QDir::cleanPath(path);
+    for (auto &g : m_groups) if (g.id == project) {
+        for (const auto &f : g.folders) if (f.id != id && f.machine == machine && f.path == clean) return false;
+        for (auto &f : g.folders) if (f.id == id) { if(f.machine!=machine){f.machineId.clear();f.machineName.clear();} f.machine=machine; f.path=clean; f.name=name.trimmed().left(80); return true; }
+    }
+    return false;
+}
+void SessionOrganization::removeFolder(const QString &project, const QString &folder)
+{
+    for (auto &g : m_groups) if (g.id == project) for (int i = 0; i < g.folders.size(); ++i)
+        if (g.folders[i].id == folder) { g.folders.removeAt(i); return; }
+}
+QJsonObject SessionOrganization::toJson() const
+{
+    QJsonArray projects;
+    for (const auto &g : m_groups) {
+        QJsonArray folders;
+        for (const auto &f : g.folders) folders.append(QJsonObject{{"id",f.id},{"machine",f.machine},{"path",f.path},{"name",f.name},{"machine_id",f.machineId},{"machine_name",f.machineName}});
+        projects.append(QJsonObject{{"id", g.id}, {"name", g.name}, {"color",g.color}, {"vivid",g.vivid}, {"folders",folders},
+            {"collapsed", g.collapsed}, {"accessible",g.accessible}, {"sessions", QJsonArray::fromStringList(g.sessions)}});
+    }
+    return {{"version", 2}, {"default_project", m_default}, {"projects", projects}, {"runs", m_runs}, {"imported_machines",QJsonArray::fromStringList(m_imported)}};
+}

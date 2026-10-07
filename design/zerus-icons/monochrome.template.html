@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>hgs zerus — монохромные лезвия</title>
+<style>
+:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color-scheme:dark;--bg:#111315;--surface:#1a1d20;--raised:#23272b;--line:#34393f;--ink:#f4f5f5;--muted:#a0a7ad;--accent:#9bdfc8;--on-accent:#11231d;--mark:#fff}
+:root[data-theme=light]{color-scheme:light;--bg:#f1f2f3;--surface:#fff;--raised:#eceeef;--line:#d4d8db;--ink:#1d2328;--muted:#626c74;--accent:#216c54;--on-accent:#fff;--mark:#23272b}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);line-height:1.5}button,a,input{font:inherit}button,a{touch-action:manipulation}button{cursor:pointer;color:inherit}button:focus-visible,a:focus-visible,input:focus-visible{outline:3px solid var(--accent);outline-offset:4px}svg{display:block;flex-shrink:0}a{color:var(--accent);text-underline-offset:4px}.wrap{max-width:1160px;padding:0 28px;margin:auto}.top{height:76px;display:flex;justify-content:space-between;align-items:center;gap:16px;border-bottom:1px solid var(--line)}.brand{display:flex;align-items:center;gap:10px;font-size:16px;font-weight:650;letter-spacing:-.3px}.brand small{font-size:10px;letter-spacing:1.6px;color:var(--muted);font-weight:500;margin-left:14px}.quiet-button{border:1px solid var(--line);background:var(--surface);border-radius:9px;padding:8px 12px;font-size:12px}.intro{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;padding:36px 0 26px}.eyebrow{font-size:10px;letter-spacing:1.7px;color:var(--accent);margin:0 0 10px;font-weight:650}h1{font-size:clamp(29px,3.5vw,42px);font-weight:550;line-height:1.15;letter-spacing:-1.6px;margin:0 0 12px}.intro p:last-child{font-size:14px;color:var(--muted);max-width:580px;margin:0}.preview-note{font-size:11px;color:var(--muted);white-space:nowrap;margin-bottom:3px}.preview-note:before{content:"";display:inline-block;width:6px;height:6px;background:var(--accent);border-radius:50%;margin-right:7px}.cards{display:grid;grid-template-columns:1fr 1fr;gap:20px}.card{border:1px solid var(--line);background:var(--surface);border-radius:15px;overflow:hidden}.card.active{border-color:var(--accent)}.card-top{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--muted);padding:18px 22px 0}.card.active .tag{color:var(--accent)}.stage{height:228px;display:flex;align-items:center;justify-content:center}.enlarge{border:0;background:transparent;color:var(--mark);padding:15px;border-radius:16px;position:relative}.enlarge:hover{background:var(--raised)}.enlarge:after{content:"↗";position:absolute;right:0;top:0;color:var(--muted);font-size:15px}.copy{padding:0 22px 17px}.name-line{display:flex;align-items:baseline;gap:11px}.name-line h2{font-size:23px;font-weight:550;letter-spacing:-.7px;margin:0}.name-line span{font-size:12px;color:var(--muted)}.copy p{color:var(--muted);font-size:12px;margin:9px 0 0;max-width:380px}.sizes{display:flex;align-items:flex-end;justify-content:space-around;gap:8px;padding:20px 14px 16px;border-top:1px solid var(--line);color:var(--mark)}.sizes figure{margin:0;display:flex;align-items:center;flex-direction:column;gap:11px}.sizes figcaption{font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums}.card-actions{display:flex;gap:10px;padding:0 22px 20px}.preview-button{width:100%;border:1px solid var(--line);background:var(--raised);border-radius:8px;font-size:12px;padding:10px 12px}.preview-button[aria-pressed=true]{border-color:var(--accent);background:var(--accent);color:var(--on-accent);font-weight:600}.workbench{margin-top:22px;border:1px solid var(--line);border-radius:15px;background:var(--surface);padding:24px;display:grid;grid-template-columns:1fr 1.45fr;gap:30px}.workbench h2{font-size:21px;font-weight:550;letter-spacing:-.5px;margin:0 0 9px}.workbench p{font-size:12px;color:var(--muted);margin:0;max-width:300px}.control{display:flex;align-items:center;gap:10px;margin-top:19px;font-size:12px;flex-wrap:wrap}.control label{color:var(--muted)}.control input[type=number]{width:76px;padding:6px 8px;border:1px solid var(--line);background:var(--raised);color:var(--ink);border-radius:7px;font-variant-numeric:tabular-nums}.control input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;margin:0}.control input[type=number]:disabled{opacity:.4}.context{display:grid;gap:14px}.context-title{font-size:10px;color:var(--muted);margin-bottom:7px}.bar{height:40px;border-radius:8px;padding:0 12px;display:flex;align-items:center;gap:12px;font-size:11px;border:1px solid #ffffff0b}.bar .spacer{flex:1}.bar.window{background:var(--raised);border:1px solid var(--line);color:var(--ink)}.bar.arch{background:#272a2e;color:#fff}.bar.mac{background:#e7e7e9;color:#26282b;border-color:#0000000a}.bar .symbols{font-size:14px;white-space:nowrap;opacity:.6}.clock{font-variant-numeric:tabular-nums}.download-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:21px 0 25px}.download-row p{font-size:11px;color:var(--muted);margin:0;max-width:570px}.download{font-size:12px;border:1px solid var(--line);border-radius:9px;background:var(--surface);padding:10px 15px;text-decoration:none;white-space:nowrap;color:var(--ink)}.footer{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:20px 0 26px;border-top:1px solid var(--line);font-size:11px;color:var(--muted)}dialog{border:1px solid var(--line);border-radius:18px;color:var(--ink);background:var(--surface);width:min(530px,calc(100% - 32px));padding:24px}dialog::backdrop{background:#000b;backdrop-filter:blur(6px)}.dialog-top{display:flex;justify-content:space-between;align-items:center;gap:14px}dialog h2{font-size:20px;font-weight:550;margin:0}#large-mark{display:flex;justify-content:center;padding:30px 0;color:var(--mark)}#large-mark svg{width:min(340px,100%);height:auto}dialog p{font-size:12px;color:var(--muted);text-align:center;margin:0}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+@media(max-width:700px){.wrap{padding:0 18px}.top{height:66px}.brand small,.preview-note{display:none}.intro{padding:28px 0 22px}h1{letter-spacing:-1px}.cards{grid-template-columns:1fr;gap:16px}.stage{height:224px}.workbench{grid-template-columns:1fr;padding:20px;gap:25px}.workbench p{max-width:none}.download-row{align-items:flex-start;flex-direction:column}.download{width:100%;text-align:center}.bar{gap:9px;padding:0 10px}.copy p{max-width:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="top"><div class="brand"><span id="brand-mark" aria-hidden="true"></span>hgs zerus <small>MONOCHROME / 06</small></div><button class="quiet-button" id="theme-toggle">Светлая тема</button></header>
+<main>
+<section class="intro"><div><p class="eyebrow">SWARM · ЛЕЗВИЯ</p><h1>Тот же характер. Чистый силуэт.</h1><p>Лезвия в плоском монохроме — рядом с предыдущей Z.<br>Один цвет, гладкие края и никаких внутренних насечек.</p></div><span class="preview-note">Предварительный просмотр</span></section>
+<section id="cards" class="cards" aria-label="Сравнение знаков"></section>
+<section class="workbench" aria-labelledby="context-heading">
+<div><p class="eyebrow">В ИНТЕРФЕЙСЕ</p><h2 id="context-heading">Swarm / лезвия</h2><p>Реальные размеры значков при масштабе браузера 100%. В светлой панели знак становится тёмным.</p><div class="control"><input type="checkbox" id="show-count" checked><label for="show-count">Счётчик в трее</label><input type="number" id="count" min="0" max="999" value="12" aria-label="Число сессий"></div><div class="control"><input type="checkbox" id="show-stale"><label for="show-stale">Точка устаревшего статуса</label></div></div>
+<div class="context">
+<div><div class="context-title">Заголовок окна · 16 px</div><div class="bar window"><span id="window-mark" aria-hidden="true"></span><span>hgs zerus · Sessions</span><span class="spacer"></span><span class="symbols" aria-hidden="true">− &nbsp; □ &nbsp; ×</span></div></div>
+<div><div class="context-title">Arch / Plasma · 22 px</div><div class="bar arch"><span>Рабочий стол 1</span><span class="spacer"></span><span class="symbols" aria-hidden="true">⌃</span><span id="arch-mark" aria-hidden="true"></span><span class="symbols" aria-hidden="true">◉</span><span class="clock">12:48</span></div></div>
+<div><div class="context-title">macOS · 22 px</div><div class="bar mac"><span>Finder</span><span class="spacer"></span><span id="mac-mark" aria-hidden="true"></span><span class="symbols" aria-hidden="true">◒</span><span class="clock">Пт 12:48</span></div></div>
+</div>
+</section>
+<div class="download-row"><p>Макеты панелей показывают форму и масштаб. Шрифт счётчика может немного отличаться от системного. Выбор здесь меняет только превью.</p><a id="download" class="download" download="swarm-symbolic-v6.svg">Скачать Swarm · SVG</a></div>
+</main>
+<footer class="footer"><span>hgs zerus · белый знак на прозрачном фоне</span><a href="swarm-materials-v4.html">Предыдущие лезвия с объёмом ↗</a></footer>
+</div>
+<dialog id="zoom-dialog" aria-labelledby="zoom-title"><div class="dialog-top"><h2 id="zoom-title">Swarm / лезвия</h2><form method="dialog"><button class="quiet-button">Закрыть</button></form></div><div id="large-mark"></div><p>Векторный силуэт · прозрачный фон</p></dialog>
+<div id="announce" class="sr-only" aria-live="polite"></div>
+<script type="application/json" id="icon-data">__ZERUS_DATA__</script>
+<script>
+(() => {
+  'use strict';
+  const variants = JSON.parse(document.getElementById('icon-data').textContent);
+  const $ = id => document.getElementById(id);
+  let selected = variants[0], serial = 0;
+  const inner = variant => variant.svg.replace(/^[\s\S]*?<svg\b[^>]*>/, '').replace(/<\/svg>\s*$/, '').replace(/fill="#fff"/g, 'fill="currentColor"');
+  function mark(variant, size) {
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="${size}" height="${size}" aria-hidden="true">${inner(variant)}</svg>`;
+  }
+  const canvas = document.createElement('canvas'), ctx = canvas.getContext('2d');
+  function tray(variant) {
+    const size = 22, inset = 1, id = `cut-${++serial}`;
+    const count = Math.min(999, Math.max(0, Math.trunc(Number($('count').value) || 0)));
+    const text = count > 99 ? '99+' : String(count);
+    let px = 12;
+    const measure = () => { ctx.font = `700 ${px}px system-ui`; return ctx.measureText(text); };
+    let metrics = measure();
+    while(metrics.width > size - inset * 2 && px > 5) { px--; metrics = measure(); }
+    const width = Math.min(size, Math.ceil(metrics.width) + inset * 2);
+    const ascent = Math.ceil(metrics.actualBoundingBoxAscent), descent = Math.ceil(metrics.actualBoundingBoxDescent);
+    const height = ascent + descent + inset * 2, x = size - width, y = size - height;
+    const rounded = `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="1.8"/>`;
+    const glyph = `<g transform="scale(.22)">${inner(variant)}</g>`;
+    const badge = $('show-count').checked;
+    const stale = $('show-stale').checked ? '<circle cx="19.8" cy="2.2" r="2.2" fill="currentColor" opacity=".55"/>' : '';
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22" aria-hidden="true">
+      ${badge ? `<defs><mask id="${id}" maskUnits="userSpaceOnUse" x="0" y="0" width="22" height="22"><rect width="22" height="22" fill="white"/><text x="${x + width / 2}" y="${y + inset + ascent}" text-anchor="middle" font-family="system-ui" font-weight="700" font-size="${px}" fill="black">${text}</text></mask><mask id="${id}-gap" maskUnits="userSpaceOnUse" x="0" y="0" width="22" height="22"><rect width="22" height="22" fill="white"/><rect x="${x - .7}" y="${y - .7}" width="${width + 1.4}" height="${height + 1.4}" rx="2.5" fill="black"/></mask></defs><g mask="url(#${id}-gap)">${glyph}</g><g fill="currentColor" mask="url(#${id})">${rounded}</g>` : glyph}${stale}</svg>`;
+  }
+  function renderContext() {
+    $('context-heading').textContent = `${selected.name} / ${selected.subtitle.toLowerCase()}`;
+    $('window-mark').innerHTML = mark(selected, 16);
+    $('arch-mark').innerHTML = tray(selected);
+    $('mac-mark').innerHTML = tray(selected);
+    $('count').disabled = !$('show-count').checked;
+    $('download').href = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(selected.svg);
+    $('download').download = selected.id + '.svg';
+    $('download').textContent = `Скачать ${selected.name} · SVG`;
+    for(const button of document.querySelectorAll('[data-select]')) {
+      const active = button.dataset.select === selected.id;
+      button.setAttribute('aria-pressed', String(active));
+      button.textContent = active ? 'Показан в панелях ниже' : 'Показать в панелях';
+      button.closest('.card').classList.toggle('active', active);
+    }
+  }
+  $('brand-mark').innerHTML = mark(variants[0], 26);
+  $('cards').innerHTML = variants.map((variant, index) => `<article class="card" aria-labelledby="title-${variant.id}"><div class="card-top"><span>0${index + 1}</span><span class="tag">${variant.tag}</span></div><div class="stage"><button class="enlarge" data-zoom="${variant.id}" aria-label="Увеличить ${variant.name}">${mark(variant, 176)}</button></div><div class="copy"><div class="name-line"><h2 id="title-${variant.id}">${variant.name}</h2><span>${variant.subtitle}</span></div><p>${variant.description}</p></div><div class="sizes" aria-label="Знак в размерах от 16 до 48 пикселей">${[16, 22, 24, 32, 48].map(size => `<figure>${mark(variant, size)}<figcaption>${size} px</figcaption></figure>`).join('')}</div><div class="card-actions"><button class="preview-button" data-select="${variant.id}" aria-pressed="false">Показать в панелях</button></div></article>`).join('');
+  $('cards').addEventListener('click', event => {
+    const select = event.target.closest('[data-select]'), zoom = event.target.closest('[data-zoom]');
+    if(select) {
+      selected = variants.find(variant => variant.id === select.dataset.select);
+      renderContext();
+      $('announce').textContent = `В панелях показан ${selected.name}`;
+    }
+    if(zoom) {
+      const variant = variants.find(item => item.id === zoom.dataset.zoom);
+      $('zoom-title').textContent = `${variant.name} / ${variant.subtitle.toLowerCase()}`;
+      $('large-mark').innerHTML = mark(variant, 340);
+      $('zoom-dialog').showModal();
+    }
+  });
+  $('theme-toggle').addEventListener('click', () => {
+    const light = document.documentElement.dataset.theme !== 'light';
+    document.documentElement.dataset.theme = light ? 'light' : 'dark';
+    $('theme-toggle').textContent = light ? 'Тёмная тема' : 'Светлая тема';
+  });
+  $('count').addEventListener('input', renderContext);
+  $('count').addEventListener('change', () => {
+    $('count').value = String(Math.min(999, Math.max(0, Math.trunc(Number($('count').value) || 0))));
+    renderContext();
+  });
+  $('show-count').addEventListener('change', renderContext);
+  $('show-stale').addEventListener('change', renderContext);
+  renderContext();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+{
+  "tool": "built-in image_gen",
+  "reference": "design/zerus-icons/assets/z-carapace-v5-1024.png",
+  "variants": [
+    {
+      "id": "app",
+      "prompt": "Use case: precise-object-edit.\nInput image: the user-approved Z Carapace app icon. This is the edit target.\nPrimary request: prepare the exact same artwork for desktop application packaging. Preserve the existing Z, its precise contour, graphite layered chitin, turquoise facets, coral inner insets, lighting, all surface details and position relative to its dark background. Do not redesign or reinterpret any part of the Z.\nChange only the outer silhouette of the backdrop: make the neutral almost-black graphite background a crisp rounded square with approximately 22% corner radius, occupying 90% of the 1024 x 1024 canvas, centered with about 5% transparent padding. Scale the original square artwork uniformly into this rounded-square tile so the Z tips remain safely within the tile. Clip the dark backdrop at the rounded corners. Outside the rounded square must be genuinely transparent, not black or checkerboard pixels. Inside the tile preserve neutral graphite, no teal background, no gradient border.\nPixel-clean smooth alpha edge, no thick border, no outline, no outer glow, no drop shadow outside the tile, no stray pixels. Deliver one single app icon, no text, no mockup, no frame, no additional symbols."
+    },
+    {
+      "id": "tray",
+      "prompt": "Use case: style-transfer.\nInput image: user-approved Z Carapace icon, use its letter silhouette as the exact geometry reference.\nPrimary request: derive a dedicated monochrome desktop tray glyph of this Z on a genuinely transparent background. Preserve the recognizable outer silhouette: two broad hooked horizontal strokes joined by one diagonal, strong clean Z reading and generous internal openings. Match the overall contour closely, removing only tiny nicks that would disappear at 22 pixels.\nRender the full letter as a single solid opaque white silhouette. No inner material borders, no chitin texture, no shading, no colored inserts, no outlines, no grey fill, no glow. Smooth clean antialiased alpha edges only. Background entirely transparent including the two internal open spaces; do not include a rounded square or any background plaque.\nSquare 1024 x 1024 canvas; centered glyph fills approximately 88% width and height with clear margins. This is a flat functional 22px tray mark, no 3D effect, no scene, no words, no numbers, no additional symbols."
+    }
+  ],
+  "production_notes": {
+    "app": "Generated rounded graphite tile with transparent outer padding, exported with Lanczos resizing.",
+    "tray": "Generated raster draft rejected due to edge artifacts. Production glyph is a clean vector silhouette in IconFactory.cpp."
+  }
+}

@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Zerus — автоматические реакции на ошибки</title>
+<style>
+:root{color-scheme:dark;--bg:#161b21;--card:#1c242c;--line:#35434e;--text:#e4eaf0;--muted:#a2adbc;--accent:#8bdfc0;--amber:#edbd77}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 system-ui,sans-serif}main{max-width:1260px;margin:auto;padding:36px 24px 70px}h1{font-size:34px;line-height:1.2;margin:12px 0}h2{font-size:23px;margin:30px 0 14px}h3{font-size:16px;margin:0 0 12px}p{margin:8px 0 16px}a{color:var(--accent)}small,.muted{color:var(--muted);font-size:12px}.eyebrow{color:var(--accent);font-size:12px;letter-spacing:.06em}.lead{font-size:18px;max-width:850px}.grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px;margin-top:24px}.panel{padding:22px;border:1px solid var(--line);border-radius:12px;background:var(--card);min-width:0}.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.between{justify-content:space-between}.stack{display:grid;gap:14px;min-width:0}.stack>*{min-width:0}.rule{display:grid;grid-template-columns:minmax(0,1fr) 145px;gap:14px;align-items:center;padding:13px 0;border-bottom:1px solid var(--line)}.rule small{display:block;margin-top:3px}.steps{display:flex;gap:8px;flex-wrap:wrap}.steps label{display:grid;gap:4px;font-size:12px;color:var(--muted)}input[type=number]{width:84px}input[type=checkbox]{accent-color:var(--accent);width:17px;height:17px}.switch{display:flex;gap:10px;align-items:center;margin:20px 0 8px}button,select,input{font:inherit;color:inherit;background:#172027;border:1px solid var(--line);border-radius:7px;padding:8px 10px;min-height:36px}select{min-width:0;max-width:100%}button{cursor:pointer}button:hover:enabled{background:#293a40}button.primary{background:#25483e;border-color:#70bda4}button:disabled{opacity:.45;cursor:default}:focus-visible{outline:2px solid var(--accent);outline-offset:3px}.notice{color:var(--accent);font-size:12px;min-height:20px}.badge{border:1px solid #46524b;color:var(--amber);border-radius:6px;padding:3px 8px;font-size:12px}.failure{margin-top:20px;border:1px solid var(--line);border-left:3px solid var(--amber);padding:16px;background:#192127}.failure h3{color:var(--amber)}.failure code{display:block;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;color:var(--muted);margin:10px 0}.recovery{padding-top:14px;border-top:1px solid var(--line)}#status{font-size:17px;margin:0 0 5px}#reason{min-height:40px}.demo{margin-top:18px;padding-top:14px;border-top:1px dashed var(--line)}.demo button{font-size:12px;padding:6px 9px;min-height:30px}.journal{font-size:12px;color:var(--muted);padding-left:18px;max-height:125px;overflow:auto}.note{border-left:3px solid var(--accent);padding:10px 16px;background:#1c2b27;margin:22px 0}.table-wrap{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:12px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:12px}td code{color:var(--accent)}details{border:1px solid var(--line);border-radius:8px;padding:16px;margin-top:14px}summary{cursor:pointer;font-weight:600}details p:first-of-type{margin-top:16px}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;background:#10171d;padding:16px;border-radius:6px}.spec p{max-width:1060px}.spec li{margin:8px 0}[hidden]{display:none!important}@media(max-width:850px){.grid{grid-template-columns:1fr}main{padding:24px 16px}.panel{padding:16px}h1{font-size:28px}}@media(max-width:440px){.rule{grid-template-columns:1fr}.rule select{width:100%}}
+</style>
+</head>
+<body><main>
+<div class="eyebrow">ZERUS / ПРОЕКТ ФИЧИ / 6 ОКТЯБРЯ 2026</div>
+<h1>Временная ошибка — понятное ожидание</h1>
+<p class="lead">Zerus может дождаться восстановления провайдера и продолжить прерванную работу. Пользователь видит причину, время следующей попытки и может отменить её.</p>
+<p class="muted">Интерактивный макет. Кнопки меняют только демонстрацию в этой странице. Автоматическое восстановление в HGS пока не реализовано.</p>
+
+<div class="grid">
+<section class="panel" aria-labelledby="settings-title">
+<div class="row between"><h3 id="settings-title">Settings / Auto reactions</h3><label>Машина <select id="host"><option value="arch">arch</option><option value="mac">mac</option></select></label></div>
+<p class="muted">Для сессий на этой машине. Настройка общая для всех подключённых окон Zerus.</p>
+<label class="switch"><input id="enabled" type="checkbox">Автоматически восстанавливать ответы</label>
+<p class="muted">После включения — для новых ошибок. Старые ошибки сами не запускают работу.</p>
+<div class="rule"><div>Перегрузка и сбой сервиса<small>Overloaded, временные ошибки сервера</small></div><select id="service" aria-label="Реакция на сбой сервиса"><option value="retry">Повторять</option><option value="none">Ничего</option></select></div>
+<div class="rule"><div>Слишком частые запросы<small>Только подтверждённый временный rate limit</small></div><select id="rate" aria-label="Реакция на ограничение частоты"><option value="retry">Повторять</option><option value="none">Ничего</option></select></div>
+<div class="rule"><div>Сеть и таймаут<small>Когда агент подтвердил остановку ответа</small></div><select id="network" aria-label="Реакция на сетевую ошибку"><option value="retry">Повторять</option><option value="none">Ничего</option></select></div>
+<h3 style="margin-top:20px">Ожидание между попытками</h3>
+<div class="steps"><label>1-я, сек<input id="delay0" type="number" min="1" max="86400" value="15"></label><label>2-я, сек<input id="delay1" type="number" min="1" max="86400" value="30"></label><label>3-я, сек<input id="delay2" type="number" min="1" max="86400" value="60"></label><label>4-я, сек<input id="delay3" type="number" min="1" max="86400" value="300"></label></div>
+<p class="muted" style="margin-top:10px">Максимум 4 автоматические попытки. Если провайдер просит ждать дольше, учитываем его срок. Затем — Needs attention.</p>
+<p class="muted">Авторизация, деньги, квота, контекст и неизвестные ошибки требуют вашего решения.</p>
+<div class="row"><button class="primary" id="apply">Применить к arch</button><span id="saved" class="notice" role="status"></span></div>
+</section>
+
+<section class="panel" aria-labelledby="preview-title">
+<div class="row between"><h3 id="preview-title">Activity / Пример</h3><span class="badge" id="state-badge">Needs attention</span></div>
+<label class="stack">Сценарий<select id="scenario"><option value="service">Claude: 529 Overloaded</option><option value="rate">Временный 429: ждать 120 секунд</option><option value="network">Соединение прервано, ответ остановлен</option><option value="quota">Исчерпан бюджет аккаунта</option><option value="unknown">Неизвестная ошибка провайдера</option><option value="uncertain">Доставка предыдущего ввода не подтверждена</option><option value="native">Агент ещё повторяет запрос сам</option><option value="unsupported">Способ восстановления не поддерживается</option></select></label>
+<article class="failure"><h3>Response failed</h3><code id="error"></code><div class="recovery"><p id="status" role="status" aria-live="polite"></p><p id="reason" class="muted"></p><div class="row"><button id="retry">Повторить сейчас</button><button id="cancel">Отменить</button><button id="settings">Настройки…</button></div></div></article>
+<div class="demo"><small>Управление демонстрацией</small><div class="row" style="margin-top:8px"><button id="restart">Новая ошибка</button><button id="advance">Пропустить ожидание</button><button id="fail">Снова ошибка</button><button id="success">Ответ получен</button><button id="manual">Пользователь написал</button></div><ol class="journal" id="journal" aria-label="История демонстрации"></ol></div>
+</section>
+</div>
+
+<div class="note">Общий класс: <strong>временные ошибки провайдера</strong> (transient provider failures). <code>529 Overloaded</code> означает перегрузку сервиса Claude. Способ восстановления и возможность безопасного повтора проверяются отдельно от класса ошибки.</div>
+
+<section class="spec">
+<h2>Какая реакция подходит</h2>
+<div class="table-wrap"><table><thead><tr><th>Класс</th><th>Рекомендация после включения</th><th>Условие</th></tr></thead><tbody>
+<tr><td>Перегрузка, временный серверный сбой</td><td>15 → 30 → 60 → 300 сек</td><td>Например, Claude 529 или DeepSeek 503. Окончательный отказ ответа, штатные повторы агента закончены.</td></tr>
+<tr><td>Ограничение частоты</td><td>Та же последовательность</td><td>Подтверждён временный лимит. Не раньше Retry-After, если агент передал его. Сам код 429 недостаточен.</td></tr>
+<tr><td>Сеть / timeout</td><td>Та же последовательность</td><td>Агент подтвердил завершившуюся неудачную попытку, доступен проверенный способ продолжить. Обрыв связи Zerus с машиной сам по себе не повод повторять.</td></tr>
+<tr><td>Квота / баланс / авторизация / доступ</td><td>Ничего автоматически</td><td>Открыть аккаунт, войти снова или дождаться сброса. «Продолжить после сброса» — отдельное последующее расширение, только при достоверном reset_at.</td></tr>
+<tr><td>Контекст / неверный запрос / модель / неизвестная причина</td><td>Ничего автоматически</td><td>Показать ошибку и доступное ручное действие. Без автоматической смены модели, аккаунта или компактации.</td></tr>
+<tr><td>Вопрос / разрешение / ошибка инструмента / неясная доставка</td><td>Не запускать эту политику</td><td>Это другие события. Не подтверждать диалоги, не выполнять команды заново и не дублировать возможную доставку.</td></tr>
+</tbody></table></div>
+
+<h2>Поведение, которое видно пользователю</h2>
+<p>Ожидание выглядит как <strong>Retry in 14s (1/4)</strong> в карточке сессии и внутри исходной ошибки в Activity. Рядом — <strong>Повторить сейчас</strong>, <strong>Отменить</strong>, <strong>Настройки…</strong>. «Повторить сейчас» также соблюдает минимальный срок провайдера. Отмена касается этой цепочки; правило остаётся включено.</p>
+<p>Одна ошибка объединяет историю попыток. Журнал сохраняет причину, сроки, результат и отмену без одинаковых карточек на каждый опрос. Таймер обновляется на месте, сохраняя прокрутку и фокус. При исчерпании четырёх попыток появляется Needs attention и одно обычное уведомление. Пока повтор запланирован, периодические ошибки не вызывают серию уведомлений. Ручная отметка «посмотреть потом» сохраняется.</p>
+<p>15, 30, 60 и 300 секунд — <strong>задержки после очередной завершившейся неудачи</strong>, а не время от первого сбоя. Базовое ожидание суммарно 6 мин 45 сек; длительность запросов, срок провайдера и небольшой случайный разброс добавляются сверху. После четвёртой неудачной попытки автоматического цикла больше нет.</p>
+<p>Новый ввод пользователя, ручная остановка, пауза, архивирование, смена запуска или разговора отменяют цепочку. Если агент сам возобновил работу, запланированное действие снимается. При этом незавершённый эпизод и уже потраченные попытки сохраняются: очередная ошибка того же ответа не начинает новый бесконечный цикл. Бюджет сбрасывается после успешного окончания ответа либо нового явного запроса пользователя.</p>
+
+<h2>Где живут настройки и ожидание</h2>
+<p>В первом варианте — один набор правил <strong>на машину агента</strong>, редактируемый через Settings / Auto reactions с выбором машины. Слои настроек проектов и аккаунтов пока не нужны. По умолчанию автоматизация выключена; при включении предлагаются три правила и интервалы выше. Настройки применяются ко всем сессиям на выбранной машине.</p>
+<p>HGS хранит правила и задания на этой машине. Новый фоновый исполнитель под systemd user / launchd обслуживает её локальные сессии. Его работа не зависит от открытого окна Zerus или SSH-соединения с ним. Два клиента редактируют одну политику с номером ревизии; при конфликте показывается актуальное значение. Недоступная машина не отображается как успешно настроенная. До установки работающего исполнителя включение недоступно.</p>
+<p>Изменение интервалов относится к новым эпизодам; уже видимый отсчёт сохраняет использованную версию правила. Выключение автоматизации или перевод класса в «Ничего» отменяет ожидающие задания этого класса. Уже отправленный запрос не прерывается. Включение не оживляет исторические ошибки; для текущей нужен явный запуск пользователем.</p>
+<p>На одной машине повторные запросы одного аккаунта отправляются по очереди с небольшим случайным разбросом задержки. Если аккаунт используется и на Arch, и на Mac, провайдерский минимум учитывается каждой машиной; глобальная координация лимита между машинами в первый вариант не входит.</p>
+
+<details><summary>Что уже есть в HGS и что нужно добавить</summary>
+<p><a href="../../src/state/provider_errors.rs">provider_errors.rs</a> нормализует подтверждённые сообщения о сбое в <code>StopFailure / provider_error</code>. Есть <code>capacity</code>, <code>rate_limit</code>, <code>quota</code>, <code>authentication</code>, <code>context_limit</code>, <code>model_unavailable</code>, <code>provider</code>. Сейчас классификация в основном текстовая; сведения Retry-After и уверенность классификации не сохраняются.</p>
+<p><a href="../../src/state/input.rs">input.rs</a> проверяет возможность нового ввода после ошибки; <code>error_message_can_send</code> означает готовность поля ввода, а не наличие безопасного повтора. Отдельного планировщика и операции восстановления сейчас нет.</p>
+<p>Добавить нормализованный объект ошибки: источник, категория, исходный код/тип, request_id, стабильный failure_id, признак окончательного сбоя, retry_not_before и доказательство классификации. Структурированные данные имеют приоритет; точные проверенные форматы сообщения используются только внутри адаптера провайдера. Неизвестный текст остаётся ручным случаем.</p>
+<pre>{
+  "recovery": {
+    "supported": true,
+    "action": "native_retry",
+    "failure_id": "opaque-failure-id",
+    "episode_id": "opaque-original-turn-id",
+    "state": "scheduled",
+    "attempt": 1,
+    "max_attempts": 4,
+    "next_attempt_at": "host timestamp",
+    "retry_not_before": null,
+    "policy_revision": 3,
+    "blocked_reason": null
+  }
+}</pre>
+<p>После проверки установленных клиентов реализация использует действия <code>continue_message</code> и <code>retry_request</code>. Claude, Codex и Kimi получают явно помеченное сообщение <code>[HGS automatic recovery]</code> с просьбой продолжить текущую задачу в той же беседе. HGS не пересылает исходный запрос и не повторяет команды инструментов. Это поведение раскрыто в настройках, выключено по умолчанию и проверяется отдельными нативными тестами. DeepSeek после завершения встроенных повторов повторяет тот же неудачный запрос модели; для уже запущенного host без нового расширения используется сообщение продолжения.</p>
+<p>Фактический JSON содержит <code>recovery_capability</code>, <code>recovery_error_class</code> и <code>recovery</code> с полями <code>id, identity, state, action, attempt, delays, due_at, not_before, receipt, history</code>. Черновики и неопределённая доставка блокируют автоматизацию. Неизвестные будущие адаптеры требуют явного подключения и проверки, а не автоматического наследования права на ввод.</p>
+</details>
+
+<details><summary>Исполнение, повторная доставка и перезапуск</summary>
+<p>Идентичность задания привязана к машине, сессии, run_id, conversation_id, исходному эпизоду и номеру попытки. Все следующие ошибки той же цепочки связываются с эпизодом; опрос, heartbeat, tool progress и очередной failure_id не обнуляют бюджет. Нативные повторы агента не считаются попытками HGS и не выполняются одновременно с ними.</p>
+<p>Перед действием атомарно захватывается задание, затем повторно сверяются исходный сбой, запуск, текущая политика, отсутствие нового пользовательского ввода, незавершённой доставки, вопросов и разрешений. Проверяются завершение штатного retry, отсутствие работающих инструментов и совместимость состояния адаптера. Черновик в терминале сохраняется и блокирует действие. Неудачная проверка не расходует попытку отправки: отмена для изменившейся идентичности или Needs attention для неизвестного состояния.</p>
+<p>Отправке предшествует сохранение стабильного request_id и записи о попытке. Один исполнитель на хост, атомарное состояние и дедупликация препятствуют двум отправкам из нескольких окон. После передачи ввода ожидается нативное подтверждение. Если доставка могла состояться, а подтверждения нет, цепочка останавливается с Needs attention. Нельзя обещать exactly-once через PTY; неопределённый результат требует проверки, а не следующего Enter.</p>
+<p>После падения исполнителя неотправленные задания восстанавливаются с тем же бюджетом. Для подготовленной или отправленной попытки сначала ищется подтверждение; при неопределённости автоматическая повторная передача запрещена. После сна или восстановления связи выполняется максимум одно просроченное действие после новой проверки, без накопившейся серии. Закрытие окна, чтение ошибки и Mark as read не меняют расписание.</p>
+<p>Временный прогресс означает «агент работает», но ещё не «успешно восстановлено». Успех отмечается по окончанию ответа. Все переходы, включая отмену, неподдерживаемый адаптер и исчерпание бюджета, записываются в журнал Activity.</p>
+</details>
+
+<details><summary>Границы первой версии и проверка</summary>
+<p>Первая версия: настройки машины, конечная последовательность ожиданий, проверенные временные классы, действие адаптера, сохранённый на хосте исполнитель, отмена и состояние в Activity/списке сессий. Автооплата, переключение аккаунта/модели, подтверждение разрешений, автоответы, восстановление упавшего процесса и ожидание суточной квоты сюда не входят.</p>
+<p>Проверить на изолированных агентах: окончательный 529; обычный 429 против бюджетного; Retry-After дольше настройки; встроенные повторы; 4 сбоя подряд; ошибка после частичного ответа; потеря подтверждения; два клиента; падение между сохранением и отправкой; новая реплика перед срабатыванием; смена run/conversation; сон/пробуждение; выключение правила. На Qt — отсчёт без пересоздания карточки, прыжков прокрутки и перехвата фокуса. Отключение правила не должно посылать агенту ввод.</p>
+</details>
+
+<h2>Источники</h2>
+<p>Claude документирует 529 как временную перегрузку и различает причины 429; SDK уже имеет свои повторы и учитывает Retry-After. <a href="https://platform.claude.com/docs/en/api/errors">Claude API errors</a>, <a href="https://platform.claude.com/docs/en/api/rate-limits">Claude rate limits</a>. DeepSeek описывает 503 как перегрузку, 500 как серверный сбой, а 402 как недостаточный баланс. <a href="https://api-docs.deepseek.com/quick_start/error_codes/">DeepSeek error codes</a>. Эти API-документы подтверждают классификацию; способы управления установленными CLI требуют нативных тестов.</p>
+</section>
+</main>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+const defaults=()=>({enabled:false,service:'retry',rate:'retry',network:'retry',delays:[15,30,60,300]});
+const policies={arch:defaults(),mac:defaults()};
+const scenarios={service:{group:'service',error:'API Error: 529 Overloaded. The provider is temporarily overloaded.'},rate:{group:'rate',floor:120,error:'Temporary rate limit. Retry-After: 120 seconds.'},network:{group:'network',error:'Connection interrupted. Agent confirmed the response has stopped.'},quota:{error:'Account spending limit reached.',reason:'Нужно проверить лимит или баланс аккаунта.'},unknown:{error:'Provider error with an unrecognized cause.',reason:'Причина неизвестна. Откройте Terminal для проверки.'},uncertain:{error:'Previous input delivery is not confirmed.',reason:'Ввод мог дойти до агента. Проверьте Terminal перед повтором.'},native:{error:'Provider overloaded. Agent is retrying internally.',reason:'Агент уже повторяет запрос. HGS дождётся окончательного результата.'},unsupported:{error:'Provider overloaded.',reason:'Для этой версии агента проверенный способ восстановления пока недоступен.'}};
+let plan,step=0,phase='idle',remaining=0,floor=0,manual=false;
+function log(text){const li=document.createElement('li');li.textContent=text;$('journal').prepend(li);}
+function load(){const p=policies[$('host').value];$('enabled').checked=p.enabled;for(const k of ['service','rate','network'])$(k).value=p[k];p.delays.forEach((n,i)=>$('delay'+i).value=n);$('apply').textContent='Применить к '+$('host').value;$('saved').textContent='';start();}
+function schedule(){const s=scenarios[$('scenario').value];floor=s.floor||0;remaining=0;if(!s.group){phase='blocked';}else if(manual||!plan.enabled||plan[s.group]==='none'){phase='idle';}else if(step>=plan.delays.length){phase='exhausted';}else{phase='waiting';remaining=Math.max(plan.delays[step],floor);log('Ожидание '+remaining+' сек перед попыткой '+(step+1)+'/4.');}render();}
+function start(){plan=structuredClone(policies[$('host').value]);step=0;manual=false;$('journal').replaceChildren();schedule();}
+function render(){const s=scenarios[$('scenario').value];$('error').textContent=s.error;let status='',reason='',badge='Needs attention';
+if(phase==='waiting'){status='Повтор через '+remaining+' сек ('+(step+1)+'/4)';reason=floor>0?'Провайдер просит ждать ещё '+floor+' сек.':'Ожидаем по вашему правилу. Можно отменить этот повтор.';badge='Retry in '+remaining+'s';}
+else if(phase==='working'){status='Запрос возобновлён';reason='Ожидаем результат агента.';badge='Working';}
+else if(phase==='done'){status='Ответ получен';reason='Эпизод завершён. Новая ошибка получит отдельный бюджет.';badge='Ready';}
+else if(phase==='cancelled'){status='Автоматический повтор отменён';reason='Эта цепочка больше не запустится сама.';}
+else if(phase==='exhausted'){status='4 попытки не помогли';reason='Повторите вручную позже или проверьте состояние провайдера.';}
+else if(phase==='blocked'){status=$('scenario').value==='native'?'Агент повторяет запрос':'Требуется проверка';reason=s.reason;if($('scenario').value==='native')badge='Working';}
+else{status='Автоматического повтора нет';reason=manual?'Ручная попытка не запускает автоматическую цепочку.':'Для этого класса или машины выбрано «Ничего». Повторить можно вручную.';}
+$('status').textContent=status;$('reason').textContent=reason;$('state-badge').textContent=badge;
+$('retry').disabled=!s.group||floor>0||['working','done'].includes(phase);$('retry').textContent=phase==='waiting'?'Повторить сейчас':'Повторить вручную';$('cancel').disabled=phase!=='waiting';$('advance').disabled=phase!=='waiting'&&!(phase==='idle'&&floor>0);$('fail').disabled=phase!=='working';$('success').disabled=phase!=='working';}
+function send(){if($('retry').disabled)return;if(phase!=='waiting')manual=true;else step++;phase='working';remaining=0;floor=0;log(manual?'Ручная попытка.':'Отправлена попытка '+step+'/4.');render();}
+$('apply').onclick=()=>{const delays=[0,1,2,3].map(i=>Number($('delay'+i).value));if(delays.some(n=>!Number.isInteger(n)||n<1||n>86400)){$('saved').textContent='Введите целые секунды от 1 до 86400.';return;}const p={enabled:$('enabled').checked,service:$('service').value,rate:$('rate').value,network:$('network').value,delays};policies[$('host').value]=p;$('saved').textContent='Сохранено для '+$('host').value;const group=scenarios[$('scenario').value].group;if(phase==='waiting'&&(!p.enabled||p[group]==='none')){phase='cancelled';log('Ожидание отменено изменением правила.');render();}else log('Новые настройки применятся к новой ошибке.');};
+$('host').onchange=load;$('scenario').onchange=start;$('restart').onclick=start;$('retry').onclick=send;
+$('cancel').onclick=()=>{phase='cancelled';log('Пользователь отменил цепочку.');render();};
+$('advance').onclick=()=>{remaining=0;floor=0;render();if(phase==='waiting')send();};
+$('fail').onclick=()=>{log('Агент подтвердил новую ошибку.');schedule();};
+$('success').onclick=()=>{phase='done';log('Подтверждено успешное окончание ответа.');render();};
+$('manual').onclick=()=>{phase='cancelled';remaining=0;floor=0;log('Новое сообщение пользователя отменило эту цепочку.');render();};
+$('settings').onclick=()=>{$('enabled').focus();$('settings-title').scrollIntoView({behavior:'smooth',block:'center'});};
+setInterval(()=>{const floorChanged=floor>0;if(floorChanged)floor--;if(phase==='waiting'){remaining=Math.max(0,remaining-1);render();if(!remaining)send();}else if(floorChanged)render();},1000);
+load();
+</script>
+</body></html>

@@ -1,0 +1,11 @@
+{
+  "variants": 4,
+  "images": "loaded",
+  "selection": "persisted",
+  "settings": "persisted",
+  "prompts": "passed",
+  "clipboardFallback": "passed",
+  "download": "hgs-zerus-02-swarm-512.png",
+  "mobile": "390px without overflow",
+  "consoleErrors": []
+}

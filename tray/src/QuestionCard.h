@@ -1,0 +1,82 @@
+#pragma once
+
+#include <QHash>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QSet>
+#include <QWidget>
+#include <QElapsedTimer>
+#include <QTimer>
+
+class QAbstractButton;
+class QLabel;
+class QLineEdit;
+class QPushButton;
+class QStackedWidget;
+class QTabBar;
+class QToolButton;
+
+// A native form for a specific provider question request. The owner supplies
+// identity-checked transport; this widget never sends terminal keystrokes.
+class QuestionCard : public QWidget {
+    Q_OBJECT
+public:
+    explicit QuestionCard(QWidget *parent = nullptr);
+    void setQuestion(const QString &sessionKey, const QJsonObject &question, int pendingQuestions = 0);
+    void setQueueNavigation(int index, int count);
+    void setAvailability(bool available, const QString &reason = {});
+    void setTheme(bool dark);
+    void setNativeUi(bool native);
+    void setSending(const QString &sessionKey, const QString &questionId, bool sending = true);
+    void setError(const QString &sessionKey, const QString &questionId, const QString &detail, bool uncertain = false);
+    void setAnswered(const QString &sessionKey, const QString &questionId);
+
+signals:
+    void answerRequested(const QString &sessionKey, const QString &questionId, const QJsonArray &answers);
+    void openTerminalRequested();
+    void queueNavigationRequested(int direction);
+
+protected:
+    void paintEvent(QPaintEvent *event) override;
+
+private:
+    struct Answer { QSet<QString> options; QString text; bool other = false; };
+    struct Draft {
+        QHash<QString, Answer> answers;
+        QString notice;
+        int page = 0;
+        bool sending = false, answered = false, error = false, uncertain = false;
+    };
+    struct Form {
+        QString id;
+        bool multi = false, allowOther = false, required = true;
+        QHash<QString, QAbstractButton *> options;
+        QAbstractButton *other = nullptr;
+        QLineEdit *text = nullptr;
+    };
+    void rebuild();
+    void capture();
+    void updateControls();
+    void submit();
+    QJsonArray answers(bool *valid = nullptr) const;
+    QString callbackKey(const QString &sessionKey, const QString &questionId) const;
+    static QString identity(const QString &sessionKey, const QString &questionId, const QString &hash = {});
+
+    QHash<QString, Draft> m_drafts;
+    QHash<QString, QString> m_latestKeys, m_sendingKeys;
+    QString m_session, m_id, m_key, m_unavailableReason;
+    QJsonObject m_question;
+    QList<Form> m_forms;
+    QLabel *m_heading, *m_progress, *m_status, *m_askedAt, *m_pendingCount;
+    QTabBar *m_tabs;
+    QStackedWidget *m_pages;
+    QPushButton *m_terminal, *m_retry, *m_submit, *m_skip;
+    QPushButton *m_previous, *m_next;
+    QToolButton *m_queuePrevious, *m_queueNext;
+    QPushButton *m_approve, *m_deny;
+    QTimer m_reviewTimer;
+    QElapsedTimer m_reviewClock;
+    int m_reviewSeconds = 3;
+    int m_queueIndex = -1, m_queueCount = 0;
+    bool m_available = true, m_loading = false, m_dark = true;
+};

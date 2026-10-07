@@ -1,0 +1,970 @@
+//! Host-owned recovery episodes with a replicated, versioned policy.
+//! A terminal continuation is explicitly different from retrying an API request.
+use super::*;
+use fs2::FileExt;
+use serde::{Deserialize, Serialize};
+use std::fs::{self, OpenOptions};
+use std::os::unix::fs::OpenOptionsExt;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+
+pub(super) const CONTINUATION: &str = "[HGS automatic recovery] The previous turn stopped with a temporary provider error. Continue the current task from the existing conversation. Check any uncertain operation before repeating it.";
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+struct Policy {
+    version: u32,
+    revision: u64,
+    enabled: bool,
+    enabled_at: f64,
+    service: bool,
+    rate_limit: bool,
+    network: bool,
+    delays: Vec<i64>, // Legacy v1 default; per-class schedules take precedence.
+    schedules: std::collections::BTreeMap<String, Vec<i64>>,
+    writer: String,
+}
+impl Default for Policy {
+    fn default() -> Self {
+        Self {
+            version: 2,
+            revision: 0,
+            enabled: false,
+            enabled_at: 0.0,
+            service: true,
+            rate_limit: true,
+            network: true,
+            delays: vec![15, 30, 60, 300],
+            schedules: Default::default(),
+            writer: String::new(),
+        }
+    }
+}
+pub(super) fn policy_path() -> PathBuf {
+    root().join("recovery/policy.json")
+}
+fn read_json(path: &Path) -> Result<Value> {
+    serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+}
+fn policy() -> Result<Policy> {
+    if !policy_path().exists() {
+        return Ok(Policy::default());
+    }
+    let p: Policy =
+        serde_json::from_value(read_json(&policy_path())?).map_err(|e| e.to_string())?;
+    validate_policy(&p)?;
+    Ok(p)
+}
+fn validate_delays(delays: &[i64]) -> Result<()> {
+    if delays.is_empty() || delays.len() > 16 {
+        return Err("Use 1–16 delays".into());
+    }
+    for (index, delay) in delays.iter().enumerate() {
+        if (1..=86400).contains(delay) {
+            continue;
+        }
+        if index + 1 == delays.len() && (*delay == -1 || (*delay == 0 && index > 0)) {
+            continue;
+        }
+        return Err(
+            "Use 1–86400 seconds; end with -1 to stop or 0 to repeat the previous delay forever"
+                .into(),
+        );
+    }
+    Ok(())
+}
+fn validate_policy(p: &Policy) -> Result<()> {
+    if ![1, 2].contains(&p.version) || p.writer.len() > 128 || p.revision >= 9_000_000_000_000_000 {
+        return Err("Unsupported recovery policy version or revision".into());
+    }
+    validate_delays(&p.delays)?;
+    for (class, delays) in &p.schedules {
+        if !["service", "rate_limit", "network"].contains(&class.as_str()) {
+            return Err("Unknown recovery class".into());
+        }
+        validate_delays(delays)?;
+    }
+    Ok(())
+}
+fn policy_order(p: &Policy) -> (u64, String) {
+    // Revision is a Lamport clock. Stable content ordering also reconciles v1
+    // policies created independently before shared settings existed.
+    let writer = if p.writer.is_empty() {
+        format!(
+            "legacy:{:?}:{}:{}:{}:{}:{:?}",
+            p.delays, p.enabled, p.service, p.rate_limit, p.network, p.schedules
+        )
+    } else {
+        p.writer.clone()
+    };
+    (p.revision, writer)
+}
+fn next_delay(delays: &[Value], attempt: usize) -> Option<f64> {
+    match delays.get(attempt).and_then(Value::as_i64) {
+        Some(value) if value > 0 => Some(value as f64),
+        Some(-1) => None,
+        _ if delays.last().and_then(Value::as_i64) == Some(0) => delays
+            .get(delays.len().checked_sub(2)?)
+            .and_then(Value::as_i64)
+            .filter(|v| *v > 0)
+            .map(|v| v as f64),
+        _ => None,
+    }
+}
+fn job_path(name: &str) -> PathBuf {
+    root()
+        .join("recovery/jobs")
+        .join(legacy_record_path(name).file_name().unwrap())
+}
+fn load_job(name: &str) -> Value {
+    read_json(&job_path(name)).unwrap_or(Value::Null)
+}
+pub(super) fn rename_job(old: &str, new: &str, run_id: &str) -> Result<()> {
+    let mut job = load_job(old);
+    if !job.is_object() || job["identity"][0] != run_id {
+        return Ok(());
+    }
+    job["name"] = json!(new);
+    if job["state"] == "dispatching" {
+        stop(
+            &mut job,
+            "uncertain",
+            "Session renamed during delivery; inspect the agent",
+        );
+    }
+    // Called inside the existing rename transaction's lock; replay is harmless.
+    atomic(&job_path(new), &job.to_string())?;
+    fs::remove_file(job_path(old)).map_err(|e| e.to_string())
+}
+fn save_job(job: &Value) -> Result<()> {
+    let previous = load_job(string(job, "name"));
+    let mut job = job.clone();
+    let mut history = if previous["id"] == job["id"] {
+        previous["history"].as_array().cloned().unwrap_or_default()
+    } else {
+        vec![]
+    };
+    if previous["state"] != job["state"] || previous["attempt"] != job["attempt"] {
+        history.push(json!({"at":now(),"state":job["state"],"attempt":job["attempt"],"reason":job["reason"]}));
+        if history.len() > 32 {
+            history.remove(0);
+        }
+    }
+    job["history"] = json!(history);
+    atomic(&job_path(string(&job, "name")), &job.to_string())
+}
+fn seconds(v: &Value, key: &str) -> f64 {
+    v[key].as_f64().unwrap_or(0.0)
+}
+fn failure_id(s: &Value) -> String {
+    let e = &s["provider_error"];
+    if !e.is_object() {
+        return String::new();
+    }
+    format!(
+        "{}:{}:{}",
+        string(e, "source"),
+        string(e, "message_id"),
+        seconds(e, "at")
+    )
+}
+fn identity(s: &Value) -> Value {
+    json!([
+        s["run_id"],
+        s["conversation_id"],
+        s["model"],
+        s["account_id"],
+        s["host_generation"]
+    ])
+}
+// Register new provider recovery capabilities here, never infer them from a
+// composer's generic ability to send text or from arbitrary tool output.
+fn adapter(s: &Value) -> Option<&'static str> {
+    match string(s, "agent") {
+        "claude" | "kimi" | "codex" => Some("continue_message"),
+        "dsh" if s["native_recovery"].is_object() => Some("retry_request"),
+        "dsh" => Some("continue_message"),
+        _ => None,
+    }
+}
+fn contains(text: &str, words: &[&str]) -> bool {
+    words.iter().any(|w| text.contains(w))
+}
+fn class(error: &Value) -> &'static str {
+    let text = format!(
+        "{} {}",
+        string(error, "error_kind"),
+        string(error, "detail")
+    )
+    .to_lowercase();
+    // Permanent failures always win, including a quota error containing 429.
+    if contains(
+        &text,
+        &[
+            "quota",
+            "billing",
+            "credit",
+            "balance",
+            "usage limit",
+            "usage_limit",
+            "insufficient",
+            "account_on_hold",
+            "authentication",
+            "unauthorized",
+            "api key",
+            "api_key",
+            "credential",
+            "401",
+            "403",
+            "context",
+            "max_output_tokens",
+            "model_not_found",
+            "model not found",
+            "not supported",
+            "invalid request",
+        ],
+    ) {
+        return "manual";
+    }
+    if contains(
+        &text,
+        &[
+            "capacity",
+            "overload",
+            "529",
+            "503",
+            "502",
+            "500",
+            "504",
+            "internal_server_error",
+            "internal server error",
+            "service unavailable",
+        ],
+    ) {
+        return "service";
+    }
+    if contains(
+        &text,
+        &["rate_limit", "rate limit", "too many requests", "429"],
+    ) {
+        return "rate_limit";
+    }
+    if contains(
+        &text,
+        &[
+            "connection reset",
+            "connection refused",
+            "connection lost",
+            "connection error",
+            "network error",
+            "network_error",
+            "timed out",
+            "timeout",
+            "econnreset",
+            "econnrefused",
+            "etimedout",
+            "stream disconnected",
+        ],
+    ) {
+        return "network";
+    }
+    "manual"
+}
+fn enabled(p: &Policy, class: &str) -> bool {
+    p.enabled
+        && match class {
+            "service" => p.service,
+            "rate_limit" => p.rate_limit,
+            "network" => p.network,
+            _ => false,
+        }
+}
+fn stop(job: &mut Value, state: &str, reason: &str) {
+    job["state"] = json!(state);
+    job["reason"] = json!(reason);
+    job["updated_at"] = json!(now());
+}
+pub(super) fn cancel_for_input(name: &str) -> Result<()> {
+    let mut job = load_job(name);
+    if active(&job) {
+        stop(
+            &mut job,
+            "cancelled",
+            "New input cancelled automatic recovery",
+        );
+        save_job(&job)?;
+    }
+    Ok(())
+}
+fn active(job: &Value) -> bool {
+    ["waiting", "dispatching", "retrying"].contains(&string(job, "state"))
+}
+fn schedule(job: &mut Value, s: &Value, time: f64) {
+    job["action"] = json!(adapter(s));
+    let category = class(&s["provider_error"]);
+    if let Some(delays) = job["schedules"][category].as_array() { job["delays"] = json!(delays); }
+    let n = if job["schedules"].is_object() { job["attempts"][category].as_u64().unwrap_or(0) }
+        else { job["attempt"].as_u64().unwrap_or(0) } as usize;
+    job["class_attempt"] = json!(n);
+    let delays = job["delays"].as_array().cloned().unwrap_or_default();
+    job["failure_id"] = json!(failure_id(s));
+    job["failure_at"] = s["provider_error"]["at"].clone();
+    job["class"] = json!(class(&s["provider_error"]));
+    let Some(delay) = next_delay(&delays, n) else {
+        stop(job, "exhausted", "Automatic attempts exhausted");
+        return;
+    };
+    // Stable per-episode jitter survives restarts and avoids synchronized fleets.
+    let jitter = string(job, "id").bytes().map(u64::from).sum::<u64>() % 101;
+    let minimum = seconds(&s["provider_error"], "retry_not_before");
+    job["not_before"] = json!(minimum);
+    job["due_at"] = json!((time + delay * (1.0 + jitter as f64 / 1000.0)).max(minimum));
+    stop(job, "waiting", "");
+}
+
+// Pure transition function; wall clock is supplied so tests can exercise long
+// backoff sequences, restarts, and interleaved user activity without sleeping.
+fn advance(mut job: Value, s: &Value, p: &Policy, time: f64) -> Value {
+    let error = &s["provider_error"];
+    let fid = failure_id(s);
+    let user_at = seconds(s, "recovery_user_at");
+    let same = job.is_object() && job["identity"] == identity(s);
+    let own_input = s["recovery_user_text"] == CONTINUATION
+        && user_at >= seconds(&job, "sent_at")
+        && seconds(&job, "sent_at") > 0.0;
+    let new_input = same && user_at > seconds(&job, "user_at") && !own_input;
+    if job.is_object() && !same && job["failure_id"] == fid {
+        stop(
+            &mut job,
+            "cancelled",
+            "The session identity or model changed",
+        );
+        return job;
+    }
+    if same && active(&job) {
+        if own_input {
+            job["acknowledged"] = json!(true);
+            job["user_at"] = json!(user_at);
+        }
+        if !p.enabled {
+            stop(&mut job, "cancelled", "Automatic recovery disabled");
+            return job;
+        }
+        if new_input || seconds(s, "recovery_cancel_at") > seconds(&job, "started_at") {
+            stop(
+                &mut job,
+                "cancelled",
+                "New input or interruption cancelled recovery",
+            );
+            if seconds(error, "at") <= user_at {
+                return job;
+            }
+        } else if ["approval", "input"].contains(&string(s, "phase"))
+            || s["process_state"] == "exited"
+        {
+            stop(&mut job, "cancelled", "Session needs attention or stopped");
+            return job;
+        } else if job["acknowledged"] == true
+            && seconds(s, "recovery_success_at") > seconds(&job, "started_at")
+        {
+            job["completed_at"] = s["recovery_success_at"].clone();
+            stop(&mut job, "succeeded", "Agent completed the turn");
+            return job;
+        } else if string(&job, "state") == "retrying" {
+            if !fid.is_empty()
+                && job["failure_id"] != fid
+                && seconds(error, "at") > seconds(&job, "sent_at")
+            {
+                if job["acknowledged"] != true {
+                    stop(
+                        &mut job,
+                        "uncertain",
+                        "Native delivery acknowledgement is missing",
+                    );
+                } else if !enabled(p, class(error)) {
+                    stop(&mut job, "cancelled", "This error requires manual recovery");
+                } else {
+                    schedule(&mut job, s, time);
+                }
+            } else if job["acknowledged"] != true && time > seconds(&job, "sent_at") + 30.0 {
+                stop(
+                    &mut job,
+                    "uncertain",
+                    "Delivery was not confirmed; inspect the native agent",
+                );
+            }
+            return job;
+        } else if job["state"] == "waiting" {
+            if job["failure_id"] != fid || s["phase"] != "error" {
+                stop(
+                    &mut job,
+                    "cancelled",
+                    "The failed turn is no longer current",
+                );
+            } else if !enabled(p, class(error)) {
+                stop(&mut job, "cancelled", "This reaction is disabled");
+            }
+            return job;
+        } else {
+            return job;
+        }
+    }
+    if same
+        && !new_input
+        && !(job["state"] == "succeeded" && seconds(error, "at") > seconds(&job, "completed_at"))
+    {
+        return job;
+    }
+    if !enabled(p, class(error))
+        || adapter(s).is_none()
+        || s["phase"] != "error"
+        || s["process_state"] == "exited"
+        || seconds(error, "at") <= p.enabled_at
+        || seconds(error, "at") <= user_at
+        || fid.is_empty()
+    {
+        return Value::Null;
+    }
+    let mut fresh = json!({"version":1,"id":uuid::Uuid::new_v4().to_string(),"name":s["name"],
+        "identity":identity(s),"action":adapter(s),"attempt":0,"attempts":{},
+        "schedules":(["service","rate_limit","network"].into_iter().map(|k|(k,p.schedules.get(k).unwrap_or(&p.delays))).collect::<BTreeMap<_,_>>()),
+        "delays":p.schedules.get(class(error)).unwrap_or(&p.delays),
+        "started_at":time,"user_at":user_at,"state":"waiting"});
+    schedule(&mut fresh, s, time);
+    fresh
+}
+
+pub(super) fn enrich(record: &Value, output: &mut Value) {
+    for key in ["name", "agent", "run_id", "conversation_id"] {
+        if let Some(v) = record.get(key) {
+            output[key] = v.clone();
+        }
+    }
+    for key in [
+        "recovery_user_at",
+        "recovery_user_text",
+        "recovery_success_at",
+        "recovery_cancel_at",
+    ] {
+        if let Some(v) = record.get(key) {
+            output[key] = v.clone();
+        }
+    }
+    let job = load_job(string(record, "name"));
+    // Never show a previous conversation's countdown in a reused session row.
+    if job.is_object()
+        && job["identity"][0] == output["run_id"]
+        && job["identity"][1] == output["conversation_id"]
+    {
+        output["recovery"] = job;
+    }
+    output["recovery_capability"] = json!(adapter(output));
+    output["recovery_error_class"] = json!(class(&output["provider_error"]));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn snapshot(agent: &str) -> Value {
+        json!({"name":"session","agent":agent,"run_id":"run","conversation_id":"conversation","model":"model","account_id":"account",
+            "phase":"error","process_state":"running","recovery_user_at":5.0,
+            "provider_error":{"source":"native","message_id":"error-1","at":10.0,"detail":"API Error: 529 Overloaded"}})
+    }
+    fn on() -> Policy {
+        Policy {
+            enabled: true,
+            enabled_at: 1.0,
+            ..Policy::default()
+        }
+    }
+    #[test]
+    fn independent_sequences_keep_class_budgets_and_repeat_last_delay() {
+        for values in [vec![0],vec![1,0,2],vec![1,-1,3],vec![-2],vec![]] {assert!(validate_delays(&values).is_err());}
+        assert_eq!(next_delay(&vec![json!(15),json!(30),json!(0)],42),Some(30.0));
+        assert_eq!(next_delay(&vec![json!(15),json!(-1)],1),None);
+        assert_eq!(next_delay(&vec![json!(-1)],0),None);
+        let mut p=on();p.schedules.insert("service".into(),vec![10,20,-1]);p.schedules.insert("network".into(),vec![3,0]);
+        let mut s=snapshot("claude");let mut job=advance(Value::Null,&s,&p,11.0);
+        assert_eq!(job["delays"],json!([10,20,-1]));
+        job["attempts"]["service"]=json!(1);job["attempt"]=json!(1);
+        s["provider_error"]["detail"]=json!("connection reset");schedule(&mut job,&s,100.0);
+        assert_eq!(job["class_attempt"],0);assert_eq!(job["delays"],json!([3,0]));
+        job["attempts"]["network"]=json!(10);schedule(&mut job,&s,200.0);assert_eq!(job["state"],"waiting");
+        s["provider_error"]["detail"]=json!("503 unavailable");schedule(&mut job,&s,300.0);
+        assert_eq!(job["class_attempt"],1);assert!(seconds(&job,"due_at")>=320.0&&seconds(&job,"due_at")<323.0);
+        job["attempts"]["service"]=json!(2);schedule(&mut job,&s,400.0);assert_eq!(job["state"],"exhausted");
+    }
+    #[test]
+    fn transient_classes_exclude_permanent_errors_and_future_agents() {
+        for (detail, expected) in [
+            ("529 Overloaded", "service"),
+            ("HTTP 503", "service"),
+            ("500 internal server error", "service"),
+            ("429 rate limit", "rate_limit"),
+            ("429 insufficient quota", "manual"),
+            ("overloaded account balance exhausted", "manual"),
+            ("401 authentication failed", "manual"),
+            ("context window exceeded", "manual"),
+            ("stream disconnected", "network"),
+            ("ECONNRESET", "network"),
+            ("tool returned 1", "manual"),
+        ] {
+            assert_eq!(class(&json!({"detail":detail})), expected, "{detail}");
+        }
+        for agent in ["claude", "kimi", "codex"] {
+            assert_eq!(
+                advance(Value::Null, &snapshot(agent), &on(), 11.0)["action"],
+                "continue_message"
+            );
+        }
+        assert!(advance(Value::Null, &snapshot("future-agent"), &on(), 11.0).is_null());
+        let mut s = snapshot("dsh");
+        assert_eq!(
+            advance(Value::Null, &s, &on(), 11.0)["action"],
+            "continue_message"
+        );
+        s["native_recovery"] = json!({"id":"step"});
+        assert_eq!(
+            advance(Value::Null, &s, &on(), 11.0)["action"],
+            "retry_request"
+        );
+    }
+    #[test]
+    fn off_and_old_errors_never_schedule_and_deadlines_survive_restart() {
+        let mut s = snapshot("claude");
+        assert!(advance(Value::Null, &s, &Policy::default(), 11.0).is_null());
+        let mut p = on();
+        p.enabled_at = 20.0;
+        assert!(advance(Value::Null, &s, &p, 21.0).is_null());
+        s["provider_error"]["retry_not_before"] = json!(1000.0);
+        let job = advance(Value::Null, &s, &on(), 11.0);
+        assert_eq!(job["due_at"], 1000.0);
+        let restored: Value = serde_json::from_str(&job.to_string()).unwrap();
+        assert_eq!(advance(restored, &s, &on(), 500.0), job);
+    }
+    #[test]
+    fn budget_is_finite_across_distinct_errors_not_reset_by_progress() {
+        let mut s = snapshot("kimi");
+        let mut job = advance(Value::Null, &s, &on(), 11.0);
+        for attempt in 1..=4 {
+            let sent = attempt as f64 * 1000.0;
+            job["attempt"] = json!(attempt);
+            job["attempts"]["service"]=json!(attempt);
+            job["state"] = json!("retrying");
+            job["sent_at"] = json!(sent);
+            job["acknowledged"] = json!(false);
+            s["phase"] = json!("working");
+            s["provider_error"] = Value::Null;
+            s["recovery_user_at"] = json!(sent + 1.0);
+            s["recovery_user_text"] = json!(CONTINUATION);
+            job = advance(job, &s, &on(), sent + 2.0);
+            assert_eq!(job["acknowledged"], true);
+            s["phase"] = json!("tool");
+            job = advance(job, &s, &on(), sent + 10.0);
+            assert_eq!(job["attempt"], attempt);
+            s["phase"] = json!("error");
+            s["provider_error"] = json!({"source":"native","message_id":format!("error-{attempt}"),"at":sent+20.0,"detail":"503 unavailable"});
+            job = advance(job, &s, &on(), sent + 21.0);
+            assert_eq!(
+                job["state"],
+                if attempt == 4 { "exhausted" } else { "waiting" }
+            );
+        }
+        assert_eq!(advance(job.clone(), &s, &on(), 99999.0), job);
+    }
+    #[test]
+    fn new_input_cancellation_success_and_uncertain_delivery_are_terminal() {
+        let mut s = snapshot("codex");
+        let original = advance(Value::Null, &s, &on(), 11.0);
+        let cancelled = advance(original.clone(), &s, &Policy::default(), 12.0);
+        assert_eq!(cancelled["state"], "cancelled");
+        assert_eq!(advance(cancelled.clone(), &s, &on(), 1000.0), cancelled);
+        s["recovery_user_at"] = json!(12.0);
+        s["recovery_user_text"] = json!("new task");
+        assert_eq!(
+            advance(original.clone(), &s, &on(), 13.0)["state"],
+            "cancelled"
+        );
+        s = snapshot("codex");
+        s["phase"] = json!("approval");
+        assert_eq!(
+            advance(original.clone(), &s, &on(), 13.0)["state"],
+            "cancelled"
+        );
+        s = snapshot("codex");
+        let mut sent = original.clone();
+        sent["state"] = json!("retrying");
+        sent["sent_at"] = json!(12.0);
+        assert_eq!(advance(sent.clone(), &s, &on(), 43.0)["state"], "uncertain");
+        s["recovery_success_at"] = json!(20.0);
+        s["recovery_user_at"] = json!(13.0);
+        s["recovery_user_text"] = json!(CONTINUATION);
+        assert_eq!(advance(sent, &s, &on(), 21.0)["state"], "succeeded");
+        s = snapshot("codex");
+        s["run_id"] = json!("new-run");
+        s["provider_error"] = Value::Null;
+        assert!(advance(original, &s, &on(), 30.0).is_null());
+    }
+    #[test]
+    fn late_acknowledgement_cannot_restart_an_uncertain_episode() {
+        let mut s = snapshot("claude");
+        let mut job = advance(Value::Null, &s, &on(), 11.0);
+        job["state"] = json!("retrying");
+        job["sent_at"] = json!(12.0);
+        job["attempt"] = json!(1);
+        job = advance(job, &s, &on(), 43.0);
+        assert_eq!(job["state"], "uncertain");
+        s["recovery_user_at"] = json!(13.0);
+        s["recovery_user_text"] = json!(CONTINUATION);
+        s["provider_error"]["at"] = json!(45.0);
+        s["provider_error"]["message_id"] = json!("late-error");
+        assert_eq!(advance(job.clone(), &s, &on(), 46.0), job);
+        s["recovery_user_at"] = json!(47.0);
+        s["recovery_user_text"] = json!("Please try a new task");
+        s["provider_error"]["at"] = json!(50.0);
+        let fresh = advance(job.clone(), &s, &on(), 51.0);
+        assert_ne!(fresh["id"], job["id"]);
+        assert_eq!(fresh["attempt"], 0);
+    }
+}
+
+pub(super) fn check_submission(record: &Value, id: &str) -> Result<()> {
+    let job = load_job(string(record, "name"));
+    let p = policy()?;
+    let s = journal::summary(record, true);
+    if job["id"] != id
+        || job["state"] != "dispatching"
+        || job["identity"] != identity(&s)
+        || job["failure_id"] != failure_id(&s)
+        || s["phase"] != "error"
+        || !enabled(&p, class(&s["provider_error"]))
+        || seconds(&s, "recovery_user_at") > seconds(&job, "user_at")
+    {
+        return Err("The recovery request is no longer current; nothing was submitted".into());
+    }
+    Ok(())
+}
+
+pub(super) fn check_native_submission(snapshot: &Value) -> Result<()> {
+    let job = load_job(string(snapshot, "name"));
+    if job["state"] != "dispatching"
+        || job["identity"] != identity(snapshot)
+        || job["failure_id"] != failure_id(snapshot)
+        || !enabled(&policy()?, class(&snapshot["provider_error"]))
+    {
+        return Err("Native recovery was cancelled or changed".into());
+    }
+    Ok(())
+}
+
+fn observe() -> Result<Vec<Value>> {
+    let panes = live()?;
+    let mut snapshots = Vec::new();
+    for record in records()? {
+        let mut s = journal::summary(
+            &record,
+            matches(&record, panes.get(string(&record, "name"))),
+        );
+        for key in ["name", "agent", "run_id", "conversation_id"] {
+            s[key] = record[key].clone();
+        }
+        snapshots.push(s);
+    }
+    for record in dsh::snapshots().unwrap_or_default() {
+        if record["state"] == "running"
+            && (record["native_recovery"].is_object()
+                || record["phase"] == "error"
+                || active(&load_job(string(&record, "name"))))
+        {
+            if let Ok(s) = dsh::inspect(string(&record, "name"), None) {
+                snapshots.push(s);
+            }
+        }
+    }
+    Ok(snapshots)
+}
+fn tick() -> Result<()> {
+    let mut sends = Vec::new();
+    // Native inspection can wait on an agent. Never hold the global write lock
+    // while collecting observations; delivery revalidates the exact failure.
+    let snapshots = if policy()?.enabled {
+        observe()?
+    } else {
+        vec![]
+    };
+    let mut dismisses = Vec::new();
+    {
+        let _guard = lock(None)?;
+        let p = policy()?;
+        let heartbeat = root().join("recovery/heartbeat.json");
+        let last = read_json(&heartbeat).unwrap_or(Value::Null);
+        if last["enabled"] != p.enabled || now() - seconds(&last, "at") > 5.0 {
+            atomic(
+                &heartbeat,
+                &json!({"at":now(),"enabled":p.enabled}).to_string(),
+            )?;
+        }
+        if !p.enabled {
+            return Ok(());
+        }
+        let mut occupied = std::collections::BTreeSet::new();
+        for s in &snapshots {
+            let job = load_job(string(s, "name"));
+            if job["state"] == "dispatching" || job["state"] == "retrying" {
+                occupied.insert(json!([s["agent"], s["account_id"]]).to_string());
+            }
+        }
+        for s in snapshots {
+            let old = load_job(string(&s, "name"));
+            let mut job = advance(old.clone(), &s, &p, now());
+            if job.is_null() {
+                if old.is_object() {
+                    atomic(
+                        &root()
+                            .join("recovery/history")
+                            .join(format!("{}.json", string(&old, "id"))),
+                        &old.to_string(),
+                    )?;
+                    fs::remove_file(job_path(string(&s, "name"))).map_err(|e| e.to_string())?;
+                }
+                if s["native_recovery"].is_object() {
+                    dismisses.push(s.clone());
+                }
+                continue;
+            }
+            let account = json!([s["agent"], s["account_id"]]).to_string();
+            if job["state"] == "waiting"
+                && now() >= seconds(&job, "due_at")
+                && !occupied.contains(&account)
+            {
+                occupied.insert(account);
+                job["attempt"] = json!(job["attempt"].as_u64().unwrap_or(0) + 1);
+                if job["schedules"].is_object() {
+                    let category=string(&job,"class").to_owned();
+                    let n=job["attempts"][&category].as_u64().unwrap_or(0)+1;
+                    job["attempts"][&category]=json!(n);job["class_attempt"]=json!(n);
+                }
+                job["request_id"] = json!(uuid::Uuid::new_v4().to_string());
+                job["sent_at"] = json!(now());
+                job["acknowledged"] = json!(false);
+                stop(&mut job, "dispatching", "");
+                sends.push((s.clone(), job.clone()));
+            }
+            if job != old {
+                save_job(&job)?;
+            }
+            if !active(&job) && s["native_recovery"].is_object() {
+                dismisses.push(s.clone());
+            }
+        }
+    }
+    for s in dismisses {
+        let _ = dsh::dismiss_recovery(&s);
+    }
+    for (s, mut job) in sends {
+        let result = if s["agent"] == "dsh" {
+            dsh::recover(&s, string(&job, "request_id"))
+        } else {
+            let payload = json!({"request_id":job["request_id"],"text":CONTINUATION,
+                "expected_run_id":s["run_id"],"expected_conversation_id":s["conversation_id"]});
+            input::submit(
+                string(&s, "name"),
+                payload.to_string().as_bytes(),
+                Some(string(&job, "id")),
+            )
+        };
+        let _guard = lock(None)?;
+        let current = load_job(string(&s, "name"));
+        if current["id"] != job["id"] || current["state"] != "dispatching" {
+            continue;
+        }
+        match result {
+            Ok(receipt) => {
+                job["acknowledged"] = json!(receipt["status"] == "confirmed");
+                job["receipt"] = receipt;
+                stop(&mut job, "retrying", "");
+            }
+            Err(e) => {
+                let definitely_unsent = s["agent"] != "dsh"
+                    && !root()
+                        .join("input_receipts")
+                        .join(format!("{}.json", string(&job, "request_id")))
+                        .exists();
+                if definitely_unsent {
+                    job["attempt"] = json!(job["attempt"].as_u64().unwrap_or(1).saturating_sub(1));
+                    if job["schedules"].is_object() {
+                        let category=string(&job,"class").to_owned();
+                        let n=job["attempts"][&category].as_u64().unwrap_or(1).saturating_sub(1);
+                        job["attempts"][&category]=json!(n);job["class_attempt"]=json!(n);
+                    }
+                }
+                stop(
+                    &mut job,
+                    if definitely_unsent {
+                        "blocked"
+                    } else {
+                        "uncertain"
+                    },
+                    &e,
+                );
+            }
+        }
+        save_job(&job)?;
+    }
+    Ok(())
+}
+fn recover_interrupted_jobs() -> Result<()> {
+    let _guard = lock(None)?;
+    if let Ok(entries) = fs::read_dir(root().join("recovery/jobs")) {
+        for entry in entries.flatten() {
+            if let Ok(mut job) = read_json(&entry.path()) {
+                if job["state"] == "dispatching" {
+                    stop(
+                        &mut job,
+                        "uncertain",
+                        "Recovery worker restarted during delivery; inspect the agent",
+                    );
+                    save_job(&job)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+fn worker() -> Result<i32> {
+    private_dir(&root().join("recovery"))?;
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(root().join("recovery/worker.lock"))
+        .map_err(|e| e.to_string())?;
+    if file.try_lock_exclusive().is_err() {
+        return Ok(0);
+    }
+    recover_interrupted_jobs()?;
+    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+    let started = fs::metadata(&executable).and_then(|m| m.modified()).ok();
+    loop {
+        if fs::metadata(&executable).and_then(|m| m.modified()).ok() != started {
+            return Ok(0);
+        }
+        if let Err(e) = tick() {
+            eprintln!("hgs recovery: {e}");
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
+}
+fn ensure_worker() -> Result<()> {
+    // Detached from both SSH and GUI lifetime; service installation additionally
+    // restarts the worker after login. The worker lock handles competing GUIs.
+    use std::os::unix::process::CommandExt;
+    let mut cmd = Command::new(std::env::current_exe().map_err(|e| e.to_string())?);
+    cmd.args(["recovery", "worker"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    cmd.spawn().map_err(|e| e.to_string())?;
+    Ok(())
+}
+pub(super) fn dispatch(args: &[String]) -> Result<i32> {
+    match args.first().map(String::as_str) {
+        Some("worker") if args.len() == 1 => return worker(),
+        Some("tick") if args.len() == 1 => {
+            tick()?;
+            return Ok(0);
+        }
+        Some("get") if args.len() == 1 => {
+            let p = policy()?;
+            if p.enabled {
+                ensure_worker()?;
+            }
+            println!(
+                "{}",
+                json!({"order":policy_order(&p),"policy":p,"continuation_message":CONTINUATION,
+                "adapters":{"claude":"continue_message","codex":"continue_message","kimi":"continue_message","dsh":"retry_request"},
+                "worker":read_json(&root().join("recovery/heartbeat.json")).unwrap_or(Value::Null)})
+            );
+        }
+        Some("set" | "sync") if args.len() == 1 => {
+            let syncing = args[0] == "sync";
+            let request = stdin_json()?;
+            let mut p: Policy = serde_json::from_value(request).map_err(|e| e.to_string())?;
+            validate_policy(&p)?;
+            {
+                let _guard = lock(None)?;
+                let old = policy()?;
+                if !syncing && (p.revision != old.revision || p.writer != old.writer) {
+                    return Err("Recovery settings changed on this machine; reload them".into());
+                }
+                if syncing && policy_order(&p) <= policy_order(&old) {
+                    println!("{}", json!({"order":policy_order(&old),"policy":old}));
+                    return Ok(0);
+                }
+                if !syncing {
+                    p.revision += 1;
+                    p.writer = uuid::Uuid::new_v4().to_string();
+                }
+                p.version = 2;
+                p.enabled_at = if p.enabled && !old.enabled {
+                    now()
+                } else {
+                    old.enabled_at
+                };
+                atomic(
+                    &policy_path(),
+                    &serde_json::to_string(&p).map_err(|e| e.to_string())?,
+                )?;
+                {
+                    if let Ok(entries) = fs::read_dir(root().join("recovery/jobs")) {
+                        for entry in entries.flatten() {
+                            if let Ok(mut job) = read_json(&entry.path()) {
+                                if active(&job) && !enabled(&p, string(&job, "class")) {
+                                    stop(
+                                        &mut job,
+                                        "cancelled",
+                                        "Automatic recovery disabled for this error class",
+                                    );
+                                    save_job(&job)?;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if p.enabled {
+                ensure_worker()?;
+            }
+            println!("{}", json!({"order":policy_order(&p),"policy":p}));
+        }
+        Some("action") if args.len() == 1 => {
+            let request = stdin_json()?;
+            let _guard = lock(None)?;
+            let mut job = load_job(string(&request, "name"));
+            if job["id"] != request["id"] || job["state"] != "waiting" {
+                return Err(
+                    "This scheduled recovery is no longer current; refresh Activity".into(),
+                );
+            }
+            match string(&request, "action") {
+                "cancel" => stop(&mut job, "cancelled", "Cancelled by you"),
+                "now" => {
+                    job["due_at"] = json!(now().max(seconds(&job, "not_before")));
+                }
+                _ => return Err("Unknown recovery action".into()),
+            }
+            save_job(&job)?;
+            println!("{job}");
+        }
+        _ => return Err("usage: hgs recovery get | set | sync | action | worker".into()),
+    }
+    Ok(0)
+}

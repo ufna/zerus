@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>              <string>hgs zerus</string>
+    <key>CFBundleIdentifier</key>        <string>com.hgdev.hgs-tray</string>
+    <key>CFBundleIconFile</key>          <string>${MACOSX_BUNDLE_ICON_FILE}</string>
+    <key>CFBundleIconName</key>          <string>hgs-zerus-swarm</string>
+    <key>CFBundleVersion</key>           <string>${MACOSX_BUNDLE_BUNDLE_VERSION}</string>
+    <key>CFBundleShortVersionString</key><string>${MACOSX_BUNDLE_SHORT_VERSION_STRING}</string>
+    <key>CFBundlePackageType</key>       <string>APPL</string>
+    <!-- Start in the menu bar. MacAppVisibility enables Dock / Cmd-Tab while
+         an application window is open, including minimized windows. -->
+    <key>LSUIElement</key>               <true/>
+</dict>
+</plist>

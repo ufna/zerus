@@ -1,0 +1,14 @@
+Use case: logo-brand.
+Asset type: a finished premium desktop application icon for "hgs zerus", a modern manager of AI agent sessions. Generate ONE square icon, not a presentation board or device mockup.
+Primary request: Zerus refers to the primordial homeworld of the zerg. Convey primal evolution, an intelligent swarm, living alien chitin, with the restraint and clarity of a beautifully designed modern Mac app icon.
+Subject: a single bold abstract Z-shaped alien sigil, formed from three broad sculpted interlocking chitin plates. Sharp purposeful outer silhouette, tapered claw-like ends, a clean diagonal negative-space channel through the center, a small concentrated bioluminescent jade core visible between the plates. It should read as a distinctive emblem at 32 pixels, and reveal subtle organic ridges at 1024 pixels.
+Style: sophisticated sculptural 3D icon, polished art direction, simple memorable geometry, tactile satin chitin, controlled subtle iridescence, crisp edges. Deep plum and violet plates, mint-jade light from the central seam, restrained cool edge highlights.
+Backdrop: a dark near-black aubergine rounded-square tile with generous continuous corner radius, slight sculpted bevel, very subtle dark gradient. Transparent outside the rounded-square tile. Tile occupies about 88% of canvas width and height, centered. Sigil occupies about 68% of canvas.
+Composition: straight-on, optically centered, balanced, no perspective tilt. Strong readable silhouette and generous breathing room. High contrast against the dark tile. Carefully controlled glow confined to the core, no bloom haze.
+Constraints: true alpha transparency outside tile; single finished icon only; no text, no wordmark, no typography apart from the abstract Z-like emblem; no UI, no badges, no tiny decorative symbols, no stars, no landscape, no insects or creature faces, no photoreal slime, no excessive microdetail, no watermarks. Original emblem, not a reproduction of an existing game faction logo.
+
+Final cleanup (built-in image_gen, edit of the first generated icon):
+Use case: precise-object-edit.
+Edit target: the attached finished Zerus app icon.
+Make ONLY a technical cleanup of its alpha silhouette. Preserve the existing purple chitin Z emblem, green luminous core, rounded-square tile, all proportions, textures, lighting and the original composition.
+Remove every stray isolated colored pixel, cyan/blue speck, magenta noise fragment or floating glow outside the rounded-square tile. The icon must have one immaculate, continuous, smoothly antialiased outer tile contour; every pixel outside this contour must be fully transparent, alpha 0. No drop shadow, no detached particles, no halo beyond the antialiased edge. Keep the 6–7% transparent canvas margin around the tile. No new elements or lettering. Actual transparent RGBA background, not a checkerboard illustration. Output ONE square cleaned production app icon.

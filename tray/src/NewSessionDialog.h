@@ -1,0 +1,59 @@
+#pragma once
+#include <QDialog>
+#include <QMap>
+#include "FleetState.h"
+#include "SessionOrganization.h"
+class QComboBox;
+class QCheckBox;
+class QToolButton;
+class QLabel;
+class QLineEdit;
+class QPushButton;
+
+class NewSessionDialog : public QDialog {
+    Q_OBJECT
+public:
+    NewSessionDialog(const QString &hgsPath,const FleetState &fleet,const QString &host = {},
+                     const QString &agent = {},const QString &project = {},QWidget *parent = nullptr);
+    void setFleet(const FleetState &fleet);
+    void setGroups(const SessionOrganization &organization,const QString &selectedProject = {});
+    bool selectFolder(const QString &folderId);
+    void selectPath(const QString &path);
+    void selectAccount(const QString &account);
+signals:
+    void launchRequested(const QString &host,const QString &agent,const QString &target,const QString &name,const QString &account,const QString &project,bool openTerminal);
+    void manageProjectsRequested(const QString &host);
+    void projectFoldersRequested(const QString &project);
+private:
+    void loadMachines();
+    void loadFolders(const QString &selectedPath = {});
+    void browseFolder();
+    void updateWorktrees();
+    void chooseWorktree();
+    void createWorktree();
+    void loadAccounts();
+    void updateAccounts();
+    void updateForm();
+    void start();
+    void launch(const QString &target);
+    QString host() const;
+    HgsClient m_client;
+    FleetState m_fleet;
+    SessionOrganization m_projects;
+    QString m_initialProject,m_initialHost,m_accountHost;
+    QString m_preferredAccount;
+    bool m_accountPreset=false;
+    QComboBox *m_agent,*m_project,*m_machine,*m_folder,*m_account;
+    QCheckBox *m_openTerminal;
+    QMap<QString, QString> m_browsedFolders;
+    QString m_folderContext;
+    QLineEdit *m_name;
+    QLabel *m_projectPath,*m_preview,*m_error;
+    QPushButton *m_start,*m_browse,*m_worktrees,*m_newWorktree;
+    QJsonObject m_worktreeCatalog;
+    QString m_worktreeContext;
+    quint64 m_catalogRequest=0;
+    QToolButton *m_manage;
+    quint64 m_validation = 0,m_accountRequest = 0;
+    QJsonArray m_accounts,m_removedAccounts;
+};

@@ -1,0 +1,254 @@
+#pragma once
+
+#include <QHash>
+#include <QByteArray>
+#include <QList>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QMetaType>
+#include <QObject>
+#include <QSet>
+#include <QString>
+#include <QStringList>
+
+struct SessionInfo {
+    QJsonObject recovery;
+    QJsonObject goal;
+    QString name;      // полное имя: cmd/project[/tag]
+    QString cmd;
+    QString project;   // может быть null -> isNull()
+    QString tag;       // может быть null -> isNull()
+    int attached = 0;
+    QStringList clients;   // tty приаттаченных клиентов
+    qint64 created = 0;
+    QString state = QStringLiteral("running"); // running | paused | stopped | archived
+    QString archiveId;
+    QString runId, attentionId, launchId, conversationId, replyId;
+    QString accountId, accountHome;
+    double replyAt = 0;
+    bool unreadReply = false;
+    bool reviewLater = false, attentionAcknowledged = false;
+    double archivedAt = 0;
+    bool resumable = false;
+    QString activity;
+    bool tracked = false;
+    QString phase, model, effort, prompt, currentTool, toolDetail;
+    QString cwd, canonicalCwd, gitCommonDir, cwdSource, gitRoot, gitBranch, gitWorktreeName, gitMetadataState;
+    bool gitWorktree = false, gitDetached = false;
+    QString activitySummary, activityDetail, subagentSource;
+    bool subagentCountsComplete = false;
+    int subagentActiveCount = 0, subagentCompletedCount = 0, subagentTotalCount = -1;
+    QJsonArray subagentPreviews;
+    QJsonObject subagents;
+    QString processState, conversationState, runtimeState;
+    double lastEventAt = 0, turnStarted = 0, compactionStarted = 0;
+    int subagentCount = 0;
+    bool needsAttention() const { return (needsAction() && !attentionAcknowledged)
+        || (state != QLatin1String("archived") && (unreadReply || reviewLater)); }
+    bool needsAction() const {
+        const auto recoveryState = recovery.value("state").toString();
+        const bool recovering = recoveryState == "waiting" || recoveryState == "dispatching" || recoveryState == "retrying";
+        return state == QLatin1String("running") && processState != QLatin1String("exited")
+            && (phase == QLatin1String("approval") || phase == QLatin1String("input") || (phase == QLatin1String("error") && !recovering)
+                || recoveryState == "uncertain" || recoveryState == "blocked" || recoveryState == "exhausted");
+    }
+};
+
+struct BoxState {
+    QJsonObject metrics;
+    QString host;
+    bool ok = false;
+    QString error;                     // "offline" | "bad_response" | пусто
+    QHash<QString, QString> projects;  // имя -> каталог
+    QList<SessionInfo> sessions;
+    QStringList peers;
+    bool peersKnown = false;
+};
+
+struct ProjectInfo {
+    QString name;
+    QString dir;
+    bool fromAnsible = false;   // src == "ansible": править нельзя, только переопределить
+    bool exists = false;        // каталог существует на момент опроса
+};
+// Не обязательно для доставки projectsReady() через QueuedConnection -- проверено
+// отдельным пробником на Qt 6.11.2: новый connect-синтаксис сам выводит QMetaType
+// для обычных value-типов и без макроса, сигнал доходит с корректными данными.
+// Регистрируем явно всё равно: это не про доставку сигнала, а на будущее -- редактору
+// из следующей задачи наверняка понадобится класть ProjectInfo в QVariant (item/model
+// data), а там без Q_DECLARE_METATYPE поведение уже зависит от версии Qt.
+Q_DECLARE_METATYPE(ProjectInfo)
+
+struct MessageAttachment {
+    QString name;
+    QString mime;
+    QByteArray data;
+    QString reference;
+};
+
+// Единственное, что знает про CLI. Не знает ни про tmux, ни про ssh: и то и другое —
+// знание CLI, дублировать его здесь запрещено.
+class HgsClient : public QObject {
+    Q_OBJECT
+public:
+    explicit HgsClient(QString hgsPath, QObject *parent = nullptr);
+    ~HgsClient() override;
+    QString executable() const { return m_hgs; }
+    quint64 requestRecovery(const QString &host, const QString &operation, const QJsonObject &payload = {});
+
+    // Асинхронно: `hgs ls --json --local`. Один exec, единицы миллисекунд.
+    void requestLocal();
+    void launchDetachedSession(const QString &host, const QString &agent, const QString &target, const QString &name, const QString &account, const QString &launchId);
+    void launchNativeSession(const QString &host, const QString &target, const QString &name, const QString &account, const QString &launchId);
+    // Асинхронно: `hgs @<peer> ls --json`. Пир, который спит, — это ok:false, а не ошибка.
+    void requestPeer(const QString &peer);
+    // Project lists and directory browsing are read on the selected machine.
+    // Directory request IDs let views discard replies to superseded navigation.
+    void requestProjects(const QString &host = {});
+    quint64 requestAccounts(const QString &host, const QStringList &arguments = {QStringLiteral("ls")}, const QByteArray &input = {});
+    quint64 requestMachines(const QStringList &arguments = {QStringLiteral("ls")});
+    quint64 requestSwarm(const QStringList &arguments = {QStringLiteral("get")}, const QJsonObject &input = {});
+    void setupMachine(const QString &alias, const QString &source = {});
+    QJsonObject worktreeSnapshot(const QString &host, const QString &path) const;
+    quint64 requestWorktrees(const QString &host, const QString &path, bool refresh = false);
+    quint64 createWorktree(const QString &host, const QString &path, const QString &commonDir,
+                           const QString &branch, const QString &base, const QString &destination);
+    quint64 requestDirectories(const QString &host, const QString &path, bool hidden = false);
+    bool requestInspection(const QString &host, const QString &name, qint64 after = 0, const QString &archiveId = {}, bool includeProcesses = true);
+    quint64 requestProcess(const QString &host, const QString &name, const QString &processId, const QString &run,
+                           const QString &conversation, const QString &archive, const QString &generation, bool stop = false);
+    void requestSubagentInspection(const QString &host, const QString &name, const QString &agentId, const QString &archiveId = {});
+    quint64 requestEffort(const QString &host, const QString &name, const QString &effort, const QString &run, const QString &conversation);
+    quint64 requestSettings(const QString &host, const QString &name, const QString &model, const QString &effort,
+                            const QString &run, const QString &conversation, const QString &expectedPendingId = {});
+    quint64 requestSearch(const QString &host, const QString &query);
+    quint64 requestAttachment(const QString &host, const QString &name, const QJsonObject &file,
+                              const QString &conversation, const QString &archive = {}, const QString &agent = {});
+    static constexpr qsizetype MaximumMessageBytes = 64 * 1024;
+    static constexpr qsizetype MaximumAttachmentBytes = 10 * 1024 * 1024;
+    static constexpr qsizetype MaximumAttachmentsBytes = 20 * 1024 * 1024;
+    static constexpr qsizetype MaximumAttachments = 8;
+    quint64 requestSendMessage(const QString &host, const QString &name, const QString &text,
+                               const QList<MessageAttachment> &attachments,
+                               const QString &expectedRunId, const QString &expectedConversationId = {}, const QString &agentId = {}, const QString &compactionId = {});
+    quint64 requestQueueSendNow(const QString &host, const QString &name, const QString &run, const QString &conversation, const QString &queue);
+    quint64 requestStageFiles(const QString &host, const QString &name, const QStringList &paths,
+                             const QString &run, const QString &conversation);
+    quint64 requestCompactContext(const QString &host, const QString &name, const QString &run, const QString &conversation);
+    quint64 requestClearContext(const QString &host, const QString &name, const QString &run, const QString &conversation);
+    quint64 requestInterrupt(const QString &host, const QString &name, const QString &run,
+                             const QString &conversation, double turnStarted);
+    quint64 requestAnswerQuestion(const QString &host, const QString &name,
+                                  const QJsonObject &question, const QJsonArray &answers);
+
+    // Чистые функции разбора: тестируются без запуска процессов.
+    static BoxState parseBox(const QByteArray &json, QString *error);
+    static QList<BoxState> parseFleet(const QByteArray &json, QString *error);
+    static QList<ProjectInfo> parseProjects(const QByteArray &json, QString *error);
+
+    // Пишущие операции. Все возвращают исход одним сигналом writeDone: вызывающему
+    // нужно ровно «получилось или нет и что сказал hgs», а не четыре разных ответа.
+    void forkSession(const QString &host, const QString &name, const QString &tag, const QString &archive, const QString &run, const QString &conversation);
+    void terminateSession(const QString &host, const QString &name, const QString &run);
+    void killSession(const QString &host, const QString &name);   // host пуст = свой бокс
+    void pauseSession(const QString &host, const QString &name);
+    void openNativeUi(const QString &host, const QString &name);
+    quint64 requestNativeUi(const QString &host, const QString &name);
+    void resumeSession(const QString &host, const QString &name);
+    void archiveSession(const QString &host, const QString &name);
+    void renameSession(const QString &host, const QString &name, const QString &newName, const QString &archiveId = {});
+    void restoreArchive(const QString &host, const QString &name, const QString &archiveId);
+    void forgetArchive(const QString &host, const QString &name, const QString &archiveId);
+    void pauseAll(const QString &host, int count);
+    void resumeAll(const QString &host, int count);
+    void projectSet(const QString &name, const QString &dir, const QString &host = {});
+    void projectRemove(const QString &name, const QString &host = {});
+
+signals:
+    void sessionActionFinished(quint64 request, bool ok, const QJsonObject &result, const QString &error);
+    void recoveryFinished(quint64 request, bool ok, const QJsonObject &result, const QString &error);
+    void attachmentReady(quint64 request, const QJsonObject &file, const QByteArray &bytes);
+    void attachmentFailed(quint64 request, const QString &detail);
+    void nativeUiReady(quint64 request, const QJsonObject &connection);
+    void nativeUiFailed(quint64 request, const QString &error);
+    void nativeSessionLaunched(const QString &launchId, bool ok, const QString &error);
+    void settingsFinished(quint64 request, bool ok, const QJsonObject &receipt, const QString &error);
+    void effortFinished(quint64 request, bool ok, const QJsonObject &receipt, const QString &error);
+    void searchReady(quint64 request, const QString &host, const QJsonObject &data);
+    void searchFailed(quint64 request, const QString &host, const QString &error);
+    void accountsReady(quint64 request, const QString &host, const QJsonObject &result);
+    void accountsFailed(quint64 request, const QString &host, const QString &error);
+    void machinesReady(quint64 request, const QJsonObject &result);
+    void machinesFailed(quint64 request, const QString &error);
+    void swarmReady(quint64 request, const QJsonObject &result);
+    void swarmFailed(quint64 request, const QString &error);
+    void machineSetupOutput(const QString &text);
+    void machineSetupFinished(bool ok, const QString &error);
+    void questionAnswered(quint64 request, const QString &host, const QString &name, const QJsonObject &receipt);
+    void questionAnswerFailed(quint64 request, const QString &host, const QString &name,
+                              const QString &detail, bool deliveryUncertain);
+    void queueSendFinished(quint64 request, bool ok, const QJsonObject &receipt, const QString &error);
+    void messageSent(quint64 request, const QString &host, const QString &name, const QJsonObject &receipt);
+    void messageFailed(quint64 request, const QString &host, const QString &name, const QString &detail, bool deliveryUncertain);
+    void sessionWriteDone(const QString &host);
+    void stateReadFailed(const QString &host, const QString &detail);
+    void stateReadStarted(const QString &host);
+    void inspectionReady(const QString &host, const QString &name, const QJsonObject &data, const QString &archiveId = QString());
+    void processFinished(quint64 request, const QJsonObject &data, const QString &error);
+    void inspectionFailed(const QString &host, const QString &name, const QString &detail, const QString &archiveId = QString());
+    void subagentInspectionReady(const QString &host, const QString &name, const QString &agentId, const QString &archiveId, const QJsonObject &data);
+    void subagentInspectionFailed(const QString &host, const QString &name, const QString &agentId, const QString &archiveId, const QString &error);
+    void localReady(const BoxState &box);
+    void peerReady(const BoxState &box);
+    void projectsReady(const QList<ProjectInfo> &projects);
+    void projectsForHostReady(const QString &host, const QList<ProjectInfo> &projects);
+    void projectsFailed(const QString &host, const QString &detail);
+    void worktreesReady(quint64 request, const QString &host, const QString &path, const QJsonObject &data);
+    void worktreesFailed(quint64 request, const QString &host, const QString &path, const QString &detail);
+    void worktreeCreated(quint64 request, bool ok, const QJsonObject &result, const QString &error);
+    void directoriesReady(quint64 request, const QString &host, const QJsonObject &data);
+    void directoriesFailed(quint64 request, const QString &host, const QString &detail);
+    // Процесс не запустился или не уложился в таймаут. Это НЕ то же самое, что ok:false:
+    // здесь сломан сам вызов hgs, и трей должен показать состояние «?».
+    void failed(const QString &what, const QString &detail);
+    // op — человеческое имя операции для сообщения об ошибке ("kill claude/x",
+    // "save project scratch"); detail — stderr от hgs, уже обрезанный.
+    void writeDone(const QString &op, bool ok, const QString &detail);
+
+private:
+    quint64 runSessionAction(const QString &host, const QString &name, const QString &operation, QJsonObject payload);
+    // Общий каркас пишущего вызова: успех = выход 0, stderr отдаём как есть -- hgs
+    // сам формулирует внятные ошибки ("'x' comes from Ansible ... shadow it with
+    // 'hgs project set'"), переформулировать их здесь значит потерять смысл.
+    // timeoutMs -- в отличие от requestLocal()/requestProjects() тут нет единой
+    // константы: локальный kill и правка карты -- это exec без сети, а kill пира идёт
+    // через ssh и может повиснуть на спящем ноуте (см. requestPeer) -- вызывающий сам
+    // выбирает бюджет под конкретную команду.
+    void runWrite(const QString &op, const QStringList &args, int timeoutMs,
+                  bool sessionWrite = false, const QString &host = QString());
+
+    QString m_hgs;
+    // Алиасы пиров, чей "@peer ls --json" сейчас в полёте (см. requestPeer в .cpp).
+    // Спящий ноут не отвечает все 15с таймаута -- без этой метки каждый тик меню/фона
+    // добавлял бы ещё один параллельный ssh-процесс поверх уже висящих.
+    QSet<QString> m_peerInFlight;
+    bool m_localInFlight = false;
+    QSet<QString> m_inspectionsInFlight;
+    quint64 m_directoryRequest = 0, m_worktreeRequest = 0;
+    QHash<QString, QList<QPair<quint64, QString>>> m_worktreesInFlight;
+    quint64 m_nativeUiRequest = 0;
+    quint64 m_searchRequest = 0;
+    quint64 m_attachmentRequest = 0;
+    quint64 m_effortRequest = 0;
+    quint64 m_settingsRequest = 0;
+    quint64 m_recoveryRequest = 0;
+    quint64 m_machineRequest = 0;
+    quint64 m_swarmRequest = 0;
+    quint64 m_accountRequest = 0;
+    bool m_machineSetupInFlight = false;
+    quint64 m_messageRequest = 0;
+    quint64 m_sessionActionRequest = 0;
+    QSet<QString> m_messagesInFlight;
+    quint64 m_answerRequest = 0;
+    QSet<QString> m_answersInFlight;
+};

@@ -1,0 +1,1722 @@
+//! Public hgs CLI. tmux remains the terminal supervisor; durable agent identity belongs to state.
+use crate::{
+    config::{self, Config},
+    platform::{self, TabGuard},
+    state,
+};
+use serde_json::{json, Value};
+use std::{
+    env, fmt, fs,
+    io::Write,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    time::{Instant, SystemTime, UNIX_EPOCH},
+};
+
+#[derive(Debug)]
+pub struct Error {
+    pub code: i32,
+    pub message: String,
+}
+impl Error {
+    pub fn new(code: i32, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.message.fmt(f)
+    }
+}
+impl std::error::Error for Error {}
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Self {
+        Self::new(1, error.to_string())
+    }
+}
+pub type Result<T> = std::result::Result<T, Error>;
+
+const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [-n tag] [-d] [--rc] [--dry-run] [-- args...]
+       hgs [@host] a <session>        attach by full name (see hgs ls)
+       hgs [@host] a <session> --existing [--run-id ID]   attach only to this live run
+       hgs [@host] ls                 sessions here and on peers
+       hgs ls --json --local          this box as JSON (for the tray; no ssh)
+       hgs [@host] inspect <session> [--archive <id>] [--after <cursor>]   activity as JSON
+       hgs [@host] processes <session> [--archive <id>]   observed shell commands as JSON
+       hgs [@host] processes <session> --output ID | --stop ID --run RUN --conversation ID [--generation ID]
+       hgs [@host] send <session> --json   submit message/attachments from JSON stdin
+       hgs [@host] compact-context <session> --json compact the idle agent context using its native command
+       hgs [@host] clear-context <session> --json   clear the idle agent context using its native command
+       hgs [@host] interrupt <session> --json   interrupt the current turn, keep the session
+       hgs [@host] attachment <session> --request ID --index N --conversation ID   read a sent attachment
+       hgs [@host] answer <session> --json   answer an exact pending question from JSON stdin
+       hgs [@host] fork <session> [-n name] [-d] [--archive ID]  branch into a new conversation
+       hgs [@host] effort <session> --json   change this agent's effort from JSON stdin
+       hgs [@host] settings <session> --json model and effort for this session (JSON stdin)
+       hgs [@host] recovery get | set | action   automatic recovery policy (JSON stdin for writes)
+       hgs [@host] search --query <text> [--limit N]   search saved session contents
+       hgs machine ls | set <alias> --json <profile> | remove <alias> | reset <alias>
+       hgs machine resolve <alias>          effective SSH settings (no connection)
+       hgs swarm get | preview PEER | join PEER | sync | worker   shared project catalog
+       hgs machine check <alias> | ssh <alias> [--directory PATH] | setup <alias> [--source <checkout>]
+       hgs [@host] account ls | add ID --provider AGENT --label NAME | rm ID | restore ID | login ID
+       hgs [@host] account rename ID --label NAME | inspect ID [--refresh]
+       hgs [@host] account default [ID]   show or select the default account for new sessions
+       hgs [@host] account set-key native-dsh --json   save API key from private JSON stdin
+       hgs [@host] account install codex|claude|kimi|dsh   install an agent in this terminal
+       hgs [@host] account inspect --session SESSION [--refresh]
+       hgs account copy ID --from MACHINE --to MACHINE --as NEW_ID [--label NAME]
+       hgs [@host] worktrees --path PATH [--refresh] [--json]   existing checkouts as JSON
+       hgs [@host] worktrees create --path REPO --branch NAME --destination PATH [--base HEAD] [--json]
+       hgs [@host] dirs [--hidden] [path]   directories as JSON (default: home)
+       hgs [@host] kill <session> [--archive <id>]
+       hgs [@host] rename <session> <new-full-name> [--archive <id>]
+       hgs [@host] archive <session>          move a stopped conversation to Archive
+       hgs [@host] pause <session>|--all       save and gracefully close idle agents
+       hgs [@host] resume <session>|--all [-d] [--archive <id>]   restore exact conversations
+       hgs notify [--bell] <session> [text]   event for the tray (no tray = no-op)
+       hgs project ls [--json] | add <name> <dir> | set <name> <dir> | rm <name>
+       hgs clip                       PNG from this box's clipboard to stdout (rc 1: no image)
+       hgs paste <session> <pane> [client]   the tmux C-v binding; not for hand use
+  cmd      claude | codex | kimi (know --resume) | sh (login shell) | any command
+  project  name from ~/.config/hgs/projects, a path, or omitted = current dir
+  -c       resume the dir's last conversation (claude/kimi -c, codex resume --last)
+  -c ID    resume this exact conversation UUID; --resume=ID is also accepted
+  -n tag   separate session <cmd>/<project>/<tag>
+  --account ID   use a named native agent profile for this session
+  --new    always create a separate session; generate a name unless -n is given
+  -d       start detached (do not attach)      --fresh  explicitly replace a saved conversation
+  --rc     claude --remote-control (phone)     --bare   ignore a project run_<cmd>.sh launcher
+  --dry-run  print the tmux/ssh command
+~/.config/hgs/config sets HGS_SELF (names that mean "this box") and HGS_PEERS
+(the ssh aliases that hgs ls polls and @host hops to); environment variables win.
+The terminal tab is renamed while attached (HGS_TAB=0 disables this); HGS_TAB_COLORS
+sets per-box colours in Konsole. Configuration uses NAME=value assignments.
+Ctrl+V in a session attached from a peer pulls the image from that box's clipboard.
+--client <peer> identifies the attaching box; @host hops set it automatically.
+Saved names resume their exact conversation; --fresh explicitly replaces the binding.
+Launch options apply only when a session is CREATED; existing sessions attach as is.
+Claude/Codex/Kimi install tracking hooks; Codex hooks need trust in /hooks.
+pause refuses untracked/busy sessions. Saved sessions survive reboot; a opens them again.
+Archive holds completed conversations; only explicit resume --archive restores them.
+terminate stops a tracked session and preserves it in Archive; kill explicitly forgets it.
+resume --all excludes Archive. kill --archive forgets only that archived entry.
+rename changes the session label while preserving its agent/project, process and conversation.
+"#;
+
+fn state_command(verb: &str, args: &[String]) -> Result<i32> {
+    let mut command = vec![verb.to_owned()];
+    command.extend_from_slice(args);
+    state::dispatch(&command).map_err(|e| Error::new(1, e))
+}
+fn has(args: &[String], arg: &str) -> bool {
+    args.iter().any(|a| a == arg)
+}
+fn require<'a>(args: &'a [String], index: usize, message: &str) -> Result<&'a str> {
+    args.get(index)
+        .filter(|s| !s.is_empty())
+        .map(String::as_str)
+        .ok_or_else(|| Error::new(1, message))
+}
+fn sanitize(name: &str) -> String {
+    name.replace([':', '.'], "_")
+}
+fn basename(path: &str) -> String {
+    if path.trim_end_matches('/').is_empty() {
+        return "/".into();
+    }
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(path)
+        .into()
+}
+fn session_exists(name: &str) -> bool {
+    platform::silent("tmux", &["has-session", "-t", &format!("={name}")])
+}
+fn binding_exists(config: &Config, name: &str) -> Result<bool> {
+    if !config.state.is_dir() {
+        return Ok(false);
+    }
+    Ok(state_command("exists", &[name.into()])? == 0)
+}
+fn executable_path() -> Result<PathBuf> {
+    if let Some(path) = env::var_os("HGS_EXECUTABLE").filter(|s| !s.is_empty()) {
+        let path = PathBuf::from(path);
+        if path.is_absolute() && platform::executable(&path) {
+            return Ok(path);
+        }
+    }
+    // Preserve the invoked stable install path, including a symlink, in durable recipes.
+    let invoked = env::args().next().unwrap_or_else(|| "hgs".into());
+    let path = PathBuf::from(&invoked);
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    if invoked.contains('/') {
+        return Ok(env::current_dir()?.join(path));
+    }
+    if let Some(path) = env::split_paths(&env::var_os("PATH").unwrap_or_default())
+        .map(|directory| directory.join(&invoked))
+        .find(|path| platform::executable(path))
+    {
+        return Ok(if path.is_absolute() {
+            path
+        } else {
+            env::current_dir()?.join(path)
+        });
+    }
+    Ok(env::current_exe()?)
+}
+fn nested_guard(dry: bool) -> Result<()> {
+    if !dry && env::var("TMUX").is_ok_and(|s| !s.is_empty()) {
+        let name = platform::capture("tmux", &["display", "-p", "#S"]).unwrap_or_default();
+        return Err(Error::new(
+            2,
+            format!(
+                "already inside tmux session {}; open a new tab",
+                name.trim()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+pub fn dispatch(args: Vec<String>) -> Result<i32> {
+    platform::prepare_environment();
+    // Existing hooks call this private stable ABI, including hooks installed before migration.
+    if args.first().is_some_and(|a| a == "__state") {
+        return state::dispatch(&args[1..]).map_err(|e| Error::new(1, e));
+    }
+    let config = Config::load()?;
+    if args.first().is_some_and(|a| a == "--run") {
+        return run(&args[1..]);
+    }
+    let mut target = String::new();
+    let mut dry = false;
+    let mut client = "local".to_owned();
+    let mut index = 0;
+    while let Some(arg) = args.get(index) {
+        if let Some(host) = arg.strip_prefix('@') {
+            target = host.into();
+            index += 1;
+        } else if arg == "--dry-run" {
+            dry = true;
+            index += 1;
+        } else if arg == "--client" {
+            client = require(&args, index + 1, "--client needs a peer name")?.into();
+            index += 2;
+        } else {
+            break;
+        }
+    }
+    let Some(command) = args.get(index) else {
+        eprint!("{USAGE}");
+        return Ok(1);
+    };
+    let args = &args[index + 1..];
+    match command.as_str() {
+        "-h" | "--help" | "help" => {
+            print!("{USAGE}");
+            return Ok(0);
+        }
+        "--version" => {
+            println!("hgs {}", env!("CARGO_PKG_VERSION"));
+            return Ok(0);
+        }
+        _ => {}
+    }
+    if command == "native-ui" {
+        let name = require(args, 0, "usage: hgs native-ui <session> [--json]")?;
+        if args.get(1).is_some_and(|v| v == "--json") && !dry {
+            println!(
+                "{}",
+                serde_json::json!({"url":crate::native_ui::address(&config,&target,name)?})
+            );
+            return Ok(0);
+        }
+        return crate::native_ui::open(&config, &target, name, dry);
+    }
+    if command == "account"
+        && args.first().is_some_and(|v| v == "login")
+        && args.get(1).is_some_and(|v| v == "native-dsh")
+    {
+        return crate::native_ui::open(&config, &target, "@account", dry);
+    }
+    if command == "a" && args.first().is_some_and(|v| v.starts_with("dsh/")) {
+        return crate::native_ui::open(&config, &target, &args[0], dry);
+    }
+    if !target.is_empty() && !config.is_self(&target) {
+        return remote(&config, &target, command, args, dry);
+    }
+    match command.as_str() {
+        "__dsh-ui-url" => {
+            let url = state::dsh::native_ui_url(require(args, 0, "Choose a native session")?)
+                .map_err(|e| Error::new(1, e))?;
+            println!("{}", json!({"url":url}));
+            Ok(0)
+        }
+        "ls" => list(&config, args, dry),
+        "a" => attach_command(&config, args, &client, dry),
+        "kill" => kill(&config, args, dry),
+        "rename" => rename(&config, args, dry),
+        "archive" | "terminate" => {
+            let mut args = args.to_vec();
+            if dry {
+                args.push("--dry-run".into());
+            }
+            state_command(command, &args)
+        }
+        "inspect" | "processes" | "worktrees" | "dirs" | "send" | "send-now" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search"
+        | "attachment" | "recovery" => {
+            if command == "worktrees" && args.first().is_some_and(|s| s == "create") && dry {
+                return Err(Error::new(1, "worktree creation does not support --dry-run"));
+            }
+            if (matches!(command.as_str(), "processes" | "send" | "send-now" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "recovery") || (command=="attachment" && has(args,"--stage"))) && dry {
+                return Err(Error::new(1, "message input does not support --dry-run"));
+            }
+            state_command(command, args)
+        }
+        "pause" | "resume" => pause_resume(&config, command, args, &client, dry),
+        "fork" => fork_session(&config, args, &client, dry),
+        "notify" => notify(&config, args, dry),
+        "clip" => platform::clip(),
+        "paste" => platform::paste(
+            &config,
+            require(
+                args,
+                0,
+                "usage: hgs paste <session> <pane> [client]  (the tmux C-v binding)",
+            )?,
+            require(
+                args,
+                1,
+                "usage: hgs paste <session> <pane> [client]  (the tmux C-v binding)",
+            )?,
+            args.get(2).map(String::as_str).unwrap_or(""),
+        ),
+        "machine" => crate::machines::dispatch(&config, args, dry),
+        "swarm" => crate::swarm::dispatch(&config, args, dry),
+        "account" => crate::accounts::dispatch(&config, args, dry),
+        "project" => project(&config, args, dry),
+        _ => launch(&config, command, args, &client, dry),
+    }
+}
+
+fn run(args: &[String]) -> Result<i32> {
+    let n: usize = require(args, 0, "--run needs a resume-argument count")?
+        .parse()
+        .map_err(|_| Error::new(1, "invalid --run resume-argument count"))?;
+    if n >= args.len() - 1 {
+        return Err(Error::new(
+            1,
+            "--run needs a base command after the resume arguments",
+        ));
+    }
+    if env::var("HGS_SESSION").is_ok_and(|s| !s.is_empty())
+        && env::var("HGS_TRACKING").as_deref() != Ok("0")
+    {
+        return state_command("run", args);
+    }
+    let resume = &args[1..n + 1];
+    let base = &args[n + 1..];
+    if n != 0 {
+        let start = Instant::now();
+        let rc = platform::wait_interactive(Command::new(&resume[0]).args(&resume[1..]))?;
+        let seconds: u64 = env::var("HGS_FALLBACK_SECS")
+            .unwrap_or_else(|_| "5".into())
+            .parse()
+            .map_err(|_| Error::new(1, "HGS_FALLBACK_SECS must be a nonnegative integer"))?;
+        if rc == 0 || start.elapsed().as_secs() >= seconds || rc >= 128 {
+            return Ok(rc);
+        }
+        eprintln!(
+            "hgs: nothing to resume (exit {rc} after {}s) — starting fresh",
+            start.elapsed().as_secs()
+        );
+    }
+    // The untracked runner has no durable process state and can replace itself directly.
+    use std::os::unix::process::CommandExt;
+    let error = Command::new(&base[0]).args(&base[1..]).exec();
+    Err(Error::new(
+        if error.kind() == std::io::ErrorKind::NotFound {
+            127
+        } else {
+            126
+        },
+        format!("{}: {error}", base[0]),
+    ))
+}
+
+fn peer_session(command: &str, args: &[String]) -> String {
+    if command == "fork" {
+        if let Some(source) = args.first() {
+            let parts: Vec<_> = source.splitn(3, '/').collect();
+            if parts.len() >= 2 {
+                let tag = args
+                    .windows(2)
+                    .find(|pair| pair[0] == "-n")
+                    .map(|pair| pair[1].clone())
+                    .unwrap_or_else(|| {
+                        format!("{}-fork", parts.get(2).copied().unwrap_or("session"))
+                    });
+                return format!("{}/{}/{tag}", parts[0], parts[1]);
+            }
+        }
+    }
+    if matches!(command, "a" | "resume") {
+        return args.first().cloned().unwrap_or_default();
+    }
+    let mut project = String::new();
+    let mut tag = String::new();
+    let mut i = 0;
+    while let Some(arg) = args.get(i) {
+        match arg.as_str() {
+            "--" => break,
+            "-n" => {
+                tag = args.get(i + 1).cloned().unwrap_or_default();
+                i += 1;
+            }
+            "--launch-id" => i += 1,
+            option if option.starts_with('-') => {}
+            name if project.is_empty() => project = name.into(),
+            _ => {}
+        }
+        i += 1;
+    }
+    if matches!(project.as_str(), "." | "..") {
+        project.clear();
+    } else if project.contains('/') || project.starts_with('~') {
+        project = basename(&project);
+    }
+    format!(
+        "{}{}{}",
+        basename(command),
+        if project.is_empty() {
+            String::new()
+        } else {
+            format!("/{}", sanitize(&project))
+        },
+        if tag.is_empty() {
+            String::new()
+        } else {
+            format!("/{tag}")
+        }
+    )
+}
+fn peer_json(config: &Config, peer: &str) -> Value {
+    let output = Command::new("ssh")
+        .args(crate::machines::ssh_options(config, peer))
+        .args([
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=3",
+            peer,
+            "~/.local/bin/hgs ls --local --json",
+        ])
+        .stderr(Stdio::piped())
+        .output();
+    let (error, detail) = match output {
+        Ok(out) if out.status.success() && !out.stdout.is_empty() => {
+            match serde_json::from_slice::<Value>(&out.stdout) {
+                Ok(value) if value.is_object() => return value,
+                _ => (
+                    "bad_response",
+                    "Invalid response from hgs on the remote machine".to_string(),
+                ),
+            }
+        }
+        Ok(out) => {
+            let detail: String = String::from_utf8_lossy(&out.stderr)
+                .chars()
+                .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+                .take(2048)
+                .collect();
+            (
+                "offline",
+                if detail.trim().is_empty() {
+                    format!("SSH command failed ({})", out.status)
+                } else {
+                    detail.trim().to_owned()
+                },
+            )
+        }
+        Err(err) => ("offline", format!("Could not start SSH: {err}")),
+    };
+    // Preserve the legacy object key order used by simple shell consumers.
+    let mut value = serde_json::Map::new();
+    value.insert("host".into(), json!(peer));
+    value.insert("ok".into(), json!(false));
+    value.insert("error".into(), json!(error));
+    value.insert("error_detail".into(), json!(detail));
+    value.insert("projects".into(), json!({}));
+    value.insert("sessions".into(), json!([]));
+    Value::Object(value)
+}
+fn remote(
+    config: &Config,
+    target: &str,
+    command: &str,
+    args: &[String],
+    global_dry: bool,
+) -> Result<i32> {
+    if target.starts_with('-') || target.chars().any(char::is_whitespace) {
+        return Err(Error::new(1, "invalid SSH host alias"));
+    }
+    let mut args = args.to_vec();
+    if global_dry {
+        args.push("--dry-run".into());
+    }
+    let mut flags: Vec<String>;
+    let mut link = None;
+    let mut tab = None;
+    let remote_args: Vec<String> = match command {
+        "ls" => {
+            flags = vec![
+                "-o".into(),
+                "BatchMode=yes".into(),
+                "-o".into(),
+                "ConnectTimeout=3".into(),
+            ];
+            let mut all = vec!["ls".into(), "--local".into()];
+            all.extend(args.clone());
+            all
+        }
+        "account" if args.first().is_some_and(|s| s != "login" && s != "install") => {
+            flags = vec![
+                "-o".into(),
+                "BatchMode=yes".into(),
+                "-o".into(),
+                "ConnectTimeout=5".into(),
+            ];
+            let mut all = vec![command.into()];
+            all.extend(args.clone());
+            all
+        }
+        "kill" | "terminate" | "pause" | "inspect" | "processes" | "worktrees" | "dirs" | "project" | "archive" | "rename"
+        | "send" | "send-now" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search" | "dsh" | "attachment" | "recovery" | "swarm" => {
+            flags = vec![
+                "-o".into(),
+                "BatchMode=yes".into(),
+                "-o".into(),
+                "ConnectTimeout=3".into(),
+            ];
+            let mut all = vec![command.into()];
+            all.extend(args.clone());
+            all
+        }
+        _ => {
+            if has(&args, "-d") || (command == "resume" && has(&args, "--all")) {
+                flags = vec!["-o".into(), "BatchMode=yes".into()];
+            } else {
+                let directory = tempfile::tempdir()?;
+                let marker = directory.path().join("up");
+                flags = vec![
+                    "-t".into(),
+                    "-o".into(),
+                    "PermitLocalCommand=yes".into(),
+                    "-o".into(),
+                    format!(
+                        "LocalCommand=touch {}",
+                        platform::quote(&marker.to_string_lossy())
+                    ),
+                ];
+                link = Some(directory);
+                tab = Some(format!("{target}:{}", peer_session(command, &args)));
+            }
+            let mut all = vec!["--client".into(), config.host().into(), command.into()];
+            all.extend(args.clone());
+            all
+        }
+    };
+    flags.extend(crate::machines::ssh_options(config, target));
+    let remote = format!("~/.local/bin/hgs {}", platform::join(&remote_args));
+    if global_dry || has(&args, "--dry-run") {
+        if let Some(title) = tab {
+            if config.tab {
+                println!("tab {title} color={}", platform::tab_color(config, target));
+            }
+        }
+        println!("ssh {} {target} {remote}", platform::join(&flags));
+        return Ok(0);
+    }
+    if command == "ls" && has(&args, "--json") {
+        println!("{}", peer_json(config, target));
+        return Ok(0);
+    }
+    if command == "ls" {
+        println!("{target}:");
+    }
+    let _tab = tab
+        .as_ref()
+        .map(|title| TabGuard::begin(config, title, &platform::tab_color(config, target)));
+    flags.push(target.into());
+    flags.push(remote);
+    let rc = platform::wait_interactive(Command::new("ssh").args(flags))?;
+    if rc == 255 {
+        if link
+            .as_ref()
+            .is_some_and(|dir| dir.path().join("up").exists())
+        {
+            platform::restore_terminal();
+            return Err(Error::new(
+                3,
+                format!("link to {target} dropped; the session is still there, rerun to reattach"),
+            ));
+        }
+        return Err(Error::new(3, format!("{target} unreachable")));
+    }
+    Ok(rc)
+}
+
+fn local_json(config: &Config) -> Result<Value> {
+    let mut projects = serde_json::Map::new();
+    for project in config.projects()? {
+        projects.insert(project.name, json!(project.dir));
+    }
+    let clients = platform::capture(
+        "tmux",
+        &["list-clients", "-F", "#{client_session}\t#{client_tty}"],
+    )
+    .unwrap_or_default();
+    let rows = platform::capture(
+        "tmux",
+        &[
+            "list-sessions",
+            "-F",
+            "#{session_name}\t#{session_attached}\t#{session_created}\t#{HGS_LAUNCH_ID}",
+        ],
+    )
+    .unwrap_or_default();
+    let sessions: Vec<Value> = rows.lines().filter(|line| !line.is_empty()).map(|line| {
+        let mut fields = line.split('\t'); let name = fields.next().unwrap_or_default();
+        let attached = fields.next().unwrap_or("0").parse::<u64>().unwrap_or(0);
+        let created = fields.next().unwrap_or("0").parse::<u64>().unwrap_or(0);
+        let launch_id = fields.next().unwrap_or_default();
+        let mut parts = name.splitn(3, '/'); let cmd = parts.next().unwrap_or("");
+        let project = parts.next().filter(|s| !s.is_empty()); let tag = parts.next().filter(|s| !s.is_empty());
+        let ttys: Vec<&str> = clients.lines().filter_map(|line| line.split_once('\t')).filter_map(|(session, tty)| if session == name { Some(tty) } else { None }).collect();
+        json!({"name":name,"cmd":cmd,"project":project,"tag":tag,"attached":attached,"clients":ttys,"created":created,"launch_id":launch_id})
+    }).collect();
+    let raw = json!({"host":config.host(),"ok":true,"projects":projects,"sessions":sessions,"peers":config.peers,"metrics":crate::metrics::snapshot(&config.state)});
+    state::merge_snapshot(raw).map_err(|e| Error::new(1, e))
+}
+fn local_list(config: &Config) -> Result<()> {
+    match platform::capture(
+        "tmux",
+        &["list-sessions", "-F", "#{session_name}|#{session_attached}"],
+    ) {
+        Some(rows) if !rows.trim().is_empty() => {
+            for row in rows.lines() {
+                if let Some((name, count)) = row.split_once('|') {
+                    println!("  {name:<40} {count} client(s)");
+                }
+            }
+        }
+        _ => println!("  (no sessions)"),
+    }
+    if config.state.is_dir() {
+        state_command("list", &[])?;
+    }
+    Ok(())
+}
+fn list(config: &Config, args: &[String], global_dry: bool) -> Result<i32> {
+    let dry = global_dry || has(args, "--dry-run");
+    if has(args, "--json") {
+        if dry {
+            println!("tmux list-clients -F \"#{{client_session}}\\t#{{client_tty}}\"\ntmux list-sessions -F \"#{{session_name}}\\t#{{session_attached}}\\t#{{session_created}}\\t#{{HGS_LAUNCH_ID}}\"");
+            return Ok(0);
+        }
+        let local = local_json(config)?;
+        if has(args, "--local") {
+            println!("{local}");
+        } else {
+            let mut fleet = vec![local];
+            fleet.extend(config.peers.iter().map(|peer| peer_json(config, peer)));
+            println!("{}", json!(fleet));
+        }
+        return Ok(0);
+    }
+    if dry {
+        println!("tmux list-sessions");
+        return Ok(0);
+    }
+    if args.first().is_some_and(|a| a == "--local") {
+        local_list(config)?;
+        return Ok(0);
+    }
+    println!("{}:", config.host());
+    local_list(config)?;
+    for peer in &config.peers {
+        println!("{peer}:");
+        let mut flags = crate::machines::ssh_options(config, peer);
+        flags.extend(
+            [
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=3",
+                peer,
+                "~/.local/bin/hgs ls --local",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        );
+        match platform::capture("ssh", &flags.iter().map(String::as_str).collect::<Vec<_>>()) {
+            Some(out) => println!("{}", out.trim_end_matches('\n')),
+            None => println!("  offline"),
+        }
+    }
+    Ok(0)
+}
+
+fn attach_command(config: &Config, args: &[String], client: &str, mut dry: bool) -> Result<i32> {
+    const HELP: &str = "usage: hgs a <session> [--existing [--run-id ID]]";
+    let session = require(args, 0, HELP)?;
+    if state::dsh::exists(session) {
+        return crate::native_ui::open(config, "", session, dry || has(args, "--dry-run"));
+    }
+    let mut existing = false;
+    let mut run_id = None;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--existing" => existing = true,
+            "--dry-run" => dry = true,
+            "--run-id" if run_id.is_none() => {
+                run_id = Some(require(args, i + 1, "--run-id needs an identity")?);
+                i += 1;
+            }
+            _ => return Err(Error::new(1, HELP)),
+        }
+        i += 1;
+    }
+    if run_id.is_some() && !existing {
+        return Err(Error::new(1, "--run-id requires --existing"));
+    }
+    if !existing {
+        return attach(config, session, client, dry);
+    }
+    if dry {
+        println!(
+            "tmux attach existing session {}{}",
+            platform::quote(session),
+            run_id
+                .map(|id| format!(" (run {})", platform::quote(id)))
+                .unwrap_or_default()
+        );
+        return Ok(0);
+    }
+    nested_guard(false)?;
+    // Resolve exact name to an immutable tmux session ID before checking the run.
+    // If it disappears later, attach fails instead of creating or selecting a new one.
+    let target = platform::capture(
+        "tmux",
+        &[
+            "display-message",
+            "-p",
+            "-t",
+            &format!("={session}:"),
+            "#{session_id}\t#{@hgs_run}",
+        ],
+    )
+    .ok_or_else(|| Error::new(1, "session is no longer running; resume it explicitly"))?;
+    let fields: Vec<_> = target.trim_end_matches('\n').split('\t').collect();
+    if fields.len() != 2
+        || !fields[0]
+            .strip_prefix('$')
+            .is_some_and(|id| !id.is_empty() && id.chars().all(|ch| ch.is_ascii_digit()))
+    {
+        return Err(Error::new(1, "invalid tmux session identity"));
+    }
+    if run_id.is_some_and(|expected| fields[1] != expected) {
+        return Err(Error::new(
+            1,
+            "session run changed; refresh before reconnecting",
+        ));
+    }
+    attach_target(config, session, client, fields[0])
+}
+
+fn attach(config: &Config, session: &str, client: &str, dry: bool) -> Result<i32> {
+    if dry {
+        println!("tmux set-environment -t ={session} HGS_CLIENT {client}\ntmux -u attach-session -t ={session}");
+        return Ok(0);
+    }
+    nested_guard(false)?;
+    if !session_exists(session) && config.state.is_dir() {
+        env::set_var("HGS_CLIENT", client);
+        let rc = state_command("resume", &[session.into()])?;
+        if rc != 0 {
+            return Ok(rc);
+        }
+    }
+    attach_target(config, session, client, &format!("={session}"))
+}
+
+fn attach_target(config: &Config, session: &str, client: &str, target: &str) -> Result<i32> {
+    platform::silent(
+        "tmux",
+        &["set-environment", "-t", target, "HGS_CLIENT", client],
+    );
+    let _tab = TabGuard::begin(config, session, &platform::tab_color(config, "local"));
+    let rc = platform::wait_interactive(Command::new("tmux").args([
+        "-u",
+        "attach-session",
+        "-t",
+        target,
+    ]))?;
+    platform::client_done(rc);
+    report_startup_failure(session);
+    Ok(rc)
+}
+
+fn report_startup_failure(session: &str) -> bool {
+    if let Ok(Some(message)) = state::startup_failure(session) {
+        eprintln!("hgs: {message}");
+        true
+    } else {
+        false
+    }
+}
+
+fn attach_requested(
+    config: &Config,
+    session: &str,
+    client: &str,
+    agent: &str,
+    id: &str,
+) -> Result<i32> {
+    // Capture the tmux identity before rechecking the conversation. If the name
+    // is reused afterwards, attach must fail instead of selecting its new owner.
+    let target = platform::capture(
+        "tmux",
+        &[
+            "display-message",
+            "-p",
+            "-t",
+            &format!("={session}:"),
+            "#{session_id}",
+        ],
+    )
+    .filter(|value| {
+        value
+            .trim()
+            .strip_prefix('$')
+            .is_some_and(|value| !value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit()))
+    })
+    .ok_or_else(|| {
+        Error::new(
+            1,
+            "requested session ended before attach; repeat the command",
+        )
+    })?;
+    state::check_requested_session(session, agent, id).map_err(|error| Error::new(1, error))?;
+    attach_target(config, session, client, target.trim())
+}
+fn kill(config: &Config, args: &[String], mut dry: bool) -> Result<i32> {
+    let session = require(args, 0, "usage: hgs kill <session> [--archive <id>]")?;
+    let mut archive = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--dry-run" => dry = true,
+            "--archive" if archive.is_none() => {
+                archive = Some(require(args, index + 1, "--archive needs an archive ID")?);
+                index += 1;
+            }
+            option => return Err(Error::new(1, format!("unknown kill option: {option}"))),
+        }
+        index += 1;
+    }
+    // Resolve archive-only operations before touching tmux. The same name can
+    // belong to a live session and several independent archived conversations.
+    if let Some(id) = archive {
+        let mut args = vec![session.into(), "--archive".into(), id.into()];
+        if dry {
+            args.push("--dry-run".into());
+        }
+        return state_command("forget", &args);
+    }
+    if dry {
+        println!("tmux kill-session -t ={session}");
+        return Ok(0);
+    }
+    if session_exists(session) {
+        let rc = platform::code(
+            Command::new("tmux")
+                .args(["kill-session", "-t", &format!("={session}")])
+                .status()?,
+        );
+        if rc != 0 {
+            return Ok(rc);
+        }
+    } else if !binding_exists(config, session)? {
+        return Err(Error::new(1, format!("no such session: {session}")));
+    }
+    if config.state.is_dir() {
+        state_command("forget", &[session.into()])
+    } else {
+        Ok(0)
+    }
+}
+
+fn rename(config: &Config, args: &[String], mut dry: bool) -> Result<i32> {
+    const USAGE: &str = "usage: hgs rename <session> <new-full-name> [--archive ID] [--dry-run]";
+    let old = require(args, 0, USAGE)?;
+    let new = require(args, 1, USAGE)?;
+    let mut archive = None;
+    let mut index = 2;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--dry-run" => dry = true,
+            "--archive" if archive.is_none() => {
+                archive = Some(require(args, index + 1, "--archive needs an archive ID")?);
+                index += 1;
+            }
+            option => return Err(Error::new(1, format!("unknown rename option: {option}"))),
+        }
+        index += 1;
+    }
+    let mut state_args = vec![old.to_owned(), new.to_owned()];
+    if let Some(id) = archive {
+        state_args.extend(["--archive".into(), id.into()]);
+    }
+    if dry {
+        state_args.push("--dry-run".into());
+    }
+    let result = state_command("rename", &state_args)?;
+    if result == 0 && !dry && archive.is_none() && config.tab {
+        if let Err(error) = platform::refresh_session_title(new) {
+            eprintln!("hgs: session renamed; could not update a terminal title: {error}");
+        }
+    }
+    Ok(result)
+}
+fn fork_session(config: &Config, args: &[String], client: &str, mut dry: bool) -> Result<i32> {
+    let name = require(
+        args,
+        0,
+        "usage: hgs fork <session> [-n name] [-d] [--archive ID]",
+    )?;
+    let (mut tag, mut archive, mut expected_run, mut expected_conversation) =
+        (None, None, None, None);
+    let mut detached = false;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--dry-run" => dry = true,
+            "-d" => detached = true,
+            "-n" | "--archive" | "--expected-run-id" | "--expected-conversation-id" => {
+                let value = require(args, index + 1, "missing fork option value")?;
+                let slot = match args[index].as_str() {
+                    "-n" => &mut tag,
+                    "--archive" => &mut archive,
+                    "--expected-run-id" => &mut expected_run,
+                    _ => &mut expected_conversation,
+                };
+                if slot.is_some() {
+                    return Err(Error::new(1, "duplicate fork option"));
+                }
+                *slot = Some(value);
+                index += 1;
+            }
+            option => return Err(Error::new(1, format!("unknown fork option: {option}"))),
+        }
+        index += 1;
+    }
+    if !detached && !dry && env::var("TMUX").is_ok_and(|value| !value.is_empty()) {
+        return Err(Error::new(
+            2,
+            "already inside tmux; use fork -d or open a new tab",
+        ));
+    }
+    env::set_var("HGS_CLIENT", client);
+    let target = state::fork_session(name, tag, archive, expected_run, expected_conversation, dry)
+        .map_err(|error| Error::new(1, error))?;
+    if detached || dry {
+        Ok(0)
+    } else {
+        attach(config, &target, client, false)
+    }
+}
+
+fn pause_resume(
+    config: &Config,
+    command: &str,
+    args: &[String],
+    client: &str,
+    mut dry: bool,
+) -> Result<i32> {
+    let session = require(
+        args,
+        0,
+        &format!("usage: hgs {command} <session>|--all [-d] [--archive <id>]"),
+    )?;
+    let mut detached = session == "--all";
+    if session.starts_with('-') && session != "--all" {
+        return Err(Error::new(
+            1,
+            format!("unknown {command} option: {session}"),
+        ));
+    }
+    let mut archive = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--dry-run" => dry = true,
+            "-d" if command == "resume" => detached = true,
+            "-d" => return Err(Error::new(1, "-d is only valid with resume")),
+            "--archive" if command == "resume" && session != "--all" && archive.is_none() => {
+                archive = Some(require(args, index + 1, "--archive needs an archive ID")?);
+                index += 1;
+            }
+            option => return Err(Error::new(1, format!("unknown {command} option: {option}"))),
+        }
+        index += 1;
+    }
+    if command == "resume" && !detached && !dry && env::var("TMUX").is_ok_and(|s| !s.is_empty()) {
+        return Err(Error::new(
+            2,
+            "already inside tmux; use resume -d or open a new tab",
+        ));
+    }
+    let mut state_args = vec![session.into()];
+    if let Some(id) = archive {
+        state_args.extend(["--archive".into(), id.into()]);
+    }
+    if dry {
+        state_args.push("--dry-run".into());
+    }
+    env::set_var("HGS_CLIENT", client);
+    let rc = state_command(command, &state_args)?;
+    if rc != 0 || dry || command != "resume" || detached || state::dsh::exists(session) {
+        return Ok(rc);
+    }
+    attach(config, session, client, false)
+}
+
+fn notify(config: &Config, args: &[String], dry: bool) -> Result<i32> {
+    let bell = args.first().is_some_and(|s| s == "--bell");
+    let args = if bell { &args[1..] } else { args };
+    let session = require(args, 0, "usage: hgs notify [--bell] <session> [text...]")?;
+    let mut text = args[1..].join(" ");
+    if text.is_empty() {
+        text = if bell {
+            "rang the bell"
+        } else {
+            "waiting for you"
+        }
+        .into();
+    }
+    let path = env::var("HGS_EVENTS")
+        .ok()
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            if platform::is_macos() {
+                PathBuf::from(format!(
+                    "{}/Library/Application Support/hgs/events",
+                    config.home
+                ))
+            } else {
+                PathBuf::from(
+                    env::var("XDG_RUNTIME_DIR")
+                        .unwrap_or_else(|_| format!("/tmp/hgs-{}", unsafe { libc::getuid() })),
+                )
+                .join("hgs/events")
+            }
+        });
+    if dry {
+        println!("notify {} {session}", path.display());
+        return Ok(0);
+    }
+    // Never create or spool events when the tray is absent.
+    if !path.is_file() {
+        return Ok(0);
+    }
+    let mut file = match fs::OpenOptions::new().append(true).open(&path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e.into()),
+    };
+    let line = format!(
+        "{}\n",
+        json!({"session":session,"host":config.host(),"text":text,"bell":bell,"ts":SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()})
+    );
+    // O_APPEND plus a single write preserves records across simultaneous short notifications.
+    file.write_all(line.as_bytes())?;
+    Ok(0)
+}
+fn project(config: &Config, args: &[String], dry: bool) -> Result<i32> {
+    let subcommand = args.first().map(String::as_str).unwrap_or("ls");
+    let args = if args.is_empty() { args } else { &args[1..] };
+    match subcommand {
+        "ls" => {
+            let projects = config.projects()?;
+            if has(args, "--json") {
+                println!("{}", json!(projects.iter().map(|p| json!({"name":p.name,"dir":p.dir,"src":p.src,"exists":Path::new(&p.dir).is_dir()})).collect::<Vec<_>>()));
+            } else {
+                for p in projects {
+                    println!(
+                        "{} {:<24} {:<8} {}",
+                        if Path::new(&p.dir).is_dir() { " " } else { "!" },
+                        p.name,
+                        p.src,
+                        p.dir
+                    );
+                }
+            }
+        }
+        "add" | "set" => {
+            let usage = format!("usage: hgs project {subcommand} <name> <dir>");
+            let name = require(args, 0, &usage)?;
+            let directory = require(args, 1, &usage)?;
+            config::check_name(name)?;
+            let expanded = config.expand_home(directory);
+            config::check_directory(&expanded)?;
+            let path = absolute_directory(&expanded)
+                .map_err(|_| Error::new(1, format!("no such directory: {directory}")))?;
+            let directory = path.to_string_lossy();
+            config::check_directory(&directory)?;
+            if subcommand == "add" {
+                if let Some(p) = config.projects()?.into_iter().find(|p| p.name == name) {
+                    return Err(Error::new(1, format!("project '{name}' already exists ({}); use 'hgs project set' to override it", p.src)));
+                }
+            }
+            if dry {
+                println!(
+                    "project {subcommand} {name}={directory} -> {}/projects.local",
+                    config.dir.display()
+                );
+            } else {
+                config.write_project(name, Some(&directory), subcommand == "add")?;
+            }
+        }
+        "rm" => {
+            let name = require(args, 0, "usage: hgs project rm <name>")?;
+            match config
+                .projects()?
+                .into_iter()
+                .find(|p| p.name == name)
+                .map(|p| p.src)
+            {
+                Some(source) if source == "local" => {}
+                Some(_) => return Err(Error::new(1, format!("unknown project '{name}'"))),
+                None => return Err(Error::new(1, format!("unknown project '{name}'"))),
+            }
+            if dry {
+                println!(
+                    "project rm {name} <- {}/projects.local",
+                    config.dir.display()
+                );
+            } else {
+                config.write_project(name, None, false)?;
+            }
+        }
+        _ => {
+            return Err(Error::new(
+                1,
+                "usage: hgs project ls [--json] | add <name> <dir> | set <name> <dir> | rm <name>",
+            ))
+        }
+    }
+    Ok(0)
+}
+fn logical_cwd() -> std::io::Result<PathBuf> {
+    let actual = env::current_dir()?;
+    Ok(env::var("PWD")
+        .ok()
+        .filter(|p| {
+            Path::new(p).is_absolute() && fs::canonicalize(p).ok().as_ref() == Some(&actual)
+        })
+        .map(PathBuf::from)
+        .unwrap_or(actual))
+}
+fn absolute_directory(path: &str) -> std::io::Result<PathBuf> {
+    // Match `cd -L; pwd`: a project symlink's visible name remains the session name.
+    // Canonicalizing here would rename ~/projects/site to its target's basename.
+    let path = Path::new(path);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        logical_cwd()?.join(path)
+    };
+    let mut directory = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                directory.pop();
+            }
+            component => directory.push(component.as_os_str()),
+        }
+    }
+    if !directory.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotADirectory,
+            "not a directory",
+        ));
+    }
+    Ok(directory)
+}
+
+#[derive(Default)]
+struct LaunchOptions {
+    account: Option<String>,
+    launch_id: Option<String>,
+    project: String,
+    tag: String,
+    fresh: bool,
+    new_only: bool,
+    resume: bool,
+    resume_id: Option<String>,
+    remote_control: bool,
+    dry: bool,
+    detached: bool,
+    bare: bool,
+    extra: Vec<String>,
+}
+fn conversation_id(value: &str) -> Option<String> {
+    let (prefix, value) = match value.strip_prefix("session_") {
+        Some(value) => ("session_", value),
+        None => ("", value),
+    };
+    uuid::Uuid::parse_str(value)
+        .ok()
+        .map(|id| format!("{prefix}{id}"))
+}
+impl LaunchOptions {
+    fn parse(args: &[String], dry: bool) -> Result<Self> {
+        let mut options = Self {
+            dry,
+            ..Self::default()
+        };
+        let mut i = 0;
+        while let Some(arg) = args.get(i) {
+            match arg.as_str() {
+                "-n" => {
+                    options.tag = require(args, i + 1, "-n needs a tag")?.into();
+                    i += 1;
+                }
+                "--account" => {
+                    options.account =
+                        Some(require(args, i + 1, "--account needs a profile ID")?.into());
+                    i += 1;
+                }
+                "--launch-id" => {
+                    let id =
+                        uuid::Uuid::parse_str(require(args, i + 1, "--launch-id needs a UUID")?)
+                            .map_err(|_| Error::new(1, "--launch-id needs a UUID"))?;
+                    if id.is_nil() || options.launch_id.replace(id.to_string()).is_some() {
+                        return Err(Error::new(1, "provide one non-empty launch UUID"));
+                    }
+                    i += 1;
+                }
+                "-d" => options.detached = true,
+                "-c" | "--resume" | "--continue" => {
+                    options.resume = true;
+                    if let Some(id) = args.get(i + 1).and_then(|value| conversation_id(value)) {
+                        if options.resume_id.replace(id).is_some() {
+                            return Err(Error::new(1, "only one conversation ID can be requested"));
+                        }
+                        i += 1;
+                    }
+                }
+                option if option.starts_with("--resume=") || option.starts_with("--continue=") => {
+                    let value = option.split_once('=').unwrap().1;
+                    let id = conversation_id(value)
+                        .ok_or_else(|| Error::new(1, "--resume=ID needs a conversation UUID"))?;
+                    if options.resume_id.replace(id).is_some() {
+                        return Err(Error::new(1, "only one conversation ID can be requested"));
+                    }
+                    options.resume = true;
+                }
+                "--fresh" => options.fresh = true,
+                "--new" => options.new_only = true,
+                "--bare" => options.bare = true,
+                "--rc" => options.remote_control = true,
+                "--dry-run" => options.dry = true,
+                "--" => {
+                    options.extra = args[i + 1..].to_vec();
+                    break;
+                }
+                option if option.starts_with('-') => {
+                    return Err(Error::new(
+                        1,
+                        format!("unknown option {option} (agent flags go after --)"),
+                    ))
+                }
+                name if options.project.is_empty() => options.project = name.into(),
+                name => {
+                    return Err(Error::new(
+                        1,
+                        format!("unexpected argument {name} (agent flags go after --)"),
+                    ))
+                }
+            }
+            i += 1;
+        }
+        nested_guard(options.dry)?;
+        if options.launch_id.is_some() && !options.new_only {
+            return Err(Error::new(1, "--launch-id requires --new"));
+        }
+        if options.resume_id.is_some() && options.fresh {
+            return Err(Error::new(
+                1,
+                "an exact conversation ID cannot be combined with --fresh",
+            ));
+        }
+        if options.new_only {
+            if options.resume || options.fresh {
+                return Err(Error::new(
+                    1,
+                    "--new cannot be combined with --resume or --fresh",
+                ));
+            }
+            if options.tag.is_empty() {
+                options.tag = format!("work-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+            }
+            if options.tag.contains(['/', ':', '.']) || options.tag.chars().any(char::is_whitespace)
+            {
+                return Err(Error::new(
+                    1,
+                    "new session name cannot contain whitespace, '/', ':' or '.'",
+                ));
+            }
+        }
+        Ok(options)
+    }
+}
+fn resolve_project(
+    config: &Config,
+    command: &str,
+    options: &LaunchOptions,
+) -> Result<(String, String)> {
+    let project = &options.project;
+    if project.is_empty() {
+        let directory = logical_cwd()?.to_string_lossy().into_owned();
+        return Ok((directory.clone(), basename(&directory)));
+    }
+    if project.contains('/') || project.starts_with('~') || matches!(project.as_str(), "." | "..") {
+        let directory = absolute_directory(&config.expand_home(project))
+            .map_err(|_| Error::new(1, format!("no such directory: {project}")))?
+            .to_string_lossy()
+            .into_owned();
+        return Ok((directory.clone(), basename(&directory)));
+    }
+    let projects = config.projects()?;
+    if let Some(found) = projects.iter().find(|p| p.name == *project) {
+        let directory = config.expand_home(&found.dir);
+        if !Path::new(&directory).is_dir() {
+            return Err(Error::new(
+                1,
+                format!("project '{project}' points to missing dir {directory}"),
+            ));
+        }
+        return Ok((directory, project.clone()));
+    }
+    let session = format!(
+        "{}/{}{}",
+        basename(command),
+        sanitize(project),
+        if options.tag.is_empty() {
+            String::new()
+        } else {
+            format!("/{}", options.tag)
+        }
+    );
+    if session_exists(&session) {
+        return Ok((String::new(), project.clone()));
+    }
+    Err(Error::new(
+        1,
+        format!(
+            "unknown project '{project}' and no session {}/{}; known: {}",
+            basename(command),
+            sanitize(project),
+            projects
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
+    ))
+}
+fn launch(
+    config: &Config,
+    command: &str,
+    args: &[String],
+    client: &str,
+    global_dry: bool,
+) -> Result<i32> {
+    let mut options = LaunchOptions::parse(args, global_dry)?;
+    let (directory, project) = resolve_project(config, command, &options)?;
+    let command_name = basename(command);
+    if command_name == "dsh" {
+        if options
+            .account
+            .as_deref()
+            .is_some_and(|id| id != "native-dsh")
+        {
+            return Err(Error::new(
+                1,
+                "Choose the native DeepSeek account; manage its login in the native UI",
+            ));
+        }
+        if options.resume_id.is_some() || !options.extra.is_empty() || options.fresh {
+            return Err(Error::new(
+                1,
+                "Use HGS session names to resume DeepSeek; native CLI flags belong in dsh itself",
+            ));
+        }
+        let project = if project == "/" {
+            "root".into()
+        } else {
+            sanitize(&project)
+        };
+        let name = format!(
+            "dsh/{project}{}",
+            if options.tag.is_empty() {
+                String::new()
+            } else {
+                format!("/{}", options.tag)
+            }
+        );
+        state::dsh::launch(
+            &name,
+            &directory,
+            options.launch_id.as_deref(),
+            options.dry,
+            options.new_only,
+        )
+        .map_err(|e| Error::new(1, e))?;
+        if !options.dry {
+            println!("DeepSeek session ready: {name}\nOpen this session in hgs zerus.");
+        }
+        return Ok(0);
+    }
+    let explicit_account = options.account.is_some();
+    // Exact conversation lookup is scoped to the chosen account's native home.
+    if !explicit_account && options.resume_id.is_some() {
+        options.account = crate::accounts::default_account(config, &command_name)?;
+    }
+    let mut account_environment = if let Some(id) = &options.account {
+        crate::accounts::select(config, id, &command_name)?
+    } else {
+        Vec::new()
+    };
+    let requested_session = if let Some(id) = &options.resume_id {
+        if !matches!(command_name.as_str(), "claude" | "codex" | "kimi") {
+            return Err(Error::new(
+                1,
+                "resuming a conversation ID requires claude, codex or kimi",
+            ));
+        }
+        if options.tag.is_empty() {
+            let found = state::find_requested_session(&command_name, id)
+                .map_err(|error| Error::new(1, error))?;
+            options.tag = format!("resume-{id}");
+            found
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let project = if project == "/" {
+        "root".into()
+    } else {
+        sanitize(&project)
+    };
+    let session = requested_session.unwrap_or_else(|| {
+        format!(
+            "{command_name}/{project}{}",
+            if options.tag.is_empty() {
+                String::new()
+            } else {
+                format!("/{}", options.tag)
+            }
+        )
+    });
+    let existing = session_exists(&session);
+    if explicit_account
+        && (existing || (!options.fresh && binding_exists(config, &session)?))
+    {
+        return Err(Error::new(1, "This session already has an account. Open it from Sessions, or choose a new session name."));
+    }
+    let mut requested_saved = false;
+    if let Some(id) = &options.resume_id {
+        if existing || binding_exists(config, &session)? {
+            requested_saved = state::check_requested_session(&session, &command_name, id)
+                .map_err(|error| Error::new(1, error))?;
+        }
+    }
+    if options.new_only && (existing || binding_exists(config, &session)?) {
+        return Err(Error::new(
+            1,
+            format!(
+                "session '{session}' already exists; choose another name or open it from Sessions"
+            ),
+        ));
+    }
+    // Attaching/restoring a named session keeps its saved account binding.
+    if !explicit_account && options.resume_id.is_none() && !existing
+        && (options.fresh || !binding_exists(config, &session)?) {
+        options.account = crate::accounts::default_account(config, &command_name)?;
+        if let Some(id) = &options.account {
+            account_environment = crate::accounts::select(config, id, &command_name)?;
+        }
+    }
+    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    let (mut base, mut resume): (Vec<String>, Vec<String>) = match command_name.as_str() {
+        "claude" | "kimi" => (
+            vec![command_name.clone()],
+            vec![command_name.clone(), "-c".into()],
+        ),
+        "codex" => (
+            vec!["codex".into()],
+            vec!["codex".into(), "resume".into(), "--last".into()],
+        ),
+        "sh" => (vec![shell.clone(), "-l".into()], Vec::new()),
+        _ => (vec![command.into()], Vec::new()),
+    };
+    let launcher = Path::new(&directory).join(format!("run_{command_name}.sh"));
+    if !options.bare && !directory.is_empty() && platform::executable(&launcher) {
+        base[0] = launcher.to_string_lossy().into_owned();
+        if !resume.is_empty() {
+            resume[0] = base[0].clone();
+        }
+    }
+    if let Some(id) = &options.resume_id {
+        base.extend([
+            match command_name.as_str() {
+                "codex" => "resume",
+                "claude" => "--resume",
+                "kimi" => "--session",
+                _ => unreachable!(),
+            }
+            .into(),
+            id.clone(),
+        ]);
+    }
+    let mut auto = options.resume && !options.fresh && options.resume_id.is_none();
+    if auto && resume.is_empty() {
+        eprintln!("hgs: -c: no resume mode known for {command_name}; starting it as is");
+        auto = false;
+    }
+    if command_name == "claude" && auto {
+        let history_root = env::var("HGS_CLAUDE_PROJECTS").unwrap_or_else(|_| {
+            let home = env::var("CLAUDE_CONFIG_DIR")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| format!("{}/.claude", config.home));
+            Path::new(&home)
+                .join("projects")
+                .to_string_lossy()
+                .into_owned()
+        });
+        let escaped: String = directory
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        auto = fs::read_dir(Path::new(&history_root).join(escaped))
+            .ok()
+            .is_some_and(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .any(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
+            });
+    }
+    if !options.extra.is_empty() {
+        match command_name.as_str() {
+            "codex" => auto = false,
+            "claude"
+                if options
+                    .extra
+                    .iter()
+                    .any(|arg| matches!(arg.as_str(), "-c" | "--continue" | "-r" | "--resume")) =>
+            {
+                auto = false
+            }
+            "kimi"
+                if options.extra.iter().any(|arg| {
+                    matches!(arg.as_str(), "-c" | "--continue" | "-S" | "--session")
+                }) =>
+            {
+                auto = false
+            }
+            _ => {}
+        }
+        base.extend(options.extra.clone());
+        if !resume.is_empty() {
+            resume.extend(options.extra.clone());
+        }
+    }
+    if options.remote_control {
+        if command_name == "claude" {
+            base.extend(["--remote-control".into(), session.clone()]);
+            resume.extend(["--remote-control".into(), session.clone()]);
+        } else {
+            eprintln!("hgs: --rc is claude-only; ignored for {command_name}");
+        }
+    }
+    let executable = executable_path()?.to_string_lossy().into_owned();
+    let command_string = if command_name == "sh" {
+        platform::join(&base)
+    } else {
+        let mut words = vec![
+            shell,
+            "-lic".into(),
+            if account_environment.is_empty() {
+                "exec \"$0\" --run \"$@\"".into()
+            } else {
+                format!(
+                    "exec env {} \"$0\" --run \"$@\"",
+                    platform::join(&account_environment)
+                )
+            },
+            executable.clone(),
+        ];
+        if auto {
+            words.push(resume.len().to_string());
+            words.extend(resume);
+        } else {
+            words.push("0".into());
+        }
+        words.extend(base);
+        platform::join(&words)
+    };
+    if existing {
+        if options.dry {
+            if !options.detached && config.tab {
+                println!(
+                    "tab {session} color={}",
+                    platform::tab_color(config, "local")
+                );
+            }
+            return attach(config, &session, client, true);
+        }
+        if let Some(id) = &options.resume_id {
+            eprintln!("hgs: conversation {id} is running as {session}");
+        } else if options.fresh
+            || options.resume
+            || options.remote_control
+            || !options.extra.is_empty()
+        {
+            eprintln!("hgs: session {session} exists, attaching; launch options ignored");
+        }
+        if options.detached {
+            println!("hgs: session {session} already running");
+            return Ok(0);
+        }
+        if let Some(id) = &options.resume_id {
+            return attach_requested(config, &session, client, &command_name, id);
+        }
+        return attach(config, &session, client, false);
+    }
+    let mut environment = vec![format!("HGS_CLIENT={client}")];
+    if let Some(id) = &options.launch_id {
+        // Set only on the session actually created by this command. A name
+        // collision must never claim another session for the GUI's group.
+        environment.push(format!("HGS_LAUNCH_ID={id}"));
+    }
+    environment.extend(account_environment);
+    environment.extend(platform::gui_env());
+    if !options.fresh
+        && (requested_saved || (options.resume_id.is_none() && binding_exists(config, &session)?))
+    {
+        env::set_var("HGS_CLIENT", client);
+        if let Some(id) = &options.resume_id {
+            env::set_var("HGS_REQUESTED_ID", id);
+        } else {
+            env::remove_var("HGS_REQUESTED_ID");
+        }
+        let mut state_args = vec![session.clone()];
+        if options.dry {
+            state_args.push("--dry-run".into());
+        }
+        let rc = state_command("resume", &state_args)?;
+        return if rc == 0 && !options.detached && !options.dry {
+            attach(config, &session, client, false)
+        } else {
+            Ok(rc)
+        };
+    }
+    if options.dry {
+        if !options.detached && config.tab {
+            println!(
+                "tab {session} color={}",
+                platform::tab_color(config, "local")
+            );
+        }
+        println!(
+            "tmux -u new-session {}{} -s {session} -c {directory} -- {command_string}",
+            if options.detached { "-d " } else { "" },
+            environment
+                .iter()
+                .map(|v| format!("-e {v}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        return Ok(0);
+    }
+    if matches!(command_name.as_str(), "claude" | "codex" | "kimi")
+        && env::var("HGS_TRACKING").as_deref() != Ok("0")
+    {
+        environment.extend([
+            format!("HGS_SESSION={session}"),
+            format!("HGS_AGENT={command_name}"),
+            format!(
+                "HGS_ACCOUNT_ID={}",
+                options.account.as_deref().unwrap_or("")
+            ),
+            format!("HGS_STATE_DIR={}", config.state.display()),
+            format!("HGS_EXECUTABLE={executable}"),
+            "HGS_RUN_ID=".into(),
+            "HGS_EXPECTED_ID=".into(),
+            "HGS_ARCHIVE_ID=".into(),
+            format!("HGS_FRESH={}", if options.fresh { "1" } else { "0" }),
+            format!(
+                "HGS_REQUESTED_ID={}",
+                options.resume_id.as_deref().unwrap_or("")
+            ),
+            "HGS_TRACKING=1".into(),
+        ]);
+        for key in ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "KIMI_CODE_HOME"] {
+            environment.push(format!("{key}={}", env::var(key).unwrap_or_default()));
+        }
+    }
+    let mut tmux = Command::new("tmux");
+    tmux.args(["-u", "new-session"]);
+    if options.detached {
+        tmux.arg("-d");
+    }
+    for value in &environment {
+        tmux.args(["-e", value]);
+    }
+    tmux.args(["-s", &session, "-c", &directory, &command_string]);
+    if options.detached {
+        let rc = platform::code(tmux.status()?);
+        if rc == 0 {
+            println!("hgs: started {session}");
+        }
+        return Ok(rc);
+    }
+    let _tab = TabGuard::begin(config, &session, &platform::tab_color(config, "local"));
+    let start = Instant::now();
+    let rc = platform::wait_interactive(&mut tmux)?;
+    let server_died = platform::client_done(rc);
+    if !report_startup_failure(&session)
+        && !server_died
+        && !session_exists(&session)
+        && start.elapsed().as_secs() < 3
+    {
+        eprintln!("hgs: session {session} ended immediately — command not found on this box? try --dry-run");
+    }
+    Ok(rc)
+}

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.hgdev.hgs-tray</string>
+    <!-- Путь к бандлу и путь к hgs подставляет install.sh: plist для launchd — данные,
+         ни ~, ни переменные окружения он в нём не разворачивает. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>__APP__/Contents/MacOS/hgs-tray</string>
+        <!-- launchd даёт голый PATH=/usr/bin:/bin:/usr/sbin:/sbin, а hgs живёт в
+             ~/.local/bin. Без явного пути трей падает с FailedToStart на каждом тике. -->
+        <string>--hgs</string>
+        <string>__HGS__</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <!-- Только после крэша (смерть по сигналу: SIGABRT, SIGSEGV...), не после любого
+         выхода: у launchd нет аналога RestartPreventExitStatus, а трей штатно выходит с
+         кодом 4, когда строки меню нет, -- KeepAlive=true крутил бы его в цикле. Крэш
+         здесь в первую очередь -- abort() сторожа главного потока (MainThreadWatchdog.h):
+         так повисший в AppKit трей поднимается сам, а не висит неделю. Обычный выход и
+         launchctl unload перезапуска не дают. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+    <!-- stderr трея: варнинги Qt и строка сторожа перед abort(). Без этого ключа launchd
+         отправляет stderr в никуда, и зависание не оставляет ни следа. Путь подставляет
+         install.sh -- launchd не разворачивает ~. -->
+    <key>StandardErrorPath</key>
+    <string>__LOG__</string>
+</dict>
+</plist>

@@ -1,0 +1,850 @@
+//! Structured provider questions. Hooks preserve new requests; Kimi's own wire
+//! transcript recovers the exact interaction identity for already-running TUIs.
+use super::*;
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, File};
+use std::io::{Seek, SeekFrom};
+use std::time::{Duration, Instant};
+
+const MAX_WIRE_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_PAYLOAD_BYTES: u64 = 128 * 1024;
+
+fn text(value: &Value, max: usize) -> Result<String> {
+    let value = value.as_str().unwrap_or("");
+    if value.chars().count() > max
+        || value
+            .chars()
+            .any(|ch| ch.is_control() && ch != '\n' && ch != '\t')
+    {
+        return Err("question text exceeds supported limits or contains control characters".into());
+    }
+    Ok(value.into())
+}
+
+fn token(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 200
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+}
+
+pub(super) fn normalize(items: &Value) -> Result<Value> {
+    let items = items.as_array().ok_or("questions must be an array")?;
+    if items.is_empty() || items.len() > 4 {
+        return Err("question requests must contain one to four questions".into());
+    }
+    let mut questions = Vec::new();
+    let mut seen_questions = BTreeSet::new();
+    for (index, item) in items.iter().enumerate() {
+        let question = text(&item["question"], 8192)?;
+        if question.trim().is_empty() || !seen_questions.insert(question.clone()) {
+            return Err("question text is empty or duplicated".into());
+        }
+        let options = item["options"]
+            .as_array()
+            .ok_or("question options are missing")?;
+        if !(2..=4).contains(&options.len()) {
+            return Err("each question must have two to four options".into());
+        }
+        let mut choices = Vec::new();
+        let mut seen_options = BTreeSet::new();
+        for (option_index, option) in options.iter().enumerate() {
+            let label = text(&option["label"], 1024)?;
+            if label.trim().is_empty() || !seen_options.insert(label.clone()) {
+                return Err("option labels are empty or duplicated".into());
+            }
+            choices.push(
+                json!({"id":format!("opt_{index}_{option_index}"),"label":label,
+                "description":text(&option["description"],4096)?}),
+            );
+        }
+        questions.push(json!({"id":format!("q_{index}"),"question":question,
+            "header":text(&item["header"],128)?,"body":text(&item["body"],8192)?,
+            "other_label":text(item.get("other_label").or_else(||item.get("otherLabel")).unwrap_or(&Value::Null),1024)?,
+            "other_description":text(item.get("other_description").or_else(||item.get("otherDescription")).unwrap_or(&Value::Null),4096)?,
+            "multi_select":item.get("multi_select").or_else(||item.get("multiSelect")).and_then(Value::as_bool).unwrap_or(false),
+            "allow_other":true,"options":choices}));
+    }
+    Ok(json!(questions))
+}
+
+fn tool_id(event: &Value) -> &str {
+    ["tool_use_id", "tool_call_id"]
+        .iter()
+        .map(|key| string(event, key))
+        .find(|value| !value.is_empty())
+        .unwrap_or("")
+}
+
+pub(super) fn fingerprint(card: &Value) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(
+            json!({"question_id":card["question_id"],
+        "tool_call_id":card["tool_call_id"],"run_id":card["run_id"],
+        "conversation_id":card["conversation_id"],"questions":card["questions"]})
+            .to_string()
+        )
+    )
+}
+
+fn card(
+    record: &Value,
+    id: &str,
+    tool: &str,
+    items: &Value,
+    source: &str,
+    at: f64,
+) -> Result<Value> {
+    if id.is_empty() || id.len() > 240 || !token(tool) {
+        return Err("missing question interaction identity".into());
+    }
+    let mut card = json!({"question_id":id,"tool_call_id":tool,"agent_id":"main",
+        "run_id":record["run_id"],"conversation_id":record["conversation_id"],
+        "created_at":at,"source":source,"questions":normalize(items)?,
+        "can_answer":false,"answer_transport":"","answer_unavailable_reason":"Open Terminal to answer this question."});
+    card["question_hash"] = json!(fingerprint(&card));
+    Ok(card)
+}
+
+pub(super) fn from_hook(record: &Value, event: &Value) -> Option<Value> {
+    if string(event, "hook_event_name") != "PreToolUse"
+        || string(event, "tool_name") != "AskUserQuestion"
+        || !string(event, "agent_id").is_empty()
+    {
+        return None;
+    }
+    let tool = tool_id(event);
+    card(
+        record,
+        &format!("tool:{tool}"),
+        tool,
+        &event["tool_input"]["questions"],
+        "hook",
+        now(),
+    )
+    .ok()
+}
+
+pub(super) fn observe(record: &mut Value, event: &Value) {
+    if !string(event, "agent_id").is_empty() {
+        return;
+    }
+    let kind = string(event, "hook_event_name");
+    if kind=="PermissionRequest" {
+        record["pending_approval"]=event.clone();
+    } else if ["SessionStart","SessionEnd","Interrupt","Stop","StopFailure","PostToolUse","PostToolUseFailure"].contains(&kind) {
+        record.as_object_mut().unwrap().remove("pending_approval");
+    }
+    if matches!(
+        kind,
+        "SessionStart" | "SessionEnd" | "Interrupt" | "Stop" | "StopFailure"
+    ) {
+        record.as_object_mut().unwrap().remove("pending_questions");
+        return;
+    }
+    let mut pending = record["pending_questions"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    if let Some(card) = from_hook(record, event) {
+        pending.insert(string(&card, "tool_call_id").into(), card);
+    } else if matches!(kind, "PostToolUse" | "PostToolUseFailure") {
+        let tool = tool_id(event);
+        if !tool.is_empty() {
+            pending.remove(tool);
+        } else if string(event, "tool_name") == "AskUserQuestion" {
+            pending.clear();
+        }
+    }
+    record["pending_questions"] = json!(pending);
+}
+
+pub(super) fn kimi_home(record: &Value) -> PathBuf {
+    let specified = string(record, "agent_home");
+    if specified.is_empty() {
+        return home().join(".kimi-code");
+    }
+    let path = PathBuf::from(specified);
+    if path.is_absolute() {
+        path
+    } else {
+        Path::new(string(record, "launch_dir")).join(path)
+    }
+}
+
+pub(super) fn wire_paths(record: &Value) -> Result<Vec<PathBuf>> {
+    if string(record, "agent") != "kimi" {
+        return Ok(vec![]);
+    }
+    let session = string(record, "conversation_id");
+    if !token(session) {
+        return Ok(vec![]);
+    }
+    let sessions = kimi_home(record).join("sessions");
+    let Ok(root) = sessions.canonicalize() else {
+        return Ok(vec![]);
+    };
+    let directories = fs::read_dir(&root).map_err(|error| error.to_string())?;
+    let mut paths = Vec::new();
+    for directory in directories.take(2000).flatten() {
+        let path = directory
+            .path()
+            .join(session)
+            .join("agents/main/wire.jsonl");
+        if let Ok(resolved) = path.canonicalize() {
+            if resolved.starts_with(&root) && resolved.is_file() {
+                paths.push(resolved);
+            }
+        }
+    }
+    if paths.len() > 1 {
+        return Err("Kimi conversation exists in multiple workspace histories".into());
+    }
+    Ok(paths)
+}
+
+fn wire_events(record: &Value) -> Result<Vec<Value>> {
+    let mut events = Vec::new();
+    for path in wire_paths(record)? {
+        let mut file = File::open(&path).map_err(|error| error.to_string())?;
+        let size = file.metadata().map_err(|error| error.to_string())?.len();
+        let offset = size.saturating_sub(MAX_WIRE_BYTES);
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|error| error.to_string())?;
+        let mut bytes = Vec::new();
+        file.take(MAX_WIRE_BYTES)
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        for (index, line) in bytes.split(|byte| *byte == b'\n').enumerate() {
+            if (offset > 0 && index == 0)
+                || line.len() > MAX_PAYLOAD_BYTES as usize
+                || line.is_empty()
+            {
+                continue;
+            }
+            if !line.windows(12).any(|part| part == b"interaction.") {
+                continue;
+            }
+            if let Ok(event) = serde_json::from_slice::<Value>(line) {
+                if string(&event, "agentId") == "main"
+                    && string(&event, "type").starts_with("interaction.")
+                {
+                    events.push(event);
+                }
+            }
+        }
+    }
+    Ok(events)
+}
+
+fn recover_wire(record: &Value, events: &[Value]) -> BTreeMap<String, Value> {
+    let mut pending = BTreeMap::new();
+    for event in events {
+        let id = string(event, "id");
+        if id.is_empty() {
+            continue;
+        }
+        match string(event, "type") {
+            "interaction.request" if string(event, "kind") == "question" => {
+                let tool = string(event, "toolCallId");
+                let active = record["active_tools"]
+                    .get(tool)
+                    .is_some_and(|tool| string(tool, "name") == "AskUserQuestion");
+                if !active {
+                    continue;
+                }
+                if let Ok(card) = card(
+                    record,
+                    id,
+                    tool,
+                    &event["request"]["questions"],
+                    "kimi_wire",
+                    event["time"].as_f64().unwrap_or(0.0) / 1000.0,
+                ) {
+                    pending.insert(id.into(), card);
+                }
+            }
+            "interaction.resolved" | "interaction.cancelled" | "interaction.dismissed" => {
+                pending.remove(id);
+            }
+            _ => {}
+        }
+    }
+    pending
+}
+
+/// Current normalized identities without availability checks (adapter guard API).
+pub(super) fn current(record: &Value) -> Result<Vec<Value>> {
+    let mut by_tool = BTreeMap::new();
+    if let Some(pending) = record["pending_questions"].as_object() {
+        for card in pending.values() {
+            let tool = string(card, "tool_call_id");
+            if card["run_id"] == record["run_id"]
+                && card["conversation_id"] == record["conversation_id"]
+                && record["active_tools"]
+                    .get(tool)
+                    .is_some_and(|tool| string(tool, "name") == "AskUserQuestion")
+            {
+                by_tool.insert(tool.to_owned(), card.clone());
+            }
+        }
+    }
+    let events = wire_events(record)?;
+    // Native interactions supersede hook-only identities, including when a
+    // resolution reaches the wire before the corresponding PostToolUse hook.
+    for event in &events {
+        if string(event, "type") == "interaction.request" && string(event, "kind") == "question" {
+            by_tool.remove(string(event, "toolCallId"));
+        }
+    }
+    for card in recover_wire(record, &events).into_values() {
+        by_tool.insert(string(&card, "tool_call_id").into(), card);
+    }
+    let mut cards: Vec<_> = by_tool.into_values().collect();
+    cards.extend(codex_questions::current(record)?);
+    if let Some(approval)=claude_approval::current(record){cards.push(approval);}
+    if let Some(mode) = claude_permission::current(record) {
+        cards.push(mode);
+    }
+    if let Some(trust) = claude_trust::current(record) {
+        cards.push(trust);
+    }
+    if let Some(trust) = codex_trust::current(record) {cards.push(trust);}
+    if let Some(trust) = kimi_trust::current(record) {
+        cards.push(trust);
+    }
+    if let Some(hint) = kimi_cache_hint::current(record) {
+        cards.push(hint);
+    }
+    cards.sort_by(|a, b| {
+        a["created_at"]
+            .as_f64()
+            .unwrap_or(0.0)
+            .total_cmp(&b["created_at"].as_f64().unwrap_or(0.0))
+    });
+    Ok(cards)
+}
+
+pub(super) fn wire_response(record: &Value, question_id: &str) -> Result<Option<Value>> {
+    Ok(wire_events(record)?.into_iter().rev().find(|event| {
+        string(event, "id") == question_id
+            && matches!(
+                string(event, "type"),
+                "interaction.resolved" | "interaction.cancelled" | "interaction.dismissed"
+            )
+    }))
+}
+
+pub(super) fn response(record: &Value, card: &Value) -> Result<Option<Value>> {
+    if string(card,"source")=="codex_async" {
+        codex_questions::response(record,card)
+    } else if string(record,"agent")=="claude" && string(card,"source")=="hook" {
+        claude_question::response(record,card)
+    } else {
+        wire_response(record,string(card,"question_id"))
+    }
+}
+
+pub(super) fn inspection(record: &Value, live_pane: bool) -> Result<Value> {
+    if !live_pane || !process_alive(record) {
+        return Ok(json!([]));
+    }
+    match current(record) {
+        Ok(mut pending) => {
+            for card in &mut pending {
+                if string(card,"source")=="codex_async" {
+                    card["can_skip"]=json!(true);
+                    match codex_questions::available(record,card) {
+                        Ok(())=>{card["can_answer"]=json!(true);card["answer_transport"]=json!("codex_tui");card["answer_unavailable_reason"]=json!("");}
+                        Err(error)=>card["answer_unavailable_reason"]=json!(error),
+                    }
+                }
+                if string(record,"agent")=="claude" && string(card,"source")=="hook" {
+                    match claude_question::available(record,card) {
+                        Ok(()) => { card["can_answer"]=json!(true); card["answer_transport"]=json!("claude_tui"); card["answer_unavailable_reason"]=json!(""); }
+                        Err(error) => card["answer_unavailable_reason"]=json!(error),
+                    }
+                }
+                if string(record, "agent") == "kimi" && string(card, "source") == "kimi_wire" {
+                    match super::question_terminal::available(record, card) {
+                        Ok(()) => {
+                            card["can_answer"] = json!(true);
+                            card["answer_transport"] = json!("kimi_tui");
+                            card["answer_unavailable_reason"] = json!("");
+                        }
+                        Err(error) => card["answer_unavailable_reason"] = json!(error),
+                    }
+                }
+            }
+            Ok(json!(pending))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AnswerRequest {
+    request_id: String,
+    expected_run_id: String,
+    expected_conversation_id: String,
+    question_id: String,
+    expected_question_hash: String,
+    answers: Vec<Answer>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Answer {
+    question_id: String,
+    #[serde(default)]
+    selected_option_ids: Vec<String>,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    skip: bool,
+}
+
+fn validated_answers(card: &Value, answers: &[Answer]) -> Result<Value> {
+    let questions = card["questions"]
+        .as_array()
+        .ok_or("invalid pending question")?;
+    if answers.len() != questions.len() {
+        return Err("answer every question before submitting".into());
+    }
+    let mut seen = BTreeSet::new();
+    let mut normalized = Vec::new();
+    for question in questions {
+        let id = string(question, "id");
+        let answer = answers
+            .iter()
+            .find(|answer| answer.question_id == id)
+            .ok_or("missing answer for a question")?;
+        if !seen.insert(&answer.question_id)
+            || answers
+                .iter()
+                .filter(|answer| answer.question_id == id)
+                .count()
+                != 1
+        {
+            return Err("duplicate question answer".into());
+        }
+        if answer.skip {
+            if card["optional"] != true || string(card,"source")!="codex_async" || !answer.text.is_empty() || !answer.selected_option_ids.is_empty() {
+                return Err("only optional questions can be skipped without an answer".into());
+            }
+            normalized.push(json!({"question_id":id,"skip":true,"selected_option_ids":[],"text":""}));
+            continue;
+        }
+        if answer.text.len() > 4096 || answer.text.chars().any(char::is_control) {
+            return Err("Other answers must be a single line of at most 4096 UTF-8 bytes".into());
+        }
+        let other = answer.text.trim();
+        if other.starts_with(['/', '!']) {
+            return Err(
+                "Other answers beginning with a command must be entered in Terminal".into(),
+            );
+        }
+        let options = question["options"]
+            .as_array()
+            .ok_or("invalid question options")?;
+        let mut selected = BTreeSet::new();
+        for id in &answer.selected_option_ids {
+            if !options.iter().any(|option| string(option, "id") == id) || !selected.insert(id) {
+                return Err("unknown or duplicate answer option".into());
+            }
+        }
+        if selected.is_empty() && other.is_empty() {
+            return Err("choose an option or write an Other answer for every question".into());
+        }
+        if question["multi_select"] != true && selected.len() + usize::from(!other.is_empty()) != 1
+        {
+            return Err("this question accepts only one answer".into());
+        }
+        if !other.is_empty() && question["allow_other"] != true {
+            return Err("this question does not accept an Other answer".into());
+        }
+        normalized.push(
+            json!({"question_id":id,"selected_option_ids":answer.selected_option_ids,"text":other}),
+        );
+    }
+    Ok(json!(normalized))
+}
+
+fn startup_question_id(id: &str) -> bool {
+    ["codex-trust:", "kimi-trust:", "claude-trust:", "claude-permissions:"].iter().any(|prefix| id.starts_with(prefix))
+}
+
+fn matching_record(name: &str, request: &AnswerRequest) -> Result<Value> {
+    let record = read(name)?;
+    if string(&record, "run_id") != request.expected_run_id
+        || string(&record, "conversation_id") != request.expected_conversation_id
+    {
+        return Err("session identity changed; refresh before answering".into());
+    }
+    if !matches(&record, live()?.get(name))
+        || !process_alive(&record)
+        || pause_active(&record)
+        || !string(&record, "error").is_empty()
+        || (!string(&record, "expected_id").is_empty()
+            && !startup_question_id(&request.question_id))
+    {
+        return Err("the exact agent is no longer available for this question".into());
+    }
+    Ok(record)
+}
+
+fn response_matches(question: &Value, answers: &Value, event: &Value) -> bool {
+    if string(event, "type") != "interaction.resolved" {
+        return false;
+    }
+    let response = &event["response"];
+    let response = response.get("answers").unwrap_or(response);
+    let Some(actual) = response.as_object() else {
+        return false;
+    };
+    let Some(items) = question["questions"].as_array() else {
+        return false;
+    };
+    let Some(answers) = answers.as_array() else {
+        return false;
+    };
+    if actual.len() != items.len() {
+        return false;
+    }
+    items.iter().zip(answers).all(|(question, answer)| {
+        let mut labels: Vec<String> = question["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|option| {
+                answer["selected_option_ids"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&option["id"])
+            })
+            .map(|option| string(option, "label").to_owned())
+            .collect();
+        if !string(answer, "text").is_empty() {
+            labels.push(string(answer, "text").into());
+        }
+        actual
+            .get(string(question, "question"))
+            .and_then(Value::as_str)
+            == Some(labels.join(", ").as_str())
+    })
+}
+
+fn log_answer(record: &Value, question: &Value, response: &Value) -> Result<()> {
+    // Keep every question represented even when a custom answer is long. The
+    // full chosen text remains in the private receipt and provider transcript.
+    let summary = question["questions"]
+        .as_array()
+        .ok_or("missing questions")?
+        .iter()
+        .map(|item| {
+            let answer = &response["response"]["answers"][string(item, "question")];
+            format!(
+                "{} → {}",
+                journal::clipped(&item["question"], 120),
+                journal::clipped(answer, 150)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    journal::log_event(
+        record,
+        &json!({"hook_event_name":"QuestionAnswered",
+        "tool_name":"AskUserQuestion","question_id":question["question_id"],
+        "question_hash":question["question_hash"],"tool_call_id":question["tool_call_id"],
+        "at":response["time"].as_f64().unwrap_or(0.0)/1000.0,"body":summary}),
+    )
+}
+
+pub(super) fn dispatch(args: &[String]) -> Result<i32> {
+    if args.len() != 2 || args[1] != "--json" {
+        return Err("usage: hgs answer <session> --json (JSON from stdin)".into());
+    }
+    let mut input = Vec::new();
+    io::stdin()
+        .take(MAX_PAYLOAD_BYTES + 1)
+        .read_to_end(&mut input)
+        .map_err(|error| error.to_string())?;
+    if input.len() as u64 > MAX_PAYLOAD_BYTES {
+        return Err("answer payload exceeds128 KiB".into());
+    }
+    let request: AnswerRequest = serde_json::from_slice(&input)
+        .map_err(|error| format!("invalid answer payload: {error}"))?;
+    let request_id = uuid::Uuid::parse_str(&request.request_id)
+        .map_err(|_| "request_id must be a UUID")?
+        .to_string();
+    if request.expected_run_id.is_empty()
+        || (request.expected_conversation_id.is_empty()
+            && !startup_question_id(&request.question_id))
+        || request.expected_question_hash.len() != 64
+    {
+        return Err("question identities are required; refresh before answering".into());
+    }
+    let digest = format!("{:x}", Sha256::digest(&input));
+    let receipt_path = absolute_root()?
+        .join("question_receipts")
+        .join(format!("{request_id}.json"));
+    let name = &args[0];
+    // Serialize all answers to this run, including requests arriving through
+    // different hosts or carrying different UUIDs. Provider hooks never take
+    // this lock, and must remain free to acknowledge completion.
+    let question_lock = absolute_root()?.join("question_locks").join(format!(
+        "{:x}.lock",
+        Sha256::digest(request.expected_run_id.as_bytes())
+    ));
+    let _answer_guard = lock(Some(&question_lock))?;
+    // Only the preparation is locked. Awaiting the UI must not block provider
+    // hooks which confirm the very answer that we are waiting for.
+    let (record, question, answers, mut receipt) = {
+        let _guard = lock(None)?;
+        if receipt_path.exists() {
+            let contents = fs::read_to_string(&receipt_path).map_err(|error| error.to_string())?;
+            let receipt: Value =
+                serde_json::from_str(&contents).map_err(|error| error.to_string())?;
+            if string(&receipt, "digest") != digest || string(&receipt, "name") != name {
+                return Err("answer request ID was already used for different content".into());
+            }
+            if receipt["status"] == "answered" {
+                println!("{contents}");
+                return Ok(0);
+            }
+            if receipt["status"] == "rejected" {
+                return Err(string(&receipt, "error").to_owned());
+            }
+            return Err("delivery uncertain: this answer request may already be in Terminal; do not resend automatically".into());
+        }
+        let record = matching_record(name, &request)?;
+        let question = current(&record)?
+            .into_iter()
+            .find(|question| string(question, "question_id") == request.question_id)
+            .ok_or("question is no longer pending; refresh before answering")?;
+        if string(&question, "question_hash") != request.expected_question_hash {
+            return Err("question changed; refresh before answering".into());
+        }
+        if !["codex_folder_trust", "codex_async", "kimi_wire", "kimi_cache_hint", "kimi_folder_trust", "claude_folder_trust", "claude_permission_mode", "claude_tool_approval"]
+            .contains(&string(&question, "source"))
+            && !(string(&record,"agent")=="claude" && string(&question,"source")=="hook")
+        {
+            return Err("this question has no native response identity; open Terminal".into());
+        }
+        let answers = validated_answers(&question, &request.answers)?;
+        if string(&question,"source")=="codex_async" {
+            if answers[0]["skip"]!=true {codex_questions::available(&record,&question)?;}
+        } else if string(&record,"agent")=="claude" && string(&question,"source")=="hook" {
+            claude_question::available(&record,&question)?;
+        } else if string(&question, "source") == "claude_tool_approval" {
+            claude_approval::available(&record,&question)?;
+        } else if string(&question, "source") == "claude_permission_mode" {
+            claude_permission::available(&record, &question)?;
+        } else if string(&question, "source") == "claude_folder_trust" {
+            claude_trust::available(&record, &question)?;
+        } else if string(&question, "source") == "codex_folder_trust" {
+            codex_trust::available(&record, &question)?;
+        } else if string(&question, "source") == "kimi_folder_trust" {
+            kimi_trust::available(&record, &question)?;
+        } else if string(&question, "source") == "kimi_cache_hint" {
+            kimi_cache_hint::available(&record, &question)?;
+        } else {
+            super::question_terminal::available(&record, &question)?;
+        }
+        let receipt = json!({"status":"in_progress","request_id":request_id,"name":name,
+            "run_id":request.expected_run_id,"conversation_id":request.expected_conversation_id,
+            "question_id":request.question_id,"question_hash":request.expected_question_hash,"digest":digest,
+            "submitted_at":now(),"answers":answers});
+        atomic(&receipt_path, &receipt.to_string())?;
+        (record, question, answers, receipt)
+    };
+    let tui_choice =
+        ["codex_folder_trust", "kimi_cache_hint", "kimi_folder_trust", "claude_folder_trust", "claude_permission_mode", "claude_tool_approval"].contains(&string(&question, "source"));
+    if string(&question,"source")=="codex_async" {
+        let result=codex_questions::answer(&record,&question,&answers,&request_id);
+        if let Err(error)=result {
+            if !error.contains("delivery uncertain") {receipt["status"]=json!("rejected");receipt["error"]=json!(error);let _=atomic(&receipt_path,&receipt.to_string());}
+            return Err(error);
+        }
+        receipt["status"]=json!("answered");receipt["skipped"]=json!(answers[0]["skip"]==true);receipt["answered_at"]=json!(now());
+        atomic(&receipt_path,&receipt.to_string()).map_err(|e|format!("delivery uncertain: {e}"))?;
+        println!("{receipt}");return Ok(0);
+    }
+    let delivery = if string(&record,"agent")=="claude" && string(&question,"source")=="hook" {
+        claude_question::answer(&record,&question,&answers)
+    } else if string(&question, "source") == "claude_tool_approval" {
+        claude_approval::answer(&record,&question,&answers)
+    } else if string(&question, "source") == "claude_permission_mode" {
+        claude_permission::answer(&record, &question, &answers)
+    } else if string(&question, "source") == "claude_folder_trust" {
+        claude_trust::answer(&record, &question, &answers)
+    } else if string(&question, "source") == "codex_folder_trust" {
+        codex_trust::answer(&record, &question, &answers)
+    } else if string(&question, "source") == "kimi_folder_trust" {
+        kimi_trust::answer(&record, &question, &answers)
+    } else if string(&question, "source") == "kimi_cache_hint" {
+        kimi_cache_hint::answer(&record, &question, &answers)
+    } else {
+        super::question_terminal::answer(&record, &question, &answers)
+    };
+    if let Err(error) = delivery {
+        if !error.contains("delivery uncertain") {
+            receipt["status"] = json!("rejected");
+            receipt["error"] = json!(error);
+            // No terminal input was sent, so even a failed receipt update
+            // cannot turn this definite rejection into a possible delivery.
+            let _ = atomic(&receipt_path, &receipt.to_string());
+        }
+        return Err(error);
+    }
+    if tui_choice {
+        let id = answers[0]["selected_option_ids"][0].as_str().unwrap_or("");
+        let item = &question["questions"][0];
+        let label = item["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| string(o, "id") == id)
+            .map(|o| string(o, "label"))
+            .unwrap_or("");
+        let response =
+            json!({"time":now()*1000.,"response":{"answers":{string(item,"question"):label}}});
+        log_answer(&record, &question, &response)
+            .map_err(|e| format!("delivery uncertain: {e}"))?;
+        receipt["status"] = json!("answered");
+        receipt["answered_at"] = json!(now());
+        atomic(&receipt_path, &receipt.to_string())
+            .map_err(|e| format!("delivery uncertain: {e}"))?;
+        println!("{receipt}");
+        return Ok(0);
+    }
+    let deadline = Instant::now() + Duration::from_secs(6);
+    loop {
+        if let Some(response) = response(&record, &question).map_err(|error| {
+            format!("delivery uncertain: cannot read provider acknowledgement: {error}")
+        })? {
+            if !response_matches(&question, &answers, &response) {
+                return Err("delivery uncertain: provider resolved this question with a different answer; inspect Terminal".into());
+            }
+            log_answer(&record, &question, &response).map_err(|error| {
+                format!(
+                    "delivery uncertain: answer confirmed but journal could not be saved: {error}"
+                )
+            })?;
+            receipt["status"] = json!("answered");
+            receipt["answered_at"] = json!(now());
+            atomic(&receipt_path, &receipt.to_string())
+                .map_err(|error| format!("delivery uncertain: {error}"))?;
+            println!("{receipt}");
+            return Ok(0);
+        }
+        if Instant::now() >= deadline {
+            return Err("delivery uncertain: provider has not confirmed the answer; inspect Terminal before retrying".into());
+        }
+        std::thread::sleep(Duration::from_millis(80));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn record() -> Value {
+        json!({"agent":"kimi","run_id":"run","conversation_id":"session_test","active_tools":{"tool_test":{"name":"AskUserQuestion"}}})
+    }
+    fn items() -> Value {
+        json!([{"question":"What should we do?","header":"Task","options":[{"label":"Build","description":"Create it"},{"label":"Review"}]}])
+    }
+    fn event() -> Value {
+        json!({"type":"interaction.request","id":"question_test","kind":"question","agentId":"main","toolCallId":"tool_test","request":{"questions":items()},"time":1000})
+    }
+    #[test]
+    fn normalizes_hooks_and_recovers_exact_wire_identity() {
+        let mut record = record();
+        let hook = json!({"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_call_id":"tool_test","tool_input":{"questions":items()}});
+        observe(&mut record, &hook);
+        assert_eq!(
+            record["pending_questions"]["tool_test"]["questions"][0]["options"][0]["id"],
+            "opt_0_0"
+        );
+        let recovered = recover_wire(&record, &[event()]);
+        assert_eq!(recovered["question_test"]["question_id"], "question_test");
+        assert_eq!(recovered["question_test"]["created_at"], 1.0);
+        assert_eq!(
+            recovered["question_test"]["questions"][0]["allow_other"],
+            true
+        );
+        observe(
+            &mut record,
+            &json!({"hook_event_name":"PostToolUse","tool_call_id":"tool_test"}),
+        );
+        assert_eq!(record["pending_questions"], json!({}));
+    }
+    #[test]
+    fn ignores_resolved_or_inactive_questions_and_rejects_bad_choices() {
+        assert!(recover_wire(
+            &record(),
+            &[
+                event(),
+                json!({"type":"interaction.resolved","id":"question_test"})
+            ]
+        )
+        .is_empty());
+        let mut stopped = record();
+        stopped["active_tools"] = json!({});
+        assert!(recover_wire(&stopped, &[event()]).is_empty());
+        let card = card(
+            &record(),
+            "question_test",
+            "tool_test",
+            &items(),
+            "kimi_wire",
+            1.0,
+        )
+        .unwrap();
+        let good = Answer { skip:false,
+            question_id: "q_0".into(),
+            selected_option_ids: vec!["opt_0_0".into()],
+            text: String::new(),
+        };
+        assert!(validated_answers(&card, &[good]).is_ok());
+        let bad = Answer { skip:false,
+            question_id: "q_0".into(),
+            selected_option_ids: vec!["opt_0_9".into()],
+            text: String::new(),
+        };
+        assert!(validated_answers(&card, &[bad]).is_err());
+        let multiline = Answer { skip:false,
+            question_id: "q_0".into(),
+            selected_option_ids: vec![],
+            text: "one\ntwo".into(),
+        };
+        assert!(validated_answers(&card, &[multiline]).is_err());
+    }
+    #[test]
+    fn acknowledgement_must_contain_exact_answers() {
+        let card = card(
+            &record(),
+            "question_test",
+            "tool_test",
+            &items(),
+            "kimi_wire",
+            1.0,
+        )
+        .unwrap();
+        let answers = json!([{"question_id":"q_0","selected_option_ids":["opt_0_0"],"text":""}]);
+        assert!(response_matches(
+            &card,
+            &answers,
+            &json!({"type":"interaction.resolved","response":{"answers":{"What should we do?":"Build"}}})
+        ));
+        assert!(!response_matches(
+            &card,
+            &answers,
+            &json!({"type":"interaction.resolved","response":{"answers":{"What should we do?":"Review"}}})
+        ));
+    }
+}

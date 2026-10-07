@@ -1,0 +1,5 @@
+# Captured terminal screens intentionally preserve whitespace and blank lines.
+tests/fixtures/*.txt -whitespace
+
+# Keep vendored libvterm byte-for-byte identical to the documented upstream.
+tray/vendor/libvterm/** -whitespace

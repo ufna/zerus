@@ -1,0 +1,430 @@
+//! Attachment access uses durable delivery receipts, never a caller's file path.
+use super::*;
+use base64::{engine::general_purpose::STANDARD, Engine};
+use std::fs::{self, OpenOptions};
+use std::io::{Read, Write};
+use std::os::unix::fs::OpenOptionsExt;
+const MAX_FILE: u64 = 10 * 1024 * 1024;
+
+fn receipt(path: &Path) -> Result<Value> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|e| e.to_string())?;
+    if !file.metadata().map_err(|e| e.to_string())?.is_file() {
+        return Err("Attachment receipt is unavailable".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(256 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() > 256 * 1024 {
+        return Err("Attachment receipt is too large".into());
+    }
+    serde_json::from_slice(&bytes).map_err(|e| e.to_string())
+}
+fn belongs(receipt: &Value, record: &Value, agent: &str) -> bool {
+    let conversation = receipt
+        .get("resolved_conversation_id")
+        .unwrap_or(&receipt["conversation_id"]);
+    receipt["status"] == "submitted"
+        && string(receipt, "agent_id") == agent
+        && ((conversation.as_str().is_some_and(|s| !s.is_empty())
+            && *conversation == record["conversation_id"])
+            || (conversation.as_str() == Some("")
+                && receipt["first_message"] == true
+                && receipt["run_id"] == record["run_id"]))
+}
+fn directory(record: &Value) -> PathBuf {
+    root().join(if record["agent"] == "dsh" || record["backend"] == "dsh" {
+        "dsh/receipts"
+    } else {
+        "input_receipts"
+    })
+}
+pub(super) fn validate_references(references: &[&str]) -> Result<()> {
+    let pattern = regex::Regex::new(r"^\[(Image|File) #[1-9][0-9]{0,8}\]$").unwrap();
+    let mut seen = std::collections::HashSet::new();
+    for reference in references.iter().filter(|r| !r.is_empty()) {
+        if !pattern.is_match(reference) || !seen.insert(*reference) {
+            return Err("Invalid or duplicate attachment reference".into());
+        }
+    }
+    Ok(())
+}
+
+pub(super) enum MessagePart<'a> {
+    Text(&'a str),
+    Attachment(usize),
+}
+
+// Match only the original message: a filename containing another reference
+// must never be expanded recursively. Repeated labels reference the same file;
+// its contents are inserted once, at the first occurrence.
+pub(super) fn ordered_parts<'a>(text: &'a str, references: &[&str]) -> Vec<MessagePart<'a>> {
+    let pattern = regex::Regex::new(r"\[(Image|File) #[1-9][0-9]{0,8}\]").unwrap();
+    let mut parts = Vec::new();
+    let mut seen = vec![false; references.len()];
+    let mut offset = 0;
+    for found in pattern.find_iter(text) {
+        if let Some(index) = references.iter().position(|r| *r == found.as_str()) {
+            if !seen[index] {
+                parts.push(MessagePart::Text(&text[offset..found.end()]));
+                parts.push(MessagePart::Attachment(index));
+                offset = found.end();
+                seen[index] = true;
+            }
+        }
+    }
+    if offset < text.len() {
+        parts.push(MessagePart::Text(&text[offset..]));
+    }
+    // Legacy callers and a deliberately removed label still send their files.
+    for (index, used) in seen.iter().enumerate() {
+        if !used {
+            parts.push(MessagePart::Attachment(index));
+        }
+    }
+    parts
+}
+
+pub(super) fn terminal_text(text: &str, files: &[Value]) -> String {
+    let references = files
+        .iter()
+        .map(|f| string(f, "reference"))
+        .collect::<Vec<_>>();
+    let mut result = String::new();
+    for part in ordered_parts(text, &references) {
+        match part {
+            MessagePart::Text(value) => result.push_str(value),
+            MessagePart::Attachment(index) => {
+                let file = &files[index];
+                let instruction = format!(
+                    "{} {}",
+                    if string(file, "mime").starts_with("image/") {
+                        "Inspect the attached image at"
+                    } else {
+                        "Read the attached file at"
+                    },
+                    serde_json::to_string(&file["path"]).unwrap()
+                );
+                let reference = references[index];
+                if !reference.is_empty() && text.contains(reference) {
+                    result.push_str(&format!(" ({instruction})"));
+                } else {
+                    result.push_str("\n\n");
+                    if !reference.is_empty() {
+                        result.push_str(reference);
+                        result.push(' ');
+                    }
+                    result.push_str(&instruction);
+                }
+            }
+        }
+    }
+    result
+}
+
+fn public_files(receipt: &Value) -> Vec<Value> {
+    receipt["attachments"].as_array().into_iter().flatten().take(8).enumerate()
+        .map(|(index,file)|json!({"request_id":receipt["request_id"],"index":index,"name":file["name"],"mime":file["mime"],"bytes":file["bytes"],"reference":file["reference"]})).collect()
+}
+fn message_text(receipt: &Value) -> String {
+    if let Some(text) = receipt["text"].as_str() {
+        return text.to_owned();
+    }
+    // Older receipts predate the user-text field. Strip only the exact suffix
+    // HGS itself appended when it submitted these files to the native terminal.
+    let mut text = string(receipt, "submitted_text").to_owned();
+    for file in receipt["attachments"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .rev()
+    {
+        let suffix = format!(
+            "\n\n{} {}",
+            if string(file, "mime").starts_with("image/") {
+                "Inspect the attached image at"
+            } else {
+                "Read the attached file at"
+            },
+            serde_json::to_string(&file["path"]).unwrap()
+        );
+        if text.ends_with(&suffix) {
+            text.truncate(text.len() - suffix.len());
+        }
+    }
+    text.trim().to_owned()
+}
+pub(super) fn messages(record: &Value, agent: &str) -> Value {
+    let mut paths = fs::read_dir(directory(record))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|p| p.path().extension().is_some_and(|e| e == "json"))
+        .filter_map(|p| Some((p.metadata().ok()?.modified().ok()?, p.path())))
+        .collect::<Vec<_>>();
+    paths.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    let mut messages = Vec::new();
+    for (_, path) in paths.into_iter().take(512) {
+        let Ok(mut receipt) = receipt(&path) else {
+            continue;
+        };
+        if !belongs(&receipt, record, agent)
+            || receipt["attachments"].as_array().is_none_or(Vec::is_empty)
+        {
+            continue;
+        }
+        if string(&receipt, "conversation_id").is_empty()
+            && string(&receipt, "resolved_conversation_id").is_empty()
+            && !string(record, "conversation_id").is_empty()
+            && receipt["run_id"] == record["run_id"]
+        {
+            // Pin the first prompt once its provider creates the conversation.
+            // Preserve the original acknowledgement for idempotent send retries.
+            receipt["resolved_conversation_id"] = record["conversation_id"].clone();
+            let _ = atomic(&path, &receipt.to_string());
+        }
+        messages.push(json!({"type":"UserPromptSubmit","source":"hgs_delivery","message_id":receipt["request_id"],"agent_id":"",
+            "at":receipt.get("submitted_at").unwrap_or(&receipt["at"]),"detail":message_text(&receipt),"submitted_text":receipt["submitted_text"],"attachments":public_files(&receipt)}));
+        if messages.len() >= 100 {
+            break;
+        }
+    }
+    json!(messages)
+}
+
+pub(super) fn stage_native(request: &Value) -> Result<Value> {
+    if request["attachments"].is_null() {
+        return Ok(json!([]));
+    }
+    let files = request["attachments"]
+        .as_array()
+        .ok_or("Invalid attachments")?;
+    if files.len() > 8 {
+        return Err("At most 8 attachments are allowed".into());
+    }
+    let request_id = uuid::Uuid::parse_str(string(request, "request_id"))
+        .map_err(|_| "Invalid attachment request")?;
+    let parent = root().join("attachments");
+    private_dir(&parent)?;
+    let staged_dir = tempfile::Builder::new()
+        .prefix(&format!("native-{request_id}-"))
+        .tempdir_in(&parent)
+        .map_err(|e| e.to_string())?;
+    let dir = staged_dir.path();
+    let mut total = 0;
+    let mut staged = Vec::new();
+    for (index, file) in files.iter().enumerate() {
+        let data = string(file, "data_base64");
+        if data.len() > MAX_FILE as usize * 4 / 3 + 4 {
+            return Err("Attachment exceeds 10 MiB".into());
+        }
+        let bytes = STANDARD
+            .decode(data)
+            .map_err(|_| "Invalid attachment data")?;
+        total += bytes.len();
+        if bytes.is_empty() || bytes.len() > MAX_FILE as usize || total > 20 * 1024 * 1024 {
+            return Err("Attachments exceed the size limit".into());
+        }
+        private_dir(&dir)?;
+        let path = dir.join(input::safe_filename(string(file, "name"), index));
+        let mut output = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|e| e.to_string())?;
+        output.write_all(&bytes).map_err(|e| e.to_string())?;
+        staged
+            .push(json!({"name":file["name"],"mime":file["mime"],"path":path,"bytes":bytes.len(),"reference":file["reference"]}));
+    }
+    if !staged.is_empty() {
+        let _ = staged_dir.keep();
+    }
+    Ok(json!(staged))
+}
+fn read_file(root: &Path, file: &Value) -> Result<Vec<u8>> {
+    let allowed = root
+        .join("attachments")
+        .canonicalize()
+        .map_err(|_| "The attachment is no longer available")?;
+    let path = PathBuf::from(string(file, "path"));
+    let resolved = path
+        .canonicalize()
+        .map_err(|_| "The attachment is no longer available")?;
+    if !resolved.starts_with(&allowed) {
+        return Err("Invalid attachment location".into());
+    }
+    let handle = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&path)
+        .map_err(|_| "The attachment is no longer available")?;
+    let meta = handle.metadata().map_err(|e| e.to_string())?;
+    if !meta.is_file() || meta.len() > MAX_FILE {
+        return Err("Attachment is not a supported file".into());
+    }
+    let mut bytes = Vec::new();
+    handle
+        .take(MAX_FILE + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() > MAX_FILE as usize {
+        return Err("Attachment exceeds 10 MiB".into());
+    }
+    Ok(bytes)
+}
+pub(super) fn dispatch(args: &[String]) -> Result<i32> {
+    let name = args.first().ok_or("Choose the attachment session")?;
+    if args.get(1).map(String::as_str) == Some("--stage") {
+        if args.len() != 3 || args[2] != "--json" {
+            return Err("usage: hgs attachment <session> --stage --json".into());
+        }
+        let mut bytes = Vec::new();
+        io::stdin().take(30 * 1024 * 1024 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+        if bytes.len() > 30 * 1024 * 1024 { return Err("Attachment request is too large".into()); }
+        let request: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        let native = dsh::exists(name);
+        let _guard = if native { lock(Some(&root().join("dsh/bindings.lock")))? } else { lock(None)? };
+        let record = if native { dsh::binding(name)? } else { read(name)? };
+        if string(&request,"expected_run_id").is_empty() || request["expected_run_id"] != record["run_id"]
+            || request["expected_conversation_id"] != record["conversation_id"] {
+            return Err("Session changed; drop the files again in its Terminal".into());
+        }
+        if !native { kimi_tui_choice::identity(&record)?; }
+        if request["attachments"].as_array().is_none_or(Vec::is_empty) { return Err("No files to transfer".into()); }
+        let files = stage_native(&request)?;
+        println!("{}",json!({"status":"staged","request_id":request["request_id"],"name":name,
+            "run_id":record["run_id"],"conversation_id":record["conversation_id"],"files":files}));
+        return Ok(0);
+    }
+    let flag = |key: &str| {
+        args.windows(2)
+            .find(|p| p[0] == key)
+            .map(|p| p[1].as_str())
+            .unwrap_or("")
+    };
+    let id = uuid::Uuid::parse_str(flag("--request")).map_err(|_| "Invalid attachment identity")?;
+    let index = flag("--index")
+        .parse::<usize>()
+        .map_err(|_| "Invalid attachment index")?;
+    if index >= 8 {
+        return Err("Invalid attachment index".into());
+    }
+    let record = if !flag("--archive").is_empty() {
+        archive::read_archive(name, flag("--archive"))?
+    } else if dsh::exists(name) {
+        dsh::binding(name)?
+    } else {
+        read(name)?
+    };
+    if flag("--conversation") != string(&record, "conversation_id") {
+        return Err("The session conversation changed; refresh Activity".into());
+    }
+    let receipt = receipt(&directory(&record).join(format!("{id}.json")))?;
+    if !belongs(&receipt, &record, flag("--agent")) {
+        return Err("This attachment belongs to another conversation".into());
+    }
+    let file = receipt["attachments"]
+        .as_array()
+        .and_then(|v| v.get(index))
+        .ok_or("Attachment not found")?;
+    let bytes = read_file(&root(), file)?;
+    let mut output = public_files(&receipt)[index].clone();
+    output["data_base64"] = json!(STANDARD.encode(bytes));
+    println!("{output}");
+    Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn inline_references_follow_text_order_without_recursive_expansion() {
+        let files = vec![
+            json!({"reference":"[Image #1]","mime":"image/png","path":"/private/[Image #2].png"}),
+            json!({"reference":"[Image #2]","mime":"image/png","path":"/private/two.png"}),
+            json!({"reference":"[File #3]","mime":"text/plain","path":"/private/three.txt"}),
+        ];
+        let text = "До [Image #2] между [Image #1] после; again [Image #2]";
+        let output = terminal_text(text, &files);
+        assert!(output.starts_with(
+            "До [Image #2] (Inspect the attached image at \"/private/two.png\") между [Image #1]"
+        ));
+        assert!(output.contains("\"/private/[Image #2].png\") после; again [Image #2]"));
+        assert_eq!(output.matches("Inspect the attached image at").count(), 2);
+        assert!(output.ends_with("\n\n[File #3] Read the attached file at \"/private/three.txt\""));
+        let parts = ordered_parts(text, &["[Image #1]", "[Image #2]", "[File #3]"]);
+        let order = parts
+            .iter()
+            .filter_map(|p| match p {
+                MessagePart::Attachment(i) => Some(*i),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(order, [1, 0, 2]);
+    }
+
+    #[test]
+    fn attachment_reference_validation_is_strict_but_legacy_is_supported() {
+        assert!(validate_references(&["", "", "[Image #1]", "[File #2]"]).is_ok());
+        for refs in [
+            vec!["[Image #1]", "[Image #1]"],
+            vec!["hello"],
+            vec!["[Image #0]"],
+            vec!["[Image #1]\n"],
+        ] {
+            assert!(validate_references(&refs).is_err());
+        }
+        assert_eq!(
+            terminal_text("hello", &[json!({"mime":"image/png","path":"/old.png"})]),
+            "hello\n\nInspect the attached image at \"/old.png\""
+        );
+    }
+    #[test]
+    fn receipts_are_bound_to_the_conversation_and_child() {
+        let record = json!({"run_id":"new-run","conversation_id":"same-conversation"});
+        let mut r =
+            json!({"status":"submitted","run_id":"old-run","conversation_id":"same-conversation"});
+        assert!(belongs(&r, &record, ""));
+        r["conversation_id"] = json!("other");
+        assert!(!belongs(&r, &record, ""));
+        r["run_id"] = json!("new-run");
+        r["first_message"] = json!(true);
+        assert!(!belongs(&r, &record, ""));
+        r["conversation_id"] = json!("");
+        assert!(belongs(&r, &record, ""));
+        r["agent_id"] = json!("child");
+        assert!(!belongs(&r, &record, ""));
+        assert!(belongs(&r, &record, "child"));
+        r["status"] = json!("pending");
+        assert!(!belongs(&r, &record, "child"));
+    }
+    #[test]
+    fn attachment_reads_cannot_escape_the_private_store() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("attachments")).unwrap();
+        let path = temp.path().join("attachments/file.txt");
+        fs::write(&path, b"file content").unwrap();
+        assert_eq!(
+            read_file(temp.path(), &json!({"path":path})).unwrap(),
+            b"file content"
+        );
+        let other = temp.path().join("private.txt");
+        fs::write(&other, b"private").unwrap();
+        assert!(read_file(temp.path(), &json!({"path":other})).is_err());
+        let link = temp.path().join("attachments/link");
+        std::os::unix::fs::symlink(&other, &link).unwrap();
+        assert!(read_file(temp.path(), &json!({"path":link})).is_err());
+        fs::remove_file(&path).unwrap();
+        assert!(read_file(temp.path(), &json!({"path":path})).is_err());
+    }
+    #[test]
+    fn legacy_image_only_receipt_has_no_synthetic_prompt() {
+        let receipt = json!({"submitted_text":"\n\nInspect the attached image at \"/private/image.png\"","attachments":[{"path":"/private/image.png","mime":"image/png"}]});
+        assert_eq!(message_text(&receipt), "");
+    }
+}

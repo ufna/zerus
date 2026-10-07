@@ -1,0 +1,39 @@
+
+──────────────────────────────────────────────────────────────────────────────────────────────
+ Accessing workspace:
+
+ /work/example
+
+ Quick safety check: Is this a project you created or one you trust? (Like your own code, a
+ well-known open source project, or work from your team). If not, take a moment to review
+ what's in this folder first.
+
+ Claude Code'll be able to read, edit, and execute files here.
+
+ ⚠ This folder pre-approves 17 tool permissions in .claude/settings.local.json:
+   Bash(git config:*), Bash(grep -E "\(README|CONTRIBUTING|DOCS|\\.md$|\\.txt$\)"),
+ Bash(ssh:*), Bash(gh auth:*), Bash(gh repo:*), Bash(gh secret:*), Bash(gh variable:*),
+ Bash(rsync -avz --delete --exclude=.git --exclude=.github --…, and 9 more
+ These will apply without asking. Only proceed if you trust this configuration.
+
+ Security guide
+
+ ❯ No, exit
+   Yes, I trust this folder
+
+ Enter to confirm · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

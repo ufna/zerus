@@ -1,0 +1,53 @@
+#pragma once
+#include "RecoverySettings.h"
+#include <QComboBox>
+#include <QCoreApplication>
+#include <QListWidget>
+#include <QScrollArea>
+#include <QStackedWidget>
+#include <QDoubleSpinBox>
+#include <QFormLayout>
+#include "ProcessSettings.h"
+
+class SettingsPage : public QWidget {
+public:
+    std::function<void()> appearanceChanged;
+    std::function<void()> pollingChanged;
+    explicit SettingsPage(const QString &executable,QWidget *parent=nullptr):QWidget(parent){
+        setObjectName("settingsPage");auto *outer=new QVBoxLayout(this);outer->setContentsMargins(24,20,24,20);outer->setSpacing(20);
+        auto *title=new QLabel(tr("Settings"));title->setObjectName("heading");outer->addWidget(title);
+        auto *body=new QHBoxLayout;body->setSpacing(24);nav=new QListWidget;nav->setObjectName("settingsSections");nav->setFixedWidth(180);nav->addItems({tr("Appearance"),tr("Sessions"),tr("Automatic recovery"),tr("Processes"),tr("About")});body->addWidget(nav);
+        pages=new QStackedWidget;pages->setMinimumWidth(0);body->addWidget(pages,1);outer->addLayout(body,1);
+        auto makePage=[&](const QString &heading){auto *content=new QWidget;content->setMaximumWidth(850);auto *layout=new QVBoxLayout(content);layout->setContentsMargins(0,0,12,0);layout->setSpacing(18);auto *h=new QLabel(heading);h->setObjectName("heading");layout->addWidget(h);addPage(content);return layout;};
+        auto *appearance=makePage(tr("Appearance"));auto *theme=new QComboBox;theme->setObjectName("workspaceTheme");theme->addItem(tr("Follow system appearance"),"system");theme->addItem(tr("Dark"),"dark");theme->addItem(tr("Light"),"light");theme->setCurrentIndex(qMax(0,theme->findData(QSettings().value("workspace/theme","system"))));appearance->addWidget(new QLabel(tr("Theme")));appearance->addWidget(theme);
+        auto *local=new QLabel(tr("Appearance and session list preferences apply to this Zerus."));local->setWordWrap(true);appearance->addWidget(local);appearance->addStretch();
+        connect(theme,&QComboBox::currentIndexChanged,this,[this,theme]{QSettings().setValue("workspace/theme",theme->currentData());if(appearanceChanged)appearanceChanged();});
+        auto *sessions=makePage(tr("Sessions"));
+        for(const auto &option:QList<QStringList>{{"workspaceCompact","workspace/compact",tr("Compact session rows"),"false"},{"workspaceHideEmptyProjects","workspace/hideEmptyProjects",tr("Hide projects without active sessions"),"true"},{"workspaceAnimateActivity","workspace/animateActivity",tr("Animate working sessions"),"true"}}){
+            auto *check=new QCheckBox(option[2]);check->setObjectName(option[0]);check->setChecked(QSettings().value(option[1],option[3]=="true").toBool());sessions->addWidget(check);connect(check,&QCheckBox::toggled,this,[this,key=option[1]](bool on){QSettings().setValue(key,on);if(appearanceChanged)appearanceChanged();});
+        }
+        auto *hint=new QLabel(tr("Closing Zerus keeps agents running. Projects and the arrangement of your workspace are saved on this device."));hint->setWordWrap(true);sessions->addWidget(hint);sessions->addStretch();
+        sync=new RecoverySync(executable,this);recovery=new RecoverySettings(sync);recovery->setMaximumWidth(850);addPage(recovery);
+        auto *processes=makePage(tr("Processes"));
+        auto *enabled=new QCheckBox(tr("Enable Processes tab"));enabled->setObjectName("processesEnabled");enabled->setChecked(ProcessSettings::enabled());processes->addWidget(enabled);
+        auto *timings=new QWidget;auto *form=new QFormLayout(timings);form->setContentsMargins(0,0,0,0);form->setFieldGrowthPolicy(QFormLayout::FieldsStayAtSizeHint);timings->setEnabled(enabled->isChecked());processes->addWidget(timings);
+        connect(enabled,&QCheckBox::toggled,this,[this,timings](bool on){QSettings().setValue("processes/enabled",on);timings->setEnabled(on);if(pollingChanged)pollingChanged();});
+        auto timing=[&](const char *key,const QString &label,int value,double low,double high){
+            auto *spin=new QDoubleSpinBox;spin->setObjectName(QLatin1String(key));spin->setRange(low,high);spin->setDecimals(1);spin->setSingleStep(0.5);spin->setSuffix(tr(" s"));spin->setValue(value/1000.);form->addRow(label,spin);
+            connect(spin,&QDoubleSpinBox::valueChanged,this,[this,key](double seconds){QSettings().setValue(QStringLiteral("processes/")+QLatin1String(key),seconds);if(pollingChanged)pollingChanged();});
+        };
+        timing("activeSeconds",tr("Open Processes tab"),ProcessSettings::activeMs(),1,60);
+        timing("backgroundSeconds",tr("Background process count"),ProcessSettings::backgroundMs(),5,600);
+        timing("unknownSeconds",tr("Unconfirmed process output"),ProcessSettings::unknownMs(),1,600);
+        timing("loadingSeconds",tr("Show loading indicator after"),ProcessSettings::loadingMs(),0,5);
+        auto *processHint=new QLabel(tr("Off by default. When disabled, the tab is hidden and processes are not polled. Enable it to inspect running shells and background commands, read recorded output and stop selected processes. Only the selected session is inspected; opening Processes refreshes immediately. Output is read only while the tab is visible. Timings apply to this Zerus. Background refresh also controls session inspection while Terminal or Native UI is open; session overview and account limits refresh separately."));processHint->setWordWrap(true);processes->addWidget(processHint);processes->addStretch();
+        auto *about=makePage(tr("About"));about->addWidget(new QLabel(tr("hgs zerus %1").arg(QCoreApplication::applicationVersion())));about->addStretch();
+        connect(nav,&QListWidget::currentRowChanged,pages,&QStackedWidget::setCurrentIndex);nav->setCurrentRow(0);
+    }
+    void setPeers(const QStringList &peers){sync->setPeers(peers);}
+    void openRecovery(){nav->setCurrentRow(2);sync->refresh();}
+    void refresh(){sync->refresh();}
+private:
+    void addPage(QWidget *page){if(page->objectName().isEmpty())page->setObjectName("settingsContent");auto *scroll=new QScrollArea;scroll->setFrameShape(QFrame::NoFrame);scroll->setWidgetResizable(true);scroll->setWidget(page);scroll->setMinimumWidth(0);pages->addWidget(scroll);}
+    QListWidget *nav;QStackedWidget *pages;RecoverySync *sync;RecoverySettings *recovery;
+};

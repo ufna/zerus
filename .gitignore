@@ -1,0 +1,22 @@
+build/
+build-*/
+*.o
+.DS_Store
+.claude/
+
+# makepkg artifacts — PKGBUILD relocates BUILDDIR here so makepkg never creates
+# its own src/ or pkg/ next to our real src/.
+makepkg-builddir/
+*.pkg.tar.zst
+compile_commands.json
+__pycache__/
+/target/
+
+.rust-build/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+*.gate.lock*

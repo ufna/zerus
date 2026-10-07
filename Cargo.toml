@@ -1,0 +1,34 @@
+[package]
+name = "hgs"
+version = "1.46.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Persistent local and remote agent sessions for Zerus"
+license = "MIT"
+repository = "https://github.com/ufna/zerus"
+
+[[bin]]
+name = "hgs"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+fs2 = "0.4"
+libc = "0.2"
+regex = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = "0.10"
+shell-words = "1"
+tempfile = "3"
+toml_edit = "0.22"
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+strip = true
+lto = "thin"
+
+[build-dependencies]
+cc = "1"

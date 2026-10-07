@@ -1,0 +1,12 @@
+{
+  "variants": 3,
+  "paletteLabels": "passed",
+  "images": "loaded",
+  "largePreview": "passed",
+  "selectionAndSettings": "persisted",
+  "copyFallback": "includes Z and palette",
+  "download": "hgs-zerus-z-carapace-v5-1024.png",
+  "prompts": "passed",
+  "mobile": "390px without overflow",
+  "consoleErrors": []
+}

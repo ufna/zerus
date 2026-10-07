@@ -1,0 +1,61 @@
+{
+  "provenance": "Synthetic text rendered by unmodified installed Kimi 2.1.1 QuestionDialogComponent and pi-tui Input; no agent runtime. Theme/width helpers isolated; width120 avoids truncation.",
+  "frames": [
+    {
+      "screen": " \u001b[38;2;90;170;220m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[0m\n \u001b[1m question\u001b[22m\n \n  \u001b[48;2;40;90;120m\u001b[1m Approach \u001b[22m\u001b[49m  \u001b[38;2;90;170;220m(○) Checks\u001b[0m  \u001b[38;2;90;170;220m(○) Detail\u001b[0m  \u001b[38;2;90;170;220m Submit \u001b[0m\n \n \u001b[38;2;90;170;220m ? Which approach?\u001b[0m\n \n \u001b[38;2;90;170;220m  → [1] Incremental\u001b[0m\n \u001b[38;2;90;170;220m    [2] Complete\u001b[0m\n \u001b[38;2;90;170;220m    [3] Other\u001b[0m\n \n \u001b[38;2;90;170;220m  ↑↓ select  1-3 / ↵ choose  ←/→/tab switch  esc cancel\u001b[0m\n \u001b[38;2;90;170;220m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[0m"
+    },
+    {
+      "kind": "key",
+      "value": "2",
+      "screen": " \u001b[38;2;90;170;220m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[0m\n \u001b[1m question\u001b[22m\n \n  \u001b[38;2;90;170;220m(✓) Approach\u001b[0m  \u001b[48;2;40;90;120m\u001b[1m Checks \u001b[22m\u001b[49m  \u001b[38;2;90;170;220m(○) Detail\u001b[0m  \u001b[38;2;90;170;220m Submit \u001b[0m\n \n \u001b[38;2;90;170;220m ? Which checks?\u001b[0m\n \n \u001b[38;2;90;170;220m  [ ] Linux\u001b[0m\n \u001b[38;2;90;170;220m  [ ] macOS\u001b[0m\n \u001b[38;2;90;170;220m  [ ] Other\u001b[0m\n \n \u001b[38;2;90;170;220m  ↑↓ select  1-3 / ↵ toggle  ←/→/tab switch  esc cancel\u001b[0m\n \u001b[38;2;90;170;220m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[0m"
+    },
+    {
+      "kind": "key",
+      "value": "1",
+      "screen": " \u001b[38;2;90;170;220m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[0m\n \u001b[1m question\u001b[22m\n \n  \u001b[38;2;90;170;220m(✓) Approach\u001b[0m  \u001b[48;2;40;90;120m\u001b[1m Checks \u001b[22m\u001b[49m  \u001b[38;2;90;170;220m(○) Detail\u001b[0m  \u001b[38;2;90;170;220m Submit \u001b[0m\n \n \u001b[38;2;90;170;220m ? Which checks?\u001b[0m\n \n \u001b[1m  [✓] Linux\u001b[22m\n \u001b[38;2;90;170;220m  [ ] macOS\u001b[0m\n \u001b[38;2;90;170;220m  [ ] Other\u001b[0m\n \n \u001b[38;2;90;170;220m  ↑↓ select  1-3 / ↵ toggle  ←/→/tab switch  esc cancel\u001b[0m\n \u001b[38;2;90;170;220m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[0m"
+    },
+    {
+      "kind": "key",
+      "value": "2",
+      "screen": " \u001b[38;2;90;170;220m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[0m\n \u001b[1m question\u001b[22m\n \n  \u001b[38;2;90;170;220m(✓) Approach\u001b[0m  \u001b[48;2;40;90;120m\u001b[1m Checks \u001b[22m\u001b[49m  \u001b[38;2;90;170;220m(○) Detail\u001b[0m  \u001b[38;2;90;170;220m Submit \u001b[0m\n \n \u001b[38;2;90;170;220m ? Which checks?\u001b[0m\n \n \u001b[38;2;90;170;220m  [✓] Linux\u001b[0m\n \u001b[1m  [✓] macOS\u001b[22m\n \u001b[38;2;90;170;220m  [ ] Other\u001b[0m\n \n \u001b[38;2;90;170;220m  ↑↓ select  1-3 / ↵ toggle  ←/→/tab switch  esc cancel\u001b[0m\n \u001b[38;2;90;170;220m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[0m"
+    },
+    {
+      "kind": "key",
+      "value": "Tab",
+      "screen": " \u001b[38;2;90;170;220m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[0m\n \u001b[1m question\u001b[22m\n \n  \u001b[38;2;90;170;220m(✓) Approach\u001b[0m  \u001b[38;2;90;170;220m(✓) Checks\u001b[0m  \u001b[48;2;40;90;120m\u001b[1m Detail \u001b[22m\u001b[49m  \u001b[38;2;90;170;220m Submit \u001b[0m\n \n \u001b[38;2;90;170;220m ? Any further detail?\u001b[0m\n \n \u001b[38;2;90;170;220m  → [1] None\u001b[0m\n \u001b[38;2;90;170;220m    [2] Documentation\u001b[0m\n \u001b[38;2;90;170;220m    [3] Other\u001b[0m\n \n \u001b[38;2;90;170;220m  ↑↓ select  1-3 / ↵ choose  ←/→/tab switch  esc cancel\u001b[0m\n \u001b[38;2;90;170;220m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[0m"
+    },
+    {
+      "kind": "key",
+      "value": "3",
+      "screen": " \u001b[38;2;90;170;220m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[0m\n \u001b[1m question\u001b[22m\n \n  \u001b[38;2;90;170;220m(✓) Approach\u001b[0m  \u001b[38;2;90;170;220m(✓) Checks\u001b[0m  \u001b[48;2;40;90;120m\u001b[1m Detail \u001b[22m\u001b[49m  \u001b[38;2;90;170;220m Submit \u001b[0m\n \n \u001b[38;2;90;170;220m ? Any further detail?\u001b[0m\n \u001b[38;2;90;170;220m   Type your answer, then press Enter to save.\u001b[0m\n \n \u001b[38;2;90;170;220m    [1] None\u001b[0m\n \u001b[38;2;90;170;220m    [2] Documentation\u001b[0m\n \u001b[38;2;90;170;220m  → [3] Other: \u001b[0m\u001b[7m \u001b[27m                                                                                                        \n \n \u001b[38;2;90;170;220m  type answer  ↵ save  tab switch  esc cancel\u001b[0m\n \u001b[38;2;90;170;220m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[0m"
+    },
+    {
+      "kind": "paste",
+      "value": "Проверь Unicode 界",
+      "screen": " \u001b[38;2;90;170;220m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[0m\n \u001b[1m question\u001b[22m\n \n  \u001b[38;2;90;170;220m(✓) Approach\u001b[0m  \u001b[38;2;90;170;220m(✓) Checks\u001b[0m  \u001b[48;2;40;90;120m\u001b[1m Detail \u001b[22m\u001b[49m  \u001b[38;2;90;170;220m Submit \u001b[0m\n \n \u001b[38;2;90;170;220m ? Any further detail?\u001b[0m\n \u001b[38;2;90;170;220m   Type your answer, then press Enter to save.\u001b[0m\n \n \u001b[38;2;90;170;220m    [1] None\u001b[0m\n \u001b[38;2;90;170;220m    [2] Documentation\u001b[0m\n \u001b[38;2;90;170;220m  → [3] Other: \u001b[0mПроверь Unicode 界\u001b[7m \u001b[27m                                                                                      \n \n \u001b[38;2;90;170;220m  type answer  ↵ save  tab switch  esc cancel\u001b[0m\n \u001b[38;2;90;170;220m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[0m"
+    },
+    {
+      "kind": "key",
+      "value": "Enter",
+      "screen": " \u001b[38;2;90;170;220m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[0m\n \u001b[1m question\u001b[22m\n \n  \u001b[38;2;90;170;220m(✓) Approach\u001b[0m  \u001b[38;2;90;170;220m(✓) Checks\u001b[0m  \u001b[38;2;90;170;220m(✓) Detail\u001b[0m  \u001b[48;2;40;90;120m\u001b[1m Submit \u001b[22m\u001b[49m\n \n \u001b[1m Review your answer before submit\u001b[22m\n \n   \u001b[38;2;90;170;220mQ\u001b[0m  Which approach?\n   \u001b[38;2;90;170;220m→\u001b[0m  \u001b[38;2;90;170;220mComplete\u001b[0m\n   \u001b[38;2;90;170;220mQ\u001b[0m  Which checks?\n   \u001b[38;2;90;170;220m→\u001b[0m  \u001b[38;2;90;170;220mLinux, macOS\u001b[0m\n   \u001b[38;2;90;170;220mQ\u001b[0m  Any further detail?\n   \u001b[38;2;90;170;220m→\u001b[0m  \u001b[38;2;90;170;220mПроверь Unicode 界\u001b[0m\n \n \u001b[38;2;90;170;220m Ready to submit your answers?\u001b[0m\n \n \u001b[38;2;90;170;220m  → [1] Submit\u001b[0m\n \u001b[38;2;90;170;220m    [2] Cancel\u001b[0m\n \n \u001b[38;2;90;170;220m  ↑↓ select  1/2 choose  ↵ confirm  ←/→/tab switch  esc cancel\u001b[0m\n \u001b[38;2;90;170;220m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[0m"
+    },
+    {
+      "kind": "key",
+      "value": "1",
+      "screen": null
+    }
+  ],
+  "response": {
+    "answers": {
+      "Which approach?": "Complete",
+      "Which checks?": "Linux, macOS",
+      "Any further detail?": "Проверь Unicode 界"
+    },
+    "method": "enter"
+  },
+  "source_sha256": {
+    "QuestionDialogComponent": "0b1877208116bd0c843c4720254835eb235375b6dbe34ef03c8fa343a3bee1c6",
+    "Input": "50be520c29c3a880f697d7c27382a0bbfcee89a685119b9d6514d6d16db53929"
+  },
+  "source_note": "Hashes match installed Arch x86_64 and macOS arm64 Kimi2.1.1 bundled source sections including region marker, excluding endregion."
+}

@@ -1,0 +1,214 @@
+#include <QtTest>
+#include "FleetState.h"
+
+static BoxState box(const QString &host, bool ok, int sessions)
+{
+    BoxState b;
+    b.host = host;
+    b.ok = ok;
+    for (int i = 0; i < sessions; ++i) {
+        SessionInfo s;
+        s.name = QStringLiteral("claude/p%1").arg(i);
+        b.sessions << s;
+    }
+    return b;
+}
+
+class TestFleetState : public QObject {
+    Q_OBJECT
+private slots:
+    void sumsAcrossBoxes();
+    void attentionMarksFollowConversationAndRejectStaleActions();
+    void attentionMarksIgnoreRoutineEventsButKeepNewRequestsUnread();
+    void archivesDoNotCountAsActiveFleet();
+    void peerNeverPolledIsStale();
+    void freshPeerIsNotStale();
+    void stalePeerStillCounts();
+    void localIsAlwaysFresh();
+    void peerGoingOfflineKeepsLastKnownSessions();
+    void peerNeverSeenAliveCountsAsZero();
+    void tooltipShowsPollAgeForOfflinePeer();
+    void tooltipAgeIsMinuteGrained();
+};
+
+void TestFleetState::attentionMarksFollowConversationAndRejectStaleActions()
+{
+    auto local = box("arch", true, 1); auto &s = local.sessions[0];
+    s.state = "running"; s.cmd = "claude"; s.phase = "approval";
+    s.runId = "run1"; s.conversationId = "conversation1"; s.created = 100; s.lastEventAt = 101;
+    FleetState f; f.setLocal(local, 1000);
+    QVERIFY(f.setReviewLater({}, s, true)); QVERIFY(f.local().sessions[0].reviewLater);
+    const auto marks = f.attentionMarks();
+    FleetState restart; restart.setAttentionMarks(marks); restart.setLocal(local, 1000);
+    QVERIFY(restart.local().sessions[0].reviewLater);
+    QVERIFY(restart.markSessionRead({}, s)); QVERIFY(restart.local().sessions[0].needsAction());
+    QVERIFY(!restart.local().sessions[0].needsAttention());
+    restart.setLocal(local, 2000); QVERIFY(!restart.local().sessions[0].needsAttention());
+    const auto old = s; s.lastEventAt = 102; restart.setLocal(local, 3000);
+    QVERIFY(restart.local().sessions[0].needsAttention()); QVERIFY(!restart.markSessionRead({}, old));
+    QVERIFY(restart.setReviewLater({}, s, true));
+    s.name = "claude/renamed"; s.runId = "resumed"; s.created = 200; restart.setLocal(local, 4000);
+    QVERIFY(restart.local().sessions[0].reviewLater); QVERIFY(!restart.markSessionRead({}, old));
+    s.conversationId = "different"; restart.setLocal(local, 5000); QVERIFY(!restart.local().sessions[0].reviewLater);
+    auto remote = local; remote.host = "mac"; restart.setPeer(remote, 5000);
+    QVERIFY(restart.setReviewLater("mac", s, true));
+    restart.setPeer(box("mac", false, 0), 6000);
+    QVERIFY(restart.peer("mac")->sessions[0].reviewLater);
+    QVERIFY(restart.attentionSessions(6000 + FleetState::kPeerStaleMs) >= 1);
+}
+
+void TestFleetState::attentionMarksIgnoreRoutineEventsButKeepNewRequestsUnread()
+{
+    auto local = box("arch", true, 1); auto &s = local.sessions[0];
+    s.state = "running"; s.cmd = "claude"; s.phase = "input";
+    s.runId = "run"; s.conversationId = "conversation"; s.created = 100;
+    s.attentionId = "question-1"; s.replyId = "reply-1"; s.lastEventAt = 101;
+    s.subagents = {{"worker", QJsonObject{{"state", "working"}, {"summary", "First tool"}}},
+        {"waiting", QJsonObject{{"state", "input"}, {"question_id", "child-question-1"}, {"last_event_at", 101}}}};
+    FleetState state; state.setLocal(local, 1000); const auto opened = s;
+    s.lastEventAt = 102;
+    auto worker = s.subagents["worker"].toObject(); worker["summary"] = "Next tool"; s.subagents["worker"] = worker;
+    auto child = s.subagents["waiting"].toObject(); child["last_event_at"] = 102; s.subagents["waiting"] = child;
+    state.setLocal(local, 2000);
+    QVERIFY(state.markSessionRead({}, opened)); QVERIFY(!state.local().sessions[0].needsAttention());
+    s.lastEventAt = 103; state.setLocal(local, 3000);
+    QVERIFY(!state.local().sessions[0].needsAttention());
+
+    s.attentionId = "question-2"; state.setLocal(local, 4000);
+    QVERIFY(state.local().sessions[0].needsAttention()); QVERIFY(!state.markSessionRead({}, opened));
+    QVERIFY(state.markSessionRead({}, s));
+    const auto beforeChild = s; child["question_id"] = "child-question-2"; s.subagents["waiting"] = child;
+    state.setLocal(local, 5000);
+    QVERIFY(!state.local().sessions[0].attentionAcknowledged); QVERIFY(!state.markSessionRead({}, beforeChild));
+    QVERIFY(state.markSessionRead({}, s));
+    const auto beforeReply = s; s.replyId = "reply-2"; state.setLocal(local, 6000);
+    QVERIFY(state.local().sessions[0].unreadReply); QVERIFY(!state.markSessionRead({}, beforeReply));
+    const auto beforeRun = s; s.runId = "another-run"; state.setLocal(local, 7000);
+    QVERIFY(!state.markSessionRead({}, beforeRun));
+}
+
+void TestFleetState::sumsAcrossBoxes()
+{
+    FleetState f;
+    f.setLocal(box(QStringLiteral("arch"), true, 4), 1000);
+    f.setPeer(box(QStringLiteral("mac"), true, 2), 1000);
+    QCOMPARE(f.totalSessions(), 6);
+}
+
+void TestFleetState::archivesDoNotCountAsActiveFleet()
+{
+    auto local = box("arch", true, 2); local.sessions[1].state = "archived";
+    auto peer = box("mac", true, 3); peer.sessions[1].state = "archived"; peer.sessions[2].state = "paused";
+    FleetState fleet; fleet.setLocal(local, 1000); fleet.setPeer(peer, 1000);
+    QCOMPARE(fleet.totalSessions(), 3);
+    QVERIFY(fleet.tooltip(1000).contains("1 here"));
+    QVERIFY(fleet.tooltip(1000).contains("2 on mac"));
+    fleet.setPeer(box("mac", false, 0), 2000);
+    QCOMPARE(fleet.totalSessions(), 3); // Offline retention excludes archives too.
+}
+
+void TestFleetState::peerNeverPolledIsStale()
+{
+    FleetState f;
+    f.setLocal(box(QStringLiteral("arch"), true, 4), 1000);
+    f.registerPeer(QStringLiteral("mac"));      // объявлен, но ещё не опрошен
+    QCOMPARE(f.totalSessions(), 4);
+    QVERIFY(f.isStale(1000));
+}
+
+void TestFleetState::freshPeerIsNotStale()
+{
+    FleetState f;
+    f.setLocal(box(QStringLiteral("arch"), true, 4), 1000);
+    f.setPeer(box(QStringLiteral("mac"), true, 2), 1000);
+    QVERIFY(!f.isStale(1000 + FleetState::kPeerStaleMs - 1));
+}
+
+void TestFleetState::stalePeerStillCounts()
+{
+    // Ноут закрыли: сессии не умерли, они на паузе. Считаем их, но метим цифру точкой.
+    FleetState f;
+    f.setLocal(box(QStringLiteral("arch"), true, 4), 1000);
+    f.setPeer(box(QStringLiteral("mac"), true, 2), 1000);
+    const qint64 later = 1000 + FleetState::kPeerStaleMs + 1;
+    QCOMPARE(f.totalSessions(), 6);
+    QVERIFY(f.isStale(later));
+}
+
+void TestFleetState::localIsAlwaysFresh()
+{
+    FleetState f;
+    f.setLocal(box(QStringLiteral("arch"), true, 4), 1000);
+    QVERIFY(!f.isStale(1000 + 10 * FleetState::kPeerStaleMs));
+}
+
+void TestFleetState::peerGoingOfflineKeepsLastKnownSessions()
+{
+    // Ноут был на связи с 2 сессиями, потом заснул: hgs присылает ok:false с sessions:[]
+    // (спросить уже некого), но реальные сессии не исчезли — цифра не должна просесть.
+    FleetState f;
+    f.setLocal(box(QStringLiteral("arch"), true, 4), 1000);
+    f.setPeer(box(QStringLiteral("mac"), true, 2), 1000);
+    QCOMPARE(f.totalSessions(), 6);
+
+    BoxState offline = box(QStringLiteral("mac"), false, 0);
+    offline.error = QStringLiteral("offline");
+    f.setPeer(offline, 2000);
+
+    QCOMPARE(f.totalSessions(), 6);        // 4 arch + 2 из последнего живого ответа mac
+    QVERIFY(f.isStale(2000));              // но помечено несвежим сразу же (ok:false)
+    QCOMPARE(f.peerPolledAt(QStringLiteral("mac")), qint64(2000));  // спросили и получили ответ
+}
+
+void TestFleetState::peerNeverSeenAliveCountsAsZero()
+{
+    // Первый же опрос застал пира спящим: сессии неизвестны (не 0 по факту, но и не
+    // подтверждены), считать их как известные нельзя.
+    FleetState f;
+    f.setLocal(box(QStringLiteral("arch"), true, 4), 1000);
+    BoxState offline = box(QStringLiteral("mac"), false, 0);
+    offline.error = QStringLiteral("offline");
+    f.setPeer(offline, 1000);
+
+    QCOMPARE(f.totalSessions(), 4);
+    QVERIFY(f.isStale(1000));
+}
+
+void TestFleetState::tooltipShowsPollAgeForOfflinePeer()
+{
+    // "unreachable" само по себе не говорит, спросили ли мы только что или час назад —
+    // а это ровно то, чем "ноут спит" отличается от "потеряли контакт".
+    FleetState f;
+    f.setLocal(box(QStringLiteral("arch"), true, 4), 1000);
+    BoxState offline = box(QStringLiteral("mac"), false, 0);
+    offline.error = QStringLiteral("offline");
+    f.setPeer(offline, 1000);
+
+    const QString tip = f.tooltip(1000 + 20000);   // 20 секунд спустя
+    QVERIFY2(tip.contains(QStringLiteral("unreachable")), qPrintable(tip));
+    QVERIFY2(tip.contains(QStringLiteral("just now")), qPrintable(tip));
+}
+
+void TestFleetState::tooltipAgeIsMinuteGrained()
+{
+    // Возраст в секундах менял бы текст тултипа почти на каждом 2-секундном тике, а на
+    // маке каждая такая смена -- обновление NSStatusItem (см. QuietTrayIcon.h). Вопрос
+    // же, на который отвечает возраст, -- «ноут спит» или «потеряли контакт», --
+    // решается минутами. «just now» держится полторы минуты: столько покрывает штатный
+    // минутный опрос вместе с задержкой ssh, и здоровый пир не мигает «1m ago».
+    FleetState f;
+    f.setLocal(box(QStringLiteral("arch"), true, 4), 1000);
+    BoxState offline = box(QStringLiteral("mac"), false, 0);
+    offline.error = QStringLiteral("offline");
+    f.setPeer(offline, 1000);
+
+    QVERIFY2(f.tooltip(1000 + 89000).contains(QStringLiteral("just now")),
+             qPrintable(f.tooltip(1000 + 89000)));
+    QVERIFY2(f.tooltip(1000 + 90000).contains(QStringLiteral("1m ago")),
+             qPrintable(f.tooltip(1000 + 90000)));
+    QVERIFY2(f.tooltip(1000 + 150000).contains(QStringLiteral("2m ago")),
+             qPrintable(f.tooltip(1000 + 150000)));
+}
+
+QTEST_APPLESS_MAIN(TestFleetState)
+#include "test_fleetstate.moc"

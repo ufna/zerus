@@ -1,0 +1,25 @@
+#!/bin/sh
+# hgs Rust launcher — development checkout and legacy source-path compatibility.
+set -eu
+entry=$0
+while [ -L "$entry" ]; do
+    parent=$(CDPATH= cd -P -- "$(dirname -- "$entry")" && pwd)
+    link=$(readlink "$entry")
+    case "$link" in /*) entry=$link ;; *) entry=$parent/$link ;; esac
+done
+here=$(CDPATH= cd -P -- "$(dirname -- "$entry")" && pwd)
+export HGS_EXECUTABLE="$here/hgs"
+for binary in "$here/target/debug/hgs" "$here/target/release/hgs" "$here/.rust-build/target/release/hgs"; do
+    if [ -x "$binary" ]; then exec "$binary" "$@"; fi
+done
+# Deployed legacy hooks can still refer to the source checkout after installation.
+installed="${HOME}/.local/bin/hgs"
+if [ -x "$installed" ] && [ ! "$installed" -ef "$here/hgs" ]; then
+    magic=$(od -An -tx1 -N4 "$installed" | tr -d ' \n')
+    case "$magic" in 7f454c46|cffaedfe|feedfacf|cafebabe|bebafeca)
+        export HGS_EXECUTABLE="$installed"
+        exec "$installed" "$@"
+    esac
+fi
+echo 'hgs: build the Rust CLI with cargo build --locked, or install it with ./install.sh' >&2
+exit 1
