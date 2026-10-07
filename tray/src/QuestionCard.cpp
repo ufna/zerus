@@ -4,6 +4,7 @@
 #include <QApplication>
 #include <QButtonGroup>
 #include <QDateTime>
+#include <QEvent>
 #include <QCheckBox>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -15,6 +16,7 @@
 #include <QPushButton>
 #include <QRadioButton>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QStyle>
@@ -101,6 +103,8 @@ protected:
 QuestionCard::QuestionCard(QWidget *parent) : QWidget(parent)
 {
     setObjectName("questionCard"); setAttribute(Qt::WA_StyledBackground);
+    setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+    if (parent) parent->installEventFilter(this);
     auto *layout = new QVBoxLayout(this); layout->setContentsMargins(14, 12, 14, 12); layout->setSpacing(9);
     auto *header = new QHBoxLayout; header->setContentsMargins(0, 0, 0, 0);
     m_heading = new QLabel(tr("Agent needs your answer")); m_heading->setObjectName("questionHeading");
@@ -123,7 +127,7 @@ QuestionCard::QuestionCard(QWidget *parent) : QWidget(parent)
     m_tabs->setExpanding(false); m_tabs->setDrawBase(false); m_tabs->setUsesScrollButtons(true); m_tabs->setElideMode(Qt::ElideNone);
     layout->addWidget(m_tabs);
     m_pages = new QStackedWidget; m_pages->setObjectName("questionPages");
-    m_pages->setMinimumHeight(155); m_pages->setMaximumHeight(330); layout->addWidget(m_pages, 1);
+    m_pages->setFixedHeight(0); layout->addWidget(m_pages);
     m_status = new QLabel; m_status->setObjectName("questionStatus"); m_status->setWordWrap(true); m_status->setTextFormat(Qt::PlainText);
     m_status->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     layout->addWidget(m_status);
@@ -297,8 +301,13 @@ void QuestionCard::rebuild()
         form.id = question.value("id").toString(); form.multi = question.value("multi_select").toBool();
         form.allowOther = question.value("allow_other").toBool(); form.required = question.value("required").toBool(true);
         const auto answer = draft.answers.value(form.id);
-        auto *scroll = new QScrollArea; scroll->setFrameShape(QFrame::NoFrame); scroll->setWidgetResizable(true);
+        auto *formPage = new QWidget;
+        auto *formLayout = new QVBoxLayout(formPage); formLayout->setContentsMargins(0, 0, 0, 0); formLayout->setSpacing(7);
+        auto *scroll = new QScrollArea; scroll->setObjectName("questionContent");
+        scroll->setFrameShape(QFrame::NoFrame); scroll->setWidgetResizable(true);
+        scroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
         scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        formLayout->addWidget(scroll, 1);
         auto *page = new QWidget; page->setObjectName("questionPage");
         auto *column = new QVBoxLayout(page); column->setContentsMargins(0, 0, 7, 0); column->setSpacing(7);
         auto *prompt = new QLabel(question.value("question").toString()); prompt->setObjectName("questionPrompt");
@@ -335,10 +344,11 @@ void QuestionCard::rebuild()
             form.text = new QLineEdit; form.text->setObjectName("questionFreeText"); form.text->setProperty("questionId", form.id);
             form.text->setPlaceholderText(tr("Write your answer…")); form.text->setAccessibleName(tr("Your answer to %1").arg(prompt->text()));
             form.text->setMinimumHeight(35); form.text->setMaxLength(4096); form.text->setText(answer.text);
-            column->addWidget(form.text); connect(form.text, &QLineEdit::textChanged, this, [this] { capture(); });
+            // Keep the answer reachable while a long prompt or option list scrolls.
+            formLayout->addWidget(form.text); connect(form.text, &QLineEdit::textChanged, this, [this] { capture(); });
         }
         mode->setVisible(!form.options.isEmpty()&&!m_question.value("approval").toBool()); column->addStretch(); scroll->setWidget(page);
-        m_pages->addWidget(scroll); m_forms.append(form);
+        m_pages->addWidget(formPage); m_forms.append(form);
         const auto header = question.value("header").toString().simplified();
         const auto title = header.isEmpty() ? tr("Question %1").arg(++index) : QString::number(++index) + QStringLiteral(": ") + header.left(32);
         const int tab = m_tabs->addTab(title); m_tabs->setTabData(tab, title);
@@ -449,6 +459,56 @@ void QuestionCard::updateControls()
         complete ? tr("Your choices are ready to send.") : tr("Answer each question to continue.");
     m_status->setText(notice.left(600));
     m_status->setStyleSheet(QString("color:%1;font-size:11px;").arg(draft.error ? (m_dark ? "#f4ab9b" : "#a13224") : (m_dark ? "#a2adbc" : "#627082")));
+    scheduleSizing();
+}
+
+void QuestionCard::scheduleSizing()
+{
+    if (m_sizingPending) return;
+    m_sizingPending = true;
+    QTimer::singleShot(0, this, [this] { m_sizingPending = false; sizeToContent(); });
+}
+
+void QuestionCard::sizeToContent()
+{
+    auto *page = m_pages->currentWidget();
+    auto *scroll = page ? page->findChild<QScrollArea *>("questionContent") : nullptr;
+    if (!scroll || !scroll->widget()) return;
+    const auto margins = layout()->contentsMargins();
+    const int pageWidth = qMax(1, width() - margins.left() - margins.right());
+    // Reserve a scrollbar width when measuring wrapped text, avoiding oscillation
+    // at the height limit as the scrollbar appears and disappears.
+    const int contentWidth = qMax(1, pageWidth - scroll->verticalScrollBar()->sizeHint().width());
+    auto *contentLayout = scroll->widget()->layout();
+    const int contentHeight = contentLayout->hasHeightForWidth()
+        ? contentLayout->totalHeightForWidth(contentWidth) : contentLayout->totalSizeHint().height();
+    const auto *editor = page->findChild<QLineEdit *>("questionFreeText");
+    const int editorHeight = editor && !editor->isHidden()
+        ? qMax(editor->minimumHeight(), editor->sizeHint().height()) + page->layout()->spacing() : 0;
+    layout()->activate();
+    const int chrome = layout()->totalHeightForWidth(width()) - m_pages->height();
+    const int limit = parentWidget() ? qMin(360, parentWidget()->height() * 45 / 100) : 360;
+    const int bodyHeight = qMin(contentHeight + editorHeight, qMax(editorHeight + 40, limit - chrome));
+    if (m_pages->height() != bodyHeight) {
+        m_pages->setFixedHeight(bodyHeight);
+        updateGeometry();
+    }
+}
+
+bool QuestionCard::event(QEvent *event)
+{
+    const bool result = QWidget::event(event);
+    if (event->type() == QEvent::ParentChange && parentWidget()) parentWidget()->installEventFilter(this);
+    if (event->type() == QEvent::Resize || event->type() == QEvent::LayoutRequest
+        || event->type() == QEvent::Show || event->type() == QEvent::FontChange)
+        scheduleSizing();
+    return result;
+}
+
+bool QuestionCard::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == parentWidget() && event->type() == QEvent::Resize) scheduleSizing();
+    return QWidget::eventFilter(watched, event);
 }
 
 void QuestionCard::submit()

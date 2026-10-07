@@ -195,11 +195,13 @@ void NewSessionDialog::updateForm()
     const auto path=m_folder->currentData(Qt::UserRole+2).toString();
     m_projectPath->setText(path);m_projectPath->setVisible(!path.isEmpty());
     m_projectPath->setToolTip(path);m_projectPath->ensurePolished();m_projectPath->setFixedHeight(m_projectPath->fontMetrics().height());
-    const bool outside=!path.isEmpty()&&m_folder->currentData().toString().isEmpty();
+    const bool worktree=m_folder->currentData().toString().isEmpty()&&projectWorktree(path);
+    const bool outside=!path.isEmpty()&&m_folder->currentData().toString().isEmpty()&&!worktree;
     m_preview->setProperty("outsideProject",outside);
     m_preview->setStyleSheet(outside?QStringLiteral("color: %1;").arg(palette().color(QPalette::Window).lightness()<128?"#f0b65a":"#9b6300"):QString());
     m_preview->setText(path.isEmpty()?tr("Browse to choose a folder on this computer."):
         outside?tr("This folder is outside the project.\nStarting here will add it to this project."):
+        worktree?tr("Worktree in %1").arg(m_project->currentText()):
         tr("Folder in %1").arg(m_project->currentText()));
     m_preview->setToolTip(m_preview->text());m_preview->ensurePolished();m_preview->setFixedHeight(2*m_preview->fontMetrics().lineSpacing());
     const bool validName=!m_name->text().isEmpty()&&!m_name->text().contains(QRegularExpression("[\\s/.:]"));
@@ -277,6 +279,28 @@ void NewSessionDialog::updateWorktrees()
     if(!path.isEmpty()&&box&&box->ok)m_catalogRequest=m_client.requestWorktrees(host(),path);
     updateForm();
 }
+bool NewSessionDialog::projectWorktree(const QString &path,const QJsonObject &catalog) const
+{
+    if(path.isEmpty()||catalog["state"]!="ok"||catalog["stale"].toBool()||catalog["common_dir"].toString().isEmpty())return false;
+    const auto contains=[&](const QString &folder){
+        for(const auto &value:catalog["worktrees"].toArray()){
+            const auto entry=value.toObject();const auto root=QDir::cleanPath(entry["path"].toString());
+            if(!QDir::isAbsolutePath(root)||entry["kind"]=="bare"||!entry["available"].toBool())continue;
+            const auto clean=QDir::cleanPath(folder);
+            if(clean==root||clean.startsWith(root=='/'?root:root+'/'))return true;
+        }
+        return false;
+    };
+    if(!contains(path))return false;
+    if(const auto *project=m_projects.group(m_project->currentData().toString()))
+        for(const auto &folder:project->folders)
+            if((folder.machine==m_fleet.local().host?QString():folder.machine)==host()&&contains(folder.path))return true;
+    return false;
+}
+bool NewSessionDialog::projectWorktree(const QString &path) const
+{
+    return projectWorktree(path,m_worktreeCatalog)||projectWorktree(path,m_verifiedWorktrees.value(host()+'\n'+path));
+}
 void NewSessionDialog::chooseWorktree()
 {
     const auto machine=host(),project=m_project->currentData().toString();
@@ -292,11 +316,18 @@ void NewSessionDialog::createWorktree()
 {
     if(!m_newWorktree->isEnabled())return;
     const auto machine=host(),project=m_project->currentData().toString();
+    const auto source=m_folder->currentData(Qt::UserRole+2).toString();
+    auto catalog=m_worktreeCatalog;
     NewWorktreeDialog dialog(&m_client,machine,machine.isEmpty()?m_fleet.local().host:machine,
-        m_folder->currentData(Qt::UserRole+2).toString(),m_worktreeCatalog,m_name->text(),this);
+        source,catalog,m_name->text(),this);
     if(dialog.exec()!=QDialog::Accepted||dialog.createdPath().isEmpty())return;
     if(host()!=machine||m_project->currentData().toString()!=project){
         m_error->setText(tr("Worktree created at %1 on %2. Select that folder to start a session.").arg(dialog.createdPath(),machine.isEmpty()?m_fleet.local().host:machine));return;
     }
+    // Successful creation confirms membership even before the catalog refresh
+    // includes the new checkout. Retain that evidence only in this dialog.
+    auto entries=catalog["worktrees"].toArray();entries.append(QJsonObject{{"path",dialog.createdPath()},{"kind","linked"},{"available",true}});
+    catalog["worktrees"]=entries;
+    m_verifiedWorktrees[machine+'\n'+dialog.createdPath()]=catalog;
     selectPath(dialog.createdPath());m_error->setText(tr("Worktree created. Ready to start the session."));
 }

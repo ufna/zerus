@@ -7,9 +7,13 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSignalSpy>
+#include <QStackedWidget>
 #include <QTabBar>
 #include <QTest>
+#include <QTextBrowser>
+#include <QVBoxLayout>
 
 namespace {
 QJsonObject request(const QString &id = "tool-question", const QString &hash = "hash-one")
@@ -57,6 +61,8 @@ private slots:
     void capabilityOfflineAndErrorStates();
     void freeformLimitsAndPlainText();
     void longProviderTextKeepsCompactWidth();
+    void contentHeightPreservesActivityAndPinsFreeformAnswer();
+    void currentQuestionAndOtherAnswerResizeTheForm();
     void reviewCountdownAndNextNavigation();
     void optionalQuestionsHaveExplicitSkipAndKeepDrafts();
     void submittedAnswersRestoreAndIgnoreLateErrors();
@@ -282,6 +288,75 @@ void TestQuestionCard::longProviderTextKeepsCompactWidth()
     card.setError("arch/session", "tool-question", token); QTest::qWait(25);
     QCOMPARE(card.width(), 480);
     QVERIFY(card.findChild<QLabel *>("questionStatus")->width() < card.width());
+}
+
+void TestQuestionCard::contentHeightPreservesActivityAndPinsFreeformAnswer()
+{
+    QWidget activity; activity.resize(820, 720);
+    auto *layout = new QVBoxLayout(&activity); layout->setContentsMargins(0, 0, 0, 0); layout->setSpacing(0);
+    auto *history = new QTextBrowser; history->setPlainText(QString("Previous agent context\n").repeated(100));
+    auto *card = new QuestionCard;
+    layout->addWidget(history, 1); layout->addWidget(card);
+    auto data = request(); data["optional"] = true; data["can_skip"] = true;
+    data["created_at"] = double(QDateTime::currentSecsSinceEpoch());
+    auto question = QJsonObject{{"id", "free"}, {"question", "Which folder should I use for the next step?"}, {"allow_other", true}};
+    data["questions"] = QJsonArray{question}; card->setQuestion("fixture", data); activity.show();
+    QTRY_VERIFY(card->height() < 240);
+    QTRY_VERIFY(history->height() > activity.height() * 2 / 3);
+    auto *editor = text(*card, "free"); editor->setText("Keep this draft");
+    auto *scroll = card->findChild<QScrollArea *>("questionContent");
+    QTRY_COMPARE(scroll->verticalScrollBar()->maximum(), 0);
+    question["question"] = QString("Long question with enough text to wrap and scroll.\n").repeated(80);
+    data["questions"] = QJsonArray{question}; card->setQuestion("fixture", data);
+    editor = text(*card, "free"); scroll = card->findChild<QScrollArea *>("questionContent");
+    QTRY_VERIFY(scroll->verticalScrollBar()->maximum() > 0);
+    QTRY_COMPARE(card->height(), activity.height() * 45 / 100);
+    QTRY_VERIFY(card->height() <= activity.height() * 45 / 100);
+    QVERIFY(editor->isVisible()); QVERIFY(!scroll->isAncestorOf(editor));
+    QCOMPARE(editor->text(), QString("Keep this draft"));
+    QVERIFY(card->rect().contains(submit(*card)->geometry()));
+    history->verticalScrollBar()->setValue(50); QCOMPARE(history->verticalScrollBar()->value(), 50);
+    scroll->verticalScrollBar()->setValue(scroll->verticalScrollBar()->maximum());
+    QCOMPARE(history->verticalScrollBar()->value(), 50);
+    const int tallHeight = card->height();
+    activity.resize(480, 460);
+    QTRY_VERIFY(card->height() < tallHeight);
+    QTRY_VERIFY(card->height() <= activity.height() / 2);
+    QVERIFY(history->height() >= activity.height() / 2);
+    QVERIFY(editor->isVisible()); QCOMPARE(editor->text(), QString("Keep this draft"));
+    QVERIFY(card->rect().contains(submit(*card)->geometry()));
+    const auto directory = qEnvironmentVariable("HGS_PREVIEW_DIR");
+    if (!directory.isEmpty()) QVERIFY(activity.grab().save(directory + "/question-long-in-activity.png"));
+    question["question"] = "Which folder should I use for the next step?";
+    data["questions"] = QJsonArray{question}; card->setQuestion("fixture", data);
+    activity.resize(820, 720);
+    QTRY_VERIFY(card->height() < 240);
+    if (!directory.isEmpty()) QVERIFY(activity.grab().save(directory + "/question-short-in-activity.png"));
+}
+
+void TestQuestionCard::currentQuestionAndOtherAnswerResizeTheForm()
+{
+    QWidget activity; activity.resize(700, 800);
+    auto *layout = new QVBoxLayout(&activity); layout->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(new QTextBrowser, 1);
+    auto *card = new QuestionCard; layout->addWidget(card);
+    auto data = request(); auto questions = data["questions"].toArray();
+    auto first = questions[0].toObject();
+    first["question"] = QString("Long option question\n").repeated(80); questions[0] = first;
+    auto second = questions[1].toObject(); second["options"] = QJsonArray{}; questions[1] = second;
+    data["questions"] = questions; card->setQuestion("fixture", data); activity.show();
+    auto *tabs = card->findChild<QTabBar *>("questionTabs");
+    auto *pages = card->findChild<QStackedWidget *>("questionPages");
+    QTRY_VERIFY(pages->currentWidget()->findChild<QScrollArea *>("questionContent")->verticalScrollBar()->maximum() > 0);
+    QTRY_COMPARE(card->height(), 360);
+    const int longHeight = card->height();
+    tabs->setCurrentIndex(1);
+    QTRY_VERIFY(card->height() < longHeight);
+    QVERIFY(text(*card, "q_1")->isVisible());
+    tabs->setCurrentIndex(0); other(*card, "q_0")->click();
+    QTRY_VERIFY(text(*card, "q_0")->isVisible());
+    QTRY_VERIFY(card->height() <= 360);
+    QVERIFY(card->rect().contains(QRect(text(*card,"q_0")->mapTo(card,QPoint()),text(*card,"q_0")->size())));
 }
 
 void TestQuestionCard::preview()

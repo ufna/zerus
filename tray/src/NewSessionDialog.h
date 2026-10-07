@@ -31,6 +31,8 @@ private:
     void updateWorktrees();
     void chooseWorktree();
     void createWorktree();
+    bool projectWorktree(const QString &path, const QJsonObject &catalog) const;
+    bool projectWorktree(const QString &path) const;
     void loadAccounts();
     void updateAccounts();
     void updateForm();
@@ -51,6 +53,7 @@ private:
     QLabel *m_projectPath,*m_preview,*m_error;
     QPushButton *m_start,*m_browse,*m_worktrees,*m_newWorktree;
     QJsonObject m_worktreeCatalog;
+    QMap<QString, QJsonObject> m_verifiedWorktrees;
     QString m_worktreeContext;
     quint64 m_catalogRequest=0;
     QToolButton *m_manage;

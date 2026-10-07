@@ -38,6 +38,8 @@ signals:
     void queueNavigationRequested(int direction);
 
 protected:
+    bool event(QEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
     void paintEvent(QPaintEvent *event) override;
 
 private:
@@ -58,6 +60,8 @@ private:
     void rebuild();
     void capture();
     void updateControls();
+    void scheduleSizing();
+    void sizeToContent();
     void submit();
     QJsonArray answers(bool *valid = nullptr) const;
     QString callbackKey(const QString &sessionKey, const QString &questionId) const;
@@ -79,5 +83,5 @@ private:
     QElapsedTimer m_reviewClock;
     int m_reviewSeconds = 3;
     int m_queueIndex = -1, m_queueCount = 0;
-    bool m_available = true, m_loading = false, m_dark = true;
+    bool m_available = true, m_loading = false, m_dark = true, m_sizingPending = false;
 };
