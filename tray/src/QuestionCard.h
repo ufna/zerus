@@ -30,6 +30,7 @@ public:
     void setSending(const QString &sessionKey, const QString &questionId, bool sending = true);
     void setError(const QString &sessionKey, const QString &questionId, const QString &detail, bool uncertain = false);
     void setAnswered(const QString &sessionKey, const QString &questionId);
+    void setSubmitted(const QString &sessionKey, const QString &questionId);
 
 signals:
     void answerRequested(const QString &sessionKey, const QString &questionId, const QJsonArray &answers);
@@ -45,7 +46,7 @@ private:
         QHash<QString, Answer> answers;
         QString notice;
         int page = 0;
-        bool sending = false, answered = false, error = false, uncertain = false;
+        bool sending = false, submitted = false, answered = false, error = false, uncertain = false;
     };
     struct Form {
         QString id;

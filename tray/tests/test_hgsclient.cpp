@@ -32,6 +32,7 @@ private slots:
     void messagesUseStdinAndIdentityReceipts();
     void messageFailuresAreExplicitAndNeverRetried();
     void questionAnswersUsePinnedIdentityAndStdin();
+    void submittedQuestionReceiptsRequireOptionalCodexAndExactIdentity();
     void questionAnswerFailures_data();
     void questionAnswerFailures();
     void unconfirmedQuestionCannotStartTransport();
@@ -46,6 +47,41 @@ private slots:
     void nativeLaunchReportsProcessResult();
     void attachmentsUseCapturedIdentityAndValidateResponses();
 };
+
+void TestHgsClient::submittedQuestionReceiptsRequireOptionalCodexAndExactIdentity()
+{
+    QTemporaryDir directory;QFile script(directory.filePath("hgs"));QVERIFY(script.open(QIODevice::WriteOnly));
+    script.write(R"(#!/usr/bin/env python3
+import json,sys
+p=json.load(sys.stdin)
+receipt={'status':'submitted','request_id':p['request_id'],'name':sys.argv[-2],
+ 'run_id':p['expected_run_id'],'conversation_id':p['expected_conversation_id'],
+ 'question_id':p['question_id'],'question_hash':p['expected_question_hash']}
+mode=p['answers'][0].get('text','')
+if mode in receipt:receipt[mode]='unrelated'
+print(json.dumps(receipt))
+)");script.close();QVERIFY(script.setPermissions(QFileDevice::ReadOwner|QFileDevice::WriteOwner|QFileDevice::ExeOwner));
+    HgsClient client(script.fileName());QSignalSpy submitted(&client,&HgsClient::questionAnswerSubmitted),
+        answered(&client,&HgsClient::questionAnswered),failed(&client,&HgsClient::questionAnswerFailed);
+    const QJsonObject question{{"question_id","pending-question"},{"question_hash","exact-content"},
+        {"run_id","run-one"},{"conversation_id","conversation-one"},{"can_answer",true},
+        {"can_skip",true},{"optional",true},{"source","codex_async"}};
+    const auto send=[&](const QJsonObject &q,const QJsonObject &answer) {
+        return client.requestAnswerQuestion({},"codex/project/main",q,QJsonArray{answer});
+    };
+    const auto requestId=send(question,QJsonObject{{"question_id","q_0"},{"text","Saved answer"}});
+    QTRY_COMPARE(submitted.size(),1);QCOMPARE(submitted[0][0].toULongLong(),requestId);QCOMPARE(answered.size(),0);QCOMPARE(failed.size(),0);
+    int failures=0;
+    for(const auto &field:{"request_id","name","run_id","conversation_id","question_id","question_hash"}) {
+        send(question,QJsonObject{{"question_id","q_0"},{"text",field}});++failures;QTRY_COMPARE(failed.size(),failures);
+    }
+    auto unsupported=question;unsupported["source"]="codex_tui";
+    send(unsupported,QJsonObject{{"question_id","q_0"},{"text","answer"}});++failures;QTRY_COMPARE(failed.size(),failures);
+    unsupported=question;unsupported["optional"]=false;
+    send(unsupported,QJsonObject{{"question_id","q_0"},{"text","answer"}});++failures;QTRY_COMPARE(failed.size(),failures);
+    send(question,QJsonObject{{"question_id","q_0"},{"skip",true}});++failures;QTRY_COMPARE(failed.size(),failures);
+    QCOMPARE(submitted.size(),1);QCOMPARE(answered.size(),0);
+}
 
 void TestHgsClient::attachmentsUseCapturedIdentityAndValidateResponses()
 {

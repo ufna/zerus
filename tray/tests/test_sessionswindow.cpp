@@ -139,6 +139,7 @@ private slots:
     void modelSettingsKeepSessionIdentity_data();
     void modelSettingsKeepSessionIdentity();
     void questionAnswersStayWithOriginalSession();
+    void queuedQuestionAnswersStayPendingUntilNativeConfirmation();
     void hookReviewOpensOnlyTheRequestingTerminal();
     void optionalQuestionKeepsComposerAvailable();
     void questionCompletionKeepsInputFocus_data();
@@ -1448,6 +1449,71 @@ elif args[0]=='answer':
     card->answerRequested(key, "interaction-one", choices); // resolved question is no longer actionable
     QTest::qWait(30);
     QFile calls(directory.filePath("calls")); QVERIFY(calls.open(QIODevice::ReadOnly)); QCOMPARE(calls.readAll(), QByteArray("call\n"));
+}
+
+void TestSessionsWindow::queuedQuestionAnswersStayPendingUntilNativeConfirmation()
+{
+    QTemporaryDir directory;QFile program(directory.filePath("hgs"));QVERIFY(program.open(QIODevice::WriteOnly));
+    program.write(R"PY(#!/usr/bin/env python3
+import json,pathlib,sys
+root=pathlib.Path(__file__).parent
+if sys.argv[1]=='inspect':
+ print((root/'details.json').read_text())
+elif sys.argv[1]=='answer':
+ p=json.load(sys.stdin)
+ with (root/'calls').open('a') as f:f.write('call\n')
+ details=json.loads((root/'details.json').read_text())
+ q=details['pending_questions'][0]
+ q['can_answer']=False;q['can_skip']=False
+ q['answer_delivery']={'status':'submitted','request_id':p['request_id'],'run_id':p['expected_run_id'],
+  'conversation_id':p['expected_conversation_id'],'question_id':p['question_id'],
+  'question_hash':p['expected_question_hash'],'answers':p['answers']}
+ details['input_queue']={'id':'native-queue-one','text':'↳ Which validation should run? → '+p['answers'][0]['text'],
+  'can_send_now':True,'hint':'Interrupt and send the queued answer using the native action.'}
+ (root/'details.json').write_text(json.dumps(details))
+ print(json.dumps(dict(q['answer_delivery'],name=sys.argv[2])))
+)PY");program.close();QVERIFY(program.setPermissions(QFileDevice::ReadOwner|QFileDevice::WriteOwner|QFileDevice::ExeOwner));
+    const QJsonObject question{{"question_id","optional-one"},{"question_hash","hash-one"},{"run_id","run-one"},
+        {"conversation_id","conversation-one"},{"source","codex_async"},{"optional",true},{"can_answer",true},{"can_skip",true},
+        {"questions",QJsonArray{QJsonObject{{"id","q_0"},{"question","Which validation should run?"},{"allow_other",true},{"options",QJsonArray{}}}}}};
+    QJsonObject details{{"tracked",true},{"run_id","run-one"},{"conversation_id","conversation-one"},
+        {"runtime_state","live"},{"process_state","running"},{"activity","busy"},{"phase","thinking"},
+        {"pending_questions",QJsonArray{question}},{"events",QJsonArray{}},{"cursor",0}};
+    const auto save=[&] {
+        QFile fixture(directory.filePath("details.json"));if(!fixture.open(QIODevice::WriteOnly))return false;
+        return fixture.write(QJsonDocument(details).toJson())>0;
+    };QVERIFY(save());
+    SessionsWindow window(program.fileName());window.setFleet(fleet());window.show();window.showSession({},"codex/hgs/dashboard");
+    auto *client=window.findChild<HgsClient *>();auto *card=window.findChild<QuestionCard *>();
+    auto *composer=window.findChild<MessageComposer *>("messageComposer");
+    auto *activity=window.findChild<ActivityView *>("mainActivity");QVERIFY(activity);
+    QSignalSpy promoted(activity,&ActivityView::queueSendNowRequested);
+    QSignalSpy submitted(client,&HgsClient::questionAnswerSubmitted),answered(client,&HgsClient::questionAnswered);
+    QTRY_VERIFY(card->isVisible());auto *editor=card->findChild<QLineEdit *>("questionFreeText");QVERIFY(editor);
+    editor->setText("Run unit tests and a desktop preview.");composer->editor()->setPlainText("Keep my next-message draft");
+    auto *send=card->findChild<QPushButton *>("submitQuestionAnswer");QVERIFY(send->isEnabled());send->click();
+    QTRY_COMPARE(submitted.size(),1);QCOMPARE(answered.size(),0);QVERIFY(card->isVisible());
+    QCOMPARE(send->text(),QString("Submitted"));QVERIFY(!send->isEnabled());
+    QVERIFY(!card->findChild<QPushButton *>("skipQuestion")->isEnabled());
+    QCOMPARE(card->findChild<QLabel *>("questionProgress")->text(),QString("Awaiting agent"));
+    QFile fixture(directory.filePath("details.json"));QVERIFY(fixture.open(QIODevice::ReadOnly));
+    details=QJsonDocument::fromJson(fixture.readAll()).object();fixture.close();
+    client->inspectionReady({},"codex/hgs/dashboard",details);
+    QVERIFY(activity->findChild<QWidget *>("activityInputQueue")->isVisible());
+    QVERIFY(activity->findChild<QPushButton *>("queueSendNow")->isEnabled());QCOMPARE(promoted.size(),0);
+    QCOMPARE(card->findChild<QLineEdit *>("questionFreeText")->text(),QString("Run unit tests and a desktop preview."));
+    QVERIFY(card->findChild<QPushButton *>("questionAllowRetry")->isHidden());
+    QVERIFY(composer->isVisible());QCOMPARE(composer->editor()->toPlainText(),QString("Keep my next-message draft"));
+    if(!qEnvironmentVariable("HGS_PREVIEW_DIR").isEmpty()) {
+        window.resize(1240,900);QTest::qWait(30);
+        QVERIFY(window.grab().save(qEnvironmentVariable("HGS_PREVIEW_DIR")+"/queued-question-answer.png"));
+    }
+    window.showSession({},"kimi/docs/research");window.showSession({},"codex/hgs/dashboard");
+    QTRY_VERIFY(card->isVisible());QVERIFY(!card->findChild<QPushButton *>("submitQuestionAnswer")->isEnabled());
+    card->findChild<QPushButton *>("submitQuestionAnswer")->click();QFile calls(directory.filePath("calls"));QVERIFY(calls.open(QIODevice::ReadOnly));QCOMPARE(calls.readAll(),QByteArray("call\n"));
+    details["pending_questions"]=QJsonArray{};details.remove("input_queue");QVERIFY(save());client->inspectionReady({},"codex/hgs/dashboard",details);
+    QTRY_VERIFY(card->isHidden());QCOMPARE(composer->editor()->toPlainText(),QString("Keep my next-message draft"));
+    QCOMPARE(promoted.size(),0);
 }
 
 void TestSessionsWindow::hookReviewOpensOnlyTheRequestingTerminal()

@@ -224,6 +224,7 @@ fn read_cache(record: &Value) -> Result<Value> {
             }
         }
     }
+    recover_submissions(record, &mut cache)?;
     cache["initialized"] = json!(true);
     let serialized = cache.to_string();
     if fs::read_to_string(&cache_path).ok().as_deref() != Some(&serialized) {
@@ -244,6 +245,10 @@ pub(super) fn current(record: &Value) -> Result<Vec<Value>> {
         .map(|mut card| {
             card["run_id"] = record["run_id"].clone();
             card["question_hash"] = json!(questions::fingerprint(&card));
+            if matching_submission(record, &card, &card["delivery"]) {
+                card["answer_delivery"] = card["delivery"].clone();
+            }
+            card.as_object_mut().unwrap().remove("delivery");
             card
         })
         .collect())
@@ -333,6 +338,9 @@ fn panel_empty(screen: &str, card: &Value) -> Result<bool> {
     }))
 }
 pub(super) fn available(record: &Value, card: &Value) -> Result<()> {
+    if card["answer_delivery"]["status"] == "submitted" {
+        return Err("An answer was already submitted. Wait for Codex to record it.".into());
+    }
     let mut terminal = Native::new(record, card);
     let screen = terminal.screen()?;
     if visible_panel(&screen, card)? {
@@ -370,12 +378,128 @@ fn envelope(card: &Value, text: &str) -> String {
         json!([{"questionItemId":card["native_question_id"],"question":card["questions"][0]["question"],"answer":text}])
     )
 }
+
+fn matching_submission(record: &Value, card: &Value, delivery: &Value) -> bool {
+    delivery["status"] == "submitted"
+        && delivery["run_id"] == record["run_id"]
+        && delivery["conversation_id"] == record["conversation_id"]
+        && delivery["question_id"] == card["question_id"]
+        && delivery["question_hash"] == questions::fingerprint(card)
+}
+
+fn submission(record: &Value, card: &Value, answers: &Value, request_id: &str) -> Value {
+    json!({"status":"submitted","request_id":request_id,"run_id":record["run_id"],
+        "conversation_id":record["conversation_id"],"question_id":card["question_id"],
+        "question_hash":questions::fingerprint(card),"answers":answers,"submitted_at":now()})
+}
+
+fn save_submission(record: &Value, card: &Value, answers: &Value, request_id: &str) -> Result<()> {
+    read_cache(record)?;
+    let path = cache_path(record)?;
+    let _guard = lock(Some(&path.with_extension("lock")))?;
+    let mut cache: Value =
+        serde_json::from_str(&fs::read_to_string(&path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    let saved = &mut cache["items"][string(card, "question_id")];
+    if saved["questions"] != card["questions"]
+        || saved["native_question_id"] != card["native_question_id"]
+    {
+        return Err("question changed after submission".into());
+    }
+    saved["delivery"] = submission(record, card, answers, request_id);
+    atomic(&path, &cache.to_string())
+}
+
+// Older adapters left an in-progress question receipt after successfully
+// entering its envelope. Recover only a confirmed question submission or the
+// exact durable terminal acknowledgement, once per run; a timeout or a queue
+// preview alone never proves submission.
+fn recover_submissions(record: &Value, cache: &mut Value) -> Result<()> {
+    if cache["submission_scan_run"] == record["run_id"] {
+        return Ok(());
+    }
+    let root = absolute_root()?;
+    let entries = match fs::read_dir(root.join("question_receipts")) {
+        Ok(entries) => Some(entries),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e.to_string()),
+    };
+    for entry in entries.into_iter().flatten().flatten() {
+        if !entry
+            .metadata()
+            .is_ok_and(|m| m.is_file() && m.len() <= 256 * 1024)
+        {
+            continue;
+        }
+        let Some(receipt): Option<Value> = fs::read_to_string(entry.path())
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+        else {
+            continue;
+        };
+        let request_id = string(&receipt, "request_id");
+        if uuid::Uuid::parse_str(request_id).is_err()
+            || receipt["run_id"] != record["run_id"]
+            || receipt["conversation_id"] != record["conversation_id"]
+            || receipt["name"] != record["name"]
+            || !["in_progress", "submitted"].contains(&string(&receipt, "status"))
+        {
+            continue;
+        }
+        let mut card = cache["items"][string(&receipt, "question_id")].clone();
+        card["run_id"] = record["run_id"].clone();
+        if card["source"] != "codex_async"
+            || receipt["question_hash"] != questions::fingerprint(&card)
+            || receipt["answers"].as_array().is_none_or(|a| a.len() != 1)
+            || receipt["answers"][0]["skip"] == true
+            || receipt["answers"][0]["question_id"] != card["questions"][0]["id"]
+        {
+            continue;
+        }
+        if receipt["status"] == "submitted" {
+            if !matching_submission(record, &card, &card["delivery"]) {
+                cache["items"][string(&receipt, "question_id")]["delivery"] =
+                    submission(record, &card, &receipt["answers"], request_id);
+            }
+            continue;
+        }
+        let input_path = root
+            .join("input_receipts")
+            .join(format!("{request_id}.json"));
+        if !fs::metadata(&input_path).is_ok_and(|m| m.is_file() && m.len() <= 256 * 1024) {
+            continue;
+        }
+        let Some(input): Option<Value> = fs::read_to_string(input_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+        else {
+            continue;
+        };
+        let Ok(text) = answer_text(&card, &receipt["answers"][0]) else {
+            continue;
+        };
+        if input["status"] == "submitted"
+            && input["request_id"] == request_id
+            && input["name"] == record["name"]
+            && input["run_id"] == record["run_id"]
+            && input["conversation_id"] == record["conversation_id"]
+            && input["text"] == envelope(&card, &text)
+            && !matching_submission(record, &card, &card["delivery"])
+        {
+            cache["items"][string(&receipt, "question_id")]["delivery"] =
+                submission(record, &card, &receipt["answers"], request_id);
+        }
+    }
+    cache["submission_scan_run"] = record["run_id"].clone();
+    Ok(())
+}
+
 pub(super) fn answer(
     record: &Value,
     card: &Value,
     answers: &Value,
     request_id: &str,
-) -> Result<()> {
+) -> Result<&'static str> {
     let mut terminal = Native::new(record, card);
     let screen = terminal.screen()?;
     if answers[0]["skip"] == true {
@@ -395,7 +519,7 @@ pub(super) fn answer(
                 e
             }
         })?;
-        return Ok(());
+        return Ok("answered");
     }
     available(record, card)?;
     let text = answer_text(card, &answers[0])?;
@@ -422,6 +546,8 @@ pub(super) fn answer(
         let payload = json!({"request_id":request_id,"text":envelope(card,&text),"expected_run_id":record["run_id"],"expected_conversation_id":record["conversation_id"]});
         input::submit(string(record, "name"), payload.to_string().as_bytes(), None)?;
     }
+    save_submission(record, card, answers, request_id)
+        .map_err(|e| format!("delivery uncertain: {e}"))?;
     let deadline = Instant::now() + Duration::from_secs(6);
     loop {
         if let Some(response) =
@@ -430,13 +556,13 @@ pub(super) fn answer(
             return if response["response"]["answers"][string(&card["questions"][0], "question")]
                 == text
             {
-                Ok(())
+                Ok("answered")
             } else {
                 Err("delivery uncertain: question received a different answer".into())
             };
         }
         if Instant::now() >= deadline {
-            return Err("delivery uncertain: Codex has not recorded the answer; inspect Terminal before retrying".into());
+            return Ok("submitted");
         }
         std::thread::sleep(Duration::from_millis(80));
     }

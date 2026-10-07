@@ -189,7 +189,7 @@ private:
     void finishMessage(quint64 request, bool ok, const QJsonObject &receipt, const QString &error = {}, bool uncertain = false);
     void reconcileMessages();
     void answerQuestion(const QString &key, const QString &questionId, const QJsonArray &answers);
-    void finishQuestion(quint64 request, bool ok, const QString &error = {}, bool uncertain = false);
+    void finishQuestion(quint64 request, bool ok, const QString &error = {}, bool uncertain = false, bool submitted = false);
     void renderQuestion(const Entry &entry, int navigation = 0);
     void setInspectorVisible(bool visible);
     void updateInspectorMinimum();

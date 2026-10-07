@@ -311,6 +311,15 @@ priority. Confirmed answers appear as **You (answer)** in Activity. Codex option
 question replies show the question and your answer in separate sections,
 preserving the literal answer text.
 
+If an optional answer enters Codex's native queue, the question stays visible as
+**Submitted / Awaiting agent** with the original answer locked. Submission means
+the verified terminal received the answer; it does not mean Codex has recorded
+it yet. This state survives polling and GUI restarts. The card disappears after
+the exact native question reply appears in the conversation. Zerus never resends
+the answer or promotes the queue automatically; **Send now** remains an explicit
+native queue action. Delivery without confirmed submission still requires
+checking Terminal before retrying.
+
 ### Models, effort, context, goals and subagents
 
 The Activity model selector changes supported per-session model/effort settings,

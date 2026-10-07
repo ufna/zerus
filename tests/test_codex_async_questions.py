@@ -16,14 +16,18 @@ def render(*args):
  global config
  config=json.loads((root/'config.json').read_text()) if (root/'config.json').exists() else None
  lines=[]
+ if (root/'queued').exists():
+  reply=json.loads((root/'queued').read_text().split('\n')[1])[0]
+  lines=['• Messages to be submitted after next tool call (press esc to interrupt and send immediately)',
+   '  ↳ '+reply['question']+' → '+reply['answer'],'']
  if config and config.get('panel'):
-  lines=[config['title'],'']
+  lines += [config['title'],'']
   if config.get('options'):
    lines += ['  '+str(i+1)+'. '+v for i,v in enumerate(config['options'])]
    lines += ['› '+str(len(config['options'])+1)+'. '+(draft or 'Other')]
   else:lines += [draft or 'Type your answer']
   lines += ['','enter submit   ctrl+] skip']
- else:lines=['› '+draft]
+ else:lines += ['› '+draft]
  os.write(1,b'\x1b[?2004h\x1b[2J\x1b[H'+'\r\n'.join(lines).encode())
 def handle(value):
  global draft
@@ -34,6 +38,8 @@ def handle(value):
   text='<send_user_message_question_reply>\n'+json.dumps([dict(questionItemId=config['native_id'],question=config['title'],answer=draft)])+'\n</send_user_message_question_reply>'
  else:text=draft
  if (root/'wrong-ack').exists():text=text.replace('Accepted answer','Different answer')
+ if (root/'queue-answer').exists():
+  (root/'queued').write_text(text);(root/'submitted').write_text(text);draft='';config['panel']=False;(root/'config.json').write_text(json.dumps(config));render();return
  with open(config['transcript'],'a') as f:f.write(json.dumps(dict(type='event_msg',timestamp='2026-10-07T15:01:00Z',payload=dict(type='user_message',message=text)))+'\n')
  (root/'submitted').write_text(text);draft='';config['panel']=False;(root/'config.json').write_text(json.dumps(config));render()
 signal.signal(signal.SIGUSR1,render);render();(root/'agent-pid').write_text(str(os.getpid()))
@@ -150,5 +156,56 @@ class CodexAsync(unittest.TestCase):
         card=self.request();(self.root/'wrong-ack').touch()
         result,payload=self.answer(card);self.assertNotEqual(result.returncode,0);self.assertIn('delivery uncertain',result.stderr)
         before=self.received();result,_=self.answer(card,request_id=payload['request_id']);self.assertNotEqual(result.returncode,0);self.assertEqual(self.received(),before)
+
+    def test_queued_answers_preserve_identity_block_duplicates_and_later_resolve(self):
+        for panel in [False,True]:
+            with self.subTest(panel=panel):
+                self.transcript.write_text(json.dumps(dict(type='session_meta',payload=dict(id=self.conversation_id)))+'\n')
+                for path in (self.state/'codex_questions').glob('*.json'):path.unlink()
+                # The next subcase is a distinct fixture interaction, including
+                # its durable transport evidence (native IDs stay deterministic).
+                for directory in ['question_receipts','input_receipts']:
+                    if (self.state/directory).exists():
+                        for path in (self.state/directory).glob('*.json'):path.unlink()
+                self.configure(panel=panel);card=self.request();(self.root/'queue-answer').touch()
+                result,payload=self.answer(card);self.assertEqual(result.returncode,0,result.stderr)
+                receipt=json.loads(result.stdout);self.assertEqual(receipt['status'],'submitted');self.assertNotIn('answered_at',receipt)
+                pending=self.inspect()['pending_questions'];self.assertEqual(len(pending),1)
+                self.assertFalse(pending[0]['can_answer']);self.assertFalse(pending[0]['can_skip'])
+                delivery=pending[0]['answer_delivery'];self.assertEqual(delivery['request_id'],payload['request_id'])
+                self.assertEqual(delivery['answers'][0]['text'],'Accepted answer')
+                # A fresh question index restores either submission path from
+                # the scoped durable receipt, without touching native input.
+                for path in (self.state/'codex_questions').glob('*.json'):path.unlink()
+                restored=self.inspect()['pending_questions'][0]
+                self.assertFalse(restored['can_answer']);self.assertEqual(restored['answer_delivery']['request_id'],payload['request_id'])
+                before=self.received()
+                replay,_=self.answer(card,request_id=payload['request_id']);self.assertEqual(replay.returncode,0,replay.stderr)
+                self.assertEqual(json.loads(replay.stdout)['status'],'submitted');self.assertEqual(self.received(),before)
+                for answer in [dict(question_id='q_0',text='Different answer'),dict(question_id='q_0',skip=True)]:
+                    duplicate,_=self.answer(card,answer);self.assertNotEqual(duplicate.returncode,0)
+                    self.assertIn('already submitted',duplicate.stderr);self.assertEqual(self.received(),before)
+                self.append(dict(type='event_msg',timestamp='2026-10-07T15:01:00Z',payload=dict(type='user_message',message=(self.root/'queued').read_text())))
+                self.assertEqual(self.inspect()['pending_questions'],[])
+                (self.root/'queued').unlink();(self.root/'queue-answer').unlink()
+
+    def test_legacy_terminal_submission_is_recovered_only_with_exact_receipt_evidence(self):
+        card=self.request();request_id=str(uuid.uuid4())
+        answers=[dict(question_id='q_0',text='Accepted answer')]
+        envelope='<send_user_message_question_reply>\n'+json.dumps([dict(questionItemId=card['native_question_id'],question=card['questions'][0]['question'],answer='Accepted answer')],sort_keys=True,separators=(',',':'))+'\n</send_user_message_question_reply>'
+        question=dict(status='in_progress',request_id=request_id,name=self.name,run_id=self.run_id,conversation_id=self.conversation_id,
+            question_id=card['question_id'],question_hash=card['question_hash'],answers=answers)
+        terminal=dict(status='submitted',request_id=request_id,name=self.name,run_id=self.run_id,conversation_id=self.conversation_id,text=envelope)
+        (self.state/'question_receipts').mkdir(exist_ok=True);(self.state/'input_receipts').mkdir(exist_ok=True)
+        (self.state/'question_receipts'/f'{request_id}.json').write_text(json.dumps(question))
+        path=self.state/'input_receipts'/f'{request_id}.json';cache_path=next((self.state/'codex_questions').glob('*.json'))
+        for mode in ['missing','wrong-run','wrong-text','exact']:
+            with self.subTest(mode=mode):
+                if mode!='missing':path.write_text(json.dumps(dict(terminal,**({'run_id':'other'} if mode=='wrong-run' else {'text':'unrelated input'} if mode=='wrong-text' else {}))))
+                cache=json.loads(cache_path.read_text());cache.pop('submission_scan_run',None);cache['items'][card['question_id']].pop('delivery',None);cache_path.write_text(json.dumps(cache))
+                current=self.inspect()['pending_questions'][0]
+                if mode=='exact':
+                    self.assertFalse(current['can_answer']);self.assertEqual(current['answer_delivery']['request_id'],request_id)
+                else:self.assertTrue(current['can_answer']);self.assertNotIn('answer_delivery',current)
 
 if __name__=='__main__':unittest.main()

@@ -185,6 +185,7 @@ signals:
     void machineSetupOutput(const QString &text);
     void machineSetupFinished(bool ok, const QString &error);
     void questionAnswered(quint64 request, const QString &host, const QString &name, const QJsonObject &receipt);
+    void questionAnswerSubmitted(quint64 request, const QString &host, const QString &name, const QJsonObject &receipt);
     void questionAnswerFailed(quint64 request, const QString &host, const QString &name,
                               const QString &detail, bool deliveryUncertain);
     void queueSendFinished(quint64 request, bool ok, const QJsonObject &receipt, const QString &error);

@@ -186,8 +186,29 @@ void QuestionCard::setQuestion(const QString &sessionKey, const QJsonObject &que
 {
     const QString id = question.value("question_id").toString();
     const QString key = id.isEmpty() ? QString() : identity(sessionKey, id, question.value("question_hash").toString());
-    const bool changed = key != m_key || question.value("questions") != m_question.value("questions");
+    bool changed = key != m_key || question.value("questions") != m_question.value("questions");
     m_session = sessionKey; m_id = id; m_key = key; m_question = question;
+    const auto delivery = question.value("answer_delivery").toObject();
+    if (!key.isEmpty() && question.value("source") == "codex_async" && question.value("optional").toBool()
+        && delivery.value("status") == "submitted"
+        && delivery.value("question_id") == question.value("question_id")
+        && delivery.value("question_hash") == question.value("question_hash")
+        && delivery.value("run_id") == question.value("run_id")
+        && delivery.value("conversation_id") == question.value("conversation_id")) {
+        auto &draft = m_drafts[key];
+        if (!draft.submitted) {
+            draft.answers.clear();
+            for (const auto &value : delivery.value("answers").toArray()) {
+                const auto answer = value.toObject(); Answer saved;
+                for (const auto &option : answer.value("selected_option_ids").toArray()) saved.options.insert(option.toString());
+                saved.text = answer.value("text").toString(); saved.other = saved.options.isEmpty();
+                draft.answers.insert(answer.value("question_id").toString(), saved);
+            }
+            changed = true;
+        }
+        draft.submitted = true; draft.sending = false; draft.error = false; draft.uncertain = false;
+        draft.notice = tr("Answer submitted. Waiting for Codex to record it. You can check the queue above or open Terminal.");
+    }
     const double created=question.value("created_at").toDouble();
     const auto asked=created>0 && created<253402300800. ? QDateTime::fromSecsSinceEpoch(qint64(created)).toLocalTime() : QDateTime();
     m_askedAt->setVisible(asked.isValid());
@@ -237,7 +258,11 @@ void QuestionCard::setError(const QString &sessionKey, const QString &questionId
 {
     const QString key = callbackKey(sessionKey, questionId);
     if (key.isEmpty()) return;
-    auto &draft = m_drafts[key]; draft.sending = false; draft.error = true; draft.uncertain = uncertain;
+    auto &draft = m_drafts[key];
+    if (draft.submitted) {
+        draft.sending = false; m_sendingKeys.remove(identity(sessionKey, questionId)); updateControls(); return;
+    }
+    draft.sending = false; draft.error = true; draft.uncertain = uncertain;
     draft.notice = uncertain ? tr("Delivery is not confirmed. Check Terminal before retrying. %1").arg(detail) : detail;
     m_sendingKeys.remove(identity(sessionKey, questionId)); updateControls();
 }
@@ -248,6 +273,15 @@ void QuestionCard::setAnswered(const QString &sessionKey, const QString &questio
     if (key.isEmpty()) return;
     auto &draft = m_drafts[key]; draft.sending = false; draft.answered = true; draft.error = false; draft.uncertain = false;
     draft.notice = m_question.value("optional").toBool() ? tr("Response recorded.") : tr("Answer sent. Waiting for the agent…");
+    m_sendingKeys.remove(identity(sessionKey, questionId)); updateControls();
+}
+
+void QuestionCard::setSubmitted(const QString &sessionKey, const QString &questionId)
+{
+    const QString key = callbackKey(sessionKey, questionId);
+    if (key.isEmpty()) return;
+    auto &draft = m_drafts[key]; draft.sending = false; draft.submitted = true; draft.error = false; draft.uncertain = false;
+    draft.notice = tr("Answer submitted. Waiting for Codex to record it. You can check the queue above or open Terminal.");
     m_sendingKeys.remove(identity(sessionKey, questionId)); updateControls();
 }
 
@@ -354,7 +388,7 @@ void QuestionCard::updateControls()
 {
     const auto draft = m_drafts.value(m_key);
     const bool inFlight = m_sendingKeys.contains(identity(m_session, m_id));
-    const bool locked = draft.sending || inFlight || draft.answered;
+    const bool locked = draft.sending || inFlight || draft.submitted || draft.answered;
     // Disabling the focused answer control would move Qt focus out to the
     // context button. Hold it here until the card resolves or the user moves it.
     auto *focus = QApplication::focusWidget();
@@ -371,7 +405,7 @@ void QuestionCard::updateControls()
     }
     const bool supported = m_question.value("can_answer").toBool();
     m_submit->setEnabled(!m_key.isEmpty() && m_available && supported && complete && !locked && !draft.uncertain);
-    m_submit->setText(draft.sending || inFlight ? tr("Submitting…") : m_forms.size() == 1 ? tr("Submit answer") : tr("Submit answers"));
+    m_submit->setText(draft.submitted && !draft.answered ? tr("Submitted") : draft.sending || inFlight ? tr("Submitting…") : m_forms.size() == 1 ? tr("Submit answer") : tr("Submit answers"));
     m_retry->setVisible(draft.uncertain && !locked);
     const int page=m_tabs->currentIndex();
     m_previous->setVisible(m_forms.size()>1);m_previous->setEnabled(page>0&&!locked);
@@ -399,7 +433,7 @@ void QuestionCard::updateControls()
         if (filled) ++answered;
         m_tabs->setTabText(i, (filled ? QStringLiteral("✓ ") : QString()) + m_tabs->tabData(i).toString());
     }
-    m_progress->setText(m_forms.isEmpty() ? QString() : tr("%1 of %2 answered").arg(answered).arg(m_forms.size()));
+    m_progress->setText(draft.submitted && !draft.answered ? tr("Awaiting agent") : m_forms.isEmpty() ? QString() : tr("%1 of %2 answered").arg(answered).arg(m_forms.size()));
     m_progress->setVisible(!approval);
     QString notice = draft.notice;
     if (notice.isEmpty() && !m_available) notice = m_unavailableReason;

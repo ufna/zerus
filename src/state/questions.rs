@@ -358,7 +358,7 @@ pub(super) fn inspection(record: &Value, live_pane: bool) -> Result<Value> {
         Ok(mut pending) => {
             for card in &mut pending {
                 if string(card,"source")=="codex_async" {
-                    card["can_skip"]=json!(true);
+                    card["can_skip"]=json!(card["answer_delivery"]["status"] != "submitted");
                     match codex_questions::available(record,card) {
                         Ok(())=>{card["can_answer"]=json!(true);card["answer_transport"]=json!("codex_tui");card["answer_unavailable_reason"]=json!("");}
                         Err(error)=>card["answer_unavailable_reason"]=json!(error),
@@ -613,7 +613,7 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
             if string(&receipt, "digest") != digest || string(&receipt, "name") != name {
                 return Err("answer request ID was already used for different content".into());
             }
-            if receipt["status"] == "answered" {
+            if receipt["status"] == "answered" || receipt["status"] == "submitted" {
                 println!("{contents}");
                 return Ok(0);
             }
@@ -638,6 +638,9 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         }
         let answers = validated_answers(&question, &request.answers)?;
         if string(&question,"source")=="codex_async" {
+            if question["answer_delivery"]["status"] == "submitted" {
+                return Err("An answer was already submitted. Wait for Codex to record it.".into());
+            }
             if answers[0]["skip"]!=true {codex_questions::available(&record,&question)?;}
         } else if string(&record,"agent")=="claude" && string(&question,"source")=="hook" {
             claude_question::available(&record,&question)?;
@@ -668,12 +671,15 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     let tui_choice =
         ["codex_hooks_trust", "codex_folder_trust", "kimi_cache_hint", "kimi_folder_trust", "claude_folder_trust", "claude_permission_mode", "claude_tool_approval"].contains(&string(&question, "source"));
     if string(&question,"source")=="codex_async" {
-        let result=codex_questions::answer(&record,&question,&answers,&request_id);
-        if let Err(error)=result {
-            if !error.contains("delivery uncertain") {receipt["status"]=json!("rejected");receipt["error"]=json!(error);let _=atomic(&receipt_path,&receipt.to_string());}
-            return Err(error);
-        }
-        receipt["status"]=json!("answered");receipt["skipped"]=json!(answers[0]["skip"]==true);receipt["answered_at"]=json!(now());
+        let status = match codex_questions::answer(&record,&question,&answers,&request_id) {
+            Ok(status) => status,
+            Err(error) => {
+                if !error.contains("delivery uncertain") {receipt["status"]=json!("rejected");receipt["error"]=json!(error);let _=atomic(&receipt_path,&receipt.to_string());}
+                return Err(error);
+            }
+        };
+        receipt["status"]=json!(status);receipt["skipped"]=json!(answers[0]["skip"]==true);
+        if status == "answered" { receipt["answered_at"]=json!(now()); }
         atomic(&receipt_path,&receipt.to_string()).map_err(|e|format!("delivery uncertain: {e}"))?;
         println!("{receipt}");return Ok(0);
     }

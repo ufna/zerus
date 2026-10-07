@@ -730,6 +730,9 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     connect(&m_client, &HgsClient::questionAnswerFailed, this, [this](quint64 request, const QString &, const QString &, const QString &error, bool uncertain) {
         finishQuestion(request, false, error, uncertain);
     });
+    connect(&m_client, &HgsClient::questionAnswerSubmitted, this, [this](quint64 request, const QString &, const QString &, const QJsonObject &) {
+        finishQuestion(request, true, {}, false, true);
+    });
     connect(m_composer,&MessageComposer::interruptRequested,this,[this](const QString &key) {
         const auto *entry=selected();
         if(!entry||key!=m_selectedKey||m_interruptRequest||m_details.value("interrupt_supported")!=true)return;
@@ -2855,11 +2858,12 @@ void SessionsWindow::answerQuestion(const QString &key, const QString &questionI
     renderDetails();
 }
 
-void SessionsWindow::finishQuestion(quint64 request, bool ok, const QString &error, bool uncertain)
+void SessionsWindow::finishQuestion(quint64 request, bool ok, const QString &error, bool uncertain, bool submitted)
 {
     if (!m_pendingAnswers.contains(request)) return;
     const auto pending = m_pendingAnswers.take(request);
-    if (ok) m_question->setAnswered(pending.key, pending.questionId);
+    if (ok && submitted) m_question->setSubmitted(pending.key, pending.questionId);
+    else if (ok) m_question->setAnswered(pending.key, pending.questionId);
     else m_question->setError(pending.key, pending.questionId, error, uncertain);
     if (m_selectedKey == pending.key) { renderDetails(); inspect(); }
     emit refreshRequested();

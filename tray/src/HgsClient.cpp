@@ -936,6 +936,7 @@ quint64 HgsClient::requestAnswerQuestion(const QString &host, const QString &nam
     const QString questionHash = question.value("question_hash").toString();
     const QString runId = question.value("run_id").toString();
     const QString conversationId = question.value("conversation_id").toString();
+    const bool asyncQuestion = question.value("source") == "codex_async" && question.value("optional").toBool();
     // Native agents ask for folder trust before SessionStart creates a conversation.
     // Only recognized native startup requests may omit it; the CLI checks the
     // exact run, process, folder and complete disclosure before sending keys.
@@ -1004,7 +1005,7 @@ quint64 HgsClient::requestAnswerQuestion(const QString &host, const QString &nam
         }
     });
     connect(process, &QProcess::finished, process,
-        [this, process, timer, fail, reported, request, host, name, key, requestId, questionId, questionHash, runId, conversationId]
+        [this, process, timer, fail, reported, request, host, name, key, requestId, questionId, questionHash, runId, conversationId, asyncQuestion, canSkip]
         (int code, QProcess::ExitStatus exitStatus) {
             timer->stop();
             if (*reported) { process->deleteLater(); return; }
@@ -1018,7 +1019,7 @@ quint64 HgsClient::requestAnswerQuestion(const QString &host, const QString &nam
                 const auto doc = QJsonDocument::fromJson(process->readAllStandardOutput(), &error);
                 const auto receipt = doc.object();
                 if (error.error != QJsonParseError::NoError || !doc.isObject()
-                    || receipt.value("status").toString() != "answered"
+                    || (receipt.value("status") != "answered" && !(asyncQuestion && !canSkip && receipt.value("status") == "submitted" && !receipt.value("skipped").toBool()))
                     || receipt.value("request_id").toString() != requestId
                     || receipt.value("name").toString() != name
                     || receipt.value("question_id").toString() != questionId
@@ -1029,7 +1030,9 @@ quint64 HgsClient::requestAnswerQuestion(const QString &host, const QString &nam
                     fail(tr("The answer acknowledgement is invalid. Check Terminal before retrying."), true);
                 else {
                     *reported = true; m_answersInFlight.remove(key);
-                    emit questionAnswered(request, host, name, receipt); emit sessionWriteDone(host);
+                    if (receipt.value("status") == "submitted") emit questionAnswerSubmitted(request, host, name, receipt);
+                    else emit questionAnswered(request, host, name, receipt);
+                    emit sessionWriteDone(host);
                 }
             }
             process->deleteLater();

@@ -59,9 +59,59 @@ private slots:
     void longProviderTextKeepsCompactWidth();
     void reviewCountdownAndNextNavigation();
     void optionalQuestionsHaveExplicitSkipAndKeepDrafts();
+    void submittedAnswersRestoreAndIgnoreLateErrors();
+    void submittedCallbacksAndMetadataKeepExactIdentity();
     void hookTrustRequiresAnExplicitChoice();
     void preview();
 };
+
+void TestQuestionCard::submittedAnswersRestoreAndIgnoreLateErrors()
+{
+    QuestionCard card; auto question=request();question["source"]="codex_async";question["optional"]=true;question["can_skip"]=true;
+    card.setQuestion("local",question);card.show();
+    complete(card);card.setSending("local","tool-question",true);
+    question["can_answer"]=false;question["can_skip"]=false;
+    question["answer_delivery"]=QJsonObject{{"status","submitted"},{"question_id","tool-question"},{"question_hash","hash-one"},
+        {"run_id","run"},{"conversation_id","conversation"},{"answers",QJsonArray{
+            QJsonObject{{"question_id","q_0"},{"selected_option_ids",QJsonArray{}},{"text","Saved queued answer"}},
+            QJsonObject{{"question_id","q_1"},{"selected_option_ids",QJsonArray{"opt_1_1"}},{"text",""}}}}};
+    card.setQuestion("local",question);
+    QCOMPARE(text(card,"q_0")->text(),QString("Saved queued answer"));QVERIFY(other(card,"q_0")->isChecked());
+    QVERIFY(option(card,"opt_1_1")->isChecked());QVERIFY(!option(card,"opt_1_0")->isChecked());
+    QVERIFY(!text(card,"q_0")->isEnabled());QVERIFY(!option(card,"opt_1_1")->isEnabled());
+    QVERIFY(!submit(card)->isEnabled());QCOMPARE(submit(card)->text(),QString("Submitted"));
+    QCOMPARE(card.findChild<QLabel *>("questionProgress")->text(),QString("Awaiting agent"));
+    QVERIFY(!card.findChild<QPushButton *>("skipQuestion")->isEnabled());
+    card.setError("local","tool-question","Old timeout",true);
+    QVERIFY(card.findChild<QPushButton *>("questionAllowRetry")->isHidden());
+    QVERIFY(card.findChild<QLabel *>("questionStatus")->text().contains("Waiting for Codex"));
+    QSignalSpy sent(&card,&QuestionCard::answerRequested);submit(card)->click();
+    card.findChild<QPushButton *>("skipQuestion")->click();QCOMPARE(sent.size(),0);
+    card.setQuestion("other",request());complete(card);QVERIFY(submit(card)->isEnabled());
+    card.setQuestion("local",question);QVERIFY(!submit(card)->isEnabled());
+    QuestionCard fresh;fresh.setQuestion("local",question);
+    QCOMPARE(text(fresh,"q_0")->text(),QString("Saved queued answer"));QVERIFY(!submit(fresh)->isEnabled());
+}
+
+void TestQuestionCard::submittedCallbacksAndMetadataKeepExactIdentity()
+{
+    auto question=request();question["source"]="codex_async";question["optional"]=true;
+    QuestionCard card;card.setQuestion("local",question);complete(card);card.setSending("local","tool-question",true);
+    auto replacement=question;replacement["question_hash"]="new-hash";
+    card.setQuestion("local",replacement);card.setSubmitted("local","tool-question");
+    QVERIFY(submit(card)->text()!=QString("Submitted"));complete(card);
+    QVERIFY(submit(card)->isEnabled());
+    card.setQuestion("local",question);QVERIFY(!submit(card)->isEnabled());QCOMPARE(submit(card)->text(),QString("Submitted"));
+    card.setQuestion("remote",question);complete(card);QVERIFY(submit(card)->isEnabled());
+    const QJsonObject delivery{{"status","submitted"},{"question_id","tool-question"},{"question_hash","hash-one"},
+        {"run_id","run"},{"conversation_id","conversation"},{"answers",QJsonArray{}}};
+    for(const auto &field:{"question_id","question_hash","run_id","conversation_id"}) {
+        QuestionCard fresh;auto stale=delivery;stale[field]="unrelated";auto snapshot=question;snapshot["answer_delivery"]=stale;
+        fresh.setQuestion("local",snapshot);complete(fresh);QVERIFY(submit(fresh)->isEnabled());
+    }
+    QuestionCard unsupported;auto snapshot=question;snapshot["source"]="other";snapshot["answer_delivery"]=delivery;
+    unsupported.setQuestion("local",snapshot);complete(unsupported);QVERIFY(submit(unsupported)->isEnabled());
+}
 
 void TestQuestionCard::hookTrustRequiresAnExplicitChoice()
 {
