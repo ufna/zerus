@@ -77,6 +77,7 @@ jobs:
           name: zerus-${{ inputs.version }}-candidate
           path: dist
           retention-days: 14
+          include-hidden-files: true # .SRCINFO is required AUR metadata.
   draft:
     if: inputs.create_draft
     needs: assemble

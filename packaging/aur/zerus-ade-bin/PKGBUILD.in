@@ -7,7 +7,7 @@ arch=('x86_64')
 url='https://github.com/ufna/zerus'
 license=('MIT')
 depends=('qt6-base' 'qt6-webengine' 'kstatusnotifieritem' 'kwindowsystem'
-         'tmux' 'openssh' 'python' 'libgcc' 'libstdc++' 'glibc' 'hicolor-icon-theme')
+         'tmux>=3.7' 'openssh' 'python' 'libgcc' 'libstdc++' 'glibc' 'hicolor-icon-theme')
 optdepends=('konsole: external KDE terminal integration'
             'wl-clipboard: clipboard transfers on Wayland'
             'xclip: clipboard transfers on X11'

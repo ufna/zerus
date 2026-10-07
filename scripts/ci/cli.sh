@@ -8,6 +8,14 @@ while IFS= read -r variable; do
     case "$variable" in HGS_*) unset "$variable" ;; esac
 done < <(compgen -e)
 unset HGS_CLAUDE_TEST_BIN HGS_NATIVE_RECOVERY HGS_TEST_LEGACY_STATE HGS_TEST_LEGACY_BIN
+python3 - <<'PY'
+import re, subprocess
+version = subprocess.check_output(['tmux', '-V'], text=True).strip()
+match = re.match(r'tmux (\d+)\.(\d+)', version)
+if not match or tuple(map(int, match.groups())) < (3, 7):
+    raise SystemExit('Full CLI integration checks require tmux 3.7+ for verified input-mode inspection: ' + version)
+print('Terminal fixture toolchain: ' + version)
+PY
 cargo test --locked 2>&1 | tee artifacts/test-results/rust.log
 cargo build --locked
 export HGS_TEST_BIN="$PWD/target/debug/hgs"

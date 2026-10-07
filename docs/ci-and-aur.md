@@ -27,6 +27,12 @@ on every PR update.
 
 Arch is the Linux GUI build environment because the application uses Qt 6 and KDE
 Frameworks 6. Ubuntu remains useful for portable CLI and minimum-Rust checks.
+Linux CLI CI builds the pinned official tmux 3.7c archive with an exact SHA-256;
+Ubuntu 24.04's tmux 3.4 lacks `bracket_paste_flag`, introduced in tmux 3.7. That
+format is required by the existing verified agent input transport. Unknown input
+mode must keep rejecting delivery; upgrading the test toolchain preserves that
+guard. The package requires tmux 3.7+. A binary upgrade must not restart live
+servers; see the [installation requirements](installation.md#requirements).
 Current release packaging supports **Arch x86_64 only**. The macOS runner checks
 build/test compatibility; it does not create a notarized macOS installer. Windows
 and Arch ARM are outside this first package matrix.
@@ -178,7 +184,8 @@ It checks the requested version, reruns the complete CI, takes the tested Arch
 package from that exact run and verifies its embedded source commit. It creates:
 
 - `zerus-0.36.2-source.tar.gz` from the exact Git commit. Git export attributes
-  omit tracker, agent instruction/skill and workflow directories.
+  omit tracker, agent instruction/skill, workflow and design prototype directories.
+  Runtime artwork, vendored sources and their notices remain included.
 - `zerus-0.36.2-arch-x86_64.tar.gz`, containing the system-installable `usr/` tree.
 - Tested stable source and binary `.pkg.tar.zst` packages, `SHA256SUMS` and
   `release-info.json`.
@@ -246,6 +253,7 @@ Optional policies can be decided independently:
 | Q15 | Is a separate CLI-only package needed? | Start with the requested complete ADE bundle. A separate CLI package is useful for headless hosts but requires split-package ownership/conflict design. |
 | Q16 | When do we need macOS distributable bundles/notarization? | Separate work: Apple Developer identity, signing/notarization policy, Qt dependency distribution review and installer update strategy. Current macOS CI is build/test only. |
 | Q17 | Do release archives need retention/mirroring beyond GitHub? | Keep published versioned assets immutable. A mirror must preserve exact hashes; do not replace an existing release archive in place. |
+| Q18 | Are existing agent machines running tmux 3.7+ servers? If not, when can their owners coordinate migration? | Check the running server version. Keep live sessions intact; plan older-server migration after deliberate session saving rather than restarting servers during a package/GUI update. |
 
 ## Owner actions for first publication
 

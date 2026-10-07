@@ -47,7 +47,7 @@ def main():
     install(ROOT / "tray/resources/icons/hgs-zerus-symbolic.svg",
             destination / "usr/share/icons/hicolor/scalable/apps/hgs-zerus-swarm-symbolic.svg")
     documentation = destination / "usr/share/doc/zerus"
-    for name in ("README.md", "THIRD_PARTY_NOTICES.md", "tmux.conf"):
+    for name in ("README.md", "CONTRIBUTING.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "tmux.conf"):
         install(ROOT / name, documentation / name)
     shutil.copytree(ROOT / "docs", documentation / "docs", dirs_exist_ok=True)
     if args.package_name not in {"zerus-ade", "zerus-ade-git", "zerus-ade-bin"}:

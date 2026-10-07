@@ -7,5 +7,6 @@ tray/vendor/libvterm/** -whitespace
 .beads export-ignore
 .agents export-ignore
 .github export-ignore
+design export-ignore
 AGENTS.md export-ignore
 CLAUDE.md export-ignore

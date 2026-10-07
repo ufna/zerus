@@ -13,7 +13,7 @@ pkgbase = zerus-ade-git
 	depends = qt6-webengine
 	depends = kstatusnotifieritem
 	depends = kwindowsystem
-	depends = tmux
+	depends = tmux>=3.7
 	depends = openssh
 	depends = python
 	depends = libgcc

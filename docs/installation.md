@@ -7,8 +7,16 @@ build. The CLI keeps the name `hgs`; the desktop executable is `hgs-tray`.
 
 ## Requirements
 
-For the CLI: Rust 1.85+, a C compiler, Python 3, tmux and OpenSSH. Install the
+For the CLI: Rust 1.85+, a C compiler, Python 3, tmux 3.7+ and OpenSSH. Install the
 agents you want to use on the machines where they will run.
+
+The ADE's verified answer/message delivery needs tmux 3.7's input-mode inspection.
+Some distributions ship older tmux packages; use a supported upstream release.
+Installing a newer binary does not replace an already running tmux server. Check
+the server with `tmux display-message -p '#{version}'`; schedule any server
+migration deliberately after saving your sessions. Never kill a live server or
+native agents as part of a Zerus GUI/package update.
+[Official tmux releases](https://github.com/tmux/tmux/releases).
 
 For the desktop: CMake, a C++17 compiler and Qt 6 with Widgets and WebEngine.
 Linux also needs KDE Frameworks 6 KStatusNotifierItem and KWindowSystem, a system
