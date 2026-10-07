@@ -49,7 +49,7 @@ The Arch base image is digest-pinned, but `pacman -Syu` intentionally uses curre
 Arch packages. This tests rolling-distribution compatibility; it does not promise
 bit-for-bit reproducibility months later. Rust dependencies are locked, fetched
 in `prepare()` and built/tested with `--frozen` inside source packages. The CI
-image and official DeepSeek fixture pin need periodic maintainer review.
+image, tmux and official DeepSeek fixture pins need periodic maintainer review.
 
 ### Test isolation and local commands
 
@@ -132,8 +132,11 @@ records both versions and the source commit in `build-info.json`.
 Increase the product/desktop version for each new public bundle, including a
 CLI-only bundle change, so published archive URLs and hashes remain immutable.
 
-Existing runtime paths and IDs remain `hgs`/`HGS_*`/`hgs-tray`. In particular,
-remote SSH protocols call `~/.local/bin/hgs`. Pacman cannot install into arbitrary
+Existing runtime paths and IDs remain `hgs`/`HGS_*`/`hgs-tray`.
+The desktop entry keeps the `hgs-tray.desktop` ID so existing launchers remain
+associated with the same application. A local source-install entry can shadow
+the system entry; inspect it deliberately during migration.
+Remote SSH protocols call `~/.local/bin/hgs`. Pacman cannot install into arbitrary
 user homes, so each user runs this once, **without sudo**:
 
 ```sh

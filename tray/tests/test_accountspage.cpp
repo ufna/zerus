@@ -16,6 +16,7 @@
 #include <QDialogButtonBox>
 #include <QTimer>
 #include <QRadioButton>
+#include <QScopeGuard>
 #include <QStyleOptionComboBox>
 #include "AccountCatalog.h"
 #include "AccountUsage.h"
@@ -67,6 +68,8 @@ args=sys.argv[1:]; host=''
 if args[0].startswith('@'): host=args.pop(0)[1:]
 if host and (root/'slow').exists(): time.sleep(.15)
 if args[0]=='account':
+ if args[1]=='ls' and host:
+  while (root/'hold-remote-catalog').exists():time.sleep(.02)
  if args[1]=='ls' and host and (root/'fail-catalog').exists():sys.exit(1)
  if args[1]=='ls' and (root/'empty-catalog').exists():print(json.dumps({'profiles':[]}));sys.exit(0)
  if args[1]=='inspect':
@@ -310,6 +313,12 @@ void TestAccountsPage::removeAndReAddNativeAccount()
 {
     AccountsPage page(m_script);page.setFleet(fleet(false));page.show();
     auto *list=page.findChild<QListWidget *>("accountProfiles");QTRY_COMPARE(list->count(),4);
+    // Catalog and identity replies can finish in any order. Pin the provider
+    // under test rather than relying on the first row selected during loading.
+    page.showAccount({},"native-codex");
+    QTRY_VERIFY(list->currentItem());
+    QTRY_COMPARE(list->currentItem()->data(Qt::UserRole).toJsonObject()["id"].toString(),QString("native-codex"));
+    QTRY_VERIFY(page.findChild<QPushButton *>("removeAccount")->isEnabled());
     QTimer::singleShot(0,&page,[&] {
         auto *dialog=page.findChild<QMessageBox *>("removeAccountDialog");QVERIFY(dialog);
         QCOMPARE(dialog->defaultButton(),dialog->button(QMessageBox::Cancel));
@@ -325,8 +334,10 @@ void TestAccountsPage::removeAndReAddNativeAccount()
     });
     page.findChild<QPushButton *>("removeAccount")->click();QTRY_COMPARE(list->count(),3);
     QVERIFY(!page.findChild<QPushButton *>("restoreAccount"));QSignalSpy login(&page,&AccountsPage::loginRequested);
+    QTRY_VERIFY(page.findChild<QPushButton *>("addAccount")->isEnabled());
     QTimer::singleShot(0,&page,[&]{
         auto *dialog=page.findChild<QDialog *>("accountDialog");QVERIFY(dialog);
+        const auto closeOnFailure=qScopeGuard([dialog]{if(dialog->isVisible())dialog->reject();});
         auto *saved=dialog->findChild<QComboBox *>("savedAccount");QVERIFY(saved->isVisible());
         QCOMPARE(saved->currentData().toJsonObject()["id"].toString(),QString("native-codex"));dialog->accept();
     });
@@ -538,10 +549,15 @@ void TestAccountsPage::initialLoadingPublishesOnlyGroupedAccounts()
 {
     QFile shared(m_dir.filePath("shared-identity")); QVERIFY(shared.open(QIODevice::WriteOnly)); shared.close();
     QFile hold(m_dir.filePath("hold-inspect")); QVERIFY(hold.open(QIODevice::WriteOnly)); hold.close();
+    QFile catalogHold(m_dir.filePath("hold-remote-catalog")); QVERIFY(catalogHold.open(QIODevice::WriteOnly)); catalogHold.close();
     AccountsPage page(m_script);page.setFleet(fleet());page.resize(1000,700);page.show();page.showAccount("mac","native-codex");
     auto *list=page.findChild<QListWidget *>("accountProfiles");auto *loading=page.findChild<QWidget *>("accountsLoading");
     auto *content=page.findChild<QWidget *>("accountsContent");auto *refresh=page.findChild<QPushButton *>("refreshAccounts");
     QVERIFY(loading->isVisible());QVERIFY(!content->isVisible());QCOMPARE(list->count(),0);
+    // Queue local inspections first. Holding both remote inspector slots before
+    // local catalog arrival would prevent the intermediate local-only snapshot.
+    QTRY_COMPARE(page.profiles().size(),4);
+    QVERIFY(QFile::remove(catalogHold.fileName()));
     QTRY_COMPARE(page.profiles().size(),8);QTest::qWait(100);
     QCOMPARE(list->count(),0);QVERIFY(loading->isVisible());QVERIFY(refresh->property("refreshing").toBool());
     int maximumRows=0;connect(list->model(),&QAbstractItemModel::rowsInserted,&page,[&]{maximumRows=qMax(maximumRows,list->count());});

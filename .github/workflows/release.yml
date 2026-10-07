@@ -72,6 +72,13 @@ jobs:
           test "${#packages[@]}" = 1
           runuser -u user -- python3 scripts/prepare-release.py --version "$RELEASE_VERSION" --package "${packages[0]}" --output dist
           runuser -u user -- bash scripts/check-release-packages.sh dist
+      - name: Retain release packaging logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-packaging-${{ github.sha }}
+          path: artifacts/test-results/*
+          retention-days: 7
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: zerus-${{ inputs.version }}-candidate

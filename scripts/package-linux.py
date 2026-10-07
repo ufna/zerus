@@ -40,7 +40,7 @@ def main():
         installed.write_text("#!/usr/bin/python\n" + text.split("\n", 1)[1])
     for unit in (ROOT / "packaging/linux").glob("*.service"):
         install(unit, destination / "usr/lib/systemd/user" / unit.name)
-    install(ROOT / "packaging/linux/zerus.desktop", destination / "usr/share/applications/zerus.desktop")
+    install(ROOT / "packaging/linux/hgs-tray.desktop", destination / "usr/share/applications/hgs-tray.desktop")
     for size in (16, 24, 32, 48, 64, 128, 256, 512, 1024):
         install(ROOT / f"tray/resources/icons/hgs-zerus-{size}.png",
                 destination / f"usr/share/icons/hicolor/{size}x{size}/apps/hgs-zerus.png")

@@ -1,12 +1,10 @@
 [Desktop Entry]
 Type=Application
-Name=hgs zerus
-GenericName=Agent session manager
-Comment=Сессии агентов, их активность и управление контекстом
-# %h ниже -- не поле спецификации Desktop Entry (desktop-file-validate его отвергает),
-# это плейсхолдер под install.sh: он подставляет туда реальный $HOME при установке
-# файла в ~/.local/share/applications, с подстановкой пути при установке
-# использует для собственного Exec=.
+Name=Zerus
+GenericName=Agent development environment
+Comment=Manage persistent local and remote terminal agents
+# install.sh replaces this home placeholder with the absolute user path.
+# It is not a Desktop Entry field code and must be rendered before validation.
 Exec=%h/.local/bin/hgs-tray --sessions
 Icon=hgs-zerus-swarm-symbolic
 Terminal=false
