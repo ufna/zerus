@@ -379,7 +379,7 @@ void QuestionCard::updateControls()
     m_next->setEnabled(!locked);
     const bool approval=m_question.value("approval").toBool();
     const bool optional=m_question.value("optional").toBool();
-    m_heading->setText(approval?tr("Agent needs your approval"):optional?tr("Optional question"):tr("Agent needs your answer"));
+    m_heading->setText((approval||m_question.value("trust_request").toBool())?tr("Agent needs your approval"):optional?tr("Optional question"):tr("Agent needs your answer"));
     if(optional && !approval && m_queueCount>1 && m_queueIndex>=0 && m_queueIndex<m_queueCount)
         m_heading->setText(tr("Optional question #%1/%2").arg(m_queueIndex+1).arg(m_queueCount));
     m_skip->setVisible(optional);

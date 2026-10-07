@@ -137,6 +137,7 @@ private slots:
     void modelSettingsKeepSessionIdentity_data();
     void modelSettingsKeepSessionIdentity();
     void questionAnswersStayWithOriginalSession();
+    void hookReviewOpensOnlyTheRequestingTerminal();
     void optionalQuestionKeepsComposerAvailable();
     void questionCompletionKeepsInputFocus_data();
     void questionCompletionKeepsInputFocus();
@@ -1445,6 +1446,42 @@ elif args[0]=='answer':
     card->answerRequested(key, "interaction-one", choices); // resolved question is no longer actionable
     QTest::qWait(30);
     QFile calls(directory.filePath("calls")); QVERIFY(calls.open(QIODevice::ReadOnly)); QCOMPARE(calls.readAll(), QByteArray("call\n"));
+}
+
+void TestSessionsWindow::hookReviewOpensOnlyTheRequestingTerminal()
+{
+    QTemporaryDir directory;QFile file(directory.filePath("hgs"));QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(R"PY(#!/usr/bin/env python3
+import json,pathlib,sys,time
+args=sys.argv[1:];root=pathlib.Path(__file__).parent
+question={'question_id':'codex-hooks-trust:'+'a'*64,'question_hash':'a'*64,'run_id':'startup-run','conversation_id':None,
+ 'source':'codex_hooks_trust','answer_transport':'codex_tui','trust_request':True,'can_answer':True,
+ 'questions':[{'id':'hooks_trust','question':'Hooks need review','allow_other':False,
+ 'options':[{'id':'review','label':'Review hooks'},{'id':'trust','label':'Trust all and continue'},
+ {'id':'continue_without_trusting','label':"Continue without trusting (hooks won't run)"}]}]}
+if args[0]=='inspect':
+ print(json.dumps({'tracked':True,'run_id':'startup-run','conversation_id':None,'runtime_state':'live','process_state':'running',
+ 'activity':'busy','phase':'approval','pending_questions':[question] if not (root/'done').exists() else [],'events':[],'cursor':0}))
+elif args[0]=='answer':
+ p=json.load(sys.stdin);time.sleep(.15);(root/'done').touch()
+ print(json.dumps({'status':'answered','request_id':p['request_id'],'name':args[1],
+ 'run_id':p['expected_run_id'],'conversation_id':p['expected_conversation_id'],'question_id':p['question_id'],
+ 'question_hash':p['expected_question_hash'],'open_terminal':True}))
+)PY");file.close();QVERIFY(file.setPermissions(QFileDevice::ReadOwner|QFileDevice::WriteOwner|QFileDevice::ExeOwner));
+    SessionsWindow window(file.fileName());window.setFleet(fleet());window.show();window.showSession({},"codex/hgs/dashboard");
+    auto *card=window.findChild<QuestionCard *>();auto *client=window.findChild<HgsClient *>();
+    auto *list=window.findChild<QListWidget *>("sessionList");auto *tabs=window.findChild<QTabWidget *>("sessionDetailTabs");
+    QSignalSpy answered(client,&HgsClient::questionAnswered);
+    QTRY_VERIFY(card->isVisible());const auto key=list->currentItem()->data(Qt::UserRole).toString();
+    const QJsonArray answer{QJsonObject{{"question_id","hooks_trust"},{"selected_option_ids",QJsonArray{"review"}},{"text",""}}};
+    const QString id="codex-hooks-trust:"+QString(64,QChar('a'));
+    card->answerRequested(key,id,answer);QTRY_COMPARE(answered.size(),1);
+    QCOMPARE(tabs->currentWidget()->objectName(),QString("terminalView"));
+    // A delayed review acknowledgement must not steal another session's tab.
+    QVERIFY(QFile::remove(directory.filePath("done")));tabs->setCurrentIndex(0);
+    window.showSession({},"kimi/docs/research");window.showSession({},"codex/hgs/dashboard");QTRY_VERIFY(card->isVisible());
+    card->answerRequested(key,id,answer);window.showSession({},"kimi/docs/research");tabs->setCurrentIndex(0);
+    QTRY_COMPARE(answered.size(),2);QVERIFY(tabs->currentWidget()->objectName()!="terminalView");
 }
 
 void TestSessionsWindow::optionalQuestionKeepsComposerAvailable()

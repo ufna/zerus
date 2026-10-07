@@ -59,8 +59,27 @@ private slots:
     void longProviderTextKeepsCompactWidth();
     void reviewCountdownAndNextNavigation();
     void optionalQuestionsHaveExplicitSkipAndKeepDrafts();
+    void hookTrustRequiresAnExplicitChoice();
     void preview();
 };
+
+void TestQuestionCard::hookTrustRequiresAnExplicitChoice()
+{
+    QuestionCard card;auto hooks=request();hooks["trust_request"]=true;hooks["conversation_id"]=QJsonValue::Null;
+    hooks["questions"]=QJsonArray{QJsonObject{{"id","hooks_trust"},{"header","Hook trust"},{"question","Hooks need review"},
+        {"body","4 hooks are new or changed. Hooks can run outside the sandbox after you trust them."},{"allow_other",false},
+        {"options",QJsonArray{QJsonObject{{"id","review"},{"label","Review hooks"}},QJsonObject{{"id","trust"},{"label","Trust all and continue"}},
+            QJsonObject{{"id","continue_without_trusting"},{"label","Continue without trusting (hooks won't run)"}}}}}};
+    card.setQuestion("startup",hooks);card.resize(700,450);card.show();
+    QCOMPARE(card.findChild<QLabel *>("questionHeading")->text(),QString("Agent needs your approval"));
+    QVERIFY(card.findChild<QPushButton *>("skipQuestion")->isHidden());
+    QVERIFY(!submit(card)->isEnabled());QSignalSpy sent(&card,&QuestionCard::answerRequested);
+    option(card,"trust")->click();QVERIFY(submit(card)->isEnabled());QCOMPARE(sent.size(),0);
+    submit(card)->click();QCOMPARE(sent.size(),1);
+    QCOMPARE(sent.first()[2].toJsonArray().first().toObject()["selected_option_ids"].toArray(),QJsonArray{"trust"});
+    const auto preview=qEnvironmentVariable("ZERUS_HOOKS_PREVIEW");
+    if(!preview.isEmpty()) {QDir().mkpath(preview);QVERIFY(card.grab().save(preview+"/hooks.png"));}
+}
 
 void TestQuestionCard::reviewCountdownAndNextNavigation()
 {

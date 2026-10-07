@@ -222,6 +222,9 @@ fn checked_input(
     if codex_trust::current(&record).is_some() {
         return Err("Codex is waiting for folder trust approval. Choose an option in Activity or Terminal before sending a message.".into());
     }
+    if codex_hooks_trust::current(&record).is_some() {
+        return Err("Codex is waiting for hook trust review. Choose an option in Activity or Terminal before sending a message.".into());
+    }
     if kimi_trust::current(&record).is_some() {
         return Err("Kimi is waiting for folder trust approval. Choose an option in Activity or Terminal before sending a message.".into());
     }

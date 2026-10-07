@@ -340,6 +340,13 @@ print(json.dumps({'status':'answered','request_id':p['request_id'],'name':sys.ar
     client.requestAnswerQuestion("mac",name,optional,skipped);QTRY_COMPARE(sent.size(),2);
     QVERIFY(captured.open(QIODevice::ReadOnly));QCOMPARE(QJsonDocument::fromJson(captured.readAll()).object()["payload"].toObject()["answers"].toArray(),skipped);
     optional["optional"]=false;client.requestAnswerQuestion("mac",name,optional,skipped);QTRY_COMPARE(failed.size(),2);
+    const QString hookHash(64, QChar('b'));
+    auto hooks=question;hooks["question_id"]="codex-hooks-trust:"+hookHash;hooks["question_hash"]=hookHash;
+    hooks["source"]="codex_hooks_trust";hooks["answer_transport"]="codex_tui";hooks["conversation_id"]=QJsonValue::Null;
+    const QJsonArray hookAnswer{QJsonObject{{"question_id","hooks_trust"},{"selected_option_ids",QJsonArray{"continue_without_trusting"}},{"text",""}}};
+    client.requestAnswerQuestion({},"codex/project/startup",hooks,hookAnswer);QTRY_COMPARE(sent.size(),3);
+    captured.close();QVERIFY(captured.open(QIODevice::ReadOnly));const auto hookPayload=QJsonDocument::fromJson(captured.readAll()).object()["payload"].toObject();
+    QCOMPARE(hookPayload["expected_conversation_id"].toString(),QString());QCOMPARE(hookPayload["answers"].toArray(),hookAnswer);
 }
 
 void TestHgsClient::unconfirmedQuestionCannotStartTransport()
@@ -351,9 +358,10 @@ void TestHgsClient::unconfirmedQuestionCannotStartTransport()
     HgsClient client(program.fileName());
     QSignalSpy sent(&client, &HgsClient::questionAnswered), failed(&client, &HgsClient::questionAnswerFailed);
     const QString hash(64, QChar('a'));
-    for (const QString provider : {QString("kimi"), QString("claude"), QString("codex"), QString("claude-permissions")}) {
+    for (const QString provider : {QString("kimi"), QString("claude"), QString("codex"), QString("claude-permissions"), QString("codex-hooks")}) {
     const QJsonObject startup{{"question_id", (provider == "claude-permissions" ? "claude-permissions:" : provider + "-trust:") + hash}, {"question_hash", hash},
-        {"source", provider == "claude-permissions" ? "claude_permission_mode" : provider + "_folder_trust"}, {"answer_transport", provider == "claude-permissions" ? "claude_tui" : provider + "_tui"},
+        {"source", provider == "codex-hooks" ? "codex_hooks_trust" : provider == "claude-permissions" ? "claude_permission_mode" : provider + "_folder_trust"},
+        {"answer_transport", provider == "codex-hooks" ? "codex_tui" : provider == "claude-permissions" ? "claude_tui" : provider + "_tui"},
         {"run_id", "run"}, {"conversation_id", QJsonValue::Null}, {"can_answer", true}};
     const QList<QPair<QString, QJsonValue>> invalid{
         {"source", "kimi_wire"}, {"question_id", "other-question"},
