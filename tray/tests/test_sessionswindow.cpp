@@ -188,6 +188,7 @@ private slots:
     void collapsedStripSearchOpensPanel();
     void collapsingKeepsRowsInPlace();
     void escapeInActivityInterruptsAndRestoresPrompt();
+    void escapeInterruptsFromAnywhereAndNeverCloses();
     void suggestedMessageIsPlaceholderAndTabTakesIt();
     void preview();
 private:
@@ -3297,6 +3298,46 @@ void TestSessionsWindow::escapeInActivityInterruptsAndRestoresPrompt()
     details["phase"] = "idle"; details["activity"] = "idle"; update();
     composer->editor()->setFocus(); QTest::keyClick(composer->editor(), Qt::Key_Escape);
     QVERIFY(!composer->editor()->hasFocus()); QTest::qWait(150); QCOMPARE(requests(), 2);
+}
+
+void TestSessionsWindow::escapeInterruptsFromAnywhereAndNeverCloses()
+{
+    QTemporaryDir fixture; QFile fake(fixture.filePath("hgs")), original(script());
+    QVERIFY(original.open(QIODevice::ReadOnly)); QVERIFY(fake.open(QIODevice::WriteOnly));
+    fake.write(original.readAll().replace("case \"$1\" in\n", "case \"$1\" in\n"
+        "interrupt) payload=$(cat); printf '%s\\n' \"$payload\" >> \"$0.interrupts\";"
+        " id=$(printf '%s' \"$payload\" | sed 's/.*\"request_id\":\"\\([^\"]*\\)\".*/\\1/');"
+        " printf '{\"request_id\":\"%s\",\"name\":\"%s\",\"run_id\":\"run-one\",\"conversation_id\":\"conversation-one\",\"status\":\"submitted\"}\\n' \"$id\" \"$2\";;\n"));
+    fake.close(); QVERIFY(fake.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+    const auto requests = [&] { QFile log(fake.fileName() + ".interrupts"); return log.open(QIODevice::ReadOnly) ? log.readAll().count('\n') : 0; };
+
+    SessionsWindow window(fake.fileName()); window.setFleet(fleet()); window.show(); window.showSession({}, "codex/hgs/dashboard");
+    window.activateWindow(); QVERIFY(QTest::qWaitForWindowActive(&window));
+    auto *client = window.findChild<HgsClient *>(); auto *composer = window.findChild<MessageComposer *>("messageComposer");
+    auto *list = window.findChild<QWidget *>("sessionList"); auto *search = window.findChild<QLineEdit *>("search");
+    const QString prompt = "Rebuild the release";
+    QJsonObject details{{"tracked", true}, {"run_id", "run-one"}, {"conversation_id", "conversation-one"}, {"runtime_state", "live"},
+        {"process_state", "running"}, {"activity", "busy"}, {"phase", "tool"}, {"interrupt_supported", true},
+        {"turn_started", 1790928000.0}, {"prompt", prompt}, {"events", QJsonArray{}}, {"cursor", 0}};
+    const auto update = [&] { client->inspectionReady({}, "codex/hgs/dashboard", details, {}); };
+    update(); QVERIFY(composer->findChild<QPushButton *>("interruptAgent")->isEnabled());
+
+    // The session list had focus after choosing the session: Escape still
+    // stops the working agent and the window stays open.
+    list->setFocus(); QTest::keyClick(list, Qt::Key_Escape);
+    QTRY_COMPARE(requests(), 1); QVERIFY(window.isVisible());
+    details["phase"] = "interrupted"; details["activity"] = "unknown"; details["interrupted_message_can_send"] = true; update();
+    QCOMPARE(composer->editor()->toPlainText(), prompt);
+
+    // Nothing is working: Escape never closes Zerus.
+    details["phase"] = "idle"; details["activity"] = "idle"; details.remove("interrupted_message_can_send"); update();
+    list->setFocus(); QTest::keyClick(list, Qt::Key_Escape); QTest::qWait(150);
+    QVERIFY(window.isVisible()); QCOMPARE(requests(), 1);
+
+    // A search being typed is cleared first, without stopping the agent.
+    details["phase"] = "working"; details["activity"] = "busy"; details["turn_started"] = 1790928100.0; update();
+    search->setFocus(); search->setText("release"); QTest::keyClick(search, Qt::Key_Escape);
+    QVERIFY(search->text().isEmpty()); QTest::qWait(150); QCOMPARE(requests(), 1); QVERIFY(window.isVisible());
 }
 
 void TestSessionsWindow::suggestedMessageIsPlaceholderAndTabTakesIt()

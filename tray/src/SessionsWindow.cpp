@@ -975,10 +975,14 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     auto *refreshShortcut = new QShortcut(QKeySequence::Refresh, this); connect(refreshShortcut, &QShortcut::activated, refresh, &QPushButton::click);
     auto *refreshR = new QShortcut(QKeySequence("Ctrl+R"), this); connect(refreshR, &QShortcut::activated, refresh, &QPushButton::click);
     auto *escape = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+    // Escape never closes Zerus. A search being typed is cleared first;
+    // otherwise, like Escape in Terminal, it stops the selected session's
+    // working turn. Terminal and the message field handle their own Escape.
     connect(escape, &QShortcut::activated, this, [this] {
         if (m_sessionDock->dismissPeek()) m_search->clear();
-        else if (activityHasFocus() && m_composer->requestInterrupt()) return;
-        else if (!m_search->text().isEmpty()) m_search->clear(); else close();
+        else if (m_search->hasFocus() && !m_search->text().isEmpty()) m_search->clear();
+        else if (m_pages->currentIndex() == 0 && m_composer->requestInterrupt()) return;
+        else if (!m_search->text().isEmpty()) m_search->clear();
     });
     connect(m_activityView, &ActivityView::queueSendNowRequested, this, [this](const QString &id) {
         const auto *entry = selected(); const auto queue = m_details["input_queue"].toObject();
@@ -1232,14 +1236,6 @@ void SessionsWindow::applyTheme()
     m_subagentView->setTheme(m_dark); m_subagentComposer->setTheme(m_dark);
     m_processes->setTheme(m_dark);
     m_childrenHtml.clear(); m_sessions->viewport()->update(); renderDetails();
-}
-
-// Escape in Activity acts like Escape in Terminal for the main conversation.
-bool SessionsWindow::activityHasFocus() const
-{
-    const auto *focus = QApplication::focusWidget();
-    return focus && m_pages->currentIndex() == 0 && m_detailTabs->currentWidget() == m_activityStack
-        && m_activityStack->currentIndex() == 0 && m_activityStack->isAncestorOf(focus);
 }
 
 // The exact text sent from Activity when it is this turn's prompt, otherwise

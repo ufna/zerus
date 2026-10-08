@@ -88,4 +88,26 @@ class NativeClaudeFetchApproval(NativeClaudeReadApproval):
         self.answer(self.choose(self.options()[-1]['label']))
         self.wait_for(lambda: 'What should Claude do instead?' in self.screen())
 
+class NativeClaudeInterrupt(NativeClaudeReadApproval):
+    tool_name = 'Bash'
+    tool_input = {'command': 'sleep 30; printf done > slept.txt', 'description': 'Wait for the fixture'}
+    test_session_grant_is_marked_broader_and_deny_reaches_claude = None
+
+    def test_escape_interrupt_is_recorded_without_a_hook(self):
+        import json, time, uuid
+        self.answer(self.choose('Yes'))
+        self.wait_for(lambda: 'Do you want to proceed?' not in self.screen())
+        record = json.loads(self.record_path.read_text())
+        record.update(run_identity_version=1, supervisor=dict(pid=record['pid'], start=record['process_start']), activity='busy', turn_started=time.time())
+        self.record_path.write_text(json.dumps(record))
+        import subprocess, test_input
+        result = subprocess.run([str(test_input.HGS), 'interrupt', self.name, '--json'], env=self.env, text=True, capture_output=True, timeout=15,
+            input=json.dumps(dict(request_id=str(uuid.uuid4()), expected_run_id=self.run_id, expected_conversation_id=self.conversation_id,
+                                  expected_turn_started=record['turn_started'])))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(json.loads(result.stdout)['confirmed'], self.screen())
+        self.assertIn('What should Claude do instead?', self.screen())
+        self.assertEqual(self.inspect()['phase'], 'interrupted')
+        self.assertFalse((self.root/'work/slept.txt').exists())
+
 if __name__ == '__main__': unittest.main()

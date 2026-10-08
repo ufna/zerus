@@ -246,7 +246,8 @@ clears selection. Context menus and shortcuts preserve the target identity.
 new records created after the confirmation snapshot; native history remains.
 
 Common shortcuts: Ctrl/Command-F searches, Ctrl/Command-R refreshes, Enter opens the
-selected live session and Escape closes the workspace or its current transient UI.
+selected live session and Escape closes the current transient UI; it never closes
+the workspace.
 An archive needs explicit **Restore**; Enter does not start it.
 
 <a id="activity"></a>
@@ -281,8 +282,9 @@ main native conversation.
 ### Sending and attachments
 
 Enter sends, Shift-Enter inserts a line and Escape releases focus while keeping
-the draft. Paste images, drag local files or use the attachment button. Labels
-such as `[Image #1]` and `[File #2]` preserve attachment placement within the text;
+the draft, unless a turn is working. Paste images, drag local files or use the
+attachment button. Labels such as `[Image #1]` and `[File #2]` preserve
+attachment placement within the text;
 removing one does not renumber the rest. Drafts and attachments stay with the
 session while the workspace is open.
 
@@ -295,11 +297,14 @@ in Terminal or Native UI. Codex ordinary deferred follow-ups remain read-only
 unless its native UI offers the supported promotion operation.
 
 **Stop** interrupts the current turn and cancels recovery without terminating the
-session; Escape in Activity does the same while a turn is working. Once the turn
-is interrupted, its prompt returns to an empty message field for editing; a
-started draft is kept. Claude, Codex and Kimi use verified native Escape;
-supported DeepSeek hosts use native cancel. Native queue behavior still applies: Codex Escape may
-start a queued follow-up. Uncertain interruption is not repeated.
+session; Escape anywhere in the workspace except Terminal does the same while
+the selected session's turn is working, after first clearing a search being
+typed. Once the turn is interrupted, its prompt returns to an empty message field
+for editing; a started draft is kept. Claude, Codex and Kimi use verified native
+Escape; Claude sends no event for it, so HGS records the interruption once
+Claude shows it. Supported DeepSeek hosts use native cancel. Native queue
+behavior still applies: Codex Escape may start a queued follow-up. Uncertain
+interruption is not repeated.
 
 When Claude suggests your next message after a turn, Activity shows it as the
 empty message field's placeholder, as Claude's terminal does; Tab inserts it.

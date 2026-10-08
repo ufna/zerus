@@ -32,6 +32,8 @@ try:
         value = os.read(fd, 65536)
         if not value: break
         with (root / 'received').open('ab') as file: file.write(value)
+        # Optionally redraw like an agent that stops its turn on Escape.
+        if value == b'\x1b' and (root / 'on-escape').exists(): os.write(1, (root / 'on-escape').read_bytes())
 finally:
     termios.tcsetattr(fd, termios.TCSANOW, original)
 '''

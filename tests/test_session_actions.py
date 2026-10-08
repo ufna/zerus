@@ -33,6 +33,20 @@ class SessionActions(unittest.TestCase):
                 self.assertEqual(self.received()[len(before):],b'\x1b')
                 self.request('interrupt',data,ok=False);self.assertEqual(self.received()[len(before):],b'\x1b')
                 self.assertIn('Unsent terminal draft',self.tmux('capture-pane','-p','-t',self.pane))
+    def test_claude_interrupt_is_recorded_once_claude_shows_it(self):
+        # Claude emits no hook after Escape; its own transcript line confirms it.
+        self.working('claude');self.record.update(active_tools=dict(tool=dict(name='Bash',detail='sleep 30')));self.write_record()
+        self.screen('\x1b[2J\x1b[H  \u23bf  Interrupted \u00b7 What should Claude do instead?\r\n','0:1')
+        (self.root/'on-escape').write_bytes('\r\n  \u23bf  Interrupted \u00b7 What should Claude do instead?\r\n\u276f '.encode())
+        receipt=self.request('interrupt',dict(self.identity(),expected_turn_started=self.record['turn_started']))
+        self.assertTrue(receipt['confirmed'])
+        state=json.loads(self.record_path.read_text())
+        self.assertEqual((state['phase'],state['activity'],state['active_tools']),('interrupted','unknown',{}))
+        # An earlier interruption still on screen is not a confirmation.
+        (self.root/'on-escape').unlink();self.working('claude')
+        receipt=self.request('interrupt',dict(self.identity(),expected_turn_started=self.record['turn_started']))
+        self.assertFalse(receipt['confirmed'])
+        self.assertEqual(json.loads(self.record_path.read_text())['phase'],'working')
     def test_changed_turn_and_idle_state_receive_nothing(self):
         self.working('codex');data=dict(self.identity(),expected_turn_started=self.record['turn_started']-1)
         self.request('interrupt',data,ok=False)
