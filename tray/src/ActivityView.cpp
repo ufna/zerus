@@ -713,6 +713,10 @@ void ActivityView::render(bool contentUpdate)
         if (event.value("type") == "UserPromptSubmit" && event.value("agent_id").toString().isEmpty()
             && event.value("detail").toString().trimmed().isEmpty()
             && event.value("attachments").toArray().isEmpty()) continue;
+        // Claude reminds a minute after every finished turn that it waits for input
+        // (an empty Notification, or idle_prompt); approvals and questions have their own events.
+        if (event.value("type") == "Notification" && (event.value("detail").toString().trimmed().isEmpty()
+            || event.value("notification_type") == "idle_prompt")) continue;
         if (!seen.contains(key)) { seen.insert(key); events.append(event); }
     }
     const bool sequenced = std::all_of(events.cbegin(), events.cend(), [](const QJsonObject &e) { return e.value("seq").toInteger() > 0; });

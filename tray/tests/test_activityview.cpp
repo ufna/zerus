@@ -76,6 +76,7 @@ private slots:
     void jumpOverlayPreservesViewportAndReadingPosition();
     void preservesSelectionAndReadingPosition();
     void groupsToolsAndKeepsExpansion();
+    void idleNotificationsStayOutOfTheTimeline();
     void rejectsMarkupResourcesAndUnsafeLinks();
     void preservesLiteralUserMessages_data();
     void preservesLiteralUserMessages();
@@ -794,6 +795,22 @@ void TestActivityView::preservesSelectionAndReadingPosition()
     latest->click();
     QTRY_COMPARE(bar->value(), bar->maximum());
     QVERIFY(!latest->isVisible()); QVERIFY(!browser->textCursor().hasSelection());
+}
+
+void TestActivityView::idleNotificationsStayOutOfTheTimeline()
+{
+    // Claude sends an empty Notification a minute after every finished turn
+    // ("waiting for your input"); it is not part of the conversation.
+    ActivityView view; view.resize(540, 320); view.show();
+    QJsonObject typed = journalEvent(4, "Notification", "Claude is waiting for your input");
+    typed["notification_type"] = "idle_prompt";
+    view.setActivity({}, {journalEvent(1, "UserPromptSubmit", "Do the work"), journalEvent(2, "Stop", "Done."),
+                          journalEvent(3, "Notification", ""), typed});
+    QVERIFY(!view.plainText().contains("Agent notification"));
+    QVERIFY(!view.plainText().contains("activity events"));
+    QVERIFY(!view.plainText().contains("waiting for your input"));
+    QVERIFY(!links(view.browser()).join(' ').contains("hgs-activity:"));
+    QVERIFY(view.plainText().contains("Done."));
 }
 
 void TestActivityView::groupsToolsAndKeepsExpansion()
