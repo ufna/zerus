@@ -186,6 +186,7 @@ private slots:
     void sessionListCollapsesIntoWorkingStrip();
     void collapsedStripExpandsOverContentOnlyWhenEnabled();
     void collapsedStripSearchOpensPanel();
+    void collapsingKeepsRowsInPlace();
     void preview();
 private:
     FleetState fleet() const;
@@ -3137,6 +3138,7 @@ void TestSessionsWindow::contextMenuAcrossSessionPanelBackground()
 
 void TestSessionsWindow::sessionListCollapsesIntoWorkingStrip()
 {
+    QSettings().setValue("workspace/expandSessionsOnHover", false);
     if (!qEnvironmentVariable("HGS_STRIP_PREVIEW").isEmpty()) QSettings().setValue("workspace/theme", "dark");
     auto window = std::make_unique<SessionsWindow>(script()); window->resize(1280, 860); window->setFleet(fleet()); window->show();
     QVERIFY(QTest::qWaitForWindowExposed(window.get()));
@@ -3191,9 +3193,14 @@ void TestSessionsWindow::collapsedStripExpandsOverContentOnlyWhenEnabled()
 {
     QSettings().setValue("workspace/sessionsCollapsed", true);
     {
+        SessionsWindow window(script());
+        auto *option = window.findChild<QCheckBox *>("workspaceExpandSessionsOnHover"); QVERIFY(option); QVERIFY(option->isChecked());
+    }
+    QSettings().setValue("workspace/expandSessionsOnHover", false);
+    {
         SessionsWindow window(script()); window.resize(1280, 860); window.setFleet(fleet()); window.show();
         QVERIFY(QTest::qWaitForWindowExposed(&window));
-        auto *option = window.findChild<QCheckBox *>("workspaceExpandSessionsOnHover"); QVERIFY(option); QVERIFY(!option->isChecked());
+        auto *option = window.findChild<QCheckBox *>("workspaceExpandSessionsOnHover"); QVERIFY(!option->isChecked());
         auto *panel = window.findChild<QWidget *>("sessionListPanel");
         QTRY_COMPARE(panel->width(), 64);
         QTest::mouseMove(panel, QPoint(30, 300)); QTest::qWait(450);
@@ -3219,9 +3226,30 @@ void TestSessionsWindow::collapsedStripExpandsOverContentOnlyWhenEnabled()
     QVERIFY(QSettings().value("workspace/sessionsCollapsed").toBool());
 }
 
+void TestSessionsWindow::collapsingKeepsRowsInPlace()
+{
+    QSettings().setValue("workspace/expandSessionsOnHover", false);
+    SessionsWindow window(script()); window.resize(1280, 860); window.setFleet(fleet()); window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    auto *panel = window.findChild<QWidget *>("sessionListPanel"); auto *list = window.findChild<SessionList *>("sessionList");
+    auto *toggle = window.findChild<QPushButton *>("sessionPanelToggle");
+    const auto top = [&] { return list->mapTo(panel, QPoint()).y(); };
+    for (bool filtered : {false, true}) {
+        if (filtered) { window.findChild<MachineFilter *>()->setSelection({"mac"}); QTest::qWait(20); }
+        const int docked = top();
+        // Each frame of the transition keeps the list where it was.
+        QList<int> frames;
+        toggle->click();
+        for (int i = 0; i < 30 && list->property("expansion").toReal() > 0; ++i) { QTest::qWait(10); frames << top(); }
+        QTRY_COMPARE(list->property("expansion").toReal(), 0.0); frames << top();
+        toggle->click(); QTRY_COMPARE(list->property("expansion").toReal(), 1.0); frames << top();
+        for (int frame : frames) QCOMPARE(frame, docked);
+    }
+}
+
 void TestSessionsWindow::collapsedStripSearchOpensPanel()
 {
-    QSettings().setValue("workspace/sessionsCollapsed", true);
+    QSettings().setValue("workspace/sessionsCollapsed", true); QSettings().setValue("workspace/expandSessionsOnHover", false);
     SessionsWindow window(script()); window.resize(1280, 860); window.setFleet(fleet()); window.show();
     QVERIFY(QTest::qWaitForWindowExposed(&window)); window.activateWindow();
     auto *panel = window.findChild<QWidget *>("sessionListPanel"); auto *search = window.findChild<QLineEdit *>("search");

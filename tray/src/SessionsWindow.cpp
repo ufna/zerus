@@ -361,6 +361,8 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     connect(m_machineFilter, &MachineFilter::selectionChanged, this, [this](const QSet<QString> &hosts) { m_hostFilters = hosts; rebuild(); });
     m_folderFilterClear=new QPushButton;m_folderFilterClear->setObjectName("clearFolderFilter");m_folderFilterClear->hide();m_folderFilterClear->setAutoDefault(false);
     connect(m_folderFilterClear,&QPushButton::clicked,this,[this]{m_folderFilterPath.clear();rebuild();});listLayout->addWidget(m_folderFilterClear);
+    // Holds the height of filter rows the strip hides, so the list does not move.
+    m_stripSpacer = new QWidget; m_stripSpacer->hide(); listLayout->addWidget(m_stripSpacer);
     m_sessions = new SessionList; m_sessions->setObjectName("sessionList"); m_sessions->setMinimumWidth(250);
     m_sessions->setProperty("compact", settings.value("workspace/compact", true).toBool());
     m_sessions->setItemDelegate(new SessionDelegate(m_sessions)); m_sessions->setMouseTracking(true);
@@ -881,7 +883,7 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         if (mode != SessionPanelDock::Docked && m_sessions->bulkSelecting()) m_sessions->clearBulkSelection();
         updateSessionsToggle(); QTimer::singleShot(0, this, &SessionsWindow::updateInspectorMinimum);
     };
-    m_sessionDock->setHoverExpands(settings.value("workspace/expandSessionsOnHover", false).toBool());
+    m_sessionDock->setHoverExpands(settings.value("workspace/expandSessionsOnHover", true).toBool());
     m_sessionDock->restore(settings.value("workspace/sessionsCollapsed", false).toBool(), settings.value("workspace/sessionsWidth", 0).toInt());
     connect(m_sessionsToggle, &QPushButton::clicked, this, [this] { m_sessionDock->toggle(); });
     m_pages = new QStackedWidget; m_pages->addWidget(body);
@@ -935,7 +937,7 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     };
     m_settingsPage->appearanceChanged=[this]{
         m_sessions->setProperty("compact",QSettings().value("workspace/compact",false).toBool());m_sessions->doItemsLayout();
-        m_sessionDock->setHoverExpands(QSettings().value("workspace/expandSessionsOnHover",false).toBool());applyTheme();rebuild();
+        m_sessionDock->setHoverExpands(QSettings().value("workspace/expandSessionsOnHover",true).toBool());applyTheme();rebuild();
     };
     m_settingsPage->contentScaleChanged=[this]{applyContentScale();};
     connect(m_accountsPage,&AccountsPage::loginRequested,this,&SessionsWindow::accountLoginRequested);
@@ -1244,6 +1246,13 @@ void SessionsWindow::applySessionStrip()
     const bool strip = m_sessionDock->chromeNarrow(), filters = m_sessionDock->filtersNarrow();
     // Rebuilds follow every poll; the layout only changes with the strip state.
     if (m_stripLayout != int(strip) * 2 + int(filters)) {
+        if (strip && !(m_stripLayout & 2)) {
+            // Measured before hiding, while these rows still have their docked height.
+            int reserve = 0, rows = 0;
+            for (QWidget *row : {static_cast<QWidget *>(m_machineFilter), static_cast<QWidget *>(m_folderFilterClear)})
+                if (row->isVisible()) { reserve += row->height(); ++rows; }
+            m_stripReserve = rows ? reserve + (rows - 1) * m_stripSpacer->parentWidget()->layout()->spacing() : 0;
+        }
         m_stripLayout = int(strip) * 2 + int(filters);
         m_sessionHeader->setAlignment(m_sessionsToggle, strip ? Qt::AlignHCenter : Qt::Alignment());
         for (auto *button : m_filters) {
@@ -1252,7 +1261,11 @@ void SessionsWindow::applySessionStrip()
         }
     }
     m_heading->setVisible(!strip); m_batchButton->setVisible(!strip);
+    // The search button stands in for the field at the same height. A widget
+    // style survives the window style's repolish, which resets button minimums.
+    setWorkspaceStyle(m_stripSearch, QString("QPushButton { min-height:%1px; max-height:%1px; }").arg(qMax(0, m_search->sizeHint().height() - 2)));
     m_search->setVisible(!strip); m_stripSearch->setVisible(strip);
+    m_stripSpacer->setFixedHeight(m_stripReserve); m_stripSpacer->setVisible(strip && m_stripReserve > 0);
     for (auto *button : m_filters) button->setVisible(!filters || button->isChecked());
     m_machineFilter->button()->setVisible(!filters);
     m_machineFilter->setVisible(!strip && !m_hostFilters.isEmpty());

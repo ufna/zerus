@@ -12,7 +12,7 @@ extern "C" {
 
 namespace {
 // github-markdown-css 5.8.1 comment metrics at a 14 px base font (rem = 16 px).
-constexpr int BaseSize = 14;
+constexpr int BaseSize = 14, CodeSize = 12;
 constexpr int BlockGap = 16, HeadingGap = 24, RuleGap = 24;
 constexpr int LineHeight = 21, CodeLineHeight = 23;
 
@@ -133,6 +133,19 @@ public:
             frame.checked = item->is_task && (item->task_mark == 'x' || item->task_mark == 'X');
             break;
         }
+        case MD_BLOCK_QUOTE:
+            pushStyle([&](Style &s) { s.color = m_theme.muted; });
+            break;
+        case MD_BLOCK_TH:
+            pushStyle([](Style &s) { s.bold = true; });
+            frame.align = static_cast<MD_BLOCK_TD_DETAIL *>(detail)->align;
+            break;
+        case MD_BLOCK_TD:
+            frame.align = static_cast<MD_BLOCK_TD_DETAIL *>(detail)->align;
+            break;
+        case MD_BLOCK_TR:
+            frame.head = m_frames.last().type == MD_BLOCK_THEAD;
+            break;
         default: break;
         }
         m_frames.append(frame);
@@ -179,6 +192,47 @@ public:
                        + QString("</td><td valign=\"top\" style=\"padding-top:%1px;line-height:%2px;\">").arg(top).arg(lineHeight)
                        + frame.html + "</td></tr>";
             ++list.blocks; ++list.number;
+            break;
+        }
+        case MD_BLOCK_QUOTE:
+            m_styles.removeLast();
+            append(QString("<table width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"margin-top:%1px;\"><tr>"
+                           "<td width=\"4\" bgcolor=\"%2\"></td><td style=\"padding:0 14px;\">").arg(gap(BlockGap)).arg(m_theme.border.name())
+                   + frame.html + "</td></tr></table>");
+            break;
+        case MD_BLOCK_CODE:
+            append(codeBlock(frame.raw, gap(BlockGap)));
+            break;
+        case MD_BLOCK_HR:
+            append(QString("<table width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" bgcolor=\"%1\" style=\"margin-top:%2px;\">"
+                           "<tr><td height=\"4\" style=\"font-size:1px;line-height:4px;\">&#8203;</td></tr></table>")
+                       .arg(m_theme.border.name()).arg(gap(RuleGap)), true);
+            break;
+        case MD_BLOCK_TABLE:
+            append(QString("<table cellspacing=\"0\" cellpadding=\"0\" style=\"margin-top:%1px;border-collapse:collapse;\">").arg(gap(BlockGap))
+                   + frame.html + "</table>");
+            break;
+        case MD_BLOCK_THEAD: case MD_BLOCK_TBODY:
+            m_frames.last().html += frame.html;
+            break;
+        case MD_BLOCK_TR: {
+            Frame *table = nullptr;
+            for (auto i = m_frames.size() - 1; i >= 0 && !table; --i) if (m_frames[i].type == MD_BLOCK_TABLE) table = &m_frames[i];
+            const bool zebra = !frame.head && table && table->bodyRow++ % 2 == 1;
+            m_frames.last().html += QString("<tr bgcolor=\"%1\">").arg((zebra ? m_theme.subtle : m_theme.canvas).name()) + frame.html + "</tr>";
+            break;
+        }
+        case MD_BLOCK_TH: case MD_BLOCK_TD: {
+            const bool header = type == MD_BLOCK_TH;
+            if (header) m_styles.removeLast();
+            const QString tag = header ? QStringLiteral("th") : QStringLiteral("td");
+            // Browsers centre header cells unless the column says otherwise.
+            const QString align = frame.align == MD_ALIGN_LEFT ? "left" : frame.align == MD_ALIGN_CENTER ? "center"
+                : frame.align == MD_ALIGN_RIGHT ? "right" : header ? "center" : "";
+            m_frames.last().html += "<" + tag + (align.isEmpty() ? QString() : " align=\"" + align + "\"")
+                + QString(" style=\"padding:6px 13px;border:1px solid %1;line-height:%2px;\">").arg(m_theme.border.name())
+                      .arg(frame.code ? CodeLineHeight : LineHeight)
+                + frame.html + "</" + tag + ">";
             break;
         }
         default:
@@ -254,6 +308,7 @@ public:
         else if (type == MD_TEXT_ENTITY) value = decodeEntity(QByteArray(data, qsizetype(size)));
         else value = QString::fromUtf8(data, qsizetype(size));
         if (!m_linkStack.isEmpty()) m_linkStack.last().label += value;
+        if (frame.type == MD_BLOCK_CODE) { frame.raw += value; return 0; }
         if (m_inCode) frame.html += value.toHtmlEscaped().replace(' ', QStringLiteral("&nbsp;"));
         else frame.html += run(value);
         return 0;
@@ -275,6 +330,40 @@ private:
     QString image(const char *name, int width) const
     {
         return QString("<img src=\"%1\" width=\"%2\" height=\"19\">").arg(m_theme.resource(QLatin1String(name))).arg(width);
+    }
+    // Runs, indentation and trailing spaces survive HTML whitespace collapsing;
+    // a single space between words stays breakable for narrow panes.
+    static QString preserveSpaces(const QString &escaped)
+    {
+        QString result;
+        for (qsizetype i = 0; i < escaped.size(); ++i) {
+            const bool space = escaped[i] == ' ';
+            const bool lone = space && i > 0 && escaped[i - 1] != ' ' && i + 1 < escaped.size() && escaped[i + 1] != ' ';
+            result += space && !lone ? QStringLiteral("&nbsp;") : QString(escaped[i]);
+        }
+        return result;
+    }
+    // Rounded corners: a 3×3 table with drawn 6 px corners around the padded code.
+    QString codeBlock(QString code, int top) const
+    {
+        code.remove('\r'); code.replace('\t', QStringLiteral("    "));
+        if (code.endsWith('\n')) code.chop(1);
+        Style style; style.size = CodeSize; style.color = m_theme.fg; style.family = m_theme.monoFamily;
+        QStringList lines;
+        for (const QString &line : code.split('\n'))
+            lines.append(QString("<span style=\"%1\">").arg(style.css()) + preserveSpaces(line.toHtmlEscaped()) + "</span>");
+        const QString subtle = m_theme.subtle.name();
+        const auto corner = [&](const char *name) {
+            return QString("<td width=\"6\" height=\"6\" style=\"font-size:1px;line-height:6px;\"><img src=\"%1\" width=\"6\" height=\"6\"></td>")
+                .arg(m_theme.resource(QLatin1String(name)));
+        };
+        const QString edge = QString("<td bgcolor=\"%1\" style=\"font-size:1px;line-height:6px;\">&#8203;</td>").arg(subtle);
+        return QString("<table width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"margin-top:%1px;\">").arg(top)
+            + "<tr>" + corner("corner-tl") + edge + corner("corner-tr") + "</tr>"
+            + QString("<tr><td bgcolor=\"%1\"></td><td bgcolor=\"%1\" style=\"padding:7px 10px 13px 10px;line-height:17px;\">").arg(subtle)
+            + lines.join(QStringLiteral("<br>"))
+            + QString("</td><td bgcolor=\"%1\"></td></tr>").arg(subtle)
+            + "<tr>" + corner("corner-bl") + edge + corner("corner-br") + "</tr></table>";
     }
     // GitHub: ol → decimal, nested → lower-roman, deeper → lower-alpha.
     static QString ordinal(unsigned number, int depth)

@@ -122,7 +122,8 @@ private:
     QHBoxLayout *m_sessionHeader = nullptr, *m_filterRow = nullptr;
     QString m_countFull, m_countShort;
     bool m_focusSearch = false;
-    int m_stripLayout = 0;
+    int m_stripLayout = 0, m_stripReserve = 0;
+    QWidget *m_stripSpacer = nullptr;
     QLabel *m_attentionBadge = nullptr;
     int m_attentionCount = 0;
     QTimer m_readTimer;

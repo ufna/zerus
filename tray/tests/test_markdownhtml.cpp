@@ -64,6 +64,11 @@ private slots:
     void looseListItemsAreSpaced();
     void taskItemsShowCheckboxes();
     void deepNestingSettles();
+    void codeBlocksKeepWhitespaceAndRoundCorners();
+    void codeBlocksIgnoreCarriageReturns();
+    void blockquotesHaveBarAndMutedText();
+    void tablesHaveBordersZebraAndAlignment();
+    void rulesUseGitHubGaps();
 };
 
 void TestMarkdownHtml::themeUsesGitHubTokens()
@@ -206,6 +211,55 @@ void TestMarkdownHtml::deepNestingSettles()
     for (int depth = 0; depth < 5; ++depth) ordered += QString(depth * 3, ' ') + "1. level\n";
     QVERIFY(document(ordered)->toPlainText().contains("a."));
     QVERIFY(document("> > > - deep\n> > > > quote")->toPlainText().contains("deep"));
+}
+
+void TestMarkdownHtml::codeBlocksKeepWhitespaceAndRoundCorners()
+{
+    const QString markdown = "```python\nif x:\n    y  = 1   # note\n```";
+    const auto output = html(markdown);
+    for (const char *corner : {"corner-tl", "corner-tr", "corner-bl", "corner-br"})
+        QVERIFY2(output.contains(light().resource(QLatin1String(corner))), corner);
+    QVERIFY(output.contains("padding:7px 10px 13px 10px;line-height:17px;"));
+    const auto doc = document(markdown);
+    QVERIFY(doc->toPlainText().contains("    y  = 1   # note"));
+    const auto format = formatOf(*doc, "if x:");
+    QCOMPARE(format.font().pixelSize(), 12);
+    QCOMPARE(format.fontFamilies().toStringList().value(0), light().monoFamily);
+}
+
+void TestMarkdownHtml::codeBlocksIgnoreCarriageReturns()
+{
+    const auto plain = document("```\r\na\tb\r\nc\r\n```")->toPlainText();
+    QVERIFY(!plain.contains('\r'));
+    QVERIFY(plain.contains("a    b"));
+    QVERIFY(plain.contains("c"));
+}
+
+void TestMarkdownHtml::blockquotesHaveBarAndMutedText()
+{
+    QVERIFY(html("> quoted").contains("<td width=\"4\" bgcolor=\"#d1d9e0\"></td>"));
+    QCOMPARE(formatOf(*document("> quoted"), "quoted").foreground().color().name(), QString("#59636e"));
+}
+
+void TestMarkdownHtml::tablesHaveBordersZebraAndAlignment()
+{
+    const QString markdown = "| A | B |\n|---|--:|\n| 1 | `x` |\n| 3 | 4 |\n| 5 | 6 |";
+    const auto output = html(markdown);
+    QVERIFY(output.contains("border-collapse:collapse;"));
+    QCOMPARE(output.count("<tr bgcolor=\"#ffffff\">"), 3);
+    QCOMPARE(output.count("<tr bgcolor=\"#f6f8fa\">"), 1);
+    QVERIFY(output.contains("<th align=\"center\""));
+    QVERIFY(output.contains("<td align=\"right\""));
+    QVERIFY(output.contains("line-height:23px;"));
+    QCOMPARE(formatOf(*document(markdown), "A").fontWeight(), 600);
+}
+
+void TestMarkdownHtml::rulesUseGitHubGaps()
+{
+    const auto output = html("a\n\n---\n\nb");
+    QVERIFY(output.contains("bgcolor=\"#d1d9e0\" style=\"margin-top:24px;\""));
+    QVERIFY(output.contains("height=\"4\""));
+    QVERIFY(output.contains("<p style=\"margin:24px 0 0 0;line-height:21px;\">"));
 }
 
 QTEST_MAIN(TestMarkdownHtml)

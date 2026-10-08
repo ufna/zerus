@@ -217,9 +217,9 @@ icons, initials, provider icons and attention edges, and each band shows its mos
 urgent counter. Rows open on click and name their session in a tooltip. Expanding
 grows the same rows back into cards. The strip's search button opens the full
 list over the conversation without resizing it; Escape or a click outside returns
-to the strip, and the pin docks the list again. **Settings → Sessions → Expand
-the collapsed session list on hover**, off by default, opens the full list over
-the conversation while the pointer rests on the strip. The collapsed state and
+to the strip, and the pin docks the list again. While the pointer rests on the
+strip, the full list opens over the conversation; turn this off with **Settings →
+Sessions → Expand the collapsed session list on hover**. The collapsed state and
 the docked width are local preferences.
 
 Search names, folders, branches and models immediately. From two characters,
