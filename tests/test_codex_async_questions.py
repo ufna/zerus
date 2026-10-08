@@ -28,6 +28,8 @@ def render(*args):
   else:lines += [draft or 'Type your answer']
   lines += ['','enter submit   ctrl+] skip']
  else:lines += ['› '+draft]
+ if (root/'hyperlinks').exists():
+  lines=['Artifact: \x1b]8;id=fixture;https://example.invalid/artifact\x1b\\Download\x1b]8;;\x1b\\','']+lines
  os.write(1,b'\x1b[?2004h\x1b[2J\x1b[H'+'\r\n'.join(lines).encode())
 def handle(value):
  global draft
@@ -126,6 +128,20 @@ class CodexAsync(unittest.TestCase):
         sent=(self.root/'submitted').read_text();self.assertIn('questionItemId',sent);self.assertIn('call_one',sent)
         self.assertEqual(self.inspect()['pending_questions'],[])
         replay,_=self.answer(card,request_id=payload['request_id']);self.assertEqual(replay.returncode,0,replay.stderr)
+    def test_transcript_hyperlink_does_not_block_optional_answer(self):
+        (self.root/'hyperlinks').touch()
+        for panel in [False,True]:
+            with self.subTest(panel=panel):
+                self.transcript.write_text(json.dumps(dict(type='session_meta',payload=dict(id=self.conversation_id)))+'\n')
+                for path in (self.state/'codex_questions').glob('*.json'):path.unlink()
+                self.configure(panel=panel,options=[])
+                self.wait_for(lambda:'\x1b]8;' in self.tmux('capture-pane','-p','-e','-t',self.pane))
+                card=self.request();self.assertTrue(card['can_answer'],card['answer_unavailable_reason'])
+                result,payload=self.answer(card);self.assertEqual(result.returncode,0,result.stderr)
+                self.assertEqual(self.inspect()['pending_questions'],[])
+                before=self.received()
+                replay,_=self.answer(card,request_id=payload['request_id']);self.assertEqual(replay.returncode,0,replay.stderr)
+                self.assertEqual(self.received(),before)
     def test_visible_native_question_supports_options_and_freeform(self):
         for options in [['One','Two'],[]]:
             with self.subTest(options=options):
@@ -147,10 +163,12 @@ class CodexAsync(unittest.TestCase):
         result,_=self.answer(card,dict(question_id='q_0',skip=True));self.assertEqual(result.returncode,0,result.stderr)
         self.wait_for(lambda:(self.root/'skipped').exists());self.assertFalse((self.root/'submitted').exists());self.assertEqual(self.inspect()['pending_questions'],[])
     def test_existing_native_draft_is_not_overwritten(self):
+        (self.root/'hyperlinks').touch()
         self.configure(panel=True);card=self.request()
         self.tmux('send-keys','-t',self.pane,'-l','\x1b[200~existing draft\x1b[201~')
         self.wait_for(lambda:'existing draft' in self.tmux('capture-pane','-p','-t',self.pane))
-        before=self.received();self.assertFalse(self.inspect()['pending_questions'][0]['can_answer'])
+        before=self.received();current=self.inspect()['pending_questions'][0]
+        self.assertFalse(current['can_answer']);self.assertIn('draft in Terminal',current['answer_unavailable_reason'])
         result,_=self.answer(card);self.assertNotEqual(result.returncode,0);self.assertEqual(self.received(),before)
     def test_different_native_ack_is_uncertain_and_never_retried(self):
         card=self.request();(self.root/'wrong-ack').touch()
