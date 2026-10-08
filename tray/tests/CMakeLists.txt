@@ -169,7 +169,7 @@ add_test(NAME watchdog COMMAND test_watchdog)
 add_executable(test_sessionswindow test_sessionswindow.cpp ../src/SessionsWindow.cpp ../src/SessionSelection.cpp ../src/MachinesPage.cpp ../src/SessionSearch.cpp
                ../src/MachineFilter.cpp ../src/DashboardPage.cpp ../src/AccountsPage.cpp ../src/AccountUsageStore.cpp
                ../src/SessionOrganization.cpp ../src/SessionList.cpp ../src/SwarmController.cpp ../src/SwarmDialog.cpp
-               ../src/ActivityView.cpp ../src/ProcessView.cpp ../src/NativeUiView.cpp ../src/MessageComposer.cpp ../src/QuestionCard.cpp
+               ../src/ActivityView.cpp ../src/ProcessView.cpp ../src/NativeUiView.cpp ../src/MessageComposer.cpp ../src/ComposerDraftStore.cpp ../src/QuestionCard.cpp
                ../src/FleetState.cpp ../src/HgsClient.cpp ../src/DirectoryDialog.cpp
                ../src/NewSessionDialog.cpp ../src/ProjectsDialog.cpp ../resources.qrc)
 target_include_directories(test_sessionswindow PRIVATE ../src)
@@ -190,13 +190,13 @@ target_link_libraries(test_activityview PRIVATE Qt6::Test Qt6::Widgets)
 add_test(NAME activityview COMMAND test_activityview)
 set_tests_properties(activityview PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
-add_executable(test_messagecomposer test_messagecomposer.cpp ../src/MessageComposer.cpp)
+add_executable(test_messagecomposer test_messagecomposer.cpp ../src/MessageComposer.cpp ../src/ComposerDraftStore.cpp)
 target_include_directories(test_messagecomposer PRIVATE ../src)
 target_link_libraries(test_messagecomposer PRIVATE Qt6::Test Qt6::Widgets)
 add_test(NAME messagecomposer COMMAND test_messagecomposer)
 set_tests_properties(messagecomposer PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
-add_executable(test_questioncard test_questioncard.cpp ../src/QuestionCard.cpp)
+add_executable(test_questioncard test_questioncard.cpp ../src/QuestionCard.cpp ../src/ComposerDraftStore.cpp)
 target_include_directories(test_questioncard PRIVATE ../src)
 target_link_libraries(test_questioncard PRIVATE Qt6::Test Qt6::Widgets)
 add_test(NAME questioncard COMMAND test_questioncard)

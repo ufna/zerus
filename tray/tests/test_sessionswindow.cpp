@@ -72,7 +72,8 @@ class TestSessionsWindow : public QObject {
     Q_OBJECT
 private slots:
     void initTestCase();
-    void init() { QSettings().remove("workspace"); QSettings().remove("processes"); }
+    void init() { QSettings().remove("workspace"); QSettings().remove("processes"); QVERIFY(QDir(ComposerDraftStore::directory()).removeRecursively()); }
+    void workspaceRestoresDraftAcrossRestartAndSessionRemoval();
     void groupsPersistFilterAndRevealAttention();
     void emptyProjectsSettingPreservesArchiveAndProjects();
     void unreadRepliesNeedAnActiveVisibleResult();
@@ -225,6 +226,28 @@ FleetState TestSessionsWindow::fleet() const
     BoxState mac; mac.host = "mac"; mac.ok = true; mac.sessions = {approval};
     FleetState result; result.setLocal(arch, QDateTime::currentMSecsSinceEpoch()); result.setPeer(mac, QDateTime::currentMSecsSinceEpoch());
     return result;
+}
+
+void TestSessionsWindow::workspaceRestoresDraftAcrossRestartAndSessionRemoval()
+{
+    const auto state = fleet();
+    {
+        SessionsWindow window(script()); window.setFleet(state); window.show(); window.showSession({}, "codex/hgs/dashboard");
+        auto *composer = window.findChild<MessageComposer *>("messageComposer"); QVERIFY(composer);
+        composer->editor()->setPlainText("Keep my work after the agent exits");
+        QVERIFY(composer->addAttachment("notes.txt", "text/plain", "notes snapshot"));
+    }
+    SessionsWindow restored(script()); restored.setFleet(state); restored.show(); restored.showSession({}, "codex/hgs/dashboard");
+    auto *composer = restored.findChild<MessageComposer *>("messageComposer"); QVERIFY(composer);
+    QCOMPARE(composer->editor()->toPlainText(), "[File #1] Keep my work after the agent exits");
+    restored.setFleet(FleetState());
+    QTimer::singleShot(0, &restored, [&] {
+        auto *dialog = restored.findChild<QDialog *>("savedDraftsDialog"); QVERIFY(dialog); QVERIFY(dialog->isVisible());
+        auto *list = dialog->findChild<QListWidget *>("savedDraftList"); QCOMPARE(list->count(), 1);
+        QCOMPARE(dialog->findChild<QPlainTextEdit *>("savedDraftPreview")->toPlainText(), "[File #1] Keep my work after the agent exits");
+        QVERIFY(!dialog->findChild<QPushButton *>("restoreSavedDraft")->isEnabled()); dialog->reject();
+    });
+    restored.findChild<QPushButton *>("savedDrafts")->click();
 }
 
 void TestSessionsWindow::workingCardsKeepTurnClockAcrossUpdates()

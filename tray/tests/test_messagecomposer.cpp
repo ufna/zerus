@@ -2,6 +2,8 @@
 
 #include <QApplication>
 #include <QComboBox>
+#include <QDialog>
+#include <QDir>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDragLeaveEvent>
@@ -11,14 +13,19 @@
 #include <QImage>
 #include <QInputMethodEvent>
 #include <QLabel>
+#include <QListWidget>
+#include <QMessageBox>
 #include <QLineEdit>
 #include <QMimeData>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QProcess>
+#include <QSettings>
 #include <QTemporaryDir>
 #include <QSignalSpy>
 #include <QScopeGuard>
 #include <QTest>
+#include <QTimer>
 #include <QStyleOptionComboBox>
 #include <QUrl>
 #include <QToolTip>
@@ -61,6 +68,17 @@ void drop(QPlainTextEdit *editor, const QMimeData &mime)
 class TestMessageComposer : public QObject {
     Q_OBJECT
 private slots:
+    void initTestCase();
+    void init() { QVERIFY(QDir(ComposerDraftStore::directory()).removeRecursively()); }
+    void crashRestoresLastEditAndAttachmentBytes();
+    void restartKeepsIsolationRenamesAndAttachmentRemoval();
+    void deliveryPersistence_data();
+    void deliveryPersistence();
+    void storageFailureKeepsDraftAndBlocksDispatch();
+    void endedSessionDraftCanBeRecovered();
+    void draftReplacementRequiresConfirmation();
+    void renameCollisionKeepsBothDrafts();
+    void typingDoesNotRewriteAttachmentSnapshots();
     void isolatesDraftsAcrossSessions();
     void enterSendsShiftEnterAddsLine();
     void sendingKeepsEditorFocus_data();
@@ -85,7 +103,165 @@ private slots:
     void attachmentDropReleasesVisualCaret_data();
     void attachmentDropReleasesVisualCaret();
     void unsupportedModelOffersTerminal();
+private:
+    QTemporaryDir m_settings;
 };
+
+void TestMessageComposer::initTestCase()
+{
+    QVERIFY(m_settings.isValid());
+    QCoreApplication::setOrganizationName("hgs-tests"); QCoreApplication::setApplicationName("message-composer");
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, m_settings.path());
+}
+
+void TestMessageComposer::crashRestoresLastEditAndAttachmentBytes()
+{
+    QProcess child; child.setProcessChannelMode(QProcess::SeparateChannels);
+    child.start(QCoreApplication::applicationFilePath(), {"--draft-crash-child", m_settings.path()});
+    QVERIFY(child.waitForStarted());
+    QVERIFY2(child.waitForReadyRead(10000), qPrintable(QString::fromUtf8(child.readAllStandardError())));
+    QCOMPARE(child.readAllStandardOutput().trimmed(), QByteArray("saved"));
+    child.kill(); QVERIFY(child.waitForFinished()); QCOMPARE(child.exitStatus(), QProcess::CrashExit);
+    MessageComposer composer; QList<Submission> submissions; observe(composer, submissions);
+    composer.setSessionKey("arch\nended/session"); composer.setAvailability(true);
+    QCOMPARE(composer.editor()->toPlainText(), QString::fromUtf8("[File #1] Last keystroke я\nsecond line"));
+    QCOMPARE(composer.editor()->textCursor().position(), 8); QCOMPARE(composer.editor()->textCursor().anchor(), 3);
+    sendButton(composer)->click(); QCOMPARE(submissions.size(), 1);
+    QCOMPARE(submissions[0].attachments.size(), 1); QCOMPARE(submissions[0].attachments[0].data, QByteArray("exact\0bytes", 11));
+    const auto root = ComposerDraftStore::directory();
+    for (const auto &folder : QDir(root).entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        const auto permissions = QFileInfo(root + '/' + folder).permissions();
+        QVERIFY(!(permissions & (QFile::ReadGroup | QFile::WriteGroup | QFile::ReadOther | QFile::WriteOther)));
+        for (const auto &file : QDir(root + '/' + folder).entryList(QDir::Files))
+            QVERIFY(!(QFileInfo(root + '/' + folder + '/' + file).permissions() & (QFile::ReadGroup | QFile::ReadOther)));
+    }
+}
+
+void TestMessageComposer::restartKeepsIsolationRenamesAndAttachmentRemoval()
+{
+    {
+        MessageComposer composer; composer.setSessionKey("arch\nsame"); composer.editor()->setPlainText("Local");
+        QVERIFY(composer.addAttachment("local.txt", "text/plain", "snapshot"));
+        composer.editor()->setPlainText("Local without marker");
+        composer.findChild<QPushButton *>("removeAttachment")->click();
+        composer.setSessionKey("mac\nsame"); composer.editor()->setPlainText("Remote");
+        composer.renameDraft("mac\nsame", "mac\nrenamed");
+        composer.setSessionKey("arch\nsame\nconversation\nchild"); composer.editor()->setPlainText("Child");
+    }
+    MessageComposer restored; restored.setSessionKey("arch\nsame");
+    QCOMPARE(restored.editor()->toPlainText(), "Local without marker");
+    QCOMPARE(restored.findChildren<QPushButton *>("removeAttachment").size(), 0);
+    restored.setSessionKey("mac\nsame"); QVERIFY(restored.editor()->toPlainText().isEmpty());
+    restored.setSessionKey("mac\nrenamed"); QCOMPARE(restored.editor()->toPlainText(), "Remote");
+    restored.setSessionKey("arch\nsame\nconversation\nchild"); QCOMPARE(restored.editor()->toPlainText(), "Child");
+    restored.setAvailability(false, "Machine unavailable"); restored.setSessionKey({});
+    restored.setSessionKey("arch\nsame"); QCOMPARE(restored.editor()->toPlainText(), "Local without marker");
+}
+
+void TestMessageComposer::deliveryPersistence_data()
+{
+    QTest::addColumn<QString>("outcome");
+    for (const auto &outcome : {"success", "failure", "uncertain", "interrupted", "retry-old-message"}) QTest::newRow(outcome) << QString(outcome);
+}
+
+void TestMessageComposer::deliveryPersistence()
+{
+    QFETCH(QString, outcome);
+    {
+        MessageComposer composer; composer.setSessionKey("arch\none"); composer.editor()->setPlainText("Never lose this");
+        QVERIFY(composer.addAttachment("keep.txt", "text/plain", "keep"));
+        QVERIFY(composer.setSending("arch\none", outcome == "retry-old-message"));
+        if (outcome != "interrupted") composer.deliveryFinished("arch\none", outcome == "success" || outcome == "retry-old-message", "Failed", outcome == "uncertain");
+    }
+    MessageComposer restored; QList<Submission> submissions; observe(restored, submissions);
+    restored.setSessionKey("arch\none"); restored.setAvailability(true);
+    const bool success = outcome == "success";
+    QCOMPARE(restored.editor()->toPlainText(), success ? QString() : QString("[File #1] Never lose this"));
+    QCOMPARE(restored.findChildren<QPushButton *>("removeAttachment").size(), success ? 0 : 1);
+    QVERIFY(!restored.isSending("arch\none"));
+    const bool uncertain = outcome == "interrupted" || outcome == "uncertain";
+    QCOMPARE(sendButton(restored)->isEnabled(), !success && !uncertain);
+    sendButton(restored)->click(); QCOMPARE(submissions.size(), !success && !uncertain ? 1 : 0);
+    if (uncertain) { restored.findChild<QPushButton *>("allowMessageRetry")->click(); QVERIFY(sendButton(restored)->isEnabled()); }
+}
+
+void TestMessageComposer::storageFailureKeepsDraftAndBlocksDispatch()
+{
+    QVERIFY(QDir().mkpath(QFileInfo(ComposerDraftStore::directory()).absolutePath()));
+    QFile blocker(ComposerDraftStore::directory()); QVERIFY(blocker.open(QIODevice::WriteOnly)); blocker.close();
+    MessageComposer composer; composer.setSessionKey("one"); composer.setAvailability(true);
+    composer.editor()->setPlainText("Still editable");
+    QVERIFY(status(composer)->text().contains("not saved"));
+    QVERIFY(!composer.setSending("one")); QVERIFY(!composer.editor()->isReadOnly());
+    QCOMPARE(composer.editor()->toPlainText(), "Still editable");
+    QVERIFY(blocker.remove()); composer.editor()->insertPlainText("X");
+    QVERIFY(status(composer)->text().contains("saved locally"));
+    MessageComposer restored; restored.setSessionKey("one"); QCOMPARE(restored.editor()->toPlainText(), composer.editor()->toPlainText());
+}
+
+void TestMessageComposer::endedSessionDraftCanBeRecovered()
+{
+    MessageComposer composer; composer.setSessionKey("lost\nended"); composer.editor()->setPlainText("Recover my work");
+    QVERIFY(composer.addAttachment("keep.txt", "text/plain", "important"));
+    composer.setSessionKey("arch\nnew"); composer.setAvailability(true);
+    QList<Submission> submissions; observe(composer, submissions);
+    QTimer::singleShot(0, &composer, [&] {
+        auto *dialog = composer.findChild<QDialog *>("savedDraftsDialog"); QVERIFY(dialog);
+        auto *list = dialog->findChild<QListWidget *>("savedDraftList"); QCOMPARE(list->count(), 1);
+        QCOMPARE(list->item(0)->data(Qt::UserRole).toString(), "lost\nended");
+        dialog->findChild<QPushButton *>("restoreSavedDraft")->click();
+    });
+    composer.showSavedDrafts(); QCOMPARE(submissions.size(), 0);
+    QCOMPARE(composer.editor()->toPlainText(), "[File #1] Recover my work");
+    sendButton(composer)->click(); QCOMPARE(submissions[0].attachments[0].data, QByteArray("important"));
+    QVERIFY(ComposerDraftStore().keys().contains("lost\nended"));
+}
+
+void TestMessageComposer::draftReplacementRequiresConfirmation()
+{
+    MessageComposer composer; composer.setSessionKey("arch\nsource"); composer.editor()->setPlainText("Saved source");
+    composer.setSessionKey("mac\ntarget"); composer.editor()->setPlainText("Current draft");
+    QTimer::singleShot(0, &composer, [&] {
+        auto *dialog = composer.findChild<QDialog *>("savedDraftsDialog"); QVERIFY(dialog);
+        auto *list = dialog->findChild<QListWidget *>("savedDraftList"); list->setCurrentRow(0);
+        dialog->findChild<QPushButton *>("copySavedDraft")->click(); QVERIFY(dialog->isVisible());
+        QTimer::singleShot(0, &composer, [&] {
+            auto *confirm = composer.findChild<QMessageBox *>("replaceDraftConfirm"); QVERIFY(confirm);
+            QCOMPARE(confirm->defaultButton(), confirm->button(QMessageBox::Cancel)); confirm->reject();
+        });
+        dialog->findChild<QPushButton *>("restoreSavedDraft")->click(); QVERIFY(dialog->isVisible()); dialog->reject();
+    });
+    composer.showSavedDrafts(); QCOMPARE(composer.editor()->toPlainText(), "Current draft");
+    MessageComposer restarted; restarted.setSessionKey("mac\ntarget"); QCOMPARE(restarted.editor()->toPlainText(), "Current draft");
+}
+
+void TestMessageComposer::renameCollisionKeepsBothDrafts()
+{
+    MessageComposer composer; composer.setSessionKey("old"); composer.editor()->setPlainText("Original");
+    composer.setSessionKey("new"); composer.editor()->setPlainText("Other saved draft");
+    composer.setSessionKey("old"); composer.renameDraft("old", "new");
+    QCOMPARE(composer.editor()->toPlainText(), "Other saved draft");
+    MessageComposer restarted; restarted.setSessionKey("old"); QCOMPARE(restarted.editor()->toPlainText(), "Original");
+    restarted.setSessionKey("new"); QCOMPARE(restarted.editor()->toPlainText(), "Other saved draft");
+}
+
+void TestMessageComposer::typingDoesNotRewriteAttachmentSnapshots()
+{
+    MessageComposer composer; composer.setSessionKey("one");
+    QVERIFY(composer.addAttachment("large.bin", "application/octet-stream", QByteArray(10 * 1024 * 1024, 'x')));
+    const auto folders = QDir(ComposerDraftStore::directory()).entryList(QDir::Dirs | QDir::NoDotAndDotDot); QCOMPARE(folders.size(), 1);
+    const QDir folder(ComposerDraftStore::directory() + '/' + folders[0]); const auto files = folder.entryList({"*.bin"}, QDir::Files); QCOMPARE(files.size(), 1);
+    QFile snapshot(folder.filePath(files[0])); const auto timestamp = QDateTime::fromSecsSinceEpoch(1000000000);
+    QVERIFY(snapshot.open(QIODevice::ReadWrite)); QVERIFY(snapshot.setFileTime(timestamp, QFileDevice::FileModificationTime)); snapshot.close();
+    QTest::keyClicks(composer.editor(), "Every character is saved");
+    QCOMPARE(QFileInfo(snapshot).lastModified(), timestamp);
+    QVERIFY(composer.addAttachment("second.bin", "application/octet-stream", "second"));
+    const auto before = composer.editor()->toPlainText();
+    MessageComposer restored; restored.setSessionKey("one"); QCOMPARE(restored.editor()->toPlainText(), before);
+    QVERIFY(restored.addAttachment("third.bin", "application/octet-stream", "third"));
+    QVERIFY(restored.editor()->toPlainText().contains("[File #3]"));
+}
 
 void TestMessageComposer::attachmentDropReleasesVisualCaret_data()
 {
@@ -586,5 +762,26 @@ void TestMessageComposer::renamePreservesDraft()
     QCOMPARE(composer.editor()->toPlainText(), "[File #1] Rename retains this draft");
 }
 
-QTEST_MAIN(TestMessageComposer)
+int main(int argc, char **argv)
+{
+    QApplication app(argc, argv);
+    if (app.arguments().contains("--draft-crash-child")) {
+        QCoreApplication::setOrganizationName("hgs-tests"); QCoreApplication::setApplicationName("message-composer");
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, app.arguments().last());
+        auto *composer = new MessageComposer;
+        composer->setSessionKey("arch\nended/session"); composer->editor()->setPlainText("Last keystroke");
+        QFile original(QDir(app.arguments().last()).filePath("vanished.txt"));
+        if (!original.open(QIODevice::WriteOnly)) return 2;
+        original.write(QByteArray("exact\0bytes", 11)); original.close();
+        composer->attachDroppedFiles({original.fileName()});
+        if (!original.remove()) return 2;
+        composer->editor()->moveCursor(QTextCursor::End); composer->editor()->insertPlainText(QString::fromUtf8(" я\nsecond line"));
+        auto cursor = composer->editor()->textCursor(); cursor.setPosition(3); cursor.setPosition(8, QTextCursor::KeepAnchor); composer->editor()->setTextCursor(cursor);
+        QFile output; if (!output.open(stdout, QIODevice::WriteOnly)) return 2;
+        output.write("saved\n"); output.flush();
+        return app.exec(); // Parent sends SIGKILL, so no destructor/close handler runs.
+    }
+    TestMessageComposer test; return QTest::qExec(&test, argc, argv);
+}
 #include "test_messagecomposer.moc"

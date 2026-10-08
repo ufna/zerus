@@ -263,8 +263,21 @@ main native conversation.
 Enter sends, Shift-Enter inserts a line and Escape releases focus while keeping
 the draft. Paste images, drag local files or use the attachment button. Labels
 such as `[Image #1]` and `[File #2]` preserve attachment placement within the text;
-removing one does not renumber the rest. Drafts and attachments stay with the
-session while the workspace is open.
+removing one does not renumber the rest. Text, cursor/selection and attachment
+bytes are saved locally as they change, separately for each machine, session and
+subagent. They survive GUI crashes, restarts, unavailable machines and ended
+sessions, even if the original attachment file is gone. Storage is a private
+directory next to the desktop's Qt settings file (`<settings-file>.drafts`),
+outside P2P configuration sync.
+
+**Saved drafts** below the session list lets you preview, copy or restore drafts
+from ended or missing sessions into the current session. Copying keeps the dialog
+open; restoring never sends anything and replacing an existing draft requires
+confirmation. A source draft remains available after copying it to another session.
+Confirmed sends clear the outgoing draft; failures retain it. After an interrupted
+or uncertain send, check Activity or Terminal before explicitly allowing another
+send. Saving failures are shown in the editor and retried locally; sending starts
+only after its recovery snapshot has been saved.
 
 Delivery verifies the exact run, process, conversation and native input state.
 Confirmed receipts are idempotent by request ID. An uncertain result is never
@@ -293,6 +306,10 @@ Activity exposes supported native questions with their full visible disclosure,
 options, queue position and request time. It never submits a highlighted option
 without a user action. Answers are scoped to the unchanged run, process,
 conversation and request hash; uncertain input is not automatically retried.
+Unsent freeform answers, choices and the current question page are also saved
+locally. They restore only for the same machine/session, run, conversation and
+question hash. Interrupted submissions remain locked until reviewed; confirmed
+queued answers keep their submitted state after a GUI restart.
 Unsupported or truncated native prompts remain in Terminal.
 
 Supported startup prompts include Claude workspace trust and auto-mode consent,

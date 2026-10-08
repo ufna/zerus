@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ComposerDraftStore.h"
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -27,7 +28,7 @@ public:
     void setAvailability(bool available, const QString &reason = {});
     void setTheme(bool dark);
     void setNativeUi(bool native);
-    void setSending(const QString &sessionKey, const QString &questionId, bool sending = true);
+    bool setSending(const QString &sessionKey, const QString &questionId, bool sending = true);
     void setError(const QString &sessionKey, const QString &questionId, const QString &detail, bool uncertain = false);
     void setAnswered(const QString &sessionKey, const QString &questionId);
     void setSubmitted(const QString &sessionKey, const QString &questionId);
@@ -46,7 +47,7 @@ private:
     struct Answer { QSet<QString> options; QString text; bool other = false; };
     struct Draft {
         QHash<QString, Answer> answers;
-        QString notice;
+        QString notice, storageError, label;
         int page = 0;
         bool sending = false, submitted = false, answered = false, error = false, uncertain = false;
     };
@@ -59,6 +60,8 @@ private:
     };
     void rebuild();
     void capture();
+    bool saveDraft(const QString &key);
+    Draft loadDraft(const QString &key) const;
     void updateControls();
     void scheduleSizing();
     void sizeToContent();
@@ -68,6 +71,8 @@ private:
     static QString identity(const QString &sessionKey, const QString &questionId, const QString &hash = {});
 
     QHash<QString, Draft> m_drafts;
+    ComposerDraftStore m_draftStore;
+    QSet<QString> m_failedSaves;
     QHash<QString, QString> m_latestKeys, m_sendingKeys;
     QString m_session, m_id, m_key, m_unavailableReason;
     QJsonObject m_question;

@@ -9,9 +9,11 @@
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSignalSpy>
+#include <QSettings>
 #include <QStackedWidget>
 #include <QTabBar>
 #include <QTest>
+#include <QTemporaryDir>
 #include <QTextBrowser>
 #include <QVBoxLayout>
 
@@ -54,6 +56,15 @@ void complete(QuestionCard &card) { option(card, "opt_0_0")->click(); option(car
 class TestQuestionCard : public QObject {
     Q_OBJECT
 private slots:
+    void initTestCase() {
+        QVERIFY(m_settings.isValid());
+        QCoreApplication::setOrganizationName("hgs-tests"); QCoreApplication::setApplicationName("question-card");
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, m_settings.path());
+    }
+    void init() { QVERIFY(QDir(ComposerDraftStore::directory()).removeRecursively()); }
+    void restoresUnsentAnswersAcrossRestartWithExactRequestIdentity();
+    void interruptedAndSubmittedAnswersStayLockedAfterRestart();
     void allRequiredQuestionsAndStableAnswerIds();
     void customAndMultipleAnswers();
     void enterSubmitsFreeformAnswers_data();
@@ -73,7 +84,45 @@ private slots:
     void submittedCallbacksAndMetadataKeepExactIdentity();
     void hookTrustRequiresAnExplicitChoice();
     void preview();
+private:
+    QTemporaryDir m_settings;
 };
+
+void TestQuestionCard::restoresUnsentAnswersAcrossRestartWithExactRequestIdentity()
+{
+    {
+        QuestionCard card; card.setQuestion("arch\nagent", request());
+        other(card, "q_0")->click(); text(card, "q_0")->setText("Keep every typed character");
+        option(card, "opt_1_1")->click(); card.findChild<QTabBar *>("questionTabs")->setCurrentIndex(1);
+    }
+    QuestionCard restored; QSignalSpy sent(&restored, &QuestionCard::answerRequested);
+    restored.setQuestion("arch\nagent", request());
+    QCOMPARE(text(restored, "q_0")->text(), "Keep every typed character");
+    QVERIFY(other(restored, "q_0")->isChecked()); QVERIFY(option(restored, "opt_1_1")->isChecked());
+    QCOMPARE(restored.findChild<QTabBar *>("questionTabs")->currentIndex(), 1); QCOMPARE(sent.count(), 0);
+    auto changed = request(); changed["run_id"] = "different-run";
+    restored.setQuestion("arch\nagent", changed); QVERIFY(text(restored, "q_0")->text().isEmpty());
+    changed = request(); changed["conversation_id"] = "different-conversation";
+    restored.setQuestion("arch\nagent", changed); QVERIFY(text(restored, "q_0")->text().isEmpty());
+    restored.setQuestion("mac\nagent", request()); QVERIFY(text(restored, "q_0")->text().isEmpty());
+    restored.setQuestion("arch\nagent", request("tool-question", "different-hash")); QVERIFY(text(restored, "q_0")->text().isEmpty());
+    restored.setQuestion("arch\nagent", request()); QCOMPARE(text(restored, "q_0")->text(), "Keep every typed character");
+}
+
+void TestQuestionCard::interruptedAndSubmittedAnswersStayLockedAfterRestart()
+{
+    {
+        QuestionCard card; card.setQuestion("arch\nagent", request()); complete(card);
+        QVERIFY(card.setSending("arch\nagent", "tool-question"));
+    }
+    QuestionCard restored; restored.setQuestion("arch\nagent", request());
+    QVERIFY(!submit(restored)->isEnabled());
+    restored.findChild<QPushButton *>("questionAllowRetry")->click(); QVERIFY(submit(restored)->isEnabled());
+    restored.setSubmitted("arch\nagent", "tool-question");
+    QuestionCard submitted; submitted.setQuestion("arch\nagent", request());
+    QVERIFY(!submit(submitted)->isEnabled()); QCOMPARE(submit(submitted)->text(), "Submitted");
+    QVERIFY(option(submitted, "opt_0_0")->isChecked());
+}
 
 void TestQuestionCard::submittedAnswersRestoreAndIgnoreLateErrors()
 {
@@ -117,10 +166,11 @@ void TestQuestionCard::submittedCallbacksAndMetadataKeepExactIdentity()
         {"run_id","run"},{"conversation_id","conversation"},{"answers",QJsonArray{}}};
     for(const auto &field:{"question_id","question_hash","run_id","conversation_id"}) {
         QuestionCard fresh;auto stale=delivery;stale[field]="unrelated";auto snapshot=question;snapshot["answer_delivery"]=stale;
-        fresh.setQuestion("local",snapshot);complete(fresh);QVERIFY(submit(fresh)->isEnabled());
+        fresh.setQuestion(QString("unsubmitted-%1").arg(field),snapshot);complete(fresh);QVERIFY(submit(fresh)->isEnabled());
+        QuestionCard known; known.setQuestion("local",snapshot); QVERIFY(!submit(known)->isEnabled());
     }
     QuestionCard unsupported;auto snapshot=question;snapshot["source"]="other";snapshot["answer_delivery"]=delivery;
-    unsupported.setQuestion("local",snapshot);complete(unsupported);QVERIFY(submit(unsupported)->isEnabled());
+    unsupported.setQuestion("unsupported",snapshot);complete(unsupported);QVERIFY(submit(unsupported)->isEnabled());
 }
 
 void TestQuestionCard::hookTrustRequiresAnExplicitChoice()

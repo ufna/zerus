@@ -382,7 +382,13 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
             if (!event.isEmpty()) m_activityView->showSearchResult(event, query);
             else m_activityView->clearSearchResult();
         });
-    m_count = label({}, "listSummary"); m_count->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred); listLayout->addWidget(m_count);
+    m_count = label({}, "listSummary"); m_count->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    auto *summary = new QHBoxLayout; summary->addWidget(m_count, 1);
+    auto *drafts = new QPushButton(tr("Saved drafts")); drafts->setObjectName("savedDrafts"); drafts->setAutoDefault(false);
+    drafts->setToolTip(tr("Recover local drafts, including those from ended sessions")); summary->addWidget(drafts);
+    connect(drafts, &QPushButton::clicked, this, [this] {
+        (m_subagentId.isEmpty() ? m_composer : m_subagentComposer)->showSavedDrafts();
+    }); listLayout->addLayout(summary);
     m_splitter->addWidget(listPanel); m_sessions->installEventFilter(this);
     m_sessions->setContextMenuPolicy(Qt::CustomContextMenu);
     m_sessionMenu = new QMenu(this); m_sessionMenu->setObjectName("sessionContextMenu"); m_sessionMenu->setToolTipsVisible(true);
@@ -665,9 +671,10 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
             const auto *entry = selected();
             if (!entry || m_subagentId.isEmpty() || key != childKey(*entry, m_subagentId)
                 || !entry->online || !m_subagentDetails.value("send_supported").toBool() || m_subagentComposer->isSending(key)) return;
+            if (!m_subagentComposer->setSending(key)) return;
             const auto request = m_client.requestSendMessage(entry->host, entry->session.name, text, files,
                 m_details.value("run_id").toString(), m_subagentConversation, m_subagentId);
-            m_childMessages.insert(request, key); m_subagentComposer->setSending(key);
+            m_childMessages.insert(request, key);
         });
     connect(m_subagentView, &ActivityView::fileReferenceActivated, this, openFileReference);
     auto *attachments=new AttachmentLoader(&m_client,this);
@@ -2676,9 +2683,9 @@ void SessionsWindow::sendMessage(const QString &key, const QString &text, const 
         }
         const auto currentProblem=messageBlockReason(*entry);if(!currentProblem.isEmpty()){showNotice(currentProblem,true);return;}
     }
+    if (!m_composer->setSending(key,!retryId.isEmpty() && !m_composer->draftMatches(key,text,attachments))) return;
     const quint64 request = m_client.requestSendMessage(entry->host, entry->session.name, text, attachments, runId, conversationId, {}, compactionId);
     m_pendingMessages.insert(request, {key, runId, conversationId});
-    m_composer->setSending(key,!retryId.isEmpty() && !m_composer->draftMatches(key,text,attachments));
     QJsonArray files;
     for (const auto &file : attachments) files.append(QJsonObject{{"name",file.name},{"mime",file.mime},{"bytes",file.data.size()},{"reference",file.reference},
         {"local_path",AttachmentFiles::store(file.name,file.data)}});
@@ -2843,7 +2850,7 @@ void SessionsWindow::answerQuestion(const QString &key, const QString &questionI
         || question.value("conversation_id") != m_details.value("conversation_id")) {
         m_question->setError(key, questionId, tr("This question changed. Refresh before answering.")); return;
     }
-    m_question->setSending(key, questionId);
+    if (!m_question->setSending(key, questionId)) return;
     const auto request = m_client.requestAnswerQuestion(entry->host, entry->session.name, question, answers);
     m_pendingAnswers.insert(request, {key, questionId, question.value("question_hash").toString()});
     renderDetails();
