@@ -55,6 +55,7 @@ def main():
     licenses = destination / "usr/share/licenses" / args.package_name
     install(ROOT / "LICENSE", licenses / "LICENSE")
     install(ROOT / "tray/vendor/libvterm/LICENSE", licenses / "libvterm-LICENSE")
+    install(ROOT / "tray/vendor/md4c/LICENSE.md", licenses / "md4c-LICENSE")
     if not (args.licenses / "inventory.json").is_file():
         parser.error("collect dependency license texts first")
     shutil.copytree(args.licenses, licenses / "rust", dirs_exist_ok=True)

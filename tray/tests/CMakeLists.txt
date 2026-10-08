@@ -255,3 +255,8 @@ target_include_directories(test_worktreepanel PRIVATE ../src)
 target_link_libraries(test_worktreepanel PRIVATE Qt6::Test Qt6::Widgets)
 add_test(NAME worktreepanel COMMAND test_worktreepanel)
 set_tests_properties(worktreepanel PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+add_executable(test_markdownhtml test_markdownhtml.cpp)
+target_link_libraries(test_markdownhtml PRIVATE Qt6::Test hgs-markdown)
+add_test(NAME markdownhtml COMMAND test_markdownhtml)
+set_tests_properties(markdownhtml PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

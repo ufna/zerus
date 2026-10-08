@@ -22,6 +22,7 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets Network WebEngineWidgets)
 # std::thread сторожа главного потока (MainThreadWatchdog) -- на Linux это -lpthread.
 find_package(Threads REQUIRED)
 include(cmake/Terminal.cmake)
+include(cmake/Markdown.cmake)
 if(LINUX)
     # Konsole's tab colour and window raising have no escape sequence — only D-Bus.
     find_package(Qt6 REQUIRED COMPONENTS DBus)
@@ -111,7 +112,7 @@ endif()
 target_compile_definitions(hgs-tray PRIVATE HGS_TRAY_VERSION="${PROJECT_VERSION}")
 # QLocalServer/QLocalSocket (single-instance guard in main.cpp) live in QtNetwork, not
 # QtWidgets — the plan's dependency list missed this; noted in the Task 1 report.
-target_link_libraries(hgs-tray PRIVATE Qt6::Widgets Qt6::Network Qt6::WebEngineWidgets Threads::Threads hgs-terminal)
+target_link_libraries(hgs-tray PRIVATE Qt6::Widgets Qt6::Network Qt6::WebEngineWidgets Threads::Threads hgs-terminal hgs-markdown)
 if(LINUX)
     target_link_libraries(hgs-tray PRIVATE Qt6::DBus KF6::StatusNotifierItem KF6::WindowSystem)
 endif()

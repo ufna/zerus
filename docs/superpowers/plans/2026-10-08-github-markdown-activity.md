@@ -67,7 +67,6 @@ Build directory used below: `tray/build` (already configured with `BUILD_TESTING
 - [ ] **Step 1: Vendor md4c 0.5.2**
 
 ```bash
-cd /home/n-prudnikov/w/zerus
 tmp=$(mktemp -d)
 curl -sfL -o "$tmp/md4c.tar.gz" https://github.com/mity/md4c/archive/refs/tags/release-0.5.2.tar.gz
 echo "55d0111d48fb11883aaee91465e642b8b640775a4d6993c2d0e7a8092758ef21  $tmp/md4c.tar.gz" | sha256sum -c -

@@ -18,6 +18,7 @@ def main():
                 "usr/share/applications/hgs-tray.desktop", "usr/lib/systemd/user/hgs-tray.service",
                 "usr/lib/systemd/user/hgs-swarm.service", "usr/lib/systemd/user/hgs-recovery.service",
                 f"usr/share/licenses/{args.package_name}/LICENSE", f"usr/share/licenses/{args.package_name}/libvterm-LICENSE",
+                f"usr/share/licenses/{args.package_name}/md4c-LICENSE",
                 f"usr/share/licenses/{args.package_name}/rust/inventory.json", "usr/share/doc/zerus/build-info.json"]
     for name in required:
         if not (root / name).is_file():
