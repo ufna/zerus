@@ -22,6 +22,15 @@ def main():
     cargo = tomllib.loads((ROOT / "Cargo.toml").read_text())
     if cargo["package"]["license"] != "MIT":
         raise SystemExit("Review the package license and notices.")
+    # GitHub enforces these scoped cache permissions. actionlint 1.7.12 does
+    # not recognize the new key yet; validate its fixed enum before ignoring
+    # only that known syntax warning in actionlint.
+    for workflow in (ROOT / ".github/workflows").glob("*.yml"):
+        for line in workflow.read_text().splitlines():
+            match = re.match(r"^( *)cache-mode:\s*([^#]*)(?:#.*)?$", line)
+            if match and (len(match[1]) not in {0, 4} or
+                          match[2].strip() not in {"read", "write", "write-only", "none"}):
+                raise SystemExit(f"{workflow.name}: cache-mode requires a fixed workflow/job enum.")
     paths = subprocess.check_output(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], cwd=ROOT).decode().split("\0")
     for name in sorted(set(filter(None, paths))):
         path = ROOT / name

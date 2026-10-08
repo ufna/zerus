@@ -16,6 +16,8 @@ on:
 permissions:
   contents: read
 
+cache-mode: none
+
 concurrency:
   group: release-publication
   cancel-in-progress: false

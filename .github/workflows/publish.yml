@@ -16,6 +16,8 @@ on:
 permissions:
   contents: read
 
+cache-mode: none
+
 concurrency:
   group: release-publication # Serialize all versions sharing the AUR repositories.
   cancel-in-progress: false

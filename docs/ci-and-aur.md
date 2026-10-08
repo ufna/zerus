@@ -8,12 +8,14 @@ separate manual workflows; verified nightlies publish automatically.
 ## Continuous integration
 
 Hosted checks run automatically on pushes to `main` and pull requests targeting
-`main`, including Dependabot proposals. Every automatic run selects source/MSRV,
+`main`, including Dependabot proposals. External fork workflows wait for a
+maintainer's **Approve and run** decision. Every automatic run selects source/MSRV,
 full Linux CLI, Arch desktop/package and both macOS suites. The owner enabled
 this policy on 2026-10-09 after making the repository public: standard Ubuntu and
 macOS GitHub-hosted runners are free for public repositories.
 
-Manual CI remains available and defaults to all suites. Reusable CI keeps explicit
+Manual CI remains available and defaults to all suites. `ci.yml` chooses the cache
+trust boundary and calls the shared jobs in `checks.yml`. Reusable CI keeps explicit
 suite selection so another workflow cannot accidentally request unrelated jobs.
 Every job checks out the exact commit resolved by quick checks. PR checks use the
 GitHub merge commit; a manual `ref` can select a PR head or another exact revision.
@@ -31,6 +33,45 @@ same branch/PR and workflow. PR jobs have read-only permissions and no publicati
 credentials; fork PRs use `pull_request`, never `pull_request_target`. Publishing
 is confined to trusted upstream `main` and the branch-restricted `release`
 environment. Authenticated model-turn tests remain explicit opt-ins.
+
+### Incoming PRs and publication trust
+
+Running a PR compiles and executes code supplied by its author, including Rust
+build scripts, tests and packaging commands. GitHub-hosted runners provide an
+ephemeral environment; passing CI does not establish that the proposed code is
+safe to merge.
+
+Repository settings require approval for **all external contributors** and full
+commit SHA pins for actions. The workflow token defaults to read-only and cannot
+approve PRs. Review the complete diff before approving a fork workflow, especially
+workflow changes, dependency/build scripts and attempts to change cache permissions
+or runner labels. A previous harmless contribution does not grant automatic runs.
+Keep development machines off the runner list; secrets, SSH credentials, account
+configuration and authenticated model sessions do not belong in CI caches/artifacts.
+
+PR checks and every manual CI run receive **read-only cache tokens**, including a
+manual run of `refs/pull/NUMBER/head` from the upstream workflow. Only upstream
+`main` pushes and scheduled checks of that exact `main` commit can populate caches.
+This restriction is enforced by GitHub's fixed `cache-mode` on the reusable call,
+so checked-out build code cannot bypass it by invoking the cache API itself.
+Publishers use `cache-mode: none` and execute trusted upstream publication scripts.
+They accept only successful main-only stable/Nightly candidates, check workflow
+identity, repository, commit, run identity, archive safety and digests, and never
+execute downloaded AUR recipes. Ordinary PR CI artifacts cannot become releases.
+The `release` environment permits the `main` **branch** only, with no tag allowance.
+
+The current actionlint 1.7.12 release predates `cache-mode`. Source checks validate
+its fixed enum and placement; actionlint suppresses only its unknown-key warning
+for that field. Trust-boundary tests exercise the actual routing conditions and
+failure gate. GitHub validates the cache policy and reusable-workflow limits. Remove
+the narrow exception when a released actionlint supports the key.
+
+These boundaries limit credential theft, repository writes and compute abuse.
+Maintainer approval still matters: a PR can change its workflow, and granting a
+write-capable cache mode to untrusted code would bypass the secure cache default.
+See [fork workflow approvals](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/approve-runs-from-forks),
+[Actions security](https://docs.github.com/en/actions/reference/security/secure-use)
+and [cache access limits](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching).
 
 ### Manual checks
 

@@ -1,0 +1,241 @@
+name: CI checks
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit or ref to test
+        type: string
+        default: ''
+      run_linux:
+        type: boolean
+        default: false
+      run_arch:
+        type: boolean
+        default: false
+      run_macos:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    name: Quick checks (source and Rust 1.85)
+    if: github.event.repository.private == false || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      commit: ${{ steps.revision.outputs.commit }}
+      run_linux: ${{ steps.revision.outputs.run_linux }}
+      run_arch: ${{ steps.revision.outputs.run_arch }}
+      run_macos: ${{ steps.revision.outputs.run_macos }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - name: Record exact test commit and selected coverage
+        id: revision
+        env:
+          RUN_LINUX: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || inputs.run_linux }}
+          RUN_ARCH: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || inputs.run_arch }}
+          RUN_MACOS: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || inputs.run_macos }}
+        run: |
+          commit=$(git rev-parse HEAD)
+          {
+            echo "commit=$commit"
+            echo "run_linux=$RUN_LINUX"
+            echo "run_arch=$RUN_ARCH"
+            echo "run_macos=$RUN_MACOS"
+          } >> "$GITHUB_OUTPUT"
+          printf '### CI coverage\n\nCommit: %s\n\nQuick checks: always\n\nFull Linux CLI: %s\n\nArch desktop/package: %s\n\nmacOS CLI/desktop: %s\n' \
+            "$commit" "$RUN_LINUX" "$RUN_ARCH" "$RUN_MACOS" >> "$GITHUB_STEP_SUMMARY"
+      - run: python3 scripts/ci/check-source.py
+      - name: Release publication contract checks
+        run: python3 -m unittest discover -s tests -p 'test_*publication.py'
+      - name: Workflow trust boundary checks
+        run: python3 -m unittest discover -s tests -p test_ci_security.py
+      - name: Validate GitHub Actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          lint_dir=$(mktemp -d)
+          cd "$lint_dir"
+          curl -fsSLO https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          curl -fsSLO https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_checksums.txt
+          sha256sum --check --ignore-missing actionlint_1.7.12_checksums.txt
+          tar xzf actionlint_1.7.12_linux_amd64.tar.gz actionlint
+          cd "$GITHUB_WORKSPACE"
+          "$lint_dir/actionlint" -color -ignore 'unexpected key "cache-mode" for "(workflow|job)" section'
+
+      - run: rustup toolchain install 1.85.0 --profile minimal
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: msrv-${{ runner.os }}-1.85-${{ hashFiles('Cargo.lock') }}
+      - run: cargo +1.85.0 test --locked
+
+  cli:
+    name: CLI (${{ matrix.os }})
+    needs: source
+    if: needs.source.outputs.run_linux == 'true' || needs.source.outputs.run_macos == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(needs.source.outputs.run_linux == 'true' && needs.source.outputs.run_macos == 'true' && '["ubuntu-24.04","macos-15"]' || needs.source.outputs.run_macos == 'true' && '["macos-15"]' || '["ubuntu-24.04"]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_JOBS: 2
+      HOMEBREW_NO_AUTO_UPDATE: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.source.outputs.commit }}
+          persist-credentials: false
+      - name: Linux test dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libevent-dev libncurses-dev bison pkg-config
+      - name: Pinned tmux with verified input-mode support
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          bash scripts/ci/install-tmux.sh "$RUNNER_TEMP/tmux"
+          echo "$RUNNER_TEMP/tmux/bin" >> "$GITHUB_PATH"
+      - name: macOS test dependencies
+        if: runner.os == 'macOS'
+        run: brew install tmux python
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cli-${{ runner.os }}-${{ runner.arch }}-stable-${{ hashFiles('Cargo.lock') }}
+      - name: Keyless official DeepSeek contract fixture
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          npm install --prefix "$RUNNER_TEMP/dsh" --no-audit --no-fund @deepseek-ai/dsh@0.2.0-rc.2
+          echo "$RUNNER_TEMP/dsh/node_modules/.bin" >> "$GITHUB_PATH"
+      - run: bash scripts/ci/cli.sh
+      - name: Retain test logs
+        if: always() && (github.event_name != 'schedule' || failure())
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cli-results-${{ runner.os }}-${{ runner.arch }}
+          path: artifacts/test-results
+          retention-days: ${{ github.event_name == 'schedule' && 3 || 7 }}
+
+  arch:
+    name: Arch desktop and package
+    needs: source
+    if: needs.source.outputs.run_arch == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: archlinux@sha256:996c3a1d6b0d87b01242f6fcd8cfa3ad3eece1a67ab5c8f108e20af1d7b97bdd
+    steps:
+      - name: Bootstrap Git before checkout
+        run: pacman -Syu --noconfirm --needed git
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.source.outputs.commit }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Arch dependencies and unprivileged builder
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git rust cmake ninja qt6-base qt6-webengine qt6-svg kstatusnotifieritem kwindowsystem tmux openssh python ccache dbus namcap desktop-file-utils
+          useradd -m user
+          chown -R user:user "$GITHUB_WORKSPACE"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            /home/user/.cargo/registry
+            /home/user/.cargo/git
+            /home/user/.cache/ccache
+          key: arch-${{ hashFiles('Cargo.lock', 'tray/CMakeLists.txt') }}
+      - name: Test desktop and build package
+        run: |
+          chown -R user:user /home/user
+          runuser -u user -- env QTWEBENGINE_DISABLE_SANDBOX=1 bash scripts/ci/arch.sh
+      - name: Verify installed system bundle in disposable home
+        shell: bash
+        run: |
+          set -euo pipefail
+          pacman -U --noconfirm artifacts/*.pkg.tar.zst
+          runuser -u user -- python3 scripts/check-installed-package.py 2>&1 | tee artifacts/test-results/installed-package.log
+      - name: Retain Arch package and test logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: arch-x86_64-${{ needs.source.outputs.commit }}
+          path: artifacts
+          retention-days: ${{ github.event_name == 'schedule' && 3 || 7 }}
+
+  mac-desktop:
+    name: macOS desktop
+    needs: source
+    if: needs.source.outputs.run_macos == 'true'
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.source.outputs.commit }}
+          persist-credentials: false
+      - run: brew install cmake qt qtwebengine ccache
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/Library/Caches/ccache
+          key: mac-desktop-${{ runner.arch }}-${{ hashFiles('tray/CMakeLists.txt') }}
+      - run: bash scripts/ci/gui.sh
+      - name: Retain desktop test logs
+        if: always() && (github.event_name != 'schedule' || failure())
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mac-desktop-results
+          path: artifacts/test-results
+          retention-days: ${{ github.event_name == 'schedule' && 3 || 7 }}
+
+  gate:
+    name: Suite results
+    if: always() && (github.event.repository.private == false || github.event_name == 'workflow_dispatch')
+    needs: [source, cli, arch, mac-desktop]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      RESULTS: ${{ toJSON(needs) }}
+      RUN_CLI: ${{ needs.source.outputs.run_linux == 'true' || needs.source.outputs.run_macos == 'true' }}
+      RUN_ARCH: ${{ needs.source.outputs.run_arch == 'true' }}
+      RUN_MACOS: ${{ needs.source.outputs.run_macos == 'true' }}
+    steps:
+      - run: |
+          python3 - <<'PY'
+          import json, os
+          results = json.loads(os.environ['RESULTS'])
+          selected = {
+              'source': True,
+              'cli': json.loads(os.environ['RUN_CLI']),
+              'arch': json.loads(os.environ['RUN_ARCH']),
+              'mac-desktop': json.loads(os.environ['RUN_MACOS']),
+          }
+          for name, enabled in selected.items():
+              expected = 'success' if enabled else 'skipped'
+              actual = results[name]['result']
+              if actual != expected:
+                  raise SystemExit(f"{name}: {actual}, expected {expected}")
+          print('All selected CI suites passed; unselected suites were skipped.')
+          PY
