@@ -223,7 +223,7 @@ void TestActivityView::markdownFollowsThemeAndScale()
     QCOMPARE(chips.size(), 1);
     QCOMPARE(chips.first().property(QTextFormat::UserProperty + 45).toDouble(), 2.0);
     const auto disc = view.browser()->document()->resource(QTextDocument::ImageResource, QUrl("hgs-md:disc/dark/200")).value<QImage>();
-    QCOMPARE(disc.size(), (QSizeF(10, 38) * view.browser()->devicePixelRatioF()).toSize());
+    QCOMPARE(disc.size(), (QSizeF(56, 24) * view.browser()->devicePixelRatioF()).toSize());
 }
 
 void TestActivityView::agentCardsKeepZerusSurface()

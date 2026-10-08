@@ -49,8 +49,8 @@ private slots:
 void TestMarkdownObjects::resourcesAreDrawnAtScaleAndPixelRatio()
 {
     const auto disc = MarkdownObjects::resource(QUrl("hgs-md:disc/light/150"), 2.0);
-    QCOMPARE(disc.size(), QSize(15, 57)); QCOMPARE(disc.devicePixelRatio(), 2.0);
-    QVERIFY(qAlpha(disc.pixel(7, 22)) > 200);   // centre of the 5×5 disc at y 5..10
+    QCOMPARE(disc.size(), QSize(84, 36)); QCOMPARE(disc.devicePixelRatio(), 2.0);
+    QVERIFY(qAlpha(disc.pixel(40, 19)) > 200);   // centre of the 5×5 disc at x 11..16, y 4..9
     QVERIFY(qAlpha(disc.pixel(7, 2)) == 0);
     const auto corner = MarkdownObjects::resource(QUrl("hgs-md:corner-br/dark/100"), 1.0);
     QCOMPARE(corner.size(), QSize(6, 6));

@@ -69,6 +69,7 @@ private slots:
     void blockquotesHaveBarAndMutedText();
     void tablesHaveBordersZebraAndAlignment();
     void rulesUseGitHubGaps();
+    void markerSharesTheLineWithItsText();
 };
 
 void TestMarkdownHtml::themeUsesGitHubTokens()
@@ -178,8 +179,9 @@ void TestMarkdownHtml::bulletListsUseDrawnMarkers()
     QVERIFY(output.contains(light().resource("square")));
     QVERIFY(output.contains("<table cellspacing=\"0\" cellpadding=\"0\" style=\"margin-top:16px;\">"));
     QVERIFY(output.contains("<table cellspacing=\"0\" cellpadding=\"0\" style=\"margin-top:0px;\">"));
-    QVERIFY(output.contains("padding:0px 12px 0 0;line-height:21px;"));
-    QVERIFY(output.contains("padding:3px 12px 0 0;line-height:21px;"));
+    QVERIFY(output.contains("<td valign=\"top\" style=\"padding:0px 0 0 28px;\">"));
+    QVERIFY(output.contains("<td valign=\"top\" style=\"padding:3px 0 0 28px;\">"));
+    QVERIFY(output.contains("<p style=\"margin:0px 0 0 0;line-height:21px;text-indent:-28px;\">"));
     QVERIFY(document("- a\n- b")->toPlainText().contains("a"));
 }
 
@@ -187,12 +189,14 @@ void TestMarkdownHtml::orderedListsHonourStartAndNesting()
 {
     const auto plain = document("3. a\n4. b\n   1. c\n      1. d")->toPlainText();
     for (const char *marker : {"3.", "4.", "i.", "a."}) QVERIFY2(plain.contains(QLatin1String(marker)), marker);
-    QVERIFY(html("1. a\n2. b").contains("padding:3px 4px 0 0;"));
+    QVERIFY(html("1. a\n2. b").contains(light().resource("gap")));
+    QVERIFY(html("1. a\n2. b").contains(light().resource("blank")));
 }
 
 void TestMarkdownHtml::looseListItemsAreSpaced()
 {
-    QVERIFY(html("- a\n\n- b").contains("padding:16px 12px 0 0;"));
+    QVERIFY(html("- a\n\n- b").contains("padding:16px 0 0 28px;"));
+    QVERIFY(html("- a\n\n- b").contains("<p style=\"margin:0px 0 0 0;line-height:21px;text-indent:-28px;\">"));
     QVERIFY(html("- `code` item").contains("line-height:23px;"));
 }
 
@@ -263,6 +267,26 @@ void TestMarkdownHtml::rulesUseGitHubGaps()
     QVERIFY(output.contains("bgcolor=\"#d1d9e0\" style=\"margin-top:24px;\""));
     QVERIFY(output.contains("height=\"4\""));
     QVERIFY(output.contains("<p style=\"margin:24px 0 0 0;line-height:21px;\">"));
+}
+
+void TestMarkdownHtml::markerSharesTheLineWithItsText()
+{
+    // In a cell of its own the marker follows a different baseline than a first
+    // line set in monospace or holding a chip; on the same line it cannot drift.
+    const auto doc = document("- `tray/src/a/very/long/path/that/cannot/fit/in/a/narrow/pane.cpp`\n- short `x` item\n- plain item\n"
+                              "- [ ] task item\n\n1. numbered item");
+    for (const char *text : {"tray/src/a/very", "short", "plain item", "task item", "numbered item"}) {
+        bool found = false;
+        for (auto block = doc->begin(); block.isValid(); block = block.next()) {
+            if (!block.text().contains(QLatin1String(text))) continue;
+            bool marker = false;
+            for (auto it = block.begin(); !it.atEnd(); ++it)
+                marker |= it.fragment().charFormat().isImageFormat() && it.fragment().charFormat().toImageFormat().name().startsWith("hgs-md:");
+            QVERIFY2(marker, text); found = true;
+        }
+        QVERIFY2(found, text);
+    }
+    QVERIFY(html("- ```\n  x\n  ```").contains(light().resource("disc")));
 }
 
 QTEST_MAIN(TestMarkdownHtml)

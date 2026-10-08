@@ -76,11 +76,12 @@ QString markerText(const QString &imageName)
 {
     if (!imageName.startsWith(QLatin1String("hgs-md:"))) return QString();
     const QString name = QUrl(imageName).path().section('/', 0, 0);
-    if (name == "disc") return QString::fromUtf8("•");
-    if (name == "circle") return QString::fromUtf8("◦");
-    if (name == "square") return QString::fromUtf8("▪");
-    if (name == "check-on") return QStringLiteral("[x]");
-    if (name == "check-off") return QStringLiteral("[ ]");
+    if (name == "disc") return QString::fromUtf8("• ");
+    if (name == "circle") return QString::fromUtf8("◦ ");
+    if (name == "square") return QString::fromUtf8("▪ ");
+    if (name == "check-on") return QStringLiteral("[x] ");
+    if (name == "check-off") return QStringLiteral("[ ] ");
+    if (name == "gap") return QStringLiteral(" ");
     return QString();
 }
 
@@ -89,12 +90,6 @@ QTextTable *tableOf(const QTextBlock &block)
     return block.isValid() ? QTextCursor(block).currentTable() : nullptr;
 }
 
-bool isMarker(const QString &text)
-{
-    static const QRegularExpression ordinal(QStringLiteral("^([0-9]+|[ivxlcdm]+|[a-z]+)\\.$"));
-    static const QStringList glyphs{QString::fromUtf8("•"), QString::fromUtf8("◦"), QString::fromUtf8("▪"), QStringLiteral("[x]"), QStringLiteral("[ ]")};
-    return glyphs.contains(text) || ordinal.match(text).hasMatch();
-}
 }
 
 QImage MarkdownObjects::resource(const QUrl &url, qreal devicePixelRatio)
@@ -121,19 +116,22 @@ QImage MarkdownObjects::resource(const QUrl &url, qreal devicePixelRatio)
         return image;
     };
     const QString &name = parts[0];
-    // Markers live in a 19 px tall image (rows 5..10) so Qt's baseline alignment matches GitHub.
-    if (name == "disc") return draw(5, 19, [&](QPainter &p) { p.setPen(Qt::NoPen); p.setBrush(theme.fg); p.drawEllipse(QRectF(0, 5, 5, 5)); });
-    if (name == "circle") return draw(5, 19, [&](QPainter &p) { p.setPen(QPen(theme.fg, 1)); p.setBrush(Qt::NoBrush); p.drawEllipse(QRectF(0.5, 5.5, 4, 4)); });
-    if (name == "square") return draw(5, 19, [&](QPainter &p) { p.fillRect(QRectF(0, 5, 5, 5), theme.fg); });
-    if (name == "check-on" || name == "check-off") return draw(13, 19, [&](QPainter &p) {
+    // Markers fill the 28 px list gutter; the dot sits 5.5 px above the image bottom (the baseline).
+    if (name == "disc") return draw(28, 12, [&](QPainter &p) { p.setPen(Qt::NoPen); p.setBrush(theme.fg); p.drawEllipse(QRectF(11, 4, 5, 5)); });
+    if (name == "circle") return draw(28, 12, [&](QPainter &p) { p.setPen(QPen(theme.fg, 1)); p.setBrush(Qt::NoBrush); p.drawEllipse(QRectF(11.5, 4.5, 4, 4)); });
+    if (name == "square") return draw(28, 12, [&](QPainter &p) { p.fillRect(QRectF(11, 4, 5, 5), theme.fg); });
+    // Centred on the line (vertical-align: middle), like GitHub's task checkbox.
+    if (name == "check-on" || name == "check-off") return draw(28, 18, [&](QPainter &p) {
         const bool on = name == "check-on";
         p.setPen(QPen(theme.muted, 1)); p.setBrush(on ? theme.muted : theme.canvas);
-        p.drawRoundedRect(QRectF(0.5, 3.5, 12, 12), 2, 2);
+        p.drawRoundedRect(QRectF(8.5, 1.5, 12, 12), 2, 2);
         if (on) {
             p.setPen(QPen(theme.canvas, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-            p.drawPolyline(QPolygonF{QPointF(3.5, 9.5), QPointF(5.5, 11.5), QPointF(9.5, 7.0)});
+            p.drawPolyline(QPolygonF{QPointF(11.5, 7.5), QPointF(13.5, 9.5), QPointF(17.5, 5.0)});
         }
     });
+    // Ordered markers are text right-aligned in the gutter between two transparent spacers.
+    if (name == "blank" || name == "gap") return draw(1, 1, [](QPainter &) {});
     static const QHash<QString, QPointF> corners{{"corner-tl", {0, 0}}, {"corner-tr", {-6, 0}}, {"corner-bl", {0, -6}}, {"corner-br", {-6, -6}}};
     if (corners.contains(name)) return draw(6, 6, [&](QPainter &p) {
         p.setPen(Qt::NoPen); p.setBrush(theme.subtle);
@@ -217,8 +215,7 @@ QString MarkdownObjects::plainText(const QTextCursor &selection)
             }
             if (lone || tableOf(block.previous()) != table || tableOf(block.next()) != table) continue;
         }
-        const bool marker = table && table->columns() == 2 && table->cellAt(at).column() == 0 && isMarker(line);
-        result += marker ? line + ' ' : line + '\n';
+        result += line + '\n';
     }
     if (result.endsWith('\n')) result.chop(1);
     return result;

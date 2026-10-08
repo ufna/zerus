@@ -1,6 +1,8 @@
 #include "MarkdownHtml.h"
 
 #include <QFontDatabase>
+#include <QFontMetricsF>
+#include <QGuiApplication>
 #include <QObject>
 #include <QStringList>
 #include <QVector>
@@ -15,6 +17,7 @@ namespace {
 constexpr int BaseSize = 14, CodeSize = 12;
 constexpr int BlockGap = 16, HeadingGap = 24, RuleGap = 24;
 constexpr int LineHeight = 21, CodeLineHeight = 23;
+constexpr int Gutter = 28;   // list padding-left: 2em
 
 QColor over(const QColor &top, double alpha, const QColor &bottom)
 {
@@ -182,15 +185,29 @@ public:
             Frame &list = m_frames.last();
             const int top = list.blocks == 0 ? 0 : list.loose ? BlockGap : 3;
             const int lineHeight = frame.code ? CodeLineHeight : LineHeight;
-            QString marker; int space = 12;
-            if (frame.task) { marker = image(frame.checked ? "check-on" : "check-off", 13); space = 7; }
-            else if (list.ordered) { marker = run(ordinal(list.number, list.depth) + '.'); space = 4; }
-            else marker = image(list.depth == 0 ? "disc" : list.depth == 1 ? "circle" : "square", 5);
-            list.html += QString("<tr><td width=\"28\" align=\"right\" valign=\"top\" style=\"padding:%1px %2px 0 0;line-height:%3px;\">")
-                             .arg(top).arg(space).arg(lineHeight)
-                       + marker
-                       + QString("</td><td valign=\"top\" style=\"padding-top:%1px;line-height:%2px;\">").arg(top).arg(lineHeight)
-                       + frame.html + "</td></tr>";
+            // The marker hangs in the gutter on the first line itself. In a cell of its
+            // own Qt would put it on another baseline than a monospace or chip first line.
+            QString marker;
+            if (frame.task) marker = image(frame.checked ? "check-on" : "check-off", Gutter, 18, true);
+            else if (list.ordered) {
+                QFont font = QGuiApplication::font(); font.setPixelSize(BaseSize);
+                const QString label = ordinal(list.number, list.depth) + '.';
+                const int width = qRound(QFontMetricsF(font).horizontalAdvance(label));
+                marker = image("blank", qMax(1, Gutter - 4 - width), 1) + run(label) + image("gap", 4, 1);
+            } else marker = image(list.depth == 0 ? "disc" : list.depth == 1 ? "circle" : "square", Gutter, 12);
+            const QString indent = QString("text-indent:-%1px;").arg(Gutter);
+            QString content = frame.html;
+            if (content.startsWith(QLatin1String("<p style=\""))) {
+                const auto end = content.indexOf(QLatin1String("\">"));
+                content.insert(end + 2, marker);
+                content.insert(end, indent);
+            } else {
+                // Tight items hold inline runs, then any blocks (nested lists, code).
+                const auto block = content.indexOf(QLatin1String("<table"));
+                content = QString("<p style=\"margin:0px 0 0 0;line-height:%1px;%2\">").arg(lineHeight).arg(indent)
+                    + marker + (block < 0 ? content : content.left(block)) + "</p>" + (block < 0 ? QString() : content.mid(block));
+            }
+            list.html += QString("<tr><td valign=\"top\" style=\"padding:%1px 0 0 %2px;\">").arg(top).arg(Gutter) + content + "</td></tr>";
             ++list.blocks; ++list.number;
             break;
         }
@@ -326,10 +343,11 @@ private:
         for (const auto &frame : m_frames) depth += frame.type == MD_BLOCK_UL || frame.type == MD_BLOCK_OL;
         return depth;
     }
-    // Marker images are 19 px tall so that Qt's baseline alignment puts the mark where GitHub does.
-    QString image(const char *name, int width) const
+    // Bullets stand on the baseline: their 12 px image puts the dot 5.5 px above it, as on GitHub.
+    QString image(const char *name, int width, int height, bool middle = false) const
     {
-        return QString("<img src=\"%1\" width=\"%2\" height=\"19\">").arg(m_theme.resource(QLatin1String(name))).arg(width);
+        return QString("<img src=\"%1\" width=\"%2\" height=\"%3\"%4>").arg(m_theme.resource(QLatin1String(name))).arg(width).arg(height)
+            .arg(middle ? QStringLiteral(" style=\"vertical-align:middle;\"") : QString());
     }
     // Runs, indentation and trailing spaces survive HTML whitespace collapsing;
     // a single space between words stays breakable for narrow panes.

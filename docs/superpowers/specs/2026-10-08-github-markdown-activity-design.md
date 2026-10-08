@@ -80,8 +80,8 @@ Activity content scale. Spacing between blocks uses `margin-top` (16 px; heading
 | --- | --- |
 | Paragraph | `<p>` with fixed `line-height` 21 px, or 23 px when the block contains inline code (matches GitHub's taller line box). |
 | Heading 1–6 | Single-cell table; text at 2/1.5/1.25/1/0.875/0.85 em, weight 600; h1/h2 have a 1 px bottom border (`border.muted`) and 0.3 em padding; h6 uses `fg.muted`. |
-| Lists | Two-column table per list: a 28 px marker cell (right-aligned, 12 px gap) and a content cell. Items after the first get 3 px top padding. Nested lists sit in the content cell without extra margin. Markers: disc → circle → square for bullets; decimal → lower-roman → lower-alpha for ordered lists, honouring the start number. |
-| Task list item | The marker cell shows a drawn checkbox (checked/unchecked), no bullet. |
+| Lists | One table per list, one cell per item with a 28 px left padding. The marker hangs on the item's first line (`text-indent: -28px`) as a 28 px wide image, so it shares the text baseline whatever font the line uses (a separate marker cell drifted under fixed line heights). Items after the first get 3 px top padding (16 px in loose lists). Nested lists sit in the cell without extra margin. Markers: disc → circle → square for bullets, the dot 5.5 px above the baseline; decimal → lower-roman → lower-alpha for ordered lists, right-aligned text between transparent spacers, honouring the start number. |
+| Task list item | The hanging marker is a drawn checkbox (checked/unchecked) centred on the line, no bullet. |
 | Inline code | A text object (see below). |
 | Code block | 3×3 table: 6 px corner images with a 6 px radius, `canvas.subtle` edges, centre cell padded 7/10/13/10 px (top/right/bottom/left) with the monospace font at 12 px and 17 px line height. Text wraps. |
 | Blockquote | Two-cell table: 4 px left bar (`border.default`) and a content cell with 14 px horizontal padding in `fg.muted`. |
