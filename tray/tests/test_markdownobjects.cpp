@@ -48,6 +48,7 @@ private slots:
     void plainTextKeepsBlankLinesInsideMessages();
     void chipsFollowTheirTextSizeAndColour();
     void longJournalsConvertQuickly();
+    void narrowPanesKeepWideCodeAsText();
 };
 
 void TestMarkdownObjects::resourcesAreDrawnAtScaleAndPixelRatio()
@@ -156,6 +157,18 @@ void TestMarkdownObjects::longJournalsConvertQuickly()
         QCOMPARE(MarkdownObjects::convertChips(doc.get(), light(), objects), 4000);
         QVERIFY2(timer.elapsed() < 1000, qPrintable(QString::number(timer.elapsed()) + " ms"));
     }
+}
+
+void TestMarkdownObjects::narrowPanesKeepWideCodeAsText()
+{
+    // A chip cannot wrap: one wider than the space it may take stays wrappable text.
+    auto narrow = document("Run `cargo test --workspace` now");
+    QCOMPARE(MarkdownObjects::convertChips(narrow.get(), light(), true, 60), 1);
+    QVERIFY(chips(narrow.get()).isEmpty());
+    QVERIFY(narrow->toPlainText().contains("cargo test --workspace"));
+    auto wide = document("Run `cargo test --workspace` now");
+    MarkdownObjects::convertChips(wide.get(), light(), true, 600);
+    QCOMPARE(chips(wide.get()).size(), 1);
 }
 
 QTEST_MAIN(TestMarkdownObjects)

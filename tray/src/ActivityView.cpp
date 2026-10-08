@@ -185,8 +185,9 @@ QString timeText(const QJsonObject &event)
 QString messageRole(const QJsonObject &event)
 {
     if (!event.value("agent_id").toString().isEmpty() || (event.value("detail").toString().isEmpty() && event.value("attachments").toArray().isEmpty())) return {};
-    // Claude starts a turn for a finished background task; nobody wrote it.
-    if (event.value("origin") == "task_notification") return "notice";
+    // Claude starts a turn for finished background work; nobody wrote it.
+    const auto origin = event.value("origin").toString();
+    if (origin == "task_notification" || origin == "subagent_report") return "notice";
     const auto type = event.value("type").toString();
     // Kimi reports an empty UserPromptSubmit followed by the actual prompt in
     // TurnStarted. Keep that prompt in the timeline, ahead of its tool calls.
@@ -306,6 +307,11 @@ ActivityView::ActivityView(QWidget *parent) : QWidget(parent)
     });
     connect(m_browser, &QTextBrowser::selectionChanged, this, [this] {
         if (!m_rendering && m_browser->textCursor().hasSelection()) m_followLatest = false;
+    });
+    m_relayout = new QTimer(this); m_relayout->setSingleShot(true); m_relayout->setInterval(150);
+    connect(m_relayout, &QTimer::timeout, this, [this] {
+        if (m_html.isEmpty()) return;
+        m_html.clear(); render(false);
     });
     setTheme(false);
 }
@@ -533,6 +539,9 @@ bool ActivityView::eventFilter(QObject *watched, QEvent *event)
     if (watched == m_browser->viewport() && (event->type() == QEvent::Resize || event->type() == QEvent::Show)) {
         positionJumpButton();
         if (m_followLatest) scheduleFollow();
+        // Chips cannot wrap; size them again once the pane settles at another width.
+        const int width = m_browser->viewport()->width();
+        if (!m_html.isEmpty() && qAbs(width - m_chipWidth) > m_chipWidth / 10) m_relayout->start();
     }
     return QWidget::eventFilter(watched, event);
 }
@@ -754,8 +763,22 @@ void ActivityView::render(bool contentUpdate)
     for (int i = 0; i < events.size();) {
         const auto event = events[i]; const auto role = messageRole(event);
         if (role == "notice") {
-            html += card(eventKey(event), tr("Background task"), timeText(event),
-                QString("<p style='margin:0;'>%1</p>").arg(escaped(event.value("detail").toString()).replace('\n', "<br>")), false, true);
+            auto body = QString("<p style='margin:0;'>%1</p>").arg(escaped(event.value("detail").toString()).replace('\n', "<br>"));
+            // A subagent's report stays one line, like Claude's terminal, until opened.
+            const auto report = event.value("report").toString();
+            if (!report.isEmpty()) {
+                const QString key = "report-" + eventKey(event); m_toggleKeys.insert(key);
+                const bool expanded = m_expanded.value(key);
+                body += QString("<p style='font-size:11px;margin:6px 0 0;'><a href='hgs-activity:%1' style='color:%2;'>%3</a></p>")
+                    .arg(key, violet, expanded ? tr("▾ Hide report") : tr("▸ Show report"));
+                if (expanded) {
+                    auto noticeTheme = MarkdownTheme::github(m_dark, QColor(noticeSurface), m_scale);
+                    noticeTheme.subtle = QColor(codeSurface);
+                    body += markdown(report, noticeTheme, m_fileLinks);
+                }
+            }
+            html += card(eventKey(event), event.value("origin") == "subagent_report" ? tr("Subagent report") : tr("Background task"),
+                timeText(event), body, false, true);
             ++i; continue;
         }
         if (!role.isEmpty()) {
@@ -876,7 +899,9 @@ void ActivityView::render(bool contentUpdate)
     static_cast<JournalDocument *>(m_browser->document())->pixelRatio = m_browser->devicePixelRatioF();
     m_browser->setHtml(html);
     // Before bookmarks are read: offsets on both sides of a refresh count chips as one character.
-    MarkdownObjects::convertChips(m_browser->document(), agentTheme, !searching);
+    // A chip may take at most half the pane, so that it and its container still fit.
+    m_chipWidth = m_browser->viewport()->width();
+    MarkdownObjects::convertChips(m_browser->document(), agentTheme, !searching, m_chipWidth / 2.0);
     // QTextDocument lays out long tables lazily. Resolve the final scroll
     // range before restoring the viewport and allowing its next paint.
     m_browser->document()->documentLayout()->documentSize();

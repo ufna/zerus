@@ -21,6 +21,7 @@
 #include <QTextCursor>
 #include <QTextFragment>
 #include <QTextTable>
+#include <QRegularExpression>
 #include <QTest>
 #include <QVBoxLayout>
 
@@ -87,6 +88,7 @@ private slots:
     void expandsMatchingSnapshotWithoutDuplicate();
     void kimiTurnStartedKeepsRequestBeforeTools();
     void taskNotificationIsAColoredNoticeNotYou();
+    void subagentReportIsShortUntilExpanded();
     void kimiWireAnswerReplacesEmptyStop();
     void progressCommentaryAppearsBeforeFinalResponse();
     void claudeThinkingStaysSeparateFromToolsAndReplies();
@@ -113,6 +115,7 @@ private slots:
     void copyGivesVisibleText();
     void markdownFollowsThemeAndScale();
     void agentCardsKeepZerusSurface();
+    void wideChipsStayTextInNarrowPanes();
     void preview();
 };
 
@@ -243,6 +246,23 @@ void TestActivityView::agentCardsKeepZerusSurface()
         QCOMPARE(cellColour("Reply prose"), QString(dark ? "#242d36" : "#f3f6f8"));
         QCOMPARE(cellColour("block text"), QString(dark ? "#171e25" : "#e8eef2"));
     }
+}
+
+void TestActivityView::wideChipsStayTextInNarrowPanes()
+{
+    // At a large content scale a 35-character chip is wider than half a narrow pane.
+    ActivityView view; view.resize(420, 400); view.setContentScale(2.5); view.show();
+    view.setActivity({}, {journalEvent(1, "Stop", "Run `cargo test --workspace --all-feat` now")});
+    const auto chipCount = [&] {
+        int count = 0;
+        for (auto block = view.browser()->document()->begin(); block.isValid(); block = block.next())
+            for (auto it = block.begin(); !it.atEnd(); ++it) count += it.fragment().charFormat().objectType() == MarkdownObjects::ChipObjectType;
+        return count;
+    };
+    QTRY_COMPARE(chipCount(), 0);
+    QVERIFY(view.plainText().contains("cargo test --workspace --all-feat"));
+    view.resize(2400, 400);
+    QTRY_COMPARE(chipCount(), 1);
 }
 
 void TestActivityView::contextCounterKeepsPhysicalRightAlignment()
@@ -903,6 +923,33 @@ void TestActivityView::expandsMatchingSnapshotWithoutDuplicate()
     QVERIFY(view.browser()->toPlainText().contains("recorded response"));
     QVERIFY(view.browser()->toPlainText().indexOf("An older response") < view.browser()->toPlainText().indexOf("New request"));
     QVERIFY(view.browser()->toPlainText().contains("Outside the available timeline"));
+}
+
+void TestActivityView::subagentReportIsShortUntilExpanded()
+{
+    ActivityView view; view.setTheme(true);
+    auto report = journalEvent(2, "UserPromptSubmit", "Agent \"Review branch\" finished");
+    report["origin"] = "subagent_report"; report["agent_id"] = ""; report["from_agent"] = "a15";
+    report["report"] = "## Review: Markdown\n\n- **Critical**: tests fail at HEAD\n- Minor: spacing";
+    view.setActivity({}, {journalEvent(1, "UserPromptSubmit", "Review the branch"), report, journalEvent(3, "Stop", "Fixing it")});
+    auto plain = view.browser()->toPlainText();
+    QCOMPARE(plain.count("You"), 1);
+    QVERIFY(plain.contains("Subagent report"));
+    QVERIFY(plain.contains("Agent \"Review branch\" finished"));
+    QVERIFY(!plain.contains("tests fail at HEAD"));
+    const auto toggle = links(view.browser()).filter(QRegularExpression("^hgs-activity:report-"));
+    QCOMPARE(toggle.size(), 1);
+    activate(view.browser(), toggle.first());
+    plain = view.browser()->toPlainText();
+    QVERIFY(plain.contains("Review: Markdown"));
+    QVERIFY(plain.contains("tests fail at HEAD"));
+    QVERIFY(!plain.contains("## Review"));
+    QVERIFY(plain.indexOf("Review: Markdown") < plain.indexOf("Fixing it"));
+    // Polling keeps the reader's choice; a second click collapses it again.
+    view.setActivity({}, {journalEvent(1, "UserPromptSubmit", "Review the branch"), report, journalEvent(3, "Stop", "Fixing it")});
+    QVERIFY(view.browser()->toPlainText().contains("tests fail at HEAD"));
+    activate(view.browser(), toggle.first());
+    QVERIFY(!view.browser()->toPlainText().contains("tests fail at HEAD"));
 }
 
 void TestActivityView::taskNotificationIsAColoredNoticeNotYou()

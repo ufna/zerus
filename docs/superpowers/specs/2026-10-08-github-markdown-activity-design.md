@@ -110,8 +110,10 @@ Trade-offs, accepted:
   possible.
 - In search-result mode chips are not converted (they stay a styled span with the
   chip colour), so `QTextDocument::find()` highlights matches inside code.
-- A run longer than 40 characters also stays styled text: a chip cannot wrap, and
-  a long path or command must not be clipped in a narrow pane.
+- A run longer than 40 characters, or a chip wider than half the Activity pane,
+  also stays styled text: a chip cannot wrap, and a long path or command must not
+  be clipped in a narrow pane or at a large content scale. The view re-renders
+  chips (debounced) when the pane width changes by more than 10 %.
 
 ### Drawn resources
 

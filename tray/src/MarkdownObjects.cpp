@@ -155,7 +155,7 @@ QImage MarkdownObjects::resource(const QUrl &url, qreal devicePixelRatio)
     return {};
 }
 
-int MarkdownObjects::convertChips(QTextDocument *document, const MarkdownTheme &theme, bool objects)
+int MarkdownObjects::convertChips(QTextDocument *document, const MarkdownTheme &theme, bool objects, qreal maxWidth)
 {
     struct Run { int position = 0, length = 0; QString text; QTextCharFormat format; };
     QList<Run> runs;
@@ -181,21 +181,22 @@ int MarkdownObjects::convertChips(QTextDocument *document, const MarkdownTheme &
         // The renderer sized and coloured the run after its surroundings (already content-scaled).
         const int pixels = it->format.font().pixelSize() > 0 ? it->format.font().pixelSize() : qRound(12 * scale);
         const QColor ink = it->format.hasProperty(QTextFormat::ForegroundBrush) ? it->format.foreground().color() : theme.fg;
-        if (!objects || text.size() > MaximumChipLength) {
-            // Plain spaces again, so that find() matches and long runs can wrap.
-            QTextCharFormat format = it->format;
-            format.setBackground(theme.chip); format.setForeground(ink);
-            format.setFontFamilies(QStringList{theme.monoFamily});
-            format.setProperty(QTextFormat::FontPixelSize, pixels);
-            cursor.insertText(text, format);
-            continue;
-        }
         QTextCharFormat format;
         format.setObjectType(ChipObjectType);
         format.setProperty(ChipText, text); format.setProperty(ChipFill, theme.chip); format.setProperty(ChipInk, ink);
         format.setProperty(ChipFamily, theme.monoFamily); format.setProperty(ChipScale, scale); format.setProperty(ChipPixels, pixels);
         format.setProperty(ChipHeading, it->format.background().color() == MarkdownHtml::headingChipSentinel());
         format.setProperty(ChipWeight, it->format.fontWeight()); format.setProperty(ChipItalic, it->format.fontItalic());
+        const qreal width = QFontMetricsF(chipFont(format)).horizontalAdvance(text) + 2 * chipPadding(format).x();
+        if (!objects || text.size() > MaximumChipLength || (maxWidth > 0 && width > maxWidth)) {
+            // Plain spaces again, so that find() matches and long runs can wrap.
+            QTextCharFormat plain = it->format;
+            plain.setBackground(theme.chip); plain.setForeground(ink);
+            plain.setFontFamilies(QStringList{theme.monoFamily});
+            plain.setProperty(QTextFormat::FontPixelSize, pixels);
+            cursor.insertText(text, plain);
+            continue;
+        }
         format.setVerticalAlignment(QTextCharFormat::AlignMiddle); format.setFont(alignmentFont(chipFont(format)));
         if (it->format.isAnchor()) {
             format.setAnchor(true); format.setAnchorHref(it->format.anchorHref()); format.setToolTip(it->format.toolTip());
