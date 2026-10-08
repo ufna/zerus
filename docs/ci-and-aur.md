@@ -2,8 +2,8 @@
 
 This document describes the checks, package layout and publication workflow.
 [Zerus 0.37.0](https://github.com/ufna/zerus/releases/tag/v0.37.0) is the first
-public Arch x86_64 bundle. Release builds and GitHub/AUR publication remain
-separate manual workflows.
+public Arch x86_64 bundle. Stable release builds and GitHub/AUR publication remain
+separate manual workflows; verified nightlies publish automatically.
 
 ## Continuous integration
 
@@ -63,7 +63,9 @@ and Arch ARM are outside this first package matrix.
 All CI jobs have bounded timeouts. Checkout credentials are not persisted and
 Actions are pinned to commit SHAs. Dependabot proposes monthly grouped action/Cargo
 updates. Rust/C++ caches reduce repeated build time; their repository limit stays
-at 10 GiB. Test artifacts expire after seven days and candidates after fourteen.
+at 10 GiB. Ordinary test artifacts expire after seven days and stable candidates
+after fourteen. Scheduled logs, Arch packages and nightly candidates expire after
+three days.
 Standard Ubuntu/macOS runners and public artifacts are free while the repository
 is public. Larger runners and explicitly increased cache storage have separate
 billing rules. No self-hosted runner is attached to a development machine.
@@ -319,8 +321,8 @@ GitHub releases or a schedule.
 
 ### 1. Build and review a candidate
 
-`release.yml` runs quick checks plus full Linux CLI and Arch validation from one
-exact commit. macOS stays off unless explicitly selected. It consumes that run's
+`release.yml` runs quick checks plus full Linux CLI, Arch and macOS validation from
+one exact commit. macOS can be explicitly disabled. It consumes that run's
 Arch package, verifies its embedded version/source commit, assembles source and
 binary archives, rebuilds both stable recipes, runs namcap and seals the result.
 
@@ -421,11 +423,15 @@ For each new bundle, increase the product version, deliberately run a fresh
 candidate, review its exact source/hash/library provenance, then publish that run.
 Verify public GitHub downloads and all three AUR packages, including a fresh yay
 installation, user setup and a process-preserving upgrade. Monitor AUR comments
-and rolling-library changes. macOS remains an explicit hosted opt-in.
+and rolling-library changes. New stable candidates select macOS checks by default.
 
 An authenticated release listing can find GitHub drafts that the tag endpoint
 returns as 404. The publisher checks all pages for the exact tag and rejects
 ambiguous matches and API errors before creating or resuming a draft.
+After creating a draft, it retries read-only discovery for up to sixty seconds of
+backoff to handle delayed GitHub visibility. It creates no duplicate draft and
+does not retry API permission errors. A persistent failure retains the same
+candidate for a publisher-only retry.
 
 Signing with an owner-controlled identity and appointing a backup maintainer are
 optional follow-ups. Checksums and exact run/commit provenance are provided;
@@ -433,11 +439,11 @@ package/tag signing is not configured.
 
 ## Validation record
 
-The hosted runs below preceded the manual-only budget policy. They record prior
-platform/package validation; they do not imply automatic checks are enabled.
-The budget change itself was checked locally with actionlint, source checks and
-all eight suite selections, including 104 success/failure/skip gate scenarios.
-No hosted run was dispatched to validate it.
+The earlier runs below record platform/package validation before the temporary
+manual-only budget policy. That budget change was checked locally with actionlint,
+source checks and all eight suite selections, including 104 success/failure/skip
+gate scenarios. The automatic policy enabled on 2026-10-09 supersedes it; its first
+public nightly validation is recorded at the end of this section.
 
 On **2026-10-08**, the complete
 [main CI run](https://github.com/ufna/zerus/actions/runs/37705887611) passed every
@@ -535,3 +541,25 @@ verified with its existing ad-hoc signing procedure. Both managed GUIs activated
 Sessions after claiming their sockets; existing persistent process identities and
 state access were preserved. These local Mac checks used no GitHub macOS runner.
 Authenticated model-turn tests remain opt-in and were not run for this release.
+
+### First public nightly
+
+On **2026-10-09**, automatic [push CI](https://github.com/ufna/zerus/actions/runs/37848718266)
+and the first [Nightly build](https://github.com/ufna/zerus/actions/runs/37848718703)
+passed full source/Rust 1.85, Linux CLI, Arch desktop/package and both macOS suites
+from exact commit `9eb3a0e3867b42ef82c758781f1b6a23ac848978`. Nightly assembly
+reused the tested Arch binary, checked the generated package with namcap and
+verified its installed binaries, user setup and isolated tmux session.
+
+The [successful publisher](https://github.com/ufna/zerus/actions/runs/37850588572)
+resumed that same candidate after the initial publisher encountered delayed draft
+visibility. Bounded read-only draft discovery now handles that condition, covered
+by regression tests for transient absence, timeout and immediate API rejection.
+All 27 stable/nightly publication contracts pass locally.
+
+[nightly-37848718703](https://github.com/ufna/zerus/releases/tag/nightly-37848718703)
+contains five immutable assets and is a prerelease; the latest stable release
+remains `v0.37.0`. A fresh, fully updated isolated Arch environment installed
+`zerus-ade-nightly-bin 0.37.0.r77.g9eb3a0e.n1-1` through the real yay helper.
+Public archive checksums, runtime dependencies, idempotent `zerus-setup` and an
+ordinary non-Git terminal session passed. No host agent or tmux process was touched.

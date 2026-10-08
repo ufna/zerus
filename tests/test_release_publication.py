@@ -230,6 +230,62 @@ class PublicationTests(unittest.TestCase):
             publish.publish_github(directory, info, sums)
             self.assertEqual(commands, [])
 
+    def test_new_draft_visibility_delay_retries_reads_without_recreating(self):
+        directory = self.candidate()
+        info, sums = common.validate_candidate(directory, VERSION)
+        hashes = {**sums, "SHA256SUMS": common.sha256(directory / "SHA256SUMS")}
+        release = {"draft": True, "tag_name": "v" + VERSION,
+                   "target_commitish": COMMIT, "assets": []}
+        commands, lookups = [], []
+        def lookup(tag):
+            lookups.append(tag)
+            # Initial absence, then two transient misses after successful create.
+            return None if len(lookups) <= 3 else copy.deepcopy(release)
+        def gh(*args):
+            commands.append(args)
+            if args[1] == "create":
+                self.assertEqual(Path(args[args.index("--notes-file") + 1]).read_text().count(COMMIT), 1)
+            elif args[1] == "upload":
+                name = Path(args[3]).name
+                release["assets"].append({"name": name, "digest": "sha256:" + hashes[name],
+                                          "size": (directory / name).stat().st_size})
+            elif args[1] == "edit":
+                release["draft"] = False
+            else:
+                self.fail("Unexpected GitHub mutation: " + str(args))
+        class Download(io.BytesIO):
+            def geturl(self): return "https://release-assets.githubusercontent.com/verified"
+        with patch.object(publish, "release_for_tag", side_effect=lookup), \
+                patch.object(publish, "verify_tag", return_value=True), \
+                patch.object(publish, "gh", side_effect=gh), \
+                patch.object(publish.time, "sleep") as sleep, \
+                patch.object(publish.urllib.request, "urlopen", side_effect=lambda url, **kw: Download((directory / url.rsplit("/", 1)[1]).read_bytes())):
+            publish.publish_github(directory, info, sums)
+            self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 2])
+        self.assertEqual(sum(args[1] == "create" for args in commands), 1)
+        self.assertEqual(sum(args[1] == "upload" for args in commands), len(hashes))
+        self.assertFalse(release["draft"])
+
+    def test_invisible_new_draft_times_out_without_uploading_or_recreating(self):
+        directory = self.candidate()
+        info, sums = common.validate_candidate(directory, VERSION)
+        with patch.object(publish, "release_for_tag", return_value=None), \
+                patch.object(publish, "verify_tag", return_value=False), \
+                patch.object(publish, "gh") as mutations, patch.object(publish.time, "sleep") as sleep:
+            with self.assertRaisesRegex(ValueError, "same candidate"):
+                publish.publish_github(directory, info, sums)
+        self.assertEqual(len(mutations.call_args_list), 1)
+        self.assertEqual(mutations.call_args.args[:2], ("release", "create"))
+        self.assertEqual(sum(call.args[0] for call in sleep.call_args_list), 60)
+
+    def test_new_draft_lookup_api_errors_abort_without_retries(self):
+        with patch.object(publish, "release_for_tag", side_effect=ValueError("Cannot inspect GitHub release: HTTP 403")) as lookup, \
+                patch.object(publish.time, "sleep") as sleep:
+            with self.assertRaisesRegex(ValueError, "HTTP 403"):
+                publish.wait_for_created_draft("v" + VERSION)
+        lookup.assert_called_once()
+        sleep.assert_not_called()
+
     def test_changed_or_incomplete_public_release_is_never_overwritten(self):
         directory = self.candidate()
         info, sums = common.validate_candidate(directory, VERSION)

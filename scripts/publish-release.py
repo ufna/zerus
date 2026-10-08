@@ -8,6 +8,7 @@ from pathlib import Path
 import shlex
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -93,6 +94,18 @@ def release_for_tag(tag):
     return matches[0] if matches else None
 
 
+def wait_for_created_draft(tag):
+    # GitHub may briefly omit a newly created draft from both lookup endpoints.
+    # Retry reads only: never create another draft or replace candidate assets.
+    for delay in (0, 1, 2, 4, 8, 15, 30):
+        if delay:
+            time.sleep(delay)
+        release = release_for_tag(tag)
+        if release is not None:
+            return release
+    raise ValueError("Created draft is still not visible; retry the same candidate after checking GitHub access.")
+
+
 def verify_tag(tag, commit):
     result = subprocess.run(["gh", "api", f"repos/{REPOSITORY}/git/ref/tags/{tag}"], capture_output=True, text=True)
     if result.returncode:
@@ -150,8 +163,7 @@ def publish_github(candidate, info, sums, nightly=False):
             gh("release", "create", tag, "--repo", REPOSITORY, "--draft", "--target", commit,
                "--title", f"Zerus {'nightly ' if nightly else ''}{version}", "--notes-file", str(path),
                *(["--prerelease", "--latest=false"] if nightly else []))
-        release = release_for_tag(tag)
-        require(release is not None, "Created draft is not visible; retry the same candidate after checking GitHub access.")
+        release = wait_for_created_draft(tag)
     if release["draft"]:
         require(release["target_commitish"] == commit, "Existing draft targets another commit or a moving branch.")
     else:
