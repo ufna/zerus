@@ -260,3 +260,8 @@ add_executable(test_markdownhtml test_markdownhtml.cpp)
 target_link_libraries(test_markdownhtml PRIVATE Qt6::Test hgs-markdown)
 add_test(NAME markdownhtml COMMAND test_markdownhtml)
 set_tests_properties(markdownhtml PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+add_executable(test_markdownobjects test_markdownobjects.cpp)
+target_link_libraries(test_markdownobjects PRIVATE Qt6::Test hgs-markdown)
+add_test(NAME markdownobjects COMMAND test_markdownobjects)
+set_tests_properties(markdownobjects PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
