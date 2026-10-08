@@ -54,6 +54,12 @@ GitHub Actions without an explicit owner request to run hosted checks. Validate
 workflow edits locally. Default CI uses one Ubuntu job; full Linux integration,
 Arch packaging and macOS are explicit opt-ins. Release candidates request
 Linux/Arch coverage but leave macOS off by default. See `docs/ci-and-aur.md`.
+AUR packages are `zerus` (stable source), `zerus-git` (upstream main) and
+`zerus-ade-bin` (stable binary), with x86_64 support. Release publication is a
+separate owner-triggered workflow consuming a verified exact-commit candidate;
+never rebuild or overwrite immutable assets on retries. Pure VCS version bumps
+do not create AUR commits. Keep publication credentials confined to the release
+environment and validate changes locally before requesting its manual launch.
 
 Run checks appropriate to the change; see `CONTRIBUTING.md`. Update Beads status
 and export with `bd export -o .beads/issues.jsonl` before staging tracker changes.

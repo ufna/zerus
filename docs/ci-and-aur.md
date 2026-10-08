@@ -2,7 +2,8 @@
 
 This document describes the implemented checks, package layout and first-publication
 handoff. Repository documentation is English. No AUR package has been published by
-this preparation, and release automation defaults to private review artifacts.
+this preparation. The upstream is public; release builds and publication are
+separate manual workflows.
 
 ## Continuous integration
 
@@ -18,7 +19,7 @@ checks and Rust unit tests; it allocates no Arch or macOS runners.
 
 | Job | Default manual CI | Selection | Checks |
 | --- | --- | --- | --- |
-| Quick checks | Always | One Ubuntu job | Privacy guard, Python/Bash syntax, version consistency, actionlint, locked unit tests on Rust 1.85.0 |
+| Quick checks | Always | One Ubuntu job | Privacy guard, Python/Bash syntax, version consistency, actionlint, publication contract tests, locked unit tests on Rust 1.85.0 |
 | Linux CLI | Off | `run_linux=true` | Stable Rust unit tests, terminal smoke tests, all Python integration modules, release build |
 | Arch desktop and package | Off | `run_arch=true` | Qt desktop build, all CTest suites, production build without test targets, pacman package, namcap, staged and installed bundle checks |
 | macOS CLI and desktop | Off | `run_macos=true` | CLI checks and native Qt build with all CTest suites; two macOS jobs |
@@ -77,8 +78,8 @@ permissions, checkout credentials are not persisted, official actions are pinned
 to commit SHAs and Dependabot proposes weekly action/Cargo updates. Rust and C++ caches reduce repeated build
 cost. Test artifacts expire after seven days; release candidates after fourteen.
 Manually selected PR code receives no deployment credentials. There is no
-automatic AUR push, public release publication or self-hosted runner attached to
-a development machine.
+push/tag/release-triggered publication or self-hosted runner attached to a
+development machine. The owner explicitly starts each candidate and publication.
 
 The Arch base image is digest-pinned, but `pacman -Syu` intentionally uses current
 Arch packages. This tests rolling-distribution compatibility; it does not promise
@@ -121,27 +122,54 @@ live upstream; they are not uploaded into AUR Git.
 [AUR submission guidelines](https://wiki.archlinux.org/title/AUR_submission_guidelines),
 [PKGBUILD manual](https://man.archlinux.org/man/PKGBUILD.5.en).
 
-The proposed package family is:
+The owner selected this package family on **2026-10-08**:
 
 | Name | Source | Purpose |
 | --- | --- | --- |
-| `zerus-ade` | Versioned source release with SHA-256 | Recommended stable source package |
-| `zerus-ade-bin` | Versioned Arch x86_64 binary archive with SHA-256 | Convenient installation without Rust/C++ compilation |
-| `zerus-ade-git` | Anonymous upstream Git, `pkgver()` derived from history | Optional development channel |
+| `zerus` | Versioned source archive with SHA-256 | Stable release compiled locally |
+| `zerus-ade-bin` | Versioned Arch x86_64 binary archive with SHA-256 | Stable release without Rust/C++ compilation |
+| `zerus-git` | Public upstream `main`, version derived by `pkgver()` | Development build compiled locally |
 
-The names are recommendations awaiting the owner's choice. All three were absent
-from the AUR RPC lookup on **2026-10-08**; recheck immediately before submission.
-`zerus-bin` already belongs to an unrelated crates.io offline-mirror tool, so it
-must not be reused. [Existing zerus-bin package](https://aur.archlinux.org/packages/zerus-bin).
+Primary owner/maintainer: **ufna**, **Vladimir Alyamkin <ufna@ufna.dev>**.
+These three names were absent from the AUR RPC lookup on **2026-10-08**; the
+publisher rechecks ownership before writing. All flavors install the same files
+and conflict with one another. The binary/VCS flavors provide versioned `zerus`.
 
-Stable source and binary recipes are templates until candidate preparation inserts
-the release version and exact archive hashes. The VCS recipe is ready for build
-validation; its initial version is a seed and `pkgver()` updates it during build.
-`SKIP` is used only for VCS sources. Candidate assembly regenerates the metadata
-for all three recipes. Never hand-edit `.SRCINFO`.
+Open-source prebuilt packages require the `-bin` suffix. `zerus-bin` belongs to
+an unrelated project, so our binary package uses `zerus-ade-bin`.
+[AUR naming rules](https://wiki.archlinux.org/title/AUR_submission_guidelines),
+[existing zerus-bin package](https://aur.archlinux.org/packages/zerus-bin).
+
+Stable recipes are templates until candidate assembly inserts the release version,
+archive hashes and binary library floors. The VCS recipe tracks `main` explicitly;
+its seed version is updated by makepkg. `SKIP` is only for its Git source.
+Generate `.SRCINFO` with `makepkg --printsrcinfo`; never edit it manually.
 [Rust package guidelines](https://wiki.archlinux.org/title/Rust_package_guidelines),
 [VCS package guidelines](https://wiki.archlinux.org/title/VCS_package_guidelines),
 [.SRCINFO](https://wiki.archlinux.org/title/.SRCINFO).
+
+### Dependency declarations
+
+| Class | Packages | Reason |
+| --- | --- | --- |
+| Desktop runtime | `qt6-base`, `qt6-webengine`, `qt6-svg`, `kstatusnotifieritem`, `kwindowsystem`, `hicolor-icon-theme` | Widgets, embedded web UI, SVG plugin, tray/window integration and icons |
+| CLI/runtime tools | `tmux>=3.7`, `openssh`, `python`, `curl`, `procps-ng`, `bash`, `tar` | Persistent sessions, remote access, compatibility helper, account HTTP, process inspection, installers and remote source transfer |
+| Native library runtime | `glibc`, `libgcc`, `libstdc++` | Dynamically linked CLI/desktop binaries |
+| Source build only | `rust`, `cmake`, `ninja`; additionally `git` for `zerus-git` | Locked Rust and production Qt builds; Git source/version discovery |
+| Standard build environment | `base-devel` | Required by Arch's makepkg/AUR build convention; its tools are not repeated in makedepends |
+| Optional features | `nodejs`, `npm`, `git`, `konsole`, `wl-clipboard`, `xclip`, `systemd` | Native agent installation/runtime, worktrees, external terminals, clipboard and user services/scopes |
+
+The binary package has no Rust/CMake/Ninja build dependencies. Its Qt/KDE, C/C++
+runtime and glibc dependency floors are generated from the **verified builder's
+`.BUILDINFO`**, not the publication runner. `release-info.json` records these
+versions. This prevents installing that binary against older libraries that may
+lack symbols; Arch users should keep a fully updated system. A fresh binary/ABI
+rebuild gets a new product version and immutable assets.
+
+Node.js and npm are separate optional dependencies. Native agents are installed
+separately through Accounts or their upstream installers; agent executables,
+credentials and user configuration are never bundled. Systemd integration is
+optional and detected at runtime. Packaging never enables services.
 
 ### Package contents and compatibility
 
@@ -169,7 +197,7 @@ accounts, credentials or configuration. Package installation does not start or
 stop services, edit user homes or replace the user's tmux configuration.
 
 The product package version currently follows the desktop version: `VERSION`
-and `tray/CMakeLists.txt` are **0.36.2**. The independently versioned compatible
+and `tray/CMakeLists.txt` are **0.37.0** for the first public release. The independently versioned compatible
 CLI remains **1.46.1**. CI rejects a product/desktop version mismatch; packaging
 records both versions in `build-info.json`, with the source commit when built
 from Git. For source-archive builds, the release manifest and archive SHA-256
@@ -213,166 +241,129 @@ agent processes, tmux servers and DeepSeek hosts. Package upgrades do not perfor
 a restart. Review the old unit's kill policy before restarting an existing
 installation; never use a broad process kill or restart all native clients.
 
-## Release candidate workflow
+## Manual build and publication
 
-The repository was **private** when this preparation started. A private upstream
-cannot support a normal anonymous AUR build. The owner must choose either public
-upstream or an audited public source/release mirror, then update the recipe URLs
-and release destinations together. Do not put GitHub tokens or personal SSH
-credentials in a `PKGBUILD`. Until then, private Actions artifacts can be reviewed
-and installed directly with pacman; they are not a public yay distribution.
+The public upstream is [ufna/zerus](https://github.com/ufna/zerus). There are two
+independent manual workflows. Neither runs on pushes, pull requests, tags,
+GitHub releases or a schedule.
 
-The manual workflow defaults to artifact-only preparation:
+### 1. Build and review a candidate
 
-```sh
-gh workflow run release.yml --ref main -f version=0.36.2 -f create_draft=false
-gh run list --workflow release.yml
-# Substitute the selected run ID:
-gh run download RUN_ID --name zerus-0.36.2-candidate --dir /tmp/zerus-candidate
-```
-
-An explicit release dispatch runs quick checks, the full Linux CLI suite and
-Arch desktop/package validation, then builds the candidate. It does **not** run
-macOS by default; add `-f run_macos=true` only when that coverage is wanted. This
-is an expensive Linux/Arch build, so dispatch it when preparing a release rather
-than after every edit. A separate full CI dispatch is not needed immediately
-before it: these checks already run inside the release workflow.
-
-The workflow checks the requested version, takes the tested Arch package from
-that exact run and verifies its embedded source commit. It creates:
-
-- `zerus-0.36.2-source.tar.gz` from the exact Git commit. Git export attributes
-  omit tracker, agent instruction/skill, workflow and design prototype directories.
-  Runtime artwork, vendored sources and their notices remain included.
-- `zerus-0.36.2-arch-x86_64.tar.gz`, containing the system-installable `usr/` tree.
-- Tested stable source and binary `.pkg.tar.zst` packages, `SHA256SUMS` and
-  `release-info.json`.
-- `aur/zerus-ade`, `aur/zerus-ade-bin` and `aur/zerus-ade-git`, each containing
-  a concrete `PKGBUILD` and generated `.SRCINFO`.
-
-The source and binary recipes are actually rebuilt against the local candidate
-archives with makepkg as an unprivileged user. namcap errors and staged executable,
-desktop entry or license checks stop the candidate. Public recipe URLs stay
-unchanged; local fixture sources exist only in disposable copies.
-
-Arch CI also installs the built package inside its disposable container and tests
-system binaries, repeated per-user setup and a terminal-only session in a private
-home/socket. This does not exercise a live desktop's tray or an authenticated
-native agent. namcap warnings about dynamically invoked tools and interpreter
-references are retained in the logs; runtime dependencies are declared explicitly.
-
-`create_draft=true` additionally creates a **draft** GitHub release under the
-`release` environment with narrowly scoped write permission. Configure that
-environment's reviewer policy before enabling draft automation if the account
-plan supports it. This workflow does not publish the draft or push AUR repositories.
-The draft uploads source/binary archives, pacman packages, checksums and manifest.
-
-Equivalent local steps after the checkout is committed and its Arch package built:
+`release.yml` runs quick checks plus full Linux CLI and Arch validation from one
+exact commit. macOS stays off unless explicitly selected. It consumes that run's
+Arch package, verifies its embedded version/source commit, assembles source and
+binary archives, rebuilds both stable recipes, runs namcap and seals the result.
 
 ```sh
-python3 scripts/prepare-release.py --version "$(cat VERSION)" \
-  --package artifacts/zerus-ade-git-EXACT_VERSION-x86_64.pkg.tar.zst --output dist
-bash scripts/check-release-packages.sh dist
-cd dist
+# Only when the owner requests a hosted build:
+gh workflow run release.yml --ref main -f version=0.37.0
+# After this manual run succeeds:
+gh run download RUN_ID --name zerus-0.37.0-candidate --dir /tmp/zerus-candidate
+cd /tmp/zerus-candidate
 sha256sum -c SHA256SUMS
 ```
 
-Run these inside an Arch build environment with the package dependencies. The
-helper rejects packages from another source commit/version. Rebuild after changing
-release source, even if the changes are documentation only. Candidate directories
-and source archives are not committed to the application repository.
+The artifact contains source/binary archives, two checked pacman packages,
+`release-info.json`, all three concrete `PKGBUILD`/`.SRCINFO` pairs, their sealed
+`zerus-VERSION-aur.tar.gz` archive and `SHA256SUMS` covering every release asset.
+Git export attributes omit tracker, agent instructions/skills, workflows and
+prototype artwork from the source archive; runtime artwork and notices remain.
 
-## Owner questionnaire
+Review the source commit, package logs, dependency/license inventory and recipes.
+`create_draft=true` additionally creates a GitHub draft; by default everything
+remains in the candidate artifact. Candidate artifacts expire after fourteen days,
+logs after seven. Old 0.36.2 artifacts predate the new names/schema and cannot be
+published by the new workflow. Never substitute a package built from another SHA.
 
-Answer the required rows first; the recommendations already guide the prepared
-implementation. An unanswered recommendation is not authorization to publish.
-
-| ID | Required decision | Recommendation / implications |
-| --- | --- | --- |
-| Q1 | May the application source become public? Public upstream or a separate public release mirror? | Public audited upstream is simplest. Review Git history **and** `refs/dolt/data` before changing visibility. A mirror needs its own reviewed source, assets and matching recipe URLs. |
-| Q2 | Which package names should we publish? | `zerus-ade` and `zerus-ade-bin`; add `zerus-ade-git` only if maintaining a development channel is useful. `zerus-bin` is occupied. |
-| Q3 | Which AUR account owns the packages, and who can co-maintain them? | Owner-controlled account with a designated backup maintainer. Register/login manually; do not share login credentials in Git or chat. |
-| Q4 | Which public maintainer name/contact and Git email should appear in AUR? | Choose a public project contact or privacy-preserving attribution deliberately. AUR Git history is public. Replace the recipe Maintainer placeholder before the first push. |
-| Q5 | Is 0.36.2 the first public bundle release version? | Keep the implemented desktop/product version and CLI 1.46.1, unless a deliberate release version bump is wanted. Product `VERSION` and CMake must match. |
-| Q6 | Confirmed CI policy; any future budget change? | Manual-only on owner request, including PRs. Default to one Ubuntu job; Linux integration, Arch packaging and macOS are explicit opt-ins. Releases opt into Linux/Arch only; macOS stays off by default. Do not enable paid overages or attach development machines as runners by default. |
-| Q7 | Should installs require explicit per-user setup and opt-in autostart? | Yes: `zerus-setup` once per user, GUI/workers enabled deliberately. This preserves existing source installs and active sessions. |
-| Q8 | Is x86_64 the supported first Arch architecture? | Yes, it is the validated target. Add aarch64 only with a real build/test runner and dependencies verified. |
-
-Optional policies can be decided independently:
-
-| ID | Policy | Recommended initial answer |
-| --- | --- | --- |
-| Q9 | Who approves stable release publication? | Owner reviews the candidate, notes and anonymous download checks, then publishes. Set `release` environment reviewers where supported. |
-| Q10 | Which main branch protection/review policy? | Review manual results for the tested SHA. Do not require a CI status that is deliberately absent on PRs. Decide independently whether reviews are mandatory and whether owner/admin bypass is allowed. |
-| Q11 | Do we need signed release tags/pacman packages/archives now? Which existing signing identity? | Prefer an owner-controlled signing key for stable distribution if available; checksums alone do not establish publisher identity. Never invent or store a private signing key in the repository. |
-| Q12 | Should AUR updates be automated later? | Begin with manual reviewed Git pushes. Automation requires a dedicated AUR SSH key, verified host key, narrowly scoped GitHub environment secret and explicit publication policy. No AUR secret is needed for current CI. |
-| Q13 | Who maintains stable releases, dependency/image updates and Arch rebuilds? | Name a primary and backup maintainer; rebuild/test after relevant Qt/KDE/Arch ABI changes. Update package `pkgrel` for packaging-only rebuilds. |
-| Q14 | Should authenticated native-agent/model tests be scheduled? | Keep them outside public PR CI. If needed, decide providers, spending cap, isolated accounts and trusted-branch-only access first. |
-| Q15 | Is a separate CLI-only package needed? | Start with the requested complete ADE bundle. A separate CLI package is useful for headless hosts but requires split-package ownership/conflict design. |
-| Q16 | When do we need macOS distributable bundles/notarization? | Separate work: Apple Developer identity, signing/notarization policy, Qt dependency distribution review and installer update strategy. Current macOS CI is build/test only. |
-| Q17 | Do release archives need retention/mirroring beyond GitHub? | Keep published versioned assets immutable. A mirror must preserve exact hashes; do not replace an existing release archive in place. |
-| Q18 | Are existing agent machines running tmux 3.7+ servers? If not, when can their owners coordinate migration? | Check the running server version. Keep live sessions intact; plan older-server migration after deliberate session saving rather than restarting servers during a package/GUI update. |
-
-## Owner actions for first publication
-
-1. Answer Q1–Q8 and choose the public maintainer attribution. No credentials need
-   to be pasted into the questionnaire.
-2. Inspect the candidate and source/public-history audit. The repository's privacy
-   guard is only a first check: run a complete history secret scan, inspect Beads
-   data/history and review artwork/dependency notices before changing visibility.
-3. Make the selected source and release location anonymously accessible, or create
-   the reviewed public mirror. Update URLs before creating the final candidate.
-4. Check GitHub Actions quota/billing before a manual build. Keep push/PR checks
-   disabled and choose the release environment/review policy without requiring
-   an automatically produced CI gate.
-   [GitHub-hosted runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
-5. Create/login to the AUR account, verify its contact details and add a dedicated
-   SSH **public** key. Keep the private key outside the repository. Verify AUR's
-   SSH host-key fingerprints from the official submission instructions before
-   accepting a connection; do not disable host-key checking.
-6. Dispatch the artifact-only release workflow for the selected version. Review
-   `release-info.json`, source contents, notices, package logs and all three recipe
-   directories. Check `sha256sum -c SHA256SUMS`. Decide which package flavors to
-   submit and fill their Maintainer attribution.
-7. Create a reviewed draft/tag for that exact commit, add release notes and
-   publish only after approval. Test every recipe's source URL anonymously from
-   a machine without GitHub authentication. Recheck its downloaded SHA-256.
-8. Prepare one AUR Git repository per selected flavor, following the commands
-   below. Inspect the staged diff and regenerate `.SRCINFO`. Push only the reviewed
-   package recipe and metadata; never archives, application source or build logs.
-9. On a disposable clean Arch desktop, test `yay -S zerus-ade-bin` or
-   `yay -S zerus-ade`, `zerus-setup`, launching the ADE, local/remote sessions and
-   optional service enablement. Check that an upgrade preserves existing native
-   processes and state. Initial publication is not complete until this public
-   install roundtrip succeeds.
-10. Record the public release/AUR URLs and maintainer responsibility, then update
-    the installation documentation to advertise the live packages. Monitor AUR
-    comments/out-of-date notifications and keep stable hashes immutable.
-
-Example submission, **after** account/key setup, public release availability and
-the owner's package-name decision:
+Equivalent local assembly on Arch, with a clean committed checkout and its exact
+verified package, remains available:
 
 ```sh
-# Use a dedicated temporary publication workspace outside the application tree.
-git clone ssh://aur@aur.archlinux.org/zerus-ade-bin.git /tmp/zerus-aur-bin
-cp /tmp/zerus-candidate/aur/zerus-ade-bin/PKGBUILD /tmp/zerus-aur-bin/
-cd /tmp/zerus-aur-bin
-# Edit only the public Maintainer attribution, then generate authoritative metadata.
-makepkg --printsrcinfo > .SRCINFO
-makepkg --verifysource
-namcap PKGBUILD
-git add PKGBUILD .SRCINFO
-git diff --cached --check
-git diff --cached
-git -c user.name='CHOSEN PUBLIC NAME' -c user.email='CHOSEN PUBLIC EMAIL' \
-  commit -m 'Publish Zerus ADE binary package'
-GIT_SSH_COMMAND='ssh -o BatchMode=yes' git push origin HEAD:master
+python3 scripts/prepare-release.py --version "$(cat VERSION)" \
+  --package artifacts/zerus-git-EXACT_VERSION-x86_64.pkg.tar.zst --output dist
+bash scripts/check-release-packages.sh dist
 ```
 
-Substitute the chosen source/development flavor in its own repository. If the
-package has appeared since the namespace check, stop and use AUR ownership/contact
-procedures; do not overwrite another maintainer's package. Review AUR's current
-submission guidelines again on publication day.
+The helper requires an empty output directory. Build artifacts are ignored and
+are never committed to the application or AUR repositories.
+
+### 2. Publish the reviewed candidate and update AUR
+
+`publish.yml` takes the **successful candidate run ID** and its version. It uses
+one Ubuntu runner, does no compilation and allocates no Arch/macOS runners:
+
+```sh
+# Only after review and an explicit owner publication request:
+gh workflow run publish.yml --ref main \
+  -f version=0.37.0 -f candidate_run=RUN_ID
+```
+
+The publisher verifies the same-repository manual run came from `main`, succeeded,
+and contains exactly one unexpired versioned artifact. It checks GitHub's artifact
+SHA-256, the manifest's exact source commit, all asset checksums, sealed AUR files
+and public recipe URLs. Candidate source/recipe code is never executed with the
+publication credential.
+
+Before any GitHub release write it authenticates to AUR, checks ownership of all
+names, prepares Git changes and refuses recipe downgrades. It creates or finishes
+a draft for the exact commit, publishes it, verifies **every asset anonymously**,
+then pushes the stable source, binary and VCS recipe updates. AUR Git receives only
+`PKGBUILD` and `.SRCINFO`; release archives stay on GitHub.
+
+The VCS flavor follows `main` automatically when users rebuild. Release-time sync
+updates its recipe when dependencies/build/package logic change; pure `pkgver`
+bumps (including the corresponding versioned provides) do not create AUR commits.
+Arch's submission rules explicitly disallow version-only VCS updates.
+
+Publication runs are serialized across versions. Existing public assets must
+match exactly; missing or different public assets stop publication. Uploads never
+use `--clobber`, tags never move and AUR pushes never force. An interrupted draft
+can resume only with matching existing assets and the exact commit. If an AUR push
+fails after GitHub publication, **rerun Publish release with the same candidate
+run and version**. Completed recipes become no-ops; the remaining updates retry.
+The two services are not an atomic transaction, so inspect the failed job's output.
+Do not rebuild or replace published archives to recover a partial AUR update.
+
+Publication retries require the same retained candidate artifact. After expiry,
+recover the exact published assets/recipes for local review; do not regenerate
+archives and assume identical checksums. A packaging-only stable update needs an
+explicit `pkgrel` bump and a separately reviewed recipe change.
+
+### Publication credentials
+
+The dedicated AUR SSH public key is registered to **ufna** and SSH authentication
+was verified on **2026-10-08**. Its private key is configured as the GitHub
+**release environment** secret `AUR_SSH_PRIVATE_KEY`. That environment permits
+only the `main` branch. CI/candidate jobs receive no AUR key. Publication jobs use
+`actions: read` and `contents: write`; no separate GitHub personal token is needed.
+The owner starts publication manually; environment reviewers may be added later.
+
+`packaging/aur/known_hosts` pins AUR's Ed25519 host key, independently verified
+against the [official AUR homepage](https://aur.archlinux.org). SSH uses strict
+host checking, batch mode and only the dedicated identity. Rotate a host key only
+after verifying a newly announced official fingerprint. Rotate the client key by
+registering its replacement, updating the environment secret and revoking the old
+public key. No password, private key or account session is stored in the repository.
+
+### Remaining first-release actions
+
+1. The owner requests the first hosted **Release candidate** build for `0.37.0`.
+   This is separate from the confirmed manual-only CI policy; no build has been
+   dispatched during this preparation.
+2. Review that candidate's exact SHA, packages, notices, hashes and three recipes.
+3. The owner requests **Publish release** with that successful run ID. It publishes
+   GitHub and synchronizes AUR without another build.
+4. Verify a fresh `yay -S zerus-ade-bin`, `yay -S zerus` or `yay -S zerus-git` in a
+   disposable Arch environment, then `zerus-setup`. Complete a live desktop and
+   local/remote agent roundtrip and check upgrades preserve native processes/state.
+5. Advertise the verified release/AUR links in the installation guide only after
+   that public install roundtrip. Monitor AUR comments and rolling-library changes.
+
+No further package-name, architecture, public-contact, repository-visibility or
+SSH-key decisions are needed. Signing with an existing owner-controlled identity
+and appointing a backup maintainer are optional follow-ups; neither is configured
+by the first-release workflow. Checksums and exact GitHub run/commit provenance
+are available now; do not claim package/tag signing.
 
 ## Validation record
 
@@ -417,5 +408,10 @@ idempotence, conflict preservation, dangling links, missing targets and root
 refusal. Removing `qt6-svg` makes the actual resource-render test fail; restoring
 it passes. The final handoff/tracker documentation may follow the pinned candidate
 commit; regenerate the exact candidate after changing release source or URLs.
-Public AUR installation, a live desktop/authenticated-agent roundtrip, owner
-account/signing choices and source visibility remain first-publication requirements.
+Public AUR installation and a live desktop/authenticated-agent roundtrip remain
+first-publication validation. The source is now public and account/key setup is done.
+
+On **2026-10-08**, the publication changes were validated locally with actionlint,
+source checks, generated makepkg metadata and credential-free contracts covering
+provenance, archive safety, library floors, immutable draft/public retries, version
+downgrades and GitHub/AUR ordering. No hosted workflow was dispatched.

@@ -1,0 +1,75 @@
+name: Publish release
+run-name: Publish Zerus ${{ inputs.version }} from candidate run ${{ inputs.candidate_run }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Reviewed candidate version (without v)
+        required: true
+        type: string
+      candidate_run:
+        description: Successful Release candidate run ID from main; reuse the same run on retries
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-publication # Serialize all versions sharing the AUR repositories.
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Require upstream main
+        env:
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_REPOSITORY: ${{ github.repository }}
+        run: |
+          test "$WORKFLOW_REF" = refs/heads/main
+          test "$WORKFLOW_REPOSITORY" = ufna/zerus
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Run local publication contract checks
+        run: python3 -m unittest discover -s tests -p test_release_publication.py
+      - name: Download and verify reviewed candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run }}
+        run: |
+          python3 scripts/fetch-release-candidate.py --version "$RELEASE_VERSION" \
+            --run-id "$CANDIDATE_RUN" --output dist
+      - name: Prepare dedicated AUR identity
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib
+          key = os.environ.get('AUR_SSH_PRIVATE_KEY', '')
+          if not key:
+              raise SystemExit('Register the dedicated AUR public key and configure release/AUR_SSH_PRIVATE_KEY first.')
+          path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'zerus-aur-key'
+          descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(descriptor, 'w') as stream:
+              stream.write(key.rstrip() + '\n')
+          PY
+      - name: Publish immutable assets and synchronize AUR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          python3 scripts/publish-release.py --candidate dist --version "$RELEASE_VERSION" \
+            --ssh-key "$RUNNER_TEMP/zerus-aur-key"
+      - name: Remove temporary identity
+        if: always()
+        run: rm -f "$RUNNER_TEMP/zerus-aur-key"

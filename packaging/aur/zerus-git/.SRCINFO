@@ -1,6 +1,6 @@
-pkgbase = zerus-ade-git
+pkgbase = zerus-git
 	pkgdesc = An agent development environment for persistent local and remote tmux sessions
-	pkgver = 0.36.2.r8.gccf4dad
+	pkgver = 0.37.0.r1.g0000000
 	pkgrel = 1
 	url = https://github.com/ufna/zerus
 	arch = x86_64
@@ -23,20 +23,23 @@ pkgbase = zerus-ade-git
 	depends = libstdc++
 	depends = glibc
 	depends = hicolor-icon-theme
+	depends = bash
+	depends = tar
 	optdepends = konsole: external KDE terminal integration
 	optdepends = wl-clipboard: clipboard transfers on Wayland
 	optdepends = xclip: clipboard transfers on X11
 	optdepends = nodejs: separately installed native agents and DeepSeek Harness
 	optdepends = npm: install Codex and DeepSeek Harness from Accounts
 	optdepends = git: Git repository and worktree features
-	provides = zerus-ade
+	optdepends = systemd: user service autostart and isolated DeepSeek scopes
+	provides = zerus=0.37.0.r1.g0000000
 	provides = hgs
 	provides = hgs-tray
-	conflicts = zerus-ade
+	conflicts = zerus
 	conflicts = zerus-ade-bin
 	options = !lto
 	options = !debug
-	source = zerus::git+https://github.com/ufna/zerus.git
+	source = zerus::git+https://github.com/ufna/zerus.git#branch=main
 	sha256sums = SKIP
 
-pkgname = zerus-ade-git
+pkgname = zerus-git

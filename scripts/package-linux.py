@@ -22,7 +22,7 @@ def main():
     parser.add_argument("--cli", type=Path, required=True)
     parser.add_argument("--gui", type=Path, required=True)
     parser.add_argument("--licenses", type=Path, required=True)
-    parser.add_argument("--package-name", default="zerus-ade-git")
+    parser.add_argument("--package-name", default="zerus-git")
     args = parser.parse_args()
     destination = args.destdir.resolve()
     if destination == Path("/"):
@@ -50,7 +50,7 @@ def main():
     for name in ("README.md", "CONTRIBUTING.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "tmux.conf"):
         install(ROOT / name, documentation / name)
     shutil.copytree(ROOT / "docs", documentation / "docs", dirs_exist_ok=True)
-    if args.package_name not in {"zerus-ade", "zerus-ade-git", "zerus-ade-bin"}:
+    if args.package_name not in {"zerus", "zerus-git", "zerus-ade-bin"}:
         parser.error("unsupported package name")
     licenses = destination / "usr/share/licenses" / args.package_name
     install(ROOT / "LICENSE", licenses / "LICENSE")
