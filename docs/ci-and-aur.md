@@ -6,24 +6,58 @@ this preparation, and release automation defaults to private review artifacts.
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on pull requests, pushes to `main` and manual
-dispatches. The release workflow reuses the same checks.
+Hosted checks are **manual-only** to preserve the account's Actions quota. There
+are no CI triggers for pushes, pull requests or schedules. The owner decides when
+to run checks, including for Dependabot PRs. Do not dispatch hosted checks just to
+validate a workflow change; run actionlint and relevant checks locally instead.
 
-| Job | Pull requests | Main / manual | Checks |
+`.github/workflows/ci.yml` accepts manual dispatches and explicit calls from the
+manual release workflow. All expensive suite inputs default to `false` in both
+manual and reusable CI. A default dispatch uses **one Ubuntu job** for source
+checks and Rust unit tests; it allocates no Arch or macOS runners.
+
+| Job | Default manual CI | Selection | Checks |
 | --- | --- | --- | --- |
-| Source checks | Yes | Yes | Privacy guard, Python/Bash syntax, version consistency, actionlint |
-| Rust minimum | Yes | Yes | Locked unit tests on Rust 1.85.0 |
-| Linux CLI | Yes | Yes | Stable Rust unit tests, terminal smoke tests, all Python integration modules, release build |
-| macOS CLI | Yes | Yes | Same CLI checks on the macOS 15 ARM runner |
-| Arch desktop and package | Yes | Yes | Qt desktop build, all CTest suites, production build without test targets, pacman package, namcap, staged and installed bundle checks |
-| macOS desktop | No | Yes | Native Qt build and all CTest suites |
-| CI gate | Yes | Yes | Requires every applicable job to succeed |
+| Quick checks | Always | One Ubuntu job | Privacy guard, Python/Bash syntax, version consistency, actionlint, locked unit tests on Rust 1.85.0 |
+| Linux CLI | Off | `run_linux=true` | Stable Rust unit tests, terminal smoke tests, all Python integration modules, release build |
+| Arch desktop and package | Off | `run_arch=true` | Qt desktop build, all CTest suites, production build without test targets, pacman package, namcap, staged and installed bundle checks |
+| macOS CLI and desktop | Off | `run_macos=true` | CLI checks and native Qt build with all CTest suites; two macOS jobs |
+| CI gate | Only with extra suites | Automatic within a selected run | Requires quick checks and every selected suite to succeed; unselected suites must be skipped |
 
-Use **CI gate** as the branch protection required check. Its explicit result
-handling fails on errors, cancellations and unexpected skipped jobs. The macOS
-desktop skip is allowed only for pull requests. Expensive desktop coverage on
-`main` keeps native platform coverage without paying for a second desktop build
-on every PR update.
+The expensive jobs start only after quick checks pass. The macOS CLI runner is
+added to the matrix only when requested; disabling it does not allocate a runner
+that merely skips its steps. CI gate fails on errors, cancellations and unexpected
+skips. Quick-only runs omit this extra job to avoid another runner startup.
+
+### Manual checks, including pull requests
+
+In GitHub **Actions → CI → Run workflow**, keep the workflow branch on `main` to
+use the current budget controls. Leave the test `ref` blank for that commit, or
+enter a branch, full commit SHA or `refs/pull/NUMBER/head`. Select only the extra
+suites needed for that change. This also checks older PR branches using the new
+workflow definition. [GitHub manual workflow instructions](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).
+
+```sh
+# Quick source and minimum-Rust checks only:
+gh workflow run ci.yml --ref main
+# Check a PR's current head with the same inexpensive defaults:
+gh workflow run ci.yml --ref main -f ref=refs/pull/123/head
+# Full Linux CLI and Arch desktop/package coverage for a PR:
+gh workflow run ci.yml --ref main -f ref=refs/pull/123/head \
+  -f run_linux=true -f run_arch=true
+# Explicitly opt into both macOS suites when native coverage is needed:
+gh workflow run ci.yml --ref main -f run_macos=true
+```
+
+Quick checks resolve the target once. Every selected job checks out that exact
+commit; the summary records its SHA and selected coverage, and the Arch artifact
+name contains the tested SHA. A PR updated later needs a new deliberate dispatch.
+Use the summary's tested SHA when reviewing an explicit test `ref`: GitHub's run
+metadata remains associated with the workflow branch, not the checkout override.
+
+Do **not** require CI gate as an automatic PR status check under this policy. A
+manual run may intentionally omit it, and no check is produced until the owner
+requests one. Review/merge policies are independent of hosted CI.
 
 Arch is the Linux GUI build environment because the application uses Qt 6 and KDE
 Frameworks 6. Ubuntu remains useful for portable CLI and minimum-Rust checks.
@@ -37,13 +71,14 @@ Current release packaging supports **Arch x86_64 only**. The macOS runner checks
 build/test compatibility; it does not create a notarized macOS installer. Windows
 and Arch ARM are outside this first package matrix.
 
-All CI jobs have bounded timeouts. A newer CI run cancels an obsolete run on the
-same ref. Workflows have read-only repository permissions, checkout credentials
-are not persisted, official actions are pinned to commit SHAs and Dependabot
-proposes weekly action/Cargo updates. Rust and C++ caches reduce repeated build
+All CI jobs have bounded timeouts. A newer manual CI run cancels an obsolete run
+for the same requested ref and workflow. Workflows have read-only repository
+permissions, checkout credentials are not persisted, official actions are pinned
+to commit SHAs and Dependabot proposes weekly action/Cargo updates. Rust and C++ caches reduce repeated build
 cost. Test artifacts expire after seven days; release candidates after fourteen.
-Fork PRs receive no deployment credentials. There is no automatic AUR push, public
-release publication or self-hosted runner attached to a development machine.
+Manually selected PR code receives no deployment credentials. There is no
+automatic AUR push, public release publication or self-hosted runner attached to
+a development machine.
 
 The Arch base image is digest-pinned, but `pacman -Syu` intentionally uses current
 Arch packages. This tests rolling-distribution compatibility; it does not promise
@@ -196,8 +231,15 @@ gh run list --workflow release.yml
 gh run download RUN_ID --name zerus-0.36.2-candidate --dir /tmp/zerus-candidate
 ```
 
-It checks the requested version, reruns the complete CI, takes the tested Arch
-package from that exact run and verifies its embedded source commit. It creates:
+An explicit release dispatch runs quick checks, the full Linux CLI suite and
+Arch desktop/package validation, then builds the candidate. It does **not** run
+macOS by default; add `-f run_macos=true` only when that coverage is wanted. This
+is an expensive Linux/Arch build, so dispatch it when preparing a release rather
+than after every edit. A separate full CI dispatch is not needed immediately
+before it: these checks already run inside the release workflow.
+
+The workflow checks the requested version, takes the tested Arch package from
+that exact run and verifies its embedded source commit. It creates:
 
 - `zerus-0.36.2-source.tar.gz` from the exact Git commit. Git export attributes
   omit tracker, agent instruction/skill, workflow and design prototype directories.
@@ -252,7 +294,7 @@ implementation. An unanswered recommendation is not authorization to publish.
 | Q3 | Which AUR account owns the packages, and who can co-maintain them? | Owner-controlled account with a designated backup maintainer. Register/login manually; do not share login credentials in Git or chat. |
 | Q4 | Which public maintainer name/contact and Git email should appear in AUR? | Choose a public project contact or privacy-preserving attribution deliberately. AUR Git history is public. Replace the recipe Maintainer placeholder before the first push. |
 | Q5 | Is 0.36.2 the first public bundle release version? | Keep the implemented desktop/product version and CLI 1.46.1, unless a deliberate release version bump is wanted. Product `VERSION` and CMake must match. |
-| Q6 | Are standard GitHub-hosted runner usage and the main/PR matrix acceptable? What spending limit? | Use included quota first, inspect the first run's usage, keep macOS desktop main-only. Do not enable paid overages or attach personal development machines as runners by default. |
+| Q6 | Confirmed CI policy; any future budget change? | Manual-only on owner request, including PRs. Default to one Ubuntu job; Linux integration, Arch packaging and macOS are explicit opt-ins. Releases opt into Linux/Arch only; macOS stays off by default. Do not enable paid overages or attach development machines as runners by default. |
 | Q7 | Should installs require explicit per-user setup and opt-in autostart? | Yes: `zerus-setup` once per user, GUI/workers enabled deliberately. This preserves existing source installs and active sessions. |
 | Q8 | Is x86_64 the supported first Arch architecture? | Yes, it is the validated target. Add aarch64 only with a real build/test runner and dependencies verified. |
 
@@ -261,7 +303,7 @@ Optional policies can be decided independently:
 | ID | Policy | Recommended initial answer |
 | --- | --- | --- |
 | Q9 | Who approves stable release publication? | Owner reviews the candidate, notes and anonymous download checks, then publishes. Set `release` environment reviewers where supported. |
-| Q10 | Which main branch protection/review policy? | Require **CI gate**; decide independently whether reviews are mandatory and whether owner/admin bypass is allowed. |
+| Q10 | Which main branch protection/review policy? | Review manual results for the tested SHA. Do not require a CI status that is deliberately absent on PRs. Decide independently whether reviews are mandatory and whether owner/admin bypass is allowed. |
 | Q11 | Do we need signed release tags/pacman packages/archives now? Which existing signing identity? | Prefer an owner-controlled signing key for stable distribution if available; checksums alone do not establish publisher identity. Never invent or store a private signing key in the repository. |
 | Q12 | Should AUR updates be automated later? | Begin with manual reviewed Git pushes. Automation requires a dedicated AUR SSH key, verified host key, narrowly scoped GitHub environment secret and explicit publication policy. No AUR secret is needed for current CI. |
 | Q13 | Who maintains stable releases, dependency/image updates and Arch rebuilds? | Name a primary and backup maintainer; rebuild/test after relevant Qt/KDE/Arch ABI changes. Update package `pkgrel` for packaging-only rebuilds. |
@@ -280,8 +322,9 @@ Optional policies can be decided independently:
    data/history and review artwork/dependency notices before changing visibility.
 3. Make the selected source and release location anonymously accessible, or create
    the reviewed public mirror. Update URLs before creating the final candidate.
-4. Check GitHub Actions quota/billing and the first run results. Configure main
-   branch protection with **CI gate** and the chosen release environment policy.
+4. Check GitHub Actions quota/billing before a manual build. Keep push/PR checks
+   disabled and choose the release environment/review policy without requiring
+   an automatically produced CI gate.
    [GitHub-hosted runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
 5. Create/login to the AUR account, verify its contact details and add a dedicated
    SSH **public** key. Keep the private key outside the repository. Verify AUR's
@@ -332,6 +375,12 @@ procedures; do not overwrite another maintainer's package. Review AUR's current
 submission guidelines again on publication day.
 
 ## Validation record
+
+The hosted runs below preceded the manual-only budget policy. They record prior
+platform/package validation; they do not imply automatic checks are enabled.
+The budget change itself was checked locally with actionlint, source checks and
+all eight suite selections, including 104 success/failure/skip gate scenarios.
+No hosted run was dispatched to validate it.
 
 On **2026-10-08**, the complete
 [main CI run](https://github.com/ufna/zerus/actions/runs/37705887611) passed every

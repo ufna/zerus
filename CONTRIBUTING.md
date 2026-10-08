@@ -21,7 +21,11 @@ parallelism. Run `cargo +1.85.0 test --locked` for the minimum supported Rust.
 On Arch, `bash scripts/ci/arch.sh` also builds and validates the pacman package
 as an unprivileged user. It substitutes a local Git source only in its disposable
 build directory; it never installs the package or enables services.
-See [CI and Arch publication](docs/ci-and-aur.md) for the workflow matrix,
+Hosted CI is manual-only, including pull requests. The owner chooses when to
+dispatch it. Default runs use one Ubuntu job; full Linux integration, Arch
+desktop/packaging and macOS builds are separate opt-ins, all off by default.
+Validate workflow edits locally rather than spending hosted minutes. See
+[CI and Arch publication](docs/ci-and-aur.md) for manual PR checks, suite selection,
 candidate release commands and publication requirements.
 
 Native integration tests may need separately installed agent CLIs or a real desktop;

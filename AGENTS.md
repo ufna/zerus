@@ -46,6 +46,12 @@ Use a GitHub no-reply address for Git and Beads attribution if email privacy mat
 
 ## Validation and handoff
 
+Hosted CI is manual-only, including pull requests and pushes. Do not dispatch
+GitHub Actions without an explicit owner request to run hosted checks. Validate
+workflow edits locally. Default CI uses one Ubuntu job; full Linux integration,
+Arch packaging and macOS are explicit opt-ins. Release candidates request
+Linux/Arch coverage but leave macOS off by default. See `docs/ci-and-aur.md`.
+
 Run checks appropriate to the change; see `CONTRIBUTING.md`. Update Beads status
 and export with `bd export -o .beads/issues.jsonl` before staging tracker changes.
 Inspect `git status` and the staged diff. Commit, push and synchronize only when

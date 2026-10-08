@@ -1,28 +1,71 @@
 name: CI
+run-name: CI ${{ inputs.ref || github.ref_name }} (Linux=${{ inputs.run_linux }}, Arch=${{ inputs.run_arch }}, macOS=${{ inputs.run_macos }})
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit, branch or refs/pull/NUMBER/head to test (blank uses selected workflow branch)
+        type: string
+        default: ''
+      run_linux:
+        description: Run full Linux CLI integration tests and release build
+        type: boolean
+        default: false
+      run_arch:
+        description: Build/test Arch desktop and pacman package (expensive)
+        type: boolean
+        default: false
+      run_macos:
+        description: Run macOS CLI and desktop builds/tests (expensive)
+        type: boolean
+        default: false
   workflow_call:
+    inputs:
+      ref:
+        description: Commit or ref to test
+        type: string
+        default: ''
+      run_linux:
+        type: boolean
+        default: false
+      run_arch:
+        type: boolean
+        default: false
+      run_macos:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ inputs.ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
   source:
-    name: Source checks
+    name: Quick checks (source and Rust 1.85)
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
+    outputs:
+      commit: ${{ steps.revision.outputs.commit }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
+      - name: Record exact test commit and selected coverage
+        id: revision
+        env:
+          RUN_LINUX: ${{ inputs.run_linux }}
+          RUN_ARCH: ${{ inputs.run_arch }}
+          RUN_MACOS: ${{ inputs.run_macos }}
+        run: |
+          commit=$(git rev-parse HEAD)
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          printf '### CI coverage\n\nCommit: `%s`\n\nQuick checks: always\n\nFull Linux CLI: %s\n\nArch desktop/package: %s\n\nmacOS CLI/desktop: %s\n' \
+            "$commit" "$RUN_LINUX" "$RUN_ARCH" "$RUN_MACOS" >> "$GITHUB_STEP_SUMMARY"
       - run: python3 scripts/ci/check-source.py
       - name: Validate GitHub Actions
         shell: bash
@@ -37,14 +80,6 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           "$lint_dir/actionlint" -color
 
-  msrv:
-    name: Rust 1.85 minimum
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
       - run: rustup toolchain install 1.85.0 --profile minimal
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -57,18 +92,22 @@ jobs:
 
   cli:
     name: CLI (${{ matrix.os }})
+    needs: source
+    if: inputs.run_linux || inputs.run_macos
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15]
+        os: ${{ fromJSON(inputs.run_linux && inputs.run_macos && '["ubuntu-24.04","macos-15"]' || inputs.run_macos && '["macos-15"]' || '["ubuntu-24.04"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     env:
       CARGO_TERM_COLOR: always
       CARGO_BUILD_JOBS: 2
+      HOMEBREW_NO_AUTO_UPDATE: 1
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ needs.source.outputs.commit }}
           persist-credentials: false
       - name: Linux test dependencies
         if: runner.os == 'Linux'
@@ -110,6 +149,8 @@ jobs:
 
   arch:
     name: Arch desktop and package
+    needs: source
+    if: inputs.run_arch
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     container:
@@ -119,6 +160,7 @@ jobs:
         run: pacman -Syu --noconfirm --needed git
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ needs.source.outputs.commit }}
           persist-credentials: false
           fetch-depth: 0
       - name: Arch dependencies and unprivileged builder
@@ -147,14 +189,14 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: arch-x86_64-${{ github.sha }}
+          name: arch-x86_64-${{ needs.source.outputs.commit }}
           path: artifacts
           retention-days: 7
 
   mac-desktop:
     name: macOS desktop
-    # The expensive native desktop build runs on main and manual checks.
-    if: github.event_name != 'pull_request'
+    needs: source
+    if: inputs.run_macos
     runs-on: macos-15
     timeout-minutes: 45
     env:
@@ -162,6 +204,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ needs.source.outputs.commit }}
           persist-credentials: false
       - run: brew install cmake qt qtwebengine ccache
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -179,23 +222,31 @@ jobs:
 
   gate:
     name: CI gate
-    if: always()
-    needs: [source, msrv, cli, arch, mac-desktop]
+    # Quick-only runs need just one Ubuntu job; check aggregate results only for selected extra suites.
+    if: always() && (inputs.run_linux || inputs.run_arch || inputs.run_macos)
+    needs: [source, cli, arch, mac-desktop]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
       RESULTS: ${{ toJSON(needs) }}
-      EVENT: ${{ github.event_name }}
+      RUN_CLI: ${{ inputs.run_linux || inputs.run_macos }}
+      RUN_ARCH: ${{ inputs.run_arch }}
+      RUN_MACOS: ${{ inputs.run_macos }}
     steps:
       - run: |
           python3 - <<'PY'
           import json, os
           results = json.loads(os.environ['RESULTS'])
-          for name, result in results.items():
-              allowed = {'success'}
-              if name == 'mac-desktop' and os.environ['EVENT'] == 'pull_request':
-                  allowed.add('skipped')
-              if result['result'] not in allowed:
-                  raise SystemExit(f"{name}: {result['result']}")
-          print('All required CI jobs passed.')
+          selected = {
+              'source': True,
+              'cli': json.loads(os.environ['RUN_CLI']),
+              'arch': json.loads(os.environ['RUN_ARCH']),
+              'mac-desktop': json.loads(os.environ['RUN_MACOS']),
+          }
+          for name, enabled in selected.items():
+              expected = 'success' if enabled else 'skipped'
+              actual = results[name]['result']
+              if actual != expected:
+                  raise SystemExit(f"{name}: {actual}, expected {expected}")
+          print('All selected CI suites passed; unselected suites were skipped.')
           PY

@@ -11,6 +11,10 @@ on:
         description: Create a GitHub draft release after all checks pass
         type: boolean
         default: false
+      run_macos:
+        description: Also run macOS CLI and desktop checks (expensive; not needed for Arch bundle)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -40,6 +44,11 @@ jobs:
   verify:
     needs: version
     uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ github.sha }}
+      run_linux: true
+      run_arch: true
+      run_macos: ${{ inputs.run_macos }}
   assemble:
     needs: verify
     runs-on: ubuntu-24.04
