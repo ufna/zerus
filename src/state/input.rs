@@ -103,9 +103,9 @@ fn validate(request: &Request) -> Result<Vec<Vec<u8>>> {
         .collect()
 }
 
-/// Fresh provider TUIs can defer SessionStart until their first submitted turn.
-/// This exception applies only to an HGS-supervised run with no conversation or
-/// hook evidence; it never adopts an untracked pane or bypasses an expected ID.
+/// Provider TUIs can defer SessionStart until their first submitted turn.
+/// Only supervised fresh runs or verifiable native Codex forks are candidates;
+/// checked_input separately proves a fork's owned child history before delivery.
 pub(super) fn first_message_candidate(record: &Value) -> bool {
     record["run_identity_version"] == 1
         && record["supervisor"].is_object()
@@ -114,7 +114,7 @@ pub(super) fn first_message_candidate(record: &Value) -> bool {
         && string(record, "conversation_id").is_empty()
         && string(record, "expected_id").is_empty()
         && string(record, "requested_id").is_empty()
-        && string(record, "fork_parent_id").is_empty()
+        && (string(record, "fork_parent_id").is_empty() || resume_input::fork_pending(record))
         && string(record, "error").is_empty()
         && record.get("session_end").is_none()
         && record["last_event_at"].as_f64().unwrap_or(0.0) == 0.0
@@ -230,6 +230,9 @@ fn checked_input(
     }
     let first_message =
         allow_working && conversation_id.is_empty() && first_message_candidate(&record);
+    if first_message && !string(&record, "fork_parent_id").is_empty() {
+        resume_input::fork_ready(&record)?;
+    }
     let resumed_message = allow_working && resume_input::pending(&record);
     if resumed_message {
         resume_input::ready(&record)?;

@@ -368,6 +368,11 @@ next to the original session in its group. Files remain shared. The CLI is
 `hgs [@host] fork SESSION [-n NAME] [-d] [--archive ID]`; support depends on the agent.
 DeepSeek native fork remains in Native UI.
 
+Codex may defer `SessionStart` until the fork's first message. Activity enables
+Send once Zerus verifies that the supervised process owns an independent child
+history linked to the source conversation and its native composer is ready.
+The child ID is confirmed by the agent's own event; the source session stays intact.
+
 <a id="projects"></a>
 
 ## Projects and P2P synchronization

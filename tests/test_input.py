@@ -134,13 +134,18 @@ class InputTransport(unittest.TestCase):
         self.record.pop('last_event_at',None)
         self.write_record()
 
-    def resumed_unconfirmed(self):
+    def resumed_unconfirmed(self, fork_parent=None):
         # A native executable name, exact parent PID and an open rollout are
         # all checked by the bridge. No real provider or model call is involved.
         self.tmux('kill-session', '-t', self.name)
         (self.root / 'agent-pid').unlink()
         self.rollout = self.root / 'saved.jsonl'
-        self.rollout.write_text(json.dumps(dict(type='session_meta', payload=dict(id=self.conversation_id)))+'\n')
+        meta = dict(type='session_meta', payload=dict(id=self.conversation_id))
+        if fork_parent:
+            self.rollout = self.root / '.codex/sessions/rollout-fork.jsonl'
+            self.rollout.parent.mkdir(parents=True)
+            meta['payload'].update(forked_from_id=fork_parent, source='cli', cwd=str(self.root))
+        self.rollout.write_text(json.dumps(meta)+'\n')
         source = self.root / 'codex.c'
         source.write_text(r'''
 #include <fcntl.h>
@@ -181,7 +186,109 @@ int main(int argc,char **argv) {
         self.record.update(run_identity_version=1,startup_kind='resume',pid=pid,process_start=start(pid),
             supervisor=dict(pid=parent,start=start(parent)),expected_id=self.conversation_id,
             transcript=str(self.rollout),activity='unknown',phase='unknown',pane=self.pane,last_event_at=0)
+        if fork_parent:
+            self.record.update(startup_kind='new', conversation_id=None, transcript=None,
+                               fork_parent_id=fork_parent, launch_dir=str(self.root),
+                               base=['codex', 'fork', fork_parent])
+            self.record.pop('expected_id')
         self.write_record()
+
+    def test_native_fork_accepts_first_message_before_deferred_sessionstart(self):
+        parent = str(uuid.uuid4())
+        parent_history = self.root / 'parent.jsonl'
+        parent_history.write_text(json.dumps(dict(id=parent, context=['Original context']))+'\n')
+        original = parent_history.read_bytes()
+        self.resumed_unconfirmed(fork_parent=parent)
+        info = self.inspect()
+        self.assertTrue(info['first_message_can_send'], info.get('first_message_reason'))
+        self.assertFalse(info.get('conversation_id'))
+        self.assertFalse(json.loads(self.record_path.read_text()).get('conversation_id'))
+        attachment = dict(name='plot.png', mime='image/png', reference='[Image #1]',
+                          data_base64=base64.b64encode(b'fixture image').decode())
+        payload = self.payload(expected_conversation_id='', text='[Image #1] hello', attachments=[attachment])
+        receipt = self.send(payload)
+        self.assertTrue(receipt['first_message'])
+        self.wait_for(lambda:self.received().endswith(b'\r'))
+        received = self.received()
+        self.assertIn(b'[Image #1]', received)
+        self.assertFalse(self.inspect()['first_message_can_send'])
+        self.assertEqual(self.send(payload), receipt)
+        self.assertEqual(self.received(), received)
+        self.send(self.payload(expected_conversation_id=''), success=False)
+        self.assertEqual(self.received(), received)
+        self.assertEqual(parent_history.read_bytes(), original)
+        # Only the child's native event confirms the conversation; the bridge
+        # never manufactures SessionStart from a history file.
+        event = dict(hook_event_name='SessionStart', session_id=self.conversation_id,
+                     transcript_path=str(self.rollout))
+        result = subprocess.run([str(HGS), '__state', 'hook'], env=dict(self.env, HGS_SESSION=self.name, HGS_RUN_ID=self.run_id),
+                                input=json.dumps(event), capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        confirmed = self.inspect()
+        self.assertEqual(confirmed['conversation_id'], self.conversation_id)
+        self.assertEqual(confirmed['fork_parent_id'], parent)
+        self.assertNotEqual(confirmed['conversation_id'], parent)
+        self.assertEqual(parent_history.read_bytes(), original)
+        self.assertIn('identity changed', self.send(self.payload(expected_conversation_id=''), success=False))
+        self.assertEqual(self.received(), received)
+
+    def test_fork_bootstrap_requires_exact_native_child_history_and_process(self):
+        parent = str(uuid.uuid4())
+        self.resumed_unconfirmed(fork_parent=parent)
+        initial = self.record.copy()
+        patches = [dict(fork_parent_id=str(uuid.uuid4())), dict(agent='claude'),
+                   dict(base=['codex', 'resume', parent]), dict(base=['codex', 'fork', str(uuid.uuid4())]),
+                   dict(expected_id=self.conversation_id), dict(requested_id=self.conversation_id),
+                   dict(agent_home=str(self.root/'other-account')), dict(process_start='old process'),
+                   dict(supervisor=dict(pid=os.getpid(), start=initial['supervisor']['start'])),
+                   dict(last_event_at=time.time()), dict(input_pending_at=time.time()),
+                   dict(error='wrong conversation')]
+        for patch in patches:
+            with self.subTest(patch=patch):
+                self.record = dict(initial, **patch); self.write_record()
+                self.assertFalse(self.inspect().get('first_message_can_send', False))
+                self.send(self.payload(expected_conversation_id=''), success=False)
+                self.assertEqual(self.received(), b'')
+        self.record = initial; self.write_record()
+        meta = json.loads(self.rollout.read_text())
+        for patch in [dict(id=parent), dict(id='invalid'), dict(forked_from_id=str(uuid.uuid4())),
+                      dict(source='exec'), dict(cwd=str(self.root.parent)),
+                      dict(base_instructions='x'*(256*1024))]:
+            with self.subTest(metadata=next(iter(patch))):
+                changed = dict(meta, payload=dict(meta['payload'], **patch))
+                self.rollout.write_text(json.dumps(changed)+'\n')
+                self.assertFalse(self.inspect()['first_message_can_send'])
+                self.send(self.payload(expected_conversation_id=''), success=False)
+                self.assertEqual(self.received(), b'')
+        self.rollout.write_text(json.dumps(meta)+'\n')
+        # Native -C/--cd launch options are preserved by fork recipes. Resolve
+        # relative paths from the launch directory when checking child history.
+        workspace = self.root/'workspace'; workspace.mkdir()
+        changed = dict(meta, payload=dict(meta['payload'], cwd=str(workspace)))
+        self.rollout.write_text(json.dumps(changed)+'\n')
+        for flags in [['-C', 'workspace'], ['--cd=workspace']]:
+            self.record = dict(initial, base=['codex', 'fork', parent, *flags]); self.write_record()
+            self.assertTrue(self.inspect()['first_message_can_send'])
+        self.record = initial; self.write_record()
+        # A valid unopened neighbor cannot replace this process's own history.
+        (self.rollout.parent/'rollout-unowned.jsonl').write_text(json.dumps(meta)+'\n')
+        self.rollout.write_text(json.dumps(dict(meta, payload=dict(meta['payload'], id=parent)))+'\n')
+        self.assertFalse(self.inspect()['first_message_can_send'])
+        self.send(self.payload(expected_conversation_id=''), success=False)
+        self.assertEqual(self.received(), b'')
+        self.rollout.write_text(json.dumps(meta)+'\n')
+        self.screen('\x1b[2J\x1b[HPassword: ', '10:0')
+        self.assertFalse(self.inspect()['first_message_can_send'])
+        self.send(self.payload(expected_conversation_id=''), success=False)
+        self.assertEqual(self.received(), b'')
+        self.screen('\x1b[2J\x1b[H› ', '2:0')
+        self.assertTrue(self.inspect()['first_message_can_send'])
+        # Owning an identical header outside this account's native session store
+        # is insufficient, even when the file is still held by the same process.
+        self.rollout.rename(self.root/'rollout-outside.jsonl')
+        self.assertFalse(self.inspect()['first_message_can_send'])
+        self.send(self.payload(expected_conversation_id=''), success=False)
+        self.assertEqual(self.received(), b'')
 
     def test_send_now_uses_native_queue_shortcuts_without_repasting(self):
         self.record.update(run_identity_version=1, supervisor=dict(pid=self.record['pid'], start=self.record['process_start']),

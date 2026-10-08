@@ -1336,14 +1336,16 @@ void TestSessionsWindow::providerErrorWaitsForNativePrompt()
 
 void TestSessionsWindow::firstMessageWaitsForNativePrompt_data()
 {
-    QTest::addColumn<bool>("resumed");
-    QTest::newRow("new") << false;
-    QTest::newRow("resumed") << true;
+    QTest::addColumn<QString>("startup");
+    QTest::newRow("new") << QString("new");
+    QTest::newRow("resumed") << QString("resumed");
+    QTest::newRow("forked") << QString("forked");
 }
 
 void TestSessionsWindow::firstMessageWaitsForNativePrompt()
 {
-    QFETCH(bool, resumed);
+    QFETCH(QString, startup);
+    const bool resumed = startup == "resumed";
     QFile::remove(m_dir.filePath("first-payload.json"));
     const QString program = m_dir.filePath("first-message-hgs");
     QFile file(program); QVERIFY(file.open(QIODevice::WriteOnly));
@@ -1361,6 +1363,10 @@ elif args[0]=='send':
     QJsonObject state{{"tracked", true}, {"run_id", "fresh-run"}, {"conversation_id", ""},
         {"runtime_state", "live"}, {"process_state", "running"}, {"activity", "unknown"}, {"phase", "unknown"},
         {"first_message_can_send", false}, {"first_message_reason", "Finish login in Terminal"}, {"events", QJsonArray{}}, {"cursor", 0}};
+    if (startup == "forked") {
+        state["fork_parent_id"] = "parent-conversation";
+        state["fork_source_name"] = "codex/hgs/source";
+    }
     if (resumed) {
         state["conversation_id"] = "saved-conversation"; state["expected_id"] = "saved-conversation";
         state["resume_message_can_send"] = false; state["resume_message_reason"] = "Finish login in Terminal";
