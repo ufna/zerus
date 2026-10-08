@@ -54,6 +54,10 @@ GitHub Actions without an explicit owner request to run hosted checks. Validate
 workflow edits locally. Default CI uses one Ubuntu job; full Linux integration,
 Arch packaging and macOS are explicit opt-ins. Release candidates request
 Linux/Arch coverage but leave macOS off by default. See `docs/ci-and-aur.md`.
+Dependency proposals are monthly and grouped, with one ordinary PR per ecosystem.
+Cargo proposals update only the lockfile within reviewed manifest constraints;
+review manifest migrations explicitly and retain Rust 1.85 compatibility.
+Keep security alerts and security updates enabled separately. Never auto-merge.
 AUR packages are `zerus` (stable source), `zerus-git` (upstream main) and
 `zerus-ade-bin` (stable binary), with x86_64 support. Release publication is a
 separate owner-triggered workflow consuming a verified exact-commit candidate;
