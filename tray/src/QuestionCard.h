@@ -32,6 +32,7 @@ public:
     void setError(const QString &sessionKey, const QString &questionId, const QString &detail, bool uncertain = false);
     void setAnswered(const QString &sessionKey, const QString &questionId);
     void setSubmitted(const QString &sessionKey, const QString &questionId);
+    bool hasSubmittedAnswer(const QString &sessionKey, const QJsonObject &question);
 
 signals:
     void answerRequested(const QString &sessionKey, const QString &questionId, const QJsonArray &answers);
@@ -62,6 +63,7 @@ private:
     void capture();
     bool saveDraft(const QString &key);
     Draft loadDraft(const QString &key) const;
+    void ensureDraft(const QString &key, const QString &sessionKey);
     void updateControls();
     void scheduleSizing();
     void sizeToContent();
@@ -69,6 +71,8 @@ private:
     QJsonArray answers(bool *valid = nullptr) const;
     QString callbackKey(const QString &sessionKey, const QString &questionId) const;
     static QString identity(const QString &sessionKey, const QString &questionId, const QString &hash = {});
+    static QString draftIdentity(const QString &sessionKey, const QJsonObject &question);
+    bool restoreSubmittedAnswer(const QString &key, const QJsonObject &question);
 
     QHash<QString, Draft> m_drafts;
     ComposerDraftStore m_draftStore;

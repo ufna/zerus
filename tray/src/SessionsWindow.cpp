@@ -2781,7 +2781,9 @@ void SessionsWindow::renderQuestion(const Entry &entry, int navigation)
         const auto candidate = value.toObject();
         const auto id=candidate.value("question_id").toString();
         if(id.isEmpty() || seen.contains(id) || candidate.value("questions").toArray().isEmpty())continue;
-        seen.insert(id);pendingQuestions+=candidate.value("questions").toArray().size();
+        seen.insert(id);
+        if(m_question->hasSubmittedAnswer(m_selectedKey,candidate))continue;
+        pendingQuestions+=candidate.value("questions").toArray().size();
         if(candidate.value("optional").toBool())optional.append(candidate);
         else if(question.isEmpty() || (!question.value("can_answer").toBool() && candidate.value("can_answer").toBool()))question=candidate;
     }
@@ -2844,6 +2846,7 @@ void SessionsWindow::answerQuestion(const QString &key, const QString &questionI
     QJsonObject question;
     for (const auto &value : m_details.value("pending_questions").toArray())
         if (value.toObject().value("question_id").toString() == questionId) { question = value.toObject(); break; }
+    if (m_question->hasSubmittedAnswer(key, question)) return;
     const bool skipping = !answers.isEmpty() && answers.first().toObject().value("skip").toBool();
     if (question.isEmpty() || !(skipping ? question.value("can_skip").toBool() : question.value("can_answer").toBool())
         || question.value("run_id") != m_details.value("run_id")

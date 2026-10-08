@@ -82,6 +82,7 @@ private slots:
     void optionalQuestionsHaveExplicitSkipAndKeepDrafts();
     void submittedAnswersRestoreAndIgnoreLateErrors();
     void submittedCallbacksAndMetadataKeepExactIdentity();
+    void submissionRecognitionKeepsUnconfirmedAnswers();
     void hookTrustRequiresAnExplicitChoice();
     void preview();
 private:
@@ -135,6 +136,7 @@ void TestQuestionCard::submittedAnswersRestoreAndIgnoreLateErrors()
             QJsonObject{{"question_id","q_0"},{"selected_option_ids",QJsonArray{}},{"text","Saved queued answer"}},
             QJsonObject{{"question_id","q_1"},{"selected_option_ids",QJsonArray{"opt_1_1"}},{"text",""}}}}};
     card.setQuestion("local",question);
+    QVERIFY(card.hasSubmittedAnswer("local",question));
     QCOMPARE(text(card,"q_0")->text(),QString("Saved queued answer"));QVERIFY(other(card,"q_0")->isChecked());
     QVERIFY(option(card,"opt_1_1")->isChecked());QVERIFY(!option(card,"opt_1_0")->isChecked());
     QVERIFY(!text(card,"q_0")->isEnabled());QVERIFY(!option(card,"opt_1_1")->isEnabled());
@@ -150,6 +152,8 @@ void TestQuestionCard::submittedAnswersRestoreAndIgnoreLateErrors()
     card.setQuestion("local",question);QVERIFY(!submit(card)->isEnabled());
     QuestionCard fresh;fresh.setQuestion("local",question);
     QCOMPARE(text(fresh,"q_0")->text(),QString("Saved queued answer"));QVERIFY(!submit(fresh)->isEnabled());
+    question.remove("answer_delivery");
+    QVERIFY(fresh.hasSubmittedAnswer("local",question)); // stale metadata cannot reoffer a confirmed answer
 }
 
 void TestQuestionCard::submittedCallbacksAndMetadataKeepExactIdentity()
@@ -158,19 +162,49 @@ void TestQuestionCard::submittedCallbacksAndMetadataKeepExactIdentity()
     QuestionCard card;card.setQuestion("local",question);complete(card);card.setSending("local","tool-question",true);
     auto replacement=question;replacement["question_hash"]="new-hash";
     card.setQuestion("local",replacement);card.setSubmitted("local","tool-question");
+    QVERIFY(!card.hasSubmittedAnswer("local",replacement));
     QVERIFY(submit(card)->text()!=QString("Submitted"));complete(card);
     QVERIFY(submit(card)->isEnabled());
     card.setQuestion("local",question);QVERIFY(!submit(card)->isEnabled());QCOMPARE(submit(card)->text(),QString("Submitted"));
+    QVERIFY(card.hasSubmittedAnswer("local",question));
     card.setQuestion("remote",question);complete(card);QVERIFY(submit(card)->isEnabled());
+    QVERIFY(!card.hasSubmittedAnswer("remote",question));
+    for(const auto &field:{"run_id","conversation_id"}) {
+        auto unrelated=question;unrelated[field]="other-identity";
+        card.setQuestion("local",unrelated);complete(card);QVERIFY(submit(card)->isEnabled());
+        QVERIFY(!card.hasSubmittedAnswer("local",unrelated));
+    }
     const QJsonObject delivery{{"status","submitted"},{"question_id","tool-question"},{"question_hash","hash-one"},
         {"run_id","run"},{"conversation_id","conversation"},{"answers",QJsonArray{}}};
     for(const auto &field:{"question_id","question_hash","run_id","conversation_id"}) {
         QuestionCard fresh;auto stale=delivery;stale[field]="unrelated";auto snapshot=question;snapshot["answer_delivery"]=stale;
-        fresh.setQuestion(QString("unsubmitted-%1").arg(field),snapshot);complete(fresh);QVERIFY(submit(fresh)->isEnabled());
+        const auto unsubmitted = QString("unsubmitted-%1").arg(field);
+        fresh.setQuestion(unsubmitted,snapshot);complete(fresh);QVERIFY(submit(fresh)->isEnabled());
+        QVERIFY(!fresh.hasSubmittedAnswer(unsubmitted,snapshot));
         QuestionCard known; known.setQuestion("local",snapshot); QVERIFY(!submit(known)->isEnabled());
+        QVERIFY(known.hasSubmittedAnswer("local",snapshot));
     }
     QuestionCard unsupported;auto snapshot=question;snapshot["source"]="other";snapshot["answer_delivery"]=delivery;
     unsupported.setQuestion("unsupported",snapshot);complete(unsupported);QVERIFY(submit(unsupported)->isEnabled());
+    QVERIFY(!unsupported.hasSubmittedAnswer("unsupported",snapshot));
+
+}
+
+void TestQuestionCard::submissionRecognitionKeepsUnconfirmedAnswers()
+{
+    auto question=request();question["source"]="codex_async";question["optional"]=true;
+    QuestionCard card;card.setQuestion("local",question);complete(card);
+    card.setSending("local","tool-question");QVERIFY(!card.hasSubmittedAnswer("local",question));
+    card.setError("local","tool-question","No receipt",true);QVERIFY(!card.hasSubmittedAnswer("local",question));
+    card.setSubmitted("local","tool-question");QVERIFY(card.hasSubmittedAnswer("local",question));
+    // A persisted receipt can be recognized before the question is displayed.
+    question["answer_delivery"]=QJsonObject{{"status","submitted"},{"question_id","tool-question"},
+        {"question_hash","hash-one"},{"run_id","run"},{"conversation_id","conversation"}};
+    QuestionCard fresh;QVERIFY(fresh.hasSubmittedAnswer("local",question));
+    auto unsupported=question;unsupported["optional"]=false;QVERIFY(!fresh.hasSubmittedAnswer("local",unsupported));
+    unsupported=question;unsupported["source"]="other";QVERIFY(!fresh.hasSubmittedAnswer("local",unsupported));
+    question.remove("answer_delivery");QVERIFY(fresh.hasSubmittedAnswer("local",question));
+
 }
 
 void TestQuestionCard::hookTrustRequiresAnExplicitChoice()
