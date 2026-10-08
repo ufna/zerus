@@ -187,6 +187,7 @@ private slots:
     void collapsedStripExpandsOverContentOnlyWhenEnabled();
     void collapsedStripSearchOpensPanel();
     void collapsingKeepsRowsInPlace();
+    void escapeInActivityInterruptsAndRestoresPrompt();
     void preview();
 private:
     FleetState fleet() const;
@@ -3250,6 +3251,51 @@ void TestSessionsWindow::collapsingKeepsRowsInPlace()
         toggle->click(); QTRY_COMPARE(list->property("expansion").toReal(), 1.0); frames << top();
         for (int frame : frames) QCOMPARE(frame, docked);
     }
+}
+
+void TestSessionsWindow::escapeInActivityInterruptsAndRestoresPrompt()
+{
+    QTemporaryDir fixture; QFile fake(fixture.filePath("hgs")), original(script());
+    QVERIFY(original.open(QIODevice::ReadOnly)); QVERIFY(fake.open(QIODevice::WriteOnly));
+    // Acknowledge interrupts like the CLI and record each request.
+    fake.write(original.readAll().replace("case \"$1\" in\n", "case \"$1\" in\n"
+        "interrupt) payload=$(cat); printf '%s\\n' \"$payload\" >> \"$0.interrupts\";"
+        " id=$(printf '%s' \"$payload\" | sed 's/.*\"request_id\":\"\\([^\"]*\\)\".*/\\1/');"
+        " printf '{\"request_id\":\"%s\",\"name\":\"%s\",\"run_id\":\"run-one\",\"conversation_id\":\"conversation-one\",\"status\":\"submitted\"}\\n' \"$id\" \"$2\";;\n"));
+    fake.close(); QVERIFY(fake.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+    const auto requests = [&] { QFile log(fake.fileName() + ".interrupts"); return log.open(QIODevice::ReadOnly) ? log.readAll().count('\n') : 0; };
+
+    SessionsWindow window(fake.fileName()); window.setFleet(fleet()); window.show(); window.showSession({}, "codex/hgs/dashboard");
+    window.activateWindow(); QVERIFY(QTest::qWaitForWindowActive(&window));
+    auto *client = window.findChild<HgsClient *>(); auto *composer = window.findChild<MessageComposer *>("messageComposer");
+    auto *browser = window.findChild<ActivityView *>("mainActivity")->browser(); auto *notice = window.findChild<QLabel *>("notice");
+    const QString prompt = "Fix the flaky test\nand explain the cause.";
+    QJsonObject details{{"tracked", true}, {"run_id", "run-one"}, {"conversation_id", "conversation-one"}, {"runtime_state", "live"},
+        {"process_state", "running"}, {"activity", "busy"}, {"phase", "working"}, {"interrupt_supported", true},
+        {"turn_started", 1790928000.0}, {"prompt", prompt}, {"events", QJsonArray{}}, {"cursor", 0}};
+    const auto update = [&] { client->inspectionReady({}, "codex/hgs/dashboard", details, {}); };
+    const auto interrupted = [&] { details["phase"] = "interrupted"; details["activity"] = "unknown"; details["interrupted_message_can_send"] = true; update(); };
+    update(); QVERIFY(composer->findChild<QPushButton *>("interruptAgent")->isEnabled());
+
+    // Escape in the transcript stops the turn instead of closing the window,
+    // and the interrupted prompt returns to the empty message field.
+    browser->setFocus(); QTest::keyClick(browser, Qt::Key_Escape);
+    QTRY_COMPARE(requests(), 1); QVERIFY(window.isVisible());
+    QTRY_VERIFY(notice->text().contains("Interrupt sent"));
+    interrupted();
+    QCOMPARE(composer->editor()->toPlainText(), prompt); QVERIFY(composer->editor()->hasFocus());
+
+    // Escape in the message field stops the next turn; a started draft is kept.
+    details["phase"] = "working"; details["activity"] = "busy"; details["turn_started"] = 1790928100.0; details.remove("interrupted_message_can_send");
+    update(); composer->editor()->setPlainText("my own draft"); composer->editor()->setFocus(); notice->clear();
+    QTest::keyClick(composer->editor(), Qt::Key_Escape);
+    QTRY_COMPARE(requests(), 2); QTRY_VERIFY(notice->text().contains("Interrupt sent"));
+    interrupted(); QCOMPARE(composer->editor()->toPlainText(), QString("my own draft"));
+
+    // Without a working turn, Escape only leaves the field.
+    details["phase"] = "idle"; details["activity"] = "idle"; update();
+    composer->editor()->setFocus(); QTest::keyClick(composer->editor(), Qt::Key_Escape);
+    QVERIFY(!composer->editor()->hasFocus()); QTest::qWait(150); QCOMPARE(requests(), 2);
 }
 
 void TestSessionsWindow::collapsedStripSearchOpensPanel()

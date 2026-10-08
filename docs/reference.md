@@ -292,8 +292,10 @@ in Terminal or Native UI. Codex ordinary deferred follow-ups remain read-only
 unless its native UI offers the supported promotion operation.
 
 **Stop** interrupts the current turn and cancels recovery without terminating the
-session. Claude, Codex and Kimi use verified native Escape; supported DeepSeek
-hosts use native cancel. Native queue behavior still applies: Codex Escape may
+session; Escape in Activity does the same while a turn is working. Once the turn
+is interrupted, its prompt returns to an empty message field for editing; a
+started draft is kept. Claude, Codex and Kimi use verified native Escape;
+supported DeepSeek hosts use native cancel. Native queue behavior still applies: Codex Escape may
 start a queued follow-up. Uncertain interruption is not repeated.
 
 File links retain their visible path and source position. Relative references

@@ -21,6 +21,10 @@ public:
     void setSessionKey(const QString &key);
     void setAvailability(bool available, const QString &reason = {});
     void setInterruptAvailability(bool working, bool enabled, const QString &reason = {});
+    // Same as Stop; false when no turn can be interrupted now.
+    bool requestInterrupt();
+    // Fills an empty draft, for example with the prompt of an interrupted turn.
+    bool offerDraft(const QString &key, const QString &text);
     void setTheme(bool dark);
     // Enlarges the message field; its actions keep the workspace size.
     void setContentScale(double scale);

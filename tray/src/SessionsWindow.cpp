@@ -743,6 +743,10 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         if(!entry||key!=m_selectedKey||m_interruptRequest||m_details.value("interrupt_supported")!=true)return;
         cancelCompactContinuation(tr("Interrupted. Your draft was kept without sending."));
         m_interruptKey=key;
+        // As in Terminal, the prompt of an interrupted turn returns to the message field.
+        const QString prompt=interruptedPrompt(key);
+        if(prompt.isEmpty())m_interruptPrompts.remove(key);
+        else m_interruptPrompts.insert(key,{m_details.value("run_id").toString(),m_details.value("conversation_id").toString(),prompt});
         m_interruptRequest=m_client.requestInterrupt(entry->host,entry->session.name,m_details.value("run_id").toString(),
             m_details.value("conversation_id").toString(),m_details.value("turn_started").toDouble());
         renderDetails();
@@ -750,6 +754,7 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     connect(&m_client,&HgsClient::sessionActionFinished,this,[this](quint64 id,bool ok,const QJsonObject &,const QString &error) {
         if(id!=m_interruptRequest)return;
         m_interruptRequest=0;
+        if(!ok)m_interruptPrompts.remove(m_interruptKey);
         showNotice(ok?tr("Interrupt sent. Waiting for the agent to stop…"):error,!ok);
         if(m_selectedKey==m_interruptKey)inspect();
         renderDetails();
@@ -972,6 +977,7 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     auto *escape = new QShortcut(QKeySequence(Qt::Key_Escape), this);
     connect(escape, &QShortcut::activated, this, [this] {
         if (m_sessionDock->dismissPeek()) m_search->clear();
+        else if (activityHasFocus() && m_composer->requestInterrupt()) return;
         else if (!m_search->text().isEmpty()) m_search->clear(); else close();
     });
     connect(m_activityView, &ActivityView::queueSendNowRequested, this, [this](const QString &id) {
@@ -1226,6 +1232,46 @@ void SessionsWindow::applyTheme()
     m_subagentView->setTheme(m_dark); m_subagentComposer->setTheme(m_dark);
     m_processes->setTheme(m_dark);
     m_childrenHtml.clear(); m_sessions->viewport()->update(); renderDetails();
+}
+
+// Escape in Activity acts like Escape in Terminal for the main conversation.
+bool SessionsWindow::activityHasFocus() const
+{
+    const auto *focus = QApplication::focusWidget();
+    return focus && m_pages->currentIndex() == 0 && m_detailTabs->currentWidget() == m_activityStack
+        && m_activityStack->currentIndex() == 0 && m_activityStack->isAncestorOf(focus);
+}
+
+// The exact text sent from Activity when it is this turn's prompt, otherwise
+// the recorded prompt. Clipped prompts and automatic continuations are skipped.
+QString SessionsWindow::interruptedPrompt(const QString &key) const
+{
+    const QString prompt = m_details.value("prompt").toString();
+    if (prompt.isEmpty() || prompt.startsWith(QStringLiteral("[HGS automatic recovery]"))) return {};
+    const bool clipped = prompt.size() > 4000 && prompt.endsWith(QChar(0x2026));
+    const QString known = clipped ? prompt.chopped(1) : prompt;
+    const auto messages = m_localMessages.value(key);
+    for (int i = messages.size(); i-- > 0;) {
+        const auto message = messages[i].toObject(); const QString text = message.value("text").toString();
+        if (message.value("status") != "error" && message.value("run_id") == m_details.value("run_id")
+            && (clipped ? text.startsWith(known) : text.trimmed() == known.trimmed())) return text;
+    }
+    return clipped ? QString() : prompt;
+}
+
+void SessionsWindow::restoreInterruptedPrompt()
+{
+    const auto pending = m_interruptPrompts.constFind(m_selectedKey);
+    // Wait for this session's inspection; selection briefly renders without it.
+    if (pending == m_interruptPrompts.cend() || m_details.value("run_id").toString().isEmpty()) return;
+    const QString phase = m_details.value("phase").toString();
+    if (m_details.value("run_id") != pending->run || m_details.value("conversation_id") != pending->conversation
+        || !QStringList{"working", "tool", "compacting", "interrupted"}.contains(phase)) {
+        m_interruptPrompts.remove(m_selectedKey); return; // The turn ended another way.
+    }
+    if (phase != "interrupted") return;
+    const QString text = pending->text; m_interruptPrompts.remove(m_selectedKey);
+    if (m_composer->offerDraft(m_selectedKey, text)) m_composer->editor()->setFocus(Qt::OtherFocusReason);
 }
 
 void SessionsWindow::updateSessionsToggle()
@@ -2365,6 +2411,7 @@ void SessionsWindow::renderDetails()
     m_composer->setAvailability(messageProblem.isEmpty(), messageProblem);
     const auto phase=m_details.value("phase").toString(entry->session.phase);
     const bool working=QStringList{"working","tool","compacting"}.contains(phase)&&entry->session.state=="running";
+    restoreInterruptedPrompt();
     m_composer->setInterruptAvailability(working,entry->online&&m_details.value("interrupt_supported").toBool()&&!m_interruptRequest,
         m_interruptRequest?tr("Interrupt is being sent…"):!entry->online?tr("Machine is offline"):
         !m_details.value("interrupt_supported").toBool()?tr("Interrupt is unavailable. Open Terminal to stop this turn."):QString());

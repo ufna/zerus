@@ -116,6 +116,11 @@ private:
     void markAllRepliesRead();
     void updateAttentionIndicator();
     void updateSessionsToggle();
+    bool activityHasFocus() const;
+    QString interruptedPrompt(const QString &key) const;
+    void restoreInterruptedPrompt();
+    struct InterruptedPrompt { QString run, conversation, text; };
+    QHash<QString, InterruptedPrompt> m_interruptPrompts;
     void applySessionStrip();
     SessionPanelDock *m_sessionDock = nullptr;
     QPushButton *m_sessionsToggle = nullptr, *m_stripSearch = nullptr, *m_batchButton = nullptr;

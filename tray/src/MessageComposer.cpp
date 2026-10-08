@@ -76,6 +76,7 @@ class ComposeEdit : public QPlainTextEdit {
 public:
     explicit ComposeEdit(QWidget *parent) : QPlainTextEdit(parent) {}
     std::function<void()> submit;
+    std::function<bool()> escape;
     std::function<void(const QString &)> attachFile;
     std::function<void(const QImage &)> attachImage;
 protected:
@@ -105,7 +106,9 @@ protected:
     }
     void keyPressEvent(QKeyEvent *event) override {
         if (!m_composing && event->key() == Qt::Key_Escape) {
-            clearFocus(); event->accept(); return;
+            // Like Escape in Terminal: stop a working turn, otherwise leave the field.
+            if (!(escape && escape())) clearFocus();
+            event->accept(); return;
         }
         if (!m_composing && (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
             && !event->modifiers().testFlag(Qt::ShiftModifier)) {
@@ -218,6 +221,7 @@ MessageComposer::MessageComposer(QWidget *parent) : QWidget(parent)
     connect(edit, &QPlainTextEdit::cursorPositionChanged, this, rememberCursor);
     connect(edit, &QPlainTextEdit::selectionChanged, this, rememberCursor);
     edit->submit = [this]() { send(); };
+    edit->escape = [this]() { return requestInterrupt(); };
     edit->attachFile = [this](const QString &path) { attachFile(path); };
     edit->attachImage = [this](const QImage &image) {
         if (qint64(image.width()) * image.height() > 32000000) { showError(tr("Image is too large. Use an image below 32 megapixels.")); return; }
@@ -278,6 +282,23 @@ void MessageComposer::setInterruptAvailability(bool working, bool enabled, const
 {
     m_stop->setVisible(working); m_stop->setEnabled(enabled);
     m_stop->setToolTip(reason.isEmpty()?tr("Interrupt the current turn, like Escape in Terminal. The session stays open; queued messages follow the agent's native behavior."):reason);
+}
+
+bool MessageComposer::requestInterrupt()
+{
+    if (m_key.isEmpty() || m_stop->isHidden() || !m_stop->isEnabled()) return false;
+    emit interruptRequested(m_key); return true;
+}
+
+bool MessageComposer::offerDraft(const QString &key, const QString &text)
+{
+    if (key.isEmpty() || text.trimmed().isEmpty()) return false;
+    auto &draft = m_drafts[key];
+    // A draft the user started, or a message on its way, always wins.
+    if (!draft.text.trimmed().isEmpty() || !draft.attachments.isEmpty() || draft.sending) return false;
+    draft.text = text; draft.position = draft.anchor = int(text.size()); draft.notice.clear();
+    if (key == m_key) { m_loading = true; restoreDraft(); m_loading = false; }
+    updateControls(); return true;
 }
 
 void MessageComposer::setAvailability(bool available, const QString &reason)
