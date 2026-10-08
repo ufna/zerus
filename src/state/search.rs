@@ -244,7 +244,7 @@ impl Search {
             }
             // A conversation's journal can span several resumed processes. Its
             // binding is the navigation target, while event.run_id stays intact.
-            journal::mark_task_notification(&mut event, "");
+            journal::mark_system_prompt(record, &mut event, "");
             let role = journal_role(&event);
             if string(&event, "detail").is_empty() {
                 continue;
@@ -357,7 +357,7 @@ fn equivalent_excerpt(left: &str, right: &str) -> bool {
 }
 
 fn journal_role(event: &Value) -> &'static str {
-    if string(event, "agent_id").is_empty() && event["origin"] != "task_notification" {
+    if string(event, "agent_id").is_empty() && !event["origin"].is_string() {
         match string(event, "type") {
             "UserPromptSubmit" | "UserPromptQueued" | "TurnStarted" | "QuestionAnswered" => {
                 return "user"
@@ -502,11 +502,11 @@ pub(super) fn provider_event(agent: &str, event: &Value) -> Option<(Value, &'sta
                 _ => return None,
             };
             let message = &event["message"];
-            // Claude records a finished background task as a system "user" turn.
+            // Claude records finished background work as a system "user" turn.
             if string(message, "role") != role
-                || event["origin"]["kind"] == "task-notification"
+                || ["task-notification", "peer"].contains(&string(&event["origin"], "kind"))
                 || (role == "user"
-                    && journal::task_notification(&text_parts(&message["content"], &["text"])).is_some())
+                    && journal::system_prompt(&text_parts(&message["content"], &["text"])).is_some())
             {
                 return None;
             }
@@ -787,6 +787,9 @@ mod tests {
         task.as_object_mut().unwrap().remove("origin");
         assert!(provider_event("claude", &task).is_none());
         assert_eq!(journal_role(&json!({"type":"UserPromptSubmit","origin":"task_notification"})), "event");
+        assert_eq!(journal_role(&json!({"type":"UserPromptSubmit","origin":"subagent_report"})), "event");
+        task["message"]["content"] = json!("<agent-message from=\"a15\">\nPlease rebase.\n</agent-message>");
+        assert!(provider_event("claude", &task).is_none());
         let mut kimi = json!({"type":"agent.message.appended","agentId":"main","time":1767225600000u64,
             "message":{"message":{"role":"assistant","content":[{"type":"think","think":"private"},
                 {"type":"text","text":"Public response"}]},"meta":{"messageId":"message"}}});

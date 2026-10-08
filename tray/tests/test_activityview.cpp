@@ -927,7 +927,8 @@ void TestActivityView::expandsMatchingSnapshotWithoutDuplicate()
 
 void TestActivityView::subagentReportIsShortUntilExpanded()
 {
-    ActivityView view; view.setTheme(true);
+    ActivityView view; view.setTheme(true); view.resize(630, 520); view.show();
+    const auto preview = qEnvironmentVariable("HGS_REPORT_PREVIEW");
     auto report = journalEvent(2, "UserPromptSubmit", "Agent \"Review branch\" finished");
     report["origin"] = "subagent_report"; report["agent_id"] = ""; report["from_agent"] = "a15";
     report["report"] = "## Review: Markdown\n\n- **Critical**: tests fail at HEAD\n- Minor: spacing";
@@ -939,7 +940,9 @@ void TestActivityView::subagentReportIsShortUntilExpanded()
     QVERIFY(!plain.contains("tests fail at HEAD"));
     const auto toggle = links(view.browser()).filter(QRegularExpression("^hgs-activity:report-"));
     QCOMPARE(toggle.size(), 1);
+    if (!preview.isEmpty()) { QDir().mkpath(preview); QTest::qWait(40); QVERIFY(view.grab().save(preview + "/report-collapsed.png")); }
     activate(view.browser(), toggle.first());
+    if (!preview.isEmpty()) { QTest::qWait(40); QVERIFY(view.grab().save(preview + "/report-expanded.png")); }
     plain = view.browser()->toPlainText();
     QVERIFY(plain.contains("Review: Markdown"));
     QVERIFY(plain.contains("tests fail at HEAD"));

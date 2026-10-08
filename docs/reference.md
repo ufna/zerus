@@ -257,10 +257,11 @@ Activity shows recorded public messages and tool events rather than a full copy
 of native history. User messages preserve literal text, Markdown markers and
 line breaks; agent replies render Markdown. Adjacent tool events collapse into
 groups. Reading older history preserves scroll and selection; **Jump to latest**
-returns to live events without resizing the timeline. Claude reports a finished
-background task as a new turn; Activity shows its summary as a violet
-**Background task** notice, never as your message, and search and the session's
-last request ignore it.
+returns to live events without resizing the timeline. Claude hands finished
+background work back as a new turn. Activity never shows it as your message: a
+background task becomes a violet **Background task** notice, and a subagent's
+final report a **Subagent report** with one summary line and **Show report** for
+the full Markdown. Search and the session's last request ignore both.
 
 The owner-only `events.sqlite3` journal sits with session records on the agent host
 and retains about 50,000 events per machine. Excerpts can contain project data.

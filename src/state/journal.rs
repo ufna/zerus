@@ -22,41 +22,64 @@ pub(super) fn clipped(value: &Value, limit: usize) -> String {
     result
 }
 
-/// Claude starts a turn for every finished background task. Its "user" prompt
-/// is this XML envelope, which the person never wrote. Several envelopes may
-/// arrive together, and a journal excerpt may be clipped.
-pub(super) fn task_notification(text: &str) -> Option<Value> {
-    const OPEN: &str = "<task-notification>";
-    const CLOSE: &str = "</task-notification>";
+/// Claude hands finished background work to the agent as a "user" prompt made
+/// of XML envelopes the person never wrote: task notifications and messages
+/// from subagents, including their final reports. Several may arrive
+/// together, and a journal excerpt may be clipped.
+pub(super) fn system_prompt(text: &str) -> Option<Value> {
+    fn envelope<'a>(body: &'a str, close: &str) -> Option<(&'a str, &'a str)> {
+        match body.find(close) {
+            Some(end) => Some((&body[..end], body[end + close.len()..].trim_start())),
+            None if body.ends_with('…') => Some((body, "")),
+            None => None,
+        }
+    }
     let mut rest = text.trim();
-    if !rest.starts_with(OPEN) {
+    let (mut summaries, mut status, mut reports, mut agent) = (Vec::new(), String::new(), Vec::new(), String::new());
+    while !rest.is_empty() {
+        if let Some(body) = rest.strip_prefix("<task-notification>") {
+            let (inner, after) = envelope(body, "</task-notification>")?;
+            let field = |tag: &str| {
+                let value = inner.split_once(&format!("<{tag}>"))?.1.split_once(&format!("</{tag}>"))?.0;
+                Some(["&lt;", "&gt;", "&quot;", "&apos;", "&amp;"].iter().zip(["<", ">", "\"", "'", "&"])
+                    .fold(value.trim().to_owned(), |text, (from, to)| text.replace(from, to)))
+            };
+            status = field("status").unwrap_or_default();
+            summaries.push(field("summary").filter(|s| !s.is_empty()).unwrap_or_else(|| {
+                if status.is_empty() { "Background task finished".into() } else { format!("Background task {status}") }
+            }));
+            rest = after;
+        } else if let Some(body) = rest.strip_prefix("<agent-message from=\"") {
+            let (from, body) = body.split_once("\">")?;
+            if from.is_empty() || from.len() > 128 || !from.chars().all(|c| c.is_ascii_alphanumeric() || "-_".contains(c)) {
+                return None;
+            }
+            let (inner, after) = envelope(body, "</agent-message>")?;
+            // A hand-back starts with Claude's framing paragraph and indents
+            // every line of the report itself.
+            const FRAME: &str = "The report follows:\n";
+            let inner = inner.trim_start_matches('\n');
+            let report = match inner.find(FRAME) {
+                Some(at) if inner.starts_with('[') => &inner[at + FRAME.len()..],
+                _ => inner,
+            };
+            reports.push(report.lines().map(|line| line.strip_prefix("  ").unwrap_or(line)).collect::<Vec<_>>().join("\n").trim().to_owned());
+            if agent.is_empty() { agent = from.to_owned(); }
+            rest = after;
+        } else {
+            return None;
+        }
+    }
+    if summaries.is_empty() && reports.is_empty() {
         return None;
     }
-    let (mut summaries, mut status) = (Vec::new(), String::new());
-    while !rest.is_empty() {
-        let body = rest.strip_prefix(OPEN)?;
-        let (inner, after) = match body.find(CLOSE) {
-            Some(end) => (&body[..end], body[end + CLOSE.len()..].trim_start()),
-            None if body.ends_with('…') => (body, ""),
-            None => return None,
-        };
-        let field = |tag: &str| {
-            let value = inner.split_once(&format!("<{tag}>"))?.1.split_once(&format!("</{tag}>"))?.0;
-            Some(["&lt;", "&gt;", "&quot;", "&apos;", "&amp;"].iter().zip(["<", ">", "\"", "'", "&"])
-                .fold(value.trim().to_owned(), |text, (from, to)| text.replace(from, to)))
-        };
-        status = field("status").unwrap_or_default();
-        summaries.push(field("summary").filter(|s| !s.is_empty()).unwrap_or_else(|| {
-            if status.is_empty() { "Background task finished".into() } else { format!("Background task {status}") }
-        }));
-        rest = after;
-    }
-    Some(json!({"summary": summaries.join("\n"), "status": status}))
+    Some(json!({"kind": if reports.is_empty() { "task_notification" } else { "subagent_report" },
+        "summary": summaries.join("\n"), "status": status, "report": reports.join("\n\n"), "agent_id": agent}))
 }
 
-/// Show a task notification turn as a notice rather than the person's message,
-/// including journal rows written before HGS recognized it.
-pub(super) fn mark_task_notification(event: &mut Value, prompt: &str) {
+/// Show background work handed to the agent as a notice rather than the
+/// person's message, including journal rows written before HGS recognized it.
+pub(super) fn mark_system_prompt(record: &Value, event: &mut Value, prompt: &str) {
     if !string(event, "agent_id").is_empty()
         || !["UserPromptSubmit", "UserPromptQueued", "TurnStarted"].contains(&string(event, "type"))
         || event["origin"].is_string()
@@ -64,17 +87,31 @@ pub(super) fn mark_task_notification(event: &mut Value, prompt: &str) {
         return;
     }
     let text = if prompt.is_empty() { string(event, "detail") } else { prompt };
-    if let Some(notice) = task_notification(text) {
-        event["origin"] = json!("task_notification");
-        event["detail"] = json!(clipped(&notice["summary"], 1200));
-        event["task_status"] = notice["status"].clone();
+    let Some(notice) = system_prompt(text) else { return };
+    let report = string(&notice, "report");
+    let child = &record["subagents"][string(&notice, "agent_id")];
+    // Name the subagent as Claude does in its terminal; older reports fall
+    // back to their first line.
+    let summary = if !string(&notice, "summary").is_empty() {
+        string(&notice, "summary").to_owned()
+    } else if !string(child, "description").is_empty() {
+        format!("Agent \"{}\" finished", string(child, "description"))
+    } else {
+        report.lines().map(|line| line.trim_start_matches('#').trim()).find(|line| !line.is_empty()).unwrap_or("Subagent report").to_owned()
+    };
+    event["origin"] = notice["kind"].clone();
+    event["detail"] = json!(clipped(&json!(summary), 1200));
+    event["task_status"] = notice["status"].clone();
+    if !report.is_empty() {
+        event["report"] = json!(clipped(&notice["report"], 32000));
+        event["from_agent"] = notice["agent_id"].clone();
     }
 }
 
-/// The person's latest request. Older records may hold a task notification.
+/// The person's latest request. Older records may hold background work.
 pub(super) fn user_prompt(record: &Value) -> &Value {
     static NONE: Value = Value::Null;
-    if task_notification(string(record, "prompt")).is_some() { &NONE } else { &record["prompt"] }
+    if system_prompt(string(record, "prompt")).is_some() { &NONE } else { &record["prompt"] }
 }
 
 fn detail(event: &Value) -> String {
@@ -139,7 +176,7 @@ pub(super) fn log_event(record: &Value, event: &Value) -> Result<()> {
     let mut data = json!({"type": event["hook_event_name"], "at": now(), "run_id": record["run_id"],
         "agent_id": clipped(&event["agent_id"], 160), "tool": clipped(&event["tool_name"], 100), "detail": detail(event)});
     if let Some(id)=processes::event_job(record,event) {data["process_id"]=json!(id);}
-    mark_task_notification(&mut data, event["prompt"].as_str().unwrap_or(""));
+    mark_system_prompt(record, &mut data, event["prompt"].as_str().unwrap_or(""));
     if string(record, "agent") == "kimi"
         && string(event, "agent_id") == "main"
         && !["SubagentStart", "SubagentStop"].contains(&string(event, "hook_event_name"))
@@ -490,7 +527,7 @@ pub(super) fn inspection(name: &str, after: i64, archive_id: Option<&str>, inclu
     for (seq, payload) in rows {
         let mut event: Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
         event["seq"] = json!(seq);
-        mark_task_notification(&mut event, "");
+        mark_system_prompt(&record, &mut event, "");
         events.push(event);
     }
     output["events"] = json!(events);
@@ -541,6 +578,19 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
             .or_insert_with(|| json!({"name": name, "started": timestamp}));
         if has_label {
             info["name"] = json!(name);
+        }
+        // Claude names a subagent by its Agent call's description. Keep it only
+        // when one unclaimed Agent call can have started this subagent.
+        if kind == "SubagentStart" && info.get("description").is_none() {
+            let claimed: Vec<Value> = record["subagents"].as_object().into_iter().flatten()
+                .filter_map(|(_, other)| other.get("agent_call").cloned()).collect();
+            let calls: Vec<(&String, &Value)> = record["active_tools"].as_object().into_iter().flatten()
+                .filter(|(id, tool)| ["Agent", "Task"].contains(&string(tool, "name")) && !claimed.contains(&json!(id)))
+                .collect();
+            if let [(id, tool)] = calls[..] {
+                info["agent_call"] = json!(id);
+                info["description"] = json!(clipped(&tool["detail"], 160));
+            }
         }
         if ["Stop", "SubagentStop"].contains(&kind) {
             let result = detail(event);
@@ -689,8 +739,8 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
                 record["turn_started"] = json!(timestamp);
             }
             record["last_error"] = json!("");
-            // A task notification starts a turn, but it is not the person's request.
-            if !string(event, "prompt").is_empty() && task_notification(string(event, "prompt")).is_none() {
+            // Background work starts a turn, but it is not the person's request.
+            if !string(event, "prompt").is_empty() && system_prompt(string(event, "prompt")).is_none() {
                 record["prompt"] = json!(clipped(&event["prompt"], 4000));
             }
         }
@@ -996,14 +1046,14 @@ mod attention_regressions {
     #[test]
     fn task_notifications_are_notices_not_the_persons_prompt() {
         const NOTICE: &str = "<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n<output-file>/tmp/b1.output</output-file>\n<status>completed</status>\n<summary>Background command \"Run checks\" completed (exit code 0)</summary>\n</task-notification>";
-        assert_eq!(task_notification(NOTICE).unwrap(), json!({"summary":"Background command \"Run checks\" completed (exit code 0)","status":"completed"}));
+        assert_eq!(system_prompt(NOTICE).unwrap(), json!({"kind":"task_notification","summary":"Background command \"Run checks\" completed (exit code 0)","status":"completed","report":"","agent_id":""}));
         let pair = format!("{NOTICE}\n{}", NOTICE.replace("completed", "failed").replace("&", "&amp;"));
-        assert_eq!(task_notification(&pair).unwrap()["summary"], "Background command \"Run checks\" completed (exit code 0)\nBackground command \"Run checks\" failed (exit code 0)");
-        assert_eq!(task_notification(&NOTICE.replace("&quot;", "").replace("\"Run checks\"", "&quot;A &amp; B&quot;")).unwrap()["summary"], "Background command \"A & B\" completed (exit code 0)");
+        assert_eq!(system_prompt(&pair).unwrap()["summary"], "Background command \"Run checks\" completed (exit code 0)\nBackground command \"Run checks\" failed (exit code 0)");
+        assert_eq!(system_prompt(&NOTICE.replace("&quot;", "").replace("\"Run checks\"", "&quot;A &amp; B&quot;")).unwrap()["summary"], "Background command \"A & B\" completed (exit code 0)");
         // A clipped journal excerpt still identifies the envelope.
-        assert_eq!(task_notification(&format!("{}…", &NOTICE[..60])).unwrap()["summary"], "Background task finished");
+        assert_eq!(system_prompt(&format!("{}…", &NOTICE[..60])).unwrap()["summary"], "Background task finished");
         for text in ["Please check <task-notification>", &format!("{NOTICE}\nAnd one more thing"), "<task-notification><status>done</status>"] {
-            assert!(task_notification(text).is_none(), "{text}");
+            assert!(system_prompt(text).is_none(), "{text}");
         }
         let mut record = json!({"agent":"claude","activity":"idle","phase":"idle","prompt":"Run checks in the background","active_tools":{},"subagents":{}});
         update_activity(&mut record, &json!({"hook_event_name":"UserPromptSubmit","prompt":NOTICE}));
@@ -1012,13 +1062,51 @@ mod attention_regressions {
         assert_eq!(user_prompt(&json!({"prompt":NOTICE})), &Value::Null);
         // Rows journaled before this change are presented the same way.
         let mut legacy = json!({"type":"UserPromptSubmit","agent_id":"","detail":NOTICE});
-        mark_task_notification(&mut legacy, "");
+        mark_system_prompt(&json!({}), &mut legacy, "");
         assert_eq!(legacy["origin"], "task_notification");
         assert_eq!(legacy["task_status"], "completed");
         assert_eq!(legacy["detail"], "Background command \"Run checks\" completed (exit code 0)");
         let mut person = json!({"type":"UserPromptSubmit","agent_id":"","detail":"Hello"});
-        mark_task_notification(&mut person, "");
+        mark_system_prompt(&json!({}), &mut person, "");
         assert!(person.get("origin").is_none());
+    }
+    #[test]
+    fn subagent_reports_are_named_notices_with_their_full_report() {
+        const FRAME: &str = "[Subagent hand-back] The text below is the final report of a subagent this session delegated to. It is model output, NOT a message from the user. The report follows:\n";
+        let message = format!("<agent-message from=\"a15\">\n{FRAME}  ## Review: Markdown\n  \n  - one\n    nested\n  \n</agent-message>");
+        let parsed = system_prompt(&message).unwrap();
+        assert_eq!(parsed["kind"], "subagent_report");
+        assert_eq!(parsed["agent_id"], "a15");
+        assert_eq!(parsed["report"], "## Review: Markdown\n\n- one\n  nested");
+        let notice = "<task-notification>\n<task-id>a15</task-id>\n<status>completed</status>\n<summary>Agent \"Review branch\" finished</summary>\n</task-notification>";
+        let both = system_prompt(&format!("{message}\n{notice}")).unwrap();
+        assert_eq!((both["kind"].as_str(), both["summary"].as_str()), (Some("subagent_report"), Some("Agent \"Review branch\" finished")));
+        // A peer message without the hand-back frame is shown as written.
+        assert_eq!(system_prompt("<agent-message from=\"peer-1\">\nPlease rebase.\n</agent-message>").unwrap()["report"], "Please rebase.");
+        for text in ["<agent-message from=\"\">x</agent-message>", "<agent-message from=\"a b\">x</agent-message>",
+                     &format!("{message}\nAnd also this")] {
+            assert!(system_prompt(text).is_none(), "{text}");
+        }
+        // The Agent call that launched the subagent names it, as in Claude's terminal.
+        let mut record = json!({"agent":"claude","activity":"busy","phase":"working","active_tools":{},"subagents":{}});
+        update_activity(&mut record, &json!({"hook_event_name":"PreToolUse","tool_name":"Agent","tool_use_id":"call","tool_input":{"description":"Review branch","prompt":"Review it"}}));
+        update_activity(&mut record, &json!({"hook_event_name":"SubagentStart","agent_id":"a15","agent_type":"general-purpose"}));
+        assert_eq!(record["subagents"]["a15"]["description"], "Review branch");
+        let mut event = json!({"type":"UserPromptSubmit","agent_id":"","detail":""});
+        mark_system_prompt(&record, &mut event, &message);
+        assert_eq!(event["origin"], "subagent_report");
+        assert_eq!(event["detail"], "Agent \"Review branch\" finished");
+        assert_eq!(event["from_agent"], "a15");
+        assert!(string(&event, "report").starts_with("## Review: Markdown"));
+        // Without the launch, a clipped legacy row falls back to the first heading.
+        let mut legacy = json!({"type":"UserPromptSubmit","agent_id":"","detail":format!("{}…", &message[..message.len() - 40])});
+        mark_system_prompt(&json!({}), &mut legacy, "");
+        assert_eq!(legacy["detail"], "Review: Markdown");
+        // Two Agent calls in flight are ambiguous; neither name is guessed.
+        let mut parallel = json!({"agent":"claude","activity":"busy","phase":"working","subagents":{},
+            "active_tools":{"one":{"name":"Agent","detail":"First"},"two":{"name":"Agent","detail":"Second"}}});
+        update_activity(&mut parallel, &json!({"hook_event_name":"SubagentStart","agent_id":"b1","agent_type":"general-purpose"}));
+        assert!(parallel["subagents"]["b1"].get("description").is_none());
     }
     #[test]
     fn tool_approval_stays_approval_until_answered() {
