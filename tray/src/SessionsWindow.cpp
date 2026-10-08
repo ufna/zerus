@@ -10,6 +10,7 @@
 #include "ProjectAppearance.h"
 #include "SessionStatusBadge.h"
 #include "SessionElapsed.h"
+#include "SessionTag.h"
 #include "ProjectsDialog.h"
 #include "SwarmController.h"
 #include "SwarmDialog.h"
@@ -119,16 +120,6 @@ using SessionPresentation::projectContext;
 using SessionPresentation::currentActivity;
 using SessionPresentation::currentAction;
 using SessionPresentation::childCount;
-
-QString renameProblem(const QString &tag)
-{
-    if (tag.isEmpty()) return QObject::tr("Enter a session name.");
-    if (tag != tag.trimmed()) return QObject::tr("Remove spaces at the beginning or end.");
-    for (const QChar character : tag)
-        if (character == '/' || character == ':' || character == '.' || character.category() == QChar::Other_Control)
-            return QObject::tr("Names cannot contain /, : or . or control characters.");
-    return {};
-}
 
 bool needsAttention(const SessionInfo &s)
 {
@@ -3121,10 +3112,10 @@ void SessionsWindow::forkSession()
     auto *name = new QLineEdit(tag); name->setObjectName("forkSessionName"); name->setAccessibleName(tr("New session name")); layout->addWidget(name);
     auto *error = label({}, "hint"); error->setWordWrap(true); layout->addWidget(error);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel); auto *create = buttons->button(QDialogButtonBox::Ok); create->setText(tr("Fork session")); layout->addWidget(buttons);
-    const auto validate = [&] { QString problem = renameProblem(name->text()); if (problem.isEmpty() && occupied(name->text())) problem = tr("This session name is already in use."); error->setText(problem); create->setEnabled(problem.isEmpty()); };
+    const auto validate = [&] { QString problem = SessionTag::problem(name->text()); if (problem.isEmpty() && occupied(name->text())) problem = tr("This session name is already in use."); error->setText(problem); create->setEnabled(problem.isEmpty()); };
     connect(name, &QLineEdit::textChanged, &dialog, validate); connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept); connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     validate(); name->selectAll(); name->setFocus();
-    if (dialog.exec() != QDialog::Accepted || !renameProblem(name->text()).isEmpty() || occupied(name->text())) return;
+    if (dialog.exec() != QDialog::Accepted || !SessionTag::problem(name->text()).isEmpty() || occupied(name->text())) return;
     if (!selectSessionEntry(original) || !m_forkAction->isEnabled()) return;
     m_forkKey = original.host + '\n' + prefix + name->text(); m_forkGroup = m_organization.groupFor(original.identity);
     if (const auto *group = m_organization.group(m_forkGroup)) {
@@ -3164,7 +3155,7 @@ void SessionsWindow::renameSession()
     save->style()->unpolish(save); save->style()->polish(save);
     save->setDefault(true); layout->addWidget(buttons);
     const auto problem = [this, original, archived, prefix](const QString &tag) {
-        const QString invalid = renameProblem(tag); if (!invalid.isEmpty()) return invalid;
+        const QString invalid = SessionTag::problem(tag); if (!invalid.isEmpty()) return invalid;
         if (!archived) for (const auto &other : m_entries)
             if (other.host == original.host && other.key != original.key && other.session.state != "archived" && other.session.name == prefix + tag)
                 return tr("This name is already in use on %1.").arg(original.machine);

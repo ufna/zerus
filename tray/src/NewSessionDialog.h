@@ -50,7 +50,7 @@ private:
     QMap<QString, QString> m_browsedFolders;
     QString m_folderContext;
     QLineEdit *m_name;
-    QLabel *m_projectPath,*m_preview,*m_error;
+    QLabel *m_projectPath,*m_preview,*m_error,*m_nameError;
     QPushButton *m_start,*m_browse,*m_worktrees,*m_newWorktree;
     QJsonObject m_worktreeCatalog;
     QMap<QString, QJsonObject> m_verifiedWorktrees;

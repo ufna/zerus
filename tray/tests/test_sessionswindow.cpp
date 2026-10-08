@@ -165,6 +165,7 @@ private slots:
     void terminationProgress_data();
     void terminationProgress();
     void remoteFolderLaunch();
+    void launchNameFollowsRenameRules();
     void nativeLaunchStaysInWorkspace_data();
     void nativeLaunchStaysInWorkspace();
     void nativeSignInPreservesDraftAndUnblocks();
@@ -3485,6 +3486,29 @@ void TestSessionsWindow::remoteFolderLaunch()
     NewSessionDialog second(script(), fleet(), {}, "martty-dsh", "infra");
     QVERIFY(second.findChild<QLineEdit *>("launchName")->text() != name);
     QCOMPARE(second.findChild<QComboBox *>("launchAgent")->currentText(), QStringLiteral("martty-dsh"));
+}
+
+void TestSessionsWindow::launchNameFollowsRenameRules()
+{
+    // Creating a session accepts exactly the tags that Rename accepts.
+    NewSessionDialog dialog(script(), fleet(), "mac"); dialog.show();
+    QTRY_COMPARE(dialog.findChild<QComboBox *>("launchProject")->count(), 1);
+    SessionOrganization organization; organization.addFolder("ungrouped","mac","/remote/work tree");
+    dialog.setGroups(organization,"ungrouped");
+    auto *name = dialog.findChild<QLineEdit *>("launchName");
+    auto *problem = dialog.findChild<QLabel *>("launchNameError"); QVERIFY(problem);
+    auto *start = dialog.findChild<QPushButton *>("primary"); QTRY_VERIFY(start->isEnabled());
+    for (const QString &bad : {QString(" plan"), QString("plan "), QString("a/b"), QString("a.b"), QString("a:b"), QString()}) {
+        name->setText(bad);
+        QVERIFY2(!start->isEnabled(), qPrintable(bad));
+        QVERIFY2(problem->isVisible() && !problem->text().isEmpty(), qPrintable(bad));
+    }
+    name->setText("my plan");
+    QTRY_VERIFY(start->isEnabled()); QVERIFY(!problem->isVisible());
+    QSignalSpy launched(&dialog, &NewSessionDialog::launchRequested);
+    start->click();
+    QTRY_COMPARE(launched.size(), 1);
+    QCOMPARE(launched[0][3].toString(), QStringLiteral("my plan"));
 }
 
 void TestSessionsWindow::nativeLaunchStaysInWorkspace_data()

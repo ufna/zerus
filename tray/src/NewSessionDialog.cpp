@@ -3,6 +3,7 @@
 #include "DirectoryDialog.h"
 #include "WorktreePanel.h"
 #include "NewWorktreeDialog.h"
+#include "SessionTag.h"
 #include <QCheckBox>
 #include <QToolButton>
 #include <QComboBox>
@@ -13,7 +14,6 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
-#include <QRegularExpression>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QUuid>
@@ -63,6 +63,7 @@ NewSessionDialog::NewSessionDialog(const QString &hgsPath,const FleetState &flee
     m_account=new QComboBox;m_account->setObjectName("launchAccount");m_account->addItem(tr("Default account"),QString());
     form->addRow(tr("Agent"),m_agent);form->addRow(tr("Account"),m_account);
     m_name=new QLineEdit("work-"+QUuid::createUuid().toString(QUuid::Id128).left(8));m_name->setObjectName("launchName");form->addRow(tr("Session name"),m_name);
+    m_nameError=plainLabel();m_nameError->setObjectName("launchNameError");m_nameError->hide();form->addRow(QString(),m_nameError);
     m_openTerminal=new QCheckBox(tr("Open terminal window"));m_openTerminal->setObjectName("launchOpenTerminal");
     m_openTerminal->setChecked(QSettings().value("workspace/launchOpenTerminal",false).toBool());form->addRow(QString(),m_openTerminal);
     layout->addLayout(form);
@@ -204,7 +205,8 @@ void NewSessionDialog::updateForm()
         worktree?tr("Worktree in %1").arg(m_project->currentText()):
         tr("Folder in %1").arg(m_project->currentText()));
     m_preview->setToolTip(m_preview->text());m_preview->ensurePolished();m_preview->setFixedHeight(2*m_preview->fontMetrics().lineSpacing());
-    const bool validName=!m_name->text().isEmpty()&&!m_name->text().contains(QRegularExpression("[\\s/.:]"));
+    const QString nameProblem=SessionTag::problem(m_name->text());const bool validName=nameProblem.isEmpty();
+    m_nameError->setText(nameProblem);m_nameError->setVisible(!validName);
     m_start->setEnabled(m_account->currentIndex()>=0&&!m_accountRequest&&!m_validation&&validName&&!path.isEmpty()&&m_folder->currentData(Qt::UserRole+3).toBool());
     for(auto *widget:QList<QWidget *>{m_project,m_machine,m_folder,m_agent,m_name,m_manage,m_worktrees})widget->setEnabled(!m_validation);
     const auto *machine=host().isEmpty()?&m_fleet.local():m_fleet.peer(host());
