@@ -83,7 +83,14 @@ def release_for_tag(tag):
     if result.returncode == 0:
         return json.loads(result.stdout)
     require("HTTP 404" in result.stderr, "Cannot inspect GitHub release: " + result.stderr.strip())
-    return None
+    # The tag endpoint exposes published releases. An authenticated listing also
+    # includes drafts, whose Git tag may not exist yet. Paginate so a retained
+    # draft can still be resumed after later releases have been created.
+    pages = json.loads(gh("api", "--paginate", "--slurp",
+                          f"repos/{REPOSITORY}/releases?per_page=100"))
+    matches = [release for page in pages for release in page if release["tag_name"] == tag]
+    require(len(matches) <= 1, "Multiple releases use the candidate tag; inspect manually.")
+    return matches[0] if matches else None
 
 
 def verify_tag(tag, commit):
@@ -136,6 +143,7 @@ def publish_github(candidate, info, sums):
             gh("release", "create", tag, "--repo", REPOSITORY, "--draft", "--target", commit,
                "--title", f"Zerus {version}", "--notes-file", str(path))
         release = release_for_tag(tag)
+        require(release is not None, "Created draft is not visible; retry the same candidate after checking GitHub access.")
     if release["draft"]:
         require(release["target_commitish"] == commit, "Existing draft targets another commit or a moving branch.")
     else:

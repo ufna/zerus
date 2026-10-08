@@ -175,6 +175,32 @@ class PublicationTests(unittest.TestCase):
                 patch.object(publish, "api", return_value={"object": {"type": "commit", "sha": COMMIT}}):
             self.assertTrue(publish.verify_tag("v" + VERSION, COMMIT))
 
+    def test_unpublished_draft_is_found_in_authenticated_paginated_listing(self):
+        draft = {"id": 42, "tag_name": "v" + VERSION, "draft": True,
+                 "target_commitish": COMMIT, "assets": []}
+        missing = subprocess.CompletedProcess([], 1, "", "gh: HTTP 404")
+        pages = [[{"tag_name": "v0.36.2", "draft": False}], [draft]]
+        with patch.object(publish.subprocess, "run", return_value=missing), \
+                patch.object(publish, "gh", return_value=json.dumps(pages)) as listing:
+            self.assertEqual(publish.release_for_tag(draft["tag_name"]), draft)
+            listing.assert_called_once_with("api", "--paginate", "--slurp",
+                                            f"repos/{common.REPOSITORY}/releases?per_page=100")
+        with patch.object(publish.subprocess, "run", return_value=missing), \
+                patch.object(publish, "gh", return_value=json.dumps([[]])):
+            self.assertIsNone(publish.release_for_tag(draft["tag_name"]))
+        with patch.object(publish.subprocess, "run", return_value=missing), \
+                patch.object(publish, "gh", return_value=json.dumps([[draft], [draft]])):
+            with self.assertRaisesRegex(ValueError, "Multiple releases"):
+                publish.release_for_tag(draft["tag_name"])
+
+    def test_release_lookup_errors_cannot_be_treated_as_absence(self):
+        forbidden = subprocess.CompletedProcess([], 1, "", "gh: HTTP 403")
+        with patch.object(publish.subprocess, "run", return_value=forbidden), \
+                patch.object(publish, "gh") as listing:
+            with self.assertRaisesRegex(ValueError, "Cannot inspect"):
+                publish.release_for_tag("v" + VERSION)
+            listing.assert_not_called()
+
     def test_retry_finishes_existing_draft_then_leaves_public_assets_unchanged(self):
         directory = self.candidate()
         info, sums = common.validate_candidate(directory, VERSION)
