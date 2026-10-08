@@ -56,6 +56,10 @@ class TestQuestionCard : public QObject {
 private slots:
     void allRequiredQuestionsAndStableAnswerIds();
     void customAndMultipleAnswers();
+    void enterSubmitsFreeformAnswers_data();
+    void enterSubmitsFreeformAnswers();
+    void enterRespectsSubmissionGuards();
+    void enterCannotBypassQuestionNavigationOrApproval();
     void draftsSurviveRefreshAndSessionSwitch();
     void replacementHashAndBackgroundReplyAreIsolated();
     void capabilityOfflineAndErrorStates();
@@ -195,6 +199,78 @@ void TestQuestionCard::customAndMultipleAnswers()
     QCOMPARE(answers[0].toObject()["text"].toString(), "My approach");
     QCOMPARE(answers[1].toObject()["selected_option_ids"].toArray(), QJsonArray({"opt_1_0", "opt_1_1"}));
     QCOMPARE(answers[1].toObject()["text"].toString(), "Also check keyboard navigation");
+}
+
+void TestQuestionCard::enterSubmitsFreeformAnswers_data()
+{
+    QTest::addColumn<int>("key"); QTest::addColumn<bool>("hasOptions");
+    for (const auto key : {Qt::Key_Return, Qt::Key_Enter})
+        for (const bool hasOptions : {false, true})
+            QTest::newRow(qPrintable(QString("%1-%2").arg(key).arg(hasOptions))) << int(key) << hasOptions;
+}
+
+void TestQuestionCard::enterSubmitsFreeformAnswers()
+{
+    QFETCH(int, key); QFETCH(bool, hasOptions);
+    QuestionCard card; auto data = request(); data["optional"] = true; data["can_skip"] = true;
+    auto question = data["questions"].toArray().first().toObject();
+    if (!hasOptions) question["options"] = QJsonArray{};
+    data["questions"] = QJsonArray{question}; card.setQuestion("fixture/session", data); card.show();
+    if (hasOptions) other(card, "q_0")->click();
+    auto *editor = text(card, "q_0"); editor->setText("  Keyboard answer  "); editor->setFocus();
+    QVERIFY(submit(card)->isVisible()); QVERIFY(submit(card)->isEnabled());
+    QSignalSpy sent(&card, &QuestionCard::answerRequested);
+    connect(&card, &QuestionCard::answerRequested, &card, [&card](const QString &session, const QString &id) {
+        card.setSending(session, id);
+    });
+    QTest::keyClick(editor, Qt::Key(key)); QCOMPARE(sent.size(), 1);
+    QCOMPARE(sent.first()[0].toString(), QString("fixture/session"));
+    QCOMPARE(sent.first()[1].toString(), QString("tool-question"));
+    QCOMPARE(sent.first()[2].toJsonArray(), QJsonArray{QJsonObject({{"question_id", "q_0"},
+        {"selected_option_ids", QJsonArray{}}, {"text", "Keyboard answer"}})});
+    QTest::keyClick(editor, Qt::Key(key)); QCOMPARE(sent.size(), 1);
+    card.setSubmitted("fixture/session", "tool-question");
+    QTest::keyClick(editor, Qt::Key(key)); QCOMPARE(sent.size(), 1);
+}
+
+void TestQuestionCard::enterRespectsSubmissionGuards()
+{
+    QuestionCard card; auto data = request();
+    data["questions"] = QJsonArray{QJsonObject{{"id", "free"}, {"question", "Your answer?"}, {"allow_other", true}}};
+    card.setQuestion("fixture/session", data); card.show();
+    auto *editor = text(card, "free"); editor->setFocus();
+    QSignalSpy sent(&card, &QuestionCard::answerRequested);
+    QTest::keyClick(editor, Qt::Key_Return); QCOMPARE(sent.size(), 0);
+    editor->setText("/invalid-answer"); QTest::keyClick(editor, Qt::Key_Return); QCOMPARE(sent.size(), 0);
+    editor->setText("Valid answer");
+    data["can_answer"] = false; card.setQuestion("fixture/session", data);
+    QTest::keyClick(editor, Qt::Key_Return); QCOMPARE(sent.size(), 0);
+    data["can_answer"] = true; card.setQuestion("fixture/session", data);
+    card.setAvailability(false, "Offline");
+    QTest::keyClick(editor, Qt::Key_Return); QCOMPARE(sent.size(), 0);
+    card.setAvailability(true); card.setError("fixture/session", "tool-question", "Check delivery", true);
+    QTest::keyClick(editor, Qt::Key_Return); QCOMPARE(sent.size(), 0);
+    card.findChild<QPushButton *>("questionAllowRetry")->click();
+    QTest::keyClick(editor, Qt::Key_Return); QCOMPARE(sent.size(), 1);
+}
+
+void TestQuestionCard::enterCannotBypassQuestionNavigationOrApproval()
+{
+    QuestionCard card; auto data = request();
+    data["questions"] = QJsonArray{
+        QJsonObject{{"id", "first"}, {"question", "First answer?"}, {"allow_other", true}},
+        QJsonObject{{"id", "last"}, {"question", "Last answer?"}, {"allow_other", true}}};
+    card.setQuestion("fixture/session", data); card.show();
+    text(card, "first")->setText("First"); text(card, "last")->setText("Last");
+    QVERIFY(submit(card)->isEnabled()); QVERIFY(submit(card)->isHidden());
+    QSignalSpy sent(&card, &QuestionCard::answerRequested);
+    QTest::keyClick(text(card, "first"), Qt::Key_Return); QCOMPARE(sent.size(), 0);
+    card.findChild<QTabBar *>("questionTabs")->setCurrentIndex(1);
+    QTest::keyClick(text(card, "last"), Qt::Key_Return); QCOMPARE(sent.size(), 1);
+    data["approval"] = true; data["questions"] = QJsonArray{data["questions"].toArray().first()};
+    card.setQuestion("fixture/session", data);
+    QVERIFY(submit(card)->isHidden());
+    QTest::keyClick(text(card, "first"), Qt::Key_Return); QCOMPARE(sent.size(), 1);
 }
 
 void TestQuestionCard::draftsSurviveRefreshAndSessionSwitch()

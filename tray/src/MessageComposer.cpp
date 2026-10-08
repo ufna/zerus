@@ -79,9 +79,10 @@ public:
     std::function<void(const QImage &)> attachImage;
 protected:
     bool canInsertFromMimeData(const QMimeData *source) const override {
-        return source->hasImage() || source->hasUrls() || QPlainTextEdit::canInsertFromMimeData(source);
+        return !isReadOnly() && (source->hasImage() || source->hasUrls() || QPlainTextEdit::canInsertFromMimeData(source));
     }
     void insertFromMimeData(const QMimeData *source) override {
+        if (isReadOnly()) return;
         if (source->hasUrls()) {
             const auto urls = source->urls();
             bool allLocal = !urls.isEmpty();
@@ -113,6 +114,7 @@ protected:
         QPlainTextEdit::keyPressEvent(event);
     }
     void dropEvent(QDropEvent *event) override {
+        if (isReadOnly()) { event->ignore(); return; }
         const auto *mime = event->mimeData();
         if (mime->hasImage() || mime->hasUrls()) {
             // We handle attachment insertion ourselves, so finish the native
@@ -304,6 +306,7 @@ void MessageComposer::setSending(const QString &key, bool preserveDraft)
     // Keep the submitted payload for failure recovery, but remove it from the
     // composer as soon as the owner accepts delivery and adds it to Activity.
     if (key == m_key) {
+        if (m_send->hasFocus()) m_editor->setFocus(Qt::OtherFocusReason);
         m_loading = true; m_editor->clear(); m_loading = false;
         rebuildAttachments(); updateControls();
     }
@@ -451,7 +454,10 @@ void MessageComposer::updateControls()
     const auto draft = m_drafts.value(m_key);
     const bool hasContent = !draft.text.trimmed().isEmpty() || !draft.attachments.isEmpty();
     const bool tooLong = draft.text.toUtf8().size() > MaxTextBytes;
-    m_editor->setEnabled(!m_key.isEmpty() && !draft.sending);
+    // Disabling a focused editor makes Qt focus another action (often Stop).
+    // Keep its focus while locking the outgoing payload against edits.
+    m_editor->setEnabled(!m_key.isEmpty());
+    m_editor->setReadOnly(draft.sending);
     m_attach->setEnabled(!m_key.isEmpty() && !draft.sending);
     for (auto *button : m_attachmentList->findChildren<QPushButton *>("removeAttachment")) button->setEnabled(!draft.sending);
     m_send->setEnabled(!m_key.isEmpty() && m_available && hasContent && !tooLong && !draft.sending && !draft.uncertain);

@@ -1198,11 +1198,18 @@ elif args[0]=='send':
     const QString message = QString::fromUtf8("Review this screenshot.\nКавычки: '$HOME' `whoami`");
     composer->editor()->setPlainText(message);
     QVERIFY(composer->addAttachment("notes.txt", "text/plain", QByteArray("review notes")));
-    QTRY_VERIFY(send->isEnabled()); send->click(); QVERIFY(!send->isEnabled());
+    QTRY_VERIFY(send->isEnabled()); window.activateWindow(); composer->editor()->setFocus();
+    QTRY_COMPARE(QApplication::focusWidget(),composer->editor());
+    QTest::keyClick(composer->editor(),Qt::Key_Return); QVERIFY(!send->isEnabled());
+    QCOMPARE(QApplication::focusWidget(),composer->editor());
     QCOMPARE(delivered.size(), 0); // The transport has not acknowledged this request yet.
     QVERIFY(composer->editor()->toPlainText().isEmpty());
     QCOMPARE(composer->findChildren<QPushButton *>("removeAttachment").size(), 0);
     QVERIFY(window.findChild<QTextBrowser *>("activity")->toPlainText().contains("Review this screenshot."));
+    if(promptEvent=="UserPromptQueued") {
+        QTRY_COMPARE(delivered.size(),1);
+        QCOMPARE(QApplication::focusWidget(),composer->editor());QVERIFY(!composer->editor()->isReadOnly());
+    }
     window.showSession({}, "kimi/docs/research"); composer->editor()->setPlainText("Separate Kimi draft");
     QTRY_COMPARE(delivered.size(), 1);
     QCOMPARE(composer->editor()->toPlainText(), QString("Separate Kimi draft"));
@@ -1438,8 +1445,12 @@ elif args[0]=='answer':
         QVERIFY(window.grab().save(qEnvironmentVariable("HGS_PREVIEW_DIR") + "/sessions-question.png"));
     }
     const QString key = list->currentItem()->data(Qt::UserRole).toString();
-    const QJsonArray choices{QJsonObject{{"question_id", "q_0"}, {"selected_option_ids", QJsonArray{"opt_0_1"}}, {"text", ""}}};
-    card->answerRequested(key, "interaction-one", choices);
+    const QJsonArray choices{QJsonObject{{"question_id", "q_0"}, {"selected_option_ids", QJsonArray{}}, {"text", "Inspect source using Enter"}}};
+    card->findChild<QAbstractButton *>("questionOther")->click();
+    auto *answerEditor = card->findChild<QLineEdit *>("questionFreeText");
+    answerEditor->setText("Inspect source using Enter"); answerEditor->setFocus();
+    QTest::keyClick(answerEditor, Qt::Key_Return);
+    QTest::keyClick(answerEditor, Qt::Key_Return); // an in-flight answer cannot be sent twice
     window.showSession({}, "codex/hgs/dashboard"); composer->editor()->setPlainText("Keep this other-session draft");
     card->answerRequested(key, "interaction-one", choices); // stale selection cannot send again
     QTRY_COMPARE(answered.size(), 1);
@@ -1496,10 +1507,13 @@ elif sys.argv[1]=='answer':
     auto *activity=window.findChild<ActivityView *>("mainActivity");QVERIFY(activity);
     QSignalSpy promoted(activity,&ActivityView::queueSendNowRequested);
     QSignalSpy submitted(client,&HgsClient::questionAnswerSubmitted),answered(client,&HgsClient::questionAnswered);
+    QSignalSpy messages(composer,&MessageComposer::sendRequested),stopped(composer,&MessageComposer::interruptRequested);
     QTRY_VERIFY(card->isVisible());auto *editor=card->findChild<QLineEdit *>("questionFreeText");QVERIFY(editor);
     editor->setText("Run unit tests and a desktop preview.");composer->editor()->setPlainText("Keep my next-message draft");
-    auto *send=card->findChild<QPushButton *>("submitQuestionAnswer");QVERIFY(send->isEnabled());send->click();
+    auto *send=card->findChild<QPushButton *>("submitQuestionAnswer");QVERIFY(send->isEnabled());
+    QVERIFY(composer->isVisible());editor->setFocus();QTest::keyClick(editor,Qt::Key_Return);
     QTRY_COMPARE(submitted.size(),1);QCOMPARE(answered.size(),0);QVERIFY(card->isVisible());
+    QCOMPARE(messages.size(),0);QCOMPARE(stopped.size(),0);
     QCOMPARE(send->text(),QString("Submitted"));QVERIFY(!send->isEnabled());
     QVERIFY(!card->findChild<QPushButton *>("skipQuestion")->isEnabled());
     QCOMPARE(card->findChild<QLabel *>("questionProgress")->text(),QString("Awaiting agent"));

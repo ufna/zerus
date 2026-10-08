@@ -11,6 +11,7 @@
 #include <QImage>
 #include <QInputMethodEvent>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMimeData>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -21,6 +22,7 @@
 #include <QStyleOptionComboBox>
 #include <QUrl>
 #include <QToolTip>
+#include <QVBoxLayout>
 
 namespace {
 struct Submission {
@@ -61,6 +63,9 @@ class TestMessageComposer : public QObject {
 private slots:
     void isolatesDraftsAcrossSessions();
     void enterSendsShiftEnterAddsLine();
+    void sendingKeepsEditorFocus_data();
+    void sendingKeepsEditorFocus();
+    void deliveryDoesNotStealDeliberatelyMovedFocus();
     void inputMethodDoesNotAccidentallySubmit();
     void availabilityAndBusyGateSubmission();
     void syntheticImageAndFileDrop();
@@ -340,6 +345,53 @@ void TestMessageComposer::enterSendsShiftEnterAddsLine()
     QCOMPARE(editor->toPlainText(), "First line\nSecond line");
 }
 
+void TestMessageComposer::sendingKeepsEditorFocus_data()
+{
+    QTest::addColumn<bool>("button");
+    QTest::newRow("enter") << false;
+    QTest::newRow("send-button") << true;
+}
+
+void TestMessageComposer::sendingKeepsEditorFocus()
+{
+    QFETCH(bool, button);
+    MessageComposer composer; QList<Submission> submissions; observe(composer, submissions);
+    connect(&composer, &MessageComposer::sendRequested, &composer, [&](const QString &key) { composer.setSending(key); });
+    composer.setSessionKey("arch/one"); composer.setAvailability(true); composer.setInterruptAvailability(true, true);
+    composer.show(); composer.activateWindow();
+    auto *editor = composer.editor(); editor->setPlainText("Queue this message"); editor->setFocus();
+    QTRY_COMPARE(QApplication::focusWidget(), editor);
+    if (button) { sendButton(composer)->setFocus(); sendButton(composer)->click(); }
+    else QTest::keyClick(editor, Qt::Key_Return);
+    QCOMPARE(submissions.size(), 1); QCOMPARE(submissions.first().text, QString("Queue this message"));
+    QCOMPARE(QApplication::focusWidget(), editor);
+    QVERIFY(editor->isEnabled()); QVERIFY(editor->isReadOnly()); QVERIFY(editor->toPlainText().isEmpty());
+    QTest::keyClicks(editor, "Must not change the outgoing payload");
+    QTest::keyClick(editor, Qt::Key_Return); QCOMPARE(submissions.size(), 1); QVERIFY(editor->toPlainText().isEmpty());
+    composer.deliveryFinished("arch/one", true);
+    QCOMPARE(QApplication::focusWidget(), editor); QVERIFY(!editor->isReadOnly());
+    QVERIFY(!composer.findChild<QPushButton *>("interruptAgent")->hasFocus());
+    QTest::keyClicks(editor, "Next draft"); QCOMPARE(editor->toPlainText(), QString("Next draft"));
+}
+
+void TestMessageComposer::deliveryDoesNotStealDeliberatelyMovedFocus()
+{
+    QWidget window; auto *layout = new QVBoxLayout(&window);
+    auto *composer = new MessageComposer; auto *other = new QLineEdit;
+    layout->addWidget(composer); layout->addWidget(other);
+    composer->setSessionKey("arch/one"); composer->setAvailability(true); composer->setInterruptAvailability(true, true);
+    window.show(); window.activateWindow(); composer->editor()->setPlainText("Recover this draft");
+    composer->editor()->setFocus(); QTRY_COMPARE(QApplication::focusWidget(), composer->editor());
+    composer->setSending("arch/one"); other->setFocus();
+    composer->deliveryFinished("arch/one", false, "Rejected");
+    QCOMPARE(QApplication::focusWidget(), other); QCOMPARE(composer->editor()->toPlainText(), QString("Recover this draft"));
+    composer->setSending("arch/one"); composer->setSessionKey("mac/two");
+    composer->editor()->setPlainText("Other session draft"); composer->editor()->setFocus();
+    composer->deliveryFinished("arch/one", true);
+    QCOMPARE(QApplication::focusWidget(), composer->editor());
+    QCOMPARE(composer->editor()->toPlainText(), QString("Other session draft")); QVERIFY(!composer->editor()->isReadOnly());
+}
+
 void TestMessageComposer::inputMethodDoesNotAccidentallySubmit()
 {
     MessageComposer composer; QList<Submission> submissions; observe(composer, submissions);
@@ -370,7 +422,7 @@ void TestMessageComposer::availabilityAndBusyGateSubmission()
     composer.setAvailability(true);
     QVERIFY(sendButton(composer)->isEnabled());
     composer.setSending("arch/one");
-    QVERIFY(composer.isSending("arch/one")); QVERIFY(!composer.editor()->isEnabled());
+    QVERIFY(composer.isSending("arch/one")); QVERIFY(composer.editor()->isEnabled()); QVERIFY(composer.editor()->isReadOnly());
     QVERIFY(!sendButton(composer)->isEnabled());
     QVERIFY(!composer.findChild<QPushButton *>("attachMessageFile")->isEnabled());
     QVERIFY(composer.editor()->toPlainText().isEmpty());
@@ -378,7 +430,7 @@ void TestMessageComposer::availabilityAndBusyGateSubmission()
     QVERIFY(!composer.addAttachment("late.txt", "text/plain", "late"));
     sendButton(composer)->click(); QCOMPARE(submissions.size(), 0);
     composer.deliveryFinished("arch/one", false, "Agent was busy.");
-    QVERIFY(composer.editor()->isEnabled()); QVERIFY(sendButton(composer)->isEnabled());
+    QVERIFY(composer.editor()->isEnabled()); QVERIFY(!composer.editor()->isReadOnly()); QVERIFY(sendButton(composer)->isEnabled());
     QCOMPARE(composer.editor()->toPlainText(), "[File #1] A saved draft");
 }
 

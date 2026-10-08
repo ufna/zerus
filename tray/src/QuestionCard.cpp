@@ -346,6 +346,9 @@ void QuestionCard::rebuild()
             form.text->setMinimumHeight(35); form.text->setMaxLength(4096); form.text->setText(answer.text);
             // Keep the answer reachable while a long prompt or option list scrolls.
             formLayout->addWidget(form.text); connect(form.text, &QLineEdit::textChanged, this, [this] { capture(); });
+            connect(form.text, &QLineEdit::returnPressed, this, [this] {
+                if (m_submit->isVisible()) submit();
+            });
         }
         mode->setVisible(!form.options.isEmpty()&&!m_question.value("approval").toBool()); column->addStretch(); scroll->setWidget(page);
         m_pages->addWidget(formPage); m_forms.append(form);
