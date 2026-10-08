@@ -185,6 +185,8 @@ QString timeText(const QJsonObject &event)
 QString messageRole(const QJsonObject &event)
 {
     if (!event.value("agent_id").toString().isEmpty() || (event.value("detail").toString().isEmpty() && event.value("attachments").toArray().isEmpty())) return {};
+    // Claude starts a turn for a finished background task; nobody wrote it.
+    if (event.value("origin") == "task_notification") return "notice";
     const auto type = event.value("type").toString();
     // Kimi reports an empty UserPromptSubmit followed by the actual prompt in
     // TurnStarted. Keep that prompt in the timeline, ahead of its tool calls.
@@ -620,6 +622,8 @@ void ActivityView::render(bool contentUpdate)
     const QString codeSurface = m_dark ? "#171e25" : "#e8eef2";
     const QString warning = m_dark ? "#edbd77" : "#9b6216";
     const QString blue = m_dark ? "#98bdeb" : "#366ba9";
+    const QString violet = m_dark ? "#c5a8f5" : "#6c43b8";
+    const QString noticeSurface = m_dark ? "#2a2536" : "#f4f0fb";
     const QString border = m_dark ? "#34404a" : "#dbe3e9";
     // Agent replies sit on GitHub's canvas; expanded thinking stays on the page.
     const auto agentTheme = MarkdownTheme::github(m_dark, QColor(m_dark ? "#0d1117" : "#ffffff"), m_scale);
@@ -661,7 +665,7 @@ void ActivityView::render(bool contentUpdate)
         }
         return result;
     };
-    const auto card = [&](const QString &key, const QString &label, const QString &stamp, const QString &body, bool user) {
+    const auto card = [&](const QString &key, const QString &label, const QString &stamp, const QString &body, bool user, bool notice = false) {
         auto content = body;
         // User text always starts with a paragraph. Anchor inside that block:
         // Qt discards an empty anchor between paragraphs, and a header-relative
@@ -669,7 +673,7 @@ void ActivityView::render(bool contentUpdate)
         if (user) content.insert(content.indexOf('>') + 1, QString("<a name='item-body-%1'></a>").arg(escaped(key)));
         return QString("<table width='100%' cellspacing='0' cellpadding='0'><tr><td width='3' bgcolor='%1'></td><td bgcolor='%2' style='padding:11px 13px;'>"
             "<p style='font-size:11px;margin-top:0;margin-bottom:8px;'><a name='item-%3'></a><b style='color:%1;'>%4</b><span style='color:%5;'>%6</span></p>%7</td></tr></table><p style='font-size:5px;margin:0;'>&nbsp;</p>")
-            .arg(user ? accent : blue, user ? userSurface : agentTheme.canvas.name(), escaped(key), escaped(label), muted,
+            .arg(notice ? violet : user ? accent : blue, notice ? noticeSurface : user ? userSurface : agentTheme.canvas.name(), escaped(key), escaped(label), muted,
                 stamp.isEmpty() ? QString() : QStringLiteral(" &nbsp;&nbsp; ") + escaped(stamp), content);
     };
 
@@ -746,6 +750,11 @@ void ActivityView::render(bool contentUpdate)
     m_toggleKeys.clear();m_processLinks.clear();
     for (int i = 0; i < events.size();) {
         const auto event = events[i]; const auto role = messageRole(event);
+        if (role == "notice") {
+            html += card(eventKey(event), tr("Background task"), timeText(event),
+                QString("<p style='margin:0;'>%1</p>").arg(escaped(event.value("detail").toString()).replace('\n', "<br>")), false, true);
+            ++i; continue;
+        }
         if (!role.isEmpty()) {
             const auto text = event.value("detail").toString();
             const auto replies = role == "user" ? questionReplies(text) : QJsonArray();

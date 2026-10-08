@@ -22,6 +22,61 @@ pub(super) fn clipped(value: &Value, limit: usize) -> String {
     result
 }
 
+/// Claude starts a turn for every finished background task. Its "user" prompt
+/// is this XML envelope, which the person never wrote. Several envelopes may
+/// arrive together, and a journal excerpt may be clipped.
+pub(super) fn task_notification(text: &str) -> Option<Value> {
+    const OPEN: &str = "<task-notification>";
+    const CLOSE: &str = "</task-notification>";
+    let mut rest = text.trim();
+    if !rest.starts_with(OPEN) {
+        return None;
+    }
+    let (mut summaries, mut status) = (Vec::new(), String::new());
+    while !rest.is_empty() {
+        let body = rest.strip_prefix(OPEN)?;
+        let (inner, after) = match body.find(CLOSE) {
+            Some(end) => (&body[..end], body[end + CLOSE.len()..].trim_start()),
+            None if body.ends_with('…') => (body, ""),
+            None => return None,
+        };
+        let field = |tag: &str| {
+            let value = inner.split_once(&format!("<{tag}>"))?.1.split_once(&format!("</{tag}>"))?.0;
+            Some(["&lt;", "&gt;", "&quot;", "&apos;", "&amp;"].iter().zip(["<", ">", "\"", "'", "&"])
+                .fold(value.trim().to_owned(), |text, (from, to)| text.replace(from, to)))
+        };
+        status = field("status").unwrap_or_default();
+        summaries.push(field("summary").filter(|s| !s.is_empty()).unwrap_or_else(|| {
+            if status.is_empty() { "Background task finished".into() } else { format!("Background task {status}") }
+        }));
+        rest = after;
+    }
+    Some(json!({"summary": summaries.join("\n"), "status": status}))
+}
+
+/// Show a task notification turn as a notice rather than the person's message,
+/// including journal rows written before HGS recognized it.
+pub(super) fn mark_task_notification(event: &mut Value, prompt: &str) {
+    if !string(event, "agent_id").is_empty()
+        || !["UserPromptSubmit", "UserPromptQueued", "TurnStarted"].contains(&string(event, "type"))
+        || event["origin"].is_string()
+    {
+        return;
+    }
+    let text = if prompt.is_empty() { string(event, "detail") } else { prompt };
+    if let Some(notice) = task_notification(text) {
+        event["origin"] = json!("task_notification");
+        event["detail"] = json!(clipped(&notice["summary"], 1200));
+        event["task_status"] = notice["status"].clone();
+    }
+}
+
+/// The person's latest request. Older records may hold a task notification.
+pub(super) fn user_prompt(record: &Value) -> &Value {
+    static NONE: Value = Value::Null;
+    if task_notification(string(record, "prompt")).is_some() { &NONE } else { &record["prompt"] }
+}
+
 fn detail(event: &Value) -> String {
     if event["hook_event_name"] == "StopFailure" {
         for key in [
@@ -84,6 +139,7 @@ pub(super) fn log_event(record: &Value, event: &Value) -> Result<()> {
     let mut data = json!({"type": event["hook_event_name"], "at": now(), "run_id": record["run_id"],
         "agent_id": clipped(&event["agent_id"], 160), "tool": clipped(&event["tool_name"], 100), "detail": detail(event)});
     if let Some(id)=processes::event_job(record,event) {data["process_id"]=json!(id);}
+    mark_task_notification(&mut data, event["prompt"].as_str().unwrap_or(""));
     if string(record, "agent") == "kimi"
         && string(event, "agent_id") == "main"
         && !["SubagentStart", "SubagentStop"].contains(&string(event, "hook_event_name"))
@@ -205,7 +261,7 @@ pub(super) fn summary(record: &Value, live_pane: bool) -> Value {
         .extend(telemetry.as_object().unwrap().clone());
     output.as_object_mut().unwrap().extend(json!({"tracked": true, "run_id":record["run_id"], "model": string(record, "model"),
         "cwd":record["cwd"].as_str().unwrap_or_else(||string(record,"launch_dir")), "cwd_source":if live_pane {"hook"} else {"saved"},
-        "prompt": clipped(&record["prompt"], 240), "last_event_at": record.get("last_event_at").unwrap_or(&json!(0)),
+        "prompt": clipped(user_prompt(record), 240), "last_event_at": record.get("last_event_at").unwrap_or(&json!(0)),
         "turn_started": record.get("turn_started").unwrap_or(&json!(0)),
         "compaction_started": if record["phase"] == "compacting" { record.get("compaction_started").or_else(||record.get("last_main_progress_at")).unwrap_or(&json!(0)).clone() } else { json!(0) },
         "current_tool": last_tool.map(|tool| string(tool, "name")).unwrap_or(""),
@@ -355,8 +411,8 @@ pub(super) fn inspection(name: &str, after: i64, archive_id: Option<&str>, inclu
             .clone(),
     );
     // The compact list preview must not shorten the existing inspector field.
-    if let Some(prompt) = record.get("prompt") {
-        output["prompt"] = prompt.clone();
+    if !user_prompt(&record).is_null() {
+        output["prompt"] = record["prompt"].clone();
     }
     output["tracked"] = json!(true);
     if archive_id.is_some() {
@@ -434,6 +490,7 @@ pub(super) fn inspection(name: &str, after: i64, archive_id: Option<&str>, inclu
     for (seq, payload) in rows {
         let mut event: Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
         event["seq"] = json!(seq);
+        mark_task_notification(&mut event, "");
         events.push(event);
     }
     output["events"] = json!(events);
@@ -632,7 +689,8 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
                 record["turn_started"] = json!(timestamp);
             }
             record["last_error"] = json!("");
-            if !string(event, "prompt").is_empty() {
+            // A task notification starts a turn, but it is not the person's request.
+            if !string(event, "prompt").is_empty() && task_notification(string(event, "prompt")).is_none() {
                 record["prompt"] = json!(clipped(&event["prompt"], 4000));
             }
         }
@@ -934,6 +992,33 @@ mod attention_regressions {
             &json!({"hook_event_name":"Stop","agent_id":"main"}),
         );
         assert_eq!(record["phase"], "idle");
+    }
+    #[test]
+    fn task_notifications_are_notices_not_the_persons_prompt() {
+        const NOTICE: &str = "<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n<output-file>/tmp/b1.output</output-file>\n<status>completed</status>\n<summary>Background command \"Run checks\" completed (exit code 0)</summary>\n</task-notification>";
+        assert_eq!(task_notification(NOTICE).unwrap(), json!({"summary":"Background command \"Run checks\" completed (exit code 0)","status":"completed"}));
+        let pair = format!("{NOTICE}\n{}", NOTICE.replace("completed", "failed").replace("&", "&amp;"));
+        assert_eq!(task_notification(&pair).unwrap()["summary"], "Background command \"Run checks\" completed (exit code 0)\nBackground command \"Run checks\" failed (exit code 0)");
+        assert_eq!(task_notification(&NOTICE.replace("&quot;", "").replace("\"Run checks\"", "&quot;A &amp; B&quot;")).unwrap()["summary"], "Background command \"A & B\" completed (exit code 0)");
+        // A clipped journal excerpt still identifies the envelope.
+        assert_eq!(task_notification(&format!("{}…", &NOTICE[..60])).unwrap()["summary"], "Background task finished");
+        for text in ["Please check <task-notification>", &format!("{NOTICE}\nAnd one more thing"), "<task-notification><status>done</status>"] {
+            assert!(task_notification(text).is_none(), "{text}");
+        }
+        let mut record = json!({"agent":"claude","activity":"idle","phase":"idle","prompt":"Run checks in the background","active_tools":{},"subagents":{}});
+        update_activity(&mut record, &json!({"hook_event_name":"UserPromptSubmit","prompt":NOTICE}));
+        assert_eq!(record["phase"], "working");
+        assert_eq!(record["prompt"], "Run checks in the background");
+        assert_eq!(user_prompt(&json!({"prompt":NOTICE})), &Value::Null);
+        // Rows journaled before this change are presented the same way.
+        let mut legacy = json!({"type":"UserPromptSubmit","agent_id":"","detail":NOTICE});
+        mark_task_notification(&mut legacy, "");
+        assert_eq!(legacy["origin"], "task_notification");
+        assert_eq!(legacy["task_status"], "completed");
+        assert_eq!(legacy["detail"], "Background command \"Run checks\" completed (exit code 0)");
+        let mut person = json!({"type":"UserPromptSubmit","agent_id":"","detail":"Hello"});
+        mark_task_notification(&mut person, "");
+        assert!(person.get("origin").is_none());
     }
     #[test]
     fn tool_approval_stays_approval_until_answered() {
