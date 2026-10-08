@@ -85,6 +85,7 @@ private slots:
     void preservesSessionFileReferences();
     void expandsMatchingSnapshotWithoutDuplicate();
     void kimiTurnStartedKeepsRequestBeforeTools();
+    void taskNotificationIsAColoredNoticeNotYou();
     void kimiWireAnswerReplacesEmptyStop();
     void progressCommentaryAppearsBeforeFinalResponse();
     void claudeThinkingStaysSeparateFromToolsAndReplies();
@@ -883,6 +884,24 @@ void TestActivityView::expandsMatchingSnapshotWithoutDuplicate()
     QVERIFY(view.browser()->toPlainText().contains("Outside the available timeline"));
 }
 
+void TestActivityView::taskNotificationIsAColoredNoticeNotYou()
+{
+    ActivityView view; view.setTheme(true);
+    auto notice = journalEvent(2, "UserPromptSubmit", "Background command \"Run checks\" completed (exit code 0)");
+    notice["origin"] = "task_notification"; notice["agent_id"] = "";
+    view.setActivity({}, {journalEvent(1, "UserPromptSubmit", "Run checks in the background"), notice, journalEvent(3, "Stop", "Checks passed")});
+    const auto plain = view.browser()->toPlainText();
+    QCOMPARE(plain.count("You"), 1);
+    QVERIFY(plain.contains("Background task"));
+    QVERIFY(plain.contains("Background command \"Run checks\" completed (exit code 0)"));
+    QCOMPARE(plain.count("Sent"), 1);
+    QVERIFY(plain.indexOf("Background task") < plain.indexOf("Checks passed"));
+    // The notice has its own color in both themes.
+    QVERIFY(view.browser()->toHtml().contains("#c5a8f5", Qt::CaseInsensitive));
+    view.setTheme(false); view.setActivity({}, {notice});
+    QVERIFY(view.browser()->toHtml().contains("#6c43b8", Qt::CaseInsensitive));
+}
+
 void TestActivityView::kimiTurnStartedKeepsRequestBeforeTools()
 {
     ActivityView view;
@@ -1098,7 +1117,13 @@ void TestActivityView::preview()
             journalEvent(3, "PostToolUse", "Found the activity rendering path", "Bash"),
             journalEvent(4, "PreToolUse", "Add ActivityView and preserve the reading position", "apply_patch"),
             journalEvent(5, "PostToolUse", "Updated ActivityView.cpp", "apply_patch"),
-            journalEvent(6, "Stop", "The timeline now uses clear message cards.\n\n- [Download package](/home/user/packages/client.zip)\n- [Setup instructions](files/client/README.txt)\n- [Client registry](docs/client.md:24)\n\n```sh\nctest --test-dir tray/build -R activityview\n```\n\nAll focused checks passed.")});
+            QJsonObject{{"seq", 6}, {"at", 1791018006}, {"type", "UserPromptSubmit"}, {"agent_id", ""}, {"origin", "task_notification"},
+                {"detail", "Background command \"Run focused checks\" completed (exit code 0)"}},
+            journalEvent(7, "Stop", "## Summary\n\nFixed launching sessions with a space in the name:\n\n"
+                "- `src/cli.rs` — `--new` now follows `rename`\n- `tests/test_hgs.sh` — new checks\n  - nested item with **bold** text\n"
+                "- see [docs](https://example.com) and [client registry](docs/client.md:24)\n\n1. First step\n2. Second step\n\n"
+                "| File | Lines | Status |\n|------|------:|--------|\n| `src/cli.rs` | 7 | changed |\n| `tests/test_hgs.sh` | 18 | added |\n| `README.md` | 0 | unchanged |\n\n"
+                "> Remote machines must update `hgs`.\n\n```sh\nctest --test-dir tray/build -R activityview\n```\n\n---\n\nAll focused checks passed.")});
         QTest::qWait(40);
         QVERIFY(view.grab().save(directory + (dark ? "/activity-dark.png" : "/activity-light.png")));
     }
