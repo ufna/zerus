@@ -59,6 +59,11 @@ private slots:
     void entitiesAreDecoded();
     void inlineCodeUsesSentinelAndTallerLine();
     void monospaceFamilyIsInstalled();
+    void bulletListsUseDrawnMarkers();
+    void orderedListsHonourStartAndNesting();
+    void looseListItemsAreSpaced();
+    void taskItemsShowCheckboxes();
+    void deepNestingSettles();
 };
 
 void TestMarkdownHtml::themeUsesGitHubTokens()
@@ -156,6 +161,51 @@ void TestMarkdownHtml::monospaceFamilyIsInstalled()
     QVERIFY(QFontDatabase::families().contains(family, Qt::CaseInsensitive)
             || family == QFontDatabase::systemFont(QFontDatabase::FixedFont).family());
     QCOMPARE(light().monoFamily, family);
+}
+
+void TestMarkdownHtml::bulletListsUseDrawnMarkers()
+{
+    const auto output = html("Intro\n\n- a\n- b\n  - c\n    - d");
+    QVERIFY(output.contains(light().resource("disc"))); QVERIFY(output.contains(light().resource("circle")));
+    QVERIFY(output.contains(light().resource("square")));
+    QVERIFY(output.contains("<table cellspacing=\"0\" cellpadding=\"0\" style=\"margin-top:16px;\">"));
+    QVERIFY(output.contains("<table cellspacing=\"0\" cellpadding=\"0\" style=\"margin-top:0px;\">"));
+    QVERIFY(output.contains("padding:0px 12px 0 0;line-height:21px;"));
+    QVERIFY(output.contains("padding:3px 12px 0 0;line-height:21px;"));
+    QVERIFY(document("- a\n- b")->toPlainText().contains("a"));
+}
+
+void TestMarkdownHtml::orderedListsHonourStartAndNesting()
+{
+    const auto plain = document("3. a\n4. b\n   1. c\n      1. d")->toPlainText();
+    for (const char *marker : {"3.", "4.", "i.", "a."}) QVERIFY2(plain.contains(QLatin1String(marker)), marker);
+    QVERIFY(html("1. a\n2. b").contains("padding:3px 4px 0 0;"));
+}
+
+void TestMarkdownHtml::looseListItemsAreSpaced()
+{
+    QVERIFY(html("- a\n\n- b").contains("padding:16px 12px 0 0;"));
+    QVERIFY(html("- `code` item").contains("line-height:23px;"));
+}
+
+void TestMarkdownHtml::taskItemsShowCheckboxes()
+{
+    const auto output = html("- [ ] todo\n- [x] done");
+    QVERIFY(output.contains(light().resource("check-off"))); QVERIFY(output.contains(light().resource("check-on")));
+    QVERIFY(!output.contains(light().resource("disc")));
+    QVERIFY(document("- [ ] todo")->toPlainText().contains("todo"));
+}
+
+void TestMarkdownHtml::deepNestingSettles()
+{
+    QString markdown;
+    for (int depth = 0; depth < 10; ++depth) markdown += QString(depth * 2, ' ') + "- level\n";
+    const auto output = html(markdown);
+    QCOMPARE(output.count(light().resource("square")), 8);
+    QString ordered;
+    for (int depth = 0; depth < 5; ++depth) ordered += QString(depth * 3, ' ') + "1. level\n";
+    QVERIFY(document(ordered)->toPlainText().contains("a."));
+    QVERIFY(document("> > > - deep\n> > > > quote")->toPlainText().contains("deep"));
 }
 
 QTEST_MAIN(TestMarkdownHtml)

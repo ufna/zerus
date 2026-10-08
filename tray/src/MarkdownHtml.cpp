@@ -118,6 +118,21 @@ public:
             pushStyle([&](Style &s) { s.size = size; s.bold = true; if (muted) s.color = m_theme.muted; });
             break;
         }
+        case MD_BLOCK_UL:
+            frame.loose = !static_cast<MD_BLOCK_UL_DETAIL *>(detail)->is_tight;
+            frame.depth = listDepth();
+            break;
+        case MD_BLOCK_OL: {
+            const auto *list = static_cast<MD_BLOCK_OL_DETAIL *>(detail);
+            frame.ordered = true; frame.loose = !list->is_tight; frame.number = list->start; frame.depth = listDepth();
+            break;
+        }
+        case MD_BLOCK_LI: {
+            const auto *item = static_cast<MD_BLOCK_LI_DETAIL *>(detail);
+            frame.task = item->is_task;
+            frame.checked = item->is_task && (item->task_mark == 'x' || item->task_mark == 'X');
+            break;
+        }
         default: break;
         }
         m_frames.append(frame);
@@ -142,6 +157,28 @@ public:
                            .arg(top).arg(qRound(size * 0.3)).arg(m_theme.borderMuted.name()).arg(lineHeight)
                        + frame.html + "</td></tr></table>");
             else append(QString("<p style=\"margin:%1px 0 0 0;line-height:%2px;\">").arg(top).arg(lineHeight) + frame.html + "</p>");
+            break;
+        }
+        case MD_BLOCK_UL: case MD_BLOCK_OL: {
+            // A nested list continues its item without a gap (GitHub: ul ul { margin: 0 }).
+            const int top = m_frames.last().type == MD_BLOCK_LI ? 0 : gap(BlockGap);
+            append(QString("<table cellspacing=\"0\" cellpadding=\"0\" style=\"margin-top:%1px;\">").arg(top) + frame.html + "</table>");
+            break;
+        }
+        case MD_BLOCK_LI: {
+            Frame &list = m_frames.last();
+            const int top = list.blocks == 0 ? 0 : list.loose ? BlockGap : 3;
+            const int lineHeight = frame.code ? CodeLineHeight : LineHeight;
+            QString marker; int space = 12;
+            if (frame.task) { marker = image(frame.checked ? "check-on" : "check-off", 13); space = 7; }
+            else if (list.ordered) { marker = run(ordinal(list.number, list.depth) + '.'); space = 4; }
+            else marker = image(list.depth == 0 ? "disc" : list.depth == 1 ? "circle" : "square", 5);
+            list.html += QString("<tr><td width=\"28\" align=\"right\" valign=\"top\" style=\"padding:%1px %2px 0 0;line-height:%3px;\">")
+                             .arg(top).arg(space).arg(lineHeight)
+                       + marker
+                       + QString("</td><td valign=\"top\" style=\"padding-top:%1px;line-height:%2px;\">").arg(top).arg(lineHeight)
+                       + frame.html + "</td></tr>";
+            ++list.blocks; ++list.number;
             break;
         }
         default:
@@ -228,6 +265,32 @@ private:
     int gap(int wanted) const { const Frame &c = m_frames.last(); return c.blocks == 0 ? 0 : c.afterRule ? RuleGap : wanted; }
     void append(const QString &html, bool rule = false) { Frame &c = m_frames.last(); c.html += html; ++c.blocks; c.afterRule = rule; }
     QString run(const QString &value) const { return QString("<span style=\"%1\">").arg(m_styles.last().css()) + value.toHtmlEscaped() + "</span>"; }
+    int listDepth() const
+    {
+        int depth = 0;
+        for (const auto &frame : m_frames) depth += frame.type == MD_BLOCK_UL || frame.type == MD_BLOCK_OL;
+        return depth;
+    }
+    // Marker images are 19 px tall so that Qt's baseline alignment puts the mark where GitHub does.
+    QString image(const char *name, int width) const
+    {
+        return QString("<img src=\"%1\" width=\"%2\" height=\"19\">").arg(m_theme.resource(QLatin1String(name))).arg(width);
+    }
+    // GitHub: ol → decimal, nested → lower-roman, deeper → lower-alpha.
+    static QString ordinal(unsigned number, int depth)
+    {
+        if (depth == 0) return QString::number(number);
+        if (depth == 1) {
+            static const QList<QPair<unsigned, const char *>> numerals{{1000, "m"}, {900, "cm"}, {500, "d"}, {400, "cd"}, {100, "c"},
+                {90, "xc"}, {50, "l"}, {40, "xl"}, {10, "x"}, {9, "ix"}, {5, "v"}, {4, "iv"}, {1, "i"}};
+            QString result;
+            for (const auto &[value, text] : numerals) while (number >= value) { result += QLatin1String(text); number -= value; }
+            return result;
+        }
+        QString result;
+        while (number > 0) { --number; result.prepend(QChar('a' + int(number % 26))); number /= 26; }
+        return result;
+    }
 
     const MarkdownTheme &m_theme;
     const MarkdownLinkPolicy &m_links;
