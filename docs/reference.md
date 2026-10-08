@@ -547,7 +547,12 @@ session's effective permissions. Bypass maps to Codex full access without sandbo
 Claude `bypassPermissions`, Kimi Never Ask/`--auto` and DeepSeek's native
 `danger-full-access`. The CLI is `hgs [@host] account permissions ID --mode
 provider|bypass`. Permissions do not accompany copied sign-in credentials.
-An older running DeepSeek host needs the newer adapter on its next ordinary start.
+Resident legacy DeepSeek bridges also support this mode through the official
+authenticated web API, without restarting the host or changing other sessions.
+Capability checks precede new binding creation. If permission setup is not
+confirmed, sending stays disabled; explicitly resume the same session to verify
+and finish setup. A confirmed native preset is not applied again after an
+uncertain acknowledgement. Already-running sessions keep their existing mode.
 
 **Copy existing sign-in over SSH** copies Codex/Kimi credentials and necessary
 provider/model settings into a new profile, without replacing another one or

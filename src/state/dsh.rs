@@ -258,15 +258,75 @@ pub(crate) fn native_ui_url(name: &str) -> Result<String> {
     Ok(url)
 }
 
-// Older running native hosts keep their sessions intact. Never pretend they
-// honored a newly selected account mode when their adapter cannot apply it.
-fn permission_mode(record: &Value) -> Result<String> {
+struct PermissionPlan {
+    mode: String,
+    legacy_url: Option<String>,
+    needs_setup: bool,
+    generation: Value,
+}
+
+fn legacy_permissions(record: &Value, url: &str, operation: &str) -> Result<Value> {
+    let mut child = Command::new("node")
+        .args([
+            "--input-type=module", "-e",
+            concat!(include_str!("../dsh/account-client.mjs"), "\n", include_str!("../dsh/permissions-compat.mjs")),
+        ])
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())
+        .spawn().map_err(|e| e.to_string())?;
+    child.stdin.take().ok_or("Could not prepare native permissions")?
+        .write_all(json!({"url":url,"sessionId":record["conversation_id"],"operation":operation,
+            "pending":record["permissions_pending"] == true}).to_string().as_bytes())
+        .map_err(|e| e.to_string())?;
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+    if !output.status.success() || result["ok"] != true {
+        return Err(if operation == "check" {
+            "Could not verify bypass permissions on the running DeepSeek host. Check its Native UI; no new session was created."
+        } else {
+            "DeepSeek did not confirm bypass permissions. Resume this session to finish setup; no message was sent."
+        }.into());
+    }
+    Ok(result)
+}
+
+// Extend legacy residents through their authenticated native API, without
+// reloading their bridge (which would dispose its owned live agents).
+fn permission_plan(record: &Value) -> Result<PermissionPlan> {
     let config = crate::config::Config::load().map_err(|e|e.message)?;
     let mode = crate::accounts::permission_mode(&config,"native-dsh","dsh").map_err(|e|e.message)?;
-    if mode == "bypass" && rpc(record,"ping",json!({}))?["accountPermissions"] != true {
-        return Err("This DeepSeek host needs the updated adapter for account permissions. Close its sessions and restart DeepSeek before using bypass mode.".into());
+    let ping = rpc(record, "ping", json!({}))?;
+    let mut plan = PermissionPlan { mode, legacy_url: None, needs_setup: false, generation: ping["generation"].clone() };
+    if plan.mode == "bypass" && (ping["accountPermissions"] != true || record["permissions_pending"] == true) {
+        let url = account_ui_url(Path::new(string(record, "agent_home")))?;
+        let checked = legacy_permissions(record, &url, "check")?;
+        plan.needs_setup = checked["needs_setup"].as_bool().ok_or("Invalid native permissions response")?;
+        plan.legacy_url = Some(url);
     }
-    Ok(mode)
+    Ok(plan)
+}
+
+fn create_session(record: &mut Value) -> Result<()> {
+    // Deterministic capability/account checks precede persistence; identities
+    // still precede native creation so an uncertain reply cannot duplicate it.
+    let plan = permission_plan(record)?;
+    if rpc(record, "ping", json!({}))?["generation"] != plan.generation {
+        return Err("DeepSeek host changed before session creation; retry opening the session".into());
+    }
+    if plan.needs_setup { record["permissions_pending"] = json!(true); }
+    save(record)?;
+    rpc(record, "create", json!({"sessionId":record["conversation_id"],"cwd":record["cwd"],
+        "title":string(record,"name").rsplit('/').next(),"permissionMode":plan.mode}))?;
+    if let Some(url) = plan.legacy_url.filter(|_| plan.needs_setup) {
+        if rpc(record, "ping", json!({}))?["generation"] != plan.generation {
+            return Err("DeepSeek host changed before permission setup; resume the session".into());
+        }
+        legacy_permissions(record, &url, "apply")?;
+        if rpc(record, "ping", json!({}))?["generation"] != plan.generation {
+            return Err("DeepSeek host changed during permission setup; resume the session".into());
+        }
+    }
+    record.as_object_mut().ok_or("Invalid DeepSeek binding")?.remove("permissions_pending");
+    save(record)
 }
 
 pub(crate) fn launch(
@@ -287,11 +347,7 @@ pub(crate) fn launch(
         }
         let mut record = binding(name)?;
         ensure_host(&record)?;
-        rpc(
-            &record,
-            "create",
-            json!({"sessionId":record["conversation_id"],"cwd":record["cwd"],"title":name.rsplit('/').next(),"permissionMode":permission_mode(&record)?}),
-        )?;
+        create_session(&mut record)?;
         record["paused"] = json!(false);
         record["run_id"] = json!(uuid::Uuid::new_v4().to_string());
         save(&record)?;
@@ -300,18 +356,11 @@ pub(crate) fn launch(
     let cwd = PathBuf::from(cwd)
         .canonicalize()
         .map_err(|e| e.to_string())?;
-    let record = json!({"backend":"dsh","name":name,"agent":"dsh","agent_home":native_home(),"cwd":cwd,
+    let mut record = json!({"backend":"dsh","name":name,"agent":"dsh","agent_home":native_home(),"cwd":cwd,
         "conversation_id":format!("session-{}",uuid::Uuid::new_v4()),"run_id":uuid::Uuid::new_v4().to_string(),
         "created":now(),"launch_id":launch_id,"paused":false});
     ensure_host(&record)?;
-    // Save the identity before native creation so a lost acknowledgement can
-    // never cause a retry to create another conversation.
-    save(&record)?;
-    rpc(
-        &record,
-        "create",
-        json!({"sessionId":record["conversation_id"],"cwd":cwd,"title":name.rsplit('/').next().unwrap_or(name),"permissionMode":permission_mode(&record)?}),
-    )?;
+    create_session(&mut record)?;
     Ok(())
 }
 
@@ -520,7 +569,13 @@ fn normalize(record: &Value, row: &Value, inspected: &Value) -> Value {
         "subagent_source":"dsh_native","subagent_counts_complete":false,"subagent_total_count":children.len(),"subagents":children,
         "prompt":outline.map(|v|v["prompt"].clone()),"activity_detail":outline.map(|v|v["response"].clone()),
         "reply_id":reply.map(|v|format!("dsh-turn-{}",v["seq"].as_u64().unwrap_or(0))),"reply_at":if reply.is_some(){row["updatedAt"].as_f64().unwrap_or(0.0)/1000.0}else{0.0},
-        "native_ui_available":true,"settings_change_supported":alive,"send_available":alive && !auth_required});
+        "native_ui_available":true,"settings_change_supported":alive,"send_available":alive && !auth_required && record["permissions_pending"] != true});
+    if record["permissions_pending"] == true {
+        value["phase"] = json!("error");
+        value["activity"] = json!("attention");
+        value["activity_summary"] = json!("Resume to finish permission setup");
+        value["settings_change_supported"] = json!(false);
+    }
     value["account_id"] = json!("native-dsh");
     value["account_home"] = record["agent_home"].clone();
     value["auth_required"] = json!(auth_required);
@@ -528,7 +583,7 @@ fn normalize(record: &Value, row: &Value, inspected: &Value) -> Value {
         .get("accountStatus")
         .unwrap_or(&row["accountStatus"])
         .clone();
-    if alive && !working && !pending && !auth_required {
+    if alive && !working && !pending && !auth_required && record["permissions_pending"] != true {
         let failure = inspected
             .get("provider_error")
             .cloned()
@@ -541,7 +596,7 @@ fn normalize(record: &Value, row: &Value, inspected: &Value) -> Value {
         value["task_lists"] = json!({"main":{"source":"dsh_native","run_id":record["run_id"],"items":todos.iter().enumerate().map(|(index,t)|json!({"id":index.to_string(),"title":t["content"],"status":t["status"]})).collect::<Vec<_>>()}});
     }
     let pending_recovery = inspected.get("nativeRecovery").unwrap_or(&row["nativeRecovery"]);
-    if alive && !pending && !auth_required && pending_recovery.is_object() {
+    if alive && !pending && !auth_required && pending_recovery.is_object() && record["permissions_pending"] != true {
         let mut error = provider_errors::event(string(pending_recovery,"id"),
             pending_recovery["at"].as_f64().unwrap_or(0.0),string(pending_recovery,"detail"),"dsh_request_error");
         error["retry_not_before"] = pending_recovery["retryNotBefore"].clone();
@@ -760,6 +815,9 @@ fn question_cards(record: &Value, inspected: &Value) -> Vec<Value> {
 pub(super) fn recover(snapshot: &Value, request_id: &str) -> Result<Value> {
     let _guard = lock(None)?;
     let record = binding(string(snapshot,"name"))?;
+    if record["permissions_pending"] == true {
+        return Err("Resume this DeepSeek session to finish permission setup before recovery".into());
+    }
     if record["run_id"] != snapshot["run_id"] || record["conversation_id"] != snapshot["conversation_id"] {
         return Err("DeepSeek session changed before recovery".into());
     }
@@ -835,6 +893,9 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
             println!("{}",json!({"request_id":request["request_id"],"name":name,"run_id":record["run_id"],"conversation_id":record["conversation_id"],"status":"submitted"}));
         }
         "send" | "settings" => {
+            if record["permissions_pending"] == true {
+                return Err("Resume this DeepSeek session to finish permission setup before sending or changing settings".into());
+            }
             let request = checked_request(&record)?;
             let receipt = json!({"request_id":request["request_id"],"name":name,"run_id":record["run_id"],"conversation_id":record["conversation_id"],"at":now()});
             let mut receipt = receipt;
@@ -1029,11 +1090,7 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
                 ensure_host(&record)?;
             }
             if command == "resume" {
-                rpc(
-                    &record,
-                    "create",
-                    json!({"sessionId":record["conversation_id"],"cwd":record["cwd"],"title":name.rsplit('/').next(),"permissionMode":permission_mode(&record)?}),
-                )?;
+                create_session(&mut record)?;
             } else {
                 rpc(
                     &record,

@@ -35,6 +35,9 @@ project catalogs, native agent processes or saved conversations.
 
 Never restart or kill native agents, tmux servers or DeepSeek hosts as part of a
 GUI update. Test tmux operations with an existing isolated socket directory.
+Do not hot-reload a DeepSeek bridge that owns live agents: its disposal closes
+them. Use the native API compatibility path for resident adapters and keep
+unconfirmed permission setup blocked until an explicit resume verifies it.
 Ordinary non-Git folders are supported; do not create Git repositories or worktrees
 automatically. Destructive UI actions require explicit confirmation.
 
