@@ -2412,6 +2412,10 @@ void SessionsWindow::renderDetails()
     const auto phase=m_details.value("phase").toString(entry->session.phase);
     const bool working=QStringList{"working","tool","compacting"}.contains(phase)&&entry->session.state=="running";
     restoreInterruptedPrompt();
+    // Claude's suggested next message lasts while the session waits for one.
+    const auto suggestion = m_details.value("prompt_suggestion").toObject();
+    m_composer->setSuggestion(m_selectedKey, phase == "idle" && entry->online && s.state == "running" ? suggestion.value("text").toString() : QString(),
+        suggestion.value("at").toDouble());
     m_composer->setInterruptAvailability(working,entry->online&&m_details.value("interrupt_supported").toBool()&&!m_interruptRequest,
         m_interruptRequest?tr("Interrupt is being sent…"):!entry->online?tr("Machine is offline"):
         !m_details.value("interrupt_supported").toBool()?tr("Interrupt is unavailable. Open Terminal to stop this turn."):QString());

@@ -25,6 +25,10 @@ public:
     bool requestInterrupt();
     // Fills an empty draft, for example with the prompt of an interrupted turn.
     bool offerDraft(const QString &key, const QString &text);
+    // The agent's suggested next message: the empty field's placeholder, inserted
+    // with Tab. An empty text withdraws it; one already answered is not shown again.
+    void setSuggestion(const QString &key, const QString &text, double at);
+    QString suggestion() const;
     void setTheme(bool dark);
     // Enlarges the message field; its actions keep the workspace size.
     void setContentScale(double scale);
@@ -62,6 +66,10 @@ private:
     };
     void send();
     void restoreDraft();
+    void updatePlaceholder();
+    struct Suggestion { QString text; double at = 0; };
+    QHash<QString, Suggestion> m_suggestions;
+    QHash<QString, double> m_dismissedSuggestions;
     void attachFiles();
     void attachFile(const QString &path);
     void updateControls();

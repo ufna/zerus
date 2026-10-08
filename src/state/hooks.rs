@@ -356,6 +356,11 @@ pub(super) fn hook() -> Result<i32> {
         record["session_end"] = json!({"reason": string(&event, "reason"), "at": now(),
             "run_id": record["run_id"], "conversation_id": sid});
     }
+    // Claude's suggested next message is no subagent and no Activity event.
+    if prompt_suggestion::observe(&mut record, &event) {
+        write(&mut record)?;
+        return Ok(0);
+    }
     telemetry::observe(&mut record, &event);
     tasks::observe(&mut record, &event);
     processes::observe(&mut record, &event);

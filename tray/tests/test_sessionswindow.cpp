@@ -188,6 +188,7 @@ private slots:
     void collapsedStripSearchOpensPanel();
     void collapsingKeepsRowsInPlace();
     void escapeInActivityInterruptsAndRestoresPrompt();
+    void suggestedMessageIsPlaceholderAndTabTakesIt();
     void preview();
 private:
     FleetState fleet() const;
@@ -3296,6 +3297,40 @@ void TestSessionsWindow::escapeInActivityInterruptsAndRestoresPrompt()
     details["phase"] = "idle"; details["activity"] = "idle"; update();
     composer->editor()->setFocus(); QTest::keyClick(composer->editor(), Qt::Key_Escape);
     QVERIFY(!composer->editor()->hasFocus()); QTest::qWait(150); QCOMPARE(requests(), 2);
+}
+
+void TestSessionsWindow::suggestedMessageIsPlaceholderAndTabTakesIt()
+{
+    SessionsWindow window(script()); window.setFleet(fleet()); window.show(); window.showSession({}, "codex/hgs/dashboard");
+    window.activateWindow(); QVERIFY(QTest::qWaitForWindowActive(&window));
+    auto *client = window.findChild<HgsClient *>(); auto *composer = window.findChild<MessageComposer *>("messageComposer");
+    auto *editor = composer->editor(); const QString placeholder = editor->placeholderText();
+    QJsonObject details{{"tracked", true}, {"run_id", "run-one"}, {"conversation_id", "conversation-one"}, {"runtime_state", "live"},
+        {"process_state", "running"}, {"activity", "idle"}, {"phase", "idle"}, {"events", QJsonArray{}}, {"cursor", 0},
+        {"prompt_suggestion", QJsonObject{{"text", "run the tests"}, {"at", 1790928000.0}}}};
+    const auto update = [&] { client->inspectionReady({}, "codex/hgs/dashboard", details, {}); };
+    update(); QCOMPARE(editor->placeholderText(), QString("run the tests"));
+
+    // Tab takes the suggestion into an empty field and keeps moving focus otherwise.
+    editor->setPlainText("x"); editor->setFocus(); QTest::keyClick(editor, Qt::Key_Tab);
+    QCOMPARE(editor->toPlainText(), QString("x"));
+    editor->clear(); editor->setFocus(); QTest::keyClick(editor, Qt::Key_Tab);
+    QCOMPARE(editor->toPlainText(), QString("run the tests"));
+
+    // A new turn makes it stale.
+    editor->clear(); details["phase"] = "working"; details["activity"] = "busy"; update();
+    QCOMPARE(editor->placeholderText(), placeholder);
+    editor->setFocus(); QTest::keyClick(editor, Qt::Key_Tab); QVERIFY(editor->toPlainText().isEmpty());
+
+    // Sending answers it: the same suggestion does not return before the next one.
+    details["phase"] = "idle"; details["activity"] = "idle"; update();
+    QCOMPARE(editor->placeholderText(), QString("run the tests"));
+    auto *send = composer->findChild<QPushButton *>("sendMessage");
+    editor->setPlainText("something else"); QVERIFY(send->isEnabled()); send->click();
+    QCOMPARE(editor->placeholderText(), placeholder);
+    update(); QCOMPARE(editor->placeholderText(), placeholder);
+    details["prompt_suggestion"] = QJsonObject{{"text", "push it"}, {"at", 1790928100.0}}; update();
+    QCOMPARE(editor->placeholderText(), QString("push it"));
 }
 
 void TestSessionsWindow::collapsedStripSearchOpensPanel()

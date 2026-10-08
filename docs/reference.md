@@ -301,6 +301,12 @@ started draft is kept. Claude, Codex and Kimi use verified native Escape;
 supported DeepSeek hosts use native cancel. Native queue behavior still applies: Codex Escape may
 start a queued follow-up. Uncertain interruption is not repeated.
 
+When Claude suggests your next message after a turn, Activity shows it as the
+empty message field's placeholder, as Claude's terminal does; Tab inserts it.
+Sending a message, a new turn or a new conversation removes the suggestion.
+Claude writes it with an internal agent, which is neither listed as a subagent
+nor shown in Activity.
+
 File links retain their visible path and source position. Relative references
 resolve against that session's folder. Local references can open the file or its
 parent folder; remote references identify the host and offer an SSH terminal

@@ -391,6 +391,20 @@ class Lifecycle(Harness):
         self.resume(name)
         self.assertEqual(json.loads(self.hgs("inspect", name))["last_message"], "Waiting for reviewer")
 
+    def test_claude_next_message_suggestion_is_not_a_subagent(self):
+        name = self.start()
+        self.send_event(name, "UserPromptSubmit", prompt="Fix the build")
+        self.send_event(name, "Stop", last_assistant_message="Fixed")
+        cursor = json.loads(self.hgs("inspect", name))["cursor"]
+        # Claude's internal suggestion agent reports only its SubagentStop.
+        self.send_event(name, "SubagentStop", agent_id="a1b2c3", last_assistant_message="run the tests")
+        info = json.loads(self.hgs("inspect", name, "--after", str(cursor)))
+        self.assertEqual(info["prompt_suggestion"]["text"], "run the tests")
+        self.assertNotIn("a1b2c3", info.get("subagents") or {})
+        self.assertEqual(info["events"], [])
+        self.send_event(name, "UserPromptSubmit", prompt="run the tests")
+        self.assertNotIn("prompt_suggestion", json.loads(self.hgs("inspect", name)))
+
     def test_task_lists_are_confirmed_isolated_and_reset_with_conversation(self):
         name = self.start()
         run = self.binding(name)["run_id"]

@@ -436,6 +436,7 @@ pub(super) fn inspection(name: &str, after: i64, archive_id: Option<&str>, inclu
         "error",
         "expected_id",
         "requested_id",
+        "prompt_suggestion",
     ] {
         if let Some(value) = record.get(key) {
             output[key] = value.clone();

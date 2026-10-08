@@ -77,6 +77,7 @@ public:
     explicit ComposeEdit(QWidget *parent) : QPlainTextEdit(parent) {}
     std::function<void()> submit;
     std::function<bool()> escape;
+    std::function<QString()> suggestion;
     std::function<void(const QString &)> attachFile;
     std::function<void(const QImage &)> attachImage;
 protected:
@@ -101,6 +102,13 @@ protected:
     bool event(QEvent *event) override {
         if (event->type() == QEvent::ShortcutOverride && static_cast<QKeyEvent *>(event)->key() == Qt::Key_Escape) {
             event->accept(); return true;
+        }
+        // Tab takes the suggested next message into an empty field, as in Claude's
+        // terminal; otherwise it keeps moving focus.
+        if (event->type() == QEvent::KeyPress && static_cast<QKeyEvent *>(event)->key() == Qt::Key_Tab
+            && static_cast<QKeyEvent *>(event)->modifiers() == Qt::NoModifier && document()->isEmpty() && suggestion) {
+            const QString text = suggestion();
+            if (!text.isEmpty()) { insertPlainText(text); event->accept(); return true; }
         }
         return QPlainTextEdit::event(event);
     }
@@ -222,6 +230,7 @@ MessageComposer::MessageComposer(QWidget *parent) : QWidget(parent)
     connect(edit, &QPlainTextEdit::selectionChanged, this, rememberCursor);
     edit->submit = [this]() { send(); };
     edit->escape = [this]() { return requestInterrupt(); };
+    edit->suggestion = [this]() { return suggestion(); };
     edit->attachFile = [this](const QString &path) { attachFile(path); };
     edit->attachImage = [this](const QImage &image) {
         if (qint64(image.width()) * image.height() > 32000000) { showError(tr("Image is too large. Use an image below 32 megapixels.")); return; }
@@ -264,7 +273,7 @@ void MessageComposer::setSessionKey(const QString &key)
     m_settingsPopup->hide();
     m_key = key; m_loading = true;
     restoreDraft();
-    m_loading = false; rebuildAttachments(); updateControls();
+    m_loading = false; rebuildAttachments(); updateControls(); updatePlaceholder();
 }
 
 void MessageComposer::restoreDraft()
@@ -282,6 +291,22 @@ void MessageComposer::setInterruptAvailability(bool working, bool enabled, const
 {
     m_stop->setVisible(working); m_stop->setEnabled(enabled);
     m_stop->setToolTip(reason.isEmpty()?tr("Interrupt the current turn, like Escape in Terminal. The session stays open; queued messages follow the agent's native behavior."):reason);
+}
+
+void MessageComposer::setSuggestion(const QString &key, const QString &text, double at)
+{
+    if (key.isEmpty()) return;
+    if (text.isEmpty()) { m_suggestions.remove(key); m_dismissedSuggestions.remove(key); }
+    else if (m_dismissedSuggestions.value(key, -1) != at) m_suggestions.insert(key, {text, at});
+    if (key == m_key) updatePlaceholder();
+}
+
+QString MessageComposer::suggestion() const { return m_suggestions.value(m_key).text; }
+
+void MessageComposer::updatePlaceholder()
+{
+    const QString text = suggestion();
+    m_editor->setPlaceholderText(text.isEmpty() ? tr("Message this agent…") : text);
 }
 
 bool MessageComposer::requestInterrupt()
@@ -366,6 +391,10 @@ void MessageComposer::send()
     }
     QToolTip::hideText();
     const auto draft = m_drafts.value(m_key);
+    // Sending answers the suggestion; the same one never returns.
+    if (m_suggestions.contains(m_key)) {
+        m_dismissedSuggestions.insert(m_key, m_suggestions.take(m_key).at); updatePlaceholder();
+    }
     emit sendRequested(m_key, draft.text, draft.attachments);
 }
 

@@ -31,6 +31,7 @@ mod provider_errors;
 mod recovery;
 mod provider_messages;
 mod processes;
+mod prompt_suggestion;
 mod question_terminal;
 mod questions;
 mod codex_questions;
