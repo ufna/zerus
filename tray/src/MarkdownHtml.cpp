@@ -266,10 +266,19 @@ public:
         case MD_SPAN_EM: pushStyle([](Style &s) { s.italic = true; }); break;
         case MD_SPAN_STRONG: pushStyle([](Style &s) { s.bold = true; }); break;
         case MD_SPAN_DEL: pushStyle([](Style &s) { s.strike = true; }); break;
-        case MD_SPAN_CODE:
+        case MD_SPAN_CODE: {
+            // GitHub: code is 85 % of the surrounding text and inherits its colour, weight
+            // and slant; in headings it keeps the heading size (h1 code { font-size: inherit }).
+            const Style &around = m_styles.last();
+            const bool heading = m_frames.last().type == MD_BLOCK_H;
             m_inCode = true; m_frames.last().code = true;
-            m_frames.last().html += QString("<span style=\"background-color:%1;\">").arg(MarkdownHtml::chipSentinel().name());
+            m_frames.last().html += QString("<span style=\"background-color:%1;font-size:%2px;color:%3;%4%5\">")
+                .arg((heading ? MarkdownHtml::headingChipSentinel() : MarkdownHtml::chipSentinel()).name())
+                .arg(heading ? around.size : qRound(around.size * 0.85)).arg(around.color.name(),
+                     around.bold ? QStringLiteral("font-weight:600;") : QString(),
+                     around.italic ? QStringLiteral("font-style:italic;") : QString());
             break;
+        }
         case MD_SPAN_A: {
             Link link; link.start = m_frames.last().html.size();
             link.destination = attribute(static_cast<MD_SPAN_A_DETAIL *>(detail)->href);
@@ -433,6 +442,7 @@ QString MarkdownTheme::resource(const QString &name) const
 }
 
 QColor MarkdownHtml::chipSentinel() { return QColor(1, 2, 3); }
+QColor MarkdownHtml::headingChipSentinel() { return QColor(1, 2, 4); }
 
 QString MarkdownHtml::monospaceFamily()
 {

@@ -27,6 +27,8 @@ using MarkdownLinkPolicy = std::function<MarkdownLink(const QString &destination
 namespace MarkdownHtml {
 // Inline code is emitted with this background; MarkdownObjects turns each run into a chip.
 QColor chipSentinel();
+// The same inside headings, where GitHub keeps the heading size and pads 0 .2em.
+QColor headingChipSentinel();
 // First installed family of GitHub's monospace stack.
 QString monospaceFamily();
 QString render(const QString &markdown, const MarkdownTheme &theme, const MarkdownLinkPolicy &links);

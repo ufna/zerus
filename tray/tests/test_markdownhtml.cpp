@@ -70,6 +70,7 @@ private slots:
     void tablesHaveBordersZebraAndAlignment();
     void rulesUseGitHubGaps();
     void markerSharesTheLineWithItsText();
+    void inlineCodeFollowsSurroundingText();
 };
 
 void TestMarkdownHtml::themeUsesGitHubTokens()
@@ -287,6 +288,19 @@ void TestMarkdownHtml::markerSharesTheLineWithItsText()
         QVERIFY2(found, text);
     }
     QVERIFY(html("- ```\n  x\n  ```").contains(light().resource("disc")));
+}
+
+void TestMarkdownHtml::inlineCodeFollowsSurroundingText()
+{
+    // GitHub: code is 85 % of the text around it and inherits its colour and weight;
+    // in headings it keeps the heading size (`h2 code { font-size: inherit }`).
+    QVERIFY(html("Run `x` now").contains("background-color:#010203;font-size:12px;color:#1f2328;\""));
+    QVERIFY(html("**Bold `x`**").contains("background-color:#010203;font-size:12px;color:#1f2328;font-weight:600;"));
+    QVERIFY(html("## Title `main` here").contains("background-color:#010204;font-size:21px;color:#1f2328;font-weight:600;"));
+    QVERIFY(html("# Big `main`").contains("background-color:#010204;font-size:28px;"));
+    QVERIFY(html("###### Small `main`").contains("background-color:#010204;font-size:12px;color:#59636e;"));
+    QVERIFY(html("[`code`](https://example.com)", policy).contains("font-size:12px;color:#0969da;"));
+    QCOMPARE(MarkdownHtml::headingChipSentinel(), QColor(1, 2, 4));
 }
 
 QTEST_MAIN(TestMarkdownHtml)

@@ -44,6 +44,7 @@ private slots:
     void chipInsideLinkStaysClickable();
     void plainTextSpellsOutMarkersAndSkipsDecoration();
     void plainTextKeepsBlankLinesInsideMessages();
+    void chipsFollowTheirTextSizeAndColour();
 };
 
 void TestMarkdownObjects::resourcesAreDrawnAtScaleAndPixelRatio()
@@ -116,6 +117,26 @@ void TestMarkdownObjects::plainTextKeepsBlankLinesInsideMessages()
     QTextDocument doc;
     doc.setHtml("<table><tr><td width='3'></td><td><p style='white-space:pre-wrap;'>first\n\nsecond</p></td></tr></table>");
     QCOMPARE(all(&doc), QString("first\n\nsecond"));
+}
+
+void TestMarkdownObjects::chipsFollowTheirTextSizeAndColour()
+{
+    auto doc = document("## Title `main`\n\nBody `main`\n\n###### Note `main`");
+    QCOMPARE(MarkdownObjects::convertChips(doc.get(), light(), true), 3);
+    const auto found = chips(doc.get());
+    QCOMPARE(found.size(), 3);
+    QCOMPARE(found[0].intProperty(QTextFormat::UserProperty + 46), 21);   // heading size, not 85 %
+    QVERIFY(found[0].boolProperty(QTextFormat::UserProperty + 47));         // heading padding 0 .2em
+    QCOMPARE(found[0].intProperty(QTextFormat::UserProperty + 48), 600);    // heading weight
+    QCOMPARE(found[1].intProperty(QTextFormat::UserProperty + 46), 12);
+    QVERIFY(!found[1].boolProperty(QTextFormat::UserProperty + 47));
+    QCOMPARE(found[2].colorProperty(QTextFormat::UserProperty + 43).name(), QString("#59636e"));
+    // The heading chip sits higher, as its code baseline follows the larger text.
+    QVERIFY(found[0].font().pixelSize() > found[1].font().pixelSize());
+    auto search = document("## Title `main`");
+    MarkdownObjects::convertChips(search.get(), light(), false);
+    QTextCursor inside(search.get()); inside.setPosition(search->find("main").selectionStart() + 1);
+    QCOMPARE(inside.charFormat().font().pixelSize(), 21);
 }
 
 QTEST_MAIN(TestMarkdownObjects)

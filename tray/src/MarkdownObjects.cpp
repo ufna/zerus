@@ -19,14 +19,23 @@
 #include <functional>
 
 namespace {
-enum : int { ChipText = QTextFormat::UserProperty + 41, ChipFill, ChipInk, ChipFamily, ChipScale };
+enum : int { ChipText = QTextFormat::UserProperty + 41, ChipFill, ChipInk, ChipFamily, ChipScale, ChipPixels, ChipHeading,
+             ChipWeight, ChipItalic };
 constexpr int MaximumChipLength = 40;
 
 QFont chipFont(const QTextFormat &format)
 {
     QFont font(format.stringProperty(ChipFamily));
-    font.setPixelSize(qMax(1, qRound(12 * format.doubleProperty(ChipScale))));
+    font.setPixelSize(qMax(1, format.intProperty(ChipPixels)));
+    if (format.intProperty(ChipWeight) > 0) font.setWeight(QFont::Weight(format.intProperty(ChipWeight)));
+    font.setItalic(format.boolProperty(ChipItalic));
     return font;
+}
+// GitHub pads code .2em .4em, and 0 .2em inside headings.
+QPointF chipPadding(const QTextFormat &format)
+{
+    const qreal em = format.intProperty(ChipPixels);
+    return format.boolProperty(ChipHeading) ? QPointF(0.2 * em, 0) : QPointF(0.4 * em, 0.2 * em);
 }
 
 class ChipHandler final : public QObject, public QTextObjectInterface {
@@ -36,19 +45,19 @@ public:
     using QObject::QObject;
     QSizeF intrinsicSize(QTextDocument *, int, const QTextFormat &format) override
     {
-        const QFont font = chipFont(format); const QFontMetricsF metrics(font); const qreal em = font.pixelSize();
-        return {metrics.horizontalAdvance(format.stringProperty(ChipText)) + 0.8 * em, metrics.ascent() + metrics.descent() + 0.4 * em};
+        const QFontMetricsF metrics(chipFont(format)); const QPointF padding = chipPadding(format);
+        return {metrics.horizontalAdvance(format.stringProperty(ChipText)) + 2 * padding.x(), metrics.ascent() + metrics.descent() + 2 * padding.y()};
     }
     void drawObject(QPainter *painter, const QRectF &rect, QTextDocument *, int, const QTextFormat &format) override
     {
         const QFont font = chipFont(format); const QFontMetricsF metrics(font);
-        const qreal em = font.pixelSize(), radius = 6 * format.doubleProperty(ChipScale);
+        const QPointF padding = chipPadding(format); const qreal radius = 6 * format.doubleProperty(ChipScale);
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing);
         painter->setPen(Qt::NoPen); painter->setBrush(format.colorProperty(ChipFill));
         painter->drawRoundedRect(rect, radius, radius);
         painter->setFont(font); painter->setPen(format.colorProperty(ChipInk));
-        painter->drawText(QPointF(rect.x() + 0.4 * em, rect.y() + 0.2 * em + metrics.ascent()), format.stringProperty(ChipText));
+        painter->drawText(QPointF(rect.x() + padding.x(), rect.y() + padding.y() + metrics.ascent()), format.stringProperty(ChipText));
         painter->restore();
     }
 };
@@ -60,15 +69,21 @@ void install(QTextDocument *document)
     layout->registerHandler(MarkdownObjects::ChipObjectType, new ChipHandler(layout));
 }
 
-// Qt centres an AlignMiddle object xHeight / 4 above the baseline; pick the
-// format font whose x-height puts the chip centre where GitHub has it.
-QFont alignmentFont(qreal centreAboveBaseline)
+// Qt centres an AlignMiddle object xHeight / 4 above the baseline. GitHub pads
+// the code symmetrically around text on the line's baseline, so the chip centre
+// lies (ascent − descent) / 2 above it; pick the format font that puts it there.
+QFont alignmentFont(const QFont &code)
 {
+    static QHash<int, QFont> cache;
+    const QFontMetricsF metrics(code);
+    const int key = qRound((metrics.ascent() - metrics.descent()) * 50);   // 4 × centre, in 1/100 px
+    if (const auto found = cache.constFind(key); found != cache.cend()) return *found;
     QFont font = QGuiApplication::font();
     for (int pixels = 1; pixels < 400; ++pixels) {
         font.setPixelSize(pixels);
-        if (QFontMetricsF(font).xHeight() >= 4 * centreAboveBaseline) break;
+        if (QFontMetricsF(font).xHeight() * 100 >= key) break;
     }
+    cache.insert(key, font);
     return font;
 }
 
@@ -147,7 +162,9 @@ int MarkdownObjects::convertChips(QTextDocument *document, const MarkdownTheme &
     for (auto block = document->begin(); block.isValid(); block = block.next())
         for (auto it = block.begin(); !it.atEnd(); ++it) {
             const auto fragment = it.fragment(); const auto format = fragment.charFormat();
-            if (format.background().style() == Qt::NoBrush || format.background().color() != MarkdownHtml::chipSentinel()) continue;
+            if (format.background().style() == Qt::NoBrush) continue;
+            const QColor background = format.background().color();
+            if (background != MarkdownHtml::chipSentinel() && background != MarkdownHtml::headingChipSentinel()) continue;
             if (!runs.isEmpty() && runs.last().position + runs.last().length == fragment.position()) {
                 runs.last().length += fragment.length(); runs.last().text += fragment.text();
             } else runs.append({fragment.position(), fragment.length(), fragment.text(), format});
@@ -155,25 +172,29 @@ int MarkdownObjects::convertChips(QTextDocument *document, const MarkdownTheme &
     if (runs.isEmpty()) return 0;
     const double scale = theme.scalePercent / 100.0;
     if (objects) install(document);
-    const QFont anchor = alignmentFont(3.15 * scale);
     for (auto it = runs.crbegin(); it != runs.crend(); ++it) {
         QTextCursor cursor(document);
         cursor.setPosition(it->position); cursor.setPosition(it->position + it->length, QTextCursor::KeepAnchor);
         QString text = it->text; text.replace(QChar::Nbsp, ' ');
+        // The renderer sized and coloured the run after its surroundings (already content-scaled).
+        const int pixels = it->format.font().pixelSize() > 0 ? it->format.font().pixelSize() : qRound(12 * scale);
+        const QColor ink = it->format.hasProperty(QTextFormat::ForegroundBrush) ? it->format.foreground().color() : theme.fg;
         if (!objects || text.size() > MaximumChipLength) {
             // Plain spaces again, so that find() matches and long runs can wrap.
             QTextCharFormat format = it->format;
-            format.setBackground(theme.chip); format.setForeground(theme.fg);
+            format.setBackground(theme.chip); format.setForeground(ink);
             format.setFontFamilies(QStringList{theme.monoFamily});
-            format.setProperty(QTextFormat::FontPixelSize, qRound(12 * scale));
+            format.setProperty(QTextFormat::FontPixelSize, pixels);
             cursor.insertText(text, format);
             continue;
         }
         QTextCharFormat format;
         format.setObjectType(ChipObjectType);
-        format.setProperty(ChipText, text); format.setProperty(ChipFill, theme.chip); format.setProperty(ChipInk, theme.fg);
-        format.setProperty(ChipFamily, theme.monoFamily); format.setProperty(ChipScale, scale);
-        format.setVerticalAlignment(QTextCharFormat::AlignMiddle); format.setFont(anchor);
+        format.setProperty(ChipText, text); format.setProperty(ChipFill, theme.chip); format.setProperty(ChipInk, ink);
+        format.setProperty(ChipFamily, theme.monoFamily); format.setProperty(ChipScale, scale); format.setProperty(ChipPixels, pixels);
+        format.setProperty(ChipHeading, it->format.background().color() == MarkdownHtml::headingChipSentinel());
+        format.setProperty(ChipWeight, it->format.fontWeight()); format.setProperty(ChipItalic, it->format.fontItalic());
+        format.setVerticalAlignment(QTextCharFormat::AlignMiddle); format.setFont(alignmentFont(chipFont(format)));
         if (it->format.isAnchor()) {
             format.setAnchor(true); format.setAnchorHref(it->format.anchorHref()); format.setToolTip(it->format.toolTip());
         }
