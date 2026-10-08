@@ -172,8 +172,10 @@ int MarkdownObjects::convertChips(QTextDocument *document, const MarkdownTheme &
     if (runs.isEmpty()) return 0;
     const double scale = theme.scalePercent / 100.0;
     if (objects) install(document);
+    // One edit block: per-run edits would each relayout the document (seconds on long journals).
+    QTextCursor cursor(document);
+    cursor.beginEditBlock();
     for (auto it = runs.crbegin(); it != runs.crend(); ++it) {
-        QTextCursor cursor(document);
         cursor.setPosition(it->position); cursor.setPosition(it->position + it->length, QTextCursor::KeepAnchor);
         QString text = it->text; text.replace(QChar::Nbsp, ' ');
         // The renderer sized and coloured the run after its surroundings (already content-scaled).
@@ -200,6 +202,7 @@ int MarkdownObjects::convertChips(QTextDocument *document, const MarkdownTheme &
         }
         cursor.insertText(QString(QChar::ObjectReplacementCharacter), format);
     }
+    cursor.endEditBlock();
     return runs.size();
 }
 

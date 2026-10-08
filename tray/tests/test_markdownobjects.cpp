@@ -1,6 +1,8 @@
 #include "MarkdownHtml.h"
 #include "MarkdownObjects.h"
 
+#include <QAbstractTextDocumentLayout>
+#include <QElapsedTimer>
 #include <QTest>
 #include <QTextBlock>
 #include <QTextCursor>
@@ -45,6 +47,7 @@ private slots:
     void plainTextSpellsOutMarkersAndSkipsDecoration();
     void plainTextKeepsBlankLinesInsideMessages();
     void chipsFollowTheirTextSizeAndColour();
+    void longJournalsConvertQuickly();
 };
 
 void TestMarkdownObjects::resourcesAreDrawnAtScaleAndPixelRatio()
@@ -137,6 +140,22 @@ void TestMarkdownObjects::chipsFollowTheirTextSizeAndColour()
     MarkdownObjects::convertChips(search.get(), light(), false);
     QTextCursor inside(search.get()); inside.setPosition(search->find("main").selectionStart() + 1);
     QCOMPARE(inside.charFormat().font().pixelSize(), 21);
+}
+
+void TestMarkdownObjects::longJournalsConvertQuickly()
+{
+    // Activity re-renders on every poll; 4000 chips in 800 card tables must not stall the GUI thread.
+    QString html;
+    for (int i = 0; i < 800; ++i)
+        html += "<table width='100%'><tr><td width='3'></td><td>"
+            + MarkdownHtml::render(QString("Reply %1 uses `a` `b` `c` `d` `e`.").arg(i), light(), {}) + "</td></tr></table>";
+    for (bool objects : {true, false}) {
+        auto doc = std::make_unique<QTextDocument>(); doc->setHtml(html);
+        doc->documentLayout()->documentSize();
+        QElapsedTimer timer; timer.start();
+        QCOMPARE(MarkdownObjects::convertChips(doc.get(), light(), objects), 4000);
+        QVERIFY2(timer.elapsed() < 1000, qPrintable(QString::number(timer.elapsed()) + " ms"));
+    }
 }
 
 QTEST_MAIN(TestMarkdownObjects)
