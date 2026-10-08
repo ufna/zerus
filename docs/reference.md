@@ -309,6 +309,16 @@ without a user action. Answers are scoped to the unchanged run, process,
 conversation and request hash; uncertain input is not automatically retried.
 Unsupported or truncated native prompts remain in Terminal.
 
+Claude tool approvals keep the session at **Needs approval** and appear in
+Activity while Claude shows its chooser. When the complete panel matches the
+agent's request, such as the Bash command, file name or fetched host, Activity
+lists Claude's options verbatim after a short review delay. Options that reach
+beyond this request, such as always allowing, blocking, session-wide grants or
+mode switches, are marked and need a second **Confirm** click. Choosing a **No**
+option ends Claude's turn as in Terminal; the composer reopens after Claude's
+prompt is verified. A clipped or unrecognized panel, a mismatched request and
+plan approval stay visible with **Open Terminal**.
+
 Supported startup prompts include Claude workspace trust and auto-mode consent,
 Codex folder access and **Hooks need review**, and Kimi folder/MCP trust. These
 can appear before a conversation exists, but only with verified startup identity.

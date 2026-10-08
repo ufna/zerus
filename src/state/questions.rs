@@ -136,8 +136,10 @@ pub(super) fn observe(record: &mut Value, event: &Value) {
     let kind = string(event, "hook_event_name");
     if kind=="PermissionRequest" {
         record["pending_approval"]=event.clone();
+        record["pending_approval_at"]=json!(now());
     } else if ["SessionStart","SessionEnd","Interrupt","Stop","StopFailure","PostToolUse","PostToolUseFailure"].contains(&kind) {
         record.as_object_mut().unwrap().remove("pending_approval");
+        record.as_object_mut().unwrap().remove("pending_approval_at");
     }
     if matches!(
         kind,

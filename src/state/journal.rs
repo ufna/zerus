@@ -661,7 +661,12 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
         }
         "PermissionRequest" => {
             record["activity"] = json!("busy");
-            record["phase"] = json!("approval");
+            // Claude routes AskUserQuestion through its permission prompt too.
+            record["phase"] = json!(if claude_approval::question_tool(string(event, "tool_name")) {
+                "input"
+            } else {
+                "approval"
+            });
         }
         "PermissionResult" => {
             record["activity"] = json!("busy");
@@ -777,7 +782,11 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
                 .contains(&string(event, "notification_type")) =>
         {
             record["activity"] = json!("busy");
-            record["phase"] = json!("input");
+            // Claude repeats a pending tool approval as a permission_prompt
+            // notification; it must not turn into an ordinary input request.
+            if record["phase"] != "approval" {
+                record["phase"] = json!("input");
+            }
         }
         _ => {}
     }
@@ -925,6 +934,29 @@ mod attention_regressions {
             &json!({"hook_event_name":"Stop","agent_id":"main"}),
         );
         assert_eq!(record["phase"], "idle");
+    }
+    #[test]
+    fn tool_approval_stays_approval_until_answered() {
+        let mut record = json!({"agent":"claude","activity":"busy","phase":"working","active_tools":{},"subagents":{}});
+        for event in [
+            json!({"hook_event_name":"PreToolUse","tool_name":"Read","tool_use_id":"read"}),
+            json!({"hook_event_name":"PermissionRequest","tool_name":"Read"}),
+            json!({"hook_event_name":"Notification","notification_type":"permission_prompt"}),
+        ] {
+            update_activity(&mut record, &event);
+        }
+        assert_eq!(record["phase"], "approval");
+        update_activity(&mut record, &json!({"hook_event_name":"PostToolUse","tool_use_id":"read"}));
+        assert_eq!(record["phase"], "working");
+        // A question uses the same prompt, but it asks for input.
+        for event in [
+            json!({"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_use_id":"ask"}),
+            json!({"hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion"}),
+            json!({"hook_event_name":"Notification","notification_type":"permission_prompt"}),
+        ] {
+            update_activity(&mut record, &event);
+            assert_eq!(record["phase"], "input", "{event}");
+        }
     }
     #[test]
     fn real_children_and_approval_survive_repair() {

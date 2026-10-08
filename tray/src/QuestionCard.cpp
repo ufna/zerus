@@ -136,7 +136,8 @@ QuestionCard::QuestionCard(QWidget *parent) : QWidget(parent)
     m_terminal = new QPushButton(tr("Open Terminal")); m_terminal->setObjectName("questionOpenTerminal");
     m_retry = new QPushButton(tr("Allow retry")); m_retry->setObjectName("questionAllowRetry");
     m_retry->setToolTip(tr("Check the agent in Terminal before retrying to avoid submitting twice."));
-    m_submit = new SubmitButton({tr("Submit answers"), tr("Submit answer"), tr("Submitting…")}); m_submit->setObjectName("submitQuestionAnswer");
+    m_submit = new SubmitButton({tr("Submit answers"), tr("Submit answer"), tr("Submitting…"), tr("Submit answer (%1)").arg(3), tr("Confirm")});
+    m_submit->setObjectName("submitQuestionAnswer");
     m_previous = new QPushButton(tr("← Back")); m_previous->setObjectName("questionPrevious");
     m_next = new QPushButton(tr("Next →")); m_next->setObjectName("questionNext");
     m_approve = new QPushButton(tr("Approve once (3)"));m_approve->setObjectName("approveToolRequest");
@@ -325,14 +326,19 @@ void QuestionCard::rebuild()
         }
         auto *mode = new QLabel(form.multi ? tr("Select one or more") : tr("Select one")); mode->setObjectName("questionMode"); column->addWidget(mode);
         auto *group = new QButtonGroup(page); group->setExclusive(!form.multi);
+        // Claude approvals list native options verbatim. Hide only the
+        // synthesized Approve/Deny pairs, which have their own buttons.
+        const bool listed = !m_question.value("approval").toBool() || m_question.value("approval_choices").toBool();
         for (const auto &optionValue : question.value("options").toArray()) {
             const auto option = optionValue.toObject();
-            auto *choice = new Choice(form.multi, option.value("label").toString(), option.value("description").toString(), page);
+            const QString description = option.value("scope") == "broader"
+                ? tr("Applies beyond this request. Asks for confirmation.") : option.value("description").toString();
+            auto *choice = new Choice(form.multi, option.value("label").toString(), description, page);
             choice->button->setObjectName("questionOption"); choice->button->setProperty("optionId", option.value("id").toString());
             choice->button->setProperty("questionId", form.id); group->addButton(choice->button);
             choice->button->setChecked(answer.options.contains(option.value("id").toString()));
             form.options.insert(option.value("id").toString(), choice->button); column->addWidget(choice);
-            choice->setVisible(!m_question.value("approval").toBool());
+            choice->setVisible(listed);
             connect(choice->button, &QAbstractButton::toggled, this, [this] { capture(); });
         }
         if (form.allowOther) {
@@ -348,7 +354,7 @@ void QuestionCard::rebuild()
             // Keep the answer reachable while a long prompt or option list scrolls.
             formLayout->addWidget(form.text); connect(form.text, &QLineEdit::textChanged, this, [this] { capture(); });
         }
-        mode->setVisible(!form.options.isEmpty()&&!m_question.value("approval").toBool()); column->addStretch(); scroll->setWidget(page);
+        mode->setVisible(!form.options.isEmpty()&&listed); column->addStretch(); scroll->setWidget(page);
         m_pages->addWidget(formPage); m_forms.append(form);
         const auto header = question.value("header").toString().simplified();
         const auto title = header.isEmpty() ? tr("Question %1").arg(++index) : QString::number(++index) + QStringLiteral(": ") + header.left(32);
@@ -362,7 +368,7 @@ void QuestionCard::rebuild()
 void QuestionCard::capture()
 {
     if (m_loading || m_key.isEmpty()) return;
-    auto &draft = m_drafts[m_key];
+    auto &draft = m_drafts[m_key]; draft.confirm.clear();
     for (const auto &form : m_forms) {
         auto &answer = draft.answers[form.id]; answer.options.clear();
         for (auto it = form.options.cbegin(); it != form.options.cend(); ++it) if (it.value()->isChecked()) answer.options.insert(it.key());
@@ -415,23 +421,31 @@ void QuestionCard::updateControls()
         }
     }
     const bool supported = m_question.value("can_answer").toBool();
-    m_submit->setEnabled(!m_key.isEmpty() && m_available && supported && complete && !locked && !draft.uncertain);
-    m_submit->setText(draft.submitted && !draft.answered ? tr("Submitted") : draft.sending || inFlight ? tr("Submitting…") : m_forms.size() == 1 ? tr("Submit answer") : tr("Submit answers"));
+    const bool approval=m_question.value("approval").toBool();
+    const bool choices=approval&&m_question.value("approval_choices").toBool();
+    const QString broader=choices?broaderSelection():QString();
+    const bool confirming=!broader.isEmpty()&&draft.confirm==broader;
+    m_submit->setEnabled(!m_key.isEmpty() && m_available && supported && complete && !locked && !draft.uncertain
+        && (!choices || m_reviewSeconds == 0));
+    m_submit->setText(draft.submitted && !draft.answered ? tr("Submitted") : draft.sending || inFlight ? tr("Submitting…")
+        : choices && m_reviewSeconds > 0 ? tr("Submit answer (%1)").arg(m_reviewSeconds) : confirming ? tr("Confirm")
+        : m_forms.size() == 1 ? tr("Submit answer") : tr("Submit answers"));
     m_retry->setVisible(draft.uncertain && !locked);
     const int page=m_tabs->currentIndex();
     m_previous->setVisible(m_forms.size()>1);m_previous->setEnabled(page>0&&!locked);
     m_next->setVisible(page>=0&&page<m_forms.size()-1);
     m_next->setEnabled(!locked);
-    const bool approval=m_question.value("approval").toBool();
     const bool optional=m_question.value("optional").toBool();
     m_heading->setText((approval||m_question.value("trust_request").toBool())?tr("Agent needs your approval"):optional?tr("Optional question"):tr("Agent needs your answer"));
     if(optional && !approval && m_queueCount>1 && m_queueIndex>=0 && m_queueIndex<m_queueCount)
         m_heading->setText(tr("Optional question #%1/%2").arg(m_queueIndex+1).arg(m_queueCount));
     m_skip->setVisible(optional);
     m_skip->setEnabled(optional && m_available && m_question.value("can_skip").toBool() && !locked && !draft.uncertain);
-    m_submit->setVisible(!approval&&page==m_forms.size()-1);
-    m_approve->setVisible(approval);m_deny->setVisible(approval);
-    const bool canApprove=approval&&m_available&&supported&&!locked&&!draft.uncertain;
+    // Without native options, an approval can only be answered in Terminal.
+    const bool buttons=approval&&!choices&&!m_forms.isEmpty()&&!m_forms.first().options.isEmpty();
+    m_submit->setVisible((!approval||(choices&&supported))&&page==m_forms.size()-1);
+    m_approve->setVisible(buttons);m_deny->setVisible(buttons);
+    const bool canApprove=buttons&&m_available&&supported&&!locked&&!draft.uncertain;
     m_approve->setEnabled(canApprove&&m_reviewSeconds==0);m_deny->setEnabled(canApprove);
     m_approve->setText(m_reviewSeconds>0?tr("Approve once (%1)").arg(m_reviewSeconds):tr("Approve once"));
     int answered = 0;
@@ -455,6 +469,9 @@ void QuestionCard::updateControls()
         notice = customAnswerProblem(answer.text.trimmed());
         if (!notice.isEmpty()) break;
     }
+    if (notice.isEmpty() && confirming)
+        notice = tr("“%1” changes Claude's permissions beyond this request. Select Confirm to send it.").arg(broader);
+    if (notice.isEmpty() && choices) notice = tr("Review the request, then choose one of Claude's options.");
     if (notice.isEmpty()) notice = approval?tr("Approval applies only to this command. Review it before continuing."):
         optional ? tr("The agent can continue. Answer when ready or skip this question.") :
         complete ? tr("Your choices are ready to send.") : tr("Answer each question to continue.");
@@ -516,7 +533,25 @@ void QuestionCard::submit()
 {
     if (!m_submit->isEnabled()) return;
     bool valid = false; const auto result = answers(&valid);
-    if (valid) emit answerRequested(m_session, m_id, result);
+    if (!valid) return;
+    // An option beyond this one request needs a second, explicit click.
+    const QString broader = m_question.value("approval_choices").toBool() ? broaderSelection() : QString();
+    if (!broader.isEmpty() && m_drafts[m_key].confirm != broader) {
+        m_drafts[m_key].confirm = broader; updateControls(); return;
+    }
+    emit answerRequested(m_session, m_id, result);
+}
+
+QString QuestionCard::broaderSelection() const
+{
+    const auto draft = m_drafts.value(m_key);
+    for (const auto &value : m_question.value("questions").toArray()) {
+        const auto question = value.toObject(); const auto chosen = draft.answers.value(question.value("id").toString()).options;
+        for (const auto &option : question.value("options").toArray())
+            if (option.toObject().value("scope") == "broader" && chosen.contains(option.toObject().value("id").toString()))
+                return option.toObject().value("label").toString();
+    }
+    return {};
 }
 
 void QuestionCard::paintEvent(QPaintEvent *)

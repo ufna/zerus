@@ -47,6 +47,33 @@ pub(super) fn answer(
     acknowledged: fn(&str) -> bool,
     expect_exit: bool,
 ) -> Result<()> {
+    navigate(record, question, chosen, option_count, parse, acknowledged, expect_exit, false)
+}
+
+// Claude shows queued tool approvals one after another, so the next complete
+// approval may replace the answered one before any other screen is drawn.
+pub(super) fn answer_queued(
+    record: &Value,
+    question: &Value,
+    chosen: usize,
+    option_count: usize,
+    parse: fn(&Value, &str) -> Option<(Value, usize)>,
+    acknowledged: fn(&str) -> bool,
+) -> Result<()> {
+    navigate(record, question, chosen, option_count, parse, acknowledged, false, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn navigate(
+    record: &Value,
+    question: &Value,
+    chosen: usize,
+    option_count: usize,
+    parse: fn(&Value, &str) -> Option<(Value, usize)>,
+    acknowledged: fn(&str) -> bool,
+    expect_exit: bool,
+    queued: bool,
+) -> Result<()> {
     let mut touched = false;
     let result = (|| {
         // One verified arrow at a time: never apply a saved index to a different
@@ -105,7 +132,12 @@ pub(super) fn answer(
                 let next = parse(&active, &screen);
                 if key == "Enter" {
                     // A clipped or partially redrawn chooser is not an acknowledgement.
-                    if next.is_none() && acknowledged(&screen) {
+                    // Elsewhere a different dialog may report a native failure.
+                    let gone = match &next {
+                        None => acknowledged(&screen),
+                        Some(next) => queued && next.0 != question["question_hash"],
+                    };
+                    if gone {
                         return Ok(());
                     }
                 } else if let Some(next) = next {

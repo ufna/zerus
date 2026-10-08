@@ -18,28 +18,74 @@ class NativeClaudeApprovals(unittest.TestCase):
     answer = questions.Questions.answer
     payload = questions.Questions.payload
 
-    def decision(self, choice, **updates):
-        return self.payload(answers=[dict(question_id='approval', selected_option_ids=[choice], text='')], **updates)
+    def options(self):
+        return self.card['questions'][0]['options']
 
-    def test_approve_once_does_not_change_permission_mode(self):
+    def choose(self, label, **updates):
+        option = next(o for o in self.options() if o['label'] == label)
+        return self.payload(answers=[dict(question_id='approval', selected_option_ids=[option['id']], text='')], **updates)
+
+    def test_native_options_and_approve_once_do_not_change_permission_mode(self):
         self.assertTrue(self.card['approval'])
-        self.assertEqual(self.card['questions'][0]['body'], self.tool_input['command'])
-        self.answer(self.decision('allow'))
+        self.assertTrue(self.card['can_answer'], self.card['answer_unavailable_reason'])
+        self.assertEqual(self.card['tool_call_id'], 'toolu_native_fixture')
+        self.assertIn(self.tool_input['command'], self.card['questions'][0]['body'])
+        self.assertEqual(self.options()[0], dict(id='1', label='Yes', scope='once'))
+        self.assertEqual(self.options()[-1], dict(id=str(len(self.options())), label='No', scope='once'))
+        self.assertTrue(all(o['scope'] == 'broader' for o in self.options()[1:-1]), self.options())
+        self.answer(self.choose('Yes'))
         self.wait_for(lambda: (self.root/'work/approved.txt').exists())
         self.assertEqual((self.root/'work/approved.txt').read_text(), 'approved')
         self.assertNotIn('bypassPermissions', (self.root/'.claude/settings.json').read_text())
 
-    def test_deny_does_not_execute_command(self):
-        self.answer(self.decision('deny'))
+    def test_deny_interrupts_without_running_and_reopens_the_composer(self):
+        self.answer(self.choose('No'))
+        self.wait_for(lambda: 'What should Claude do instead?' in self.screen())
         self.assertFalse((self.root/'work/approved.txt').exists())
+        state = self.inspect()
+        self.assertEqual(state['phase'], 'interrupted')
+        self.assertEqual(state['pending_questions'], [])
 
     def test_changed_command_and_hash_send_no_approval(self):
-        self.answer(self.decision('allow', expected_question_hash='0'*64), success=False)
+        self.answer(self.choose('Yes', expected_question_hash='0'*64), success=False)
         self.assertIn('Do you want to proceed?', self.screen())
         self.assertFalse((self.root/'work/approved.txt').exists())
-        self.hook(dict(hook_event_name='PermissionRequest', tool_name='Bash', tool_use_id='changed', tool_input={'command':'rm changed'}))
-        self.answer(self.decision('allow'), success=False)
+        self.hook(dict(hook_event_name='PermissionRequest', tool_name='Bash', tool_input={'command':'rm changed'}))
+        changed = self.inspect()['pending_questions'][0]
+        self.assertFalse(changed['can_answer'])
+        self.assertIn('Terminal', changed['answer_unavailable_reason'])
+        self.answer(self.choose('Yes'), success=False)
         self.assertIn('Do you want to proceed?', self.screen())
         self.assertFalse((self.root/'work/approved.txt').exists())
+
+
+class NativeClaudeReadApproval(NativeClaudeApprovals):
+    tool_name = 'Read'
+    tool_input = {'file_path': '/outside-fixture/notes.txt'}
+    test_native_options_and_approve_once_do_not_change_permission_mode = None
+    test_deny_interrupts_without_running_and_reopens_the_composer = None
+    test_changed_command_and_hash_send_no_approval = None
+
+    def test_session_grant_is_marked_broader_and_deny_reaches_claude(self):
+        self.assertTrue(self.card['can_answer'], self.card['answer_unavailable_reason'])
+        self.assertIn('Read(/outside-fixture/notes.txt)', self.card['questions'][0]['body'])
+        self.assertEqual([o['scope'] for o in self.options()], ['once', 'broader', 'once'])
+        self.answer(self.choose('No'))
+        self.wait_for(lambda: 'What should Claude do instead?' in self.screen())
+        self.assertEqual(self.inspect()['phase'], 'interrupted')
+
+
+class NativeClaudeFetchApproval(NativeClaudeReadApproval):
+    tool_name = 'WebFetch'
+    tool_input = {'url': 'https://example.com', 'prompt': 'title?'}
+    panel_question = 'Do you want to allow Claude to fetch this content?'
+    test_session_grant_is_marked_broader_and_deny_reaches_claude = None
+
+    def test_feedback_denial_without_footer(self):
+        self.assertTrue(self.card['can_answer'], self.card['answer_unavailable_reason'])
+        self.assertEqual(self.options()[-1]['scope'], 'once')
+        self.assertEqual(self.options()[1]['scope'], 'broader')
+        self.answer(self.choose(self.options()[-1]['label']))
+        self.wait_for(lambda: 'What should Claude do instead?' in self.screen())
 
 if __name__ == '__main__': unittest.main()

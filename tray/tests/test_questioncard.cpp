@@ -65,6 +65,8 @@ private slots:
     void contentHeightPreservesActivityAndPinsFreeformAnswer();
     void currentQuestionAndOtherAnswerResizeTheForm();
     void reviewCountdownAndNextNavigation();
+    void claudeApprovalListsNativeOptionsAndConfirmsBroaderOnes();
+    void unreadableApprovalPointsToTerminal();
     void optionalQuestionsHaveExplicitSkipAndKeepDrafts();
     void submittedAnswersRestoreAndIgnoreLateErrors();
     void submittedCallbacksAndMetadataKeepExactIdentity();
@@ -180,6 +182,51 @@ void TestQuestionCard::reviewCountdownAndNextNavigation()
     QTRY_VERIFY_WITH_TIMEOUT(allow->isEnabled(),4000);allow->click();QCOMPARE(sent.size(),1);
     QCOMPARE(sent.first()[2].toJsonArray().first().toObject().value("selected_option_ids").toArray(),QJsonArray{"allow"});
     const auto preview=qEnvironmentVariable("HGS_APPROVAL_PREVIEW");if(!preview.isEmpty()){QDir().mkpath(preview);QVERIFY(card.grab().save(preview+"/approval.png"));}
+}
+
+void TestQuestionCard::claudeApprovalListsNativeOptionsAndConfirmsBroaderOnes()
+{
+    QuestionCard card;card.resize(700,450);card.show();card.activateWindow();QApplication::setActiveWindow(&card);
+    auto approval=request("claude-approval:one","read-one");approval["approval"]=true;approval["approval_choices"]=true;approval["source"]="claude_tool_approval";
+    approval["questions"]=QJsonArray{QJsonObject{{"id","approval"},{"question","Allow this read outside the working directories?"},
+        {"body","Read outside the working directories\n\nRead(/home/user/.codex/image.png)"},{"allow_other",false},{"options",QJsonArray{
+            QJsonObject{{"id","1"},{"label","Yes, and keep allowing any reads outside the working directories"},{"scope","broader"}},
+            QJsonObject{{"id","2"},{"label","No, and block reads outside the working directories from now on"},{"scope","broader"}},
+            QJsonObject{{"id","3"},{"label","No, and ask again next time"},{"scope","once"}},
+            QJsonObject{{"id","4"},{"label","Yes, but ask again next time"},{"scope","once"}}}}}};
+    card.setQuestion("session",approval);
+    QCOMPARE(card.findChild<QLabel *>("questionHeading")->text(),QString("Agent needs your approval"));
+    QVERIFY(card.findChild<QPushButton *>("approveToolRequest")->isHidden());QVERIFY(card.findChild<QPushButton *>("denyToolRequest")->isHidden());
+    QVERIFY(option(card,"1")->isVisible());QVERIFY(option(card,"4")->isVisible());
+    QCOMPARE(option(card,"1")->accessibleDescription(),QString("Applies beyond this request. Asks for confirmation."));
+    QVERIFY(option(card,"4")->accessibleDescription().isEmpty());
+    QSignalSpy sent(&card,&QuestionCard::answerRequested);
+    option(card,"1")->click();QVERIFY(!submit(card)->isEnabled());QVERIFY(submit(card)->text().contains("(3)"));
+    QTRY_VERIFY_WITH_TIMEOUT(submit(card)->isEnabled(),4000);
+    // A broader option needs a second click; changing the choice resets it.
+    submit(card)->click();QCOMPARE(sent.size(),0);QCOMPARE(submit(card)->text(),QString("Confirm"));
+    QVERIFY(card.findChild<QLabel *>("questionStatus")->text().contains("beyond this request"));
+    option(card,"4")->click();QCOMPARE(submit(card)->text(),QString("Submit answer"));
+    option(card,"1")->click();submit(card)->click();QCOMPARE(sent.size(),0);submit(card)->click();QCOMPARE(sent.size(),1);
+    QCOMPARE(sent.first()[2].toJsonArray().first().toObject().value("selected_option_ids").toArray(),QJsonArray{"1"});
+    approval["question_hash"]="read-two";card.setQuestion("session",approval);QVERIFY(!submit(card)->isEnabled());
+    option(card,"4")->click();QTRY_VERIFY_WITH_TIMEOUT(submit(card)->isEnabled(),4000);submit(card)->click();QCOMPARE(sent.size(),2);
+    QCOMPARE(sent.last()[2].toJsonArray().first().toObject().value("selected_option_ids").toArray(),QJsonArray{"4"});
+    const auto preview=qEnvironmentVariable("HGS_APPROVAL_PREVIEW");if(!preview.isEmpty()){QDir().mkpath(preview);QVERIFY(card.grab().save(preview+"/claude-approval.png"));}
+}
+
+void TestQuestionCard::unreadableApprovalPointsToTerminal()
+{
+    QuestionCard card;card.resize(700,450);card.show();
+    auto approval=request("claude-approval:clipped","clipped");approval["approval"]=true;approval["can_answer"]=false;
+    approval["answer_unavailable_reason"]="Zerus cannot read this approval completely. Enlarge Terminal or answer it there.";
+    approval["questions"]=QJsonArray{QJsonObject{{"id","approval"},{"question","Claude asks to use Read"},{"body","Read\n\n/home/user/notes.txt"},
+        {"allow_other",false},{"options",QJsonArray{}}}};
+    card.setQuestion("session",approval);
+    QVERIFY(card.isVisible());QVERIFY(submit(card)->isHidden());
+    QVERIFY(card.findChild<QPushButton *>("approveToolRequest")->isHidden());QVERIFY(card.findChild<QPushButton *>("denyToolRequest")->isHidden());
+    QVERIFY(card.findChild<QPushButton *>("questionOpenTerminal")->isVisible());
+    QCOMPARE(card.findChild<QLabel *>("questionStatus")->text(),approval["answer_unavailable_reason"].toString());
 }
 
 void TestQuestionCard::allRequiredQuestionsAndStableAnswerIds()

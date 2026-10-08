@@ -48,7 +48,7 @@ private:
     struct Answer { QSet<QString> options; QString text; bool other = false; };
     struct Draft {
         QHash<QString, Answer> answers;
-        QString notice;
+        QString notice, confirm;
         int page = 0;
         bool sending = false, submitted = false, answered = false, error = false, uncertain = false;
     };
@@ -66,6 +66,8 @@ private:
     void sizeToContent();
     void submit();
     QJsonArray answers(bool *valid = nullptr) const;
+    // Label of a selected approval option that reaches beyond this request.
+    QString broaderSelection() const;
     QString callbackKey(const QString &sessionKey, const QString &questionId) const;
     static QString identity(const QString &sessionKey, const QString &questionId, const QString &hash = {});
 
