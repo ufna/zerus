@@ -83,6 +83,7 @@ private slots:
     void attachmentDropReleasesVisualCaret();
     void unsupportedModelOffersTerminal();
     void contentScaleEnlargesOnlyTheMessageField();
+    void draftStateFollowsUnsentContent();
 };
 
 void TestMessageComposer::contentScaleEnlargesOnlyTheMessageField()
@@ -556,6 +557,36 @@ void TestMessageComposer::renamePreservesDraft()
     QVERIFY(composer.editor()->toPlainText().isEmpty());
     composer.setSessionKey("arch\ncodex/project/final");
     QCOMPARE(composer.editor()->toPlainText(), "[File #1] Rename retains this draft");
+}
+
+void TestMessageComposer::draftStateFollowsUnsentContent()
+{
+    // The session list marks sessions whose composer still holds an unsent message.
+    MessageComposer composer; composer.setAvailability(true);
+    QSignalSpy changed(&composer, &MessageComposer::draftChanged);
+    composer.setSessionKey("arch/one");
+    QVERIFY(!composer.hasDraft("arch/one"));
+    composer.editor()->setPlainText("   \n");
+    QVERIFY(!composer.hasDraft("arch/one")); QCOMPARE(changed.size(), 0);
+    composer.editor()->setPlainText("Ask about the tests");
+    QVERIFY(composer.hasDraft("arch/one"));
+    QCOMPARE(changed.size(), 1); QCOMPARE(changed.last().at(0).toString(), QString("arch/one"));
+    composer.editor()->setPlainText("Ask about the tests again");
+    QCOMPARE(changed.size(), 1);   // only a change between empty and unsent is reported
+    composer.setSessionKey("arch/two");
+    QVERIFY(composer.hasDraft("arch/one")); QVERIFY(!composer.hasDraft("arch/two"));
+    composer.setSending("arch/one");
+    QVERIFY(!composer.hasDraft("arch/one")); QCOMPARE(changed.size(), 2);
+    composer.deliveryFinished("arch/one", false, "Rejected before sending");
+    QVERIFY(composer.hasDraft("arch/one")); QCOMPARE(changed.size(), 3);   // failed delivery is still unsent
+    composer.setSending("arch/one"); composer.deliveryFinished("arch/one", true);
+    QVERIFY(!composer.hasDraft("arch/one"));
+    QVERIFY(composer.addAttachment("note.txt", "text/plain", "context"));
+    QVERIFY(composer.hasDraft("arch/two"));
+    composer.renameDraft("arch/two", "arch/renamed");
+    QVERIFY(!composer.hasDraft("arch/two")); QVERIFY(composer.hasDraft("arch/renamed"));
+    QVERIFY(composer.offerDraft("arch/offered", "Continue the interrupted turn"));
+    QVERIFY(composer.hasDraft("arch/offered"));
 }
 
 QTEST_MAIN(TestMessageComposer)

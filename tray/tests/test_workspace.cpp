@@ -6,6 +6,7 @@
 #include <QVBoxLayout>
 #include "SessionOrganization.h"
 #include "SessionList.h"
+#include "SessionCardDelegate.h"
 #include "SessionElapsed.h"
 #include "IdentityBadge.h"
 
@@ -24,6 +25,7 @@ private slots:
     void activityAnimationOnlyRunsForVisibleWorkingRows();
     void elapsedWorkTimeKeepsUpdatingWithoutAnimation();
     void shortIdentityLabelsFitWithoutElision();
+    void draftStatusSitsBetweenWorkAndReplies();
 };
 
 void TestWorkspace::shortIdentityLabelsFitWithoutElision()
@@ -237,6 +239,29 @@ void TestWorkspace::keyboardFocusFollowsInput()
     input.setFocus(); QTest::keyClick(&input, Qt::Key_Tab); QVERIFY(list.hasFocus()); QVERIFY(keyboard());
     QTest::mouseClick(list.viewport(), Qt::RightButton, Qt::NoModifier, list.visualItemRect(list.item(1)).center());
     QVERIFY(!keyboard()); QCOMPARE(list.currentRow(), 1);
+}
+
+void TestWorkspace::draftStatusSitsBetweenWorkAndReplies()
+{
+    // An unsent draft is a status of its own: below anything asking for the user or
+    // still working, above a new reply (kept as the extra badge), a pause and Ready.
+    QListWidget list; auto *item = new QListWidgetItem("session", &list);
+    const auto status = [&](bool selected = false) { return SessionDelegate::statusOf(list.model()->index(0, 0), selected); };
+    item->setData(SessionRoles::Status, "Ready"); item->setData(SessionRoles::Draft, true);
+    QCOMPARE(status().kind, SessionStatusBadge::Draft); QCOMPARE(status().caption, QString("Draft"));
+    QCOMPARE(status(true).kind, SessionStatusBadge::Neutral);   // the open session shows its draft in place
+    item->setData(SessionRoles::Unread, true);
+    QCOMPARE(status().kind, SessionStatusBadge::Draft); QVERIFY(status().additionalUnread);
+    item->setData(SessionRoles::Working, 1);
+    QCOMPARE(status().kind, SessionStatusBadge::Working);
+    item->setData(SessionRoles::Working, 0); item->setData(SessionRoles::Attention, true);
+    QCOMPARE(status().kind, SessionStatusBadge::Attention);
+    item->setData(SessionRoles::Attention, false); item->setData(SessionRoles::Unread, false); item->setData(SessionRoles::Status, "Paused");
+    QCOMPARE(status().kind, SessionStatusBadge::Draft);
+    item->setData(SessionRoles::Draft, false);
+    QCOMPARE(status().kind, SessionStatusBadge::Paused);
+    item->setData(SessionRoles::Draft, true); item->setData(SessionRoles::Status, "Offline");
+    QCOMPARE(status().kind, SessionStatusBadge::Neutral); QCOMPARE(status().caption, QString("Offline"));
 }
 
 QTEST_MAIN(TestWorkspace)

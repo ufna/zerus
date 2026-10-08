@@ -80,6 +80,7 @@ private slots:
     void contentScaleLeavesWorkspaceChrome();
     void unreadRepliesNeedAnActiveVisibleResult();
     void markAllReadIgnoresFiltersAndKeepsCurrentDraft();
+    void unsentDraftBecomesARowStatus();
     void compactWorkspaceGeometry();
     void worktreeFilterKeepsConversationDraftAndSearchScope();
     void worktreePreview();
@@ -616,6 +617,30 @@ void TestSessionsWindow::unreadRepliesNeedAnActiveVisibleResult()
     QVERIFY(row()->data(SessionRoles::Unread).toBool()); QVERIFY(row()->data(SessionRoles::Working).toBool());
     QCOMPARE(row()->data(SessionRoles::Detail).toString(), QString("Bash: Check the next deployment"));
     QVERIFY(window.findChild<QLabel *>("listSummary")->text().contains("1 working"));
+}
+
+void TestSessionsWindow::unsentDraftBecomesARowStatus()
+{
+    // A composer draft marks its row (the delegate turns it into the Draft status).
+    auto state = fleet(); const auto box = state.local();
+    SessionsWindow window(script()); window.setFleet(state); window.show(); window.showSession({}, box.sessions[0].name);
+    auto *composer = window.findChild<MessageComposer *>("messageComposer"); QVERIFY(composer);
+    auto *list = window.findChild<SessionList *>("sessionList");
+    const auto draft = [&](const QString &name) {
+        for (int i = 0; i < list->count(); ++i)
+            if (list->item(i)->data(SessionRoles::Key).toString().endsWith('\n' + name)) return list->item(i)->data(SessionRoles::Draft).toBool();
+        return false;
+    };
+    composer->editor()->setPlainText("Unsent question");
+    QVERIFY(draft(box.sessions[0].name));
+    window.showSession({}, box.sessions[1].name);
+    window.setFleet(state);   // rows are refreshed in place; the draft stays marked
+    QVERIFY(draft(box.sessions[0].name)); QVERIFY(!draft(box.sessions[1].name));
+    window.findChild<MachineFilter *>()->setSelection({"@local"});   // other rows go: the list is rebuilt from scratch
+    QVERIFY(draft(box.sessions[0].name));
+    window.findChild<MachineFilter *>()->setSelection({});
+    window.showSession({}, box.sessions[0].name); composer->editor()->clear();
+    QVERIFY(!draft(box.sessions[0].name));
 }
 
 void TestSessionsWindow::markAllReadIgnoresFiltersAndKeepsCurrentDraft()

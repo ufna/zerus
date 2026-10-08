@@ -3,7 +3,7 @@
 #include <QPainter>
 
 namespace SessionStatusBadge {
-enum Kind { Neutral, Working, Attention, Error, Paused, Unread };
+enum Kind { Neutral, Working, Attention, Error, Paused, Unread, Draft };
 inline QFont font(QFont base) { base.setPixelSize(11); base.setWeight(QFont::Medium); return base; }
 inline int width(const QString &text, Kind kind, const QFont &base) {
     // Leave room for fractional glyph advances before elidedText rounds them.
@@ -15,11 +15,13 @@ inline void paint(QPainter *p, const QRect &rect, const QString &text, Kind kind
     const QColor background = kind == Working ? QColor(dark ? "#194d36" : "#ccefdc")
         : (kind == Attention || kind == Unread) ? QColor(dark ? "#ffda76" : "#f4ce65")
         : kind == Error ? QColor(dark ? "#ffabb6" : "#b73750")
-        : kind == Paused ? QColor(dark ? "#443654" : "#e8ddf5") : QColor(dark ? "#2b343e" : "#e7edf2");
+        : kind == Paused ? QColor(dark ? "#443654" : "#e8ddf5")
+        : kind == Draft ? QColor(dark ? "#263446" : "#e3edf9") : QColor(dark ? "#2b343e" : "#e7edf2");
     const QColor foreground = kind == Working ? QColor(dark ? "#97f0ba" : "#145b37")
         : (kind == Attention || kind == Unread) ? QColor("#392900")
         : kind == Error ? QColor(dark ? "#46202a" : "#ffffff")
-        : kind == Paused ? QColor(dark ? "#dec3ff" : "#634187") : QColor(dark ? "#b6c2d0" : "#566575");
+        : kind == Paused ? QColor(dark ? "#dec3ff" : "#634187")
+        : kind == Draft ? QColor(dark ? "#9cc0ec" : "#2f5f93") : QColor(dark ? "#b6c2d0" : "#566575");
     p->setPen(Qt::NoPen); p->setBrush(background); p->drawRoundedRect(rect, 5, 5);
     const QPointF center(rect.x() + 11, rect.center().y() + .5);
     p->setFont(font(p->font())); p->setPen(foreground);
@@ -34,6 +36,12 @@ inline void paint(QPainter *p, const QRect &rect, const QString &text, Kind kind
         p->setPen(QPen(foreground, 1.5, Qt::SolidLine, Qt::RoundCap));
         p->drawLine(center + QPointF(-2, -3), center + QPointF(-2, 3));
         p->drawLine(center + QPointF(2, -3), center + QPointF(2, 3));
+    } else if (kind == Draft) {
+        // A pencil: an unsent message waits in the composer.
+        p->setPen(QPen(foreground, 1.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p->drawLine(center + QPointF(-3, 3), center + QPointF(2.5, -2.5));
+        p->drawLine(center + QPointF(1.5, -3.5), center + QPointF(3.5, -1.5));
+        p->drawLine(center + QPointF(-3, 3), center + QPointF(-3.5, 3.5));
     } else if (kind == Unread) {
         p->setPen(QPen(foreground, 1)); p->setBrush(Qt::NoBrush);
         p->drawRoundedRect(QRectF(center.x() - 4, center.y() - 3, 8, 6), 1, 1);

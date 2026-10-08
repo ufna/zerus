@@ -53,15 +53,15 @@ public:
         else if (expansion >= 1) paintCard(p, option, index);
         else paintStripCard(p, option, index, expansion);
     }
-private:
     struct CardStatus {
-        bool attention, unread, working, paused, additionalUnread;
+        bool attention, unread, working, paused, draft, additionalUnread;
         QString state, caption;
         SessionStatusBadge::Kind kind;
         IdentityBadges::RowEmphasis emphasis;
     };
-    struct SharedBadges { QRect status, unread, provider; QString agent; };
-    CardStatus cardStatus(const QModelIndex &index) const {
+    // Priority: attention or error, work, an unsent draft (not for the open session,
+    // which shows it in place), a new reply (then an extra badge), a pause, Ready.
+    static CardStatus statusOf(const QModelIndex &index, bool selected) {
         CardStatus s;
         s.attention = index.data(SessionRoles::Attention).toBool();
         s.unread = index.data(SessionRoles::Unread).toBool();
@@ -69,15 +69,18 @@ private:
         const bool error = s.state == "Error";
         s.working = index.data(SessionRoles::Working).toInt() > 0;
         s.paused = s.state == "Paused";
+        s.draft = index.data(SessionRoles::Draft).toBool() && !selected && !s.attention && !s.working && s.state != "Offline";
         s.emphasis = s.attention ? (error ? IdentityBadges::Error : IdentityBadges::Attention) : s.unread ? IdentityBadges::Unread : IdentityBadges::Normal;
         s.kind = s.attention ? (error ? SessionStatusBadge::Error : SessionStatusBadge::Attention)
-            : s.working ? SessionStatusBadge::Working : s.unread ? SessionStatusBadge::Unread
+            : s.working ? SessionStatusBadge::Working : s.draft ? SessionStatusBadge::Draft : s.unread ? SessionStatusBadge::Unread
             : s.paused ? SessionStatusBadge::Paused : SessionStatusBadge::Neutral;
-        s.caption = s.working ? SessionElapsed::status(s.state == "Compacting" ? tr("Compacting") : tr("Working"), index.data(SessionRoles::WorkingSince).toDouble()) : s.unread && !s.attention ? tr("New reply")
+        s.caption = s.working ? SessionElapsed::status(s.state == "Compacting" ? tr("Compacting") : tr("Working"), index.data(SessionRoles::WorkingSince).toDouble()) : s.draft ? tr("Draft") : s.unread && !s.attention ? tr("New reply")
             : s.state == "Not tracked" ? tr("Untracked") : s.state;
-        s.additionalUnread = s.unread && (s.working || s.attention);
+        s.additionalUnread = s.unread && (s.working || s.attention || s.draft);
         return s;
     }
+private:
+    struct SharedBadges { QRect status, unread, provider; QString agent; };
     void paintHeader(QPainter *p, const QStyleOptionViewItem &option, const QModelIndex &index, qreal expansion) const {
         p->save(); p->setRenderHint(QPainter::Antialiasing);
         const bool dark = option.widget && option.widget->property("hgsDark").toBool();
@@ -140,7 +143,7 @@ private:
         const bool expandable = index.data(SessionRoles::HasChildren).toBool();
         const QRect r = sessionCardRect(option.rect).adjusted(childRow ? 24 : 0, 0, 0, 0);
         const bool compact = option.widget && option.widget->property("compact").toBool();
-        const auto status = cardStatus(index);
+        const auto status = statusOf(index, option.state & QStyle::State_Selected);
         const bool attention = status.attention, unread = status.unread, working = status.working, paused = status.paused;
         const QString state = status.state;
         p->setClipRect(option.rect, Qt::IntersectClip);
@@ -267,7 +270,7 @@ private:
         const qreal pulse = option.widget ? option.widget->property("workingPulse").toReal() : 0.0;
         QStyleOptionViewItem wide(option);
         wide.rect.setWidth(qMax(option.rect.width(), option.widget ? option.widget->property("expandedRowWidth").toInt() : 0));
-        const auto status = cardStatus(index);
+        const auto status = statusOf(index, option.state & QStyle::State_Selected);
         const QRect r = sessionCardRect(option.rect);
         const QRect stripStatus(r.x() + (SessionStrip::CardWidth - 26) / 2, r.y() + 8, 26, 20);
         const QColor muted(dark ? "#a1adbb" : "#647386");

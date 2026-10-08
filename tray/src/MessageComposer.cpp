@@ -323,7 +323,7 @@ bool MessageComposer::offerDraft(const QString &key, const QString &text)
     if (!draft.text.trimmed().isEmpty() || !draft.attachments.isEmpty() || draft.sending) return false;
     draft.text = text; draft.position = draft.anchor = int(text.size()); draft.notice.clear();
     if (key == m_key) { m_loading = true; restoreDraft(); m_loading = false; }
-    updateControls(); return true;
+    notifyDraft(key); updateControls(); return true;
 }
 
 void MessageComposer::setAvailability(bool available, const QString &reason)
@@ -333,6 +333,19 @@ void MessageComposer::setAvailability(bool available, const QString &reason)
 }
 
 bool MessageComposer::isSending(const QString &key) const { return m_drafts.value(key).sending; }
+
+bool MessageComposer::hasDraft(const QString &key) const
+{
+    const auto draft = m_drafts.value(key);
+    return !draft.sending && (!draft.text.trimmed().isEmpty() || !draft.attachments.isEmpty());
+}
+
+void MessageComposer::notifyDraft(const QString &key)
+{
+    if (key.isEmpty() || hasDraft(key) == m_unsent.contains(key)) return;
+    if (hasDraft(key)) m_unsent.insert(key); else m_unsent.remove(key);
+    emit draftChanged(key);
+}
 
 bool MessageComposer::draftMatches(const QString &key, const QString &text, const QList<MessageAttachment> &attachments) const
 {
@@ -354,6 +367,7 @@ void MessageComposer::setSending(const QString &key, bool preserveDraft)
         m_loading = true; m_editor->clear(); m_loading = false;
         rebuildAttachments(); updateControls();
     }
+    notifyDraft(key);
 }
 
 void MessageComposer::deliveryFinished(const QString &key, bool ok, const QString &detail, bool uncertain)
@@ -361,12 +375,13 @@ void MessageComposer::deliveryFinished(const QString &key, bool ok, const QStrin
     if(m_preservedDrafts.contains(key)) {
         m_drafts[key]=m_preservedDrafts.take(key);
         if(key==m_key){m_loading=true;restoreDraft();m_loading=false;rebuildAttachments();updateControls();}
-        return;
+        notifyDraft(key); return;
     }
     auto &draft = m_drafts[key]; const bool wasSending = draft.sending;
     draft.sending = false; draft.error = !ok; draft.uncertain = uncertain;
     draft.notice = ok ? tr("Submitted to terminal") : detail;
     if (ok) { draft.text.clear(); draft.attachments.clear(); draft.nextAttachmentNumber = 1; }
+    notifyDraft(key);
     if (key != m_key) return;
     if (ok || wasSending) { m_loading = true; restoreDraft(); m_loading = false; }
     rebuildAttachments(); updateControls();
@@ -377,6 +392,7 @@ void MessageComposer::renameDraft(const QString &oldKey, const QString &newKey)
     if (oldKey == newKey || !m_drafts.contains(oldKey)) return;
     m_drafts.insert(newKey, m_drafts.take(oldKey));
     if(m_preservedDrafts.contains(oldKey))m_preservedDrafts.insert(newKey,m_preservedDrafts.take(oldKey));
+    notifyDraft(oldKey); notifyDraft(newKey);
     if (m_key == oldKey) { m_key.clear(); setSessionKey(newKey); }
 }
 
@@ -499,6 +515,7 @@ void MessageComposer::rebuildAttachments()
 
 void MessageComposer::updateControls()
 {
+    notifyDraft(m_key);   // typing, attachments and retries end here
     const auto draft = m_drafts.value(m_key);
     const bool hasContent = !draft.text.trimmed().isEmpty() || !draft.attachments.isEmpty();
     const bool tooLong = draft.text.toUtf8().size() > MaxTextBytes;

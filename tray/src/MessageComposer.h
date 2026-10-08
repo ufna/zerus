@@ -2,6 +2,7 @@
 
 #include "HgsClient.h"
 #include <QHash>
+#include <QSet>
 #include <QWidget>
 
 class QLabel;
@@ -41,6 +42,8 @@ public:
     void deliveryFinished(const QString &key, bool ok, const QString &detail = {}, bool uncertain = false);
     void renameDraft(const QString &oldKey, const QString &newKey);
     bool isSending(const QString &key) const;
+    // Text or attachments not yet sent; a message on its way does not count.
+    bool hasDraft(const QString &key) const;
     bool addAttachment(const QString &name, const QString &mime, const QByteArray &data);
     bool canAttachFiles() const { return !m_key.isEmpty() && !isSending(m_key); }
     QString sessionKey() const { return m_key; }
@@ -52,6 +55,8 @@ signals:
     void settingsTerminalRequested(const QString &sessionKey);
     void settingsRequested(const QString &sessionKey, const QString &model, const QString &effort);
     void sendRequested(const QString &sessionKey, const QString &text, const QList<MessageAttachment> &attachments);
+    // hasDraft(sessionKey) changed.
+    void draftChanged(const QString &sessionKey);
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
@@ -66,6 +71,7 @@ private:
     };
     void send();
     void restoreDraft();
+    void notifyDraft(const QString &key);
     void updatePlaceholder();
     struct Suggestion { QString text; double at = 0; };
     QHash<QString, Suggestion> m_suggestions;
@@ -82,6 +88,7 @@ private:
 
     QHash<QString, Draft> m_drafts;
     QHash<QString, Draft> m_preservedDrafts;
+    QSet<QString> m_unsent;   // keys whose last reported hasDraft() was true
     QString m_key, m_unavailableReason;
     bool m_available = false, m_loading = false, m_dark = true;
     double m_scale = 1.0;

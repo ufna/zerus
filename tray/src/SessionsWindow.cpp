@@ -760,6 +760,14 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         renderDetails();
     });
     connect(m_composer, &MessageComposer::sendRequested, this, [this](const QString &key,const QString &text,const QList<MessageAttachment> &files){sendMessage(key,text,files);});
+    // An unsent draft becomes the row's status (see SessionDelegate::statusOf).
+    connect(m_composer, &MessageComposer::draftChanged, this, [this](const QString &key) {
+        for (int row = 0; row < m_sessions->count(); ++row) {
+            auto *item = m_sessions->item(row);
+            if (item->data(SessionRoles::Key).toString() == key && item->data(SessionRoles::ChildId).toString().isEmpty())
+                item->setData(SessionRoles::Draft, m_composer->hasDraft(key));
+        }
+    });
     connect(m_activityView, &ActivityView::messageActionRequested, this, &SessionsWindow::messageAction);
     connect(m_composer, &MessageComposer::settingsTerminalRequested, this, [this](const QString &key) {
         if (key != m_selectedKey || !selected()) return;
@@ -2013,6 +2021,7 @@ void SessionsWindow::rebuild()
         item->setData(MetaRole, meta); item->setData(StatusRole, rowStatus); item->setData(DetailRole, desc);
         item->setData(SessionRoles::Attention, !terminating && (s.reviewLater || (e.online && !s.attentionAcknowledged && (s.needsAction() || childNeedsAction(e)))));
         item->setData(SessionRoles::ReviewLater, s.reviewLater);
+        item->setData(SessionRoles::Draft, m_composer->hasDraft(e.key));
         item->setData(SessionRoles::Unread, !terminating && s.unreadReply);
         item->setData(SessionRoles::Working, !isTerminating(e) && currentActivity(s, e.online) && s.activity == "busy" && !s.needsAction());
         item->setData(SessionRoles::WorkingSince, s.phase == "compacting" ? s.compactionStarted : s.turnStarted);
