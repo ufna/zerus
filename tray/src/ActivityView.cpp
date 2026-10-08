@@ -645,6 +645,13 @@ void ActivityView::render(bool contentUpdate)
     auto agentTheme = MarkdownTheme::github(m_dark, QColor(surface), m_scale);
     auto pageTheme = MarkdownTheme::github(m_dark, QColor(m_dark ? "#1c2229" : "#ffffff"), m_scale);
     agentTheme.subtle = pageTheme.subtle = QColor(codeSurface);
+    // Dark: GitHub's zebra and border steps relative to the grey card instead of near-black
+    // code rows, and denser inline code so that it stands out from the card.
+    agentTheme.stripe = pageTheme.stripe = QColor(m_dark ? "#2a333d" : codeSurface);
+    if (m_dark) {
+        agentTheme.border = pageTheme.border = QColor("#3a444e");
+        agentTheme.chip.setAlphaF(0.33f); pageTheme.chip.setAlphaF(0.33f);
+    }
     QString html = QString("<html><head><style>body{color:%1;font-size:13px;}p{margin:6px 0;line-height:135%;}h1,h2,h3,h4{font-size:14px;margin:10px 0 6px;}pre{white-space:pre-wrap;}a{color:%2;text-decoration:none;}li{margin-bottom:4px;}</style></head><body>").arg(fg, accent);
     html += QString("<p style='font-size:10px;color:%1;margin-bottom:12px;'>%2</p>").arg(muted, searching ? tr("SEARCH RESULT — Saved message") : tr("RECORDED ACTIVITY — Messages and tool excerpts"));
     if (details.value("history_truncated").toBool())

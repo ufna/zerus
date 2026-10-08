@@ -116,6 +116,7 @@ private slots:
     void markdownFollowsThemeAndScale();
     void agentCardsKeepZerusSurface();
     void wideChipsStayTextInNarrowPanes();
+    void darkCardsUseNeutralTablesAndVisibleChips();
     void preview();
 };
 
@@ -263,6 +264,26 @@ void TestActivityView::wideChipsStayTextInNarrowPanes()
     QVERIFY(view.plainText().contains("cargo test --workspace --all-feat"));
     view.resize(2400, 400);
     QTRY_COMPARE(chipCount(), 1);
+}
+
+void TestActivityView::darkCardsUseNeutralTablesAndVisibleChips()
+{
+    // On the grey Zerus card, zebra rows are a step lighter (not the near-black code
+    // surface) and inline code is dense enough to stand out.
+    ActivityView view; view.resize(560, 400); view.setTheme(true); view.show();
+    view.setActivity({}, {journalEvent(1, "Stop", "Use `x`.\n\n| A |\n|---|\n| one |\n| two |")});
+    QString stripe; double chipAlpha = 0;
+    for (auto block = view.browser()->document()->begin(); block.isValid(); block = block.next()) {
+        if (block.text().contains("two")) {
+            const QTextCursor cursor(block);
+            stripe = cursor.currentTable()->cellAt(cursor).format().background().color().name();
+        }
+        for (auto it = block.begin(); !it.atEnd(); ++it)
+            if (it.fragment().charFormat().objectType() == MarkdownObjects::ChipObjectType)
+                chipAlpha = it.fragment().charFormat().colorProperty(QTextFormat::UserProperty + 42).alphaF();
+    }
+    QCOMPARE(stripe, QString("#2a333d"));
+    QVERIFY2(chipAlpha >= 0.3, qPrintable(QString::number(chipAlpha)));
 }
 
 void TestActivityView::contextCounterKeepsPhysicalRightAlignment()

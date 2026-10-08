@@ -10,6 +10,7 @@ struct MarkdownTheme {
     bool dark = false;
     int scalePercent = 100;   // keys the drawn hgs-md: resources
     QColor canvas, fg, muted, accent, subtle, border, borderMuted, chip;
+    QColor stripe;   // even table rows; GitHub's canvas.subtle unless the view picks its own
     QString monoFamily;
 
     static MarkdownTheme github(bool dark, const QColor &canvas, double scale = 1.0);

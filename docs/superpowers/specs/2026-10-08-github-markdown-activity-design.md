@@ -64,7 +64,9 @@ QString MarkdownHtml::render(const QString &markdown, const MarkdownTheme &, con
 - Agent message cards keep their Zerus background (`#f3f6f8` / `#242d36`); the
   Markdown inside uses GitHub typography and colours on it. Because GitHub's
   `canvas.subtle` would vanish on that grey, code blocks, zebra rows and code-block
-  corners use the journal's code surface (`#e8eef2` / `#171e25`). Expanded
+  corners use the journal's code surface (`#e8eef2` / `#171e25`). Table stripes
+  have their own token: `#e8eef2` in light, `#2a333d` (a step above the card) in
+  dark, where borders use `#3a444e` and inline code is filled at 33 %. Expanded
   “Thinking” text uses the same renderer on the page background.
 - `ContentScale::html()` keeps scaling every `px` length, so the renderer emits
   lengths in `px` at scale 1. Image resources are generated for the current scale.

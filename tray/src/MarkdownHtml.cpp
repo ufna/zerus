@@ -207,7 +207,8 @@ public:
                 content = QString("<p style=\"margin:0px 0 0 0;line-height:%1px;%2\">").arg(lineHeight).arg(indent)
                     + marker + (block < 0 ? content : content.left(block)) + "</p>" + (block < 0 ? QString() : content.mid(block));
             }
-            list.html += QString("<tr><td valign=\"top\" style=\"padding:%1px 0 0 %2px;\">").arg(top).arg(Gutter) + content + "</td></tr>";
+            // No valign: Qt would hand it to the marker image (AlignTop) and lift it off the baseline.
+            list.html += QString("<tr><td style=\"padding:%1px 0 0 %2px;\">").arg(top).arg(Gutter) + content + "</td></tr>";
             ++list.blocks; ++list.number;
             break;
         }
@@ -236,7 +237,7 @@ public:
             Frame *table = nullptr;
             for (auto i = m_frames.size() - 1; i >= 0 && !table; --i) if (m_frames[i].type == MD_BLOCK_TABLE) table = &m_frames[i];
             const bool zebra = !frame.head && table && table->bodyRow++ % 2 == 1;
-            m_frames.last().html += QString("<tr bgcolor=\"%1\">").arg((zebra ? m_theme.subtle : m_theme.canvas).name()) + frame.html + "</tr>";
+            m_frames.last().html += QString("<tr bgcolor=\"%1\">").arg((zebra ? m_theme.stripe : m_theme.canvas).name()) + frame.html + "</tr>";
             break;
         }
         case MD_BLOCK_TH: case MD_BLOCK_TD: {
@@ -426,6 +427,7 @@ MarkdownTheme MarkdownTheme::github(bool dark, const QColor &canvas, double scal
     theme.muted = QColor(dark ? "#9198a1" : "#59636e");
     theme.accent = QColor(dark ? "#4493f8" : "#0969da");
     theme.subtle = QColor(dark ? "#151b23" : "#f6f8fa");
+    theme.stripe = theme.subtle;
     theme.border = QColor(dark ? "#3d444d" : "#d1d9e0");
     theme.borderMuted = over(theme.border, 0.7, canvas);
     theme.chip = QColor(dark ? "#656c76" : "#818b98"); theme.chip.setAlphaF(dark ? 0.2f : 0.12f);

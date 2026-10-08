@@ -71,6 +71,8 @@ private slots:
     void rulesUseGitHubGaps();
     void markerSharesTheLineWithItsText();
     void inlineCodeFollowsSurroundingText();
+    void listMarkersStandOnTheBaseline();
+    void tableStripesUseTheirOwnToken();
 };
 
 void TestMarkdownHtml::themeUsesGitHubTokens()
@@ -180,8 +182,8 @@ void TestMarkdownHtml::bulletListsUseDrawnMarkers()
     QVERIFY(output.contains(light().resource("square")));
     QVERIFY(output.contains("<table cellspacing=\"0\" cellpadding=\"0\" style=\"margin-top:16px;\">"));
     QVERIFY(output.contains("<table cellspacing=\"0\" cellpadding=\"0\" style=\"margin-top:0px;\">"));
-    QVERIFY(output.contains("<td valign=\"top\" style=\"padding:0px 0 0 28px;\">"));
-    QVERIFY(output.contains("<td valign=\"top\" style=\"padding:3px 0 0 28px;\">"));
+    QVERIFY(output.contains("<td style=\"padding:0px 0 0 28px;\">"));
+    QVERIFY(output.contains("<td style=\"padding:3px 0 0 28px;\">"));
     QVERIFY(output.contains("<p style=\"margin:0px 0 0 0;line-height:21px;text-indent:-28px;\">"));
     QVERIFY(document("- a\n- b")->toPlainText().contains("a"));
 }
@@ -301,6 +303,31 @@ void TestMarkdownHtml::inlineCodeFollowsSurroundingText()
     QVERIFY(html("###### Small `main`").contains("background-color:#010204;font-size:12px;color:#59636e;"));
     QVERIFY(html("[`code`](https://example.com)", policy).contains("font-size:12px;color:#0969da;"));
     QCOMPARE(MarkdownHtml::headingChipSentinel(), QColor(1, 2, 4));
+}
+
+void TestMarkdownHtml::listMarkersStandOnTheBaseline()
+{
+    // A cell's valign leaks into an image's vertical alignment: AlignTop would pin the
+    // marker to the line top, a few pixels above the text, more at larger scales.
+    const auto doc = document("- plain\n- `chip` item\n  - nested");
+    int markers = 0;
+    for (auto block = doc->begin(); block.isValid(); block = block.next())
+        for (auto it = block.begin(); !it.atEnd(); ++it) {
+            const auto format = it.fragment().charFormat();
+            if (!format.isImageFormat()) continue;
+            ++markers;
+            QVERIFY2(format.verticalAlignment() == QTextCharFormat::AlignNormal || format.verticalAlignment() == QTextCharFormat::AlignBaseline,
+                     qPrintable(QString::number(format.verticalAlignment())));
+        }
+    QCOMPARE(markers, 3);
+}
+
+void TestMarkdownHtml::tableStripesUseTheirOwnToken()
+{
+    auto theme = light(); theme.stripe = QColor("#123456");
+    const auto output = MarkdownHtml::render("| A |\n|---|\n| 1 |\n| 2 |", theme, {});
+    QCOMPARE(output.count("<tr bgcolor=\"#123456\">"), 1);
+    QCOMPARE(light().stripe, light().subtle);   // GitHub's own zebra colour by default
 }
 
 QTEST_MAIN(TestMarkdownHtml)
