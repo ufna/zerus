@@ -1,8 +1,8 @@
 # CI and Arch Linux publication
 
-This document describes the implemented checks, package layout and first-publication
-handoff. Repository documentation is English. No AUR package has been published by
-this preparation. The upstream is public; release builds and publication are
+This document describes the checks, package layout and publication workflow.
+[Zerus 0.37.0](https://github.com/ufna/zerus/releases/tag/v0.37.0) is the first
+public Arch x86_64 bundle. Release builds and GitHub/AUR publication remain
 separate manual workflows.
 
 ## Continuous integration
@@ -126,14 +126,14 @@ The owner selected this package family on **2026-10-08**:
 
 | Name | Source | Purpose |
 | --- | --- | --- |
-| `zerus` | Versioned source archive with SHA-256 | Stable release compiled locally |
-| `zerus-ade-bin` | Versioned Arch x86_64 binary archive with SHA-256 | Stable release without Rust/C++ compilation |
-| `zerus-git` | Public upstream `main`, version derived by `pkgver()` | Development build compiled locally |
+| [zerus](https://aur.archlinux.org/packages/zerus) | Versioned source archive with SHA-256 | Stable release compiled locally |
+| [zerus-ade-bin](https://aur.archlinux.org/packages/zerus-ade-bin) | Versioned Arch x86_64 binary archive with SHA-256 | Stable release without Rust/C++ compilation |
+| [zerus-git](https://aur.archlinux.org/packages/zerus-git) | Public upstream `main`, version derived by `pkgver()` | Development build compiled locally |
 
 Primary owner/maintainer: **ufna**, **Vladimir Alyamkin <ufna@ufna.dev>**.
-These three names were absent from the AUR RPC lookup on **2026-10-08**; the
-publisher rechecks ownership before writing. All flavors install the same files
-and conflict with one another. The binary/VCS flavors provide versioned `zerus`.
+All three public AUR package pages confirm the approved maintainer. The publisher
+rechecks ownership and SSH write access before writing. All flavors install the
+same files and conflict with one another. The binary/VCS flavors provide versioned `zerus`.
 
 Open-source prebuilt packages require the `-bin` suffix. `zerus-bin` belongs to
 an unrelated project, so our binary package uses `zerus-ade-bin`.
@@ -236,9 +236,13 @@ systemctl --user enable --now hgs-tray.service
 systemctl --user enable --now hgs-swarm.service hgs-recovery.service
 ```
 
-The packaged GUI unit uses `KillMode=process`. A GUI restart must preserve native
-agent processes, tmux servers and DeepSeek hosts. Package upgrades do not perform
-a restart. Review the old unit's kill policy before restarting an existing
+Packaged units and the current source installer template use `KillMode=process`.
+A GUI restart must preserve native agents, tmux servers and DeepSeek hosts. Older
+source-installed units
+may still use systemd's control-group default. Before restarting one, add a user
+drop-in with `[Service]` and `KillMode=process`, run `systemctl --user daemon-reload`
+and verify `systemctl --user show hgs-tray.service -p KillMode`. Package upgrades
+do not perform a restart. Review the old unit's kill policy before restarting an existing
 installation; never use a broad process kill or restart all native clients.
 
 ## Manual build and publication
@@ -345,25 +349,21 @@ after verifying a newly announced official fingerprint. Rotate the client key by
 registering its replacement, updating the environment secret and revoking the old
 public key. No password, private key or account session is stored in the repository.
 
-### Remaining first-release actions
+### Release maintenance
 
-1. The owner requests the first hosted **Release candidate** build for `0.37.0`.
-   This is separate from the confirmed manual-only CI policy; no build has been
-   dispatched during this preparation.
-2. Review that candidate's exact SHA, packages, notices, hashes and three recipes.
-3. The owner requests **Publish release** with that successful run ID. It publishes
-   GitHub and synchronizes AUR without another build.
-4. Verify a fresh `yay -S zerus-ade-bin`, `yay -S zerus` or `yay -S zerus-git` in a
-   disposable Arch environment, then `zerus-setup`. Complete a live desktop and
-   local/remote agent roundtrip and check upgrades preserve native processes/state.
-5. Advertise the verified release/AUR links in the installation guide only after
-   that public install roundtrip. Monitor AUR comments and rolling-library changes.
+For each new bundle, increase the product version, deliberately run a fresh
+candidate, review its exact source/hash/library provenance, then publish that run.
+Verify public GitHub downloads and all three AUR packages, including a fresh yay
+installation, user setup and a process-preserving upgrade. Monitor AUR comments
+and rolling-library changes. macOS remains an explicit hosted opt-in.
 
-No further package-name, architecture, public-contact, repository-visibility or
-SSH-key decisions are needed. Signing with an existing owner-controlled identity
-and appointing a backup maintainer are optional follow-ups; neither is configured
-by the first-release workflow. Checksums and exact GitHub run/commit provenance
-are available now; do not claim package/tag signing.
+An authenticated release listing can find GitHub drafts that the tag endpoint
+returns as 404. The publisher checks all pages for the exact tag and rejects
+ambiguous matches and API errors before creating or resuming a draft.
+
+Signing with an owner-controlled identity and appointing a backup maintainer are
+optional follow-ups. Checksums and exact run/commit provenance are provided;
+package/tag signing is not configured.
 
 ## Validation record
 
@@ -408,8 +408,8 @@ idempotence, conflict preservation, dangling links, missing targets and root
 refusal. Removing `qt6-svg` makes the actual resource-render test fail; restoring
 it passes. The final handoff/tracker documentation may follow the pinned candidate
 commit; regenerate the exact candidate after changing release source or URLs.
-Public AUR installation and a live desktop/authenticated-agent roundtrip remain
-first-publication validation. The source is now public and account/key setup is done.
+Those preparation checks did not establish public AUR installation. The first
+public installation and deployment validation is recorded below.
 
 On **2026-10-08**, the publication changes were validated locally with actionlint,
 source checks, generated makepkg metadata and credential-free contracts covering
@@ -428,3 +428,44 @@ match makepkg output. Library floors were checked against the real `.BUILDINFO`.
 This local packaging review does not replace the full exact-commit release checks.
 Regenerate the hosted candidate from the selected final `main` commit before
 public publication; later documentation/tracker changes have a different SHA.
+
+### First public release: 0.37.0
+
+On **2026-10-08**, the owner explicitly requested the latest build, required
+checks and deployment. The [release candidate run](https://github.com/ufna/zerus/actions/runs/37830899221)
+pins `998bc4e9565a645e59b26bec3e2ced187e3d1444` and passed quick/minimum-Rust,
+full Linux and Arch checks. macOS hosted jobs were skipped. Linux covered 145
+Rust unit tests, 212 terminal smoke checks and 427 Python cases in 35 modules;
+24 authenticated/native opt-in cases were skipped. All 32 Arch CTest suites
+passed. VCS and both stable packages passed layout/version/notice checks and
+namcap with no errors; known dynamic-tool/plugin warnings remain in the logs.
+
+Independent candidate review verified GitHub's artifact digest, all six sealed
+asset hashes, 466 source-export entries, binary embedded source provenance and
+all three canonical makepkg metadata pairs. Binary floors record Qt base/SVG
+6.12.0, WebEngine 6.11.2 and KDE Frameworks 6.30.0, plus the builder's C/C++/glibc
+versions. Both stable packages include 59 Cargo dependency notices and the
+vendored libvterm/md4c notices.
+
+The [successful publication run](https://github.com/ufna/zerus/actions/runs/37833745339)
+resumed the same candidate after correcting authenticated draft discovery. It
+published [v0.37.0](https://github.com/ufna/zerus/releases/tag/v0.37.0), verified
+all seven download assets anonymously and synchronized the three AUR recipes.
+The release tag and archive hashes remain unchanged. AUR HTML pages became
+visible before RPC metadata refreshed; yay lookup succeeded after that refresh.
+
+A disposable, fully updated Arch environment installed **all three flavors through
+yay**: binary/stable source `0.37.0-1` and VCS `0.37.0.r60.ga2fa919-1`. Installed
+binary checks, idempotent user setup and ordinary non-Git terminal sessions passed.
+An actual X11 desktop GUI, its isolated tmux server and terminal process survived
+binary package reinstallation and subsequent source/VCS flavor replacement.
+No user services were enabled by package installation or setup.
+
+Existing Linux and Mac source installations were also updated. Linux binaries
+were built from the reviewed source against its installed Qt 6.11 libraries. Mac native validation covered 143 Rust tests and 34 Qt suites; the
+terminal suite was rerun after correcting a test assumption about rounded native
+font metrics. Runtime code was unchanged by that correction. The Mac bundle was
+verified with its existing ad-hoc signing procedure. Both managed GUIs activated
+Sessions after claiming their sockets; existing persistent process identities and
+state access were preserved. These local Mac checks used no GitHub macOS runner.
+Authenticated model-turn tests remain opt-in and were not run for this release.

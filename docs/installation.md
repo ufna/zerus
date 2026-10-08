@@ -2,8 +2,9 @@
 
 [Product overview](../README.md) | [Detailed reference](reference.md#installation)
 
-Zerus runs on Linux and macOS. The primary installation path is currently a source
-build. The CLI keeps the name `hgs`; the desktop executable is `hgs-tray`.
+Zerus runs on Linux and macOS. Arch Linux x86_64 users can install the complete
+CLI and desktop bundle from AUR. Other installations build from source. The CLI
+keeps the name `hgs`; the desktop executable is `hgs-tray`.
 
 ## Requirements
 
@@ -57,20 +58,36 @@ The repository's `tmux.conf` is a suggested configuration. If you already have
 your own, merge the settings you need manually: `hgs` uses the machine's shared
 tmux server.
 
-## Arch package preparation
+## Arch Linux
 
-An Arch system bundle and AUR recipes are prepared, but the packages are **not yet
-published**. See [CI and Arch publication](ci-and-aur.md) for candidate builds and
-the first-publication requirements. The selected packages are `zerus` (stable sources),
-`zerus-git` (upstream main) and `zerus-ade-bin` (stable binary). All include the CLI
-and desktop and conflict with one another. The first public product version is
-0.37.0. GitHub and AUR publication use a separate manual workflow consuming the
-reviewed candidate without rebuilding.
+Choose one package; all include the CLI and desktop and conflict with one another:
 
-After installing a reviewed pacman package, run `zerus-setup` once as your normal
-user to create the `~/.local/bin/hgs` compatibility links used by SSH. Existing
-source-install files are preserved and require deliberate migration. Services
-and autostart remain opt-in; package installation does not restart native agents.
+| Package | Installation | Contents |
+| --- | --- | --- |
+| [zerus-ade-bin](https://aur.archlinux.org/packages/zerus-ade-bin) | `yay -S zerus-ade-bin` | Stable prebuilt Arch x86_64 bundle |
+| [zerus](https://aur.archlinux.org/packages/zerus) | `yay -S zerus` | Stable release compiled locally |
+| [zerus-git](https://aur.archlinux.org/packages/zerus-git) | `yay -S zerus-git` | Current upstream main compiled locally |
+
+Keep Arch fully updated before installing. Binary library version requirements
+come from the verified release builder; source packages compile against your
+installed libraries. The [0.37.0 release](https://github.com/ufna/zerus/releases/tag/v0.37.0)
+includes immutable source/binary archives, checked pacman packages, AUR recipes
+and SHA-256 checksums. Native agents are installed separately.
+
+After installation, run this once as your normal user, **without sudo**:
+
+```sh
+zerus-setup
+```
+
+It creates the `~/.local/bin/hgs` compatibility links used by SSH. Existing
+source-install files are preserved: inspect and move them aside deliberately if
+you want to migrate to the system package. Keep your configuration and agent state.
+
+Services and autostart are opt-in. Inspect old user unit files before enabling
+packaged services; local definitions can shadow the system package. Package
+installation and upgrades do not restart native agents, tmux or the GUI.
+[Service setup and migration](ci-and-aur.md#package-contents-and-compatibility).
 
 ## Other machines
 
