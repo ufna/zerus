@@ -64,7 +64,7 @@ jobs:
         run: |
           commit=$(git rev-parse HEAD)
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
-          printf '### CI coverage\n\nCommit: `%s`\n\nQuick checks: always\n\nFull Linux CLI: %s\n\nArch desktop/package: %s\n\nmacOS CLI/desktop: %s\n' \
+          printf '### CI coverage\n\nCommit: %s\n\nQuick checks: always\n\nFull Linux CLI: %s\n\nArch desktop/package: %s\n\nmacOS CLI/desktop: %s\n' \
             "$commit" "$RUN_LINUX" "$RUN_ARCH" "$RUN_MACOS" >> "$GITHUB_STEP_SUMMARY"
       - run: python3 scripts/ci/check-source.py
       - name: Release publication contract checks
