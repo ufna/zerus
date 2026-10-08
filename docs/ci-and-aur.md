@@ -136,9 +136,14 @@ stop services, edit user homes or replace the user's tmux configuration.
 The product package version currently follows the desktop version: `VERSION`
 and `tray/CMakeLists.txt` are **0.36.2**. The independently versioned compatible
 CLI remains **1.46.1**. CI rejects a product/desktop version mismatch; packaging
-records both versions and the source commit in `build-info.json`.
+records both versions in `build-info.json`, with the source commit when built
+from Git. For source-archive builds, the release manifest and archive SHA-256
+provide the commit provenance.
 Increase the product/desktop version for each new public bundle, including a
 CLI-only bundle change, so published archive URLs and hashes remain immutable.
+A recipe-only `pkgrel` bump can reuse immutable upstream assets. A newly compiled
+binary needs a new product version under the prepared archive naming scheme;
+do not replace an existing release archive during an ABI rebuild.
 
 Existing runtime paths and IDs remain `hgs`/`HGS_*`/`hgs-tray`.
 The desktop entry keeps the `hgs-tray.desktop` ID so existing launchers remain
@@ -328,18 +333,40 @@ submission guidelines again on publication day.
 
 ## Validation record
 
-On **2026-10-08**, the first complete
-[main CI run](https://github.com/ufna/zerus/actions/runs/37704073894) passed every
-job at commit `7cc3900`, including both CLI platforms, both desktop platforms,
+On **2026-10-08**, the complete
+[main CI run](https://github.com/ufna/zerus/actions/runs/37705887611) passed every
+job at commit `548469a`, including both CLI platforms, both desktop platforms,
 Rust 1.85 and the installed Arch bundle check. Linux CLI validation covered 135
 Rust unit tests, 202 terminal smoke checks and 398 Python cases across 33 modules;
 native authenticated tests remain opt-in. Desktop coverage includes 30 Linux
 and 32 macOS CTest suites. The corrected account fixture also passed ten
 consecutive runs on each platform.
 
-Production packaging with `BUILD_TESTING=OFF` and all three package flavors was
-tested in a disposable Arch container. Migration helper tests cover idempotence,
-conflict preservation, dangling links, missing targets and root refusal. Updated
-dependency metadata and the final private release candidate are checked separately
-after that initial green run. Public AUR installation, owner account/signing
-choices and source visibility remain separate first-publication requirements.
+The artifact-only
+[release candidate run](https://github.com/ufna/zerus/actions/runs/37705888076)
+also passed its full CI and rebuilt the stable source and binary packages with
+makepkg. Downloaded results are available locally under the ignored
+`artifacts/review-candidate/` directory and in the `zerus-0.36.2-candidate`
+Actions artifact (fourteen-day retention):
+
+- Both pacman packages are approximately 5.4 MiB. All four archive/package hashes
+  pass `sha256sum -c SHA256SUMS`.
+- All three `.SRCINFO` files are present and exactly match `makepkg --printsrcinfo`.
+- The binary manifest pins `548469a20972ec24594130efdff2d4d35ba0c768`; versions are
+  GUI/product 0.36.2 and CLI 1.46.1. The package contains 59 dependency notices.
+- The source archive contains 433 entries and excludes Beads, agent instructions,
+  workflow files and design prototypes while retaining runtime artwork/notices.
+- The downloaded binary package was actually installed in a disposable Arch
+  container. System binaries, repeated `zerus-setup`, compatibility links and an
+  isolated terminal session in an ordinary non-Git folder passed.
+- namcap reported no errors. Warnings about dynamic dependencies/interpreters
+  remain in the separate `release-packaging-548469a20972ec24594130efdff2d4d35ba0c768`
+  log artifact and local `artifacts/review-release-logs/`.
+
+Production packaging uses `BUILD_TESTING=OFF`. Migration helper tests cover
+idempotence, conflict preservation, dangling links, missing targets and root
+refusal. Removing `qt6-svg` makes the actual resource-render test fail; restoring
+it passes. The final handoff/tracker documentation may follow the pinned candidate
+commit; regenerate the exact candidate after changing release source or URLs.
+Public AUR installation, a live desktop/authenticated-agent roundtrip, owner
+account/signing choices and source visibility remain first-publication requirements.
