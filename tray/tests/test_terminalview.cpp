@@ -224,12 +224,22 @@ private slots:
     screen->feed("preserved context");
     QCOMPARE(QFontInfo(screen->font()).pixelSize(), 13);
     const auto before = screen->terminalSize();
+    const auto viewportBefore = screen->viewport()->size();
     const int statusFont = QFontInfo(status->font()).pixelSize();
     QSignalSpy resized(screen, &TerminalScreen::sizeChanged);
     view->setContentScale(2.0);
     QTest::qWait(10);
     QCOMPARE(QFontInfo(screen->font()).pixelSize(), 26);
-    QVERIFY(screen->terminalSize().width() <= before.width() / 2 + 1);
+    QCOMPARE(screen->viewport()->size(), viewportBefore);
+    // Native glyph advances round up to whole cells: a 13px cell can become
+    // 25px at double font size, so the column count need not halve exactly.
+    const QFontMetricsF metrics(screen->font(), screen->viewport());
+    const int width = int(std::ceil(metrics.horizontalAdvance(QLatin1Char('M'))));
+    const int height = int(std::ceil(metrics.height())) + 2;
+    QCOMPARE(screen->terminalSize(),
+             QSize((screen->viewport()->width() - 16) / width,
+                   (screen->viewport()->height() - 16) / height));
+    QVERIFY(screen->terminalSize().width() < before.width());
     QVERIFY(screen->terminalSize().height() < before.height());
     QCOMPARE(resized.last().at(0).toSize(), screen->terminalSize());
     QCOMPARE(QFontInfo(status->font()).pixelSize(), statusFont);
