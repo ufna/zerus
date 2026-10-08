@@ -18,6 +18,10 @@ private slots:
     void rejectsEmptyTemplate();
     void rejectsTemplateWithoutPlaceholder();
     void substitutesInsideArgument();
+    void systemTerminalPrefersXdgTerminalExec();
+    void systemTerminalFallsBackToDebianAlternative();
+    void systemTerminalIsEmptyWithoutLauncher();
+    void systemTerminalKeepsCommandAsOneArgument();
     void sessionCommandsPreserveIdentityAndQuoting();
     void archiveCommandsRestoreTheSelectedInstance();
     void folderShellQuotesPathsAndUsesMachineProfiles();
@@ -116,6 +120,41 @@ void TestTerminalBackend::substitutesInsideArgument()
         QStringLiteral("alacritty --command={cmd}"), QStringLiteral("hgs a x"), &err);
     QVERIFY2(err.isEmpty(), qPrintable(err));
     QCOMPARE(argv.constLast(), QStringLiteral("--command=hgs a x"));
+}
+
+void TestTerminalBackend::systemTerminalPrefersXdgTerminalExec()
+{
+    // xdg-terminal-exec honours the terminal the user picked; the Debian alternative
+    // is only the distribution's default.
+    const QString tmpl = CommandBackend::systemTerminalTemplate([](const QString &) { return true; });
+    QCOMPARE(tmpl, QStringLiteral("xdg-terminal-exec bash -lc {cmd}"));
+}
+
+void TestTerminalBackend::systemTerminalFallsBackToDebianAlternative()
+{
+    const QString tmpl = CommandBackend::systemTerminalTemplate([](const QString &program) {
+        return program == QLatin1String("x-terminal-emulator");
+    });
+    QCOMPARE(tmpl, QStringLiteral("x-terminal-emulator -e bash -lc {cmd}"));
+}
+
+void TestTerminalBackend::systemTerminalIsEmptyWithoutLauncher()
+{
+    QVERIFY(CommandBackend::systemTerminalTemplate([](const QString &) { return false; }).isEmpty());
+}
+
+void TestTerminalBackend::systemTerminalKeepsCommandAsOneArgument()
+{
+    const QString tmpl = CommandBackend::systemTerminalTemplate([](const QString &program) {
+        return program == QLatin1String("x-terminal-emulator");
+    });
+    QString err;
+    const QStringList argv = CommandBackend::buildArgv(
+        tmpl, QStringLiteral("hgs a 'claude/my project/tag'"), &err);
+    QVERIFY2(err.isEmpty(), qPrintable(err));
+    QCOMPARE(argv, QStringList({QStringLiteral("x-terminal-emulator"), QStringLiteral("-e"),
+                                QStringLiteral("bash"), QStringLiteral("-lc"),
+                                QStringLiteral("hgs a 'claude/my project/tag'")}));
 }
 
 void TestTerminalBackend::clipboardChainPrefersKlipperOnLinux()

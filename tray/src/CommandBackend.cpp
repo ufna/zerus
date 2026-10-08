@@ -48,6 +48,20 @@ QStringList CommandBackend::buildArgv(const QString &terminalTemplate, const QSt
     return argv;
 }
 
+QString CommandBackend::systemTerminalTemplate(
+    const std::function<bool(const QString &)> &isInstalled)
+{
+    // bash -lc for the same reason as KonsoleBackend::launchArgs: a new terminal window
+    // starts without the login profile that puts ~/.local/bin (hgs) on PATH.
+    // xdg-terminal-exec (freedesktop default-terminal spec) honours the user's choice;
+    // x-terminal-emulator is the Debian/Ubuntu alternative with xterm's -e semantics.
+    if (isInstalled(QStringLiteral("xdg-terminal-exec")))
+        return QStringLiteral("xdg-terminal-exec bash -lc {cmd}");
+    if (isInstalled(QStringLiteral("x-terminal-emulator")))
+        return QStringLiteral("x-terminal-emulator -e bash -lc {cmd}");
+    return QString();
+}
+
 bool CommandBackend::open(const QString &command, QString *error)
 {
     QStringList argv = buildArgv(m_template, command, error);

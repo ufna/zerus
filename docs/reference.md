@@ -738,8 +738,11 @@ graphical security context are handled separately from agent conversation state.
 
 ### External terminal modes
 
-Linux defaults to Konsole with `auto`, `tab`, `window` or `clipboard`. macOS offers
-Terminal.app or clipboard. A custom `--terminal` template substitutes `{cmd}`.
+Linux defaults to Konsole with `auto`, `tab`, `window` or `clipboard`. Without
+Konsole in `PATH`, it opens the desktop's default terminal through
+`xdg-terminal-exec`, or `x-terminal-emulator` on Debian and Ubuntu; the
+Konsole-specific `tab` and `window` modes do not apply there. macOS offers Terminal.app or clipboard. A custom
+`--terminal` template substitutes `{cmd}`.
 Konsole tab insertion needs its security-sensitive D-Bus API and an available
 window; automatic mode may open a new window when a usable tab is unavailable.
 Enabling that API grants other session-bus processes control of terminal tabs.

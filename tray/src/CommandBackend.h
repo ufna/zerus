@@ -5,6 +5,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <functional>
+
 // Запасной бэкенд: шаблон команды из ~/.config/hgs/tray.conf (`terminal=`) или из
 // --terminal. Ничего не знает ни про Konsole, ни про D-Bus, поэтому годится и как
 // «терминал, который выбрал пользователь», и как заглушка на платформе без бэкенда.
@@ -26,6 +28,11 @@ public:
     // командную строку одним аргументом: `foot -e bash -lc {cmd}`, а не `xterm -e {cmd}`.
     static QStringList buildArgv(const QString &terminalTemplate, const QString &command,
                                  QString *error);
+
+    // Template for the desktop's default terminal, used on Linux when Konsole is not
+    // installed and no terminal= is configured. Pure: isInstalled answers whether a
+    // program is in PATH. Empty when no standard launcher is available.
+    static QString systemTerminalTemplate(const std::function<bool(const QString &)> &isInstalled);
 
 private:
     QString m_template;

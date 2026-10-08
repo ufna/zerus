@@ -4,6 +4,7 @@
 #include <QDateTime>
 #include <QProcess>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QJsonDocument>
 #include <QDebug>
 
@@ -75,6 +76,15 @@ std::unique_ptr<TerminalBackend> makeTerminal(const AppConfig &cfg)
     if (!cfg.terminalTemplate.isEmpty())
         return std::make_unique<CommandBackend>(cfg.terminalTemplate);
 #ifdef Q_OS_LINUX
+    // Without Konsole (GNOME, Ubuntu) use the desktop's default terminal; the
+    // tab/window modes are Konsole-specific and do not apply to it.
+    if (QStandardPaths::findExecutable(QStringLiteral("konsole")).isEmpty()) {
+        const QString systemTerminal = CommandBackend::systemTerminalTemplate([](const QString &program) {
+            return !QStandardPaths::findExecutable(program).isEmpty();
+        });
+        if (!systemTerminal.isEmpty())
+            return std::make_unique<CommandBackend>(systemTerminal);
+    }
     KonsoleBackend::OpenMode mode = KonsoleBackend::OpenMode::Auto;
     if (cfg.openMode == QLatin1String("tab"))
         mode = KonsoleBackend::OpenMode::Tab;
