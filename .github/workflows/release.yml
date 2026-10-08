@@ -12,9 +12,9 @@ on:
         type: boolean
         default: false
       run_macos:
-        description: Also run macOS CLI and desktop checks (expensive; not needed for Arch bundle)
+        description: Also run macOS CLI and desktop checks
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read

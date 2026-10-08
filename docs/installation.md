@@ -67,12 +67,18 @@ Choose one package; all include the CLI and desktop and conflict with one anothe
 | [zerus-ade-bin](https://aur.archlinux.org/packages/zerus-ade-bin) | `yay -S zerus-ade-bin` | Stable prebuilt Arch x86_64 bundle |
 | [zerus](https://aur.archlinux.org/packages/zerus) | `yay -S zerus` | Stable release compiled locally |
 | [zerus-git](https://aur.archlinux.org/packages/zerus-git) | `yay -S zerus-git` | Current upstream main compiled locally |
+| [zerus-ade-nightly-bin](https://aur.archlinux.org/packages/zerus-ade-nightly-bin) | `yay -S zerus-ade-nightly-bin` | Prebuilt nightly after full Linux/Arch/macOS checks |
 
 Keep Arch fully updated before installing. Binary library version requirements
 come from the verified release builder; source packages compile against your
 installed libraries. The [0.37.0 release](https://github.com/ufna/zerus/releases/tag/v0.37.0)
 includes immutable source/binary archives, checked pacman packages, AUR recipes
 and SHA-256 checksums. Native agents are installed separately.
+
+Nightly packages update through ordinary `yay -Syu`; source-based `zerus-git`
+updates need `yay -Syu --devel`. Nightly releases use immutable build URLs and
+checksums and leave the latest stable release unchanged. See
+[automatic nightly publication](ci-and-aur.md#automatic-nightly-publication).
 
 After installation, run this once as your normal user, **without sudo**:
 

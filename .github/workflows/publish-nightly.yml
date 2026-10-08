@@ -1,0 +1,69 @@
+name: Publish nightly
+run-name: Publish nightly from run ${{ inputs.candidate_run || github.event.workflow_run.id }}
+
+on:
+  workflow_run:
+    workflows: [Nightly]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      candidate_run:
+        description: Successful Nightly run ID; reuse the same run on retries
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-publication
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: >-
+      github.repository == 'ufna/zerus' && github.ref == 'refs/heads/main' && github.event.repository.private == false &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_repository.full_name == 'ufna/zerus'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Publication contract checks
+        run: python3 -m unittest discover -s tests -p 'test_*publication.py'
+      - name: Fetch and validate successful upstream nightly
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run || github.event.workflow_run.id }}
+        run: |
+          python3 scripts/fetch-release-candidate.py --nightly --run-id "$CANDIDATE_RUN" --output dist
+      - name: Prepare dedicated AUR identity
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib
+          key = os.environ.get('AUR_SSH_PRIVATE_KEY', '')
+          if not key:
+              raise SystemExit('Missing release/AUR_SSH_PRIVATE_KEY.')
+          path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'zerus-aur-key'
+          descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(descriptor, 'w') as stream:
+              stream.write(key.rstrip() + '\n')
+          PY
+      - name: Publish immutable prerelease and synchronize nightly AUR recipe
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/publish-release.py --nightly --candidate dist --ssh-key "$RUNNER_TEMP/zerus-aur-key"
+      - name: Remove temporary identity
+        if: always()
+        run: rm -f "$RUNNER_TEMP/zerus-aur-key"

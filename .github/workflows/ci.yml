@@ -1,7 +1,11 @@
 name: CI
-run-name: CI ${{ inputs.ref || github.ref_name }} (Linux=${{ inputs.run_linux }}, Arch=${{ inputs.run_arch }}, macOS=${{ inputs.run_macos }})
+run-name: CI ${{ inputs.ref || github.ref_name }} (${{ github.event_name }})
 
 on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       ref:
@@ -11,15 +15,15 @@ on:
       run_linux:
         description: Run full Linux CLI integration tests and release build
         type: boolean
-        default: false
+        default: true
       run_arch:
-        description: Build/test Arch desktop and pacman package (expensive)
+        description: Build/test Arch desktop and pacman package
         type: boolean
-        default: false
+        default: true
       run_macos:
-        description: Run macOS CLI and desktop builds/tests (expensive)
+        description: Run macOS CLI and desktop builds/tests
         type: boolean
-        default: false
+        default: true
   workflow_call:
     inputs:
       ref:
@@ -46,10 +50,14 @@ concurrency:
 jobs:
   source:
     name: Quick checks (source and Rust 1.85)
+    if: github.event.repository.private == false || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     outputs:
       commit: ${{ steps.revision.outputs.commit }}
+      run_linux: ${{ steps.revision.outputs.run_linux }}
+      run_arch: ${{ steps.revision.outputs.run_arch }}
+      run_macos: ${{ steps.revision.outputs.run_macos }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -58,17 +66,22 @@ jobs:
       - name: Record exact test commit and selected coverage
         id: revision
         env:
-          RUN_LINUX: ${{ inputs.run_linux }}
-          RUN_ARCH: ${{ inputs.run_arch }}
-          RUN_MACOS: ${{ inputs.run_macos }}
+          RUN_LINUX: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || inputs.run_linux }}
+          RUN_ARCH: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || inputs.run_arch }}
+          RUN_MACOS: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || inputs.run_macos }}
         run: |
           commit=$(git rev-parse HEAD)
-          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          {
+            echo "commit=$commit"
+            echo "run_linux=$RUN_LINUX"
+            echo "run_arch=$RUN_ARCH"
+            echo "run_macos=$RUN_MACOS"
+          } >> "$GITHUB_OUTPUT"
           printf '### CI coverage\n\nCommit: %s\n\nQuick checks: always\n\nFull Linux CLI: %s\n\nArch desktop/package: %s\n\nmacOS CLI/desktop: %s\n' \
             "$commit" "$RUN_LINUX" "$RUN_ARCH" "$RUN_MACOS" >> "$GITHUB_STEP_SUMMARY"
       - run: python3 scripts/ci/check-source.py
       - name: Release publication contract checks
-        run: python3 -m unittest discover -s tests -p test_release_publication.py
+        run: python3 -m unittest discover -s tests -p 'test_*publication.py'
       - name: Validate GitHub Actions
         shell: bash
         run: |
@@ -95,11 +108,11 @@ jobs:
   cli:
     name: CLI (${{ matrix.os }})
     needs: source
-    if: inputs.run_linux || inputs.run_macos
+    if: needs.source.outputs.run_linux == 'true' || needs.source.outputs.run_macos == 'true'
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(inputs.run_linux && inputs.run_macos && '["ubuntu-24.04","macos-15"]' || inputs.run_macos && '["macos-15"]' || '["ubuntu-24.04"]') }}
+        os: ${{ fromJSON(needs.source.outputs.run_linux == 'true' && needs.source.outputs.run_macos == 'true' && '["ubuntu-24.04","macos-15"]' || needs.source.outputs.run_macos == 'true' && '["macos-15"]' || '["ubuntu-24.04"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     env:
@@ -152,7 +165,7 @@ jobs:
   arch:
     name: Arch desktop and package
     needs: source
-    if: inputs.run_arch
+    if: needs.source.outputs.run_arch == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     container:
@@ -198,7 +211,7 @@ jobs:
   mac-desktop:
     name: macOS desktop
     needs: source
-    if: inputs.run_macos
+    if: needs.source.outputs.run_macos == 'true'
     runs-on: macos-15
     timeout-minutes: 45
     env:
@@ -224,16 +237,15 @@ jobs:
 
   gate:
     name: CI gate
-    # Quick-only runs need just one Ubuntu job; check aggregate results only for selected extra suites.
-    if: always() && (inputs.run_linux || inputs.run_arch || inputs.run_macos)
+    if: always() && (github.event.repository.private == false || github.event_name == 'workflow_dispatch')
     needs: [source, cli, arch, mac-desktop]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
       RESULTS: ${{ toJSON(needs) }}
-      RUN_CLI: ${{ inputs.run_linux || inputs.run_macos }}
-      RUN_ARCH: ${{ inputs.run_arch }}
-      RUN_MACOS: ${{ inputs.run_macos }}
+      RUN_CLI: ${{ needs.source.outputs.run_linux == 'true' || needs.source.outputs.run_macos == 'true' }}
+      RUN_ARCH: ${{ needs.source.outputs.run_arch == 'true' }}
+      RUN_MACOS: ${{ needs.source.outputs.run_macos == 'true' }}
     steps:
       - run: |
           python3 - <<'PY'

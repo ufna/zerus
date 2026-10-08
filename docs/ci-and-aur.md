@@ -7,58 +7,46 @@ separate manual workflows.
 
 ## Continuous integration
 
-Hosted checks are **manual-only** to preserve the account's Actions quota. There
-are no CI triggers for pushes, pull requests or schedules. The owner decides when
-to run checks, including for Dependabot PRs. Do not dispatch hosted checks just to
-validate a workflow change; run actionlint and relevant checks locally instead.
+Hosted checks run automatically on pushes to `main` and pull requests targeting
+`main`, including Dependabot proposals. Every automatic run selects source/MSRV,
+full Linux CLI, Arch desktop/package and both macOS suites. The owner enabled
+this policy on 2026-10-09 after making the repository public: standard Ubuntu and
+macOS GitHub-hosted runners are free for public repositories.
 
-`.github/workflows/ci.yml` accepts manual dispatches and explicit calls from the
-manual release workflow. All expensive suite inputs default to `false` in both
-manual and reusable CI. A default dispatch uses **one Ubuntu job** for source
-checks and Rust unit tests; it allocates no Arch or macOS runners.
+Manual CI remains available and defaults to all suites. Reusable CI keeps explicit
+suite selection so another workflow cannot accidentally request unrelated jobs.
+Every job checks out the exact commit resolved by quick checks. PR checks use the
+GitHub merge commit; a manual `ref` can select a PR head or another exact revision.
 
-| Job | Default manual CI | Selection | Checks |
-| --- | --- | --- | --- |
-| Quick checks | Always | One Ubuntu job | Privacy guard, Python/Bash syntax, version consistency, actionlint, publication contract tests, locked unit tests on Rust 1.85.0 |
-| Linux CLI | Off | `run_linux=true` | Stable Rust unit tests, terminal smoke tests, all Python integration modules, release build |
-| Arch desktop and package | Off | `run_arch=true` | Qt desktop build, all CTest suites, production build without test targets, pacman package, namcap, staged and installed bundle checks |
-| macOS CLI and desktop | Off | `run_macos=true` | CLI checks and native Qt build with all CTest suites; two macOS jobs |
-| CI gate | Only with extra suites | Automatic within a selected run | Requires quick checks and every selected suite to succeed; unselected suites must be skipped |
+| Job | Automatic CI | Checks |
+| --- | --- | --- |
+| Quick checks | Always | Privacy, Python/Bash syntax, version consistency, actionlint, stable/nightly publication contracts, locked Rust 1.85 unit tests |
+| Linux CLI | Always | Stable Rust unit tests, terminal smoke tests, Python integration modules, release build |
+| Arch desktop/package | Always | Qt build and all CTest suites, production package, namcap, staged and installed bundle checks |
+| macOS CLI and desktop | Always | Native CLI integration and all Qt CTest suites on two standard macOS jobs |
+| CI gate | Always | Requires every selected suite to succeed; fails on unexpected skips, cancellation and errors |
 
-The expensive jobs start only after quick checks pass. The macOS CLI runner is
-added to the matrix only when requested; disabling it does not allocate a runner
-that merely skips its steps. CI gate fails on errors, cancellations and unexpected
-skips. Quick-only runs omit this extra job to avoid another runner startup.
+The full jobs start after quick checks. New CI runs cancel obsolete runs for the
+same branch/PR and workflow. PR jobs have read-only permissions and no publication
+credentials; fork PRs use `pull_request`, never `pull_request_target`. Publishing
+is confined to trusted upstream `main` and the branch-restricted `release`
+environment. Authenticated model-turn tests remain explicit opt-ins.
 
-### Manual checks, including pull requests
-
-In GitHub **Actions → CI → Run workflow**, keep the workflow branch on `main` to
-use the current budget controls. Leave the test `ref` blank for that commit, or
-enter a branch, full commit SHA or `refs/pull/NUMBER/head`. Select only the extra
-suites needed for that change. This also checks older PR branches using the new
-workflow definition. [GitHub manual workflow instructions](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).
+### Manual checks
 
 ```sh
-# Quick source and minimum-Rust checks only:
+# Full Linux, Arch and macOS coverage:
 gh workflow run ci.yml --ref main
-# Check a PR's current head with the same inexpensive defaults:
+# Full coverage of a PR head with the current upstream workflow:
 gh workflow run ci.yml --ref main -f ref=refs/pull/123/head
-# Full Linux CLI and Arch desktop/package coverage for a PR:
-gh workflow run ci.yml --ref main -f ref=refs/pull/123/head \
-  -f run_linux=true -f run_arch=true
-# Explicitly opt into both macOS suites when native coverage is needed:
-gh workflow run ci.yml --ref main -f run_macos=true
+# Source/MSRV checks plus the aggregate gate only:
+gh workflow run ci.yml --ref main -f run_linux=false -f run_arch=false -f run_macos=false
 ```
 
-Quick checks resolve the target once. Every selected job checks out that exact
-commit; the summary records its SHA and selected coverage, and the Arch artifact
-name contains the tested SHA. A PR updated later needs a new deliberate dispatch.
-Use the summary's tested SHA when reviewing an explicit test `ref`: GitHub's run
-metadata remains associated with the workflow branch, not the checkout override.
-
-Do **not** require CI gate as an automatic PR status check under this policy. A
-manual run may intentionally omit it, and no check is produced until the owner
-requests one. Review/merge policies are independent of hosted CI.
+An explicit test `ref` changes the checked-out commit, not GitHub's workflow run
+metadata. Use the exact tested SHA recorded in the job summary when reviewing
+such a manual run. Automatic PR and push runs produce CI gate without a dispatch.
+Review and merging remain deliberate; successful CI does not auto-merge PRs.
 
 Arch is the Linux GUI build environment because the application uses Qt 6 and KDE
 Frameworks 6. Ubuntu remains useful for portable CLI and minimum-Rust checks.
@@ -72,14 +60,14 @@ Current release packaging supports **Arch x86_64 only**. The macOS runner checks
 build/test compatibility; it does not create a notarized macOS installer. Windows
 and Arch ARM are outside this first package matrix.
 
-All CI jobs have bounded timeouts. A newer manual CI run cancels an obsolete run
-for the same requested ref and workflow. Workflows have read-only repository
-permissions, checkout credentials are not persisted, official actions are pinned
-to commit SHAs and Dependabot proposes weekly action/Cargo updates. Rust and C++ caches reduce repeated build
-cost. Test artifacts expire after seven days; release candidates after fourteen.
-Manually selected PR code receives no deployment credentials. There is no
-push/tag/release-triggered publication or self-hosted runner attached to a
-development machine. The owner explicitly starts each candidate and publication.
+All CI jobs have bounded timeouts. Checkout credentials are not persisted and
+Actions are pinned to commit SHAs. Dependabot proposes weekly action/Cargo
+updates. Rust/C++ caches reduce repeated build time; their repository limit stays
+at 10 GiB. Test artifacts expire after seven days and candidates after fourteen.
+Standard Ubuntu/macOS runners and public artifacts are free while the repository
+is public. Larger runners and explicitly increased cache storage have separate
+billing rules. No self-hosted runner is attached to a development machine.
+[Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
 
 The Arch base image is digest-pinned, but `pacman -Syu` intentionally uses current
 Arch packages. This tests rolling-distribution compatibility; it does not promise
@@ -114,6 +102,53 @@ separate, reviewed baseline cleanup. Logs are under ignored
 `artifacts/test-results/`; packaging outputs are under ignored `artifacts/` and
 `dist/`.
 
+## Automatic nightly publication
+
+`nightly.yml` runs daily at 00:17 UTC (03:17 Europe/Moscow) and supports manual
+launches. It verifies one exact upstream `main` commit with the complete Linux,
+Arch and macOS CI matrix, then repackages its already tested Arch binary. It
+checks the generated pacman package, namcap output and installed bundle in an
+isolated home. There is no second Rust/C++ compilation during nightly assembly.
+
+The package is `zerus-ade-nightly-bin`; `zerus-git` remains a source package that
+tracks upstream `main`. Nightly versions have the form
+`0.37.0.r62.gabcdef0.n7`: product version, Git revision count, short source SHA
+and monotonically increasing Nightly run number. The application keeps its
+product/CLI versions. Rebuilding an unchanged commit creates a new package
+version, allowing daily Arch ABI/dependency refreshes without replacing assets.
+
+After a successful Nightly run, `publish-nightly.yml` automatically verifies the
+upstream repository, workflow path/event, main branch, completion status, exact
+source SHA, build number, GitHub artifact digest, sealed AUR recipes and checksums.
+Only then does it receive the dedicated AUR key from the `release` environment.
+Downloaded scripts/PKGBUILDs are never executed with publication credentials.
+
+Each build creates an immutable `nightly-RUN_ID` GitHub prerelease and updates only
+`zerus-ade-nightly-bin` in AUR. It never becomes the latest stable release or changes
+`zerus`/`zerus-ade-bin`/`zerus-git`. Its public binary URL and SHA-256 stay fixed.
+Binary library floors come from the verified source package's `.BUILDINFO`.
+Stable and nightly publishers share a serialization group, preventing AUR races.
+
+```sh
+# Build and automatically publish a new fully verified nightly:
+gh workflow run nightly.yml --ref main
+# Retry partial publication using the same successful retained candidate:
+gh workflow run publish-nightly.yml --ref main -f candidate_run=123456789
+# Install the latest prebuilt nightly (conflicts with the other Zerus flavors):
+yay -S zerus-ade-nightly-bin
+# Source-based main builds require devel update checks:
+yay -Syu --devel
+```
+
+Failed builds never publish. GitHub or AUR publication failures leave stable
+releases untouched. Retry only the publisher with the same run ID; do not rerun a
+published build to produce different bytes under its existing tag. Artifacts are
+retained for fourteen days and logs for seven; public GitHub release assets remain
+available after artifact expiry. Nightlies run even without new commits to test
+current rolling Arch dependencies and produce fresh, uniquely versioned binaries.
+Stable candidates/publication remain separate manual workflows; macOS checks are
+now selected by default for new candidates and can still be explicitly disabled.
+
 ## What yay actually installs
 
 `yay` is an AUR helper. AUR hosts a public `PKGBUILD` and generated `.SRCINFO`,
@@ -122,16 +157,17 @@ live upstream; they are not uploaded into AUR Git.
 [AUR submission guidelines](https://wiki.archlinux.org/title/AUR_submission_guidelines),
 [PKGBUILD manual](https://man.archlinux.org/man/PKGBUILD.5.en).
 
-The owner selected this package family on **2026-10-08**:
+The owner selected the stable/source family on **2026-10-08** and added automated nightly binaries on **2026-10-09**:
 
 | Name | Source | Purpose |
 | --- | --- | --- |
 | [zerus](https://aur.archlinux.org/packages/zerus) | Versioned source archive with SHA-256 | Stable release compiled locally |
 | [zerus-ade-bin](https://aur.archlinux.org/packages/zerus-ade-bin) | Versioned Arch x86_64 binary archive with SHA-256 | Stable release without Rust/C++ compilation |
 | [zerus-git](https://aur.archlinux.org/packages/zerus-git) | Public upstream `main`, version derived by `pkgver()` | Development build compiled locally |
+| [zerus-ade-nightly-bin](https://aur.archlinux.org/packages/zerus-ade-nightly-bin) | Immutable verified nightly binary with SHA-256 | Current main without local compilation |
 
 Primary owner/maintainer: **ufna**, **Vladimir Alyamkin <ufna@ufna.dev>**.
-All three public AUR package pages confirm the approved maintainer. The publisher
+The stable/source AUR package pages confirm the approved maintainer. The publisher
 rechecks ownership and SSH write access before writing. All flavors install the
 same files and conflict with one another. The binary/VCS flavors provide versioned `zerus`.
 

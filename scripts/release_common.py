@@ -57,15 +57,15 @@ def binary_dependencies(buildinfo):
     return versions
 
 
-def finish_candidate(directory):
+def finish_candidate(directory, packages=PACKAGES):
     """Seal generated AUR metadata and all flat release assets after makepkg checks."""
     info = json.loads((directory / "release-info.json").read_text())
-    info.update(schema=1, aur_packages=list(PACKAGES))
+    info.update(schema=1, aur_packages=list(packages))
     (directory / "release-info.json").write_text(json.dumps(info, indent=2) + "\n")
     archive = directory / f"zerus-{info['version']}-aur.tar.gz"
     with archive.open("wb") as output, gzip.GzipFile(filename="", fileobj=output, mode="wb", mtime=0) as compressed:
         with tarfile.open(fileobj=compressed, mode="w") as bundled:
-            for package in PACKAGES:
+            for package in packages:
                 for name in ("PKGBUILD", ".SRCINFO"):
                     path = directory / "aur" / package / name
                     member = bundled.gettarinfo(str(path), arcname=f"aur/{package}/{name}")
@@ -143,6 +143,6 @@ def recipe_changed(old, new, vcs=False):
 
 def package_version(data):
     version = data["pkgver"][0]
-    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:\.r(\d+)\.g[0-9a-f]+)?", version)
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:\.r(\d+)\.g[0-9a-f]+(?:\.n(\d+))?)?", version)
     require(match is not None, "Unexpected existing package version; inspect manually.")
     return tuple(int(part or 0) for part in match.groups()) + (int(data["pkgrel"][0]),)

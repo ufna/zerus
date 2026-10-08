@@ -34,15 +34,15 @@ def ssh_environment(identity, hosts):
     return command, env
 
 
-def prepare_aur(candidate, workspace, ssh, env):
+def prepare_aur(candidate, workspace, ssh, env, packages=PACKAGES):
     # AUR authentication/ownership failures must precede any public GitHub write.
     owned = {name.lstrip("*") for name in subprocess.check_output([*ssh, "aur@aur.archlinux.org", "list-repos"], text=True).split()}
-    query = urllib.parse.urlencode([("arg[]", package) for package in PACKAGES])
+    query = urllib.parse.urlencode([("arg[]", package) for package in packages])
     with urllib.request.urlopen("https://aur.archlinux.org/rpc/v5/info?" + query, timeout=30) as response:
         existing = json.load(response)["results"]
     require(all(item["PackageBase"] in owned for item in existing), "An AUR name belongs to another account; do not overwrite it.")
     plans = []
-    for package in PACKAGES:
+    for package in packages:
         directory = workspace / package
         subprocess.run(["git", "-c", "init.defaultBranch=master", "clone", "--quiet",
                         f"ssh://aur@aur.archlinux.org/{package}.git", str(directory)], env=env, check=True)
@@ -124,9 +124,9 @@ def verify_assets(release, candidate, hashes, allow_missing=False):
     return set(hashes) - set(assets)
 
 
-def publish_github(candidate, info, sums):
+def publish_github(candidate, info, sums, nightly=False):
     version, commit = info["version"], info["source_commit"]
-    tag = "v" + version
+    tag = info["release_tag"] if nightly else "v" + version
     hashes = {**sums, "SHA256SUMS": sha256(candidate / "SHA256SUMS")}
     verify_tag(tag, commit)
     release = release_for_tag(tag)
@@ -137,11 +137,19 @@ def publish_github(candidate, info, sums):
                  f"AUR updates follow GitHub publication; consult the publication workflow if an update is pending.\n\n"
                  f"Native agents are installed separately. Services and autostart are opt-in.\n\n"
                  f"Source commit: `{commit}`. Verify downloads using `SHA256SUMS`.\n")
+        if nightly:
+            notes = (f"Automatically verified Arch Linux x86_64 nightly from upstream main.\n\n"
+                     f"Install with `yay -S zerus-ade-nightly-bin`. This replaces another Zerus package flavor. "
+                     f"Run `zerus-setup` once as your normal user; services remain opt-in.\n\n"
+                     f"Product version: `{info['product_version']}`. Source commit: `{commit}`. "
+                     f"Build run: https://github.com/{REPOSITORY}/actions/runs/{info['workflow_run_id']}.\n\n"
+                     f"Native agents are installed separately. Verify downloads using `SHA256SUMS`.\n")
         with tempfile.TemporaryDirectory(prefix="zerus-notes-") as temporary:
             path = Path(temporary) / "notes.md"
             path.write_text(notes)
             gh("release", "create", tag, "--repo", REPOSITORY, "--draft", "--target", commit,
-               "--title", f"Zerus {version}", "--notes-file", str(path))
+               "--title", f"Zerus {'nightly ' if nightly else ''}{version}", "--notes-file", str(path),
+               *(["--prerelease", "--latest=false"] if nightly else []))
         release = release_for_tag(tag)
         require(release is not None, "Created draft is not visible; retry the same candidate after checking GitHub access.")
     if release["draft"]:
@@ -155,7 +163,8 @@ def publish_github(candidate, info, sums):
         release = release_for_tag(tag)
         verify_assets(release, candidate, hashes)
         verify_tag(tag, commit)  # Existing draft/tag must still name the verified commit.
-        gh("release", "edit", tag, "--repo", REPOSITORY, "--draft=false", "--latest")
+        gh("release", "edit", tag, "--repo", REPOSITORY, "--draft=false",
+           *(["--prerelease", "--latest=false"] if nightly else ["--latest"]))
     require(verify_tag(tag, commit), "Published release tag is missing.")
     # AUR recipes must resolve without a GitHub login or token.
     for name, expected in hashes.items():
@@ -170,22 +179,34 @@ def publish_github(candidate, info, sums):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate", type=Path, required=True)
-    parser.add_argument("--version", required=True)
+    parser.add_argument("--version")
+    parser.add_argument("--nightly", action="store_true")
     parser.add_argument("--ssh-key", type=Path, required=True)
     parser.add_argument("--known-hosts", type=Path, default=Path("packaging/aur/known_hosts"))
     args = parser.parse_args()
-    info, sums = validate_candidate(args.candidate, args.version)
+    if args.nightly:
+        from nightly_common import PACKAGES as nightly_packages, validate_nightly
+        info, sums = validate_nightly(args.candidate)
+        packages = nightly_packages
+    else:
+        require(args.version is not None, "Stable publication requires --version.")
+        info, sums = validate_candidate(args.candidate, args.version)
+        packages = PACKAGES
     ssh, env = ssh_environment(args.ssh_key, args.known_hosts)
     with tempfile.TemporaryDirectory(prefix="zerus-aur-") as temporary:
-        plans = prepare_aur(args.candidate, Path(temporary), ssh, env)
-        publish_github(args.candidate, info, sums)
+        if args.nightly:
+            plans = prepare_aur(args.candidate, Path(temporary), ssh, env, packages=packages)
+            publish_github(args.candidate, info, sums, nightly=True)
+        else:
+            plans = prepare_aur(args.candidate, Path(temporary), ssh, env)
+            publish_github(args.candidate, info, sums)
         for package, directory in plans:
             try:
                 git(directory, "push", "origin", "HEAD:master", env=env)
             except subprocess.CalledProcessError:
                 raise SystemExit(f"GitHub assets remain published; {package} AUR update failed. Rerun publication with this same candidate; do not rebuild or replace assets.")
             print(f"{package}: AUR update published.")
-    print(f"Zerus {args.version}: GitHub and all AUR recipes synchronized.")
+    print(f"Zerus {info['version']}: GitHub and all selected AUR recipes synchronized.")
 
 
 if __name__ == "__main__":

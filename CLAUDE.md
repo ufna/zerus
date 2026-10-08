@@ -49,17 +49,19 @@ Use a GitHub no-reply address for Git and Beads attribution if email privacy mat
 
 ## Validation and handoff
 
-Hosted CI is manual-only, including pull requests and pushes. Do not dispatch
-GitHub Actions without an explicit owner request to run hosted checks. Validate
-workflow edits locally. Default CI uses one Ubuntu job; full Linux integration,
-Arch packaging and macOS are explicit opt-ins. Release candidates request
-Linux/Arch coverage but leave macOS off by default. See `docs/ci-and-aur.md`.
-AUR packages are `zerus` (stable source), `zerus-git` (upstream main) and
-`zerus-ade-bin` (stable binary), with x86_64 support. Release publication is a
-separate owner-triggered workflow consuming a verified exact-commit candidate;
-never rebuild or overwrite immutable assets on retries. Pure VCS version bumps
-do not create AUR commits. Keep publication credentials confined to the release
-environment and validate changes locally before requesting its manual launch.
+Hosted CI runs the complete Linux/Arch/macOS matrix automatically on pushes to
+main and pull requests targeting main. Manual checks remain available. Public
+standard GitHub runners are free; do not introduce paid larger runners or raise
+the 10 GiB cache limit without owner authorization. Authenticated model tests stay
+opt-in. Validate workflow edits locally before pushing. See `docs/ci-and-aur.md`.
+AUR packages are `zerus` (stable source), `zerus-git` (upstream main),
+`zerus-ade-bin` (stable binary) and `zerus-ade-nightly-bin` (verified nightly binary),
+with x86_64 support. Stable publication remains owner-triggered. Daily nightlies
+publish automatically only after full CI and package checks succeed. Publication
+credentials remain confined to trusted main in the release environment, never PR
+code. Nightly tags/assets are immutable and never become the latest stable release.
+Retry publishers with the same verified candidate; never rebuild or overwrite its
+assets. Pure VCS version bumps do not create AUR commits.
 
 Run checks appropriate to the change; see `CONTRIBUTING.md`. Update Beads status
 and export with `bd export -o .beads/issues.jsonl` before staging tracker changes.
