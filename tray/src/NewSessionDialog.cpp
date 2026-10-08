@@ -59,7 +59,8 @@ NewSessionDialog::NewSessionDialog(const QString &hgsPath,const FleetState &flee
     form->addRow(tr("Working folder"),folderField);
     m_agent=new QComboBox;m_agent->setObjectName("launchAgent");m_agent->addItems({"codex","claude","kimi","dsh","sh"});
     if(!agent.isEmpty()&&m_agent->findText(agent)<0)m_agent->addItem(agent);
-    if(!agent.isEmpty())m_agent->setCurrentText(agent);
+    const auto lastAgent=QSettings().value("workspace/launchAgent").toString();
+    if(!agent.isEmpty())m_agent->setCurrentText(agent);else if(m_agent->findText(lastAgent)>=0)m_agent->setCurrentText(lastAgent);
     m_account=new QComboBox;m_account->setObjectName("launchAccount");m_account->addItem(tr("Default account"),QString());
     form->addRow(tr("Agent"),m_agent);form->addRow(tr("Account"),m_account);
     m_name=new QLineEdit("work-"+QUuid::createUuid().toString(QUuid::Id128).left(8));m_name->setObjectName("launchName");form->addRow(tr("Session name"),m_name);
@@ -232,7 +233,14 @@ void NewSessionDialog::start()
 }
 void NewSessionDialog::launch(const QString &target)
 {
-    QSettings().setValue("workspace/launchOpenTerminal",m_openTerminal->isChecked());
+    QSettings settings;settings.setValue("workspace/launchOpenTerminal",m_openTerminal->isChecked());
+    // The next dialog starts with this agent and, per machine and agent, this account.
+    settings.setValue("workspace/launchAgent",m_agent->currentText());
+    if(const auto account=m_account->currentData().toString();!account.isEmpty()){
+        auto accounts=QJsonDocument::fromJson(settings.value("workspace/launchAccounts").toByteArray()).object();
+        auto machine=accounts.value(host()).toObject();machine[m_agent->currentText()]=account;accounts[host()]=machine;
+        settings.setValue("workspace/launchAccounts",QJsonDocument(accounts).toJson(QJsonDocument::Compact));
+    }
     emit launchRequested(host(),m_agent->currentText(),target,m_name->text(),m_account->currentData().toString(),m_project->currentData().toString(),m_openTerminal->isChecked()&&m_agent->currentText()!="dsh");accept();
 }
 void NewSessionDialog::loadAccounts()
@@ -255,7 +263,11 @@ void NewSessionDialog::updateAccounts()
     // Older/unavailable catalogs keep the native option explicit; an empty ID
     // would silently select a different configured HGS default.
     if((m_accounts.isEmpty()&&!removed)||(m_agent->currentText()=="dsh"&&m_account->count()==0))m_account->addItem(tr("Native account"),"native-"+m_agent->currentText());
-    m_account->setCurrentIndex(m_accountPreset?m_account->findData(m_preferredAccount):defaultIndex);updateForm();
+    // An explicit account must be found; a remembered one silently yields to the default.
+    const auto lastAccount=QJsonDocument::fromJson(QSettings().value("workspace/launchAccounts").toByteArray()).object()
+        .value(host()).toObject().value(m_agent->currentText()).toString();
+    const int lastIndex=lastAccount.isEmpty()?-1:m_account->findData(lastAccount);
+    m_account->setCurrentIndex(m_accountPreset?m_account->findData(m_preferredAccount):lastIndex>=0?lastIndex:defaultIndex);updateForm();
 }
 
 void NewSessionDialog::selectAccount(const QString &account)

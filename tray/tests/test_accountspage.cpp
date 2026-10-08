@@ -17,6 +17,7 @@
 #include <QTimer>
 #include <QRadioButton>
 #include <QScopeGuard>
+#include <QSettings>
 #include <QStyleOptionComboBox>
 #include "AccountCatalog.h"
 #include "AccountUsage.h"
@@ -26,11 +27,13 @@
 class TestAccountsPage : public QObject {
     Q_OBJECT
 private slots:
+    void initTestCase();
     void init();
     void nativeDefaultsAndMachineScopedActions();
     void repliesFromRemovedMachineAreIgnored();
     void explicitMachineOutsidePollingSurvivesRefreshAndExpiresWithFilter();
     void launchCarriesAccountForSelectedMachine();
+    void newSessionRemembersAgentAndAccountPerMachine();
     void renameAndDetailsStayBoundToSelectedProfile();
     void removeAndReAddNativeAccount();
     void savedSignInKeepsDifferentAccountsSeparate();
@@ -53,11 +56,18 @@ private slots:
     void preview();
 private:
     FleetState fleet(bool remote = true) const;
-    QTemporaryDir m_dir;
+    QTemporaryDir m_dir,m_settings;
     QString m_script;
 };
+void TestAccountsPage::initTestCase()
+{
+    QVERIFY(m_settings.isValid());
+    QCoreApplication::setOrganizationName("hgs-tests"); QCoreApplication::setApplicationName("accounts-page");
+    QSettings::setDefaultFormat(QSettings::IniFormat); QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, m_settings.path());
+}
 void TestAccountsPage::init()
 {
+    QSettings().clear();
     QVERIFY(m_dir.isValid()); m_script = m_dir.filePath("hgs");
     for (const auto &name : QDir(m_dir.path()).entryList(QDir::Files)) QFile::remove(m_dir.filePath(name));
     QFile script(m_script); QVERIFY(script.open(QIODevice::WriteOnly));
@@ -300,6 +310,43 @@ void TestAccountsPage::launchCarriesAccountForSelectedMachine()
     accounts->setCurrentIndex(1); QTRY_VERIFY(start->isEnabled());
     QSignalSpy launched(&dialog, &NewSessionDialog::launchRequested); start->click();
     QTRY_COMPARE(launched.size(), 1); QCOMPARE(launched[0][0].toString(), ""); QCOMPARE(launched[0][4].toString(), "work-local");
+}
+void TestAccountsPage::newSessionRemembersAgentAndAccountPerMachine()
+{
+    auto available=fleet();BoxState mac;mac.host="mac";mac.ok=true;available.setPeer(mac,QDateTime::currentMSecsSinceEpoch());
+    SessionOrganization projects; projects.addFolder("ungrouped","arch","/tmp/sample"); projects.addFolder("ungrouped","mac","/tmp/sample");
+    const auto launch=[&](const QString &agent,const QString &account) {
+        NewSessionDialog dialog(m_script,available,"mac"); dialog.setGroups(projects,"ungrouped"); dialog.show();
+        dialog.findChild<QComboBox *>("launchAgent")->setCurrentText(agent);
+        auto *accounts=dialog.findChild<QComboBox *>("launchAccount"); QTRY_VERIFY(accounts->findData(account)>=0);
+        accounts->setCurrentIndex(accounts->findData(account));
+        auto *start=dialog.findChild<QPushButton *>("primary"); QTRY_VERIFY(start->isEnabled());
+        QSignalSpy launched(&dialog,&NewSessionDialog::launchRequested); start->click(); QTRY_COMPARE(launched.size(),1);
+    };
+    {
+        // Nothing is remembered yet, and cancelling a dialog remembers nothing.
+        NewSessionDialog dialog(m_script,available,"mac"); dialog.show();
+        QCOMPARE(dialog.findChild<QComboBox *>("launchAgent")->currentText(),QString("codex"));
+        dialog.findChild<QComboBox *>("launchAgent")->setCurrentText("kimi"); dialog.reject();
+    }
+    launch("codex","work-mac"); launch("claude","native-claude");
+    NewSessionDialog dialog(m_script,available,"mac"); dialog.setGroups(projects,"ungrouped"); dialog.show();
+    auto *agent=dialog.findChild<QComboBox *>("launchAgent"); auto *accounts=dialog.findChild<QComboBox *>("launchAccount");
+    QCOMPARE(agent->currentText(),QString("claude"));
+    agent->setCurrentText("codex"); QTRY_COMPARE(accounts->count(),2); QCOMPARE(accounts->currentData().toString(),QString("work-mac"));
+    // Accounts are remembered per machine: arch has its own Work account, but none was chosen there.
+    auto *machine=dialog.findChild<QComboBox *>("launchComputer"); machine->setCurrentIndex(machine->findData(QString()));
+    QTRY_COMPARE(accounts->itemData(1).toString(),QString("work-local")); QCOMPARE(accounts->currentData().toString(),QString("native-codex"));
+    // A remembered account that disappeared falls back to the default without an error.
+    QFile removed(m_dir.filePath("removed-mac"));QVERIFY(removed.open(QIODevice::WriteOnly));removed.write("work-mac");removed.close();
+    NewSessionDialog fallback(m_script,available,"mac"); fallback.setGroups(projects,"ungrouped"); fallback.show();
+    fallback.findChild<QComboBox *>("launchAgent")->setCurrentText("codex");
+    auto *fallbackAccounts=fallback.findChild<QComboBox *>("launchAccount");
+    QTRY_VERIFY(fallbackAccounts->currentText().contains("default")); QCOMPARE(fallbackAccounts->currentData().toString(),QString("native-codex"));
+    QVERIFY(fallback.findChild<QLabel *>("launchError")->text().isEmpty());
+    // An agent requested by the caller wins over the remembered one.
+    NewSessionDialog requested(m_script,available,"mac","kimi");
+    QCOMPARE(requested.findChild<QComboBox *>("launchAgent")->currentText(),QString("kimi"));
 }
 void TestAccountsPage::hiddenDefaultIsNotOfferedForNewSessions()
 {
