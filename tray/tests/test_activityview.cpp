@@ -89,6 +89,7 @@ private slots:
     void kimiTurnStartedKeepsRequestBeforeTools();
     void taskNotificationIsAColoredNoticeNotYou();
     void subagentReportIsShortUntilExpanded();
+    void crossSessionMessageIsAFullNoticeFromThatSession();
     void kimiWireAnswerReplacesEmptyStop();
     void progressCommentaryAppearsBeforeFinalResponse();
     void claudeThinkingStaysSeparateFromToolsAndReplies();
@@ -949,6 +950,23 @@ void TestActivityView::expandsMatchingSnapshotWithoutDuplicate()
     QVERIFY(view.browser()->toPlainText().contains("recorded response"));
     QVERIFY(view.browser()->toPlainText().indexOf("An older response") < view.browser()->toPlainText().indexOf("New request"));
     QVERIFY(view.browser()->toPlainText().contains("Outside the available timeline"));
+}
+
+void TestActivityView::crossSessionMessageIsAFullNoticeFromThatSession()
+{
+    ActivityView view; view.setTheme(true);
+    auto message = journalEvent(2, "UserPromptSubmit", "Message from zerus-19");
+    message["origin"] = "peer_message"; message["agent_id"] = ""; message["sender"] = "zerus-19";
+    message["report"] = "SessionsWindow.cpp is free again.\n\n- **Re-apply** your edits on top of HEAD";
+    view.setActivity({}, {journalEvent(1, "UserPromptSubmit", "Commit my work"), message, journalEvent(3, "Stop", "Done")});
+    const auto plain = view.browser()->toPlainText();
+    QCOMPARE(plain.count("You"), 1);
+    QVERIFY(plain.contains("Message from zerus-19"));
+    QVERIFY(plain.contains("SessionsWindow.cpp is free again."));
+    QVERIFY(plain.contains("Re-apply your edits on top of HEAD"));
+    QVERIFY(!plain.contains("**Re-apply**"));
+    QVERIFY(links(view.browser()).filter(QRegularExpression("^hgs-activity:report-")).isEmpty());
+    QVERIFY(view.browser()->toHtml().contains("#c5a8f5", Qt::CaseInsensitive));
 }
 
 void TestActivityView::subagentReportIsShortUntilExpanded()

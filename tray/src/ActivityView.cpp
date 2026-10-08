@@ -187,7 +187,7 @@ QString messageRole(const QJsonObject &event)
     if (!event.value("agent_id").toString().isEmpty() || (event.value("detail").toString().isEmpty() && event.value("attachments").toArray().isEmpty())) return {};
     // Claude starts a turn for finished background work; nobody wrote it.
     const auto origin = event.value("origin").toString();
-    if (origin == "task_notification" || origin == "subagent_report") return "notice";
+    if (origin == "task_notification" || origin == "subagent_report" || origin == "peer_message") return "notice";
     const auto type = event.value("type").toString();
     // Kimi reports an empty UserPromptSubmit followed by the actual prompt in
     // TurnStarted. Keep that prompt in the timeline, ahead of its tool calls.
@@ -786,9 +786,15 @@ void ActivityView::render(bool contentUpdate)
         }
         if (role == "notice") {
             auto body = QString("<p style='margin:0;'>%1</p>").arg(escaped(event.value("detail").toString()).replace('\n', "<br>"));
-            // A subagent's report stays one line, like Claude's terminal, until opened.
+            // Another session's message is meant to be read in full. A
+            // subagent's report stays one line, like Claude's terminal, until opened.
+            const auto origin = event.value("origin").toString();
             const auto report = event.value("report").toString();
-            if (!report.isEmpty()) {
+            if (origin == "peer_message") {
+                auto noticeTheme = MarkdownTheme::github(m_dark, QColor(noticeSurface), m_scale);
+                noticeTheme.subtle = QColor(codeSurface);
+                body = markdown(report.isEmpty() ? event.value("detail").toString() : report, noticeTheme, m_fileLinks);
+            } else if (!report.isEmpty()) {
                 const QString key = "report-" + eventKey(event); m_toggleKeys.insert(key);
                 const bool expanded = m_expanded.value(key);
                 body += QString("<p style='font-size:11px;margin:6px 0 0;'><a href='hgs-activity:%1' style='color:%2;'>%3</a></p>")
@@ -799,8 +805,9 @@ void ActivityView::render(bool contentUpdate)
                     body += markdown(report, noticeTheme, m_fileLinks);
                 }
             }
-            html += card(eventKey(event), event.value("origin") == "subagent_report" ? tr("Subagent report") : tr("Background task"),
-                timeText(event), body, false, true);
+            const QString label = origin == "subagent_report" ? tr("Subagent report")
+                : origin == "peer_message" ? tr("Message from %1").arg(event.value("sender").toString()) : tr("Background task");
+            html += card(eventKey(event), label, timeText(event), body, false, true);
             ++i; continue;
         }
         if (!role.isEmpty()) {

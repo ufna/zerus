@@ -261,10 +261,12 @@ full as a quieter **Thinking** card: the same Markdown at the same size, without
 the card fill and with dimmer text. Adjacent tool events collapse into groups.
 Reading older history preserves scroll and selection; **Jump to latest** returns
 to live events without resizing the timeline. Claude hands finished
-background work back as a new turn. Activity never shows it as your message: a
-background task becomes a violet **Background task** notice, and a subagent's
-final report a **Subagent report** with one summary line and **Show report** for
-the full Markdown. Search and the session's last request ignore both.
+background work and other sessions' messages back as a new turn. Activity never
+shows them as your message: a background task becomes a violet **Background
+task** notice, a subagent's final report a **Subagent report** with one summary
+line and **Show report** for the full Markdown, and a message from another
+Claude session a **Message from** notice with its full text. Search and the
+session's last request ignore all three.
 
 The owner-only `events.sqlite3` journal sits with session records on the agent host
 and retains about 50,000 events per machine. Excerpts can contain project data.

@@ -22,10 +22,10 @@ pub(super) fn clipped(value: &Value, limit: usize) -> String {
     result
 }
 
-/// Claude hands finished background work to the agent as a "user" prompt made
-/// of XML envelopes the person never wrote: task notifications and messages
-/// from subagents, including their final reports. Several may arrive
-/// together, and a journal excerpt may be clipped.
+/// Claude hands finished background work and other sessions' messages to the
+/// agent as a "user" prompt made of XML envelopes the person never wrote: task
+/// notifications, subagent reports and cross-session messages. Several may
+/// arrive together, and a journal excerpt may be clipped.
 pub(super) fn system_prompt(text: &str) -> Option<Value> {
     fn envelope<'a>(body: &'a str, close: &str) -> Option<(&'a str, &'a str)> {
         match body.find(close) {
@@ -36,6 +36,7 @@ pub(super) fn system_prompt(text: &str) -> Option<Value> {
     }
     let mut rest = text.trim();
     let (mut summaries, mut status, mut reports, mut agent) = (Vec::new(), String::new(), Vec::new(), String::new());
+    let (mut messages, mut sender) = (Vec::new(), String::new());
     while !rest.is_empty() {
         if let Some(body) = rest.strip_prefix("<task-notification>") {
             let (inner, after) = envelope(body, "</task-notification>")?;
@@ -66,15 +67,27 @@ pub(super) fn system_prompt(text: &str) -> Option<Value> {
             reports.push(report.lines().map(|line| line.strip_prefix("  ").unwrap_or(line)).collect::<Vec<_>>().join("\n").trim().to_owned());
             if agent.is_empty() { agent = from.to_owned(); }
             rest = after;
+        } else if let Some(body) = rest.strip_prefix("<cross-session-message ") {
+            // Another local Claude session wrote to this one; the user did not.
+            let (attributes, body) = body.split_once('>')?;
+            let attribute = |name: &str| attributes.split_once(&format!("{name}=\""))
+                .and_then(|(_, value)| value.split_once('"')).map(|(value, _)| value.trim());
+            let name = attribute("from-name").filter(|n| !n.is_empty()).or_else(|| attribute("from")).unwrap_or_default();
+            if name.is_empty() || name.len() > 200 {
+                return None;
+            }
+            let (inner, after) = envelope(body, "</cross-session-message>")?;
+            messages.push(inner.trim().to_owned());
+            if sender.is_empty() { sender = name.to_owned(); }
+            rest = after;
         } else {
             return None;
         }
     }
-    if summaries.is_empty() && reports.is_empty() {
-        return None;
-    }
-    Some(json!({"kind": if reports.is_empty() { "task_notification" } else { "subagent_report" },
-        "summary": summaries.join("\n"), "status": status, "report": reports.join("\n\n"), "agent_id": agent}))
+    let kind = if !reports.is_empty() { "subagent_report" } else if !messages.is_empty() { "peer_message" } else if !summaries.is_empty() { "task_notification" } else { return None };
+    reports.extend(messages);
+    Some(json!({"kind": kind, "summary": summaries.join("\n"), "status": status,
+        "report": reports.join("\n\n"), "agent_id": agent, "sender": sender}))
 }
 
 /// Show background work handed to the agent as a notice rather than the
@@ -92,7 +105,9 @@ pub(super) fn mark_system_prompt(record: &Value, event: &mut Value, prompt: &str
     let child = &record["subagents"][string(&notice, "agent_id")];
     // Name the subagent as Claude does in its terminal; older reports fall
     // back to their first line.
-    let summary = if !string(&notice, "summary").is_empty() {
+    let summary = if notice["kind"] == "peer_message" {
+        format!("Message from {}", string(&notice, "sender"))
+    } else if !string(&notice, "summary").is_empty() {
         string(&notice, "summary").to_owned()
     } else if !string(child, "description").is_empty() {
         format!("Agent \"{}\" finished", string(child, "description"))
@@ -105,6 +120,9 @@ pub(super) fn mark_system_prompt(record: &Value, event: &mut Value, prompt: &str
     if !report.is_empty() {
         event["report"] = json!(clipped(&notice["report"], 32000));
         event["from_agent"] = notice["agent_id"].clone();
+    }
+    if notice["kind"] == "peer_message" {
+        event["sender"] = notice["sender"].clone();
     }
 }
 
@@ -1047,7 +1065,7 @@ mod attention_regressions {
     #[test]
     fn task_notifications_are_notices_not_the_persons_prompt() {
         const NOTICE: &str = "<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n<output-file>/tmp/b1.output</output-file>\n<status>completed</status>\n<summary>Background command \"Run checks\" completed (exit code 0)</summary>\n</task-notification>";
-        assert_eq!(system_prompt(NOTICE).unwrap(), json!({"kind":"task_notification","summary":"Background command \"Run checks\" completed (exit code 0)","status":"completed","report":"","agent_id":""}));
+        assert_eq!(system_prompt(NOTICE).unwrap(), json!({"kind":"task_notification","summary":"Background command \"Run checks\" completed (exit code 0)","status":"completed","report":"","agent_id":"","sender":""}));
         let pair = format!("{NOTICE}\n{}", NOTICE.replace("completed", "failed").replace("&", "&amp;"));
         assert_eq!(system_prompt(&pair).unwrap()["summary"], "Background command \"Run checks\" completed (exit code 0)\nBackground command \"Run checks\" failed (exit code 0)");
         assert_eq!(system_prompt(&NOTICE.replace("&quot;", "").replace("\"Run checks\"", "&quot;A &amp; B&quot;")).unwrap()["summary"], "Background command \"A & B\" completed (exit code 0)");
@@ -1070,6 +1088,30 @@ mod attention_regressions {
         let mut person = json!({"type":"UserPromptSubmit","agent_id":"","detail":"Hello"});
         mark_system_prompt(&json!({}), &mut person, "");
         assert!(person.get("origin").is_none());
+    }
+    #[test]
+    fn cross_session_messages_are_notices_from_the_sending_session() {
+        let message = "<cross-session-message from=\"uds:/run/user/1000/cc-socks/1.sock\" from-name=\"zerus-19\" from-mode=\"prompting\">\nSessionsWindow.cpp is free again.\n\n- one\n</cross-session-message>";
+        let parsed = system_prompt(message).unwrap();
+        assert_eq!((parsed["kind"].as_str(), parsed["sender"].as_str()), (Some("peer_message"), Some("zerus-19")));
+        assert_eq!(parsed["report"], "SessionsWindow.cpp is free again.\n\n- one");
+        let mut event = json!({"type":"UserPromptSubmit","agent_id":"","detail":""});
+        mark_system_prompt(&json!({}), &mut event, message);
+        assert_eq!(event["origin"], "peer_message");
+        assert_eq!(event["detail"], "Message from zerus-19");
+        assert_eq!(event["sender"], "zerus-19");
+        assert_eq!(event["report"], "SessionsWindow.cpp is free again.\n\n- one");
+        // Without a session name, the address identifies the sender.
+        assert_eq!(system_prompt("<cross-session-message from=\"uds:/s.sock\">Hi</cross-session-message>").unwrap()["sender"], "uds:/s.sock");
+        // Clipped journal rows and the session prompt are recognized too.
+        let mut legacy = json!({"type":"UserPromptSubmit","agent_id":"","detail":format!("{}…", &message[..140])});
+        mark_system_prompt(&json!({}), &mut legacy, "");
+        assert_eq!(legacy["origin"], "peer_message");
+        assert_eq!(user_prompt(&json!({"prompt":message})), &Value::Null);
+        for text in ["<cross-session-message>Hi</cross-session-message>", "<cross-session-message from-name=\"\">Hi</cross-session-message>",
+                     &format!("{message}\nPlus my own words")] {
+            assert!(system_prompt(text).is_none(), "{text}");
+        }
     }
     #[test]
     fn subagent_reports_are_named_notices_with_their_full_report() {
