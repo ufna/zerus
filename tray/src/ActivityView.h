@@ -35,6 +35,8 @@ public:
     QPushButton *jumpButton() const { return m_latest; }
     QTextBrowser *browser() const { return m_browser; }
     bool replyVisible(const QString &replyId) const;
+    // The document as copied: chips and list markers spelled out.
+    QString plainText() const;
     void setAttachmentPreview(const QString &key, const QImage &image);
 
 public slots:

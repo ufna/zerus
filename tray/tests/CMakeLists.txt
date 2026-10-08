@@ -174,7 +174,7 @@ add_executable(test_sessionswindow test_sessionswindow.cpp ../src/SessionsWindow
                ../src/NewSessionDialog.cpp ../src/ProjectsDialog.cpp ../resources.qrc)
 target_include_directories(test_sessionswindow PRIVATE ../src)
 target_compile_definitions(test_sessionswindow PRIVATE HGS_TRAY_VERSION="${PROJECT_VERSION}")
-target_link_libraries(test_sessionswindow PRIVATE Qt6::Test Qt6::Widgets Qt6::WebEngineWidgets hgs-terminal)
+target_link_libraries(test_sessionswindow PRIVATE Qt6::Test Qt6::Widgets Qt6::WebEngineWidgets hgs-terminal hgs-markdown)
 add_test(NAME sessionswindow COMMAND test_sessionswindow)
 set_tests_properties(sessionswindow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
@@ -186,7 +186,7 @@ set_tests_properties(nativeuiview PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscr
 
 add_executable(test_activityview test_activityview.cpp ../src/ActivityView.cpp)
 target_include_directories(test_activityview PRIVATE ../src)
-target_link_libraries(test_activityview PRIVATE Qt6::Test Qt6::Widgets)
+target_link_libraries(test_activityview PRIVATE Qt6::Test Qt6::Widgets hgs-markdown)
 add_test(NAME activityview COMMAND test_activityview)
 set_tests_properties(activityview PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 

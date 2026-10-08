@@ -1,11 +1,14 @@
 #include "ActivityView.h"
 #include "ContentScale.h"
+#include "MarkdownObjects.h"
 #include "SessionFileReference.h"
 #include "SessionUsage.h"
 #include "WorkspaceFocus.h"
 
+#include <QClipboard>
 #include <QDir>
 #include <QFontInfo>
+#include <QGuiApplication>
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
@@ -103,6 +106,10 @@ private slots:
     void searchToolExcerptIsExpandedAndClearlyMarked();
     void contentScaleScalesMarkupOnly();
     void contentScaleEnlargesTranscriptAndQueue();
+    void agentMarkdownLooksLikeGitHub();
+    void searchResultKeepsInlineCodeSearchable();
+    void copyGivesVisibleText();
+    void markdownFollowsThemeAndScale();
     void preview();
 };
 
@@ -140,10 +147,10 @@ void TestActivityView::contentScaleEnlargesTranscriptAndQueue()
     auto *browser = view->browser(); auto *queue = view->findChild<QLabel *>("queueText"); QVERIFY(queue);
     const int body = fontPixels(browser, "Agent body"), heading = fontPixels(browser, "Plan heading");
     const int queued = QFontInfo(queue->font()).pixelSize(), jump = QFontInfo(view->jumpButton()->font()).pixelSize();
-    QCOMPARE(body, 13);
+    QCOMPARE(body, 14);
     const QSize documentSize = browser->document()->size().toSize();
     view->setContentScale(2.0);
-    QCOMPARE(fontPixels(browser, "Agent body"), 26);
+    QCOMPARE(fontPixels(browser, "Agent body"), 28);
     QVERIFY2(fontPixels(browser, "Plan heading") >= 2 * heading - 1, qPrintable(QString::number(fontPixels(browser, "Plan heading"))));
     QCOMPARE(QFontInfo(queue->font()).pixelSize(), 26);
     QCOMPARE(QFontInfo(view->jumpButton()->font()).pixelSize(), jump);
@@ -152,12 +159,68 @@ void TestActivityView::contentScaleEnlargesTranscriptAndQueue()
     QVERIFY(browser->toPlainText().contains(literal));
     QVERIFY(links(browser).contains("https://example.com/icon-16px.png"));
     view->setActivity(details, events);
-    QCOMPARE(fontPixels(browser, "Agent body"), 26);
+    QCOMPARE(fontPixels(browser, "Agent body"), 28);
     view->setContentScale(1.0);
     QCOMPARE(fontPixels(browser, "Agent body"), body);
     QCOMPARE(fontPixels(browser, "Plan heading"), heading);
     QCOMPARE(QFontInfo(queue->font()).pixelSize(), queued);
     QCOMPARE(browser->document()->size().toSize(), documentSize);
+}
+
+void TestActivityView::agentMarkdownLooksLikeGitHub()
+{
+    ActivityView view; view.resize(560, 600); view.show();
+    view.setActivity({}, {journalEvent(1, "Stop", "Use `ctest` and:\n\n- one\n- two\n\n```\ncode\n```")});
+    auto *document = view.browser()->document();
+    int chips = 0; QStringList images;
+    for (auto block = document->begin(); block.isValid(); block = block.next())
+        for (auto it = block.begin(); !it.atEnd(); ++it) {
+            const auto format = it.fragment().charFormat();
+            chips += format.objectType() == MarkdownObjects::ChipObjectType;
+            if (format.isImageFormat()) images.append(format.toImageFormat().name());
+        }
+    QCOMPARE(chips, 1);
+    QVERIFY(images.contains("hgs-md:disc/light/100")); QVERIFY(images.contains("hgs-md:corner-tl/light/100"));
+    for (const auto &name : images) QVERIFY(!document->resource(QTextDocument::ImageResource, QUrl(name)).value<QImage>().isNull());
+    QVERIFY(view.plainText().contains(QString::fromUtf8("Use ctest and:\n• one\n• two\ncode")));
+}
+
+void TestActivityView::searchResultKeepsInlineCodeSearchable()
+{
+    ActivityView view; view.resize(560, 400); view.show();
+    view.showSearchResult(journalEvent(1, "AgentMessage", "Run `ctest -R markdown` now"), "ctest");
+    for (auto block = view.browser()->document()->begin(); block.isValid(); block = block.next())
+        for (auto it = block.begin(); !it.atEnd(); ++it) QVERIFY(it.fragment().charFormat().objectType() != MarkdownObjects::ChipObjectType);
+    QVERIFY(!view.browser()->extraSelections().isEmpty());
+}
+
+void TestActivityView::copyGivesVisibleText()
+{
+    ActivityView view; view.resize(560, 400); view.show();
+    view.setActivity({}, {journalEvent(1, "Stop", "Edit `src/cli.rs`:\n\n1. first\n2. second")});
+    view.browser()->selectAll(); view.browser()->copy();
+    const auto copied = QGuiApplication::clipboard()->text();
+    QVERIFY2(copied.contains("Edit src/cli.rs:\n1. first\n2. second"), qPrintable(copied));
+    QVERIFY(!copied.contains(QChar::ObjectReplacementCharacter));
+}
+
+void TestActivityView::markdownFollowsThemeAndScale()
+{
+    ActivityView view; view.resize(560, 400); view.show();
+    view.setActivity({}, {journalEvent(1, "Stop", "- item with `code`")});
+    view.setTheme(true); view.setContentScale(2.0);
+    QStringList images; QList<QTextCharFormat> chips;
+    for (auto block = view.browser()->document()->begin(); block.isValid(); block = block.next())
+        for (auto it = block.begin(); !it.atEnd(); ++it) {
+            const auto format = it.fragment().charFormat();
+            if (format.isImageFormat()) images.append(format.toImageFormat().name());
+            if (format.objectType() == MarkdownObjects::ChipObjectType) chips.append(format);
+        }
+    QVERIFY(images.contains("hgs-md:disc/dark/200"));
+    QCOMPARE(chips.size(), 1);
+    QCOMPARE(chips.first().property(QTextFormat::UserProperty + 45).toDouble(), 2.0);
+    const auto disc = view.browser()->document()->resource(QTextDocument::ImageResource, QUrl("hgs-md:disc/dark/200")).value<QImage>();
+    QCOMPARE(disc.size(), (QSizeF(10, 38) * view.browser()->devicePixelRatioF()).toSize());
 }
 
 void TestActivityView::contextCounterKeepsPhysicalRightAlignment()
@@ -705,7 +768,7 @@ void TestActivityView::rejectsMarkupResourcesAndUnsafeLinks()
     for (const auto &link : allLinks) QVERIFY(link.startsWith("https://") || link.startsWith("hgs-file:") || link == "hgs-activity:group-2");
     QVERIFY(browser->toPlainText().contains("[Image attachment]"));
     for (auto block = browser->document()->begin(); block.isValid(); block = block.next())
-        for (auto it = block.begin(); !it.atEnd(); ++it) QVERIFY(!it.fragment().charFormat().isImageFormat());
+        for (auto it = block.begin(); !it.atEnd(); ++it) QVERIFY(!it.fragment().charFormat().isImageFormat() || it.fragment().charFormat().toImageFormat().name().startsWith("hgs-md:"));
     QVERIFY(browser->document()->resource(QTextDocument::ImageResource, QUrl("file:///etc/passwd")).value<QImage>().isNull());
     QSignalSpy opened(&view, &ActivityView::externalLinkActivated);
     activate(browser, "javascript:alert(1)"); activate(browser, "file:///etc/passwd");
@@ -766,7 +829,7 @@ void TestActivityView::preservesLiteralUserMessages()
     }
     view.setActivity({}, {journalEvent(2, "Stop", "**Ответ агента** с `кодом`")});
     if (source == "search") view.clearSearchResult();
-    QVERIFY(browser->toPlainText().contains("Ответ агента с кодом"));
+    QVERIFY(view.plainText().contains("Ответ агента с кодом"));
     QVERIFY(!browser->toPlainText().contains("**Ответ агента**"));
 }
 

@@ -1,5 +1,7 @@
 #include "ActivityView.h"
 #include "ContentScale.h"
+#include "MarkdownHtml.h"
+#include "MarkdownObjects.h"
 #include "ProcessSettings.h"
 #include "SessionFileReference.h"
 
@@ -15,6 +17,7 @@
 #include <QImage>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QMimeData>
 #include <QProgressBar>
 #include <QHBoxLayout>
 #include <QPushButton>
@@ -66,8 +69,23 @@ private:
 class JournalDocument final : public QTextDocument {
 public:
     using QTextDocument::QTextDocument;
+    qreal pixelRatio = 1.0;
 protected:
-    QVariant loadResource(int, const QUrl &) override { return QImage(); }
+    // Only drawn Markdown decorations load; remote and file resources never do.
+    QVariant loadResource(int, const QUrl &url) override { return MarkdownObjects::resource(url, pixelRatio); }
+};
+
+// Copies what the reader sees instead of U+FFFC for chips and markers.
+class ActivityBrowser final : public QTextBrowser {
+public:
+    using QTextBrowser::QTextBrowser;
+protected:
+    QMimeData *createMimeDataFromSelection() const override
+    {
+        auto *data = new QMimeData;
+        data->setText(MarkdownObjects::plainText(textCursor()));
+        return data;
+    }
 };
 
 bool webLink(const QUrl &url)
@@ -189,64 +207,18 @@ bool isExcerptOf(QString excerpt, const QString &full)
     return !excerpt.isEmpty() && full.startsWith(excerpt);
 }
 
-QString markdown(const QString &text, const QString &codeBackground, const QString &accent,
-                 QHash<QString, QString> &fileLinks)
+QString markdown(const QString &text, const MarkdownTheme &theme, QHash<QString, QString> &fileLinks)
 {
-    JournalDocument doc;
-    doc.setMarkdown(text, QTextDocument::MarkdownFeatures(QTextDocument::MarkdownDialectGitHub) | QTextDocument::MarkdownNoHTML);
-    struct Fragment { int position, length; QTextCharFormat format; };
-    QList<Fragment> changes;
-    for (auto block = doc.begin(); block.isValid(); block = block.next()) {
-        for (auto it = block.begin(); !it.atEnd(); ++it) {
-            const auto fragment = it.fragment();
-            if (fragment.isValid()) changes.append({fragment.position(), fragment.length(), fragment.charFormat()});
+    return MarkdownHtml::render(text, theme, [&fileLinks](const QString &href) -> MarkdownLink {
+        const auto file = SessionFileReference::parse(href);
+        if (file.valid()) {
+            const QString key = QString::fromLatin1(QCryptographicHash::hash(href.toUtf8(), QCryptographicHash::Sha256).toHex());
+            fileLinks.insert(key, href);
+            return {"hgs-file:" + key, file.path + file.location, file.path + file.location};
         }
-        if (block.blockFormat().nonBreakableLines()) {
-            QTextCursor cursor(block);
-            auto format = block.blockFormat();
-            format.setNonBreakableLines(false); // wrap long commands in narrow panes
-            format.setBackground(QColor(codeBackground));
-            format.setLeftMargin(9); format.setRightMargin(9);
-            cursor.setBlockFormat(format);
-        }
-    }
-    // Backwards iteration keeps subsequent fragment offsets valid when images
-    // become a text attachment label instead of initiating resource loads.
-    for (auto it = changes.crbegin(); it != changes.crend(); ++it) {
-        QTextCursor cursor(&doc); cursor.setPosition(it->position);
-        cursor.setPosition(it->position + it->length, QTextCursor::KeepAnchor);
-        if (it->format.isImageFormat()) {
-            cursor.insertText(QObject::tr("[Image attachment]"), QTextCharFormat());
-        } else if (it->format.isAnchor()) {
-            auto format = it->format;
-            const QString href = format.anchorHref();
-            const auto file = SessionFileReference::parse(href);
-            const bool allowed = file.valid() || webLink(QUrl(href));
-            format.setAnchor(allowed); format.setAnchorNames({});
-            if (!allowed) { format.setAnchorHref({}); format.setFontUnderline(false); format.clearForeground(); }
-            else format.setForeground(QColor(accent));
-            if (file.valid()) {
-                const QString key = QString::fromLatin1(QCryptographicHash::hash(href.toUtf8(), QCryptographicHash::Sha256).toHex());
-                fileLinks.insert(key, href);
-                format.setAnchorHref("hgs-file:" + key);
-                format.setToolTip(file.path + file.location);
-                format.setFontUnderline(true);
-                // A link can span several differently formatted fragments.
-                // Append the destination once, after its final fragment.
-                const auto next = it.base();
-                const bool last = next == changes.cend() || next->position != it->position + it->length
-                    || next->format.anchorHref() != href;
-                if (last && cursor.selectedText() != file.path + file.location && cursor.selectedText() != href) {
-                    QTextCursor end(cursor); end.setPosition(it->position + it->length);
-                    end.insertText(" (" + file.path + file.location + ")", format);
-                }
-            }
-            cursor.setCharFormat(format);
-        }
-    }
-    auto html = doc.toHtml();
-    const auto start = html.indexOf('>', html.indexOf("<body")) + 1;
-    return html.mid(start, html.lastIndexOf("</body>") - start);
+        if (webLink(QUrl(href))) return {href, {}, {}};
+        return {};
+    });
 }
 
 // Named anchors let a reading position survive journal pruning and expansion
@@ -282,7 +254,7 @@ ActivityView::ActivityView(QWidget *parent) : QWidget(parent)
 {
     setObjectName("activityView");
     auto *layout = new QVBoxLayout(this); layout->setContentsMargins(0, 0, 0, 0); layout->setSpacing(5);
-    m_browser = new QTextBrowser(this); m_browser->setObjectName("activity");
+    m_browser = new ActivityBrowser(this); m_browser->setObjectName("activity");
     m_browser->setDocument(new JournalDocument(m_browser));
     m_browser->setFrameShape(QFrame::NoFrame);
     m_browser->setOpenLinks(false); m_browser->setOpenExternalLinks(false);
@@ -452,6 +424,13 @@ void ActivityView::setContentScale(double scale)
         : QString("QTextBrowser { font-size:%1px; }").arg(ContentScale::px(13, scale)));
     m_queueText->setMaximumHeight(ContentScale::px(100, scale));
     setTheme(m_dark);
+}
+
+QString ActivityView::plainText() const
+{
+    QTextCursor all(m_browser->document());
+    all.select(QTextCursor::Document);
+    return MarkdownObjects::plainText(all);
 }
 
 bool ActivityView::replyVisible(const QString &replyId) const
@@ -637,12 +616,14 @@ void ActivityView::render(bool contentUpdate)
     const QString fg = m_dark ? "#e8edf4" : "#1a2733";
     const QString muted = m_dark ? "#9eabba" : "#657487";
     const QString accent = m_dark ? "#8bdfc0" : "#167357";
-    const QString surface = m_dark ? "#242d36" : "#f3f6f8";
     const QString userSurface = m_dark ? "#243730" : "#edf6f1";
     const QString codeSurface = m_dark ? "#171e25" : "#e8eef2";
     const QString warning = m_dark ? "#edbd77" : "#9b6216";
     const QString blue = m_dark ? "#98bdeb" : "#366ba9";
     const QString border = m_dark ? "#34404a" : "#dbe3e9";
+    // Agent replies sit on GitHub's canvas; expanded thinking stays on the page.
+    const auto agentTheme = MarkdownTheme::github(m_dark, QColor(m_dark ? "#0d1117" : "#ffffff"), m_scale);
+    const auto pageTheme = MarkdownTheme::github(m_dark, QColor(m_dark ? "#1c2229" : "#ffffff"), m_scale);
     QString html = QString("<html><head><style>body{color:%1;font-size:13px;}p{margin:6px 0;line-height:135%;}h1,h2,h3,h4{font-size:14px;margin:10px 0 6px;}pre{white-space:pre-wrap;}a{color:%2;text-decoration:none;}li{margin-bottom:4px;}</style></head><body>").arg(fg, accent);
     html += QString("<p style='font-size:10px;color:%1;margin-bottom:12px;'>%2</p>").arg(muted, searching ? tr("SEARCH RESULT — Saved message") : tr("RECORDED ACTIVITY — Messages and tool excerpts"));
     if (details.value("history_truncated").toBool())
@@ -688,7 +669,7 @@ void ActivityView::render(bool contentUpdate)
         if (user) content.insert(content.indexOf('>') + 1, QString("<a name='item-body-%1'></a>").arg(escaped(key)));
         return QString("<table width='100%' cellspacing='0' cellpadding='0'><tr><td width='3' bgcolor='%1'></td><td bgcolor='%2' style='padding:11px 13px;'>"
             "<p style='font-size:11px;margin-top:0;margin-bottom:8px;'><a name='item-%3'></a><b style='color:%1;'>%4</b><span style='color:%5;'>%6</span></p>%7</td></tr></table><p style='font-size:5px;margin:0;'>&nbsp;</p>")
-            .arg(user ? accent : blue, user ? userSurface : surface, escaped(key), escaped(label), muted,
+            .arg(user ? accent : blue, user ? userSurface : agentTheme.canvas.name(), escaped(key), escaped(label), muted,
                 stamp.isEmpty() ? QString() : QStringLiteral(" &nbsp;&nbsp; ") + escaped(stamp), content);
     };
 
@@ -760,7 +741,7 @@ void ActivityView::render(bool contentUpdate)
             html += card("prompt-snapshot", replies.isEmpty() ? tr("You (recorded request)") : tr("You (recorded answer)"), {},
                 replies.isEmpty() ? userMessage(prompt) : questionReplyBody(replies, muted, accent, codeSurface, border), true);
         }
-        if (!answer.isEmpty()) html += card("answer-snapshot", tr("Agent (recorded response)"), {}, markdown(answer, codeSurface, accent, m_fileLinks), false);
+        if (!answer.isEmpty()) html += card("answer-snapshot", tr("Agent (recorded response)"), {}, markdown(answer, agentTheme, m_fileLinks), false);
     }
     m_toggleKeys.clear();m_processLinks.clear();
     for (int i = 0; i < events.size();) {
@@ -780,7 +761,7 @@ void ActivityView::render(bool contentUpdate)
                 stamp += "  " + (accepted ? tr("Sent") : tr("Queued at this time"));
             }
             auto body = role == "user" ? (replies.isEmpty() ? userMessage(text) : questionReplyBody(replies, muted, accent, codeSurface, border))
-                                       : markdown(text, codeSurface, accent, m_fileLinks);
+                                       : markdown(text, agentTheme, m_fileLinks);
             if(event.value("type")=="LocalMessage") {
                 const auto state=event.value("status").toString();stamp=state=="sending"?tr("Sending…"):state=="error"?tr("Not sent"):tr("Submitted to terminal");
                 if(state=="error" && event.value("uncertain").toBool())stamp=tr("Delivery not confirmed");
@@ -828,7 +809,7 @@ void ActivityView::render(bool contentUpdate)
             "<a href='hgs-activity:%3' style='color:%4;'><b>%5 %6</b></a><span style='font-size:10px;color:%7;'> &nbsp; %8</span>")
             .arg(border, escaped(key), key, color, expanded ? QStringLiteral("▾") : QStringLiteral("▸"), escaped(title), muted, escaped(timeText(last)));
         if (!expanded && !preview.isEmpty()) html += QString("<p style='color:%1;font-size:11px;margin:4px 0 0;'>%2</p>").arg(muted, escaped(preview));
-        if(expanded && thinking)html+=markdown(event.value("detail").toString(),codeSurface,accent,m_fileLinks);
+        if(expanded && thinking)html+=markdown(event.value("detail").toString(),pageTheme,m_fileLinks);
         else if (expanded) for (const auto &e : group) {
             QString label = eventTitle(e.value("type").toString());
             if (!e.value("tool").toString().isEmpty()) label += QStringLiteral(" / ") + e.value("tool").toString();
@@ -880,7 +861,10 @@ void ActivityView::render(bool contentUpdate)
     // updates disabled lets a parent repaint erase Activity for a whole frame.
     const bool updatesEnabled = m_browser->updatesEnabled();
     m_browser->setUpdatesEnabled(false);
+    static_cast<JournalDocument *>(m_browser->document())->pixelRatio = m_browser->devicePixelRatioF();
     m_browser->setHtml(html);
+    // Before bookmarks are read: offsets on both sides of a refresh count chips as one character.
+    MarkdownObjects::convertChips(m_browser->document(), agentTheme, !searching);
     // QTextDocument lays out long tables lazily. Resolve the final scroll
     // range before restoring the viewport and allowing its next paint.
     m_browser->document()->documentLayout()->documentSize();
