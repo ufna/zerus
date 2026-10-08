@@ -219,6 +219,9 @@ published build to produce different bytes under its existing tag. Artifacts are
 retained for three days and logs for three; public GitHub release assets remain
 available after artifact expiry. Nightlies run even without new commits to test
 current rolling Arch dependencies and produce fresh, uniquely versioned binaries.
+After an accepted AUR push, RPC metadata and yay may briefly show the previous
+version. Check the AUR Git repository's `.SRCINFO` and wait for metadata to refresh;
+do not rebuild or republish the candidate to work around that delay.
 Stable candidates/publication remain separate manual workflows; macOS checks are
 now selected by default for new candidates and can still be explicitly disabled.
 
@@ -604,3 +607,15 @@ remains `v0.37.0`. A fresh, fully updated isolated Arch environment installed
 `zerus-ade-nightly-bin 0.37.0.r77.g9eb3a0e.n1-1` through the real yay helper.
 Public archive checksums, runtime dependencies, idempotent `zerus-setup` and an
 ordinary non-Git terminal session passed. No host agent or tmux process was touched.
+
+The next [Nightly run](https://github.com/ufna/zerus/actions/runs/37851516418) passed
+all suites and installed-package checks at
+`fef1a00f0e505dd02d9aa0ad94c655ef6d954a1a`. Its [publisher](https://github.com/ufna/zerus/actions/runs/37852775356)
+was triggered automatically by successful completion, created and anonymously
+verified [nightly-37851516418](https://github.com/ufna/zerus/releases/tag/nightly-37851516418),
+and synchronized AUR `0.37.0.r78.gfef1a00.n2-1` without a manual publisher retry.
+After AUR metadata refreshed, ordinary `yay -Syu` detected and installed the new
+version. The upgrade retained an existing isolated tmux server, terminal process,
+session identity and user links. Installed-package checks passed again; all files
+expected under the container's pacman extraction policy were present, and the
+downloaded archive's build manifest matched the exact verified source commit.
