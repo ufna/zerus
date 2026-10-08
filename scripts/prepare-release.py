@@ -3,13 +3,14 @@
 import argparse
 import gzip
 import hashlib
-import io
 import json
 from pathlib import Path
 import re
 import subprocess
 import tarfile
 import tempfile
+
+from release_common import binary_dependencies
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -32,6 +33,8 @@ def main():
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     epoch = int(subprocess.check_output(["git", "show", "-s", "--format=%ct", "HEAD"], cwd=ROOT, text=True))
     args.output.mkdir(parents=True, exist_ok=True)
+    if any(args.output.iterdir()):
+        parser.error("use an empty candidate output directory; never overwrite an existing candidate")
     source = args.output / f"zerus-{version}-source.tar.gz"
     archive = subprocess.check_output(["git", "archive", "--format=tar", f"--prefix=zerus-{version}/", "HEAD"], cwd=ROOT)
     source.write_bytes(gzip.compress(archive, mtime=epoch))
@@ -47,6 +50,7 @@ def main():
         info = json.loads((root / "usr/share/doc/zerus/build-info.json").read_text())
         if info.get("source_commit") != revision or info.get("version") != version:
             parser.error("the verified package must come from this exact commit and version")
+        libraries = binary_dependencies((root / ".BUILDINFO").read_text())
         with binary.open("wb") as output, gzip.GzipFile(filename="", mode="wb", fileobj=output, mtime=epoch) as zipped:
             with tarfile.open(fileobj=zipped, mode="w") as bundled:
                 prefix = f"zerus-{version}-arch-x86_64"
@@ -61,8 +65,9 @@ def main():
                             bundled.addfile(member, content)
                     else:
                         bundled.addfile(member)
-    values = {"@VERSION@": version, "@SOURCE_SHA256@": digest(source), "@BINARY_SHA256@": digest(binary)}
-    for flavor in ("zerus-ade", "zerus-ade-bin"):
+    values = {"@VERSION@": version, "@SOURCE_SHA256@": digest(source), "@BINARY_SHA256@": digest(binary),
+              "@BINARY_LIBRARY_DEPENDS@": " ".join(f"'{name}>={value}'" for name, value in libraries.items())}
+    for flavor in ("zerus", "zerus-ade-bin"):
         directory = args.output / "aur" / flavor
         directory.mkdir(parents=True, exist_ok=True)
         text = (ROOT / "packaging/aur" / flavor / "PKGBUILD.in").read_text()
@@ -71,7 +76,8 @@ def main():
         (directory / "PKGBUILD").write_text(text)
     (args.output / "SHA256SUMS").write_text("".join(f"{digest(path)}  {path.name}\n" for path in (source, binary)))
     (args.output / "release-info.json").write_text(json.dumps({"version": version, "source_commit": revision,
-        "architecture": "x86_64", "distribution": "Arch Linux", "publication": "candidate", "native_agents_bundled": False}, indent=2) + "\n")
+        "architecture": "x86_64", "distribution": "Arch Linux", "publication": "candidate",
+        "binary_dependencies": libraries, "native_agents_bundled": False}, indent=2) + "\n")
     print("Created source and Arch binary archives, SHA256SUMS and release AUR recipes. Nothing was published.")
 
 

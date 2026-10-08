@@ -42,13 +42,23 @@ class NativeHarness(unittest.TestCase):
         cls.workspace = cls.root / 'workspace'
         cls.workspace.mkdir()
         package = Path(DSH).resolve().parent.parent
+        bridge = REPO / 'src/dsh/bridge.mjs'
+        if getattr(cls, 'LEGACY_ADAPTER', False):
+            # Same released harness, but the resident bridge predates account
+            # permissions. It ignores the new wire field just like that host.
+            bridge = cls.root / 'legacy-bridge.mjs'
+            source = (REPO / 'src/dsh/bridge.mjs').read_text()
+            source = source.replace('accountPermissions: true', 'legacyAdapter: true')
+            source = source.replace('applyPermissions(handle.agent, permissionMode);', '')
+            source = source.replace('applyPermissions(handle.agent, p.permissionMode);', '')
+            bridge.write_text(source)
         patch = [
             {'id': 'llm-deepseek', 'disabled': True},
             {'id': 'tool-subagent', 'config': {'backgroundMode': 'continuable'}},
             {'id': 'agent-default-model', 'config': {'provider': 'hgs-test', 'model': 'test-a'}},
             {'insert': [
                 {'id': 'hgs-test-model', 'name': str(REPO / 'tests/fixtures/dsh-model.mjs')},
-                {'id': 'hgs-native-dsh', 'name': str(REPO / 'src/dsh/bridge.mjs'), 'config': {'socket': cls.sock, 'recoveryPolicy': str(cls.state / 'recovery/policy.json')}},
+                {'id': 'hgs-native-dsh', 'name': str(bridge), 'config': {'socket': cls.sock, 'recoveryPolicy': str(cls.state / 'recovery/policy.json')}},
             ]},
         ]
         overlay = cls.root / 'patch.json'

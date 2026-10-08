@@ -38,7 +38,7 @@ On macOS, install the dependencies first:
 brew install rust python tmux cmake qt qtwebengine
 ```
 
-On Arch Linux, desktop dependencies include `cmake`, `qt6-base`, `qt6-webengine`,
+On Arch Linux, desktop dependencies include `cmake`, `qt6-base`, `qt6-webengine`, `qt6-svg`,
 `kstatusnotifieritem`, `kwindowsystem` and C++ build tools.
 
 Add `~/.local/bin` to `PATH`. The CLI installs to `~/.local/bin/hgs`; SSH calls
@@ -61,8 +61,11 @@ tmux server.
 
 An Arch system bundle and AUR recipes are prepared, but the packages are **not yet
 published**. See [CI and Arch publication](ci-and-aur.md) for candidate builds and
-the first-publication requirements. The proposed package names are `zerus-ade`,
-`zerus-ade-bin` and `zerus-ade-git`.
+the first-publication requirements. The selected packages are `zerus` (stable sources),
+`zerus-git` (upstream main) and `zerus-ade-bin` (stable binary). All include the CLI
+and desktop and conflict with one another. The first public product version is
+0.37.0. GitHub and AUR publication use a separate manual workflow consuming the
+reviewed candidate without rebuilding.
 
 After installing a reviewed pacman package, run `zerus-setup` once as your normal
 user to create the `~/.local/bin/hgs` compatibility links used by SSH. Existing

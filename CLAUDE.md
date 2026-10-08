@@ -35,6 +35,9 @@ project catalogs, native agent processes or saved conversations.
 
 Never restart or kill native agents, tmux servers or DeepSeek hosts as part of a
 GUI update. Test tmux operations with an existing isolated socket directory.
+Do not hot-reload a DeepSeek bridge that owns live agents: its disposal closes
+them. Use the native API compatibility path for resident adapters and keep
+unconfirmed permission setup blocked until an explicit resume verifies it.
 Ordinary non-Git folders are supported; do not create Git repositories or worktrees
 automatically. Destructive UI actions require explicit confirmation.
 
@@ -51,6 +54,12 @@ GitHub Actions without an explicit owner request to run hosted checks. Validate
 workflow edits locally. Default CI uses one Ubuntu job; full Linux integration,
 Arch packaging and macOS are explicit opt-ins. Release candidates request
 Linux/Arch coverage but leave macOS off by default. See `docs/ci-and-aur.md`.
+AUR packages are `zerus` (stable source), `zerus-git` (upstream main) and
+`zerus-ade-bin` (stable binary), with x86_64 support. Release publication is a
+separate owner-triggered workflow consuming a verified exact-commit candidate;
+never rebuild or overwrite immutable assets on retries. Pure VCS version bumps
+do not create AUR commits. Keep publication credentials confined to the release
+environment and validate changes locally before requesting its manual launch.
 
 Run checks appropriate to the change; see `CONTRIBUTING.md`. Update Beads status
 and export with `bd export -o .beads/issues.jsonl` before staging tracker changes.

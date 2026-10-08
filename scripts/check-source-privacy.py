@@ -4,6 +4,7 @@
 This is a portable-path guard, not a replacement for Gitleaks or manual review.
 Third-party copyright/author attribution is intentionally preserved.
 """
+import json
 from pathlib import Path
 import re
 import subprocess
@@ -14,6 +15,8 @@ SYNTHETIC_USERS = {'example', 'user', 'test', 'test user', 'remote', 'alice', 'b
 HOME_PATH = re.compile(r'/(?:Users|home)/([^/"\'`\n<>]+)(?:/|["\'`])')
 PRIVATE_KEY = re.compile(rb'-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----')
 EMAIL = re.compile(r'(?<![\w.+-])[\w.+-]+@(?:[\w-]+\.)+[A-Za-z]{2,}')
+# The owner explicitly approved this public maintainer address for AUR/Git.
+PUBLIC_CONTACTS = {'ufna@ufna.dev'}
 
 
 def main():
@@ -37,6 +40,13 @@ def main():
         if b'\0' in data:
             continue
         for line_no, line in enumerate(data.decode('utf-8', errors='replace').splitlines(), 1):
+            if path.suffix == '.jsonl':
+                # Beads escapes angle brackets as Unicode; decode before scanning
+                # so the escape cannot become part of a maintainer email address.
+                try:
+                    line = json.dumps(json.loads(line), ensure_ascii=False)
+                except json.JSONDecodeError:
+                    pass
             for match in HOME_PATH.finditer(line):
                 if match[1] not in SYNTHETIC_USERS:
                     problems.append((name, line_no, 'non-example absolute home path'))
@@ -45,7 +55,7 @@ def main():
             if not name.startswith('tray/vendor/'):
                 for address in EMAIL.findall(line):
                     domain = address.rsplit('@', 1)[1].lower()
-                    if address in {'git@github.com', 'aur@aur.archlinux.org'} or domain.endswith(('.png', '.svg', '.icns')):
+                    if address in PUBLIC_CONTACTS | {'git@github.com', 'aur@aur.archlinux.org'} or domain.endswith(('.png', '.svg', '.icns')):
                         continue
                     if not (domain in {'example.com', 'example.org', 'example.net', 'example.test',
                                        'users.noreply.github.com'} or domain.endswith(('.example', '.test', '.invalid'))):

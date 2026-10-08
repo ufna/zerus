@@ -11,7 +11,7 @@ import tempfile
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
-    parser.add_argument("--package-name", default="zerus-ade-git")
+    parser.add_argument("--package-name", default="zerus-git")
     args = parser.parse_args()
     root = args.root.resolve()
     required = ["usr/bin/hgs", "usr/bin/hgs-tray", "usr/bin/hgs_state.py", "usr/bin/zerus-setup",

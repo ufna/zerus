@@ -128,6 +128,7 @@ private:
     bool m_focusSearch = false;
     int m_stripLayout = 0, m_stripReserve = 0;
     QWidget *m_stripSpacer = nullptr;
+    QPushButton *m_savedDrafts = nullptr;
     QLabel *m_attentionBadge = nullptr;
     int m_attentionCount = 0;
     QTimer m_readTimer;

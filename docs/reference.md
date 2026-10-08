@@ -286,9 +286,21 @@ main native conversation.
 Enter sends, Shift-Enter inserts a line and Escape releases focus while keeping
 the draft, unless a turn is working. Paste images, drag local files or use the
 attachment button. Labels such as `[Image #1]` and `[File #2]` preserve
-attachment placement within the text;
-removing one does not renumber the rest. Drafts and attachments stay with the
-session while the workspace is open.
+attachment placement within the text; removing one does not renumber the rest. Text, cursor/selection and attachment
+bytes are saved locally as they change, separately for each machine, session and
+subagent. They survive GUI crashes, restarts, unavailable machines and ended
+sessions, even if the original attachment file is gone. Storage is a private
+directory next to the desktop's Qt settings file (`<settings-file>.drafts`),
+outside P2P configuration sync.
+
+**Saved drafts** below the session list lets you preview, copy or restore drafts
+from ended or missing sessions into the current session. Copying keeps the dialog
+open; restoring never sends anything and replacing an existing draft requires
+confirmation. A source draft remains available after copying it to another session.
+Confirmed sends clear the outgoing draft; failures retain it. After an interrupted
+or uncertain send, check Activity or Terminal before explicitly allowing another
+send. Saving failures are shown in the editor and retried locally; sending starts
+only after its recovery snapshot has been saved.
 
 Delivery verifies the exact run, process, conversation and native input state.
 Confirmed receipts are idempotent by request ID. An uncertain result is never
@@ -328,6 +340,10 @@ Activity exposes supported native questions with their full visible disclosure,
 options, queue position and request time. It never submits a highlighted option
 without a user action. Answers are scoped to the unchanged run, process,
 conversation and request hash; uncertain input is not automatically retried.
+Unsent freeform answers, choices and the current question page are also saved
+locally. They restore only for the same machine/session, run, conversation and
+question hash. Interrupted submissions remain locked until reviewed; confirmed
+queued answers keep their submitted state after a GUI restart.
 Unsupported or truncated native prompts remain in Terminal.
 
 Claude tool approvals keep the session at **Needs approval** and appear in
@@ -412,6 +428,11 @@ verification; other adapters and one-shot children may expose history only.
 next to the original session in its group. Files remain shared. The CLI is
 `hgs [@host] fork SESSION [-n NAME] [-d] [--archive ID]`; support depends on the agent.
 DeepSeek native fork remains in Native UI.
+
+Codex may defer `SessionStart` until the fork's first message. Activity enables
+Send once Zerus verifies that the supervised process owns an independent child
+history linked to the source conversation and its native composer is ready.
+The child ID is confirmed by the agent's own event; the source session stays intact.
 
 <a id="projects"></a>
 
@@ -587,7 +608,12 @@ session's effective permissions. Bypass maps to Codex full access without sandbo
 Claude `bypassPermissions`, Kimi Never Ask/`--auto` and DeepSeek's native
 `danger-full-access`. The CLI is `hgs [@host] account permissions ID --mode
 provider|bypass`. Permissions do not accompany copied sign-in credentials.
-An older running DeepSeek host needs the newer adapter on its next ordinary start.
+Resident legacy DeepSeek bridges also support this mode through the official
+authenticated web API, without restarting the host or changing other sessions.
+Capability checks precede new binding creation. If permission setup is not
+confirmed, sending stays disabled; explicitly resume the same session to verify
+and finish setup. A confirmed native preset is not applied again after an
+uncertain acknowledgement. Already-running sessions keep their existing mode.
 
 **Copy existing sign-in over SSH** copies Codex/Kimi credentials and necessary
 provider/model settings into a new profile, without replacing another one or

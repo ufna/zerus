@@ -34,4 +34,5 @@ predecessor archive. Beads is synchronized through its own `refs/dolt/data`; all
 future tracker text must be suitable for public collaboration as well.
 
 Public binary packaging and exact dependency notices remain tracked release work.
-The repository remains private until the owner explicitly chooses to publish it.
+The owner made the repository public on 2026-10-08. Keep source, tracker data and
+future history suitable for public collaboration.

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ComposerDraftStore.h"
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -29,10 +30,11 @@ public:
     // Enlarges question text and answers; actions keep the workspace size.
     void setContentScale(double scale);
     void setNativeUi(bool native);
-    void setSending(const QString &sessionKey, const QString &questionId, bool sending = true);
+    bool setSending(const QString &sessionKey, const QString &questionId, bool sending = true);
     void setError(const QString &sessionKey, const QString &questionId, const QString &detail, bool uncertain = false);
     void setAnswered(const QString &sessionKey, const QString &questionId);
     void setSubmitted(const QString &sessionKey, const QString &questionId);
+    bool hasSubmittedAnswer(const QString &sessionKey, const QJsonObject &question);
 
 signals:
     void answerRequested(const QString &sessionKey, const QString &questionId, const QJsonArray &answers);
@@ -48,7 +50,7 @@ private:
     struct Answer { QSet<QString> options; QString text; bool other = false; };
     struct Draft {
         QHash<QString, Answer> answers;
-        QString notice, confirm;
+        QString notice, confirm, storageError, label;
         int page = 0;
         bool sending = false, submitted = false, answered = false, error = false, uncertain = false;
     };
@@ -61,6 +63,9 @@ private:
     };
     void rebuild();
     void capture();
+    bool saveDraft(const QString &key);
+    Draft loadDraft(const QString &key) const;
+    void ensureDraft(const QString &key, const QString &sessionKey);
     void updateControls();
     void scheduleSizing();
     void sizeToContent();
@@ -70,8 +75,12 @@ private:
     QString broaderSelection() const;
     QString callbackKey(const QString &sessionKey, const QString &questionId) const;
     static QString identity(const QString &sessionKey, const QString &questionId, const QString &hash = {});
+    static QString draftIdentity(const QString &sessionKey, const QJsonObject &question);
+    bool restoreSubmittedAnswer(const QString &key, const QJsonObject &question);
 
     QHash<QString, Draft> m_drafts;
+    ComposerDraftStore m_draftStore;
+    QSet<QString> m_failedSaves;
     QHash<QString, QString> m_latestKeys, m_sendingKeys;
     QString m_session, m_id, m_key, m_unavailableReason;
     QJsonObject m_question;

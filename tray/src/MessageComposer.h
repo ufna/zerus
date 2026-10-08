@@ -1,6 +1,7 @@
 #pragma once
 
 #include "HgsClient.h"
+#include "ComposerDraftStore.h"
 #include <QHash>
 #include <QSet>
 #include <QWidget>
@@ -37,10 +38,11 @@ public:
                           bool enabled, const QString &reason, const QString &pendingModel = {},
                           const QString &pendingEffort = {}, const QString &applyWhen = {});
     void setSettingsTerminalAvailable(bool available);
-    void setSending(const QString &key, bool preserveDraft = false);
+    bool setSending(const QString &key, bool preserveDraft = false);
     bool draftMatches(const QString &key, const QString &text, const QList<MessageAttachment> &attachments) const;
     void deliveryFinished(const QString &key, bool ok, const QString &detail = {}, bool uncertain = false);
     void renameDraft(const QString &oldKey, const QString &newKey);
+    void showSavedDrafts();
     bool isSending(const QString &key) const;
     // Text or attachments not yet sent; a message on its way does not count.
     bool hasDraft(const QString &key) const;
@@ -62,13 +64,8 @@ protected:
     void resizeEvent(QResizeEvent *event) override;
 
 private:
-    struct Draft {
-        QString text, notice;
-        QList<MessageAttachment> attachments;
-        int nextAttachmentNumber = 1;
-        int position = 0, anchor = 0;
-        bool sending = false, error = false, uncertain = false;
-    };
+    using Draft = ComposerDraft;
+    bool saveDraft(const QString &key);
     void send();
     void restoreDraft();
     void notifyDraft(const QString &key);
@@ -89,6 +86,8 @@ private:
     QHash<QString, Draft> m_drafts;
     QHash<QString, Draft> m_preservedDrafts;
     QSet<QString> m_unsent;   // keys whose last reported hasDraft() was true
+    ComposerDraftStore m_draftStore;
+    QSet<QString> m_failedSaves;
     QString m_key, m_unavailableReason;
     bool m_available = false, m_loading = false, m_dark = true;
     double m_scale = 1.0;

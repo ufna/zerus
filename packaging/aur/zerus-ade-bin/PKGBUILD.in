@@ -1,4 +1,4 @@
-# Maintainer: Zerus contributors (set the AUR maintainer contact before publication)
+# Maintainer: Vladimir Alyamkin <ufna@ufna.dev>
 pkgname=zerus-ade-bin
 pkgver=@VERSION@
 pkgrel=1
@@ -6,21 +6,23 @@ pkgdesc='An agent development environment for persistent local and remote tmux s
 arch=('x86_64')
 url='https://github.com/ufna/zerus'
 license=('MIT')
-depends=('qt6-base' 'qt6-webengine' 'qt6-svg' 'kstatusnotifieritem' 'kwindowsystem'
-         'tmux>=3.7' 'openssh' 'python' 'curl' 'procps-ng' 'libgcc' 'libstdc++' 'glibc' 'hicolor-icon-theme')
+# Library floors come from the verified package's .BUILDINFO, never the publisher.
+depends=(@BINARY_LIBRARY_DEPENDS@
+         'tmux>=3.7' 'openssh' 'python' 'curl' 'procps-ng' 'hicolor-icon-theme' 'bash' 'tar')
 optdepends=('konsole: external KDE terminal integration'
             'wl-clipboard: clipboard transfers on Wayland'
             'xclip: clipboard transfers on X11'
             'nodejs: separately installed native agents and DeepSeek Harness'
             'npm: install Codex and DeepSeek Harness from Accounts'
-            'git: Git repository and worktree features')
-provides=('zerus-ade' 'hgs' 'hgs-tray')
-conflicts=('zerus-ade' 'zerus-ade-git')
+            'git: Git repository and worktree features'
+            'systemd: user service autostart and isolated DeepSeek scopes')
+provides=("zerus=$pkgver" 'hgs' 'hgs-tray')
+conflicts=('zerus' 'zerus-git')
 options=('!strip' '!debug')
 source=("https://github.com/ufna/zerus/releases/download/v${pkgver}/zerus-${pkgver}-arch-${CARCH}.tar.gz")
 sha256sums=('@BINARY_SHA256@')
 
 package() {
     cp -a "$srcdir/zerus-$pkgver-arch-$CARCH/usr" "$pkgdir/"
-    mv "$pkgdir/usr/share/licenses/zerus-ade-git" "$pkgdir/usr/share/licenses/$pkgname"
+    mv "$pkgdir/usr/share/licenses/zerus-git" "$pkgdir/usr/share/licenses/$pkgname"
 }

@@ -8,18 +8,18 @@ git rev-parse --verify HEAD > /dev/null
 package_build="$repo_root/.ci-build/arch-package"
 mkdir -p "$package_build" artifacts/test-results
 (
-    cd packaging/aur/zerus-ade-git
+    cd packaging/aur/zerus-git
     makepkg --printsrcinfo | diff - .SRCINFO
 )
-cp packaging/aur/zerus-ade-git/PKGBUILD "$package_build/PKGBUILD"
-rm -f "$package_build"/*.pkg.tar.zst artifacts/zerus-ade-git-*.pkg.tar.zst
+cp packaging/aur/zerus-git/PKGBUILD "$package_build/PKGBUILD"
+rm -f "$package_build"/*.pkg.tar.zst artifacts/zerus-git-*.pkg.tar.zst
 # Only this disposable copy uses a local source; the distributable recipe keeps
 # its anonymous upstream URL. No token or personal checkout path enters AUR.
 python3 - "$package_build/PKGBUILD" "$repo_root" <<'PY'
 from pathlib import Path
 import sys
 path=Path(sys.argv[1])
-upstream="source=('zerus::git+https://github.com/ufna/zerus.git')"
+upstream="source=('zerus::git+https://github.com/ufna/zerus.git#branch=main')"
 assert path.read_text().count(upstream)==1
 uri=Path(sys.argv[2]).as_uri()
 assert "'" not in uri
@@ -36,4 +36,4 @@ PY
     fi
     cp ./*.pkg.tar.zst "$repo_root/artifacts/"
 )
-python3 scripts/check-package.py --root "$package_build/pkg/zerus-ade-git"
+python3 scripts/check-package.py --root "$package_build/pkg/zerus-git"

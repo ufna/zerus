@@ -7,6 +7,7 @@ machine connection settings local. `AGENTS.md` describes the Beads workflow.
 
 ```sh
 python3 scripts/ci/check-source.py
+python3 -m unittest discover -s tests -p test_release_publication.py
 bash scripts/ci/cli.sh
 bash scripts/ci/gui.sh
 ```

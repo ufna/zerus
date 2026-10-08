@@ -173,13 +173,19 @@ QuestionCard::QuestionCard(QWidget *parent) : QWidget(parent)
     connect(m_submit, &QPushButton::clicked, this, &QuestionCard::submit);
     connect(m_tabs, &QTabBar::currentChanged, this, [this](int index) {
         m_pages->setCurrentIndex(index);
-        if (!m_loading && !m_key.isEmpty()) m_drafts[m_key].page = index;
+        if (!m_loading && !m_key.isEmpty()) { m_drafts[m_key].page = index; saveDraft(m_key); }
         updateControls();
     });
     connect(m_retry, &QPushButton::clicked, this, [this] {
         if (m_key.isEmpty()) return;
-        auto &draft = m_drafts[m_key]; draft.uncertain = false; draft.error = false; draft.notice.clear(); updateControls();
+        auto &draft = m_drafts[m_key]; draft.uncertain = false; draft.error = false; draft.notice.clear(); saveDraft(m_key); updateControls();
     });
+    auto *retrySave = new QTimer(this); retrySave->setInterval(2000);
+    connect(retrySave, &QTimer::timeout, this, [this] {
+        const auto pending = m_failedSaves;
+        for (const auto &key : pending) saveDraft(key);
+        if (!pending.isEmpty()) updateControls();
+    }); retrySave->start();
     setTheme(true); hide();
 }
 
@@ -188,12 +194,25 @@ QString QuestionCard::identity(const QString &sessionKey, const QString &questio
     return QString::fromUtf8(QJsonDocument(QJsonArray{sessionKey, questionId, hash}).toJson(QJsonDocument::Compact));
 }
 
-void QuestionCard::setQuestion(const QString &sessionKey, const QJsonObject &question, int pendingQuestions)
+QString QuestionCard::draftIdentity(const QString &sessionKey, const QJsonObject &question)
 {
-    const QString id = question.value("question_id").toString();
-    const QString key = id.isEmpty() ? QString() : identity(sessionKey, id, question.value("question_hash").toString());
-    bool changed = key != m_key || question.value("questions") != m_question.value("questions");
-    m_session = sessionKey; m_id = id; m_key = key; m_question = question;
+    if (question.value("question_id").toString().isEmpty()) return {};
+    return identity(sessionKey, question.value("question_id").toString(), question.value("question_hash").toString())
+        + '\n' + question.value("run_id").toString() + '\n' + question.value("conversation_id").toString();
+}
+
+void QuestionCard::ensureDraft(const QString &key, const QString &sessionKey)
+{
+    if (!key.isEmpty() && !m_drafts.contains(key)) {
+        auto draft = loadDraft(key);
+        draft.label = tr("%1 (question answer)").arg(QString(sessionKey).replace('\n', " / "));
+        m_drafts.insert(key, draft);
+    }
+}
+
+bool QuestionCard::restoreSubmittedAnswer(const QString &key, const QJsonObject &question)
+{
+    bool changed = false;
     const auto delivery = question.value("answer_delivery").toObject();
     if (!key.isEmpty() && question.value("source") == "codex_async" && question.value("optional").toBool()
         && delivery.value("status") == "submitted"
@@ -214,7 +233,30 @@ void QuestionCard::setQuestion(const QString &sessionKey, const QJsonObject &que
         }
         draft.submitted = true; draft.sending = false; draft.error = false; draft.uncertain = false;
         draft.notice = tr("Answer submitted. Waiting for Codex to record it. You can check the queue above or open Terminal.");
+        saveDraft(key);
     }
+    return changed;
+}
+
+bool QuestionCard::hasSubmittedAnswer(const QString &sessionKey, const QJsonObject &question)
+{
+    if (question.value("source") != "codex_async" || !question.value("optional").toBool()) return false;
+    const auto key = draftIdentity(sessionKey, question);
+    ensureDraft(key, sessionKey);
+    // Remember verified snapshots even when the submitted card is never shown.
+    // A later stale poll must not offer the same request again.
+    restoreSubmittedAnswer(key, question);
+    return m_drafts.value(key).submitted;
+}
+
+void QuestionCard::setQuestion(const QString &sessionKey, const QJsonObject &question, int pendingQuestions)
+{
+    const QString id = question.value("question_id").toString();
+    const QString key = draftIdentity(sessionKey, question);
+    ensureDraft(key, sessionKey);
+    const bool restored = restoreSubmittedAnswer(key, question);
+    const bool changed = restored || key != m_key || question.value("questions") != m_question.value("questions");
+    m_session = sessionKey; m_id = id; m_key = key; m_question = question;
     const double created=question.value("created_at").toDouble();
     const auto asked=created>0 && created<253402300800. ? QDateTime::fromSecsSinceEpoch(qint64(created)).toLocalTime() : QDateTime();
     m_askedAt->setVisible(asked.isValid());
@@ -250,14 +292,16 @@ QString QuestionCard::callbackKey(const QString &sessionKey, const QString &ques
     return m_sendingKeys.value(pair, m_latestKeys.value(pair));
 }
 
-void QuestionCard::setSending(const QString &sessionKey, const QString &questionId, bool sending)
+bool QuestionCard::setSending(const QString &sessionKey, const QString &questionId, bool sending)
 {
     const QString pair = identity(sessionKey, questionId), key = callbackKey(sessionKey, questionId);
-    if (key.isEmpty()) return;
+    if (key.isEmpty()) return false;
     auto &draft = m_drafts[key]; draft.sending = sending; draft.error = false;
     draft.notice = sending ? tr("Submitting your answer…") : QString();
+    if (!saveDraft(key)) { draft.sending = false; draft.notice.clear(); updateControls(); return false; }
     if (sending) m_sendingKeys.insert(pair, key); else m_sendingKeys.remove(pair);
     updateControls();
+    return true;
 }
 
 void QuestionCard::setError(const QString &sessionKey, const QString &questionId, const QString &detail, bool uncertain)
@@ -266,11 +310,11 @@ void QuestionCard::setError(const QString &sessionKey, const QString &questionId
     if (key.isEmpty()) return;
     auto &draft = m_drafts[key];
     if (draft.submitted) {
-        draft.sending = false; m_sendingKeys.remove(identity(sessionKey, questionId)); updateControls(); return;
+        draft.sending = false; saveDraft(key); m_sendingKeys.remove(identity(sessionKey, questionId)); updateControls(); return;
     }
     draft.sending = false; draft.error = true; draft.uncertain = uncertain;
     draft.notice = uncertain ? tr("Delivery is not confirmed. Check Terminal before retrying. %1").arg(detail) : detail;
-    m_sendingKeys.remove(identity(sessionKey, questionId)); updateControls();
+    saveDraft(key); m_sendingKeys.remove(identity(sessionKey, questionId)); updateControls();
 }
 
 void QuestionCard::setAnswered(const QString &sessionKey, const QString &questionId)
@@ -279,6 +323,7 @@ void QuestionCard::setAnswered(const QString &sessionKey, const QString &questio
     if (key.isEmpty()) return;
     auto &draft = m_drafts[key]; draft.sending = false; draft.answered = true; draft.error = false; draft.uncertain = false;
     draft.notice = m_question.value("optional").toBool() ? tr("Response recorded.") : tr("Answer sent. Waiting for the agent…");
+    saveDraft(key);
     m_sendingKeys.remove(identity(sessionKey, questionId)); updateControls();
 }
 
@@ -288,6 +333,7 @@ void QuestionCard::setSubmitted(const QString &sessionKey, const QString &questi
     if (key.isEmpty()) return;
     auto &draft = m_drafts[key]; draft.sending = false; draft.submitted = true; draft.error = false; draft.uncertain = false;
     draft.notice = tr("Answer submitted. Waiting for Codex to record it. You can check the queue above or open Terminal.");
+    saveDraft(key);
     m_sendingKeys.remove(identity(sessionKey, questionId)); updateControls();
 }
 
@@ -353,6 +399,9 @@ void QuestionCard::rebuild()
             form.text->setMinimumHeight(35); form.text->setMaxLength(4096); form.text->setText(answer.text);
             // Keep the answer reachable while a long prompt or option list scrolls.
             formLayout->addWidget(form.text); connect(form.text, &QLineEdit::textChanged, this, [this] { capture(); });
+            connect(form.text, &QLineEdit::returnPressed, this, [this] {
+                if (m_submit->isVisible()) submit();
+            });
         }
         mode->setVisible(!form.options.isEmpty()&&listed); column->addStretch(); scroll->setWidget(page);
         m_pages->addWidget(formPage); m_forms.append(form);
@@ -375,7 +424,45 @@ void QuestionCard::capture()
         answer.other = form.other && form.other->isChecked();
         if (form.text) answer.text = form.text->text();
     }
-    updateControls();
+    saveDraft(m_key); updateControls();
+}
+
+QuestionCard::Draft QuestionCard::loadDraft(const QString &key) const
+{
+    const auto saved = m_draftStore.load("question\n" + key); Draft draft;
+    draft.storageError = saved.storageError; draft.uncertain = saved.uncertain; draft.error = saved.uncertain;
+    draft.notice = saved.notice;
+    draft.page = saved.formState.value("page").toInt();
+    draft.answered = saved.formState.value("answered").toBool(); draft.submitted = saved.formState.value("submitted").toBool();
+    if (draft.submitted) draft.notice = tr("Answer submitted. Waiting for the agent to record it. Check Activity or Terminal.");
+    if (draft.answered) draft.notice = tr("Response recorded.");
+    for (const auto &value : saved.formState.value("answers").toArray()) {
+        const auto object = value.toObject(); Answer answer;
+        answer.text = object.value("text").toString(); answer.other = object.value("other").toBool();
+        for (const auto &option : object.value("options").toArray()) answer.options.insert(option.toString());
+        draft.answers.insert(object.value("id").toString(), answer);
+    }
+    return draft;
+}
+
+bool QuestionCard::saveDraft(const QString &key)
+{
+    if (key.isEmpty()) return true;
+    auto &draft = m_drafts[key]; ComposerDraft saved;
+    saved.label = draft.label; saved.sending = draft.sending; saved.uncertain = draft.uncertain;
+    QJsonArray answers; QStringList text;
+    auto ids = draft.answers.keys(); ids.sort();
+    for (const auto &id : ids) {
+        const auto answer = draft.answers.value(id); QJsonArray options;
+        auto selected = answer.options.values(); selected.sort(); for (const auto &option : selected) options.append(option);
+        answers.append(QJsonObject{{"id", id}, {"text", answer.text}, {"other", answer.other}, {"options", options}});
+        if (!answer.text.isEmpty()) text.append(answer.text);
+    }
+    if (!draft.answered && !draft.submitted) saved.text = text.join('\n');
+    saved.formState = {{"answers", draft.answered ? QJsonArray() : answers}, {"page", draft.page}, {"answered", draft.answered}, {"submitted", draft.submitted}};
+    const bool ok = m_draftStore.save("question\n" + key, saved); draft.storageError = saved.storageError;
+    if (ok) m_failedSaves.remove(key); else m_failedSaves.insert(key);
+    return ok;
 }
 
 QJsonArray QuestionCard::answers(bool *valid) const
@@ -460,7 +547,7 @@ void QuestionCard::updateControls()
     }
     m_progress->setText(draft.submitted && !draft.answered ? tr("Awaiting agent") : m_forms.isEmpty() ? QString() : tr("%1 of %2 answered").arg(answered).arg(m_forms.size()));
     m_progress->setVisible(!approval);
-    QString notice = draft.notice;
+    QString notice = draft.storageError.isEmpty() ? draft.notice : draft.storageError;
     if (notice.isEmpty() && !m_available) notice = m_unavailableReason;
     if (notice.isEmpty() && !supported) notice = m_question.value("answer_unavailable_reason").toString(tr("Answer this request in Terminal."));
     if (notice.isEmpty()) for (const auto &form : m_forms) {
@@ -476,7 +563,7 @@ void QuestionCard::updateControls()
         optional ? tr("The agent can continue. Answer when ready or skip this question.") :
         complete ? tr("Your choices are ready to send.") : tr("Answer each question to continue.");
     m_status->setText(notice.left(600));
-    m_status->setStyleSheet(QString("color:%1;font-size:11px;").arg(draft.error ? (m_dark ? "#f4ab9b" : "#a13224") : (m_dark ? "#a2adbc" : "#627082")));
+    m_status->setStyleSheet(QString("color:%1;font-size:11px;").arg(draft.error || !draft.storageError.isEmpty() ? (m_dark ? "#f4ab9b" : "#a13224") : (m_dark ? "#a2adbc" : "#627082")));
     scheduleSizing();
 }
 

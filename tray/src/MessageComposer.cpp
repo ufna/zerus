@@ -3,8 +3,11 @@
 #include "WorkspaceIcons.h"
 #include "WorkspaceStyle.h"
 
+#include <QApplication>
 #include <QBuffer>
 #include <QComboBox>
+#include <QClipboard>
+#include <QDialog>
 #include <QDropEvent>
 #include <QDragLeaveEvent>
 #include <QFile>
@@ -17,6 +20,8 @@
 #include <QKeyEvent>
 #include <QToolTip>
 #include <QLabel>
+#include <QListWidget>
+#include <QMessageBox>
 #include <QMimeData>
 #include <QMimeDatabase>
 #include <QPlainTextEdit>
@@ -28,6 +33,7 @@
 #include <QStylePainter>
 #include <QStyleOptionButton>
 #include <QTextDocument>
+#include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <functional>
@@ -82,9 +88,10 @@ public:
     std::function<void(const QImage &)> attachImage;
 protected:
     bool canInsertFromMimeData(const QMimeData *source) const override {
-        return source->hasImage() || source->hasUrls() || QPlainTextEdit::canInsertFromMimeData(source);
+        return !isReadOnly() && (source->hasImage() || source->hasUrls() || QPlainTextEdit::canInsertFromMimeData(source));
     }
     void insertFromMimeData(const QMimeData *source) override {
+        if (isReadOnly()) return;
         if (source->hasUrls()) {
             const auto urls = source->urls();
             bool allLocal = !urls.isEmpty();
@@ -125,6 +132,7 @@ protected:
         QPlainTextEdit::keyPressEvent(event);
     }
     void dropEvent(QDropEvent *event) override {
+        if (isReadOnly()) { event->ignore(); return; }
         const auto *mime = event->mimeData();
         if (mime->hasImage() || mime->hasUrls()) {
             // We handle attachment insertion ourselves, so finish the native
@@ -218,13 +226,17 @@ MessageComposer::MessageComposer(QWidget *parent) : QWidget(parent)
     connect(edit, &QPlainTextEdit::textChanged, this, [this]() {
         if (m_loading || m_key.isEmpty()) return;
         auto &draft = m_drafts[m_key]; draft.text = m_editor->toPlainText();
+        draft.position = m_editor->textCursor().position(); draft.anchor = m_editor->textCursor().anchor();
         if (!draft.error && !draft.uncertain) draft.notice.clear();
+        saveDraft(m_key);
         updateControls();
     });
     auto rememberCursor = [this] {
         if (m_loading || m_key.isEmpty() || m_drafts[m_key].sending) return;
         auto &draft = m_drafts[m_key];
+        if (draft.position == m_editor->textCursor().position() && draft.anchor == m_editor->textCursor().anchor()) return;
         draft.position = m_editor->textCursor().position(); draft.anchor = m_editor->textCursor().anchor();
+        saveDraft(m_key); updateControls();
     };
     connect(edit, &QPlainTextEdit::cursorPositionChanged, this, rememberCursor);
     connect(edit, &QPlainTextEdit::selectionChanged, this, rememberCursor);
@@ -243,8 +255,15 @@ MessageComposer::MessageComposer(QWidget *parent) : QWidget(parent)
     connect(m_retry, &QPushButton::clicked, this, [this]() {
         if (m_key.isEmpty()) return;
         auto &draft = m_drafts[m_key]; draft.uncertain = false; draft.notice.clear(); draft.error = false;
+        saveDraft(m_key);
         updateControls(); m_editor->setFocus();
     });
+    auto *retrySave = new QTimer(this); retrySave->setInterval(2000);
+    connect(retrySave, &QTimer::timeout, this, [this] {
+        const auto pending = m_failedSaves;
+        for (const auto &key : pending) saveDraft(key);
+        if (!pending.isEmpty()) updateControls();
+    }); retrySave->start();
     setTheme(true); updateControls();
 }
 
@@ -271,6 +290,7 @@ void MessageComposer::setSessionKey(const QString &key)
 {
     if (key == m_key) return;
     m_settingsPopup->hide();
+    if (!key.isEmpty() && !m_drafts.contains(key)) m_drafts.insert(key, m_draftStore.load(key));
     m_key = key; m_loading = true;
     restoreDraft();
     m_loading = false; rebuildAttachments(); updateControls(); updatePlaceholder();
@@ -323,7 +343,7 @@ bool MessageComposer::offerDraft(const QString &key, const QString &text)
     if (!draft.text.trimmed().isEmpty() || !draft.attachments.isEmpty() || draft.sending) return false;
     draft.text = text; draft.position = draft.anchor = int(text.size()); draft.notice.clear();
     if (key == m_key) { m_loading = true; restoreDraft(); m_loading = false; }
-    notifyDraft(key); updateControls(); return true;
+    saveDraft(key); notifyDraft(key); updateControls(); return true;
 }
 
 void MessageComposer::setAvailability(bool available, const QString &reason)
@@ -357,30 +377,49 @@ bool MessageComposer::draftMatches(const QString &key, const QString &text, cons
     return true;
 }
 
-void MessageComposer::setSending(const QString &key, bool preserveDraft)
+bool MessageComposer::saveDraft(const QString &key)
+{
+    // Retrying an older Activity message must never replace the current draft.
+    auto &draft = m_preservedDrafts.contains(key) ? m_preservedDrafts[key] : m_drafts[key];
+    const bool saved = m_draftStore.save(key, draft);
+    if (saved) m_failedSaves.remove(key); else m_failedSaves.insert(key);
+    if (m_preservedDrafts.contains(key)) m_drafts[key].storageError = draft.storageError;
+    return saved;
+}
+
+bool MessageComposer::setSending(const QString &key, bool preserveDraft)
 {
     if(preserveDraft)m_preservedDrafts.insert(key,m_drafts.value(key));
     auto &draft = m_drafts[key]; draft.sending = true; draft.error = false; draft.notice = tr("Sending…");
+    if (!saveDraft(key)) {
+        draft.sending = false; draft.notice.clear(); m_preservedDrafts.remove(key);
+        if (key == m_key) updateControls();
+        return false;
+    }
     // Keep the submitted payload for failure recovery, but remove it from the
     // composer as soon as the owner accepts delivery and adds it to Activity.
     if (key == m_key) {
+        if (m_send->hasFocus()) m_editor->setFocus(Qt::OtherFocusReason);
         m_loading = true; m_editor->clear(); m_loading = false;
         rebuildAttachments(); updateControls();
     }
     notifyDraft(key);
+    return true;
 }
 
 void MessageComposer::deliveryFinished(const QString &key, bool ok, const QString &detail, bool uncertain)
 {
     if(m_preservedDrafts.contains(key)) {
         m_drafts[key]=m_preservedDrafts.take(key);
+        saveDraft(key);
         if(key==m_key){m_loading=true;restoreDraft();m_loading=false;rebuildAttachments();updateControls();}
         notifyDraft(key); return;
     }
     auto &draft = m_drafts[key]; const bool wasSending = draft.sending;
     draft.sending = false; draft.error = !ok; draft.uncertain = uncertain;
     draft.notice = ok ? tr("Submitted to terminal") : detail;
-    if (ok) { draft.text.clear(); draft.attachments.clear(); draft.nextAttachmentNumber = 1; }
+    if (ok) { draft.text.clear(); draft.attachments.clear(); draft.attachmentHashes.clear(); draft.nextAttachmentNumber = 1; }
+    saveDraft(key);
     notifyDraft(key);
     if (key != m_key) return;
     if (ok || wasSending) { m_loading = true; restoreDraft(); m_loading = false; }
@@ -390,6 +429,16 @@ void MessageComposer::deliveryFinished(const QString &key, bool ok, const QStrin
 void MessageComposer::renameDraft(const QString &oldKey, const QString &newKey)
 {
     if (oldKey == newKey || !m_drafts.contains(oldKey)) return;
+    auto moved = m_preservedDrafts.value(oldKey, m_drafts.value(oldKey));
+    auto destination = m_drafts.contains(newKey) ? m_drafts.value(newKey) : m_draftStore.load(newKey);
+    if (!destination.text.isEmpty() || !destination.attachments.isEmpty() || !destination.storageError.isEmpty()) {
+        m_drafts.insert(newKey, destination);
+        if (m_key == oldKey) { m_key.clear(); setSessionKey(newKey); }
+        showError(tr("Another draft already exists here. Recover the previous one from Saved drafts."));
+        return;
+    }
+    if (!m_draftStore.save(newKey, moved)) { m_drafts[oldKey].storageError = moved.storageError; updateControls(); return; }
+    Draft empty; m_draftStore.save(oldKey, empty);
     m_drafts.insert(newKey, m_drafts.take(oldKey));
     if(m_preservedDrafts.contains(oldKey))m_preservedDrafts.insert(newKey,m_preservedDrafts.take(oldKey));
     notifyDraft(oldKey); notifyDraft(newKey);
@@ -453,6 +502,7 @@ bool MessageComposer::addAttachment(const QString &name, const QString &mime, co
         reference = QString("[%1 #%2]").arg(mime.startsWith("image/") ? "Image" : "File").arg(draft.nextAttachmentNumber++);
     } while (draft.text.contains(reference));
     draft.attachments.append(MessageAttachment{name, mime, data, reference});
+    draft.attachmentHashes.clear();
     auto cursor = m_editor->textCursor();
     const auto text = m_editor->toPlainText();
     const bool leading = cursor.selectionStart() > 0 && !text[cursor.selectionStart() - 1].isSpace();
@@ -460,7 +510,7 @@ bool MessageComposer::addAttachment(const QString &name, const QString &mime, co
     cursor.insertText((leading ? " " : "") + reference + (trailing ? " " : ""));
     m_editor->setTextCursor(cursor);
     if (!draft.uncertain) { draft.notice.clear(); draft.error = false; }
-    rebuildAttachments(); updateControls(); return true;
+    saveDraft(m_key); rebuildAttachments(); updateControls(); return true;
 }
 
 void MessageComposer::showError(const QString &text)
@@ -497,6 +547,7 @@ void MessageComposer::rebuildAttachments()
         connect(remove, &QPushButton::clicked, this, [this, i]() {
             auto &current = m_drafts[m_key]; if (current.sending || i >= current.attachments.size()) return;
             const auto reference = current.attachments.takeAt(i).reference;
+            current.attachmentHashes.clear();
             if (!reference.isEmpty()) {
                 auto edit = m_editor->textCursor(); edit.beginEditBlock();
                 auto match = m_editor->document()->find(reference);
@@ -506,7 +557,7 @@ void MessageComposer::rebuildAttachments()
                 }
                 edit.endEditBlock();
             }
-            rebuildAttachments(); updateControls();
+            saveDraft(m_key); rebuildAttachments(); updateControls();
         });
         row->addWidget(image); row->addWidget(text, 1); row->addWidget(remove); m_attachmentsLayout->addWidget(tile);
     }
@@ -519,7 +570,10 @@ void MessageComposer::updateControls()
     const auto draft = m_drafts.value(m_key);
     const bool hasContent = !draft.text.trimmed().isEmpty() || !draft.attachments.isEmpty();
     const bool tooLong = draft.text.toUtf8().size() > MaxTextBytes;
-    m_editor->setEnabled(!m_key.isEmpty() && !draft.sending);
+    // Disabling a focused editor makes Qt focus another action (often Stop).
+    // Keep its focus while locking the outgoing payload against edits.
+    m_editor->setEnabled(!m_key.isEmpty());
+    m_editor->setReadOnly(draft.sending);
     m_attach->setEnabled(!m_key.isEmpty() && !draft.sending);
     for (auto *button : m_attachmentList->findChildren<QPushButton *>("removeAttachment")) button->setEnabled(!draft.sending);
     m_send->setEnabled(!m_key.isEmpty() && m_available && hasContent && !tooLong && !draft.sending && !draft.uncertain);
@@ -527,10 +581,72 @@ void MessageComposer::updateControls()
     m_retry->setVisible(draft.uncertain && !draft.sending);
     m_settings->setEnabled(!m_key.isEmpty() && !draft.sending);
     if (m_settingsPopup->isVisible()) updateSettingsApply();
-    QString status = draft.notice;
-    if (status.isEmpty()) status = tooLong ? tr("Message exceeds 64 KiB.") : !m_available ? m_unavailableReason : tr("Enter to send; Shift+Enter for a new line");
+    QString status = draft.storageError.isEmpty() ? draft.notice : draft.storageError;
+    if (status.isEmpty()) status = tooLong ? tr("Message exceeds 64 KiB.") : !m_available ? m_unavailableReason
+        : hasContent ? tr("Draft saved locally. Enter to send; Shift+Enter for a new line") : tr("Enter to send; Shift+Enter for a new line");
     m_status->setText(status); m_status->setToolTip(status);
-    setWorkspaceStyle(m_status, QString("font-size:11px;color:%1;").arg(draft.error || tooLong ? (m_dark ? "#f4ab9b" : "#a13224") : (m_dark ? "#a2adbc" : "#627082")));
+    setWorkspaceStyle(m_status, QString("font-size:11px;color:%1;").arg(draft.error || tooLong || !draft.storageError.isEmpty() ? (m_dark ? "#f4ab9b" : "#a13224") : (m_dark ? "#a2adbc" : "#627082")));
+}
+
+void MessageComposer::showSavedDrafts()
+{
+    QDialog dialog(this); dialog.setObjectName("savedDraftsDialog"); dialog.setWindowTitle(tr("Saved drafts")); dialog.resize(720, 440);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *hint = new QLabel(tr("Drafts stay on this desktop, including those from ended or unavailable sessions. Restoring never sends a message."));
+    hint->setWordWrap(true); layout->addWidget(hint);
+    auto *list = new QListWidget; list->setObjectName("savedDraftList"); layout->addWidget(list, 1);
+    auto keys = m_draftStore.keys();
+    for (auto it = m_drafts.cbegin(); it != m_drafts.cend(); ++it)
+        if ((!it->text.isEmpty() || !it->attachments.isEmpty()) && !keys.contains(it.key())) keys.append(it.key());
+    keys.sort();
+    for (const auto &key : keys) {
+        auto *item = new QListWidgetItem(m_draftStore.label(key), list);
+        item->setData(Qt::UserRole, key);
+    }
+    auto *preview = new QPlainTextEdit; preview->setObjectName("savedDraftPreview"); preview->setReadOnly(true); layout->addWidget(preview, 1);
+    auto *detail = new QLabel; detail->setWordWrap(true); layout->addWidget(detail);
+    auto *actions = new QHBoxLayout;
+    auto *copy = new QPushButton(tr("Copy text")); copy->setObjectName("copySavedDraft");
+    auto *restore = new QPushButton(tr("Restore in current session")); restore->setObjectName("restoreSavedDraft");
+    auto *close = new QPushButton(tr("Close")); close->setDefault(true);
+    actions->addWidget(copy); actions->addWidget(restore); actions->addStretch(); actions->addWidget(close); layout->addLayout(actions);
+    const auto target = m_key;
+    Draft selected;
+    connect(list, &QListWidget::currentItemChanged, &dialog, [&](QListWidgetItem *item) {
+        const auto key = item ? item->data(Qt::UserRole).toString() : QString();
+        if (!item) selected = {};
+        else if (m_preservedDrafts.contains(key)) selected = m_preservedDrafts.value(key);
+        else if (m_drafts.contains(key)) selected = m_drafts.value(key);
+        else selected = m_draftStore.load(key);
+        if (selected.sending) {
+            selected.sending = false; selected.uncertain = true;
+            selected.notice = tr("This message may already have been sent. Check Activity or Terminal before sending again.");
+        }
+        preview->setPlainText(selected.text);
+        detail->setText(selected.storageError.isEmpty() ? tr("%1 attachment(s). %2").arg(selected.attachments.size()).arg(selected.notice) : selected.storageError);
+        copy->setEnabled(item && !selected.text.isEmpty());
+        restore->setEnabled(item && !target.isEmpty() && !isSending(target) && selected.storageError.isEmpty());
+    });
+    connect(copy, &QPushButton::clicked, &dialog, [&] { QApplication::clipboard()->setText(selected.text); });
+    connect(close, &QPushButton::clicked, &dialog, &QDialog::reject);
+    connect(restore, &QPushButton::clicked, &dialog, [&] {
+        if (m_key != target || target.isEmpty() || isSending(target)) return;
+        const auto current = m_drafts.value(target);
+        if ((!current.text.isEmpty() || !current.attachments.isEmpty())
+            && list->currentItem()->data(Qt::UserRole).toString() != target) {
+            QMessageBox confirm(QMessageBox::Warning, tr("Replace current draft?"),
+                tr("Replace the unsent draft in %1 with the selected saved draft?").arg(QString(target).replace('\n', " / ")),
+                QMessageBox::Ok | QMessageBox::Cancel, &dialog);
+            confirm.setObjectName("replaceDraftConfirm"); confirm.setTextFormat(Qt::PlainText); confirm.setDefaultButton(QMessageBox::Cancel);
+            if (confirm.exec() != QMessageBox::Ok || m_key != target || isSending(target)) return;
+        }
+        selected.label.clear(); selected.formState = {};
+        m_drafts[target] = selected; saveDraft(target);
+        m_loading = true; restoreDraft(); m_loading = false; rebuildAttachments(); updateControls(); dialog.accept();
+    });
+    copy->setEnabled(false); restore->setEnabled(false);
+    if (list->count()) list->setCurrentRow(0); else hint->setText(tr("No saved drafts on this desktop."));
+    dialog.exec();
 }
 
 void MessageComposer::setModelSettings(const QString &model, const QString &effort, const QJsonArray &options,
