@@ -1281,11 +1281,14 @@ impl LaunchOptions {
             if options.tag.is_empty() {
                 options.tag = format!("work-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
             }
-            if options.tag.contains(['/', ':', '.']) || options.tag.chars().any(char::is_whitespace)
+            // Same tags as rename and fork; the GUI validates with SessionTag::problem.
+            if options.tag.trim() != options.tag
+                || options.tag.contains(['/', ':', '.'])
+                || options.tag.chars().any(char::is_control)
             {
                 return Err(Error::new(
                     1,
-                    "new session name cannot contain whitespace, '/', ':' or '.'",
+                    "new session name cannot contain '/', ':', '.', control characters or surrounding whitespace",
                 ));
             }
         }

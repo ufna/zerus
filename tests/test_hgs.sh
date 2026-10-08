@@ -881,6 +881,24 @@ other_launch=4400baad-7d90-480a-8451-5f3e456e2ae9
 check "launch token requires new session" 1 "requires --new" --dry-run sh "$P" --launch-id "$launch_id"
 check "launch token validates UUID" 1 "needs a UUID" --dry-run sh "$P" --new --launch-id invalid
 check "launch token forwards over interactive SSH" 0 "ssh -t.*--launch-id $launch_id" --dry-run @nowhere sh "$P" --new -n group-test --launch-id "$launch_id"
+# New sessions accept the same tags as rename and fork, so the GUI can create them.
+check "new session accepts inner spaces" 0 "-s sh/sample-project/my plan -c " --dry-run sh "$P" --new -n 'my plan'
+check "@peer new session quotes a spaced name" 0 "--new -n 'my plan' -d --dry-run\$" --dry-run @nowhere sh "$P" --new -n 'my plan' -d
+for bad in ' plan' 'plan ' 'a/b' 'a.b' 'a:b' "$(printf 'a\tb')"; do
+  check "new session rejects tag '$bad'" 1 "new session name" --dry-run sh "$P" --new -n "$bad"
+done
+if [ -x "$TM" ] && command -v python3 >/dev/null 2>&1; then
+  spaced_launch=0c5a7f3e-6d1b-4c8e-9f2a-5b7d3e1c9a40
+  check "detached launch creates a spaced session" 0 "started sh/sample-project/my plan" sh "$P" --new -d -n 'my plan' --launch-id "$spaced_launch"
+  "$HGS" ls --json --local > "$tmp/spaced-list.json"
+  if python3 - "$tmp/spaced-list.json" "$spaced_launch" <<'PY'
+import json, sys
+session = next(s for s in json.load(open(sys.argv[1]))['sessions'] if s['name'] == 'sh/sample-project/my plan')
+assert session['launch_id'] == sys.argv[2], session
+PY
+  then pass=$((pass+1)); echo "ok   spaced session is listed with its launch token"; else fail=$((fail+1)); echo "FAIL spaced session is missing from the listing"; fi
+  t kill-session -t '=sh/sample-project/my plan' 2>/dev/null || true
+fi
 if [ -x "$TM" ] && command -v python3 >/dev/null 2>&1; then
   check "launch token creates only its own session" 0 "started sh/sample-project/group-test" sh "$P" --new -d -n group-test --launch-id "$launch_id"
   check "launch collision cannot take ownership" 1 "already exists" sh "$P" --new -d -n group-test --launch-id "$other_launch"
