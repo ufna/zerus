@@ -19,6 +19,8 @@ public:
   void setAvailable(bool available, const QString &reason = {});
   void updateSessionName(const QString &newName);
   void setTheme(bool dark);
+  // Enlarges the terminal cells; the toolbar keeps the workspace size.
+  void setContentScale(double scale);
   bool isConnected() const;
   // Changes even when reconnecting the same session, so delayed uploads cannot
   // paste into a replacement attachment or a different native input.
@@ -51,5 +53,6 @@ private:
   QString m_hgsPath, m_host, m_name, m_runId, m_unavailableReason;
   bool m_available = true;
   bool m_dark = false;
+  double m_scale = 1.0;
   quint64 m_connectionGeneration = 0;
 };

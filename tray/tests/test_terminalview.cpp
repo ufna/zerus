@@ -3,6 +3,7 @@
 #include "TerminalView.h"
 
 #include <QFile>
+#include <QFontInfo>
 #include <QFontMetricsF>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
@@ -206,6 +207,40 @@ private slots:
     QVERIFY(screen->screenText().contains(QStringLiteral("preserved context")));
   }
 
+  void contentScaleEnlargesCellsOnly() {
+    // SessionsWindow sets this base font on every workspace widget.
+    QWidget workspace;
+    workspace.setStyleSheet(QStringLiteral("QWidget { font-size:13px; }"));
+    auto *layout = new QVBoxLayout(&workspace);
+    auto *view = new TerminalView;
+    layout->addWidget(view);
+    view->setTheme(false);
+    workspace.resize(720, 420);
+    workspace.show();
+    QTest::qWait(10);
+    auto *screen = view->terminalScreen();
+    auto *status = view->findChild<QWidget *>(QStringLiteral("terminalStatus"));
+    QVERIFY(status);
+    screen->feed("preserved context");
+    QCOMPARE(QFontInfo(screen->font()).pixelSize(), 13);
+    const auto before = screen->terminalSize();
+    const int statusFont = QFontInfo(status->font()).pixelSize();
+    QSignalSpy resized(screen, &TerminalScreen::sizeChanged);
+    view->setContentScale(2.0);
+    QTest::qWait(10);
+    QCOMPARE(QFontInfo(screen->font()).pixelSize(), 26);
+    QVERIFY(screen->terminalSize().width() <= before.width() / 2 + 1);
+    QVERIFY(screen->terminalSize().height() < before.height());
+    QCOMPARE(resized.last().at(0).toSize(), screen->terminalSize());
+    QCOMPARE(QFontInfo(status->font()).pixelSize(), statusFont);
+    QVERIFY(screen->screenText().contains(QStringLiteral("preserved context")));
+    view->setTheme(true);
+    QCOMPARE(QFontInfo(screen->font()).pixelSize(), 26);
+    view->setContentScale(1.0);
+    QTest::qWait(10);
+    QCOMPARE(QFontInfo(screen->font()).pixelSize(), 13);
+    QCOMPARE(screen->terminalSize(), before);
+  }
   void scrollbackAndResize() {
     TerminalScreen screen;
     screen.resize(420, 160);

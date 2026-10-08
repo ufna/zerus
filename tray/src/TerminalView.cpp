@@ -1,4 +1,5 @@
 #include "TerminalView.h"
+#include "ContentScale.h"
 #include "WorkspaceStyle.h"
 #include "PtyProcess.h"
 #include "TerminalScreen.h"
@@ -162,8 +163,19 @@ void TerminalView::setTheme(bool dark) {
       " padding:0; min-height:0; border:1px solid transparent; border-radius:6px; background:transparent; }"
       "QPushButton#terminalConnect:hover, QPushButton#terminalReconnect:hover { background:%1; }"
       "QPushButton#terminalConnect:focus[keyboardFocus=\"true\"], QPushButton#terminalReconnect:focus[keyboardFocus=\"true\"] { border-color:%2; }")
-      .arg(dark ? "#2b3540" : "#edf2f5", dark ? "#8bdfc0" : "#167357") + workspaceScrollbars(dark));
+      .arg(dark ? "#2b3540" : "#edf2f5", dark ? "#8bdfc0" : "#167357") + workspaceScrollbars(dark)
+      // The workspace sets a 13px font on every widget. Cell metrics and the
+      // PTY size follow the resulting FontChange.
+      + (qFuzzyCompare(m_scale, 1.0) ? QString()
+         : QStringLiteral(" QAbstractScrollArea#terminalScreen { font-size:%1px; }").arg(ContentScale::px(13, m_scale))));
   updateButtons();
+}
+void TerminalView::setContentScale(double scale) {
+  scale = ContentScale::clamp(scale);
+  if (qFuzzyCompare(scale, m_scale))
+    return;
+  m_scale = scale;
+  setTheme(m_dark);
 }
 void TerminalView::updateButtons() {
   const bool ready = m_available && !m_hgsPath.isEmpty() && !m_name.isEmpty();

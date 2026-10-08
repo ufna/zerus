@@ -27,6 +27,8 @@ public:
     // Items: id, text, submitted_at, status, attachments (file references), error.
     void setLocalMessages(const QJsonArray &messages);
     void setTheme(bool dark);
+    // Enlarges the transcript and queued input, not the overlay controls.
+    void setContentScale(double scale);
     void showSearchResult(const QJsonObject &event, const QString &query);
     void clearSearchResult();
     QWidget *compactionIndicator() const { return m_compaction; }
@@ -80,4 +82,5 @@ private:
     bool m_dark = false, m_tracked = true, m_initial = true;
     bool m_rendering = false, m_followLatest = true, m_followScheduled = false;
     int m_unseen = 0;
+    double m_scale = 1.0;
 };

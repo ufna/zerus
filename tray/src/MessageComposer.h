@@ -22,6 +22,8 @@ public:
     void setAvailability(bool available, const QString &reason = {});
     void setInterruptAvailability(bool working, bool enabled, const QString &reason = {});
     void setTheme(bool dark);
+    // Enlarges the message field; its actions keep the workspace size.
+    void setContentScale(double scale);
     void setModelSettings(const QString &model, const QString &effort, const QJsonArray &options,
                           bool enabled, const QString &reason, const QString &pendingModel = {},
                           const QString &pendingEffort = {}, const QString &applyWhen = {});
@@ -70,6 +72,7 @@ private:
     QHash<QString, Draft> m_preservedDrafts;
     QString m_key, m_unavailableReason;
     bool m_available = false, m_loading = false, m_dark = true;
+    double m_scale = 1.0;
     QPlainTextEdit *m_editor;
     QLabel *m_status;
     QFrame *m_settingsPopup;

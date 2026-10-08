@@ -35,6 +35,8 @@
 #include <QTextTable>
 #include <QTabWidget>
 #include <QTabBar>
+#include <QSlider>
+#include <QFontInfo>
 #include <QVBoxLayout>
 #include <QTableWidget>
 #include "SessionsWindow.h"
@@ -75,6 +77,7 @@ private slots:
     void init() { QSettings().remove("workspace"); QSettings().remove("processes"); }
     void groupsPersistFilterAndRevealAttention();
     void emptyProjectsSettingPreservesArchiveAndProjects();
+    void contentScaleLeavesWorkspaceChrome();
     void unreadRepliesNeedAnActiveVisibleResult();
     void markAllReadIgnoresFiltersAndKeepsCurrentDraft();
     void compactWorkspaceGeometry();
@@ -464,6 +467,55 @@ void TestSessionsWindow::groupsPersistFilterAndRevealAttention()
     reopened.showAttentionSession("mac", "claude/infra/review");
     auto *newList = reopened.findChild<SessionList *>("sessionList"); QCOMPARE(newList->currentItem()->data(SessionRoles::Group).toString(), docs);
     QVERIFY(!newList->currentItem()->isHidden());
+}
+
+void TestSessionsWindow::contentScaleLeavesWorkspaceChrome()
+{
+    SessionsWindow window(script()); window.resize(1280, 860); window.setFleet(fleet()); window.show();
+    window.showSession({}, "codex/hgs/dashboard");
+    const auto preview = [&window](const QString &name) {
+        const auto directory = qEnvironmentVariable("HGS_PREVIEW_DIR"); if (directory.isEmpty()) return true;
+        window.showSession({}, "codex/hgs/dashboard");
+        const QJsonObject details{{"tracked", true}, {"run_id", "run"}, {"conversation_id", "conversation-one"}, {"runtime_state", "live"},
+            {"process_state", "running"}, {"activity", "idle"}, {"phase", "idle"}, {"cursor", 2}, {"events", QJsonArray{
+                QJsonObject{{"seq", 1}, {"at", 2000000000}, {"type", "UserPromptSubmit"}, {"detail", "Make the transcript easier to read."}},
+                QJsonObject{{"seq", 2}, {"at", 2000000010}, {"type", "Stop"}, {"detail", "## Done\n\nContent now follows **Settings → Appearance**. Run `ctest` to verify."}}}}};
+        window.findChild<HgsClient *>()->inspectionReady({}, "codex/hgs/dashboard", details); QTest::qWait(50);
+        return window.grab().save(directory + "/" + name);
+    };
+    QVERIFY(preview("content-scale-100.png"));
+    const auto pixels = [&window](const QString &name) {
+        auto *widget = window.findChild<QWidget *>(name); return widget ? QFontInfo(widget->font()).pixelSize() : -1;
+    };
+    auto *composer = window.findChild<MessageComposer *>("messageComposer"); QVERIFY(composer);
+    const auto editorPixels = [composer] { return QFontInfo(composer->editor()->font()).pixelSize(); };
+    const QStringList chrome{"sessionList", "search", "detailTitle", "sessionInspector", "sessionInfo", "terminalStatus", "sendMessage"};
+    QMap<QString, int> before; for (const auto &name : chrome) { before.insert(name, pixels(name)); QVERIFY2(before.value(name) > 0, qPrintable(name)); }
+    const int tabs = QFontInfo(window.findChild<QTabWidget *>("sessionDetailTabs")->tabBar()->font()).pixelSize();
+    QCOMPARE(pixels("activity"), 13); QCOMPARE(pixels("terminalScreen"), 13); QCOMPARE(editorPixels(), 13);
+    window.findChild<QPushButton *>("workspaceSettings")->click();
+    auto *settings = window.findChild<QWidget *>("settingsPage"); QVERIFY(settings && settings->isVisible());
+    auto *slider = settings->findChild<QSlider *>("workspaceContentScale"); QVERIFY(slider && slider->isVisible());
+    QCOMPARE(slider->minimum(), 10); QCOMPARE(slider->maximum(), 25); QCOMPARE(slider->value(), 10);
+    QCOMPARE(settings->findChild<QLabel *>("workspaceContentScaleValue")->text(), QString("100%"));
+    slider->setValue(15); slider->setValue(25);
+    QCOMPARE(QSettings().value("workspace/contentScale").toDouble(), 2.5);
+    QCOMPARE(settings->findChild<QLabel *>("workspaceContentScaleValue")->text(), QString("250%"));
+    QTRY_COMPARE(editorPixels(), 33);
+    if (!qEnvironmentVariable("HGS_PREVIEW_DIR").isEmpty())
+        QVERIFY(window.grab().save(qEnvironmentVariable("HGS_PREVIEW_DIR") + "/content-scale-settings.png"));
+    QCOMPARE(pixels("activity"), 33); QCOMPARE(pixels("subagentJournal"), 33); QCOMPARE(pixels("terminalScreen"), 33);
+    for (const auto &name : chrome) QCOMPARE(pixels(name), before.value(name));
+    QCOMPARE(QFontInfo(window.findChild<QTabWidget *>("sessionDetailTabs")->tabBar()->font()).pixelSize(), tabs);
+    // Theme changes rebuild workspace styles without dropping the preference.
+    QSettings().setValue("workspace/theme", "dark"); settings->findChild<QComboBox *>("workspaceTheme")->setCurrentIndex(1);
+    QCOMPARE(editorPixels(), 33); QCOMPARE(pixels("activity"), 33);
+    QVERIFY(preview("content-scale-250.png"));
+    SessionsWindow restored(script()); restored.setFleet(fleet());
+    QCOMPARE(QFontInfo(restored.findChild<MessageComposer *>("messageComposer")->editor()->font()).pixelSize(), 33);
+    window.findChild<QPushButton *>("workspaceSettings")->click(); slider->setValue(10);
+    QTRY_COMPARE(editorPixels(), 13);
+    QCOMPARE(pixels("activity"), 13); QCOMPARE(pixels("terminalScreen"), 13);
 }
 
 void TestSessionsWindow::emptyProjectsSettingPreservesArchiveAndProjects()

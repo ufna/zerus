@@ -26,6 +26,8 @@ public:
     void setQueueNavigation(int index, int count);
     void setAvailability(bool available, const QString &reason = {});
     void setTheme(bool dark);
+    // Enlarges question text and answers; actions keep the workspace size.
+    void setContentScale(double scale);
     void setNativeUi(bool native);
     void setSending(const QString &sessionKey, const QString &questionId, bool sending = true);
     void setError(const QString &sessionKey, const QString &questionId, const QString &detail, bool uncertain = false);
@@ -84,4 +86,5 @@ private:
     int m_reviewSeconds = 3;
     int m_queueIndex = -1, m_queueCount = 0;
     bool m_available = true, m_loading = false, m_dark = true, m_sizingPending = false;
+    double m_scale = 1.0;
 };

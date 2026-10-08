@@ -24,6 +24,7 @@
 #include "QuestionCard.h"
 #include "RecoveryWidgets.h"
 #include "SettingsPage.h"
+#include "ContentScale.h"
 #include "ProcessSettings.h"
 #include "TerminalView.h"
 #include "TerminalScreen.h"
@@ -910,6 +911,7 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         m_detailTabs->setTabVisible(m_detailTabs->indexOf(m_processes),enabled);renderDetails();
     };
     m_settingsPage->appearanceChanged=[this]{m_sessions->setProperty("compact",QSettings().value("workspace/compact",false).toBool());m_sessions->doItemsLayout();applyTheme();rebuild();};
+    m_settingsPage->contentScaleChanged=[this]{applyContentScale();};
     connect(m_accountsPage,&AccountsPage::loginRequested,this,&SessionsWindow::accountLoginRequested);
     connect(m_accountsPage,&AccountsPage::installRequested,this,&SessionsWindow::accountInstallRequested);
     connect(m_accountsPage,&AccountsPage::accountsChanged,this,&SessionsWindow::refreshRequested);
@@ -1024,7 +1026,17 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         if (++m_tick % 10 == 0) emit refreshRequested();
     });
     m_readTimer.setInterval(400); connect(&m_readTimer, &QTimer::timeout, this, &SessionsWindow::checkViewedReply);
-    applyTheme(); rebuild();
+    applyTheme(); applyContentScale(); rebuild();
+}
+
+// Only session content follows this preference. Workspace chrome, including
+// both sidebars, the session header and its tabs, keeps the native size.
+void SessionsWindow::applyContentScale()
+{
+    const double scale = ContentScale::factor();
+    for (auto *view : {m_activityView, m_subagentView}) view->setContentScale(scale);
+    for (auto *composer : {m_composer, m_subagentComposer}) composer->setContentScale(scale);
+    m_question->setContentScale(scale); m_terminal->setContentScale(scale);
 }
 
 void SessionsWindow::applyTheme()
@@ -1124,6 +1136,11 @@ void SessionsWindow::applyTheme()
         QPlainTextEdit#machineSetupLog, QPlainTextEdit#processOutput { background:%3; color:%2; border:1px solid %4; border-radius:7px; }
         QPushButton#machineFilter { padding:0; border-color:transparent; background:transparent; }
         QCheckBox { color:%2; spacing:8px; }
+        QSlider#workspaceContentScale { min-height:22px; }
+        QSlider#workspaceContentScale::groove:horizontal { height:4px; background:%4; border-radius:2px; }
+        QSlider#workspaceContentScale::sub-page:horizontal { background:%5; border-radius:2px; }
+        QSlider#workspaceContentScale::handle:horizontal { background:%5; width:16px; margin:-6px 0; border-radius:8px; }
+        QSlider#workspaceContentScale::handle:horizontal:hover { background:%9; }
         QListWidget#sessionList { background:transparent; border:0; outline:0; padding-right:2px; }
         QListWidget#hosts { background:transparent; border:0; outline:0; color:%6; }
         QListWidget#hosts::item { padding:9px 8px; border-radius:6px; }

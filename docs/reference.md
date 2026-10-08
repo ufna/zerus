@@ -206,7 +206,10 @@ Session rows show provider, machine, current action, model, effort and Git conte
 **Ready** means a reply ended, not that a long-running task is complete. Working
 and compacting timers use native start evidence and update locally without extra
 host requests. Theme, density, animation and machine/project label appearance are
-local preferences. Missing Git metadata does not turn a folder into a repository.
+local preferences. **Settings → Appearance → Content scale** enlarges Activity,
+questions, the message field and Terminal from 100% to 250%; the session list,
+the side panel, the session header and its tabs keep their size. Missing Git
+metadata does not turn a folder into a repository.
 
 Search names, folders, branches and models immediately. From two characters,
 content search also reads public Codex, Claude and Kimi messages and saved tool

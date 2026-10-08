@@ -1,9 +1,11 @@
 #include "ActivityView.h"
+#include "ContentScale.h"
 #include "SessionFileReference.h"
 #include "SessionUsage.h"
 #include "WorkspaceFocus.h"
 
 #include <QDir>
+#include <QFontInfo>
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
@@ -42,6 +44,14 @@ QStringList links(QTextBrowser *browser)
             if (!format.anchorHref().isEmpty()) result.append(format.anchorHref());
         }
     return result;
+}
+
+int fontPixels(QTextBrowser *browser, const QString &text)
+{
+    for (auto block = browser->document()->begin(); block.isValid(); block = block.next())
+        for (auto it = block.begin(); !it.atEnd(); ++it)
+            if (it.fragment().text().contains(text)) return QFontInfo(it.fragment().charFormat().font()).pixelSize();
+    return -1;
 }
 
 void activate(QTextBrowser *browser, const QString &url)
@@ -91,8 +101,64 @@ private slots:
     void searchResultIsolatedFromLiveUpdatesAndReturnsToLatest();
     void searchResultClearsOnConversationChange();
     void searchToolExcerptIsExpandedAndClearlyMarked();
+    void contentScaleScalesMarkupOnly();
+    void contentScaleEnlargesTranscriptAndQueue();
     void preview();
 };
+
+void TestActivityView::contentScaleScalesMarkupOnly()
+{
+    const QString source = "<html><head><style>body{font-size:13px;}p{margin:6px 0;line-height:135%;}</style></head><body>"
+        "<p style='font-size:10px;margin:0px;'>style='font-size:12px' 14px</p>"
+        "<table width='100%' cellspacing='0' cellpadding='10' style='border:1px solid #333;'><tr><td width='3'></td>"
+        "<td><a href='https://example.com/icon-16px.png' title='width=\"4\" 18px'>link</a>"
+        "<span style=\" font-family:'monospace'; margin-left:9px;\">code 20px</span></td></tr></table>"
+        "<img src='hgs-thumbnail:key' width='96' height='64'></body></html>";
+    QCOMPARE(ContentScale::html(source, 1.0), source);
+    QCOMPARE(ContentScale::html(source, 2.0), QString("<html><head><style>body{font-size:26px;}p{margin:12px 0;line-height:135%;}</style></head><body>"
+        "<p style='font-size:20px;margin:0px;'>style='font-size:12px' 14px</p>"
+        "<table width='100%' cellspacing='0' cellpadding='20' style='border:2px solid #333;'><tr><td width='6'></td>"
+        "<td><a href='https://example.com/icon-16px.png' title='width=\"4\" 18px'>link</a>"
+        "<span style=\" font-family:'monospace'; margin-left:18px;\">code 20px</span></td></tr></table>"
+        "<img src='hgs-thumbnail:key' width='192' height='128'></body></html>"));
+    QCOMPARE(ContentScale::clamp(0.5), 1.0);
+    QCOMPARE(ContentScale::clamp(4.0), 2.5);
+}
+
+void TestActivityView::contentScaleEnlargesTranscriptAndQueue()
+{
+    // The workspace sets this base font on every widget.
+    QWidget workspace; workspace.setStyleSheet("QWidget { font-size:13px; }");
+    auto *layout = new QVBoxLayout(&workspace); auto *view = new ActivityView; layout->addWidget(view);
+    view->setTheme(false); workspace.resize(520, 700); workspace.show();
+    view->setSessionKey("arch/scaled");
+    const QString literal = "style='font-size:12px' and https://example.com/icon-16px.png";
+    QJsonObject details{{"input_queue", QJsonObject{{"id", "queue"}, {"text", "queued words"}}}};
+    const QJsonArray events{journalEvent(1, "UserPromptSubmit", literal),
+        journalEvent(2, "Stop", "# Plan heading\n\nAgent body with [docs](https://example.com/icon-16px.png).")};
+    view->setActivity(details, events);
+    auto *browser = view->browser(); auto *queue = view->findChild<QLabel *>("queueText"); QVERIFY(queue);
+    const int body = fontPixels(browser, "Agent body"), heading = fontPixels(browser, "Plan heading");
+    const int queued = QFontInfo(queue->font()).pixelSize(), jump = QFontInfo(view->jumpButton()->font()).pixelSize();
+    QCOMPARE(body, 13);
+    const QSize documentSize = browser->document()->size().toSize();
+    view->setContentScale(2.0);
+    QCOMPARE(fontPixels(browser, "Agent body"), 26);
+    QVERIFY2(fontPixels(browser, "Plan heading") >= 2 * heading - 1, qPrintable(QString::number(fontPixels(browser, "Plan heading"))));
+    QCOMPARE(QFontInfo(queue->font()).pixelSize(), 26);
+    QCOMPARE(QFontInfo(view->jumpButton()->font()).pixelSize(), jump);
+    QVERIFY(browser->document()->size().height() > documentSize.height() * 1.5);
+    // Literal text and link destinations are content, not markup.
+    QVERIFY(browser->toPlainText().contains(literal));
+    QVERIFY(links(browser).contains("https://example.com/icon-16px.png"));
+    view->setActivity(details, events);
+    QCOMPARE(fontPixels(browser, "Agent body"), 26);
+    view->setContentScale(1.0);
+    QCOMPARE(fontPixels(browser, "Agent body"), body);
+    QCOMPARE(fontPixels(browser, "Plan heading"), heading);
+    QCOMPARE(QFontInfo(queue->font()).pixelSize(), queued);
+    QCOMPARE(browser->document()->size().toSize(), documentSize);
+}
 
 void TestActivityView::contextCounterKeepsPhysicalRightAlignment()
 {

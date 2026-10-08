@@ -7,6 +7,7 @@
 #include <QDragLeaveEvent>
 #include <QDropEvent>
 #include <QFile>
+#include <QFontInfo>
 #include <QFrame>
 #include <QImage>
 #include <QInputMethodEvent>
@@ -20,6 +21,7 @@
 #include <QTest>
 #include <QStyleOptionComboBox>
 #include <QUrl>
+#include <QVBoxLayout>
 #include <QToolTip>
 
 namespace {
@@ -80,7 +82,29 @@ private slots:
     void attachmentDropReleasesVisualCaret_data();
     void attachmentDropReleasesVisualCaret();
     void unsupportedModelOffersTerminal();
+    void contentScaleEnlargesOnlyTheMessageField();
 };
+
+void TestMessageComposer::contentScaleEnlargesOnlyTheMessageField()
+{
+    QWidget workspace; workspace.setStyleSheet("QWidget { font-size:13px; }");
+    auto *layout = new QVBoxLayout(&workspace); auto *composer = new MessageComposer; layout->addWidget(composer);
+    composer->setTheme(false); composer->setSessionKey("local/scale"); composer->setAvailability(true); composer->editor()->setPlainText("draft survives");
+    workspace.resize(520, 300); workspace.show(); QTest::qWait(10);
+    auto *send = composer->findChild<QPushButton *>("sendMessage"); QVERIFY(send);
+    const int height = composer->editor()->height(), sendFont = QFontInfo(send->font()).pixelSize();
+    QCOMPARE(QFontInfo(composer->editor()->font()).pixelSize(), 13);
+    composer->setContentScale(2.0); QTest::qWait(10);
+    QCOMPARE(QFontInfo(composer->editor()->font()).pixelSize(), 26);
+    QCOMPARE(composer->editor()->height(), 2 * height);
+    QCOMPARE(QFontInfo(send->font()).pixelSize(), sendFont);
+    QCOMPARE(composer->editor()->toPlainText(), QString("draft survives"));
+    composer->setTheme(true);
+    QCOMPARE(QFontInfo(composer->editor()->font()).pixelSize(), 26);
+    composer->setContentScale(1.0); QTest::qWait(10);
+    QCOMPARE(QFontInfo(composer->editor()->font()).pixelSize(), 13);
+    QCOMPARE(composer->editor()->height(), height);
+}
 
 void TestMessageComposer::attachmentDropReleasesVisualCaret_data()
 {

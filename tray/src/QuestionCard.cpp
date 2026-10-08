@@ -1,4 +1,5 @@
 #include "QuestionCard.h"
+#include "ContentScale.h"
 
 #include <QAbstractButton>
 #include <QApplication>
@@ -526,6 +527,13 @@ void QuestionCard::paintEvent(QPaintEvent *)
 
 void QuestionCard::setNativeUi(bool native) { m_terminal->setText(native ? tr("Open native UI") : tr("Open Terminal")); }
 
+void QuestionCard::setContentScale(double scale)
+{
+    scale = ContentScale::clamp(scale);
+    if (qFuzzyCompare(scale, m_scale)) return;
+    m_scale = scale; setTheme(m_dark);
+}
+
 void QuestionCard::setTheme(bool dark)
 {
     m_dark = dark;
@@ -533,10 +541,10 @@ void QuestionCard::setTheme(bool dark)
         QWidget#questionCard { background:%1; border:1px solid %3; border-radius:10px; }
         QWidget#questionPage, QScrollArea { background:transparent; border:0; }
         QLabel { color:%2; border:0; }
-        QLabel#questionHeading { color:%5; font-size:13px; font-weight:600; }
-        QLabel#questionAskedAt, QLabel#questionPendingCount, QLabel#questionProgress, QLabel#questionMode, QLabel#questionBody, QLabel#questionChoiceDescription { color:%7; font-size:11px; }
-        QLabel#questionPrompt { font-size:13px; font-weight:600; padding-bottom:3px; }
-        QLabel#questionChoiceTitle { font-size:12px; }
+        QLabel#questionHeading { color:%5; font-size:%9px; font-weight:600; }
+        QLabel#questionAskedAt, QLabel#questionPendingCount, QLabel#questionProgress, QLabel#questionMode, QLabel#questionBody, QLabel#questionChoiceDescription { color:%7; font-size:%10px; }
+        QLabel#questionPrompt { font-size:%9px; font-weight:600; padding-bottom:3px; }
+        QLabel#questionChoiceTitle { font-size:%11px; }
         QFrame#questionChoice { background:%8; border:1px solid %3; border-radius:7px; }
         QFrame#questionChoice[checked=true] { background:%4; border-color:%5; }
         QFrame#questionChoice:hover { border-color:%5; }
@@ -545,7 +553,7 @@ void QuestionCard::setTheme(bool dark)
         QRadioButton::indicator { border-radius:7px; }
         QCheckBox::indicator { border-radius:3px; }
         QCheckBox::indicator:checked, QRadioButton::indicator:checked { background:%5; border:2px solid %8; }
-        QLineEdit { background:%8; color:%2; border:1px solid %3; border-radius:7px; padding:7px; font-size:12px; }
+        QLineEdit { background:%8; color:%2; border:1px solid %3; border-radius:7px; padding:%12px; font-size:%11px; }
         QLineEdit:focus { border-color:%5; }
         QTabBar { font-size:11px; }
         QTabBar::tab { background:transparent; color:%7; padding:7px 10px; border-bottom:2px solid transparent; }
@@ -560,7 +568,8 @@ void QuestionCard::setTheme(bool dark)
         QToolButton#questionQueuePrevious:disabled, QToolButton#questionQueueNext:disabled { color:%7; background:transparent; }
     )").arg(dark ? "#202a2c" : "#f4f9f7", dark ? "#e8edf4" : "#1a2733", dark ? "#40544e" : "#cbded4",
              dark ? "#293d35" : "#e4f3ec", dark ? "#8bdfc0" : "#167357", dark ? "#10231b" : "#ffffff",
-             dark ? "#a2adbc" : "#627082", dark ? "#192228" : "#ffffff"));
+             dark ? "#a2adbc" : "#627082", dark ? "#192228" : "#ffffff")
+        .arg(ContentScale::px(13, m_scale)).arg(ContentScale::px(11, m_scale)).arg(ContentScale::px(12, m_scale)).arg(ContentScale::px(7, m_scale)));
     style()->unpolish(this); style()->polish(this);
     for (auto *child : findChildren<QWidget *>()) { child->style()->unpolish(child); child->style()->polish(child); }
     update();

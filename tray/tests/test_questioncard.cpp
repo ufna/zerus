@@ -3,6 +3,7 @@
 #include <QAbstractButton>
 #include <QDir>
 #include <QDateTime>
+#include <QFontInfo>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
@@ -68,8 +69,28 @@ private slots:
     void submittedAnswersRestoreAndIgnoreLateErrors();
     void submittedCallbacksAndMetadataKeepExactIdentity();
     void hookTrustRequiresAnExplicitChoice();
+    void contentScaleEnlargesQuestionTextOnly();
     void preview();
 };
+
+void TestQuestionCard::contentScaleEnlargesQuestionTextOnly()
+{
+    QWidget workspace; workspace.setStyleSheet("QWidget { font-size:13px; }");
+    auto *layout = new QVBoxLayout(&workspace); auto *card = new QuestionCard; layout->addWidget(card);
+    card->setTheme(false); card->setQuestion("local", request()); workspace.resize(560, 700); workspace.show(); QTest::qWait(10);
+    const auto pixels = [card](const QString &name) { auto *widget = card->findChild<QWidget *>(name); return widget ? QFontInfo(widget->font()).pixelSize() : -1; };
+    const QStringList scaled{"questionPrompt", "questionChoiceTitle", "questionChoiceDescription", "questionFreeText"};
+    QMap<QString, int> before; for (const auto &name : scaled) before.insert(name, pixels(name));
+    const int submitFont = QFontInfo(submit(*card)->font()).pixelSize();
+    QCOMPARE(before.value("questionPrompt"), 13);
+    option(*card, "opt_0_1")->click(); text(*card, "q_0")->setText("custom");
+    card->setContentScale(2.0); QTest::qWait(10);
+    for (const auto &name : scaled) QCOMPARE(pixels(name), 2 * before.value(name));
+    QCOMPARE(QFontInfo(submit(*card)->font()).pixelSize(), submitFont);
+    QVERIFY(option(*card, "opt_0_1")->isChecked()); QCOMPARE(text(*card, "q_0")->text(), QString("custom"));
+    card->setContentScale(1.0); QTest::qWait(10);
+    for (const auto &name : scaled) QCOMPARE(pixels(name), before.value(name));
+}
 
 void TestQuestionCard::submittedAnswersRestoreAndIgnoreLateErrors()
 {

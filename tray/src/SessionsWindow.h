@@ -88,6 +88,7 @@ protected:
 private:
     struct Entry { QString host, machine, key, identity; SessionInfo session; bool online; };
     void applyTheme();
+    void applyContentScale();
     void saveOrganization();
     void savePendingLaunches();
     void placeLaunchedSessions();

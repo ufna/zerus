@@ -1,9 +1,11 @@
 #pragma once
 #include "RecoverySettings.h"
+#include "ContentScale.h"
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QListWidget>
 #include <QScrollArea>
+#include <QSlider>
 #include <QStackedWidget>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
@@ -12,6 +14,7 @@
 class SettingsPage : public QWidget {
 public:
     std::function<void()> appearanceChanged;
+    std::function<void()> contentScaleChanged;
     std::function<void()> pollingChanged;
     explicit SettingsPage(const QString &executable,QWidget *parent=nullptr):QWidget(parent){
         setObjectName("settingsPage");auto *outer=new QVBoxLayout(this);outer->setContentsMargins(24,20,24,20);outer->setSpacing(20);
@@ -20,6 +23,19 @@ public:
         pages=new QStackedWidget;pages->setMinimumWidth(0);body->addWidget(pages,1);outer->addLayout(body,1);
         auto makePage=[&](const QString &heading){auto *content=new QWidget;content->setMaximumWidth(850);auto *layout=new QVBoxLayout(content);layout->setContentsMargins(0,0,12,0);layout->setSpacing(18);auto *h=new QLabel(heading);h->setObjectName("heading");layout->addWidget(h);addPage(content);return layout;};
         auto *appearance=makePage(tr("Appearance"));auto *theme=new QComboBox;theme->setObjectName("workspaceTheme");theme->addItem(tr("Follow system appearance"),"system");theme->addItem(tr("Dark"),"dark");theme->addItem(tr("Light"),"light");theme->setCurrentIndex(qMax(0,theme->findData(QSettings().value("workspace/theme","system"))));appearance->addWidget(new QLabel(tr("Theme")));appearance->addWidget(theme);
+        appearance->addWidget(new QLabel(tr("Content scale")));
+        auto *scaleRow=new QHBoxLayout;scaleRow->setSpacing(12);auto *scale=new QSlider(Qt::Horizontal);scale->setObjectName("workspaceContentScale");
+        // Tenths keep the slider on 10% steps for both dragging and the keyboard.
+        scale->setRange(qRound(ContentScale::Minimum*10),qRound(ContentScale::Maximum*10));scale->setPageStep(5);
+        scale->setValue(qRound(ContentScale::factor()*10));scale->setAccessibleName(tr("Content scale"));scale->setMaximumWidth(360);
+        auto *scaleValue=new QLabel;scaleValue->setObjectName("workspaceContentScaleValue");scaleValue->setMinimumWidth(scaleValue->fontMetrics().horizontalAdvance("250%")+8);
+        scaleRow->addWidget(scale,1);scaleRow->addWidget(scaleValue);scaleRow->addStretch();appearance->addLayout(scaleRow);
+        auto *scaleHint=new QLabel(tr("Enlarges Activity, the message field and Terminal. The session list and the side panel keep their size."));scaleHint->setWordWrap(true);appearance->addWidget(scaleHint);
+        // Rebuilding a long transcript on every slider step would stall dragging.
+        auto *scaleApply=new QTimer(this);scaleApply->setSingleShot(true);scaleApply->setInterval(150);
+        connect(scaleApply,&QTimer::timeout,this,[this]{if(contentScaleChanged)contentScaleChanged();});
+        auto showScale=[scaleValue](int tenths){scaleValue->setText(QStringLiteral("%1%").arg(tenths*10));};showScale(scale->value());
+        connect(scale,&QSlider::valueChanged,this,[scaleApply,showScale](int tenths){QSettings().setValue("workspace/contentScale",tenths/10.);showScale(tenths);scaleApply->start();});
         auto *local=new QLabel(tr("Appearance and session list preferences apply to this Zerus."));local->setWordWrap(true);appearance->addWidget(local);appearance->addStretch();
         connect(theme,&QComboBox::currentIndexChanged,this,[this,theme]{QSettings().setValue("workspace/theme",theme->currentData());if(appearanceChanged)appearanceChanged();});
         auto *sessions=makePage(tr("Sessions"));

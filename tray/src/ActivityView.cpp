@@ -1,4 +1,5 @@
 #include "ActivityView.h"
+#include "ContentScale.h"
 #include "ProcessSettings.h"
 #include "SessionFileReference.h"
 
@@ -313,7 +314,7 @@ ActivityView::ActivityView(QWidget *parent) : QWidget(parent)
     queueHeader->addWidget(queueCaption); queueHeader->addStretch();
     m_queueSend = new QPushButton(tr("Send now")); m_queueSend->setObjectName("queueSendNow"); queueHeader->addWidget(m_queueSend);
     queueLayout->addLayout(queueHeader);
-    m_queueText = new QLabel; m_queueText->setTextFormat(Qt::PlainText); m_queueText->setWordWrap(true);
+    m_queueText = new QLabel; m_queueText->setObjectName("queueText"); m_queueText->setTextFormat(Qt::PlainText); m_queueText->setWordWrap(true);
     m_queueText->setTextInteractionFlags(Qt::TextSelectableByMouse); m_queueText->setMaximumHeight(100);
     queueLayout->addWidget(m_queueText); layout->addWidget(m_queue); m_queue->hide();
     connect(m_queueSend, &QPushButton::clicked, this, [this] { emit queueSendNowRequested(m_details["input_queue"].toObject()["id"].toString()); });
@@ -430,13 +431,27 @@ void ActivityView::setTheme(bool dark)
     m_compaction->setStyleSheet(QString("QWidget#activityCompaction { background:%3; } QLabel { color:%1; background:transparent; font-size:12px; } QProgressBar { background:%2; border:0; border-radius:2px; } QProgressBar::chunk { background:%1; border-radius:2px; }")
         .arg(dark ? "#8bdfc0" : "#167357", dark ? "#34404a" : "#dbe3e9", dark ? "#1c2229" : "#ffffff"));
     m_queue->setStyleSheet(QString("QWidget#activityInputQueue{background:%1;border:1px solid %2;border-radius:7px;} QLabel#queueCaption{color:%3;font-weight:600;}")
-        .arg(dark ? "#2d2c23" : "#fff7e4", dark ? "#655638" : "#d7be84", dark ? "#edbd77" : "#805516"));
+        .arg(dark ? "#2d2c23" : "#fff7e4", dark ? "#655638" : "#d7be84", dark ? "#edbd77" : "#805516")
+        + (qFuzzyCompare(m_scale, 1.0) ? QString() : QString(" QLabel#queueText{font-size:%1px;}").arg(ContentScale::px(13, m_scale))));
     auto *progress = m_compaction->findChild<QProgressBar *>("compactionProgress");
     auto progressPalette = progress->palette();
     progressPalette.setColor(QPalette::Base, QColor(dark ? "#34404a" : "#dbe3e9"));
     progressPalette.setColor(QPalette::Highlight, QColor(dark ? "#8bdfc0" : "#167357"));
     progress->setPalette(progressPalette);
     render(false);
+}
+
+void ActivityView::setContentScale(double scale)
+{
+    scale = ContentScale::clamp(scale);
+    if (qFuzzyCompare(scale, m_scale)) return;
+    m_scale = scale;
+    // Explicit HTML lengths are scaled while rendering. Markdown headings are
+    // relative to the document's default font, which follows the widget font.
+    m_browser->setStyleSheet(qFuzzyCompare(scale, 1.0) ? QString()
+        : QString("QTextBrowser { font-size:%1px; }").arg(ContentScale::px(13, scale)));
+    m_queueText->setMaximumHeight(ContentScale::px(100, scale));
+    setTheme(m_dark);
 }
 
 bool ActivityView::replyVisible(const QString &replyId) const
@@ -844,6 +859,7 @@ void ActivityView::render(bool contentUpdate)
                 m_tracked ? tr("Messages, tools and approvals will appear as your agent works.") : tr("This session has no recorded activity. Open its terminal to see the agent."));
     }
     html += "</body></html>";
+    html = ContentScale::html(html, m_scale);
     if (html == m_html) return;
     const bool follow = !searching && ((m_initial && hasContent) || (m_followLatest && !m_browser->textCursor().hasSelection()));
     if (contentUpdate && !m_initial && !follow) {

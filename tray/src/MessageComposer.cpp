@@ -1,4 +1,5 @@
 #include "MessageComposer.h"
+#include "ContentScale.h"
 #include "WorkspaceIcons.h"
 #include "WorkspaceStyle.h"
 
@@ -570,7 +571,7 @@ void MessageComposer::setTheme(bool dark)
     m_attach->setIcon(workspaceIcon("attachment", dark ? QColor("#c5cfdb") : QColor("#536477")));
     m_stop->setIcon(workspaceIcon("stop",dark ? QColor("#ff9ca8") : QColor("#b52d48")));
     setStyleSheet(QString(R"(
-        QPlainTextEdit#messageInput { background:%1; color:%2; border:1px solid %3; border-radius:9px; padding:9px; font-size:13px; selection-background-color:%4; }
+        QPlainTextEdit#messageInput { background:%1; color:%2; border:1px solid %3; border-radius:9px; padding:%8px; font-size:%9px; selection-background-color:%4; }
         QPlainTextEdit#messageInput:focus { border-color:%5; }
         QScrollArea#messageAttachments, QWidget#messageComposer { background:transparent; border:0; }
         QWidget#attachmentTile { background:%1; border:1px solid %3; border-radius:8px; }
@@ -598,6 +599,17 @@ void MessageComposer::setTheme(bool dark)
         QPushButton#attachMessageFile:focus[keyboardFocus="true"] { border-color:%5; }
         QPushButton#allowMessageRetry { padding:7px 10px; font-size:11px; }
     )").arg(dark ? "#171d24" : "#f8fafb", dark ? "#e8edf4" : "#1a2733", dark ? "#3d4855" : "#dce2e8",
-             dark ? "#365b4d" : "#c7eadd", dark ? "#8bdfc0" : "#167357", dark ? "#10231b" : "#ffffff", dark ? "#85909e" : "#6d7784") + workspaceScrollbars(dark));
+             dark ? "#365b4d" : "#c7eadd", dark ? "#8bdfc0" : "#167357", dark ? "#10231b" : "#ffffff", dark ? "#85909e" : "#6d7784")
+        .arg(ContentScale::px(9, m_scale)).arg(ContentScale::px(13, m_scale)) + workspaceScrollbars(dark));
     updateControls();
+}
+
+void MessageComposer::setContentScale(double scale)
+{
+    scale = ContentScale::clamp(scale);
+    if (qFuzzyCompare(scale, m_scale)) return;
+    m_scale = scale;
+    // Keep the same number of visible lines as at the native size.
+    m_editor->setFixedHeight(ContentScale::px(76, scale));
+    setTheme(m_dark);
 }
