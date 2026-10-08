@@ -121,6 +121,10 @@ Each flavor installs the same ADE bundle:
   license texts under `/usr/share/licenses/<package-name>`.
 
 Qt, Qt WebEngine and KDE libraries are dynamically linked system dependencies.
+`qt6-svg` supplies the dynamically loaded SVG image plugin used by menu and
+combo-box arrows; a Qt test renders the actual bundled resources so a missing
+plugin fails CI. The current Arch Qt base package supplies its Wayland display
+plugin. [Arch Qt SVG package](https://archlinux.org/packages/extra/x86_64/qt6-svg/).
 The runtime also declares curl for native account HTTP requests and procps-ng
 for process inspection. Optional Node.js/npm enable agent installation from
 Accounts; Git enables repository/worktree features. Arch's Node.js package does

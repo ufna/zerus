@@ -48,7 +48,7 @@ add_test(NAME fleetstate COMMAND test_fleetstate)
 # сам создаёт QApplication, раз видит QT_WIDGETS_LIB через Qt6::Widgets. На боксе без
 # дисплея (headless сборка/CI) нужна offscreen-платформа — задаём её тут же тестовым
 # свойством, чтобы `ctest` работал сам по себе, без переменных окружения снаружи.
-add_executable(test_iconfactory test_iconfactory.cpp ../src/IconFactory.cpp)
+add_executable(test_iconfactory test_iconfactory.cpp ../src/IconFactory.cpp ../resources.qrc)
 target_include_directories(test_iconfactory PRIVATE ../src)
 target_link_libraries(test_iconfactory PRIVATE Qt6::Test Qt6::Widgets Qt6::Core)
 add_test(NAME iconfactory COMMAND test_iconfactory)

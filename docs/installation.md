@@ -97,6 +97,16 @@ managed in **Machines**.
 ## Agents
 
 Use **Accounts** to configure accounts and install supported agents.
+On Arch, installing Codex or DeepSeek from Accounts requires both the optional
+`nodejs` and `npm` packages. For a fresh npm setup, choose a writable user prefix
+before installing agents; Zerus already recognizes `~/.local/bin`:
+
+```sh
+sudo pacman -S --needed nodejs npm
+npm config set prefix "$HOME/.local"
+```
+
+Keep an existing working npm prefix if you already manage native agents there.
 The current official DeepSeek Harness adapter is pinned to
 `@deepseek-ai/dsh@0.2.0-rc.2`:
 

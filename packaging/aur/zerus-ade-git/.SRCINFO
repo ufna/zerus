@@ -11,6 +11,7 @@ pkgbase = zerus-ade-git
 	makedepends = ninja
 	depends = qt6-base
 	depends = qt6-webengine
+	depends = qt6-svg
 	depends = kstatusnotifieritem
 	depends = kwindowsystem
 	depends = tmux>=3.7
