@@ -6,6 +6,7 @@
 #include <QTemporaryDir>
 #include "SwarmController.h"
 #include "SwarmDialog.h"
+#include "SwarmConflictReview.h"
 #include "FleetState.h"
 #include <QApplication>
 #include <QComboBox>
@@ -17,6 +18,8 @@
 #include <QLineEdit>
 #include <QLabel>
 #include <QScrollBar>
+#include <QMessageBox>
+#include <QAbstractButton>
 
 class TestSwarmController : public QObject {
     Q_OBJECT
@@ -34,6 +37,18 @@ class TestSwarmController : public QObject {
         QFile file(m_root+"/requests");QJsonArray result;if(!file.open(QIODevice::ReadOnly))return result;
         for(const auto &line:file.readAll().split('\n'))if(!line.isEmpty())result.append(QJsonDocument::fromJson(line).object());return result;
     }
+    QJsonObject conflictSnapshot() const {
+        auto org=organization("Work");auto projects=org["projects"].toArray();
+        projects.append(QJsonObject{{"id","ungrouped"},{"name","General"},{"sessions",QJsonArray{}},{"folders",QJsonArray{}}});org["projects"]=projects;
+        return {{"organization",org},{"node_id","node-a"},{"machines",QJsonArray{
+            QJsonObject{{"id","node-a"},{"name","Desktop"},{"connection","arch"},{"local",true}},
+            QJsonObject{{"id","node-b"},{"name","Laptop"},{"connection","mac"},{"local",false}}}}};
+    }
+    QJsonObject conflict(const QJsonObject &field,const QJsonValue &first,const QJsonValue &second) const {
+        return {{"key",QString::fromUtf8(QJsonDocument(field).toJson(QJsonDocument::Compact))},{"field",field},{"selected","version-a"},
+            {"variants",QJsonArray{QJsonObject{{"id","version-a"},{"actor","node-a"},{"value",first}},
+                                  QJsonObject{{"id","version-b"},{"actor","node-b"},{"value",second}}}}};
+    }
 private slots:
     void initTestCase() {
         QVERIFY(m_directory.isValid());QCoreApplication::setOrganizationName("hgs-swarm-test");QCoreApplication::setApplicationName("controller");
@@ -45,7 +60,7 @@ private slots:
 import json,pathlib,sys,time
 root=pathlib.Path(__file__).parent
 action=sys.argv[2]
-payload=json.load(sys.stdin) if action in ['apply','initialize'] else {}
+payload=json.load(sys.stdin) if action in ['apply','initialize','resolve'] else {}
 with (root/'requests').open('a') as file:file.write(json.dumps(dict(action=action,input=payload))+'\n')
 count=len((root/'requests').read_text().splitlines())
 while (root/'hold').exists():time.sleep(.01)
@@ -98,6 +113,95 @@ print(json.dumps(result))
         controller.setDraftEditing(true);QFile::remove(m_root+"/hold");QTRY_VERIFY(!controller.busy());QCOMPARE(rendered.count(),1);
         controller.edit(organization("Typed name"));controller.setDraftEditing(false);QTRY_COMPARE(requests().size(),3);QTRY_VERIFY(controller.settled());
         const auto patch=requests()[2].toObject()["input"].toObject();QCOMPARE(patch["versions"].toObject()[m_key].toArray(),QJsonArray{"observed"});
+    }
+    void conflictReviewExplainsSessionPlacementAndRequiresChoice() {
+        FleetState fleet;BoxState local;local.host="arch";SessionInfo session;session.name="claude/demo/planning";session.project="demo";session.tag="planning";local.sessions.append(session);fleet.setLocal(local,0);
+        SwarmConflictReview review(fleet);review.resize(510,480);review.show();
+        auto snapshot=conflictSnapshot();auto c=conflict({{"kind","session"},{"machine","node-a"},{"session",session.name}},"ungrouped","p");
+        // Independent edits with an identical value should appear as one choice.
+        auto variants=c["variants"].toArray();variants.append(QJsonObject{{"id","version-c"},{"actor","node-b"},{"value","ungrouped"}});c["variants"]=variants;
+        review.setConflict(c,snapshot);QSignalSpy sent(&review,&SwarmConflictReview::resolutionRequested);
+        auto *choices=review.findChild<QTableWidget*>("swarmConflictChoices");auto *button=review.findChild<QPushButton*>("swarmResolve");
+        QCOMPARE(choices->rowCount(),2);QCOMPARE(choices->item(0,0)->text(),"General");QCOMPARE(choices->item(1,0)->text(),"Work");
+        QVERIFY(choices->item(0,1)->text().contains("Desktop (this computer)"));QVERIFY(choices->item(0,1)->text().contains("Laptop"));
+        QCOMPARE(choices->item(0,2)->text(),"Shown now");QVERIFY(!button->isEnabled());
+        QVERIFY(review.findChild<QLabel*>("swarmConflictSubject")->text().contains("demo / planning on Desktop"));
+        choices->setCurrentCell(1,0);QVERIFY(button->isEnabled());QCOMPARE(button->text(),"Keep this project");
+        auto *outcome=review.findChild<QLabel*>("swarmConflictOutcome");QVERIFY(outcome->text().contains("Assign this session to “Work”"));QVERIFY(outcome->text().contains("running agent stay intact"));
+        button->click();QCOMPARE(sent.count(),1);const auto payload=sent[0][0].toJsonObject();QCOMPARE(payload["key"],c["key"]);QCOMPARE(payload["value"],QJsonValue("p"));
+        QCOMPARE(payload["versions"].toArray(),QJsonArray({"version-a","version-b","version-c"}));
+        QTest::qWait(30);
+        const auto preview=qEnvironmentVariable("HGS_CONFLICT_PREVIEW");if(!preview.isEmpty())QVERIFY(review.grab().save(preview));
+    }
+    void archiveIdentityIsReadableAndNewVersionsClearTheChoice() {
+        FleetState fleet;BoxState local;local.host="arch";SessionInfo archive;archive.name="claude/demo/old-plan";archive.project="demo";archive.tag="old-plan";archive.state="archived";archive.archiveId="archive-id";local.sessions.append(archive);fleet.setLocal(local,0);
+        SwarmConflictReview review(fleet);auto snapshot=conflictSnapshot();auto c=conflict({{"kind","session"},{"machine","node-a"},{"session","archive\narchive-id"}},"p","ungrouped");
+        review.setConflict(c,snapshot);QVERIFY(review.findChild<QLabel*>("swarmConflictSubject")->text().contains("Archived session: demo / old-plan"));
+        auto *choices=review.findChild<QTableWidget*>("swarmConflictChoices");auto *button=review.findChild<QPushButton*>("swarmResolve");choices->setCurrentCell(1,0);QVERIFY(button->isEnabled());
+        snapshot["peers"]=QJsonObject{{"mac",QJsonObject{{"last_sync",12345}}}};review.setConflict(c,snapshot);QVERIFY(button->isEnabled());QCOMPARE(choices->currentRow(),1);
+        auto variants=c["variants"].toArray();auto changed=variants[1].toObject();changed["id"]="new-version";variants[1]=changed;c["variants"]=variants;
+        review.setConflict(c,snapshot);QVERIFY(!button->isEnabled());QVERIFY(choices->selectedItems().isEmpty());
+        QVERIFY(review.findChild<QLabel*>("swarmConflictExplanation")->text().contains("Review the updated choices again"));
+        choices->setCurrentCell(0,0);review.setBusy(true);QVERIFY(!button->isEnabled());review.setBusy(false);QVERIFY(button->isEnabled());
+    }
+    void nullAssignmentsAndFolderObjectsKeepTheirTypes() {
+        FleetState fleet;SwarmConflictReview review(fleet);const auto snapshot=conflictSnapshot();
+        auto c=conflict({{"kind","session"},{"machine","node-a"},{"session","codex/demo/test"}},"p",QJsonValue::Null);
+        review.setConflict(c,snapshot);QSignalSpy sent(&review,&SwarmConflictReview::resolutionRequested);
+        auto *choices=review.findChild<QTableWidget*>("swarmConflictChoices");auto *button=review.findChild<QPushButton*>("swarmResolve");
+        choices->setCurrentCell(1,0);QVERIFY(choices->item(1,0)->text().contains("local default"));button->click();QCOMPARE(sent.count(),1);QVERIFY(sent[0][0].toJsonObject()["value"].isNull());
+        const QJsonObject folder{{"project","p"},{"machine","node-b"},{"path","/projects/demo"},{"name","Source"}};
+        c=conflict({{"kind","folder"},{"id","folder-id"}},folder,QJsonValue::Null);review.setConflict(c,snapshot);choices->setCurrentCell(0,0);
+        QVERIFY(choices->item(0,0)->text().contains("Project: Work"));QVERIFY(choices->item(0,0)->text().contains("Computer: Laptop"));QVERIFY(!choices->item(0,0)->text().contains("{"));
+        button->click();QCOMPARE(sent.count(),2);QCOMPARE(sent[1][0].toJsonObject()["value"].toObject(),folder);
+    }
+    void catalogRemovalRequiresConfirmationAndCancelKeepsConflict() {
+        FleetState fleet;SwarmConflictReview review(fleet);const auto c=conflict({{"kind","project"},{"id","p"},{"field","alive"}},true,false);
+        review.setConflict(c,conflictSnapshot());QSignalSpy sent(&review,&SwarmConflictReview::resolutionRequested);
+        auto *choices=review.findChild<QTableWidget*>("swarmConflictChoices");auto *button=review.findChild<QPushButton*>("swarmResolve");choices->setCurrentCell(1,0);
+        QCOMPARE(choices->item(1,0)->text(),"Remove project from the catalog");
+        QTimer::singleShot(0,this,[&]{auto *box=qobject_cast<QMessageBox*>(QApplication::activeModalWidget());QVERIFY(box);QVERIFY(box->text().contains("Work"));QCOMPARE(box->defaultButton(),qobject_cast<QPushButton*>(box->button(QMessageBox::Cancel)));box->button(QMessageBox::Cancel)->click();});
+        button->click();QCOMPARE(sent.count(),0);QVERIFY(button->isEnabled());
+        QTimer::singleShot(0,this,[&]{auto *box=qobject_cast<QMessageBox*>(QApplication::activeModalWidget());QVERIFY(box);box->button(QMessageBox::Apply)->click();});
+        button->click();QCOMPARE(sent.count(),1);QCOMPARE(sent[0][0].toJsonObject()["value"],QJsonValue(false));
+    }
+    void sharedNamesRemainLiteralAndDuplicateProjectNamesAreDistinct() {
+        FleetState fleet;SwarmConflictReview review(fleet);auto snapshot=conflictSnapshot();
+        auto c=conflict({{"kind","project"},{"id","p"},{"field","name"}},"<b>Work</b>","Plain name");review.setConflict(c,snapshot);
+        auto *choices=review.findChild<QTableWidget*>("swarmConflictChoices");choices->setCurrentCell(0,0);
+        QCOMPARE(choices->item(0,0)->text(),"<b>Work</b>");QCOMPARE(review.findChild<QLabel*>("swarmConflictOutcome")->textFormat(),Qt::PlainText);
+        auto org=snapshot["organization"].toObject();auto projects=org["projects"].toArray();projects.append(QJsonObject{{"id","another-project"},{"name","Work"}});org["projects"]=projects;snapshot["organization"]=org;
+        c=conflict({{"kind","session"},{"machine","node-a"},{"session","codex/demo/test"}},"p","another-project");review.setConflict(c,snapshot);
+        QVERIFY(choices->item(0,0)->text()!=choices->item(1,0)->text());
+    }
+    void aRefreshDuringConfirmationCannotResolveUnseenVersions() {
+        FleetState fleet;SwarmConflictReview review(fleet);auto c=conflict({{"kind","project"},{"id","p"},{"field","alive"}},true,false);
+        review.setConflict(c,conflictSnapshot());QSignalSpy sent(&review,&SwarmConflictReview::resolutionRequested);
+        review.findChild<QTableWidget*>("swarmConflictChoices")->setCurrentCell(1,0);
+        QTimer::singleShot(0,this,[&]{
+            auto *box=qobject_cast<QMessageBox*>(QApplication::activeModalWidget());QVERIFY(box);
+            auto variants=c["variants"].toArray();auto newer=variants[0].toObject();newer["id"]="unseen-version";variants[0]=newer;c["variants"]=variants;
+            review.setConflict(c,conflictSnapshot());box->button(QMessageBox::Apply)->click();
+        });
+        review.findChild<QPushButton*>("swarmResolve")->click();QCOMPARE(sent.count(),0);
+        QVERIFY(!review.findChild<QPushButton*>("swarmResolve")->isEnabled());
+    }
+    void dialogResolvesOnlyTheExplicitlyReviewedChoice() {
+        HgsClient client(m_program);SwarmController controller(&client);controller.start(organization("Original"));QTRY_VERIFY(controller.settled());
+        auto snapshot=controller.snapshot();const auto context=conflictSnapshot();snapshot["machines"]=context["machines"];snapshot["node_id"]=context["node_id"];snapshot["organization"]=context["organization"];
+        const auto c=conflict({{"kind","session"},{"machine","node-a"},{"session","codex/demo/review"}},"ungrouped","p");snapshot["conflicts"]=QJsonArray{c};controller.acceptExternal(snapshot);
+        FleetState fleet;bool checked=false;
+        QTimer::singleShot(0,this,[&]{
+            auto *dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget());QVERIFY(dialog);dialog->findChild<QTabWidget*>("swarmTabs")->setCurrentIndex(2);
+            auto *choices=dialog->findChild<QTableWidget*>("swarmConflictChoices");auto *button=dialog->findChild<QPushButton*>("swarmResolve");QVERIFY(!button->isEnabled());choices->setCurrentCell(1,0);QTRY_VERIFY(button->isEnabled());
+            QTest::qWait(30);const auto preview=qEnvironmentVariable("HGS_CONFLICT_PREVIEW");if(!preview.isEmpty())QVERIFY(dialog->grab().save(preview+"-dialog.png"));
+            button->click();QTRY_VERIFY(requests().size()>=2);QCOMPARE(requests().at(1).toObject()["action"].toString(),"resolve");
+            const auto input=requests().at(1).toObject()["input"].toObject();QCOMPARE(input["key"],c["key"]);QCOMPARE(input["value"],QJsonValue("p"));QCOMPARE(input["versions"].toArray(),QJsonArray({"version-a","version-b"}));
+            QTRY_VERIFY(dialog->findChild<QLabel*>("swarmStatus")->text().startsWith("Choice saved"));QTRY_VERIFY(controller.settled());
+            checked=true;dialog->reject();
+        });
+        QTimer timeout;timeout.setSingleShot(true);connect(&timeout,&QTimer::timeout,this,[]{if(auto *dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget()))dialog->reject();});timeout.start(10000);
+        showSwarmDialog(&client,&controller,fleet,nullptr,[]{});QVERIFY(checked);
     }
     void largeFleetKeepsScrollAndSelection() {
         HgsClient client(m_program);SwarmController controller(&client);controller.start(organization("Original"));QTRY_VERIFY(controller.settled());

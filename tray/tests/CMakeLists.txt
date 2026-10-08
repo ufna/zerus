@@ -26,7 +26,7 @@ target_include_directories(test_hgsclient PRIVATE ../src)
 target_link_libraries(test_hgsclient PRIVATE Qt6::Test Qt6::Core)
 add_test(NAME hgsclient COMMAND test_hgsclient)
 
-add_executable(test_swarmcontroller test_swarmcontroller.cpp ../src/SwarmController.cpp ../src/SwarmDialog.cpp ../src/HgsClient.cpp ../src/FleetState.cpp)
+add_executable(test_swarmcontroller test_swarmcontroller.cpp ../src/SwarmController.cpp ../src/SwarmDialog.cpp ../src/SwarmConflictReview.cpp ../src/HgsClient.cpp ../src/FleetState.cpp)
 target_include_directories(test_swarmcontroller PRIVATE ../src)
 target_link_libraries(test_swarmcontroller PRIVATE Qt6::Test Qt6::Widgets)
 add_test(NAME swarmcontroller COMMAND test_swarmcontroller)
@@ -168,7 +168,7 @@ add_test(NAME watchdog COMMAND test_watchdog)
 
 add_executable(test_sessionswindow test_sessionswindow.cpp ../src/SessionsWindow.cpp ../src/SessionSelection.cpp ../src/MachinesPage.cpp ../src/SessionSearch.cpp
                ../src/MachineFilter.cpp ../src/DashboardPage.cpp ../src/AccountsPage.cpp ../src/AccountUsageStore.cpp
-               ../src/SessionOrganization.cpp ../src/SessionList.cpp ../src/SwarmController.cpp ../src/SwarmDialog.cpp
+               ../src/SessionOrganization.cpp ../src/SessionList.cpp ../src/SwarmController.cpp ../src/SwarmDialog.cpp ../src/SwarmConflictReview.cpp
                ../src/ActivityView.cpp ../src/ProcessView.cpp ../src/NativeUiView.cpp ../src/MessageComposer.cpp ../src/ComposerDraftStore.cpp ../src/QuestionCard.cpp
                ../src/FleetState.cpp ../src/HgsClient.cpp ../src/DirectoryDialog.cpp
                ../src/NewSessionDialog.cpp ../src/ProjectsDialog.cpp ../resources.qrc)

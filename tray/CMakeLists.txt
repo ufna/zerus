@@ -46,7 +46,7 @@ add_executable(hgs-tray
     src/MachinesPage.cpp src/SessionSearch.cpp
     src/MachineFilter.cpp src/DashboardPage.cpp src/AccountsPage.cpp src/AccountUsageStore.cpp
     src/SessionOrganization.cpp
-    src/SwarmController.cpp src/SwarmDialog.cpp
+    src/SwarmController.cpp src/SwarmDialog.cpp src/SwarmConflictReview.cpp
     src/SessionList.cpp
     src/ActivityView.cpp
     src/ProcessView.cpp

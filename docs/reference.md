@@ -491,6 +491,17 @@ members catch up later. Independent fields merge; conflicts remain in the Swarm
 review UI. Deletion records prevent old replicas from resurrecting data; this
 version does not prune old journal records.
 
+**Swarm → Conflicts** explains the affected session, archived session, project or
+folder. Compare the values and the computers that saved them. **Shown now** marks
+the temporary display choice; it does not mean the conflict has been resolved.
+Select a row to preview the result, then use **Keep this project** or the matching
+action. Project assignments change catalog placement without restarting agents
+or removing conversations. Folder/project removals affect the shared catalog,
+leave files and sessions intact, and require confirmation. The decision is shared
+with connected computers and reaches offline members when they reconnect. Closing
+the window postpones the decision. New conflicting versions clear the selection
+and require another review, including if they arrive during a confirmation.
+
 ```sh
 hgs swarm get
 hgs swarm preview mac

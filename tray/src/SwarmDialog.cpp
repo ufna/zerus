@@ -1,5 +1,6 @@
 #include "SwarmDialog.h"
 #include "SwarmController.h"
+#include "SwarmConflictReview.h"
 #include "FleetState.h"
 #include <QComboBox>
 #include <QCheckBox>
@@ -15,6 +16,8 @@
 #include <QLineEdit>
 #include <QScrollBar>
 #include <QSet>
+#include <QSignalBlocker>
+#include <QSplitter>
 #include <QStackedWidget>
 #include <QTabWidget>
 #include <QPushButton>
@@ -83,10 +86,11 @@ void showSwarmDialog(HgsClient *client,SwarmController *controller,const FleetSt
     auto *conflictStack=new QStackedWidget;conflictStack->setObjectName("swarmConflictReview");
     auto *noConflicts=message(QObject::tr("No conflicting changes.\nChanges from connected computers are merged automatically."));conflictStack->addWidget(noConflicts);
     auto *conflictPage=new QWidget;auto *conflictLayout=new QVBoxLayout(conflictPage);
-    auto *conflictTitle=new QLabel(QObject::tr("Select a change and choose the value to keep."));conflictTitle->setWordWrap(true);conflictLayout->addWidget(conflictTitle);
-    auto *conflicts=new QListWidget;conflicts->setObjectName("swarmConflicts");conflictLayout->addWidget(conflicts,1);
-    auto *resolveRow=new QHBoxLayout;auto *variant=new QComboBox;variant->setObjectName("swarmVariant");variant->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);variant->setMinimumContentsLength(16);
-    auto *resolve=new QPushButton(QObject::tr("Use selected value"));resolve->setObjectName("swarmResolve");resolveRow->addWidget(variant,1);resolveRow->addWidget(resolve);conflictLayout->addLayout(resolveRow);conflictStack->addWidget(conflictPage);
+    auto *conflictTitle=new QLabel(QObject::tr("These changes need your decision. Review one item at a time; each choice is shared with the swarm."));conflictTitle->setWordWrap(true);conflictLayout->addWidget(conflictTitle);
+    auto *conflictSplit=new QSplitter;conflictLayout->addWidget(conflictSplit,1);
+    auto *conflicts=new QListWidget;conflicts->setObjectName("swarmConflicts");conflicts->setWordWrap(true);conflicts->setMinimumWidth(170);conflicts->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);conflictSplit->addWidget(conflicts);
+    auto *review=new SwarmConflictReview(fleet);review->setObjectName("swarmConflictDetails");conflictSplit->addWidget(review);conflictSplit->setChildrenCollapsible(false);conflictSplit->setStretchFactor(1,1);conflictSplit->setSizes({210,480});
+    conflictStack->addWidget(conflictPage);
     const int conflictTab=tabs->addTab(conflictStack,QObject::tr("Conflicts (0)"));
 
     auto *status=new QLabel;status->setWordWrap(true);status->setTextFormat(Qt::PlainText);status->setObjectName("swarmStatus");
@@ -104,7 +108,7 @@ void showSwarmDialog(HgsClient *client,SwarmController *controller,const FleetSt
         count->setText(query.isEmpty()?QObject::tr("%1 computers").arg(machines->rowCount()):QObject::tr("%1 of %2 computers").arg(visible).arg(machines->rowCount()));
     };
     QObject::connect(filter,&QLineEdit::textChanged,&dialog,filterMachines);
-    quint64 request=0;QString action,previewPeer;QJsonObject previewData;QJsonArray conflictData;bool conflictsRendered=false;
+    quint64 request=0;QString action,previewPeer;QJsonObject previewData,conflictSnapshot;QJsonArray conflictData;
     auto render=[&](const QJsonObject &snapshot){
         const auto selected=machines->currentRow()>=0?machines->item(machines->currentRow(),0)->data(Qt::UserRole).toString():QString();
         const int scroll=machines->verticalScrollBar()->value();
@@ -128,24 +132,20 @@ void showSwarmDialog(HgsClient *client,SwarmController *controller,const FleetSt
         machines->setSortingEnabled(true);filterMachines();
         if(!selected.isEmpty())for(int row=0;row<machines->rowCount();++row)if(machines->item(row,0)->data(Qt::UserRole).toString()==selected){machines->setCurrentCell(row,0);break;}
         machines->verticalScrollBar()->setValue(scroll);machines->setUpdatesEnabled(true);
-        if(conflictData==snapshot.value("conflicts").toArray() && conflictsRendered)return;
-        conflictsRendered=true;
+        QSignalBlocker blockSelection(conflicts);
         const auto selectedConflict=conflicts->currentItem()?conflicts->currentItem()->data(Qt::UserRole).toString():QString();
-        conflictData=snapshot.value("conflicts").toArray();conflicts->clear();
-        for(const auto &entry:conflictData){const auto c=entry.toObject();const auto f=c.value("field").toObject();QString name=f.value("id").toString();for(const auto &p:snapshot.value("organization").toObject().value("projects").toArray())if(p.toObject().value("id")==f.value("id"))name=p.toObject().value("name").toString();
-            auto *item=new QListWidgetItem(QObject::tr("%1: %2").arg(name.isEmpty()?f.value("session").toString():name,f.value("field").toString(f.value("kind").toString())),conflicts);item->setData(Qt::UserRole,c.value("key").toString());if(c.value("key").toString()==selectedConflict)conflicts->setCurrentItem(item);}
+        conflictSnapshot=snapshot;conflictData=snapshot.value("conflicts").toArray();conflicts->clear();
+        for(const auto &entry:conflictData){const auto c=entry.toObject();
+            const auto label=review->conflictLabel(c,snapshot);auto *item=new QListWidgetItem(label,conflicts);item->setToolTip(label);item->setData(Qt::UserRole,c.value("key").toString());if(c.value("key").toString()==selectedConflict)conflicts->setCurrentItem(item);}
         if(!conflicts->currentItem()&&conflicts->count())conflicts->setCurrentRow(0);
-        if(conflicts->count()==0)variant->clear();
+        review->setConflict(conflicts->currentRow()<0?QJsonObject{}:conflictData[conflicts->currentRow()].toObject(),snapshot);
         tabs->setTabText(conflictTab,QObject::tr("Conflicts (%1)").arg(conflicts->count()));
         conflictStack->setCurrentWidget(conflicts->count()?conflictPage:static_cast<QWidget*>(noConflicts));
     };
-    QObject::connect(conflicts,&QListWidget::currentRowChanged,&dialog,[&](int row){variant->clear();if(row<0||row>=conflictData.size())return;
-        for(const auto &v:conflictData[row].toObject().value("variants").toArray()){
-            const auto op=v.toObject();const auto value=op.value("value");QString text=value.isString()?value.toString():value.isNull()?QObject::tr("Removed"):value.isBool()?(value.toBool()?QObject::tr("Keep"):QObject::tr("Delete")):QString::fromUtf8(QJsonDocument(value.toObject()).toJson(QJsonDocument::Compact));
-            variant->addItem(text,op);variant->setItemData(variant->count()-1,text,Qt::ToolTipRole);
-        }
+    QObject::connect(conflicts,&QListWidget::currentRowChanged,&dialog,[&](int row){
+        review->setConflict(row<0||row>=conflictData.size()?QJsonObject{}:conflictData[row].toObject(),conflictSnapshot);
     });
-    auto updateButtons=[&]{const bool busy=request!=0;preview->setEnabled(!busy&&peer->count());peer->setEnabled(!busy);sync->setEnabled(!busy&&controller->settled());join->setEnabled(!busy&&controller->settled()&&!previewData.isEmpty()&&peer->currentText()==previewPeer);resolve->setEnabled(!busy&&controller->settled()&&variant->count());manage->setEnabled(!dialog.changing);buttons->setEnabled(!dialog.changing);mapping->setEnabled(!dialog.changing);};
+    auto updateButtons=[&]{const bool busy=request!=0;preview->setEnabled(!busy&&peer->count());peer->setEnabled(!busy);sync->setEnabled(!busy&&controller->settled());join->setEnabled(!busy&&controller->settled()&&!previewData.isEmpty()&&peer->currentText()==previewPeer);review->setBusy(busy||!controller->settled());conflicts->setEnabled(!dialog.changing);manage->setEnabled(!dialog.changing);buttons->setEnabled(!dialog.changing);mapping->setEnabled(!dialog.changing);};
     QTimer stateTimer;stateTimer.setInterval(200);QObject::connect(&stateTimer,&QTimer::timeout,&dialog,updateButtons);stateTimer.start();
     QObject::connect(manage,&QPushButton::clicked,&dialog,[&]{dialog.accept();manageConnections();});
     QObject::connect(peer,&QComboBox::currentIndexChanged,&dialog,[&]{previewData={};mapping->setRowCount(0);previewStack->setCurrentWidget(previewEmpty);keepPlacement->hide();join->setText(QObject::tr("Connect this member"));updateButtons();});
@@ -156,10 +156,9 @@ void showSwarmDialog(HgsClient *client,SwarmController *controller,const FleetSt
         for(int row=0;row<mapping->rowCount();++row){auto *choice=qobject_cast<QComboBox*>(mapping->cellWidget(row,1));if(!choice->currentData().toString().isEmpty())map.insert(mapping->item(row,0)->data(Qt::UserRole).toString(),choice->currentData().toString());}
         dialog.changing=true;controller->suspend(true);action="join";request=client->requestSwarm({"join",previewPeer},{{"node_id",previewData.value("node_id")},{"swarm_id",previewData.value("swarm_id")},{"project_map",map},{"prefer_peer_memberships",keepPlacement->isChecked()}});setStatus(QObject::tr("Connecting and merging catalogs…"));updateButtons();
     });
-    QObject::connect(resolve,&QPushButton::clicked,&dialog,[&]{
-        if(!controller->settled()||conflicts->currentRow()<0)return;
-        const auto conflict=conflictData[conflicts->currentRow()].toObject();QJsonArray versions;for(const auto &v:conflict.value("variants").toArray())versions.append(v.toObject().value("id"));
-        dialog.changing=true;controller->suspend(true);action="resolve";request=client->requestSwarm({"resolve"},{{"key",conflict.value("key")},{"versions",versions},{"value",variant->currentData().toJsonObject().value("value")}});updateButtons();
+    QObject::connect(review,&SwarmConflictReview::resolutionRequested,&dialog,[&](const QJsonObject &payload){
+        if(request||!controller->settled()||conflicts->currentRow()<0)return;
+        dialog.changing=true;controller->suspend(true);action="resolve";request=client->requestSwarm({"resolve"},payload);setStatus(QObject::tr("Saving your choice to the shared catalog…"));updateButtons();
     });
     QObject::connect(client,&HgsClient::swarmReady,&dialog,[&](quint64 id,const QJsonObject &result){
         if(id!=request)return;request=0;dialog.changing=false;
@@ -182,7 +181,7 @@ void showSwarmDialog(HgsClient *client,SwarmController *controller,const FleetSt
                 setStatus(QObject::tr("Open Projects in Zerus on %1 first to import its catalog.").arg(previewPeer));previewData={};
             }
         }else if(action=="join"||action=="resolve"){
-            controller->acceptExternal(action=="join"?result.value("snapshot").toObject():result);controller->suspend(false);previewData={};mapping->setRowCount(0);previewStack->setCurrentWidget(previewEmpty);keepPlacement->hide();join->setText(QObject::tr("Connect this member"));setStatus(action=="join"?QObject::tr("Connected to %1.").arg(previewPeer):QObject::tr("Selected value saved."));
+            controller->acceptExternal(action=="join"?result.value("snapshot").toObject():result);controller->suspend(false);previewData={};mapping->setRowCount(0);previewStack->setCurrentWidget(previewEmpty);keepPlacement->hide();join->setText(QObject::tr("Connect this member"));setStatus(action=="join"?QObject::tr("Connected to %1.").arg(previewPeer):result.value("conflicts").toArray().isEmpty()?QObject::tr("Choice saved. No conflicts remain."):QObject::tr("Choice saved. Review the remaining conflicts."));
         }else{controller->refresh();setStatus(QObject::tr("Synchronization finished. Connection details are on the Computers tab."));}
         updateButtons();
     });
