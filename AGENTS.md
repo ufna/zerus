@@ -49,11 +49,13 @@ Use a GitHub no-reply address for Git and Beads attribution if email privacy mat
 
 ## Validation and handoff
 
-Hosted CI is manual-only, including pull requests and pushes. Do not dispatch
-GitHub Actions without an explicit owner request to run hosted checks. Validate
-workflow edits locally. Default CI uses one Ubuntu job; full Linux integration,
-Arch packaging and macOS are explicit opt-ins. Release candidates request
-Linux/Arch coverage but leave macOS off by default. See `docs/ci-and-aur.md`.
+Full Linux/Arch/macOS CI runs nightly on public upstream main. Push and PR
+checks remain manual; do not dispatch additional hosted runs without an explicit
+owner request. Validate workflow edits locally. Scheduled checks skip private
+repositories and retain only failure logs for three days. Default manual CI uses
+one Ubuntu job, with full Linux, Arch and macOS as explicit opt-ins. Release
+candidates request Linux/Arch coverage and leave macOS off by default. See
+`docs/ci-and-aur.md`.
 Dependency proposals are monthly and grouped, with one ordinary PR per ecosystem.
 Cargo proposals update only the lockfile within reviewed manifest constraints;
 review manifest migrations explicitly and retain Rust 1.85 compatibility.

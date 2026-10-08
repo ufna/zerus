@@ -7,14 +7,19 @@ separate manual workflows.
 
 ## Continuous integration
 
-Hosted checks are **manual-only** to preserve the account's Actions quota. There
-are no CI triggers for pushes, pull requests or schedules. The owner decides when
-to run checks, including for Dependabot PRs. Do not dispatch hosted checks just to
-validate a workflow change; run actionlint and relevant checks locally instead.
+Full checks run **nightly on public upstream `main`**, at 00:17 UTC (03:17
+Moscow time), through `.github/workflows/nightly.yml`. The nightly run selects
+Linux CLI, Arch desktop/package and both macOS suites for the event's exact SHA.
+It skips private repositories and forks. Standard public runner minutes are free
+without a monthly limit; this schedule provides recurring coverage.
+
+Pushes and pull requests do not trigger checks. The owner decides when to run
+additional checks, including for Dependabot PRs. Do not dispatch hosted checks
+just to validate a workflow change; run actionlint and relevant checks locally.
 
 `.github/workflows/ci.yml` accepts manual dispatches and explicit calls from the
-manual release workflow. All expensive suite inputs default to `false` in both
-manual and reusable CI. A default dispatch uses **one Ubuntu job** for source
+nightly and manual release workflows. Additional suite inputs default to `false`
+in both manual and reusable CI. A default dispatch uses **one Ubuntu job** for source
 checks and Rust unit tests; it allocates no Arch or macOS runners.
 
 | Job | Default manual CI | Selection | Checks |
@@ -72,12 +77,15 @@ Current release packaging supports **Arch x86_64 only**. The macOS runner checks
 build/test compatibility; it does not create a notarized macOS installer. Windows
 and Arch ARM are outside this first package matrix.
 
-All CI jobs have bounded timeouts. A newer manual CI run cancels an obsolete run
-for the same requested ref and workflow. Workflows have read-only repository
-permissions, checkout credentials are not persisted, official actions are pinned
+All CI jobs have bounded timeouts. A newer CI run cancels an obsolete run
+for the same requested ref and workflow; nightly runs share one concurrency group.
+Workflows have read-only repository permissions, checkout credentials are not persisted, official actions are pinned
 to commit SHAs and Dependabot proposes monthly grouped action/Cargo updates.
-Rust and C++ caches reduce repeated build cost. Test artifacts expire after seven
-days; release candidates after fourteen.
+Rust and C++ caches reduce repeated build cost. Nightly checks upload only test
+logs on failure, with three-day retention; successful scheduled checks do not
+retain binaries. Manual test artifacts expire after seven days and manually
+requested release candidates after fourteen. Workflow logs and summaries do not
+consume artifact storage; uploaded artifacts have a separate storage allowance.
 Manually selected PR code receives no deployment credentials. There is no
 push/tag/release-triggered publication or self-hosted runner attached to a
 development machine. The owner explicitly starts each candidate and publication.
