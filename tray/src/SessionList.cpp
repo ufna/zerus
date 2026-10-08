@@ -11,6 +11,8 @@
 #include <QPainter>
 #include <QUuid>
 #include <QScrollBar>
+#include <QHelpEvent>
+#include <QToolTip>
 #include <cmath>
 
 namespace { constexpr auto Mime = "application/x-hgs-session-placement"; }
@@ -117,6 +119,25 @@ QRect SessionList::childrenControlRect(const QListWidgetItem *item) const
 
 bool SessionList::viewportEvent(QEvent *event)
 {
+    if (event->type() == QEvent::ToolTip && property("expansion").isValid() && property("expansion").toReal() < 1) {
+        // The collapsed strip hides card text; its tooltip names the session and its state.
+        const auto *help = static_cast<QHelpEvent *>(event);
+        const auto *row = itemAt(help->pos());
+        if (row && !row->data(SessionRoles::Header).toBool()) {
+            QString state = row->data(SessionRoles::Status).toString();
+            if (row->data(SessionRoles::Working).toInt() > 0) state = tr("Working");
+            else if (row->data(SessionRoles::Unread).toBool() && !row->data(SessionRoles::Attention).toBool()) state = tr("New reply");
+            QStringList lines{QStringLiteral("<b>%1</b> · %2").arg(row->data(SessionRoles::Title).toString().toHtmlEscaped(), state.toHtmlEscaped())};
+            const QString detail = row->data(SessionRoles::Detail).toString().simplified();
+            if (!detail.isEmpty()) lines << detail.toHtmlEscaped();
+            QStringList place;
+            for (const int role : {int(SessionRoles::Meta), int(SessionRoles::Host)})
+                if (!row->data(role).toString().isEmpty()) place << row->data(role).toString().toHtmlEscaped();
+            if (!place.isEmpty()) lines << place.join(QStringLiteral(" · "));
+            QToolTip::showText(help->globalPos(), lines.join(QStringLiteral("<br>")), viewport(), visualItemRect(row));
+            return true;
+        }
+    }
     if (event->type() == QEvent::Leave) {
         setProperty("hoveredChildren", QString()); viewport()->unsetCursor(); viewport()->update();
     }

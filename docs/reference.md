@@ -211,6 +211,17 @@ questions, the message field and Terminal from 100% to 250%; the session list,
 the side panel, the session header and its tabs keep their size. Missing Git
 metadata does not turn a folder into a repository.
 
+The button beside **⋯** in the session list header collapses the list into a
+strip. Every project band and session row keeps its height. Rows show status
+icons, initials, provider icons and attention edges, and each band shows its most
+urgent counter. Rows open on click and name their session in a tooltip. Expanding
+grows the same rows back into cards. The strip's search button opens the full
+list over the conversation without resizing it; Escape or a click outside returns
+to the strip, and the pin docks the list again. **Settings → Sessions → Expand
+the collapsed session list on hover**, off by default, opens the full list over
+the conversation while the pointer rests on the strip. The collapsed state and
+the docked width are local preferences.
+
 Search names, folders, branches and models immediately. From two characters,
 content search also reads public Codex, Claude and Kimi messages and saved tool
 events on each host. Machine and state filters narrow results; the all-sessions

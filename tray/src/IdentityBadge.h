@@ -23,7 +23,7 @@ inline int width(Kind kind, const QString &value, const QFont &base, int maximum
     // "mac" into an ellipsis with the macOS system font.
     return qMin(maximum, qCeil(QFontMetricsF(font(base, kind)).horizontalAdvance(text)) + (kind == Provider ? 34 : 12));
 }
-inline void paint(QPainter *p, const QRect &rect, Kind kind, const QString &value, bool dark, QColor machineColor = {}, const QString &machineIdentity = {}) {
+inline void paint(QPainter *p, const QRect &rect, Kind kind, const QString &value, bool dark, QColor machineColor = {}, const QString &machineIdentity = {}, qreal labelOpacity = 1) {
     if (rect.isEmpty() || value.isEmpty()) return;
     p->save(); p->setClipRect(rect, Qt::IntersectClip); p->setRenderHint(QPainter::Antialiasing);
     const auto f = font(p->font(), kind); p->setFont(f);
@@ -49,7 +49,8 @@ inline void paint(QPainter *p, const QRect &rect, Kind kind, const QString &valu
         }
     }
     const QRect textRect = rect.adjusted(kind == Provider ? 22 : 6, 0, -6, 0);
-    p->setPen(foreground); p->drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft,
+    p->setOpacity(p->opacity() * labelOpacity);
+    p->setPen(foreground); p->drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft, labelOpacity < 1 ? text :
         QFontMetrics(f).elidedText(text, kind == Machine ? Qt::ElideMiddle : Qt::ElideRight, qMax(0, textRect.width())));
     p->restore();
 }

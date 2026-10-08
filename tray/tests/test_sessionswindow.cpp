@@ -183,6 +183,9 @@ private slots:
     void searchResultKeepsItsSessionAndSnapshot();
     void blankListContextMenu();
     void contextMenuAcrossSessionPanelBackground();
+    void sessionListCollapsesIntoWorkingStrip();
+    void collapsedStripExpandsOverContentOnlyWhenEnabled();
+    void collapsedStripSearchOpensPanel();
     void preview();
 private:
     FleetState fleet() const;
@@ -3130,6 +3133,108 @@ void TestSessionsWindow::contextMenuAcrossSessionPanelBackground()
     });
     sendContext(search, search->rect().center()); QCoreApplication::processEvents();
     QVERIFY(nativeMenu);
+}
+
+void TestSessionsWindow::sessionListCollapsesIntoWorkingStrip()
+{
+    if (!qEnvironmentVariable("HGS_STRIP_PREVIEW").isEmpty()) QSettings().setValue("workspace/theme", "dark");
+    auto window = std::make_unique<SessionsWindow>(script()); window->resize(1280, 860); window->setFleet(fleet()); window->show();
+    QVERIFY(QTest::qWaitForWindowExposed(window.get()));
+    auto *panel = window->findChild<QWidget *>("sessionListPanel"), *slot = window->findChild<QWidget *>("sessionListSlot");
+    auto *toggle = window->findChild<QPushButton *>("sessionPanelToggle"); auto *list = window->findChild<SessionList *>("sessionList");
+    QVERIFY(panel && slot && toggle && list);
+    QTRY_COMPARE(panel->width(), slot->width()); QVERIFY(slot->width() >= 270);
+    const int docked = slot->width();
+    auto *detail = window->findChild<QStackedWidget *>("detail"); const int detailWidth = detail->width();
+    const auto preview = qEnvironmentVariable("HGS_STRIP_PREVIEW"); if (!preview.isEmpty()) QDir().mkpath(preview);
+    const auto shot = [&](QWidget *target, const QString &name) { if (!preview.isEmpty()) QVERIFY(target->grab().save(preview + "/" + name)); };
+    shot(window.get(), "docked.png");
+
+    toggle->click();
+    if (!preview.isEmpty()) { QTest::qWait(70); shot(window.get(), "collapsing.png"); }
+    QTRY_COMPARE(list->property("expansion").toReal(), 0.0);
+    QCOMPARE(panel->width(), 64); QCOMPARE(slot->width(), 64); QVERIFY(detail->width() > detailWidth);
+    QVERIFY(QSettings().value("workspace/sessionsCollapsed").toBool());
+    QVERIFY(!window->findChild<QLineEdit *>("search")->isVisible()); QVERIFY(window->findChild<QPushButton *>("sessionStripSearch")->isVisible());
+    int filters = 0; for (auto *filter : window->findChildren<QPushButton *>("sessionFilter")) filters += filter->isVisible();
+    QCOMPARE(filters, 1);
+    auto *summary = window->findChild<QLabel *>("listSummary");
+    QVERIFY(summary->toolTip().contains("shown")); QCOMPARE(summary->text(), summary->toolTip().section(' ', 0, 0));
+    QCOMPARE(toggle->property("glyph").toString(), QString("expand-sessions"));
+
+    // The strip keeps every row, as narrow as the strip, and still selects sessions.
+    int target = -1;
+    for (int i = 0; i < list->count(); ++i) {
+        const auto *row = list->item(i);
+        QVERIFY(list->visualItemRect(row).width() <= list->viewport()->width());
+        if (!row->data(SessionRoles::Header).toBool() && row != list->currentItem() && !row->isHidden()) target = i;
+    }
+    QVERIFY(target >= 0);
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, {}, list->visualItemRect(list->item(target)).center());
+    QCOMPARE(list->currentRow(), target);
+    QImage strip = list->viewport()->grab().toImage(); QVERIFY(!strip.isNull());
+    shot(window.get(), "collapsed.png");
+
+    // The collapsed state survives a restart and keeps the docked width for later.
+    window.reset(); QSettings().setValue("workspace/sessionsWidth", 360);
+    window = std::make_unique<SessionsWindow>(script()); window->resize(1280, 860); window->setFleet(fleet()); window->show();
+    QVERIFY(QTest::qWaitForWindowExposed(window.get()));
+    panel = window->findChild<QWidget *>("sessionListPanel"); slot = window->findChild<QWidget *>("sessionListSlot");
+    QTRY_COMPARE(panel->width(), 64);
+    window->findChild<QPushButton *>("sessionPanelToggle")->click();
+    QTRY_COMPARE(slot->width(), 360); QTRY_COMPARE(panel->width(), 360); QVERIFY(docked != 360);
+    QVERIFY(!QSettings().value("workspace/sessionsCollapsed").toBool());
+    QCOMPARE(window->findChild<SessionList *>("sessionList")->property("expansion").toReal(), 1.0);
+}
+
+void TestSessionsWindow::collapsedStripExpandsOverContentOnlyWhenEnabled()
+{
+    QSettings().setValue("workspace/sessionsCollapsed", true);
+    {
+        SessionsWindow window(script()); window.resize(1280, 860); window.setFleet(fleet()); window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        auto *option = window.findChild<QCheckBox *>("workspaceExpandSessionsOnHover"); QVERIFY(option); QVERIFY(!option->isChecked());
+        auto *panel = window.findChild<QWidget *>("sessionListPanel");
+        QTRY_COMPARE(panel->width(), 64);
+        QTest::mouseMove(panel, QPoint(30, 300)); QTest::qWait(450);
+        QCOMPARE(panel->width(), 64);
+    }
+    QSettings().setValue("workspace/expandSessionsOnHover", true);
+    if (!qEnvironmentVariable("HGS_STRIP_PREVIEW").isEmpty()) QSettings().setValue("workspace/theme", "dark");
+    SessionsWindow window(script()); window.resize(1280, 860); window.setFleet(fleet()); window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    QVERIFY(window.findChild<QCheckBox *>("workspaceExpandSessionsOnHover")->isChecked());
+    auto *panel = window.findChild<QWidget *>("sessionListPanel"), *slot = window.findChild<QWidget *>("sessionListSlot");
+    auto *detail = window.findChild<QStackedWidget *>("detail"); auto *scrim = window.findChild<QWidget *>("sessionPanelScrim");
+    QTRY_COMPARE(panel->width(), 64);
+    const int detailWidth = detail->width();
+    QTest::mouseMove(panel, QPoint(30, 300));
+    QTRY_VERIFY(panel->width() >= 270);
+    const auto preview = qEnvironmentVariable("HGS_STRIP_PREVIEW");
+    if (!preview.isEmpty()) { QTest::qWait(300); QDir().mkpath(preview); QVERIFY(window.grab().save(preview + "/hover.png")); }
+    QCOMPARE(slot->width(), 64); QCOMPARE(detail->width(), detailWidth); QVERIFY(scrim->isVisible());
+    QCOMPARE(window.findChild<QPushButton *>("sessionPanelToggle")->property("glyph").toString(), QString("pin"));
+    QTest::mouseMove(detail, QPoint(detail->width() - 40, 300));
+    QTRY_COMPARE(panel->width(), 64); QTRY_VERIFY(!scrim->isVisible());
+    QVERIFY(QSettings().value("workspace/sessionsCollapsed").toBool());
+}
+
+void TestSessionsWindow::collapsedStripSearchOpensPanel()
+{
+    QSettings().setValue("workspace/sessionsCollapsed", true);
+    SessionsWindow window(script()); window.resize(1280, 860); window.setFleet(fleet()); window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window)); window.activateWindow();
+    auto *panel = window.findChild<QWidget *>("sessionListPanel"); auto *search = window.findChild<QLineEdit *>("search");
+    QTRY_COMPARE(panel->width(), 64);
+    window.findChild<QPushButton *>("sessionStripSearch")->click();
+    QTRY_VERIFY(panel->width() >= 270); QTRY_VERIFY(search->hasFocus());
+    QTest::keyClick(search, Qt::Key_Escape);
+    QTRY_COMPARE(panel->width(), 64);
+    // Pinning the open panel docks it; the conversation then makes room once.
+    window.findChild<QPushButton *>("sessionStripSearch")->click(); QTRY_VERIFY(panel->width() >= 270);
+    window.findChild<QPushButton *>("sessionPanelToggle")->click();
+    QTRY_COMPARE(window.findChild<QWidget *>("sessionListSlot")->width(), panel->width());
+    QVERIFY(!QSettings().value("workspace/sessionsCollapsed").toBool());
 }
 
 void TestSessionsWindow::preview()

@@ -1,6 +1,7 @@
 #include "SessionsWindow.h"
 #include "SessionFileDrop.h"
 #include "SessionCardDelegate.h"
+#include "SessionPanelDock.h"
 #include "SessionPresentation.h"
 #include "AccountUsage.h"
 #include "SessionUsage.h"
@@ -326,7 +327,9 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     groupsMenu->addAction(m_clearArchiveAction);
     auto *batchButton = iconButton("more", tr("Session and machine actions"), "batchActions");
     auto *batchMenu = new QMenu(batchButton); batchButton->setMenu(batchMenu); batchMenu->setToolTipsVisible(true);
-    connect(batchMenu, &QMenu::aboutToShow, this, [this, batchMenu]() { populateBatchActions(batchMenu); }); header->addWidget(batchButton);
+    connect(batchMenu, &QMenu::aboutToShow, this, [this, batchMenu]() { populateBatchActions(batchMenu); });
+    m_sessionsToggle = iconButton("collapse-sessions", tr("Collapse session list"), "sessionPanelToggle"); header->addWidget(m_sessionsToggle);
+    header->addWidget(batchButton); m_batchButton = batchButton; m_sessionHeader = header;
     listLayout->addLayout(header);
     m_search = new QLineEdit; m_search->setObjectName("search"); m_search->setPlaceholderText(tr("Search sessions and messages…"));
     m_search->setClearButtonEnabled(true); m_search->setAccessibleName(tr("Search sessions"));
@@ -336,8 +339,12 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         if (!m_searchResults->active()) m_activityView->clearSearchResult();
         rebuild();
     }); listLayout->addWidget(m_search);
+    // In the strip, search opens the panel over the conversation with focus in the field.
+    m_stripSearch = iconButton("search", tr("Search sessions"), "sessionStripSearch"); m_stripSearch->hide();
+    listLayout->addWidget(m_stripSearch, 0, Qt::AlignHCenter);
+    connect(m_stripSearch, &QPushButton::clicked, this, [this] { m_focusSearch = true; m_sessionDock->peek(); });
     connect(m_search, &QLineEdit::textEdited, this, [this]() { m_restoreKey.clear(); m_renameKey.clear(); });
-    auto *filterRow = new QHBoxLayout; filterRow->setSpacing(3);
+    auto *filterRow = m_filterRow = new QHBoxLayout; filterRow->setSpacing(3);
     const QList<QPair<QString, QString>> filters{{"all", tr("All sessions")}, {"attention", tr("Needs attention")},
         {"working", tr("Working")}, {"paused", tr("Saved sessions")}, {"archived", tr("Archive")}};
     for (const auto &pair : filters) {
@@ -384,7 +391,11 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
             else m_activityView->clearSearchResult();
         });
     m_count = label({}, "listSummary"); m_count->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred); listLayout->addWidget(m_count);
-    m_splitter->addWidget(listPanel); m_sessions->installEventFilter(this);
+    // The panel floats over this placeholder so it can collapse into a strip and
+    // grow over the conversation without resizing it.
+    auto *sessionSlot = new QWidget; sessionSlot->setObjectName("sessionListSlot"); sessionSlot->setMinimumWidth(listPanel->minimumWidth());
+    m_splitter->addWidget(sessionSlot); listPanel->setParent(body); listPanel->setAttribute(Qt::WA_StyledBackground);
+    m_sessions->installEventFilter(this);
     m_sessions->setContextMenuPolicy(Qt::CustomContextMenu);
     m_sessionMenu = new QMenu(this); m_sessionMenu->setObjectName("sessionContextMenu"); m_sessionMenu->setToolTipsVisible(true);
     connect(m_sessions, &QWidget::customContextMenuRequested, this, [this, groupsMenu](const QPoint &position) {
@@ -861,6 +872,18 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     m_splitter->setStretchFactor(0, 0); m_splitter->setStretchFactor(1, 1); m_splitter->setSizes({310, 814});
     if (!settings.value("workspace/splitter").toByteArray().isEmpty()) m_splitter->restoreState(settings.value("workspace/splitter").toByteArray());
     layout->addWidget(m_splitter, 1);
+    m_sessionDock = new SessionPanelDock(m_splitter, sessionSlot, listPanel, m_sessions, this);
+    m_sessionDock->layoutChanged = [this] { applySessionStrip(); };
+    m_sessionDock->keepPeek = [this] { return m_search->hasFocus() || !m_search->text().isEmpty(); };
+    m_sessionDock->modeChanged = [this] {
+        const auto mode = m_sessionDock->mode();
+        if (mode != SessionPanelDock::Peek) QSettings().setValue("workspace/sessionsCollapsed", mode == SessionPanelDock::Collapsed);
+        if (mode != SessionPanelDock::Docked && m_sessions->bulkSelecting()) m_sessions->clearBulkSelection();
+        updateSessionsToggle(); QTimer::singleShot(0, this, &SessionsWindow::updateInspectorMinimum);
+    };
+    m_sessionDock->setHoverExpands(settings.value("workspace/expandSessionsOnHover", false).toBool());
+    m_sessionDock->restore(settings.value("workspace/sessionsCollapsed", false).toBool(), settings.value("workspace/sessionsWidth", 0).toInt());
+    connect(m_sessionsToggle, &QPushButton::clicked, this, [this] { m_sessionDock->toggle(); });
     m_pages = new QStackedWidget; m_pages->addWidget(body);
     connect(m_pages, &QStackedWidget::currentChanged, this, [this](int index) {
         if (index != 0) m_terminal->disconnectSession();
@@ -910,7 +933,10 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         if(!enabled && m_detailTabs->currentWidget()==m_processes)m_detailTabs->setCurrentIndex(0);
         m_detailTabs->setTabVisible(m_detailTabs->indexOf(m_processes),enabled);renderDetails();
     };
-    m_settingsPage->appearanceChanged=[this]{m_sessions->setProperty("compact",QSettings().value("workspace/compact",false).toBool());m_sessions->doItemsLayout();applyTheme();rebuild();};
+    m_settingsPage->appearanceChanged=[this]{
+        m_sessions->setProperty("compact",QSettings().value("workspace/compact",false).toBool());m_sessions->doItemsLayout();
+        m_sessionDock->setHoverExpands(QSettings().value("workspace/expandSessionsOnHover",false).toBool());applyTheme();rebuild();
+    };
     m_settingsPage->contentScaleChanged=[this]{applyContentScale();};
     connect(m_accountsPage,&AccountsPage::loginRequested,this,&SessionsWindow::accountLoginRequested);
     connect(m_accountsPage,&AccountsPage::installRequested,this,&SessionsWindow::accountInstallRequested);
@@ -942,7 +968,10 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     auto *refreshShortcut = new QShortcut(QKeySequence::Refresh, this); connect(refreshShortcut, &QShortcut::activated, refresh, &QPushButton::click);
     auto *refreshR = new QShortcut(QKeySequence("Ctrl+R"), this); connect(refreshR, &QShortcut::activated, refresh, &QPushButton::click);
     auto *escape = new QShortcut(QKeySequence(Qt::Key_Escape), this);
-    connect(escape, &QShortcut::activated, this, [this] { if (!m_search->text().isEmpty()) m_search->clear(); else close(); });
+    connect(escape, &QShortcut::activated, this, [this] {
+        if (m_sessionDock->dismissPeek()) m_search->clear();
+        else if (!m_search->text().isEmpty()) m_search->clear(); else close();
+    });
     connect(m_activityView, &ActivityView::queueSendNowRequested, this, [this](const QString &id) {
         const auto *entry = selected(); const auto queue = m_details["input_queue"].toObject();
         if (!entry || !entry->online || m_queueSendRequest || id.isEmpty() || queue["id"] != id || !queue["can_send_now"].toBool()) return;
@@ -1095,8 +1124,10 @@ void SessionsWindow::applyTheme()
         QPushButton#sessionFilter { padding:4px 2px; min-height:22px; font-size:11px; background:transparent; border-color:transparent; }
         QPushButton#sessionFilter:checked { background:%10; border-color:%4; color:%5; }
         QPushButton#sessionFilter:hover { background:%7; }
-        QPushButton#newSession, QPushButton#batchActions { padding:0; background:transparent; border-color:transparent; }
-        QPushButton#newSession:hover, QPushButton#batchActions:hover { background:%7; }
+        QPushButton#newSession, QPushButton#batchActions, QPushButton#sessionPanelToggle { padding:0; background:transparent; border-color:transparent; }
+        QPushButton#newSession:hover, QPushButton#batchActions:hover, QPushButton#sessionPanelToggle:hover, QPushButton#sessionStripSearch:hover { background:%7; }
+        QPushButton#sessionStripSearch { padding:0; background:%3; border:1px solid %4; }
+        QWidget#sessionListPanel { background:%1; }
         QPushButton#newSession { background:%10; }
         QPushButton#machineFilter::menu-indicator, QPushButton#batchActions::menu-indicator { image:none; width:0; }
         QPushButton#hostFilterChip { padding:3px 8px; font-size:11px; text-align:left; color:%5; background:%10; }
@@ -1169,6 +1200,7 @@ void SessionsWindow::applyTheme()
               m_dark ? "#151b21" : "#f3f6f8", tone("Error", m_dark).name()) + workspaceScrollbars(m_dark));
     for (auto *button : findChildren<QPushButton *>()) if (!button->property("glyph").toString().isEmpty())
         button->setIcon(workspaceIcon(button->property("glyph").toString(), QColor(m_muted)));
+    if (m_sessionDock) m_sessionDock->setEdgeColor(QColor(m_border));
     if (m_brand) m_brand->setAppearance(m_dark ? QColor(Qt::white) : QColor(m_accent), QColor(m_dark ? "#ffda76" : "#a66000"),
         m_attentionCount > 0, QSettings().value("workspace/reduceMotion", false).toBool());
     m_sessions->setProperty("hgsDark", m_dark);
@@ -1192,6 +1224,44 @@ void SessionsWindow::applyTheme()
     m_subagentView->setTheme(m_dark); m_subagentComposer->setTheme(m_dark);
     m_processes->setTheme(m_dark);
     m_childrenHtml.clear(); m_sessions->viewport()->update(); renderDetails();
+}
+
+void SessionsWindow::updateSessionsToggle()
+{
+    const auto mode = m_sessionDock->mode();
+    const QString glyph = mode == SessionPanelDock::Docked ? "collapse-sessions" : mode == SessionPanelDock::Collapsed ? "expand-sessions" : "pin";
+    const QString caption = mode == SessionPanelDock::Docked ? tr("Collapse session list")
+        : mode == SessionPanelDock::Collapsed ? tr("Expand session list") : tr("Keep session list open");
+    m_sessionsToggle->setProperty("glyph", glyph); m_sessionsToggle->setToolTip(caption); m_sessionsToggle->setAccessibleName(caption);
+    m_sessionsToggle->setIcon(workspaceIcon(glyph, QColor(m_muted)));
+}
+
+// The strip keeps the list and swaps the panel chrome for compact controls:
+// one toggle, a search button, the active filter and the session count.
+void SessionsWindow::applySessionStrip()
+{
+    if (!m_sessionDock) return;
+    const bool strip = m_sessionDock->chromeNarrow(), filters = m_sessionDock->filtersNarrow();
+    // Rebuilds follow every poll; the layout only changes with the strip state.
+    if (m_stripLayout != int(strip) * 2 + int(filters)) {
+        m_stripLayout = int(strip) * 2 + int(filters);
+        m_sessionHeader->setAlignment(m_sessionsToggle, strip ? Qt::AlignHCenter : Qt::Alignment());
+        for (auto *button : m_filters) {
+            button->setMaximumWidth(filters ? 48 : QWIDGETSIZE_MAX);
+            m_filterRow->setAlignment(button, filters ? Qt::AlignHCenter : Qt::Alignment());
+        }
+    }
+    m_heading->setVisible(!strip); m_batchButton->setVisible(!strip);
+    m_search->setVisible(!strip); m_stripSearch->setVisible(strip);
+    for (auto *button : m_filters) button->setVisible(!filters || button->isChecked());
+    m_machineFilter->button()->setVisible(!filters);
+    m_machineFilter->setVisible(!strip && !m_hostFilters.isEmpty());
+    m_folderFilterClear->setVisible(!strip && !m_folderFilterPath.isEmpty());
+    m_listStack->setCurrentIndex(!strip && m_searchResults->active() ? 1 : 0);
+    m_count->setText(strip ? m_countShort : m_countFull);
+    m_count->setAlignment(strip ? Qt::AlignCenter : Qt::AlignLeft | Qt::AlignVCenter);
+    m_count->setVisible(strip || !m_searchResults->active());
+    if (!strip && m_focusSearch) { m_focusSearch = false; m_search->setFocus(Qt::OtherFocusReason); }
 }
 
 void SessionsWindow::updateInspectorMinimum()
@@ -1933,10 +2003,12 @@ void SessionsWindow::rebuild()
     m_count->setText(visible.isEmpty() ? tr("No matching sessions") : tr("%1 shown, %2 working, %3 attention").arg(visible.size()).arg(visibleWorking).arg(visibleAttention));
     const int starting = std::count_if(rows.cbegin(), rows.cend(), [](const Row &row) { return !row.launch.isEmpty(); });
     if (starting) m_count->setText(visible.isEmpty() ? tr("%1 starting").arg(starting) : m_count->text() + tr(", %1 starting").arg(starting));
+    m_countFull = m_count->text(); m_countShort = QString::number(visible.size() + starting);
     m_folderFilterClear->setVisible(!m_folderFilterPath.isEmpty());
     m_folderFilterClear->setText(tr("Folder: %1   ×").arg(m_folderFilterPath.section('/',-1)));m_folderFilterClear->setToolTip(m_folderFilterPath+tr("\nClear folder filter"));
-    m_count->setToolTip(m_count->text());
+    m_count->setToolTip(m_countFull);
     m_count->setVisible(!m_searchResults->active());
+    applySessionStrip();
     m_rebuilding = false;
     updateSelectionActions();
     m_sessions->syncActivityAnimation();
@@ -3256,6 +3328,7 @@ void SessionsWindow::hideEvent(QHideEvent *event) { m_readTimer.stop(); m_readCa
 void SessionsWindow::closeEvent(QCloseEvent *event)
 {
     QSettings settings; settings.setValue("sessions/geometry", saveGeometry()); settings.setValue("workspace/splitter", m_splitter->saveState());
+    settings.setValue("workspace/sessionsWidth", m_sessionDock->dockedWidth());
     QWidget::closeEvent(event);
 }
 void SessionsWindow::changeEvent(QEvent *event)

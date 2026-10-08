@@ -8,68 +8,144 @@
 #include "SessionElapsed.h"
 #include "WorkspaceIcons.h"
 #include <QPainter>
+#include <QRegularExpression>
 #include <QStyledItemDelegate>
 
 // One renderer for session-list rows and overview cards.
 inline QRect sessionCardRect(const QRect &row) { return row.adjusted(2, 4, -2, -6); }
 
+// The collapsed session list keeps every row at its height; only the width
+// changes. The list's "expansion" runs from 0 (strip) to 1 (full cards), and
+// "expandedRowWidth" is the row width the cards grow into.
+namespace SessionStrip {
+constexpr int Width = 64;
+constexpr int CardWidth = 50;
+inline qreal expansion(const QWidget *list) {
+    const auto value = list ? list->property("expansion") : QVariant();
+    return value.isValid() ? qBound(0.0, value.toReal(), 1.0) : 1.0;
+}
+// Card text appears after a third of the way; strip marks are gone by then.
+inline qreal fullOpacity(qreal expansion) { return qBound(0.0, (expansion - .32) * 1.9, 1.0); }
+inline qreal stripOpacity(qreal expansion) { return qBound(0.0, 1 - expansion * 3.2, 1.0); }
+inline QRect mix(const QRect &from, const QRect &to, qreal t) {
+    const auto at = [t](int a, int b) { return qRound(a + (b - a) * t); };
+    return {at(from.x(), to.x()), at(from.y(), to.y()), at(from.width(), to.width()), at(from.height(), to.height())};
+}
+inline QString initials(const QString &title) {
+    const auto words = title.split(QRegularExpression(QStringLiteral("[\\s_./-]+")), Qt::SkipEmptyParts);
+    if (words.isEmpty()) return {};
+    if (words.size() > 1) return (words[0].left(1) + words[1].left(1)).toUpper();
+    return words[0].left(1).toUpper() + words[0].mid(1, 1);
+}
+}
+
 class SessionDelegate : public QStyledItemDelegate {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
     QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override {
-        return {280, !index.data(SessionRoles::ChildId).toString().isEmpty() ? 64 : index.data(SessionRoles::Header).toBool() ? 40 : option.widget && option.widget->property("compact").toBool() ? 94 : 104};
+        // List rows are as wide as the view but never narrower than the hint.
+        const int width = SessionStrip::expansion(option.widget) < 1 ? 1 : 280;
+        return {width, !index.data(SessionRoles::ChildId).toString().isEmpty() ? 64 : index.data(SessionRoles::Header).toBool() ? 40 : option.widget && option.widget->property("compact").toBool() ? 94 : 104};
     }
     void paint(QPainter *p, const QStyleOptionViewItem &option, const QModelIndex &index) const override {
+        const qreal expansion = SessionStrip::expansion(option.widget);
+        if (index.data(SessionRoles::Header).toBool()) paintHeader(p, option, index, expansion);
+        else if (expansion >= 1) paintCard(p, option, index);
+        else paintStripCard(p, option, index, expansion);
+    }
+private:
+    struct CardStatus {
+        bool attention, unread, working, paused, additionalUnread;
+        QString state, caption;
+        SessionStatusBadge::Kind kind;
+        IdentityBadges::RowEmphasis emphasis;
+    };
+    struct SharedBadges { QRect status, unread, provider; QString agent; };
+    CardStatus cardStatus(const QModelIndex &index) const {
+        CardStatus s;
+        s.attention = index.data(SessionRoles::Attention).toBool();
+        s.unread = index.data(SessionRoles::Unread).toBool();
+        s.state = index.data(SessionRoles::Status).toString();
+        const bool error = s.state == "Error";
+        s.working = index.data(SessionRoles::Working).toInt() > 0;
+        s.paused = s.state == "Paused";
+        s.emphasis = s.attention ? (error ? IdentityBadges::Error : IdentityBadges::Attention) : s.unread ? IdentityBadges::Unread : IdentityBadges::Normal;
+        s.kind = s.attention ? (error ? SessionStatusBadge::Error : SessionStatusBadge::Attention)
+            : s.working ? SessionStatusBadge::Working : s.unread ? SessionStatusBadge::Unread
+            : s.paused ? SessionStatusBadge::Paused : SessionStatusBadge::Neutral;
+        s.caption = s.working ? SessionElapsed::status(s.state == "Compacting" ? tr("Compacting") : tr("Working"), index.data(SessionRoles::WorkingSince).toDouble()) : s.unread && !s.attention ? tr("New reply")
+            : s.state == "Not tracked" ? tr("Untracked") : s.state;
+        s.additionalUnread = s.unread && (s.working || s.attention);
+        return s;
+    }
+    void paintHeader(QPainter *p, const QStyleOptionViewItem &option, const QModelIndex &index, qreal expansion) const {
         p->save(); p->setRenderHint(QPainter::Antialiasing);
         const bool dark = option.widget && option.widget->property("hgsDark").toBool();
-        if (index.data(SessionRoles::Header).toBool()) {
-            const int attention = index.data(SessionRoles::Attention).toInt(), working = index.data(SessionRoles::Working).toInt(), unread = index.data(SessionRoles::Unread).toInt();
-            const QRect band = option.rect.adjusted(2, 5, -2, -3), r = band.adjusted(9, 0, -9, 0);
-            const QColor projectColor = index.data(SessionRoles::ProjectColor).value<QColor>();
-            const bool vivid = index.data(SessionRoles::ProjectVivid).toBool();
-            const auto fg = ProjectAppearance::ink(projectColor,dark,vivid);
-            const auto background = ProjectAppearance::fill(projectColor,dark,vivid);
-            p->setPen(Qt::NoPen); p->setBrush(background); p->drawRoundedRect(band,6,6);
-            p->setPen(QPen(fg, 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-            const QPoint c(r.x() + 3, r.center().y()); QPolygon arrow;
-            if (index.data(SessionRoles::Collapsed).toBool()) arrow << c + QPoint(-2,-4) << c + QPoint(2,0) << c + QPoint(-2,4);
-            else arrow << c + QPoint(-4,-2) << c + QPoint(0,2) << c + QPoint(4,-2);
-            p->drawPolyline(arrow);
-            workspaceIcon("projects", fg).paint(p, QRect(r.x() + 15, r.center().y() - 8, 16, 16));
-            QFont font = option.font; font.setPixelSize(11); font.setWeight(QFont::Medium); p->setFont(font);
-            int right = r.right();
-            const auto counter = [&](const QString &text, const QColor &color, const QColor &background) {
-                const int w = QFontMetrics(font).horizontalAdvance(text) + 12;
-                const QRect badge(right - w, r.center().y() - 9, w, 18); p->setPen(Qt::NoPen); p->setBrush(background);
-                p->drawRoundedRect(badge, 5, 5); p->setPen(color); p->drawText(badge, Qt::AlignCenter, text); right -= w + 6;
-            };
-            counter(QString::number(index.data(SessionRoles::Total).toInt()), fg, MachineAppearance::blend(background,fg,.13));
-            if (attention) counter(QString("! %1").arg(attention), QColor("#392900"), QColor(dark ? "#ffda76" : "#f4ce65"));
-            if (unread) counter(QString("● %1").arg(unread), QColor("#392900"), QColor(dark ? "#ffda76" : "#f4ce65"));
-            if (working) {
-                QColor progress(dark ? "#55e39a" : "#12834e");
-                progress.setAlphaF(.72 + .28 * (option.widget ? option.widget->property("workingPulse").toReal() : 0.0));
-                counter(QString("● %1").arg(working), progress, QColor(dark ? "#123624" : "#e0f5e9"));
+        const int attention = index.data(SessionRoles::Attention).toInt(), working = index.data(SessionRoles::Working).toInt(), unread = index.data(SessionRoles::Unread).toInt();
+        const QRect band = option.rect.adjusted(2, 5, -2, -3), r = band.adjusted(9, 0, -9, 0);
+        const QColor projectColor = index.data(SessionRoles::ProjectColor).value<QColor>();
+        const bool vivid = index.data(SessionRoles::ProjectVivid).toBool();
+        const auto fg = ProjectAppearance::ink(projectColor,dark,vivid);
+        const auto background = ProjectAppearance::fill(projectColor,dark,vivid);
+        p->setPen(Qt::NoPen); p->setBrush(background); p->drawRoundedRect(band,6,6);
+        // The band keeps its color at any width; its contents fade into the strip summary.
+        const qreal full = SessionStrip::fullOpacity(expansion), strip = SessionStrip::stripOpacity(expansion);
+        p->setOpacity(full);
+        p->setPen(QPen(fg, 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        const QPoint c(r.x() + 3, r.center().y()); QPolygon arrow;
+        if (index.data(SessionRoles::Collapsed).toBool()) arrow << c + QPoint(-2,-4) << c + QPoint(2,0) << c + QPoint(-2,4);
+        else arrow << c + QPoint(-4,-2) << c + QPoint(0,2) << c + QPoint(4,-2);
+        p->drawPolyline(arrow);
+        workspaceIcon("projects", fg).paint(p, QRect(r.x() + 15, r.center().y() - 8, 16, 16));
+        QFont font = option.font; font.setPixelSize(11); font.setWeight(QFont::Medium); p->setFont(font);
+        int right = r.right();
+        const auto counter = [&](const QString &text, const QColor &color, const QColor &background) {
+            const int w = QFontMetrics(font).horizontalAdvance(text) + 12;
+            const QRect badge(right - w, r.center().y() - 9, w, 18); p->setPen(Qt::NoPen); p->setBrush(background);
+            p->drawRoundedRect(badge, 5, 5); p->setPen(color); p->drawText(badge, Qt::AlignCenter, text); right -= w + 6;
+        };
+        counter(QString::number(index.data(SessionRoles::Total).toInt()), fg, MachineAppearance::blend(background,fg,.13));
+        if (attention) counter(QString("! %1").arg(attention), QColor("#392900"), QColor(dark ? "#ffda76" : "#f4ce65"));
+        if (unread) counter(QString("● %1").arg(unread), QColor("#392900"), QColor(dark ? "#ffda76" : "#f4ce65"));
+        QColor progress(dark ? "#55e39a" : "#12834e");
+        progress.setAlphaF(.72 + .28 * (option.widget ? option.widget->property("workingPulse").toReal() : 0.0));
+        if (working) counter(QString("● %1").arg(working), progress, QColor(dark ? "#123624" : "#e0f5e9"));
+        font.setPixelSize(12); font.setWeight(QFont::DemiBold); p->setFont(font); p->setPen(fg);
+        p->drawText(QRect(r.x() + 39, r.y(), qMax(0, right - r.x() - 39), r.height()), Qt::AlignVCenter,
+            QFontMetrics(font).elidedText(index.data(SessionRoles::Title).toString(), Qt::ElideRight, qMax(0, right - r.x() - 39)));
+        if (strip > 0) {
+            // One counter per band in the strip: what needs a response, then
+            // unread replies, then work in progress, then the session count.
+            QString text = QString::number(index.data(SessionRoles::Total).toInt());
+            QColor ink = fg, fill = MachineAppearance::blend(background, fg, .13);
+            if (attention || unread) {
+                text = attention ? QString("! %1").arg(attention) : QString("● %1").arg(unread);
+                ink = QColor("#392900"); fill = QColor(dark ? "#ffda76" : "#f4ce65");
+            } else if (working) {
+                text = QString("● %1").arg(working); ink = progress; fill = QColor(dark ? "#123624" : "#e0f5e9");
             }
-            font.setPixelSize(12); font.setWeight(QFont::DemiBold); p->setFont(font); p->setPen(fg);
-            p->drawText(QRect(r.x() + 39, r.y(), qMax(0, right - r.x() - 39), r.height()), Qt::AlignVCenter,
-                QFontMetrics(font).elidedText(index.data(SessionRoles::Title).toString(), Qt::ElideRight, qMax(0, right - r.x() - 39)));
-            p->restore(); return;
+            font.setPixelSize(11); font.setWeight(QFont::Medium); p->setFont(font); p->setOpacity(strip);
+            const int w = QFontMetrics(font).horizontalAdvance(text) + 12;
+            const QRect badge(band.x() + (SessionStrip::CardWidth - w) / 2, band.center().y() - 9, w, 18);
+            p->setPen(Qt::NoPen); p->setBrush(fill); p->drawRoundedRect(badge, 5, 5); p->setPen(ink); p->drawText(badge, Qt::AlignCenter, text);
         }
+        p->restore();
+    }
+    // The full card. With shared set, its surface and the badges that travel
+    // between strip and card are left to the caller, which records their places.
+    void paintCard(QPainter *p, const QStyleOptionViewItem &option, const QModelIndex &index, SharedBadges *shared = nullptr) const {
+        p->save(); p->setRenderHint(QPainter::Antialiasing);
+        const bool dark = option.widget && option.widget->property("hgsDark").toBool();
         const bool childRow = !index.data(SessionRoles::ChildId).toString().isEmpty();
         const bool expandable = index.data(SessionRoles::HasChildren).toBool();
         const QRect r = sessionCardRect(option.rect).adjusted(childRow ? 24 : 0, 0, 0, 0);
         const bool compact = option.widget && option.widget->property("compact").toBool();
-        const bool attention = index.data(SessionRoles::Attention).toBool();
-        const bool anyUnread = index.data(SessionRoles::Unread).toBool();
-        const bool unread = index.data(SessionRoles::Unread).toBool();
-        const bool error = index.data(SessionRoles::Status).toString() == "Error";
-        const bool working = index.data(SessionRoles::Working).toInt() > 0;
-        const QString state = index.data(SessionRoles::Status).toString();
-        const bool paused = state == "Paused";
-        p->setClipRect(option.rect);
+        const auto status = cardStatus(index);
+        const bool attention = status.attention, unread = status.unread, working = status.working, paused = status.paused;
+        const QString state = status.state;
+        p->setClipRect(option.rect, Qt::IntersectClip);
         QStyleOptionViewItem cardOption(option); cardOption.rect.adjust(childRow ? 24 : 0, 2, 0, -4);
-        IdentityBadges::paintRow(p, cardOption, dark, attention ? (error ? IdentityBadges::Error : IdentityBadges::Attention) : anyUnread ? IdentityBadges::Unread : IdentityBadges::Normal);
+        if (!shared) IdentityBadges::paintRow(p, cardOption, dark, status.emphasis);
         const int x = r.x() + 12, textX = x + 8, right = r.right() - 11, width = right - textX;
         const QColor foreground(dark ? "#e8edf4" : "#1a2733"), muted(dark ? "#a1adbb" : "#647386");
         if (childRow) {
@@ -85,12 +161,9 @@ public:
         // Provider goes with the session title; machine goes with its folder.
         // At narrow widths the provider keeps its icon, leaving room for the
         // title and elapsed status. The footer is independent of those badges.
-        const auto kind = attention ? (error ? SessionStatusBadge::Error : SessionStatusBadge::Attention)
-            : working ? SessionStatusBadge::Working : unread ? SessionStatusBadge::Unread
-            : paused ? SessionStatusBadge::Paused : SessionStatusBadge::Neutral;
-        const QString caption = working ? SessionElapsed::status(state == "Compacting" ? tr("Compacting") : tr("Working"), index.data(SessionRoles::WorkingSince).toDouble()) : unread && !attention ? tr("New reply")
-            : state == "Not tracked" ? tr("Untracked") : state;
-        const bool additionalUnread = unread && (working || attention);
+        const auto kind = status.kind;
+        const QString caption = status.caption;
+        const bool additionalUnread = status.additionalUnread;
         const int statusWidth = SessionStatusBadge::width(caption, kind, option.font);
         QFont font = option.font; font.setPixelSize(14); font.setWeight(QFont::DemiBold);
         const QString agent = index.data(SessionRoles::Agent).toString(), host = index.data(SessionRoles::Host).toString();
@@ -103,10 +176,15 @@ public:
         const QString title = QFontMetrics(font).elidedText(index.data(SessionRoles::Title).toString(), Qt::ElideRight, titleWidth);
         p->drawText(QRect(x, titleY, titleWidth, 21), Qt::AlignVCenter, title);
         const QRect statusBadge(x + QFontMetrics(font).horizontalAdvance(title) + 8, titleY, statusWidth, 20);
-        SessionStatusBadge::paint(p, statusBadge, caption, kind, dark,
-            option.widget ? option.widget->property("workingPulse").toReal() : 0.0);
-        if (additionalUnread) SessionStatusBadge::paint(p, QRect(statusBadge.right() + 6, titleY, 22, 20), {}, SessionStatusBadge::Unread, dark);
-        if (providerWidth) IdentityBadges::paint(p, QRect(right - providerWidth, titleY + 1, providerWidth, 18), IdentityBadges::Provider, agent, dark);
+        const QRect unreadBadge = additionalUnread ? QRect(statusBadge.right() + 6, titleY, 22, 20) : QRect();
+        const QRect providerBadge = providerWidth ? QRect(right - providerWidth, titleY + 1, providerWidth, 18) : QRect();
+        if (shared) *shared = {statusBadge, unreadBadge, providerBadge, agent};
+        else {
+            SessionStatusBadge::paint(p, statusBadge, caption, kind, dark,
+                option.widget ? option.widget->property("workingPulse").toReal() : 0.0);
+            if (additionalUnread) SessionStatusBadge::paint(p, unreadBadge, {}, SessionStatusBadge::Unread, dark);
+            if (providerWidth) IdentityBadges::paint(p, providerBadge, IdentityBadges::Provider, agent, dark);
+        }
 
         if (childRow) {
             font.setPixelSize(11); font.setWeight(QFont::Normal); p->setFont(font); p->setPen(muted);
@@ -176,6 +254,69 @@ public:
             const QRect effortBadge(textX + QFontMetrics(font).horizontalAdvance(model) + 7, modelY + 2, effortWidth, 16);
             p->setPen(Qt::NoPen); p->setBrush(QColor(dark ? "#2b343e" : "#e7edf2")); p->drawRoundedRect(effortBadge, 3, 3);
             p->setPen(muted); p->drawText(effortBadge, Qt::AlignCenter, effort);
+        }
+        p->restore();
+    }
+    // A strip tile on its way to a full card: the surface follows the row width,
+    // status and provider badges travel to their card places, the card text
+    // fades in at full width and the initials fade out.
+    void paintStripCard(QPainter *p, const QStyleOptionViewItem &option, const QModelIndex &index, qreal expansion) const {
+        p->save(); p->setRenderHint(QPainter::Antialiasing); p->setClipRect(option.rect, Qt::IntersectClip);
+        const bool dark = option.widget && option.widget->property("hgsDark").toBool();
+        const qreal full = SessionStrip::fullOpacity(expansion), strip = SessionStrip::stripOpacity(expansion);
+        const qreal pulse = option.widget ? option.widget->property("workingPulse").toReal() : 0.0;
+        QStyleOptionViewItem wide(option);
+        wide.rect.setWidth(qMax(option.rect.width(), option.widget ? option.widget->property("expandedRowWidth").toInt() : 0));
+        const auto status = cardStatus(index);
+        const QRect r = sessionCardRect(option.rect);
+        const QRect stripStatus(r.x() + (SessionStrip::CardWidth - 26) / 2, r.y() + 8, 26, 20);
+        const QColor muted(dark ? "#a1adbb" : "#647386");
+        const auto neutralDot = [&](const QRect &badge) {
+            if (status.kind != SessionStatusBadge::Neutral || strip <= 0) return;
+            p->save(); p->setOpacity(strip * .6); p->setPen(Qt::NoPen); p->setBrush(muted);
+            p->drawEllipse(QPointF(badge.center()) + QPointF(.5, .5), 2.5, 2.5); p->restore();
+        };
+        if (!index.data(SessionRoles::ChildId).toString().isEmpty()) {
+            // Subagent rows keep only their status in the strip.
+            p->save(); p->setOpacity(full); paintCard(p, wide, index); p->restore();
+            const QRect badge(stripStatus.x(), option.rect.center().y() - 10, 26, 20);
+            p->setOpacity(strip); SessionStatusBadge::paint(p, badge, status.caption, status.kind, dark, pulse, 0); neutralDot(badge);
+            p->restore(); return;
+        }
+        QStyleOptionViewItem cardOption(option); cardOption.rect.adjust(0, 2, 0, -4);
+        IdentityBadges::paintRow(p, cardOption, dark, status.emphasis);
+        SharedBadges shared;
+        p->save(); p->setOpacity(full); paintCard(p, wide, index, &shared); p->restore();
+        const QRect statusBadge = SessionStrip::mix(stripStatus, shared.status, expansion);
+        SessionStatusBadge::paint(p, statusBadge, status.caption, status.kind, dark, pulse, full);
+        neutralDot(statusBadge);
+        if (status.additionalUnread) {
+            // A dot on the strip badge grows into the separate unread badge.
+            const QRect badge = SessionStrip::mix(QRect(stripStatus.right() - 6, stripStatus.y() - 4, 10, 10), shared.unread, expansion);
+            const bool selected = option.state & QStyle::State_Selected, hovered = option.state & QStyle::State_MouseOver;
+            p->setPen(Qt::NoPen);
+            if (strip > 0) {
+                p->setOpacity(strip);
+                p->setBrush(QColor(selected ? (dark ? "#303b47" : "#dde7ef") : hovered ? (dark ? "#242c34" : "#edf1f4") : (dark ? "#161b21" : "#f5f7f9")));
+                p->drawRoundedRect(badge.adjusted(-2, -2, 2, 2), 7, 7);
+            }
+            p->setOpacity(1); p->setBrush(QColor(dark ? "#ffda76" : "#f4ce65")); p->drawRoundedRect(badge, 5, 5);
+            if (full > 0) {
+                p->setOpacity(full); p->setPen(QPen(QColor("#392900"), 1)); p->setBrush(Qt::NoBrush);
+                const QPointF c(badge.x() + 11, badge.center().y() + .5);
+                p->drawRoundedRect(QRectF(c.x() - 4, c.y() - 3, 8, 6), 1, 1);
+                p->drawLine(c + QPointF(-4, -3), c); p->drawLine(c, c + QPointF(4, -3));
+            }
+            p->setOpacity(1);
+        }
+        if (!shared.agent.isEmpty())
+            IdentityBadges::paint(p, SessionStrip::mix(QRect(stripStatus.x(), r.bottom() - 25, 26, 18), shared.provider, expansion),
+                IdentityBadges::Provider, shared.agent, dark, {}, {}, full);
+        if (strip > 0) {
+            QFont font = option.font; font.setPixelSize(12); font.setWeight(QFont::DemiBold); p->setFont(font);
+            p->setOpacity(strip); p->setPen(QColor(dark ? "#e8edf4" : "#1a2733"));
+            p->drawText(QRect(r.x(), r.center().y() - 9, SessionStrip::CardWidth, 18), Qt::AlignCenter,
+                SessionStrip::initials(index.data(SessionRoles::Title).toString()));
         }
         p->restore();
     }

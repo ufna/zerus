@@ -1,0 +1,773 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>hgs zerus · Свёрнутая колонка сессий</title>
+<style>
+@property --t { syntax: '<number>'; inherits: true; initial-value: 0; }
+:root {
+  color-scheme: dark;
+  --bg: #161b21; --surface: #1c2229; --border: #333c47; --fg: #e8edf4; --muted: #a2adbc;
+  --accent: #8bdfc0; --hover: #2b3540; --selected: #233d35;
+  --dur: 220ms; --ease: cubic-bezier(.2, .7, .2, 1);
+  --font: "Ubuntu Sans", "Ubuntu", "Noto Sans", "Cantarell", system-ui, sans-serif;
+  --mono: "Ubuntu Sans Mono", "Ubuntu Mono", "DejaVu Sans Mono", ui-monospace, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #0f1317; color: var(--fg); font: 13px/1.35 var(--font); }
+body { padding: 28px 24px 56px; }
+button { font: inherit; }
+
+/* Page chrome around the prototype */
+.intro, .notes { max-width: 1280px; margin: 0 auto; }
+h1 { font-size: 22px; font-weight: 650; margin: 0 0 6px; }
+.intro p { color: var(--muted); margin: 0 0 14px; max-width: 920px; line-height: 1.55; }
+.controls { display: flex; flex-wrap: wrap; gap: 10px 20px; align-items: center; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { background: transparent; color: var(--muted); border: 0; padding: 8px 12px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button[aria-pressed="true"] { background: var(--selected); color: var(--accent); }
+.ctl { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); }
+.ctl input[type="range"] { width: 190px; accent-color: var(--accent); }
+.ctl input[type="checkbox"] { accent-color: var(--accent); }
+.btn { background: var(--surface); color: var(--fg); border: 1px solid var(--border); border-radius: 7px; padding: 7px 12px; cursor: pointer; }
+.btn:hover { background: var(--hover); }
+.log { color: var(--muted); font-size: 12px; min-height: 18px; margin: 10px 0 14px; }
+.log b { color: var(--fg); font-weight: 600; }
+.frame { overflow-x: auto; padding-bottom: 6px; }
+
+/* Window */
+.window { width: 1280px; height: 840px; margin: 0 auto; display: flex; position: relative; overflow: hidden;
+  background: var(--bg); border: 1px solid #2a323b; border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,.45);
+  transition: --t var(--dur) var(--ease); }
+.window.scrub, .window.instant { transition: none; }
+.rail { width: 56px; flex: none; background: var(--surface); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; align-items: center; padding: 10px 7px; gap: 8px; }
+.rb { width: 42px; height: 44px; border-radius: 7px; border: 1px solid transparent; background: transparent; color: var(--muted);
+  display: grid; place-items: center; padding: 0; position: relative; }
+.rb svg { width: 24px; height: 24px; }
+.rb.on { background: var(--selected); border-color: var(--border); }
+.rb.brand { margin-bottom: 8px; color: #f4f7fa; }
+.rb.new { background: var(--selected); color: #55e39a; }
+.rail .grow { flex: 1; }
+.rail .ver { font-size: 9px; color: var(--muted); }
+.rail .badge { position: absolute; left: 24px; top: 3px; min-width: 17px; height: 16px; padding: 0 4px; border-radius: 7px;
+  background: #ffda76; color: #30250c; font-size: 9px; font-weight: 700; display: grid; place-items: center; }
+.col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.body { flex: 1; min-height: 0; display: flex; padding: 8px; position: relative; }
+.slot { position: relative; flex: none; width: 300px; transition: width var(--dur) var(--ease); }
+.window.scrub .slot, .window.instant .slot, .window.instant .panel, .window.instant .scrim { transition: none; }
+.handle { width: 8px; flex: none; }
+.scrim { position: absolute; inset: 0; z-index: 4; background: #05080b; opacity: 0; pointer-events: none; transition: opacity var(--dur); }
+.window.float .scrim { opacity: calc(.24 * var(--t)); }
+.statusbar { height: 26px; flex: none; border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: flex-end;
+  gap: 10px; padding: 0 14px; font-size: 11px; color: var(--muted); }
+.meter { width: 30px; height: 3px; border-radius: 2px; background: #2b343e; overflow: hidden; }
+.meter i { display: block; height: 100%; background: var(--accent); }
+
+/* Sessions panel: one progress value --t drives the whole morph */
+.panel { position: absolute; top: 0; bottom: 0; left: 0; z-index: 6; width: calc(64px + 236px * var(--t));
+  display: flex; flex-direction: column; gap: 7px; padding: 2px 4px 0; overflow: hidden;
+  background: var(--bg); border-right: 1px solid transparent; border-radius: 0 10px 10px 0;
+  transition: box-shadow var(--dur), border-color var(--dur); }
+.window.float .panel { box-shadow: 18px 0 38px -10px rgba(0,0,0,.7); border-right-color: var(--border); }
+.xo { opacity: clamp(0, calc((var(--t) - .32) * 1.9), 1); }
+.co { opacity: clamp(0, calc(1 - var(--t) * 3.2), 1); }
+.window.narrow .xo { pointer-events: none; }
+.window:not(.narrow) .co { pointer-events: none; }
+
+.phead { position: relative; height: 32px; flex: none; }
+.phead h2 { position: absolute; left: 2px; top: 0; margin: 0; line-height: 32px; font-size: 16px; font-weight: 600; white-space: nowrap; }
+.ib { position: absolute; top: 0; width: 34px; height: 32px; padding: 0; border-radius: 6px; border: 1px solid transparent;
+  background: transparent; color: var(--muted); display: grid; place-items: center; cursor: pointer; }
+.ib:hover { background: var(--hover); color: var(--fg); }
+.ib svg { width: 18px; height: 18px; }
+.ib.more { right: 0; }
+.ib.toggle { left: calc(11px + 209px * var(--t)); }
+.toggle .i { display: none; }
+.window[data-mode="docked"] .toggle .i-collapse,
+.window[data-mode="collapsed"] .toggle .i-expand,
+.window[data-mode="float"] .toggle .i-pin { display: block; }
+
+.search { position: relative; flex: none; height: 33px; overflow: hidden; cursor: text;
+  margin-left: calc(11px * (1 - var(--t))); width: calc(34px + (100% - 34px) * var(--t));
+  background: var(--surface); border: 1px solid var(--border); border-radius: 7px; }
+.search:focus-within { border-color: var(--accent); }
+.search input { position: absolute; left: 0; top: 0; width: 290px; height: 31px; border: 0; outline: 0; padding: 0 10px;
+  background: transparent; color: var(--fg); font: inherit; }
+.search input::placeholder { color: var(--muted); }
+.search .mag { position: absolute; left: 7px; top: 6px; width: 18px; height: 18px; color: var(--muted); }
+
+.filters { position: relative; height: 30px; flex: none; }
+.chip { position: absolute; top: 0; height: 30px; padding: 0 2px; overflow: hidden; white-space: nowrap; cursor: pointer;
+  left: calc(11px + (var(--el) - 11px) * var(--t)); width: calc(34px + (var(--ew) - 34px) * var(--t));
+  display: flex; align-items: center; justify-content: center; gap: 4px; font-size: 11px;
+  border-radius: 7px; border: 1px solid transparent; background: transparent; color: var(--muted); }
+.chip svg { width: 16px; height: 16px; flex: none; }
+.chip:hover { background: var(--hover); }
+.chip.on { background: var(--selected); border-color: var(--border); color: var(--accent); z-index: 1; }
+.chip.warn svg { color: #f0c77b; }
+
+.list { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding-right: 2px; scrollbar-width: none; }
+.list::-webkit-scrollbar { display: none; }
+/* Overlay handle like workspaceScrollbars(): it never takes card width and is absent from the strip. */
+.sb { position: absolute; right: 1px; width: 5px; border-radius: 3px; background: rgba(156,170,183,.37); z-index: 2; cursor: default; }
+.sb:hover, .sb.drag { background: rgba(175,189,202,.59); }
+/* The strip shows the handle only while the pointer is over it. */
+.sb { transition: opacity 150ms; }
+.window.narrow.pointer-in .sb { opacity: 1; pointer-events: auto; }
+.row { position: relative; }
+.row.h { height: 40px; }
+.row.s { height: 94px; }
+.pfoot { flex: none; height: 24px; position: relative; font-size: 11px; color: var(--muted); white-space: nowrap; }
+.pfoot span { position: absolute; top: 2px; }
+.pfoot .xo { left: 4px; }
+.pfoot .co { left: 0; width: 56px; text-align: center; }
+
+/* Group header band — same paint as SessionDelegate */
+.band { position: absolute; top: 5px; left: 2px; right: 2px; height: 32px; border-radius: 6px; overflow: hidden; cursor: pointer; }
+.band:hover { filter: brightness(1.12); }
+.band svg.chev { position: absolute; left: 0; top: 0; width: 24px; height: 32px; }
+.band svg.fold { position: absolute; left: 24px; top: 8px; width: 16px; height: 16px; }
+.band .bt { position: absolute; left: 48px; top: 0; line-height: 32px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.band .cnts { position: absolute; right: 9px; top: 7px; display: flex; flex-direction: row-reverse; gap: 6px; }
+.band .sum { position: absolute; left: 0; top: 7px; width: 50px; display: flex; justify-content: center; }
+.cnt { height: 18px; line-height: 18px; padding: 0 6px; border-radius: 5px; font-size: 11px; font-weight: 500; white-space: nowrap; }
+.cnt.amber { background: #ffda76; color: #392900; }
+.cnt.green { background: #123624; color: #55e39a; animation: pulse-text 1.6s ease-in-out infinite; }
+
+/* Session card — same rows and paint as SessionDelegate (compact: 94 px) */
+.card { position: absolute; top: 4px; left: 2px; right: 2px; height: 84px; border-radius: 8px; overflow: hidden; cursor: pointer; --ring: var(--bg); }
+.card:hover { background: #242c34; --ring: #242c34; }
+.card.sel { background: #303b47; box-shadow: inset 0 0 0 1px #8295a9; --ring: #303b47; }
+.edge { position: absolute; left: 1px; top: 10px; bottom: 10px; width: 3px; border-radius: 1.5px; }
+.full { position: absolute; left: 0; top: 0; width: 286px; height: 84px; }
+.full > div { position: absolute; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.full .title { left: 12px; top: 3px; height: 21px; line-height: 21px; font-size: 14px; font-weight: 600; }
+.full .meta { left: 20px; top: 25px; height: 18px; line-height: 18px; font-size: 11px; color: var(--muted); }
+.full .mach { top: 25px; height: 18px; line-height: 18px; padding: 0 6px; border-radius: 4px; font-size: 11px; }
+.full .det { left: 20px; top: 45px; width: 255px; height: 18px; line-height: 18px; font-size: 12px; }
+.full .model { left: 20px; top: 63px; height: 20px; line-height: 20px; font-size: 10px; color: var(--muted); }
+.ini { position: absolute; left: 0; top: 33px; width: 50px; height: 18px; line-height: 18px; text-align: center;
+  font-size: 12px; font-weight: 600; letter-spacing: .3px; }
+
+/* Shared elements travel between their collapsed and expanded places */
+.st { position: absolute; height: 20px; border-radius: 5px; overflow: hidden; white-space: nowrap;
+  left: calc(12px + (var(--sx) - 12px) * var(--t)); top: calc(8px - 5px * var(--t)); width: calc(26px + (var(--sw) - 26px) * var(--t)); }
+.st .ico { position: absolute; left: calc(2px * (1 - var(--t))); top: 0; width: 22px; height: 20px; display: grid; place-items: center; }
+.st .lbl { position: absolute; left: 23px; top: 0; line-height: 20px; font-size: 11px; font-weight: 500; }
+.st.neutral .lbl { left: 7px; }
+.st.working { background: #194d36; color: #97f0ba; }
+.st.attention, .st.unread { background: #ffda76; color: #392900; }
+.st.error { background: #ffabb6; color: #46202a; }
+.st.paused { background: #443654; color: #dec3ff; }
+.st.neutral { background: #2b343e; color: #b6c2d0; }
+.st b { font-size: 11px; font-weight: 800; }
+.dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; position: relative; }
+.dot::before { content: ""; position: absolute; inset: -3px; border-radius: 50%; background: currentColor; opacity: .1; animation: halo 1.6s ease-in-out infinite; }
+.ndot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: .6; }
+.xu { position: absolute; overflow: hidden; background: #ffda76; color: #392900; border-radius: 5px;
+  left: calc(31px + (var(--xx) - 31px) * var(--t)); top: calc(3px * (1 - var(--t)) + 3px * var(--t));
+  width: calc(10px + 12px * var(--t)); height: calc(10px + 10px * var(--t));
+  box-shadow: 0 0 0 calc(2px * (1 - var(--t))) var(--ring); display: grid; place-items: center; }
+.pv { position: absolute; height: 18px; border-radius: 4px; background: #303942; overflow: hidden; white-space: nowrap;
+  left: calc(12px + (var(--px) - 12px) * var(--t)); top: calc(58px - 54px * var(--t)); width: calc(26px + (var(--pw) - 26px) * var(--t)); }
+.pv svg { position: absolute; left: calc(6px - 3px * var(--t)); top: 2px; width: 14px; height: 14px; }
+.pv .lbl { position: absolute; left: 22px; top: 0; line-height: 18px; font-size: 11px; font-weight: 500; }
+.tip { position: absolute; z-index: 20; transform: translateY(-50%); max-width: 300px; padding: 6px 9px; pointer-events: none;
+  background: #2b3540; border: 1px solid #4a5663; border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.5);
+  font-size: 12px; line-height: 1.4; display: none; }
+.tip.on { display: block; }
+.tip b { font-weight: 600; }
+.tip small { display: block; color: var(--muted); font-size: 11px; }
+@keyframes halo { 50% { opacity: .33; transform: scale(1.25); } }
+@keyframes pulse-text { 50% { opacity: .72; } }
+
+/* Session detail (unchanged, simplified) */
+.detail { flex: 1; min-width: 0; position: relative; overflow: hidden; display: flex; flex-direction: column;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+.dh { position: relative; padding: 12px 16px 0; }
+.dh h3 { margin: 0; font-size: 16px; font-weight: 600; white-space: nowrap; }
+.dchips { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 11px; color: var(--muted); }
+.badge18 { height: 18px; line-height: 18px; padding: 0 6px; border-radius: 4px; font-size: 11px; display: inline-flex; align-items: center; gap: 5px; }
+.dtools { position: absolute; right: 12px; top: 10px; display: flex; align-items: center; gap: 2px; }
+.dtools .pill { height: 22px; line-height: 22px; padding: 0 9px; border-radius: 5px; font-size: 11px; font-weight: 500; margin-right: 8px; }
+.tool { width: 32px; height: 30px; display: grid; place-items: center; color: var(--muted); }
+.tool svg { width: 18px; height: 18px; }
+.dmodel { position: absolute; right: 16px; top: 46px; font-size: 11px; color: var(--muted); }
+.tabs { display: flex; gap: 2px; padding: 0 8px; margin-top: 10px; border-bottom: 1px solid var(--border); }
+.tab { padding: 8px 9px; color: var(--muted); border-bottom: 2px solid transparent; }
+.tab.on { color: var(--fg); border-bottom-color: var(--accent); }
+.feed { flex: 1; min-height: 0; overflow: hidden; padding: 10px 14px; display: flex; flex-direction: column; gap: 10px; }
+.eyebrow { font-size: 10px; color: var(--muted); letter-spacing: .3px; }
+.ev { border: 1px solid var(--border); border-radius: 3px; padding: 8px 10px; font-size: 12px; }
+.ev b { font-size: 13px; }
+.ev .ts { color: var(--muted); font-size: 10px; margin-left: 6px; }
+.ev .sub { color: var(--muted); font-size: 11px; margin-top: 4px; font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ev.you { background: #1d3a2d; border-color: #2a4d3c; border-left: 3px solid #55e39a; }
+.ev.you p { margin: 8px 0 0; line-height: 1.5; }
+.dmeta { display: flex; justify-content: flex-end; gap: 22px; padding: 0 16px 6px; font-size: 11px; color: var(--muted); }
+.dmeta .cache { color: var(--accent); }
+.composer { margin: 0 14px 8px; height: 70px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); }
+.cfoot { display: flex; align-items: center; gap: 10px; margin: 0 14px 12px; font-size: 11px; color: var(--muted); }
+.cfoot .sp { flex: 1; }
+.cbtn { height: 32px; padding: 0 12px; border-radius: 7px; border: 1px solid var(--border); background: var(--surface); color: var(--fg);
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+.cbtn.icon { width: 32px; padding: 0; justify-content: center; color: var(--muted); }
+
+/* Settings page — SettingsPage.h */
+.settings { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 20px; padding: 20px 24px; background: var(--bg); }
+.settings[hidden], .spage[hidden] { display: none; }
+.settings h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.sbody { flex: 1; min-height: 0; display: flex; gap: 24px; }
+.snav { width: 180px; flex: none; display: flex; flex-direction: column; }
+.snav button { text-align: left; padding: 11px 10px; margin-bottom: 5px; border: 0; border-radius: 6px; background: transparent; color: var(--fg); cursor: pointer; }
+.snav button:hover { background: var(--hover); }
+.snav button[aria-selected="true"] { background: var(--selected); color: var(--accent); }
+.spage { flex: 1; max-width: 850px; display: flex; flex-direction: column; gap: 18px; padding-right: 12px; }
+.check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.check input { appearance: none; width: 16px; height: 16px; margin: 0; flex: none; display: grid; place-items: center;
+  border: 1px solid #4a5663; border-radius: 3px; background: var(--surface); cursor: pointer; }
+.check input:checked { background: var(--accent); border-color: var(--accent); }
+.check input:checked::after { content: ""; width: 8px; height: 4px; border: 2px solid #10261d; border-top: 0; border-right: 0; transform: translate(0, -1px) rotate(-45deg); }
+.check input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.anno { font-size: 11px; color: var(--accent); border: 1px dashed rgba(139,223,192,.5); border-radius: 4px; padding: 0 6px; }
+.shint { margin: 0; line-height: 1.5; }
+.shint.muted { color: var(--muted); }
+.window.still .dot::before, .window.still .cnt.green { animation: none; }
+
+/* Notes */
+.notes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 26px; }
+.note { border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; background: #13181d; }
+.note h2 { font-size: 15px; margin: 0 0 8px; }
+.note ul { margin: 0; padding-left: 18px; color: var(--muted); line-height: 1.55; }
+.note li + li { margin-top: 5px; }
+.note code { font-family: var(--mono); font-size: 12px; color: var(--fg); }
+@media (max-width: 1100px) { .notes { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .window, .slot { transition: none; } .dot::before, .cnt.green { animation: none; } }
+</style>
+</head>
+<body>
+
+<section class="intro">
+  <h1>Свёрнутая колонка сессий</h1>
+  <p>Развёрнутая колонка — текущий сайдбар без изменений. Свёрнутая полоса собрана из тех же строк и элементов и работает сама по себе:
+    клик выбирает сессию, наведение показывает подсказку. Кнопка «⇥» в полосе разворачивает колонку: полоса растёт вширь, каждая строка
+    остаётся на своей высоте, бейджи статуса и провайдера переезжают на свои места. Ползунок позволяет рассмотреть переход покадрово.
+    Раскрытие при наведении — опция в настройках приложения (шестерёнка внизу рейки → Sessions), по умолчанию выключена.</p>
+  <div class="controls">
+    <div class="seg" role="group" aria-label="Состояние колонки">
+      <button data-set="docked">Как сейчас</button>
+      <button data-set="collapsed">Свёрнута</button>
+      <button data-set="float">Поверх контента</button>
+    </div>
+    <label class="ctl">Переход <input id="scrub" type="range" min="0" max="100" value="100"> <span id="scrubv">100%</span></label>
+    <label class="ctl"><input id="slow" type="checkbox"> медленная анимация</label>
+    <button class="btn" id="event">Прислать событие</button>
+  </div>
+  <div class="log" id="log">Синтетические сессии. События меняют статусы — видно, как уведомления выглядят в свёрнутой полосе.</div>
+</section>
+
+<div class="frame">
+<div class="window" id="win" data-mode="docked">
+  <nav class="rail" aria-label="Navigation">
+    <button class="rb brand" title="Home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3a9 9 0 1 0 9 9"/><path d="M12 7.5a4.5 4.5 0 1 0 4.5 4.5"/><path d="M21 12c0-2-1-4-3-5.5"/><circle cx="12" cy="12" r="1" fill="currentColor"/></svg></button>
+    <button class="rb new" title="New session"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+    <button class="rb on" id="navSessions" title="Sessions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="7" rx="2"/><rect x="4" y="14" width="16" height="6" rx="2"/><path d="M8 7.5h.01M12 7.5h4"/></svg><span class="badge" id="railBadge">2</span></button>
+    <button class="rb" title="Projects"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M3 8V5h7l2 3h9v11H3Z"/></svg></button>
+    <button class="rb" title="Machines"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M12 16v4M8 20h8"/></svg></button>
+    <button class="rb" title="Accounts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="10" cy="7" r="3.5"/><path d="M3 20c0-9 14-9 14 0"/><circle cx="18" cy="12" r="2"/><path d="M18 14v6M18 18h3"/></svg></button>
+    <div class="grow"></div>
+    <button class="rb" id="navSettings" title="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2.5"/><path d="M12 19v2M12 3v2M19 12h2M3 12h2M17 17l1.4 1.4M5.6 5.6 7 7M17 7l1.4-1.4M5.6 18.4 7 17"/></svg></button>
+    <div class="ver">0.36.2</div>
+  </nav>
+
+  <div class="col">
+    <div class="body">
+      <div class="slot" id="slot">
+        <aside class="panel" id="panel" aria-label="Sessions">
+          <div class="phead">
+            <h2 class="xo">Sessions</h2>
+            <button class="ib toggle" id="toggle" title="">
+              <svg class="i i-collapse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4v16M19 12H9M14 7l-5 5 5 5"/></svg>
+              <svg class="i i-expand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4v16M9 12h10M14 7l5 5-5 5"/></svg>
+              <svg class="i i-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3h8l-1 6 4 4H5l4-4-1-6Z"/><path d="M12 13v8"/></svg>
+            </button>
+            <button class="ib more xo" title="Session and machine actions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h.01M12 12h.01M19 12h.01"/></svg></button>
+          </div>
+          <div class="search" id="search">
+            <svg class="mag co" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/></svg>
+            <input class="xo" id="q" placeholder="Search sessions and messages…" aria-label="Search sessions">
+          </div>
+          <div class="filters" id="filters"></div>
+          <div class="list" id="list"></div>
+          <div class="sb xo" id="sb"></div>
+          <div class="pfoot"><span class="xo" id="footX"></span><span class="co" id="footC"></span></div>
+        </aside>
+      </div>
+      <div class="handle"></div>
+      <main class="detail" id="detail">
+        <div class="dh">
+          <h3 id="dTitle"></h3>
+          <div class="dchips" id="dChips"></div>
+          <div class="dtools">
+            <span class="pill" id="dPill"></span>
+            <span class="tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M3 8V5h7l2 3h9v11H3Z"/></svg></span>
+            <span class="tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></svg></span>
+            <span class="tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 4h8v8M20 4 10 14M8 5H4v15h15v-4"/></svg></span>
+            <span class="tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 5v14M16 5v14"/></svg></span>
+            <span class="tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M5 12h.01M12 12h.01M19 12h.01"/></svg></span>
+          </div>
+          <div class="dmodel" id="dModel"></div>
+        </div>
+        <div class="tabs"><span class="tab on">Activity</span><span class="tab">Terminal</span><span class="tab">Processes</span></div>
+        <div class="feed">
+          <div class="eyebrow">RECORDED ACTIVITY — Messages and tool excerpts</div>
+          <div class="ev"><b>▸ Session started</b><span class="ts">8 Oct 10:24:02</span></div>
+          <div class="ev you"><b>You</b><span class="ts">8 Oct 10:24:10 Sent</span>
+            <p>Add request validation to the orders endpoint and cover the new rules with tests.</p></div>
+          <div class="ev"><b>▸ 3 tool calls, 6 events / Bash</b><span class="ts">8 Oct 10:24:31</span>
+            <div class="sub">rg -n "validate" src/routes; npm test -- orders</div></div>
+          <div class="ev"><b>▸ Thinking</b><span class="ts">8 Oct 10:25:04</span>
+            <div class="sub">Comparing the request schema with the existing handlers…</div></div>
+          <div class="ev"><b>▸ Edit / src/routes/orders.ts</b><span class="ts">8 Oct 10:25:40</span>
+            <div class="sub">+42 −7</div></div>
+          <div class="ev"><b>▸ 1 tool call, 2 events / Bash</b><span class="ts">8 Oct 10:26:12</span>
+            <div class="sub">npm test -- --watch=false</div></div>
+        </div>
+        <div class="dmeta"><span class="cache">Cache ~60m</span><span>41,2k</span></div>
+        <div class="composer">Message this agent…</div>
+        <div class="cfoot">
+          <span class="cbtn icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="m9 16 7-7c3-3-1-7-4-4l-7 7c-6 6 2 14 8 8l7-7"/></svg></span>
+          <span>Submitted to terminal</span><span class="sp"></span>
+          <span id="cModel"></span><span class="cbtn"><span style="width:9px;height:9px;border:1.5px solid #ff8a9b;border-radius:2px"></span>Stop</span><span class="cbtn">Send ↑</span>
+        </div>
+      </main>
+      <div class="scrim"></div>
+    </div>
+    <section class="settings" id="settings" hidden>
+      <h2>Settings</h2>
+      <div class="sbody">
+        <div class="snav" role="tablist">
+          <button role="tab" aria-selected="false">Appearance</button>
+          <button role="tab" aria-selected="true">Sessions</button>
+          <button role="tab" aria-selected="false">Automatic recovery</button>
+          <button role="tab" aria-selected="false">Processes</button>
+          <button role="tab" aria-selected="false">About</button>
+        </div>
+        <div class="spage" id="spageSessions">
+          <h2>Sessions</h2>
+          <label class="check"><input type="checkbox" checked> Compact session rows</label>
+          <label class="check"><input type="checkbox" id="optHover"> Expand the collapsed session list on hover <span class="anno">новая опция</span></label>
+          <label class="check"><input type="checkbox" checked> Hide projects without active sessions</label>
+          <label class="check"><input type="checkbox" id="optAnimate" checked> Animate working sessions</label>
+          <p class="shint">Closing Zerus keeps agents running. Projects and the arrangement of your workspace are saved on this device.</p>
+        </div>
+        <div class="spage" id="spageOther" hidden><h2 id="spageOtherTitle"></h2><p class="shint muted">Этот раздел в прототипе не показан.</p></div>
+      </div>
+    </section>
+    <div class="statusbar"><span>claude</span><span class="meter"><i style="width:2%"></i></span><span>5h 0%</span><span class="meter"><i style="width:66%"></i></span><span>7d 66%</span><span>↻</span></div>
+  </div>
+</div>
+</div>
+
+<section class="notes">
+  <div class="note">
+    <h2>Свёрнутая полоса</h2>
+    <ul>
+      <li>Те же строки той же высоты: группа 40 px, карточка 94 px. Порядок, скролл и выделение общие с развёрнутой колонкой.</li>
+      <li>Карточка: рамка выделения, кромка attention / unread / error, бейдж статуса без текста (те же цвета и значки), инициалы, иконка провайдера — как в узкой карточке сейчас.</li>
+      <li>Непрочитанный ответ поверх работы или вопроса — точка на бейдже; при раскрытии она вырастает в обычный бейдж-конверт.</li>
+      <li>Группа: та же цветная плашка и один главный счётчик: <code>!</code> → <code>●</code> новые → <code>●</code> работают → всего. У свёрнутой группы он показывает скрытые сессии.</li>
+      <li>Поиск — квадрат с лупой, из фильтров виден только активный чип, внизу — число сессий.</li>
+    </ul>
+  </div>
+  <div class="note">
+    <h2>Без раскрытия при наведении</h2>
+    <ul>
+      <li>Полоса остаётся узкой. Клик по плитке выбирает сессию, клик по плашке сворачивает или разворачивает группу.</li>
+      <li>Через 250 мс наведения на плитку появляется подсказка: название, статус, последнее действие, папка и машина. На плашке — счётчики группы.</li>
+      <li>«Свернуть» — новая кнопка в шапке рядом с «⋯»; в полосе та же кнопка разворачивает колонку. Переход — морфинг на месте: строки не прыгают, статус и провайдер переезжают, текст проявляется.</li>
+      <li>Клик по лупе раскрывает панель поверх контента и ставит фокус в поиск. Закрывается по Esc или клику мимо панели, булавка закрепляет колонку.</li>
+      <li>Пока курсор над полосой, справа появляется тонкая ручка прокрутки; без курсора её нет.</li>
+      <li>Раскрытие при наведении — опция <i>Settings → Sessions → Expand the collapsed session list on hover</i>, по умолчанию выключена. Включённая: через 150 мс полоса растёт поверх контента и сворачивается через 350 мс после ухода курсора.</li>
+    </ul>
+  </div>
+  <div class="note">
+    <h2>Как это ляжет на Qt</h2>
+    <ul>
+      <li>Тот же <code>SessionList</code> и <code>SessionDelegate</code>: делегат получает свойство прогресса 0…1 и интерполирует позиции так же, как прототип.</li>
+      <li>В свёрнутом режиме в сплиттере остаётся слот 64 px; при наведении панель поднимается над detail (<code>raise()</code>) и растёт через <code>QVariantAnimation</code>.</li>
+      <li>Закрепление возвращает панель в сплиттер; свёрнутость хранится в <code>QSettings</code> рядом с <code>workspace/compact</code>.</li>
+      <li>Опция — ещё один флажок в списке раздела Sessions в <code>SettingsPage.h</code>: ключ <code>workspace/expandSessionsOnHover</code>, по умолчанию <code>false</code>.</li>
+    </ul>
+  </div>
+</section>
+
+<script>
+const $ = s => document.querySelector(s);
+const win = $('#win'), slot = $('#slot'), panel = $('#panel'), list = $('#list'), q = $('#q');
+const FONT = getComputedStyle(document.documentElement).getPropertyValue('--font');
+const ctx = document.createElement('canvas').getContext('2d');
+const tw = (text, font) => { ctx.font = `${font} ${FONT}`; return ctx.measureText(text).width; };
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+
+// MachineAppearance / ProjectAppearance: non-vivid fill and ink in the dark theme.
+const hex = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+const mix = (a, b, t) => a.map((v, i) => Math.round(v * (1 - t) + b[i] * t));
+const rgb = c => `rgb(${c.join(',')})`;
+const fill = c => mix(hex(c), hex('#171e25'), .78);
+const ink = c => mix(hex(c), [255, 255, 255], .38);
+
+const now = () => Date.now() / 1000;
+const elapsed = since => {
+  const d = Math.max(0, Math.floor(now() - since));
+  if (d < 60) return `${d}s`;
+  if (d < 3600) return `${Math.floor(d / 60)}m ${String(d % 60).padStart(2, '0')}s`;
+  return `${Math.floor(d / 3600)}h ${String(Math.floor(d / 60) % 60).padStart(2, '0')}m`;
+};
+
+const projects = [
+  { id: 'app', name: 'sample-app', color: '#6479ff', collapsed: false },
+  { id: 'infra', name: 'infra', color: '#ffcf32', collapsed: false },
+  { id: 'docs', name: 'docs', color: '#2999ff', collapsed: false },
+  { id: 'tooling', name: 'tooling', color: '#64b4f5', collapsed: true },
+];
+const machines = { 'build-box': '#b04cc8', 'mac-mini': '#3fb6a8' };
+const t0 = now();
+const initial = [
+  { id: 'as', p: 'app', title: 'API Server', agent: 'claude', host: 'build-box', state: 'Working', since: t0 - 48, unread: false, meta: 'sample-app / main', detail: 'Bash: npm test -- --watch=false', model: 'claude-opus-5-5' },
+  { id: 'wp', p: 'app', title: 'Worker Pool', agent: 'codex', host: 'build-box', state: 'Needs input', unread: true, meta: 'sample-app / worker', detail: 'Approve: run database migration 0042?', model: 'gpt-6.1-sol' },
+  { id: 'wc', p: 'app', title: 'Web Client', agent: 'kimi', host: 'mac-mini', state: 'Ready', unread: false, meta: 'sample-app / web', detail: '', model: 'kimi-k3' },
+  { id: 'mi', p: 'infra', title: 'Migrations', agent: 'claude', host: 'build-box', state: 'Error', unread: false, meta: 'infra / main', detail: 'Error: connection refused (db.example.net)', model: 'claude-opus-5-5' },
+  { id: 'bc', p: 'infra', title: 'Backup Check', agent: 'claude', host: 'mac-mini', state: 'Ready', unread: true, meta: 'infra / backups', detail: 'Backups verified, 2 warnings', model: 'claude-fable-5-1' },
+  { id: 'rn', p: 'docs', title: 'Release Notes', agent: 'codex', host: 'build-box', state: 'Working', since: t0 - 134, unread: true, meta: 'docs / main', detail: 'Drafting the 0.37 changelog', model: 'gpt-6.1-sol' },
+  { id: 'ds', p: 'docs', title: 'Docs Site', agent: 'kimi', host: 'mac-mini', state: 'Paused', unread: false, meta: 'docs / site', detail: '', model: 'kimi-k3' },
+  { id: 'lb', p: 'tooling', title: 'Lint Bot', agent: 'codex', host: 'build-box', state: 'Ready', unread: true, meta: 'tooling / main', detail: '', model: 'gpt-6.1-sol' },
+  { id: 'fm', p: 'tooling', title: 'Formatter', agent: 'claude', host: 'build-box', state: 'Ready', unread: false, meta: 'tooling / fmt', detail: '', model: 'claude-opus-5-5' },
+];
+let sessions = structuredClone(initial);
+const get = id => sessions.find(s => s.id === id);
+
+// Same decisions as SessionDelegate::paint.
+function view(s) {
+  const attention = s.state === 'Needs input' || s.state === 'Error', error = s.state === 'Error';
+  const working = s.state === 'Working', paused = s.state === 'Paused';
+  const kind = attention ? (error ? 'error' : 'attention') : working ? 'working' : s.unread ? 'unread' : paused ? 'paused' : 'neutral';
+  const caption = working ? `Working (${elapsed(s.since)})` : s.unread && !attention ? 'New reply' : s.state;
+  const edge = attention ? (error ? '#ffabb6' : '#ffda76') : s.unread ? '#ffda76' : '';
+  let detail = s.detail;
+  if (!detail && s.unread && !working && !attention) detail = 'Response ready to read';
+  else if (!detail && s.state === 'Ready') detail = 'Waiting for your next message';
+  else if (!detail && paused) detail = 'Resume to continue';
+  return { attention, error, working, paused, kind, caption, edge, detail, extra: s.unread && (working || attention) };
+}
+
+const PROVIDER = { claude: 'Claude', codex: 'Codex', kimi: 'Kimi' };
+const PCOLOR = { claude: '#e8b29b', codex: '#a6d8c5', kimi: '#bac1ff' };
+const providerIcon = a => {
+  const g = a === 'claude'
+    ? [0, 45, 90, 135, 180, 225, 270, 315].map(r => `<path transform="rotate(${r} 7 7)" d="M7 9v3"/>`).join('')
+    : a === 'kimi' ? '<path d="M4 3v8M4 7l6-4M4 7l6 4"/>' : '<path d="M3 4l3 3-3 3M8 10h3"/>';
+  return `<svg viewBox="0 0 14 14" fill="none" stroke="${PCOLOR[a]}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">${g}</svg>`;
+};
+const envelope = '<svg width="10" height="8" viewBox="0 0 10 8" fill="none" stroke="currentColor"><rect x=".5" y=".5" width="9" height="7" rx="1"/><path d="M.5.5 5 4.5 9.5.5"/></svg>';
+const statusIcon = k => k === 'working' ? '<span class="ico"><i class="dot"></i></span>'
+  : k === 'attention' || k === 'error' ? '<span class="ico"><b>!</b></span>'
+  : k === 'unread' ? `<span class="ico">${envelope}</span>`
+  : k === 'paused' ? '<span class="ico"><svg width="8" height="8" viewBox="0 0 8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 1v6M6 1v6"/></svg></span>'
+  : '<span class="ico co"><i class="ndot"></i></span>';
+const initials = t => { const w = t.split(/\s+/); return w.length > 1 ? (w[0][0] + w[1][0]).toUpperCase() : w[0].slice(0, 2); };
+
+// Expanded geometry of a 286 px card; collapsed geometry is fixed in CSS.
+const CARD = 286, X = 12, RIGHT = CARD - 11;
+function geometry(s, v) {
+  const stW = Math.ceil(tw(v.caption, '500 11px')) + 16 + (v.kind === 'neutral' ? 0 : 16);
+  // Like the delegate, a crowded title row keeps only the provider icon.
+  const natural = Math.min(95, Math.ceil(tw(PROVIDER[s.agent], '500 11px')) + 34);
+  const providerRoom = RIGHT - X - stW - 16 - (v.extra ? 28 : 0) - Math.min(72, Math.ceil(tw(s.title, '600 14px')));
+  const pW = providerRoom < natural ? 26 : natural;
+  const titleRoom = Math.max(0, RIGHT - X - stW - 8 - (v.extra ? 28 : 0) - pW - 8);
+  const titleW = Math.min(Math.ceil(tw(s.title, '600 14px')), titleRoom);
+  const sx = X + titleW + 8;
+  const hostW = Math.min(Math.floor((RIGHT - X - 8) / 3) + 10, Math.ceil(tw(s.host, '400 11px')) + 12);
+  return { stW, pW, titleRoom, sx, xx: sx + stW + 6, px: RIGHT - pW, hostW };
+}
+
+function cardHTML(s) {
+  const v = view(s), g = geometry(s, v), mc = machines[s.host];
+  return `${v.edge ? `<i class="edge" style="background:${v.edge}"></i>` : ''}
+    <div class="full xo">
+      <div class="title" style="max-width:${g.titleRoom}px">${esc(s.title)}</div>
+      <div class="meta" style="width:${RIGHT - 20 - g.hostW - 8}px">${esc(s.meta)}</div>
+      <div class="mach" style="left:${RIGHT - g.hostW}px;width:${g.hostW}px;background:${rgb(fill(mc))};color:${rgb(ink(mc))}">${esc(s.host)}</div>
+      <div class="det" style="color:${s.state === 'Offline' ? 'var(--muted)' : 'var(--fg)'}">${esc(v.detail)}</div>
+      <div class="model">${esc(s.model)}</div>
+    </div>
+    <div class="ini co">${esc(initials(s.title))}</div>
+    <div class="st ${v.kind}" style="--sx:${g.sx}px;--sw:${g.stW}px">${statusIcon(v.kind)}<span class="lbl xo">${esc(v.caption)}</span></div>
+    ${v.extra ? `<div class="xu" style="--xx:${g.xx}px"><span class="xo" style="display:grid">${envelope}</span></div>` : ''}
+    <div class="pv" style="--px:${g.px}px;--pw:${g.pW}px">${providerIcon(s.agent)}${g.pW > 26 ? `<span class="lbl xo" style="color:${PCOLOR[s.agent]}">${PROVIDER[s.agent]}</span>` : ''}</div>`;
+}
+
+function bandHTML(p) {
+  const members = sessions.filter(s => s.p === p.id);
+  const total = members.length, att = members.filter(s => view(s).attention).length;
+  const unread = members.filter(s => s.unread).length, work = members.filter(s => s.state === 'Working').length;
+  const f = fill(p.color), k = ink(p.color), tint = `background:${rgb(mix(f, k, .13))};color:${rgb(k)}`;
+  const cTotal = `<span class="cnt" style="${tint}">${total}</span>`, cAtt = `<span class="cnt amber">! ${att}</span>`;
+  const cUnread = `<span class="cnt amber">● ${unread}</span>`, cWork = `<span class="cnt green">● ${work}</span>`;
+  const chev = p.collapsed ? '10,12 14,16 10,20' : '8,14 12,18 16,14';
+  return `<div class="band" style="background:${rgb(f)};color:${rgb(k)}">
+      <svg class="chev xo" viewBox="0 0 24 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="${chev}"/></svg>
+      <svg class="fold xo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M3 8V5h7l2 3h9v11H3Z"/></svg>
+      <span class="bt xo">${esc(p.name)}</span>
+      <span class="cnts xo">${cTotal}${att ? cAtt : ''}${unread ? cUnread : ''}${work ? cWork : ''}</span>
+      <span class="sum co">${att ? cAtt : unread ? cUnread : work ? cWork : cTotal}</span>
+    </div>`;
+}
+
+const S = { dock: 'docked', peek: false, force: false, scrub: null, selected: 'as', filter: 'all', slow: false, hover: false };
+const FILTERS = [
+  ['all', 'All sessions', '<rect x="4" y="4" width="16" height="7" rx="2"/><rect x="4" y="14" width="16" height="6" rx="2"/><path d="M8 7.5h.01M12 7.5h4"/>'],
+  ['attention', 'Needs attention', '<path d="M6 10c0-7 12-7 12 0v5l2 3H4l2-3Z"/><path d="M10 20a2 2 0 0 0 4 0"/>'],
+  ['working', 'Working', '<path d="M13 3 5 13h6l-1 8 9-11h-6Z"/>'],
+  ['paused', 'Saved sessions', '<path d="M8 5v14M16 5v14"/>'],
+  ['archived', 'Archive', '<rect x="3" y="4" width="18" height="4"/><rect x="5" y="8" width="14" height="12"/><path d="M10 12h4"/>'],
+  ['machine', 'Machines', '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M12 16v4M8 20h8"/>'],
+];
+const PRED = { all: () => true, attention: s => view(s).attention, working: s => s.state === 'Working', paused: s => s.state === 'Paused', archived: () => false, machine: () => true };
+
+function renderFilters() {
+  const counts = { all: sessions.length, attention: sessions.filter(PRED.attention).length, working: sessions.filter(PRED.working).length, paused: sessions.filter(PRED.paused).length, archived: 0 };
+  const ew = (292 - 5 * 3) / 6;
+  $('#filters').innerHTML = FILTERS.map(([id, caption, icon], i) => {
+    const on = id === S.filter;
+    return `<button class="chip ${on ? 'on' : 'xo'} ${id === 'attention' && counts.attention ? 'warn' : ''}" data-filter="${id}" title="${caption}"
+      style="--el:${(i * (ew + 3)).toFixed(2)}px;--ew:${ew.toFixed(2)}px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${icon}</svg>${id in counts ? `<span>${counts[id]}</span>` : ''}</button>`;
+  }).join('');
+}
+
+function renderList() {
+  const scroll = list.scrollTop;
+  list.innerHTML = '';
+  let shown = 0;
+  for (const p of projects) {
+    const members = sessions.filter(s => s.p === p.id && PRED[S.filter](s));
+    if (!members.length && S.filter !== 'all') continue;
+    const head = document.createElement('div'); head.className = 'row h'; head.dataset.project = p.id; head.innerHTML = bandHTML(p);
+    list.append(head);
+    shown += members.length;
+    if (p.collapsed) continue;
+    for (const s of members) {
+      const row = document.createElement('div'); row.className = 'row s';
+      row.innerHTML = `<div class="card${s.id === S.selected ? ' sel' : ''}" data-id="${s.id}">${cardHTML(s)}</div>`;
+      list.append(row);
+    }
+  }
+  list.scrollTop = scroll;
+  updateThumb();
+  const working = sessions.filter(PRED.working).length, attention = sessions.filter(PRED.attention).length;
+  $('#footX').textContent = `${shown} shown, ${working} working, ${attention} attention`;
+  $('#footC').textContent = shown;
+  $('#railBadge').textContent = attention; $('#railBadge').style.display = attention ? '' : 'none';
+}
+
+const sb = $('#sb');
+function updateThumb() {
+  const { scrollTop, scrollHeight, clientHeight, offsetTop } = list;
+  if (scrollHeight <= clientHeight + 1) { sb.style.display = 'none'; return; }
+  const h = Math.max(28, clientHeight * clientHeight / scrollHeight);
+  Object.assign(sb.style, { display: '', height: `${h}px`, top: `${offsetTop + (clientHeight - h) * scrollTop / (scrollHeight - clientHeight)}px` });
+}
+list.addEventListener('scroll', updateThumb);
+addEventListener('resize', updateThumb);
+sb.addEventListener('mousedown', e => {
+  e.preventDefault(); sb.classList.add('drag');
+  const y = e.clientY, start = list.scrollTop;
+  const ratio = (list.scrollHeight - list.clientHeight) / (list.clientHeight - sb.offsetHeight);
+  const move = m => { list.scrollTop = start + (m.clientY - y) * ratio; };
+  const up = m => { sb.classList.remove('drag'); if (!panel.contains(m.target)) win.classList.remove('pointer-in'); removeEventListener('mousemove', move); removeEventListener('mouseup', up); };
+  addEventListener('mousemove', move); addEventListener('mouseup', up);
+});
+
+// Ticking elapsed time repaints only the cards, so hover state survives.
+function refreshCards() {
+  for (const card of list.querySelectorAll('.card')) {
+    const s = get(card.dataset.id);
+    if (s.state === 'Working') card.innerHTML = cardHTML(s);
+  }
+}
+
+function renderDetail() {
+  const s = get(S.selected), v = view(s), p = projects.find(x => x.id === s.p), mc = machines[s.host];
+  $('#dTitle').textContent = `${p.name} / ${s.title}`;
+  $('#dChips').innerHTML = `<span class="badge18" style="background:#303942;color:${PCOLOR[s.agent]}">${providerIcon(s.agent).replace('<svg', '<svg width="14" height="14"')}${PROVIDER[s.agent]}</span>
+    <span class="badge18" style="background:${rgb(fill(mc))};color:${rgb(ink(mc))}">${esc(s.host)}</span><span>${esc(s.meta)}</span>`;
+  const pill = { working: ['#194d36', '#97f0ba', 'Using a tool'], attention: ['#ffda76', '#392900', 'Needs input'], error: ['#ffabb6', '#46202a', 'Error'],
+    unread: ['#ffda76', '#392900', 'New reply'], paused: ['#443654', '#dec3ff', 'Paused'], neutral: ['#2b343e', '#b6c2d0', 'Ready'] }[v.kind];
+  Object.assign($('#dPill').style, { background: pill[0], color: pill[1] }); $('#dPill').textContent = pill[2];
+  $('#dModel').textContent = s.model; $('#cModel').textContent = `${s.model} ⌄`;
+}
+
+function apply() {
+  hideTip();
+  const scrub = S.scrub !== null, open = S.dock === 'docked' || S.peek || S.force;
+  const t = scrub ? S.scrub : open ? 1 : 0;
+  const mode = scrub ? 'float' : S.dock === 'docked' ? 'docked' : open ? 'float' : 'collapsed';
+  win.style.setProperty('--dur', `${S.slow ? 1200 : 220}ms`);
+  win.classList.toggle('scrub', scrub);
+  win.classList.toggle('float', mode === 'float');
+  win.classList.toggle('narrow', mode === 'collapsed');
+  win.dataset.mode = mode;
+  win.style.setProperty('--t', t);
+  slot.style.width = S.dock === 'docked' && !scrub ? '300px' : '64px';
+  $('#toggle').title = mode === 'docked' ? 'Collapse sessions' : mode === 'collapsed' ? 'Expand sessions' : 'Pin sessions';
+  const seg = scrub ? '' : S.dock === 'docked' ? 'docked' : S.force ? 'float' : 'collapsed';
+  document.querySelectorAll('[data-set]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.set === seg)));
+  if (!scrub) { $('#scrub').value = t * 100; $('#scrubv').textContent = `${Math.round(t * 100)}%`; }
+}
+
+// Optional hover: open after 150 ms, close 350 ms after the pointer leaves.
+let enterTimer, leaveTimer;
+panel.addEventListener('mouseenter', () => {
+  win.classList.add('pointer-in'); updateThumb();
+  clearTimeout(leaveTimer);
+  if (S.hover && S.dock === 'collapsed' && S.scrub === null && !S.peek && !S.force) enterTimer = setTimeout(() => { S.peek = true; apply(); }, 150);
+});
+panel.addEventListener('mouseleave', () => {
+  if (!sb.classList.contains('drag')) win.classList.remove('pointer-in');
+  clearTimeout(enterTimer);
+  if (!S.peek || !S.hover) return;
+  leaveTimer = setTimeout(() => {
+    if (document.activeElement === q && q.value) return;
+    S.peek = false; q.blur(); apply();
+  }, 350);
+});
+// A panel opened by a click closes on a click outside it.
+document.addEventListener('mousedown', e => {
+  if (S.peek && !panel.contains(e.target) && win.contains(e.target)) { S.peek = false; q.blur(); apply(); }
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && (S.peek || S.force)) { S.peek = false; S.force = false; q.blur(); apply(); }
+});
+$('#toggle').addEventListener('click', () => {
+  S.dock = win.dataset.mode === 'docked' ? 'collapsed' : 'docked';
+  S.peek = false; S.force = false; S.scrub = null; apply();
+});
+$('#search').addEventListener('click', () => {
+  if (win.dataset.mode !== 'collapsed') return;
+  S.peek = true; apply(); setTimeout(() => q.focus(), parseInt(win.style.getPropertyValue('--dur')));
+});
+$('#filters').addEventListener('click', e => {
+  const chip = e.target.closest('.chip'); if (!chip || win.dataset.mode === 'collapsed' || chip.dataset.filter === 'machine') return;
+  S.filter = chip.dataset.filter; renderFilters(); renderList();
+});
+list.addEventListener('click', e => {
+  const card = e.target.closest('.card');
+  if (card) {
+    S.selected = card.dataset.id;
+    list.querySelectorAll('.card').forEach(c => c.classList.toggle('sel', c === card));
+    renderDetail(); return;
+  }
+  const head = e.target.closest('.row.h');
+  if (head) { const p = projects.find(x => x.id === head.dataset.project); p.collapsed = !p.collapsed; renderList(); }
+});
+
+document.querySelectorAll('[data-set]').forEach(b => b.addEventListener('click', () => {
+  Object.assign(S, { scrub: null, peek: false, force: b.dataset.set === 'float', dock: b.dataset.set === 'docked' ? 'docked' : 'collapsed' });
+  apply();
+}));
+$('#scrub').addEventListener('input', e => {
+  Object.assign(S, { scrub: e.target.value / 100, dock: 'collapsed', peek: false, force: false });
+  $('#scrubv').textContent = `${e.target.value}%`; apply();
+});
+$('#slow').addEventListener('change', e => { S.slow = e.target.checked; apply(); });
+// Settings → Sessions → "Expand the collapsed session list on hover" (workspace/expandSessionsOnHover).
+const HOVER_KEY = 'zerus-proto/expandSessionsOnHover';
+try { S.hover = localStorage.getItem(HOVER_KEY) === 'true'; } catch {}
+$('#optHover').checked = S.hover;
+$('#optHover').addEventListener('change', e => {
+  S.hover = e.target.checked;
+  try { localStorage.setItem(HOVER_KEY, String(S.hover)); } catch {}
+});
+$('#optAnimate').addEventListener('change', e => win.classList.toggle('still', !e.target.checked));
+
+function showPage(page) {
+  $('#settings').hidden = page !== 'settings';
+  $('.body').style.display = page === 'settings' ? 'none' : '';
+  $('#navSessions').classList.toggle('on', page !== 'settings');
+  $('#navSettings').classList.toggle('on', page === 'settings');
+  hideTip(); if (page !== 'settings') updateThumb();
+}
+$('#navSettings').addEventListener('click', () => showPage('settings'));
+$('#navSessions').addEventListener('click', () => showPage('sessions'));
+document.querySelectorAll('.snav button').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('.snav button').forEach(x => x.setAttribute('aria-selected', String(x === b)));
+  const sessionsPage = b.textContent === 'Sessions';
+  $('#spageSessions').hidden = !sessionsPage; $('#spageOther').hidden = sessionsPage; $('#spageOtherTitle').textContent = b.textContent;
+}));
+
+// Tooltips replace hover expansion in the strip.
+const tip = document.createElement('div'); tip.className = 'tip'; win.append(tip);
+let tipTimer, tipAnchor = null;
+function hideTip() { clearTimeout(tipTimer); tip.classList.remove('on'); tipAnchor = null; }
+function showTip(el) {
+  if (el.classList.contains('card')) {
+    const s = get(el.dataset.id), v = view(s);
+    tip.innerHTML = `<b>${esc(s.title)}</b> · ${esc(v.caption)}<div>${esc(v.detail)}</div><small>${esc(s.meta)} · ${esc(s.host)}</small>`;
+  } else {
+    const p = projects.find(x => x.id === el.parentElement.dataset.project), m = sessions.filter(s => s.p === p.id);
+    const n = f => m.filter(f).length;
+    tip.innerHTML = `<b>${esc(p.name)}</b>${p.collapsed ? ' · collapsed' : ''}<small>${m.length} sessions, ${n(PRED.working)} working, ${n(PRED.attention)} attention, ${n(s => s.unread)} unread</small>`;
+  }
+  const w = win.getBoundingClientRect(), r = el.getBoundingClientRect(), pr = panel.getBoundingClientRect();
+  Object.assign(tip.style, { left: `${pr.right - w.left + 6}px`, top: `${r.top - w.top + r.height / 2}px` });
+  tip.classList.add('on');
+}
+list.addEventListener('mouseover', e => {
+  const el = e.target.closest('.card, .band');
+  if (!el || !win.classList.contains('narrow')) { hideTip(); return; }
+  if (el === tipAnchor) return;
+  hideTip(); tipAnchor = el; tipTimer = setTimeout(() => showTip(el), 250);
+});
+list.addEventListener('mouseleave', hideTip);
+list.addEventListener('scroll', hideTip);
+
+const EVENTS = [
+  ['Web Client ответил — у сессии непрочитанный ответ', () => Object.assign(get('wc'), { unread: true, detail: 'Component tree refactored, ready for review' })],
+  ['Worker Pool получил ответ и снова работает', () => Object.assign(get('wp'), { state: 'Working', since: now(), unread: false, detail: 'Running migration 0042' })],
+  ['Release Notes закончил — новый ответ', () => Object.assign(get('rn'), { state: 'Ready', detail: 'Changelog draft is ready' })],
+  ['Migrations перезапущен после ошибки', () => Object.assign(get('mi'), { state: 'Working', since: now(), detail: 'Retrying with db.example.net' })],
+  ['API Server ждёт подтверждения', () => Object.assign(get('as'), { state: 'Needs input', detail: 'Approve: git push to origin/main?' })],
+  ['Lint Bot в свёрнутой группе tooling просит ввод', () => Object.assign(get('lb'), { state: 'Needs input', detail: 'Allow writing .lintrc?' })],
+  ['Данные сброшены к исходным', () => { const shift = now() - t0; sessions = structuredClone(initial).map(s => s.since ? { ...s, since: s.since + shift } : s); }],
+];
+let eventIndex = 0;
+$('#event').addEventListener('click', () => {
+  const [text, run] = EVENTS[eventIndex++ % EVENTS.length];
+  run(); renderFilters(); renderList(); renderDetail();
+  $('#log').innerHTML = `Событие: <b>${esc(text)}</b>`;
+});
+
+// Shareable states: #collapsed, #float, #t=55; #play=<state> animates into it after load.
+function fromHash() {
+  const h = location.hash.slice(1), t = /^t=(\d+)$/.exec(h), play = /^play=(\w+)$/.exec(h);
+  if (play) { S.dock = 'collapsed'; setTimeout(() => document.querySelector(`[data-set="${play[1]}"]`)?.click(), 400); return; }
+  if (t) { Object.assign(S, { scrub: Math.min(100, +t[1]) / 100, dock: 'collapsed' }); $('#scrub').value = t[1]; $('#scrubv').textContent = `${t[1]}%`; }
+  else if (h === 'collapsed' || h === 'float') Object.assign(S, { dock: 'collapsed', force: h === 'float' });
+  else if (h === 'settings') { S.dock = 'collapsed'; showPage('settings'); }
+}
+
+fromHash();
+// The first paint takes the initial state without animating into it.
+win.classList.add('instant');
+document.fonts.ready.then(() => {
+  renderFilters(); renderList(); renderDetail(); apply();
+  requestAnimationFrame(() => requestAnimationFrame(() => win.classList.remove('instant')));
+});
+setInterval(refreshCards, 1000);
+</script>
+</body>
+</html>

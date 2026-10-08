@@ -81,6 +81,13 @@ inline QIcon workspaceIcon(const QString &name, const QColor &color)
         } else if (name == "inspector") {
             p.drawRoundedRect(QRectF(3, 4, 18, 16), 2, 2); p.drawLine(14, 4, 14, 20);
             p.drawLine(17, 8, 18, 8); p.drawLine(17, 12, 18, 12);
+        } else if (name == "collapse-sessions" || name == "expand-sessions") {
+            // The bar is the session list's edge; the arrow points where it goes.
+            const int tip = name == "collapse-sessions" ? 9 : 19, tail = name == "collapse-sessions" ? 19 : 9;
+            p.drawLine(4, 4, 4, 20); p.drawLine(tail, 12, tip, 12);
+            p.drawLine(14, 7, tip, 12); p.drawLine(14, 17, tip, 12);
+        } else if (name == "search") {
+            p.drawEllipse(QPointF(10.5, 10.5), 6, 6); p.drawLine(QPointF(15, 15), QPointF(20, 20));
         } else if (name == "collapse-panel") {
             p.drawLine(20, 4, 20, 20); p.drawLine(5, 12, 15, 12);
             p.drawLine(10, 7, 15, 12); p.drawLine(10, 17, 15, 12);

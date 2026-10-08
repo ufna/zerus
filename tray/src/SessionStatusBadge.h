@@ -9,7 +9,8 @@ inline int width(const QString &text, Kind kind, const QFont &base) {
     // Leave room for fractional glyph advances before elidedText rounds them.
     return QFontMetrics(font(base)).horizontalAdvance(text) + 16 + (kind == Neutral ? 0 : 16);
 }
-inline void paint(QPainter *p, const QRect &rect, const QString &text, Kind kind, bool dark, qreal pulse = 0) {
+// labelOpacity fades the caption while the collapsed session strip grows into cards.
+inline void paint(QPainter *p, const QRect &rect, const QString &text, Kind kind, bool dark, qreal pulse = 0, qreal labelOpacity = 1) {
     p->save(); p->setRenderHint(QPainter::Antialiasing); p->setClipRect(rect, Qt::IntersectClip);
     const QColor background = kind == Working ? QColor(dark ? "#194d36" : "#ccefdc")
         : (kind == Attention || kind == Unread) ? QColor(dark ? "#ffda76" : "#f4ce65")
@@ -38,9 +39,10 @@ inline void paint(QPainter *p, const QRect &rect, const QString &text, Kind kind
         p->drawRoundedRect(QRectF(center.x() - 4, center.y() - 3, 8, 6), 1, 1);
         p->drawLine(center + QPointF(-4, -3), center); p->drawLine(center, center + QPointF(4, -3));
     }
-    p->setPen(foreground); p->setFont(font(p->font()));
+    p->setPen(foreground); p->setFont(font(p->font())); p->setOpacity(p->opacity() * labelOpacity);
     const QRect label = rect.adjusted(kind == Neutral ? 7 : 23, 0, -7, 0);
-    p->drawText(label, Qt::AlignVCenter, QFontMetrics(p->font()).elidedText(text, Qt::ElideRight, qMax(0, label.width())));
+    // A growing badge reveals its caption under the clip instead of re-eliding it.
+    p->drawText(label, Qt::AlignVCenter, labelOpacity < 1 ? text : QFontMetrics(p->font()).elidedText(text, Qt::ElideRight, qMax(0, label.width())));
     p->restore();
 }
 }
