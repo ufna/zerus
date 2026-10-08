@@ -415,3 +415,16 @@ On **2026-10-08**, the publication changes were validated locally with actionlin
 source checks, generated makepkg metadata and credential-free contracts covering
 provenance, archive safety, library floors, immutable draft/public retries, version
 downgrades and GitHub/AUR ordering. No hosted workflow was dispatched.
+
+The **0.37.0 local review candidate** pins commit `11dff8f` and is available under
+the ignored `artifacts/review-candidate-0.37.0-11dff8f/` directory. A clean isolated
+checkout built the real `zerus-git` production package, then assembled the exact
+source/binary archives and rebuilt `zerus` and `zerus-ade-bin` with makepkg. Rust's
+135 release unit tests passed; all three package layouts/executable versions and
+59 dependency notices passed validation. namcap reported no errors; dynamic-tool
+warnings remain in the logs. Both stable packages are about 5.4 MiB. All six sealed
+release assets passed SHA-256 verification and all three `.SRCINFO` files exactly
+match makepkg output. Library floors were checked against the real `.BUILDINFO`.
+This local packaging review does not replace the full exact-commit release checks.
+Regenerate the hosted candidate from the selected final `main` commit before
+public publication; later documentation/tracker changes have a different SHA.
