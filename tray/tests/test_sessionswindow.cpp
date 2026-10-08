@@ -3212,17 +3212,22 @@ void TestSessionsWindow::collapsedStripExpandsOverContentOnlyWhenEnabled()
     QVERIFY(QTest::qWaitForWindowExposed(&window));
     QVERIFY(window.findChild<QCheckBox *>("workspaceExpandSessionsOnHover")->isChecked());
     auto *panel = window.findChild<QWidget *>("sessionListPanel"), *slot = window.findChild<QWidget *>("sessionListSlot");
-    auto *detail = window.findChild<QStackedWidget *>("detail"); auto *scrim = window.findChild<QWidget *>("sessionPanelScrim");
+    auto *detail = window.findChild<QStackedWidget *>("detail");
     QTRY_COMPARE(panel->width(), 64);
     const int detailWidth = detail->width();
     QTest::mouseMove(panel, QPoint(30, 300));
     QTRY_VERIFY(panel->width() >= 270);
     const auto preview = qEnvironmentVariable("HGS_STRIP_PREVIEW");
     if (!preview.isEmpty()) { QTest::qWait(300); QDir().mkpath(preview); QVERIFY(window.grab().save(preview + "/hover.png")); }
-    QCOMPARE(slot->width(), 64); QCOMPARE(detail->width(), detailWidth); QVERIFY(scrim->isVisible());
+    QCOMPARE(slot->width(), 64); QCOMPARE(detail->width(), detailWidth);
+    // Nothing dims the conversation: only the panel and its edge shadow lie over it.
+    auto *splitter = slot->parentWidget();
+    for (auto *layer : panel->parentWidget()->findChildren<QWidget *>(QString(), Qt::FindDirectChildrenOnly))
+        if (layer->isVisible() && layer != panel && layer != splitter && layer->geometry().intersects(splitter->geometry()))
+            QVERIFY(layer->testAttribute(Qt::WA_TransparentForMouseEvents) && layer->width() <= 18);
     QCOMPARE(window.findChild<QPushButton *>("sessionPanelToggle")->property("glyph").toString(), QString("pin"));
     QTest::mouseMove(detail, QPoint(detail->width() - 40, 300));
-    QTRY_COMPARE(panel->width(), 64); QTRY_VERIFY(!scrim->isVisible());
+    QTRY_COMPARE(panel->width(), 64);
     QVERIFY(QSettings().value("workspace/sessionsCollapsed").toBool());
 }
 
@@ -3258,6 +3263,16 @@ void TestSessionsWindow::collapsedStripSearchOpensPanel()
     QTRY_VERIFY(panel->width() >= 270); QTRY_VERIFY(search->hasFocus());
     QTest::keyClick(search, Qt::Key_Escape);
     QTRY_COMPARE(panel->width(), 64);
+    window.findChild<QPushButton *>("sessionStripSearch")->click(); QTRY_VERIFY(panel->width() >= 270);
+    // A click on the conversation closes the panel and still reaches its target.
+    struct Presses : QObject {
+        int count = 0;
+        bool eventFilter(QObject *, QEvent *event) override { count += event->type() == QEvent::MouseButtonPress; return false; }
+    } presses;
+    auto *detail = window.findChild<QStackedWidget *>("detail"); const QPoint point(detail->width() - 60, detail->height() / 2);
+    QWidget *target = detail->childAt(point) ? detail->childAt(point) : detail; target->installEventFilter(&presses);
+    QTest::mouseClick(target, Qt::LeftButton, {}, target->mapFrom(detail, point));
+    QTRY_COMPARE(panel->width(), 64); QCOMPARE(presses.count, 1); target->removeEventFilter(&presses);
     // Pinning the open panel docks it; the conversation then makes room once.
     window.findChild<QPushButton *>("sessionStripSearch")->click(); QTRY_VERIFY(panel->width() >= 270);
     window.findChild<QPushButton *>("sessionPanelToggle")->click();

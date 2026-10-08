@@ -5,7 +5,6 @@
 #include <QCursor>
 #include <QEasingCurve>
 #include <QElapsedTimer>
-#include <QMouseEvent>
 #include <QPainter>
 #include <QScrollBar>
 #include <QSplitter>
@@ -29,8 +28,6 @@ public:
         : QObject(owner), m_splitter(splitter), m_slot(slot), m_panel(panel), m_list(list), m_host(panel->parentWidget()),
           m_dockMinimum(qMax(panel->minimumWidth(), slot->minimumWidth()))
     {
-        m_scrim = new Scrim(m_host); m_scrim->setObjectName("sessionPanelScrim"); m_scrim->hide();
-        m_scrim->pressed = [this] { if (m_mode == Peek) setMode(Collapsed); };
         m_shadow = new Shadow(m_host); m_shadow->hide();
         m_panel->setMinimumWidth(0); m_list->setMinimumWidth(0);
         m_slot->setMinimumWidth(m_dockMinimum);
@@ -88,6 +85,8 @@ public:
         if (m_mode == Docked && !animating()) { m_dockedWidth = m_slot->width(); m_rowInset = m_panel->width() - m_list->viewport()->width(); }
         const Mode from = m_mode;
         m_mode = mode; m_peekByHover = false; m_enter.stop(); m_leave.stop();
+        // While the panel is over the conversation, a click elsewhere returns it to the strip.
+        if (mode == Peek) qApp->installEventFilter(this); else qApp->removeEventFilter(this);
         m_decorated = mode == Peek || (from == Peek && mode == Collapsed);
         // The conversation takes the space at once and the panel animates above it.
         if (mode != Docked) fixSlot(true);
@@ -101,6 +100,11 @@ public:
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override {
         const auto type = event->type();
+        if (type == QEvent::MouseButtonPress && m_mode == Peek) {
+            // The click still reaches its target; menus opened from the panel are other windows.
+            const auto *widget = qobject_cast<QWidget *>(watched);
+            if (widget && widget->window() == m_panel->window() && widget != m_panel && !m_panel->isAncestorOf(widget)) setMode(Collapsed);
+        }
         if ((watched == m_slot && (type == QEvent::Resize || type == QEvent::Move)) || (watched == m_host && type == QEvent::Resize)) place();
         if (watched == m_panel && type == QEvent::Enter) {
             if (m_mode == Collapsed && m_hoverExpands) m_enter.start();
@@ -112,15 +116,6 @@ protected:
     }
 
 private:
-    class Scrim : public QWidget {
-    public:
-        using QWidget::QWidget;
-        std::function<void()> pressed;
-        qreal alpha = 0;
-    protected:
-        void paintEvent(QPaintEvent *) override { QPainter(this).fillRect(rect(), QColor(0, 0, 0, qRound(255 * alpha))); }
-        void mousePressEvent(QMouseEvent *event) override { event->accept(); if (pressed) pressed(); }
-    };
     class Shadow : public QWidget {
     public:
         explicit Shadow(QWidget *parent) : QWidget(parent) { setAttribute(Qt::WA_TransparentForMouseEvents); }
@@ -176,10 +171,10 @@ private:
             : qRound(SessionStrip::Width + (expandedWidth() - SessionStrip::Width) * m_expansion);
         m_panel->setGeometry(at.x(), at.y(), width, m_slot->height());
         const qreal alpha = m_decorated ? m_expansion : 0;
-        m_scrim->alpha = .24 * alpha; m_shadow->alpha = alpha;
-        m_scrim->setGeometry(m_splitter->geometry()); m_shadow->setGeometry(at.x() + width, at.y(), 18, m_slot->height());
-        m_scrim->setVisible(alpha > 0); m_shadow->setVisible(alpha > 0);
-        if (alpha > 0) { m_scrim->raise(); m_shadow->raise(); m_scrim->update(); m_shadow->update(); }
+        // Only a shadow at the panel edge; the conversation is not dimmed.
+        m_shadow->alpha = alpha; m_shadow->setGeometry(at.x() + width, at.y(), 18, m_slot->height());
+        m_shadow->setVisible(alpha > 0);
+        if (alpha > 0) { m_shadow->raise(); m_shadow->update(); }
         m_panel->raise();
         updateBar();
     }
@@ -195,7 +190,6 @@ private:
     SessionList *m_list;
     QWidget *m_host;
     int m_dockMinimum, m_dockedWidth = 310, m_rowInset = 17;
-    Scrim *m_scrim;
     Shadow *m_shadow;
     QScrollBar *m_bar;
     QVariantAnimation m_animation;
