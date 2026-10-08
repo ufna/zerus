@@ -581,14 +581,19 @@ void TestActivityView::claudeThinkingStaysSeparateFromToolsAndReplies()
     QJsonArray hooks{journalEvent(1,"PreToolUse","Read report","Read"),journalEvent(3,"PostToolUse","Inspect source","Bash"),journalEvent(4,"Stop","")};
     const QJsonObject details{{"provider_messages",QJsonArray{thinking}}};view.setActivity(details,hooks);
     auto *browser=view.browser();const auto text=browser->toPlainText();
-    QVERIFY(text.contains("Thinking"));QCOMPARE(text.count("Read all 24 pages."),1);QVERIFY(!text.contains("END_OF_THINKING"));
+    // Shown in full like a reply, between the tools, without a toggle.
+    QVERIFY(text.contains("Thinking"));QCOMPARE(text.count("Read all 24 pages."),1);QCOMPARE(text.count("END_OF_THINKING"),1);
     QVERIFY(text.indexOf("Thinking")>text.indexOf("Read report"));QVERIFY(text.indexOf("Thinking")<text.indexOf("Bash"));
-    QString toggle;
-    for(auto block=browser->document()->begin();block.isValid();block=block.next())
-        for(auto it=block.begin();!it.atEnd();++it)if(it.fragment().text().contains("Thinking"))toggle=it.fragment().charFormat().anchorHref();
-    QVERIFY(!toggle.isEmpty());activate(browser,toggle);QVERIFY(browser->toPlainText().contains("END_OF_THINKING"));
+    for(const auto &link:links(browser))QVERIFY2(!link.contains("thinking-one"),qPrintable(link));
+    // Quieter than a reply: page background instead of a card fill, dimmer text at full size.
+    QTextCursor cursor(browser->document()->find("END_OF_THINKING"));
+    QVERIFY(!cursor.isNull());QVERIFY(cursor.currentTable());
+    QCOMPARE(cursor.currentTable()->cellAt(cursor).format().background().color().name(),QString("#ffffff"));
+    QCOMPARE(cursor.charFormat().foreground().color().name(),QString("#424a53"));
+    QVERIFY(QFontInfo(cursor.charFormat().font()).pixelSize()>=13);
     view.setActivity(details,hooks);QCOMPARE(browser->toPlainText().count("END_OF_THINKING"),1);
-    const auto preview=qEnvironmentVariable("HGS_THINKING_PREVIEW");if(!preview.isEmpty()){QDir().mkpath(preview);QVERIFY(view.grab().save(preview+"/claude-thinking.png"));}
+    const auto preview=qEnvironmentVariable("HGS_THINKING_PREVIEW");if(!preview.isEmpty()){QDir().mkpath(preview);QVERIFY(view.grab().save(preview+"/claude-thinking.png"));
+        view.setTheme(true);view.setActivity(details,hooks);QTest::qWait(40);QVERIFY(view.grab().save(preview+"/claude-thinking-dark.png"));}
 }
 
 void TestActivityView::kimiCommentaryDoesNotReplaceEmptyStop()

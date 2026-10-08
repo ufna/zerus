@@ -634,6 +634,11 @@ void ActivityView::render(bool contentUpdate)
     const QString blue = m_dark ? "#98bdeb" : "#366ba9";
     const QString violet = m_dark ? "#c5a8f5" : "#6c43b8";
     const QString noticeSurface = m_dark ? "#2a2536" : "#f4f0fb";
+    // Thinking reads like a reply but stays quieter: no card fill, a pale bar
+    // and dimmer text at the same size.
+    const QString thinkingBar = m_dark ? "#4f6680" : "#aec3dc";
+    const QString thinkingText = m_dark ? "#b9c2cd" : "#424a53";
+    const QString thinkingLabel = m_dark ? "#8ea3bd" : "#4f6b8f";
     const QString border = m_dark ? "#34404a" : "#dbe3e9";
     // GitHub Markdown on the Zerus card and page colours. Code blocks and zebra
     // rows keep the journal's code surface so that they stay visible on the card.
@@ -677,16 +682,18 @@ void ActivityView::render(bool contentUpdate)
         }
         return result;
     };
-    const auto card = [&](const QString &key, const QString &label, const QString &stamp, const QString &body, bool user, bool notice = false) {
+    const auto card = [&](const QString &key, const QString &label, const QString &stamp, const QString &body, bool user, bool notice = false, bool thinking = false) {
         auto content = body;
         // User text always starts with a paragraph. Anchor inside that block:
         // Qt discards an empty anchor between paragraphs, and a header-relative
         // offset shifts when Sending changes to Submitted or Sent.
         if (user) content.insert(content.indexOf('>') + 1, QString("<a name='item-body-%1'></a>").arg(escaped(key)));
         return QString("<table width='100%' cellspacing='0' cellpadding='0'><tr><td width='3' bgcolor='%1'></td><td bgcolor='%2' style='padding:11px 13px;'>"
-            "<p style='font-size:11px;margin-top:0;margin-bottom:8px;'><a name='item-%3'></a><b style='color:%1;'>%4</b><span style='color:%5;'>%6</span></p>%7</td></tr></table><p style='font-size:5px;margin:0;'>&nbsp;</p>")
-            .arg(notice ? violet : user ? accent : blue, notice ? noticeSurface : user ? userSurface : surface, escaped(key), escaped(label), muted,
-                stamp.isEmpty() ? QString() : QStringLiteral(" &nbsp;&nbsp; ") + escaped(stamp), content);
+            "<p style='font-size:11px;margin-top:0;margin-bottom:8px;'><a name='item-%3'></a><b style='color:%8;'>%4</b><span style='color:%5;'>%6</span></p>%7</td></tr></table><p style='font-size:5px;margin:0;'>&nbsp;</p>")
+            .arg(thinking ? thinkingBar : notice ? violet : user ? accent : blue,
+                 thinking ? pageTheme.canvas.name() : notice ? noticeSurface : user ? userSurface : surface, escaped(key), escaped(label), muted,
+                stamp.isEmpty() ? QString() : QStringLiteral(" &nbsp;&nbsp; ") + escaped(stamp), content,
+                 thinking ? thinkingLabel : notice ? violet : user ? accent : blue);
     };
 
     QList<QJsonObject> events;
@@ -762,6 +769,14 @@ void ActivityView::render(bool contentUpdate)
     m_toggleKeys.clear();m_processLinks.clear();
     for (int i = 0; i < events.size();) {
         const auto event = events[i]; const auto role = messageRole(event);
+        if (event.value("type") == "AgentThinking") {
+            const auto text = event.value("detail").toString();
+            if (!text.trimmed().isEmpty()) {
+                auto thinkingTheme = pageTheme; thinkingTheme.fg = QColor(thinkingText);
+                html += card(eventKey(event), tr("Thinking"), timeText(event), markdown(text, thinkingTheme, m_fileLinks), false, false, true);
+            }
+            ++i; continue;
+        }
         if (role == "notice") {
             auto body = QString("<p style='margin:0;'>%1</p>").arg(escaped(event.value("detail").toString()).replace('\n', "<br>"));
             // A subagent's report stays one line, like Claude's terminal, until opened.
