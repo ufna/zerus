@@ -61,7 +61,7 @@ build/test compatibility; it does not create a notarized macOS installer. Window
 and Arch ARM are outside this first package matrix.
 
 All CI jobs have bounded timeouts. Checkout credentials are not persisted and
-Actions are pinned to commit SHAs. Dependabot proposes weekly action/Cargo
+Actions are pinned to commit SHAs. Dependabot proposes monthly grouped action/Cargo
 updates. Rust/C++ caches reduce repeated build time; their repository limit stays
 at 10 GiB. Test artifacts expire after seven days and candidates after fourteen.
 Standard Ubuntu/macOS runners and public artifacts are free while the repository
@@ -74,6 +74,36 @@ Arch packages. This tests rolling-distribution compatibility; it does not promis
 bit-for-bit reproducibility months later. Rust dependencies are locked, fetched
 in `prepare()` and built/tested with `--frozen` inside source packages. The CI
 image, tmux and official DeepSeek fixture pins need periodic maintainer review.
+
+### Dependency updates and cost
+
+Dependabot checks version updates on the first day of each month. Each ecosystem
+has one version-update group and at most one open version-update PR: two ordinary
+PRs across GitHub Actions and Cargo. Automatic rebasing is disabled; refresh a
+stale proposal before testing and merging it. Updates still require review and
+checks appropriate to the active CI policy; there is no automatic merge.
+
+Cargo proposals update only `Cargo.lock` within the reviewed `Cargo.toml`
+constraints. This also avoids unreviewed breaking minor upgrades of `0.x` crates.
+Manifest migrations are deliberate maintenance work, including Rust 1.85 and
+existing state/configuration compatibility checks. Actions keep their exact
+commit pins and may propose major upgrades in their group for manual review.
+
+Dependabot vulnerability alerts and security updates are enabled separately in
+repository settings. Security proposals have their own per-ecosystem groups;
+they are not delayed by the monthly version schedule or counted against its PR
+limit. A fix requiring a manifest migration still needs maintainer attention.
+Do not disable security alerts to reduce routine version-update noise.
+
+Dependabot jobs on standard GitHub-hosted runners do not consume included Actions
+minutes. Standard runner minutes are also free while this repository is public;
+larger runners and storage have separate billing rules. There is no monthly
+standard-runner minute quota to exhaust for a public repository. Schedule useful
+coverage rather than artificial runs. Keep artifact retention bounded and use
+standard runner labels; private-repository checks consume the account allowance.
+See [Dependabot runner billing](https://docs.github.com/en/code-security/concepts/supply-chain-security/dependabot-on-actions),
+[Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)
+and [Dependabot options](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference).
 
 ### Test isolation and local commands
 
@@ -143,7 +173,7 @@ yay -Syu --devel
 Failed builds never publish. GitHub or AUR publication failures leave stable
 releases untouched. Retry only the publisher with the same run ID; do not rerun a
 published build to produce different bytes under its existing tag. Artifacts are
-retained for fourteen days and logs for seven; public GitHub release assets remain
+retained for three days and logs for three; public GitHub release assets remain
 available after artifact expiry. Nightlies run even without new commits to test
 current rolling Arch dependencies and produce fresh, uniquely versioned binaries.
 Stable candidates/publication remain separate manual workflows; macOS checks are

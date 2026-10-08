@@ -54,6 +54,10 @@ main and pull requests targeting main. Manual checks remain available. Public
 standard GitHub runners are free; do not introduce paid larger runners or raise
 the 10 GiB cache limit without owner authorization. Authenticated model tests stay
 opt-in. Validate workflow edits locally before pushing. See `docs/ci-and-aur.md`.
+Dependency proposals are monthly and grouped, with one ordinary PR per ecosystem.
+Cargo proposals update only the lockfile within reviewed manifest constraints;
+review manifest migrations explicitly and retain Rust 1.85 compatibility.
+Keep security alerts and security updates enabled separately. Never auto-merge.
 AUR packages are `zerus` (stable source), `zerus-git` (upstream main),
 `zerus-ade-bin` (stable binary) and `zerus-ade-nightly-bin` (verified nightly binary),
 with x86_64 support. Stable publication remains owner-triggered. Daily nightlies
