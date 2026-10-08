@@ -139,7 +139,7 @@ private slots:
     void modelSettingsKeepSessionIdentity_data();
     void modelSettingsKeepSessionIdentity();
     void questionAnswersStayWithOriginalSession();
-    void queuedQuestionAnswersStayPendingUntilNativeConfirmation();
+    void queuedQuestionAnswersDisappearAfterSubmission();
     void hookReviewOpensOnlyTheRequestingTerminal();
     void optionalQuestionKeepsComposerAvailable();
     void questionCompletionKeepsInputFocus_data();
@@ -1469,7 +1469,7 @@ elif args[0]=='answer':
     QFile calls(directory.filePath("calls")); QVERIFY(calls.open(QIODevice::ReadOnly)); QCOMPARE(calls.readAll(), QByteArray("call\n"));
 }
 
-void TestSessionsWindow::queuedQuestionAnswersStayPendingUntilNativeConfirmation()
+void TestSessionsWindow::queuedQuestionAnswersDisappearAfterSubmission()
 {
     QTemporaryDir directory;QFile program(directory.filePath("hgs"));QVERIFY(program.open(QIODevice::WriteOnly));
     program.write(R"PY(#!/usr/bin/env python3
@@ -1501,7 +1501,7 @@ elif sys.argv[1]=='answer':
         QFile fixture(directory.filePath("details.json"));if(!fixture.open(QIODevice::WriteOnly))return false;
         return fixture.write(QJsonDocument(details).toJson())>0;
     };QVERIFY(save());
-    SessionsWindow window(program.fileName());window.setFleet(fleet());window.show();window.showSession({},"codex/hgs/dashboard");
+    SessionsWindow window(program.fileName());window.setFleet(fleet());window.show();window.activateWindow();window.showSession({},"codex/hgs/dashboard");
     auto *client=window.findChild<HgsClient *>();auto *card=window.findChild<QuestionCard *>();
     auto *composer=window.findChild<MessageComposer *>("messageComposer");
     auto *activity=window.findChild<ActivityView *>("mainActivity");QVERIFY(activity);
@@ -1511,27 +1511,56 @@ elif sys.argv[1]=='answer':
     QTRY_VERIFY(card->isVisible());auto *editor=card->findChild<QLineEdit *>("questionFreeText");QVERIFY(editor);
     editor->setText("Run unit tests and a desktop preview.");composer->editor()->setPlainText("Keep my next-message draft");
     auto *send=card->findChild<QPushButton *>("submitQuestionAnswer");QVERIFY(send->isEnabled());
-    QVERIFY(composer->isVisible());editor->setFocus();QTest::keyClick(editor,Qt::Key_Return);
-    QTRY_COMPARE(submitted.size(),1);QCOMPARE(answered.size(),0);QVERIFY(card->isVisible());
+    QVERIFY(composer->isVisible());editor->setFocus();QTRY_VERIFY(editor->hasFocus());QTest::keyClick(editor,Qt::Key_Return);
+    QTRY_COMPARE(submitted.size(),1);QCOMPARE(answered.size(),0);QVERIFY(card->isHidden());
     QCOMPARE(messages.size(),0);QCOMPARE(stopped.size(),0);
-    QCOMPARE(send->text(),QString("Submitted"));QVERIFY(!send->isEnabled());
-    QVERIFY(!card->findChild<QPushButton *>("skipQuestion")->isEnabled());
-    QCOMPARE(card->findChild<QLabel *>("questionProgress")->text(),QString("Awaiting agent"));
+    QVERIFY(composer->editor()->hasFocus());
     QFile fixture(directory.filePath("details.json"));QVERIFY(fixture.open(QIODevice::ReadOnly));
     details=QJsonDocument::fromJson(fixture.readAll()).object();fixture.close();
     client->inspectionReady({},"codex/hgs/dashboard",details);
+    QVERIFY(card->isHidden());QCOMPARE(details["pending_questions"].toArray().size(),1);
     QVERIFY(activity->findChild<QWidget *>("activityInputQueue")->isVisible());
     QVERIFY(activity->findChild<QPushButton *>("queueSendNow")->isEnabled());QCOMPARE(promoted.size(),0);
-    QCOMPARE(card->findChild<QLineEdit *>("questionFreeText")->text(),QString("Run unit tests and a desktop preview."));
-    QVERIFY(card->findChild<QPushButton *>("questionAllowRetry")->isHidden());
     QVERIFY(composer->isVisible());QCOMPARE(composer->editor()->toPlainText(),QString("Keep my next-message draft"));
+    auto stale=details;stale["pending_questions"]=QJsonArray{question};
+    client->inspectionReady({},"codex/hgs/dashboard",stale);QVERIFY(card->isHidden());
+    auto *list=window.findChild<QListWidget *>("sessionList");
+    const auto key=list->currentItem()->data(Qt::UserRole).toString();
+    card->answerRequested(key,"optional-one",QJsonArray{QJsonObject{{"question_id","q_0"},{"text","Do not resend"}}});
+    QCOMPARE(messages.size(),0);QCOMPARE(promoted.size(),0);
+    client->inspectionReady({},"codex/hgs/dashboard",details);
     if(!qEnvironmentVariable("HGS_PREVIEW_DIR").isEmpty()) {
         window.resize(1240,900);QTest::qWait(30);
         QVERIFY(window.grab().save(qEnvironmentVariable("HGS_PREVIEW_DIR")+"/queued-question-answer.png"));
     }
     window.showSession({},"kimi/docs/research");window.showSession({},"codex/hgs/dashboard");
-    QTRY_VERIFY(card->isVisible());QVERIFY(!card->findChild<QPushButton *>("submitQuestionAnswer")->isEnabled());
-    card->findChild<QPushButton *>("submitQuestionAnswer")->click();QFile calls(directory.filePath("calls"));QVERIFY(calls.open(QIODevice::ReadOnly));QCOMPARE(calls.readAll(),QByteArray("call\n"));
+    QTRY_VERIFY(activity->findChild<QWidget *>("activityInputQueue")->isVisible());QVERIFY(card->isHidden());
+    {
+        SessionsWindow reopened(program.fileName());reopened.setFleet(fleet());reopened.show();reopened.showSession({},"codex/hgs/dashboard");
+        auto *reopenedActivity=reopened.findChild<ActivityView *>("mainActivity");
+        QTRY_VERIFY(reopenedActivity->findChild<QWidget *>("activityInputQueue")->isVisible());
+        QVERIFY(reopened.findChild<QuestionCard *>()->isHidden());
+        // Recognition from a persisted receipt survives a later stale snapshot.
+        reopened.findChild<HgsClient *>()->inspectionReady({},"codex/hgs/dashboard",stale);
+        QVERIFY(reopened.findChild<QuestionCard *>()->isHidden());
+    }
+    auto nextQuestion=question;nextQuestion["question_id"]="optional-two";nextQuestion["question_hash"]="hash-two";
+    nextQuestion["questions"]=QJsonArray{QJsonObject{{"id","q_0"},{"question","Another unanswered question?"},{"allow_other",true}}};
+    const auto submittedQuestion=details["pending_questions"].toArray().first();
+    details["pending_questions"]=QJsonArray{submittedQuestion,nextQuestion};QVERIFY(save());
+    client->inspectionReady({},"codex/hgs/dashboard",details);
+    QVERIFY(card->isVisible());QCOMPARE(card->findChild<QLabel *>("questionPendingCount")->text(),QString("1 pending"));
+    QCOMPARE(card->findChild<QLabel *>("questionPrompt")->text(),QString("Another unanswered question?"));
+    QCOMPARE(card->findChild<QLabel *>("questionHeading")->text(),QString("Optional question"));
+    QVERIFY(card->findChild<QToolButton *>("questionQueuePrevious")->isHidden());
+    QVERIFY(card->findChild<QToolButton *>("questionQueueNext")->isHidden());
+    card->findChild<QLineEdit *>("questionFreeText")->setText("Keep the remaining answer draft");
+    client->inspectionReady({},"codex/hgs/dashboard",details);
+    QCOMPARE(card->findChild<QLineEdit *>("questionFreeText")->text(),QString("Keep the remaining answer draft"));
+    window.showSession({},"kimi/docs/research");window.showSession({},"codex/hgs/dashboard");
+    QTRY_VERIFY(card->isVisible());
+    QCOMPARE(card->findChild<QLineEdit *>("questionFreeText")->text(),QString("Keep the remaining answer draft"));
+    QFile calls(directory.filePath("calls"));QVERIFY(calls.open(QIODevice::ReadOnly));QCOMPARE(calls.readAll(),QByteArray("call\n"));
     details["pending_questions"]=QJsonArray{};details.remove("input_queue");QVERIFY(save());client->inspectionReady({},"codex/hgs/dashboard",details);
     QTRY_VERIFY(card->isHidden());QCOMPARE(composer->editor()->toPlainText(),QString("Keep my next-message draft"));
     QCOMPARE(promoted.size(),0);

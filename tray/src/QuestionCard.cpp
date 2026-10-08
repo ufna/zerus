@@ -186,12 +186,16 @@ QString QuestionCard::identity(const QString &sessionKey, const QString &questio
     return QString::fromUtf8(QJsonDocument(QJsonArray{sessionKey, questionId, hash}).toJson(QJsonDocument::Compact));
 }
 
-void QuestionCard::setQuestion(const QString &sessionKey, const QJsonObject &question, int pendingQuestions)
+QString QuestionCard::draftIdentity(const QString &sessionKey, const QJsonObject &question)
 {
-    const QString id = question.value("question_id").toString();
-    const QString key = id.isEmpty() ? QString() : identity(sessionKey, id, question.value("question_hash").toString());
-    bool changed = key != m_key || question.value("questions") != m_question.value("questions");
-    m_session = sessionKey; m_id = id; m_key = key; m_question = question;
+    if (question.value("question_id").toString().isEmpty()) return {};
+    return QString::fromUtf8(QJsonDocument(QJsonArray{sessionKey, question.value("question_id"),
+        question.value("question_hash"), question.value("run_id"), question.value("conversation_id")}).toJson(QJsonDocument::Compact));
+}
+
+bool QuestionCard::restoreSubmittedAnswer(const QString &key, const QJsonObject &question)
+{
+    bool changed = false;
     const auto delivery = question.value("answer_delivery").toObject();
     if (!key.isEmpty() && question.value("source") == "codex_async" && question.value("optional").toBool()
         && delivery.value("status") == "submitted"
@@ -213,6 +217,26 @@ void QuestionCard::setQuestion(const QString &sessionKey, const QJsonObject &que
         draft.submitted = true; draft.sending = false; draft.error = false; draft.uncertain = false;
         draft.notice = tr("Answer submitted. Waiting for Codex to record it. You can check the queue above or open Terminal.");
     }
+    return changed;
+}
+
+bool QuestionCard::hasSubmittedAnswer(const QString &sessionKey, const QJsonObject &question)
+{
+    if (question.value("source") != "codex_async" || !question.value("optional").toBool()) return false;
+    const auto key = draftIdentity(sessionKey, question);
+    // Remember verified snapshots even when the submitted card is never shown.
+    // A later stale poll must not offer the same request again.
+    restoreSubmittedAnswer(key, question);
+    return m_drafts.value(key).submitted;
+}
+
+void QuestionCard::setQuestion(const QString &sessionKey, const QJsonObject &question, int pendingQuestions)
+{
+    const QString id = question.value("question_id").toString();
+    const QString key = draftIdentity(sessionKey, question);
+    const bool restored = restoreSubmittedAnswer(key, question);
+    const bool changed = restored || key != m_key || question.value("questions") != m_question.value("questions");
+    m_session = sessionKey; m_id = id; m_key = key; m_question = question;
     const double created=question.value("created_at").toDouble();
     const auto asked=created>0 && created<253402300800. ? QDateTime::fromSecsSinceEpoch(qint64(created)).toLocalTime() : QDateTime();
     m_askedAt->setVisible(asked.isValid());
