@@ -13,6 +13,7 @@
 #include <QTextFragment>
 #include <QTextObjectInterface>
 #include <QTextTable>
+#include <QUrlQuery>
 
 #include <cmath>
 #include <functional>
@@ -104,7 +105,13 @@ QImage MarkdownObjects::resource(const QUrl &url, qreal devicePixelRatio)
     bool ok = false; const double scale = parts[2].toInt(&ok) / 100.0;
     if (!ok || scale < 0.5 || scale > 4.0) return {};
     const bool dark = parts[1] == "dark";
-    const auto theme = MarkdownTheme::github(dark, QColor(dark ? "#0d1117" : "#ffffff"), scale);
+    auto theme = MarkdownTheme::github(dark, QColor(dark ? "#0d1117" : "#ffffff"), scale);
+    if (url.hasQuery()) {
+        static const QRegularExpression hex(QStringLiteral("^[0-9a-f]{6}$"));
+        const QString fill = QUrlQuery(url).queryItemValue(QStringLiteral("fill"));
+        if (!hex.match(fill).hasMatch()) return {};
+        theme.subtle = QColor('#' + fill);
+    }
     const qreal ratio = qMax<qreal>(1.0, devicePixelRatio);
     const auto draw = [&](qreal width, qreal height, const std::function<void(QPainter &)> &paint) {
         QImage image(qCeil(width * scale * ratio), qCeil(height * scale * ratio), QImage::Format_ARGB32_Premultiplied);

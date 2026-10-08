@@ -56,7 +56,9 @@ void TestMarkdownObjects::resourcesAreDrawnAtScaleAndPixelRatio()
     QCOMPARE(corner.size(), QSize(6, 6));
     QCOMPARE(QColor::fromRgba(corner.pixel(0, 0)).name(), QString("#151b23"));
     QVERIFY(qAlpha(corner.pixel(5, 5)) < 255);
-    for (const char *url : {"hgs-md:disc/blue/100", "hgs-md:unknown/light/100", "hgs-md:disc/light/abc", "https://example.com/x.png", "file:///etc/passwd"})
+    const auto filled = MarkdownObjects::resource(QUrl("hgs-md:corner-tl/light/100?fill=e8eef2"), 1.0);
+    QCOMPARE(QColor::fromRgba(filled.pixel(5, 5)).name(), QString("#e8eef2"));
+    for (const char *url : {"hgs-md:corner-tl/light/100?fill=zz0000", "hgs-md:disc/blue/100", "hgs-md:unknown/light/100", "hgs-md:disc/light/abc", "https://example.com/x.png", "file:///etc/passwd"})
         QVERIFY2(MarkdownObjects::resource(QUrl(url), 1.0).isNull(), url);
 }
 

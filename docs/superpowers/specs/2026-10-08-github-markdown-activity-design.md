@@ -61,10 +61,11 @@ QString MarkdownHtml::render(const QString &markdown, const MarkdownTheme &, con
   `hgs-file:<sha256>` with the visible location suffix; only `http`/`https` with a
   host and no user info stay clickable; other links become plain text; images
   become “[Image attachment]”).
-- Agent message cards (`card(..., user=false)` for replies and the recorded
-  answer) use the GitHub canvas as background. User cards, tool groups and other
-  cards keep their colours. Expanded “Thinking” text uses the same renderer on the
-  page background.
+- Agent message cards keep their Zerus background (`#f3f6f8` / `#242d36`); the
+  Markdown inside uses GitHub typography and colours on it. Because GitHub's
+  `canvas.subtle` would vanish on that grey, code blocks, zebra rows and code-block
+  corners use the journal's code surface (`#e8eef2` / `#171e25`). Expanded
+  “Thinking” text uses the same renderer on the page background.
 - `ContentScale::html()` keeps scaling every `px` length, so the renderer emits
   lengths in `px` at scale 1. Image resources are generated for the current scale.
 
@@ -118,7 +119,7 @@ Markers, checkboxes and code-block corners are images served by
 `JournalDocument::loadResource()` under an internal `hgs-md:` scheme (for example
 `hgs-md:disc`, `hgs-md:corner-tl`). They are painted with `QPainter`
 (antialiased) at the current content scale and device pixel ratio, cached per
-theme and scale. Every other resource request still returns an empty image.
+theme and scale. Corner URLs carry their fill colour (`?fill=e8eef2`). Every other resource request still returns an empty image.
 
 ### Monospace font
 

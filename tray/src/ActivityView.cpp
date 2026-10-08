@@ -618,6 +618,7 @@ void ActivityView::render(bool contentUpdate)
     const QString fg = m_dark ? "#e8edf4" : "#1a2733";
     const QString muted = m_dark ? "#9eabba" : "#657487";
     const QString accent = m_dark ? "#8bdfc0" : "#167357";
+    const QString surface = m_dark ? "#242d36" : "#f3f6f8";
     const QString userSurface = m_dark ? "#243730" : "#edf6f1";
     const QString codeSurface = m_dark ? "#171e25" : "#e8eef2";
     const QString warning = m_dark ? "#edbd77" : "#9b6216";
@@ -625,9 +626,11 @@ void ActivityView::render(bool contentUpdate)
     const QString violet = m_dark ? "#c5a8f5" : "#6c43b8";
     const QString noticeSurface = m_dark ? "#2a2536" : "#f4f0fb";
     const QString border = m_dark ? "#34404a" : "#dbe3e9";
-    // Agent replies sit on GitHub's canvas; expanded thinking stays on the page.
-    const auto agentTheme = MarkdownTheme::github(m_dark, QColor(m_dark ? "#0d1117" : "#ffffff"), m_scale);
-    const auto pageTheme = MarkdownTheme::github(m_dark, QColor(m_dark ? "#1c2229" : "#ffffff"), m_scale);
+    // GitHub Markdown on the Zerus card and page colours. Code blocks and zebra
+    // rows keep the journal's code surface so that they stay visible on the card.
+    auto agentTheme = MarkdownTheme::github(m_dark, QColor(surface), m_scale);
+    auto pageTheme = MarkdownTheme::github(m_dark, QColor(m_dark ? "#1c2229" : "#ffffff"), m_scale);
+    agentTheme.subtle = pageTheme.subtle = QColor(codeSurface);
     QString html = QString("<html><head><style>body{color:%1;font-size:13px;}p{margin:6px 0;line-height:135%;}h1,h2,h3,h4{font-size:14px;margin:10px 0 6px;}pre{white-space:pre-wrap;}a{color:%2;text-decoration:none;}li{margin-bottom:4px;}</style></head><body>").arg(fg, accent);
     html += QString("<p style='font-size:10px;color:%1;margin-bottom:12px;'>%2</p>").arg(muted, searching ? tr("SEARCH RESULT — Saved message") : tr("RECORDED ACTIVITY — Messages and tool excerpts"));
     if (details.value("history_truncated").toBool())
@@ -673,7 +676,7 @@ void ActivityView::render(bool contentUpdate)
         if (user) content.insert(content.indexOf('>') + 1, QString("<a name='item-body-%1'></a>").arg(escaped(key)));
         return QString("<table width='100%' cellspacing='0' cellpadding='0'><tr><td width='3' bgcolor='%1'></td><td bgcolor='%2' style='padding:11px 13px;'>"
             "<p style='font-size:11px;margin-top:0;margin-bottom:8px;'><a name='item-%3'></a><b style='color:%1;'>%4</b><span style='color:%5;'>%6</span></p>%7</td></tr></table><p style='font-size:5px;margin:0;'>&nbsp;</p>")
-            .arg(notice ? violet : user ? accent : blue, notice ? noticeSurface : user ? userSurface : agentTheme.canvas.name(), escaped(key), escaped(label), muted,
+            .arg(notice ? violet : user ? accent : blue, notice ? noticeSurface : user ? userSurface : surface, escaped(key), escaped(label), muted,
                 stamp.isEmpty() ? QString() : QStringLiteral(" &nbsp;&nbsp; ") + escaped(stamp), content);
     };
 

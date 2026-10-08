@@ -78,7 +78,10 @@ void TestMarkdownHtml::themeUsesGitHubTokens()
     QCOMPARE(light().subtle.name(), QString("#f6f8fa")); QCOMPARE(dark.subtle.name(), QString("#151b23"));
     QVERIFY(qAbs(light().chip.alphaF() - 0.12) < 0.001); QVERIFY(qAbs(dark.chip.alphaF() - 0.2) < 0.001);
     QCOMPARE(dark.resource("disc"), QString("hgs-md:disc/dark/150"));
-    QCOMPARE(light().resource("corner-tl"), QString("hgs-md:corner-tl/light/100"));
+    QCOMPARE(light().resource("corner-tl"), QString("hgs-md:corner-tl/light/100?fill=f6f8fa"));
+    // The embedding view may put code on its own surface; corners follow it.
+    auto card = light(); card.subtle = QColor("#e8eef2");
+    QCOMPARE(card.resource("corner-br"), QString("hgs-md:corner-br/light/100?fill=e8eef2"));
 }
 
 void TestMarkdownHtml::paragraphsUseGitHubMetrics()

@@ -408,7 +408,10 @@ MarkdownTheme MarkdownTheme::github(bool dark, const QColor &canvas, double scal
 
 QString MarkdownTheme::resource(const QString &name) const
 {
-    return QString("hgs-md:%1/%2/%3").arg(name, dark ? QStringLiteral("dark") : QStringLiteral("light"), QString::number(scalePercent));
+    QString url = QString("hgs-md:%1/%2/%3").arg(name, dark ? QStringLiteral("dark") : QStringLiteral("light"), QString::number(scalePercent));
+    // Code blocks may sit on the embedding view's own surface; their corners follow it.
+    if (name.startsWith(QLatin1String("corner-"))) url += "?fill=" + subtle.name().mid(1);
+    return url;
 }
 
 QColor MarkdownHtml::chipSentinel() { return QColor(1, 2, 3); }

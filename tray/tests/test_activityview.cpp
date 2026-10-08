@@ -20,6 +20,7 @@
 #include <QTextBrowser>
 #include <QTextCursor>
 #include <QTextFragment>
+#include <QTextTable>
 #include <QTest>
 #include <QVBoxLayout>
 
@@ -111,6 +112,7 @@ private slots:
     void searchResultKeepsInlineCodeSearchable();
     void copyGivesVisibleText();
     void markdownFollowsThemeAndScale();
+    void agentCardsKeepZerusSurface();
     void preview();
 };
 
@@ -181,7 +183,7 @@ void TestActivityView::agentMarkdownLooksLikeGitHub()
             if (format.isImageFormat()) images.append(format.toImageFormat().name());
         }
     QCOMPARE(chips, 1);
-    QVERIFY(images.contains("hgs-md:disc/light/100")); QVERIFY(images.contains("hgs-md:corner-tl/light/100"));
+    QVERIFY(images.contains("hgs-md:disc/light/100")); QVERIFY(images.contains("hgs-md:corner-tl/light/100?fill=e8eef2"));
     for (const auto &name : images) QVERIFY(!document->resource(QTextDocument::ImageResource, QUrl(name)).value<QImage>().isNull());
     QVERIFY(view.plainText().contains(QString::fromUtf8("Use ctest and:\n• one\n• two\ncode")));
 }
@@ -222,6 +224,25 @@ void TestActivityView::markdownFollowsThemeAndScale()
     QCOMPARE(chips.first().property(QTextFormat::UserProperty + 45).toDouble(), 2.0);
     const auto disc = view.browser()->document()->resource(QTextDocument::ImageResource, QUrl("hgs-md:disc/dark/200")).value<QImage>();
     QCOMPARE(disc.size(), (QSizeF(10, 38) * view.browser()->devicePixelRatioF()).toSize());
+}
+
+void TestActivityView::agentCardsKeepZerusSurface()
+{
+    // GitHub styling applies to the Markdown, not to the Zerus card around it.
+    for (bool dark : {false, true}) {
+        ActivityView view; view.resize(560, 400); view.setTheme(dark); view.show();
+        view.setActivity({}, {journalEvent(1, "Stop", "Reply prose\n\n```\nblock text\n```")});
+        const auto cellColour = [&](const QString &text) {
+            for (auto block = view.browser()->document()->begin(); block.isValid(); block = block.next())
+                if (block.text().contains(text)) {
+                    const QTextCursor cursor(block);
+                    return cursor.currentTable()->cellAt(cursor).format().background().color().name();
+                }
+            return QString();
+        };
+        QCOMPARE(cellColour("Reply prose"), QString(dark ? "#242d36" : "#f3f6f8"));
+        QCOMPARE(cellColour("block text"), QString(dark ? "#171e25" : "#e8eef2"));
+    }
 }
 
 void TestActivityView::contextCounterKeepsPhysicalRightAlignment()
