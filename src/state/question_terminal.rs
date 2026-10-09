@@ -16,14 +16,41 @@ fn normalize(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-// capture-pane -e only adds SGR sequences. Reject other controls rather than
-// treating a terminal escape embedded in text as application state.
+// capture-pane -e preserves SGR styling and OSC 8 hyperlinks. Strip only this
+// presentation metadata, preserving the visible label for identity checks.
+// Reject other controls rather than interpreting them as application state.
 pub(super) fn plain(text: &str) -> Result<String> {
     let mut out = String::new();
     let mut chars = text.chars();
     while let Some(ch) = chars.next() {
         if ch == '\x1b' {
-            if chars.next() != Some('[') {
+            let kind = chars.next();
+            if kind == Some(']') {
+                if chars.next() != Some('8') || chars.next() != Some(';') {
+                    return Err("unrecognized terminal escape".into());
+                }
+                let mut separator = false;
+                let mut length = 0;
+                loop {
+                    match chars.next() {
+                        Some('\x07') => break,
+                        Some('\x1b') if chars.next() == Some('\\') => break,
+                        Some(ch) if !ch.is_control() => {
+                            separator |= ch == ';';
+                            length += ch.len_utf8();
+                            if length > 8192 {
+                                return Err("terminal hyperlink is too large".into());
+                            }
+                        }
+                        _ => return Err("incomplete or invalid terminal hyperlink".into()),
+                    }
+                }
+                if !separator {
+                    return Err("invalid terminal hyperlink".into());
+                }
+                continue;
+            }
+            if kind != Some('[') {
                 return Err("unrecognized terminal escape".into());
             }
             let mut complete = false;
@@ -765,6 +792,34 @@ pub(super) fn answer(record: &Value, card: &Value, answers: &Value) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plain_preserves_visible_hyperlink_text_and_styling() {
+        for terminator in ["\x1b\\", "\x07"] {
+            let screen = format!(
+                "Before \x1b]8;id=fixture;https://example.invalid/artifact{terminator}\x1b[1;34mArtifact 界\x1b[0m\x1b]8;;{terminator}\nAfter"
+            );
+            assert_eq!(plain(&screen).unwrap(), "Before Artifact 界\nAfter");
+        }
+    }
+
+    #[test]
+    fn plain_rejects_other_escapes_and_malformed_hyperlinks() {
+        for screen in [
+            "\x1b]52;c;data\x07",
+            "\x1b]0;title\x1b\\",
+            "\x1bPdata\x1b\\",
+            "\x1b[2J",
+            "\x1b]8;;https://example.invalid/unfinished",
+            "\x1b]8;missing-delimiter\x1b\\",
+            "\x1b]8;;https://example.invalid/\nspoofed\x1b\\",
+            "\x1b]8;;https://example.invalid/\x1b[0m\x1b\\",
+            "\x1b]8;;https://example.invalid/\x00\x07",
+        ] {
+            assert!(plain(screen).is_err(), "accepted {screen:?}");
+        }
+        assert!(plain(&format!("\x1b]8;;{}\x1b\\", "x".repeat(8193))).is_err());
+    }
 
     fn card() -> Value {
         json!({"question_id":"question_fixture", "tool_call_id":"tool_fixture", "questions":[

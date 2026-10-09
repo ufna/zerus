@@ -1,5 +1,5 @@
 [Unit]
-Description=hgs tray — счётчик и меню сессий агентов
+Description=Zerus desktop agent development environment
 PartOf=graphical-session.target
 After=graphical-session.target
 
@@ -8,16 +8,11 @@ Type=simple
 ExecStart=%h/.local/bin/hgs-tray
 Restart=on-failure
 RestartSec=5
-# Код выхода 4 = "трей недоступен" (QSystemTrayIcon::isSystemTrayAvailable() == false) —
-# это состояние рабочего стола (нет апплета системного трея на панели), а не сбой
-# процесса, и на живой сессии само оно не меняется. С голым Restart=on-failure systemd
-# ретраил бы это раз в 5 c бесконечно, только шумя в журнал. RestartPreventExitStatus
-# выключает ретрай именно на этот код, но не трогает остальные — настоящий краш
-# (сегфолт, код 3 "не удалось занять сокет" и т.п.) по-прежнему получает шанс подняться
-# сам. Если трей на панель вернули — новую попытку даст следующий логин (юнит
-# перезапускается заново при достижении graphical-session.target) либо ручной
-# `systemctl --user restart hgs-tray.service`.
+# Exit 4 means the desktop has no system tray. Retry after the next graphical
+# login or an explicit restart; real crashes still use Restart=on-failure.
 RestartPreventExitStatus=4
+# Stop only the GUI. Native agents and persistent hosts keep running.
+KillMode=process
 
 [Install]
 WantedBy=graphical-session.target

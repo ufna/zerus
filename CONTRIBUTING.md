@@ -7,7 +7,7 @@ machine connection settings local. `AGENTS.md` describes the Beads workflow.
 
 ```sh
 python3 scripts/ci/check-source.py
-python3 -m unittest discover -s tests -p test_release_publication.py
+python3 -m unittest discover -s tests -p 'test_*publication.py'
 bash scripts/ci/cli.sh
 bash scripts/ci/gui.sh
 ```
@@ -27,12 +27,13 @@ parallelism. Run `cargo +1.85.0 test --locked` for the minimum supported Rust.
 On Arch, `bash scripts/ci/arch.sh` also builds and validates the pacman package
 as an unprivileged user. It substitutes a local Git source only in its disposable
 build directory; it never installs the package or enables services.
-Hosted CI is manual-only, including pull requests. The owner chooses when to
-dispatch it. Default runs use one Ubuntu job; full Linux integration, Arch
-desktop/packaging and macOS builds are separate opt-ins, all off by default.
-Validate workflow edits locally rather than spending hosted minutes. See
-[CI and Arch publication](docs/ci-and-aur.md) for manual PR checks, suite selection,
-candidate release commands and publication requirements.
+Hosted CI runs full Linux CLI, Arch desktop/package and macOS checks automatically
+on pushes to main and PRs targeting main. Manual runs default to full coverage;
+explicit suite inputs can narrow a manual/reusable run. Validate workflow edits
+locally before pushing. Daily nightlies publish a verified binary to GitHub and
+AUR only after every check passes; stable releases remain manually published.
+See [CI and Arch publication](docs/ci-and-aur.md) for triggers and publication
+requirements.
 
 Native integration tests may need separately installed agent CLIs or a real desktop;
 read each suite's setup before running it. Do not run tests against live agent state.

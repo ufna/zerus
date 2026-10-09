@@ -1,0 +1,28 @@
+# Maintainer: Vladimir Alyamkin <ufna@ufna.dev>
+pkgname=zerus-ade-nightly-bin
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='Nightly agent development environment for persistent local and remote tmux sessions'
+arch=('x86_64')
+url='https://github.com/ufna/zerus'
+license=('MIT')
+# Floors describe the tested binary, not the publication runner's libraries.
+depends=(@BINARY_LIBRARY_DEPENDS@
+         'tmux>=3.7' 'openssh' 'python' 'curl' 'procps-ng' 'hicolor-icon-theme' 'bash' 'tar')
+optdepends=('konsole: external KDE terminal integration'
+            'wl-clipboard: clipboard transfers on Wayland'
+            'xclip: clipboard transfers on X11'
+            'nodejs: separately installed native agents and DeepSeek Harness'
+            'npm: install Codex and DeepSeek Harness from Accounts'
+            'git: Git repository and worktree features'
+            'systemd: user service autostart and isolated DeepSeek scopes')
+provides=("zerus=$pkgver" 'hgs' 'hgs-tray')
+conflicts=('zerus' 'zerus-git' 'zerus-ade-bin')
+options=('!strip' '!debug')
+source=("https://github.com/ufna/zerus/releases/download/@RELEASE_TAG@/zerus-${pkgver}-arch-${CARCH}.tar.gz")
+sha256sums=('@BINARY_SHA256@')
+
+package() {
+    cp -a "$srcdir/zerus-@PRODUCT_VERSION@-arch-$CARCH/usr" "$pkgdir/"
+    mv "$pkgdir/usr/share/licenses/zerus-git" "$pkgdir/usr/share/licenses/$pkgname"
+}

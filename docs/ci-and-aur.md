@@ -1,64 +1,93 @@
 # CI and Arch Linux publication
 
-This document describes the implemented checks, package layout and first-publication
-handoff. Repository documentation is English. No AUR package has been published by
-this preparation. The upstream is public; release builds and publication are
-separate manual workflows.
+This document describes the checks, package layout and publication workflow.
+[Zerus 0.37.0](https://github.com/ufna/zerus/releases/tag/v0.37.0) is the first
+public Arch x86_64 bundle. Stable release builds and GitHub/AUR publication remain
+separate manual workflows; verified nightlies publish automatically.
 
 ## Continuous integration
 
-Hosted checks are **manual-only** to preserve the account's Actions quota. There
-are no CI triggers for pushes, pull requests or schedules. The owner decides when
-to run checks, including for Dependabot PRs. Do not dispatch hosted checks just to
-validate a workflow change; run actionlint and relevant checks locally instead.
+Hosted checks run automatically on pushes to `main` and pull requests targeting
+`main`, including Dependabot proposals. External fork workflows wait for a
+maintainer's **Approve and run** decision. Every automatic run selects source/MSRV,
+full Linux CLI, Arch desktop/package and both macOS suites. The owner enabled
+this policy on 2026-10-09 after making the repository public: standard Ubuntu and
+macOS GitHub-hosted runners are free for public repositories.
 
-`.github/workflows/ci.yml` accepts manual dispatches and explicit calls from the
-manual release workflow. All expensive suite inputs default to `false` in both
-manual and reusable CI. A default dispatch uses **one Ubuntu job** for source
-checks and Rust unit tests; it allocates no Arch or macOS runners.
+Manual CI remains available and defaults to all suites. `ci.yml` chooses the cache
+trust boundary and calls the shared jobs in `checks.yml`. Reusable CI keeps explicit
+suite selection so another workflow cannot accidentally request unrelated jobs.
+Every job checks out the exact commit resolved by quick checks. PR checks use the
+GitHub merge commit; a manual `ref` can select a PR head or another exact revision.
 
-| Job | Default manual CI | Selection | Checks |
-| --- | --- | --- | --- |
-| Quick checks | Always | One Ubuntu job | Privacy guard, Python/Bash syntax, version consistency, actionlint, publication contract tests, locked unit tests on Rust 1.85.0 |
-| Linux CLI | Off | `run_linux=true` | Stable Rust unit tests, terminal smoke tests, all Python integration modules, release build |
-| Arch desktop and package | Off | `run_arch=true` | Qt desktop build, all CTest suites, production build without test targets, pacman package, namcap, staged and installed bundle checks |
-| macOS CLI and desktop | Off | `run_macos=true` | CLI checks and native Qt build with all CTest suites; two macOS jobs |
-| CI gate | Only with extra suites | Automatic within a selected run | Requires quick checks and every selected suite to succeed; unselected suites must be skipped |
+| Job | Automatic CI | Checks |
+| --- | --- | --- |
+| Quick checks | Always | Privacy, Python/Bash syntax, version consistency, actionlint, stable/nightly publication contracts, locked Rust 1.85 unit tests |
+| Linux CLI | Always | Stable Rust unit tests, terminal smoke tests, Python integration modules, release build |
+| Arch desktop/package | Always | Qt build and all CTest suites, production package, namcap, staged and installed bundle checks |
+| macOS CLI and desktop | Always | Native CLI integration and all Qt CTest suites on two standard macOS jobs |
+| CI gate | Always | Requires every selected suite to succeed; fails on unexpected skips, cancellation and errors |
 
-The expensive jobs start only after quick checks pass. The macOS CLI runner is
-added to the matrix only when requested; disabling it does not allocate a runner
-that merely skips its steps. CI gate fails on errors, cancellations and unexpected
-skips. Quick-only runs omit this extra job to avoid another runner startup.
+The full jobs start after quick checks. New CI runs cancel obsolete runs for the
+same branch/PR and workflow. PR jobs have read-only permissions and no publication
+credentials; fork PRs use `pull_request`, never `pull_request_target`. Publishing
+is confined to trusted upstream `main` and the branch-restricted `release`
+environment. Authenticated model-turn tests remain explicit opt-ins.
 
-### Manual checks, including pull requests
+### Incoming PRs and publication trust
 
-In GitHub **Actions → CI → Run workflow**, keep the workflow branch on `main` to
-use the current budget controls. Leave the test `ref` blank for that commit, or
-enter a branch, full commit SHA or `refs/pull/NUMBER/head`. Select only the extra
-suites needed for that change. This also checks older PR branches using the new
-workflow definition. [GitHub manual workflow instructions](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).
+Running a PR compiles and executes code supplied by its author, including Rust
+build scripts, tests and packaging commands. GitHub-hosted runners provide an
+ephemeral environment; passing CI does not establish that the proposed code is
+safe to merge.
+
+Repository settings require approval for **all external contributors** and full
+commit SHA pins for actions. The workflow token defaults to read-only and cannot
+approve PRs. Review the complete diff before approving a fork workflow, especially
+workflow changes, dependency/build scripts and attempts to change cache permissions
+or runner labels. A previous harmless contribution does not grant automatic runs.
+Keep development machines off the runner list; secrets, SSH credentials, account
+configuration and authenticated model sessions do not belong in CI caches/artifacts.
+
+PR checks and every manual CI run receive **read-only cache tokens**, including a
+manual run of `refs/pull/NUMBER/head` from the upstream workflow. Only upstream
+`main` pushes and scheduled checks of that exact `main` commit can populate caches.
+This restriction is enforced by GitHub's fixed `cache-mode` on the reusable call,
+so checked-out build code cannot bypass it by invoking the cache API itself.
+Publishers use `cache-mode: none` and execute trusted upstream publication scripts.
+They accept only successful main-only stable/Nightly candidates, check workflow
+identity, repository, commit, run identity, archive safety and digests, and never
+execute downloaded AUR recipes. Ordinary PR CI artifacts cannot become releases.
+The `release` environment permits the `main` **branch** only, with no tag allowance.
+
+The current actionlint 1.7.12 release predates `cache-mode`. Source checks validate
+its fixed enum and placement; actionlint suppresses only its unknown-key warning
+for that field. Trust-boundary tests exercise the actual routing conditions and
+failure gate. GitHub validates the cache policy and reusable-workflow limits. Remove
+the narrow exception when a released actionlint supports the key.
+
+These boundaries limit credential theft, repository writes and compute abuse.
+Maintainer approval still matters: a PR can change its workflow, and granting a
+write-capable cache mode to untrusted code would bypass the secure cache default.
+See [fork workflow approvals](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/approve-runs-from-forks),
+[Actions security](https://docs.github.com/en/actions/reference/security/secure-use)
+and [cache access limits](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching).
+
+### Manual checks
 
 ```sh
-# Quick source and minimum-Rust checks only:
+# Full Linux, Arch and macOS coverage:
 gh workflow run ci.yml --ref main
-# Check a PR's current head with the same inexpensive defaults:
+# Full coverage of a PR head with the current upstream workflow:
 gh workflow run ci.yml --ref main -f ref=refs/pull/123/head
-# Full Linux CLI and Arch desktop/package coverage for a PR:
-gh workflow run ci.yml --ref main -f ref=refs/pull/123/head \
-  -f run_linux=true -f run_arch=true
-# Explicitly opt into both macOS suites when native coverage is needed:
-gh workflow run ci.yml --ref main -f run_macos=true
+# Source/MSRV checks plus the aggregate gate only:
+gh workflow run ci.yml --ref main -f run_linux=false -f run_arch=false -f run_macos=false
 ```
 
-Quick checks resolve the target once. Every selected job checks out that exact
-commit; the summary records its SHA and selected coverage, and the Arch artifact
-name contains the tested SHA. A PR updated later needs a new deliberate dispatch.
-Use the summary's tested SHA when reviewing an explicit test `ref`: GitHub's run
-metadata remains associated with the workflow branch, not the checkout override.
-
-Do **not** require CI gate as an automatic PR status check under this policy. A
-manual run may intentionally omit it, and no check is produced until the owner
-requests one. Review/merge policies are independent of hosted CI.
+An explicit test `ref` changes the checked-out commit, not GitHub's workflow run
+metadata. Use the exact tested SHA recorded in the job summary when reviewing
+such a manual run. Automatic PR and push runs produce CI gate without a dispatch.
+Review and merging remain deliberate; successful CI does not auto-merge PRs.
 
 Arch is the Linux GUI build environment because the application uses Qt 6 and KDE
 Frameworks 6. Ubuntu remains useful for portable CLI and minimum-Rust checks.
@@ -72,20 +101,52 @@ Current release packaging supports **Arch x86_64 only**. The macOS runner checks
 build/test compatibility; it does not create a notarized macOS installer. Windows
 and Arch ARM are outside this first package matrix.
 
-All CI jobs have bounded timeouts. A newer manual CI run cancels an obsolete run
-for the same requested ref and workflow. Workflows have read-only repository
-permissions, checkout credentials are not persisted, official actions are pinned
-to commit SHAs and Dependabot proposes weekly action/Cargo updates. Rust and C++ caches reduce repeated build
-cost. Test artifacts expire after seven days; release candidates after fourteen.
-Manually selected PR code receives no deployment credentials. There is no
-push/tag/release-triggered publication or self-hosted runner attached to a
-development machine. The owner explicitly starts each candidate and publication.
+All CI jobs have bounded timeouts. Checkout credentials are not persisted and
+Actions are pinned to commit SHAs. Dependabot proposes monthly grouped action/Cargo
+updates. Rust/C++ caches reduce repeated build time; their repository limit stays
+at 10 GiB. Ordinary test artifacts expire after seven days and stable candidates
+after fourteen. Scheduled logs, Arch packages and nightly candidates expire after
+three days.
+Standard Ubuntu/macOS runners and public artifacts are free while the repository
+is public. Larger runners and explicitly increased cache storage have separate
+billing rules. No self-hosted runner is attached to a development machine.
+[Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
 
 The Arch base image is digest-pinned, but `pacman -Syu` intentionally uses current
 Arch packages. This tests rolling-distribution compatibility; it does not promise
 bit-for-bit reproducibility months later. Rust dependencies are locked, fetched
 in `prepare()` and built/tested with `--frozen` inside source packages. The CI
 image, tmux and official DeepSeek fixture pins need periodic maintainer review.
+
+### Dependency updates and cost
+
+Dependabot checks version updates on the first day of each month. Each ecosystem
+has one version-update group and at most one open version-update PR: two ordinary
+PRs across GitHub Actions and Cargo. Automatic rebasing is disabled; refresh a
+stale proposal before testing and merging it. Updates still require review and
+checks appropriate to the active CI policy; there is no automatic merge.
+
+Cargo proposals update only `Cargo.lock` within the reviewed `Cargo.toml`
+constraints. This also avoids unreviewed breaking minor upgrades of `0.x` crates.
+Manifest migrations are deliberate maintenance work, including Rust 1.85 and
+existing state/configuration compatibility checks. Actions keep their exact
+commit pins and may propose major upgrades in their group for manual review.
+
+Dependabot vulnerability alerts and security updates are enabled separately in
+repository settings. Security proposals have their own per-ecosystem groups;
+they are not delayed by the monthly version schedule or counted against its PR
+limit. A fix requiring a manifest migration still needs maintainer attention.
+Do not disable security alerts to reduce routine version-update noise.
+
+Dependabot jobs on standard GitHub-hosted runners do not consume included Actions
+minutes. Standard runner minutes are also free while this repository is public;
+larger runners and storage have separate billing rules. There is no monthly
+standard-runner minute quota to exhaust for a public repository. Schedule useful
+coverage rather than artificial runs. Keep artifact retention bounded and use
+standard runner labels; private-repository checks consume the account allowance.
+See [Dependabot runner billing](https://docs.github.com/en/code-security/concepts/supply-chain-security/dependabot-on-actions),
+[Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)
+and [Dependabot options](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference).
 
 ### Test isolation and local commands
 
@@ -114,6 +175,56 @@ separate, reviewed baseline cleanup. Logs are under ignored
 `artifacts/test-results/`; packaging outputs are under ignored `artifacts/` and
 `dist/`.
 
+## Automatic nightly publication
+
+`nightly.yml` runs daily at 00:17 UTC (03:17 Europe/Moscow) and supports manual
+launches. It verifies one exact upstream `main` commit with the complete Linux,
+Arch and macOS CI matrix, then repackages its already tested Arch binary. It
+checks the generated pacman package, namcap output and installed bundle in an
+isolated home. There is no second Rust/C++ compilation during nightly assembly.
+
+The package is `zerus-ade-nightly-bin`; `zerus-git` remains a source package that
+tracks upstream `main`. Nightly versions have the form
+`0.37.0.r62.gabcdef0.n7`: product version, Git revision count, short source SHA
+and monotonically increasing Nightly run number. The application keeps its
+product/CLI versions. Rebuilding an unchanged commit creates a new package
+version, allowing daily Arch ABI/dependency refreshes without replacing assets.
+
+After a successful Nightly run, `publish-nightly.yml` automatically verifies the
+upstream repository, workflow path/event, main branch, completion status, exact
+source SHA, build number, GitHub artifact digest, sealed AUR recipes and checksums.
+Only then does it receive the dedicated AUR key from the `release` environment.
+Downloaded scripts/PKGBUILDs are never executed with publication credentials.
+
+Each build creates an immutable `nightly-RUN_ID` GitHub prerelease and updates only
+`zerus-ade-nightly-bin` in AUR. It never becomes the latest stable release or changes
+`zerus`/`zerus-ade-bin`/`zerus-git`. Its public binary URL and SHA-256 stay fixed.
+Binary library floors come from the verified source package's `.BUILDINFO`.
+Stable and nightly publishers share a serialization group, preventing AUR races.
+
+```sh
+# Build and automatically publish a new fully verified nightly:
+gh workflow run nightly.yml --ref main
+# Retry partial publication using the same successful retained candidate:
+gh workflow run publish-nightly.yml --ref main -f candidate_run=123456789
+# Install the latest prebuilt nightly (conflicts with the other Zerus flavors):
+yay -S zerus-ade-nightly-bin
+# Source-based main builds require devel update checks:
+yay -Syu --devel
+```
+
+Failed builds never publish. GitHub or AUR publication failures leave stable
+releases untouched. Retry only the publisher with the same run ID; do not rerun a
+published build to produce different bytes under its existing tag. Artifacts are
+retained for three days and logs for three; public GitHub release assets remain
+available after artifact expiry. Nightlies run even without new commits to test
+current rolling Arch dependencies and produce fresh, uniquely versioned binaries.
+After an accepted AUR push, RPC metadata and yay may briefly show the previous
+version. Check the AUR Git repository's `.SRCINFO` and wait for metadata to refresh;
+do not rebuild or republish the candidate to work around that delay.
+Stable candidates/publication remain separate manual workflows; macOS checks are
+now selected by default for new candidates and can still be explicitly disabled.
+
 ## What yay actually installs
 
 `yay` is an AUR helper. AUR hosts a public `PKGBUILD` and generated `.SRCINFO`,
@@ -122,18 +233,19 @@ live upstream; they are not uploaded into AUR Git.
 [AUR submission guidelines](https://wiki.archlinux.org/title/AUR_submission_guidelines),
 [PKGBUILD manual](https://man.archlinux.org/man/PKGBUILD.5.en).
 
-The owner selected this package family on **2026-10-08**:
+The owner selected the stable/source family on **2026-10-08** and added automated nightly binaries on **2026-10-09**:
 
 | Name | Source | Purpose |
 | --- | --- | --- |
-| `zerus` | Versioned source archive with SHA-256 | Stable release compiled locally |
-| `zerus-ade-bin` | Versioned Arch x86_64 binary archive with SHA-256 | Stable release without Rust/C++ compilation |
-| `zerus-git` | Public upstream `main`, version derived by `pkgver()` | Development build compiled locally |
+| [zerus](https://aur.archlinux.org/packages/zerus) | Versioned source archive with SHA-256 | Stable release compiled locally |
+| [zerus-ade-bin](https://aur.archlinux.org/packages/zerus-ade-bin) | Versioned Arch x86_64 binary archive with SHA-256 | Stable release without Rust/C++ compilation |
+| [zerus-git](https://aur.archlinux.org/packages/zerus-git) | Public upstream `main`, version derived by `pkgver()` | Development build compiled locally |
+| [zerus-ade-nightly-bin](https://aur.archlinux.org/packages/zerus-ade-nightly-bin) | Immutable verified nightly binary with SHA-256 | Current main without local compilation |
 
 Primary owner/maintainer: **ufna**, **Vladimir Alyamkin <ufna@ufna.dev>**.
-These three names were absent from the AUR RPC lookup on **2026-10-08**; the
-publisher rechecks ownership before writing. All flavors install the same files
-and conflict with one another. The binary/VCS flavors provide versioned `zerus`.
+The stable/source AUR package pages confirm the approved maintainer. The publisher
+rechecks ownership and SSH write access before writing. All flavors install the
+same files and conflict with one another. The binary/VCS flavors provide versioned `zerus`.
 
 Open-source prebuilt packages require the `-bin` suffix. `zerus-bin` belongs to
 an unrelated project, so our binary package uses `zerus-ade-bin`.
@@ -236,9 +348,13 @@ systemctl --user enable --now hgs-tray.service
 systemctl --user enable --now hgs-swarm.service hgs-recovery.service
 ```
 
-The packaged GUI unit uses `KillMode=process`. A GUI restart must preserve native
-agent processes, tmux servers and DeepSeek hosts. Package upgrades do not perform
-a restart. Review the old unit's kill policy before restarting an existing
+Packaged units and the current source installer template use `KillMode=process`.
+A GUI restart must preserve native agents, tmux servers and DeepSeek hosts. Older
+source-installed units
+may still use systemd's control-group default. Before restarting one, add a user
+drop-in with `[Service]` and `KillMode=process`, run `systemctl --user daemon-reload`
+and verify `systemctl --user show hgs-tray.service -p KillMode`. Package upgrades
+do not perform a restart. Review the old unit's kill policy before restarting an existing
 installation; never use a broad process kill or restart all native clients.
 
 ## Manual build and publication
@@ -249,8 +365,8 @@ GitHub releases or a schedule.
 
 ### 1. Build and review a candidate
 
-`release.yml` runs quick checks plus full Linux CLI and Arch validation from one
-exact commit. macOS stays off unless explicitly selected. It consumes that run's
+`release.yml` runs quick checks plus full Linux CLI, Arch and macOS validation from
+one exact commit. macOS can be explicitly disabled. It consumes that run's
 Arch package, verifies its embedded version/source commit, assembles source and
 binary archives, rebuilds both stable recipes, runs namcap and seals the result.
 
@@ -345,33 +461,33 @@ after verifying a newly announced official fingerprint. Rotate the client key by
 registering its replacement, updating the environment secret and revoking the old
 public key. No password, private key or account session is stored in the repository.
 
-### Remaining first-release actions
+### Release maintenance
 
-1. The owner requests the first hosted **Release candidate** build for `0.37.0`.
-   This is separate from the confirmed manual-only CI policy; no build has been
-   dispatched during this preparation.
-2. Review that candidate's exact SHA, packages, notices, hashes and three recipes.
-3. The owner requests **Publish release** with that successful run ID. It publishes
-   GitHub and synchronizes AUR without another build.
-4. Verify a fresh `yay -S zerus-ade-bin`, `yay -S zerus` or `yay -S zerus-git` in a
-   disposable Arch environment, then `zerus-setup`. Complete a live desktop and
-   local/remote agent roundtrip and check upgrades preserve native processes/state.
-5. Advertise the verified release/AUR links in the installation guide only after
-   that public install roundtrip. Monitor AUR comments and rolling-library changes.
+For each new bundle, increase the product version, deliberately run a fresh
+candidate, review its exact source/hash/library provenance, then publish that run.
+Verify public GitHub downloads and all three AUR packages, including a fresh yay
+installation, user setup and a process-preserving upgrade. Monitor AUR comments
+and rolling-library changes. New stable candidates select macOS checks by default.
 
-No further package-name, architecture, public-contact, repository-visibility or
-SSH-key decisions are needed. Signing with an existing owner-controlled identity
-and appointing a backup maintainer are optional follow-ups; neither is configured
-by the first-release workflow. Checksums and exact GitHub run/commit provenance
-are available now; do not claim package/tag signing.
+An authenticated release listing can find GitHub drafts that the tag endpoint
+returns as 404. The publisher checks all pages for the exact tag and rejects
+ambiguous matches and API errors before creating or resuming a draft.
+After creating a draft, it retries read-only discovery for up to sixty seconds of
+backoff to handle delayed GitHub visibility. It creates no duplicate draft and
+does not retry API permission errors. A persistent failure retains the same
+candidate for a publisher-only retry.
+
+Signing with an owner-controlled identity and appointing a backup maintainer are
+optional follow-ups. Checksums and exact run/commit provenance are provided;
+package/tag signing is not configured.
 
 ## Validation record
 
-The hosted runs below preceded the manual-only budget policy. They record prior
-platform/package validation; they do not imply automatic checks are enabled.
-The budget change itself was checked locally with actionlint, source checks and
-all eight suite selections, including 104 success/failure/skip gate scenarios.
-No hosted run was dispatched to validate it.
+The earlier runs below record platform/package validation before the temporary
+manual-only budget policy. That budget change was checked locally with actionlint,
+source checks and all eight suite selections, including 104 success/failure/skip
+gate scenarios. The automatic policy enabled on 2026-10-09 supersedes it; its first
+public nightly validation is recorded at the end of this section.
 
 On **2026-10-08**, the complete
 [main CI run](https://github.com/ufna/zerus/actions/runs/37705887611) passed every
@@ -408,8 +524,8 @@ idempotence, conflict preservation, dangling links, missing targets and root
 refusal. Removing `qt6-svg` makes the actual resource-render test fail; restoring
 it passes. The final handoff/tracker documentation may follow the pinned candidate
 commit; regenerate the exact candidate after changing release source or URLs.
-Public AUR installation and a live desktop/authenticated-agent roundtrip remain
-first-publication validation. The source is now public and account/key setup is done.
+Those preparation checks did not establish public AUR installation. The first
+public installation and deployment validation is recorded below.
 
 On **2026-10-08**, the publication changes were validated locally with actionlint,
 source checks, generated makepkg metadata and credential-free contracts covering
@@ -428,3 +544,78 @@ match makepkg output. Library floors were checked against the real `.BUILDINFO`.
 This local packaging review does not replace the full exact-commit release checks.
 Regenerate the hosted candidate from the selected final `main` commit before
 public publication; later documentation/tracker changes have a different SHA.
+
+### First public release: 0.37.0
+
+On **2026-10-08**, the owner explicitly requested the latest build, required
+checks and deployment. The [release candidate run](https://github.com/ufna/zerus/actions/runs/37830899221)
+pins `998bc4e9565a645e59b26bec3e2ced187e3d1444` and passed quick/minimum-Rust,
+full Linux and Arch checks. macOS hosted jobs were skipped. Linux covered 145
+Rust unit tests, 212 terminal smoke checks and 427 Python cases in 35 modules;
+24 authenticated/native opt-in cases were skipped. All 32 Arch CTest suites
+passed. VCS and both stable packages passed layout/version/notice checks and
+namcap with no errors; known dynamic-tool/plugin warnings remain in the logs.
+
+Independent candidate review verified GitHub's artifact digest, all six sealed
+asset hashes, 466 source-export entries, binary embedded source provenance and
+all three canonical makepkg metadata pairs. Binary floors record Qt base/SVG
+6.12.0, WebEngine 6.11.2 and KDE Frameworks 6.30.0, plus the builder's C/C++/glibc
+versions. Both stable packages include 59 Cargo dependency notices and the
+vendored libvterm/md4c notices.
+
+The [successful publication run](https://github.com/ufna/zerus/actions/runs/37833745339)
+resumed the same candidate after correcting authenticated draft discovery. It
+published [v0.37.0](https://github.com/ufna/zerus/releases/tag/v0.37.0), verified
+all seven download assets anonymously and synchronized the three AUR recipes.
+The release tag and archive hashes remain unchanged. AUR HTML pages became
+visible before RPC metadata refreshed; yay lookup succeeded after that refresh.
+
+A disposable, fully updated Arch environment installed **all three flavors through
+yay**: binary/stable source `0.37.0-1` and VCS `0.37.0.r60.ga2fa919-1`. Installed
+binary checks, idempotent user setup and ordinary non-Git terminal sessions passed.
+An actual X11 desktop GUI, its isolated tmux server and terminal process survived
+binary package reinstallation and subsequent source/VCS flavor replacement.
+No user services were enabled by package installation or setup.
+
+Existing Linux and Mac source installations were also updated. Linux binaries
+were built from the reviewed source against its installed Qt 6.11 libraries. Mac native validation covered 143 Rust tests and 34 Qt suites; the
+terminal suite was rerun after correcting a test assumption about rounded native
+font metrics. Runtime code was unchanged by that correction. The Mac bundle was
+verified with its existing ad-hoc signing procedure. Both managed GUIs activated
+Sessions after claiming their sockets; existing persistent process identities and
+state access were preserved. These local Mac checks used no GitHub macOS runner.
+Authenticated model-turn tests remain opt-in and were not run for this release.
+
+### First public nightly
+
+On **2026-10-09**, automatic [push CI](https://github.com/ufna/zerus/actions/runs/37848718266)
+and the first [Nightly build](https://github.com/ufna/zerus/actions/runs/37848718703)
+passed full source/Rust 1.85, Linux CLI, Arch desktop/package and both macOS suites
+from exact commit `9eb3a0e3867b42ef82c758781f1b6a23ac848978`. Nightly assembly
+reused the tested Arch binary, checked the generated package with namcap and
+verified its installed binaries, user setup and isolated tmux session.
+
+The [successful publisher](https://github.com/ufna/zerus/actions/runs/37850588572)
+resumed that same candidate after the initial publisher encountered delayed draft
+visibility. Bounded read-only draft discovery now handles that condition, covered
+by regression tests for transient absence, timeout and immediate API rejection.
+All 27 stable/nightly publication contracts pass locally.
+
+[nightly-37848718703](https://github.com/ufna/zerus/releases/tag/nightly-37848718703)
+contains five immutable assets and is a prerelease; the latest stable release
+remains `v0.37.0`. A fresh, fully updated isolated Arch environment installed
+`zerus-ade-nightly-bin 0.37.0.r77.g9eb3a0e.n1-1` through the real yay helper.
+Public archive checksums, runtime dependencies, idempotent `zerus-setup` and an
+ordinary non-Git terminal session passed. No host agent or tmux process was touched.
+
+The next [Nightly run](https://github.com/ufna/zerus/actions/runs/37851516418) passed
+all suites and installed-package checks at
+`fef1a00f0e505dd02d9aa0ad94c655ef6d954a1a`. Its [publisher](https://github.com/ufna/zerus/actions/runs/37852775356)
+was triggered automatically by successful completion, created and anonymously
+verified [nightly-37851516418](https://github.com/ufna/zerus/releases/tag/nightly-37851516418),
+and synchronized AUR `0.37.0.r78.gfef1a00.n2-1` without a manual publisher retry.
+After AUR metadata refreshed, ordinary `yay -Syu` detected and installed the new
+version. The upgrade retained an existing isolated tmux server, terminal process,
+session identity and user links. Installed-package checks passed again; all files
+expected under the container's pacman extraction policy were present, and the
+downloaded archive's build manifest matched the exact verified source commit.

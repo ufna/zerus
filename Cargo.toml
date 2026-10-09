@@ -23,7 +23,7 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 sha2 = "0.10"
 shell-words = "1"
 tempfile = "3"
-toml_edit = "0.22"
+toml_edit = "0.25"
 uuid = { version = "1", features = ["v4"] }
 
 [profile.release]
