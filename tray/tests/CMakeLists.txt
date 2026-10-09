@@ -240,6 +240,7 @@ add_executable(test_accountspage test_accountspage.cpp ../src/SessionOrganizatio
 target_include_directories(test_accountspage PRIVATE ../src)
 target_link_libraries(test_accountspage PRIVATE Qt6::Test Qt6::Widgets)
 add_test(NAME accountspage COMMAND test_accountspage)
+set_tests_properties(accountspage PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 add_executable(test_accountusage test_accountusage.cpp ../src/AccountUsageStore.cpp ../src/HgsClient.cpp ../src/FleetState.cpp)
 target_include_directories(test_accountusage PRIVATE ../src)
