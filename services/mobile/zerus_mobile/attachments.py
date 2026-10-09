@@ -63,14 +63,21 @@ def validate_send(payload: dict) -> None:
             references.add(reference)
         if not isinstance(data, str) or len(data) > ((MAX_FILE_BYTES + 2) // 3) * 4:
             raise ValueError("attachment exceeds 10 MiB")
-        try:
-            decoded = base64.b64decode(data, validate=True)
-        except (binascii.Error, ValueError):
-            raise ValueError("invalid attachment base64") from None
-        if not decoded or len(decoded) > MAX_FILE_BYTES:
+        # Aligned 64 KiB chunks avoid a decoded file and re-encoded full copy.
+        decoded_size = 0
+        for offset in range(0, len(data), 65536):
+            chunk = data[offset:offset + 65536]
+            if offset + len(chunk) < len(data) and "=" in chunk:
+                raise ValueError("attachment base64 must be canonical")
+            try:
+                decoded = base64.b64decode(chunk, validate=True)
+            except (binascii.Error, ValueError):
+                raise ValueError("invalid attachment base64") from None
+            if base64.b64encode(decoded).decode("ascii") != chunk:
+                raise ValueError("attachment base64 must be canonical")
+            decoded_size += len(decoded)
+        if not decoded_size or decoded_size > MAX_FILE_BYTES:
             raise ValueError("attachment must be nonempty and at most 10 MiB")
-        if base64.b64encode(decoded).decode("ascii") != data:
-            raise ValueError("attachment base64 must be canonical")
-        total += len(decoded)
+        total += decoded_size
         if total > MAX_TOTAL_BYTES:
             raise ValueError("attachments exceed 20 MiB in total")

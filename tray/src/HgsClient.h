@@ -51,7 +51,8 @@ struct SessionInfo {
         const bool recovering = recoveryState == "waiting" || recoveryState == "dispatching" || recoveryState == "retrying";
         return state == QLatin1String("running") && processState != QLatin1String("exited")
             && (phase == QLatin1String("approval") || phase == QLatin1String("input")
-                || (phase == QLatin1String("error") && (!recovering || providerError.value("error_kind")=="quota"))
+                || (phase == QLatin1String("error") && (!recovering || providerError.value("error_kind")=="quota"
+                    || providerError.value("error_kind")=="provider_policy"))
                 || recoveryState == "uncertain" || recoveryState == "blocked" || recoveryState == "exhausted");
     }
 };

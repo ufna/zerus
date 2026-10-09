@@ -99,11 +99,11 @@ class AttachmentRelayTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_retained_completed_bodies_budget_and_reserved_control_allowance(self):
         request = self.request([file(b"x" * 3000)])
-        self.config.max_queue_bytes = len(json.dumps(request).encode()) + 100
+        self.config.max_queue_bytes = len(json.dumps(request).encode()) + 100 + 1024*1024
         async with self.client.post("/v1/requests", headers=self.headers, json=request) as response:
             self.assertEqual(response.status, 202)
         with self.store.db:
-            self.store.db.execute("UPDATE requests SET state='completed' WHERE id=?", (request["request_id"],))
+            self.store.db.execute("UPDATE requests SET state='completed',reserved_bytes=0 WHERE id=?", (request["request_id"],))
         async with self.client.post("/v1/requests", headers=self.headers, json=self.request([file(b"x" * 3000)])) as response:
             self.assertEqual(response.status, 429)
             self.assertIn("retained payload", (await response.json())["error"])

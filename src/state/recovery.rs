@@ -191,6 +191,11 @@ fn contains(text: &str, words: &[&str]) -> bool {
     words.iter().any(|w| text.contains(w))
 }
 fn class(error: &Value) -> &'static str {
+    if string(error, "error_kind") == "provider_policy"
+        || provider_errors::category(string(error, "detail")) == "provider_policy"
+    {
+        return "manual";
+    }
     let text = format!(
         "{} {}",
         string(error, "error_kind"),
@@ -504,12 +509,23 @@ mod tests {
             ("429 insufficient quota", "manual"),
             ("overloaded account balance exhausted", "manual"),
             ("401 authentication failed", "manual"),
+            ("policy_violation: HTTP 503 service unavailable", "manual"),
+            ("Request blocked by usage policy; HTTP 429", "manual"),
             ("context window exceeded", "manual"),
             ("stream disconnected", "network"),
             ("ECONNRESET", "network"),
             ("tool returned 1", "manual"),
         ] {
             assert_eq!(class(&json!({"detail":detail})), expected, "{detail}");
+        }
+        for detail in ["HTTP 503", "429 rate limit", "network error"] {
+            assert_eq!(
+                class(&json!({"error_kind":"provider_policy","detail":detail})),
+                "manual"
+            );
+            let mut s = snapshot("codex");
+            s["provider_error"] = json!({"error_kind":"provider_policy","detail":detail});
+            assert!(advance(Value::Null, &s, &on(), 11.0).is_null());
         }
         for agent in ["claude", "kimi", "codex"] {
             assert_eq!(

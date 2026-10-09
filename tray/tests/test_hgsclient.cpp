@@ -119,6 +119,18 @@ void TestHgsClient::providerFailuresRequireAttentionAndPreserveSpecificStatus()
     QCOMPARE(SessionPresentation::status(session),QString("Usage limit reached"));
     session.recovery={{"state","waiting"},{"due_at",QDateTime::currentSecsSinceEpoch()+30}};
     QVERIFY(session.needsAction());QCOMPARE(SessionPresentation::status(session),QString("Usage limit reached"));
+    session.recovery={};
+    session.providerError={{"error_kind","provider_policy"},{"detail","Request flagged by provider policy for authorized security testing"}};
+    session.activityDetail=session.providerError.value("detail").toString();
+    QVERIFY(session.needsAction());QCOMPARE(SessionPresentation::status(session),QString("Request blocked by provider"));
+    QCOMPARE(SessionPresentation::currentAction(session),QString("Request blocked by provider: ")+session.activityDetail);
+    QCOMPARE(session.providerError.value("detail").toString(),QString("Request flagged by provider policy for authorized security testing"));
+    session.recovery={{"state","waiting"},{"due_at",QDateTime::currentSecsSinceEpoch()+30}};
+    QVERIFY(session.needsAttention());QVERIFY(session.needsAction());
+    QCOMPARE(SessionPresentation::status(session),QString("Request blocked by provider"));
+    session.recovery={};
+    session.providerError={{"error_kind","authentication"}};
+    QCOMPARE(SessionPresentation::status(session),QString("Sign-in failed"));
     session.phase="working";session.providerError={};session.recovery={};
     QVERIFY(!session.needsAction());QCOMPARE(SessionPresentation::status(session),QString("Working"));
     session.runId="run-one";session.conversationId="conversation-one";session.lastEventAt=100;

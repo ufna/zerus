@@ -23,8 +23,8 @@ android {
         applicationId = "app.zerus.mobile"
         minSdk = 26
         targetSdk = 36
-        versionCode = 11
-        versionName = "0.1.10"
+        versionCode = 13
+        versionName = "0.1.12"
         buildConfigField("boolean", "FIREBASE_ENABLED", firebaseEnabled.toString())
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

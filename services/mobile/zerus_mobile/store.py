@@ -9,6 +9,8 @@ import secrets
 import sqlite3
 import stat
 import time
+import threading
+import functools
 import uuid
 
 from .attachments import MAX_QUEUE_BYTES
@@ -28,8 +30,17 @@ def canonical(value) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+def serialized(method):
+    @functools.wraps(method)
+    def guarded(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return guarded
+
+
 class Store:
     def __init__(self, path: str | Path):
+        self._lock = threading.RLock()
         path = Path(path)
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         # Do not chmod a caller's home, cwd or shared directory.
@@ -44,7 +55,10 @@ class Store:
             os.fchmod(fd, 0o600)
         finally:
             os.close(fd)
-        self.db = sqlite3.connect(path, timeout=5)
+        # Prepared statements can retain their last maximum-size body binding.
+        # This development backend favors a bounded native lifetime over SQL
+        # parse caching; the compatibility worker serializes the connection.
+        self.db = sqlite3.connect(path, timeout=5, check_same_thread=False, cached_statements=0)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.execute("PRAGMA journal_mode=DELETE")
@@ -82,32 +96,81 @@ class Store:
             for column in ("expires_at","result_read"):
                 if column not in columns:
                     self.db.execute(f"ALTER TABLE requests ADD COLUMN {column} REAL")
+        if "snapshot_hash" not in {r[1] for r in self.db.execute("PRAGMA table_info(nodes)")}:
+            self.db.execute("ALTER TABLE nodes ADD COLUMN snapshot_hash TEXT")
+        self.db.executescript("""
+        CREATE TABLE IF NOT EXISTS relay_usage(id INTEGER PRIMARY KEY,event_count INTEGER NOT NULL DEFAULT 0,push_count INTEGER NOT NULL DEFAULT 0);
+        INSERT OR IGNORE INTO relay_usage(id) VALUES(1);
+        UPDATE relay_usage SET event_count=(SELECT count(*) FROM events),push_count=(SELECT count(*) FROM push_jobs) WHERE id=1;
+        CREATE TRIGGER IF NOT EXISTS event_count_insert AFTER INSERT ON events BEGIN UPDATE relay_usage SET event_count=event_count+1 WHERE id=1; END;
+        CREATE TRIGGER IF NOT EXISTS event_count_delete AFTER DELETE ON events BEGIN UPDATE relay_usage SET event_count=event_count-1 WHERE id=1; END;
+        CREATE TRIGGER IF NOT EXISTS push_count_insert AFTER INSERT ON push_jobs BEGIN UPDATE relay_usage SET push_count=push_count+1 WHERE id=1; END;
+        CREATE TRIGGER IF NOT EXISTS push_count_delete AFTER DELETE ON push_jobs BEGIN UPDATE relay_usage SET push_count=push_count-1 WHERE id=1; END;
+        CREATE INDEX IF NOT EXISTS push_device ON push_jobs(device_id,id);
+        """)
         self.db.execute("CREATE INDEX IF NOT EXISTS terminal_history_v2 ON requests(updated) WHERE operation='terminal_snapshot' AND state IN ('completed','failed','uncertain')")
         self.db.execute("CREATE INDEX IF NOT EXISTS terminal_expiry ON requests(expires_at) WHERE state='queued' AND expires_at IS NOT NULL")
         self.db.execute("CREATE INDEX IF NOT EXISTS request_workspace ON requests(workspace_id,operation,state)")
+        self.db.execute("CREATE INDEX IF NOT EXISTS event_expiry ON events(created)")
+        self.db.execute("CREATE INDEX IF NOT EXISTS push_expiry ON push_jobs(created)")
+        self.db.execute("CREATE INDEX IF NOT EXISTS invitation_expiry ON invitations(expires)")
+        self.db.execute(f"CREATE INDEX IF NOT EXISTS read_history ON requests(updated) WHERE operation IN {READ_SQL} AND state IN ('completed','failed','uncertain')")
+        request_columns = {r[1] for r in self.db.execute("PRAGMA table_info(requests)")}
+        with self.db:
+            if "reserved_bytes" not in request_columns:
+                self.db.execute("ALTER TABLE requests ADD COLUMN reserved_bytes INTEGER NOT NULL DEFAULT 0")
+                self.db.execute("UPDATE requests SET reserved_bytes=1048576 WHERE state IN ('queued','claimed')")
+            if "result_bytes" not in request_columns:
+                self.db.execute("ALTER TABLE requests ADD COLUMN result_bytes INTEGER NOT NULL DEFAULT 0")
+                self.db.execute("UPDATE requests SET result_bytes=COALESCE(length(CAST(result AS BLOB)),0)+COALESCE(length(CAST(error AS BLOB)),0)")
+            self.db.executescript(f"""
+            CREATE TABLE IF NOT EXISTS workspace_usage(workspace_id TEXT PRIMARY KEY,payload_bytes INTEGER NOT NULL DEFAULT 0,active INTEGER NOT NULL DEFAULT 0,reads INTEGER NOT NULL DEFAULT 0,mutations INTEGER NOT NULL DEFAULT 0,budget_bytes INTEGER NOT NULL DEFAULT {MAX_QUEUE_BYTES});
+            INSERT OR IGNORE INTO workspace_usage(workspace_id) SELECT id FROM workspaces;
+            UPDATE workspace_usage SET payload_bytes=(SELECT COALESCE(sum(body_bytes+result_bytes+reserved_bytes),0) FROM requests WHERE workspace_id=workspace_usage.workspace_id),active=(SELECT count(*) FROM requests WHERE workspace_id=workspace_usage.workspace_id AND state IN ('queued','claimed')),reads=(SELECT count(*) FROM requests WHERE workspace_id=workspace_usage.workspace_id AND operation IN {READ_SQL}),mutations=(SELECT count(*) FROM requests WHERE workspace_id=workspace_usage.workspace_id AND operation NOT IN {READ_SQL});
+            CREATE TRIGGER IF NOT EXISTS workspace_usage_create AFTER INSERT ON workspaces BEGIN INSERT INTO workspace_usage(workspace_id) VALUES(NEW.id); END;
+            DROP TRIGGER IF EXISTS request_usage_insert;
+            DROP TRIGGER IF EXISTS request_usage_delete;
+            DROP TRIGGER IF EXISTS request_usage_update;
+            DROP TRIGGER IF EXISTS request_result_accounting;
+            CREATE TRIGGER request_usage_insert AFTER INSERT ON requests BEGIN
+                UPDATE workspace_usage SET payload_bytes=payload_bytes+NEW.body_bytes+NEW.result_bytes+NEW.reserved_bytes,active=active+(NEW.state IN ('queued','claimed')),reads=reads+(NEW.operation IN {READ_SQL}),mutations=mutations+(NEW.operation NOT IN {READ_SQL}) WHERE workspace_id=NEW.workspace_id;
+            END;
+            CREATE TRIGGER request_usage_delete AFTER DELETE ON requests BEGIN
+                UPDATE workspace_usage SET payload_bytes=payload_bytes-OLD.body_bytes-OLD.result_bytes-OLD.reserved_bytes,active=active-(OLD.state IN ('queued','claimed')),reads=reads-(OLD.operation IN {READ_SQL}),mutations=mutations-(OLD.operation NOT IN {READ_SQL}) WHERE workspace_id=OLD.workspace_id;
+            END;
+            CREATE TRIGGER request_usage_update AFTER UPDATE OF body_bytes,result_bytes,reserved_bytes,state ON requests BEGIN
+                UPDATE workspace_usage SET payload_bytes=payload_bytes+NEW.body_bytes+NEW.result_bytes+NEW.reserved_bytes-OLD.body_bytes-OLD.result_bytes-OLD.reserved_bytes,active=active+(NEW.state IN ('queued','claimed'))-(OLD.state IN ('queued','claimed')) WHERE workspace_id=NEW.workspace_id;
+            END;
+            """)
 
+
+    @serialized
     def close(self):
         self.db.close()
 
+    @serialized
     def workspace(self, name: str) -> str:
         value = str(uuid.uuid4())
         with self.db:
             self.db.execute("INSERT INTO workspaces VALUES(?,?)", (value, name))
         return value
 
+    @serialized
     def node(self, workspace: str, name: str) -> dict:
         value, secret = str(uuid.uuid4()), token()
         with self.db:
             self.db.execute("INSERT INTO nodes(id,workspace_id,name,token_hash) VALUES(?,?,?,?)", (value, workspace, name, digest(secret)))
         return {"node_id": value, "node_token": secret}
 
+    @serialized
     def invite(self, workspace: str) -> dict:
         code, expires = token(), time.time() + 600
         with self.db:
-            self.db.execute("DELETE FROM invitations WHERE expires<=?", (time.time(),))
+            self.db.execute("DELETE FROM invitations WHERE code_hash IN (SELECT code_hash FROM invitations WHERE expires<=? ORDER BY expires LIMIT 256)", (time.time(),))
             self.db.execute("INSERT INTO invitations VALUES(?,?,?)", (digest(code), workspace, expires))
         return {"pair_code": code, "expires_at": expires}
 
+    @serialized
     def pair(self, code: str, name: str) -> dict | None:
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
@@ -119,18 +182,20 @@ class Store:
             self.db.execute("INSERT INTO devices(id,workspace_id,name,token_hash) VALUES(?,?,?,?)", (value, row["workspace_id"], name, digest(secret)))
         return {"device_id": value, "device_token": secret, "workspace_id": row["workspace_id"], "workspace_name": row["workspace_name"]}
 
+    @serialized
     def authenticate(self, secret: str, role: str):
         assert role in ("nodes", "devices")
-        return self.db.execute(f"SELECT * FROM {role} WHERE token_hash=? AND revoked=0", (digest(secret),)).fetchone()
+        return self.db.execute(f"SELECT id,workspace_id,name,revoked FROM {role} WHERE token_hash=? AND revoked=0", (digest(secret),)).fetchone()
 
+    @serialized
     def revoke(self, role: str, value: str) -> bool:
         assert role in ("nodes", "devices")
         now = time.time()
         with self.db:
             found = self.db.execute(f"UPDATE {role} SET revoked=1 WHERE id=?", (value,)).rowcount
             field = "node_id" if role == "nodes" else "device_id"
-            self.db.execute(f"UPDATE requests SET state='failed',error='credential revoked before delivery',updated=? WHERE {field}=? AND state='queued'", (now, value))
-            self.db.execute(f"UPDATE requests SET state='uncertain',error='credential revoked after claim',updated=? WHERE {field}=? AND state='claimed'", (now, value))
+            self.db.execute(f"UPDATE requests SET state='failed',error='credential revoked before delivery',result_bytes=length('credential revoked before delivery'),reserved_bytes=0,updated=? WHERE {field}=? AND state='queued'", (now, value))
+            self.db.execute(f"UPDATE requests SET state='uncertain',error='credential revoked after claim',result_bytes=length('credential revoked after claim'),reserved_bytes=0,updated=? WHERE {field}=? AND state='claimed'", (now, value))
             if role == "devices":
                 self.db.execute("DELETE FROM pushes WHERE device_id=?", (value,))
                 self.db.execute("DELETE FROM push_jobs WHERE device_id=?", (value,))
@@ -140,29 +205,34 @@ class Store:
     def envelope(row) -> dict:
         return {"request_id": row["id"], "state": row["state"], "result": json.loads(row["result"]) if row["result"] is not None else None, "error": row["error"]}
 
-    def maintain(self, *, restart=False, queue_ttl=120, claim_ttl=90, retention=7 * 86400):
+    @serialized
+    def maintain(self, *, restart=False, queue_ttl=120, claim_ttl=90, retention=7 * 86400, batch_size=256):
         now = time.time()
+        batch_size=max(1,min(batch_size,4096))
         with self.db:
-            self.db.execute("UPDATE requests SET state='failed',error='terminal input expired before delivery',updated=? WHERE state='queued' AND expires_at<=?", (now,now))
-            self.db.execute("DELETE FROM requests WHERE operation='terminal_snapshot' AND state IN ('completed','failed','uncertain') AND updated<?", (now-120,))
-            self.db.execute("UPDATE requests SET state='failed',error='request expired before delivery',updated=? WHERE state='queued' AND created<=?", (now, now - queue_ttl))
+            self.db.execute(f"UPDATE requests SET state='failed',error='terminal input expired before delivery',result_bytes=length('terminal input expired before delivery'),reserved_bytes=0,updated=? WHERE id IN (SELECT id FROM requests WHERE state='queued' AND expires_at<=? ORDER BY expires_at LIMIT {batch_size})", (now,now))
+            self.db.execute(f"DELETE FROM requests WHERE id IN (SELECT id FROM requests WHERE operation='terminal_snapshot' AND state IN ('completed','failed','uncertain') AND updated<? ORDER BY updated LIMIT {batch_size})", (now-120,))
+            self.db.execute(f"UPDATE requests SET state='failed',error='request expired before delivery',result_bytes=length('request expired before delivery'),reserved_bytes=0,updated=? WHERE id IN (SELECT id FROM requests WHERE state='queued' AND created<=? ORDER BY created LIMIT {batch_size})", (now, now - queue_ttl))
             if restart:
-                self.db.execute("UPDATE requests SET state='uncertain',error='relay restarted after claim',updated=? WHERE state='claimed'", (now,))
+                self.db.execute(f"UPDATE requests SET state='uncertain',error='relay restarted after claim',result_bytes=length('relay restarted after claim'),reserved_bytes=0,updated=? WHERE state='claimed'", (now,))
             else:
-                self.db.execute("UPDATE requests SET state='uncertain',error='node result timeout after claim',updated=? WHERE state='claimed' AND claimed<=?", (now, now - claim_ttl))
+                self.db.execute(f"UPDATE requests SET state='uncertain',error='node result timeout after claim',result_bytes=length('node result timeout after claim'),reserved_bytes=0,updated=? WHERE id IN (SELECT id FROM requests WHERE state='claimed' AND claimed<=? ORDER BY claimed LIMIT {batch_size})", (now, now - claim_ttl))
             # Read-only inspections can expire; mutations keep indefinite UUID
             # tombstones so an old command can never execute a second time.
-            self.db.execute(f"DELETE FROM requests WHERE operation IN {READ_SQL} AND operation!='terminal_snapshot' AND state IN ('completed','failed','uncertain') AND updated<?", (now - min(retention, 3600),))
-            self.db.execute("UPDATE requests SET body='',body_bytes=0,result=NULL,error='request history expired; delivery must not be retried' WHERE state IN ('completed','failed','uncertain') AND updated<? AND body!=''", (now - retention,))
-            self.db.execute("DELETE FROM events WHERE created<?", (now - retention,))
-            self.db.execute("DELETE FROM push_jobs WHERE created<? OR attempts>=5", (now - 86400,))
-            self.db.execute("DELETE FROM invitations WHERE expires<=?", (now,))
+            self.db.execute(f"DELETE FROM requests WHERE id IN (SELECT id FROM requests WHERE operation IN {READ_SQL} AND operation!='terminal_snapshot' AND state IN ('completed','failed','uncertain') AND updated<? ORDER BY updated LIMIT {batch_size})", (now - min(retention, 3600),))
+            self.db.execute(f"UPDATE requests SET body='',body_bytes=0,result=NULL,result_bytes=length('request history expired; delivery must not be retried'),reserved_bytes=0,error='request history expired; delivery must not be retried' WHERE id IN (SELECT id FROM requests WHERE state IN ('completed','failed','uncertain') AND updated<? AND body!='' ORDER BY updated LIMIT {batch_size})", (now - retention,))
+            self.db.execute(f"DELETE FROM events WHERE id IN (SELECT id FROM events WHERE created<? ORDER BY created LIMIT {batch_size})", (now - retention,))
+            self.db.execute(f"DELETE FROM push_jobs WHERE id IN (SELECT id FROM push_jobs WHERE created<? OR attempts>=5 ORDER BY created LIMIT {batch_size})", (now - 86400,))
+            self.db.execute(f"DELETE FROM invitations WHERE code_hash IN (SELECT code_hash FROM invitations WHERE expires<=? ORDER BY expires LIMIT {batch_size})", (now,))
 
+    @serialized
     def submit(self, device, body: dict, max_queue: int, max_bytes: int = MAX_QUEUE_BYTES):
         now, encoded = time.time(), canonical(body)
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
-            existing = self.db.execute("SELECT * FROM requests WHERE id=?", (body["request_id"],)).fetchone()
+            if not self.authorized(device["id"], "devices"):
+                return 401, {"error": "credential revoked"}
+            existing = self.db.execute("SELECT id,device_id,body_hash,state,result,error FROM requests WHERE id=?", (body["request_id"],)).fetchone()
             if existing:
                 if existing["device_id"] != device["id"] or existing["body_hash"] != digest(encoded):
                     return 409, {"error": "request_id already used with different content"}
@@ -179,34 +249,42 @@ class Store:
                 return 409, {"error": "computer does not advertise child message transport; update its connector"}
             if body["operation"] == "terminal_input" and (node["last_seen"] is None or now-node["last_seen"]>45):
                 return 409, {"error": "computer is offline; terminal input was not queued"}
-            count = self.db.execute("SELECT count(*) FROM requests WHERE workspace_id=? AND state IN ('queued','claimed')", (device["workspace_id"],)).fetchone()[0]
+            usage = self.db.execute("SELECT * FROM workspace_usage WHERE workspace_id=?", (device["workspace_id"],)).fetchone()
+            count = usage["active"]
+            self.db.execute("UPDATE workspace_usage SET budget_bytes=? WHERE workspace_id=?", (max_bytes,device["workspace_id"]))
             if count >= max_queue:
                 return 429, {"error": "workspace queue is full"}
             reads = body["operation"] in READ_OPERATIONS
-            total = self.db.execute(f"SELECT count(*) FROM requests WHERE workspace_id=? AND (operation IN {READ_SQL})=?", (device["workspace_id"], int(reads))).fetchone()[0]
+            total = usage["reads" if reads else "mutations"]
             if total >= (5000 if reads else 100000):
                 return 429, {"error": "workspace retained request limit reached"}
             byte_count = len(encoded.encode())
-            retained = self.db.execute("SELECT COALESCE(sum(body_bytes),0) FROM requests WHERE workspace_id=?", (device["workspace_id"],)).fetchone()[0]
+            retained = usage["payload_bytes"]
             # Preserve a small control/text allowance when attachment traffic
             # occupies the main body budget. No uncertain request is evicted.
             small = byte_count <= 64 * 1024 and not body.get("payload", {}).get("attachments")
-            if retained + byte_count > max_bytes + (1024 * 1024 if small else 0):
+            if retained + byte_count + 1024*1024 > max_bytes + (1024 * 1024 if small else 0):
                 return 429, {"error": "workspace retained payload budget is full"}
-            self.db.execute("INSERT INTO requests(id,workspace_id,device_id,node_id,operation,body_hash,body_bytes,body,state,created,updated) VALUES(?,?,?,?,?,?,?,?,'queued',?,?)", (body["request_id"], device["workspace_id"], device["id"], body["computer_id"], body["operation"], digest(encoded), byte_count, encoded, now, now))
+            self.db.execute("INSERT INTO requests(id,workspace_id,device_id,node_id,operation,body_hash,body_bytes,body,state,created,updated,reserved_bytes) VALUES(?,?,?,?,?,?,?,?,'queued',?,?,1048576)", (body["request_id"], device["workspace_id"], device["id"], body["computer_id"], body["operation"], digest(encoded), byte_count, encoded, now, now))
             if body["operation"] == "terminal_input":
                 self.db.execute("UPDATE requests SET expires_at=? WHERE id=?", (now+5,body["request_id"]))
-            row = self.db.execute("SELECT * FROM requests WHERE id=?", (body["request_id"],)).fetchone()
+            row = self.db.execute("SELECT id,state,result,error FROM requests WHERE id=?", (body["request_id"],)).fetchone()
         return 202, self.envelope(row)
 
-    def claim(self, node) -> list:
+    @serialized
+    def has_pending(self,node,queue_ttl=120):
+        now=time.time()
+        return self.db.execute("SELECT 1 FROM requests r JOIN nodes n ON n.id=r.node_id WHERE r.node_id=? AND n.workspace_id=? AND n.revoked=0 AND r.state='queued' AND r.created>? AND (r.expires_at IS NULL OR r.expires_at>?) LIMIT 1",(node["id"],node["workspace_id"],now-queue_ttl,now)).fetchone() is not None
+
+    @serialized
+    def claim(self, node, queue_ttl=120, claim_ttl=90) -> list:
         now = time.time()
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
             live = self.db.execute("SELECT 1 FROM nodes WHERE id=? AND revoked=0", (node["id"],)).fetchone()
             if not live:
                 return []
-            row = self.db.execute("SELECT * FROM requests WHERE node_id=? AND state='queued' AND (expires_at IS NULL OR expires_at>?) ORDER BY created LIMIT 1", (node["id"],now)).fetchone()
+            row = self.db.execute("SELECT * FROM requests WHERE node_id=? AND state='queued' AND created>? AND (expires_at IS NULL OR expires_at>?) ORDER BY created LIMIT 1", (node["id"],now-queue_ttl,now)).fetchone()
             if not row:
                 return []
             self.db.execute("UPDATE requests SET state='claimed',claimed=?,updated=? WHERE id=? AND state='queued'", (now, now, row["id"]))
@@ -216,32 +294,52 @@ class Store:
             command["expires_at"]=row["expires_at"]
         return [command]
 
-    def result(self, node, request_id: str, body: dict) -> int:
+    @serialized
+    def result(self, node, request_id: str, body: dict, claim_ttl=90) -> int:
         with self.db:
-            row = self.db.execute("SELECT * FROM requests WHERE id=? AND node_id=?", (request_id, node["id"])).fetchone()
+            if not self.authorized(node["id"], "nodes"): return 401
+            row = self.db.execute("SELECT id,workspace_id,state,result,error,claimed,result_bytes,reserved_bytes FROM requests WHERE id=? AND node_id=?", (request_id, node["id"])).fetchone()
             if not row:
                 return 404
             encoded = canonical(body["result"]) if body["result"] is not None else None
+            if len((encoded or "").encode()) + len((body["error"] or "").encode()) > 1024 * 1024:
+                return 413
+            if row["state"] == "claimed" and row["claimed"] <= time.time()-claim_ttl:
+                self.db.execute("UPDATE requests SET state='uncertain',error='node result timeout after claim',result_bytes=length('node result timeout after claim'),reserved_bytes=0,updated=? WHERE id=?", (time.time(),request_id))
+                return 409
             if row["state"] != "claimed":
                 # A late success cannot silently resolve an uncertain delivery.
                 return 200 if (row["state"], row["result"], row["error"]) == (body["state"], encoded, body["error"]) else 409
-            self.db.execute("UPDATE requests SET state=?,result=?,error=?,updated=? WHERE id=?", (body["state"], encoded, body["error"], time.time(), request_id))
+            size = len((encoded or "").encode()) + len((body["error"] or "").encode())
+            usage = self.db.execute("SELECT * FROM workspace_usage WHERE workspace_id=?", (row["workspace_id"],)).fetchone()
+            if size > row["result_bytes"] + row["reserved_bytes"] and usage["payload_bytes"] - row["result_bytes"] - row["reserved_bytes"] + size > usage["budget_bytes"] + 1024*1024:
+                return 429
+            self.db.execute("UPDATE requests SET state=?,result=?,error=?,updated=?,result_bytes=?,reserved_bytes=0 WHERE id=?", (body["state"], encoded, body["error"], time.time(), size, request_id))
         return 200
 
+    @serialized
     def event(self, node, session: str, kind: str):
         now = time.time()
         cur = self.db.execute("INSERT INTO events(workspace_id,node_id,session,kind,created) VALUES(?,?,?,?,?)", (node["workspace_id"], node["id"], session, kind, now))
         payload = canonical({"event_id": cur.lastrowid, "kind": "wake"})
-        self.db.execute("INSERT INTO push_jobs(device_id,event_id,payload,next_at,created) SELECT p.device_id,?,?,?,? FROM pushes p JOIN devices d ON d.id=p.device_id WHERE d.workspace_id=? AND d.revoked=0 AND (SELECT count(*) FROM push_jobs)<10000", (cur.lastrowid, payload, now, now, node["workspace_id"]))
+        self.db.execute("INSERT INTO push_jobs(device_id,event_id,payload,next_at,created) SELECT p.device_id,?,?,?,? FROM pushes p JOIN devices d ON d.id=p.device_id WHERE d.workspace_id=? AND d.revoked=0 AND NOT EXISTS(SELECT 1 FROM push_jobs j WHERE j.device_id=p.device_id) LIMIT max(0,10000-(SELECT push_count FROM relay_usage WHERE id=1))", (cur.lastrowid, payload, now, now, node["workspace_id"]))
 
+    @serialized
     def heartbeat(self, node, snapshot: dict):
         now = time.time()
+        encoded=canonical(snapshot)
+        snapshot_hash=digest(encoded)
         with self.db:
-            previous = self.db.execute("SELECT snapshot FROM nodes WHERE id=?", (node["id"],)).fetchone()[0]
+            row = self.db.execute("SELECT snapshot_hash FROM nodes WHERE id=? AND revoked=0", (node["id"],)).fetchone()
+            if row is None: return False
+            if row[0]==snapshot_hash:
+                self.db.execute("UPDATE nodes SET last_seen=? WHERE id=?",(now,node["id"]))
+                return False
+            previous = self.db.execute("SELECT snapshot FROM nodes WHERE id=?",(node["id"],)).fetchone()[0]
             if previous is not None:
                 old = {s["name"]: s for s in json.loads(previous).get("sessions", []) if isinstance(s, dict) and isinstance(s.get("name"), str) and not is_archived(s)}
                 for session in snapshot.get("sessions", []):
-                    if not isinstance(session, dict) or not isinstance(session.get("name"), str) or is_archived(session):
+                    if not isinstance(session, dict) or not isinstance(session.get("name"), str) or len(session["name"])>1024 or any(ord(c)<32 for c in session["name"]) or is_archived(session):
                         continue
                     before = old.get(session["name"])
                     if before is None:
@@ -257,7 +355,86 @@ class Store:
                         self.event(node, session["name"], "error")
                     elif session.get("activity") == "idle" and before.get("activity") == "busy" and identity(before) == identity(session):
                         self.event(node, session["name"], "completed")
-            self.db.execute("UPDATE nodes SET last_seen=?,snapshot=? WHERE id=?", (now, canonical(snapshot), node["id"]))
+            self.db.execute("UPDATE nodes SET last_seen=?,snapshot=?,snapshot_hash=? WHERE id=?", (now, encoded,snapshot_hash,node["id"]))
             # Bound event and push storage even for a noisy computer.
-            self.db.execute("DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT 100000)")
-            self.db.execute("DELETE FROM push_jobs WHERE id NOT IN (SELECT id FROM push_jobs ORDER BY id DESC LIMIT 10000)")
+            excess=self.db.execute("SELECT max(0,event_count-100000) FROM relay_usage WHERE id=1").fetchone()[0]
+            if excess:
+                self.db.execute("DELETE FROM events WHERE id IN (SELECT id FROM events ORDER BY id LIMIT ?)",(min(excess,5000),))
+            return True
+
+
+    @serialized
+    def authorized(self, value, role):
+        assert role in ("nodes", "devices")
+        return self.db.execute(f"SELECT 1 FROM {role} WHERE id=? AND revoked=0", (value,)).fetchone() is not None
+
+    @serialized
+    def ready(self):
+        return self.db.execute("SELECT 1").fetchone()[0] == 1
+
+    @serialized
+    def computers(self, workspace, max_bytes=1024*1024):
+        size = self.db.execute("SELECT COALESCE(sum(COALESCE(length(CAST(snapshot AS BLOB)),0)+length(CAST(name AS BLOB))+256),0) FROM nodes WHERE workspace_id=? AND revoked=0", (workspace,)).fetchone()[0]
+        if size > max_bytes: return None
+        return [dict(row) for row in self.db.execute("SELECT id,name,last_seen,snapshot FROM nodes WHERE workspace_id=? AND revoked=0 ORDER BY name,id", (workspace,))]
+
+    @serialized
+    def get_request(self, device, value, queue_ttl=120, claim_ttl=90):
+        now = time.time()
+        with self.db:
+            if not self.authorized(device["id"],"devices"): return None
+            row = self.db.execute("SELECT id,operation,state,result,error,created,claimed,expires_at FROM requests WHERE id=? AND device_id=?", (value,device["id"])).fetchone()
+            if row is None: return None
+            if row["state"] == "queued" and ((row["expires_at"] is not None and row["expires_at"] <= now) or row["created"] <= now-queue_ttl):
+                error = "terminal input expired before delivery" if row["expires_at"] is not None and row["expires_at"] <= now else "request expired before delivery"
+                self.db.execute("UPDATE requests SET state='failed',error=?,result_bytes=?,reserved_bytes=0,updated=? WHERE id=?", (error,len(error.encode()),now,value))
+            elif row["state"] == "claimed" and row["claimed"] <= now-claim_ttl:
+                self.db.execute("UPDATE requests SET state='uncertain',error='node result timeout after claim',result_bytes=length('node result timeout after claim'),reserved_bytes=0,updated=? WHERE id=?", (now,value))
+            row = self.db.execute("SELECT id,operation,state,result,error FROM requests WHERE id=?", (value,)).fetchone()
+            if row["operation"] == "terminal_snapshot" and row["state"] not in ("queued","claimed"):
+                self.db.execute("UPDATE requests SET result_read=? WHERE id=?", (now,value))
+            return self.envelope(row)
+
+    @serialized
+    def events(self, workspace, after, max_bytes=1024*1024):
+        size=self.db.execute("SELECT COALESCE(sum(length(CAST(session AS BLOB))+256),0) FROM (SELECT session FROM events WHERE workspace_id=? AND id>? ORDER BY id LIMIT 100)",(workspace,after)).fetchone()[0]
+        if size>max_bytes: return None
+        return [dict(row) for row in self.db.execute("SELECT * FROM events WHERE workspace_id=? AND id>? ORDER BY id LIMIT 100", (workspace,after))]
+
+    @serialized
+    def register_push(self, device, provider, target):
+        with self.db:
+            if not self.authorized(device, "devices"): return
+            self.db.execute("INSERT INTO pushes VALUES(?,?,?) ON CONFLICT(device_id) DO UPDATE SET provider=excluded.provider,target=excluded.target", (device,provider,target))
+            self.db.execute("DELETE FROM push_jobs WHERE device_id=?", (device,))
+
+    @serialized
+    def delete_push(self, device):
+        with self.db:
+            self.db.execute("DELETE FROM pushes WHERE device_id=?", (device,))
+            self.db.execute("DELETE FROM push_jobs WHERE device_id=?", (device,))
+
+    @serialized
+    def claim_push_jobs(self, limit=4, lease_ttl=60):
+        now = time.time()
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            jobs = [dict(row) for row in self.db.execute("SELECT * FROM push_jobs WHERE next_at<=? AND attempts<5 ORDER BY id LIMIT ?", (now,limit))]
+            for job in jobs:
+                self.db.execute("UPDATE push_jobs SET next_at=? WHERE id=?", (now+lease_ttl,job["id"]))
+        return jobs
+
+    @serialized
+    def push_registration(self, device):
+        row = self.db.execute("SELECT p.* FROM pushes p JOIN devices d ON d.id=p.device_id WHERE p.device_id=? AND d.revoked=0", (device,)).fetchone()
+        return dict(row) if row else None
+
+    @serialized
+    def finish_push(self, job, delivered, invalid, registration):
+        with self.db:
+            if delivered or invalid or job["attempts"] >= 4 or registration is None:
+                self.db.execute("DELETE FROM push_jobs WHERE id=?", (job["id"],))
+                if invalid and registration:
+                    self.db.execute("DELETE FROM pushes WHERE device_id=? AND provider=? AND target=?", (job["device_id"],registration["provider"],registration["target"]))
+            else:
+                self.db.execute("UPDATE push_jobs SET attempts=attempts+1,next_at=? WHERE id=?", (time.time()+min(3600,5*2**job["attempts"]),job["id"]))

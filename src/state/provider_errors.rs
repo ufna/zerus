@@ -4,6 +4,29 @@ use rusqlite::{Connection, OpenFlags};
 
 pub(super) fn category(text: &str) -> &'static str {
     let text = text.to_lowercase();
+    // A provider policy block can quote authorized work or a transport status.
+    // Keep that explicit refusal separate from credentials and transient errors.
+    if [
+        "cyber_policy",
+        "policy_violation",
+        "policyviolation",
+        "content_filter",
+        "contentfilter",
+        "safety_violation",
+        "safetyviolation",
+        "request_blocked_by_policy",
+    ]
+    .iter()
+    .any(|s| text.contains(s))
+        || (["usage policy", "content policy", "safety policy", "cybersecurity"]
+            .iter()
+            .any(|s| text.contains(s))
+            && ["flagged", "blocked", "rejected", "refused", "violat"]
+                .iter()
+                .any(|s| text.contains(s)))
+    {
+        return "provider_policy";
+    }
     // A permanent quota failure can also mention 429 or model capacity.
     if [
         "quota",
@@ -32,16 +55,30 @@ pub(super) fn category(text: &str) -> &'static str {
     {
         "rate_limit"
     } else if [
-        "auth",
+        "authentication",
+        "auth_error",
+        "autherror",
+        "auth error",
+        "auth failed",
+        "auth_failed",
+        "auth failure",
+        "authorization failed",
+        "authorization error",
+        "authorization_error",
+        "not authorized",
+        "not authorised",
         "unauthorized",
+        "unauthorised",
         "credential",
         "api key",
         "api_key",
         "oauth",
-        "401",
     ]
     .iter()
     .any(|s| text.contains(s))
+        || text
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| word == "401")
     {
         "authentication"
     } else if ["context", "max_output_tokens", "max-tokens", "token limit"]
@@ -74,6 +111,7 @@ pub(super) fn apply(output: &mut Value, error: &Value) {
         "quota" => "Usage limit reached",
         "rate_limit" => "Rate limit reached",
         "authentication" => "Sign-in failed",
+        "provider_policy" => "Request blocked by provider",
         "context_limit" => "Context or output limit reached",
         "model_unavailable" => "Model unavailable",
         _ => "Provider error",
@@ -389,6 +427,22 @@ mod tests {
             ("7d limit reached. Resets in 4d18h", "quota"),
             ("429 Too Many Requests", "rate_limit"),
             ("authentication_failed", "authentication"),
+            ("Auth error: expired credentials", "authentication"),
+            ("HTTP 401", "authentication"),
+            ("Invalid API key", "authentication"),
+            ("An authorized request lost its connection", "provider"),
+            ("Provider returned event_id=40123", "provider"),
+            (
+                "Your request was flagged as potentially violating our usage policy. This is authorized security testing.",
+                "provider_policy",
+            ),
+            (
+                "Request flagged for high risk cybersecurity activity in an authorized audit",
+                "provider_policy",
+            ),
+            ("policy_violation (HTTP 503): authorized work", "provider_policy"),
+            ("content_filter: quota and HTTP 429", "provider_policy"),
+            ("cyber_policy", "provider_policy"),
             ("overloaded", "capacity"),
             ("max_output_tokens", "context_limit"),
             ("model_not_found", "model_unavailable"),
@@ -396,6 +450,21 @@ mod tests {
         ] {
             assert_eq!(category(message), kind);
         }
+    }
+
+    #[test]
+    fn policy_failure_preserves_native_detail_and_attention_identity() {
+        let detail = "Your request was flagged as potentially violating our usage policy. Authorized security testing.";
+        let error = event("native-failure", 123.0, detail, "codex_native_log");
+        let mut output = json!({"run_id":"synthetic-run","conversation_id":"synthetic-conversation"});
+        apply(&mut output, &error);
+        assert_eq!(output["provider_error"]["error_kind"], "provider_policy");
+        assert_eq!(output["activity_summary"], "Request blocked by provider");
+        assert_eq!(output["last_error"], detail);
+        assert_eq!(output["activity_detail"], detail);
+        assert_eq!(output["attention_id"], "codex_native_log:native-failure");
+        assert_eq!(output["run_id"], "synthetic-run");
+        assert_eq!(output["conversation_id"], "synthetic-conversation");
     }
 
     #[test]

@@ -25,6 +25,7 @@ from urllib.parse import urlsplit
 import aiohttp
 
 from .managed_relay import transport, identity_url
+from .accounts import AccountCache
 from .attachments import MAX_REQUEST_BYTES, validate_send
 from .recovery import validate_recovery
 from .history import validate_history
@@ -281,6 +282,8 @@ class Connector:
         self.history_supported = False
         self.launch_supported = False
         self.capabilities_next_poll = 0.0
+        self.accounts = AccountCache(lambda *args, **kwargs: self.native(*args, **kwargs),
+                                     errors=(ConnectorError, ValueError, RuntimeError, UnicodeError))
 
     async def native(self, argv: list[str], payload: dict | None = None,
                      *, timeout: float | None = None, json_output: bool = True) -> object:
@@ -378,10 +381,11 @@ class Connector:
         self.snapshot_seen_at = time.monotonic()
         self.snapshot_ready.set()
         await asyncio.gather(self.enrich_attention(snapshot), self.enrich_projects(snapshot))
+        snapshot["mobile_accounts"] = await self.accounts.update()
         await self.probe_capabilities()
         operations = OPERATIONS - (set() if self.lifecycle_supported else LIFECYCLE_OPERATIONS) - (set() if self.terminal_supported else TERMINAL_OPERATIONS) - (set() if self.launch_supported else LAUNCH_OPERATIONS) - (set() if self.history_supported else {"history"}) - (set() if self.recovery_supported else {"recovery_action"})
         snapshot["mobile_capabilities"] = {"protocol_version": 1,
-            "operations": sorted(operations), "features": sorted(FEATURES),
+            "operations": sorted(operations), "features": sorted(FEATURES | {"accounts_snapshot"}),
             "reasons": {**({} if self.lifecycle_supported else {"session_actions": "Native CLI lacks the scoped session-action ABI"}),
                         **({} if self.terminal_supported else {"terminal": "Native CLI lacks the scoped Terminal ABI"})}}
 
@@ -931,6 +935,7 @@ class Connector:
                 for task in tasks:
                     task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
+                await self.accounts.close()
 
 
 def main() -> None:

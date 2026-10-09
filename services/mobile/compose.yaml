@@ -4,21 +4,76 @@ services:
     restart: unless-stopped
     volumes:
       - relay-data:/data
-    # The service is reachable only on loopback without the optional TLS proxy.
+      - relay-spool:/spool
+    environment:
+      TMPDIR: /spool
     ports:
       - "127.0.0.1:8787:8787"
     read_only: true
     tmpfs:
-      - /tmp:size=16m,mode=1777
+      - /tmp:size=4m,mode=1777
+    mem_limit: 256m
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/healthz', timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/readyz', timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3
+    networks: [relay-internal]
+
+  postgres:
+    image: postgres:17.11-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    profiles: ["postgres"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: zerus_relay
+      POSTGRES_USER: zerus_relay
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zerus_relay -d zerus_relay"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks: [relay-internal]
+
+  relay-postgres:
+    build: .
+    profiles: ["postgres"]
+    restart: unless-stopped
+    command: ["serve", "--host", "0.0.0.0", "--config", "/run/secrets/relay.json"]
+    secrets:
+      - source: relay_config
+        target: relay.json
+    volumes:
+      - relay-postgres-spool:/spool
+    environment:
+      TMPDIR: /spool
+    read_only: true
+    tmpfs:
+      - /tmp:size=4m,mode=1777
+    mem_limit: 256m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      replicas: 2
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/readyz', timeout=3)"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    networks: [relay-internal]
+
   caddy:
     image: caddy:2.10.2-alpine
     profiles: ["tls"]
@@ -26,13 +81,33 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    environment:
+      RELAY_HOST: ${RELAY_HOST:-relay}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
-    depends_on:
-      - relay
+    networks:
+      relay-internal:
+        ipv4_address: 172.30.78.2
+
+secrets:
+  postgres_password:
+    file: ./private/postgres-password
+  relay_config:
+    file: ./private/relay.json
+
+networks:
+  relay-internal:
+    ipam:
+      config:
+        - subnet: 172.30.78.0/24
+          ip_range: 172.30.78.128/25
+
 volumes:
   relay-data:
+  relay-spool:
+  relay-postgres-spool:
+  postgres-data:
   caddy-data:
   caddy-config:

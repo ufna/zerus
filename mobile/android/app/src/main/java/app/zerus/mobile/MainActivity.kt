@@ -185,7 +185,11 @@ class MainActivity : ComponentActivity() {
             if (selected == null && project != null) Text(project.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
             else if (selected == null) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Image(painterResource(R.drawable.zerus_brand), "Zerus", Modifier.size(32.dp))
-                Text("Zerus", fontWeight = FontWeight.SemiBold, letterSpacing = (-0.5).sp)
+                Row(Modifier.weight(1f, fill = false), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Zerus", Modifier.alignByBaseline(), fontWeight = FontWeight.SemiBold, letterSpacing = (-0.5).sp, maxLines = 1, softWrap = false)
+                    Text("v${BuildConfig.VERSION_NAME}", Modifier.alignByBaseline().weight(1f, fill = false),
+                        style = MaterialTheme.typography.labelSmall, color = Muted, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                }
                 if (model.demo) Tag("PREVIEW", Amber)
             } else Column { Text(selected.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 18.sp)
                 val status = if (model.activity == null && !model.demo) "Checking…" else selectedStatus(selected, model.activity)
@@ -208,7 +212,7 @@ class MainActivity : ComponentActivity() {
                 if (selected == null) NewSessionButton(model)
             }, colors = TopAppBarDefaults.topAppBarColors(containerColor = Background)) },
         bottomBar = { if (selected == null) NavigationBar(containerColor = Background) {
-            listOf("Sessions" to DesktopIcons.Sessions, "Projects" to DesktopIcons.Projects, "Drafts" to Icons.Default.EditNote, "Machines" to DesktopIcons.Machines).forEachIndexed { i, (label, icon) ->
+            listOf("Sessions" to DesktopIcons.Sessions, "Projects" to DesktopIcons.Projects, "Drafts" to Icons.Default.EditNote, "Machines" to DesktopIcons.Machines, "Accounts" to Icons.Default.AccountCircle).forEachIndexed { i, (label, icon) ->
                 NavigationBarItem(selected = tab == i, onClick = { tab = i; model.clearSessionScope(); model.clearProject() }, icon = { Icon(icon, label) }, label = { Text(label) })
             }
         } }) { padding ->
@@ -230,10 +234,11 @@ class MainActivity : ComponentActivity() {
                 1 -> if (project != null) ProjectDetails(model, project, onViewSessions = { model.viewProjectSessions(project); tab = 0 })
                     else ProjectsScreen(model, onPair = { tab = 3 })
                 2 -> DraftsScreen(model, onReview = { review = it }, onReviewOutgoing = { reviewOutgoing = it }, onDiscard = { discard = it })
-                else -> MachinesScreen(model, live, onPair = { pairing = true }, onDisconnect = { disconnect = it },
+                3 -> MachinesScreen(model, live, onPair = { pairing = true }, onDisconnect = { disconnect = it },
                     onNotifications = { model.updateNotifications(it); if (it) onNotifications() }, onLive = {
                         if (it) onNotifications(); onLive(it)
                     }, onPush = { onNotifications(); onPush() }, onFirebase = { onNotifications(); onFirebase() })
+                else -> AccountsScreen(model,onMachines = { tab=3 })
             }
         }
     }

@@ -227,6 +227,46 @@ Mark read and Review later are private phone state. They capture the displayed
 message evidence and never answer a question or authorize a native action. With
 partial history, Mark loaded replies read acknowledges only that loaded subset.
 
+### Read-only Accounts
+
+The connector advertises the node feature `accounts_snapshot` and adds
+`snapshot.mobile_accounts` with `schema: 1`, `available`, `stale`,
+`checked_at`, `refresh_interval_seconds: 300`, and `accounts`. Accounts are
+identified by the workspace, computer, provider and native account ID. Each row
+contains `id`, `provider`, `label`, `native`, `installed`, `is_default` and
+`usage`. This viewer never signs in, changes credentials or edits accounts.
+An unavailable catalog can indicate an older native CLI; it is not an empty
+list of verified accounts.
+
+The local `hgs account ls` catalog is checked every 30 seconds. At most one
+background `hgs account inspect ID` runs at once, with a 25-second deadline and
+a minimum five-minute interval per account. Provider calls never block the
+heartbeat. Shutdown cancels and reaps only the connector-owned CLI child.
+Removed accounts and changed credential fingerprints discard previous usage;
+adapters without a fingerprint use the native signature-validated catalog
+identity and sign-in state conservatively. A failed refresh retains prior
+values with `refresh_error` and `stale`, without forwarding provider errors.
+
+Only allowlisted display fields leave the connector: identity name, email,
+organization, plan, auth method and account ID; known status/source; reported
+quota windows (`id`, `label`, `used_percent`, optional `window_minutes` and
+`resets_at`); decimal credit or wallet balances; and freshness flags.
+`usage.checked_at` is the native observation time in Unix seconds. The outer
+catalog `checked_at` never makes old quotas fresh. The catalog's cached identity
+may seed an initial row without quota windows, which remain unknown. Reset
+times retain valid native Unix seconds or ISO 8601 timestamps. Invalid numeric
+values are omitted rather than converted to zero. Limits are 100 accounts,
+16 windows or balances per account, bounded display strings and a 128 KiB
+serialized projection. Homes, configuration paths, credential revisions,
+tokens, raw errors and arbitrary URLs are excluded. The relay transports this
+snapshot through the existing trusted-server connection; no new command or
+administrative HTTP endpoint is added.
+
+The synthetic integration fixture supports optional `account_profiles` and
+`account_usage` (an object keyed by account ID) in its private fixture config.
+These produce account catalog/inspection responses without contacting any
+provider or changing a native session.
+
 ### Terminal
 
 Terminal is a separate fullscreen view of the existing native tmux pane. It
