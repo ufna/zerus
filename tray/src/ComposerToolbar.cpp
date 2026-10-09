@@ -318,8 +318,8 @@ int ComposerToolbar::requiredWidth() const
         if (!item.widget || !item.widget->isVisibleTo(this)) continue;
         width += qMin(item.widget->sizeHint().width(), item.widget->maximumWidth()); ++count;
     }
-    // The stretch between the zones adds one more gap.
-    return width + count * Spacing;
+    // The stretch between the zones is empty, so the layout spaces only real items.
+    return width + qMax(0, count - 1) * Spacing;
 }
 
 void ComposerToolbar::fit()

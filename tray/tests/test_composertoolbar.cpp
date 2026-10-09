@@ -80,6 +80,7 @@ private slots:
     void popoverFitsItsContent();
     void hiddenChipHandsFocusToTheField();
     void openPopoverFollowsItsContent();
+    void exactWidthNeedsNoShortening();
 };
 
 void TestComposerToolbar::slotsFixOrderAndRowHeight()
@@ -243,6 +244,17 @@ void TestComposerToolbar::openPopoverFollowsItsContent()
     QTRY_VERIFY(popover->height() > small + 40); QTRY_VERIFY(popover->geometry().bottom() < chipTop);
     text->setText("One line");
     QTRY_COMPARE(popover->height(), small); QTRY_VERIFY(popover->geometry().bottom() < chipTop);
+}
+
+void TestComposerToolbar::exactWidthNeedsNoShortening()
+{
+    // Five items have four gaps: a row exactly that wide keeps every full label.
+    Row row; row.show(900); QVERIFY(QTest::qWaitForWindowExposed(&row.window)); QTRY_VERIFY(row.context->isVisible());
+    int needed = row.context->sizeHint().width() + 4 * 6;
+    for (auto *chip : {row.attachments, row.read, row.recovery, row.cache}) needed += chip->labelSizeHint(false).width();
+    row.window.resize(needed, 90); QTRY_COMPARE(row.toolbar->width(), needed); QCoreApplication::processEvents();
+    for (auto *chip : {row.attachments, row.read, row.recovery, row.cache}) QVERIFY2(!chip->isCompact(), qPrintable(chip->objectName()));
+    verifyFits(row);
 }
 
 QTEST_MAIN(TestComposerToolbar)
