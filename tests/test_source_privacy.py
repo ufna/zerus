@@ -1,0 +1,43 @@
+"""Exercise the source privacy guard on synthetic files."""
+import importlib.util
+import json
+from pathlib import Path
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location("check_source_privacy", ROOT / "scripts/check-source-privacy.py")
+privacy = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(privacy)
+
+WORK = "maintainer" + "@" + "work-mail.dev"
+
+
+def issue(**fields):
+    return json.dumps({"_type": "issue", "id": "zerus-abc", "title": "Synthetic issue", **fields})
+
+
+class BeadsAttributionTest(unittest.TestCase):
+    def test_work_addresses_attribute_beads_records(self):
+        # The team commits with these identities; Beads records who did what.
+        line = issue(owner=WORK, created_by=WORK, assignee=WORK,
+                     comments=[{"author": WORK, "text": "Checked."}],
+                     dependencies=[{"depends_on_id": "zerus-def", "created_by": WORK}])
+        self.assertEqual(privacy.findings(".beads/issues.jsonl", line), [])
+
+    def test_free_text_and_other_files_stay_checked(self):
+        for name, text in [
+            (".beads/issues.jsonl", issue(owner=WORK, description=f"Ask {WORK} for access.")),
+            (".beads/issues.jsonl", issue(comments=[{"author": WORK, "text": f"Mail {WORK}."}])),
+            ("docs/notes.md", f"Contact {WORK}."),
+            ("notes.jsonl", json.dumps({"owner": WORK})),
+        ]:
+            with self.subTest(name=name, text=text):
+                self.assertEqual(privacy.findings(name, text), [(1, "non-example email address")])
+
+    def test_attribution_does_not_hide_paths(self):
+        line = issue(owner=WORK, description="See /home/" + "someone/notes")
+        self.assertEqual(privacy.findings(".beads/issues.jsonl", line), [(1, "non-example absolute home path")])
+
+
+if __name__ == "__main__":
+    unittest.main()

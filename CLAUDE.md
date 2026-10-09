@@ -45,7 +45,9 @@ Use non-interactive filesystem commands and `ssh/scp -o BatchMode=yes` in automa
 Use synthetic fixture paths, reserved example domains and local/private configuration
 for deployment values. Never commit login material, runtime data or personal audits.
 All Beads data on the repository remote may eventually be public, including history.
-Use a GitHub no-reply address for Git and Beads attribution if email privacy matters.
+Git and Beads attribution may use the team's work addresses; the source privacy
+guard still rejects addresses elsewhere, including Beads free text. Use a GitHub
+no-reply address instead if email privacy matters.
 
 ## Validation and handoff
 
