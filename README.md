@@ -3,15 +3,16 @@
 </h1>
 
 <p align="center">
-  <strong>One ADE for dozens or hundreds of agents across your machines.</strong><br />
-  Projects, sessions, messages and notifications in one place. Your agents keep working when you close the window.
+  <strong>Your agents. Your machines. One workspace.</strong><br />
+  An ADE for dozens or hundreds of AI coding agents across your machines.<br />
+  Follow conversations, get notified and keep projects in sync over P2P.
 </p>
 
 <p align="center">
   <a href="docs/installation.md">Install</a> &nbsp; | &nbsp;
   <a href="#features">Features</a> &nbsp; | &nbsp;
   <a href="docs/reference.md">Reference</a><br />
-  <sub>Linux and macOS &nbsp; | &nbsp; tmux + SSH &nbsp; | &nbsp; P2P &nbsp; | &nbsp; MIT</sub>
+  <sub>Linux and macOS &nbsp; | &nbsp; Local and remote &nbsp; | &nbsp; P2P &nbsp; | &nbsp; MIT</sub>
 </p>
 
 <p align="center">
@@ -21,9 +22,11 @@
   <a href="https://deepseek-harness.github.io/deepseek-harness/"><kbd><img src="https://www.google.com/s2/favicons?domain=deepseek.com&amp;sz=64" alt="" width="16" valign="middle" /> DeepSeek Harness</kbd></a>
 </p>
 
-Zerus is an Agent Development Environment built around persistent sessions. Work
-on several projects, spread agents across your laptop and servers, follow their
-progress and respond wherever your attention is needed.
+Zerus is an **Agent Development Environment (ADE)** for working with a fleet of AI
+coding agents across your laptop and servers. Bring your own agents and
+subscriptions. Work on multiple projects, follow conversations and respond
+wherever your attention is needed, all from one workspace. Your agents keep
+working when you close the window.
 
 **Claude Code, Codex, Kimi Code and DeepSeek Harness** have close native
 integrations: Activity, messages, questions, approvals and session controls.

@@ -14,7 +14,7 @@ import urllib.parse
 import urllib.request
 
 from release_common import (PACKAGES, REPOSITORY, api, gh, metadata, package_version,
-                            recipe_changed, require, sha256, validate_candidate)
+                            recipe_changed, retains_description_update, require, sha256, validate_candidate)
 
 HOST_FINGERPRINT = "SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4"
 
@@ -50,13 +50,18 @@ def prepare_aur(candidate, workspace, ssh, env, packages=PACKAGES):
         tracked = git(directory, "ls-files").splitlines()
         require(set(tracked) <= {"PKGBUILD", ".SRCINFO"}, f"Unexpected existing AUR files: {package}; inspect manually.")
         source = candidate / "aur" / package
-        changed = False
+        recipes = []
         for name in ("PKGBUILD", ".SRCINFO"):
             old = (directory / name).read_text() if (directory / name).exists() else ""
             new = (source / name).read_text()
-            changed |= recipe_changed(old, new, vcs=package == "zerus-git")
-        if not changed:
+            recipes.append((old, new))
+        vcs = package == "zerus-git"
+        if not any(recipe_changed(old, new, vcs=vcs) for old, new in recipes):
             print(f"{package}: recipe already synchronized.")
+            continue
+        if all(not recipe_changed(old, new, vcs=vcs) or
+               retains_description_update(old, new, vcs=vcs) for old, new in recipes):
+            print(f"{package}: retaining the refreshed AUR description.")
             continue
         if (directory / ".SRCINFO").exists():
             old = metadata((directory / ".SRCINFO").read_text())

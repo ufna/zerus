@@ -215,8 +215,9 @@ above Settings on the left rail switches the same option. Files and terminals
 opened from Zerus may then appear behind it. Missing Git metadata does not turn
 a folder into a repository.
 
-The button beside **⋯** in the session list header collapses the list into a
-strip. Every project band and session row keeps its height, so each session
+The **+** in the session list header opens **New session**, like the one in the
+side rail. The button beside **⋯** collapses the list into a strip. Every project
+band and session row keeps its height, so each session
 becomes a square tile: status and provider icons, the session name on up to two
 lines and a short state such as the working time. Instead of the attention
 edge, a tile's frame takes the color of its state (working, needing an answer,
@@ -467,6 +468,8 @@ explicitly chosen through **Browse…** stays pinned per machine within that dia
 closing it clears this temporary choice. Selecting a listed folder unpins it.
 A folder outside the project shows a warning and is added only after a successful
 launch with the matching launch ID. Cancellation and launch failure add nothing.
+A worktree of a project folder on that computer is not outside the project, so
+starting there adds no folder; **Other worktrees…** offers it again.
 
 New launches immediately show **Starting…** until the matching session appears.
 Controls stay disabled before confirmation. Errors remove the placeholder and

@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def main():
+    subprocess.run([sys.executable, "-m", "unittest", "discover", "-q", "-s", "tests", "-p", "test_source_privacy.py"], cwd=ROOT, check=True)
     subprocess.run([sys.executable, str(ROOT / "scripts/check-source-privacy.py")], check=True)
     subprocess.run(["git", "diff", "--check"], cwd=ROOT, check=True)
     version = (ROOT / "VERSION").read_text().strip()

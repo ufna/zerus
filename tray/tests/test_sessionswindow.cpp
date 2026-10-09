@@ -169,6 +169,9 @@ private slots:
     void launchInitialFolderFollowsProject_data();
     void launchInitialFolderFollowsProject();
     void launchFoldersFollowProject();
+    void launchListsSurviveFleetRefreshes();
+    void sessionPanelHeaderStartsNewSession();
+    void launchAddsOnlyFoldersOutsideTheProject();
     void arbitraryFolderAndTerminalPreference_data();
     void arbitraryFolderAndTerminalPreference();
     void terminationProgress_data();
@@ -3884,6 +3887,82 @@ void TestSessionsWindow::launchFoldersFollowProject()
     QCOMPARE(machine->currentData().toString(),QString("missing"));QVERIFY(folder->currentData(Qt::UserRole+2).toString().isEmpty());QVERIFY(!dialog.findChild<QPushButton *>("primary")->isEnabled());
 }
 
+void TestSessionsWindow::launchListsSurviveFleetRefreshes()
+{
+    // Polls arrive while a list is open; rebuilding its rows would reset the hovered row.
+    SessionOrganization projects;const auto id=projects.createGroup("First");
+    projects.addFolder(id,"mac","/remote/one");const auto two=projects.addFolder(id,"mac","/remote/two");
+    NewSessionDialog dialog(script(),fleet(),"mac","codex");dialog.setGroups(projects,id);QVERIFY(dialog.selectFolder(two));dialog.show();
+    auto *folder=dialog.findChild<QComboBox *>("launchProjectFolder");auto *machine=dialog.findChild<QComboBox *>("launchComputer");
+    QSignalSpy folderRows(folder->model(),&QAbstractItemModel::rowsRemoved),machineRows(machine->model(),&QAbstractItemModel::rowsRemoved);
+    dialog.setFleet(fleet());
+    QCOMPARE(folderRows.count(),0);QCOMPARE(machineRows.count(),0);QCOMPARE(folder->currentData().toString(),two);
+    QVERIFY(folder->currentData(Qt::UserRole+3).toBool());QVERIFY(dialog.findChild<QPushButton *>("browseLaunchFolder")->isEnabled());
+    // Availability still follows the fleet, in place.
+    auto offline=fleet();BoxState mac;mac.host="mac";mac.ok=false;offline.setPeer(mac,QDateTime::currentMSecsSinceEpoch());
+    dialog.setFleet(offline);
+    QCOMPARE(folderRows.count(),0);QCOMPARE(machineRows.count(),0);QCOMPARE(folder->currentData().toString(),two);
+    QVERIFY(!folder->currentData(Qt::UserRole+3).toBool());QVERIFY(machine->currentText().endsWith(" (offline)"));
+    QVERIFY(!dialog.findChild<QPushButton *>("primary")->isEnabled());
+    dialog.setFleet(fleet());QVERIFY(folder->currentData(Qt::UserRole+3).toBool());QCOMPARE(machine->currentText(),QString("mac"));
+    // A changed folder list is still shown.
+    projects.addFolder(id,"mac","/remote/three");dialog.setGroups(projects,id);
+    QVERIFY(folder->findData("/remote/three",Qt::UserRole+2)>=0);
+}
+
+void TestSessionsWindow::sessionPanelHeaderStartsNewSession()
+{
+    QSettings().setValue("workspace/expandSessionsOnHover", false);
+    SessionsWindow window(script()); window.resize(1280, 860); window.setFleet(fleet()); window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    auto *create = window.findChild<QPushButton *>("sessionPanelNewSession"), *toggle = window.findChild<QPushButton *>("sessionPanelToggle");
+    QVERIFY(create && toggle); QVERIFY(create->isVisible()); QCOMPARE(create->parentWidget()->objectName(), QString("sessionListPanel"));
+    QCOMPARE(create->property("glyph").toString(), QString("add")); QVERIFY(create->x() < toggle->x());
+    bool opened = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto *dialog = qobject_cast<NewSessionDialog *>(QApplication::activeModalWidget());
+        opened = dialog != nullptr; if (dialog) dialog->reject();
+    });
+    create->click(); QVERIFY(opened);
+    // The strip keeps only its toggle; the rail still offers New session.
+    toggle->click(); QTRY_COMPARE(window.findChild<SessionList *>("sessionList")->property("expansion").toReal(), 0.0);
+    QVERIFY(!create->isVisible());
+    toggle->click(); QTRY_VERIFY(create->isVisible());
+}
+
+void TestSessionsWindow::launchAddsOnlyFoldersOutsideTheProject()
+{
+    // A worktree of a project folder is reached through that folder; only an
+    // outside folder joins the project once its launch is observed.
+    SessionOrganization organization;const auto group=organization.createGroup("Design");
+    organization.addFolder(group,"mac","/repo");
+    QSettings().setValue("workspace/organization",QJsonDocument(organization.toJson()).toJson(QJsonDocument::Compact));
+    auto state=fleet();auto box=*state.peer("mac");
+    SessionsWindow window(script());window.setFleet(state);window.show();
+    QSignalSpy launches(&window,&SessionsWindow::newSessionRequested);QStringList paths;
+    const auto start=[&](const QString &path,const QString &name,const QString &hint){
+        QTimer::singleShot(0,&window,[&,name,hint]{
+            auto *dialog=qobject_cast<NewSessionDialog *>(QApplication::activeModalWidget());QVERIFY(dialog);
+            QTimer::singleShot(3000,dialog,&QDialog::reject);
+            QTRY_COMPARE(dialog->findChild<QLabel *>("muted")->text(),hint);
+            dialog->findChild<QCheckBox *>("launchOpenTerminal")->setChecked(true);
+            dialog->findChild<QLineEdit *>("launchName")->setText(name);
+            auto *button=dialog->findChild<QPushButton *>("primary");QTRY_VERIFY(button->isEnabled());button->click();
+        });
+        window.showNewSession("codex",group,"mac",{},path);QVERIFY(!launches.isEmpty());
+        SessionInfo created;created.name="codex/infra/"+name;created.cmd="codex";created.project="infra";created.tag=name;
+        created.runId="run-"+name;created.state="running";created.launchId=launches.last()[5].toString();
+        box.sessions.append(created);state.setPeer(box,QDateTime::currentMSecsSinceEpoch());window.setFleet(state);
+        const SessionOrganization stored(QJsonDocument::fromJson(QSettings().value("workspace/organization").toByteArray()).object());
+        QCOMPARE(stored.groupFor("mac\ncodex/infra/"+name),group);
+        paths.clear();for(const auto &folder:stored.group(group)->folders)paths<<folder.path;
+    };
+    // The fixture confirms every chosen folder as /remote/work tree.
+    start("/linked","linked","Worktree in Design");QCOMPARE(launches.size(),1);QCOMPARE(paths,QStringList{"/repo"});
+    start("/elsewhere","outside","This folder is outside the project.\nStarting here will add it to this project.");
+    QCOMPARE(launches.size(),2);QCOMPARE(paths,(QStringList{"/repo","/remote/work tree"}));
+}
+
 void TestSessionsWindow::arbitraryFolderAndTerminalPreference_data()
 {
     QTest::addColumn<QString>("theme");
@@ -3925,13 +4004,13 @@ void TestSessionsWindow::arbitraryFolderAndTerminalPreference()
     const auto preview=qEnvironmentVariable("HGS_NAVIGATION_PREVIEW");
     if(!preview.isEmpty()){QDir().mkpath(preview);QTest::qWait(40);QVERIFY(dialog.grab().save(preview+"/new-session-folder-"+theme+".png"));}
     QSignalSpy launches(&dialog,&NewSessionDialog::launchRequested);terminal->setChecked(true);QTRY_VERIFY(start->isEnabled());start->click();QTRY_COMPARE(launches.size(),1);
-    QCOMPARE(launches[0][0].toString(),QString("mac"));QVERIFY(launches[0][6].toBool());
+    QCOMPARE(launches[0][0].toString(),QString("mac"));QVERIFY(launches[0][6].toBool());QVERIFY(launches[0][7].toBool());
     NewSessionDialog second(script(),fleet(),"mac");QVERIFY(second.findChild<QCheckBox *>("launchOpenTerminal")->isChecked());
     second.setGroups(projects,id);QCOMPARE(second.findChild<QComboBox *>("launchProjectFolder")->count(),0);
     projects.addFolder(id,"mac","/remote/work tree");second.setGroups(projects,id);
     second.findChild<QCheckBox *>("launchOpenTerminal")->setChecked(false);
     QSignalSpy secondLaunch(&second,&NewSessionDialog::launchRequested);QTRY_VERIFY(second.findChild<QPushButton *>("primary")->isEnabled());second.findChild<QPushButton *>("primary")->click();QTRY_COMPARE(secondLaunch.size(),1);
-    QVERIFY(!secondLaunch[0][6].toBool());
+    QVERIFY(!secondLaunch[0][6].toBool());QVERIFY(!secondLaunch[0][7].toBool());
     NewSessionDialog third(script(),fleet());QVERIFY(!third.findChild<QCheckBox *>("launchOpenTerminal")->isChecked());
     // Selecting a project folder explicitly replaces the earlier Browse choice.
     project->setCurrentIndex(project->findData(other));
@@ -4215,8 +4294,9 @@ void TestSessionsWindow::newSessionGroupFollowsLaunchIdentity()
     QCOMPARE(stored.groupFor(machine + '\n' + created.name), mode == "deleted" || mode == "failed" ? QString("ungrouped") : destination);
     QVERIFY(!QJsonDocument::fromJson(QSettings().value("workspace/pendingLaunches").toByteArray()).object().contains(token));
     const auto *resultGroup=stored.group(mode=="deleted"?stored.defaultProject():destination);QVERIFY(resultGroup);
+    // The listed folder already belongs to the project, whatever path confirmed it.
     const bool added=std::any_of(resultGroup->folders.cbegin(),resultGroup->folders.cend(),[&](const SessionOrganization::Folder &f){return f.machine==machine&&f.path=="/remote/work tree";});
-    QCOMPARE(added,mode!="failed");
+    QVERIFY(!added);
 }
 
 void TestSessionsWindow::folderBrowserIgnoresStaleResponses()

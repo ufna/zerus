@@ -120,17 +120,23 @@ void NewSessionDialog::setFleet(const FleetState &fleet)
 void NewSessionDialog::loadMachines()
 {
     const auto previous=m_machine->currentIndex()<0?m_initialHost:host();
-    const QSignalBlocker block(m_machine);m_machine->clear();
     QStringList machines{m_fleet.local().host};machines.append(m_fleet.peerNames());
     if(!previous.isEmpty()&&!machines.contains(previous))machines.append(previous);
     if(const auto *project=m_projects.group(m_project->currentData().toString()))
         for(const auto &folder:project->folders)if(!machines.contains(folder.machine) && (folder.machineId.isEmpty() || folder.machine==m_fleet.local().host || m_fleet.peerNames().contains(folder.machine)))machines.append(folder.machine);
+    QList<QPair<QString,QString>> items;
     for(const auto &machine:machines){
         if(machine.isEmpty())continue;
         const auto target=machine==m_fleet.local().host?QString():machine;
         const auto *box=target.isEmpty()?&m_fleet.local():m_fleet.peer(target);
-        m_machine->addItem(machine+(box&&box->ok?QString():tr(" (offline)")),target);
+        items.append({machine+(box&&box->ok?QString():tr(" (offline)")),target});
     }
+    // Fleet polls refresh labels in place: new rows would reset an open list's hovered row.
+    const QSignalBlocker block(m_machine);
+    bool same=m_machine->count()==items.size();
+    for(int row=0;same&&row<items.size();++row)same=m_machine->itemData(row).toString()==items[row].second;
+    if(!same){m_machine->clear();for(const auto &item:items)m_machine->addItem(item.first,item.second);}
+    else for(int row=0;row<items.size();++row)if(m_machine->itemText(row)!=items[row].first)m_machine->setItemText(row,items[row].first);
     m_machine->setCurrentIndex(qMax(0,m_machine->findData(previous)));
 }
 
@@ -160,27 +166,42 @@ void NewSessionDialog::loadFolders(const QString &selectedPath)
     // Refreshes retain the displayed folder, but only Browse choices cross projects.
     const auto previous=context==m_folderContext?m_folder->currentData(Qt::UserRole+2).toString():QString();
     m_folderContext=context;
-    const QSignalBlocker block(m_folder);m_folder->clear();m_error->clear();
     const auto *project=m_projects.group(m_project->currentData().toString());
     const auto *machine=host().isEmpty()?&m_fleet.local():m_fleet.peer(host());
     const bool available=machine&&machine->ok;
+    struct Row {QString id,path,name;};
+    QList<Row> rows;
     const auto add=[&](const QString &id,const QString &rawPath,const QString &name){
         const auto path=QDir::cleanPath(rawPath);
-        m_folder->addItem(name.isEmpty()?(path=="/"?path:path.section('/',-1)):name,id);
-        const int row=m_folder->count()-1;m_folder->setItemData(row,host(),Qt::UserRole+1);m_folder->setItemData(row,path,Qt::UserRole+2);
-        m_folder->setItemData(row,available,Qt::UserRole+3);m_folder->setItemData(row,path,Qt::ToolTipRole);
+        rows.append({id,path,name.isEmpty()?(path=="/"?path:path.section('/',-1)):name});
     };
     if(project)for(const auto &folder:project->folders){
         if((folder.machine==m_fleet.local().host?QString():folder.machine)!=host())continue;
         add(folder.id,folder.path,folder.name);
     }
     const auto custom=!selectedPath.isEmpty()?selectedPath:!previous.isEmpty()?previous:m_browsedFolders.value(host());
-    int index=-1;
+    int index=rows.isEmpty()?-1:0;
     if(!custom.isEmpty()){
-        index=m_folder->findData(custom,Qt::UserRole+2);
-        if(index<0){add({},custom,{});index=m_folder->count()-1;}
+        index=-1;for(int row=0;row<rows.size()&&index<0;++row)if(rows[row].path==custom)index=row;
+        if(index<0){add({},custom,{});index=rows.size()-1;}
     }
-    m_folder->setCurrentIndex(index<0?0:index);
+    // Fleet polls refresh availability in place: new rows would reset an open
+    // list's hovered row. Messages stay until the folder choice changes.
+    const QSignalBlocker block(m_folder);
+    bool same=m_folder->count()==rows.size();
+    for(int row=0;same&&row<rows.size();++row)
+        same=m_folder->itemData(row).toString()==rows[row].id&&m_folder->itemData(row,Qt::UserRole+2).toString()==rows[row].path
+            &&m_folder->itemText(row)==rows[row].name&&m_folder->itemData(row,Qt::UserRole+1).toString()==host();
+    if(!same||m_folder->currentIndex()!=index)m_error->clear();
+    if(!same){
+        m_folder->clear();
+        for(const auto &row:rows){
+            m_folder->addItem(row.name,row.id);const int at=m_folder->count()-1;
+            m_folder->setItemData(at,host(),Qt::UserRole+1);m_folder->setItemData(at,row.path,Qt::UserRole+2);m_folder->setItemData(at,row.path,Qt::ToolTipRole);
+        }
+    }
+    for(int row=0;row<m_folder->count();++row)m_folder->setItemData(row,available,Qt::UserRole+3);
+    m_folder->setCurrentIndex(index);
     loadAccounts();updateForm();updateWorktrees();
 }
 void NewSessionDialog::browseFolder()
@@ -241,7 +262,9 @@ void NewSessionDialog::launch(const QString &target)
         auto machine=accounts.value(host()).toObject();machine[m_agent->currentText()]=account;accounts[host()]=machine;
         settings.setValue("workspace/launchAccounts",QJsonDocument(accounts).toJson(QJsonDocument::Compact));
     }
-    emit launchRequested(host(),m_agent->currentText(),target,m_name->text(),m_account->currentData().toString(),m_project->currentData().toString(),m_openTerminal->isChecked()&&m_agent->currentText()!="dsh");accept();
+    // Listed folders and worktrees of them already belong to the project.
+    const bool outside=m_folder->currentData().toString().isEmpty()&&!projectWorktree(m_folder->currentData(Qt::UserRole+2).toString());
+    emit launchRequested(host(),m_agent->currentText(),target,m_name->text(),m_account->currentData().toString(),m_project->currentData().toString(),m_openTerminal->isChecked()&&m_agent->currentText()!="dsh",outside);accept();
 }
 void NewSessionDialog::loadAccounts()
 {

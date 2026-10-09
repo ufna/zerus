@@ -12,6 +12,12 @@ PACKAGES = ("zerus", "zerus-ade-bin", "zerus-git")
 BINARY_LIBRARIES = ("qt6-base", "qt6-webengine", "qt6-svg", "kstatusnotifieritem",
                    "kwindowsystem", "libgcc", "libstdc++", "glibc")
 MAINTAINER = "# Maintainer: Vladimir Alyamkin <ufna@ufna.dev>"
+DESCRIPTION_UPDATES = (
+    ("An agent development environment for persistent local and remote tmux sessions",
+     "Agent development environment for AI coding agents across your machines"),
+    ("Nightly agent development environment for persistent local and remote tmux sessions",
+     "Agent development environment for AI coding agents across machines (nightly)"),
+)
 
 
 def require(condition, message):
@@ -139,6 +145,19 @@ def recipe_changed(old, new, vcs=False):
         old = re.sub(pattern, "", old)
         new = re.sub(pattern, "", new)
     return old != new
+
+
+def retains_description_update(old, new, vcs=False):
+    """Keep an approved AUR description when retrying an older sealed recipe."""
+    for previous, current in DESCRIPTION_UPDATES:
+        for prefix, suffix in (("pkgdesc='", "'"), ("\tpkgdesc = ", "")):
+            previous_line = prefix + previous + suffix + "\n"
+            current_line = prefix + current + suffix + "\n"
+            if current_line in old.splitlines(keepends=True) and previous_line in new.splitlines(keepends=True):
+                refreshed = "".join(current_line if line == previous_line else line
+                                    for line in new.splitlines(keepends=True))
+                return not recipe_changed(old, refreshed, vcs=vcs)
+    return False
 
 
 def package_version(data):

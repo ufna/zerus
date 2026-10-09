@@ -609,8 +609,14 @@ bool ActivityView::eventFilter(QObject *watched, QEvent *event)
         positionJumpButton();
         if (m_followLatest) scheduleFollow();
         // Chips cannot wrap; size them again once the pane settles at another width.
+        // Only a chip crossing the half-pane limit changes the journal: re-rendering
+        // otherwise shifts the transcript after a panel toggle. A render's own
+        // scrollbar changes are measured against the previous width, so skip them.
         const int width = m_browser->viewport()->width();
-        if (!m_html.isEmpty() && qAbs(width - m_chipWidth) > m_chipWidth / 10) m_relayout->start();
+        const auto text = [](qreal chip, int pane) { return pane > 0 && chip > pane / 2.0; };
+        if (!m_rendering && !m_html.isEmpty() && qAbs(width - m_chipWidth) > m_chipWidth / 10
+            && std::any_of(m_chipWidths.cbegin(), m_chipWidths.cend(), [&](qreal chip) { return text(chip, width) != text(chip, m_chipWidth); }))
+            m_relayout->start();
     }
     return QWidget::eventFilter(watched, event);
 }
@@ -1052,7 +1058,8 @@ void ActivityView::render(bool contentUpdate)
     // Before bookmarks are read: offsets on both sides of a refresh count chips as one character.
     // A chip may take at most half the pane, so that it and its container still fit.
     m_chipWidth = m_browser->viewport()->width();
-    MarkdownObjects::convertChips(m_browser->document(), agentTheme, !searching, m_chipWidth / 2.0);
+    m_chipWidths.clear();
+    MarkdownObjects::convertChips(m_browser->document(), agentTheme, !searching, m_chipWidth / 2.0, &m_chipWidths);
     edit.endEditBlock();
     // QTextDocument lays out long tables lazily. Resolve the final scroll
     // range before restoring the viewport and allowing its next paint.

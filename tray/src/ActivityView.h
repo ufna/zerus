@@ -95,5 +95,6 @@ private:
     int m_unseen = 0;
     QTimer *m_relayout = nullptr;   // re-renders chips after the pane width changes
     int m_chipWidth = 0;            // viewport width the chips were sized for
+    QList<qreal> m_chipWidths;      // chips whose form depends on that width
     double m_scale = 1.0;
 };

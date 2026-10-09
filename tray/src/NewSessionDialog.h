@@ -21,7 +21,8 @@ public:
     void selectPath(const QString &path);
     void selectAccount(const QString &account);
 signals:
-    void launchRequested(const QString &host,const QString &agent,const QString &target,const QString &name,const QString &account,const QString &project,bool openTerminal);
+    // addFolder: the folder is outside the project and joins it once the session starts.
+    void launchRequested(const QString &host,const QString &agent,const QString &target,const QString &name,const QString &account,const QString &project,bool openTerminal,bool addFolder);
     void manageProjectsRequested(const QString &host);
     void projectFoldersRequested(const QString &project);
 private:
