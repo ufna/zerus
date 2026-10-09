@@ -295,6 +295,8 @@ pub(super) fn hook() -> Result<i32> {
         eprintln!("hgs is pausing this session; retry after resuming");
         return Ok(2);
     }
+    let changed_conversation = kind == "SessionStart" && string(&event, "agent_id").is_empty()
+        && sid != string(&record, "conversation_id");
     if kind == "SessionStart" && string(&event, "agent_id").is_empty() {
         if !string(&record, "fork_parent_id").is_empty() && sid == string(&record, "fork_parent_id")
         {
@@ -312,6 +314,7 @@ pub(super) fn hook() -> Result<i32> {
             return Ok(0);
         }
         if sid != string(&record, "conversation_id") {
+            clear_context::observe_start(&mut record, &event);
             for key in [
                 "clear_context_request",
                 "compact_context_request",
@@ -368,6 +371,12 @@ pub(super) fn hook() -> Result<i32> {
     compact_context::observe(&mut record, &event);
     questions::observe(&mut record, &event);
     journal::log_event(&record, &event)?;
+    if changed_conversation {
+        if let Some(mut clear) = clear_context::event(&record) {
+            clear["hook_event_name"] = json!("SessionCleared");
+            journal::log_event(&record, &clear)?;
+        }
+    }
     write(&mut record)?;
     if kind == "SessionStart" && string(&event, "agent_id").is_empty() {
         archive::confirm_restore(&mut record)?;

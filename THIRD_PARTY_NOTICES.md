@@ -5,6 +5,12 @@ Dependency licenses and copyright notices remain in effect.
 
 ## Vendored code
 
+`src/state/data/codex-0.160.1-greetings.txt` retains the finite native empty-state
+greeting vocabulary from OpenAI Codex `rust-v0.160.1` for exact reset recognition.
+Source provenance is recorded in that file; the original Apache-2.0 license is
+retained in `docs/licenses/codex-LICENSE.txt`, which is also shipped with packages.
+No native Codex executable is bundled.
+
 `tray/vendor/libvterm` contains libvterm 0.3.3 under MIT. Its original copyright
 notice and complete license are retained in `tray/vendor/libvterm/LICENSE`;
 source provenance and archive checksum are in `UPSTREAM.md` beside it.

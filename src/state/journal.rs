@@ -196,6 +196,10 @@ pub(super) fn log_event(record: &Value, event: &Value) -> Result<()> {
     }
     let mut data = json!({"type": event["hook_event_name"], "at": now(), "run_id": record["run_id"],
         "agent_id": clipped(&event["agent_id"], 160), "tool": clipped(&event["tool_name"], 100), "detail": detail(event)});
+    if string(event, "hook_event_name") == "SessionCleared" {
+        data["at"] = event["at"].clone();
+        data["activity_key"] = event["activity_key"].clone();
+    }
     if let Some(id)=processes::event_job(record,event) {data["process_id"]=json!(id);}
     mark_system_prompt(record, &mut data, event["prompt"].as_str().unwrap_or(""));
     if string(record, "agent") == "kimi"
@@ -404,7 +408,7 @@ const MESSAGE_EVENTS_BYTES: usize = 256 * 1024;
 fn message_events(db: &Connection, name: &str, conversation: Option<&str>) -> Result<(Vec<Value>, bool)> {
     let mut query = db.prepare("SELECT seq,payload FROM events WHERE name=?1 AND conversation IS ?2
         AND COALESCE(json_extract(payload, '$.agent_id'), '') IN ('', 'main')
-        AND json_extract(payload, '$.type') IN ('UserPromptSubmit','UserPromptQueued','UserMessage','TurnStarted','QuestionAnswered','AgentMessage','Stop')
+        AND json_extract(payload, '$.type') IN ('SessionCleared','UserPromptSubmit','UserPromptQueued','UserMessage','TurnStarted','QuestionAnswered','AgentMessage','Stop')
         ORDER BY seq DESC LIMIT 101").map_err(|e| e.to_string())?;
     let rows = query.query_map(params![name, conversation], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
         .map_err(|e| e.to_string())?;
@@ -438,7 +442,7 @@ pub(super) fn inspection(name: &str, after: i64, archive_id: Option<&str>, inclu
         drop(_guard);
         return Ok(untracked());
     }
-    let record = if let Some(id) = archive_id {
+    let mut record = if let Some(id) = archive_id {
         archive::read_archive(name, id)?
     } else {
         read(name)?
@@ -452,6 +456,9 @@ pub(super) fn inspection(name: &str, after: i64, archive_id: Option<&str>, inclu
     if panes.is_some() && !matches(&record, panes) {
         drop(_guard);
         return Ok(untracked());
+    }
+    if archive_id.is_none() && panes.is_some() {
+        let _ = clear_context::observe_terminal(&mut record);
     }
     let mut output = json!({});
     for key in [
@@ -526,7 +533,11 @@ pub(super) fn inspection(name: &str, after: i64, archive_id: Option<&str>, inclu
         }
     }
     output["input_queue"] = if archive_id.is_none() { input_queue::inspection(&record, panes.is_some()).unwrap_or(Value::Null) } else { Value::Null };
-    output["session_usage"] = usage::read(&record);
+    output["session_usage"] = if clear_context::awaiting_start(&record) {
+        json!({"status":"unavailable","source":record["agent"],"scope":"conversation"})
+    } else { usage::read(&record) };
+    output["session_clear"] = clear_context::event(&record).unwrap_or(Value::Null);
+    output["clear_context_request"] = record["clear_context_request"].clone();
     if include_processes {
         output["processes"] = processes::snapshot(&record, archive_id.is_none() && panes.is_some() && process_alive(&record));
     }
@@ -549,6 +560,12 @@ pub(super) fn inspection(name: &str, after: i64, archive_id: Option<&str>, inclu
             output["provider_messages"] = json!(messages);
         }
         Err(error) => output["pending_questions_error"] = json!(error),
+    }
+    if clear_context::awaiting_start(&record) {
+        output["prompt"] = json!("");
+        output["last_message"] = json!("");
+        output["provider_messages"] = json!([]);
+        output["cache_hint"] = Value::Null;
     }
     let db = event_db()?;
     let journal_name = journal_name(&record);

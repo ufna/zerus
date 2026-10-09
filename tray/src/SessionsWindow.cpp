@@ -2348,7 +2348,8 @@ void SessionsWindow::acceptInspection(const QString &host, const QString &name, 
     if (!m_details.isEmpty() && m_details.value("conversation_id") != data.value("conversation_id")) {
         // The conversation changed under this terminal. Fetch its initial window;
         // a cursor from the previous conversation must never skip the new history.
-        m_events = {}; m_cursor = 0; m_details = data; m_processPollAge.invalidate(); continueAfterCompact(); inspect(); return;
+        m_events = data.value("events").toArray(); m_cursor = 0; m_details = data; m_processPollAge.invalidate();
+        reconcileMessages(); continueAfterCompact(); renderDetails(); inspect(); return;
     }
     const auto previousRoster = childRoster(*entry);
     const auto inspected=SessionPresentation::inspected(entry->session,data);

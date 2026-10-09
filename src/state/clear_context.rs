@@ -7,6 +7,84 @@ use std::time::{Duration, Instant};
 #[serde(deny_unknown_fields)]
 struct Request { request_id: String, expected_run_id: String, expected_conversation_id: String }
 
+pub(super) fn observe_start(record: &mut Value, event: &Value) {
+    let previous = string(record, "conversation_id").to_owned();
+    let next = string(event, "session_id");
+    if previous.is_empty() || previous == next { return; }
+    let requested = record["clear_context_request"]["conversation_id"] == previous;
+    if string(event, "source") == "clear" || requested {
+        let at = if awaiting_start(record) { record["session_clear"]["at"].clone() } else { json!(now()) };
+        record["session_clear"] = json!({"at":at,"run_id":record["run_id"],
+            "conversation_id":next,"previous_conversation_id":previous,"source":"native_hook"});
+    } else {
+        record.as_object_mut().unwrap().remove("session_clear");
+    }
+}
+
+pub(super) fn awaiting_start(record: &Value) -> bool {
+    record["session_clear"]["awaiting_session_start"] == true
+        && record["session_clear"]["run_id"] == record["run_id"]
+        && record["session_clear"]["conversation_id"] == record["conversation_id"]
+}
+
+fn codex_reset_panel(screen: &str, cwd: &str) -> bool {
+    if !Path::new(cwd).is_absolute() || !screen.lines().any(|line| line.trim_start().starts_with('›')) { return false; }
+    let rows: Vec<_> = screen.lines().take_while(|line| !line.trim_start().starts_with('›'))
+        .map(str::trim).filter(|line| !line.is_empty()).collect();
+    if !(2..=6).contains(&rows.len()) || !rows[0].starts_with(">_ OpenAI Codex (v")
+        || !rows[0].ends_with(')') { return false; }
+    let short = Path::new(cwd).strip_prefix(home()).ok().map(|path| {
+        if path.as_os_str().is_empty() { "~".to_owned() } else { format!("~/{}",path.display()) }
+    });
+    if rows[1] != cwd && short.as_deref() != Some(rows[1]) { return false; }
+    let tail = if rows.get(2).is_some_and(|row| row.starts_with("permissions: ")) {
+        &rows[3..]
+    } else { &rows[2..] };
+    // Resident Codex 0.160.1 keeps one randomly chosen empty-state greeting.
+    // Match the released finite vocabulary, including terminal line wrapping;
+    // arbitrary assistant output and unknown startup panels still fail closed.
+    let greeting = tail.join(" ");
+    tail.is_empty() || include_str!("data/codex-0.160.1-greetings.txt").lines()
+        .filter(|line| !line.starts_with('#')).any(|line| line == greeting)
+}
+
+// Codex defers its clear SessionStart hook until the next user turn and does
+// not materialize the new rollout yet. Observe only the complete reset panel
+// in the exact live empty composer; keep the native ID until its real hook.
+pub(super) fn observe_terminal(record: &mut Value) -> Result<bool> {
+    if string(record,"agent") != "codex" || awaiting_start(record)
+        || record["activity"] != "idle" || record["phase"] != "idle"
+        || string(record,"conversation_id").is_empty()
+        || (string(record,"prompt").is_empty() && string(record,"last_message").is_empty()
+            && !record["clear_context_request"].is_object()) { return Ok(false); }
+    // Ordinary idle polls only need one read-only capture. Perform the more
+    // expensive process and composer checks only for a matching reset panel.
+    if !codex_reset_panel(&kimi_tui_choice::capture(record)?,string(record,"cwd")) { return Ok(false); }
+    kimi_tui_choice::identity(record)?;
+    input::checked_terminal(record,true)?;
+    if !codex_reset_panel(&kimi_tui_choice::capture(record)?,string(record,"cwd")) { return Ok(false); }
+    kimi_tui_choice::identity(record)?;
+    record["session_clear"] = json!({"at":now(),"run_id":record["run_id"],
+        "conversation_id":record["conversation_id"],"previous_conversation_id":record["conversation_id"],
+        "source":"native_terminal","awaiting_session_start":true});
+    for key in ["prompt","last_message","last_error"] { record.as_object_mut().unwrap().remove(key); }
+    if let Some(mut clear) = event(record) {
+        clear["hook_event_name"] = json!("SessionCleared");
+        journal::log_event(record,&clear)?;
+    }
+    write(record)?;
+    Ok(true)
+}
+
+pub(super) fn event(record: &Value) -> Option<Value> {
+    let clear = &record["session_clear"];
+    if clear["run_id"] != record["run_id"] || clear["conversation_id"] != record["conversation_id"]
+        || clear["at"].as_f64().is_none_or(|at| at <= 0.0) { return None; }
+    Some(json!({"type":"SessionCleared","at":clear["at"],"run_id":record["run_id"],
+        "agent_id":"","detail":"","activity_key":format!("clear:{}:{}:{}",
+            string(record,"run_id"),string(record,"conversation_id"),clear["at"])}))
+}
+
 pub(super) fn available(record: &Value, live: bool) -> bool {
     live && AGENTS.contains(&string(record,"agent"))
         && !string(record,"conversation_id").is_empty()
@@ -14,6 +92,7 @@ pub(super) fn available(record: &Value, live: bool) -> bool {
         && !pause_active(record) && string(record,"error").is_empty()
         && string(record,"expected_id").is_empty()
         && !record["clear_context_request"].is_object()
+        && !awaiting_start(record)
         && !compact_context::pending(record)
 }
 fn command_row(agent: &str, row: &str, x: usize, command: &str) -> bool {
@@ -75,10 +154,18 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     let deadline=Instant::now()+Duration::from_secs(4);
     let mut status="submitted";
     loop {
-        let current=read(name)?;
+        let mut current=read(name)?;
         if current["run_id"]!=record["run_id"] || current["pid"]!=record["pid"] {break;}
         if !string(&current,"conversation_id").is_empty() && current["conversation_id"]!=record["conversation_id"] {
             status="confirmed";break;
+        }
+        {
+            let _guard=lock(None)?;
+            current=read(name)?;
+            if current["run_id"]==record["run_id"] && current["pid"]==record["pid"]
+                && (observe_terminal(&mut current).unwrap_or(false) || awaiting_start(&current)) {
+                status="confirmed";break;
+            }
         }
         if Instant::now()>=deadline {break;}
         std::thread::sleep(Duration::from_millis(80));
@@ -89,6 +176,50 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn clear_hooks_require_a_changed_conversation_and_keep_the_observed_time() {
+        let original=json!({"run_id":"run","conversation_id":"old"});
+        let mut record=original.clone();
+        observe_start(&mut record,&json!({"session_id":"old","source":"clear"}));
+        assert!(record["session_clear"].is_null());
+        observe_start(&mut record,&json!({"session_id":"new","source":"resume"}));
+        assert!(record["session_clear"].is_null());
+        record["clear_context_request"]=json!({"conversation_id":"old"});
+        observe_start(&mut record,&json!({"session_id":"new"}));
+        record["conversation_id"]=json!("new");
+        assert!(event(&record).is_some());
+        record["run_id"]=json!("other");assert!(event(&record).is_none());
+        record=original;
+        record["session_clear"]=json!({"at":123.0,"run_id":"run","conversation_id":"old","awaiting_session_start":true});
+        observe_start(&mut record,&json!({"session_id":"new","source":"clear"}));
+        record["conversation_id"]=json!("new");
+        assert_eq!(event(&record).unwrap()["at"],123.0);
+        assert!(!awaiting_start(&record));
+    }
+    #[test] fn only_the_complete_native_empty_reset_header_matches() {
+        let panel="\n >_ OpenAI Codex (v0.162.0)\n /fixture\n permissions: YOLO mode\n\n\n› Ask Codex to do anything\n GPT-6.1-Sol default\n ? for shortcuts\n";
+        assert!(codex_reset_panel(panel,"/fixture"));
+        for screen in [panel.replace("/fixture","/other"),panel.replace("/fixture","/fix…"),
+            panel.replace("permissions: YOLO mode","To get started, describe a task"),
+            panel.replace("\n\n›","\nPrevious agent response\n›"),
+            panel.replace(">_ OpenAI Codex (v0.162.0)","Quoted reset header"),
+            panel.replace("\n >_","\nSome user message\n >_"),">_ OpenAI Codex (v0.162.0)\n/fixture\n".to_owned()] {
+            assert!(!codex_reset_panel(&screen,"/fixture"),"{screen}");
+        }
+    }
+    #[test] fn resident_native_greetings_match_without_accepting_other_prose() {
+        let header = ">_ OpenAI Codex (v0.160.1)\n/fixture\npermissions: YOLO mode\n\n";
+        let footer = "\n\n› Ask Codex to do anything\nGPT-6.1-Sol default\n? for shortcuts\n";
+        for greeting in include_str!("data/codex-0.160.1-greetings.txt").lines().filter(|line| !line.starts_with('#')) {
+            assert!(codex_reset_panel(&format!("{header}{greeting}{footer}"), "/fixture"), "{greeting}");
+            if let Some((first, last)) = greeting.rsplit_once(' ') {
+                assert!(codex_reset_panel(&format!("{header}{first}\n{last}{footer}"), "/fixture"));
+            }
+        }
+        for prose in ["Previous agent response", "Resuming session…", "Clear failed", "Unknown greeting",
+            "What are we cooking up?\nPrevious agent response", "What are we cooking up?\nWhat are we cooking up?"] {
+            assert!(!codex_reset_panel(&format!("{header}{prose}{footer}"), "/fixture"), "{prose}");
+        }
+    }
     #[test] fn exact_command_only() {
         assert!(command_row("codex","› /clear",8,"/clear"));
         assert!(command_row("claude","❯\u{a0}/clear",8,"/clear"));

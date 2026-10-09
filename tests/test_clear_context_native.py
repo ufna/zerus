@@ -1,5 +1,6 @@
-"""Verify /clear against real Claude and HGS hooks, with a localhost model only."""
+"""Verify native clear/input contracts with private homes and localhost providers."""
 import json, os, shlex, subprocess, time, unittest, uuid
+from pathlib import Path
 import test_input
 import test_claude_questions_native as native
 
@@ -47,5 +48,125 @@ class NativeClearContext(unittest.TestCase):
         self.assertFalse(fresh.get('pending_questions'))
         self.assertFalse(fresh.get('cache_hint'))
         self.assertEqual(fresh['phase'], 'idle')
+
+@unittest.skipUnless(os.environ.get('HGS_CODEX_TEST_BIN'), 'Set HGS_CODEX_TEST_BIN for the isolated native Codex clear test')
+class NativeCodexClear(unittest.TestCase):
+    script = test_input.InputTransport.script
+    write_record = test_input.InputTransport.write_record
+    tmux = test_input.InputTransport.tmux
+    wait_for = test_input.InputTransport.wait_for
+    received = test_input.InputTransport.received
+    tearDown = test_input.InputTransport.tearDown
+
+    def setUp(self):
+        import test_clear_context
+        test_input.InputTransport.setUp(self)
+        self.tmux('kill-session', '-t', self.name)
+        native_home = self.root / '.codex'
+        native_home.mkdir()
+        version = subprocess.check_output([os.environ['HGS_CODEX_TEST_BIN'], '--version'], text=True).strip()
+        self.native_version = version.removeprefix('codex-cli ')
+        width, height = os.environ.get('HGS_CODEX_TEST_SIZE', '110x35').split('x')
+        self.assertTrue(width.isdigit() and height.isdigit(), 'Expected WIDTHxHEIGHT fixture geometry')
+        (native_home / 'config.toml').write_text('''model="gpt-6.1-sol"
+model_provider="fixture"
+check_for_update_on_startup=false
+[model_providers.fixture]
+name="Fixture"
+base_url="http://127.0.0.1:1/v1"
+wire_api="responses"
+''')
+        path = native_home / 'sessions/2026/10/09' / ('rollout-fixture-' + self.conversation_id + '.jsonl')
+        path.parent.mkdir(parents=True)
+        usage_path = test_clear_context.ClearContext.usage_history(self, self.conversation_id, 109000, 100000)
+        events = Path(usage_path).read_text().splitlines()
+        metadata = json.loads(events[0])
+        metadata.update(timestamp='2026-10-09T20:00:00Z')
+        metadata['payload'].update(timestamp='2026-10-09T20:00:00Z', cwd=str(self.root), originator='codex_cli_rs',
+            cli_version=self.native_version, source='cli', model_provider='fixture', base_instructions={'text':'Fixture.'})
+        messages = [dict(type='response_item', timestamp='2026-10-09T20:00:01Z', payload=dict(
+            type='message', role=role, content=[dict(type=kind, text=text)]))
+            for role, kind, text in [('user', 'input_text', 'Previous fixture request'),
+                                     ('assistant', 'output_text', 'Previous fixture answer')]]
+        messages.extend([
+            dict(type='event_msg', timestamp='2026-10-09T20:00:01Z', payload=dict(
+                type='user_message', message='Previous fixture request', images=[], local_images=[])),
+            dict(type='event_msg', timestamp='2026-10-09T20:00:02Z', payload=dict(
+                type='agent_message', message='Previous fixture answer'))])
+        path.write_text('\n'.join([json.dumps(metadata), *map(json.dumps, messages), events[1]]) + '\n')
+        self.tmux('new-session', '-d', '-s', self.name, '-x', width, '-y', height,
+            'env', 'CODEX_HOME=' + str(native_home), os.environ['HGS_CODEX_TEST_BIN'], '--no-daemon',
+            '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust',
+            '-C', str(self.root), 'resume', self.conversation_id)
+        self.pane = self.tmux('display-message', '-p', '-t', '=' + self.name + ':', '#{pane_id}').strip()
+        self.tmux('set-option', '-t', '=' + self.name + ':', '@hgs_run', self.run_id)
+        self.wait_for(lambda: '? for shortcuts' in self.tmux('capture-pane', '-p', '-t', self.pane))
+        self.wait_for(lambda: 'Previous fixture answer' in self.tmux('capture-pane', '-p', '-t', self.pane))
+        pid = int(self.tmux('display-message', '-p', '-t', self.pane, '#{pane_pid}').strip())
+        start = subprocess.check_output(['ps', '-p', str(pid), '-o', 'lstart='],
+            env=dict(self.env, LC_ALL='C', TZ='UTC'), text=True).strip()
+        self.record.update(pid=pid, process_start=start, pane=self.pane, cwd=str(self.root), launch_dir=str(self.root),
+            agent_home=str(native_home), transcript=str(path), last_message='Previous fixture answer')
+        self.write_record()
+
+    def test_clear_is_visible_before_the_deferred_native_hook(self):
+        import test_clear_context
+        before = test_clear_context.ClearContext.inspect(self)
+        self.assertEqual(before['session_usage']['context']['used'], 109000)
+        self.assertFalse(before.get('session_clear'))
+        receipt = test_clear_context.ClearContext.clear(self)
+        self.assertEqual(receipt['status'], 'confirmed')
+        fresh = test_clear_context.ClearContext.inspect(self)
+        self.assertEqual(fresh['session_clear']['type'], 'SessionCleared')
+        self.assertEqual(fresh['session_usage']['status'], 'unavailable')
+        self.assertEqual(fresh['conversation_id'], self.conversation_id)
+        current = json.loads(self.record_path.read_text())
+        self.assertEqual(current['pid'], self.record['pid'])
+        self.assertEqual(current['run_id'], self.run_id)
+        self.assertTrue(current['session_clear']['awaiting_session_start'])
+        self.assertEqual(sum(e['type']=='SessionCleared' for e in fresh['events']), 1)
+
+    def test_clear_from_terminal_is_observed_once_without_resending(self):
+        import test_clear_context
+        self.tmux('send-keys', '-t', self.pane, '-l', '/clear')
+        self.wait_for(lambda: '/clear' in self.tmux('capture-pane', '-p', '-t', self.pane))
+        self.tmux('send-keys', '-t', self.pane, 'Enter')
+        self.wait_for(lambda: bool(test_clear_context.ClearContext.inspect(self).get('session_clear')))
+        first = test_clear_context.ClearContext.inspect(self)
+        second = test_clear_context.ClearContext.inspect(self)
+        self.assertEqual(first['session_clear'], second['session_clear'])
+        self.assertEqual(second['conversation_id'], self.conversation_id)
+        self.assertEqual(second['session_usage']['status'], 'unavailable')
+        self.assertEqual(sum(e['type']=='SessionCleared' for e in second['events']), 1)
+        current = json.loads(self.record_path.read_text())
+        self.assertEqual(current['pid'], self.record['pid'])
+        self.assertEqual(current['run_id'], self.run_id)
+        self.assertNotIn('clear_context_request', current)
+
+    def test_native_draft_is_preserved_and_prevents_clear(self):
+        import test_clear_context
+        draft = 'Keep this unsent native draft'
+        self.tmux('send-keys', '-t', self.pane, '-l', draft)
+        self.wait_for(lambda: draft in self.tmux('capture-pane', '-p', '-t', self.pane))
+        error = test_clear_context.ClearContext.clear(self, success=False)
+        self.assertIn('draft', error.lower())
+        screen = self.tmux('capture-pane', '-p', '-t', self.pane)
+        self.assertIn(draft, screen)
+        self.assertNotIn('/clear', screen)
+        fresh = test_clear_context.ClearContext.inspect(self)
+        self.assertFalse(fresh.get('session_clear'))
+        self.assertEqual(fresh['session_usage']['context']['used'], 109000)
+
+    def test_foreign_directory_does_not_confirm_a_terminal_clear(self):
+        import test_clear_context
+        self.record['cwd'] = str(self.root / 'other-project')
+        self.write_record()
+        self.tmux('send-keys', '-t', self.pane, '-l', '/clear')
+        self.wait_for(lambda: '/clear' in self.tmux('capture-pane', '-p', '-t', self.pane))
+        self.tmux('send-keys', '-t', self.pane, 'Enter')
+        time.sleep(.3)
+        fresh = test_clear_context.ClearContext.inspect(self)
+        self.assertFalse(fresh.get('session_clear'))
+        self.assertEqual(fresh['session_usage']['context']['used'], 109000)
 
 if __name__ == '__main__': unittest.main()

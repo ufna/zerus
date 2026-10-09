@@ -168,6 +168,68 @@ model API keys. Linux installs the pinned official `@deepseek-ai/dsh@0.2.0-rc.2`
 for its keyless local-model contract fixture. Native agent CLIs are not included
 in the product package.
 
+### Native agent compatibility and upstream review
+
+Full Linux CLI CI also runs `python3 scripts/ci/agent-compatibility.py`. The
+reviewed Codex matrix in `scripts/ci/agent-compatibility.json` retains 0.160.1
+(a resident-session regression) and 0.162.0. Each official Linux x86_64 package
+has an exact version and SHA-512 integrity pin. Only its native executable is
+extracted into a disposable directory; agent binaries are neither committed
+nor bundled. The runner treats skipped or empty native suites as failures.
+
+Real native checks run at 95x47 and 110x35 terminal sizes. They resume synthetic
+history, then verify GUI-command clear, Terminal clear, the deferred native
+identity transition, stale usage suppression, a single durable clear boundary,
+preserved process/run identity, unsent native drafts and foreign-directory
+rejection. Every fixture owns a private home and tmux socket and uses only a
+localhost provider. No authenticated inference or existing session is involved.
+
+The separate **Agent upstream compatibility** workflow runs daily at 04:41 UTC
+and is also available manually on upstream main. It discovers published Codex,
+Claude Code, Kimi Code and DeepSeek Harness versions from their official package
+indexes, links their official release notes and tests the latest Codex as an
+additional canary. It does not advance reviewed pins or install anything on
+development machines. Its hosted job has read-only repository access, no cache
+access and no publication credentials. Reports, native logs and public protocol
+schemas expire after three days. A discovery or native-contract failure fails
+the run; successful unittest skips do not hide missing coverage.
+
+Codex protocol schemas are generated separately with and without experimental
+APIs. The report compares the latest canary with the newest reviewed pin and
+lists added/removed methods and added/removed/changed schemas. Changes to CLI help
+appear with a generated diff. A detected addition is a review candidate, not
+evidence that Zerus supports it or that a signed-in
+account can use it. For Claude and Kimi this workflow currently discovers
+versions only; their authenticated native suites remain opt-in. DeepSeek's
+existing pinned keyless contract fixture runs in full Linux CLI CI.
+
+To run the reviewed matrix or inspect current upstream changes locally:
+
+```sh
+cargo build --locked
+python3 scripts/ci/agent-compatibility.py
+python3 scripts/ci/agent-compatibility.py --latest
+```
+
+The generated `artifacts/test-results/agent-compatibility/summary.md` and
+`report.json` contain the coverage result and review candidates. Before changing
+a pin, read the provider's release notes and compare CLI flags, hook events,
+native history and protocol schemas. Classify each relevant feature as already
+supported, requiring an adapter change, or requiring a separately reviewed
+integration; track implementation work in Beads. Add an isolated native contract
+for every adopted lifecycle/input change and retain versions still used by
+resident sessions until their compatibility boundary is deliberately reviewed.
+
+Zerus receives activity from structured hooks, conversation messages and usage
+from native history, and DeepSeek controls from its native API. Terminal checks
+verify input ownership, empty composers and native dialogs, including Codex's
+reset before its deferred SessionStart. Prefer a structured provider protocol
+when it can address the same exact live process/run/conversation. A separate
+app-server process must not be assumed to own an existing terminal session.
+See [Codex App Server](https://developers.openai.com/codex/app-server) for its
+JSON-RPC protocol and version-specific schema generation. Migration of live
+terminal-backed sessions requires separate ownership/resume verification.
+
 No blanket formatting/clippy gate was added over legacy source: it would reject
 unrelated existing formatting rather than verify this change. Existing unit,
 integration and Qt suites provide the initial gate. Add stricter linting with a

@@ -120,6 +120,7 @@ private slots:
     void sharedRecoverySyncCatchesUpOfflinePeer();
     void coldCacheConfirmationPreservesDraftAndPinsConversation();
     void coldCacheClearKeepsDraftAndPinsIdentity();
+    void clearInspectionUpdatesActivityAndCountersImmediately();
     void coldCacheCompactWaitsForSuccess_data();
     void coldCacheCompactWaitsForSuccess();
     void composerNavigationDuringPolling();
@@ -1123,6 +1124,36 @@ void TestSessionsWindow::coldCacheConfirmationPreservesDraftAndPinsConversation(
     QTimer::singleShot(0,&window,[&]{auto *dialog=window.findChild<QMessageBox *>("coldCacheConfirm");for(auto *b:dialog->buttons())if(dialog->buttonRole(b)==QMessageBox::AcceptRole)b->click();});
     send->click();QTRY_VERIFY(QFileInfo::exists(capture));QFile sent(capture);QVERIFY(sent.open(QIODevice::ReadOnly));
     const auto payload=QJsonDocument::fromJson(sent.readAll()).object();QCOMPARE(payload["expected_conversation_id"].toString(),QString("conversation-new"));QCOMPARE(payload["text"].toString(),QString("Preserve this draft"));
+}
+
+void TestSessionsWindow::clearInspectionUpdatesActivityAndCountersImmediately()
+{
+    QTemporaryDir temp;const auto program=temp.filePath("hgs");
+    QFile fixture(program);QVERIFY(fixture.open(QIODevice::WriteOnly));
+    fixture.write(R"PY(#!/usr/bin/env python3
+import json,pathlib,sys
+p=pathlib.Path(__file__).parent/'details.json'
+print(p.read_text() if 'inspect' in sys.argv and p.exists() else '{}')
+)PY");fixture.close();fixture.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner);
+    SessionsWindow window(program);window.resize(1080,760);window.setFleet(fleet());window.show();window.showSession("mac","claude/infra/review");
+    auto *client=window.findChild<HgsClient *>();
+    QJsonObject details{{"tracked",true},{"run_id","run-one"},{"phase","idle"},{"activity","idle"},{"runtime_state","live"},{"process_state","running"},
+        {"conversation_id","old"},{"cursor",40},{"session_usage",QJsonObject{{"status","ok"},{"context",QJsonObject{{"used",109000},{"limit",258400}}}}},
+        {"cache_hint",QJsonObject{{"status","cold"},{"tokens",109000}}}};
+    const auto apply=[&]{QFile data(temp.filePath("details.json"));QVERIFY(data.open(QIODevice::WriteOnly));data.write(QJsonDocument(details).toJson());data.close();client->inspectionReady("mac","claude/infra/review",details);};
+    apply();auto *context=window.findChild<QPushButton *>("activityContext");QVERIFY(context->text().contains("42%"));
+    auto *cache=window.findChild<ToolbarChip *>("cacheChip");QVERIFY(cache->isActive());
+    auto *composer=window.findChild<MessageComposer *>("messageComposer");composer->editor()->setPlainText("Keep this draft");
+    details["conversation_id"]="new";details["session_usage"]=QJsonObject{{"status","unavailable"}};details.remove("cache_hint");
+    details["session_clear"]=QJsonObject{{"type","SessionCleared"},{"at",1791018003.0},{"activity_key","clear-new"}};
+    apply();
+    // The first new-conversation reply paints now, before the follow-up read
+    // with its reset journal cursor returns.
+    auto *activity=window.findChild<ActivityView *>("mainActivity");QVERIFY(activity);
+    QVERIFY(activity->plainText().contains("Session cleared"));
+    QVERIFY(context->text().isEmpty());QVERIFY(!cache->isActive());QCOMPARE(composer->editor()->toPlainText(),QString("Keep this draft"));
+    details["session_usage"]=QJsonObject{{"status","ok"},{"context",QJsonObject{{"used",32},{"limit",258400}}}};
+    apply();QVERIFY(context->text().contains("32/"));QVERIFY(!context->text().contains("109"));
 }
 
 void TestSessionsWindow::coldCacheClearKeepsDraftAndPinsIdentity()

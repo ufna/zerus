@@ -1,0 +1,44 @@
+{
+  "codex": [
+    {
+      "version": "0.160.1",
+      "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.160.1-linux-x64.tgz",
+      "integrity": "sha512-sIDhqV+bsZKKVaVFVY5iB+pAzyOz2XRm3H1KXCsSJwGj5p98qnrT0Fweo1Hfe7WnyTp8mfBNdbVzUeO+mHYugA=="
+    },
+    {
+      "version": "0.162.0",
+      "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.162.0-linux-x64.tgz",
+      "integrity": "sha512-qHWp6oKpf456PqjberGN8avs8zChv2oS+UuDiqVFYAuDOhq6vBc1drh8jEsnR7dBX+zcw03PN5VLtePGlMcC3w=="
+    }
+  ],
+  "upstream": [
+    {
+      "name": "Codex",
+      "url": "https://registry.npmjs.org/@openai/codex/latest",
+      "version_path": ["version"],
+      "notes": "https://developers.openai.com/codex/changelog",
+      "reviewed_versions": ["0.160.1", "0.162.0"]
+    },
+    {
+      "name": "Claude Code",
+      "url": "https://registry.npmjs.org/@anthropic-ai/claude-code/latest",
+      "version_path": ["version"],
+      "notes": "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md",
+      "reviewed_versions": []
+    },
+    {
+      "name": "Kimi Code",
+      "url": "https://pypi.org/pypi/kimi-cli/json",
+      "version_path": ["info", "version"],
+      "notes": "https://github.com/MoonshotAI/kimi-cli/releases",
+      "reviewed_versions": []
+    },
+    {
+      "name": "DeepSeek Harness",
+      "url": "https://registry.npmjs.org/@deepseek-ai/dsh/latest",
+      "version_path": ["version"],
+      "notes": "https://github.com/deepseek-ai/deepseek-harness/releases",
+      "reviewed_versions": ["0.2.0-rc.2"]
+    }
+  ]
+}
