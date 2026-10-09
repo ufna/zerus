@@ -52,6 +52,7 @@ add_executable(hgs-tray
     src/ProcessView.cpp
     src/NativeUiView.cpp
     src/MessageComposer.cpp
+    src/ComposerToolbar.cpp
     src/ComposerDraftStore.cpp
     src/QuestionCard.cpp
     src/DirectoryDialog.cpp

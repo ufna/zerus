@@ -200,6 +200,12 @@ target_link_libraries(test_messagecomposer PRIVATE Qt6::Test Qt6::Widgets)
 add_test(NAME messagecomposer COMMAND test_messagecomposer)
 set_tests_properties(messagecomposer PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+add_executable(test_composertoolbar test_composertoolbar.cpp ../src/ComposerToolbar.cpp)
+target_include_directories(test_composertoolbar PRIVATE ../src)
+target_link_libraries(test_composertoolbar PRIVATE Qt6::Test Qt6::Widgets)
+add_test(NAME composertoolbar COMMAND test_composertoolbar)
+set_tests_properties(composertoolbar PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 add_executable(test_questioncard test_questioncard.cpp ../src/QuestionCard.cpp ../src/ComposerDraftStore.cpp)
 target_include_directories(test_questioncard PRIVATE ../src)
 target_link_libraries(test_questioncard PRIVATE Qt6::Test Qt6::Widgets)
