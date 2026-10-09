@@ -212,10 +212,12 @@ the side panel, the session header and its tabs keep their size. Missing Git
 metadata does not turn a folder into a repository.
 
 The button beside **⋯** in the session list header collapses the list into a
-strip. Every project band and session row keeps its height. Rows show status
-icons, initials, provider icons and attention edges, and each band shows its most
-urgent counter. Rows open on click and name their session in a tooltip. Expanding
-grows the same rows back into cards. The strip's search button opens the full
+strip. Every project band and session row keeps its height, so each session
+becomes a square tile: status and provider icons, the session name on up to two
+lines and a short state such as the working time, with the usual attention
+edge. Each band shows the project name and its most urgent counter. Rows open
+on click and name their session in a tooltip. Expanding grows the same rows
+back into cards. The strip's search button opens the full
 list over the conversation without resizing it; Escape or a click outside returns
 to the strip, and the pin docks the list again. While the pointer rests on the
 strip, the full list opens over the conversation; turn this off with **Settings →

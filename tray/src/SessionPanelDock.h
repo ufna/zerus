@@ -26,7 +26,7 @@ public:
 
     SessionPanelDock(QSplitter *splitter, QWidget *slot, QWidget *panel, SessionList *list, QObject *owner)
         : QObject(owner), m_splitter(splitter), m_slot(slot), m_panel(panel), m_list(list), m_host(panel->parentWidget()),
-          m_dockMinimum(qMax(panel->minimumWidth(), slot->minimumWidth()))
+          m_dockMinimum(qMax(panel->minimumWidth(), slot->minimumWidth())), m_stripWidth(SessionStrip::width(list->property("compact").toBool()))
     {
         m_shadow = new Shadow(m_host); m_shadow->hide();
         m_panel->setMinimumWidth(0); m_list->setMinimumWidth(0);
@@ -67,6 +67,13 @@ public:
     int dockedWidth() const { return m_mode == Docked && !animating() ? m_slot->width() : m_dockedWidth; }
     void setHoverExpands(bool enabled) { m_hoverExpands = enabled; if (!enabled) m_enter.stop(); }
     void setEdgeColor(const QColor &color) { m_shadow->edge = color; m_shadow->update(); }
+    // Follows the row height, so strip tiles stay square.
+    void setStripWidth(int width) {
+        if (width == m_stripWidth) return;
+        m_stripWidth = width;
+        if (m_mode != Docked) fixSlot(true);
+        place();
+    }
     // Starts in the saved state without animating into it.
     void restore(bool collapsed, int dockedWidth) {
         if (collapsed) setMode(Collapsed, false); else place();
@@ -140,7 +147,7 @@ private:
         // The splitter keeps its own sizes; it only moves the conversation when told.
         const auto sizes = m_splitter->sizes();
         const int total = sizes.size() == 2 ? sizes[0] + sizes[1] : 0;
-        const int width = strip ? SessionStrip::Width : qMin(expandedWidth(), total);
+        const int width = strip ? m_stripWidth : qMin(expandedWidth(), total);
         if (strip) m_slot->setFixedWidth(width);
         else { m_slot->setMinimumWidth(m_dockMinimum); m_slot->setMaximumWidth(QWIDGETSIZE_MAX); }
         if (total > 0) m_splitter->setSizes({width, total - width});
@@ -168,7 +175,7 @@ private:
     void place() {
         const QPoint at = m_slot->mapTo(m_host, QPoint());
         const int width = m_mode == Docked && !animating() ? m_slot->width()
-            : qRound(SessionStrip::Width + (expandedWidth() - SessionStrip::Width) * m_expansion);
+            : qRound(m_stripWidth + (expandedWidth() - m_stripWidth) * m_expansion);
         m_panel->setGeometry(at.x(), at.y(), width, m_slot->height());
         const qreal alpha = m_decorated ? m_expansion : 0;
         // Only a shadow at the panel edge; the conversation is not dimmed.
@@ -189,7 +196,7 @@ private:
     QWidget *m_slot, *m_panel;
     SessionList *m_list;
     QWidget *m_host;
-    int m_dockMinimum, m_dockedWidth = 310, m_rowInset = 17;
+    int m_dockMinimum, m_stripWidth, m_dockedWidth = 310, m_rowInset = 17;
     Shadow *m_shadow;
     QScrollBar *m_bar;
     QVariantAnimation m_animation;

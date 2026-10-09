@@ -51,6 +51,7 @@
 #include "ProjectsDialog.h"
 #include "MessageComposer.h"
 #include "SessionList.h"
+#include "SessionCardDelegate.h"
 #include "SessionOrganization.h"
 #include "MachineFilter.h"
 #include "DashboardPage.h"
@@ -3255,7 +3256,7 @@ void TestSessionsWindow::sessionListCollapsesIntoWorkingStrip()
     toggle->click();
     if (!preview.isEmpty()) { QTest::qWait(70); shot(window.get(), "collapsing.png"); }
     QTRY_COMPARE(list->property("expansion").toReal(), 0.0);
-    QCOMPARE(panel->width(), 64); QCOMPARE(slot->width(), 64); QVERIFY(detail->width() > detailWidth);
+    QCOMPARE(panel->width(), SessionStrip::width(true)); QCOMPARE(slot->width(), SessionStrip::width(true)); QVERIFY(detail->width() > detailWidth);
     QVERIFY(QSettings().value("workspace/sessionsCollapsed").toBool());
     QVERIFY(!window->findChild<QLineEdit *>("search")->isVisible()); QVERIFY(window->findChild<QPushButton *>("sessionStripSearch")->isVisible());
     int filters = 0; for (auto *filter : window->findChildren<QPushButton *>("sessionFilter")) filters += filter->isVisible();
@@ -3269,6 +3270,10 @@ void TestSessionsWindow::sessionListCollapsesIntoWorkingStrip()
     for (int i = 0; i < list->count(); ++i) {
         const auto *row = list->item(i);
         QVERIFY(list->visualItemRect(row).width() <= list->viewport()->width());
+        // Each session is a square tile.
+        if (!row->data(SessionRoles::Header).toBool() && !row->isHidden()) {
+            const QRect card = sessionCardRect(list->visualItemRect(row)); QCOMPARE(card.width(), card.height());
+        }
         if (!row->data(SessionRoles::Header).toBool() && row != list->currentItem() && !row->isHidden()) target = i;
     }
     QVERIFY(target >= 0);
@@ -3282,7 +3287,7 @@ void TestSessionsWindow::sessionListCollapsesIntoWorkingStrip()
     window = std::make_unique<SessionsWindow>(script()); window->resize(1280, 860); window->setFleet(fleet()); window->show();
     QVERIFY(QTest::qWaitForWindowExposed(window.get()));
     panel = window->findChild<QWidget *>("sessionListPanel"); slot = window->findChild<QWidget *>("sessionListSlot");
-    QTRY_COMPARE(panel->width(), 64);
+    QTRY_COMPARE(panel->width(), SessionStrip::width(true));
     window->findChild<QPushButton *>("sessionPanelToggle")->click();
     QTRY_COMPARE(slot->width(), 360); QTRY_COMPARE(panel->width(), 360); QVERIFY(docked != 360);
     QVERIFY(!QSettings().value("workspace/sessionsCollapsed").toBool());
@@ -3302,9 +3307,9 @@ void TestSessionsWindow::collapsedStripExpandsOverContentOnlyWhenEnabled()
         QVERIFY(QTest::qWaitForWindowExposed(&window));
         auto *option = window.findChild<QCheckBox *>("workspaceExpandSessionsOnHover"); QVERIFY(!option->isChecked());
         auto *panel = window.findChild<QWidget *>("sessionListPanel");
-        QTRY_COMPARE(panel->width(), 64);
+        QTRY_COMPARE(panel->width(), SessionStrip::width(true));
         QTest::mouseMove(panel, QPoint(30, 300)); QTest::qWait(450);
-        QCOMPARE(panel->width(), 64);
+        QCOMPARE(panel->width(), SessionStrip::width(true));
     }
     QSettings().setValue("workspace/expandSessionsOnHover", true);
     if (!qEnvironmentVariable("HGS_STRIP_PREVIEW").isEmpty()) QSettings().setValue("workspace/theme", "dark");
@@ -3313,13 +3318,13 @@ void TestSessionsWindow::collapsedStripExpandsOverContentOnlyWhenEnabled()
     QVERIFY(window.findChild<QCheckBox *>("workspaceExpandSessionsOnHover")->isChecked());
     auto *panel = window.findChild<QWidget *>("sessionListPanel"), *slot = window.findChild<QWidget *>("sessionListSlot");
     auto *detail = window.findChild<QStackedWidget *>("detail");
-    QTRY_COMPARE(panel->width(), 64);
+    QTRY_COMPARE(panel->width(), SessionStrip::width(true));
     const int detailWidth = detail->width();
     QTest::mouseMove(panel, QPoint(30, 300));
     QTRY_VERIFY(panel->width() >= 270);
     const auto preview = qEnvironmentVariable("HGS_STRIP_PREVIEW");
     if (!preview.isEmpty()) { QTest::qWait(300); QDir().mkpath(preview); QVERIFY(window.grab().save(preview + "/hover.png")); }
-    QCOMPARE(slot->width(), 64); QCOMPARE(detail->width(), detailWidth);
+    QCOMPARE(slot->width(), SessionStrip::width(true)); QCOMPARE(detail->width(), detailWidth);
     // Nothing dims the conversation: only the panel and its edge shadow lie over it.
     auto *splitter = slot->parentWidget();
     for (auto *layer : panel->parentWidget()->findChildren<QWidget *>(QString(), Qt::FindDirectChildrenOnly))
@@ -3327,7 +3332,7 @@ void TestSessionsWindow::collapsedStripExpandsOverContentOnlyWhenEnabled()
             QVERIFY(layer->testAttribute(Qt::WA_TransparentForMouseEvents) && layer->width() <= 18);
     QCOMPARE(window.findChild<QPushButton *>("sessionPanelToggle")->property("glyph").toString(), QString("pin"));
     QTest::mouseMove(detail, QPoint(detail->width() - 40, 300));
-    QTRY_COMPARE(panel->width(), 64);
+    QTRY_COMPARE(panel->width(), SessionStrip::width(true));
     QVERIFY(QSettings().value("workspace/sessionsCollapsed").toBool());
 }
 
@@ -3477,11 +3482,11 @@ void TestSessionsWindow::collapsedStripSearchOpensPanel()
     SessionsWindow window(script()); window.resize(1280, 860); window.setFleet(fleet()); window.show();
     QVERIFY(QTest::qWaitForWindowExposed(&window)); window.activateWindow();
     auto *panel = window.findChild<QWidget *>("sessionListPanel"); auto *search = window.findChild<QLineEdit *>("search");
-    QTRY_COMPARE(panel->width(), 64);
+    QTRY_COMPARE(panel->width(), SessionStrip::width(true));
     window.findChild<QPushButton *>("sessionStripSearch")->click();
     QTRY_VERIFY(panel->width() >= 270); QTRY_VERIFY(search->hasFocus());
     QTest::keyClick(search, Qt::Key_Escape);
-    QTRY_COMPARE(panel->width(), 64);
+    QTRY_COMPARE(panel->width(), SessionStrip::width(true));
     window.findChild<QPushButton *>("sessionStripSearch")->click(); QTRY_VERIFY(panel->width() >= 270);
     // A click on the conversation closes the panel and still reaches its target.
     struct Presses : QObject {
@@ -3491,7 +3496,7 @@ void TestSessionsWindow::collapsedStripSearchOpensPanel()
     auto *detail = window.findChild<QStackedWidget *>("detail"); const QPoint point(detail->width() - 60, detail->height() / 2);
     QWidget *target = detail->childAt(point) ? detail->childAt(point) : detail; target->installEventFilter(&presses);
     QTest::mouseClick(target, Qt::LeftButton, {}, target->mapFrom(detail, point));
-    QTRY_COMPARE(panel->width(), 64); QCOMPARE(presses.count, 1); target->removeEventFilter(&presses);
+    QTRY_COMPARE(panel->width(), SessionStrip::width(true)); QCOMPARE(presses.count, 1); target->removeEventFilter(&presses);
     // Pinning the open panel docks it; the conversation then makes room once.
     window.findChild<QPushButton *>("sessionStripSearch")->click(); QTRY_VERIFY(panel->width() >= 270);
     window.findChild<QPushButton *>("sessionPanelToggle")->click();

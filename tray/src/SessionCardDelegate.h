@@ -8,7 +8,6 @@
 #include "SessionElapsed.h"
 #include "WorkspaceIcons.h"
 #include <QPainter>
-#include <QRegularExpression>
 #include <QStyledItemDelegate>
 
 // One renderer for session-list rows and overview cards.
@@ -18,8 +17,10 @@ inline QRect sessionCardRect(const QRect &row) { return row.adjusted(2, 4, -2, -
 // changes. The list's "expansion" runs from 0 (strip) to 1 (full cards), and
 // "expandedRowWidth" is the row width the cards grow into.
 namespace SessionStrip {
-constexpr int Width = 64;
-constexpr int CardWidth = 50;
+// A strip tile is as wide as a card is tall, so every session gets a square.
+inline int cardSide(bool compact) { return (compact ? 94 : 104) - 10; }
+// The panel adds its margins, the list's padding and the card inset.
+inline int width(bool compact) { return cardSide(compact) + 14; }
 inline qreal expansion(const QWidget *list) {
     const auto value = list ? list->property("expansion") : QVariant();
     return value.isValid() ? qBound(0.0, value.toReal(), 1.0) : 1.0;
@@ -31,11 +32,23 @@ inline QRect mix(const QRect &from, const QRect &to, qreal t) {
     const auto at = [t](int a, int b) { return qRound(a + (b - a) * t); };
     return {at(from.x(), to.x()), at(from.y(), to.y()), at(from.width(), to.width()), at(from.height(), to.height())};
 }
-inline QString initials(const QString &title) {
-    const auto words = title.split(QRegularExpression(QStringLiteral("[\\s_./-]+")), Qt::SkipEmptyParts);
-    if (words.isEmpty()) return {};
-    if (words.size() > 1) return (words[0].left(1) + words[1].left(1)).toUpper();
-    return words[0].left(1).toUpper() + words[0].mid(1, 1);
+// A tile title takes up to two lines; a word too long for a line is split.
+inline QStringList twoLines(const QString &text, const QFontMetrics &metrics, int width) {
+    const auto words = text.simplified().split(' ', Qt::SkipEmptyParts);
+    if (words.isEmpty() || width <= 0) return {};
+    QString first; int used = 0;
+    for (; used < words.size(); ++used) {
+        const QString candidate = first.isEmpty() ? words[used] : first + ' ' + words[used];
+        if (metrics.horizontalAdvance(candidate) > width) break;
+        first = candidate;
+    }
+    QString rest = words.mid(used).join(' ');
+    if (first.isEmpty()) {
+        int fit = 1;
+        while (fit < words[0].size() && metrics.horizontalAdvance(words[0].left(fit + 1)) <= width) ++fit;
+        first = words[0].left(fit); rest = (words[0].mid(fit) + ' ' + words.mid(1).join(' ')).trimmed();
+    }
+    return rest.isEmpty() ? QStringList{first} : QStringList{first, metrics.elidedText(rest, Qt::ElideRight, width)};
 }
 }
 
@@ -129,8 +142,13 @@ private:
             }
             font.setPixelSize(11); font.setWeight(QFont::Medium); p->setFont(font); p->setOpacity(strip);
             const int w = QFontMetrics(font).horizontalAdvance(text) + 12;
-            const QRect badge(band.x() + (SessionStrip::CardWidth - w) / 2, band.center().y() - 9, w, 18);
+            const QRect badge(band.right() - 5 - w, band.center().y() - 9, w, 18);
             p->setPen(Qt::NoPen); p->setBrush(fill); p->drawRoundedRect(badge, 5, 5); p->setPen(ink); p->drawText(badge, Qt::AlignCenter, text);
+            // The project name takes what the counter leaves.
+            const QRect name(band.x() + 8, band.y(), badge.left() - 5 - band.x() - 8, band.height());
+            font.setWeight(QFont::DemiBold); p->setFont(font); p->setPen(fg);
+            if (name.width() >= 14) p->drawText(name, Qt::AlignVCenter | Qt::AlignLeft,
+                QFontMetrics(font).elidedText(index.data(SessionRoles::Title).toString(), Qt::ElideRight, name.width()));
         }
         p->restore();
     }
@@ -272,19 +290,34 @@ private:
         wide.rect.setWidth(qMax(option.rect.width(), option.widget ? option.widget->property("expandedRowWidth").toInt() : 0));
         const auto status = statusOf(index, option.state & QStyle::State_Selected);
         const QRect r = sessionCardRect(option.rect);
-        const QRect stripStatus(r.x() + (SessionStrip::CardWidth - 26) / 2, r.y() + 8, 26, 20);
-        const QColor muted(dark ? "#a1adbb" : "#647386");
+        // A square tile with one centred block: status and provider icons, the
+        // name on up to two lines, then the state. Insets keep it off the edge mark.
+        const int side = r.height(), inset = 9, textWidth = side - 2 * inset;
+        QFont nameFont = option.font; nameFont.setPixelSize(12); nameFont.setWeight(QFont::DemiBold);
+        const auto lines = SessionStrip::twoLines(index.data(SessionRoles::Title).toString(), QFontMetrics(nameFont), textWidth);
+        const int block = 20 + 7 + int(lines.size()) * 16 + 5 + 13;
+        const int top = r.y() + qMax(6, (side - block) / 2);
+        const QRect stripStatus(r.x() + inset, top, 26, 20), stripProvider(r.x() + side - inset - 26, top + 1, 26, 18);
+        const QColor muted(dark ? "#a1adbb" : "#647386"), foreground(dark ? "#e8edf4" : "#1a2733");
         const auto neutralDot = [&](const QRect &badge) {
             if (status.kind != SessionStatusBadge::Neutral || strip <= 0) return;
             p->save(); p->setOpacity(strip * .6); p->setPen(Qt::NoPen); p->setBrush(muted);
             p->drawEllipse(QPointF(badge.center()) + QPointF(.5, .5), 2.5, 2.5); p->restore();
         };
         if (!index.data(SessionRoles::ChildId).toString().isEmpty()) {
-            // Subagent rows keep only their status in the strip.
+            // Subagent rows keep their status and name in the strip.
             p->save(); p->setOpacity(full); paintCard(p, wide, index); p->restore();
             const QRect badge(stripStatus.x(), option.rect.center().y() - 10, 26, 20);
             p->setOpacity(strip); SessionStatusBadge::paint(p, badge, status.caption, status.kind, dark, pulse, 0); neutralDot(badge);
+            QFont font = option.font; font.setPixelSize(11); p->setFont(font); p->setPen(muted);
+            const QRect name(badge.right() + 6, badge.y(), qMax(0, r.right() - 5 - badge.right() - 6), badge.height());
+            p->drawText(name, Qt::AlignVCenter | Qt::AlignLeft, QFontMetrics(font).elidedText(index.data(SessionRoles::Title).toString(), Qt::ElideRight, name.width()));
             p->restore(); return;
+        }
+        // Every tile has its own surface in the strip; cards in the list do not.
+        if (strip > 0) {
+            p->save(); p->setOpacity(strip); p->setPen(QPen(QColor(dark ? "#29313a" : "#dfe5eb"), 1));
+            p->setBrush(QColor(dark ? "#1c2229" : "#ffffff")); p->drawRoundedRect(QRectF(r).adjusted(.5, .5, -.5, -.5), 8, 8); p->restore();
         }
         QStyleOptionViewItem cardOption(option); cardOption.rect.adjust(0, 2, 0, -4);
         IdentityBadges::paintRow(p, cardOption, dark, status.emphasis);
@@ -313,13 +346,21 @@ private:
             p->setOpacity(1);
         }
         if (!shared.agent.isEmpty())
-            IdentityBadges::paint(p, SessionStrip::mix(QRect(stripStatus.x(), r.bottom() - 25, 26, 18), shared.provider, expansion),
+            IdentityBadges::paint(p, SessionStrip::mix(stripProvider, shared.provider, expansion),
                 IdentityBadges::Provider, shared.agent, dark, {}, {}, full);
         if (strip > 0) {
-            QFont font = option.font; font.setPixelSize(12); font.setWeight(QFont::DemiBold); p->setFont(font);
-            p->setOpacity(strip); p->setPen(QColor(dark ? "#e8edf4" : "#1a2733"));
-            p->drawText(QRect(r.x(), r.center().y() - 9, SessionStrip::CardWidth, 18), Qt::AlignCenter,
-                SessionStrip::initials(index.data(SessionRoles::Title).toString()));
+            p->setOpacity(strip);
+            p->setFont(nameFont); p->setPen(foreground);
+            int y = top + 20 + 7;
+            for (const auto &line : lines) { p->drawText(QRect(r.x() + inset, y, textWidth, 16), Qt::AlignCenter, line); y += 16; }
+            // The state in words: how long it has worked, or what it waits for.
+            const double since = index.data(SessionRoles::WorkingSince).toDouble();
+            const QString state = status.working && since > 0 ? SessionElapsed::text(since) : status.caption;
+            const QColor tone = status.kind == SessionStatusBadge::Working ? QColor(dark ? "#55e39a" : "#12834e")
+                : status.kind == SessionStatusBadge::Error ? QColor(dark ? "#ffabb6" : "#a32238")
+                : status.kind == SessionStatusBadge::Attention || status.kind == SessionStatusBadge::Unread ? QColor(dark ? "#f0c77b" : "#885400") : muted;
+            QFont font = option.font; font.setPixelSize(10); font.setWeight(QFont::Medium); p->setFont(font); p->setPen(tone);
+            p->drawText(QRect(r.x() + inset, y + 5, textWidth, 13), Qt::AlignCenter, QFontMetrics(font).elidedText(state, Qt::ElideRight, textWidth));
         }
         p->restore();
     }
