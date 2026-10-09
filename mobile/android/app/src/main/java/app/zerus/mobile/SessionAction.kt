@@ -8,6 +8,7 @@ data class SessionAction(val requestId: String, val target: Target, val operatio
     val status: String = "sending", val createdAt: Long = System.currentTimeMillis(), val error: String = "",
     val resultTarget: Target? = null, val pendingId: String = "", val applyAttemptId:String = "") {
     val blocksSending get() = status in listOf("sending", "uncertain")
+    val needsProjectReview get() = operation=="launch" && status=="completed" && error.isNotBlank() && resultTarget!=null
     fun recover() = if (status == "sending") copy(status = "uncertain", error = "The action was interrupted. Check its original receipt; it has not been retried.") else this
 }
 
@@ -19,7 +20,7 @@ object SessionActionPolicies {
     fun arguments(operation: String, raw: JSONObject): JSONObject {
         require(operation in operations) { "Unsupported session action." }
         val allowed = when(operation) { "rename" -> setOf("new_name"); "fork" -> setOf("tag"); "send_now" -> setOf("queue_id")
-            "launch" -> setOf("agent","directory","tag","account_id")
+            "launch" -> setOf("agent","directory","tag","account_id","swarm_id","project_id","project_folder_id","add_folder")
             "recovery_action" -> setOf("job_id","action")
             "terminal_input" -> setOf("terminal_binding_id", "text", "enter", "key")
             "settings" -> setOf("model", "effort", "expected_pending_id"); "process_stop" -> setOf("process_id", "generation"); else -> emptySet() }
@@ -44,6 +45,11 @@ object SessionActionPolicies {
                 require(args.getString("directory").let { it.startsWith('/') && it.length <= 4096 && it.none(Char::isISOControl) })
                 require(args.getString("tag").let { it.isNotBlank() && it.trim() == it && it.toByteArray(Charsets.UTF_8).size <= 120 && it.none { c -> c == '/' || c == '\\' || c == ':' || c == '.' || c.isISOControl() } })
                 if(args.has("account_id")) require(args.getString("account_id").let { it.isNotBlank() && it.length <= 256 && it.none(Char::isISOControl) })
+                if(listOf("swarm_id","project_id","project_folder_id","add_folder").any(args::has)) {
+                    require(args.getString("swarm_id").isNotBlank() && args.getString("project_id").isNotBlank())
+                    require(args.get("add_folder") is Boolean)
+                    if(args.has("project_folder_id")) require(args.getString("project_folder_id").isNotBlank() && args.get("add_folder")==false)
+                }
             }
             "terminal_input" -> {
                 require(args.getString("terminal_binding_id").isNotBlank())
@@ -123,7 +129,12 @@ object SessionActionPolicies {
             val created=native?.optJSONObject("result_target")
             if(receipt.string("state") != "completed" || native == null || native.string("request_id") != action.requestId || native.string("status") != "created" ||
                 created == null || created.string("name").isBlank() || created.string("run_id").isBlank() || created.string("archive_id").isNotBlank()) return action.copy(status="uncertain",error="The new session was not confirmed. Check this original launch receipt; it has not been retried.")
-            return action.copy(status="completed",error="",resultTarget=action.target.copy(session=created.string("name"),run=created.string("run_id"),conversation=created.string("conversation_id")))
+            val arguments=JSONObject(action.arguments)
+            val assignment=native.optJSONObject("project_assignment")
+            val projectConfirmed=!arguments.has("project_id") || assignment!=null && assignment.string("status")=="assigned" &&
+                assignment.string("swarm_id")==arguments.string("swarm_id") && assignment.string("project_id")==arguments.string("project_id")
+            return action.copy(status="completed",error=if(projectConfirmed) "" else "Session created; project assignment was not confirmed. Review Projects. This launch will not be repeated.",
+                resultTarget=action.target.copy(session=created.string("name"),run=created.string("run_id"),conversation=created.string("conversation_id")))
         }
         if(receipt.string("state") != "completed" || native == null || native.string("request_id") != action.requestId ||
             native.string("name") != action.target.session || native.string("run_id") != action.target.run || native.string("conversation_id") != action.target.conversation ||

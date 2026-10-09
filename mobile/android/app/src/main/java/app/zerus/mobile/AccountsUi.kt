@@ -85,20 +85,22 @@ private fun workspaceName(model:ZerusViewModel,catalog:AccountCatalog)=model.con
                 }
                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight,"View account details",Modifier.size(20.dp),tint=muted)
             }
-            account.windows.take(2).forEach { window ->
-                val remaining=AccountPresentation.remaining(window,now)
-                val percentage=AccountPresentation.percent(window.usedPercent)
-                Row(Modifier.fillMaxWidth().clearAndSetSemantics {
-                    contentDescription="${AccountPresentation.period(window)}, ${AccountPresentation.resetSummary(window,now)}, $percentage"
-                },horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                    Text(AccountPresentation.shortPeriod(window),Modifier.weight(.22f).alignByBaseline(),style=MaterialTheme.typography.bodySmall,maxLines=1,softWrap=false,overflow=TextOverflow.Ellipsis)
-                    Text(remaining,Modifier.weight(.35f).alignByBaseline(),style=MaterialTheme.typography.bodySmall,color=if(AccountPresentation.ended(window,now)) Color(0xFFF0A35B) else muted,maxLines=1,softWrap=false,overflow=TextOverflow.Ellipsis)
-                    Text(percentage,Modifier.weight(.43f).alignByBaseline(),style=MaterialTheme.typography.bodySmall,color=windowTone(catalog,account,window,now),textAlign=TextAlign.End,maxLines=1,softWrap=false,overflow=TextOverflow.Ellipsis)
+            Column(Modifier.fillMaxWidth().padding(start=34.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
+                account.windows.take(2).forEach { window ->
+                    val remaining=AccountPresentation.remaining(window,now)
+                    val percentage=AccountPresentation.percent(window.usedPercent)
+                    Row(Modifier.fillMaxWidth().clearAndSetSemantics {
+                        contentDescription="${AccountPresentation.period(window)}, ${AccountPresentation.resetSummary(window,now)}, $percentage"
+                    },horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                        Text(AccountPresentation.shortPeriod(window),Modifier.width(36.dp).alignByBaseline(),style=MaterialTheme.typography.bodySmall,maxLines=1,softWrap=false,overflow=TextOverflow.Ellipsis)
+                        Text(remaining,Modifier.weight(1f).alignByBaseline(),style=MaterialTheme.typography.bodySmall,color=if(AccountPresentation.ended(window,now)) Color(0xFFF0A35B) else muted,maxLines=1,softWrap=false,overflow=TextOverflow.Ellipsis)
+                        Text(percentage,Modifier.alignByBaseline(),style=MaterialTheme.typography.bodySmall,color=windowTone(catalog,account,window,now),textAlign=TextAlign.End,maxLines=1,softWrap=false,overflow=TextOverflow.Ellipsis)
+                    }
                 }
+                if(account.windows.size>2) Text("+${account.windows.size-2} more usage windows",style=MaterialTheme.typography.labelSmall,color=muted)
+                if(account.windows.isEmpty()) Text(compactBalance(account) ?: "Usage unknown",style=MaterialTheme.typography.bodySmall,color=muted,maxLines=1,overflow=TextOverflow.Ellipsis)
+                if(marker.isNotBlank()) Text(marker,style=MaterialTheme.typography.labelSmall,color=if(AccountPresentation.warning(account) || account.refreshError) Color(0xFFF0A35B) else muted,maxLines=1,overflow=TextOverflow.Ellipsis)
             }
-            if(account.windows.size>2) Text("+${account.windows.size-2} more usage windows",style=MaterialTheme.typography.labelSmall,color=muted)
-            if(account.windows.isEmpty()) Text(compactBalance(account) ?: "Usage unknown",style=MaterialTheme.typography.bodySmall,color=muted,maxLines=1,overflow=TextOverflow.Ellipsis)
-            if(marker.isNotBlank()) Text(marker,style=MaterialTheme.typography.labelSmall,color=if(AccountPresentation.warning(account) || account.refreshError) Color(0xFFF0A35B) else muted,maxLines=1,overflow=TextOverflow.Ellipsis)
         }
     }
 }

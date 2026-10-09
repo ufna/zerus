@@ -31,6 +31,7 @@ from .recovery import validate_recovery
 from .history import validate_history
 from .context import CONTEXT_COMMANDS, LIFECYCLE_OPERATIONS, TERMINAL_OPERATIONS, LAUNCH_OPERATIONS, OPERATIONS, FEATURES, READ_OPERATIONS, READ_SQL, validate_context, validate_core, validate_inspect, validate_lifecycle
 from .launch import catalog as project_catalog, validate as validate_launch
+from .launch import projects as launch_projects, project_choice
 from .terminal import validate as validate_terminal
 from .history import bound_inspection
 from .projects import apply_memberships, is_archived, normalize as normalize_projects, unavailable as unavailable_projects
@@ -281,6 +282,7 @@ class Connector:
         self.recovery_supported = False
         self.history_supported = False
         self.launch_supported = False
+        self.project_launch_supported = False
         self.capabilities_next_poll = 0.0
         self.accounts = AccountCache(lambda *args, **kwargs: self.native(*args, **kwargs),
                                      errors=(ConnectorError, ValueError, RuntimeError, UnicodeError))
@@ -385,7 +387,7 @@ class Connector:
         await self.probe_capabilities()
         operations = OPERATIONS - (set() if self.lifecycle_supported else LIFECYCLE_OPERATIONS) - (set() if self.terminal_supported else TERMINAL_OPERATIONS) - (set() if self.launch_supported else LAUNCH_OPERATIONS) - (set() if self.history_supported else {"history"}) - (set() if self.recovery_supported else {"recovery_action"})
         snapshot["mobile_capabilities"] = {"protocol_version": 1,
-            "operations": sorted(operations), "features": sorted(FEATURES | {"accounts_snapshot"}),
+            "operations": sorted(operations), "features": sorted(FEATURES | {"accounts_snapshot"} | ({"launch_project"} if self.project_launch_supported else set())),
             "reasons": {**({} if self.lifecycle_supported else {"session_actions": "Native CLI lacks the scoped session-action ABI"}),
                         **({} if self.terminal_supported else {"terminal": "Native CLI lacks the scoped Terminal ABI"})}}
 
@@ -400,6 +402,7 @@ class Connector:
         self.recovery_supported = False
         self.history_supported = False
         self.launch_supported = False
+        self.project_launch_supported = False
         try:
             help_text = await self.native(["--help"], timeout=3, json_output=False)
             self.lifecycle_supported = isinstance(help_text, str) and any(
@@ -408,6 +411,7 @@ class Connector:
             self.recovery_supported = isinstance(help_text,str) and "recovery action --scoped-json" in help_text
             self.history_supported = isinstance(help_text,str) and "history <session> --json" in help_text
             self.launch_supported = isinstance(help_text,str) and "--launch-id" in help_text
+            self.project_launch_supported = isinstance(help_text,str) and "swarm assign-launch --json" in help_text
         except (ConnectorError, UnicodeError):
             pass
 
@@ -663,6 +667,23 @@ class Connector:
                 if not isinstance(directory, dict) or not isinstance(directory.get("path"), str) or not Path(directory["path"]).is_absolute():
                     raise ConnectorError("native directory is unavailable")
                 launch_directory = directory["path"]
+                if "project_id" in payload:
+                    if not self.project_launch_supported:
+                        raise ConnectorError("native scoped project assignment is unavailable")
+                    try:
+                        project_data = launch_projects(await self.native(["swarm", "get"], timeout=3))
+                        if "project_folder_id" in payload:
+                            selected_project = next((row for row in project_data["projects"] if row["id"] == payload["project_id"]), None)
+                            selected_folder = next((row for row in selected_project["folders"] if row["id"] == payload["project_folder_id"]), None) if selected_project else None
+                            if selected_folder is None:
+                                raise ValueError("selected local project folder changed")
+                            checked_folder = await self.native(["dirs", selected_folder["path"]], timeout=5)
+                            if not isinstance(checked_folder, dict) or checked_folder.get("path") != launch_directory:
+                                raise ValueError("selected local project folder changed")
+                            selected_folder["path"] = checked_folder["path"]
+                        project_choice(project_data, payload, launch_directory)
+                    except ValueError as error:
+                        raise ConnectorError(str(error)) from None
             if operation == "recovery_action":
                 if not self.recovery_supported: raise ConnectorError("native scoped recovery ABI is unavailable")
                 fresh=await self.native(["inspect",session,"--skip-processes"])
@@ -677,6 +698,12 @@ class Connector:
             if operation == "catalog":
                 try: result = project_catalog(await self.native(["account", "ls"], timeout=5))
                 except ValueError as error: raise ConnectorError(str(error)) from None
+                result["project_launch_supported"] = False
+                if self.project_launch_supported:
+                    try:
+                        result.update(launch_projects(await self.native(["swarm", "get"], timeout=3)))
+                    except (ConnectorError, ValueError):
+                        pass
                 result["request_id"] = request_id
             elif operation == "dirs":
                 result = await self.native(["dirs", payload["path"]], timeout=5)
@@ -700,6 +727,31 @@ class Connector:
                     await asyncio.sleep(.1)
                 if target is None: raise ConnectorError("native launch could not be verified by exact launch UUID; check computers before creating another")
                 result = {"request_id": request_id, "status": "created", "result_target": target}
+                if "project_id" in payload:
+                    assignment_payload = {"request_id": request_id, "name": target["name"],
+                        "expected_run_id": target["run_id"], "expected_conversation_id": target["conversation_id"],
+                        "swarm_id": payload["swarm_id"], "project_id": payload["project_id"],
+                        "directory": launch_directory, "add_folder": payload["add_folder"]}
+                    if "project_folder_id" in payload:
+                        assignment_payload["project_folder_id"] = payload["project_folder_id"]
+                    assignment = {"status": "uncertain", "swarm_id": payload["swarm_id"], "project_id": payload["project_id"]}
+                    try:
+                        raw = await self.native(["swarm", "assign-launch", "--json"], assignment_payload, timeout=5)
+                        if (isinstance(raw, dict) and raw.get("request_id") == request_id
+                                and raw.get("name") == target["name"] and raw.get("run_id") == target["run_id"]
+                                and (raw.get("conversation_id") == target["conversation_id"] or not target["conversation_id"] and isinstance(raw.get("conversation_id"), str))
+                                and raw.get("swarm_id") == payload["swarm_id"] and raw.get("project_id") == payload["project_id"]
+                                and raw.get("status") in ("assigned", "failed", "uncertain")):
+                            assignment["status"] = raw["status"]
+                            if raw["status"] == "assigned":
+                                self.project_next_poll = 0
+                            if raw["status"] == "assigned" and not target["conversation_id"]:
+                                target["conversation_id"] = raw["conversation_id"]
+                    except (ConnectorError, ValueError):
+                        pass
+                    result["project_assignment"] = assignment
+                    if assignment["status"] != "assigned":
+                        result["warning"] = "The session was created, but its project assignment is " + assignment["status"] + ". Review Projects; this launch will not be repeated."
             elif operation == "inspect":
                 argv = ["inspect", session]
                 if payload is not None and "archive_id" in payload:

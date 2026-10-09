@@ -220,11 +220,15 @@ import org.json.JSONObject
 @Composable internal fun SessionActionRecoveryCard(model: ZerusViewModel, action: SessionAction) {
     var review by remember(action.requestId) { mutableStateOf(false) }
     Card { Column(Modifier.fillMaxWidth().padding(16.dp),verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(action.target.session,fontWeight = FontWeight.SemiBold)
-        Text(actionLabel(action.operation) + " / " + sessionActionStatus(action),style = MaterialTheme.typography.labelMedium)
+        Text(if(action.needsProjectReview) action.resultTarget?.session.orEmpty() else action.target.session,fontWeight = FontWeight.SemiBold)
+        Text(if(action.needsProjectReview) "Session created / Project assignment needs review" else actionLabel(action.operation) + " / " + sessionActionStatus(action),style = MaterialTheme.typography.labelMedium)
         if(action.error.isNotBlank()) Text(action.error,style = MaterialTheme.typography.bodySmall)
         Text("The original request is saved. It is never repeated automatically.",style = MaterialTheme.typography.bodySmall)
         Row {
+            if(action.needsProjectReview) {
+                TextButton(onClick={ model.openSessionActionResult(action) },enabled=model.connections.any { it.id==action.target.connectionId }) { Text("Open created session") }
+                TextButton(onClick={ review=true }) { Text("Mark reviewed") }
+            }
             model.sessions.find { it.target == action.target }?.let { session -> TextButton(onClick = { model.open(session) }) { Text("Open") } }
             if(action.status == "uncertain") {
                 TextButton(onClick = { model.checkSessionAction(action) },enabled = model.connections.any { it.id == action.target.connectionId }) { Text("Check original receipt") }
@@ -233,7 +237,8 @@ import org.json.JSONObject
         }
     } }
     if(review) AlertDialog(onDismissRequest = { review = false },title = { Text("Review native action?") },
-        text = { Text("${action.target.session}\nThis action may already have changed the machine. Check its original receipt and native state first. Marking it reviewed does not undo or repeat it.") },
+        text = { Text(if(action.needsProjectReview) "${action.resultTarget?.session}\nThe session was created. Review its project placement before dismissing this notice. Marking reviewed never creates another session."
+            else "${action.target.session}\nThis action may already have changed the machine. Check its original receipt and native state first. Marking it reviewed does not undo or repeat it.") },
         confirmButton = { TextButton(onClick = { model.reviewSessionAction(action); review = false }) { Text("Mark reviewed") } },
         dismissButton = { TextButton(onClick = { review = false }) { Text("Cancel") } })
 }

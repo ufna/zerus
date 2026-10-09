@@ -53,6 +53,8 @@ mod conversation_history;
 mod usage;
 mod workspace;
 mod worktrees;
+mod launch_project;
+pub(crate) use launch_project::with_launch_binding;
 
 use serde_json::{json, Value};
 use std::collections::BTreeMap;

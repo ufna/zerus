@@ -66,6 +66,7 @@ const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [-n tag] [-d
        hgs machine ls | set <alias> --json <profile> | remove <alias> | reset <alias>
        hgs machine resolve <alias>          effective SSH settings (no connection)
        hgs swarm get | preview PEER | join PEER | sync | worker   shared project catalog
+       hgs swarm assign-launch --json   assign an exact launch to its selected project
        hgs machine check <alias> | ssh <alias> [--directory PATH] | setup <alias> [--source <checkout>]
        hgs [@host] account ls | add ID --provider AGENT --label NAME | rm ID | restore ID | login ID
        hgs [@host] account rename ID --label NAME | inspect ID [--refresh]

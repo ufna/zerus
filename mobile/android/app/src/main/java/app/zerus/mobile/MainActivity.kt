@@ -39,10 +39,21 @@ import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.luminance
@@ -68,6 +79,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
@@ -230,7 +243,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
             if (selected != null) Conversation(model, selected, onReview = { review = it }, onReviewOutgoing = { reviewOutgoing = it }, onAttach = onAttach, positions = readingPositions,jumpRequest = messageJump,onJumpConsumed = { messageJump = null })
-            else MainListsRefresh(model) { when (tab) {
+            else MainListsRefresh(model,tab to project?.key?.key) { when (tab) {
                 0 -> SessionsScreen(model, onPair = { tab = 3 })
                 1 -> if (project != null) ProjectDetails(model, project, onViewSessions = { model.viewProjectSessions(project); tab = 0 })
                     else ProjectsScreen(model, onPair = { tab = 3 })
@@ -330,10 +343,84 @@ class MainActivity : ComponentActivity() {
 }
 private fun selectedStatus(session: Session, raw: JSONObject?): String = SelectedSessionPresentation.status(session,raw)
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable private fun MainListsRefresh(model:ZerusViewModel,content:@Composable BoxScope.()->Unit) {
+@Composable private fun MainListsRefresh(model:ZerusViewModel,screen:Any,content:@Composable BoxScope.()->Unit) {
     if(model.demo || !model.storageReady) Box(Modifier.fillMaxSize(),content=content)
-    else PullToRefreshBox(isRefreshing=model.catalogProgress,onRefresh={ model.refresh(explicit=true) },
-        modifier=Modifier.fillMaxSize(),content=content)
+    else {
+        val state=rememberPullToRefreshState()
+        val scope=rememberCoroutineScope()
+        val maximum=with(LocalDensity.current) { 28.dp.toPx() }
+        val motion=remember(scope,maximum) { MainListPullMotion(scope,maximum) }
+        val refreshing by rememberUpdatedState(model.catalogProgress)
+        // Observe without consuming: Material3 still owns the refresh threshold and gesture.
+        val before=remember(motion,state) { object:NestedScrollConnection {
+            override fun onPreScroll(available:Offset,source:NestedScrollSource):Offset {
+                if(source==NestedScrollSource.UserInput && available.y<0 && !refreshing && !state.isAnimating) motion.drag(available.y)
+                return Offset.Zero
+            }
+        } }
+        val after=remember(motion,state) { object:NestedScrollConnection {
+            override fun onPostScroll(consumed:Offset,available:Offset,source:NestedScrollSource):Offset {
+                if(source==NestedScrollSource.UserInput && available.y>0 && !refreshing && !state.isAnimating) motion.drag(available.y)
+                return Offset.Zero
+            }
+        } }
+        LaunchedEffect(screen,motion) { motion.reset() }
+        val lifecycle=LocalLifecycleOwner.current.lifecycle
+        DisposableEffect(lifecycle,motion) {
+            val observer=LifecycleEventObserver { _,event -> if(event==Lifecycle.Event.ON_STOP) motion.release() }
+            lifecycle.addObserver(observer)
+            onDispose { lifecycle.removeObserver(observer); motion.reset() }
+        }
+        Box(Modifier.fillMaxSize().clipToBounds().nestedScroll(before).pointerInput(motion,screen) {
+            try {
+                awaitPointerEventScope {
+                    while(true) {
+                        val event=awaitPointerEvent(PointerEventPass.Initial)
+                        if(event.changes.any { it.pressed }) motion.begin() else motion.release()
+                    }
+                }
+            } finally { motion.release() }
+        }) {
+            PullToRefreshBox(isRefreshing=model.catalogProgress,onRefresh={ model.refresh(explicit=true) },
+                state=state,modifier=Modifier.fillMaxSize()) {
+                Box(Modifier.fillMaxSize().nestedScroll(after).graphicsLayer { translationY=motion.offset },content=content)
+            }
+        }
+    }
+}
+
+/** Touch-only visual resistance; refresh-state animations never move the content. */
+private class MainListPullMotion(private val scope:CoroutineScope,private val maximum:Float) {
+    var offset by mutableFloatStateOf(0f)
+        private set
+    private var distance=0f
+    private var held=false
+    private var returning:Job?=null
+    fun begin() {
+        if(held) return
+        returning?.cancel()
+        distance=offset*4f
+        held=true
+    }
+    fun drag(delta:Float) {
+        if(!held) return
+        distance=(distance+delta).coerceIn(0f,maximum*4f)
+        offset=distance*.25f
+    }
+    fun release() {
+        if(!held) return
+        held=false
+        returning=scope.launch {
+            animate(offset,0f,animationSpec=tween(180)) { value,_ -> offset=value }
+            distance=0f
+        }
+    }
+    fun reset() {
+        returning?.cancel()
+        held=false
+        distance=0f
+        offset=0f
+    }
 }
 
 @Composable private fun ProjectsScreen(model: ZerusViewModel, onPair: () -> Unit) {
@@ -982,7 +1069,7 @@ private fun selectedStatus(session: Session, raw: JSONObject?): String = Selecte
     val unsent = model.drafts.filter { (it.text.isNotBlank() || it.attachments.isNotEmpty() || it.answers.isNotBlank()) && it.status !in listOf("submitted", "recorded") }
     val unresolved = model.outgoing.filter { it.status in listOf("sending", "uncertain", "failed") }
     val contextOperations = model.contextOperations.filter { it.status in listOf("sending", "submitted", "uncertain", "failed") }
-    val sessionActions = model.sessionActions.filter { it.status in listOf("sending","uncertain","failed") }
+    val sessionActions = model.sessionActions.filter { it.status in listOf("sending","uncertain","failed") || it.needsProjectReview }
     var reviewContext by remember { mutableStateOf<ContextOperation?>(null) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("Saved drafts", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold) }
@@ -1064,7 +1151,7 @@ private fun selectedStatus(session: Session, raw: JSONObject?): String = Selecte
         model.machines.forEach { machine -> Card(colors = CardDefaults.cardColors(containerColor = Surface)) {
             Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 Icon(Icons.Default.Computer, null, tint = Mint)
-                Column(Modifier.weight(1f)) { MachineLabel(machine.name,colorHex = model.machineColor(MachineKey(machine.connectionId,machine.id))); Text(if (machine.online) "Online" else "Offline", color = if (machine.online) Mint else Muted, style = MaterialTheme.typography.bodySmall) }
+                Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(6.dp)) { MachineLabel(machine.name,colorHex = model.machineColor(MachineKey(machine.connectionId,machine.id))); Text(if (machine.online) "Online" else "Offline", color = if (machine.online) Mint else Muted, style = MaterialTheme.typography.bodySmall) }
                 if(!model.demo) {
                     IconButton(onClick={ coloring=machine },enabled=model.storageReady) { Icon(Icons.Default.Palette,"Machine label color") }
                     IconButton(onClick={ naming=machine },enabled=model.storageReady) { Icon(Icons.Default.Edit,"Rename machine") }

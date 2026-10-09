@@ -715,7 +715,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
                 val receipt=api.await(connection,api.submit(connection,target,"catalog",JSONObject().put("request_id",id),id))
                 check(receipt.string("state") == "completed") { receipt.string("error").ifBlank { "The native account catalog is unavailable." } }
                 val raw=receipt.getJSONObject("result")
-                val sanitized=withContext(Dispatchers.Default) { JSONObject().put("agents",raw.getJSONArray("agents")).put("accounts",JSONArray(raw.getJSONArray("accounts").objects().map { account -> JSONObject().put("id",account.string("id")).put("provider",account.string("provider")).put("label",account.string("label")) })) }
+                val sanitized=withContext(Dispatchers.Default) { LaunchPresentation.sanitizeCatalog(raw) }
                 if(launchGeneration == generation && launchMachine == machine) { launchCatalogState=sanitized;launchCatalogEvidence=sanitized.toString() }
             } catch(e:Exception) { if(e is CancellationException) throw e;if(launchGeneration == generation) launchError=e.message.orEmpty() }
             finally { if(launchGeneration == generation) launchCatalogLoading=false }
@@ -735,19 +735,23 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
                 check(receipt.string("state") == "completed") { receipt.string("error").ifBlank { "This folder is unavailable." } }
                 val raw=receipt.getJSONObject("result")
                 check(raw.string("path").startsWith('/')) { "Computer returned an invalid folder." }
-                if(launchGeneration == generation && launchMachine == machine) launchDirectoryState=raw
+                if(launchGeneration == generation && launchMachine == machine) launchDirectoryState=raw.put("requested_path",path)
             } catch(e:Exception) { if(e is CancellationException) throw e;if(launchGeneration == generation) launchError=e.message.orEmpty() }
             finally { if(launchGeneration == generation) launchDirectoryLoading=false }
         }
     }
-    fun launchSession(machine:MachineKey,agent:String,directory:String,tag:String,accountId:String?=null,expectedCatalog:String=launchCatalogSignature()) {
+    fun launchSession(machine:MachineKey,agent:String,directory:String,tag:String,accountId:String?=null,expectedCatalog:String=launchCatalogSignature(),projectId:String="") {
         val reason=launchReason(machine);if(reason.isNotBlank()) { launchError=reason;return }
         if(launchSubmitting || !launchVisible || launchMachine != machine || launchCatalogLoading || launchDirectoryLoading || expectedCatalog != launchCatalogEvidence) { launchError="The creation details changed. Review the current choices.";return }
         val catalog=launchCatalogState ?: return
         if(catalog.optJSONArray("agents")?.let { array -> (0 until array.length()).any { array.optString(it) == agent } } != true) { launchError="This native provider is unavailable.";return }
-        if(accountId != null && catalog.optJSONArray("accounts")?.objects().orEmpty().none { it.string("id") == accountId && it.string("provider") == agent }) { launchError="This account is no longer offered for the selected provider.";return }
-        if(launchDirectoryState?.string("path") != directory && launchDirectoryState?.optJSONArray("directories")?.objects().orEmpty().none { it.string("path") == directory }) { launchError="Select a folder from the current native browser.";return }
-        val args=JSONObject().put("agent",agent).put("directory",directory).put("tag",tag).also { if(accountId != null) it.put("account_id",accountId) }
+        if(accountId == null || LaunchPresentation.accounts(catalog,agent).none { it.id == accountId }) { launchError="Choose an offered account for the selected provider.";return }
+        if(!LaunchPresentation.selectedFolder(launchDirectoryState,directory)) { launchError="Select a folder from the current native browser.";return }
+        val args=JSONObject().put("agent",agent).put("directory",directory).put("tag",tag).put("account_id",accountId)
+        if(catalog.opt("project_launch_supported")==true) {
+            try { LaunchPresentation.projectArguments(catalog,projectId,directory).let { fields -> fields.keys().forEach { key -> args.put(key,fields.get(key)) } } }
+            catch(e:Exception) { launchError=e.message.orEmpty();return }
+        } else if(projectId.isNotBlank()) { launchError="This computer does not support scoped project assignment.";return }
         try { SessionActionPolicies.arguments("launch",args) } catch(e:Exception) { launchError=e.message.orEmpty();return }
         val target=Target(machine.computerId,"","","",machine.connectionId)
         val action=SessionAction(UUID.randomUUID().toString(),target,"launch",args.toString())
@@ -763,9 +767,11 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
                 val receipt=api.await(connection,initial);settleSessionAction(action,receipt)
                 val completed=messageState.sessionActions.find { it.requestId == action.requestId }
                 if(completed?.status == "completed" && completed.resultTarget != null && launchVisible && launchGeneration == generation && launchMachine == machine) {
-                    val created=completed.resultTarget;closeLaunch()
-                    open(Session(created,created.session,agent,"starting",directory,"",0,JSONObject().put("name",created.session).put("run_id",created.run).put("conversation_id",created.conversation)))
-                    refresh()
+                    if(completed.error.isBlank()) {
+                        val created=completed.resultTarget;closeLaunch()
+                        open(Session(created,created.session,agent,"starting",directory,"",0,JSONObject().put("name",created.session).put("run_id",created.run).put("conversation_id",created.conversation)))
+                        refresh()
+                    } else { launchError=completed.error;refresh() }
                 } else if(completed?.status != "completed") launchError=completed?.error.orEmpty()
             } catch(e:Exception) {
                 val status=if(!attempted || rejected) "failed" else "uncertain"
@@ -1056,7 +1062,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun reviewSessionAction(action: SessionAction) {
         if(action.requestId in actionFlights) return
-        editState { state -> state.sessionActions.find { it.requestId == action.requestId && it.blocksSending }?.let { state.action(it.copy(status="reviewed")) } ?: state }
+        editState { state -> state.sessionActions.find { it.requestId == action.requestId && (it.blocksSending || it.needsProjectReview) }?.let { state.action(it.copy(status="reviewed")) } ?: state }
         flushDrafts()
     }
     fun cancelCompactContinuation(reason: String = "") {

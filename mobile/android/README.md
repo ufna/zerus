@@ -262,3 +262,36 @@ Pairing QR codes use CameraX 1.6.2 and ZXing core 3.5.4 without Google Play serv
 CameraX is Apache 2.0 and includes libyuv under BSD-3-Clause; ZXing is Apache 2.0. Full license texts and source attribution are available in Third-party notices. Pins follow the [official CameraX releases](https://developer.android.com/jetpack/androidx/releases/camera) and [ZXing 3.5.4 release](https://github.com/zxing/zxing/releases/tag/zxing-3.5.4). CameraX requires compile SDK 36 and AGP 8.9.1 or newer, covered by this build.
 
 Accounts is a read-only viewer grouped by workspace and machine, using the same machine names and colors as Sessions. Compact cards show account type and aligned period, remaining reset time and usage columns; tap a card for the full identity, limits and update time. It shows reported account identity, plan, usage windows and wallet balances when the connector provides them. Unknown limits stay unknown; ended windows need a provider refresh. Account snapshots use a separate encrypted private cache, so offline values remain available with their original provider update time and stale styling; offline and authentication problems stay visible. A connector advertising `accounts_snapshot` is required; Refresh reads its latest snapshot and does not force a provider refresh.
+
+## Project and account selection
+
+New session presents Project, Folder, Agent and Account as compact selectors.
+Projects use the selected computer's fresh canonical swarm/project IDs, and
+only its local folders are offered. The native browser verifies a chosen folder
+again before creation. A folder explicitly chosen through Browse remains selected
+when changing projects in the same dialog; a listed project folder follows its
+project. Choosing an outside folder explicitly adds it to the selected project,
+as the dialog states. No Git repository or worktree is created.
+
+Accounts remain distinct native profiles. The actual reported default is
+preselected, and an offered concrete account is always sent by its exact ID.
+Identical labels include profile IDs; known cached sign-in status is shown
+without treating credential-file presence as proof of sign-in. No synthetic
+“Use native default” choice is added to a known catalog.
+
+Project assignment requires the connector's `launch_project` feature and the
+native `hgs swarm assign-launch --json` ABI. Older computers can still create
+sessions, with an explicit project-assignment-unavailable notice. Creation is
+confirmed by its launch UUID before the native helper checks the exact run,
+session and current canonical project. Assignment is a separate metadata outcome;
+it never retries session creation. A created session whose assignment failed or
+is unknown remains a completed, nonblocking action, with a durable Drafts notice
+offering Open created session and Mark reviewed.
+
+The native helper records a private write-ahead intent in
+`HGS_CONFIG_DIR/swarm/launch-assignments.json` before saving project metadata.
+An interrupted intent is permanently uncertain and never reapplied. Recorded
+outcomes survive later manual project moves, and the shared catalog keeps its
+existing schema for older desktop binaries. The sidecar is bounded to 10,000
+permanent receipts; at capacity new assignments fail before changing metadata.
+Receipts never enter swarm exports or peer synchronization.

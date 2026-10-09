@@ -247,7 +247,7 @@ def main():
     states += extra_states(record) if fixture_config.get("all_states") is True or os.environ.get("ZERUS_MOBILE_FIXTURE_ALL_STATES") == "1" or os.environ.get("ZERUS_MOBILE_FIXTURE_CATALOG_MODE") == "filters" else []
     args = sys.argv[1:]
     if args == ["--help"]:
-        print("hgs session-action <session> --json scoped native lifecycle action\nhgs --launch-id UUID\nhgs terminal <session> --json\nhgs history <session> --json\nhgs recovery action --scoped-json")
+        print("hgs session-action <session> --json scoped native lifecycle action\nhgs --launch-id UUID\nhgs swarm assign-launch --json\nhgs terminal <session> --json\nhgs history <session> --json\nhgs recovery action --scoped-json")
         return
     if args == ["ls", "--json", "--local"]:
         summaries = [{key: value for key, value in row.items()
@@ -268,6 +268,34 @@ def main():
         if states:
             result["organization"]["projects"].append({"id": "66666666-6666-4666-8666-666666666666", "name": "Saved integration history", "color": "#9c78cf", "accessible": True,
                 "folders": [], "sessions": ["Integration fixture\narchive\n" + row["archive_id"] for row in states if row.get("state") == "archived"]})
+        assignments_path = root / "project-assignments.json"
+        assignments = json.loads(assignments_path.read_text()) if assignments_path.exists() else {}
+        for placement in assignments.values():
+            if placement.get("status") != "assigned":
+                continue
+            membership = "Integration fixture\n" + placement["name"]
+            for group in result["organization"]["projects"]:
+                group["sessions"] = [name for name in group["sessions"] if name != membership]
+                if group["id"] == placement["project_id"]:
+                    group["sessions"].append(membership)
+                    if not any(folder["id"] == placement["folder_id"] for folder in group["folders"]):
+                        group["folders"].append({"id": placement["folder_id"], "machine_id": node_id,
+                            "machine_name": "Integration fixture", "name": "Added folder", "path": placement["directory"]})
+    elif args == ["swarm", "assign-launch", "--json"]:
+        payload = json.load(sys.stdin)
+        created = next(row for row in [record, *states] if row["name"] == payload["name"])
+        assert created["launch_id"] == payload["request_id"] and created["run_id"] == payload["expected_run_id"]
+        assert not created.get("archive_id") and (not payload["expected_conversation_id"] or created["conversation_id"] == payload["expected_conversation_id"])
+        assert payload["swarm_id"] == "22222222-2222-4222-8222-222222222222"
+        assert payload["project_id"] in {"ungrouped", "33333333-3333-4333-8333-333333333333"}
+        result = {"request_id": payload["request_id"], "status": fixture_config.get("project_assignment_status", "assigned"),
+            "name": created["name"], "run_id": created["run_id"], "conversation_id": created["conversation_id"],
+            "swarm_id": payload["swarm_id"], "project_id": payload["project_id"],
+            "folder_id": payload.get("project_folder_id", "fixture-folder-" + payload["request_id"]), "directory": payload["directory"]}
+        assignments_path = root / "project-assignments.json"
+        assignments = json.loads(assignments_path.read_text()) if assignments_path.exists() else {}
+        result = assignments.setdefault(payload["request_id"], result)
+        persist(assignments_path, assignments)
     elif args == ["account", "ls"]:
         result = {"profiles": account_profiles(fixture_config)}
     elif len(args) == 3 and args[:2] == ["account", "inspect"]:

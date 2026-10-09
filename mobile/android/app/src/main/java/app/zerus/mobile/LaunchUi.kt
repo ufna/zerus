@@ -7,6 +7,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -45,8 +46,10 @@ import androidx.compose.ui.unit.dp
     val machine = model.launchMachine ?: return
     ObscureConversation()
     var provider by remember(machine) { mutableStateOf("") }
-    var account by remember(machine) { mutableStateOf<String?>(null) }
+    var account by remember(machine) { mutableStateOf("") }
+    var projectId by remember(machine) { mutableStateOf("") }
     var folder by remember(machine) { mutableStateOf("") }
+    var browsedFolder by remember(machine) { mutableStateOf("") }
     var tag by remember(machine) { mutableStateOf("") }
     var browser by remember(machine) { mutableStateOf(false) }
     var allowedCatalog by remember(machine) { mutableStateOf("") }
@@ -55,6 +58,24 @@ import androidx.compose.ui.unit.dp
     LaunchedEffect(signature) { if(allowedCatalog.isBlank() && signature.isNotBlank()) allowedCatalog = signature }
     val providers = remember(model.launchCatalogState) { LaunchPresentation.agents(model.launchCatalogState) }
     val accounts = remember(model.launchCatalogState,provider) { LaunchPresentation.accounts(model.launchCatalogState,provider) }
+    val projects = remember(model.launchCatalogState) { LaunchPresentation.projects(model.launchCatalogState) }
+    val projectSupported = model.launchCatalogState?.opt("project_launch_supported")==true
+    val project = projects.find { it.id == projectId }
+    LaunchedEffect(providers) { if(provider !in providers) provider=providers.firstOrNull().orEmpty() }
+    LaunchedEffect(accounts) { account=LaunchPresentation.defaultAccount(accounts,account) }
+    LaunchedEffect(projects) {
+        if(projects.none { it.id == projectId }) {
+            val preferred=model.selectedProject?.key?.takeIf { it.connectionId==machine.connectionId && it.swarmId==model.launchCatalogState?.string("swarm_id") }?.id
+                ?: model.launchCatalogState?.string("default_project")
+            projectId=projects.find { it.id==preferred }?.id ?: projects.firstOrNull()?.id.orEmpty()
+            folder=browsedFolder
+        }
+    }
+    LaunchedEffect(projectId,model.launchDirectoryLoading) {
+        if(folder.isBlank() && !model.launchDirectoryLoading) project?.folders?.firstOrNull()?.let {
+            folder=it.path;model.browseLaunchDirectory(machine,it.path)
+        }
+    }
     val folderValid = LaunchPresentation.selectedFolder(model.launchDirectoryState,folder)
     val changed = allowedCatalog.isNotBlank() && signature != allowedCatalog
     val reason = model.launchReason(machine)
@@ -68,53 +89,67 @@ import androidx.compose.ui.unit.dp
         Column(Modifier.heightIn(max = 540.dp).verticalScroll(rememberScrollState()),verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if(model.launchCatalogLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
             if(changed) {
-                Text("The native provider or account catalog changed. Review the current choices before creating a session.",color = MaterialTheme.colorScheme.secondary)
-                TextButton(onClick = { allowedCatalog = signature;provider = "";account = null }) { Text("Review updated choices") }
+                Text("Creation choices changed. Review them before creating a session.",color = MaterialTheme.colorScheme.secondary)
+                TextButton(onClick = { allowedCatalog=signature;provider="";account="";projectId="";folder="" }) { Text("Review updated choices") }
             }
-            Text("Agent",fontWeight = FontWeight.SemiBold)
-            providers.forEach { agent -> Surface(color = androidx.compose.ui.graphics.Color.Transparent,modifier = Modifier.fillMaxWidth()
-                .selectable(provider == agent,!model.launchSubmitting,Role.RadioButton) { provider = agent;account = null }) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(provider == agent,null)
-                    ProviderBadge(agent,Modifier.size(24.dp))
-                    Text(DesktopIcons.providerName(agent),Modifier.padding(start = 8.dp))
-                }
-            } }
-            if(providers.isEmpty() && !model.launchCatalogLoading) Text("No installed native providers were reported.",style = MaterialTheme.typography.bodySmall)
-            if(provider.isNotBlank()) {
-                Text("Account",fontWeight = FontWeight.SemiBold)
-                AccountChoice("Use native default",account == null,!model.launchSubmitting) { account = null }
-                accounts.forEach { choice -> AccountChoice(choice.label,account == choice.id,!model.launchSubmitting) { account = choice.id } }
-            }
-            Text("Folder",fontWeight = FontWeight.SemiBold)
-            if(folder.isNotBlank()) SelectionContainer { Text(folder,style = MaterialTheme.typography.bodySmall) }
-            OutlinedButton(onClick = { browser = true },enabled = !model.launchSubmitting) { Icon(Icons.Default.Folder,null);Spacer(Modifier.width(8.dp));Text(if(folder.isBlank()) "Choose a native folder" else "Change folder") }
-            if(folder.isNotBlank() && !folderValid) Text("Choose this folder again in the current native browser.",style = MaterialTheme.typography.bodySmall)
-            OutlinedTextField(tag,{ tag = it },Modifier.fillMaxWidth(),label = { Text("Session name") },singleLine = true,readOnly = model.launchSubmitting)
-            if(tag.isNotEmpty() && nameError.isNotBlank()) Text(nameError,color = MaterialTheme.colorScheme.secondary,style = MaterialTheme.typography.bodySmall)
-            Text("Uses the selected existing folder. No Git repository or worktree is created.",style = MaterialTheme.typography.bodySmall,color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if(model.launchError.isNotBlank()) Text(model.launchError,color = MaterialTheme.colorScheme.secondary,style = MaterialTheme.typography.bodySmall)
-            if(reason.isNotBlank()) Text(reason,style = MaterialTheme.typography.bodySmall)
+            LaunchSelector("Project",project?.name ?: "Choose project",!model.launchSubmitting && projectSupported,
+                projects.map { it.id to it.name },projectId) { projectId=it;folder=browsedFolder }
+            if(!projectSupported && !model.launchCatalogLoading) Text("Project assignment is unavailable on this computer. Update its connector and native CLI to choose a project.",style=MaterialTheme.typography.bodySmall)
+            Text("Folder",fontWeight=FontWeight.SemiBold)
+            if(project?.folders?.isNotEmpty()==true) LaunchSelector(null,
+                project.folders.find { it.path==folder }?.name ?: "Choose project folder",!model.launchSubmitting,
+                project.folders.map { it.path to it.name },folder) { folder=it;browsedFolder="";model.browseLaunchDirectory(machine,it) }
+            if(folder.isNotBlank()) SelectionContainer { Text(folder,style=MaterialTheme.typography.bodySmall) }
+            OutlinedButton(onClick = { browser=true },enabled = !model.launchSubmitting) { Icon(Icons.Default.Folder,null);Spacer(Modifier.width(8.dp));Text(if(folder.isBlank()) "Browse folder" else "Browse another folder") }
+            if(model.launchDirectoryLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if(folder.isNotBlank() && !folderValid && !model.launchDirectoryLoading) Text("Choose this folder again in the current native browser.",style=MaterialTheme.typography.bodySmall)
+            if(project!=null && folder.isNotBlank() && project.folders.none { it.path==folder }) Text("This folder will be added to ${project.name}.",style=MaterialTheme.typography.bodySmall)
+            LaunchSelector("Agent",DesktopIcons.providerName(provider).ifBlank { "Choose agent" },!model.launchSubmitting,
+                providers.map { it to DesktopIcons.providerName(it) },provider,providerIcons=true) { provider=it;account="" }
+            if(providers.isEmpty() && !model.launchCatalogLoading) Text("No installed native providers were reported.",style=MaterialTheme.typography.bodySmall)
+            val selectedAccount=accounts.find { it.id==account }
+            LaunchSelector("Account",selectedAccount?.let { LaunchPresentation.accountTitle(it,accounts) } ?: "Choose account",!model.launchSubmitting && provider.isNotBlank(),
+                accounts.map { it.id to LaunchPresentation.accountTitle(it,accounts) },account) { account=it }
+            selectedAccount?.let { LaunchPresentation.accountStatus(it) }?.takeIf { it.isNotBlank() }?.let { Text(it,style=MaterialTheme.typography.bodySmall) }
+            OutlinedTextField(tag,{ tag=it },Modifier.fillMaxWidth(),label={ Text("Session name") },singleLine=true,readOnly=model.launchSubmitting)
+            if(tag.isNotEmpty() && nameError.isNotBlank()) Text(nameError,color=MaterialTheme.colorScheme.secondary,style=MaterialTheme.typography.bodySmall)
+            Text("Uses the existing folder. No Git repository or worktree is created.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            if(model.launchError.isNotBlank()) Text(model.launchError,color=MaterialTheme.colorScheme.secondary,style=MaterialTheme.typography.bodySmall)
+            if(reason.isNotBlank()) Text(reason,style=MaterialTheme.typography.bodySmall)
             pending?.let { action ->
-                if(action.status == "uncertain") Text("Launch result unknown. A native session may already exist. This request has not been retried.",style = MaterialTheme.typography.bodySmall)
-                TextButton(onClick = { model.checkSessionAction(action) },enabled = !model.launchSubmitting && "action:${action.requestId}" !in model.receiptFlights) { Text("Check original launch result") }
+                if(action.status=="uncertain") Text("Launch result unknown. A native session may already exist. This request has not been retried.",style=MaterialTheme.typography.bodySmall)
+                TextButton(onClick={ model.checkSessionAction(action) },enabled=!model.launchSubmitting && "action:${action.requestId}" !in model.receiptFlights) { Text("Check original launch result") }
             }
             confirmed?.let { action ->
-                Text("The machine confirmed creation of ${action.resultTarget?.session}.",style = MaterialTheme.typography.bodySmall)
-                TextButton(onClick = { model.openSessionActionResult(action) }) { Text("Open confirmed session") }
-                if(model.actionResultNotice.isNotBlank()) Text(model.actionResultNotice,style = MaterialTheme.typography.bodySmall)
+                Text("The machine confirmed creation of ${action.resultTarget?.session}.",style=MaterialTheme.typography.bodySmall)
+                if(action.error.isNotBlank() && action.error!=model.launchError) Text(action.error,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.secondary)
+                TextButton(onClick={ model.openSessionActionResult(action) }) { Text("Open confirmed session") }
+                if(model.actionResultNotice.isNotBlank()) Text(model.actionResultNotice,style=MaterialTheme.typography.bodySmall)
             }
         }
-    },confirmButton = { TextButton(onClick = { model.launchSession(machine,provider,folder,tag,account,allowedCatalog) },
-        enabled = !model.launchSubmitting && !model.launchCatalogLoading && !model.launchDirectoryLoading && !changed && allowedCatalog.isNotBlank() &&
-            reason.isBlank() && provider in providers && folderValid && nameError.isBlank() && (account == null || accounts.any { it.id == account })) { Text(if(model.launchSubmitting) "Creating…" else "Create session") } },
-        dismissButton = { TextButton(onClick = ::close,enabled = !model.launchSubmitting) { Text("Cancel") } })
-    if(browser) LaunchFolderDialog(model,machine,{ selected -> folder = selected;browser = false }) { browser = false }
+    },confirmButton={ TextButton(onClick={ model.launchSession(machine,provider,folder,tag,account,allowedCatalog,projectId) },
+        enabled=!model.launchSubmitting && !model.launchCatalogLoading && !model.launchDirectoryLoading && !changed && allowedCatalog.isNotBlank() &&
+            reason.isBlank() && provider in providers && folderValid && nameError.isBlank() && accounts.any { it.id==account } && (!projectSupported || project!=null) && confirmed==null) { Text(if(model.launchSubmitting) "Creating…" else "Create session") } },
+        dismissButton={ TextButton(onClick=::close,enabled=!model.launchSubmitting) { Text("Cancel") } })
+    if(browser) LaunchFolderDialog(model,machine,{ selected -> folder=selected;browsedFolder=selected;browser=false }) { browser=false }
 }
 
-@Composable private fun AccountChoice(label: String,selected: Boolean,enabled: Boolean,onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().selectable(selected,enabled,Role.RadioButton,onClick),verticalAlignment = Alignment.CenterVertically) {
-        RadioButton(selected,null);Text(label,style = MaterialTheme.typography.bodyMedium)
+@Composable private fun LaunchSelector(label:String?,value:String,enabled:Boolean,choices:List<Pair<String,String>>,selected:String,providerIcons:Boolean=false,onChoose:(String)->Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Column {
+        if(label!=null) Text(label,fontWeight=FontWeight.SemiBold)
+        Box {
+            OutlinedButton(onClick={ expanded=true },enabled=enabled && choices.isNotEmpty(),modifier=Modifier.fillMaxWidth()) {
+                if(providerIcons && selected.isNotBlank()) { ProviderBadge(selected,Modifier.size(24.dp));Spacer(Modifier.width(8.dp)) }
+                Text(value,Modifier.weight(1f));Icon(Icons.Default.ArrowDropDown,"Show choices",Modifier.padding(start=8.dp))
+            }
+            DropdownMenu(expanded && enabled,onDismissRequest={ expanded=false }) {
+                choices.forEach { (id,title) -> DropdownMenuItem(text={ Row(verticalAlignment=Alignment.CenterVertically) {
+                    if(providerIcons) { ProviderBadge(id,Modifier.size(24.dp));Spacer(Modifier.width(8.dp)) }
+                    Text(title,fontWeight=if(id==selected) FontWeight.SemiBold else FontWeight.Normal)
+                } },onClick={ expanded=false;onChoose(id) }) }
+            }
+        }
     }
 }
 
