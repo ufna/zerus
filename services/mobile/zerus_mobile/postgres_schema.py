@@ -43,3 +43,13 @@ CREATE TABLE IF NOT EXISTS rate_limits(key text PRIMARY KEY,count bigint NOT NUL
 ALTER TABLE rate_limits ADD COLUMN IF NOT EXISTS bucket integer NOT NULL DEFAULT 1;
 CREATE INDEX IF NOT EXISTS rate_expiry ON rate_limits(expires,key);
 """
+
+from .routes import SCHEMA as ROUTE_SCHEMA
+SCHEMA += """
+ALTER TABLE nodes ADD COLUMN IF NOT EXISTS computer_id TEXT;
+ALTER TABLE nodes ADD COLUMN IF NOT EXISTS machine_id TEXT;
+ALTER TABLE nodes ADD COLUMN IF NOT EXISTS manifest_hash TEXT;
+ALTER TABLE requests ADD COLUMN IF NOT EXISTS target_computer_id TEXT;
+ALTER TABLE requests ADD COLUMN IF NOT EXISTS target_machine_id TEXT;
+ALTER TABLE requests ADD COLUMN IF NOT EXISTS route_id TEXT;
+""" + ROUTE_SCHEMA

@@ -47,6 +47,178 @@ HTTP long polling is used for commands and events. It works through ordinary
 HTTPS reverse proxies and provides explicit durable claim semantics. It can
 later be replaced with a WebSocket transport without changing command identity.
 
+### Sharing boundary: paired computer and direct peers
+
+The connector exposes an explicitly connected gateway computer and its enabled,
+directly configured Zerus peers. The relay keeps the gateway credential separate
+from the computers reachable through it.
+
+For example, connecting a phone to computer A should expose A and its direct
+peer B. B's connection to C must not expose C through A. Extending access requires
+explicitly connecting B or another gateway. A computer appearing as a neighbor
+does not itself become an authorized gateway. Multiple explicit connections
+expose the union of their individual one-hop neighborhoods, never the transitive
+closure of the machine graph. Arbitrary SSH aliases and shared-catalog entries
+do not establish a sharing edge.
+
+An explicit gateway connection means owner-authorized connector enrollment in
+the workspace. Existing device credentials remain workspace-scoped; this design
+does not introduce phone-specific gateway grants. Discovering a neighbor must
+never create a connector credential or enroll that neighbor as a gateway.
+
+Discovery, publication and command dispatch must all enforce this same boundary.
+The phone cannot supply a multi-hop route or increase discovery depth. A gateway
+may execute locally or forward once to a verified direct peer; that peer must
+execute locally. SSH credentials remain on their owning computers. Removing a
+configured edge or disconnecting a gateway removes the routes depending on it.
+Other independently authorized routes remain valid; an explicit computer-level
+revocation blocks every route to that computer.
+
+Peer traffic follows the enrolled gateway: phone → relay → gateway → direct
+peer, with the reply returning through the same gateway. Pairing Arch therefore
+allows access to its configured Mac through Arch; it does not connect the phone
+directly to Mac. If Arch is unavailable, its route to Mac is unavailable too.
+
+Stable computer identity is separate from the route used to reach it. A machine
+reachable both directly and through another authorized gateway appears once,
+with its sessions and drafts preserved. Each submitted request retains its
+original target and selected route; claimed or uncertain mutations never move
+automatically to another route.
+
+#### One-hop implementation contract
+
+The existing phone API remains unchanged: `GET /v1/computers` returns computers
+and `POST /v1/requests` accepts the selected `computer_id`. A relay node is an
+authenticated gateway queue consumer. A discovered peer is a computer and a
+route, never a node credential or an additional gateway enrollment. Deduplication
+is scoped to one authorized workspace; identical native UUIDs in different
+workspaces do not combine their authorization domains.
+
+The relay keeps a computer registry and gateway routes separately from node
+credentials. Existing node IDs remain valid computer IDs. The first persisted
+binding of a native machine UUID chooses its canonical computer ID; subsequent
+routes attach to that computer. A newly discovered peer matching an existing
+bound local computer does not create another computer. A newly enrolled gateway
+for an already visible peer attaches its direct route before first publication.
+Historical request bodies and hashes are never rewritten. Legacy IDs remain
+accepted lookup aliases. If two different legacy IDs were already published
+before their shared native identity becomes known, keep their presentation rows
+until an alias-aware client migration can preserve drafts, caches and outboxes;
+an old client must not silently lose the computer row referenced by a draft.
+
+The gateway heartbeat has this additive shape:
+
+```json
+{
+  "snapshot": {"sessions": []},
+  "machine_id": "00000000-0000-4000-8000-000000000001",
+  "peers": [{
+    "route_id": "00000000-0000-4000-8000-000000000002",
+    "machine_id": "00000000-0000-4000-8000-000000000003",
+    "name": "Example peer",
+    "online": true
+  }]
+}
+```
+
+`POST /v1/node/heartbeat` still requires only `snapshot`; `machine_id` and
+`peers` are additive. A native UUID binding cannot silently change. `peers` is
+an authoritative manifest of at most 32 direct routes; omission withdraws old
+peer routes while preserving legacy local behavior. Missing `machine_id` does
+not erase an established local binding. The connector generates stable opaque
+route UUIDs from its local alias and the pinned target UUID. SSH aliases, host
+settings and credentials are not sent to the relay or phone.
+
+Publish each peer separately through
+`POST /v1/node/peers/{route_id}/heartbeat`, with body
+`{"machine_id":"<native UUID>","snapshot":{"sessions":[]}}`.
+The authenticated gateway must already advertise that exact route/UUID pair in
+its current manifest. Updating it does not enroll a gateway. Each peer has its
+own observation time: fresh Arch heartbeats cannot keep stale Mac data online.
+A withdrawn or explicitly offline route becomes unavailable immediately. Existing
+body, response and workspace resource limits continue to apply; peer count does
+not multiply the permitted size of an individual request or computer response.
+Peer snapshot storage is capped at 1 MiB of canonical JSON, as is the connector's
+heartbeat envelope. The workspace registry retains at most 2,048 computers,
+4,096 aliases and 4,096 routes, including revoked identities. Admission rejects
+new registry entries at these bounds rather than dropping revocation records or
+request receipts. The combined phone catalog keeps its existing 1 MiB response
+budget and checks selected snapshot sizes before loading them.
+
+Computer rows retain `id`, `name`, `online`, `last_seen_at` and `snapshot`.
+Additive metadata may include `machine_id`, `aliases` and
+`via: {"gateway_id":"<node ID>","gateway_name":"Example gateway"}`;
+`via` is null for a direct route. Old phones can consume the normal computer
+rows without understanding the additional metadata. Prefer a fresh direct
+route, then a fresh peer route ordered deterministically by gateway and route
+ID. Capabilities and displayed snapshot must come from the selected route.
+
+New gateways advertise the `gateway_one_hop` feature. At submission, store the
+target computer/native UUID and selected route alongside
+the request; `requests.node_id` remains its committed gateway. Remote claims add
+`gateway_route: {"schema":1,"route_id":"<UUID>","computer_id":"<ID>",
+"machine_id":"<native UUID>"}`. New bound local claims include the same envelope
+with `route_id: null`, so their execution also verifies the persisted target UUID.
+Historical unbound claims keep their existing shape and fingerprint. Guarded
+claims cannot be delivered to a downgraded gateway lacking this capability.
+Each queue poll must explicitly include `gateway_one_hop=1`; a stored heartbeat
+feature alone is insufficient because an older connector may start before its
+first heartbeat replaces the previous version's capabilities. Without this
+per-poll opt-in, guarded local and peer requests remain unclaimed.
+Duplicate submissions return the preserved receipt before checking current route
+availability; losing a route does not invalidate a request's durable identity.
+Before claiming a queued remote request, recheck its
+frozen route; if withdrawn, fail it before delivery rather than choosing another
+route. Once claimed, delivery loss remains uncertain and cannot cause requeue
+or automatic replay. Result authorization remains bound to the original gateway.
+Withdrawal atomically fails queued requests for that route. Re-adding the same
+alias/native UUID and deterministic route ID cannot revive those requests;
+only a new request UUID can use the restored route. Claim and withdrawal must
+serialize their route checks and state transitions. Already executing native
+operations cannot be retroactively cancelled by withdrawing a route.
+
+The native ABI consists of `hgs mobile-peers --json` and
+`hgs mobile-peer --json`. Discovery returns schema 1, a local
+`{machine_id,name}` object, and direct peer rows containing
+`{via,machine_id,name,online,error}`; `via` is a configured alias retained only on
+the gateway. Unreachable peers may have no newly verified identity. Discovery
+does not inspect their neighbors. The dispatch stdin envelope is
+`{schema:1,via,target_machine_id,argv,payload}`. It resolves `via` against the
+currently enabled local configuration, then invokes the fixed remote
+`hgs swarm __mobile-peer-local --json` entrypoint with only
+`{schema:1,target_machine_id,argv,payload}`. The destination verifies its own
+persistent UUID in the same executing invocation and performs an allowlisted
+local operation. It rejects forwarding fields, `@host` routing and arbitrary
+commands. Native stdout and exit status remain compatible with existing
+connector calls, including JSON inspection and textual capability discovery.
+For a bound local target, the connector calls `swarm __mobile-peer-local` locally
+with the expected UUID, rather than bypassing its guard. Copying a gateway
+configuration or resetting native machine identity must not execute a previously
+bound request on a different machine. Discovery may use a fixed private
+`swarm __mobile-peer-identity --json` helper returning only native UUID and name.
+Production connector calls use `hgs swarm mobile-peers --json` and
+`hgs swarm mobile-peer --json`. The existing `swarm` namespace rejects unknown
+subcommands on older binaries. This remains safe when a binary is downgraded
+between capability discovery and execution; an unknown top-level command could
+otherwise enter the generic session launcher. Help requests never execute work.
+
+The connector maintains separate session/archive membership, capabilities,
+attention, project and account contexts for each machine. Peer calls use the
+guarded native dispatch callback; all contexts share the original durable
+connector journal, whose request fingerprint includes the immutable route
+envelope for new remote work. Resolving a route never accepts an SSH alias from
+a phone or relay. The native dispatcher rechecks the enabled edge immediately
+before forwarding, so stale relay inventory cannot authorize a removed peer.
+Bound peer fanout, subprocess output and deadlines independently of the fixed
+one-hop rule, and keep local heartbeats independent of slow remote probes.
+Computer-level revocation covers every route and preserved legacy presentation
+alias for that native identity within its workspace. Revoking a gateway removes
+its routes only; it does not revoke independently authorized routes elsewhere.
+Computer revocation does not revoke a gateway credential on that same machine:
+the revoked computer is hidden and cannot be targeted, while its enrolled
+connector can still reach other authorized peers. Revoke the node credential to
+disable that gateway and all routes depending on it.
+
 ## Trust and authorization
 
 Version 1 trusts the selected relay operator with session metadata, messages and

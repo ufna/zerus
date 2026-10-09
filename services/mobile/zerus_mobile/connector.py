@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import contextvars
 import fcntl
 import hashlib
 import json
@@ -49,6 +50,7 @@ MAX_BYTES = 8 * 1024 * 1024
 MAX_PAYLOAD = MAX_REQUEST_BYTES
 MAX_RESULT = 1024 * 1024
 ARCHIVE_SNAPSHOT_TTL = 45
+LOCAL_MACHINE_GUARD = contextvars.ContextVar("mobile_local_machine_guard", default=None)
 
 
 class ConnectorError(Exception):
@@ -268,13 +270,19 @@ class Connector:
             raise ConnectorError("invalid state_dir")
         binding = hashlib.sha256((self.identity_url + "\0" + self.token).encode()).hexdigest()
         self.journal = Journal(Path(state).expanduser(), binding)
+        self._init_machine_context(binding)
+        from .fleet import Fleet
+        self.fleet = Fleet(self, ConnectorError)
+
+    def _init_machine_context(self, fallback_id: str) -> None:
+        """Initialize only machine caches; never open another durable journal."""
         self.sessions: set[str] = set()
         self.archives: set[tuple[str, str]] = set()
         self.snapshot_seen_at = 0.0
         self.snapshot_ready = asyncio.Event()
         self.attention_cache: dict[tuple[str, str, str], list[dict[str, str]]] = {}
         self.attention_cursor = 0
-        self.project_fallback_id = binding
+        self.project_fallback_id = fallback_id
         self.project_cache = None
         self.project_next_poll = 0.0
         self.lifecycle_supported = False
@@ -287,10 +295,28 @@ class Connector:
         self.accounts = AccountCache(lambda *args, **kwargs: self.native(*args, **kwargs),
                                      errors=(ConnectorError, ValueError, RuntimeError, UnicodeError))
 
+    def peer_context(self, machine_id: str, native) -> Connector:
+        context = Connector.__new__(Connector)
+        for field in ("journal", "hgs", "interval", "timeout", "max_bytes"):
+            setattr(context, field, getattr(self, field))
+        context.native = native
+        context._init_machine_context(machine_id)
+        return context
+
     async def native(self, argv: list[str], payload: dict | None = None,
                      *, timeout: float | None = None, json_output: bool = True) -> object:
+        machine_id = LOCAL_MACHINE_GUARD.get()
+        if machine_id is not None:
+            payload = {"schema": 1, "target_machine_id": machine_id,
+                       "argv": argv, "payload": payload}
+            argv = ["swarm", "__mobile-peer-local", "--json"]
+        return await self._native(argv, payload, timeout=timeout, json_output=json_output)
+
+    async def _native(self, argv: list[str], payload: dict | None = None,
+                      *, timeout: float | None = None, json_output: bool = True,
+                      max_output_bytes: int | None = None) -> object:
         stdin = None if payload is None else json.dumps(payload, ensure_ascii=False).encode()
-        if stdin is not None and len(stdin) > MAX_PAYLOAD:
+        if stdin is not None and len(stdin) > MAX_PAYLOAD + (4096 if argv[:2] in (["swarm", "mobile-peer"], ["swarm", "__mobile-peer-local"]) else 0):
             raise ConnectorError("native request exceeds size limit")
         process = None
 
@@ -298,7 +324,7 @@ class Connector:
             chunks, size = [], 0
             while chunk := await stream.read(65536):
                 size += len(chunk)
-                if size > self.max_bytes:
+                if size > (self.max_bytes if max_output_bytes is None else max_output_bytes):
                     raise ConnectorError("native output exceeds size limit")
                 chunks.append(chunk)
             return b"".join(chunks)
@@ -374,6 +400,7 @@ class Connector:
         snapshot = await self.native(["ls", "--json", "--local"])
         if not isinstance(snapshot, dict) or not isinstance(snapshot.get("sessions"), list):
             raise ConnectorError("native snapshot has invalid format")
+        snapshot.pop("peers", None)  # Native SSH aliases and peer-of-peer inventory stay local.
         self.sessions = {row["name"] for row in snapshot["sessions"]
                          if isinstance(row, dict) and isinstance(row.get("name"), str)
                          and not is_archived(row)}
@@ -387,7 +414,7 @@ class Connector:
         await self.probe_capabilities()
         operations = OPERATIONS - (set() if self.lifecycle_supported else LIFECYCLE_OPERATIONS) - (set() if self.terminal_supported else TERMINAL_OPERATIONS) - (set() if self.launch_supported else LAUNCH_OPERATIONS) - (set() if self.history_supported else {"history"}) - (set() if self.recovery_supported else {"recovery_action"})
         snapshot["mobile_capabilities"] = {"protocol_version": 1,
-            "operations": sorted(operations), "features": sorted(FEATURES | {"accounts_snapshot"} | ({"launch_project"} if self.project_launch_supported else set())),
+            "operations": sorted(operations), "features": sorted(FEATURES | {"accounts_snapshot"} | ({"gateway_one_hop"} if getattr(self, "fleet", None) and self.fleet.available else set()) | ({"launch_project"} if self.project_launch_supported else set())),
             "reasons": {**({} if self.lifecycle_supported else {"session_actions": "Native CLI lacks the scoped session-action ABI"}),
                         **({} if self.terminal_supported else {"terminal": "Native CLI lacks the scoped Terminal ABI"})}}
 
@@ -403,6 +430,8 @@ class Connector:
         self.history_supported = False
         self.launch_supported = False
         self.project_launch_supported = False
+        if getattr(self, "fleet", None):
+            self.fleet.supported = False
         try:
             help_text = await self.native(["--help"], timeout=3, json_output=False)
             self.lifecycle_supported = isinstance(help_text, str) and any(
@@ -412,8 +441,14 @@ class Connector:
             self.history_supported = isinstance(help_text,str) and "history <session> --json" in help_text
             self.launch_supported = isinstance(help_text,str) and "--launch-id" in help_text
             self.project_launch_supported = isinstance(help_text,str) and "swarm assign-launch --json" in help_text
+            if getattr(self, "fleet", None):
+                self.fleet.supported = isinstance(help_text, str) and all(
+                    marker in help_text for marker in ("mobile-peers --json", "mobile-peer --json"))
         except (ConnectorError, UnicodeError):
             pass
+        finally:
+            if getattr(self, "fleet", None):
+                self.fleet.probe_complete = True
 
     async def enrich_projects(self, snapshot: dict) -> None:
         """Poll native logical groups every fifteen seconds; retain stale data."""
@@ -629,6 +664,25 @@ class Connector:
             raise ConnectorError("invalid native request JSON") from None
         if not self.journal.claim(request_id, journal_operation, request_hash):
             return self.journal.replay(request_id)
+        try:
+            target, machine_id = await self.fleet.resolve(request.get("gateway_route"),
+                                                       present="gateway_route" in request)
+        except asyncio.CancelledError:
+            self.journal.finish(request_id, {"state": "failed", "result": None,
+                "error": "connector stopped before native route resolution"})
+            raise
+        except ConnectorError as error:
+            response = {"state": "failed", "result": None, "error": str(error)}
+            self.journal.finish(request_id, response)
+            return response
+        token = LOCAL_MACHINE_GUARD.set(machine_id)
+        try:
+            return await target._execute_claimed(request)
+        finally:
+            LOCAL_MACHINE_GUARD.reset(token)
+
+    async def _execute_claimed(self, request: dict) -> dict:
+        request_id = request["request_id"]
         mutation_started = False
         try:
             operation, session, payload = await asyncio.to_thread(self.validate, request)
@@ -945,7 +999,18 @@ class Connector:
         while True:
             try:
                 snapshot = await self.snapshot()
-                await self.http(client, "POST", "/v1/node/heartbeat", {"snapshot": snapshot})
+                body = self.fleet.heartbeat(snapshot)
+                try:
+                    await self.http(client, "POST", "/v1/node/heartbeat", body)
+                except RelayError as error:
+                    if len(body) == 1 or error.status not in {400, 404, 422}:
+                        raise
+                    self.fleet.relay_supported = False
+                    snapshot["mobile_capabilities"]["features"] = [feature for feature in
+                        snapshot["mobile_capabilities"]["features"] if feature != "gateway_one_hop"]
+                    await self.http(client, "POST", "/v1/node/heartbeat", {"snapshot": snapshot})
+                else:
+                    self.fleet.confirm_manifest(body)
                 delay = self.interval
             except ConnectorError as error:
                 LOG.warning("Heartbeat: %s", error)
@@ -958,7 +1023,10 @@ class Connector:
             try:
                 await self.flush(client)
                 await self.snapshot_ready.wait()
-                batch = await self.http(client, "GET", "/v1/node/requests?wait=25", max_response_bytes=MAX_PAYLOAD + 4096)
+                pending_capability = not self.fleet.probe_complete or (
+                    self.fleet.supported and self.fleet.relay_supported and self.fleet.local_id is None)
+                wait = 1 if pending_capability else 25
+                batch = await self.http(client, "GET", f"/v1/node/requests?wait={wait}" + ("&gateway_one_hop=1" if self.fleet.available else ""), max_response_bytes=MAX_PAYLOAD + 4096)
                 if not isinstance(batch, dict) or not isinstance(batch.get("requests"), list):
                     raise ConnectorError("relay returned invalid request list")
                 if len(batch["requests"]) > 100:
@@ -980,7 +1048,8 @@ class Connector:
     async def run(self) -> None:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=35), trust_env=False) as client:
             tasks = [asyncio.create_task(self.heartbeats(client)),
-                     asyncio.create_task(self.requests(client))]
+                     asyncio.create_task(self.requests(client)),
+                     asyncio.create_task(self.fleet.run(client))]
             try:
                 await asyncio.gather(*tasks)
             finally:
@@ -988,6 +1057,7 @@ class Connector:
                     task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
                 await self.accounts.close()
+                await self.fleet.close()
 
 
 def main() -> None:

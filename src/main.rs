@@ -4,6 +4,7 @@ mod config;
 mod machines;
 mod macos_session;
 mod metrics;
+mod mobile_peers;
 mod native_ui;
 mod platform;
 mod state;

@@ -238,6 +238,44 @@ Before restarting a connector, wait for its active mutation attempts to finish.
 Restart only the connector service; leave native agents, tmux and owning DeepSeek
 hosts running. Older resident adapters may advertise fewer supported operations.
 
+### Upgrade gateway sharing
+
+An enrolled connector publishes its own computer and enabled direct Zerus peers.
+Peer requests travel through that connector and its existing SSH configuration;
+neighbors do not receive relay credentials. Update `hgs` on both the gateway and
+each peer before enabling this feature. A phone already paired to the workspace
+can read the additional computer rows without pairing each peer separately.
+
+Do not roll this change out across mixed old and new relay workers. An old
+worker does not understand the immutable route stored with a peer request.
+
+1. Validate the new native binaries on the gateway and peers, then replace only
+   their CLI executables. Preserve native sessions and running agent processes.
+2. Temporarily block new phone request submissions while existing connector
+   claims and result uploads drain. Check both relay queues and the connector's
+   durable journal for running work and undelivered receipts. Then block claim
+   polling and stop only the connector service.
+3. Take and verify a PostgreSQL backup. Stop every old relay worker before
+   starting the new version; apply its additive registry schema and start all
+   workers from the same reviewed image. Keep the existing database, credentials,
+   request identities and accounting. Never activate a historical SQLite copy.
+4. Install the new connector package while preserving its original configuration
+   and journal. Start it against the updated native CLI and relay. Verify gateway
+   and peer heartbeats, then permit claim polling by the upgraded connector for
+   a synthetic route/receipt check before reopening ordinary phone submissions.
+   Existing user conversations need no test messages.
+5. Check that a peer's displayed data belongs to its native machine UUID and that
+   removing its configured edge makes that route unavailable. A disconnected
+   gateway must not leave its neighbors online through that gateway.
+
+After guarded requests have been stored, rollback must use a version that
+understands their route metadata and per-poll capability opt-in. Keep admission
+closed if no such version is available. An older relay must never consume this
+queue: preserving the database alone does not make its old claim logic safe.
+An older connector cannot claim guarded requests; do not erase route metadata
+or clear its journal to bypass this restriction. Uncertain mutations stay
+uncertain and are never automatically sent again through another route.
+
 Upgrade both relay and connector before using context controls. Each advertises
 its supported operations, and the agent's live inspection must also permit the
 action. Compact keeps the draft. Clear requires confirmation and does not send

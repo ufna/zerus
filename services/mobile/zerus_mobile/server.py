@@ -17,6 +17,7 @@ from .recovery import validate_recovery
 from .history import validate_history
 from .context import CONTEXT_COMMANDS, LIFECYCLE_OPERATIONS, OPERATIONS, FEATURES, validate_context, validate_core, validate_inspect, validate_lifecycle
 from .launch import OPERATIONS as LAUNCH_OPERATIONS, validate as validate_launch
+from .routes import RouteError, MAX_PEERS
 from .store import Store, digest
 from .async_store import adapt_store, StoreBusy
 from .work import EXECUTOR
@@ -133,6 +134,8 @@ async def protect(request, handler):
             response = web.Response(body=exc.body, status=exc.status, headers=exc.headers)
         else:
             response = web.json_response({"error": exc.reason}, status=exc.status, headers={k: v for k, v in exc.headers.items() if k.lower() not in ("content-type", "content-length")})
+    except RouteError as exc:
+        response=web.json_response({"error":exc.message},status=exc.status)
     except (ValueError, TypeError, KeyError, RecursionError):
         response = web.json_response({"error": "invalid JSON request"}, status=400)
     except asyncio.TimeoutError:
@@ -269,7 +272,7 @@ async def computers(request):
     rows = await request.app[STORE].computers(device["workspace_id"], max_bytes=request.app[CONFIG].max_catalog_bytes)
     if rows is None:
         raise web.HTTPRequestEntityTooLarge(max_size=request.app[CONFIG].max_catalog_bytes, actual_size=request.app[CONFIG].max_catalog_bytes + 1)
-    result = {"computers": [{"id": row["id"], "name": row["name"], "online": row["last_seen"] is not None and now - row["last_seen"] < request.app[CONFIG].online_timeout, "last_seen_at": row["last_seen"], "snapshot": await blocking(json.loads, row["snapshot"]) if row["snapshot"] else None} for row in rows]}
+    result = {"computers": [{"id": row["id"], "name": row["name"], "online": row.get("available",True) and row["last_seen"] is not None and now - row["last_seen"] < request.app[CONFIG].online_timeout, "last_seen_at": row["last_seen"], "snapshot": await blocking(json.loads, row["snapshot"]) if row["snapshot"] else None, "machine_id":row.get("machine_id"),"aliases":row.get("aliases",[]),"via":row.get("via")} for row in rows]}
     return await stream_json(request, result, budget=request.app[SPOOLS], maximum=1024 * 1024)
 
 
@@ -348,20 +351,47 @@ async def get_request(request):
     return await stream_json(request, row, budget=request.app[SPOOLS], maximum=1024 * 1024)
 
 
-async def heartbeat(request):
-    node = await auth(request, "nodes")
-    value = await body(request, ("snapshot",))
-    snap = value["snapshot"]
-    if not isinstance(snap, dict) or not isinstance(snap.get("sessions"), list) or len(snap["sessions"]) > 5000:
+def native_uuid(value):
+    if not isinstance(value,str) or len(value)!=36 or str(uuid.UUID(value))!=value:
         raise web.HTTPBadRequest()
-    for session in snap["sessions"]:
-        if not isinstance(session, dict):
-            raise web.HTTPBadRequest()
-        if "name" in session:
-            text(session["name"], 1024)
-    await still_authorized(request, node, "nodes")
-    await request.app[STORE].heartbeat(node, snap)
-    return web.json_response({"ok": True})
+    return value
+
+
+def validate_snapshot(snap):
+    if not isinstance(snap,dict) or not isinstance(snap.get('sessions'),list) or len(snap['sessions'])>5000:
+        raise web.HTTPBadRequest()
+    for session in snap['sessions']:
+        if not isinstance(session,dict):raise web.HTTPBadRequest()
+        if 'name' in session:text(session['name'],1024)
+
+
+async def heartbeat(request):
+    node=await auth(request,'nodes')
+    value=await body(request,('snapshot',),('machine_id','peers'))
+    validate_snapshot(value['snapshot'])
+    machine=native_uuid(value['machine_id']) if 'machine_id' in value else None
+    peers=value.get('peers',[])
+    if not isinstance(peers,list) or len(peers)>MAX_PEERS:raise web.HTTPBadRequest()
+    seen=set()
+    for peer in peers:
+        if not isinstance(peer,dict) or set(peer)!={'route_id','machine_id','name','online'}:raise web.HTTPBadRequest()
+        native_uuid(peer['route_id']);native_uuid(peer['machine_id']);text(peer['name'],128)
+        if type(peer['online']) is not bool or peer['route_id'] in seen:raise web.HTTPBadRequest()
+        seen.add(peer['route_id'])
+    if peers and machine is None:raise web.HTTPBadRequest()
+    await still_authorized(request,node,'nodes')
+    await request.app[STORE].heartbeat(node,value['snapshot'],machine_id=machine,peers=peers)
+    return web.json_response({'ok':True})
+
+
+async def peer_heartbeat(request):
+    node=await auth(request,'nodes')
+    route=native_uuid(request.match_info['route_id'])
+    value=await body(request,('machine_id','snapshot'))
+    machine=native_uuid(value['machine_id']);validate_snapshot(value['snapshot'])
+    await still_authorized(request,node,'nodes')
+    await request.app[STORE].peer_heartbeat(node,route,machine,value['snapshot'])
+    return web.json_response({'ok':True})
 
 
 async def poll_lease(request, row, role, wait):
@@ -410,6 +440,9 @@ async def release_poll(request, lease):
 
 async def node_requests(request):
     node = await auth(request, "nodes")
+    optin=request.query.get('gateway_one_hop','0')
+    if optin not in ('0','1'):raise web.HTTPBadRequest()
+    allow_gateway=optin=='1'
     wait = wait_seconds(request)
     lease = await poll_lease(request, node, "nodes", wait)
     deadline = time.monotonic() + wait
@@ -422,9 +455,9 @@ async def node_requests(request):
             # The payload lane covers retrieval and serialization, but never an
             # idle long poll. A busy lane leaves the command safely queued.
             rows = []
-            if await request.app[STORE].has_pending(node, queue_ttl=cfg.queue_ttl):
+            if await request.app[STORE].has_pending(node, queue_ttl=cfg.queue_ttl, allow_gateway=allow_gateway):
                 large_payload(request)
-                rows = await request.app[STORE].claim(node, queue_ttl=cfg.queue_ttl, claim_ttl=cfg.claim_ttl)
+                rows = await request.app[STORE].claim(node, queue_ttl=cfg.queue_ttl, claim_ttl=cfg.claim_ttl, allow_gateway=allow_gateway)
             if rows:
                 return await stream_json(request, {"requests": rows}, budget=request.app[SPOOLS], maximum=32 * 1024 * 1024)
             if request[LARGE_PAYLOAD]:
@@ -623,7 +656,7 @@ def create_app(store: Store, config: Config | None = None) -> web.Application:
         web.get("/healthz", health), web.get("/readyz", readiness), web.post("/v1/pair", pair),
         web.get("/v1/capabilities", capabilities), web.get("/v1/computers", computers),
         web.post("/v1/requests", submit), web.get("/v1/requests/{id}", get_request),
-        web.post("/v1/node/heartbeat", heartbeat), web.get("/v1/node/requests", node_requests),
+        web.post("/v1/node/heartbeat", heartbeat), web.post("/v1/node/peers/{route_id}/heartbeat",peer_heartbeat), web.get("/v1/node/requests", node_requests),
         web.post("/v1/node/requests/{id}/result", node_result), web.get("/v1/events", events),
         web.post("/v1/push", push_register), web.delete("/v1/push", push_delete),
         web.delete("/v1/device", device_delete),

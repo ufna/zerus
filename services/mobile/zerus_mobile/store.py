@@ -16,6 +16,7 @@ import uuid
 from .attachments import MAX_QUEUE_BYTES
 from .context import CAPABILITY_OPERATIONS, READ_OPERATIONS, READ_SQL, inspect_features, supports
 from .projects import is_archived
+from .routes import Registry, RouteError, drive_sync, SCHEMA as ROUTE_SCHEMA, MAX_PEER_SNAPSHOT_BYTES
 
 
 def token() -> str:
@@ -143,6 +144,14 @@ class Store:
             END;
             """)
 
+        for table, columns in (("nodes", ("computer_id", "machine_id", "manifest_hash")), ("requests", ("target_computer_id", "target_machine_id", "route_id"))):
+            existing = {r[1] for r in self.db.execute(f"PRAGMA table_info({table})")}
+            for column in columns:
+                if column not in existing:
+                    self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
+        self.db.executescript(ROUTE_SCHEMA)
+        self.registry = Registry()
+
 
     @serialized
     def close(self):
@@ -160,6 +169,7 @@ class Store:
         value, secret = str(uuid.uuid4()), token()
         with self.db:
             self.db.execute("INSERT INTO nodes(id,workspace_id,name,token_hash) VALUES(?,?,?,?)", (value, workspace, name, digest(secret)))
+            drive_sync(self.db, self.registry.enroll({"id": value, "workspace_id": workspace, "name": name}))
         return {"node_id": value, "node_token": secret}
 
     @serialized
@@ -196,6 +206,8 @@ class Store:
             field = "node_id" if role == "nodes" else "device_id"
             self.db.execute(f"UPDATE requests SET state='failed',error='credential revoked before delivery',result_bytes=length('credential revoked before delivery'),reserved_bytes=0,updated=? WHERE {field}=? AND state='queued'", (now, value))
             self.db.execute(f"UPDATE requests SET state='uncertain',error='credential revoked after claim',result_bytes=length('credential revoked after claim'),reserved_bytes=0,updated=? WHERE {field}=? AND state='claimed'", (now, value))
+            if role == "nodes":
+                self.db.execute("UPDATE computer_routes SET active=0,snapshot=NULL,snapshot_hash=NULL,last_seen=NULL WHERE gateway_id=?", (value,))
             if role == "devices":
                 self.db.execute("DELETE FROM pushes WHERE device_id=?", (value,))
                 self.db.execute("DELETE FROM push_jobs WHERE device_id=?", (value,))
@@ -237,9 +249,10 @@ class Store:
                 if existing["device_id"] != device["id"] or existing["body_hash"] != digest(encoded):
                     return 409, {"error": "request_id already used with different content"}
                 return 202, self.envelope(existing)
-            node = self.db.execute("SELECT id,snapshot,last_seen FROM nodes WHERE id=? AND workspace_id=? AND revoked=0", (body["computer_id"], device["workspace_id"])).fetchone()
+            node = drive_sync(self.db, self.registry.select(device["workspace_id"], body["computer_id"]))
             if not node:
-                return 404, {"error": "computer not found"}
+                exists = drive_sync(self.db, self.registry.resolve(device["workspace_id"], body["computer_id"]))
+                return (409 if exists else 404), {"error": "computer route is unavailable" if exists else "computer not found"}
             snapshot = json.loads(node["snapshot"]) if node["snapshot"] else None
             if body["operation"] in CAPABILITY_OPERATIONS and not supports(snapshot, body["operation"]):
                 return 409, {"error": "computer does not advertise this operation; update its connector"}
@@ -258,38 +271,43 @@ class Store:
             total = usage["reads" if reads else "mutations"]
             if total >= (5000 if reads else 100000):
                 return 429, {"error": "workspace retained request limit reached"}
-            byte_count = len(encoded.encode())
+            byte_count = len(encoded.encode()) + (144 if node["machine_id"] else 0)
             retained = usage["payload_bytes"]
             # Preserve a small control/text allowance when attachment traffic
             # occupies the main body budget. No uncertain request is evicted.
             small = byte_count <= 64 * 1024 and not body.get("payload", {}).get("attachments")
             if retained + byte_count + 1024*1024 > max_bytes + (1024 * 1024 if small else 0):
                 return 429, {"error": "workspace retained payload budget is full"}
-            self.db.execute("INSERT INTO requests(id,workspace_id,device_id,node_id,operation,body_hash,body_bytes,body,state,created,updated,reserved_bytes) VALUES(?,?,?,?,?,?,?,?,'queued',?,?,1048576)", (body["request_id"], device["workspace_id"], device["id"], body["computer_id"], body["operation"], digest(encoded), byte_count, encoded, now, now))
+            self.db.execute("INSERT INTO requests(id,workspace_id,device_id,node_id,operation,body_hash,body_bytes,body,state,created,updated,reserved_bytes,target_computer_id,target_machine_id,route_id) VALUES(?,?,?,?,?,?,?,?,'queued',?,?,1048576,?,?,?)", (body["request_id"], device["workspace_id"], device["id"], node["gateway_id"], body["operation"], digest(encoded), byte_count, encoded, now, now, node["id"], node["machine_id"], None if node["local"] else node["route_id"]))
             if body["operation"] == "terminal_input":
                 self.db.execute("UPDATE requests SET expires_at=? WHERE id=?", (now+5,body["request_id"]))
             row = self.db.execute("SELECT id,state,result,error FROM requests WHERE id=?", (body["request_id"],)).fetchone()
         return 202, self.envelope(row)
 
     @serialized
-    def has_pending(self,node,queue_ttl=120):
+    def has_pending(self,node,queue_ttl=120,allow_gateway=False):
         now=time.time()
-        return self.db.execute("SELECT 1 FROM requests r JOIN nodes n ON n.id=r.node_id WHERE r.node_id=? AND n.workspace_id=? AND n.revoked=0 AND r.state='queued' AND r.created>? AND (r.expires_at IS NULL OR r.expires_at>?) LIMIT 1",(node["id"],node["workspace_id"],now-queue_ttl,now)).fetchone() is not None
+        return self.db.execute("SELECT 1 FROM requests r JOIN nodes n ON n.id=r.node_id WHERE r.node_id=? AND n.workspace_id=? AND n.revoked=0 AND r.state='queued' AND (r.target_machine_id IS NULL OR ?) AND r.created>? AND (r.expires_at IS NULL OR r.expires_at>?) LIMIT 1",(node["id"],node["workspace_id"],int(allow_gateway),now-queue_ttl,now)).fetchone() is not None
 
     @serialized
-    def claim(self, node, queue_ttl=120, claim_ttl=90) -> list:
+    def claim(self, node, queue_ttl=120, claim_ttl=90, allow_gateway=False) -> list:
         now = time.time()
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
             live = self.db.execute("SELECT 1 FROM nodes WHERE id=? AND revoked=0", (node["id"],)).fetchone()
             if not live:
                 return []
-            row = self.db.execute("SELECT * FROM requests WHERE node_id=? AND state='queued' AND created>? AND (expires_at IS NULL OR expires_at>?) ORDER BY created LIMIT 1", (node["id"],now-queue_ttl,now)).fetchone()
+            row = self.db.execute("SELECT * FROM requests WHERE node_id=? AND state='queued' AND (target_machine_id IS NULL OR ?) AND created>? AND (expires_at IS NULL OR expires_at>?) ORDER BY created LIMIT 1", (node["id"],int(allow_gateway),now-queue_ttl,now)).fetchone()
             if not row:
+                return []
+            if not drive_sync(self.db, self.registry.frozen(row, allow_gateway)):
+                drive_sync(self.db, self.registry.invalidate('id=?', (row['id'],)))
                 return []
             self.db.execute("UPDATE requests SET state='claimed',claimed=?,updated=? WHERE id=? AND state='queued'", (now, now, row["id"]))
             body = json.loads(row["body"])
         command={key: body[key] for key in ("request_id", "operation", "session", "payload")}
+        if row["target_machine_id"] is not None:
+            command["gateway_route"] = {"schema": 1, "route_id": row["route_id"], "computer_id": row["target_computer_id"], "machine_id": row["target_machine_id"]}
         if row["expires_at"] is not None:
             command["expires_at"]=row["expires_at"]
         return [command]
@@ -325,16 +343,29 @@ class Store:
         self.db.execute("INSERT INTO push_jobs(device_id,event_id,payload,next_at,created) SELECT p.device_id,?,?,?,? FROM pushes p JOIN devices d ON d.id=p.device_id WHERE d.workspace_id=? AND d.revoked=0 AND NOT EXISTS(SELECT 1 FROM push_jobs j WHERE j.device_id=p.device_id) LIMIT max(0,10000-(SELECT push_count FROM relay_usage WHERE id=1))", (cur.lastrowid, payload, now, now, node["workspace_id"]))
 
     @serialized
-    def heartbeat(self, node, snapshot: dict):
+    def heartbeat(self, node, snapshot: dict, machine_id=None, peers=None):
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            manifest=digest(canonical({'machine_id':machine_id,'peers':peers or [],'guarded':supports(snapshot,'gateway_one_hop','features')}))
+            current=self.db.execute('SELECT manifest_hash FROM nodes WHERE id=? AND revoked=0',(node['id'],)).fetchone()
+            if current is None:return False
+            if current['manifest_hash']!=manifest:
+                drive_sync(self.db, self.registry.gateway(node, machine_id, peers or [], supports(snapshot, 'gateway_one_hop', 'features')))
+                self.db.execute('UPDATE nodes SET manifest_hash=? WHERE id=?',(manifest,node['id']))
+            return self._heartbeat_snapshot(node, snapshot)
+
+    def _heartbeat_snapshot(self, node, snapshot: dict):
         now = time.time()
         encoded=canonical(snapshot)
         snapshot_hash=digest(encoded)
         with self.db:
-            row = self.db.execute("SELECT snapshot_hash FROM nodes WHERE id=? AND revoked=0", (node["id"],)).fetchone()
+            row = self.db.execute("SELECT n.snapshot_hash,c.revoked AS computer_revoked FROM nodes n JOIN computers c ON c.id=n.computer_id WHERE n.id=? AND n.revoked=0", (node["id"],)).fetchone()
             if row is None: return False
-            if row[0]==snapshot_hash:
+            if row['computer_revoked'] or row[0]==snapshot_hash:
                 self.db.execute("UPDATE nodes SET last_seen=? WHERE id=?",(now,node["id"]))
                 return False
+            computer=self.db.execute('SELECT computer_id FROM nodes WHERE id=?',(node['id'],)).fetchone()[0]
+            event_node={'id':computer,'workspace_id':node['workspace_id']}
             previous = self.db.execute("SELECT snapshot FROM nodes WHERE id=?",(node["id"],)).fetchone()[0]
             if previous is not None:
                 old = {s["name"]: s for s in json.loads(previous).get("sessions", []) if isinstance(s, dict) and isinstance(s.get("name"), str) and not is_archived(s)}
@@ -350,11 +381,11 @@ class Store:
                     pending = lambda s: {canonical(q) for q in s.get("mobile_attention", []) if isinstance(q, dict)} if isinstance(s.get("mobile_attention", []), list) else set()
                     new_async_question = bool(pending(session) - pending(before)) or (bool(pending(session)) and identity(before) != identity(session))
                     if new_async_question or (phase in ("approval", "input") and (before.get("phase") != phase or identity(before) != identity(session) or question(before) != question(session))):
-                        self.event(node, session["name"], "attention")
+                        self.event(event_node, session["name"], "attention")
                     elif phase == "error" and (before.get("phase") != "error" or identity(before) != identity(session) or question(before) != question(session)):
-                        self.event(node, session["name"], "error")
+                        self.event(event_node, session["name"], "error")
                     elif session.get("activity") == "idle" and before.get("activity") == "busy" and identity(before) == identity(session):
-                        self.event(node, session["name"], "completed")
+                        self.event(event_node, session["name"], "completed")
             self.db.execute("UPDATE nodes SET last_seen=?,snapshot=?,snapshot_hash=? WHERE id=?", (now, encoded,snapshot_hash,node["id"]))
             # Bound event and push storage even for a noisy computer.
             excess=self.db.execute("SELECT max(0,event_count-100000) FROM relay_usage WHERE id=1").fetchone()[0]
@@ -374,9 +405,102 @@ class Store:
 
     @serialized
     def computers(self, workspace, max_bytes=1024*1024):
-        size = self.db.execute("SELECT COALESCE(sum(COALESCE(length(CAST(snapshot AS BLOB)),0)+length(CAST(name AS BLOB))+256),0) FROM nodes WHERE workspace_id=? AND revoked=0", (workspace,)).fetchone()[0]
-        if size > max_bytes: return None
-        return [dict(row) for row in self.db.execute("SELECT id,name,last_seen,snapshot FROM nodes WHERE workspace_id=? AND revoked=0 ORDER BY name,id", (workspace,))]
+        with self.db:
+            return drive_sync(self.db, self.registry.catalog(workspace, max_bytes))
+
+    @serialized
+    def request_gateway(self, request_id):
+        row = self.db.execute('SELECT node_id FROM requests WHERE id=?', (request_id,)).fetchone()
+        return row[0] if row else None
+
+    @staticmethod
+    def _event_changes(previous, snapshot):
+        if previous is None:
+            return []
+        old = {
+            s["name"]: s
+            for s in json.loads(previous).get("sessions", [])
+            if isinstance(s, dict)
+            and isinstance(s.get("name"), str)
+            and not is_archived(s)
+        }
+        events = []
+        for session in snapshot.get("sessions", []):
+            if (
+                not isinstance(session, dict)
+                or not isinstance(session.get("name"), str)
+                or is_archived(session)
+            ):
+                continue
+            before = old.get(session["name"], {})
+            identity = lambda s: (s.get("run_id"), s.get("conversation_id"))
+            question = lambda s: canonical(
+                [
+                    s.get("attention_id"),
+                    s.get("question_request", s.get("question_requests", None)),
+                ]
+            )
+            pending = lambda s: (
+                {
+                    canonical(q)
+                    for q in s.get("mobile_attention", [])
+                    if isinstance(q, dict)
+                }
+                if isinstance(s.get("mobile_attention", []), list)
+                else set()
+            )
+            phase = session.get("phase")
+            if (
+                bool(pending(session) - pending(before))
+                or (bool(pending(session)) and identity(before) != identity(session))
+                or (
+                    phase in ("approval", "input")
+                    and (
+                        before.get("phase") != phase
+                        or identity(before) != identity(session)
+                        or question(before) != question(session)
+                    )
+                )
+            ):
+                kind = "attention"
+            elif phase == "error" and (
+                before.get("phase") != "error"
+                or identity(before) != identity(session)
+                or question(before) != question(session)
+            ):
+                kind = "error"
+            elif (
+                session.get("activity") == "idle"
+                and before.get("activity") == "busy"
+                and identity(before) == identity(session)
+            ):
+                kind = "completed"
+            else:
+                continue
+            events.append((session["name"], kind))
+        return events
+
+
+    @serialized
+    def peer_heartbeat(self, node, route_id, machine_id, snapshot):
+        encoded = canonical(snapshot)
+        if len(encoded.encode()) > MAX_PEER_SNAPSHOT_BYTES:
+            raise RouteError(413, 'peer snapshot is too large')
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            result=drive_sync(self.db, self.registry.peer_heartbeat(node, route_id, machine_id, encoded))
+            for name,kind in self._event_changes(result['previous'],snapshot):
+                if len(name)<=1024 and not any(ord(c)<32 for c in name):
+                    self.event({'id':result['id'],'workspace_id':node['workspace_id']},name,kind)
+            excess=self.db.execute('SELECT max(0,event_count-100000) FROM relay_usage WHERE id=1').fetchone()[0]
+            if excess:self.db.execute('DELETE FROM events WHERE id IN (SELECT id FROM events ORDER BY id LIMIT ?)',(min(excess,5000),))
+            return result
+
+    @serialized
+    def revoke_computer(self, value):
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            return drive_sync(self.db, self.registry.revoke_computer(value))
 
     @serialized
     def get_request(self, device, value, queue_ttl=120, claim_ttl=90):

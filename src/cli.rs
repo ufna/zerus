@@ -40,6 +40,8 @@ impl From<std::io::Error> for Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [-n tag] [-d] [--rc] [--dry-run] [-- args...]
+       hgs mobile-peers --json        guarded direct-peer discovery (mobile-peer ABI 1)
+       hgs mobile-peer --json         guarded direct-peer native request from JSON stdin
        hgs [@host] a <session>        attach by full name (see hgs ls)
        hgs [@host] a <session> --existing [--run-id ID]   attach only to this live run
        hgs [@host] ls                 sessions here and on peers
@@ -198,6 +200,20 @@ pub fn dispatch(args: Vec<String>) -> Result<i32> {
         return state::dispatch(&args[1..]).map_err(|e| Error::new(1, e));
     }
     let config = Config::load()?;
+    // The existing swarm namespace fails closed on unknown operations in older
+    // installations, so transport helpers cannot fall through to agent launch.
+    if args.first().is_some_and(|a| a == "swarm")
+        && args.get(1).is_some_and(|a| {
+            matches!(a.as_str(), "mobile-peers" | "mobile-peer" | "__mobile-peer-local" | "__mobile-peer-identity" | "__mobile-peer-transport")
+        })
+    {
+        return crate::mobile_peers::dispatch(&config, &args[1..]);
+    }
+    if args.first().is_some_and(|a| {
+        matches!(a.as_str(), "mobile-peers" | "mobile-peer" | "__mobile-peer-local" | "__mobile-peer-identity" | "__mobile-peer-transport")
+    }) {
+        return crate::mobile_peers::dispatch(&config, &args);
+    }
     if args.first().is_some_and(|a| a == "--run") {
         return run(&args[1..]);
     }

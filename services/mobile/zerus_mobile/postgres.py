@@ -30,6 +30,7 @@ from .postgres_schema import SCHEMA
 from .projects import is_archived
 from .store import Store, canonical, digest, token
 from .work import EXECUTOR
+from .routes import Registry, RouteError, drive_async, MAX_PEER_SNAPSHOT_BYTES
 
 RESULT_RESERVE = 1024 * 1024
 RECEIPT_COLUMNS = "id,device_id,node_id,operation,body_hash,state,result,error,created,claimed,updated,expires_at"
@@ -202,6 +203,7 @@ class PostgresStore(Notifications):
                             "poll_credentials",
                             "poll_leases",
                             "rate_limits",
+                            "computers", "native_computers", "computer_aliases", "computer_routes",
                         )
                         await conn.execute(
                             "LOCK TABLE "
@@ -346,13 +348,10 @@ class PostgresStore(Notifications):
 
     async def node(self, workspace, name):
         value, secret = str(uuid.uuid4()), token()
-        await self.pool.execute(
-            "INSERT INTO nodes(id,workspace_id,name,token_hash) VALUES($1,$2,$3,$4)",
-            value,
-            workspace,
-            name,
-            digest(secret),
-        )
+        async with self.pool.acquire(timeout=5) as conn, conn.transaction():
+            await self._usage(conn, workspace)
+            await conn.execute('INSERT INTO nodes(id,workspace_id,name,token_hash) VALUES($1,$2,$3,$4)', value, workspace, name, digest(secret))
+            await drive_async(conn, Registry(True,self.shard).enroll({'id':value,'workspace_id':workspace,'name':name}))
         return {"node_id": value, "node_token": secret}
 
     async def invite(self, workspace):
@@ -409,22 +408,15 @@ class PostgresStore(Notifications):
         return await self.pool.fetchval("SELECT 1") == 1
 
     async def computers(self, workspace, max_bytes=1024 * 1024):
-        async with self.pool.acquire(timeout=5) as conn, conn.transaction(
-            isolation="repeatable_read", readonly=True
-        ):
-            size = await conn.fetchval(
-                "SELECT COALESCE(sum(COALESCE(octet_length(snapshot),0)+octet_length(name)+256),0) FROM nodes WHERE workspace_id=$1 AND revoked=0",
-                workspace,
-            )
-            if size > max_bytes:
-                return None
-            return [
-                dict(r)
-                for r in await conn.fetch(
-                    "SELECT id,name,last_seen,snapshot FROM nodes WHERE workspace_id=$1 AND revoked=0 ORDER BY name,id",
-                    workspace,
-                )
-            ]
+        async with self.pool.acquire(timeout=5) as conn, conn.transaction():
+            # Exposure and root attachment must serialize: a catalog may make
+            # a legacy ID visible while the first native binding deduplicates.
+            await self._usage(conn,workspace)
+            await conn.fetch('SELECT id FROM nodes WHERE workspace_id=$1 ORDER BY id FOR SHARE',workspace)
+            # Snapshot CAS paths intentionally avoid workspace locks. Share
+            # locks hold their selected bytes stable across preflight/fetch.
+            await conn.fetch('SELECT gateway_id,route_id FROM computer_routes WHERE gateway_id IN (SELECT id FROM nodes WHERE workspace_id=$1) ORDER BY gateway_id,route_id FOR SHARE',workspace)
+            return await drive_async(conn, Registry(True,self.shard).catalog(workspace,max_bytes))
 
     @staticmethod
     async def _usage(conn, workspace):
@@ -479,13 +471,13 @@ class PostgresStore(Notifications):
                 device["workspace_id"],
             ):
                 return 401, {"error": "credential revoked"}
-            node = await conn.fetchrow(
-                "SELECT id,snapshot,last_seen FROM nodes WHERE id=$1 AND workspace_id=$2 AND revoked=0 FOR SHARE",
-                body["computer_id"],
-                device["workspace_id"],
-            )
+            node = await drive_async(conn, Registry(True,self.shard).select(device['workspace_id'],body['computer_id']))
             if node is None:
-                return 404, {"error": "computer not found"}
+                exists=await drive_async(conn, Registry().resolve(device['workspace_id'],body['computer_id']))
+                return (409 if exists else 404), {'error':'computer route is unavailable' if exists else 'computer not found'}
+            # The workspace lock also serializes manifest admission/withdrawal.
+            await conn.fetchval('SELECT id FROM nodes WHERE id=$1 AND revoked=0 FOR SHARE',node['gateway_id'])
+            byte_count += 144 if node['machine_id'] else 0
             snapshot = json.loads(node["snapshot"]) if node["snapshot"] else None
             op, payload = body["operation"], body["payload"]
             if op in CAPABILITY_OPERATIONS and not supports(snapshot, op):
@@ -534,11 +526,11 @@ class PostgresStore(Notifications):
             # UUIDs are globally unique. A concurrent different workspace insert
             # cannot consume capacity if it loses this ON CONFLICT race.
             inserted = await conn.fetchval(
-                "INSERT INTO requests(id,workspace_id,device_id,node_id,operation,body_hash,body_bytes,body,state,created,updated,expires_at,reserved_bytes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'queued',$9,$9,$10,$11) ON CONFLICT(id) DO NOTHING RETURNING true",
+                "INSERT INTO requests(id,workspace_id,device_id,node_id,operation,body_hash,body_bytes,body,state,created,updated,expires_at,reserved_bytes,target_computer_id,target_machine_id,route_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'queued',$9,$9,$10,$11,$12,$13,$14) ON CONFLICT(id) DO NOTHING RETURNING true",
                 body["request_id"],
                 device["workspace_id"],
                 device["id"],
-                body["computer_id"],
+                node["gateway_id"],
                 op,
                 digest(encoded),
                 byte_count,
@@ -546,6 +538,7 @@ class PostgresStore(Notifications):
                 now,
                 now + 5 if op == "terminal_input" else None,
                 RESULT_RESERVE,
+                node["id"],node["machine_id"],None if node["local"] else node["route_id"],
             )
             if not inserted:
                 await conn.execute(
@@ -569,7 +562,7 @@ class PostgresStore(Notifications):
                 int(reads),
                 int(not reads),
             )
-            await self._notify(conn, "node:" + body["computer_id"])
+            await self._notify(conn, "node:" + node["gateway_id"])
             return 202, {
                 "request_id": body["request_id"],
                 "state": "queued",
@@ -662,33 +655,39 @@ class PostgresStore(Notifications):
                     )
                 return await self._cpu(Store.envelope, row)
 
-    async def has_pending(self, node, queue_ttl=120):
+    async def has_pending(self, node, queue_ttl=120, allow_gateway=False):
         now = time.time()
         return bool(
             await self.pool.fetchval(
-                "SELECT true FROM requests r JOIN nodes n ON n.id=r.node_id WHERE r.node_id=$1 AND n.workspace_id=$2 AND n.revoked=0 AND r.state='queued' AND r.created>$3 AND (r.expires_at IS NULL OR r.expires_at>$4) LIMIT 1",
+                "SELECT true FROM requests r JOIN nodes n ON n.id=r.node_id WHERE r.node_id=$1 AND n.workspace_id=$2 AND n.revoked=0 AND r.state='queued' AND (r.target_machine_id IS NULL OR $5) AND r.created>$3 AND (r.expires_at IS NULL OR r.expires_at>$4) LIMIT 1",
                 node["id"],
                 node["workspace_id"],
                 now - queue_ttl,
                 now,
+                allow_gateway,
             )
         )
 
-    async def claim(self, node, queue_ttl=120, claim_ttl=90):
+    async def claim(self, node, queue_ttl=120, claim_ttl=90, allow_gateway=False):
         now = time.time()
         async with self.pool.acquire(timeout=5) as conn, conn.transaction():
-            await self._usage(conn, node["workspace_id"])
+            await self._payload_usage(conn, node["workspace_id"])
             if not await conn.fetchval(
                 "SELECT true FROM nodes WHERE id=$1 AND revoked=0 FOR SHARE", node["id"]
             ):
                 return []
             row = await conn.fetchrow(
-                "SELECT id,body,expires_at FROM requests WHERE node_id=$1 AND state='queued' AND created>$2 AND (expires_at IS NULL OR expires_at>$3) ORDER BY created,id LIMIT 1 FOR UPDATE SKIP LOCKED",
+                "SELECT * FROM requests WHERE node_id=$1 AND state='queued' AND (target_machine_id IS NULL OR $4) AND created>$2 AND (expires_at IS NULL OR expires_at>$3) ORDER BY created,id LIMIT 1 FOR UPDATE SKIP LOCKED",
                 node["id"],
                 now - queue_ttl,
                 now,
+                allow_gateway,
             )
             if row is None:
+                return []
+            registry=Registry(True,self.shard)
+            if not await drive_async(conn, registry.frozen(row,allow_gateway)):
+                await drive_async(conn,registry.invalidate('id=?',(row['id'],)))
                 return []
             await conn.execute(
                 "UPDATE requests SET state='claimed',claimed=$2,updated=$2 WHERE id=$1",
@@ -699,6 +698,8 @@ class PostgresStore(Notifications):
             command = {
                 k: body[k] for k in ("request_id", "operation", "session", "payload")
             }
+            if row["target_machine_id"] is not None:
+                command["gateway_route"]={"schema":1,"route_id":row["route_id"],"computer_id":row["target_computer_id"],"machine_id":row["target_machine_id"]}
             if row["expires_at"] is not None:
                 command["expires_at"] = row["expires_at"]
             return [command]
@@ -852,12 +853,208 @@ class PostgresStore(Notifications):
             events.append((session["name"], kind))
         return events
 
-    async def heartbeat(self, node, snapshot):
+    async def _publish_peer_events(self,conn,node,changes,now):
+        global_usage = await conn.fetchrow(
+            "SELECT * FROM global_usage WHERE id=1 FOR UPDATE"
+        )
+        registrations = await conn.fetch(
+            "SELECT p.device_id,NOT EXISTS(SELECT 1 FROM push_jobs j WHERE j.device_id=p.device_id) AS needs_job FROM pushes p JOIN devices d ON d.id=p.device_id WHERE d.workspace_id=$1 AND d.revoked=0 LIMIT 1000",
+            node["workspace_id"],
+        )
+        event_evictions = max(0, global_usage["events"] + len(changes) - 100000)
+        job_evictions = max(
+            0,
+            global_usage["push_jobs"]
+            + sum(r["needs_job"] for r in registrations)
+            - 10000,
+        )
+        victims = []
+        job_victims = []
+        if event_evictions:
+            victims = await conn.fetch(
+                "SELECT id,workspace_id FROM events ORDER BY id LIMIT $1",
+                event_evictions,
+            )
+        if job_evictions:
+            job_victims = await conn.fetch(
+                "SELECT j.id,d.workspace_id FROM push_jobs j JOIN devices d ON d.id=j.device_id ORDER BY j.id LIMIT $1",
+                job_evictions,
+            )
+        workspaces = (
+            {node["workspace_id"]}
+            | {r["workspace_id"] for r in victims}
+            | {r["workspace_id"] for r in job_victims}
+        )
+        await conn.fetch(
+            "SELECT workspace_id FROM workspace_usage WHERE workspace_id=ANY($1::text[]) ORDER BY workspace_id FOR UPDATE",
+            sorted(workspaces),
+        )
+        latest = None
+        for session, kind in changes:
+            usage = await conn.fetchrow(
+                "SELECT events FROM workspace_usage WHERE workspace_id=$1",
+                node["workspace_id"],
+            )
+            fleet = await conn.fetchval(
+                "SELECT events FROM global_usage WHERE id=1"
+            )
+            victim = None
+            if usage["events"] >= 10000:
+                victim = await conn.fetchrow(
+                    "SELECT id,workspace_id FROM events WHERE workspace_id=$1 ORDER BY id LIMIT 1",
+                    node["workspace_id"],
+                )
+            elif fleet >= 100000:
+                victim = await conn.fetchrow(
+                    "SELECT id,workspace_id FROM events ORDER BY id LIMIT 1"
+                )
+            if victim:
+                await conn.execute(
+                    "DELETE FROM events WHERE id=$1", victim["id"]
+                )
+                await conn.execute(
+                    "UPDATE workspace_usage SET events=events-1 WHERE workspace_id=$1",
+                    victim["workspace_id"],
+                )
+                await conn.execute(
+                    "UPDATE global_usage SET events=events-1 WHERE id=1"
+                )
+            latest = await conn.fetchval(
+                "INSERT INTO events(workspace_id,node_id,session,kind,created) VALUES($1,$2,$3,$4,$5) RETURNING id",
+                node["workspace_id"],
+                node["id"],
+                session,
+                kind,
+                now,
+            )
+            await conn.execute(
+                "UPDATE workspace_usage SET events=events+1 WHERE workspace_id=$1",
+                node["workspace_id"],
+            )
+            await conn.execute(
+                "UPDATE global_usage SET events=events+1 WHERE id=1"
+            )
+        if latest is not None:
+            payload = canonical({"event_id": latest, "kind": "wake"})
+            for registration in registrations:
+                existing = await conn.fetchrow(
+                    "SELECT id,lease_until FROM push_jobs WHERE device_id=$1 ORDER BY id LIMIT 1",
+                    registration["device_id"],
+                )
+                if existing:
+                    if (
+                        existing["lease_until"] is None
+                        or existing["lease_until"] <= now
+                    ):
+                        await conn.execute(
+                            "UPDATE push_jobs SET event_id=$2,payload=$3,next_at=LEAST(next_at,$4) WHERE id=$1",
+                            existing["id"],
+                            latest,
+                            payload,
+                            now,
+                        )
+                    continue
+                usage = await conn.fetchval(
+                    "SELECT push_jobs FROM workspace_usage WHERE workspace_id=$1",
+                    node["workspace_id"],
+                )
+                fleet = await conn.fetchval(
+                    "SELECT push_jobs FROM global_usage WHERE id=1"
+                )
+                victim = None
+                if usage >= 1000:
+                    victim = await conn.fetchrow(
+                        "SELECT j.id,d.workspace_id FROM push_jobs j JOIN devices d ON d.id=j.device_id WHERE d.workspace_id=$1 ORDER BY j.id LIMIT 1",
+                        node["workspace_id"],
+                    )
+                elif fleet >= 10000:
+                    victim = await conn.fetchrow(
+                        "SELECT j.id,d.workspace_id FROM push_jobs j JOIN devices d ON d.id=j.device_id ORDER BY j.id LIMIT 1"
+                    )
+                if victim:
+                    await conn.execute(
+                        "DELETE FROM push_jobs WHERE id=$1", victim["id"]
+                    )
+                    await conn.execute(
+                        "UPDATE workspace_usage SET push_jobs=push_jobs-1 WHERE workspace_id=$1",
+                        victim["workspace_id"],
+                    )
+                    await conn.execute(
+                        "UPDATE global_usage SET push_jobs=push_jobs-1 WHERE id=1"
+                    )
+                await conn.execute(
+                    "INSERT INTO push_jobs(device_id,event_id,payload,next_at,created) VALUES($1,$2,$3,$4,$4)",
+                    registration["device_id"],
+                    latest,
+                    payload,
+                    now,
+                )
+                await conn.execute(
+                    "UPDATE workspace_usage SET push_jobs=push_jobs+1 WHERE workspace_id=$1",
+                    node["workspace_id"],
+                )
+                await conn.execute(
+                    "UPDATE global_usage SET push_jobs=push_jobs+1 WHERE id=1"
+                )
+
+    async def heartbeat(self, node, snapshot, machine_id=None, peers=None):
+        # Legacy unchanged heartbeats retain their inexpensive node-only path.
+        needs_registry = machine_id is not None or peers or await self.pool.fetchval('SELECT true FROM nodes n WHERE n.id=$1 AND (n.machine_id IS NOT NULL OR EXISTS(SELECT 1 FROM computer_routes r WHERE r.gateway_id=n.id AND r.local=0))',node['id'])
+        manifest=digest(canonical({'machine_id':machine_id,'peers':peers or [],'guarded':supports(snapshot,'gateway_one_hop','features')}))
+        unchanged=await self.pool.fetchval('SELECT true FROM nodes WHERE id=$1 AND revoked=0 AND manifest_hash=$2',node['id'],manifest) if needs_registry else True
+        if needs_registry and not unchanged:
+            async with self.pool.acquire(timeout=5) as conn, conn.transaction():
+                await self._payload_usage(conn,node['workspace_id'])
+                current=await conn.fetchval('SELECT manifest_hash FROM nodes WHERE id=$1 AND revoked=0',node['id'])
+                if current!=manifest:
+                    await drive_async(conn,Registry(True,self.shard).gateway(node,machine_id,peers or [],supports(snapshot,'gateway_one_hop','features')))
+                    await conn.execute('UPDATE nodes SET manifest_hash=$2 WHERE id=$1',node['id'],manifest)
+                await self._notify(conn,'workspace:'+node['workspace_id'])
+        return await self._heartbeat_snapshot(node,snapshot)
+
+    async def peer_heartbeat(self,node,route_id,machine_id,snapshot):
+        encoded=await self._cpu(canonical,snapshot)
+        if len(encoded.encode())>MAX_PEER_SNAPSHOT_BYTES:raise RouteError(413,'peer snapshot is too large')
+        for attempt in range(3):
+            previous=await self.pool.fetchrow('SELECT snapshot,snapshot_hash,computer_id FROM computer_routes WHERE gateway_id=$1 AND route_id=$2 AND local=0',node['id'],route_id)
+            if previous is None:raise RouteError(404,'peer route not found')
+            changes=await self._cpu(self._event_changes,previous['snapshot'],snapshot)
+            changes=[(name,kind) for name,kind in changes if len(name)<=1024 and not any(ord(c)<32 for c in name)]
+            if not changes:
+                updated=await self.pool.fetchval("UPDATE computer_routes r SET snapshot=$4,snapshot_hash=$5,last_seen=$6 FROM nodes n,computers c WHERE r.gateway_id=$1 AND r.route_id=$2 AND r.machine_id=$3 AND r.local=0 AND r.active=1 AND r.online=1 AND r.guarded=1 AND n.id=r.gateway_id AND n.workspace_id=$8 AND n.revoked=0 AND c.id=r.computer_id AND c.revoked=0 AND r.snapshot_hash IS NOT DISTINCT FROM $7 RETURNING r.computer_id",node['id'],route_id,machine_id,encoded,digest(encoded),time.time(),previous['snapshot_hash'],node['workspace_id'])
+                if updated:
+                    return {'id':updated,'previous':previous['snapshot'],'changed':digest(encoded)!=previous['snapshot_hash']}
+            async with self.pool.acquire(timeout=5) as conn,conn.transaction():
+                if changes:
+                    # Event accounting follows the established global→workspace
+                    # order; manifest/payload transactions never wait on global.
+                    await conn.fetchval('SELECT id FROM global_usage WHERE id=1 FOR UPDATE')
+                await self._usage(conn,node['workspace_id'])
+                current=await conn.fetchrow('SELECT snapshot_hash FROM computer_routes WHERE gateway_id=$1 AND route_id=$2 FOR UPDATE',node['id'],route_id)
+                if current is None:raise RouteError(404,'peer route not found')
+                if current['snapshot_hash']!=previous['snapshot_hash']:continue
+                result=await drive_async(conn,Registry(True,self.shard).peer_heartbeat(node,route_id,machine_id,encoded))
+                if changes:
+                    await self._publish_peer_events(conn,{'id':result['id'],'workspace_id':node['workspace_id']},changes,time.time())
+                await self._notify(conn,'workspace:'+node['workspace_id'])
+                return result
+        raise RouteError(409,'peer snapshot changed concurrently')
+
+    async def revoke_computer(self,value):
+        async with self.pool.acquire(timeout=5) as conn,conn.transaction():
+            workspace=await conn.fetchval('SELECT c.workspace_id FROM computers c LEFT JOIN computer_aliases a ON a.computer_id=c.id WHERE c.id=$1 OR a.alias=$1 LIMIT 1',value)
+            if workspace is None:return False
+            await self._payload_usage(conn,workspace)
+            result=await drive_async(conn,Registry(True,self.shard).revoke_computer(value))
+            await self._notify(conn,'workspace:'+workspace)
+            return result
+
+    async def _heartbeat_snapshot(self, node, snapshot):
         encoded = await self._cpu(canonical, snapshot)
         snapshot_hash = digest(encoded)
         now = time.time()
         if await self.pool.fetchval(
-            "UPDATE nodes SET last_seen=$2 WHERE id=$1 AND workspace_id=$4 AND revoked=0 AND snapshot_hash=$3 RETURNING true",
+            "UPDATE nodes SET last_seen=$2 WHERE id=$1 AND workspace_id=$4 AND revoked=0 AND (snapshot_hash=$3 OR EXISTS(SELECT 1 FROM computers c WHERE c.id=nodes.computer_id AND c.revoked=1)) RETURNING true",
             node["id"],
             now,
             snapshot_hash,
@@ -866,11 +1063,14 @@ class PostgresStore(Notifications):
             return
         for attempt in range(3):
             previous = await self.pool.fetchrow(
-                "SELECT snapshot,snapshot_hash FROM nodes WHERE id=$1 AND workspace_id=$2 AND revoked=0",
+                "SELECT n.snapshot,n.snapshot_hash,c.revoked AS computer_revoked FROM nodes n JOIN computers c ON c.id=n.computer_id WHERE n.id=$1 AND n.workspace_id=$2 AND n.revoked=0",
                 node["id"],
                 node["workspace_id"],
             )
             if previous is None:
+                return
+            if previous['computer_revoked']:
+                await self.pool.execute('UPDATE nodes SET last_seen=$2 WHERE id=$1 AND revoked=0',node['id'],now)
                 return
             changes = await self._cpu(
                 self._event_changes, previous["snapshot"], snapshot
@@ -884,15 +1084,24 @@ class PostgresStore(Notifications):
                 # Progress/timestamp changes are common at fleet scale. Commit
                 # them with a node-only compare-and-swap; no fleet quota lock or
                 # workspace wake is needed when there is no durable new event.
-                changed = await self.pool.fetchval(
-                    "UPDATE nodes SET last_seen=$2,snapshot=$3,snapshot_hash=$4 WHERE id=$1 AND workspace_id=$6 AND revoked=0 AND snapshot_hash IS NOT DISTINCT FROM $5 RETURNING true",
-                    node["id"],
-                    now,
-                    encoded,
-                    snapshot_hash,
-                    previous["snapshot_hash"],
-                    node["workspace_id"],
-                )
+                async with self.pool.acquire() as conn,conn.transaction():
+                    # Revoke invalidates the gateway node before its computer.
+                    # Lock that node, then read revocation in a fresh statement;
+                    # a pre-lock MVCC snapshot cannot publish after a revoke.
+                    await conn.fetchval('SELECT id FROM nodes WHERE id=$1 FOR UPDATE',node['id'])
+                    revoked=await conn.fetchval('SELECT c.revoked FROM nodes n JOIN computers c ON c.id=n.computer_id WHERE n.id=$1',node['id'])
+                    if revoked:
+                        await conn.execute('UPDATE nodes SET last_seen=$2 WHERE id=$1 AND revoked=0',node['id'],now)
+                        return
+                    changed = await conn.fetchval(
+                        "UPDATE nodes SET last_seen=$2,snapshot=$3,snapshot_hash=$4 WHERE id=$1 AND workspace_id=$6 AND revoked=0 AND snapshot_hash IS NOT DISTINCT FROM $5 AND NOT EXISTS(SELECT 1 FROM computers c WHERE c.id=nodes.computer_id AND c.revoked=1) RETURNING true",
+                        node["id"],
+                        now,
+                        encoded,
+                        snapshot_hash,
+                        previous["snapshot_hash"],
+                        node["workspace_id"],
+                    )
                 if changed:
                     return
                 continue
@@ -933,11 +1142,14 @@ class PostgresStore(Notifications):
                     sorted(workspaces),
                 )
                 current = await conn.fetchrow(
-                    "SELECT snapshot_hash FROM nodes WHERE id=$1 AND workspace_id=$2 AND revoked=0 FOR UPDATE",
+                    "SELECT n.snapshot_hash,c.revoked AS computer_revoked FROM nodes n JOIN computers c ON c.id=n.computer_id WHERE n.id=$1 AND n.workspace_id=$2 AND n.revoked=0 FOR UPDATE OF n",
                     node["id"],
                     node["workspace_id"],
                 )
                 if current is None:
+                    return
+                if current['computer_revoked']:
+                    await conn.execute('UPDATE nodes SET last_seen=$2 WHERE id=$1 AND revoked=0',node['id'],now)
                     return
                 if current["snapshot_hash"] != previous["snapshot_hash"]:
                     continue
@@ -974,7 +1186,7 @@ class PostgresStore(Notifications):
                     latest = await conn.fetchval(
                         "INSERT INTO events(workspace_id,node_id,session,kind,created) VALUES($1,$2,$3,$4,$5) RETURNING id",
                         node["workspace_id"],
-                        node["id"],
+                        await conn.fetchval('SELECT computer_id FROM nodes WHERE id=$1',node['id']),
                         session,
                         kind,
                         now,
@@ -1154,6 +1366,8 @@ class PostgresStore(Notifications):
                 self.shard(workspace),
                 delta,
             )
+            if role == "nodes":
+                await conn.execute("UPDATE computer_routes SET active=0,snapshot=NULL,snapshot_hash=NULL,last_seen=NULL WHERE gateway_id=$1",value)
             if role == "devices":
                 await conn.execute("DELETE FROM pushes WHERE device_id=$1", value)
                 await self._delete_jobs(conn, value)

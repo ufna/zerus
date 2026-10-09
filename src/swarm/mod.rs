@@ -12,6 +12,18 @@ use serde_json::{json, Value};
 use std::io::Read;
 use store::LockedStore;
 
+/// Persist and return the machine identity without retaining the catalog lock.
+pub(crate) fn local_node_id(config: &Config) -> Result<String> {
+    let mut store = LockedStore::load(config)?;
+    let id = uuid::Uuid::parse_str(&store.data.node_id)?;
+    ensure!(
+        !id.is_nil() && id.to_string() == store.data.node_id,
+        "invalid persisted machine identity"
+    );
+    store.save()?;
+    Ok(store.data.node_id.clone())
+}
+
 fn input() -> Result<Value> {
     let mut bytes = Vec::new();
     std::io::stdin()

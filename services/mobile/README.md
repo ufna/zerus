@@ -2,6 +2,11 @@
 
 A self-hosted Python 3.11+ relay connects the Android client to computers running
 `hgs`. Computers make outbound HTTPS connections; phones never receive SSH keys.
+An enrolled gateway also exposes its enabled direct Zerus peers through its
+existing SSH access. Requests to a peer go through that gateway; the peer's own
+neighbors are not discovered or authorized recursively. See the
+[gateway upgrade procedure](../../docs/mobile-deployment.md#upgrade-gateway-sharing)
+before updating a multiple-worker installation.
 The relay is trusted with snapshots, requests and conversation results. TLS protects
 transport. Version 1 does **not** provide end-to-end encryption.
 
@@ -36,7 +41,15 @@ zerus-mobile --database ./data/relay.sqlite3 node \
 zerus-mobile --database ./data/relay.sqlite3 invite --workspace WORKSPACE_UUID
 zerus-mobile --database ./data/relay.sqlite3 revoke-device --id DEVICE_UUID
 zerus-mobile --database ./data/relay.sqlite3 revoke-node --id NODE_UUID
+zerus-mobile --database ./data/relay.sqlite3 revoke-computer --id COMPUTER_UUID
 ```
+
+`revoke-node` removes that gateway's credential and routes. Independently enrolled
+routes to the same computer remain valid. `revoke-computer` blocks the physical
+computer and its aliases through every gateway in the workspace.
+Revoking a computer as a target leaves its gateway credential intact: it can
+still provide access to other authorized peers. Revoke its node credential too
+when the gateway itself must lose access.
 
 The default listener is `127.0.0.1:8787`. Place it behind a TLS proxy before using
 it on another machine. Keep access/body/header logging disabled at the proxy.

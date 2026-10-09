@@ -117,6 +117,10 @@ async def administer(args, backend, parser):
                 "workspace_id": args.workspace,
                 **await invoke(store, "invite", args.workspace),
             }
+        if args.command == "revoke-computer":
+            if not await invoke(store, "revoke_computer", args.id):
+                parser.error("computer not found")
+            return {"revoked": True}
         role = "devices" if args.command == "revoke-device" else "nodes"
         if not await invoke(store, "revoke", role, args.id):
             parser.error("credential not found")
@@ -168,7 +172,7 @@ def main(argv=None):
         "invite", help="Create a ten-minute, single-use phone invitation"
     )
     invitation.add_argument("--workspace", required=True)
-    for command in ("revoke-device", "revoke-node"):
+    for command in ("revoke-device", "revoke-node", "revoke-computer"):
         commands.add_parser(command).add_argument("--id", required=True)
     serve = commands.add_parser("serve")
     serve.add_argument("--host", default="127.0.0.1")
@@ -190,7 +194,7 @@ def main(argv=None):
         invitation,
         serve,
         migrate,
-        *[commands.choices[c] for c in ("revoke-device", "revoke-node")],
+        *[commands.choices[c] for c in ("revoke-device", "revoke-node", "revoke-computer")],
     ):
         command.add_argument(
             "--config",
