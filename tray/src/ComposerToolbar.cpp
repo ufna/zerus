@@ -3,6 +3,7 @@
 #include "WorkspaceStyle.h"
 
 #include <QApplication>
+#include <QFontMetricsF>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QPainter>
@@ -10,6 +11,7 @@
 #include <QStyleOption>
 #include <QStylePainter>
 #include <QTimer>
+#include <QtMath>
 #include <QVBoxLayout>
 #include <algorithm>
 
@@ -54,8 +56,9 @@ void ChipPopover::showFor(QWidget *anchor)
 {
     m_anchor = anchor; m_returnFocus = QApplication::focusWidget();
     const QRect available = anchor->screen()->availableGeometry();
-    const int wanted = qMax(260, m_content ? m_content->sizeHint().width() : 0);
-    setFixedWidth(qMin(wanted, qMin(420, available.width() - 24)));
+    // As wide as the content needs (recovery has five actions in a row), within the screen.
+    const QSize content = m_content ? m_content->sizeHint().expandedTo(m_content->minimumSizeHint()).expandedTo(m_content->minimumSize()) : QSize();
+    setFixedWidth(qMin(qMax(260, content.width()), qMin(560, available.width() - 24)));
     reposition(); show(); setFocus(Qt::PopupFocusReason);
 }
 
@@ -96,6 +99,12 @@ ToolbarChip::ToolbarChip(QWidget *parent) : QPushButton(parent), m_flashTimer(ne
     connect(m_flashTimer, &QTimer::timeout, this, [this] { m_flashing = false; setProperty("flashing", false); render(); });
     connect(this, &QPushButton::clicked, this, [this] { if (m_popover && m_popover->content()) openPopover(); });
     render(); updateVisibility();
+}
+
+QString ToolbarChip::visibleText() const
+{
+    const int available = qMax(0, width() - 2 * ChipPadding - 2 - (m_icon.isEmpty() ? 0 : IconSize + IconGap));
+    return fontMetrics().elidedText(labelText(m_compact), Qt::ElideRight, available);
 }
 
 QString ToolbarChip::labelText(bool compact) const
@@ -146,7 +155,8 @@ QSize ToolbarChip::labelSizeHint(bool compact) const
 {
     ensurePolished();   // the 11 px stylesheet font
     const QString text = labelText(compact);
-    int width = 2 * ChipPadding + 2 + fontMetrics().horizontalAdvance(text);
+    // Round the real text width up: elidedText() compares the unrounded one.
+    int width = 2 * ChipPadding + 2 + qCeil(QFontMetricsF(font()).horizontalAdvance(text));
     if (!m_icon.isEmpty()) width += IconSize + (text.isEmpty() ? 0 : IconGap);
     return {width, ChipHeight};
 }
@@ -174,8 +184,7 @@ void ToolbarChip::keyPressEvent(QKeyEvent *event)
 void ToolbarChip::paintEvent(QPaintEvent *)
 {
     QStylePainter painter(this); QStyleOptionButton option; initStyleOption(&option);
-    const int available = qMax(0, width() - 2 * ChipPadding - 2 - (m_icon.isEmpty() ? 0 : IconSize + IconGap));
-    option.text = fontMetrics().elidedText(labelText(m_compact), Qt::ElideRight, available);
+    option.text = visibleText();
     painter.drawControl(QStyle::CE_PushButton, option);
 }
 
@@ -184,9 +193,10 @@ void ToolbarChip::render()
     // Cache and recovery chips re-render every second: only restyle real changes.
     const auto colors = toneColors(m_tone, m_dark);
     const QString border = m_flashing ? accent(m_dark) : QString(colors.border);
-    setWorkspaceStyle(this, QString("QPushButton { font-size:11px; min-height:0; padding:0 %6px; border-radius:6px; text-align:left;"
-        " color:%1; background:%2; border:1px solid %3; } QPushButton:hover { background:%4; }"
-        " QPushButton:focus[keyboardFocus=\"true\"] { border-color:%5; }")
+    // Select the chip type alone: a QPushButton rule would also restyle the buttons in its popover.
+    setWorkspaceStyle(this, QString("ToolbarChip { font-size:11px; min-height:0; padding:0 %6px; border-radius:6px; text-align:left;"
+        " color:%1; background:%2; border:1px solid %3; } ToolbarChip:hover { background:%4; }"
+        " ToolbarChip:focus[keyboardFocus=\"true\"] { border-color:%5; }")
         .arg(colors.text, colors.background, border, colors.hover, accent(m_dark)).arg(ChipPadding));
     const QString iconKey = m_icon + '|' + colors.text;
     if (iconKey != m_renderedIcon) {

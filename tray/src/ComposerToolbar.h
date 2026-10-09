@@ -51,6 +51,8 @@ public:
     void setFitHidden(bool hidden);
     void setCompact(bool compact);
     bool isCompact() const { return m_compact; }
+    // The text painted at the current width: the label, elided only when squeezed.
+    QString visibleText() const;
     QSize labelSizeHint(bool compact) const;
     QSize sizeHint() const override { return labelSizeHint(m_compact); }
     QSize minimumSizeHint() const override;

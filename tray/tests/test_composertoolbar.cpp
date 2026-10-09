@@ -74,6 +74,9 @@ private slots:
     void popoverOpensFromMouseAndKeyboardAndRestoresFocus();
     void themeReachesChipsAddedBeforeAndAfter();
     void flashHighlightsBriefly();
+    void roomyRowsShowWholeLabels();
+    void chipStyleStaysOutOfPopover();
+    void popoverFitsItsContent();
 };
 
 void TestComposerToolbar::slotsFixOrderAndRowHeight()
@@ -173,6 +176,39 @@ void TestComposerToolbar::flashHighlightsBriefly()
     QVERIFY(row.attachments->property("flashing").toBool()); QVERIFY(row.attachments->styleSheet() != before);
     QTRY_VERIFY_WITH_TIMEOUT(!row.attachments->property("flashing").toBool(), 2000);
     QCOMPARE(row.attachments->styleSheet(), before);
+}
+
+void TestComposerToolbar::roomyRowsShowWholeLabels()
+{
+    Row row; row.show(900); QVERIFY(QTest::qWaitForWindowExposed(&row.window));
+    QTRY_VERIFY(row.context->isVisible()); QCoreApplication::processEvents();
+    for (auto *chip : {row.attachments, row.read, row.recovery, row.cache}) {
+        QVERIFY(!chip->isCompact()); QCOMPARE(chip->visibleText(), chip->fullLabel());
+    }
+    row.window.resize(420, 90); QTRY_COMPARE(row.toolbar->width(), 420); QCoreApplication::processEvents();
+    // Compact labels are whole too while the row has room for them.
+    for (auto *chip : {row.attachments, row.recovery, row.cache})
+        if (chip->isCompact()) QCOMPARE(chip->visibleText(), chip->shortLabel());
+}
+
+void TestComposerToolbar::chipStyleStaysOutOfPopover()
+{
+    Row row; auto *content = new QWidget; auto *inside = new QPushButton("Retry now", content);
+    (new QVBoxLayout(content))->addWidget(inside); row.recovery->setPopoverContent(content);
+    QPushButton outside("Retry now"); outside.ensurePolished(); inside->ensurePolished();
+    // The chip's 11 px font, padding and border belong to the chip alone.
+    QCOMPARE(inside->font(), outside.font()); QCOMPARE(inside->sizeHint(), outside.sizeHint());
+}
+
+void TestComposerToolbar::popoverFitsItsContent()
+{
+    // The recovery panel's row of five actions must not be squeezed into a narrow popover.
+    Row row; auto *content = new QWidget; content->setMinimumWidth(500);
+    row.recovery->setPopoverContent(content);
+    row.window.move(10, 300); row.show(600); QVERIFY(QTest::qWaitForWindowExposed(&row.window));
+    row.recovery->openPopover(); QTRY_VERIFY(row.recovery->popover()->isVisible());
+    QVERIFY2(row.recovery->popover()->width() >= 500, qPrintable(QString::number(row.recovery->popover()->width())));
+    QVERIFY(row.recovery->popover()->geometry().right() <= row.window.screen()->availableGeometry().right());
 }
 
 QTEST_MAIN(TestComposerToolbar)
