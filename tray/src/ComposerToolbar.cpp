@@ -60,13 +60,17 @@ void ChipPopover::showFor(QWidget *anchor)
     // As wide as the content needs (recovery has five actions in a row), within the screen.
     const QSize content = m_content ? m_content->sizeHint().expandedTo(m_content->minimumSizeHint()).expandedTo(m_content->minimumSize()) : QSize();
     setFixedWidth(qMin(qMax(260, content.width()), qMin(560, available.width() - 24)));
-    reposition(); show(); setFocus(Qt::PopupFocusReason);
+    // Measure after show(): only a shown popup has its content's final style and fonts.
+    show(); reposition(); setFocus(Qt::PopupFocusReason);
 }
 
 void ChipPopover::reposition()
 {
     if (!m_anchor) return;
-    adjustSize();
+    // Not adjustSize(): it measures wrapped text at the size-hint width, but the fixed width
+    // minus the 1 px frame is narrower, so the last wrapped line would be cut off.
+    QLayout *box = layout();
+    resize(width(), box && box->hasHeightForWidth() ? qMax(box->totalHeightForWidth(width()), minimumSizeHint().height()) : sizeHint().height());
     const QRect available = m_anchor->screen()->availableGeometry();
     const QPoint origin = m_anchor->mapToGlobal(QPoint(0, 0));
     const QWidget *window = m_anchor->window();

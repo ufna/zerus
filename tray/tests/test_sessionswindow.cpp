@@ -1145,6 +1145,9 @@ else: print('{}')
     QTest::mouseClick(cacheChip,Qt::LeftButton);QTRY_VERIFY(cacheChip->popover()->isVisible());
     QVERIFY(window.findChild<QLabel *>("cacheWarning")->text().contains("cold cache"));
     auto *clear=window.findChild<QPushButton *>("cacheClearContext");QVERIFY(clear->isVisible());QVERIFY(clear->isEnabled());QCOMPARE(clear->text(),QString("Clear context"));
+    // Every wrapped line fits: the popover is as tall as its content needs at its real width.
+    for(auto *label:window.findChild<QWidget *>("cachePopover")->findChildren<QLabel *>())
+        QVERIFY2(label->height()>=label->heightForWidth(label->width()),qPrintable(label->objectName()+QString(" %1 < %2").arg(label->height()).arg(label->heightForWidth(label->width()))));
     QSignalSpy launched(&window,&SessionsWindow::newSessionRequested);QSignalSpy finished(client,&HgsClient::sessionActionFinished);
     const auto confirmClear=[&]{QTimer::singleShot(0,&window,[&]{
         auto *dialog=window.findChild<QMessageBox *>("clearSessionConfirm");QVERIFY(dialog);
