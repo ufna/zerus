@@ -53,6 +53,13 @@ QT_QPA_PLATFORM=wayland \
 The ordinary `kwinwindowlayer` test runs on a private D-Bus session with a fake
 compositor and never controls the user's desktop.
 
+For the mobile relay and connector, install `services/mobile` in a Python 3.11+
+virtual environment and run `python -m unittest discover -s services/mobile/tests -v`.
+These tests use synthetic subprocesses and isolated databases, without live native
+agents. For Android, run `./gradlew testDebugUnitTest lintDebug assembleDebug` from
+`mobile/android` with JDK 17 or 21 and Android SDK 36. Follow
+[mobile setup](docs/mobile-deployment.md) for device and notification checks.
+
 Beads issues, history and memories must contain only information suitable for public
 source collaboration. An ignored local database still becomes remote data when
 `bd dolt push` is run. Review the exported issues and memory before synchronizing.

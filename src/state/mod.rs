@@ -47,6 +47,9 @@ mod supervisor;
 mod tasks;
 mod telemetry;
 mod terminate;
+mod session_action;
+mod terminal;
+mod conversation_history;
 mod usage;
 mod workspace;
 mod worktrees;
@@ -397,6 +400,9 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
     if command == "recovery" {
         return recovery::dispatch(args);
     }
+    if command == "history" { return conversation_history::dispatch(args); }
+    if command == "terminal" { return terminal::dispatch(args); }
+    if command == "session-action" { return session_action::dispatch(args); }
     if command == "compact-context" { return compact_context::dispatch(args); }
     if command == "clear-context" { return clear_context::dispatch(args); }
     if command == "interrupt" { return interrupt::dispatch(args); }

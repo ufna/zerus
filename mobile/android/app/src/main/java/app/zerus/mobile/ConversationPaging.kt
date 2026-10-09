@@ -1,0 +1,139 @@
+package app.zerus.mobile
+
+import org.json.JSONObject
+
+data class HistoryPage(val target:Target,val epoch:String,val events:List<Event>,val before:String?,val after:String?,val hasBefore:Boolean,val hasAfter:Boolean,
+    val latestIncoming:Long?,val totalIncoming:Long?,val complete:Boolean,val indexing:Boolean,val truncated:Boolean,val raw:JSONObject) {
+    companion object {
+        fun cached(target:Target,raw:JSONObject):HistoryPage {
+            if(raw.optInt("zerus_page_window") != 1) return parse(target,raw.getString("request_id"),raw)
+            require(MessageCodec.target(raw.getJSONObject("target"))==target)
+            val epoch=raw.getString("epoch");require(epoch.isNotBlank() && epoch.length<=512)
+            val events=EventHistoryCodec.decode(raw.getJSONArray("rows"));require(events.size<=100 && events.all { it.historyEpoch==epoch && it.historyId.isNotBlank() && it.historyCursor.isNotBlank() })
+            fun cursor(name:String)=(raw.opt(name) as? String)?.also { require(it.isNotBlank() && it.length<=8192) }
+            return HistoryPage(target,epoch,events,cursor("before"),cursor("after"),raw.getBoolean("has_before"),raw.getBoolean("has_after"),null,null,false,false,true,raw)
+        }
+        private fun slice(window:HistoryWindow,start:Int,end:Int):JSONObject? {
+            val rows=window.events.subList(start,end)
+            if(rows.isEmpty()) return null
+            val raw=JSONObject().put("zerus_page_window",1).put("target",MessageCodec.targetJson(window.target)).put("epoch",window.epoch)
+                .put("rows",EventHistoryCodec.encode(rows)).put("before",rows.first().historyCursor).put("after",rows.last().historyCursor)
+                .put("has_before",window.hasBefore || start>0).put("has_after",window.hasAfter || end<window.events.size)
+            return raw.takeIf { it.toString().toByteArray(Charsets.UTF_8).size<900*1024 }
+        }
+        fun retained(window:HistoryWindow,anchor:String):JSONObject? {
+            val index=window.events.indexOfFirst { it.historyCursor==anchor };if(index<0) return null
+            val start=(index-49).coerceAtLeast(0)
+            return slice(window,start,(start+100).coerceAtMost(window.events.size))
+        }
+        fun neighbors(window:HistoryWindow,anchor:String):List<Triple<String,String,JSONObject>> {
+            val index=window.events.indexOfFirst { it.historyCursor==anchor };if(index<0) return emptyList()
+            val start=(index-49).coerceAtLeast(0);val end=(start+100).coerceAtMost(window.events.size)
+            return buildList {
+                if(start>0) slice(window,(start-100).coerceAtLeast(0),start)?.let { add(Triple("before",window.events[start].historyCursor,it)) }
+                if(end<window.events.size) slice(window,end,(end+100).coerceAtMost(window.events.size))?.let { add(Triple("after",window.events[end-1].historyCursor,it)) }
+            }
+        }
+        fun parse(target:Target,id:String,raw:JSONObject):HistoryPage {
+            require(raw.string("request_id") == id && raw.string("name") == target.session && raw.string("run_id") == target.run && raw.string("conversation_id") == target.conversation)
+            require(raw.string("archive_id") == target.archiveId && raw.string("agent_id") == target.agentId && (target.agentId.isBlank() || raw.string("parent_conversation_id") == target.parentConversation))
+            val epoch=raw.getString("history_epoch");require(epoch.isNotBlank() && epoch.length <= 512)
+            fun cursor(name:String):String?=(raw.opt(name) as? String)?.also { require(it.isNotBlank() && it.length<=8192) }
+            val head=raw.getJSONObject("head")
+            fun number(name:String):Long?=(head.opt(name) as? Number)?.let { number -> val value=number.toLong();require(value>=0 && number.toDouble()==value.toDouble());value }
+            val complete=head.optBoolean("complete");val latest=number("incoming_seq");val total=number("total_incoming")
+            require(!complete || latest != null && total != null)
+            val nativeRows=raw.getJSONArray("events");require(nativeRows.length()<=100)
+            nativeRows.objects().forEach { row ->
+                require(row.string("history_id").isNotBlank() && row.string("history_id").length<=2048 && row.string("history_cursor").isNotBlank() && row.string("history_cursor").length<=8192)
+                val sequence=row.opt("incoming_seq")
+                require(sequence==null || sequence===JSONObject.NULL || sequence is Number && sequence.toLong()>=0 && sequence.toDouble()==sequence.toLong().toDouble())
+            }
+            val events=NativeParser.events(raw);require(events.size<=100 && events.all { it.historyId.isNotBlank() && it.historyCursor.isNotBlank() && it.historyEpoch==epoch })
+            val before=cursor("next_before");val after=cursor("next_after")
+            val hasBefore=raw.getBoolean("has_more_before");val hasAfter=raw.getBoolean("has_more_after")
+            require(!hasBefore || before != null);require(!hasAfter || after != null)
+            return HistoryPage(target,epoch,events,before,after,hasBefore,hasAfter,latest,total,complete,raw.optBoolean("indexing"),raw.optBoolean("truncated"),raw)
+        }
+    }
+}
+data class HistoryWindow(val target:Target,val epoch:String,val events:List<Event>,val before:String?,val after:String?,val hasBefore:Boolean,val hasAfter:Boolean,val atHead:Boolean) {
+    fun merge(page:HistoryPage,direction:String,maxEvents:Int=500,maxBytes:Int=2*1024*1024):HistoryWindow {
+        require(target==page.target && epoch==page.epoch)
+        require(direction in setOf("before","after"))
+        val aliases=RollingConversationHistory.merge(target,target,events,page.events,Int.MAX_VALUE,Int.MAX_VALUE)
+        val values=aliases.events.associateBy { it.id }
+        // Canonical server order is authoritative; equal timestamps must not reorder pages.
+        val incomingCanonical=page.events.filter { it.historyId.isNotBlank() }.map { it.id }.toSet()
+        val oldOrder=events.filterNot { it.historyId.isBlank() && aliases.supersededIds[it.id] in incomingCanonical }
+        val order=if(direction=="before") page.events+oldOrder else oldOrder+page.events
+        val rows=order.mapNotNull { row -> values[aliases.supersededIds[row.id] ?: row.id] }.distinctBy { it.id }.toMutableList()
+        var dropped=false
+        while(rows.size>maxEvents || EventHistoryCodec.encode(rows).toString().toByteArray(Charsets.UTF_8).size>maxBytes) {
+            if(rows.isEmpty()) break
+            rows.removeAt(if(direction=="before") rows.lastIndex else 0);dropped=true
+        }
+        val nextHasAfter=if(direction=="after") page.hasAfter else hasAfter || dropped
+        return copy(events=rows,before=if(direction=="before") page.before else if(dropped) rows.firstOrNull()?.historyCursor else before,
+            after=if(direction=="after") page.after else if(dropped) rows.lastOrNull()?.historyCursor else after,
+            hasBefore=if(direction=="before") page.hasBefore else hasBefore || dropped,
+            hasAfter=nextHasAfter,
+            atHead=!nextHasAfter)
+    }
+    fun inspection(incoming:List<Event>,previousInspection:List<Event> = emptyList()):HistoryWindow {
+        if(!atHead) return this
+        val known=events.flatMap { HistoryInspection.identities(it) }.toSet()
+        val updated=events.map { canonical ->
+            val exact=incoming.filter { row -> row.id in HistoryInspection.identities(canonical) && row.source==canonical.source && row.nativeType==canonical.nativeType && row.role==canonical.role }.singleOrNull()
+            if(exact!=null && (!exact.detailTruncated || canonical.detailTruncated)) canonical.copy(text=exact.text,attachments=exact.attachments,detailTruncated=exact.detailTruncated) else canonical
+        }
+        val watermark=HistoryInspection.journalWatermark(events+previousInspection)
+        val newer=incoming.filter { row -> row.id !in known && watermark!=null && HistoryInspection.journalSequence(row)?.let { it>watermark }==true }
+        if(newer.isEmpty()) return copy(events=updated)
+        val cursor=events.lastOrNull { it.historyCursor.isNotBlank() }?.historyCursor ?: after
+        val page=HistoryPage(target,epoch,newer,before,cursor,hasBefore,false,null,null,false,false,false,JSONObject())
+        return copy(events=updated).merge(page,"after")
+    }
+    companion object { fun from(page:HistoryPage)=HistoryWindow(page.target,page.epoch,page.events,page.before,page.after,page.hasBefore,page.hasAfter,!page.hasAfter) }
+}
+
+object HistoryRequests {
+    fun payload(target:Target,id:String,direction:String="",cursor:String="",limit:Int=100):JSONObject {
+        require(target.run.isNotBlank() && target.conversation.isNotBlank() && limit in 1..100)
+        require(direction in setOf("","before","after","around","unread") && (direction.isEmpty()==cursor.isEmpty()) && cursor.length<=8192)
+        val raw=JSONObject().put("request_id",id).put("expected_run_id",target.run)
+            .put("expected_conversation_id",if(target.agentId.isBlank()) target.conversation else target.parentConversation).put("limit",limit)
+        if(target.archiveId.isNotBlank()) raw.put("archive_id",target.archiveId)
+        if(target.agentId.isNotBlank()) { require(target.parentConversation.isNotBlank());raw.put("agent_id",target.agentId) }
+        if(direction=="unread") {
+            val marker=org.json.JSONArray(cursor);require(marker.length()==2)
+            val epoch=marker.getString(0);val sequence=marker.getLong(1);require(epoch.isNotBlank() && epoch.length<=512 && sequence>=0)
+            raw.put("history_epoch",epoch).put("around_incoming_seq",sequence)
+        } else if(direction.isNotBlank()) raw.put(direction,cursor)
+        return raw
+    }
+}
+
+/** Journal sequence proves arrival within that journal; provider IDs and clocks do not. */
+object HistoryInspection {
+    data class Rebased<T>(val base:HistoryWindow?,val value:T)
+    suspend fun <T> rebase(initial:HistoryWindow?,value:T,current:()->HistoryWindow?,merge:suspend (HistoryWindow?)->T):Rebased<T> {
+        var expected=initial;var result=value
+        while(current() !== expected) { expected=current();result=merge(expected) }
+        return Rebased(expected,result)
+    }
+    fun identities(row:Event)=(row.originalIds+listOf(row.id,row.originalId)).filter(String::isNotBlank)
+    private fun sequence(id:String):Long? {
+        if(!id.startsWith("journal:")) return null
+        val token=id.substringAfterLast(":native:","")
+        return token.takeIf { it.isNotEmpty() && it.all { char -> char in '0'..'9' } }?.toLongOrNull()
+    }
+    fun journalSequence(row:Event)=identities(row).mapNotNull(::sequence).maxOrNull()
+    fun journalWatermark(rows:List<Event>)=rows.mapNotNull(::journalSequence).maxOrNull()
+    fun changed(window:HistoryWindow,incoming:List<Event>,previous:List<Event>):Boolean {
+        val known=(window.events+previous).flatMap(::identities).toSet()
+        return incoming.any { row -> identities(row).none { it in known } }
+    }
+    fun retain(current:HistoryWindow,candidate:HistoryWindow?,incoming:List<Event>,previous:List<Event>):HistoryWindow =
+        if(current==candidate) current else if(current.atHead) current.inspection(incoming,previous) else current
+}

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Exact Swarm blade geometry from tray/resources/icons/hgs-zerus-symbolic.svg. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <group android:pivotX="50" android:pivotY="50" android:scaleX="0.8162" android:scaleY="0.8162" android:translateX="4" android:translateY="4">
+        <group android:rotation="0" android:pivotX="50" android:pivotY="50">
+            <group android:pivotX="56" android:pivotY="30" android:scaleX="0.88" android:scaleY="0.88">
+                <path android:fillColor="#FFFFFF" android:pathData="M39 9 C54 3 70 13 77 29 C72 25 69 24 72 32 C81 44 77 58 65 65 C70 51 65 36 52 28 C40 21 30 25 22 34 C25 21 38 15 51 19 C57 21 56 16 51 13 C47 11 43 10 39 9 Z" />
+            </group>
+        </group>
+        <group android:rotation="120" android:pivotX="50" android:pivotY="50">
+            <group android:pivotX="56" android:pivotY="30" android:scaleX="0.88" android:scaleY="0.88">
+                <path android:fillColor="#FFFFFF" android:pathData="M39 9 C54 3 70 13 77 29 C72 25 69 24 72 32 C81 44 77 58 65 65 C70 51 65 36 52 28 C40 21 30 25 22 34 C25 21 38 15 51 19 C57 21 56 16 51 13 C47 11 43 10 39 9 Z" />
+            </group>
+        </group>
+        <group android:rotation="240" android:pivotX="50" android:pivotY="50">
+            <group android:pivotX="56" android:pivotY="30" android:scaleX="0.88" android:scaleY="0.88">
+                <path android:fillColor="#FFFFFF" android:pathData="M39 9 C54 3 70 13 77 29 C72 25 69 24 72 32 C81 44 77 58 65 65 C70 51 65 36 52 28 C40 21 30 25 22 34 C25 21 38 15 51 19 C57 21 56 16 51 13 C47 11 43 10 39 9 Z" />
+            </group>
+        </group>
+    </group>
+</vector>

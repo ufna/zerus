@@ -181,12 +181,15 @@ export function apply(ctx, config) {
         } finally { abort.abort(); await stream.return(); }
     }
     page ??= await api.page({ address, throughSeq: baseline.asOfSeq, maxMessages: 150 }, new AbortController().signal);
+    const lifecycleRows = agentId ? null : await api.list({}, new AbortController().signal);
+    const lifecycleIdle = lifecycleRows?.items?.find(row => row.sessionId === sessionId)?.running === false;
     const parentLive = ctx.agents.get(sessionId);
     const live = agentId ? ctx.agents.get(agentId) : parentLive;
     const selection = live ? { ...control.selectionFor(live).current } : null;
     const status = await accountStatus();
     const jobs = ctx.get('jobs');
     return { generation, baseline, page,
+      lifecycleActions: agentId ? [] : ["rename", ...(!parentLive ? ["resume", "forget"] : owned.get(sessionId)?.agent === parentLive ? [...(lifecycleIdle ? ["pause"] : []), "forget"] : [])],
       jobs: jobs && request.includeProcesses !== false ? jobOwners.flatMap(owner => jobs.list(owner).filter(job => job.kind === 'bash' && job.owner === owner)
         .map(job => ({ ...job, callId:jobCalls.get(job.id)?.callId, controllable: owned.has(sessionId) && Boolean(ctx.agents.get(owner)) }))) : undefined,
       shellCalls:request.includeProcesses !== false ? [...shellCalls.values()].filter(call=>jobOwners.includes(call.owner)) : undefined,
@@ -199,7 +202,7 @@ export function apply(ctx, config) {
     if (closing) throw new Error('Native host is stopping');
     const p = request.params ?? {};
     switch (request.method) {
-      case 'ping': return { protocol: 1, version: '0.2.0-rc.2', generation, accountPermissions: true };
+      case 'ping': return { protocol: 1, version: '0.2.0-rc.2', generation, accountPermissions: true, sessionActions: true };
       case 'list': {
         const list = await api.list({}, new AbortController().signal);
         const status = await accountStatus();
@@ -314,6 +317,33 @@ export function apply(ctx, config) {
         await publishWorkspace(sessionId);
         if (p.title) await api.rename({ sessionId, title: p.title });
         return { sessionId, generation };
+      }
+      case 'session-action': {
+        let changed = false;
+        const answer = (status, error) => ({ sessionId:p.sessionId, action:p.action, generation, status, ...(error ? {error} : {}) });
+        try {
+          const listed = p.action === 'pause' ? await api.list({},new AbortController().signal) : null;
+          if (p.generation !== generation) throw new Error('DeepSeek host changed; refresh before this action');
+          if (!['pause','resume','rename','forget'].includes(p.action) || typeof p.sessionId !== 'string') throw new Error('Unsupported scoped lifecycle action');
+          const live = ctx.agents.get(p.sessionId);
+          const handle = owned.get(p.sessionId);
+          if (p.action === 'pause' && listed?.items?.find(row => row.sessionId === p.sessionId)?.running === true) throw new Error('Wait for the native turn before pausing');
+          if (live && p.action !== 'rename' && handle?.agent !== live) throw new Error('This agent is owned by the native UI; manage it there');
+          if (p.action === 'resume') {
+            if (live || opening.has(p.sessionId)) throw new Error('This session is already running or opening');
+            checkPermissions(p.permissionMode);
+            changed = true;
+            await resume(p.sessionId,p.permissionMode);
+          } else if (p.action === 'rename') {
+            if (typeof p.title !== 'string' || !p.title || p.title.length > 512) throw new Error('Invalid scoped title');
+            changed = true; await api.rename({sessionId:p.sessionId,title:p.title});
+          } else if (live) {
+            changed = true; ctx.goals.disarm(live);
+            await handle.dispose();
+            if (owned.get(p.sessionId) === handle) owned.delete(p.sessionId);
+          }
+          return answer('completed');
+        } catch (error) { return answer(changed ? 'uncertain' : 'failed',String(error?.message ?? error)); }
       }
       case 'resume': await resume(p.sessionId, p.permissionMode); return { generation };
       case 'pause': {

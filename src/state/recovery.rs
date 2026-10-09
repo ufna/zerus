@@ -945,6 +945,7 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
             }
             println!("{}", json!({"order":policy_order(&p),"policy":p}));
         }
+        Some("action") if args.len()==2 && args[1]=="--scoped-json" => {scoped_action(stdin_json()?)?;}
         Some("action") if args.len() == 1 => {
             let request = stdin_json()?;
             let _guard = lock(None)?;
@@ -967,4 +968,150 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         _ => return Err("usage: hgs recovery get | set | sync | action | worker".into()),
     }
     Ok(0)
+}
+
+
+/// A fixed session recovery control. Claim and job/state locks are independent;
+/// no native input is submitted here, only the existing waiting job is edited.
+fn scoped_action(request: Value) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let fields = [
+        "request_id",
+        "name",
+        "expected_run_id",
+        "expected_conversation_id",
+        "job_id",
+        "action",
+    ];
+    if !request
+        .as_object()
+        .is_some_and(|v| v.len() == fields.len() && fields.iter().all(|k| v.contains_key(*k)))
+    {
+        return Err("Invalid scoped recovery fields".into());
+    }
+    for field in ["request_id", "job_id"] {
+        let value = string(&request, field);
+        if uuid::Uuid::parse_str(value)
+            .map(|v| v.is_nil() || v.to_string() != value)
+            .unwrap_or(true)
+        {
+            return Err("Invalid recovery UUID".into());
+        }
+    }
+    for (field, max) in [
+        ("name", 512),
+        ("expected_run_id", 128),
+        ("expected_conversation_id", 256),
+    ] {
+        let value = string(&request, field);
+        if value.is_empty() || value.len() > max || value.chars().any(char::is_control) {
+            return Err("Invalid recovery identity".into());
+        }
+    }
+    if !["now", "cancel"].contains(&string(&request, "action")) {
+        return Err("Unknown scoped recovery action".into());
+    }
+    let name = string(&request, "name");
+    let directory = absolute_root()?.join("recovery_receipts");
+    private_dir(&directory)?;
+    let path = directory.join(format!("{}.json", string(&request, "request_id")));
+    let _claim = lock(Some(
+        &directory.join(format!("{}.lock", string(&request, "request_id"))),
+    ))?;
+    let hash = format!("{:x}", Sha256::digest(request.to_string()));
+    let mut answer = json!({"request_id":request["request_id"],"name":name,"run_id":request["expected_run_id"],"conversation_id":request["expected_conversation_id"],"job_id":request["job_id"],"action":request["action"],"request_hash":hash});
+    if path.exists() {
+        answer = serde_json::from_slice(&fs::read(&path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        if answer["request_hash"] != hash {
+            return Err("Recovery UUID already used for another action".into());
+        }
+        if answer["status"] == "claimed" {
+            answer["status"] = json!("uncertain");
+            answer["error"] = json!("Earlier recovery edit was interrupted; it was not replayed");
+            atomic(&path, &answer.to_string())?;
+        }
+    } else {
+        let mut changed = false;
+        let outcome = (|| -> Result<Value> {
+            // Normalize native evidence without starting/reloading a host. The
+            // raw persisted binding is rechecked once both local locks are held.
+            let captured = if dsh::exists(name) {
+                Some(dsh::binding(name)?)
+            } else {
+                None
+            };
+            let native = if captured.is_some() {
+                Some(dsh::inspect(name, None)?)
+            } else {
+                None
+            };
+            // Existing DSH lifecycle uses this binding-lock then writer-lock order.
+            let _binding = if captured.is_some() {
+                Some(lock(Some(&root().join("dsh/bindings.lock")))?)
+            } else {
+                None
+            };
+            let _guard = lock(None)?;
+            if dsh::exists(name) != captured.is_some() {
+                return Err("Recovery adapter binding changed".into());
+            }
+            let current = if captured.is_some() {
+                dsh::binding(name)?
+            } else {
+                read(name)?
+            };
+            if captured.as_ref().is_some_and(|old| old != &current) {
+                return Err("Recovery binding changed during native inspection".into());
+            }
+            let normalized = native.unwrap_or_else(|| journal::summary(&current, false));
+            if normalized["run_id"] != request["expected_run_id"]
+                || normalized["conversation_id"] != request["expected_conversation_id"]
+            {
+                return Err("Normalized recovery session changed".into());
+            }
+            let mut job = load_job(name);
+            if string(&current, "name") != name
+                || current["run_id"] != request["expected_run_id"]
+                || current["conversation_id"] != request["expected_conversation_id"]
+                || !string(&current, "archive_id").is_empty()
+                || job["id"] != request["job_id"]
+                || job["state"] != "waiting"
+                || job["identity"] != identity(&normalized)
+            {
+                return Err(
+                    "Recovery job or exact native session identity changed; refresh Activity"
+                        .into(),
+                );
+            }
+            answer["status"] = json!("claimed");
+            atomic(&path, &answer.to_string())?;
+            match string(&request, "action") {
+                "cancel" => stop(&mut job, "cancelled", "Cancelled by you"),
+                "now" => job["due_at"] = json!(now().max(seconds(&job, "not_before"))),
+                _ => unreachable!(),
+            }
+            changed = true;
+            save_job(&job)?;
+            Ok(job)
+        })();
+        match outcome {
+            Ok(job) => {
+                answer["status"] = json!(if request["action"] == "cancel" {
+                    "cancelled"
+                } else {
+                    "scheduled"
+                });
+                answer["recovery"] = job;
+            }
+            Err(error) => {
+                answer["status"] = json!(if changed { "uncertain" } else { "failed" });
+                answer["error"] = json!(error);
+            }
+        }
+        atomic(&path, &answer.to_string())?;
+    }
+    answer.as_object_mut().unwrap().remove("request_hash");
+    println!("{answer}");
+    Ok(())
 }

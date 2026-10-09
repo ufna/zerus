@@ -165,12 +165,25 @@ pub(super) fn start(
     expected_conversation: Option<&str>,
     dry: bool,
 ) -> Result<String> {
+    start_scoped(name,tag,archive_id,expected_run,expected_conversation,dry,None)
+}
+
+pub(super) fn start_scoped(
+    name: &str,
+    tag: Option<&str>,
+    archive_id: Option<&str>,
+    expected_run: Option<&str>,
+    expected_conversation: Option<&str>,
+    dry: bool,
+    scope: Option<&session_action::Scope>,
+) -> Result<String> {
     let _guard = lock(None)?;
     let record = if let Some(id) = archive_id {
         archive::read_archive(name, id)?
     } else {
         read(name)?
     };
+    if let Some(scope)=scope {scope.check(&record)?;}
     if expected_run.is_some_and(|id| id != string(&record, "run_id"))
         || expected_conversation.is_some_and(|id| id != string(&record, "conversation_id"))
     {
@@ -207,6 +220,7 @@ pub(super) fn start(
         if dry {
             Some("NEW_KIMI_FORK_ID".to_owned())
         } else {
+            if let Some(scope)=scope {scope.changing();}
             Some(kimi_fork(&record)?)
         }
     } else {
@@ -231,6 +245,7 @@ pub(super) fn start(
         "0".into(),
     ];
     launch.extend(argv);
+    let new_run=uuid::Uuid::new_v4().to_string();
     let mut environment = BTreeMap::from([
         ("HGS_SESSION", target.clone()),
         ("HGS_AGENT", agent.into()),
@@ -239,7 +254,7 @@ pub(super) fn start(
             absolute_root()?.to_string_lossy().into_owned(),
         ),
         ("HGS_EXECUTABLE", executable),
-        ("HGS_RUN_ID", uuid::Uuid::new_v4().to_string()),
+        ("HGS_RUN_ID", new_run.clone()),
         ("HGS_EXPECTED_ID", String::new()),
         ("HGS_REQUESTED_ID", new_id.clone().unwrap_or_default()),
         ("HGS_ARCHIVE_ID", String::new()),
@@ -286,14 +301,16 @@ pub(super) fn start(
         let mut display = vec!["tmux".into()];
         display.extend(arguments);
         println!("{}", join_command(&display));
-    } else if let Err(error) = tmux(&arguments, true) {
-        return Err(if let Some(id) = new_id {
+    } else {
+        if let Some(scope)=scope {scope.changing();}
+        if let Err(error) = tmux(&arguments, true) {
+        return Err(if let Some(id) = &new_id {
             format!("{error}; Kimi fork {id} is saved and can be opened explicitly")
         } else {
             error
         });
-    } else {
-        println!("hgs: forked {name} as {target}");
+        } else if scope.is_none() {println!("hgs: forked {name} as {target}");}
+        if let (Some(scope),Some(id))=(scope,new_id.as_deref()) {scope.result(&target,&new_run,id,None);}
     }
     Ok(target)
 }

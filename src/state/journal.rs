@@ -183,7 +183,10 @@ pub(super) fn event_db() -> Result<Connection> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY, name TEXT, conversation TEXT, payload TEXT);
         CREATE INDEX IF NOT EXISTS events_session ON events(name, conversation, seq);
         CREATE INDEX IF NOT EXISTS events_main_replies ON events(name, conversation, seq)
-        WHERE json_extract(payload, '$.type') = 'Stop' AND json_extract(payload, '$.agent_id') = '';").map_err(|e| e.to_string())?;
+        WHERE json_extract(payload, '$.type') = 'Stop' AND json_extract(payload, '$.agent_id') = '';
+        CREATE INDEX IF NOT EXISTS events_main_messages ON events(name, conversation, seq)
+        WHERE COALESCE(json_extract(payload, '$.agent_id'), '') IN ('', 'main')
+          AND json_extract(payload, '$.type') IN ('UserPromptSubmit','UserPromptQueued','UserMessage','TurnStarted','QuestionAnswered','AgentMessage','Stop');").map_err(|e| e.to_string())?;
     Ok(db)
 }
 
@@ -333,6 +336,9 @@ pub(super) fn summary(record: &Value, live_pane: bool) -> Value {
             .unwrap()
             .clone(),
     );
+    output.as_object_mut().unwrap().extend(session_action::summary(record,live_pane).as_object().unwrap().clone());
+    output["terminal_supported"] = json!(live_pane && string(record,"archive_id").is_empty() && process_alive(record));
+    output["terminal_reason"] = json!(if output["terminal_supported"] == true { "" } else { "Terminal requires this exact live tracked tmux pane" });
     output["subagent_count"] = output["subagent_active_count"].clone();
     let account = account_binding(record);
     output["account_id"] = account["id"].clone();
@@ -387,6 +393,34 @@ pub(super) fn summary(record: &Value, live_pane: bool) -> Value {
     }
     recovery::enrich(record, &mut output);
     output
+}
+
+const MESSAGE_EVENTS_LIMIT: usize = 100;
+const MESSAGE_EVENTS_BYTES: usize = 256 * 1024;
+
+// The activity tail includes tools and children. Keep main public messages in
+// a separate bounded window so a cold reader does not lose its newest prompt
+// merely because that turn has produced more than one hundred tool events.
+fn message_events(db: &Connection, name: &str, conversation: Option<&str>) -> Result<(Vec<Value>, bool)> {
+    let mut query = db.prepare("SELECT seq,payload FROM events WHERE name=?1 AND conversation IS ?2
+        AND COALESCE(json_extract(payload, '$.agent_id'), '') IN ('', 'main')
+        AND json_extract(payload, '$.type') IN ('UserPromptSubmit','UserPromptQueued','UserMessage','TurnStarted','QuestionAnswered','AgentMessage','Stop')
+        ORDER BY seq DESC LIMIT 101").map_err(|e| e.to_string())?;
+    let rows = query.query_map(params![name, conversation], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+        .map_err(|e| e.to_string())?;
+    let (mut events, mut bytes, mut truncated) = (Vec::new(), 2, false);
+    for row in rows {
+        let (seq, payload) = row.map_err(|e| e.to_string())?;
+        if events.len() == MESSAGE_EVENTS_LIMIT { truncated = true; break; }
+        let mut event: Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+        event["seq"] = json!(seq);
+        let size = event.to_string().len() + usize::from(!events.is_empty());
+        if bytes + size > MESSAGE_EVENTS_BYTES { truncated = true; break; }
+        bytes += size;
+        events.push(event);
+    }
+    events.reverse();
+    Ok((events, truncated))
 }
 
 pub(super) fn inspection(name: &str, after: i64, archive_id: Option<&str>, include_processes: bool) -> Result<Value> {
@@ -550,6 +584,11 @@ pub(super) fn inspection(name: &str, after: i64, archive_id: Option<&str>, inclu
         events.push(event);
     }
     output["events"] = json!(events);
+    let (messages, truncated) = message_events(&db, &journal_name, conversation)?;
+    output["message_events"] = json!(messages);
+    output["message_events_truncated"] = json!(truncated);
+    output["message_events_limit"] = json!(MESSAGE_EVENTS_LIMIT);
+    output["message_events_max_bytes"] = json!(MESSAGE_EVENTS_BYTES);
     output["attachment_messages"] = attachments::messages(&record, "");
     workspace::enrich(std::slice::from_mut(&mut output), &workspace::pane_cwds());
     Ok(output)
@@ -951,6 +990,52 @@ pub(super) fn repair_kimi_main(record: &mut Value) {
 #[cfg(test)]
 mod attention_regressions {
     use super::*;
+    fn message_db() -> Connection {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE events(seq INTEGER PRIMARY KEY,name TEXT,conversation TEXT,payload TEXT);
+            CREATE INDEX events_session ON events(name,conversation,seq);").unwrap();
+        db
+    }
+    fn insert_message(db: &Connection, name: &str, conversation: Option<&str>, event: Value) -> i64 {
+        db.execute("INSERT INTO events(name,conversation,payload) VALUES(?,?,?)", params![name, conversation, event.to_string()]).unwrap();
+        db.last_insert_rowid()
+    }
+    #[test]
+    fn message_window_keeps_latest_user_prompt_after_tools_and_isolates_conversations() {
+        let db = message_db();
+        let seq = insert_message(&db, "example", Some("conversation"), json!({"type":"UserPromptSubmit","agent_id":"","at":1,"detail":"Synthetic latest own message"}));
+        for index in 0..150 {
+            insert_message(&db, "example", Some("conversation"), json!({"type":"PostToolUse","agent_id":"","at":index+2,"detail":"Synthetic tool"}));
+            insert_message(&db, "example", Some("conversation"), json!({"type":"UserPromptSubmit","agent_id":"child","at":index+2,"detail":"Synthetic child message"}));
+        }
+        insert_message(&db, "example", Some("other"), json!({"type":"UserPromptSubmit","agent_id":"","detail":"Other conversation"}));
+        insert_message(&db, "other", Some("conversation"), json!({"type":"UserPromptSubmit","agent_id":"","detail":"Other session"}));
+        let answer = json!({"type":"QuestionAnswered","agent_id":"main","at":302,"detail":"Literal answer","question_id":"question","question_hash":"hash"});
+        let answer_seq = insert_message(&db, "example", Some("conversation"), answer.clone());
+        let (messages, truncated) = message_events(&db, "example", Some("conversation")).unwrap();
+        assert!(!truncated);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["seq"], seq);
+        assert_eq!(messages[0]["detail"], "Synthetic latest own message");
+        let mut expected = answer; expected["seq"] = json!(answer_seq);
+        assert_eq!(messages[1], expected);
+    }
+    #[test]
+    fn message_window_limits_rows_and_actual_utf8_bytes_with_disclosure() {
+        let db = message_db();
+        for index in 0..105 {
+            insert_message(&db, "example", None, json!({"type":"UserMessage","at":index,"detail":"Synthetic repeated message"}));
+        }
+        let (messages, truncated) = message_events(&db, "example", None).unwrap();
+        assert!(truncated); assert_eq!(messages.len(), MESSAGE_EVENTS_LIMIT);
+        assert_eq!(messages[0]["at"], 5); assert_eq!(messages[99]["at"], 104);
+        for _ in 0..10 {
+            insert_message(&db, "unicode", Some("conversation"), json!({"type":"UserMessage","detail":"🦀".repeat(20_000)}));
+        }
+        let (messages, truncated) = message_events(&db, "unicode", Some("conversation")).unwrap();
+        assert!(truncated); assert_eq!(messages.len(), 3);
+        assert!(json!(messages).to_string().len() <= MESSAGE_EVENTS_BYTES);
+    }
     #[test]
     fn compaction_has_its_own_clock_and_survives_duplicate_start_and_queued_input() {
         let mut record = json!({"agent":"codex","activity":"busy","phase":"tool","turn_started":123.0,"active_tools":{},"subagents":{}});

@@ -1,0 +1,395 @@
+//! Scoped lifecycle commands with durable per-UUID claims. The receipt lock is
+//! separate from the state writer lock; helpers check identity at their own
+//! mutation boundary and never replay an abandoned native attempt.
+use super::*;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::cell::{Cell, RefCell};
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Request {
+    request_id: String,
+    action: String,
+    expected_run_id: String,
+    expected_conversation_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    archive_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    new_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tag: Option<String>,
+}
+
+pub(super) struct Scope {
+    name: String,
+    run: String,
+    conversation: String,
+    archive: Option<String>,
+    changed: Cell<bool>,
+    target: RefCell<Option<Value>>,
+}
+impl Scope {
+    pub(super) fn check_base(&self, record: &Value) -> Result<()> {
+        if string(record, "name") != self.name
+            || string(record, "run_id") != self.run
+            || string(record, "conversation_id") != self.conversation
+        {
+            return Err("Session identity changed; no replacement session was selected".into());
+        }
+        Ok(())
+    }
+    pub(super) fn check(&self, record: &Value) -> Result<()> {
+        self.check_base(record)?;
+        if record["archive_id"].as_str().filter(|s| !s.is_empty()) != self.archive.as_deref() {
+            return Err("Archive identity changed; select the exact saved archive".into());
+        }
+        Ok(())
+    }
+    pub(super) fn changing(&self) {
+        self.changed.set(true);
+    }
+    /// Only a supported native adapter may explicitly attest zero side effects.
+    pub(super) fn unchanged(&self) {
+        self.changed.set(false);
+    }
+    pub(super) fn result(&self, name: &str, run: &str, conversation: &str, archive: Option<&str>) {
+        let mut target = json!({"name":name,"run_id":run,"conversation_id":conversation});
+        if let Some(id) = archive {
+            target["archive_id"] = json!(id);
+        }
+        *self.target.borrow_mut() = Some(target);
+    }
+    pub(super) fn result_record(&self, record: &Value) {
+        self.result(
+            string(record, "name"),
+            string(record, "run_id"),
+            string(record, "conversation_id"),
+            record["archive_id"].as_str().filter(|s| !s.is_empty()),
+        );
+    }
+}
+
+/// A presentation gate, never a substitute for the locked action checks.
+pub(super) fn summary(record: &Value, live_pane: bool) -> Value {
+    let archived = !string(record, "archive_id").is_empty();
+    let changing = record.get("pausing").is_some() || record["resume_pending"] == true;
+    let confirmed = !string(record, "conversation_id").is_empty();
+    let recipe = record["base"].is_array() && Path::new(string(record, "launch_dir")).is_dir();
+    let restore_pending = !string(record, "restore_archive_id").is_empty();
+    let decisions = [
+        (
+            "pause",
+            !archived && live_pane && !changing && confirmed && lifecycle::safe_to_pause(record),
+        ),
+        (
+            "resume",
+            !archived && !live_pane && !changing && confirmed && recipe,
+        ),
+        ("archive", !archived && !live_pane && !changing && confirmed),
+        ("rename", !changing),
+        (
+            "fork",
+            !changing && fork::summary(record, live_pane)["fork_supported"] == true,
+        ),
+        ("terminate", !archived),
+        (
+            "restore",
+            archived && recipe && !record_path(string(record, "name")).exists(),
+        ),
+        ("forget", !changing && !restore_pending),
+    ];
+    let mut allowed = Vec::new();
+    let mut reasons = serde_json::Map::new();
+    for (action, enabled) in decisions {
+        if enabled {
+            allowed.push(action);
+        } else {
+            reasons.insert(
+                action.into(),
+                json!(match action {
+                    "pause" => "Wait for a confirmed idle live session before pausing",
+                    "resume" =>
+                        "Resume requires a saved session and available native launch recipe",
+                    "archive" => "Archive requires a stopped or paused confirmed session",
+                    "restore" => "Restore requires an archive recipe and an unused session name",
+                    "terminate" => "An archive has no running session to terminate",
+                    "fork" => "This session cannot fork its confirmed native context yet",
+                    "forget" =>
+                        "Wait for the active pause or restore before forgetting this session",
+                    _ => "Wait for the active pause or restore before renaming",
+                }),
+            );
+        }
+    }
+    json!({"allowed_actions":allowed,"action_reasons":reasons})
+}
+
+fn validate(request: &Request, name: &str) -> Result<()> {
+    let canonical =
+        uuid::Uuid::parse_str(&request.request_id).map_err(|_| "Invalid request UUID")?;
+    if canonical.is_nil() || canonical.to_string() != request.request_id {
+        return Err("Invalid request UUID".into());
+    }
+    for (value, maximum, nonempty) in [
+        (name, 512, true),
+        (request.expected_run_id.as_str(), 128, true),
+        (request.expected_conversation_id.as_str(), 256, false),
+    ] {
+        if value.len() > maximum
+            || (nonempty && value.is_empty())
+            || value.chars().any(char::is_control)
+        {
+            return Err("Invalid session identity".into());
+        }
+    }
+    let archived = matches!(
+        request.action.as_str(),
+        "restore" | "forget" | "rename" | "fork"
+    );
+    if !matches!(
+        request.action.as_str(),
+        "pause" | "resume" | "archive" | "rename" | "fork" | "terminate" | "restore" | "forget"
+    ) || (request.archive_id.is_some() && !archived)
+        || (request.action == "restore" && request.archive_id.is_none())
+        || (request.new_name.is_some() != (request.action == "rename"))
+        || (request.tag.is_some() && request.action != "fork")
+    {
+        return Err("Unsupported action or unexpected action argument".into());
+    }
+    for (value, maximum) in [
+        (request.new_name.as_deref(), 512),
+        (request.tag.as_deref(), 120),
+    ] {
+        if value.is_some_and(|value| {
+            value.is_empty()
+                || value.len() > maximum
+                || value.trim() != value
+                || value.chars().any(char::is_control)
+        }) {
+            return Err("Invalid bounded action name".into());
+        }
+    }
+    if let Some(id) = &request.archive_id {
+        let uuid = uuid::Uuid::parse_str(id).map_err(|_| "Invalid archive UUID")?;
+        if uuid.is_nil() || uuid.to_string() != *id {
+            return Err("Invalid archive UUID".into());
+        }
+    }
+    Ok(())
+}
+
+fn perform(request: &Request, name: &str, scope: &Scope) -> Result<()> {
+    if dsh::exists(name) {
+        return dsh::session_action(name, &request.action, request.new_name.as_deref(), scope);
+    }
+    match request.action.as_str() {
+        "pause" => {
+            lifecycle::pause_scoped(&[name.into()], false, Some(scope))?;
+        }
+        "resume" => {
+            lifecycle::resume_scoped(&[name.into()], false, Some(scope))?;
+        }
+        "restore" => {
+            lifecycle::resume_scoped(
+                &[
+                    name.into(),
+                    "--archive".into(),
+                    request.archive_id.clone().unwrap(),
+                ],
+                false,
+                Some(scope),
+            )?;
+        }
+        "archive" => {
+            archive::manual_scoped(name, false, Some(scope))?;
+        }
+        "rename" => {
+            let mut args = vec![name.into(), request.new_name.clone().unwrap()];
+            if let Some(id) = &request.archive_id {
+                args.extend(["--archive".into(), id.clone()]);
+            }
+            rename::dispatch_scoped(&args, false, Some(scope))?;
+        }
+        "fork" => {
+            fork::start_scoped(
+                name,
+                request.tag.as_deref(),
+                request.archive_id.as_deref(),
+                Some(&request.expected_run_id),
+                Some(&request.expected_conversation_id),
+                false,
+                Some(scope),
+            )?;
+        }
+        "terminate" => {
+            terminate::dispatch_scoped(&[name.into()], false, Some(scope), false)?;
+        }
+        "forget" => {
+            if let Some(id) = &request.archive_id {
+                archive::forget_scoped(name, id, false, Some(scope))?;
+            } else {
+                terminate::dispatch_scoped(&[name.into()], false, Some(scope), true)?;
+            }
+        }
+        _ => unreachable!(),
+    }
+    Ok(())
+}
+
+fn receipt(request: &Request, name: &str, hash: &str, status: &str) -> Value {
+    let mut result=json!({"request_id":request.request_id,"name":name,"run_id":request.expected_run_id,
+        "conversation_id":request.expected_conversation_id,"status":status,"request_hash":hash,"at":now()});
+    if let Some(id)=&request.archive_id {result["archive_id"]=json!(id);}
+    result
+}
+
+fn attempt<F>(path: &Path, request: &Request, name: &str, hash: &str, invoke: F) -> Result<Value>
+where
+    F: FnOnce(&Scope) -> Result<()>,
+{
+    if path.exists() {
+        let old: Value = serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        if old["request_hash"] != hash {
+            return Err("Request UUID was already used for another action".into());
+        }
+        if old["status"] == "claimed" {
+            let mut uncertain = receipt(request, name, hash, "uncertain");
+            uncertain["error"] =
+                json!("The earlier native attempt was interrupted; it was not replayed");
+            atomic(path, &uncertain.to_string())?;
+            return Ok(uncertain);
+        }
+        return Ok(old);
+    }
+    atomic(path, &receipt(request, name, hash, "claimed").to_string())?;
+    let scope = Scope {
+        name: name.into(),
+        run: request.expected_run_id.clone(),
+        conversation: request.expected_conversation_id.clone(),
+        archive: request.archive_id.clone(),
+        changed: Cell::new(false),
+        target: RefCell::new(None),
+    };
+    let outcome = invoke(&scope);
+    let status = if outcome.is_ok() {
+        "completed"
+    } else if scope.changed.get() {
+        "uncertain"
+    } else {
+        "failed"
+    };
+    let mut answer = receipt(request, name, hash, status);
+    if let Err(ref error) = outcome {
+        answer["error"] = json!(error.chars().take(2048).collect::<String>());
+    }
+    if outcome.is_ok() {
+        if let Some(target) = scope.target.into_inner() {
+            answer["result_target"] = target;
+        }
+    }
+    // An unwritten acknowledgement leaves the durable claim, which is uncertain
+    // on the next lookup. It must never cause another lifecycle handoff.
+    atomic(path, &answer.to_string())?;
+    Ok(answer)
+}
+
+pub(super) fn dispatch(args: &[String]) -> Result<i32> {
+    if args.len() != 2 || args[1] != "--json" {
+        return Err("usage: hgs session-action <session> --json".into());
+    }
+    let mut bytes = Vec::new();
+    io::stdin()
+        .take(8193)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() > 8192 {
+        return Err("Action request is too large".into());
+    }
+    let request: Request = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let name = &args[0];
+    validate(&request, name)?;
+    let hash = format!(
+        "{:x}",
+        Sha256::digest(json!([name, request]).to_string().as_bytes())
+    );
+    let directory = absolute_root()?.join("action_receipts");
+    let path = directory.join(format!("{}.json", request.request_id));
+    let _receipt_guard = lock(Some(
+        &directory.join(format!("{}.lock", request.request_id)),
+    ))?;
+    let mut answer = attempt(&path, &request, name, &hash, |scope| {
+        perform(&request, name, scope)
+    })?;
+    answer.as_object_mut().unwrap().remove("request_hash");
+    println!("{answer}");
+    Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn request() -> Request {
+        serde_json::from_value(json!({"request_id":"11111111-1111-4111-8111-111111111111",
+        "action":"pause","expected_run_id":"run","expected_conversation_id":"conversation"}))
+        .unwrap()
+    }
+    #[test]
+    fn action_scope_and_arguments_reject_replacements() {
+        let r = request();
+        validate(&r, "codex/project/session").unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        attempt(&directory.path().join("receipt"),&r,"session","hash",|scope| {
+            scope.check(&json!({"name":"session","run_id":"run","conversation_id":"conversation"}))?;
+            assert!(scope.check(&json!({"name":"session","run_id":"run","conversation_id":"other"})).is_err());
+            assert!(scope.check(&json!({"name":"session","run_id":"run","conversation_id":"conversation","archive_id":"archive"})).is_err());
+            Ok(())
+        }).unwrap();
+        let mut invalid = request();
+        invalid.archive_id = Some("11111111-1111-4111-8111-111111111111".into());
+        assert!(validate(&invalid, "session").is_err());
+    }
+    #[test]
+    fn duplicate_and_abandoned_claim_never_repeat_handoff() {
+        let r = request();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("receipt");
+        let first = attempt(&path, &r, "session", "hash", |scope| {
+            scope.changing();
+            Err("after handoff".into())
+        })
+        .unwrap();
+        assert_eq!(first["status"], "uncertain");
+        assert_eq!(
+            attempt(&path, &r, "session", "hash", |_| panic!("replayed")).unwrap(),
+            first
+        );
+        assert!(attempt(&path, &r, "session", "different", |_| panic!("conflict")).is_err());
+        atomic(
+            &path,
+            &receipt(&r, "session", "hash", "claimed").to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            attempt(&path, &r, "session", "hash", |_| panic!("abandoned replay")).unwrap()
+                ["status"],
+            "uncertain"
+        );
+    }
+    #[test]
+    fn rejection_before_first_change_is_definite_failure() {
+        let r = request();
+        let directory = tempfile::tempdir().unwrap();
+        let answer = attempt(
+            &directory.path().join("receipt"),
+            &r,
+            "session",
+            "hash",
+            |_| Err("unsupported".into()),
+        )
+        .unwrap();
+        assert_eq!(answer["status"], "failed");
+        assert!(answer["result_target"].is_null());
+    }
+}

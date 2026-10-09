@@ -1,0 +1,411 @@
+//! Explicit raw Terminal, pinned to the tracked pane/process and short deadline.
+//! Read frames never resize the desktop pane. Native input UUIDs never replay.
+use super::*;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::io::Write;
+use std::process::{Command, Stdio};
+
+const MAX_SCREEN: usize = 128 * 1024;
+const KEYS: &[&str] = &[
+    "Enter", "Escape", "Tab", "BTab", "BSpace", "Up", "Down", "Left", "Right", "Home", "End",
+    "PPage", "NPage", "DC", "C-c", "C-d", "C-l", "C-a", "C-e", "C-u", "C-w",
+];
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Request {
+    request_id: String,
+    action: String,
+    expected_run_id: String,
+    expected_conversation_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    terminal_binding_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enter: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expires_at: Option<f64>,
+}
+fn validate(request: &Request) -> Result<()> {
+    let id =
+        uuid::Uuid::parse_str(&request.request_id).map_err(|_| "Invalid terminal request UUID")?;
+    if id.is_nil()
+        || id.to_string() != request.request_id
+        || request.expected_run_id.is_empty()
+        || request.expected_run_id.len() > 128
+        || request.expected_conversation_id.len() > 256
+        || request.expected_run_id.chars().any(char::is_control)
+        || request
+            .expected_conversation_id
+            .chars()
+            .any(char::is_control)
+    {
+        return Err("Invalid terminal identity".into());
+    }
+    match request.action.as_str() {
+        "snapshot"
+            if request.terminal_binding_id.is_none()
+                && request.text.is_none()
+                && request.enter.is_none()
+                && request.key.is_none()
+                && request.expires_at.is_none() =>
+        {
+            Ok(())
+        }
+        "input" => {
+            let binding = request
+                .terminal_binding_id
+                .as_deref()
+                .ok_or("Terminal input needs a verified binding")?;
+            if binding.len() != 64
+                || !binding
+                    .bytes()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+            {
+                return Err("Invalid terminal binding".into());
+            }
+            let expires = request
+                .expires_at
+                .ok_or("Terminal input needs a relay deadline")?;
+            if !expires.is_finite() || expires <= 0.0 {
+                return Err("Terminal input expired or has an invalid deadline".into());
+            }
+            if let Some(key) = &request.key {
+                if request.text.is_some()
+                    || request.enter.is_some()
+                    || !KEYS.contains(&key.as_str())
+                {
+                    return Err("Invalid terminal key".into());
+                }
+            } else {
+                let text = request
+                    .text
+                    .as_deref()
+                    .ok_or("Choose terminal text or a key")?;
+                if request.enter.is_none()
+                    || text.len() > 64 * 1024
+                    || (text.is_empty() && request.enter != Some(true))
+                    || text
+                        .chars()
+                        .any(|c| c.is_control() && c != '\n' && c != '\t')
+                {
+                    return Err("Invalid literal terminal text".into());
+                }
+            }
+            Ok(())
+        }
+        _ => Err("Unsupported terminal action".into()),
+    }
+}
+fn checked(name: &str, request: &Request) -> Result<Value> {
+    if dsh::exists(name) {
+        return Err("DeepSeek uses a structured native API without a tmux Terminal".into());
+    }
+    let record = read(name)?;
+    if string(&record, "run_id") != request.expected_run_id
+        || string(&record, "conversation_id") != request.expected_conversation_id
+        || !string(&record, "archive_id").is_empty()
+        || !process_alive(&record)
+        || !matches(&record, live()?.get(name))
+    {
+        return Err("Terminal no longer belongs to this exact live session".into());
+    }
+    Ok(record)
+}
+fn frame(record: &Value) -> Result<Value> {
+    let pane = string(record, "pane");
+    if !pane
+        .strip_prefix('%')
+        .is_some_and(|id| !id.is_empty() && id.bytes().all(|c| c.is_ascii_digit()))
+    {
+        return Err("Invalid tracked pane".into());
+    }
+    let output=tmux(&["display-message","-p","-t",pane,
+        "#{session_id}\t#{pane_id}\t#{pid}\t#{pane_pid}\t#{pane_width}\t#{pane_height}\t#{cursor_x}\t#{cursor_y}\t#{pane_in_mode}\t#{pane_dead}\t#{@hgs_run}\t#{session_name}\t#{bracket_paste_flag}\t#{pane_tty}"].map(str::to_owned),true)?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let fields: Vec<_> = text.trim_end_matches('\n').split('\t').collect();
+    if fields.len() != 14
+        || fields[1] != pane
+        || fields[9] != "0"
+        || fields[10] != string(record, "run_id")
+        || fields[11] != string(record, "name")
+        || !fields[0]
+            .strip_prefix('$')
+            .is_some_and(|id| !id.is_empty() && id.bytes().all(|c| c.is_ascii_digit()))
+    {
+        return Err("Terminal pane identity changed".into());
+    }
+    let numeric = |index: usize| {
+        fields[index]
+            .parse::<u32>()
+            .map_err(|_| "Invalid terminal dimensions or process identity".to_string())
+    };
+    let (server, pane_pid, cols, rows, x, y) = (
+        numeric(2)?,
+        numeric(3)?,
+        numeric(4)?,
+        numeric(5)?,
+        numeric(6)?,
+        numeric(7)?,
+    );
+    if cols == 0
+        || rows == 0
+        || cols > 1000
+        || rows > 1000
+        || x >= cols
+        || y >= rows
+        || server == 0
+        || pane_pid == 0
+    {
+        return Err("Unsupported terminal geometry".into());
+    }
+    let (server_start, pane_start) = (process_start(server), process_start(pane_pid));
+    if server_start.is_empty() || pane_start.is_empty() {
+        return Err("Terminal process birth identity is unavailable".into());
+    }
+    let pid = record["pid"]
+        .as_u64()
+        .ok_or("Missing tracked process")?
+        .to_string();
+    let tty = Command::new("ps")
+        .args(["-p", &pid, "-o", "tty="])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !tty.status.success()
+        || fields[13].is_empty()
+        || String::from_utf8_lossy(&tty.stdout).trim() != fields[13].trim_start_matches("/dev/")
+    {
+        return Err("Tracked process is no longer attached to this Terminal".into());
+    }
+    let binding = format!(
+        "{:x}",
+        Sha256::digest(
+            json!([
+                record["run_id"],
+                record["conversation_id"],
+                pane,
+                fields[0],
+                server,
+                server_start,
+                pane_pid,
+                pane_start,
+                record["pid"],
+                record["process_start"]
+            ])
+            .to_string()
+        )
+    );
+    Ok(
+        json!({"terminal_binding_id":binding,"cols":cols,"rows":rows,"cursor":{"x":x,"y":y},"input_mode":fields[8]=="0","bracket_paste":fields[12]=="1"}),
+    )
+}
+fn identity(request: &Request, name: &str, status: &str) -> Value {
+    json!({"request_id":request.request_id,"name":name,"run_id":request.expected_run_id,"conversation_id":request.expected_conversation_id,"status":status})
+}
+fn check_handoff(name: &str, request: &Request) -> Result<Value> {
+    if request.expires_at.unwrap_or(0.0) <= now() || request.expires_at.unwrap_or(0.0) > now() + 6.0
+    {
+        return Err("Terminal input expired before native handoff".into());
+    }
+    let record = checked(name, request)?;
+    let metadata = frame(&record)?;
+    if metadata["terminal_binding_id"].as_str() != request.terminal_binding_id.as_deref() {
+        return Err("Terminal binding changed before input".into());
+    }
+    if metadata["input_mode"] != true {
+        return Err("Exit tmux copy mode before sending terminal input".into());
+    }
+    if request
+        .text
+        .as_ref()
+        .is_some_and(|text| text.contains('\n'))
+        && metadata["bracket_paste"] != true
+    {
+        return Err("Multiline terminal text requires verified bracketed paste mode".into());
+    }
+    Ok(record)
+}
+fn input(name: &str, request: &Request, path: &Path, hash: &str) -> Result<Value> {
+    let _guard = lock(None)?;
+    let record = check_handoff(name, request)?;
+    let mut answer = identity(request, name, "claimed");
+    answer["request_hash"] = json!(hash);
+    answer["terminal_binding_id"] = json!(request.terminal_binding_id);
+    let buffer = format!("hgs-terminal-{}", request.request_id);
+    let staged = request.text.as_ref().is_some_and(|text| !text.is_empty());
+    let cleanup = || {
+        if staged {
+            let _ = tmux(&["delete-buffer", "-b", &buffer].map(str::to_owned), false);
+        }
+    };
+    if staged {
+        let stage: Result<()> = (|| {
+            let mut loader = Command::new("tmux")
+                .args(["load-buffer", "-b", &buffer, "-"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| e.to_string())?;
+            let written = match loader.stdin.take() {
+                Some(mut stdin) => stdin.write_all(request.text.as_ref().unwrap().as_bytes()),
+                None => Err(io::Error::other("Missing terminal buffer input")),
+            };
+            let status = loader.wait().map_err(|e| e.to_string())?;
+            if !status.success() || written.is_err() {
+                return Err("Could not stage terminal text; nothing was delivered".into());
+            }
+            Ok(())
+        })();
+        if let Err(error) = stage {
+            cleanup();
+            return Err(error);
+        }
+    }
+    if let Err(error) = check_handoff(name, request) {
+        cleanup();
+        return Err(error);
+    }
+    if let Err(error) = atomic(path, &answer.to_string()) {
+        cleanup();
+        return Err(error);
+    }
+    let result: Result<()> = (|| {
+        let pane = string(&record, "pane");
+        if let Some(key) = &request.key {
+            tmux(&["send-keys", "-t", pane, key].map(str::to_owned), true)?;
+        } else {
+            if staged {
+                let mut paste = vec![
+                    "paste-buffer".to_owned(),
+                    "-r".to_owned(),
+                    "-d".to_owned(),
+                    "-b".to_owned(),
+                    buffer.clone(),
+                    "-t".to_owned(),
+                    pane.to_owned(),
+                ];
+                // Use literal stdin buffers even for a single line; terminal
+                // text must not appear in child-process command arguments.
+                if frame(&record)?["bracket_paste"] == true {
+                    paste.push("-p".to_owned());
+                }
+                tmux(&paste, true)?;
+            }
+            if request.enter == Some(true) {
+                if staged {
+                    std::thread::sleep(std::time::Duration::from_millis(180));
+                }
+                check_handoff(name, request)?;
+                tmux(&["send-keys", "-t", pane, "Enter"].map(str::to_owned), true)?;
+            }
+        }
+        Ok(())
+    })();
+    cleanup();
+    answer["status"] = json!(if result.is_ok() {
+        "submitted"
+    } else {
+        "uncertain"
+    });
+    if let Err(error) = result {
+        answer["error"] = json!(error);
+    }
+    atomic(path, &answer.to_string())?;
+    Ok(answer)
+}
+pub(super) fn dispatch(args: &[String]) -> Result<i32> {
+    if args.len() != 2 || args[1] != "--json" {
+        return Err("usage: hgs terminal <session> --json".into());
+    }
+    let mut bytes = Vec::new();
+    io::stdin()
+        .take(512 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() > 512 * 1024 {
+        return Err("Terminal request exceeds size limit".into());
+    }
+    let request: Request = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    validate(&request)?;
+    let name = &args[0];
+    let mut answer = if request.action == "snapshot" {
+        let _guard = lock(None)?;
+        let record = checked(name, &request)?;
+        let metadata = frame(&record)?;
+        let output = tmux(
+            &["capture-pane", "-p", "-e", "-t", string(&record, "pane")].map(str::to_owned),
+            true,
+        )?;
+        let screen = String::from_utf8_lossy(&output.stdout);
+        let truncated = screen.len() > MAX_SCREEN;
+        let mut boundary = screen.len().min(MAX_SCREEN);
+        while !screen.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        let mut answer = identity(&request, name, "snapshot");
+        answer
+            .as_object_mut()
+            .unwrap()
+            .extend(metadata.as_object().unwrap().clone());
+        if frame(&checked(name, &request)?)?["terminal_binding_id"]
+            != metadata["terminal_binding_id"]
+        {
+            return Err("Terminal changed during screen capture".into());
+        }
+        answer["input_supported"] = metadata["input_mode"].clone();
+        answer["text_supported"] = metadata["input_mode"].clone();
+        answer["multiline_supported"] =
+            json!(metadata["input_mode"] == true && metadata["bracket_paste"] == true);
+        answer["input_reason"] = json!(if metadata["input_mode"] == true {
+            ""
+        } else {
+            "Exit tmux copy mode before input"
+        });
+        answer["screen"] = json!(&screen[..boundary]);
+        answer["truncated"] = json!(truncated);
+        answer["captured_at"] = json!(now());
+        answer
+    } else {
+        let directory = absolute_root()?.join("terminal_receipts");
+        let path = directory.join(format!("{}.json", request.request_id));
+        let _claim = lock(Some(
+            &directory.join(format!("{}.lock", request.request_id)),
+        ))?;
+        let hash = format!("{:x}", Sha256::digest(json!([name, request]).to_string()));
+        if path.exists() {
+            let mut receipt: Value =
+                serde_json::from_slice(&std::fs::read(&path).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+            if receipt["request_hash"] != hash {
+                return Err("Terminal UUID already used for another input".into());
+            }
+            if receipt["status"] == "claimed" {
+                receipt["status"] = json!("uncertain");
+                receipt["error"] =
+                    json!("Earlier terminal input was interrupted; it was not replayed");
+                atomic(&path, &receipt.to_string())?;
+            }
+            receipt
+        } else {
+            match input(name, &request, &path, &hash) {
+                Ok(answer) => answer,
+                Err(error) => {
+                    let status = if path.exists() { "uncertain" } else { "failed" };
+                    let mut answer = identity(&request, name, status);
+                    answer["request_hash"] = json!(hash);
+                    answer["terminal_binding_id"] = json!(request.terminal_binding_id);
+                    answer["error"] = json!(error);
+                    atomic(&path, &answer.to_string())?;
+                    answer
+                }
+            }
+        }
+    };
+    answer.as_object_mut().unwrap().remove("request_hash");
+    println!("{answer}");
+    Ok(0)
+}

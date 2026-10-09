@@ -62,7 +62,7 @@ pub(super) fn records() -> Result<Vec<Value>> {
     Ok(result)
 }
 
-fn remove_synced(path: &Path) -> Result<()> {
+pub(super) fn remove_synced(path: &Path) -> Result<()> {
     match fs::remove_file(path) {
         Ok(()) => File::open(path.parent().ok_or("invalid record path")?)
             .and_then(|file| file.sync_all())
@@ -151,7 +151,9 @@ pub(super) fn reconcile() -> Result<()> {
     Ok(())
 }
 
-pub(super) fn manual(name: &str, dry: bool) -> Result<i32> {
+pub(super) fn manual(name: &str, dry: bool) -> Result<i32> { manual_scoped(name,dry,None) }
+
+pub(super) fn manual_scoped(name: &str, dry: bool, scope: Option<&session_action::Scope>) -> Result<i32> {
     let _guard = lock(None)?;
     if live()?.contains_key(name) {
         return Err(format!(
@@ -159,6 +161,7 @@ pub(super) fn manual(name: &str, dry: bool) -> Result<i32> {
         ));
     }
     let mut record = read(name)?;
+    if let Some(scope)=scope {scope.check(&record)?;}
     if process_alive(&record) {
         return Err(format!("{name}: tracked agent process is still running"));
     }
@@ -171,14 +174,19 @@ pub(super) fn manual(name: &str, dry: bool) -> Result<i32> {
     }
     record["completion_source"] = json!("manual_archive");
     record["completion_reason"] = json!("user_archived");
+    if let Some(scope)=scope {scope.changing();}
     let id = save(&record)?;
-    println!("hgs: archived {name} ({id})");
+    if let Some(scope)=scope {scope.result(name,string(&record,"run_id"),string(&record,"conversation_id"),Some(&id));}
+    else {println!("hgs: archived {name} ({id})");}
     Ok(0)
 }
 
-pub(super) fn forget(name: &str, id: &str, dry: bool) -> Result<()> {
+pub(super) fn forget(name: &str, id: &str, dry: bool) -> Result<()> { forget_scoped(name,id,dry,None) }
+
+pub(super) fn forget_scoped(name: &str, id: &str, dry: bool, scope: Option<&session_action::Scope>) -> Result<()> {
     let _guard = lock(None)?;
-    read_archive(name, id)?;
+    let record=read_archive(name, id)?;
+    if let Some(scope)=scope {scope.check(&record)?;}
     // Do not remove the only recoverable source of a not-yet-confirmed restore.
     if record_path(name).exists() && string(&read(name)?, "restore_archive_id") == id {
         return Err(format!(
@@ -189,6 +197,7 @@ pub(super) fn forget(name: &str, id: &str, dry: bool) -> Result<()> {
         println!("hgs: would forget archive {id} ({name})");
         return Ok(());
     }
+    if let Some(scope)=scope {scope.changing();}
     remove_synced(&path(id)?)
 }
 

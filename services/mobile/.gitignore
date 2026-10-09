@@ -1,0 +1,6 @@
+.venv/
+*.egg-info/
+data/
+.env
+config.json
+connector.json

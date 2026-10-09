@@ -1,0 +1,360 @@
+package app.zerus.mobile
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+
+@Composable internal fun SessionHeaderTools(model: ZerusViewModel, session: Session,onJump: (ConversationMessageJump) -> Unit) {
+    val target = session.target
+    val settings = remember(model.activity) { SessionDetailsPresentation.settings(model.activity) }
+    var details by remember(target.key) { mutableStateOf(false) }
+    var settingsOpen by remember(target.key) { mutableStateOf(false) }
+    var menu by remember(target.key) { mutableStateOf(false) }
+    var request by remember(target.key) { mutableStateOf<String?>(null) }
+    var terminal by remember(target.key) { mutableStateOf(false) }
+    var search by remember(target.key) { mutableStateOf(false) }
+    var readEvidence by remember(target.key) { mutableStateOf<ReadAttentionEvidence?>(null) }
+    val clipboard = LocalClipboardManager.current
+    if(details || settingsOpen || menu || request != null || terminal || search) ObscureConversation()
+    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        TextButton(onClick = { if (target.agentId.isBlank()) settingsOpen = true else details = true }, modifier = Modifier.weight(1f)) {
+            Text(listOf(settings.model.ifBlank { "Model not reported" }, settings.effort).filter { it.isNotBlank() }.joinToString(" / "),
+                maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
+        }
+        IconButton(onClick = { search = true }) { Icon(Icons.Default.Search,"Search loaded messages") }
+        IconButton(onClick = { terminal = true }) { Icon(Icons.Default.Terminal, "Terminal") }
+        IconButton(onClick = { details = true }) { Icon(Icons.Default.Info, "Session details") }
+        if (target.agentId.isBlank()) Box {
+            IconButton(onClick = { readEvidence = model.captureReadAttention(target);menu = true }) { Icon(Icons.Default.MoreVert, "Session actions") }
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false },modifier = Modifier.heightIn(max = 480.dp)) {
+                readEvidence?.let { evidence ->
+                    val emptyReminder = model.reviewLater(target) && !evidence.authoritative && evidence.loadedIds.isEmpty()
+                    DropdownMenuItem(text = { Text(if(emptyReminder) "Clear review reminder" else if(evidence.authoritative) "Mark read on this phone" else "Mark loaded replies read") },
+                        onClick = { menu = false;model.markRead(target,evidence) },enabled = model.readPositionReady && (evidence.authoritative || evidence.loadedIds.isNotEmpty() || emptyReminder))
+                    DropdownMenuItem(text = { Text("Review later on this phone") },onClick = { menu = false;model.reviewLater(target,evidence) },enabled = model.readPositionReady)
+                    HorizontalDivider()
+                }
+                DropdownMenuItem(text = { Text("Copy session name") },onClick = { menu = false;clipboard.setText(AnnotatedString(target.session)) })
+                val folder = model.activity?.string("cwd").orEmpty()
+                if(folder.isNotBlank()) DropdownMenuItem(text = { Text("Copy folder") },onClick = { menu = false;clipboard.setText(AnnotatedString(folder)) })
+                HorizontalDivider()
+                val operations = if (target.archiveId.isNotBlank()) listOf("restore","rename","fork","forget")
+                    else listOf("pause","resume","archive","rename","fork","terminate","forget")
+                operations.forEach { operation ->
+                    val reason = model.actionReason(target,operation).ifBlank { SessionControlPresentation.reason(target,operation,model.activity) }
+                    DropdownMenuItem(text = { Column {
+                        Text(actionLabel(operation,target))
+                        if (reason.isNotBlank()) Text(reason, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } }, onClick = {
+                        menu = false
+                        if (operation in listOf("rename","fork","terminate","forget")) request = operation
+                        else { model.flushDrafts(); model.sessionAction(target,operation) }
+                    }, enabled = reason.isBlank())
+                }
+            }
+        }
+    }
+    model.pendingActionResult(target)?.let { action ->
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp),verticalAlignment = Alignment.CenterVertically) {
+            Text(model.actionResultNotice.ifBlank { "The machine confirmed this action. Its destination is available for verification." },Modifier.weight(1f),style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = { model.openSessionActionResult(action) }) { Text("Open confirmed result") }
+        }
+    }
+    NativeRecoveryCard(model,target)
+    if(search) ConversationSearchDialog(model,session,onJump) { search = false }
+    if(terminal) {
+        val reason = model.terminalOpenReason(target)
+        if(reason.isBlank()) TerminalDialog(model,session) { terminal = false }
+        else AlertDialog(onDismissRequest = { terminal = false },title = { Text("Terminal unavailable") },text = { Text(reason) },
+            confirmButton = { TextButton(onClick = { terminal = false }) { Text("Close") } })
+    }
+    if (details) SessionDetailsSheet(model,session) { details = false }
+    if (settingsOpen) NativeSettingsDialog(model,session) { settingsOpen = false }
+    request?.let { operation -> SessionActionDialog(model,session,operation) { request = null } }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable private fun SessionDetailsSheet(model: ZerusViewModel, session: Session, onDismiss: () -> Unit) {
+    val target = session.target
+    val raw = model.activity
+    val verified = model.activityVerified
+    val prepared by produceState<Pair<JSONObject?,SessionDetailsView>?>(null,raw,target,verified) {
+        value = raw to withContext(Dispatchers.Default) { SessionDetailsPresentation.parse(raw,target,verified) }
+    }
+    val details = prepared?.takeIf { it.first === raw }?.second
+    var tab by remember(target.key) { mutableIntStateOf(0) }
+    var stop by remember(target.key) { mutableStateOf<Pair<DetailProcess,String>?>(null) }
+    var showOutput by remember(target.key) { mutableStateOf<DetailProcess?>(null) }
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().heightIn(max = 680.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Session details", Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            if (details?.recorded == true) Text("Last known / Read-only", Modifier.padding(horizontal = 20.dp), style = MaterialTheme.typography.labelMedium)
+            ScrollableTabRow(selectedTabIndex = tab, edgePadding = 8.dp) {
+                listOf("Overview","Tasks","Agents","Processes").forEachIndexed { index,label -> Tab(tab == index,{ tab = index },text = { Text(label) }) }
+            }
+            Column(Modifier.fillMaxWidth().weight(1f,fill = false).verticalScroll(rememberScrollState()).padding(horizontal = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (details == null) Text("Reading native details…")
+                else when(tab) {
+                    0 -> {
+                        DetailFields(details.fields)
+                        HorizontalDivider()
+                        DetailFields(details.goal)
+                        Text(details.goalNotice, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        NativeActionRows(model,target)
+                    }
+                    1 -> {
+                        if (details.tasks.isEmpty()) Text("No task list reported yet. Tasks appear when the agent updates its plan.")
+                        details.tasks.forEach { list ->
+                            Text(list.label, fontWeight = FontWeight.SemiBold)
+                            Text("${list.tasks.count { it.status == "completed" }} of ${list.tasks.size} completed" + if (list.recorded) " / Last recorded" else "",
+                                style = MaterialTheme.typography.labelMedium)
+                            if (list.tasks.isEmpty()) Text("The agent cleared this list.")
+                            list.tasks.forEach { task -> SelectionContainer { Column {
+                                Text(task.title)
+                                Text(SessionDetailsPresentation.taskStatus(task.status) + task.owner.takeIf { it.isNotBlank() }?.let { " / $it" }.orEmpty(),
+                                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            } } }
+                            if (list.truncated) Text("Showing the first 100 tasks.", style = MaterialTheme.typography.bodySmall)
+                            HorizontalDivider()
+                        }
+                    }
+                    2 -> {
+                        if (details.agentNotice.isNotBlank()) Text(details.agentNotice, style = MaterialTheme.typography.bodySmall)
+                        if (details.agents.isEmpty()) Text("No subagent activity reported.")
+                        details.agents.forEach { agent ->
+                            Text(agent.label, fontWeight = FontWeight.SemiBold)
+                            Text(SessionDetailsPresentation.agentStatus(agent.state) + if (agent.recorded) " / Last recorded" else "",
+                                style = MaterialTheme.typography.labelMedium)
+                            if (agent.group && agent.active != null && agent.total != null) Text("${agent.active} active / ${agent.total} total", style = MaterialTheme.typography.bodySmall)
+                            SelectionContainer { Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                if (agent.task.isNotBlank()) Text(agent.task)
+                                if (agent.preview.isNotBlank()) Text(agent.preview, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            } }
+                            if (!agent.group) {
+                                val reason = model.agentInspectReason(target,agent.id)
+                                TextButton(onClick = { onDismiss(); model.inspectAgent(target,agent.id) }, enabled = reason.isBlank()) { Text("Open agent activity") }
+                                if(reason.isNotBlank()) Text(reason,style = MaterialTheme.typography.bodySmall)
+                            }
+                            HorizontalDivider()
+                        }
+                    }
+                    3 -> {
+                        if (details.processes.isEmpty()) Text("No native processes reported.")
+                        if (!details.processComplete) Text("Process inventory is incomplete. Missing entries are not proof that a process stopped.", style = MaterialTheme.typography.bodySmall)
+                        details.processNotes.forEach { note -> SelectionContainer { Text(note, style = MaterialTheme.typography.bodySmall) } }
+                        details.processes.forEach { process ->
+                            SelectionContainer { Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(process.command.ifBlank { process.description.ifBlank { "Native process" } }, fontWeight = FontWeight.SemiBold)
+                                if (process.description.isNotBlank() && process.command.isNotBlank()) Text(process.description)
+                                Text(process.status + if (process.stale) " / Last recorded" else "", style = MaterialTheme.typography.labelMedium)
+                                if (process.directory.isNotBlank()) Text(process.directory, style = MaterialTheme.typography.bodySmall)
+                            } }
+                            val outputReason = model.processOutputReason(target,process.id)
+                            val args = JSONObject().put("process_id",process.id).also { if(details.generation.isNotBlank()) it.put("generation",details.generation) }
+                            val reason = model.actionReason(target,"process_stop").ifBlank {
+                                if(!process.stop || process.stale) "This recorded process cannot be stopped here."
+                                else SessionActionPolicies.inspectReason(target,"process_stop",args,raw ?: JSONObject())
+                            }
+                            Row {
+                                TextButton(onClick = { showOutput = process; model.processOutput(target,process.id,details.generation.takeIf { it.isNotBlank() }) }, enabled = outputReason.isBlank()) { Text("Output") }
+                                TextButton(onClick = { stop = process to details.generation }, enabled = reason.isBlank()) { Text("Stop process") }
+                            }
+                            if(outputReason.isNotBlank()) Text(outputReason,style = MaterialTheme.typography.bodySmall)
+                            if(reason.isNotBlank()) Text(reason,style = MaterialTheme.typography.bodySmall)
+                            HorizontalDivider()
+                        }
+                    }
+                }
+                Spacer(Modifier.height(20.dp))
+            }
+        }
+    }
+    stop?.let { (process,generation) -> ProcessStopDialog(model,target,process,generation) { stop = null } }
+    showOutput?.let { process -> ProcessOutputDialog(model,target,process) { showOutput = null } }
+}
+
+@Composable private fun DetailFields(fields: List<ContextDetail>) {
+    SelectionContainer { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        fields.forEach { field -> Column { Text(field.label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant); Text(field.value) } }
+    } }
+}
+
+@Composable private fun NativeActionRows(model: ZerusViewModel, target: Target) {
+    model.sessionActions.filter { it.target == target && (it.status in listOf("sending","uncertain","failed","scheduled") || it.status == "completed" && it.resultTarget != null && it.operation in listOf("fork","restore","rename","resume")) }.forEach { action ->
+        Text(actionLabel(action.operation) + " / " + sessionActionStatus(action), style = MaterialTheme.typography.labelMedium)
+        if(action.status == "completed" && action.resultTarget != null) TextButton(onClick = { model.openSessionActionResult(action) }) { Text("Open confirmed result") }
+        if (action.error.isNotBlank()) Text(action.error, style = MaterialTheme.typography.bodySmall)
+        if(action.status == "uncertain") Row {
+            TextButton(onClick = { model.checkSessionAction(action) }) { Text("Check original receipt") }
+            var review by remember(action.requestId) { mutableStateOf(false) }
+            TextButton(onClick = { review = true }) { Text("Review") }
+            if(review) AlertDialog(onDismissRequest = { review = false }, title = { Text("Review ${actionLabel(action.operation).lowercase()}?") },
+                text = { Text("This action may already have changed the machine. Marking it reviewed does not undo or repeat it. Check the original receipt and native state first.") },
+                confirmButton = { TextButton(onClick = { model.reviewSessionAction(action); review = false }) { Text("Mark reviewed") } },
+                dismissButton = { TextButton(onClick = { review = false }) { Text("Cancel") } })
+        }
+    }
+}
+
+@Composable internal fun SessionActionRecoveryCard(model: ZerusViewModel, action: SessionAction) {
+    var review by remember(action.requestId) { mutableStateOf(false) }
+    Card { Column(Modifier.fillMaxWidth().padding(16.dp),verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(action.target.session,fontWeight = FontWeight.SemiBold)
+        Text(actionLabel(action.operation) + " / " + sessionActionStatus(action),style = MaterialTheme.typography.labelMedium)
+        if(action.error.isNotBlank()) Text(action.error,style = MaterialTheme.typography.bodySmall)
+        Text("The original request is saved. It is never repeated automatically.",style = MaterialTheme.typography.bodySmall)
+        Row {
+            model.sessions.find { it.target == action.target }?.let { session -> TextButton(onClick = { model.open(session) }) { Text("Open") } }
+            if(action.status == "uncertain") {
+                TextButton(onClick = { model.checkSessionAction(action) },enabled = model.connections.any { it.id == action.target.connectionId }) { Text("Check original receipt") }
+                TextButton(onClick = { review = true }) { Text("Review") }
+            }
+        }
+    } }
+    if(review) AlertDialog(onDismissRequest = { review = false },title = { Text("Review native action?") },
+        text = { Text("${action.target.session}\nThis action may already have changed the machine. Check its original receipt and native state first. Marking it reviewed does not undo or repeat it.") },
+        confirmButton = { TextButton(onClick = { model.reviewSessionAction(action); review = false }) { Text("Mark reviewed") } },
+        dismissButton = { TextButton(onClick = { review = false }) { Text("Cancel") } })
+}
+
+@Composable private fun SessionActionDialog(model: ZerusViewModel, session: Session, operation: String, onDismiss: () -> Unit) {
+    val target = session.target
+    var tag by remember(target,operation) { mutableStateOf(if(operation == "rename" && target.session.split('/').size == 3) target.session.substringAfterLast('/') else "") }
+    val computer = remember(target) { model.machines.find { it.connectionId == target.connectionId && it.id == target.computerId }?.name ?: "selected machine" }
+    val args = when(operation) {
+        "rename" -> JSONObject().put("new_name",target.session.split('/').take(2).joinToString("/") + "/" + tag)
+        "fork" -> JSONObject().put("tag",tag)
+        else -> JSONObject()
+    }
+    val reason = model.actionReason(target,operation).ifBlank { SessionControlPresentation.reason(target,operation,model.activity) }.ifBlank {
+        runCatching { SessionActionPolicies.arguments(operation,args); SessionActionPolicies.inspectReason(target,operation,args,model.activity ?: JSONObject()) }.getOrElse { it.message ?: "Enter a valid name." }
+    }
+    AlertDialog(onDismissRequest = onDismiss, title = { Text(actionLabel(operation,target) + " " + session.title + "?") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("${target.session} on $computer")
+            when(operation) {
+                "terminate" -> Text("The agent and its running processes will stop. Native conversation history is kept where supported. Your private drafts stay on this phone.")
+                "forget" -> Text(if(target.archiveId.isNotBlank()) "Remove this selected archived version from Zerus on this machine. Your private drafts stay on this phone."
+                    else "Stop this session and its running processes, then remove its Zerus record without keeping a new Zerus archive. Native provider history may remain. Your private drafts stay on this phone.")
+                "rename" -> OutlinedTextField(tag,{ tag = it },label = { Text("Session tag") },singleLine = true)
+                "fork" -> { Text("Create a separate native conversation. Your current draft is kept without sending."); OutlinedTextField(tag,{ tag = it },label = { Text("New session tag") },singleLine = true) }
+            }
+            if(reason.isNotBlank()) Text(reason, style = MaterialTheme.typography.bodySmall)
+        } },
+        confirmButton = { TextButton(onClick = { model.flushDrafts(); model.sessionAction(target,operation,args); onDismiss() }, enabled = reason.isBlank()) { Text(actionLabel(operation,target)) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
+}
+
+@Composable private fun ProcessStopDialog(model: ZerusViewModel, target: Target, process: DetailProcess, generation: String, onDismiss: () -> Unit) {
+    val computer = remember(target) { model.machines.find { it.connectionId == target.connectionId && it.id == target.computerId }?.name ?: "selected machine" }
+    val args = JSONObject().put("process_id",process.id).also { if(generation.isNotBlank()) it.put("generation",generation) }
+    val reason = model.actionReason(target,"process_stop").ifBlank { SessionActionPolicies.inspectReason(target,"process_stop",args,model.activity ?: JSONObject()) }
+    AlertDialog(onDismissRequest = onDismiss,title = { Text("Stop this process?") }, text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("${target.session} on $computer")
+        SelectionContainer { Text(process.command.ifBlank { process.description }) }
+        Text("Only the selected native process is targeted. The stop must be confirmed by the machine.")
+        if(reason.isNotBlank()) Text(reason,style = MaterialTheme.typography.bodySmall)
+    } },confirmButton = { TextButton(onClick = { model.processStop(target,process.id,generation.takeIf { it.isNotBlank() }); onDismiss() },enabled = reason.isBlank()) { Text("Stop process") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
+}
+
+@Composable private fun ProcessOutputDialog(model: ZerusViewModel, target: Target, process: DetailProcess, onDismiss: () -> Unit) {
+    val result = model.processOutputResult.takeIf { value -> value != null && model.processOutputId == process.id && value.string("name") == target.session &&
+        value.string("run_id") == target.run && value.string("conversation_id") == target.conversation && value.string("archive_id") == target.archiveId }
+    AlertDialog(onDismissRequest = onDismiss,title = { Text("Process output") },text = { Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+        if(model.processOutputLoading) Text("Reading output…")
+        if(model.processOutputError.isNotBlank()) Text(model.processOutputError)
+        result?.let { SelectionContainer { Text(it.string("output").ifEmpty { "No output reported." }) }
+            if(it.optBoolean("output_truncated") || it.optBoolean("truncated")) Text("Output is truncated.",style = MaterialTheme.typography.bodySmall) }
+    } },confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } })
+}
+
+@Composable private fun NativeSettingsDialog(model: ZerusViewModel, session: Session, onDismiss: () -> Unit) {
+    val target = session.target
+    val snapshot = remember(target) { SessionDetailsPresentation.settings(model.activity) }
+    val current = remember(model.activity) { SessionDetailsPresentation.settings(model.activity) }
+    var selectedModel by remember(target) { mutableStateOf(snapshot.pendingModel.ifBlank { snapshot.model }) }
+    var selectedEffort by remember(target) { mutableStateOf(if(snapshot.pendingId.isNotBlank()) snapshot.pendingEffort else snapshot.effort) }
+    val choice = snapshot.models.find { it.id == selectedModel }
+    val efforts = choice?.efforts ?: snapshot.efforts
+    val applyingPending = snapshot.pendingId.isNotBlank() && selectedModel == snapshot.pendingModel && selectedEffort == snapshot.pendingEffort
+    val reason = model.actionReason(target,"settings").ifBlank {
+        when {
+            current.signature != snapshot.signature -> "Native settings changed. Close and reopen this dialog to review them."
+            !snapshot.supported -> snapshot.reason.ifBlank { "Native settings are unavailable for this session." }
+            choice == null -> "Choose a model from the native catalog."
+            selectedEffort.isNotBlank() && selectedEffort !in efforts -> "Choose a supported effort for this model."
+            else -> ""
+        }
+    }
+    AlertDialog(onDismissRequest = onDismiss,title = { Text("Model and effort") },text = { Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Settings apply to ${target.session}.",style = MaterialTheme.typography.bodySmall)
+        if(snapshot.pendingId.isNotBlank()) Text("Pending: ${snapshot.pendingModel} / ${snapshot.pendingEffort.ifBlank { "Default" }}",style = MaterialTheme.typography.bodySmall)
+        Text("Model",fontWeight = FontWeight.SemiBold)
+        snapshot.models.forEach { option -> NativeSettingChoice(option.label,selectedModel == option.id) { selectedModel = option.id; if(selectedEffort !in option.efforts) selectedEffort = "" } }
+        Text("Effort",fontWeight = FontWeight.SemiBold)
+        (listOf("") + efforts).distinct().forEach { effort -> NativeSettingChoice(effort.ifBlank { "Default" },selectedEffort == effort) { selectedEffort = effort } }
+        Text(when(snapshot.applyWhen) { "ready" -> "Apply when the agent is ready."; "resume" -> "Save for the next resume."; "now" -> "Apply now."; else -> "The machine determines when these settings apply." },style = MaterialTheme.typography.bodySmall)
+        if(reason.isNotBlank()) Text(reason,style = MaterialTheme.typography.bodySmall)
+    } },confirmButton = { TextButton(onClick = { model.updateSettings(target,selectedModel,selectedEffort,if(applyingPending) snapshot.pendingId else ""); onDismiss() },enabled = reason.isBlank()) {
+        Text(when(snapshot.applyWhen) { "ready" -> "Apply when ready"; "resume" -> "Save for resume"; else -> if(applyingPending) "Apply pending" else "Apply" })
+    } },dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
+}
+
+@Composable private fun NativeSettingChoice(label: String, selected: Boolean, onClick: () -> Unit) {
+    Surface(modifier = Modifier.fillMaxWidth().selectable(selected,role = Role.RadioButton,onClick = onClick)) {
+        Row(Modifier.heightIn(min = 48.dp).padding(horizontal = 8.dp),verticalAlignment = Alignment.CenterVertically) {
+            RadioButton(selected,null); Spacer(Modifier.width(8.dp)); Text(label,Modifier.weight(1f))
+        }
+    }
+}
+internal fun actionLabel(operation: String,target: Target? = null) = when(operation) {
+    "pause" -> "Pause"; "resume" -> "Resume"; "archive" -> "Archive"; "rename" -> "Rename"; "fork" -> "Fork"
+    "terminate" -> "Terminate"; "restore" -> "Restore"; "forget" -> if(target?.archiveId?.isNotBlank() == true) "Forget archived version" else "Forget session"; "send_now" -> "Send queued message"
+    "settings" -> "Change settings"; "process_stop" -> "Stop process"; "recovery_action" -> "Recovery action"; else -> "Native action"
+}
+internal fun sessionActionStatus(action: SessionAction) = when(action.status) {
+    "sending" -> "Sending"; "uncertain" -> "Outcome unknown"; "failed" -> "Not applied"; "scheduled" -> "Pending on machine"
+    "applied" -> "Applied"; "completed" -> if(action.operation == "process_stop") "Stop requested" else "Completed"
+    "reviewed" -> "Reviewed"; else -> "Status not reported"
+}
+
+@Composable internal fun NativeInputQueue(model: ZerusViewModel, target: Target) {
+    val queue = model.activity?.optJSONObject("input_queue") ?: return
+    val id = queue.string("id")
+    if (id.isBlank() || target.agentId.isNotBlank() || target.archiveId.isNotBlank()) return
+    val reason = model.actionReason(target,"send_now").ifBlank {
+        SessionActionPolicies.inspectReason(target,"send_now",JSONObject().put("queue_id",id),model.activity ?: JSONObject())
+    }
+    Card { Column(Modifier.fillMaxWidth().padding(12.dp),verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.fillMaxWidth(),verticalAlignment = Alignment.CenterVertically) {
+            Text("Queued in agent",Modifier.weight(1f),style = MaterialTheme.typography.labelLarge)
+            TextButton(onClick = { model.sendNow(target,id) },enabled = reason.isBlank()) { Text("Send now") }
+        }
+        SelectionContainer { Text(queue.string("text"),Modifier.heightIn(max = 120.dp).verticalScroll(rememberScrollState())) }
+        if(reason.isNotBlank()) Text(reason,style = MaterialTheme.typography.bodySmall,color = MaterialTheme.colorScheme.onSurfaceVariant)
+        else if(queue.string("hint").isNotBlank()) Text(queue.string("hint"),style = MaterialTheme.typography.bodySmall)
+    } }
+}

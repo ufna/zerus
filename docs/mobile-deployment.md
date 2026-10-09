@@ -1,0 +1,286 @@
+# Android and mobile relay setup
+
+The first Android client operates existing Zerus sessions through a self-hostable
+HTTPS relay. Read the [architecture and trust model](mobile-architecture.md)
+before choosing a server. Source components are under `mobile/android/` and
+`services/mobile/`. The repository's MIT license applies except for the
+attributed Apache-2.0 MuxPod terminal adaptations bundled with Android.
+
+## Build and install Android
+
+Use JDK 17 or 21 and an Android SDK with platform 36 and build tools. The checked-in
+Gradle wrapper verifies its distribution checksum.
+
+```sh
+cd mobile/android
+export ANDROID_HOME="$HOME/Android/Sdk"
+./gradlew testDebugUnitTest lintDebug assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+The debug APK is suitable for a private pilot. It is not a signed store release.
+Keep a production signing key outside the repository and retain it for upgrades.
+For a non-debuggable pilot with release performance, run
+`./gradlew assemblePilot lintPilot` and install
+`app/build/outputs/apk/pilot/app-pilot.apk`. This variant
+uses the same development signing key for pilot upgrades; it is not a store release.
+The application ID is `app.zerus.mobile`; the minimum Android version is 8.0
+(API 26). The default build requires no Firebase account or private credentials.
+See [Android build details](../mobile/android/README.md) for optional FCM setup.
+
+## Start the relay
+
+The [relay README](../services/mobile/README.md) documents Python and Docker
+installation, administrator commands, limits and push configuration. A minimal
+Docker deployment is:
+
+```sh
+cd services/mobile
+docker compose build
+docker compose run --rm relay provision \
+  --name 'Example workspace' --computer-name 'Example computer'
+docker compose up -d relay
+```
+
+Provisioning prints a workspace UUID, computer UUID, computer credential and a
+phone invitation. Save these privately. The invitation is usable once and expires
+after ten minutes; generate another with the local `invite --workspace UUID`
+command when ready to pair.
+
+Terminate TLS with your existing reverse proxy, forwarding to
+`127.0.0.1:8787`, or use the optional Caddy profile. A proxy must allow at least
+40 seconds for long polls and 1 MiB ordinary request bodies. File-bearing sends
+use a larger envelope only at `/v1/requests`: allow 29 MiB there and 75 seconds
+for a mobile upload. Disable API request buffering to disk and request/body/header
+logging. Only the HTTPS port should be accessible remotely.
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8787;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header Connection "";
+    proxy_read_timeout 45s;
+    proxy_send_timeout 45s;
+    proxy_request_buffering off;
+    client_max_body_size 1m;
+    access_log off;
+}
+
+location = /v1/requests {
+    proxy_pass http://127.0.0.1:8787;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header Connection "";
+    proxy_read_timeout 75s;
+    proxy_send_timeout 75s;
+    client_body_timeout 75s;
+    client_max_body_size 29m;
+    proxy_request_buffering off;
+    access_log off;
+}
+```
+
+Use a real certificate trusted by Android. The application does not disable
+certificate validation or accept arbitrary cleartext endpoints. Verify
+`https://relay.example.com/healthz` returns `ok: true` and `protocol_version: 1`.
+The reserved domain in these examples must be replaced with your own.
+
+## Connect a computer
+
+Install the Python package on each computer that already has `hgs`. The connector
+uses the local CLI, so existing native accounts, hooks, conversations and safety
+checks continue to apply. Do not stop or relaunch native sessions for setup.
+
+```sh
+python3 -m venv "$HOME/.local/share/zerus-mobile/venv"
+"$HOME/.local/share/zerus-mobile/venv/bin/pip" install ./services/mobile
+install -d -m 700 "$HOME/.config/hgs/mobile"
+```
+
+Create `$HOME/.config/hgs/mobile/connector.json` privately with mode 0600:
+
+```json
+{
+  "server_url": "https://relay.example.com",
+  "node_token": "REPLACE_WITH_PRIVATE_COMPUTER_CREDENTIAL",
+  "hgs_path": "/home/user/.local/bin/hgs",
+  "poll_interval": 5,
+  "state_dir": "/home/user/.local/state/hgs/mobile-connector"
+}
+```
+
+Use absolute paths appropriate for the computer. Do not paste credentials into
+shell command arguments, issues or version control. The state directory belongs
+to one relay and computer credential; use a new directory if those change and
+retain the old one for uncertain-delivery review.
+
+Run the connector in the foreground initially:
+
+```sh
+"$HOME/.local/share/zerus-mobile/venv/bin/zerus-mobile-connector" \
+  --config "$HOME/.config/hgs/mobile/connector.json"
+```
+
+For persistent Linux operation, use a dedicated systemd user service:
+
+```ini
+[Unit]
+Description=Zerus mobile computer connector
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/zerus-mobile/venv/bin/zerus-mobile-connector --config %h/.config/hgs/mobile/connector.json
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
+```
+
+Save it as `~/.config/systemd/user/zerus-mobile-connector.service`, then run
+`systemctl --user daemon-reload` and
+`systemctl --user enable --now zerus-mobile-connector.service`. Start it from
+the user service manager so it does not inherit a running agent's environment.
+The service only manages its connector process. Stop it with the corresponding
+`systemctl --user stop` command; native agents keep running.
+
+## Configure the connector from the desktop
+
+Settings → Mobile connection edits the computer's existing connector file at
+`$XDG_CONFIG_HOME/hgs/mobile/connector.json`, or
+`$HOME/.config/hgs/mobile/connector.json` when `XDG_CONFIG_HOME` is unset.
+The default official URL is `https://relay.zerus.dev`. The configured computer
+credential stays hidden; leaving Replacement computer credential blank retains
+it. Saving writes private configuration only. Changes take effect after the
+connector restarts; copied start/restart commands require deliberate execution.
+Wait for active connector requests and receipts to drain before restarting it.
+Native agents and their hosts keep running.
+
+The managed official-relay migration preserves the original binding identity and
+receipt directory. A different relay or replacement computer credential requires
+a new, unused private receipt directory. The panel never copies or deletes old
+receipts; retain them for uncertain-delivery review. Connector service status is
+read-only and does not prove relay connectivity or that the saved configuration
+is currently active.
+
+## Pair the phone
+
+Open Zerus, choose **Machines → Pair another workspace**, enter the HTTPS server URL and the
+current invitation code, and confirm. A `zerus://pair?server=...&code=...` link can
+prefill these fields, but the app still requires explicit confirmation. Treat
+such a link as a credential until it is consumed or expires.
+
+The app opens on Sessions, grouped by projects containing matching sessions.
+Use the desktop-style All sessions, Needs attention, Working, Saved sessions,
+and Archive filters, or select one or more computers. Projects shows the logical
+project catalog, including empty projects; project details offer a View sessions
+action. Open a session to read messages, send a message or answer a supported
+question. Attach documents using the composer's file picker: up to
+eight files, ten MiB per file and twenty MiB total. The app keeps private copies
+with the draft. Sending immediately adds an outgoing message with its delivery
+status and frees the composer for the next text.
+
+Previously opened conversations show retained private cached history, when
+available for the exact target, while the computer refreshes it. The header
+distinguishes last known state from verified current state. Typing remains
+available during refresh; sending and other native actions
+wait for a verified session. The composer expands for long text, keeps keyboard
+selection during updates, and brings your own outgoing message into view.
+Reading older messages pauses automatic following; use Jump to latest to resume.
+
+The context row above the composer shows native context usage and provider cache
+state. Open it for the reported window, token breakdown, last-request cache use,
+native cost data and compaction state. Unknown values stay unknown. A reported
+warm-cache deadline is an estimate; cached or archived inspections are marked
+as last known.
+
+The header also opens session details and Terminal. Details includes native model
+and effort settings, task lists, goals, child activity and process output. Native
+capabilities determine available lifecycle actions. Terminal uses the existing
+pane and a separate saved input buffer; its key toolbar can interact with native
+prompts. A result marked unconfirmed must be checked through its original
+receipt before preparing another attempt.
+
+Upgrade the connector's `hgs` executable together with the connector when using
+new native operations. A private executable path in `connector.json` can keep
+the mobile connector on a reviewed build without replacing the desktop CLI.
+Before restarting a connector, wait for its active mutation attempts to finish.
+Restart only the connector service; leave native agents, tmux and owning DeepSeek
+hosts running. Older resident adapters may advertise fewer supported operations.
+
+Upgrade both relay and connector before using context controls. Each advertises
+its supported operations, and the agent's live inspection must also permit the
+action. Compact keeps the draft. Clear requires confirmation and does not send
+it. When continuing with a cold cache, choose full context, compact and continue,
+clear, or cancel. Compact and continue sends only after the exact native request
+completes and the original draft remains unchanged. Editing, navigating away,
+restarting or cancelling the pending send keeps it from being sent automatically.
+An uncertain operation offers a read-only receipt check rather than a retry.
+
+The Drafts tab preserves unsent text, files and uncertain attempts. An unknown
+delivery must be checked against its
+receipt and the conversation before deliberately sending again. Archive entries
+open their exact saved conversation in read-only mode. Upgrade both the relay
+and computer connector before using archive inspection. Session creation and
+restoration are available when the gateway, connector and native adapter
+advertise the corresponding operations. Archive content stays read-only;
+restore, rename, fork and forget operate on its exact saved identity.
+
+Disconnecting a workspace revokes that phone's credential and push registration.
+Saved drafts remain private on the phone. An administrator can also revoke a
+phone or computer through the relay CLI.
+
+## Enable notifications
+
+Grant Android's notification permission when prompted. The Computers tab exposes
+notification setup and the optional live connection.
+
+- For UnifiedPush, install and configure a distributor such as
+  [ntfy](https://docs.ntfy.sh/subscribe/phone/) or
+  [another supported distributor](https://unifiedpush.org/users/distributors/).
+  Select it in Zerus. The relay's `push_hosts` must permit its exact public HTTPS
+  hostname. A self-hosted distributor needs no Firebase service account.
+- For FCM, configure the Android build and the relay using your Firebase project.
+  The relay needs its own private service-account file; never put that file in the
+  APK. Both sides must use the same Firebase project. Without those credentials,
+  FCM delivery is unavailable even though the integration code builds.
+- The live connection needs no distributor or Firebase project. Enable it while
+  the app is open; its persistent notification exposes a Stop action. It uses
+  an ongoing outbound connection. Android Doze, vendor battery management and
+  force-stop can affect delivery, so it is a fallback rather than a guarantee of
+  background wake availability.
+
+Push payloads contain a generic wake signal. The app retrieves current events
+through the authenticated relay. A provider's successful HTTP response only
+acknowledges acceptance; verify delivery on the actual target phone.
+
+## Verify and recover
+
+Use a disposable session to test pairing, reading, sending, answering and an
+attention notification. Close the phone UI for the notification check. Then
+temporarily disconnect the computer network: the app should report the computer
+offline after refreshing the computer catalog. An open conversation retains its
+cached history and draft, labels its native status Last known after an inspection
+fails, and blocks native actions until a new inspection succeeds. Never test
+destructive lifecycle operations on an unrelated live agent.
+
+The source includes a fully synthetic `fixture_hgs.py` used by the HTTP
+integration tests. It does not invoke native agents or tmux. Run local checks:
+
+```sh
+PYTHONPATH=services/mobile python3 -m unittest discover -s services/mobile/tests -v
+python3 scripts/ci/check-source.py
+```
+
+Run the Python tests in an environment with the relay dependencies installed.
+Android unit tests and lint are separate from these tests. No command in this
+runbook dispatches hosted CI.
+
+Back up relay data through SQLite's online backup API or with the relay stopped.
+Never restore old command claims to the queued state. A claimed request after a
+relay or connector crash remains uncertain until reviewed. Keep API access logs
+off, preserve the connector journal, and revoke exposed credentials individually.
