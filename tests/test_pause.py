@@ -1156,7 +1156,7 @@ if sys.argv[1:] == ["--help"]:
 gate = home / "launch-gate"
 if gate.exists():
     status = gate.read_text()
-    (home / "wrapper-ready").touch()
+    (home / "wrapper-ready").write_text(str(os.getpid()))
     if status == "wait":
         signal.pause()
     sys.exit(int(status))
@@ -1261,6 +1261,9 @@ os.execvp("codex", ["codex", *sys.argv[1:]])
         self.gate.write_text("wait")
         name = self.launch()
         self.wait(self.ready.exists)
+        # Under load the supervisor records the wrapper's own process shortly
+        # after it starts; compare against that settled binding.
+        self.wait(lambda: str(self.binding(name).get("pid")) == self.ready.read_text())
         before = self.binding(name)
         self.hgs("codex", "-n", "dashboard", "-d", cwd=self.project)
         self.hgs("codex", "-n", "dashboard", "--new", "-d", cwd=self.project, rc=1)

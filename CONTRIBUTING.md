@@ -13,10 +13,15 @@ bash scripts/ci/gui.sh
 ```
 
 The CLI script clears inherited `HGS_*` session/account context, runs Rust unit
-tests and terminal smoke tests, then runs each Python integration module in a
-fresh process and builds a release binary. The desktop script builds with
-`BUILD_TESTING=ON` and runs the complete Qt suite headlessly. Test logs live in
-ignored `artifacts/test-results/`. Set `ZERUS_BUILD_JOBS` to limit desktop build
+tests and terminal smoke tests, then runs the Python integration test classes in
+parallel fresh processes and builds a release binary. Classes larger than twelve
+tests run as several jobs unless they share a class fixture, slowest first. The
+desktop script builds with `BUILD_TESTING=ON` and runs the complete Qt suite
+headlessly in parallel; `test_sessionswindow` runs as ten shards of its test
+functions. `ZERUS_TEST_JOBS` sets both test parallelisms (defaults: at most 16
+Python and 8 Qt jobs, never more than the CPU count; `1` runs them one after
+another). Test logs and Python job durations live in ignored
+`artifacts/test-results/`. Set `ZERUS_BUILD_JOBS` to limit desktop build
 parallelism. Run `cargo +1.85.0 test --locked` for the minimum supported Rust.
 
 On Arch, `bash scripts/ci/arch.sh` also builds and validates the pacman package

@@ -1,0 +1,25 @@
+# Run the QtTest functions of TEST whose name hash falls into SHARD of SHARDS,
+# so that a long suite runs as several parallel CTest tests. Hashing the name
+# keeps every function in the same shard as other functions are added.
+# Usage: cmake -DTEST=<binary> -DSHARD=<0..SHARDS-1> -DSHARDS=<n> -P RunQtShard.cmake
+execute_process(COMMAND "${TEST}" -functions OUTPUT_VARIABLE listing RESULT_VARIABLE status)
+if(NOT status EQUAL 0)
+    message(FATAL_ERROR "Could not list the test functions of ${TEST}")
+endif()
+string(REGEX MATCHALL "[A-Za-z_][A-Za-z0-9_]*\\(\\)" functions "${listing}")
+set(selected)
+foreach(function IN LISTS functions)
+    string(REPLACE "()" "" name "${function}")
+    string(MD5 hash "${name}")
+    string(SUBSTRING "${hash}" 0 6 prefix)
+    math(EXPR slot "0x${prefix} % ${SHARDS}")
+    if(slot EQUAL SHARD)
+        list(APPEND selected "${name}")
+    endif()
+endforeach()
+if(selected)
+    execute_process(COMMAND "${TEST}" ${selected} RESULT_VARIABLE status)
+    if(NOT status EQUAL 0)
+        message(FATAL_ERROR "${TEST} shard ${SHARD} of ${SHARDS} failed")
+    endif()
+endif()

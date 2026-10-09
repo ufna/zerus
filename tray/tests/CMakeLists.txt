@@ -175,8 +175,12 @@ add_executable(test_sessionswindow test_sessionswindow.cpp ../src/SessionsWindow
 target_include_directories(test_sessionswindow PRIVATE ../src)
 target_compile_definitions(test_sessionswindow PRIVATE HGS_TRAY_VERSION="${PROJECT_VERSION}")
 target_link_libraries(test_sessionswindow PRIVATE Qt6::Test Qt6::Widgets Qt6::WebEngineWidgets hgs-terminal hgs-markdown)
-add_test(NAME sessionswindow COMMAND test_sessionswindow)
-set_tests_properties(sessionswindow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+# The longest suite runs as parallel shards of its test functions.
+foreach(shard RANGE 9)
+    add_test(NAME sessionswindow-${shard} COMMAND ${CMAKE_COMMAND} -DTEST=$<TARGET_FILE:test_sessionswindow>
+        -DSHARD=${shard} -DSHARDS=10 -P ${CMAKE_CURRENT_SOURCE_DIR}/RunQtShard.cmake)
+    set_tests_properties(sessionswindow-${shard} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endforeach()
 
 add_executable(test_nativeuiview test_nativeuiview.cpp ../src/NativeUiView.cpp ../src/HgsClient.cpp)
 target_include_directories(test_nativeuiview PRIVATE ../src)
