@@ -208,7 +208,7 @@ class MainActivity : ComponentActivity() {
                 if (selected == null) NewSessionButton(model)
             }, colors = TopAppBarDefaults.topAppBarColors(containerColor = Background)) },
         bottomBar = { if (selected == null) NavigationBar(containerColor = Background) {
-            listOf("Sessions" to DesktopIcons.Sessions, "Projects" to DesktopIcons.Projects, "Drafts" to Icons.Default.EditNote, "Machines" to DesktopIcons.Machines).forEachIndexed { i, (label, icon) ->
+            listOf("Sessions" to DesktopIcons.Sessions, "Projects" to DesktopIcons.Projects, "Drafts" to Icons.Default.EditNote, "Machines" to DesktopIcons.Machines, "Accounts" to Icons.Default.AccountCircle).forEachIndexed { i, (label, icon) ->
                 NavigationBarItem(selected = tab == i, onClick = { tab = i; model.clearSessionScope(); model.clearProject() }, icon = { Icon(icon, label) }, label = { Text(label) })
             }
         } }) { padding ->
@@ -230,10 +230,11 @@ class MainActivity : ComponentActivity() {
                 1 -> if (project != null) ProjectDetails(model, project, onViewSessions = { model.viewProjectSessions(project); tab = 0 })
                     else ProjectsScreen(model, onPair = { tab = 3 })
                 2 -> DraftsScreen(model, onReview = { review = it }, onReviewOutgoing = { reviewOutgoing = it }, onDiscard = { discard = it })
-                else -> MachinesScreen(model, live, onPair = { pairing = true }, onDisconnect = { disconnect = it },
+                3 -> MachinesScreen(model, live, onPair = { pairing = true }, onDisconnect = { disconnect = it },
                     onNotifications = { model.updateNotifications(it); if (it) onNotifications() }, onLive = {
                         if (it) onNotifications(); onLive(it)
                     }, onPush = { onNotifications(); onPush() }, onFirebase = { onNotifications(); onFirebase() })
+                else -> AccountsScreen(model,onMachines = { tab=3 })
             }
         }
     }

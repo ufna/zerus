@@ -28,6 +28,11 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
     var connections by mutableStateOf<List<Connection>>(emptyList()); private set
     var machines by mutableStateOf<List<Machine>>(emptyList()); private set
     var sessions by mutableStateOf<List<Session>>(emptyList()); private set
+    private var accountsWriter:OrderedStatePersistence<List<AccountCatalog>>?=null
+    var accountCatalogs by mutableStateOf<List<AccountCatalog>>(emptyList()); private set
+    var accountsError by mutableStateOf(""); private set
+    val displayedAccounts get() = if(demo) previewAccounts else accountCatalogs
+    private val previewAccounts by lazy { AccountSnapshots.demo(System.currentTimeMillis()/1000.0) }
     var projects by mutableStateOf<List<ProjectSummary>>(emptyList()); private set
     var projectWarnings by mutableStateOf<List<String>>(emptyList()); private set
     var selectedProject by mutableStateOf<ProjectSummary?>(null); private set
@@ -399,6 +404,11 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 connections = withContext(Dispatchers.IO) { store.connections() }
                 persistence = messageRepository.open()
+                accountsWriter=AccountsPersistence.get(application).open()
+                accountsWriter!!.edit { rows -> rows.filter { row -> connections.any { it.id==row.key.connectionId } } }
+                accountCatalogs=accountsWriter!!.state.value
+                launch { accountsWriter!!.state.collectLatest { accountCatalogs=it } }
+                launch { AccountsPersistence.get(application).error.collectLatest { failure -> accountsError=if(failure!=null) "Account snapshots could not be saved. Existing private data is preserved." else "" } }
                 try {
                     readWriter=ConversationReadPersistence.get(application).open();readState=readWriter!!.state.value;readTrackingReady=true
                     launch { readWriter!!.state.collectLatest { readState=it;refreshReadAttention() } }
@@ -482,7 +492,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
             finally { machineColorSaving=machineColorSaving-key }
         }
     }
-    fun flushDrafts() { persistence?.flushAsync();readWriter?.flushAsync() }
+    fun flushDrafts() { persistence?.flushAsync();readWriter?.flushAsync();accountsWriter?.flushAsync() }
     var updateInstallPreparing by mutableStateOf(false); private set
     fun updateInstallReason(): String = UpdateInstallGuard.reason(messageState,storageReady,
         attachmentImporting || attachmentPreparing,preparingTargets.isNotEmpty(),
@@ -1208,6 +1218,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
             catch (e: RelayException) { if (e.status != 401) throw e }
             val next = connections.filterNot { it.id == connection.id }
             withContext(Dispatchers.IO) { store.saveConnections(next) }; connections = next
+            accountsWriter?.edit { rows -> rows.filterNot { it.key.connectionId==connection.id } }; accountsWriter?.flushAsync()
             inspections.values.filter { it.first.connectionId == connection.id }.forEach { it.second.cancel() }
             inspections.entries.removeAll { it.value.first.connectionId == connection.id }
             frames.entries.removeAll { it.value.target.connectionId == connection.id }
@@ -1246,7 +1257,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
         }
         catalogJob = viewModelScope.launch {
         pushStatuses = withContext(Dispatchers.IO) { connections.associate { it.id to store.pushStatus(it.id) } }
-        val newSessions = mutableListOf<Session>(); val newMachines = mutableListOf<Machine>()
+        val newSessions = mutableListOf<Session>(); val newMachines = mutableListOf<Machine>(); val newAccounts=mutableListOf<AccountCatalog>()
         val successfulConnections=mutableSetOf<String>()
         val newProjects = mutableListOf<ProjectSummary>(); val newOperations = mutableMapOf<MachineKey, Set<String>>(); val warnings = mutableListOf<String>()
         try {
@@ -1266,6 +1277,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
                         catch (_: Exception) { /* Session discovery remains available if optional capability discovery fails. */ }
                     }
                     val computerRecords = api.computers(connection).optJSONArray("computers")?.objects().orEmpty()
+                    newAccounts += withContext(Dispatchers.Default) { computerRecords.map { AccountSnapshots.parse(connection.id,it) } }
                     val connectionSessions = mutableListOf<Session>()
                     computerRecords.forEach { raw ->
                         val capabilities = raw.optJSONObject("snapshot")?.optJSONObject("mobile_capabilities")
@@ -1289,6 +1301,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
             newSessions += sessions.filter { it.target.connectionId in unavailable }.map { old -> old.copy(raw=JSONObject(old.raw.toString()).put("last_known",true)) }
             newMachines += machines.filter { it.connectionId in unavailable }.map { it.copy(online=false) }
             newProjects += projects.filter { it.key.connectionId in unavailable }
+            accountsWriter?.edit { old -> AccountSnapshots.merge(old,newAccounts,successfulConnections,originalConnections.map { it.id }.toSet()) }
             sessions = newSessions; machines = newMachines.map { MachineNames.apply(it,messageState.machineAliases) }; machineOperations = newOperations
             refreshReadAttention()
             val index=withContext(Dispatchers.Default) { ConversationIndex.capture(newSessions,newMachines) }

@@ -15,14 +15,15 @@ import javax.crypto.spec.GCMParameterSpec
 /** All credentials and drafts are encrypted with a non-exportable Android Keystore key. */
 class PrivateStore(context: Context) {
     private val preferences = context.getSharedPreferences("zerus_private", Context.MODE_PRIVATE)
-    private val key: SecretKey by lazy {
+    companion object { private val keyCreationLock=Any() }
+    private val key: SecretKey by lazy { synchronized(keyCreationLock) {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (store.getKey("zerus_private_v1", null) as? SecretKey) ?: KeyGenerator.getInstance(
             KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").apply {
             init(KeyGenParameterSpec.Builder("zerus_private_v1", KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build())
         }.generateKey()
-    }
+    } }
     @Synchronized private fun read(name: String): JSONArray {
         val stored = preferences.getString(name, null) ?: return JSONArray()
         val packed = Base64.decode(stored, Base64.NO_WRAP)
@@ -47,6 +48,8 @@ class PrivateStore(context: Context) {
     else MessageState(read("drafts").objects().map(MessageCodec::draft))
     // Legacy encrypted drafts are retained; only a successful combined commit becomes authoritative.
     fun saveMessageState(state: MessageState) = write("message_state", JSONArray().put(MessageCodec.stateJson(state)))
+    fun accounts()=AccountSnapshots.decode(read("account_catalog_v1"))
+    fun saveAccounts(state:List<AccountCatalog>)=write("account_catalog_v1",AccountSnapshots.encode(state))
     fun readState()=ConversationReadPolicies.decode(read("conversation_read_v1"))
     fun saveReadState(state:ConversationReadState)=write("conversation_read_v1",ConversationReadPolicies.encode(state))
     fun notificationEnabled() = preferences.getBoolean("notifications", true)

@@ -211,6 +211,26 @@ def persist(path, record):
     temporary.replace(path)
 
 
+def account_profiles(config):
+    return config.get("account_profiles", [{"id": "native-codex", "provider": "codex", "label": "Synthetic Codex",
+        "installed": True, "native": True, "is_default": True, "auth_revision": "synthetic-account-revision",
+        "home": "/private/never-forward-this", "credentials": "never-forward-this",
+        "account_status": {"status": "ok", "checked_at": time.time() - 180,
+                           "identity": {"email": "mobile@example.test", "plan": "Synthetic Pro"}}}])
+
+
+def account_usage(identity, config):
+    profile = next(row for row in account_profiles(config) if row["id"] == identity)
+    return {"id": identity, "provider": profile["provider"], "home": "/private/never-forward-this",
+            **config.get("account_usage", {}).get(identity, {"status": "ok", "checked_at": time.time(),
+                "source": "Codex App Server", "auth_status": "signed_in",
+                "identity": {"email": "mobile@example.test", "plan": "Synthetic Pro"},
+                "windows": [{"id": "primary", "label": "5 hours", "used_percent": 42,
+                             "window_minutes": 300, "resets_at": time.time() + 1800},
+                            {"id": "secondary", "label": "7 days", "used_percent": 73,
+                             "window_minutes": 10080, "resets_at": "2026-12-01T00:00:00Z"}]})}
+
+
 def main():
     root = Path(os.environ["ZERUS_MOBILE_FIXTURE_DIR"])
     args = sys.argv[1:]
@@ -249,8 +269,9 @@ def main():
             result["organization"]["projects"].append({"id": "66666666-6666-4666-8666-666666666666", "name": "Saved integration history", "color": "#9c78cf", "accessible": True,
                 "folders": [], "sessions": ["Integration fixture\narchive\n" + row["archive_id"] for row in states if row.get("state") == "archived"]})
     elif args == ["account", "ls"]:
-        result = {"profiles": [{"id": "native-codex", "provider": "codex", "label": "Synthetic Codex", "installed": True,
-                                "home": "/private/never-forward-this", "credentials": "never-forward-this"}]}
+        result = {"profiles": account_profiles(fixture_config)}
+    elif len(args) == 3 and args[:2] == ["account", "inspect"]:
+        result = account_usage(args[2], fixture_config)
     elif len(args) == 2 and args[0] == "dirs":
         directory = "/example" if args[1] == "~" else args[1]
         assert directory.startswith("/")
