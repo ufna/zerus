@@ -270,8 +270,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             var published=false
             try {
-                val raw=pageCache.read(target,"around",saved.cursor) ?: return@launch
-                val page=withContext(Dispatchers.Default) { HistoryPage.cached(target,raw) }
+                val page=HistoryReadPaths.saved(target) { pageCache.read(target,"around",saved.cursor) } ?: return@launch
                 if(selected?.target==target && navigationId==navigation && conversationEvents.none { it.id==saved.eventId }) {
                     publishWindow(target,HistoryWindow.from(page));restoreHistoryAttempt=target.key+saved.cursor;published=true
                 }
