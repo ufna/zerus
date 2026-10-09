@@ -11,8 +11,9 @@
 <p align="center">
   <a href="docs/installation.md">Install</a> &nbsp; | &nbsp;
   <a href="#features">Features</a> &nbsp; | &nbsp;
+  <a href="#your-fleet-from-your-phone">Android</a> &nbsp; | &nbsp;
   <a href="docs/reference.md">Reference</a><br />
-  <sub>Linux and macOS &nbsp; | &nbsp; Local and remote &nbsp; | &nbsp; P2P &nbsp; | &nbsp; MIT</sub>
+  <sub>Linux and macOS &nbsp; | &nbsp; Android pilot &nbsp; | &nbsp; P2P &nbsp; | &nbsp; MIT</sub>
 </p>
 
 <p align="center">
@@ -75,6 +76,26 @@ Missing your agent or a feature?
   </tr>
 </table>
 
+### Your fleet from your phone
+
+The **Android pilot** brings your projects and agents to your phone:
+
+- **Conversations and tasks.** Read replies, follow goals, task lists and subagents,
+  answer questions and approvals, and send messages with files and images.
+- **Remote controls.** Create sessions with the computer's native agent and account;
+  change models, clear or compact context, inspect processes and open the native
+  terminal where supported.
+- **Your workspace.** Filter sessions across machines, browse project folders and
+  check account limits. Private drafts and cached conversations stay available offline.
+
+Pair your phone with a computer to reach it and its directly connected Zerus peers
+through a **self-hostable HTTPS relay**. Notifications support UnifiedPush, an
+optional FCM build and a foreground live connection. **iOS is planned.**
+
+[Download the Android APK](https://github.com/ufna/zerus/releases?q=android-dev-&expanded=true) |
+[Connect your phone](docs/mobile-deployment.md#pair-the-phone) |
+[Architecture and trust model](docs/mobile-architecture.md)
+
 ### Persistent sessions, your choice of client
 
 Terminal agents run in **tmux**. Closing Zerus, losing SSH or putting your laptop
@@ -121,10 +142,8 @@ hgs ls                                # sessions here and on connected machines
 hgs a codex/orbit/api                  # attach from any terminal
 ```
 
-**Android pilot:** follow existing sessions, read replies, answer questions and
-send messages from your phone through a self-hostable HTTPS relay. Notifications
-support UnifiedPush, an optional FCM build and a foreground live connection.
-[Build and connect the Android client](docs/mobile-deployment.md), or read the
-[architecture and trust model](docs/mobile-architecture.md). iOS remains planned.
+**On Android:** [download the pilot APK](https://github.com/ufna/zerus/releases?q=android-dev-&expanded=true),
+then [pair your phone](docs/mobile-deployment.md#pair-the-phone).
+**Try demo** lets you explore the interface before connecting a computer.
 
 [Command and settings reference](docs/reference.md) | [CI and Arch packages](docs/ci-and-aur.md) | [MIT](LICENSE)
