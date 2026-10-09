@@ -268,19 +268,11 @@ public:
         case MD_SPAN_EM: pushStyle([](Style &s) { s.italic = true; }); break;
         case MD_SPAN_STRONG: pushStyle([](Style &s) { s.bold = true; }); break;
         case MD_SPAN_DEL: pushStyle([](Style &s) { s.strike = true; }); break;
-        case MD_SPAN_CODE: {
-            // GitHub: code is 85 % of the surrounding text and inherits its colour, weight
-            // and slant; in headings it keeps the heading size (h1 code { font-size: inherit }).
-            const Style &around = m_styles.last();
-            const bool heading = m_frames.last().type == MD_BLOCK_H;
+        case MD_SPAN_CODE:
             m_inCode = true; m_frames.last().code = true;
-            m_frames.last().html += QString("<span style=\"background-color:%1;font-size:%2px;color:%3;%4%5\">")
-                .arg((heading ? MarkdownHtml::headingChipSentinel() : MarkdownHtml::chipSentinel()).name())
-                .arg(heading ? around.size : qRound(around.size * 0.85)).arg(around.color.name(),
-                     around.bold ? QStringLiteral("font-weight:600;") : QString(),
-                     around.italic ? QStringLiteral("font-style:italic;") : QString());
+            m_codeStart = m_frames.last().html.size(); m_codeText.clear();
+            m_frames.last().html += codeOpening(m_styles.last());
             break;
-        }
         case MD_SPAN_A: {
             Link link; link.start = m_frames.last().html.size();
             link.destination = attribute(static_cast<MD_SPAN_A_DETAIL *>(detail)->href);
@@ -303,7 +295,17 @@ public:
     {
         switch (type) {
         case MD_SPAN_EM: case MD_SPAN_STRONG: case MD_SPAN_DEL: m_styles.removeLast(); break;
-        case MD_SPAN_CODE: m_inCode = false; m_frames.last().html += "</span>"; break;
+        case MD_SPAN_CODE: {
+            m_inCode = false;
+            QString &html = m_frames.last().html;
+            const MarkdownLink target = m_linkStack.isEmpty() ? urlTarget(m_codeText) : MarkdownLink{};
+            if (target.href.isEmpty()) { html += "</span>"; break; }
+            // An address quoted as code links like [`url`](url).
+            Style style = m_styles.last(); style.color = m_theme.accent;
+            html.truncate(m_codeStart);
+            html += anchor(target) + codeOpening(style) + codeText(m_codeText) + "</span></a>";
+            break;
+        }
         case MD_SPAN_A: {
             m_styles.removeLast();
             const Link link = m_linkStack.takeLast();
@@ -336,7 +338,7 @@ public:
         else value = QString::fromUtf8(data, qsizetype(size));
         if (!m_linkStack.isEmpty()) m_linkStack.last().label += value;
         if (frame.type == MD_BLOCK_CODE) { frame.raw += value; return 0; }
-        if (m_inCode) frame.html += value.toHtmlEscaped().replace(' ', QStringLiteral("&nbsp;"));
+        if (m_inCode) { frame.html += codeText(value); m_codeText += value; }
         else frame.html += type == MD_TEXT_NORMAL && m_linkStack.isEmpty() ? autolinked(value) : run(value);
         return 0;
     }
@@ -353,6 +355,29 @@ private:
         return QString("<a href=\"%1\" title=\"%2\" style=\"color:%3;text-decoration:none;\">")
             .arg(target.href.toHtmlEscaped(), target.tooltip.toHtmlEscaped(), m_theme.accent.name());
     }
+    // GitHub: code is 85 % of the surrounding text and inherits its colour, weight
+    // and slant; in headings it keeps the heading size (h1 code { font-size: inherit }).
+    QString codeOpening(const Style &around) const
+    {
+        const bool heading = m_frames.last().type == MD_BLOCK_H;
+        return QString("<span style=\"background-color:%1;font-size:%2px;color:%3;%4%5\">")
+            .arg((heading ? MarkdownHtml::headingChipSentinel() : MarkdownHtml::chipSentinel()).name())
+            .arg(heading ? around.size : qRound(around.size * 0.85)).arg(around.color.name(),
+                 around.bold ? QStringLiteral("font-weight:600;") : QString(),
+                 around.italic ? QStringLiteral("font-style:italic;") : QString());
+    }
+    static QString codeText(const QString &value) { return value.toHtmlEscaped().replace(' ', QStringLiteral("&nbsp;")); }
+    // The link for a text that is exactly one bare http(s):// or www. address.
+    MarkdownLink urlTarget(const QString &text) const
+    {
+        static const QRegularExpression prefix(QStringLiteral("^(?:https?://|www\\.)"), QRegularExpression::CaseInsensitiveOption);
+        const auto match = prefix.match(text);
+        if (!m_links || !match.hasMatch()) return {};
+        const bool www = match.captured().endsWith('.');
+        if (www && (text.size() == 4 || !text[4].isLetterOrNumber())) return {};
+        if (autolinkEnd(text, www ? 0 : match.capturedEnd()) != text.size()) return {};
+        return m_links(www ? "http://" + text : text);
+    }
     // GitHub's extended autolinks for bare http(s):// and www. addresses. md4c 0.5
     // drops a whole URL whose host has no dot or has a port, or whose path is not ASCII.
     QString autolinked(const QString &text) const
@@ -363,13 +388,11 @@ private:
         QString result; qsizetype done = 0;
         for (auto it = start.globalMatch(text); it.hasNext();) {
             const auto match = it.next();
-            const bool www = match.captured().endsWith('.');
             if (match.capturedStart() < done) continue;
-            if (www && (match.capturedEnd() >= text.size() || !text[match.capturedEnd()].isLetterOrNumber())) continue;
-            const qsizetype end = autolinkEnd(text, www ? match.capturedStart() : match.capturedEnd());
+            const qsizetype end = autolinkEnd(text, match.captured().endsWith('.') ? match.capturedStart() : match.capturedEnd());
             if (end < 0) continue;
             const QString url = text.mid(match.capturedStart(), end - match.capturedStart());
-            const MarkdownLink target = m_links(www ? "http://" + url : url);
+            const MarkdownLink target = urlTarget(url);
             if (target.href.isEmpty()) continue;
             Style style = m_styles.last(); style.color = m_theme.accent;
             if (match.capturedStart() > done) result += run(text.mid(done, match.capturedStart() - done));
@@ -470,6 +493,8 @@ private:
     QVector<Link> m_linkStack;
     int m_hidden = 0;   // inside image alt text
     bool m_inCode = false;
+    qsizetype m_codeStart = 0;   // the open code span's markup in the current frame
+    QString m_codeText;
 };
 }
 

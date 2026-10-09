@@ -73,6 +73,7 @@ private slots:
     void linksFollowPolicy();
     void bareUrlsLinkLikeGitHub_data();
     void bareUrlsLinkLikeGitHub();
+    void codeUrlsLookLikeCodeLinks();
     void imagesBecomePlaceholders();
     void entitiesAreDecoded();
     void inlineCodeUsesSentinelAndTallerLine();
@@ -184,7 +185,12 @@ void TestMarkdownHtml::bareUrlsLinkLikeGitHub_data()
         << QStringList{"http://localhost:3050/ -> http://localhost:3050/"};
     QTest::newRow("explicit link") << "[label](https://example.com/x) https://example.org"
         << QStringList{"label -> https://example.com/x", "https://example.org -> https://example.org"};
-    QTest::newRow("code") << "`http://localhost:3060/`\n\n```\nhttp://localhost:3060/\n```" << QStringList{};
+    QTest::newRow("inline code") << "Open `http://localhost:3060/#a` or `www.example.com`."
+        << QStringList{"http://localhost:3060/#a -> http://localhost:3060/#a", "www.example.com -> http://www.example.com"};
+    QTest::newRow("code inside a link") << "[`http://localhost:3060/`](https://example.com/x)"
+        << QStringList{"http://localhost:3060/ -> https://example.com/x"};
+    QTest::newRow("command") << "`curl http://localhost:3060/` and `http://localhost:3060/.`" << QStringList{};
+    QTest::newRow("code block") << "```\nhttp://localhost:3060/\n```" << QStringList{};
     QTest::newRow("inside a word") << "xhttp://localhost:3060/ awww.example.com" << QStringList{};
     QTest::newRow("no host") << "http:// and https://?x" << QStringList{};
     QTest::newRow("policy") << "ftp://example.com/file" << QStringList{};
@@ -194,6 +200,16 @@ void TestMarkdownHtml::bareUrlsLinkLikeGitHub()
 {
     QFETCH(QString, markdown); QFETCH(QStringList, links);
     QCOMPARE(linked(*document(markdown, policy)), links);
+}
+
+void TestMarkdownHtml::codeUrlsLookLikeCodeLinks()
+{
+    // Agents often quote an address as code. The whole span is then a link, as if
+    // written [`url`](url); only an exact URL qualifies, so commands stay literal.
+    QCOMPARE(html("Open `http://localhost:3060/#a` now", policy),
+        html("Open [`http://localhost:3060/#a`](http://localhost:3060/#a) now", policy));
+    QCOMPARE(html("## `https://example.com/`", policy), html("## [`https://example.com/`](https://example.com/)", policy));
+    QVERIFY(!html("`http://localhost:3060/`", [](const QString &) { return MarkdownLink{}; }).contains("<a "));
 }
 
 void TestMarkdownHtml::imagesBecomePlaceholders()
