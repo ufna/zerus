@@ -19,6 +19,19 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network WebEngineWidgets)
+get_target_property(ZERUS_QMAKE Qt6::qmake IMPORTED_LOCATION)
+get_filename_component(ZERUS_QT_BIN "${ZERUS_QMAKE}" DIRECTORY)
+find_program(ZERUS_LRELEASE NAMES lrelease lrelease6 HINTS "${ZERUS_QT_BIN}" /usr/lib/qt6/bin REQUIRED)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(ZERUS_RU_QM "${CMAKE_CURRENT_BINARY_DIR}/zerus_ru.qm")
+add_custom_command(OUTPUT "${ZERUS_RU_QM}"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/translations/prepare_catalog.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/translations/zerus_ru.ts" "${CMAKE_CURRENT_BINARY_DIR}/zerus_ru.ts"
+    COMMAND "${ZERUS_LRELEASE}" "${CMAKE_CURRENT_BINARY_DIR}/zerus_ru.ts" -qm "${ZERUS_RU_QM}"
+    DEPENDS translations/zerus_ru.ts translations/prepare_catalog.py VERBATIM)
+add_custom_target(zerus-translations DEPENDS "${ZERUS_RU_QM}")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/translations.qrc"
+    "<RCC><qresource prefix=\"/hgs/translations\"><file alias=\"zerus_ru.qm\">${ZERUS_RU_QM}</file></qresource></RCC>")
 # std::thread сторожа главного потока (MainThreadWatchdog) -- на Linux это -lpthread.
 find_package(Threads REQUIRED)
 include(cmake/Terminal.cmake)
@@ -44,6 +57,7 @@ target_include_directories(hgs-updates PUBLIC src)
 target_link_libraries(hgs-updates PUBLIC Qt6::Widgets Qt6::Network)
 
 add_executable(hgs-tray
+    "${CMAKE_CURRENT_BINARY_DIR}/translations.qrc"
     resources.qrc
     src/main.cpp
     src/AppConfig.cpp
@@ -126,6 +140,7 @@ endif()
 target_compile_definitions(hgs-tray PRIVATE HGS_TRAY_VERSION="${PROJECT_VERSION}")
 # QLocalServer/QLocalSocket (single-instance guard in main.cpp) live in QtNetwork, not
 # QtWidgets — the plan's dependency list missed this; noted in the Task 1 report.
+add_dependencies(hgs-tray zerus-translations)
 target_link_libraries(hgs-tray PRIVATE Qt6::Widgets Qt6::Network Qt6::WebEngineWidgets Threads::Threads hgs-terminal hgs-markdown hgs-window-layer)
 if(LINUX)
     target_link_libraries(hgs-tray PRIVATE Qt6::DBus KF6::StatusNotifierItem KF6::WindowSystem)

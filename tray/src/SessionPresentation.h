@@ -3,6 +3,7 @@
 #include "HgsClient.h"
 #include "QuestionReply.h"
 #include <QObject>
+#include <QCoreApplication>
 #include <QDateTime>
 
 namespace SessionPresentation {
@@ -132,7 +133,16 @@ inline QString currentAction(const SessionInfo &s, bool online = true)
     if (s.unreadReply && s.activity != "busy" && !s.needsAction()) return status(s, online);
     if (!currentActivity(s, online)) return status(s, online);
 
-    if (!s.activitySummary.isEmpty()) return s.activitySummary + (s.activityDetail.isEmpty() ? QString() : QStringLiteral(": ") + activityDetailPreview(s));
+    if (!s.activitySummary.isEmpty()) {
+        // Translate fixed backend status labels, never tool excerpts or messages.
+        QString summary = s.activitySummary;
+        const QStringList labels{QT_TRANSLATE_NOOP("Zerus", "Archived"), QT_TRANSLATE_NOOP("Zerus", "Paused"), QT_TRANSLATE_NOOP("Zerus", "Stopped"), QT_TRANSLATE_NOOP("Zerus", "Waiting for approval"),
+            QT_TRANSLATE_NOOP("Zerus", "Waiting for input"), QT_TRANSLATE_NOOP("Zerus", "Compacting context"), QT_TRANSLATE_NOOP("Zerus", "Interrupted"), QT_TRANSLATE_NOOP("Zerus", "Needs attention"),
+            QT_TRANSLATE_NOOP("Zerus", "Ready"), QT_TRANSLATE_NOOP("Zerus", "Working"), QT_TRANSLATE_NOOP("Zerus", "Status unavailable"), QT_TRANSLATE_NOOP("Zerus", "Waiting for your next message"), QT_TRANSLATE_NOOP("Zerus", "Sign in required")};
+        if (labels.contains(summary))
+            summary = QCoreApplication::translate("Zerus", summary.toUtf8().constData());
+        return summary + (s.activityDetail.isEmpty() ? QString() : QStringLiteral(": ") + activityDetailPreview(s));
+    }
     if (!s.currentTool.isEmpty()) return s.currentTool + (s.toolDetail.isEmpty() ? QString() : QStringLiteral(": ") + s.toolDetail);
     if (!s.prompt.isEmpty()) return status(s) + QStringLiteral(": ") + promptPreview(s.prompt);
     return s.tracked ? status(s) : QObject::tr("Open terminal to view activity");
