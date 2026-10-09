@@ -541,9 +541,10 @@ mod tests {
             }],
             "ungrouped"
         );
+        let expected_directory = Path::new(&request.directory).canonicalize().unwrap();
         assert_eq!(
             values[&Key::Folder { id: folder }]["path"],
-            request.directory
+            expected_directory.to_str().unwrap()
         );
     }
     #[test]

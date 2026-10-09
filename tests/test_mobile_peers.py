@@ -329,30 +329,45 @@ time.sleep(10)
         sys.path.insert(0, str(REPO / 'services/mobile'))
         from zerus_mobile.connector import Connector, ConnectorError
 
+        # The native gateway probes peer support before launching the owned SSH
+        # operation. Cold Mac/CI interpreter startup must fit inside this budget;
+        # the synthetic SSH then stalls for 30 seconds, well beyond our timeout.
+        operation_timeout = 5
+
         async def scenario(cancel):
             connector = Connector.__new__(Connector)
-            connector.hgs, connector.timeout, connector.max_bytes = str(HGS), 5, 32 * 1024 * 1024
+            connector.hgs, connector.timeout, connector.max_bytes = str(HGS), operation_timeout, 32 * 1024 * 1024
             (self.root / 'hang').touch()
             path = self.root / 'hanging-pids'
             path.unlink(missing_ok=True)
             task = asyncio.create_task(connector._native(['swarm', 'mobile-peer', '--json'], self.request(),
-                                                       timeout=5 if cancel else .3, json_output=False))
-            until = time.monotonic() + 2
-            while not path.exists() and time.monotonic() < until:
-                await asyncio.sleep(.01)
-            self.assertTrue(path.exists(), 'owned SSH must be running before cancellation')
-            pids = json.loads(path.read_text())
-            if cancel:
-                task.cancel()
-                with self.assertRaises(asyncio.CancelledError):
-                    await task
-            else:
-                with self.assertRaises(ConnectorError):
-                    await task
-            until = time.monotonic() + 2
-            while any(self.running(pid) for pid in pids) and time.monotonic() < until:
-                await asyncio.sleep(.01)
-            self.assert_owned_transports_exit(pids)
+                                                       timeout=operation_timeout, json_output=False))
+            try:
+                until = time.monotonic() + operation_timeout
+                pids = None
+                while time.monotonic() < until and pids is None:
+                    if path.exists():
+                        try:
+                            pids = json.loads(path.read_text())
+                        except ValueError:
+                            pass  # The fixture may still be writing its ownership receipt.
+                    if pids is None:
+                        if task.done():
+                            break
+                        await asyncio.sleep(.01)
+                self.assertIsNotNone(pids, 'owned SSH must be running before deadline or cancellation')
+                if cancel:
+                    task.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await task
+                else:
+                    with self.assertRaises(ConnectorError):
+                        await task
+                self.assert_owned_transports_exit(pids)
+            finally:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
 
         env = dict(self.env, HGS_CONFIG_DIR=str(self.root / 'a'), HGS_STATE_DIR=str(self.root / 'a/state'))
         with patch.dict(os.environ, env, clear=True):
