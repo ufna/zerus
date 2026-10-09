@@ -226,8 +226,10 @@ class MainActivity : ComponentActivity() {
                 if (selected == null) NewSessionButton(model)
             }, colors = TopAppBarDefaults.topAppBarColors(containerColor = Background)) },
         bottomBar = { if (selected == null) NavigationBar(containerColor = Background) {
-            listOf("Sessions" to DesktopIcons.Sessions, "Projects" to DesktopIcons.Projects, "Drafts" to Icons.Default.EditNote, "Machines" to DesktopIcons.Machines, "Accounts" to Icons.Default.AccountCircle).forEachIndexed { i, (label, icon) ->
-                NavigationBarItem(selected = tab == i, onClick = { tab = i; model.clearSessionScope(); model.clearProject() }, icon = { Icon(icon, label) }, label = { Text(label) })
+            listOf(Triple(0, "Sessions", DesktopIcons.Sessions), Triple(1, "Projects", DesktopIcons.Projects),
+                Triple(2, "Drafts", Icons.Default.EditNote), Triple(4, "Accounts", Icons.Default.AccountCircle),
+                Triple(3, "Machines", DesktopIcons.Machines)).forEach { (id, label, icon) ->
+                NavigationBarItem(selected = tab == id, onClick = { tab = id; model.clearSessionScope(); model.clearProject() }, icon = { Icon(icon, label) }, label = { Text(label) })
             }
         } }) { padding ->
         Column(Modifier.padding(padding).consumeWindowInsets(padding).fillMaxSize()) {
