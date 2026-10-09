@@ -198,7 +198,8 @@ AccountsPage::AccountsPage(const QString &hgsPath, QWidget *parent, AccountUsage
     m_remove->setToolTip(tr("Remove this profile from the selected machine's Zerus catalog. You will confirm the machine and consequences before anything changes."));
     machineLayout->addSpacing(4);machineLayout->addWidget(m_remove,0,Qt::AlignLeft);details->addWidget(m_machineCard);
     details->addWidget(m_usage); details->addStretch();
-    auto *scroll=new QScrollArea;scroll->setObjectName("accountDetailsScroll");scroll->setWidgetResizable(true);scroll->setFrameShape(QFrame::NoFrame);scroll->setAlignment(Qt::AlignLeft|Qt::AlignTop);scroll->setWidget(detailsWidget);body->addWidget(scroll,2);
+    auto *scroll=new QScrollArea;scroll->setObjectName("accountDetailsScroll");scroll->setWidgetResizable(true);scroll->setFrameShape(QFrame::NoFrame);scroll->setAlignment(Qt::AlignLeft|Qt::AlignTop);scroll->setWidget(detailsWidget);
+    scroll->setAutoFillBackground(false);scroll->viewport()->setAutoFillBackground(false);detailsWidget->setAutoFillBackground(false);body->addWidget(scroll,2);
     connect(m_refresh, &QPushButton::clicked, this, &AccountsPage::reload);
     connect(m_machine, &QComboBox::currentIndexChanged, this, [this] {
         if (!m_explicitHost.isEmpty() && m_machine->currentData().toString() != m_explicitHost) {

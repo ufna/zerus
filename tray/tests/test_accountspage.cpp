@@ -53,6 +53,7 @@ private slots:
     void claudeSignInAndKeychainStatus_data();
     void claudeSignInAndKeychainStatus();
     void defaultAccountIsMachineScopedAndUsedForNewSessions();
+    void detailsPaneShowsPageBackground();
     void preview();
 private:
     FleetState fleet(bool remote = true) const;
@@ -243,6 +244,18 @@ void TestAccountsPage::renameAndDetailsStayBoundToSelectedProfile()
     QTRY_COMPARE(notices.size(),1);QVERIFY(notices.first()[0].toString().contains("name updated"));
     list->setCurrentRow(0);QCOMPARE(notices.size(),1);QVERIFY(!page.findChild<QLabel *>("accountStatus"));
     QFile::remove(m_dir.filePath("slow-inspect"));
+}
+void TestAccountsPage::detailsPaneShowsPageBackground()
+{
+    // The window themes the page with a style sheet while the application
+    // palette keeps the desktop colour, which the details pane must not paint.
+    AccountsPage page(m_script);page.setStyleSheet("QWidget#accountsPage{background:#161b21;}");page.setFleet(fleet());page.resize(1400,900);page.show();
+    QTRY_COMPARE(page.findChild<QListWidget *>("accountProfiles")->count(),8);
+    auto *viewport=page.findChild<QScrollArea *>("accountDetailsScroll")->viewport();QVERIFY(viewport->width()>page.findChild<QWidget *>("accountDetails")->width());
+    const auto image=page.grab().toImage();const qreal ratio=image.devicePixelRatio();
+    const auto pixel=[&](QPoint point){return image.pixelColor(viewport->mapTo(&page,point)*ratio).name();};
+    QCOMPARE(pixel({8,viewport->height()-8}),QString("#161b21"));
+    QCOMPARE(pixel({viewport->width()-8,8}),QString("#161b21"));
 }
 FleetState TestAccountsPage::fleet(bool remote) const
 {
