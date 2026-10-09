@@ -39,6 +39,18 @@ Native integration tests may need separately installed agent CLIs or a real desk
 read each suite's setup before running it. Do not run tests against live agent state.
 Some platform tests only exist on macOS or Linux. Record any unavailable checks.
 
+On a KDE Plasma 6 Wayland desktop, the optional native window-layer check uses
+its own temporary settings and synthetic windows, verifies KWin's actual state,
+and leaves unrelated windows and desktop rules alone:
+
+```sh
+QT_QPA_PLATFORM=wayland ZERUS_TEST_KWIN=1 \
+  tray/build/tests/test_kwinwindowlayer nativeKWinChangesOnlyOurWindowAndRestores
+```
+
+The ordinary `kwinwindowlayer` test runs on a private D-Bus session with a fake
+compositor and never controls the user's desktop.
+
 Beads issues, history and memories must contain only information suitable for public
 source collaboration. An ignored local database still becomes remote data when
 `bd dolt push` is run. Review the exported issues and memory before synchronizing.

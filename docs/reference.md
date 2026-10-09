@@ -211,9 +211,14 @@ questions, the message field and Terminal from 75% to 200% in 5% steps, with 100
 as the default; the session list, the side panel, the session header and its tabs
 keep their size.
 **Settings → Appearance → Keep Zerus above other windows** keeps the Zerus window
-over other applications on X11 and macOS; Wayland does not allow it. The pin
-above Settings on the left rail switches the same option. Files and terminals
-opened from Zerus may then appear behind it. Missing Git metadata does not turn
+over other applications on X11, macOS and KDE Plasma 6 on Wayland. On KDE Wayland,
+Zerus uses temporary KWin scripts scoped to its own window and confirms the
+compositor's state; it installs no window rules. The pin above Settings on the
+left rail switches the same option, and both controls follow changes made in
+KDE's window menu. KWin rules can override the preference; Zerus explains a
+refused change. Other Wayland desktops require their own integration and show
+the option disabled with a window-menu/rules workaround. Files and terminals
+opened from Zerus may appear behind it. Missing Git metadata does not turn
 a folder into a repository.
 
 The **+** in the session list header opens **New session**, like the one in the

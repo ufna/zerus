@@ -10,13 +10,12 @@
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include "ProcessSettings.h"
-#include "WindowLayer.h"
 
 class SettingsPage : public QWidget {
 public:
     std::function<void()> appearanceChanged;
     std::function<void()> contentScaleChanged;
-    std::function<void()> windowLayerChanged;
+    std::function<void(bool)> windowLayerChanged;
     std::function<void()> pollingChanged;
     explicit SettingsPage(const QString &executable,QWidget *parent=nullptr):QWidget(parent){
         setObjectName("settingsPage");auto *outer=new QVBoxLayout(this);outer->setContentsMargins(24,20,24,20);outer->setSpacing(20);
@@ -41,9 +40,9 @@ public:
         connect(scaleApply,&QTimer::timeout,this,[this]{if(contentScaleChanged)contentScaleChanged();});
         auto showScale=[scaleValue](int steps){scaleValue->setText(QStringLiteral("%1%").arg(steps*5));};showScale(scale->value());
         connect(scale,&QSlider::valueChanged,this,[scaleApply,showScale](int steps){QSettings().setValue("workspace/contentScale",steps/20.);showScale(steps);scaleApply->start();});
-        onTop=new QCheckBox(tr("Keep Zerus above other windows"));onTop->setObjectName("workspaceAlwaysOnTop");onTop->setChecked(WindowLayer::alwaysOnTop());onTop->setEnabled(WindowLayer::supported());appearance->addWidget(onTop);
-        auto *onTopHint=new QLabel(WindowLayer::supported()?tr("Files and terminals opened from Zerus may appear behind it while this is on."):tr("This desktop does not let applications stay above other windows."));onTopHint->setWordWrap(true);appearance->addWidget(onTopHint);
-        connect(onTop,&QCheckBox::toggled,this,[this](bool on){QSettings().setValue("workspace/alwaysOnTop",on);if(windowLayerChanged)windowLayerChanged();});
+        onTop=new QCheckBox(tr("Keep Zerus above other windows"));onTop->setObjectName("workspaceAlwaysOnTop");onTop->setEnabled(false);appearance->addWidget(onTop);
+        onTopHint=new QLabel;onTopHint->setObjectName("workspaceAlwaysOnTopHint");onTopHint->setWordWrap(true);appearance->addWidget(onTopHint);
+        connect(onTop,&QCheckBox::toggled,this,[this](bool on){if(windowLayerChanged)windowLayerChanged(on);});
         auto *local=new QLabel(tr("Appearance and session list preferences apply to this Zerus."));local->setWordWrap(true);appearance->addWidget(local);appearance->addStretch();
         connect(theme,&QComboBox::currentIndexChanged,this,[this,theme]{QSettings().setValue("workspace/theme",theme->currentData());if(appearanceChanged)appearanceChanged();});
         auto *sessions=makePage(tr("Sessions"));
@@ -70,9 +69,9 @@ public:
     }
     void setPeers(const QStringList &peers){sync->setPeers(peers);}
     void openRecovery(){nav->setCurrentRow(2);sync->refresh();}
-    void setAlwaysOnTop(bool on){const QSignalBlocker block(onTop);onTop->setChecked(on);}
+    void setWindowLayerState(bool on,bool enabled,const QString &hint){const QSignalBlocker block(onTop);onTop->setChecked(on);onTop->setEnabled(enabled);onTopHint->setText(hint);}
     void refresh(){sync->refresh();}
 private:
     void addPage(QWidget *page){if(page->objectName().isEmpty())page->setObjectName("settingsContent");auto *scroll=new QScrollArea;scroll->setFrameShape(QFrame::NoFrame);scroll->setWidgetResizable(true);scroll->setWidget(page);scroll->setMinimumWidth(0);pages->addWidget(scroll);}
-    QListWidget *nav;QStackedWidget *pages;RecoverySync *sync;RecoverySettings *recovery;QCheckBox *onTop;
+    QListWidget *nav;QStackedWidget *pages;RecoverySync *sync;RecoverySettings *recovery;QCheckBox *onTop;QLabel *onTopHint;
 };

@@ -31,6 +31,14 @@ if(LINUX)
     find_package(KF6WindowSystem REQUIRED)
 endif()
 
+add_library(hgs-window-layer STATIC src/WindowLayer.cpp)
+target_include_directories(hgs-window-layer PUBLIC src)
+target_link_libraries(hgs-window-layer PUBLIC Qt6::Widgets)
+if(LINUX)
+    target_sources(hgs-window-layer PRIVATE src/KWinWindowLayer.cpp)
+    target_link_libraries(hgs-window-layer PRIVATE Qt6::DBus)
+endif()
+
 add_executable(hgs-tray
     resources.qrc
     src/main.cpp
@@ -113,7 +121,7 @@ endif()
 target_compile_definitions(hgs-tray PRIVATE HGS_TRAY_VERSION="${PROJECT_VERSION}")
 # QLocalServer/QLocalSocket (single-instance guard in main.cpp) live in QtNetwork, not
 # QtWidgets — the plan's dependency list missed this; noted in the Task 1 report.
-target_link_libraries(hgs-tray PRIVATE Qt6::Widgets Qt6::Network Qt6::WebEngineWidgets Threads::Threads hgs-terminal hgs-markdown)
+target_link_libraries(hgs-tray PRIVATE Qt6::Widgets Qt6::Network Qt6::WebEngineWidgets Threads::Threads hgs-terminal hgs-markdown hgs-window-layer)
 if(LINUX)
     target_link_libraries(hgs-tray PRIVATE Qt6::DBus KF6::StatusNotifierItem KF6::WindowSystem)
 endif()

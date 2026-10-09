@@ -292,7 +292,7 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     connect(refresh, &QPushButton::clicked, this, [this]() { emit refreshRequested(); inspect(); m_machinesPage->reload(); });
     side->addStretch();
     auto *windowPin = iconButton("pin", tr("Keep Zerus above other windows"), "windowPin"); windowPin->setCheckable(true);
-    windowPin->setFixedSize(42, 44); windowPin->setIconSize(QSize(24,24)); windowPin->setVisible(WindowLayer::supported()); side->addWidget(windowPin);
+    windowPin->setFixedSize(42, 44); windowPin->setIconSize(QSize(24,24)); side->addWidget(windowPin);
     auto *settingsButton = m_settingsNav = iconButton("settings", tr("Settings"), "workspaceSettings"); settingsButton->setCheckable(true); settingsButton->setFixedSize(42, 44); settingsButton->setIconSize(QSize(24,24)); side->addWidget(settingsButton);
     connect(settingsButton, &QPushButton::clicked, this, &SessionsWindow::showWorkspaceSettings);
     auto *versionLabel = label(version, "appVersion"); versionLabel->setAlignment(Qt::AlignCenter); side->addWidget(versionLabel);
@@ -974,14 +974,16 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     };
     m_settingsPage->contentScaleChanged=[this]{applyContentScale();};
     // The rail pin and Settings → Appearance switch the same preference.
-    const auto applyWindowLayer=[this,windowPin]{
-        const bool on=WindowLayer::alwaysOnTop();
-        {const QSignalBlocker block(windowPin);windowPin->setChecked(on);}
-        m_settingsPage->setAlwaysOnTop(on);WindowLayer::apply(this,on);
+    auto *windowLayer=new WindowLayer(this);
+    const auto updateWindowLayer=[this,windowPin,windowLayer]{
+        const QSignalBlocker block(windowPin);windowPin->setChecked(windowLayer->onTop());
+        windowPin->setVisible(windowLayer->supported());windowPin->setEnabled(!windowLayer->busy());
+        m_settingsPage->setWindowLayerState(windowLayer->onTop(),windowLayer->supported()&&!windowLayer->busy(),windowLayer->hint());
     };
-    m_settingsPage->windowLayerChanged=applyWindowLayer;
-    connect(windowPin,&QPushButton::toggled,this,[applyWindowLayer](bool on){QSettings().setValue("workspace/alwaysOnTop",on);applyWindowLayer();});
-    applyWindowLayer();
+    m_settingsPage->windowLayerChanged=[windowLayer](bool on){windowLayer->request(on);};
+    connect(windowPin,&QPushButton::toggled,windowLayer,&WindowLayer::request);
+    connect(windowLayer,&WindowLayer::changed,this,updateWindowLayer);
+    updateWindowLayer();
     connect(m_accountsPage,&AccountsPage::loginRequested,this,&SessionsWindow::accountLoginRequested);
     connect(m_accountsPage,&AccountsPage::installRequested,this,&SessionsWindow::accountInstallRequested);
     connect(m_accountsPage,&AccountsPage::accountsChanged,this,&SessionsWindow::refreshRequested);

@@ -14,6 +14,11 @@ if(LINUX)
     target_include_directories(test_linuxapplicationbadge PRIVATE ../src)
     target_link_libraries(test_linuxapplicationbadge PRIVATE Qt6::Test Qt6::Core Qt6::DBus)
     add_test(NAME linuxapplicationbadge COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:test_linuxapplicationbadge>)
+    find_package(Qt6 REQUIRED COMPONENTS Qml)
+    add_executable(test_kwinwindowlayer test_kwinwindowlayer.cpp)
+    target_link_libraries(test_kwinwindowlayer PRIVATE Qt6::Test Qt6::DBus Qt6::Qml hgs-window-layer)
+    add_test(NAME kwinwindowlayer COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:test_kwinwindowlayer>)
+    set_tests_properties(kwinwindowlayer PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
 
 add_executable(test_appconfig test_appconfig.cpp ../src/AppConfig.cpp)
@@ -174,7 +179,7 @@ add_executable(test_sessionswindow test_sessionswindow.cpp ../src/SessionsWindow
                ../src/NewSessionDialog.cpp ../src/ProjectsDialog.cpp ../resources.qrc)
 target_include_directories(test_sessionswindow PRIVATE ../src)
 target_compile_definitions(test_sessionswindow PRIVATE HGS_TRAY_VERSION="${PROJECT_VERSION}")
-target_link_libraries(test_sessionswindow PRIVATE Qt6::Test Qt6::Widgets Qt6::WebEngineWidgets hgs-terminal hgs-markdown)
+target_link_libraries(test_sessionswindow PRIVATE Qt6::Test Qt6::Widgets Qt6::WebEngineWidgets hgs-terminal hgs-markdown hgs-window-layer)
 # The longest suite runs as parallel shards of its test functions.
 foreach(shard RANGE 9)
     add_test(NAME sessionswindow-${shard} COMMAND ${CMAKE_COMMAND} -DTEST=$<TARGET_FILE:test_sessionswindow>
