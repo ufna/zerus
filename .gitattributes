@@ -4,6 +4,9 @@ tests/fixtures/*.txt -whitespace
 # Keep vendored libvterm byte-for-byte identical to the documented upstream.
 tray/vendor/libvterm/** -whitespace
 
+# Design prototypes and artwork are documentation, not application source.
+design/** linguist-documentation
+
 .beads export-ignore
 .agents export-ignore
 .github export-ignore

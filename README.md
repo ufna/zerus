@@ -33,7 +33,9 @@ Bring your own agents and subscriptions.
 integrations: Activity, messages, questions, approvals and session controls.
 Available actions depend on the agent and its version.
 You can run **any terminal command** through `hgs`; full ADE features need an
-adapter. Missing your agent or a feature?
+adapter.
+
+Missing your agent or a feature?
 [Send a PR](https://github.com/ufna/zerus/pulls) or
 [let us know](https://github.com/ufna/zerus/issues).
 
@@ -46,20 +48,20 @@ adapter. Missing your agent or a feature?
 <table>
   <tr>
     <td width="42%" valign="middle">
-      <h3>One shared workspace across your machines</h3>
-      <p>A project brings together folders and agents on your laptop, workstation and servers. The project catalog, session assignments and shared recovery settings sync peer to peer over SSH. Each machine keeps a copy, with no permanent main machine. Switch to another connected computer and keep the same project organization. Offline peers catch up when they reconnect; SSH access, credentials and appearance stay local.</p>
+      <h3>Your whole fleet at a glance</h3>
+      <p>See machines, running sessions and requests for attention in one overview. Search, filters and project groups help you work with dozens or hundreds of agents. Machine load and account limits are right alongside them.</p>
     </td>
     <td width="58%">
-      <a href="docs/assets/readme/projects.webp"><img src="docs/assets/readme/projects.webp" alt="The Orbit project connects folders on a workstation, a MacBook and two servers" width="640" /></a>
+      <a href="docs/assets/readme/fleet.webp"><img src="docs/assets/readme/fleet.webp" alt="Overview of 112 synthetic sessions on four machines, with activity and resource use" width="640" /></a>
     </td>
   </tr>
   <tr>
     <td valign="middle">
-      <h3>Your whole fleet at a glance</h3>
-      <p>See machines, running sessions and requests for attention in one overview. Search, filters and project groups help you work with dozens or hundreds of agents. Machine load and account limits are right alongside them.</p>
+      <h3>One shared workspace across your machines</h3>
+      <p>A project brings together folders and agents on your laptop, workstation and servers. The project catalog, session assignments and shared recovery settings sync peer to peer over SSH. Each machine keeps a copy, with no permanent main machine. Switch to another connected computer and keep the same project organization. Offline peers catch up when they reconnect; SSH access, credentials and appearance stay local.</p>
     </td>
     <td>
-      <a href="docs/assets/readme/fleet.webp"><img src="docs/assets/readme/fleet.webp" alt="Overview of 112 synthetic sessions on four machines, with activity and resource use" width="640" /></a>
+      <a href="docs/assets/readme/projects.webp"><img src="docs/assets/readme/projects.webp" alt="The Orbit project connects folders on a workstation, a MacBook and two servers" width="640" /></a>
     </td>
   </tr>
   <tr>
@@ -86,19 +88,19 @@ the window. [Integration details](docs/reference.md#deepseek).
 
 ## Yet another ADE
 
-One project, agents on several machines. I wanted to work from the laptop or
-workstation with the same projects and session assignments available on both.
-
-That is the reason for the P2P workspace. Each machine keeps the shared catalog
-and exchanges changes directly with its peers, with no permanent main machine.
-The folders and agents stay on their hosts; the project organization and shared
-settings follow you between connected computers.
-
-Terminal agents run in ordinary tmux sessions. Work through Zerus or connect to
-the same session from any SSH client, using the SSH access configured on that
-computer.
-
-— [Vladimir / @ufna](https://github.com/ufna)
+> One project, agents on several machines. I wanted to work from the laptop or
+> workstation with the same projects and session assignments available on both.
+>
+> That is the reason for the P2P workspace. Each machine keeps the shared catalog
+> and exchanges changes directly with its peers, with no permanent main machine.
+> The folders and agents stay on their hosts; the project organization and shared
+> settings follow you between connected computers.
+>
+> Terminal agents run in ordinary tmux sessions. Work through Zerus or connect to
+> the same session from any SSH client, using the SSH access configured on that
+> computer.
+>
+> — [Vladimir / @ufna](https://github.com/ufna)
 
 ## Quick start
 
