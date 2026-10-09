@@ -79,6 +79,7 @@ class TestSessionsWindow : public QObject {
     Q_OBJECT
 private slots:
     void initTestCase();
+    void updatesEntryOpensExactSettingsPage();
     void init() { QSettings().remove("workspace"); QSettings().remove("processes"); QVERIFY(QDir(ComposerDraftStore::directory()).removeRecursively()); }
     void workspaceRestoresDraftAcrossRestartAndSessionRemoval();
     void groupsPersistFilterAndRevealAttention();
@@ -4754,4 +4755,10 @@ void TestSessionsWindow::worktreePreview()
         QTimer::singleShot(0,&launch,[&]{auto *picker=launch.findChild<QDialog *>("chooseWorktreeDialog");QVERIFY(picker);QTest::qWait(100);QVERIFY(picker->grab().save(destination+(dark?"/picker-dark.png":"/picker-light.png")));picker->reject();});launch.findChild<QPushButton *>("chooseLaunchWorktree")->click();launch.reject();
     }
     qApp->setPalette(original);
+}
+
+void TestSessionsWindow::updatesEntryOpensExactSettingsPage(){
+    SessionsWindow window(script());window.show();window.showUpdates();
+    auto *sections=window.findChild<QListWidget *>("settingsSections");QVERIFY(sections);QCOMPARE(sections->currentRow(),4);QCOMPARE(sections->currentItem()->text(),QString("Updates"));
+    QVERIFY(window.findChild<QWidget *>("settingsPage")->isVisible());window.showSessionList();window.showUpdates();QCOMPARE(sections->currentRow(),4);
 }

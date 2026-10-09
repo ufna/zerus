@@ -39,6 +39,10 @@ if(LINUX)
     target_link_libraries(hgs-window-layer PRIVATE Qt6::DBus)
 endif()
 
+add_library(hgs-updates STATIC src/UpdateController.cpp src/UpdateController.h)
+target_include_directories(hgs-updates PUBLIC src)
+target_link_libraries(hgs-updates PUBLIC Qt6::Widgets Qt6::Network)
+
 add_executable(hgs-tray
     resources.qrc
     src/main.cpp
@@ -125,6 +129,8 @@ target_link_libraries(hgs-tray PRIVATE Qt6::Widgets Qt6::Network Qt6::WebEngineW
 if(LINUX)
     target_link_libraries(hgs-tray PRIVATE Qt6::DBus KF6::StatusNotifierItem KF6::WindowSystem)
 endif()
+
+target_link_libraries(hgs-tray PRIVATE hgs-updates)
 
 include(CTest)
 if(BUILD_TESTING)

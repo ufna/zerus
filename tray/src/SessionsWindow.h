@@ -53,6 +53,7 @@ public:
     explicit SessionsWindow(const QString &hgsPath, QWidget *parent = nullptr);
     void setFleet(const FleetState &fleet);
     void showSessionList();
+    void showUpdates();
     void showSession(const QString &host, const QString &name);
     void showAttentionSession(const QString &host, const QString &name);
     void showNotificationNotice(const QString &message) { showNotice(message, false); }

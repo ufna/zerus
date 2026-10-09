@@ -2,6 +2,8 @@
 #include "RecoverySettings.h"
 #include "ContentScale.h"
 #include "WorkspaceIcons.h"
+#include "UpdatesWidget.h"
+#include "RelaySettings.h"
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDesktopServices>
@@ -23,7 +25,7 @@ public:
     explicit SettingsPage(const QString &executable,QWidget *parent=nullptr):QWidget(parent){
         setObjectName("settingsPage");auto *outer=new QVBoxLayout(this);outer->setContentsMargins(24,20,24,20);outer->setSpacing(20);
         auto *title=new QLabel(tr("Settings"));title->setObjectName("heading");outer->addWidget(title);
-        auto *body=new QHBoxLayout;body->setSpacing(24);nav=new QListWidget;nav->setObjectName("settingsSections");nav->setFixedWidth(180);nav->addItems({tr("Appearance"),tr("Sessions"),tr("Automatic recovery"),tr("Processes"),tr("About")});body->addWidget(nav);
+        auto *body=new QHBoxLayout;body->setSpacing(24);nav=new QListWidget;nav->setObjectName("settingsSections");nav->setFixedWidth(180);nav->addItems({tr("Appearance"),tr("Sessions"),tr("Automatic recovery"),tr("Processes"),tr("Updates"),tr("Mobile connection"),tr("About")});body->addWidget(nav);
         pages=new QStackedWidget;pages->setMinimumWidth(0);body->addWidget(pages,1);outer->addLayout(body,1);
         auto makePage=[&](const QString &heading){auto *content=new QWidget;content->setMaximumWidth(850);auto *layout=new QVBoxLayout(content);layout->setContentsMargins(0,0,12,0);layout->setSpacing(18);auto *h=new QLabel(heading);h->setObjectName("heading");layout->addWidget(h);addPage(content);return layout;};
         auto *appearance=makePage(tr("Appearance"));auto *theme=new QComboBox;theme->setObjectName("workspaceTheme");theme->addItem(tr("Follow system appearance"),"system");theme->addItem(tr("Dark"),"dark");theme->addItem(tr("Light"),"light");theme->setCurrentIndex(qMax(0,theme->findData(QSettings().value("workspace/theme","system"))));appearance->addWidget(new QLabel(tr("Theme")));appearance->addWidget(theme);
@@ -67,6 +69,8 @@ public:
         timing("unknownSeconds",tr("Unconfirmed process output"),ProcessSettings::unknownMs(),1,600);
         timing("loadingSeconds",tr("Show loading indicator after"),ProcessSettings::loadingMs(),0,5);
         auto *processHint=new QLabel(tr("Off by default. When disabled, the tab is hidden and processes are not polled. Enable it to inspect running shells and background commands, read recorded output and stop selected processes. Only the selected session is inspected; opening Processes refreshes immediately. Output is read only while the tab is visible. Timings apply to this Zerus. Background refresh also controls session inspection while Terminal or Native UI is open; session overview and account limits refresh separately."));processHint->setWordWrap(true);processes->addWidget(processHint);processes->addStretch();
+        auto *updates=makePage(tr("Updates"));updates->addWidget(new UpdatesWidget);updates->addStretch();
+        auto *mobile=new RelaySettings::Panel;mobile->setMaximumWidth(850);addPage(mobile);
         auto *about=makePage(tr("About"));about->addWidget(new QLabel(tr("hgs zerus %1").arg(QCoreApplication::applicationVersion())));
         auto *repository=new QPushButton(QStringLiteral("ufna/zerus"));repository->setObjectName("aboutRepository");repository->setProperty("glyph","github");
         repository->setIcon(workspaceIcon("github",palette().color(QPalette::WindowText)));repository->setIconSize(QSize(20,20));repository->setAutoDefault(false);
@@ -76,6 +80,7 @@ public:
         connect(nav,&QListWidget::currentRowChanged,pages,&QStackedWidget::setCurrentIndex);nav->setCurrentRow(0);
     }
     void setPeers(const QStringList &peers){sync->setPeers(peers);}
+    void openUpdates(){nav->setCurrentRow(4);}
     void openRecovery(){nav->setCurrentRow(2);sync->refresh();}
     void setWindowLayerState(bool on,bool enabled,const QString &hint){const QSignalBlocker block(onTop);onTop->setChecked(on);onTop->setEnabled(enabled);onTopHint->setText(hint);}
     void refresh(){sync->refresh();}

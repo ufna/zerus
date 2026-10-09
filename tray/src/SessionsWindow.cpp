@@ -26,6 +26,7 @@
 #include "RecoveryWidgets.h"
 #include "SettingsPage.h"
 #include "ContentScale.h"
+#include "UpdateController.h"
 #include "ProcessSettings.h"
 #include "TerminalView.h"
 #include "TerminalScreen.h"
@@ -1008,6 +1009,8 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     auto *statusLayout = new QHBoxLayout(statusBar); statusLayout->setContentsMargins(12, 3, 12, 3);
     m_connectionStatus = new StatusMessage; m_connectionStatus->setObjectName("workspaceConnectionStatus");
     statusLayout->addWidget(m_connectionStatus, 1);
+    auto *updateEntry=new QPushButton(tr("Update available"));updateEntry->setObjectName("updatesAvailable");updateEntry->setFlat(true);statusLayout->addWidget(updateEntry);
+    auto *updates=UpdateController::instance();auto updateEntryState=[updates,updateEntry]{updateEntry->setVisible(updates->updateAvailable());updateEntry->setToolTip(tr("Zerus %1 — open Updates").arg(updates->feed().version));};connect(updates,&UpdateController::changed,this,updateEntryState);connect(updateEntry,&QPushButton::clicked,this,&SessionsWindow::showUpdates);updateEntryState();
     m_connectionRetry = new QPushButton(tr("Retry now")); m_connectionRetry->setObjectName("connectionRetry");
     m_connectionRetry->setFlat(true); m_connectionRetry->hide(); statusLayout->addWidget(m_connectionRetry);
     connect(m_connectionRetry, &QPushButton::clicked, this, &SessionsWindow::refreshRequested);
@@ -1194,7 +1197,7 @@ void SessionsWindow::applyTheme()
         QListWidget#settingsSections::item { padding:11px 10px;margin-bottom:5px;border-radius:6px; }
         QListWidget#settingsSections::item:selected { background:%10;color:%5; }
         QListWidget#settingsSections::item:hover { background:%7; }
-        QWidget#settingsPage QScrollArea, QWidget#settingsContent, QDialog#swarmDialog QScrollArea, QWidget#swarmConflictContent { background:transparent;border:0; }
+        QWidget#settingsPage QScrollArea, QWidget#settingsContent, QWidget#relaySettings, QDialog#swarmDialog QScrollArea, QWidget#swarmConflictContent { background:transparent;border:0; }
         QPushButton#railButton:checked { background:%10; border-color:%4; }
         QPushButton#sessionFilter { padding:4px 2px; min-height:22px; font-size:11px; background:transparent; border-color:transparent; }
         QPushButton#sessionFilter:checked { background:%10; border-color:%4; color:%5; }
@@ -1265,7 +1268,7 @@ void SessionsWindow::applyTheme()
         QFrame#workspaceStatus { background:%1; border:0; border-top:1px solid %4; }
         QLabel#notice { color:%6; font-size:11px; }
         QLabel#workspaceConnectionStatus { color:%12; font-size:11px; }
-        QPushButton#connectionRetry { color:%2; background:transparent; border:0; padding:0 6px; min-height:18px; font-size:11px; }
+        QPushButton#connectionRetry, QPushButton#updatesAvailable { color:%2; background:transparent; border:0; padding:0 6px; min-height:18px; font-size:11px; }
         QLabel#notice[error="true"] { color:%12; }
         QSplitter::handle { background:transparent; width:8px; }
         QFrame#sessionInspectorPanel { background:%11; border:1px solid %4; border-radius:8px; }
@@ -1574,6 +1577,8 @@ void SessionsWindow::dropTerminalFiles(const QStringList &paths)
     m_terminalDropRequest=m_client.requestStageFiles(entry->host,entry->session.name,paths,run,conversation);
     showNotice(tr("Transferring files to %1…").arg(entry->machine));
 }
+
+void SessionsWindow::showUpdates(){m_pages->setCurrentIndex(5);m_settingsPage->openUpdates();}
 
 void SessionsWindow::showWorkspaceSettings()
 {

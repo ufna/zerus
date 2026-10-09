@@ -10,6 +10,7 @@
 #include <QTimer>
 
 #include "AppConfig.h"
+#include "UpdateController.h"
 #include "HgsClient.h"
 #include "MainThreadWatchdog.h"
 #include "TrayAgent.h"
@@ -162,6 +163,7 @@ int main(int argc, char *argv[])
         QObject::connect(c, &QLocalSocket::readyRead, c, activate);
         activate();
     });
+    UpdateController::instance()->checkOnStart();
     if (cfg.showSessions) agent.showSessions();
     return app.exec();
 }
