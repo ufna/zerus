@@ -978,7 +978,11 @@ else: print('{}')
     const auto applyDetails=[&]{QFile data(temp.filePath("details.json"));QVERIFY(data.open(QIODevice::WriteOnly));data.write(QJsonDocument(details).toJson());data.close();client->inspectionReady("mac","claude/infra/review",details);};
     applyDetails();
     auto *composer=window.findChild<MessageComposer *>("messageComposer");composer->editor()->setPlainText("Keep this draft");
-    auto *clear=window.findChild<QPushButton *>("clearContextFromCache");QVERIFY(clear->isVisible());QVERIFY(clear->isEnabled());QCOMPARE(clear->text(),QString("Clear context"));
+    auto *cacheChip=window.findChild<ToolbarChip *>("cacheChip");QVERIFY(cacheChip && cacheChip->isVisible());
+    QCOMPARE(cacheChip->fullLabel(),QString("Cold cache"));QCOMPARE(cacheChip->tone(),ChipTone::Danger);
+    QTest::mouseClick(cacheChip,Qt::LeftButton);QTRY_VERIFY(cacheChip->popover()->isVisible());
+    QVERIFY(window.findChild<QLabel *>("cacheWarning")->text().contains("cold cache"));
+    auto *clear=window.findChild<QPushButton *>("cacheClearContext");QVERIFY(clear->isVisible());QVERIFY(clear->isEnabled());QCOMPARE(clear->text(),QString("Clear context"));
     QSignalSpy launched(&window,&SessionsWindow::newSessionRequested);QSignalSpy finished(client,&HgsClient::sessionActionFinished);
     const auto confirmClear=[&]{QTimer::singleShot(0,&window,[&]{
         auto *dialog=window.findChild<QMessageBox *>("clearSessionConfirm");QVERIFY(dialog);

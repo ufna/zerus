@@ -1,7 +1,7 @@
 #pragma once
 namespace AccountUsage {class Button;class RefreshButton;}
 namespace SessionUsage {class ContextButton;}
-namespace CacheStatus {class Button;}
+namespace CacheStatus {class Chip;}
 namespace RecoveryUi {class Panel;}
 class ToolbarChip;
 class SettingsPage;
@@ -284,9 +284,9 @@ private:
     QJsonObject m_accountUsageData;
     QLabel *m_usageWarning;
     QLabel *m_cacheWarning;
-    QWidget *m_cacheNotice;
+    QLabel *m_cacheDetail;
     QPushButton *m_cacheClear;
-    CacheStatus::Button *m_cacheStatus;
+    CacheStatus::Chip *m_cacheStatus;
     void refreshAccountUsage(bool force = false);
     void renderAccountUsage();
     void updateDashboardAccounts(bool request = false, bool force = false);

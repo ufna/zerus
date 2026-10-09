@@ -640,15 +640,22 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     toolbar->add(ComposerToolbar::Slot::MarkRead,m_markRead);
     auto *compaction=m_activityView->compactionIndicator();compaction->layout()->setContentsMargins(0,0,0,0);
     toolbar->add(ComposerToolbar::Slot::Compaction,compaction);toolbar->add(ComposerToolbar::Slot::CompactionCancel,m_compactCancel);
-    m_cacheStatus=new CacheStatus::Button;m_cacheStatus->setSizePolicy(QSizePolicy::Preferred,QSizePolicy::Fixed);
-    toolbar->add(ComposerToolbar::Slot::Cache,m_cacheStatus);toolbar->add(ComposerToolbar::Slot::Context,m_contextUsage);
-    m_cacheWarning=new QLabel;m_cacheWarning->setObjectName("activityCacheWarning");m_cacheWarning->setWordWrap(true);m_cacheWarning->setTextFormat(Qt::PlainText);m_cacheWarning->hide();
-    m_cacheNotice=new QWidget;m_cacheNotice->setObjectName("activityCacheNotice");
-    auto *cacheRow=new QHBoxLayout(m_cacheNotice);cacheRow->setContentsMargins(0,0,0,0);cacheRow->setSpacing(8);cacheRow->addWidget(m_cacheWarning,1);
-    m_cacheClear=new QPushButton(tr("Clear context"));m_cacheClear->setObjectName("clearContextFromCache");m_cacheClear->setAutoDefault(false);
+    m_cacheStatus=new CacheStatus::Chip;
+    auto *cachePanel=new QWidget;cachePanel->setObjectName("cachePopover");
+    auto *cacheLayout=new QVBoxLayout(cachePanel);cacheLayout->setContentsMargins(14,12,14,12);cacheLayout->setSpacing(8);
+    m_cacheWarning=new QLabel;m_cacheWarning->setObjectName("cacheWarning");m_cacheWarning->setWordWrap(true);m_cacheWarning->setTextFormat(Qt::PlainText);
+    m_cacheDetail=new QLabel;m_cacheDetail->setObjectName("cacheDetail");m_cacheDetail->setWordWrap(true);m_cacheDetail->setTextFormat(Qt::PlainText);
+    auto *cacheActions=new QHBoxLayout;cacheActions->setSpacing(8);cacheActions->addStretch();
+    auto *cacheUsage=new QPushButton(tr("Usage details"));cacheUsage->setObjectName("cacheUsageDetails");cacheUsage->setAutoDefault(false);
+    m_cacheClear=new QPushButton(tr("Clear context"));m_cacheClear->setObjectName("cacheClearContext");m_cacheClear->setAutoDefault(false);
     m_cacheClear->setToolTip(tr("Clear this agent’s conversation, like /clear in Terminal. Your unsent message stays here."));
-    cacheRow->addWidget(m_cacheClear,0,Qt::AlignVCenter);m_cacheNotice->hide();activityLayout->addWidget(m_cacheNotice);
-    connect(m_cacheClear,&QPushButton::clicked,this,&SessionsWindow::clearContext);
+    cacheActions->addWidget(cacheUsage);cacheActions->addWidget(m_cacheClear);
+    cacheLayout->addWidget(m_cacheWarning);cacheLayout->addWidget(m_cacheDetail);cacheLayout->addLayout(cacheActions);
+    m_cacheStatus->setPopoverContent(cachePanel);
+    toolbar->add(ComposerToolbar::Slot::Cache,m_cacheStatus);toolbar->add(ComposerToolbar::Slot::Context,m_contextUsage);
+    connect(cacheUsage,&QPushButton::clicked,this,[this]{m_cacheStatus->closePopover();setInspectorVisible(true);m_inspector->setCurrentIndex(1);});
+    // Close first: the confirmation dialog must not open over a popup.
+    connect(m_cacheClear,&QPushButton::clicked,this,[this]{m_cacheStatus->closePopover();clearContext();});
     connect(&m_client,&HgsClient::sessionActionFinished,this,[this](quint64 id,bool ok,const QJsonObject &receipt,const QString &error) {
         if(id!=m_clearRequest)return;
         m_clearRequest=0;
@@ -658,7 +665,6 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         }
         emit refreshRequested();
     });
-    connect(m_cacheStatus,&QPushButton::clicked,this,[this]{setInspectorVisible(true);m_inspector->setCurrentIndex(1);});
     activityLayout->addWidget(m_composer);
     connect(m_markRead,&QPushButton::clicked,this,[this]{
         const auto *entry=selected();if(!entry||entry->session.state=="archived"||!entryNeedsAttention(*entry))return;
@@ -1253,7 +1259,8 @@ void SessionsWindow::applyTheme()
     m_usageRefresh->setTheme(m_dark);
     m_contextUsage->setTheme(m_dark);m_subagentContextUsage->setTheme(m_dark);
     m_cacheStatus->setTheme(m_dark);
-    m_cacheWarning->setStyleSheet(QString("QLabel{color:%1;padding:6px 14px;font-size:11px;}").arg(m_dark?"#efbd78":"#91621a"));
+    m_cacheWarning->setStyleSheet(QString("QLabel{color:%1;font-size:12px;}").arg(m_dark?"#efbd78":"#91621a"));
+    m_cacheDetail->setStyleSheet(QString("QLabel{color:%1;font-size:11px;}").arg(m_muted));
     m_cacheClear->setIcon(workspaceIcon("refresh",QColor(m_muted)));m_cacheClear->setIconSize(QSize(14,14));
     m_fileDrop->setTheme(m_dark);
     m_recovery->setStyleSheet(QString("QFrame#recoveryPanel {background:%1;border:1px solid %2;border-radius:8px;} QLabel {border:0;background:transparent;}").arg(m_surface,m_border));
@@ -2328,7 +2335,7 @@ void SessionsWindow::renderDetails()
     m_contextUsage->setData(entry?m_details.value("session_usage").toObject():QJsonObject(),recorded);
     m_cacheStatus->setData(entry?m_details:QJsonObject(),recorded);
     const auto cacheWarning=entry?CacheStatus::warning(m_details):QString();m_cacheWarning->setText(cacheWarning);m_cacheWarning->setVisible(!cacheWarning.isEmpty());
-    m_cacheNotice->setVisible(!cacheWarning.isEmpty());
+    m_cacheDetail->setText(CacheStatus::details(m_details,recorded));m_cacheClear->setVisible(!cacheWarning.isEmpty());
     m_cacheClear->setEnabled(entry && entry->online && !m_clearRequest && m_details.value("clear_context_supported").toBool());
     const bool mainContext=m_subagentId.isEmpty();
     m_detailsClear->setVisible(mainContext);m_detailsContext->setVisible(mainContext);

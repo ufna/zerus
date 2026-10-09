@@ -30,6 +30,20 @@ private slots:
         session["cache_hint"]=QJsonObject{{"status","cold"},{"tokens",756000}};
         QVERIFY(CacheStatus::expired(session));QVERIFY(CacheStatus::warning(session).contains("cold cache"));
     }
+    void cacheChipStateFollowsHintAndCountdown() {
+        QJsonObject data;
+        QVERIFY(!CacheStatus::chipState(data).visible);
+        data["session_usage"]=QJsonObject{{"prompt_cache",QJsonObject{{"status","warm"},{"expires_at",double(QDateTime::currentSecsSinceEpoch()+240)}}}};
+        auto state=CacheStatus::chipState(data);QVERIFY(state.visible);QCOMPARE(state.tone,ChipTone::Success);
+        QCOMPARE(state.label,QString("Cache ~4m"));QCOMPARE(state.shortLabel,QString("~4m"));
+        data["cache_hint"]=QJsonObject{{"status","saving_hint"},{"tokens",484800}};
+        state=CacheStatus::chipState(data);QCOMPARE(state.tone,ChipTone::Warning);
+        QCOMPARE(state.label,QString("Clear suggested"));QCOMPARE(state.shortLabel,QString("/clear"));
+        data["cache_hint"]=QJsonObject{{"status","cold"},{"tokens",756000}};
+        state=CacheStatus::chipState(data);QCOMPARE(state.tone,ChipTone::Danger);
+        QCOMPARE(state.label,QString("Cold cache"));QCOMPARE(state.shortLabel,QString("Cold"));
+        QVERIFY(!CacheStatus::details(data,true).contains("cold cache"));QVERIFY(CacheStatus::details(data,true).contains("Last recorded"));
+    }
     void failedRefreshKeepsQuotaWarningExplicitlyHistorical() {
         QJsonObject data{{"status","ok"},{"windows",QJsonArray{QJsonObject{{"window_minutes",10080},
             {"used_percent",100},{"resets_at",QDateTime::currentSecsSinceEpoch()+3600}}}}};
