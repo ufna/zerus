@@ -400,8 +400,8 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         });
     m_count = label({}, "listSummary"); m_count->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     auto *summary = new QHBoxLayout; summary->addWidget(m_count, 1);
-    auto *drafts = m_savedDrafts = new QPushButton(tr("Saved drafts")); drafts->setObjectName("savedDrafts"); drafts->setAutoDefault(false);
-    drafts->setToolTip(tr("Recover local drafts, including those from ended sessions")); summary->addWidget(drafts);
+    auto *drafts = m_savedDrafts = iconButton("drafts", tr("Saved drafts"), "savedDrafts"); drafts->setAutoDefault(false);
+    drafts->setToolTip(tr("Saved drafts: recover local drafts, including those from ended sessions")); summary->addWidget(drafts);
     connect(drafts, &QPushButton::clicked, this, [this] {
         (m_subagentId.isEmpty() ? m_composer : m_subagentComposer)->showSavedDrafts();
     }); listLayout->addLayout(summary);
@@ -1173,8 +1173,8 @@ void SessionsWindow::applyTheme()
         QPushButton#sessionFilter { padding:4px 2px; min-height:22px; font-size:11px; background:transparent; border-color:transparent; }
         QPushButton#sessionFilter:checked { background:%10; border-color:%4; color:%5; }
         QPushButton#sessionFilter:hover { background:%7; }
-        QPushButton#newSession, QPushButton#sessionPanelNewSession, QPushButton#batchActions, QPushButton#sessionPanelToggle { padding:0; background:transparent; border-color:transparent; }
-        QPushButton#newSession:hover, QPushButton#sessionPanelNewSession:hover, QPushButton#batchActions:hover, QPushButton#sessionPanelToggle:hover, QPushButton#sessionStripSearch:hover { background:%7; }
+        QPushButton#newSession, QPushButton#sessionPanelNewSession, QPushButton#batchActions, QPushButton#sessionPanelToggle, QPushButton#savedDrafts { padding:0; background:transparent; border-color:transparent; }
+        QPushButton#newSession:hover, QPushButton#sessionPanelNewSession:hover, QPushButton#batchActions:hover, QPushButton#sessionPanelToggle:hover, QPushButton#sessionStripSearch:hover, QPushButton#savedDrafts:hover { background:%7; }
         QPushButton#sessionStripSearch { padding:0; background:%3; border:1px solid %4; }
         QWidget#sessionListPanel { background:%1; }
         QPushButton#newSession { background:%10; }

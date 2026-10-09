@@ -97,6 +97,14 @@ inline QIcon workspaceIcon(const QString &name, const QColor &color)
             p.drawLine(6, 6, 18, 18); p.drawLine(6, 18, 18, 6);
         } else if (name == "copy") {
             p.drawRoundedRect(QRectF(8, 8, 12, 13), 2, 2); p.drawLine(4, 16, 4, 3); p.drawLine(4, 3, 16, 3);
+        } else if (name == "drafts") {
+            QPainterPath page; page.moveTo(11, 21); page.lineTo(4, 21); page.lineTo(4, 3);
+            page.lineTo(13, 3); page.lineTo(18, 8); page.lineTo(18, 10); p.drawPath(page);
+            p.drawLine(13, 3, 13, 8); p.drawLine(13, 8, 18, 8);
+            p.drawLine(7, 11, 12, 11); p.drawLine(7, 15, 9, 15);
+            QPainterPath pencil; pencil.moveTo(12, 17); pencil.lineTo(19, 10); pencil.lineTo(22, 13);
+            pencil.lineTo(15, 20); pencil.lineTo(11, 21); pencil.closeSubpath(); p.drawPath(pencil);
+            p.drawLine(17, 12, 20, 15);
         } else if (name == "external") {
             p.drawLine(12, 4, 20, 4); p.drawLine(20, 4, 20, 12); p.drawLine(20, 4, 10, 14);
             QPainterPath path; path.moveTo(8, 5); path.lineTo(4, 5); path.lineTo(4, 20); path.lineTo(19, 20); path.lineTo(19, 16); p.drawPath(path);
