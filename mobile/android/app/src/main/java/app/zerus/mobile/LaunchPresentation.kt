@@ -46,11 +46,13 @@ object LaunchPresentation {
                 }.distinctBy { it.id })
         }.distinctBy { it.id }
     }
-    fun projectArguments(raw:JSONObject,projectId:String,directory:String):JSONObject {
+    fun projectArguments(raw:JSONObject,projectId:String,directory:String,worktrees:JSONObject?=null):JSONObject {
         val project=projects(raw).singleOrNull { it.id == projectId } ?: error("Choose a current native project.")
         val folder=project.folders.singleOrNull { it.path == directory }
-        return JSONObject().put("swarm_id",raw.getString("swarm_id")).put("project_id",project.id).put("add_folder",folder==null)
-            .also { if(folder!=null) it.put("project_folder_id",folder.id) }
+        val anchor = if (folder == null && raw.opt("worktree_supported") == true) WorktreePresentation.anchor(worktrees, project, directory) else null
+        return JSONObject().put("swarm_id",raw.getString("swarm_id")).put("project_id",project.id).put("add_folder",folder==null && anchor==null)
+            .also { if(folder!=null) it.put("project_folder_id",folder.id)
+                else if(anchor!=null) it.put("worktree_folder_id",anchor.id).put("worktree_common_dir",worktrees!!.getString("common_dir")) }
     }
     fun sanitizeCatalog(raw:JSONObject):JSONObject {
         val result=JSONObject().put("agents",JSONArray(agents(raw)))
@@ -59,7 +61,7 @@ object LaunchPresentation {
                 .put("native",account.native).put("is_default",account.isDefault).put("installed",account.installed).put("auth_status",account.authStatus)
         }))
         val supported=raw.opt("project_launch_supported")==true
-        result.put("project_launch_supported",supported)
+        result.put("project_launch_supported",supported).put("worktree_supported",raw.opt("worktree_supported") == true)
         if(supported) {
             result.put("swarm_id",raw.string("swarm_id")).put("default_project",raw.string("default_project"))
             result.put("projects",JSONArray(projects(raw).map { project -> JSONObject().put("id",project.id).put("name",project.name).put("color",project.color)
@@ -74,6 +76,7 @@ object LaunchPresentation {
     fun absoluteFolder(path: String) = path.startsWith('/') && path.length <= 4096 && path.none(Char::isISOControl)
     fun selectedFolder(raw: JSONObject?,selected: String): Boolean = absoluteFolder(selected) &&
         (raw?.opt("path") == selected || raw?.opt("requested_path") == selected || folders(raw).any { it.path == selected })
+    fun generatedName() = "work-" + java.util.UUID.randomUUID().toString().replace("-", "").take(8)
     fun nameError(tag: String): String = when {
         tag.isBlank() -> "Enter a session name."
         tag != tag.trim() -> "Remove spaces at the beginning and end."

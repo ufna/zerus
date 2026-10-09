@@ -48,6 +48,13 @@ conversations have no message, answer, or interrupt composer. Scoped restore,
 rename, fork, and forget require fresh native capability and action evidence;
 destructive actions require a confirmation naming their target.
 
+Question cards can expand into a full-screen form while keeping the selected
+options, text and current part. Sending, Answer submitted, Not sent and Delivery
+unknown distinguish an active attempt from its result. A submitted answer stays
+locked through a stale inspection or an application restart; checking delivery
+reads the original receipt. Approval review time counts only while its disclosure
+is visible in the focused foreground form.
+
 The message composer clears after the text and immutable attachment snapshots
 are atomically saved in the private outgoing queue. It stays editable while the
 previous message is sending. Each bubble shows Sending, Sent, Not sent, or
@@ -72,13 +79,22 @@ drafts. Files remain recoverable with unsent and uncertain messages.
 An empty conversation immediately shows “Loading conversation…” while its
 messages load. Background loading status and spinners appear only after five
 seconds; manual refresh shows progress immediately and reuses any matching
-in-flight read. Navigation cancels
+in-flight read. A thin progress bar accompanies the existing circular refresh
+indicator in catalogs and conversations. Navigation cancels
 ownership of earlier reads so stale results cannot replace a new conversation.
 Matching history reads continue in a bounded shared queue and are reused on
 reopening. Exact-target encrypted history is cached for seven days, up to 20
 conversations and 20 MiB. Cached messages appear immediately when already
 prepared in memory; cached history permits no action until a fresh inspection
 verifies the conversation. History cache failures do not prevent live reads.
+
+Agent messages and ordinary questions render Markdown with headings, emphasis,
+lists, quotes, links, tables, strikethrough, static tasks and code blocks. Code and
+wide tables scroll horizontally inside the message. Approval commands and native
+answers stay literal. Only tapped HTTP(S) links open a browser; local file links
+stay visible text, HTML stays literal and images do not download. Parsing and
+render preparation use bounded background work and an exact-content memory cache;
+over-limit or malformed content falls back to its complete original text.
 
 Draft edits update the editor immediately and save through an ordered background
 writer with a 200 ms debounce. Navigation and backgrounding request a flush.
@@ -173,8 +189,10 @@ Terminal uses a separate saved input buffer and a fresh exact native binding.
 Snapshots poll adaptively while visible; input sends literal text or fixed keys,
 with confirmation for Ctrl+C and Ctrl+D. Submitted means native input handoff,
 not command completion. New session uses the selected computer's native provider,
-account catalog and an explicitly chosen folder; it never creates a Git repository
-or worktree. A launch is confirmed only by its own native request identity.
+account catalog and an explicitly chosen folder. Ordinary folders remain usable
+without creating a Git repository. Worktree creation is a separate explicit
+action on a verified repository. A launch is confirmed only by its own native
+request identity.
 
 ## Build and install
 
@@ -317,12 +335,28 @@ Accounts is a read-only viewer grouped by workspace and provider-reported accoun
 ## Project and account selection
 
 New session presents Project, Folder, Agent and Account as compact selectors.
+An editable session name is generated when the form opens and is kept while
+changing the other selections.
 Projects use the selected computer's fresh canonical swarm/project IDs, and
 only its local folders are offered. The native browser verifies a chosen folder
 again before creation. A folder explicitly chosen through Browse remains selected
 when changing projects in the same dialog; a listed project folder follows its
 project. Choosing an outside folder explicitly adds it to the selected project,
-as the dialog states. No Git repository or worktree is created.
+as the dialog states.
+
+When the selected computer supports worktrees, a fresh catalog offers existing
+checkouts. Create worktree separately asks for a new branch, destination and
+starting revision. It never starts a session automatically or removes partial
+work after an unknown result. Check delivery reads the original creation receipt
+without repeating the operation. A related worktree is recognized only when a
+current native catalog contains both the selected checkout and a saved folder
+of the chosen project; it is not added as another project folder. Unavailable
+worktree support leaves ordinary folder launches usable.
+
+Mobile worktree creation has a 25-second native deadline and a 15-second checkout
+budget. A lost SSH connection or cancelled connector attempt drains its own
+bounded operation, preserving partial work and unrelated processes. Desktop
+worktree creation keeps its existing timeout.
 
 Accounts remain distinct native profiles. The actual reported default is
 preselected, and an offered concrete account is always sent by its exact ID.

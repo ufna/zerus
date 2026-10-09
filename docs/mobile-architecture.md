@@ -275,6 +275,9 @@ Automatic read progress appears only after five seconds of continuous waiting.
 Explicit refresh shows progress immediately, including when it promotes an
 already-running read. Operation and navigation identities prevent an old
 session's response from replacing the current session or hiding its progress.
+Catalog and conversation reads share their existing progress state with a thin
+top bar; pull-to-refresh keeps its circular indicator. Background reads retain
+the same five-second delay and do not start an extra request for either indicator.
 
 ## Projects and attachments
 
@@ -388,7 +391,42 @@ catalog, an explicit directory browser and a native launch UUID. Only an
 authoritative snapshot carrying that UUID can identify the created session.
 An uncertain launch is checked through its original receipt and never repeated
 automatically. Ordinary non-Git folders work without creating repositories or
-worktrees. A delayed result cannot change a later deliberate selection.
+worktrees. The compact form proposes an editable name once per new dialog and
+preserves deliberate edits through dependent selector changes. A delayed result
+cannot change a later deliberate selection.
+
+Worktree discovery and creation are separate capability-gated operations on the
+selected computer. Discovery returns a bounded native catalog; stale data cannot
+authorize creation or project membership. Explicit creation pins the source,
+verified Git common directory, new branch, destination, base revision and durable
+request UUID. Native UUIDs correlate results; the connector's mutation journal
+prevents replay. Unknown creation results offer only an original receipt read,
+with no automatic cleanup or session launch. Related-worktree placement requires
+the fresh native catalog to contain both the chosen checkout and a current saved
+project folder, rechecked at connector preflight and native assignment. Peer
+commands use the same narrow argument allowlist and never fall back to the
+gateway's filesystem.
+
+Questions share one answer and page owner between the inline card and expanded
+form. Actions distinguish sending, submitted, known non-delivery and unknown
+delivery. An answer is saved before transport, with a bounded aggregate receipt
+wait and HTTP cancellation. A successful question receipt retains exact
+target/question/hash/request/answer evidence before any inspection refresh; stale
+or failed reads cannot reopen it. Draft review and discard cannot bypass that
+submitted lock. Successful interrupts retain their separate cleanup behavior.
+Approval review accrues only in the visible, focused foreground disclosure.
+
+Ordinary agent messages and non-approval question disclosures render Markdown
+with the desktop's CommonMark and GFM feature set: headings, emphasis, lists,
+quotes, links, tables, strikethrough, static task markers and code blocks.
+Android uses CommonMark Java 0.30.0 with native Compose presentation, not a WebView.
+Only explicitly tapped absolute HTTP(S) links open a browser; local file
+references remain visible text. Raw HTML is literal, and images display their
+descriptions without downloading resources. Native answers, approval commands,
+receipts, raw events and delivery identities remain unchanged. Parsing runs away
+from the UI thread with two workers and an exact-content cache capped at 128
+entries and 4 MiB. The source, nesting, node and table-cell limits are 256 KiB,
+32, 8192 and 4096 respectively; failures show the complete original text.
 
 Recovery displays the native waiting job, attempt history and minimum retry
 time. Retry now and Cancel retry pin its UUID and exact current session identity.
@@ -590,7 +628,8 @@ An envelope contains `request_id`, `state`, `result` and `error`. States are
 are `inspect`, `send`, `answer` and `interrupt`. Additive operations include
 `compact_context`, `clear_context`, `send_now`, `settings`, `process_output`
 and `process_stop`, native lifecycle actions, `terminal_snapshot`,
-`terminal_input`, `history`, `catalog`, `dirs`, `launch` and `recovery_action`.
+`terminal_input`, `history`, `catalog`, `dirs`, `launch`, `worktrees`,
+`worktree_create` and `recovery_action`.
 Both relay capabilities and the computer snapshot's
 `mobile_capabilities` must advertise an extension before the phone uses it.
 
@@ -748,8 +787,10 @@ or silently change an existing client's identity scope.
 
 ### Relay service boundary
 
-The relay is a separately deployable service with persistent SQLite storage and
-a TLS reverse proxy. A small private deployment needs one process and one volume.
+The relay is a separately deployable service with persistent PostgreSQL storage
+and a TLS reverse proxy in production. SQLite remains a single-process local
+profile. See [the relay architecture](relay-architecture.md) for the deployed
+worker, admission, accounting and database boundaries.
 Backups include the database and operator-managed push configuration; restoring
 does not justify replaying claimed commands. Removing a device revokes its
 credential and push registration. Logs must omit authorization headers,
@@ -760,9 +801,9 @@ authentication, workspace membership, enrollment UI, quotas, audit/retention
 controls and billing around it. Device credentials remain individually revocable.
 No vendor-only hostname or SaaS subscription is embedded into the core protocol.
 
-SQLite and a single relay process are the first deployment boundary. Multi-worker
-SaaS requires a transactional shared database and shared event coordination;
-running several SQLite relay instances behind a load balancer is unsupported.
+Multiple production workers use shared PostgreSQL transactions and event
+coordination; running several SQLite relay instances behind a load balancer is
+unsupported. Additional workers do not provide database high availability.
 Before a public paid launch, complete external security review, cloud account
 lifecycle and deletion, operational monitoring, customer key verification/E2EE,
 and release signing. These are launch requirements, not features claimed by the

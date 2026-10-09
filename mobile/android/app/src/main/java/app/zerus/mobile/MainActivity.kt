@@ -46,6 +46,7 @@ import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
@@ -239,7 +240,7 @@ class MainActivity : ComponentActivity() {
         } }) { padding ->
         Column(Modifier.padding(padding).consumeWindowInsets(padding).fillMaxSize()) {
             if (selected == null) Box(Modifier.fillMaxWidth().height(4.dp)) {
-                if (model.busy)
+                if (!model.demo && (model.busy || model.catalogProgress))
                     LinearProgressIndicator(Modifier.fillMaxWidth(), color = Mint)
             }
             if (selected != null) SessionHeaderTools(model,selected) { messageJump = it }
@@ -612,6 +613,14 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
     val archived = target.archiveId.isNotBlank()
     val events = if (model.demo) Demo.events else model.conversationEvents
     val questions = if (archived || model.demo) emptyList() else model.conversationQuestions
+    var savedQuestionDisplay by rememberSaveable(stateSaver = Saver< QuestionDisplayState, String>(
+        save = { it.encode() }, restore = { QuestionDisplayState.decode(it) })) { mutableStateOf(QuestionDisplayState(target.key)) }
+    val questionDisplay = savedQuestionDisplay.forTarget(target.key)
+    fun updateQuestionDisplay(change: (QuestionDisplayState) -> QuestionDisplayState) {
+        savedQuestionDisplay = change(savedQuestionDisplay.forTarget(target.key))
+    }
+    val questionQueue = remember(questions, target, questionDisplay.chosen) { QuestionPolicies.queue(questions, target, questionDisplay.chosen) }
+    val offeredQuestionCount = questions.filter { it.prompts.isNotEmpty() && it.id.isNotBlank() && QuestionPolicies.submitted(it, target) == null }.distinctBy { it.id }.size
     val outgoing = model.conversationOutgoing
     val ownSendId = model.ownSendId(target)
     // Exact inspection evidence supersedes the older computer catalog while reading.
@@ -791,6 +800,10 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
         }
     }
     Column(Modifier.fillMaxSize().imePadding()) {
+        Box(Modifier.fillMaxWidth().height(4.dp)) {
+            if (!obscured && !model.demo && (model.detailProgress || historyProgress))
+                LinearProgressIndicator(Modifier.fillMaxWidth(), color = Mint)
+        }
         Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             val stripStatus = loadStatus?.takeIf { !it.initial || queueVisible }
@@ -798,6 +811,9 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
             Text(stripStatus?.text ?: unread?.let { "${it.text} unread" } ?: "Messages",
                 Modifier.weight(1f).semantics { if (!obscured && stripStatus != null) liveRegion = LiveRegionMode.Polite },
                 color = if (stripStatus == null && unread != null) Mint else Muted, style = MaterialTheme.typography.bodySmall)
+            if (offeredQuestionCount > 0) TextButton(onClick = {
+                if (!questionDisplay.expanded) questionQueue.selected?.let { question -> updateQuestionDisplay { it.open(question) } }
+            }) { Text("Questions ($offeredQuestionCount)") }
             TextButton(onClick = {
                 val result = model.markAllRead(listOf(target))
                 readAllNotice = ConversationLoadPresentation.readAllOutcome(result.marked, result.skipped, result.partial)
@@ -865,7 +881,7 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
                 if (queueVisible) item(key = "history:queue") { NativeInputQueue(model,target) }
                 if (questions.isNotEmpty()) item(key = "history:questions") {
                     QuestionsPane(model, target, questions, online && model.activityVerified && !model.contextBlocked(target), cardVisible,
-                        viewportBounds, cardMaxHeight, onReview)
+                        viewportBounds, cardMaxHeight, questionDisplay, ::updateQuestionDisplay, onReview)
                 }
                 item(key = "history:tail") { Spacer(Modifier.height(1.dp)) }
             }
@@ -894,6 +910,8 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
         }
         else MessageComposer(model, session, online, onReview, onAttach)
     }
+    ExpandedQuestionHost(model, target, questions, online && model.activityVerified && !model.contextBlocked(target),
+        questionDisplay, ::updateQuestionDisplay, onReview)
 }
 
 @Composable private fun ReadAllNotice(notice: String, modifier: Modifier = Modifier, onDismiss: () -> Unit) {
@@ -925,12 +943,15 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
                     SelectionContainer { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         replies.orEmpty().forEach { reply ->
                             Text("Question", color = Muted, style = MaterialTheme.typography.labelSmall)
-                            Text(reply.question, lineHeight = 23.sp)
+                            MarkdownText(reply.question)
                             Text("Your answer", color = Mint, style = MaterialTheme.typography.labelSmall)
                             Text(reply.answer.ifEmpty { "(empty answer)" }, lineHeight = 23.sp)
                         }
                     } }
-                } else if (event.text.isNotBlank()) SelectionContainer { Text(event.text, lineHeight = 23.sp, style = MaterialTheme.typography.bodyLarge) }
+                } else if (event.text.isNotBlank()) {
+                    if(own) SelectionContainer { Text(event.text, lineHeight = 23.sp, style = MaterialTheme.typography.bodyLarge) }
+                    else ProvideTextStyle(MaterialTheme.typography.bodyLarge.copy(lineHeight=23.sp)) { MarkdownText(event.text) }
+                }
                 AttachmentRows(event.attachments)
                 if(event.detailTruncated) Text("Message text shortened",color = Amber,style = MaterialTheme.typography.labelSmall)
                 if (event.delivery.isNotBlank() || event.at > 0) Row(Modifier.fillMaxWidth(),

@@ -16,12 +16,16 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.layout.boundsInWindow
@@ -44,37 +48,56 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 @Composable internal fun QuestionsPane(model: ZerusViewModel, target: Target, questions: List<Question>, available: Boolean,
-    visible: Boolean, viewport: Rect?, maxHeight: Dp, onReview: (Draft) -> Unit) {
-    var chosen by remember(target.key) { mutableStateOf("") }
-    val pages = remember(target.key) { mutableStateMapOf<String, Int>() }
-    val queue = remember(questions, target, chosen) { QuestionPolicies.queue(questions, target, chosen) }
+    visible: Boolean, viewport: Rect?, maxHeight: Dp, display: QuestionDisplayState,
+    onDisplay: ((QuestionDisplayState) -> QuestionDisplayState) -> Unit, onReview: (Draft) -> Unit) {
+    val queue = remember(questions, target, display.chosen) { QuestionPolicies.queue(questions, target, display.chosen) }
+    @Composable fun InlineCard(question: Question, canAnswer: Boolean) {
+        if (!display.matches(question)) NativeQuestionCard(model, target, question, canAnswer, visible, viewport, maxHeight,
+            display.page(question), { page -> onDisplay { it.withPage(question, page) } },
+            display.offset(question, display.page(question)), { offset -> onDisplay { it.withOffset(question, display.page(question), offset) } },
+            false, { onDisplay { it.open(question) } }, {}, onReview)
+    }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         queue.submitted.forEach { question ->
             var show by remember(target.key, question.id, question.hash) { mutableStateOf(false) }
             Text("Answer submitted. Waiting for the agent to record it.", color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodySmall)
             TextButton(onClick = { show = !show }) { Text(if (show) "Hide submitted answer" else "Show submitted answer") }
-            if (show) NativeQuestionCard(model, target, question, false, visible, viewport, maxHeight,
-                pages[QuestionPolicies.key(question)] ?: 0, { pages[QuestionPolicies.key(question)] = it }, onReview)
+            if (show) InlineCard(question, false)
         }
         queue.selected?.let { question ->
             if (question.optional && queue.optional.size > 1) Row(Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = { chosen = QuestionPolicies.key(queue.optional[queue.index - 1]) }, enabled = queue.index > 0) { Text("Previous") }
+                TextButton(onClick = { onDisplay { it.copy(chosen = QuestionPolicies.key(queue.optional[queue.index - 1])) } }, enabled = queue.index > 0) { Text("Previous") }
                 Text("Question ${queue.index + 1}/${queue.optional.size}", style = MaterialTheme.typography.labelMedium)
-                TextButton(onClick = { chosen = QuestionPolicies.key(queue.optional[queue.index + 1]) }, enabled = queue.index + 1 < queue.optional.size) { Text("Next") }
+                TextButton(onClick = { onDisplay { it.copy(chosen = QuestionPolicies.key(queue.optional[queue.index + 1])) } }, enabled = queue.index + 1 < queue.optional.size) { Text("Next") }
             }
-            NativeQuestionCard(model, target, question, available, visible, viewport, maxHeight,
-                pages[QuestionPolicies.key(question)] ?: 0, { page ->
-                    if (pages.size >= 64 && QuestionPolicies.key(question) !in pages) pages.keys.firstOrNull()?.let(pages::remove)
-                    pages[QuestionPolicies.key(question)] = page
-                }, onReview)
+            InlineCard(question, available)
         }
     }
 }
 
+/** Lives beside the history list so a small viewport or recycled list item cannot dismiss it. */
+@Composable internal fun ExpandedQuestionHost(model: ZerusViewModel, target: Target, questions: List<Question>,
+    available: Boolean, display: QuestionDisplayState, onDisplay: ((QuestionDisplayState) -> QuestionDisplayState) -> Unit,
+    onReview: (Draft) -> Unit) {
+    if (!display.expanded) return
+    val question = display.resolve(questions)
+    if (question != null) NativeQuestionCard(model, target, question, available, true, null, 120.dp,
+        display.page(question), { page -> onDisplay { it.withPage(question, page) } },
+        display.offset(question, display.page(question)), { offset -> onDisplay { it.withOffset(question, display.page(question), offset) } },
+        true, {}, { onDisplay { it.close() } }, onReview)
+    else {
+        ObscureConversation()
+        AlertDialog(onDismissRequest = { onDisplay { it.close() } }, title = { Text("Question unavailable") },
+            text = { Text("This exact request is not in the loaded activity. Refresh the conversation to verify it. Your saved answer is kept.") },
+            confirmButton = { TextButton(onClick = { onDisplay { it.close() } }) { Text("Close") } })
+    }
+}
+
 @Composable private fun NativeQuestionCard(model: ZerusViewModel, target: Target, question: Question, available: Boolean,
-    visible: Boolean, viewport: Rect?, maxHeight: Dp, page: Int, onPage: (Int) -> Unit, onReview: (Draft) -> Unit) {
+    visible: Boolean, viewport: Rect?, maxHeight: Dp, page: Int, onPage: (Int) -> Unit, scrollOffset: Int, onScroll: (Int) -> Unit,
+    expanded: Boolean, onExpand: () -> Unit, onCollapse: () -> Unit, onReview: (Draft) -> Unit) {
     val draft = model.draft(target, question)
     val native = QuestionPolicies.submitted(question, target)
     val saved = remember(draft.answers, native) {
@@ -109,6 +132,11 @@ import org.json.JSONObject
         val job = model.send(target,question,answers())
         submitScope.launch { try { job.join() } finally { submitGate.finish();submitPending = false } }
     }
+    val bodyScroll = rememberSaveable(target.key, question.id, question.hash, page,
+        saver = androidx.compose.foundation.ScrollState.Saver) { androidx.compose.foundation.ScrollState(scrollOffset) }
+    LaunchedEffect(bodyScroll) { snapshotFlow { bodyScroll.value }.collect { onScroll(it) } }
+    fun checkpoint() { onScroll(bodyScroll.value) }
+    @Composable fun Content(inDialog: Boolean, contentLimit: Dp) {
     val approvalSupported = QuestionPolicies.approvalSupported(question)
     val window = LocalWindowInfo.current
     val view = LocalView.current
@@ -119,8 +147,8 @@ import org.json.JSONObject
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer) }
     }
-    var cardInWindow by remember(target.key, question.id, question.hash) { mutableStateOf(false) }
-    val reviewEligible = visible && LocalConversationObscuration.current?.obscured != true && cardInWindow && foreground && window.isWindowFocused && available && editing && question.canAnswer && approvalSupported
+    var disclosureInWindow by remember(target.key, question.id, question.hash) { mutableStateOf(false) }
+    val reviewEligible = (inDialog || visible && LocalConversationObscuration.current?.obscured != true) && disclosureInWindow && foreground && window.isWindowFocused && available && editing && question.canAnswer && approvalSupported
     var review by remember(target.key, question.id, question.hash) { mutableStateOf(ApprovalReview()) }
     var reviewNow by remember(target.key, question.id, question.hash) { mutableLongStateOf(SystemClock.elapsedRealtime()) }
     LaunchedEffect(reviewEligible, question.approval) {
@@ -140,36 +168,50 @@ import org.json.JSONObject
     val initialReserve = 24.dp + 24.dp + 12.dp + 64.dp * otherPrompts.size + if(lowerActions) 48.dp else 0.dp
     val ordinaryReserve = if(cardHeightPx > bodyHeightPx && bodyHeightPx > 0) with(density) { (cardHeightPx-bodyHeightPx).toDp() } else initialReserve
     val approvalReserve = if(currentPrompts.any { it.other }) 156.dp else 100.dp
-    val bodyHeight = (maxHeight - if(question.approval) approvalReserve else ordinaryReserve).coerceAtLeast(120.dp)
-    val bodyScroll = remember(question.id, question.hash, pageIndex) { androidx.compose.foundation.ScrollState(0) }
-    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF2B2923)), modifier = Modifier.onGloballyPositioned { coordinates ->
+    val availableHeight = contentLimit
+    val bodyHeight = (availableHeight - if(question.approval) approvalReserve else ordinaryReserve).coerceAtLeast(120.dp)
+    val readableHeightPx = with(density) { MaterialTheme.typography.bodyLarge.lineHeight.toPx() + 24.dp.toPx() }
+    val disclosureVisibility = Modifier.onGloballyPositioned { coordinates ->
         val bounds = coordinates.boundsInWindow()
         val display = android.graphics.Rect(); view.getWindowVisibleDisplayFrame(display)
         val screen = IntArray(2); val inWindow = IntArray(2)
         view.getLocationOnScreen(screen); view.getLocationInWindow(inWindow)
         val dx = screen[0] - inWindow[0]; val dy = screen[1] - inWindow[1]
-        cardInWindow = viewport != null && bounds.overlaps(viewport) && bounds.width > 0 && bounds.height > 0 && bounds.right + dx > display.left &&
-            bounds.left + dx < display.right && bounds.bottom + dy > display.top && bounds.top + dy < display.bottom
-    }) {
-        Column(Modifier.onSizeChanged { if(!question.approval) cardHeightPx = it.height }.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        val visibleTop = maxOf(bounds.top, display.top - dy.toFloat(), if(inDialog) bounds.top else viewport?.top ?: Float.POSITIVE_INFINITY)
+        val visibleBottom = minOf(bounds.bottom, display.bottom - dy.toFloat(), if(inDialog) bounds.bottom else viewport?.bottom ?: Float.NEGATIVE_INFINITY)
+        disclosureInWindow = visibleBottom - visibleTop >= readableHeightPx && bounds.width > 0 &&
+            bounds.right + dx > display.left && bounds.left + dx < display.right &&
+            (inDialog || viewport != null && bounds.overlaps(viewport))
+    }
+    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF2B2923)), modifier = Modifier.fillMaxWidth().then(if(inDialog) Modifier.fillMaxHeight() else Modifier)) {
+
+        Column(Modifier.then(if(inDialog) Modifier.fillMaxSize() else Modifier.heightIn(max = contentLimit)).onSizeChanged { if(!question.approval) cardHeightPx = it.height }.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(if (question.approval || question.trustRequest) "Needs approval" else if (question.optional) "Optional question" else "Needs input",
                     Modifier.weight(1f), color = Color(0xFFFFCB7D), style = MaterialTheme.typography.labelLarge)
-                if (question.createdAt > 0) Text(java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.SHORT)
+                TextButton(onClick = { checkpoint(); if(inDialog) onCollapse() else onExpand() }) { Text(if(inDialog) "Collapse" else "Expand") }
+                if (!inDialog && question.createdAt > 0) Text(java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.SHORT)
                     .format(java.util.Date((question.createdAt * 1000).toLong())), color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.labelSmall)
             }
             // Full disclosure scrolls; the answer field and compact controls stay visible.
-            Box(Modifier.fillMaxWidth().onSizeChanged { if(!question.approval) bodyHeightPx = it.height }) {
-            Column(Modifier.fillMaxWidth().heightIn(max = bodyHeight).verticalScroll(bodyScroll)
+            Box(Modifier.fillMaxWidth().then(if(inDialog) Modifier.weight(1f) else Modifier).then(disclosureVisibility).onSizeChanged { if(!question.approval) bodyHeightPx = it.height }) {
+            Column(Modifier.fillMaxWidth().then(if(inDialog) Modifier.fillMaxSize() else Modifier.heightIn(max = bodyHeight)).verticalScroll(bodyScroll)
                 .padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 currentPrompts.forEach { prompt ->
                     SelectionContainer { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (prompt.header.isNotBlank()) Text(prompt.header, style = MaterialTheme.typography.labelLarge)
-                        Text(prompt.text, fontWeight = FontWeight.SemiBold)
-                        if (prompt.body.isNotBlank()) Text(prompt.body, fontFamily = if (question.approval) FontFamily.Monospace else FontFamily.Default)
+                        if(question.approval) Text(prompt.text, fontWeight = FontWeight.SemiBold)
+                        else ProvideTextStyle(LocalTextStyle.current.copy(fontWeight=FontWeight.SemiBold)) { MarkdownText(prompt.text) }
+                        if (prompt.body.isNotBlank()) {
+                            if(question.approval) Text(prompt.body, fontFamily=FontFamily.Monospace)
+                            else MarkdownText(prompt.body)
+                        }
                     } }
-                    if (prompt.otherDescription.isNotBlank()) SelectionContainer { Text(prompt.otherDescription, style = MaterialTheme.typography.bodySmall) }
+                    if (prompt.otherDescription.isNotBlank()) {
+                        if(question.approval) SelectionContainer { Text(prompt.otherDescription, style=MaterialTheme.typography.bodySmall) }
+                        else ProvideTextStyle(MaterialTheme.typography.bodySmall) { MarkdownText(prompt.otherDescription) }
+                    }
                     prompt.choices.forEach { choice ->
                         if (question.approval) {
                             SelectionContainer { Text(choice.label, style = MaterialTheme.typography.bodySmall) }
@@ -214,9 +256,16 @@ import org.json.JSONObject
             if (native != null) {
                 Text("Answer submitted. Waiting for the agent to record it.", style = MaterialTheme.typography.bodySmall)
                 native.answers.filter { it.skip }.forEach { Text("Skipped", style = MaterialTheme.typography.bodySmall) }
-            } else if (draft.status != "editing") {
-                Text("Answer delivery is ${draft.status}.", color = Color(0xFFFFCB7D))
-                TextButton(onClick = { onReview(draft) }, enabled = draft.status != "submitting" && draft.key !in model.receiptFlights) { Text("Review delivery") }
+            } else if (model.answerStatus(draft) != "editing") {
+                val status = model.answerStatus(draft)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if(status == "submitting") CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    Text(when(status) { "submitting" -> "Sending answer…"; "submitted" -> "Answer submitted. Waiting for the agent."; "failed" -> "Not sent. Your answer is kept."; else -> "Delivery unknown. Your answer may already have reached the agent." }, color = Color(0xFFFFCB7D), style = MaterialTheme.typography.bodySmall)
+                }
+                if(status in setOf("uncertain", "failed")) Row {
+                    if(draft.requestId.isNotBlank()) TextButton(onClick = { model.checkReceipt(draft) }, enabled = draft.key !in model.receiptFlights) { Text("Check delivery") }
+                    TextButton(onClick = { onReview(draft) }, enabled = draft.key !in model.receiptFlights) { Text("Review") }
+                }
             }
             if (error.isNotBlank()) Text(error, color = Color(0xFFFFCB7D), style = MaterialTheme.typography.bodySmall)
             if (question.approval) {
@@ -229,11 +278,11 @@ import org.json.JSONObject
                 Text("Approval applies only to this command. Review it before continuing.", style = MaterialTheme.typography.bodySmall)
             } else if(lowerActions) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (question.prompts.size > 1) {
-                    IconButton(onClick = { onPage(pageIndex - 1) }, enabled = pageIndex > 0, modifier = Modifier.size(32.dp)) {
+                    IconButton(onClick = { checkpoint(); onPage(pageIndex - 1) }, enabled = pageIndex > 0, modifier = Modifier.size(32.dp)) {
                         Icon(Icons.Default.KeyboardArrowLeft, "Previous part")
                     }
                     Text("${pageIndex + 1}/${question.prompts.size}", style = MaterialTheme.typography.labelMedium)
-                    IconButton(onClick = { onPage(pageIndex + 1) }, enabled = pageIndex + 1 < question.prompts.size, modifier = Modifier.size(32.dp)) {
+                    IconButton(onClick = { checkpoint(); onPage(pageIndex + 1) }, enabled = pageIndex + 1 < question.prompts.size, modifier = Modifier.size(32.dp)) {
                         Icon(Icons.Default.KeyboardArrowRight, "Next part")
                     }
                 }
@@ -248,6 +297,15 @@ import org.json.JSONObject
             if (question.approval && !approvalSupported) Text("This approval cannot be answered here. Continue on your machine.", style = MaterialTheme.typography.bodySmall)
         }
     }
+    }
+    if(expanded) {
+        ObscureConversation()
+        Dialog(onDismissRequest = { checkpoint(); onCollapse() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            Surface(Modifier.fillMaxSize().imePadding().padding(8.dp), color = MaterialTheme.colorScheme.background) {
+                BoxWithConstraints(Modifier.fillMaxSize()) { Content(true, maxHeight) }
+            }
+        }
+    } else Content(false, maxHeight)
 }
 
 @Composable private fun QuestionSendButton(enabled: Boolean,multiple: Boolean,onClick: () -> Unit) {
@@ -267,7 +325,7 @@ import org.json.JSONObject
             if (multi) Checkbox(selected, null) else RadioButton(selected, null)
             Column(Modifier.padding(start = 8.dp)) {
                 Text(choice.label)
-                if (choice.description.isNotBlank()) SelectionContainer { Text(choice.description, style = MaterialTheme.typography.bodySmall) }
+                if (choice.description.isNotBlank()) ProvideTextStyle(MaterialTheme.typography.bodySmall) { MarkdownText(choice.description) }
             }
         }
     }

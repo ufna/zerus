@@ -17,6 +17,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import androidx.compose.runtime.mutableStateMapOf
 import android.net.Uri
 import java.util.UUID
 import org.json.JSONArray
@@ -585,6 +587,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
                 captureUnreadBoundary(frame.target,merged.events)
             }
             if (activityVerified) {
+                if(frame.raw.optJSONArray("pending_questions")!=null) editState { state -> QuestionTracking.reconcile(state,frame.target,frame.questions) }
                 val tracked = QuestionTracking.remember(messageState, frame.target, frame.questions)
                 if (tracked != messageState) editState { state -> QuestionTracking.remember(state, frame.target, frame.questions) }
                 observeContext(frame)
@@ -711,6 +714,10 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
     var launchVisible by mutableStateOf(false);private set
     var launchCatalogState by mutableStateOf<JSONObject?>(null);private set
     var launchDirectoryState by mutableStateOf<JSONObject?>(null);private set
+    var launchWorktreeState by mutableStateOf<JSONObject?>(null);private set
+    var launchWorktreeLoading by mutableStateOf(false);private set
+    var worktreeSubmitting by mutableStateOf(false);private set
+    private var launchWorktreeJob:Job?=null
     var launchCatalogLoading by mutableStateOf(false);private set
     var launchDirectoryLoading by mutableStateOf(false);private set
     var launchError by mutableStateOf("");private set
@@ -730,8 +737,8 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun prepareLaunch(machine:MachineKey) {
         val reason=launchReason(machine);if(reason.isNotBlank()) { launchError=reason;return }
-        launchGeneration++;launchMachine=machine;launchVisible=true;launchCatalogState=null;launchDirectoryState=null;launchError="";launchCatalogEvidence=""
-        launchCatalogJob?.cancel();launchDirectoryJob?.cancel();launchDirectoryLoading=false
+        launchGeneration++;launchMachine=machine;launchVisible=true;launchCatalogState=null;launchDirectoryState=null;launchWorktreeState=null;launchError="";launchCatalogEvidence=""
+        launchCatalogJob?.cancel();launchDirectoryJob?.cancel();launchWorktreeJob?.cancel();launchWorktreeLoading=false;launchDirectoryLoading=false
         val connection=connections.find { it.id == machine.connectionId } ?: return
         val generation=launchGeneration;launchCatalogLoading=true
         launchCatalogJob=viewModelScope.launch {
@@ -747,11 +754,12 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
         }
         browseLaunchDirectory(machine,"~")
     }
-    fun closeLaunch() { launchVisible=false;launchGeneration++;launchCatalogJob?.cancel();launchDirectoryJob?.cancel();launchCatalogLoading=false;launchDirectoryLoading=false }
+    fun closeLaunch() { if(worktreeSubmitting) return;launchWorktreeJob?.cancel();launchWorktreeLoading=false;launchVisible=false;launchGeneration++;launchCatalogJob?.cancel();launchDirectoryJob?.cancel();launchCatalogLoading=false;launchDirectoryLoading=false }
     fun browseLaunchDirectory(machine:MachineKey,path:String) {
         if(launchMachine != machine || launchDirectoryLoading || !launchVisible) return
         if(path != "~" && (!path.startsWith('/') || path.length > 4096 || path.any(Char::isISOControl))) { launchError="Choose an absolute native folder.";return }
         val connection=connections.find { it.id == machine.connectionId } ?: return
+        launchWorktreeJob?.cancel();launchWorktreeState=null;launchWorktreeLoading=false;launchDirectoryState=null
         val generation=launchGeneration;launchDirectoryLoading=true;launchError=""
         launchDirectoryJob=viewModelScope.launch {
             try {
@@ -760,21 +768,81 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
                 check(receipt.string("state") == "completed") { receipt.string("error").ifBlank { "This folder is unavailable." } }
                 val raw=receipt.getJSONObject("result")
                 check(raw.string("path").startsWith('/')) { "Computer returned an invalid folder." }
-                if(launchGeneration == generation && launchMachine == machine) launchDirectoryState=raw.put("requested_path",path)
+                if(launchGeneration == generation && launchMachine == machine) {
+                    launchDirectoryState=raw.put("requested_path",path)
+                    loadLaunchWorktrees(machine,raw.getString("path"),path)
+                }
             } catch(e:Exception) { if(e is CancellationException) throw e;if(launchGeneration == generation) launchError=e.message.orEmpty() }
             finally { if(launchGeneration == generation) launchDirectoryLoading=false }
         }
     }
-    fun launchSession(machine:MachineKey,agent:String,directory:String,tag:String,accountId:String?=null,expectedCatalog:String=launchCatalogSignature(),projectId:String="") {
+    fun worktreeReason(machine:MachineKey):String {
+        if(launchReason(machine).isNotBlank()) return launchReason(machine)
+        if(listOf("worktrees","worktree_create").any { it !in relayOperations[machine.connectionId].orEmpty() || it !in machineOperations[machine].orEmpty() })
+            return "Update Zerus on this computer to use worktree actions."
+        if(sessionActions.any { it.operation=="worktree_create" && it.target.connectionId==machine.connectionId && it.target.computerId==machine.computerId && it.blocksSending })
+            return "Check the previous worktree creation receipt before creating another."
+        return ""
+    }
+    private fun loadLaunchWorktrees(machine:MachineKey,path:String,requested:String) {
+        launchWorktreeJob?.cancel();launchWorktreeState=null;launchWorktreeLoading=false
+        if("worktrees" !in relayOperations[machine.connectionId].orEmpty() || "worktrees" !in machineOperations[machine].orEmpty()) return
+        val connection=connections.find { it.id==machine.connectionId } ?: return
+        val generation=launchGeneration;launchWorktreeLoading=true
+        launchWorktreeJob=viewModelScope.launch {
+            try {
+                val id=UUID.randomUUID().toString();val target=Target(machine.computerId,"","","",machine.connectionId)
+                val receipt=api.await(connection,api.submit(connection,target,"worktrees",JSONObject().put("request_id",id).put("path",path),id))
+                check(receipt.string("state")=="completed") { receipt.string("error").ifBlank { "Worktree catalog unavailable." } }
+                val raw=receipt.getJSONObject("result").put("requested_path",requested)
+                if(launchGeneration==generation && launchMachine==machine) launchWorktreeState=raw
+            } catch(e:Exception) { if(e is CancellationException) throw e }
+            finally { if(launchGeneration==generation && launchMachine==machine) launchWorktreeLoading=false }
+        }
+    }
+    fun createLaunchWorktree(machine:MachineKey,evidence:JSONObject,branch:String,base:String,destination:String,onCreated:(String)->Unit) {
+        val problem=worktreeReason(machine)
+        if(problem.isNotBlank() || worktreeSubmitting || !launchVisible || launchMachine!=machine || !WorktreePresentation.healthy(evidence) ||
+            launchWorktreeState?.string("common_dir")!=evidence.string("common_dir")) { launchError=problem.ifBlank { "Refresh the current worktrees before creation." };return }
+        val arguments=JSONObject().put("path",evidence.getString("path")).put("common_dir",evidence.getString("common_dir"))
+            .put("branch",branch).put("base",base).put("destination",destination)
+        try { SessionActionPolicies.arguments("worktree_create",arguments) } catch(e:Exception) { launchError=e.message.orEmpty();return }
+        val action=SessionAction(UUID.randomUUID().toString(),Target(machine.computerId,"","","",machine.connectionId),"worktree_create",arguments.toString())
+        val connection=connections.find { it.id==machine.connectionId } ?: return
+        val generation=launchGeneration;worktreeSubmitting=true;actionFlights+=action.requestId;launchError=""
+        viewModelScope.launch {
+            var attempted=false;var rejected=false
+            try {
+                durable({ state -> check(state.sessionActions.none { it.operation=="worktree_create" && it.target==action.target && it.blocksSending });state.action(action) },
+                    { current,written -> current.action(written.sessionActions.first { it.requestId==action.requestId }) })
+                check(launchVisible && launchGeneration==generation && launchMachine==machine && launchWorktreeState?.string("common_dir")==evidence.string("common_dir")) { "The selected repository changed. Worktree creation was not sent." }
+                attempted=true
+                val initial=try { api.submit(connection,action.target,"worktree_create",JSONObject(arguments.toString()).put("request_id",action.requestId),action.requestId) }
+                    catch(e:RelayException) { rejected=e.status in listOf(400,401,403,404,409,413,429);throw e }
+                settleSessionAction(action,api.await(connection,initial))
+                val completed=messageState.sessionActions.find { it.requestId==action.requestId }
+                if(completed?.status=="completed" && completed.resultPath.isNotBlank() && launchVisible && launchGeneration==generation && launchMachine==machine)
+                    onCreated(completed.resultPath)
+                else launchError=completed?.error.orEmpty()
+            } catch(e:Exception) {
+                try { durable({ state -> state.sessionActions.find { it.requestId==action.requestId }?.let { existing ->
+                    state.action(existing.copy(status=if(!attempted || rejected) "failed" else "uncertain",error=if(!attempted || rejected) e.message.orEmpty() else "Worktree creation is unconfirmed. Check the original receipt and folder; nothing has been retried.")) } ?: state }) }
+                catch(_:Exception) { launchError="Could not save the creation outcome. The original request remains recoverable." }
+                if(e is CancellationException) throw e
+                launchError=if(!attempted || rejected) e.message.orEmpty() else "Worktree creation is unconfirmed. Check its original receipt; nothing has been retried."
+            } finally { actionFlights-=action.requestId;worktreeSubmitting=false }
+        }
+    }
+    fun launchSession(machine:MachineKey,agent:String,directory:String,tag:String,accountId:String?=null,expectedCatalog:String=launchCatalogSignature(),projectId:String="",worktrees:JSONObject?=null) {
         val reason=launchReason(machine);if(reason.isNotBlank()) { launchError=reason;return }
-        if(launchSubmitting || !launchVisible || launchMachine != machine || launchCatalogLoading || launchDirectoryLoading || expectedCatalog != launchCatalogEvidence) { launchError="The creation details changed. Review the current choices.";return }
+        if(launchSubmitting || worktreeSubmitting || !launchVisible || launchMachine != machine || launchCatalogLoading || launchDirectoryLoading || launchWorktreeLoading || expectedCatalog != launchCatalogEvidence) { launchError="The creation details changed. Review the current choices.";return }
         val catalog=launchCatalogState ?: return
         if(catalog.optJSONArray("agents")?.let { array -> (0 until array.length()).any { array.optString(it) == agent } } != true) { launchError="This native provider is unavailable.";return }
         if(accountId == null || LaunchPresentation.accounts(catalog,agent).none { it.id == accountId }) { launchError="Choose an offered account for the selected provider.";return }
         if(!LaunchPresentation.selectedFolder(launchDirectoryState,directory)) { launchError="Select a folder from the current native browser.";return }
         val args=JSONObject().put("agent",agent).put("directory",directory).put("tag",tag).put("account_id",accountId)
         if(catalog.opt("project_launch_supported")==true) {
-            try { LaunchPresentation.projectArguments(catalog,projectId,directory).let { fields -> fields.keys().forEach { key -> args.put(key,fields.get(key)) } } }
+            try { LaunchPresentation.projectArguments(catalog,projectId,directory,worktrees).let { fields -> fields.keys().forEach { key -> args.put(key,fields.get(key)) } } }
             catch(e:Exception) { launchError=e.message.orEmpty();return }
         } else if(projectId.isNotBlank()) { launchError="This computer does not support scoped project assignment.";return }
         try { SessionActionPolicies.arguments("launch",args) } catch(e:Exception) { launchError=e.message.orEmpty();return }
@@ -1525,44 +1593,59 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
         try { editState { state -> MessageChanges.text(state, editor) } } catch (e: Exception) { error = e.message.orEmpty() }
     }
     fun discard(draft: Draft) {
-        if (draft.key in receiptFlights) return
+        if (draft.key in receiptFlights || drafts.find { it.key==draft.key }?.let(QuestionTracking::locked)==true || answerInFlight(draft)) return
         if (continuation?.draft?.target == draft.target) cancelCompactContinuation()
         emptyDrafts.remove(Triple(draft.target, draft.questionId, draft.questionHash))
         try { editState { state -> MessageChanges.discard(state, draft) }; flushDrafts() }
         catch (e: Exception) { error = e.message.orEmpty() }
     }
     fun review(draft: Draft) {
-        if (draft.key in receiptFlights || draft.status == "submitting") return
+        if (draft.key in receiptFlights || drafts.find { it.key==draft.key }?.let(QuestionTracking::locked)==true ||
+            answerInFlight(draft) || draft.status == "submitting" && draft.questionId.isBlank()) return
         try { editState { state -> state.copy(drafts = state.drafts.map { if (it.key == draft.key && it.requestId == draft.requestId) it.copy(status = "editing", requestId = "") else it }) }; flushDrafts() }
         catch (e: Exception) { error = e.message.orEmpty() }
     }
+    private val answerFlights=mutableStateMapOf<String,String>()
+    fun answerInFlight(draft:Draft)=answerFlights[draft.key]==draft.requestId && draft.requestId.isNotBlank()
+    fun answerStatus(draft:Draft)=if(draft.status=="submitting" && !answerInFlight(draft)) "uncertain" else draft.status
     fun send(target: Target, question: Question? = null, answers: JSONArray? = null) = viewModelScope.launch {
-        if (question == null) { sendMessage(target); return@launch }
-        if (target.agentId.isNotBlank() || !fresh(target) || demo || !storageReady || contextBlocked(target) || target.key in preparingTargets) return@launch
-        val currentQuestion = conversationQuestions.find { it.id == question.id && it.hash == question.hash } ?: return@launch
-        if ((!currentQuestion.canAnswer && !currentQuestion.canSkip) || QuestionPolicies.submitted(currentQuestion, target) != null) return@launch
-        val connection = connections.find { it.id == target.connectionId } ?: return@launch
-        val current = draft(target, question)
-        if (current.status != "editing" || target.run.isBlank()) return@launch
-        val sending = current.begin().copy(answers = answers?.toString() ?: current.answers)
-        preparingTargets += target.key
-        save(sending)
-        try { persistence!!.flush() }
-        catch (_: Exception) {
-            editState { state -> state.copy(drafts = state.drafts.map { if (it.key == sending.key && it.requestId == sending.requestId) current else it }) }
-            error = "Could not save the outgoing answer. It was not sent."; preparingTargets -= target.key; return@launch
-        }
-        preparingTargets -= target.key
-        lastOwnSend = target to sending.requestId
+        if(question==null) { sendMessage(target);return@launch }
+        if(target.agentId.isNotBlank() || !fresh(target) || demo || !storageReady || contextBlocked(target) || target.key in preparingTargets) return@launch
+        val native=conversationQuestions.find { it.id==question.id && it.hash==question.hash } ?: return@launch
+        if((!native.canAnswer && !native.canSkip) || QuestionPolicies.submitted(native,target)!=null) return@launch
+        val connection=connections.find { it.id==target.connectionId } ?: return@launch
+        val original=draft(target,question)
+        if(original.status!="editing" || target.run.isBlank() || original.key in answerFlights) return@launch
+        val sending=original.begin().copy(answers=answers?.toString() ?: original.answers)
+        var attempted=false;var refused=false
+        answerFlights[sending.key]=sending.requestId;preparingTargets+=target.key
         try {
-            check(fresh(target)) { "The selected session changed before sending." }
-            val payload = target.json().put("request_id", sending.requestId).put("question_id", question.id).put("expected_question_hash", question.hash).put("answers", answers)
-            settle(sending, api.await(connection, api.submit(connection, target, "answer", payload, sending.requestId)))
-        } catch (e: Exception) {
-            editState { state -> state.copy(drafts = state.drafts.map { if (it.key == sending.key && it.requestId == sending.requestId) it.copy(status = "uncertain") else it }) }
-            flushDrafts()
-            if (e is CancellationException) throw e
-            error = "Delivery is unconfirmed. The answer is saved. Check its receipt before sending again."
+            save(sending);persistence!!.flush()
+            check(fresh(target) && draft(target,question).requestId==sending.requestId &&
+                conversationQuestions.any { it.id==question.id && it.hash==question.hash && QuestionPolicies.submitted(it,target)==null }) {
+                "The selected question changed before sending."
+            }
+            preparingTargets-=target.key;lastOwnSend=target to sending.requestId
+            val payload=target.json().put("request_id",sending.requestId).put("question_id",question.id).put("expected_question_hash",question.hash).put("answers",answers)
+            val receipt=withTimeout(45_000) {
+                attempted=true
+                val initial=try { api.submit(connection,target,"answer",payload,sending.requestId) }
+                    catch(e:RelayException) { refused=e.status in listOf(400,401,403,404,409,413,429);throw e }
+                api.await(connection,initial)
+            }
+            settle(sending,receipt)
+        } catch(e:Exception) {
+            val status=if(!attempted || refused) "failed" else "uncertain"
+            withContext(NonCancellable) {
+                try { durable({ state -> state.copy(drafts=state.drafts.map { existing ->
+                    if(existing.key==sending.key && existing.requestId==sending.requestId && existing.generation==sending.generation && !QuestionTracking.locked(existing)) existing.copy(status=status) else existing }) }) }
+                catch(_:Exception) { error="Could not save the answer outcome. Its original request remains recoverable." }
+            }
+            error=if(status=="failed") "Answer not sent. ${e.message.orEmpty()}" else "Answer delivery is unknown. Check the original receipt; nothing has been retried."
+            if(e is CancellationException && e !is kotlinx.coroutines.TimeoutCancellationException) throw e
+        } finally {
+            if(answerFlights[sending.key]==sending.requestId) answerFlights.remove(sending.key)
+            preparingTargets-=target.key
         }
     }
     fun sendingBlocked(target: Target) = contextBlocked(target) || target.key in preparingTargets || outgoing.any { it.belongsTo(target) && it.blocksSending } || pickerDraft?.target == target
@@ -1707,6 +1790,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
         } catch (e: Exception) { error = e.message.orEmpty() }
     }
     fun restoreDetached(draft: Draft) {
+        if(QuestionTracking.locked(draft)) return
         if (draft.detachedId.isBlank()) return
         val restored = draft.copy(detachedId = "", generation = UUID.randomUUID().toString(), revision = UUID.randomUUID().toString())
         val parkedId = UUID.randomUUID().toString()
@@ -1717,21 +1801,18 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
         }; flushDrafts() } catch (e: Exception) { error = e.message.orEmpty() }
     }
     private suspend fun settle(draft: Draft, receipt: JSONObject) {
-        val state = receipt.string("state"); val nativeStatus = receipt.optJSONObject("result")?.string("status").orEmpty()
-        val success = receipt.string("request_id") == draft.requestId && state == "completed" && nativeStatus in listOf("submitted", "answered", "skipped", "queued", "completed")
-        durable({ current -> current.copy(drafts = current.drafts.mapNotNull { existing ->
-            if (existing.key != draft.key || existing.requestId != draft.requestId) existing
-            else if (success) null else existing.copy(status = if (state == "failed" && receipt.string("request_id") == draft.requestId) "failed" else "uncertain")
-        }) })
-        if (success) refreshActivity() else error = receipt.string("error").ifBlank { "Delivery is $state. Review the saved answer and conversation." }
+        durable({ state -> QuestionTracking.settle(state,draft,receipt) })
+        val latest=drafts.find { it.key==draft.key && it.requestId==draft.requestId }
+        if(latest?.status=="submitted" || draft.questionId=="__interrupt" && latest==null) refreshActivity()
+        else error=receipt.string("error").ifBlank { "Delivery is unknown. Check the original receipt and saved answer." }
     }
     fun checkReceipt(draft: Draft) = viewModelScope.launch {
-        val connection = connections.find { it.id == draft.target.connectionId } ?: return@launch
-        if (draft.requestId.isBlank() || draft.key in receiptFlights) return@launch
-        receiptFlights += draft.key
-        try { settle(draft, api.await(connection, api.receipt(connection, draft.requestId))) }
-        catch (e: Exception) { error = "Receipt unavailable. The answer remains saved." }
-        finally { receiptFlights -= draft.key }
+        val connection=connections.find { it.id==draft.target.connectionId } ?: return@launch
+        if(draft.requestId.isBlank() || draft.key in receiptFlights || answerInFlight(draft)) return@launch
+        receiptFlights+=draft.key
+        try { settle(draft,withTimeout(45_000) { api.await(connection,api.receipt(connection,draft.requestId)) }) }
+        catch(e:Exception) { if(e is CancellationException && e !is kotlinx.coroutines.TimeoutCancellationException) throw e;error="Receipt unavailable. The answer remains saved." }
+        finally { receiptFlights-=draft.key }
     }
     fun interrupt(target: Target, turn: Double) = viewModelScope.launch {
         if(target.agentId.isNotBlank()) return@launch

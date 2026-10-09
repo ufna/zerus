@@ -6,7 +6,7 @@ import java.util.UUID
 /** One immutable native action attempt. Uncertain attempts are checked, never replayed. */
 data class SessionAction(val requestId: String, val target: Target, val operation: String, val arguments: String,
     val status: String = "sending", val createdAt: Long = System.currentTimeMillis(), val error: String = "",
-    val resultTarget: Target? = null, val pendingId: String = "", val applyAttemptId:String = "") {
+    val resultTarget: Target? = null, val pendingId: String = "", val applyAttemptId:String = "", val resultPath:String = "") {
     val blocksSending get() = status in listOf("sending", "uncertain")
     val needsProjectReview get() = operation=="launch" && status=="completed" && error.isNotBlank() && resultTarget!=null
     fun recover() = if (status == "sending") copy(status = "uncertain", error = "The action was interrupted. Check its original receipt; it has not been retried.") else this
@@ -14,13 +14,14 @@ data class SessionAction(val requestId: String, val target: Target, val operatio
 
 object SessionActionPolicies {
     val lifecycle = setOf("pause", "resume", "archive", "rename", "fork", "terminate", "restore", "forget")
-    val operations = lifecycle + setOf("send_now", "settings", "process_stop", "terminal_input", "launch", "recovery_action")
+    val operations = lifecycle + setOf("send_now", "settings", "process_stop", "terminal_input", "launch", "worktree_create", "recovery_action")
     val terminalKeys=setOf("Enter","Escape","Tab","BTab","BSpace","Up","Down","Left","Right","Home","End","PPage","NPage","DC","C-c","C-d","C-l","C-a","C-e","C-u","C-w")
     private fun uuid(value: String) = runCatching { UUID.fromString(value).toString() == value }.getOrDefault(false)
     fun arguments(operation: String, raw: JSONObject): JSONObject {
         require(operation in operations) { "Unsupported session action." }
         val allowed = when(operation) { "rename" -> setOf("new_name"); "fork" -> setOf("tag"); "send_now" -> setOf("queue_id")
-            "launch" -> setOf("agent","directory","tag","account_id","swarm_id","project_id","project_folder_id","add_folder")
+            "launch" -> setOf("agent","directory","tag","account_id","swarm_id","project_id","project_folder_id","add_folder","worktree_folder_id","worktree_common_dir")
+            "worktree_create" -> setOf("path","common_dir","destination","branch","base")
             "recovery_action" -> setOf("job_id","action")
             "terminal_input" -> setOf("terminal_binding_id", "text", "enter", "key")
             "settings" -> setOf("model", "effort", "expected_pending_id"); "process_stop" -> setOf("process_id", "generation"); else -> emptySet() }
@@ -40,12 +41,16 @@ object SessionActionPolicies {
                 if(args.has("effort")) require(args.getString("effort") in setOf("", "off", "none", "on", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")) { "Invalid effort." }
                 if(args.has("expected_pending_id")) require(uuid(args.getString("expected_pending_id"))) { "The pending settings identity changed." }
             }
+            "worktree_create" -> {
+                listOf("path","common_dir","destination").forEach { require(LaunchPresentation.absoluteFolder(args.getString(it))) }
+                require(WorktreePresentation.createError(args.getString("branch"),args.getString("base"),args.getString("destination")).isBlank())
+            }
             "launch" -> {
                 require(args.getString("agent") in setOf("codex","claude","kimi","dsh"))
                 require(args.getString("directory").let { it.startsWith('/') && it.length <= 4096 && it.none(Char::isISOControl) })
                 require(args.getString("tag").let { it.isNotBlank() && it.trim() == it && it.toByteArray(Charsets.UTF_8).size <= 120 && it.none { c -> c == '/' || c == '\\' || c == ':' || c == '.' || c.isISOControl() } })
                 if(args.has("account_id")) require(args.getString("account_id").let { it.isNotBlank() && it.length <= 256 && it.none(Char::isISOControl) })
-                if(listOf("swarm_id","project_id","project_folder_id","add_folder").any(args::has)) {
+                if(listOf("swarm_id","project_id","project_folder_id","add_folder","worktree_folder_id","worktree_common_dir").any(args::has)) {
                     require(args.getString("swarm_id").isNotBlank() && args.getString("project_id").isNotBlank())
                     require(args.get("add_folder") is Boolean)
                     if(args.has("project_folder_id")) require(args.getString("project_folder_id").isNotBlank() && args.get("add_folder")==false)
@@ -125,6 +130,14 @@ object SessionActionPolicies {
         if(receipt.string("request_id") != action.requestId) return action.copy(status="uncertain",error="The receipt belongs to another request.")
         if(receipt.string("state") == "failed") return action.copy(status="failed",error=receipt.string("error").ifBlank { "The computer rejected this action." })
         val native = receipt.optJSONObject("result")
+        if(action.operation == "worktree_create") {
+            val args=JSONObject(action.arguments)
+            if(receipt.string("state") != "completed" || native == null || native.string("request_id") != action.requestId ||
+                native.string("status") != "created" || native.string("common_dir") != args.string("common_dir") ||
+                native.string("branch") != args.string("branch") || !LaunchPresentation.absoluteFolder(native.string("path")))
+                return action.copy(status="uncertain",error="Worktree creation is unconfirmed. Check the original receipt; it has not been retried.")
+            return action.copy(status="completed",error="",resultPath=native.string("path"))
+        }
         if(action.operation == "launch") {
             val created=native?.optJSONObject("result_target")
             if(receipt.string("state") != "completed" || native == null || native.string("request_id") != action.requestId || native.string("status") != "created" ||

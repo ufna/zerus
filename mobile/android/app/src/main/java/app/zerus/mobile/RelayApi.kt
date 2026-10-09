@@ -5,6 +5,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.Response
+import java.io.IOException
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -15,28 +22,44 @@ import java.security.MessageDigest
 
 class RelayException(val status: Int, message: String) : Exception(message)
 class RelayApi(private val client: OkHttpClient = OkHttpClient.Builder()
+    .dispatcher(okhttp3.Dispatcher().apply { maxRequests = 64; maxRequestsPerHost = 64 })
     .connectTimeout(10, TimeUnit.SECONDS).readTimeout(35, TimeUnit.SECONDS)
     .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false).build()) {
     suspend fun call(url: String, token: String, path: String, body: JSONObject? = null, delete: Boolean = false): JSONObject = withContext(Dispatchers.IO) {
         val request = Request.Builder().url(ManagedRelay.transport(url) + path).header("Accept", "application/json")
         if (token.isNotBlank()) request.header("Authorization", "Bearer $token")
         if (delete) request.delete() else if (body != null) request.post(JsonRequestBody(body, if (path == "/v1/requests") 30_408_704L else 1_048_576L))
-        client.newCall(request.build()).execute().use { response ->
-            val value = response.body?.byteStream()?.use { stream ->
-                val bytes = ByteArrayOutputStream(); val buffer = ByteArray(8192)
-                while (true) {
-                    val count = stream.read(buffer)
-                    if (count < 0) break
-                    require(bytes.size() + count <= 1024 * 1024) { "Gateway response exceeded the 1 MiB safety limit." }
-                    bytes.write(buffer, 0, count)
+        val call = client.newCall(request.build())
+        suspendCancellableCoroutine { continuation ->
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, error: IOException) {
+                    continuation.resumeWithException(error)
                 }
-                bytes.toString(Charsets.UTF_8.name())
-            }.orEmpty()
-            if (!response.isSuccessful) throw RelayException(response.code,
-                runCatching { JSONObject(value).string("error", "message") }.getOrDefault("").ifBlank { "Server returned ${response.code}." })
-            if (value.isBlank()) JSONObject() else JSONObject(value)
+                override fun onResponse(call: Call, response: Response) {
+                    try {
+                        val result = response.use {
+                            val value = response.body?.byteStream()?.use { stream ->
+                                val bytes=ByteArrayOutputStream();val buffer=ByteArray(8192)
+                                while(true) {
+                                    val count=stream.read(buffer)
+                                    if(count<0) break
+                                    require(bytes.size()+count<=1024*1024) { "Gateway response exceeded the 1 MiB safety limit." }
+                                    bytes.write(buffer,0,count)
+                                }
+                                bytes.toString(Charsets.UTF_8.name())
+                            }.orEmpty()
+                            if(!response.isSuccessful) throw RelayException(response.code,
+                                runCatching { JSONObject(value).string("error","message") }.getOrDefault("").ifBlank { "Server returned ${response.code}." })
+                            if(value.isBlank()) JSONObject() else JSONObject(value)
+                        }
+                        continuation.resume(result)
+                    } catch(error:Exception) { continuation.resumeWithException(error) }
+                }
+            })
         }
     }
+
     suspend fun pair(url: String, code: String): Connection {
         val normalized = EndpointPolicy.normalize(url)
         require(code.isNotBlank()) { "Enter the invitation code shown on your computer." }
