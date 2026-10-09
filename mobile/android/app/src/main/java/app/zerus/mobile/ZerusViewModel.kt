@@ -278,10 +278,9 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
     }
     private fun watchHistoryHeads() {
         if(historyHeadJob?.isActive==true || !readTrackingReady) return
-        val candidates=readState.records.mapNotNull { record ->
-            val row=sessions.find { ConversationReadPolicies.key(it.target)==ConversationReadPolicies.key(record.target) } ?: return@mapNotNull null
-            if(historyNetworkReason(row.target).isNotBlank() || machines.none { it.connectionId==row.target.connectionId && it.id==row.target.computerId && it.online }) return@mapNotNull null
-            val hint=HistoryHeadHints.signature(row.preview,row.raw)
+        val eligible=sessions.filter { row -> historyNetworkReason(row.target).isBlank() && SessionFilters.online(row,machines) }
+        val candidates=ReadAllHeadCandidates.candidates(eligible,readState).mapNotNull { row ->
+            val hint=ReadAllHeadCandidates.hint(row)
             val key=ConversationReadPolicies.key(row.target)
             if(historySnapshotHints[key]==hint && key in currentHistoryHeads) return@mapNotNull null
             currentHistoryHeads-=key
@@ -293,6 +292,8 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
             chosen.forEach { target ->
                 val result=runCatching {
                     val page=historyOnce(target,"","",1)
+                    if(sessions.none { it.target==target } || historyNetworkReason(target).isNotBlank() ||
+                        machines.none { it.connectionId==target.connectionId && it.id==target.computerId && it.online }) return@runCatching
                     observeHistoryHead(page)
                     if(selected?.target==target && historyWindows[target.key]==null) {
                         if(page.complete && !olderLoading) { restoreHistoryAttempt="";loadHistory(target,"") }
@@ -328,6 +329,30 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
     fun markRead(target:Target,evidence:ReadAttentionEvidence) {
         if(evidence.target!=target || !readTrackingReady || captureReadAttention(target)!=evidence) { error="The displayed reply evidence changed. Review it before marking read.";return }
         readWriter?.let { readState=it.edit { state -> ReadAttentionPolicies.mark(state,evidence) } };refreshReadAttention();flushDrafts()
+    }
+    private fun readAllEvidence(target:Target):ReadAttentionEvidence? {
+        if(!readTrackingReady || readWriter==null || demo || target.run.isBlank() || target.conversation.isBlank() ||
+            connections.none { it.id==target.connectionId } ||
+            sessions.none { it.target==target } && (selected?.target!=target || activeFrame?.target!=target)) return null
+        val captured=captureReadAttention(target)
+        val row=sessions.find { it.target==target }
+        val currentHint=row?.let(ReadAllHeadCandidates::hint)
+        val observedHint=historySnapshotHints[ConversationReadPolicies.key(target)]
+        val hintMatches=currentHint!=null && observedHint==currentHint
+        val freshHead=captured.authoritative && hintMatches && historyNetworkReason(target).isBlank() &&
+            machines.any { it.connectionId==target.connectionId && it.id==target.computerId && it.online }
+        return captured.copy(fingerprint=captured.fingerprint+JSONArray(listOf(currentHint,observedHint)).toString(),authoritative=freshHead)
+    }
+    fun canMarkRead(target:Target):Boolean=ReadAllPolicies.available(readAllEvidence(target))
+    fun markAllRead(targets:List<Target>):ReadAllResult {
+        val distinct=targets.distinctBy(ConversationReadPolicies::key)
+        val captured=distinct.map { ReadAllCapture(it,readAllEvidence(it)) }
+        val current=distinct.map { ReadAllCapture(it,readAllEvidence(it)) }
+        val writer=readWriter ?: return ReadAllResult(skipped=distinct.size)
+        var result=ReadAllResult(skipped=distinct.size)
+        readState=writer.edit { state -> ReadAllPolicies.apply(state,captured,current).also { result=it.result }.state }
+        refreshReadAttention();writer.flushAsync()
+        return result
     }
     fun reviewLater(target:Target,evidence:ReadAttentionEvidence) {
         if(evidence.target!=target || !readTrackingReady || captureReadAttention(target)!=evidence) { error="The displayed reply evidence changed. Review it again.";return }

@@ -1,0 +1,47 @@
+package app.zerus.mobile
+
+import org.json.JSONArray
+
+/** marked includes partial; skipped and duplicate handling count distinct conversation keys. */
+data class ReadAllResult(val marked:Int=0,val skipped:Int=0,val partial:Int=0)
+data class ReadAllCapture(val target:Target,val evidence:ReadAttentionEvidence?)
+data class ReadAllUpdate(val state:ConversationReadState,val result:ReadAllResult)
+
+object ReadAllPolicies {
+    fun available(evidence:ReadAttentionEvidence?)=evidence!=null &&
+        (evidence.authoritative && evidence.epoch.isNotBlank() && evidence.head!=null || evidence.loadedIds.isNotEmpty())
+    /** All evidence is captured before the single ordered edit; reducers never fetch or inspect UI state. */
+    fun apply(state:ConversationReadState,captured:List<ReadAllCapture>,current:List<ReadAllCapture>):ReadAllUpdate {
+        var next=state;var marked=0;var skipped=0;var partial=0
+        captured.distinctBy { ConversationReadPolicies.key(it.target) }.forEach { capture ->
+            val evidence=capture.evidence
+            val matching=current.find { it.target==capture.target }?.evidence
+            val old=next.record(capture.target)
+            if(!available(evidence) || evidence!!.target!=capture.target || evidence!=matching ||
+                old?.epoch.orEmpty()!=evidence.epoch || old?.headIncoming!=evidence.head ||
+                evidence.authoritative && old?.headComplete!=true) { skipped++;return@forEach }
+            val updated=ReadAttentionPolicies.mark(next,evidence)
+            val record=updated.record(capture.target)
+            if(record==null) { skipped++;return@forEach }
+            next=updated;marked++
+            if(!evidence.authoritative || record.incomplete) partial++
+        }
+        return ReadAllUpdate(next,ReadAllResult(marked,skipped,partial))
+    }
+}
+
+/** Seed metadata heads without opening chats, retaining bounded storage and scheduler ownership. */
+object ReadAllHeadCandidates {
+    fun candidates(sessions:List<Session>,state:ConversationReadState):List<Session> {
+        var slots=(500-state.records.size).coerceAtLeast(0)
+        return sessions.distinctBy { ConversationReadPolicies.key(it.target) }.filter { row ->
+            val t=row.target
+            if(SessionFilters.archived(row) || t.run.isBlank() || t.conversation.isBlank()) false
+            else if(state.record(t)!=null) true
+            else if(slots>0 && (row.raw.string("reply_id").isNotBlank() || row.raw.optDouble("reply_at",0.0)>0 ||
+                row.raw.optBoolean("unread_reply") || row.raw.optBoolean("mobile_unread_reply"))) { slots--;true } else false
+        }
+    }
+    fun hint(row:Session)=JSONArray(listOf(row.target.key,HistoryHeadHints.signature(row.preview,row.raw),
+        row.raw.string("reply_id"),HistoryHeadHints.value(row.raw,"reply_at"))).toString()
+}

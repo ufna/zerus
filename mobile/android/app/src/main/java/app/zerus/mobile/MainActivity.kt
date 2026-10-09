@@ -32,6 +32,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -233,8 +235,8 @@ class MainActivity : ComponentActivity() {
             }
         } }) { padding ->
         Column(Modifier.padding(padding).consumeWindowInsets(padding).fillMaxSize()) {
-            Box(Modifier.fillMaxWidth().height(4.dp)) {
-                if (model.busy || selected != null && model.detailProgress)
+            if (selected == null) Box(Modifier.fillMaxWidth().height(4.dp)) {
+                if (model.busy)
                     LinearProgressIndicator(Modifier.fillMaxWidth(), color = Mint)
             }
             if (selected != null) SessionHeaderTools(model,selected) { messageJump = it }
@@ -491,6 +493,9 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
     val counts = SessionFilters.counts(scoped, model.machines)
     val visible = scoped.filter { SessionFilters.matches(it, model.sessionFilter, SessionFilters.online(it, model.machines)) }
     val groups = SessionFilters.grouped(visible, model.projects)
+    val readAllTargets = scoped.filterNot(SessionFilters::archived).map { it.target }
+    val canReadAll = !model.demo && readAllTargets.any(model::canMarkRead)
+    var readAllNotice by remember(project?.key, model.sessionQuery, model.selectedMachines) { mutableStateOf("") }
     val listState = rememberLazyListState(model.sessionListIndex, model.sessionListOffset)
     val scrollReset = model.sessionScrollReset
     val scrollScope = project?.key?.key.orEmpty()
@@ -501,7 +506,21 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
     DisposableEffect(listState, scrollScope, scrollReset) { onDispose { model.saveSessionScroll(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, scrollScope, scrollReset) } }
     var machineDialog by remember { mutableStateOf(false) }
     LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { Text(project?.name ?: "Sessions", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold) }
+        item { Column {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(project?.name ?: "Sessions", Modifier.weight(1f), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+                TextButton(onClick = {
+                    val capturedTargets = readAllTargets.toList()
+                    val result = model.markAllRead(capturedTargets)
+                    readAllNotice = ConversationLoadPresentation.readAllOutcome(result.marked, result.skipped, result.partial)
+                }, enabled = canReadAll, modifier = Modifier.semantics {
+                    contentDescription = if (canReadAll) "Read all conversations in the current project, machine and search scope on this phone"
+                        else if (model.demo) "Read all unavailable in preview"
+                        else "Read all unavailable. The current scope needs verified history or loaded replies on this phone"
+                }) { Text("Read all") }
+            }
+            ReadAllNotice(readAllNotice) { readAllNotice = "" }
+        } }
         item { OutlinedTextField(model.sessionQuery, { model.changeSessionQuery(it) }, Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("Search sessions") },
             leadingIcon = { Icon(Icons.Default.Search, "Search sessions") }, shape = RoundedCornerShape(14.dp)) }
         item { Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -607,6 +626,20 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
     val boundedNotice = if(model.historyEpoch.isNotBlank()) {
         if(model.hasOlder || model.hasNewer) "Showing part of the conversation. Use the history controls to load more messages." else ""
     } else if(model.conversationHistoryTruncated) "Showing recent activity. Older messages may be outside the available history." else ""
+    val historyGate = remember(target.key) { LoadingGate(android.os.SystemClock::elapsedRealtime) }
+    var historyProgress by remember(target.key) { mutableStateOf(false) }
+    LaunchedEffect(target.key, model.olderLoading, model.demo) {
+        historyProgress = false
+        if (!model.olderLoading || model.demo) { historyGate.cancel(); return@LaunchedEffect }
+        val operation = historyGate.begin(target.key).operation
+        delay(historyGate.remaining(operation.id))
+        if (historyGate.owns(operation.id)) historyProgress = historyGate.visible()
+    }
+    val loadStatus = ConversationLoadPresentation.status(events.isNotEmpty() || questions.isNotEmpty(),
+        model.detailBusy, model.detailProgress, model.olderLoading, historyProgress, model.demo)
+    val conversationLoading = !model.demo && (model.detailBusy || model.olderLoading)
+    val canReadAll = !archived && !model.demo && model.canMarkRead(target)
+    var readAllNotice by remember(target.key) { mutableStateOf("") }
     val keys = buildList {
         add("history:earlier")
         add("history:status")
@@ -614,7 +647,7 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
         if (boundedNotice.isNotBlank()) add("history:bounded")
         add("history:missing-anchor")
         events.forEach { if(it.id == unreadBoundary) add("history:unread"); add("event:" + it.id) }
-        if (events.isEmpty() && !model.detailBusy) add("history:empty")
+        if (events.isEmpty() && !conversationLoading) add("history:empty")
         add("history:newer")
         if (queueVisible) add("history:queue")
         if (questions.isNotEmpty()) add("history:questions")
@@ -755,6 +788,24 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
         }
     }
     Column(Modifier.fillMaxSize().imePadding()) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val stripStatus = loadStatus?.takeIf { !it.initial || queueVisible }
+            if (stripStatus?.spinner == true && !obscured) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+            Text(stripStatus?.text ?: unread?.let { "${it.text} unread" } ?: "Messages",
+                Modifier.weight(1f).semantics { if (!obscured && stripStatus != null) liveRegion = LiveRegionMode.Polite },
+                color = if (stripStatus == null && unread != null) Mint else Muted, style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = {
+                val result = model.markAllRead(listOf(target))
+                readAllNotice = ConversationLoadPresentation.readAllOutcome(result.marked, result.skipped, result.partial)
+            }, enabled = canReadAll, modifier = Modifier.semantics {
+                contentDescription = if (canReadAll) "Read all replies in this conversation on this phone"
+                    else if (model.demo) "Read all unavailable in preview"
+                    else if (archived) "Read all unavailable for archived conversations"
+                    else "Read all unavailable. This conversation needs verified history or loaded replies on this phone"
+            }) { Text("Read all") }
+        }
+        ReadAllNotice(readAllNotice, Modifier.padding(horizontal = 16.dp)) { readAllNotice = "" }
         if(searchNotice.isNotBlank()) Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp),verticalAlignment = Alignment.CenterVertically) {
             Text(searchNotice,Modifier.weight(1f),color = Amber,style = MaterialTheme.typography.bodySmall)
             IconButton(onClick = { searchNotice = "" }) { Icon(Icons.Default.Close,"Dismiss search notice") }
@@ -763,8 +814,7 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
             .onGloballyPositioned { viewportBounds = it.boundsInWindow() }) {
             LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                item(key = "history:earlier") { Column(Modifier.fillMaxWidth(),horizontalAlignment = Alignment.CenterHorizontally) {
-                    if(model.olderLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                item(key = "history:earlier") { if (loadStatus?.initial != true) Column(Modifier.fillMaxWidth(),horizontalAlignment = Alignment.CenterHorizontally) {
                     if(model.olderError.isNotBlank()) {
                         Text(model.olderError,color = Amber,style = MaterialTheme.typography.bodySmall)
                         TextButton(onClick = { model.retryHistory(target) },enabled = !model.olderLoading && historyReason.isBlank()) { Text("Retry history") }
@@ -773,7 +823,7 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
                     if(model.historyIndexing) Text("History is still indexing. Unread totals may be unavailable.",color = Muted,style = MaterialTheme.typography.labelSmall)
                     if(historyReason.isNotBlank()) Text(historyReason,color = Muted,style = MaterialTheme.typography.labelSmall)
                 } }
-                item(key = "history:status") { Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                item(key = "history:status") { if (loadStatus?.initial != true) Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (raw == null && !model.demo) Tag("Checking…", Muted) else SessionDetailBadge(session,raw)
                     Tag(if (model.demo) "Preview" else if (model.activityVerified) "Connected" else if (raw != null) "Last known" else "Checking…",
                         if (online) Mint else Amber)
@@ -800,7 +850,7 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
                         model, onReviewOutgoing)
                     }
                 }
-                if (events.isEmpty() && !model.detailBusy) item(key = "history:empty") {
+                if (events.isEmpty() && !conversationLoading) item(key = "history:empty") {
                     Text("No recent messages are available. Refresh to load activity.", color = Muted)
                 }
                 item(key = "history:newer") {
@@ -815,6 +865,11 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
                         viewportBounds, cardMaxHeight, onReview)
                 }
                 item(key = "history:tail") { Spacer(Modifier.height(1.dp)) }
+            }
+            if (loadStatus?.initial == true && !queueVisible) Column(Modifier.align(Alignment.Center).padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (loadStatus.spinner && !obscured) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                Text(loadStatus.text, Modifier.semantics { if (!obscured) liveRegion = LiveRegionMode.Polite }, color = Muted, style = MaterialTheme.typography.bodyMedium)
             }
             if ((!follow.following || model.hasNewer) && (events.isNotEmpty() || questions.isNotEmpty()) &&
                 !(questions.isNotEmpty() && cardVisible))
@@ -835,6 +890,15 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
                 modifier = Modifier.fillMaxWidth().background(Surface).padding(16.dp))
         }
         else MessageComposer(model, session, online, onReview, onAttach)
+    }
+}
+
+@Composable private fun ReadAllNotice(notice: String, modifier: Modifier = Modifier, onDismiss: () -> Unit) {
+    if (notice.isBlank()) return
+    Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(notice, Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite },
+            color = Muted, style = MaterialTheme.typography.bodySmall)
+        IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Dismiss Read all result") }
     }
 }
 

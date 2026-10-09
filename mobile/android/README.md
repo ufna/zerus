@@ -58,6 +58,10 @@ older receipt. Native user delivery rows reconcile bubbles by exact request UUID
 Without such a row, reconciliation requires an unambiguous exact text/time match
 after a successful native receipt.
 
+A message waiting in the agent's native queue appears as one compact expandable
+card. Expand it to read and select the full text. Send now remains a manual
+action, available only when the current agent and queued message allow it.
+
 Attach files through the system document picker. The app copies and encrypts
 selected bytes privately rather than sending document URIs or trusting mutable
 files. The supported gateway limits are eight files, 10 MiB per file, 20 MiB total,
@@ -65,8 +69,10 @@ and 64 KiB of message text. The picker remains bound to its original composition
 if navigation or typing changes; interrupted selection can be canceled in Saved
 drafts. Files remain recoverable with unsent and uncertain messages.
 
-Automatic reads show progress only after five monotonic seconds. Manual refresh
-shows it immediately and reuses any matching in-flight read. Navigation cancels
+An empty conversation immediately shows “Loading conversation…” while its
+messages load. Background loading status and spinners appear only after five
+seconds; manual refresh shows progress immediately and reuses any matching
+in-flight read. Navigation cancels
 ownership of earlier reads so stale results cannot replace a new conversation.
 Matching history reads continue in a bounded shared queue and are reused on
 reopening. Exact-target encrypted history is cached for seven days, up to 20
@@ -134,7 +140,18 @@ actually visible in the foreground with no modal covering the conversation.
 Fresh complete canonical counters are exact; partial or stale evidence is shown
 as a lower bound or unknown. First visits show the recent page without marking
 it read merely because it opened. Mark read and Review later are local choices
-and never answer a native question.
+and never answer a native question. Read all applies to the current conversation
+or the Sessions scope on this phone, respecting the current project, machines
+and search. It captures each conversation before changing local markers:
+fresh complete heads mark the captured replies,
+partial evidence marks only loaded replies, and unknown, unavailable or offline
+rows without loaded evidence are skipped. Its result reports marked conversations, partial marks and skipped
+rows. Reminders without usable reply evidence remain. New replies arriving
+after the captured evidence remain unread; reading anchors and drafts stay put.
+Bounded background metadata probes can prepare canonical heads for live sessions
+with reported reply evidence, without opening their conversations or fetching
+full history. Previously unvisited sessions with unknown evidence are not
+silently marked read.
 
 Context details show native size, limits, and cache evidence without inferring
 warmth from cache hits. Compact and continue waits for the exact native request

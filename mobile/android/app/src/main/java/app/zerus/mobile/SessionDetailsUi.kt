@@ -10,6 +10,9 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Queue
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -17,6 +20,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -353,13 +358,31 @@ internal fun sessionActionStatus(action: SessionAction) = when(action.status) {
     val reason = model.actionReason(target,"send_now").ifBlank {
         SessionActionPolicies.inspectReason(target,"send_now",JSONObject().put("queue_id",id),model.activity ?: JSONObject())
     }
-    Card { Column(Modifier.fillMaxWidth().padding(12.dp),verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(Modifier.fillMaxWidth(),verticalAlignment = Alignment.CenterVertically) {
-            Text("Queued in agent",Modifier.weight(1f),style = MaterialTheme.typography.labelLarge)
-            TextButton(onClick = { model.sendNow(target,id) },enabled = reason.isBlank()) { Text("Send now") }
+    var expanded by remember(target.key, id) { mutableStateOf(false) }
+    Card { Column(Modifier.fillMaxWidth()) {
+        Surface(onClick = { expanded = !expanded }, color = MaterialTheme.colorScheme.surfaceContainer,
+            modifier = Modifier.fillMaxWidth().semantics {
+                contentDescription = "Waiting for agent, 1 queued message, ${if (expanded) "collapse" else "expand"} queued message"
+            }) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(Icons.Default.Queue, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Column(Modifier.weight(1f)) {
+                        Text("Waiting for agent", style = MaterialTheme.typography.labelLarge)
+                        Text("1 queued message", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null)
+                }
+                if (!expanded) Text(queue.string("text"), maxLines = 2, overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodyMedium)
+            }
         }
-        SelectionContainer { Text(queue.string("text"),Modifier.heightIn(max = 120.dp).verticalScroll(rememberScrollState())) }
-        if(reason.isNotBlank()) Text(reason,style = MaterialTheme.typography.bodySmall,color = MaterialTheme.colorScheme.onSurfaceVariant)
-        else if(queue.string("hint").isNotBlank()) Text(queue.string("hint"),style = MaterialTheme.typography.bodySmall)
+        if (expanded) Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            SelectionContainer { Text(queue.string("text"), Modifier.heightIn(max = 180.dp).verticalScroll(rememberScrollState())) }
+            if (queue.string("hint").isNotBlank()) Text(queue.string("hint"), style = MaterialTheme.typography.bodySmall)
+            if (reason.isNotBlank()) Text(reason, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            TextButton(onClick = { model.sendNow(target,id) }, enabled = reason.isBlank()) { Text("Send now") }
+        }
     } }
 }
