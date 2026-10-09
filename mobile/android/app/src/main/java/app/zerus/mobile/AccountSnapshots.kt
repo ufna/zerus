@@ -96,7 +96,35 @@ object AccountSnapshots {
     }
 }
 
+data class AccountSelection(val machine:MachineKey,val provider:String,val accountId:String)
+
 object AccountPresentation {
+    fun selected(catalogs:List<AccountCatalog>,selection:AccountSelection):Pair<AccountCatalog,ReportedAccount>? {
+        val catalog=catalogs.find { it.key==selection.machine } ?: return null
+        return catalog.accounts.find { it.provider==selection.provider && it.id==selection.accountId }?.let { catalog to it }
+    }
+    fun resetSummary(window:AccountWindow,now:Double):String {
+        val reset=window.resetsAt?.takeIf { it.isFinite() && it>=0 && it<253402300800.0 } ?: return "Reset unknown"
+        if(!now.isFinite()) return "Reset unknown"
+        if(reset<=now) return "Window ended"
+        val minutes=kotlin.math.ceil((reset-now)/60.0).toLong()
+        val remaining=when {
+            minutes>=1440 -> "${minutes/1440}d"+(if(minutes%1440/60>0) " ${minutes%1440/60}h" else "")
+            minutes>=60 -> "${minutes/60}h"+(if(minutes%60>0) " ${minutes%60}m" else "")
+            else -> "${minutes}m"
+        }
+        return "Resets in $remaining"
+    }
+    fun warning(account:ReportedAccount)=account.status in setOf("expired","signed_out","credentials_locked","desktop_session_unavailable","credentials_unavailable","error") || account.authStatus in setOf("expired","signed_out","locked","credentials_locked")
+    fun type(account:ReportedAccount)=account.identity.plan.ifBlank { account.identity.authMethod.ifBlank { "Plan not reported" } }
+    fun compactStatus(catalog:AccountCatalog,account:ReportedAccount,now:Double):String {
+        val problem=when(account.authStatus) {
+            "expired" -> "Sign-in expired";"signed_out" -> "Signed out";"locked","credentials_locked" -> "Credentials locked"
+            else -> if(warning(account) || account.status=="offline") status(account) else ""
+        }
+        val freshness=when { !catalog.online -> "Offline / Last reported";stale(catalog,account,now) -> "Last reported";else -> "" }
+        return listOf(problem,freshness,if(!account.installed) "Provider not installed" else "",if(account.refreshError) "Refresh failed" else if(account.refreshing) "Refreshing" else "").filter(String::isNotBlank).joinToString(" / ")
+    }
     fun stale(catalog:AccountCatalog,account:ReportedAccount,now:Double):Boolean = !catalog.online || catalog.stale || account.stale || account.refreshError || account.checkedAt==null || account.checkedAt>now+60 || now-account.checkedAt>600
     fun ended(window:AccountWindow,now:Double)=window.resetsAt?.let { it<=now } == true
     fun percent(value:Double?)=value?.let { java.math.BigDecimal.valueOf(it).setScale(1,java.math.RoundingMode.HALF_UP).stripTrailingZeros().toPlainString()+"% used" } ?: "Usage unknown"
