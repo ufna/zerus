@@ -1,6 +1,5 @@
 package app.zerus.mobile
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
@@ -9,12 +8,16 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -90,10 +93,10 @@ private val Muted = Color(0xFF9AACB2)
         key(MachineKey(root.machine.connectionId, root.machine.id)) {
             Card(colors = CardDefaults.cardColors(containerColor = Surface)) {
                 Column {
-                    MachineTreeRowContent(model, root, onRename, onColor)
-                    group.children.forEach { child ->
+                    MachineTreeRowContent(model, root, onRename, onColor, hasChildren = group.children.isNotEmpty())
+                    group.children.forEachIndexed { index, child ->
                         key(MachineKey(child.machine.connectionId, child.machine.id)) {
-                            MachineTreeRowContent(model, child, onRename, onColor)
+                            MachineTreeRowContent(model, child, onRename, onColor, lastChild = index == group.children.lastIndex)
                         }
                     }
                 }
@@ -103,32 +106,57 @@ private val Muted = Color(0xFF9AACB2)
 }
 
 @Composable private fun MachineTreeRowContent(model: ZerusViewModel, row: MachineTreeRow,
-    onRename: (Machine) -> Unit, onColor: (Machine) -> Unit) {
+    onRename: (Machine) -> Unit, onColor: (Machine) -> Unit,
+    hasChildren: Boolean = false, lastChild: Boolean = false) {
     val machine = row.machine
+    val machineKey = MachineKey(machine.connectionId, machine.id)
+    var menu by remember(machineKey) { mutableStateOf(false) }
+    var badgeHeight by remember(machineKey) { mutableIntStateOf(0) }
+    val child = row.parent != null
     val caption = when (machine.route) {
         MachineRoute.Direct -> "Gateway"
         MachineRoute.Unknown -> ""
         is MachineRoute.Via -> row.gatewayName.takeIf { it.isNotBlank() }
             ?.let { "Through $it" } ?: "Through another computer"
     }
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        if (row.parent != null) {
-            Box(Modifier.width(24.dp), contentAlignment = Alignment.Center) {
-                Box(Modifier.width(12.dp).height(1.dp).background(Muted.copy(alpha = .5f)))
+    Box(Modifier.fillMaxWidth().drawBehind {
+        if (badgeHeight > 0 && (child || hasChildren)) {
+            val trunk = 30.dp.toPx()
+            val badgeTop = 10.dp.toPx()
+            val badgeCenter = badgeTop + badgeHeight / 2f
+            val stroke = 1.dp.toPx()
+            val color = Muted.copy(alpha = .5f)
+            if (child) {
+                drawLine(color, Offset(trunk, 0f), Offset(trunk, if (lastChild) badgeCenter else size.height), stroke)
+                drawLine(color, Offset(trunk, badgeCenter), Offset(40.dp.toPx(), badgeCenter), stroke)
+            } else {
+                drawLine(color, Offset(trunk, badgeTop + badgeHeight), Offset(trunk, size.height), stroke)
             }
         }
-        Row(Modifier.weight(1f).padding(18.dp), verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                MachineLabel(machine.name, colorHex = model.machineColor(MachineKey(machine.connectionId, machine.id)))
-                if (caption.isNotEmpty()) Text(caption, color = Muted, style = MaterialTheme.typography.bodySmall)
-                Text(if (machine.lastKnown) "Last known" else if (machine.online) "Online" else "Offline",
-                    color = if (machine.online && !machine.lastKnown) Mint else Muted, style = MaterialTheme.typography.bodySmall)
+    }) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (child) Spacer(Modifier.width(20.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                MachineLabel(machine.name, modifier = Modifier.onSizeChanged { badgeHeight = it.height },
+                    colorHex = model.machineColor(machineKey))
+                Column(Modifier.padding(start = if (hasChildren) 28.dp else 0.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (caption.isNotEmpty()) Text(caption, color = Muted, style = MaterialTheme.typography.bodySmall)
+                    Text(if (machine.lastKnown) "Last known" else if (machine.online) "Online" else "Offline",
+                        color = if (machine.online && !machine.lastKnown) Mint else Muted, style = MaterialTheme.typography.bodySmall)
+                }
             }
             if (!model.demo) {
-                Column {
-                    IconButton(onClick = { onColor(machine) }, enabled = model.storageReady) { Icon(Icons.Default.Palette, "Machine label color") }
-                    IconButton(onClick = { onRename(machine) }, enabled = model.storageReady) { Icon(Icons.Default.Edit, "Rename machine") }
+                Box {
+                    IconButton(onClick = { menu = true }, enabled = model.storageReady, modifier = Modifier.size(48.dp)) {
+                        Icon(Icons.Default.MoreVert, "Actions for ${machine.name}")
+                    }
+                    DropdownMenu(expanded = menu && model.storageReady, onDismissRequest = { menu = false }) {
+                        DropdownMenuItem(text = { Text("Rename machine") }, leadingIcon = { Icon(Icons.Default.Edit, null) },
+                            onClick = { menu = false; onRename(machine) })
+                        DropdownMenuItem(text = { Text("Label color") }, leadingIcon = { Icon(Icons.Default.Palette, null) },
+                            onClick = { menu = false; onColor(machine) })
+                    }
                 }
             }
         }

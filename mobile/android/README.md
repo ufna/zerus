@@ -28,7 +28,8 @@ Machines shows each reported gateway with its direct peer computers visibly
 indented beneath it. A peer's “Through” caption uses the gateway's private phone
 label when available. These computers belong to the same workspace connection;
 each keeps its own name, color, status and controls, and session and project
-filters still select individual computers. Cached routes show “Last known” until
+filters still select individual computers. Each machine's action menu opens
+Rename machine and Label color. Cached routes show “Last known” until
 the catalog refreshes. The tree describes the selected one-hop route, not a
 permanent master computer.
 
