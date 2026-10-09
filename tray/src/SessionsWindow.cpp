@@ -599,6 +599,12 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     activityLayout->addWidget(m_activityView, 1); activityLayout->addWidget(m_question);
     m_usageWarning=new QLabel;m_usageWarning->setObjectName("activityUsageWarning");m_usageWarning->setTextFormat(Qt::PlainText);m_usageWarning->setWordWrap(true);m_usageWarning->hide();activityLayout->addWidget(m_usageWarning);
     m_recovery = new RecoveryUi::Panel; activityLayout->addWidget(m_recovery);
+    m_recovery->openTerminal = [this] {
+        const auto *entry=selected();if(!entry || !entry->online)return;
+        m_detailTabs->setCurrentWidget(entry->session.cmd=="dsh"?static_cast<QWidget *>(m_nativeUi):m_terminal);
+        if(entry->session.cmd!="dsh")m_terminal->connectSession();
+    };
+    m_recovery->refreshUsage = [this] { refreshAccountUsage();inspect();emit refreshRequested(); };
     m_recovery->openSettings = [this] {
         showWorkspaceSettings();m_settingsPage->openRecovery();
     };
@@ -1868,8 +1874,10 @@ void SessionsWindow::rebuild()
             QDateTime::currentMSecsSinceEpoch() - m_fleet.peerPolledAt(host) < FleetState::kPeerStaleMs);
         if (reachable) ++online;
         const bool selectedHost = m_hostFilters.isEmpty() || m_hostFilters.contains(host.isEmpty() ? "@local" : host);
-        for (const auto &s : box.sessions) {
+        for (const auto &stored : box.sessions) {
+            auto s=stored;
             const QString key = host + '\n' + s.name + (s.state == "archived" ? '\n' + s.archiveId : QString());
+            if(key == m_selectedKey && m_inspectError.isEmpty())s=SessionPresentation::inspected(s,m_details);
             m_entries.append({host, host.isEmpty() ? box.host : host, key, {}, s, reachable});
             if (!selectedHost) continue;
             if (s.state == "archived") { ++archived; continue; }
@@ -2065,6 +2073,7 @@ void SessionsWindow::rebuild()
         item->setData(MetaRole, meta); item->setData(StatusRole, rowStatus); item->setData(DetailRole, desc);
         item->setData(SessionRoles::Attention, !terminating && (s.reviewLater || (e.online && !s.attentionAcknowledged && (s.needsAction() || childNeedsAction(e)))));
         item->setData(SessionRoles::ReviewLater, s.reviewLater);
+        item->setData(SessionRoles::Failure, s.phase=="error");
         item->setData(SessionRoles::Draft, m_composer->hasDraft(e.key));
         item->setData(SessionRoles::Unread, !terminating && s.unreadReply);
         item->setData(SessionRoles::Working, !isTerminating(e) && currentActivity(s, e.online) && s.activity == "busy" && !s.needsAction());
@@ -2287,6 +2296,9 @@ void SessionsWindow::acceptInspection(const QString &host, const QString &name, 
         m_events = {}; m_cursor = 0; m_details = data; m_processPollAge.invalidate(); continueAfterCompact(); inspect(); return;
     }
     const auto previousRoster = childRoster(*entry);
+    const auto inspected=SessionPresentation::inspected(entry->session,data);
+    const bool statusChanged=inspected.phase!=entry->session.phase || inspected.activity!=entry->session.activity
+        || inspected.providerError!=entry->session.providerError || inspected.recovery!=entry->session.recovery;
     const auto previousProcesses=m_details.value("processes");
     const bool sameRun=m_details.value("run_id")==data.value("run_id") && m_details.value("host_generation")==data.value("host_generation");
     m_details = data; m_inspectError.clear();
@@ -2297,7 +2309,7 @@ void SessionsWindow::acceptInspection(const QString &host, const QString &name, 
     else for (const auto &event : data.value("events").toArray()) if (event.toObject().value("seq").toInteger() > m_cursor) m_events.append(event);
     while (m_events.size() > 500) m_events.removeFirst();
     m_cursor = data.value("cursor").toInteger(); reconcileMessages(); continueAfterCompact(); renderDetails(); applyPendingModelSettings();
-    if (previousRoster != childRoster(*entry)) rebuild();
+    if (statusChanged || previousRoster != childRoster(*entry)) rebuild();
 }
 
 void SessionsWindow::renderDetails()
@@ -2310,7 +2322,8 @@ void SessionsWindow::renderDetails()
     auto *recoveryFocus=QApplication::focusWidget();
     if((recoveryState.isEmpty()||recoveryState=="succeeded")&&m_recovery->isVisible()&&recoveryFocus
         &&(recoveryFocus==m_recovery||m_recovery->isAncestorOf(recoveryFocus)))m_composer->editor()->setFocus(Qt::OtherFocusReason);
-    m_recovery->setState(entry && entry->session.state != "archived" ? m_details : QJsonObject(),entry && entry->online);
+    m_recovery->setState(entry && entry->session.state != "archived"
+        && m_details.value("provider_status_at").toDouble() >= entry->session.providerStatusAt ? m_details : QJsonObject(),entry && entry->online);
     m_markRead->setVisible(entry && entry->session.state!="archived" && entryNeedsAttention(*entry));
     m_markRead->setToolTip(entry && entry->session.reviewLater
         ? tr("Marked for later. Mark as read to clear this reminder.")
@@ -2341,13 +2354,15 @@ void SessionsWindow::renderDetails()
         m_composer->setAvailability(false, tr("Select a session.")); return;
     }
     auto s = entry->session;
-    if (m_details.value("tracked").toBool() && m_details.value("last_event_at").toDouble() >= s.lastEventAt) {
+    if (m_details.value("tracked").toBool() && m_details.value("last_event_at").toDouble() >= s.lastEventAt
+        && m_details.value("provider_status_at").toDouble() >= s.providerStatusAt) {
         s.phase = m_details.value("phase").toString(s.phase); s.activity = m_details.value("activity").toString(s.activity);
         s.processState = m_details.value("process_state").toString(s.processState);
         s.conversationState = m_details.value("conversation_state").toString(s.conversationState);
         s.runtimeState = m_details.value("runtime_state").toString(s.runtimeState);
         s.activitySummary = m_details.value("activity_summary").toString(s.activitySummary);
         s.activityDetail = m_details.value("activity_detail").toString(s.activityDetail);
+        s.providerError = m_details.value("provider_error").toObject();
         s.currentTool = m_details.value("current_tool").toString(s.currentTool);
         s.toolDetail = m_details.value("tool_detail").toString(s.toolDetail);
     }
@@ -2378,7 +2393,7 @@ void SessionsWindow::renderDetails()
         else if (reason == "user_archived") meta += '\n' + tr("Moved to archive");
     }
     m_meta->setToolTip(sessionTooltip({meta, m_details.value("model").toString(s.model)}, 420).html); updateHeaderText();
-    m_badge->setText(state); const auto color = tone(state, m_dark);
+    m_badge->setText(state); const auto color = tone(s.state=="running" && s.processState!="exited" && entry->online && s.phase=="error"?QStringLiteral("Error"):state, m_dark);
     setWorkspaceStyle(m_badge, QString("color:%1; background:%2; border-radius:5px; padding:4px 8px; font-size:11px; font-weight:600;")
                           .arg(color.name(), m_dark ? "#2b323d" : "#edf1f5"));
     s.model = m_details.value("model").toString(s.model); s.effort = m_details.value("effort").toString(s.effort);

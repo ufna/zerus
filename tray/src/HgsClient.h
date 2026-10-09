@@ -13,6 +13,7 @@
 
 struct SessionInfo {
     QJsonObject recovery;
+    QJsonObject providerError;
     QJsonObject goal;
     QString name;      // полное имя: cmd/project[/tag]
     QString cmd;
@@ -41,7 +42,7 @@ struct SessionInfo {
     QJsonArray subagentPreviews;
     QJsonObject subagents;
     QString processState, conversationState, runtimeState;
-    double lastEventAt = 0, turnStarted = 0, compactionStarted = 0;
+    double lastEventAt = 0, turnStarted = 0, compactionStarted = 0, providerStatusAt = 0;
     int subagentCount = 0;
     bool needsAttention() const { return (needsAction() && !attentionAcknowledged)
         || (state != QLatin1String("archived") && (unreadReply || reviewLater)); }
@@ -49,7 +50,8 @@ struct SessionInfo {
         const auto recoveryState = recovery.value("state").toString();
         const bool recovering = recoveryState == "waiting" || recoveryState == "dispatching" || recoveryState == "retrying";
         return state == QLatin1String("running") && processState != QLatin1String("exited")
-            && (phase == QLatin1String("approval") || phase == QLatin1String("input") || (phase == QLatin1String("error") && !recovering)
+            && (phase == QLatin1String("approval") || phase == QLatin1String("input")
+                || (phase == QLatin1String("error") && (!recovering || providerError.value("error_kind")=="quota"))
                 || recoveryState == "uncertain" || recoveryState == "blocked" || recoveryState == "exhausted");
     }
 };

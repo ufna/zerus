@@ -5,6 +5,40 @@
 #include <QDateTime>
 
 namespace SessionPresentation {
+inline SessionInfo inspected(SessionInfo s, const QJsonObject &details)
+{
+    // A selected-session inspection can discover failure before the fleet poll.
+    // Never apply another run/conversation or older hook evidence to its row.
+    if (s.state != "running" || s.runId.isEmpty() || !details.value("tracked").toBool()
+        || details.value("run_id").toString() != s.runId
+        || details.value("conversation_id").toString() != s.conversationId
+        || details.value("last_event_at").toDouble() < s.lastEventAt
+        || details.value("provider_status_at").toDouble() < s.providerStatusAt
+        || (details.value("last_event_at").toDouble() <= s.lastEventAt
+            && details.value("provider_status_at").toDouble() <= s.providerStatusAt)) return s;
+    s.phase=details.value("phase").toString(s.phase);s.activity=details.value("activity").toString(s.activity);
+    s.processState=details.value("process_state").toString(s.processState);
+    s.providerError=details.value("provider_error").toObject();s.recovery=details.value("recovery").toObject();
+    s.providerStatusAt=details.value("provider_status_at").toDouble();
+    s.activitySummary=details.value("activity_summary").toString(s.activitySummary);
+    s.activityDetail=details.value("activity_detail").toString(s.activityDetail);
+    s.currentTool=details.value("current_tool").toString(s.currentTool);s.toolDetail=details.value("tool_detail").toString(s.toolDetail);
+    const auto attention=details.value("attention_id").toString(s.attentionId);
+    if(attention != s.attentionId)s.attentionAcknowledged=false;
+    s.attentionId=attention;
+    return s;
+}
+inline QString providerFailure(const QJsonObject &error)
+{
+    const auto kind = error.value("error_kind").toString();
+    if (kind == "quota") return QObject::tr("Usage limit reached");
+    if (kind == "rate_limit") return QObject::tr("Rate limit reached");
+    if (kind == "capacity") return QObject::tr("Model at capacity");
+    if (kind == "authentication") return QObject::tr("Sign-in failed");
+    if (kind == "context_limit") return QObject::tr("Context limit reached");
+    if (kind == "model_unavailable") return QObject::tr("Model unavailable");
+    return QObject::tr("Provider error");
+}
 inline QString status(const SessionInfo &s, bool reachable = true)
 {
     if (!reachable) return QObject::tr("Offline");
@@ -16,12 +50,13 @@ inline QString status(const SessionInfo &s, bool reachable = true)
     if (s.phase == "approval") return QObject::tr("Needs approval");
     if (s.phase == "input" && s.cmd == "dsh" && s.activitySummary == "Sign in required") return QObject::tr("Sign in");
     if (s.phase == "input") return QObject::tr("Needs input");
+    if (s.phase == "error" && s.providerError.value("error_kind")=="quota") return providerFailure(s.providerError);
     if (s.recovery.value("state") == "waiting") {
         const auto seconds = qMax(0, int(s.recovery.value("due_at").toDouble()-QDateTime::currentMSecsSinceEpoch()/1000.0));
         return seconds ? QObject::tr("Retry in %1 s").arg(seconds) : QObject::tr("Waiting to retry");
     }
     if (s.recovery.value("state") == "dispatching") return QObject::tr("Retrying");
-    if (s.phase == "error") return QObject::tr("Error");
+    if (s.phase == "error") return s.providerError.isEmpty() ? QObject::tr("Error") : providerFailure(s.providerError);
     if (s.phase == "interrupted") return QObject::tr("Interrupted");
     if (s.phase == "compacting") return QObject::tr("Compacting");
     if (s.phase == "starting") return QObject::tr("Starting");

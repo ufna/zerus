@@ -5,6 +5,7 @@
 #include <QTextStream>
 #include <QJsonDocument>
 #include "HgsClient.h"
+#include "SessionPresentation.h"
 
 class TestHgsClient : public QObject {
     Q_OBJECT
@@ -12,6 +13,7 @@ private slots:
     void parsesBox();
     void parsesSavedSessions();
     void parsesActivityMetadata();
+    void providerFailuresRequireAttentionAndPreserveSpecificStatus();
     void archiveIdentityAndCommands();
     void archiveInspectionKeepsDistinctIdentities();
     void renameCommands();
@@ -47,6 +49,33 @@ private slots:
     void nativeLaunchReportsProcessResult();
     void attachmentsUseCapturedIdentityAndValidateResponses();
 };
+
+void TestHgsClient::providerFailuresRequireAttentionAndPreserveSpecificStatus()
+{
+    QString error;
+    auto box=HgsClient::parseBox(R"({"host":"local","sessions":[{"name":"codex/project/task","tracked":true,"activity":"attention","phase":"error","process_state":"running","provider_error":{"error_kind":"quota","detail":"7d limit reached"}}]})",&error);
+    QVERIFY(error.isEmpty());QCOMPARE(box.sessions.size(),1);
+    auto session=box.sessions.first();
+    QVERIFY(session.needsAttention());QCOMPARE(SessionPresentation::status(session),QString("Usage limit reached"));
+    session.activity="busy"; // Old tool metadata must not take precedence.
+    QCOMPARE(SessionPresentation::status(session),QString("Usage limit reached"));
+    session.recovery={{"state","waiting"},{"due_at",QDateTime::currentSecsSinceEpoch()+30}};
+    QVERIFY(session.needsAction());QCOMPARE(SessionPresentation::status(session),QString("Usage limit reached"));
+    session.phase="working";session.providerError={};session.recovery={};
+    QVERIFY(!session.needsAction());QCOMPARE(SessionPresentation::status(session),QString("Working"));
+    session.runId="run-one";session.conversationId="conversation-one";session.lastEventAt=100;
+    QJsonObject details{{"tracked",true},{"run_id","run-one"},{"conversation_id","conversation-one"},
+        {"last_event_at",101},{"phase","error"},{"activity","attention"},{"provider_error",QJsonObject{{"error_kind","quota"}}}};
+    QCOMPARE(SessionPresentation::status(SessionPresentation::inspected(session,details)),QString("Usage limit reached"));
+    details["last_event_at"]=99;
+    QCOMPARE(SessionPresentation::status(SessionPresentation::inspected(session,details)),QString("Working"));
+    details["last_event_at"]=101;details["run_id"]="another-run";
+    QCOMPARE(SessionPresentation::status(SessionPresentation::inspected(session,details)),QString("Working"));
+    details["run_id"]="run-one";details["conversation_id"]="another-conversation";
+    QCOMPARE(SessionPresentation::status(SessionPresentation::inspected(session,details)),QString("Working"));
+    details["conversation_id"]="conversation-one";session.providerStatusAt=102;details["provider_status_at"]=101;
+    QCOMPARE(SessionPresentation::status(SessionPresentation::inspected(session,details)),QString("Working"));
+}
 
 void TestHgsClient::submittedQuestionReceiptsRequireOptionalCodexAndExactIdentity()
 {

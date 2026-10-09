@@ -101,6 +101,8 @@ SessionInfo sessionFromJson(const QJsonObject &obj)
     s.gitWorktree = obj.value("git_worktree").toBool(); s.gitDetached = obj.value("git_detached").toBool();
     s.gitWorktreeName = obj.value("git_worktree_name").toString(); s.gitMetadataState = obj.value("git_metadata_state").toString();
     s.activitySummary = obj.value("activity_summary").toString(); s.activityDetail = obj.value("activity_detail").toString();
+    s.providerError = obj.value("provider_error").toObject();
+    s.providerStatusAt = obj.value("provider_status_at").toDouble();
     s.subagentSource = obj.value("subagent_source").toString();
     s.subagentCountsComplete = obj.value("subagent_counts_complete").toBool();
     s.subagentActiveCount = obj.value("subagent_active_count").toInt(s.subagentCount);

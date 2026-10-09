@@ -724,6 +724,20 @@ balance, quota and context exhaustion require manual action. Questions, new inpu
 Stop, session termination and identity changes cancel waiting; a native draft
 blocks delivery. Unknown providers do not receive automatic input.
 
+Provider failures replace Working or Compacting with a specific state such as
+**Usage limit reached**, **Model at capacity** or **Sign-in failed** and appear
+under **Needs attention**. Activity explains the stopped turn and offers
+**Open Terminal** and, for exhausted quota, **Refresh usage**. Restore account
+access or wait for the reset, then explicitly send a message to continue. Drafts
+are kept; refreshing usage never retries a turn. Account percentages alone do
+not change a running agent's state. Failed refreshes and offline snapshots are
+labeled as last reported usage.
+
+Codex failures come from the exact conversation's native error journal and
+structured failed turn completions, including compaction failures. Tool output
+and quoted error examples cannot change the session state. New native progress
+clears the failure; changing the account counter alone does not.
+
 Activity shows countdown, attempt number, **Attempts**, **Retry now** and
 **Cancel retry**. Retry now respects a known Retry-After. Policy edits apply to new
 episodes; already scheduled episodes retain their delays. Disabling recovery

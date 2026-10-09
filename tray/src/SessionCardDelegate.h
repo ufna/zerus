@@ -83,7 +83,7 @@ public:
         s.attention = index.data(SessionRoles::Attention).toBool();
         s.unread = index.data(SessionRoles::Unread).toBool();
         s.state = index.data(SessionRoles::Status).toString();
-        const bool error = s.state == "Error";
+        const bool error = index.data(SessionRoles::Failure).toBool() || s.state == "Error";
         s.working = index.data(SessionRoles::Working).toInt() > 0;
         s.paused = s.state == "Paused";
         s.draft = index.data(SessionRoles::Draft).toBool() && !selected && !s.attention && !s.working && s.state != "Offline";

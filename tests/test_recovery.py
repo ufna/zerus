@@ -89,6 +89,42 @@ class Recovery(unittest.TestCase):
         self.assertIn('changed',self.command('recovery','set',payload=policy,ok=False))
         self.assertEqual(self.received(),b'')
 
+    def test_native_quota_completion_requires_attention_without_automatic_input(self):
+        self.native_quota_completion(False)
+
+    def test_native_quota_completion_cancels_a_previous_temporary_failure_retry(self):
+        self.native_quota_completion(True)
+
+    def native_quota_completion(self,pending):
+        from datetime import datetime, timezone
+        self.prepare()
+        if pending:
+            self.tick()
+            self.assertEqual(self.inspect()['recovery']['state'],'waiting')
+        at=time.time()-1
+        transcript=self.root/f'rollout-{self.conversation_id}.jsonl'
+        transcript.write_text('\n'.join(json.dumps(row) for row in [
+            dict(type='session_meta',payload=dict(id=self.conversation_id)),
+            dict(type='event_msg',timestamp=datetime.fromtimestamp(at,timezone.utc).isoformat(),
+                 payload=dict(type='task_complete',turn_id='failed-turn',error=dict(
+                     message='7d limit reached. Resets in 4d18h',codex_error_info='usage_limit_exceeded'))),
+        ])+'\n')
+        self.record.pop('provider_error')
+        self.record.update(transcript=str(transcript),phase='compacting',activity='busy',last_main_progress_at=at-1)
+        self.write_record()
+        before=self.record_path.read_bytes()
+        info=self.inspect()
+        self.assertEqual(info['phase'],'error')
+        self.assertEqual(info['activity'],'attention')
+        self.assertEqual(info['activity_summary'],'Usage limit reached')
+        self.assertEqual(info['provider_error']['error_kind'],'quota')
+        self.assertEqual(self.record_path.read_bytes(),before)
+        for _ in range(2):
+            self.tick()
+            if pending:self.assertEqual(self.inspect()['recovery']['state'],'cancelled')
+            else:self.assertFalse(self.inspect().get('recovery'))
+            self.assertEqual(self.received(),b'')
+
     def test_shared_sync_converges_and_stale_writes_cannot_overwrite(self):
         first=self.command('recovery','get')['policy']
         first['schedules']={'service':[3,7,-1],'network':[5,20,0],'rate_limit':[-1]}

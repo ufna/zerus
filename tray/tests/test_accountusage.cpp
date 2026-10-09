@@ -30,6 +30,13 @@ private slots:
         session["cache_hint"]=QJsonObject{{"status","cold"},{"tokens",756000}};
         QVERIFY(CacheStatus::expired(session));QVERIFY(CacheStatus::warning(session).contains("cold cache"));
     }
+    void failedRefreshKeepsQuotaWarningExplicitlyHistorical() {
+        QJsonObject data{{"status","ok"},{"windows",QJsonArray{QJsonObject{{"window_minutes",10080},
+            {"used_percent",100},{"resets_at",QDateTime::currentSecsSinceEpoch()+3600}}}}};
+        QVERIFY(!AccountUsage::exhausted(data).contains("Last reported"));
+        data["refresh_error"]=true;QVERIFY(AccountUsage::exhausted(data).contains("Last reported"));
+        data.remove("refresh_error");data["offline"]=true;QVERIFY(AccountUsage::exhausted(data).contains("Last reported"));
+    }
     void cacheIsSharedByAccountWithTimedAndManualRefresh() {
         qint64 now=1000;AccountUsageStore store("/nonexistent/hgs",nullptr,[&]{return now;});
         auto *client=store.findChild<HgsClient *>();

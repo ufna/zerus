@@ -54,7 +54,9 @@ inline QString exhausted(const QJsonObject &data) {
         lines<<(!current(w)?QObject::tr("%1 limit window ended; refresh usage").arg(period(w)):
             at.isValid()?QObject::tr("%1 limit reached. Resets in %2").arg(period(w),remaining(at)):QObject::tr("%1 limit reached. Reset time is unavailable").arg(period(w)));
     }
-    return lines.join("\n");
+    const auto text=lines.join("\n");
+    return !text.isEmpty() && (data.value("offline").toBool() || data.value("refresh_error").toBool())
+        ? QObject::tr("Last reported usage: %1. Refresh to check current limits.").arg(text) : text;
 }
 inline QColor color(double value,bool dark) {return QColor(value>=90 ? (dark?"#f07878":"#ce3d47") : value>=70 ? (dark?"#f0a35b":"#bd6519") : (dark?"#72cdb2":"#237a62"));}
 inline QString state(const QJsonObject &data) {

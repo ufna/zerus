@@ -4,15 +4,14 @@ use rusqlite::{Connection, OpenFlags};
 
 pub(super) fn category(text: &str) -> &'static str {
     let text = text.to_lowercase();
-    if ["capacity", "overload", "model_capacity"]
-        .iter()
-        .any(|s| text.contains(s))
-    {
-        "capacity"
-    } else if [
+    // A permanent quota failure can also mention 429 or model capacity.
+    if [
         "quota",
         "usage limit",
         "usage_limit",
+        "usagelimitexceeded",
+        "weekly limit",
+        "7d limit reached",
         "insufficient",
         "billing",
         "credit",
@@ -22,6 +21,11 @@ pub(super) fn category(text: &str) -> &'static str {
     .any(|s| text.contains(s))
     {
         "quota"
+    } else if ["capacity", "overload", "model_capacity"]
+        .iter()
+        .any(|s| text.contains(s))
+    {
+        "capacity"
     } else if ["rate_limit", "rate limit", "too many requests", "429"]
         .iter()
         .any(|s| text.contains(s))
@@ -85,7 +89,33 @@ pub(super) fn apply(output: &mut Value, error: &Value) {
     output["tool_detail"] = json!("");
 }
 
-fn codex(record: &Value) -> Result<Vec<Value>> {
+fn codex_log_detail(target: &str, body: &str) -> Option<String> {
+    let marker = match target {
+        "codex_core::session::turn" | "codex_core::codex" => {
+            if body.contains("Turn error: ") {
+                "Turn error: "
+            } else if target == "codex_core::session::turn" {
+                "Post-turn compaction failed; preserving the completed turn error="
+            } else {
+                return None;
+            }
+        }
+        "codex_core::tasks" => "session task returned an unexpected error err=",
+        _ => return None,
+    };
+    let detail = body.strip_prefix(marker).or_else(|| {
+        body.rsplit_once(&format!(": {marker}"))
+            .map(|(_, detail)| detail)
+    })?;
+    // Codex preserves a successful answer after other post-turn compaction
+    // warnings. Only quota exhaustion marks that completed turn as failed.
+    if marker.starts_with("Post-turn compaction") && category(detail) != "quota" {
+        return None;
+    }
+    (!detail.trim().is_empty()).then(|| detail.trim().to_owned())
+}
+
+fn codex_logs(record: &Value) -> Result<Vec<Value>> {
     let conversation = string(record, "conversation_id");
     if uuid::Uuid::parse_str(conversation).is_err() {
         return Ok(vec![]);
@@ -105,13 +135,16 @@ fn codex(record: &Value) -> Result<Vec<Value>> {
     .map_err(|e| e.to_string())?;
     db.busy_timeout(std::time::Duration::from_millis(100))
         .map_err(|e| e.to_string())?;
-    // Codex 0.160 omits terminal Turn errors from rollouts and hooks. Its own
-    // indexed journal supplies the conversation and error emitter explicitly.
+    // Native emitters cover regular turns and compaction failures. Do not
+    // interpret tool output or ordinary account-usage telemetry as a failure.
     let mut query = db
         .prepare(
-            "SELECT id, ts, ts_nanos, feedback_log_body FROM logs
-        WHERE thread_id = ? AND target IN ('codex_core::session::turn','codex_core::codex')
-        AND feedback_log_body LIKE '%: Turn error: %' ORDER BY ts DESC, ts_nanos DESC LIMIT 8",
+            "SELECT id, ts, ts_nanos, feedback_log_body, target FROM logs
+        WHERE thread_id = ? AND target IN ('codex_core::session::turn','codex_core::codex','codex_core::tasks')
+        AND (feedback_log_body LIKE '%Turn error: %'
+          OR feedback_log_body LIKE '%Post-turn compaction failed; preserving the completed turn error=%'
+          OR feedback_log_body LIKE '%session task returned an unexpected error err=%')
+        ORDER BY ts DESC, ts_nanos DESC LIMIT 8",
         )
         .map_err(|e| e.to_string())?;
     let rows = query
@@ -121,31 +154,154 @@ fn codex(record: &Value) -> Result<Vec<Value>> {
                 row.get::<_, i64>(1)?,
                 row.get::<_, i64>(2)?,
                 row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
             ))
         })
         .map_err(|e| e.to_string())?;
     let mut errors = Vec::new();
     for row in rows.flatten() {
-        if let Some((_, detail)) = row.3.rsplit_once(": Turn error: ") {
-            if !detail.trim().is_empty() {
-                errors.push(event(
-                    &format!("codex-error-{}", row.0),
-                    row.1 as f64 + row.2 as f64 / 1e9,
-                    detail,
-                    "codex_native_log",
-                ));
-            }
+        if let Some(detail) = codex_log_detail(&row.4, &row.3) {
+            errors.push(event(
+                &format!("codex-error-{}", row.0),
+                row.1 as f64 + row.2 as f64 / 1e9,
+                &detail,
+                "codex_native_log",
+            ));
         }
     }
     errors.reverse();
     Ok(errors)
 }
 
+fn codex_transcript(record: &Value) -> Result<(Vec<Value>, f64)> {
+    use std::io::{BufRead, BufReader, Seek, SeekFrom};
+    let id = string(record, "conversation_id");
+    let path = PathBuf::from(string(record, "transcript"));
+    if uuid::Uuid::parse_str(id).is_err()
+        || !path.is_absolute()
+        || !path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().contains(id))
+    {
+        return Ok((vec![], 0.0));
+    }
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut first = String::new();
+    BufReader::new((&mut file).take(256 * 1024))
+        .read_line(&mut first)
+        .map_err(|e| e.to_string())?;
+    let first: Value = serde_json::from_str(&first).map_err(|e| e.to_string())?;
+    if first["type"] != "session_meta" || first["payload"]["id"] != id {
+        return Err("Conversation transcript identity mismatch".into());
+    }
+    let offset = file
+        .metadata()
+        .map_err(|e| e.to_string())?
+        .len()
+        .saturating_sub(8 * 1024 * 1024);
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|e| e.to_string())?;
+    let mut bytes = Vec::new();
+    file.take(8 * 1024 * 1024)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    let mut errors = Vec::new();
+    let mut progress: f64 = 0.0;
+    for (index, line) in bytes.split_inclusive(|b| *b == b'\n').enumerate() {
+        if (offset > 0 && index == 0) || line.len() > 1024 * 1024 || !line.ends_with(b"\n") {
+            continue;
+        }
+        if !std::str::from_utf8(line).is_ok_and(|text| {
+            text.contains("\"error\"")
+                || text.contains("\"task_started\"")
+                || text.contains("\"task_complete\"")
+                || text.contains("\"turn_complete\"")
+        }) {
+            continue;
+        }
+        let Ok(row) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
+        if row["type"] != "event_msg" {
+            continue;
+        }
+        let payload = &row["payload"];
+        let at = search::timestamp(&row["timestamp"]);
+        if at <= 0.0 {
+            continue;
+        }
+        // Current Codex records a failed turn as task_complete with an error;
+        // older versions also emit a dedicated native error event.
+        let failure = match string(payload, "type") {
+            "task_started" => {
+                progress = progress.max(at);
+                continue;
+            }
+            "task_complete" | "turn_complete" => {
+                if payload["error"].is_null() {
+                    // Older Codex completions omit errors even after failure.
+                    // Only an actual final reply confirms successful progress.
+                    if !string(payload, "last_agent_message").trim().is_empty() {
+                        progress = progress.max(at);
+                    }
+                    continue;
+                }
+                &payload["error"]
+            }
+            "error" => payload,
+            _ => continue,
+        };
+        let detail = string(failure, "message");
+        if detail.trim().is_empty() {
+            continue;
+        }
+        let mut error = event(
+            &format!("codex-turn-error-{}-{at}", string(payload, "turn_id")),
+            at,
+            detail,
+            "codex_native_transcript",
+        );
+        error["error_kind"] = json!(category(&format!(
+            "{} {}",
+            failure["codex_error_info"], detail
+        )));
+        errors.push(error);
+    }
+    if errors.len() > 8 {
+        errors.drain(..errors.len() - 8);
+    }
+    Ok((errors, progress))
+}
+
+fn codex(record: &Value) -> (Vec<Value>, f64) {
+    let mut errors = codex_logs(record).unwrap_or_default();
+    let (native_errors, native_progress) = codex_transcript(record).unwrap_or_default();
+    errors.extend(native_errors);
+    errors.sort_by(|a, b| {
+        a["at"]
+            .as_f64()
+            .unwrap_or(0.0)
+            .total_cmp(&b["at"].as_f64().unwrap_or(0.0))
+    });
+    // Prefer the terminal completion record to a matching earlier log entry.
+    let mut unique: Vec<Value> = Vec::new();
+    for error in errors {
+        unique.retain(|previous| {
+            previous["detail"] != error["detail"]
+                || (previous["at"].as_f64().unwrap_or(0.0) - error["at"].as_f64().unwrap_or(0.0))
+                    .abs()
+                    > 3.0
+        });
+        unique.push(error);
+    }
+    (unique, native_progress)
+}
+
 pub(super) fn enrich(record: &Value, output: &mut Value, live: bool) {
-    let errors = if record["agent"] == "codex" {
-        codex(record).unwrap_or_default()
+    let (errors, native_progress) = if record["agent"] == "codex" {
+        codex(record)
     } else {
-        vec![]
+        (vec![], 0.0)
     };
     let progress = record["last_main_progress_at"].as_f64().unwrap_or_else(|| {
         // Existing sessions predate the dedicated root-progress field. Child
@@ -161,7 +317,16 @@ pub(super) fn enrich(record: &Value, output: &mut Value, live: bool) {
              .optional().ok().flatten()).and_then(|s|serde_json::from_str::<Value>(&s).ok())
              .and_then(|event|event["at"].as_f64()).unwrap_or(0.0)
     })
-        .max(record["turn_started"].as_f64().unwrap_or(0.0));
+        .max(record["turn_started"].as_f64().unwrap_or(0.0))
+        .max(native_progress);
+    output["provider_status_at"] = json!(progress
+        .max(
+            errors
+                .last()
+                .and_then(|error| error["at"].as_f64())
+                .unwrap_or(0.0)
+        )
+        .max(record["provider_error"]["at"].as_f64().unwrap_or(0.0)));
     let error = errors
         .last()
         .filter(|e| e["at"].as_f64().unwrap_or(0.0) > progress)
@@ -169,6 +334,7 @@ pub(super) fn enrich(record: &Value, output: &mut Value, live: bool) {
             record["provider_error"]
                 .is_object()
                 .then_some(&record["provider_error"])
+                .filter(|error| error["at"].as_f64().unwrap_or(0.0) > progress)
         });
     if live && output["process_state"] != "exited" {
         if let Some(error) = error {
@@ -210,12 +376,17 @@ mod tests {
         enrich(&record, &mut output, false);
         assert_eq!(output["phase"], "idle");
         record["conversation_id"] = json!(uuid::Uuid::new_v4().to_string());
-        assert!(codex(&record).unwrap().is_empty());
+        assert!(codex(&record).0.is_empty());
     }
     #[test]
     fn provider_failure_kinds_keep_generic_failures_visible() {
         for (message, kind) in [
             ("quota exhausted", "quota"),
+            (
+                "429 usage limit reached; model capacity unavailable",
+                "quota",
+            ),
+            ("7d limit reached. Resets in 4d18h", "quota"),
             ("429 Too Many Requests", "rate_limit"),
             ("authentication_failed", "authentication"),
             ("overloaded", "capacity"),
@@ -225,5 +396,74 @@ mod tests {
         ] {
             assert_eq!(category(message), kind);
         }
+    }
+
+    #[test]
+    fn compaction_failures_use_exact_native_emitters_and_messages() {
+        let temp = tempfile::tempdir().unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let db = Connection::open(temp.path().join("logs_2.sqlite")).unwrap();
+        db.execute_batch("CREATE TABLE logs(id INTEGER, ts INTEGER, ts_nanos INTEGER, thread_id TEXT, target TEXT, feedback_log_body TEXT);").unwrap();
+        for (n,target,body) in [
+            (1,"codex_core::tasks","session_loop: session task returned an unexpected error err=You’ve hit your usage limit."),
+            (2,"codex_core::session::turn","run_turn: Post-turn compaction failed; preserving the completed turn error=You’ve hit your usage limit."),
+            (3,"codex_core::tools","run_turn: Turn error: quota exhausted"),
+            (4,"codex_core::session::turn","update_rate_limits: usage limit reached"),
+            (5,"codex_core::session::turn","test fixture containing Turn error: quota exhausted"),
+            (6,"codex_core::session::turn","run_turn: Post-turn compaction failed; preserving the completed turn error=Model at capacity"),
+        ] {
+            db.execute("INSERT INTO logs VALUES(?,100,0,?,?,?)",rusqlite::params![n,id,target,body]).unwrap();
+        }
+        let record = json!({"agent":"codex","agent_home":temp.path(),"conversation_id":id,"last_main_progress_at":90});
+        assert_eq!(codex(&record).0.len(), 1); // Duplicate native details merge.
+        let mut output = json!({"phase":"compacting","activity":"busy","process_state":"running"});
+        enrich(&record, &mut output, true);
+        assert_eq!(output["phase"], "error");
+        assert_eq!(output["provider_error"]["error_kind"], "quota");
+        assert_eq!(output["activity_summary"], "Usage limit reached");
+    }
+
+    #[test]
+    fn native_failed_completion_survives_missing_logs_then_clears_on_new_progress() {
+        let temp = tempfile::tempdir().unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let path = temp.path().join(format!("rollout-{id}.jsonl"));
+        let at = search::timestamp(&json!("2026-10-09T08:00:00Z"));
+        let rows = [
+            json!({"type":"session_meta","payload":{"id":id}}),
+            json!({"type":"event_msg","timestamp":"2026-10-09T08:00:00Z","payload":{"type":"task_complete","turn_id":"failed-turn","error":{"message":"Provider refused the request","codex_error_info":"usage_limit_exceeded"}}}),
+            json!({"type":"event_msg","timestamp":"2026-10-09T08:00:01Z","payload":{"type":"agent_message","message":"Example: usage limit reached"}}),
+            json!({"type":"response_item","timestamp":"2026-10-09T08:00:02Z","payload":{"type":"function_call_output","error":{"message":"tool output quota exhausted"}}}),
+            json!({"type":"event_msg","timestamp":"2026-10-09T08:00:03Z","payload":{"type":"task_complete","turn_id":"failed-turn","error":null}}),
+        ];
+        std::fs::write(&path,rows.iter().map(|row|row.to_string()+"\n").collect::<String>()
+            + "{\"type\":\"event_msg\",\"payload\":{\"type\":\"error\",\"message\":\"incomplete").unwrap();
+        let mut record = json!({"agent":"codex","agent_home":temp.path(),"conversation_id":id,"transcript":path,"last_main_progress_at":at-0.1});
+        let mut output = json!({"process_state":"running","activity":"busy","phase":"tool"});
+        enrich(&record, &mut output, true);
+        assert_eq!(output["phase"], "error");
+        assert_eq!(output["activity"], "attention");
+        assert_eq!(output["provider_error"]["error_kind"], "quota");
+        assert_eq!(output["provider_errors"].as_array().unwrap().len(), 1);
+        record["last_main_progress_at"] = json!(at + 10.0);
+        output = json!({"phase":"working","activity":"busy"});
+        enrich(&record, &mut output, true);
+        assert_eq!(output["phase"], "working");
+        assert!(output["provider_error"].is_null());
+        record["last_main_progress_at"] = json!(at - 1.0);
+        std::fs::write(&path,rows.iter().map(|row|row.to_string()+"\n").collect::<String>()
+            + &json!({"type":"event_msg","timestamp":"2026-10-09T08:01:00Z","payload":{"type":"task_started","turn_id":"new-turn"}}).to_string()+"\n").unwrap();
+        output = json!({"phase":"working","activity":"busy"});
+        enrich(&record, &mut output, true);
+        assert_eq!(output["phase"], "working"); // Native progress survives missing hooks.
+                                                // Even a correctly named file cannot supply another thread's state.
+        std::fs::write(
+            &path,
+            json!({"type":"session_meta","payload":{"id":uuid::Uuid::new_v4().to_string()}})
+                .to_string()
+                + "\n",
+        )
+        .unwrap();
+        assert!(codex_transcript(&record).is_err());
     }
 }

@@ -145,6 +145,7 @@ public:
         item->setData(sessionLabel(session), SessionRoles::Title);
         item->setData(projectContext(session), SessionRoles::Meta);
         item->setData(status(session), SessionRoles::Status);
+        item->setData(session.phase=="error", SessionRoles::Failure);
         item->setData(currentAction(session).simplified(), SessionRoles::Detail);
         item->setData(session.cmd, SessionRoles::Agent);
         item->setData(alias, SessionRoles::Host);

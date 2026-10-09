@@ -417,7 +417,8 @@ void ActivityView::setActivity(const QJsonObject &details, const QJsonArray &eve
     }
     for (const auto &value : details.value("provider_errors").toArray()) {
         const auto error = value.toObject();
-        if (error.value("type") == "StopFailure" && error.value("source") == "codex_native_log") m_events.append(error);
+        if (error.value("type") == "StopFailure" && (error.value("source") == "codex_native_log"
+            || error.value("source") == "codex_native_transcript")) m_events.append(error);
     }
     render(true);
 }

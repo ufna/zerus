@@ -6,7 +6,7 @@
 namespace SessionRoles {
 enum Role { Key = Qt::UserRole, Title, Meta, Status, Detail, Agent, Host, Children,
             Group, Header, Identity, Collapsed, Total, Attention, Working, Model, Effort, MachineColor, MachineName, Unread,
-            ChildId, ParentKey, HasChildren, Expanded, ProjectColor, ProjectVivid, LaunchId, WorkingSince, ReviewLater, Draft };
+            ChildId, ParentKey, HasChildren, Expanded, ProjectColor, ProjectVivid, LaunchId, WorkingSince, ReviewLater, Draft, Failure };
 }
 
 // Drops express placement relative to an identity, never a filtered row number.

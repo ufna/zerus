@@ -1,5 +1,6 @@
 #pragma once
 #include "HgsClient.h"
+#include "SessionPresentation.h"
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDateTime>
@@ -38,6 +39,8 @@ class Panel : public QFrame {
 public:
     std::function<void(const QJsonObject &)> action;
     std::function<void()> openSettings;
+    std::function<void()> openTerminal;
+    std::function<void()> refreshUsage;
     explicit Panel(QWidget *parent=nullptr):QFrame(parent) {
         setObjectName("recoveryPanel"); setFrameShape(QFrame::StyledPanel);setFocusPolicy(Qt::StrongFocus);
         auto *layout=new QVBoxLayout(this); layout->setContentsMargins(14,10,14,10); layout->setSpacing(8);
@@ -45,7 +48,13 @@ public:
         m_detail=new QLabel; m_detail->setTextFormat(Qt::PlainText);m_detail->setWordWrap(true); layout->addWidget(m_detail);
         auto *row=new QHBoxLayout; m_now=new QPushButton(tr("Retry now"));m_now->setObjectName("recoveryNow");m_cancel=new QPushButton(tr("Cancel retry"));m_cancel->setObjectName("recoveryCancel");
         m_history=new QPushButton(tr("Attempts…"));m_history->setObjectName("recoveryHistory");
-        auto *settings=new QPushButton(tr("Settings…")); row->addWidget(m_now);row->addWidget(m_cancel);row->addWidget(m_history);row->addStretch();row->addWidget(settings);layout->addLayout(row);
+        m_terminal=new QPushButton(tr("Open Terminal"));m_terminal->setObjectName("providerErrorTerminal");
+        m_usage=new QPushButton(tr("Refresh usage"));m_usage->setObjectName("providerErrorRefresh");
+        m_help=new QLabel;m_help->setObjectName("providerErrorHelp");m_help->setWordWrap(true);m_help->setTextFormat(Qt::PlainText);layout->addWidget(m_help);
+        auto *settings=new QPushButton(tr("Settings…"));m_settings=settings;
+        row->addWidget(m_now);row->addWidget(m_cancel);row->addWidget(m_history);row->addWidget(m_terminal);row->addWidget(m_usage);row->addStretch();row->addWidget(settings);layout->addLayout(row);
+        connect(m_terminal,&QPushButton::clicked,this,[this]{if(openTerminal)openTerminal();});
+        connect(m_usage,&QPushButton::clicked,this,[this]{if(refreshUsage)refreshUsage();});
         connect(m_history,&QPushButton::clicked,this,[this]{
             QDialog dialog(this);dialog.setObjectName("recoveryHistoryDialog");dialog.setWindowTitle(tr("Recovery attempts — hgs zerus"));dialog.resize(560,360);
             auto *layout=new QVBoxLayout(&dialog);layout->setContentsMargins(20,20,20,20);layout->setSpacing(12);
@@ -69,11 +78,26 @@ public:
         const auto job=details.value("recovery").toObject();
         if(job.value("id")!=m_job.value("id")) {m_pending=false;m_error.clear();}
         m_job=job;m_online=online;
-        setVisible(!job.isEmpty() && job.value("state")!="succeeded"); refresh();
+        m_failure=details.value("phase")=="error"?details.value("provider_error").toObject():QJsonObject();
+        setVisible((!job.isEmpty() && job.value("state")!="succeeded") || !m_failure.isEmpty()); refresh();
     }
     void finished(const QString &error) { m_pending=false;m_error=error;refresh(); }
 private:
     void refresh() {
+        const bool failure=!m_failure.isEmpty() && (m_job.isEmpty() || m_job.value("state")=="succeeded"
+            || m_failure.value("error_kind")=="quota");
+        m_terminal->setVisible(failure);m_usage->setVisible(failure && m_failure.value("error_kind")=="quota");
+        m_terminal->setEnabled(m_online);m_usage->setEnabled(m_online);
+        m_help->setVisible(failure);m_settings->setVisible(!failure);m_history->setVisible(!failure);
+        if(failure) {
+            m_status->setText(SessionPresentation::providerFailure(m_failure));
+            const auto detail=m_failure.value("detail").toString();
+            m_detail->setText(detail.size()>500?detail.left(500)+QStringLiteral("…"):detail);m_detail->setToolTip(detail);
+            m_help->setText(m_failure.value("error_kind")=="quota"
+                ? tr("The provider stopped this turn. Wait for the limit to reset or restore account access, then refresh usage and send a message to continue. Your draft is kept; Zerus will not retry automatically.")
+                : tr("The provider stopped this turn. Check Terminal and resolve the error, then send a message to continue. Your draft is kept."));
+            m_now->hide();m_cancel->setVisible(m_job.value("state")=="waiting");m_cancel->setEnabled(m_online&&!m_pending);return;
+        }
         const auto state=m_job.value("state").toString(); const bool waiting=state=="waiting";
         if(!waiting&&(m_now->hasFocus()||m_cancel->hasFocus()))setFocus(Qt::OtherFocusReason);
         const auto delays=m_job.value("delays").toArray();const bool infinite=!delays.isEmpty()&&delays.last().toInt()==0;
@@ -86,7 +110,7 @@ private:
         m_now->setEnabled(waiting&&m_online&&!m_pending&&m_job.value("not_before").toDouble()<=QDateTime::currentMSecsSinceEpoch()/1000.0);
         m_cancel->setEnabled(waiting&&m_online&&!m_pending);
     }
-    QJsonObject m_job; bool m_online=false,m_pending=false; QString m_error;
-    QLabel *m_status,*m_detail; QPushButton *m_now,*m_cancel,*m_history;
+    QJsonObject m_job,m_failure; bool m_online=false,m_pending=false; QString m_error;
+    QLabel *m_status,*m_detail,*m_help; QPushButton *m_now,*m_cancel,*m_history,*m_terminal,*m_usage,*m_settings;
 };
 }

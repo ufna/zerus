@@ -99,6 +99,7 @@ private slots:
     void kimiCommentaryDoesNotReplaceEmptyStop();
     void emptyPromptHooksDoNotCreateCards();
     void providerErrorsStayVisibleAndStable();
+    void providerErrorsStayVisibleAndStable_data();
     void attachmentsStayWithTheirMessageAndOpenExactFile();
     void attachmentThumbnailArrivesWithoutMovingTranscript();
     void liveCompactionProgressPreservesTranscriptAndClears();
@@ -780,10 +781,17 @@ void TestActivityView::emptyPromptHooksDoNotCreateCards()
     QVERIFY(!text.contains("UserPromptSubmit"));
 }
 
+void TestActivityView::providerErrorsStayVisibleAndStable_data()
+{
+    QTest::addColumn<QString>("source");
+    QTest::newRow("native-log")<<QString("codex_native_log");
+    QTest::newRow("native-completion")<<QString("codex_native_transcript");
+}
 void TestActivityView::providerErrorsStayVisibleAndStable()
 {
+    QFETCH(QString,source);
     ActivityView view;view.setSessionKey("codex/project/session");
-    const QJsonObject error{{"type","StopFailure"},{"source","codex_native_log"},{"message_id","codex-error-1"},
+    const QJsonObject error{{"type","StopFailure"},{"source",source},{"message_id","codex-error-1"},
         {"at",1791018002.5},{"detail","Selected model is at capacity. Please try a different model."}};
     const QJsonObject details{{"provider_errors",QJsonArray{error,error}}};
     QJsonArray events{journalEvent(1,"UserPromptSubmit","Start"),journalEvent(2,"PostToolUse","Success","Bash")};

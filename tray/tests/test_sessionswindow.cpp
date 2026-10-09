@@ -142,6 +142,7 @@ private slots:
     void messageDeliveryKeepsSessionIdentityAndDrafts();
     void providerErrorWaitsForNativePrompt_data();
     void providerErrorWaitsForNativePrompt();
+    void quotaFailureExplainsRecoveryAndKeepsDraft();
     void firstMessageWaitsForNativePrompt_data();
     void firstMessageWaitsForNativePrompt();
     void failedMessagesReconcileAndRetryWithoutLosingDrafts();
@@ -1497,6 +1498,36 @@ void TestSessionsWindow::providerErrorWaitsForNativePrompt()
     details["phase"] = state; details["error"] = "Tracking mismatch"; update(); QVERIFY(!send->isEnabled());
     details.remove("error"); details["process_state"] = "exited"; update(); QVERIFY(!send->isEnabled());
     QCOMPARE(composer->editor()->toPlainText(), QString("повтори"));
+}
+
+void TestSessionsWindow::quotaFailureExplainsRecoveryAndKeepsDraft()
+{
+    auto state=fleet();auto box=state.local();box.sessions[0].runId="run-one";box.sessions[0].conversationId="conversation-one";state.setLocal(box,0);
+    SessionsWindow window(script());window.setFleet(state);window.show();window.showSession({},"codex/hgs/dashboard");
+    auto *client=window.findChild<HgsClient *>();auto *composer=window.findChild<MessageComposer *>("messageComposer");
+    QTRY_VERIFY(composer->findChild<QLabel *>("messageStatus")->text().contains("starting"));
+    composer->editor()->setPlainText("Continue after account access is restored");
+    QJsonObject details{{"tracked",true},{"run_id","run-one"},{"conversation_id","conversation-one"},
+        {"last_event_at",2000000000},{"runtime_state","live"},{"process_state","running"},
+        {"activity","attention"},{"phase","error"},{"error_message_can_send",true},
+        {"provider_error",QJsonObject{{"error_kind","quota"},{"detail","7d limit reached. Resets in 4d18h"}}},
+        {"events",QJsonArray{}},{"cursor",0}};
+    client->inspectionReady({},"codex/hgs/dashboard",details,{});
+    auto *panel=window.findChild<QFrame *>("recoveryPanel");QVERIFY(panel && panel->isVisible());
+    const auto *row=window.findChild<SessionList *>("sessionList")->currentItem();
+    QCOMPARE(row->data(SessionRoles::Status).toString(),QString("Usage limit reached"));
+    QVERIFY(!row->data(SessionRoles::Working).toBool());QVERIFY(row->data(SessionRoles::Attention).toBool());
+    QVERIFY(panel->findChild<QLabel *>("providerErrorHelp")->text().contains("will not retry automatically"));
+    QVERIFY(panel->findChild<QPushButton *>("providerErrorTerminal")->isVisible());
+    QVERIFY(panel->findChild<QPushButton *>("providerErrorRefresh")->isVisible());
+    QCOMPARE(composer->editor()->toPlainText(),QString("Continue after account access is restored"));
+    const auto preview=qEnvironmentVariable("HGS_QUOTA_PREVIEW");
+    if(!preview.isEmpty()) {QDir().mkpath(preview);window.resize(1120,800);QTest::qWait(30);QVERIFY(window.grab().save(preview+"/quota-failure.png"));}
+    // Restored native progress clears the failure without submitting the draft.
+    details["phase"]="working";details["activity"]="busy";details.remove("provider_error");
+    client->inspectionReady({},"codex/hgs/dashboard",details,{});
+    QVERIFY(!panel->isVisible());
+    QCOMPARE(composer->editor()->toPlainText(),QString("Continue after account access is restored"));
 }
 
 void TestSessionsWindow::firstMessageWaitsForNativePrompt_data()
