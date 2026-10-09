@@ -9,11 +9,15 @@
 inline QIcon workspaceIcon(const QString &name, const QColor &color)
 {
     QIcon icon;
+    const QIcon github = name == "github" ? QIcon(":/hgs/icons/github-mark.svg") : QIcon();
     for (int size : {16, 20, 24, 32, 40, 48}) {
         QPixmap pm(size, size); pm.fill(Qt::transparent);
         QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing); p.scale(size / 24., size / 24.);
         p.setPen(QPen(color, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin)); p.setBrush(Qt::NoBrush);
-        if (name == "sessions" || name == "all") {
+        if (name == "github") {
+            p.resetTransform(); p.drawPixmap(0, 0, github.pixmap(size, size));
+            p.setCompositionMode(QPainter::CompositionMode_SourceIn); p.fillRect(pm.rect(), color);
+        } else if (name == "sessions" || name == "all") {
             p.drawRoundedRect(QRectF(4, 4, 16, 7), 2, 2); p.drawRoundedRect(QRectF(4, 14, 16, 6), 2, 2);
             p.drawPoint(QPointF(8, 7.5)); p.drawLine(QPointF(12, 7.5), QPointF(16, 7.5));
         } else if (name == "machines") {
@@ -29,9 +33,12 @@ inline QIcon workspaceIcon(const QString &name, const QColor &color)
             QPainterPath folder; folder.moveTo(3, 8); folder.lineTo(3, 5); folder.lineTo(10, 5);
             folder.lineTo(12, 8); folder.lineTo(21, 8); folder.lineTo(21, 20); folder.lineTo(3, 20); folder.lineTo(3, 17);
             p.drawPath(folder); p.drawLine(2, 13, 13, 13); p.drawLine(9, 9, 13, 13); p.drawLine(9, 17, 13, 13);
-        } else if (name == "pin") {
+        } else if (name == "pin" || name == "unpinned" || name == "pinned") {
+            if (name == "unpinned") { p.translate(12, 12); p.rotate(-35); p.translate(-12, -12); }
+            if (name == "pinned") p.setBrush(color);
             QPainterPath path; path.moveTo(8, 3); path.lineTo(16, 3); path.lineTo(15, 9); path.lineTo(19, 13);
             path.lineTo(5, 13); path.lineTo(9, 9); path.closeSubpath(); p.drawPath(path); p.drawLine(12, 13, 12, 21);
+            if (name == "pinned") p.drawLine(8, 19, 16, 19);
         } else if (name == "accounts") {
             p.drawEllipse(QPointF(10, 7), 3.5, 3.5);
             QPainterPath path; path.moveTo(3, 20); path.cubicTo(3, 11, 17, 11, 17, 20); p.drawPath(path);

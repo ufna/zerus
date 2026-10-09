@@ -1,0 +1,26 @@
+# Replace this reserved hostname with your public relay domain before deployment.
+relay.example.com {
+    @uploads {
+        method POST
+        path /v1/requests
+    }
+    handle @uploads {
+        request_body {
+            max_size 29MB
+        }
+        reverse_proxy relay:8787 {
+            transport http {
+                response_header_timeout 75s
+                read_timeout 75s
+                write_timeout 75s
+            }
+        }
+    }
+    handle {
+        request_body {
+            max_size 1MB
+        }
+        reverse_proxy relay:8787
+    }
+    # Access logging is deliberately disabled. Never add headers/body logging.
+}

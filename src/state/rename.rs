@@ -83,7 +83,9 @@ fn current_session_name(id: &str) -> Result<Option<String>> {
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned()))
 }
 
-pub(super) fn dispatch(args: &[String], dry: bool) -> Result<i32> {
+pub(super) fn dispatch(args: &[String], dry: bool) -> Result<i32> { dispatch_scoped(args,dry,None) }
+
+pub(super) fn dispatch_scoped(args: &[String], dry: bool, scope: Option<&session_action::Scope>) -> Result<i32> {
     let archive_id = match args {
         [_, _] => None,
         [_, _, flag, id] if flag == "--archive" => Some(id.as_str()),
@@ -104,6 +106,7 @@ pub(super) fn dispatch(args: &[String], dry: bool) -> Result<i32> {
     }
     if let Some(id) = archive_id {
         let mut record = archive::read_archive(old, id)?;
+        if let Some(scope)=scope {scope.check(&record)?;}
         if old != new && !dry {
             anchor(&mut record);
             record["name"] = json!(new);
@@ -111,14 +114,17 @@ pub(super) fn dispatch(args: &[String], dry: bool) -> Result<i32> {
             for key in ["rename_shadow", "rename_target", "legacy_shadow"] {
                 record.as_object_mut().unwrap().remove(key);
             }
+            if let Some(scope)=scope {scope.changing();}
             atomic(&archive::path(id)?, &format!("{record}\n"))?;
         }
+        if let Some(scope)=scope {scope.result(new,string(&record,"run_id"),string(&record,"conversation_id"),Some(id));}
     } else {
         let record = if record_path(old).exists() {
             Some(read(old)?)
         } else {
             None
         };
+        if let Some(scope)=scope {scope.check(record.as_ref().ok_or("Scoped rename requires a tracked binding")?)?;}
         let live_panes = snapshot.get(old);
         if record.is_none() && live_panes.is_none() {
             return Err(format!("{old}: session not found"));
@@ -151,6 +157,7 @@ pub(super) fn dispatch(args: &[String], dry: bool) -> Result<i32> {
             let path = root()
                 .join("renames")
                 .join(format!("{}.json", uuid::Uuid::new_v4()));
+            if let Some(scope)=scope {scope.changing();}
             atomic(&path, &format!("{transaction}\n"))?;
             if let Some(id) = id {
                 if let Err(error) = tmux(
@@ -165,10 +172,12 @@ pub(super) fn dispatch(args: &[String], dry: bool) -> Result<i32> {
             remove(&path)?;
         }
     }
-    println!(
+    if let Some(scope)=scope {
+        if archive_id.is_none() {scope.result_record(&read(new)?);}
+    } else {println!(
         "hgs: {}renamed {old} to {new}",
         if dry { "would have " } else { "" }
-    );
+    );}
     Ok(0)
 }
 

@@ -1,0 +1,1125 @@
+package app.zerus.mobile
+
+import android.Manifest
+import android.content.Intent
+import android.os.Build
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.SystemBarStyle
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.viewModels
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import org.json.JSONArray
+import org.json.JSONObject
+
+private val Mint = Color(0xFF67E8CB)
+private val Amber = Color(0xFFFFCB7D)
+private val Background = Color(0xFF101517)
+private val Surface = Color(0xFF1A2225)
+private val Muted = Color(0xFF9AACB2)
+private val Scheme = darkColorScheme(primary = Mint, onPrimary = Background, secondary = Amber,
+    background = Background, surface = Surface, surfaceContainer = Surface, onSurface = Color(0xFFE9F0F2),
+    onSurfaceVariant = Muted, outline = Color(0xFF354449))
+
+class MainActivity : ComponentActivity() {
+    private val model: ZerusViewModel by viewModels()
+    private var invitation by mutableStateOf<PairingInvite?>(null)
+    private val requestNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    private val fileLaunchers = mutableMapOf<String, ActivityResultLauncher<Array<String>>>()
+    private fun fileLauncher(selectionId: String): ActivityResultLauncher<Array<String>> = fileLaunchers.getOrPut(selectionId) {
+        activityResultRegistry.register("zerus-files:$selectionId", ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+            model.finishAttachmentPick(uris, selectionId)
+        }
+    }
+    override fun onDestroy() { fileLaunchers.values.forEach { it.unregister() }; super.onDestroy() }
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.rgb(16, 21, 23)))
+        readIntent(intent)
+        model.pickerId.takeIf { it.isNotBlank() }?.let { fileLauncher(it) }
+        setContent { MaterialTheme(colorScheme = Scheme) {
+            ZerusApp(model, invitation, onInvitationUsed = { invitation = null }, onNotifications = {
+                if (Build.VERSION.SDK_INT >= 33) requestNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }, onLive = { enabled ->
+                val service = Intent(this, LiveConnectionService::class.java)
+                if (enabled) startForegroundService(service) else stopService(service)
+            }, onAttach = { target ->
+                model.beginAttachmentPick(target) { selectionId ->
+                    if (isDestroyed || isFinishing) return@beginAttachmentPick
+                    try { fileLauncher(selectionId).launch(arrayOf("*/*")) }
+                    catch (_: Exception) { model.cancelAttachmentPick() }
+                }
+            }, onPush = { PushRegistration.choose(this) }, onFirebase = {
+                Class.forName("app.zerus.mobile.OptionalFirebase").getMethod("register", android.content.Context::class.java).invoke(null, this)
+            })
+        } }
+    }
+    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); readIntent(intent) }
+    private fun readIntent(intent: Intent) {
+        intent.data?.toString()?.let { PairingInvite.parse(it) }?.let { invitation = it;intent.data = null }
+        val session = intent.getStringExtra("session")
+        val computer = intent.getStringExtra("computer")
+        if (session != null) model.openFromNotification(intent.getStringExtra("connection").orEmpty(), computer.orEmpty(), session)
+    }
+}
+
+@Composable private fun ZerusApp(model: ZerusViewModel, invitation: PairingInvite?, onInvitationUsed: () -> Unit,
+    onNotifications: () -> Unit, onLive: (Boolean) -> Unit, onAttach: (Target) -> Unit, onPush: () -> Unit, onFirebase: () -> Unit) {
+    val obscuration = remember { ConversationObscuration() }
+    CompositionLocalProvider(LocalConversationObscuration provides obscuration) {
+        ZerusAppContent(model,invitation,onInvitationUsed,onNotifications,onLive,onAttach,onPush,onFirebase)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable private fun ZerusAppContent(model: ZerusViewModel, invitation: PairingInvite?, onInvitationUsed: () -> Unit,
+    onNotifications: () -> Unit, onLive: (Boolean) -> Unit, onAttach: (Target) -> Unit, onPush: () -> Unit, onFirebase: () -> Unit) {
+    var tab by rememberSaveable { mutableIntStateOf(0) }
+    var handledReturnSequence by remember(model) { mutableLongStateOf(model.returnToSessionsSequence) }
+    LaunchedEffect(model.returnToSessionsSequence) {
+        val sequence = model.returnToSessionsSequence
+        if(sequence > 0 && sequence != handledReturnSequence) tab = 0
+        handledReturnSequence = sequence
+    }
+    var pairing by rememberSaveable { mutableStateOf(false) }
+    var server by rememberSaveable { mutableStateOf("https://relay.zerus.dev") }
+    var code by remember { mutableStateOf("") }
+    var disconnect by remember { mutableStateOf<Connection?>(null) }
+    var review by remember { mutableStateOf<Draft?>(null) }
+    var reviewOutgoing by remember { mutableStateOf<OutgoingMessage?>(null) }
+    var discard by remember { mutableStateOf<Draft?>(null) }
+    var stopRequest by remember { mutableStateOf<Pair<Session, Double>?>(null) }
+    val readingPositions = remember { mutableMapOf<String, ConversationAnchor>() }
+    var messageJump by remember { mutableStateOf<ConversationMessageJump?>(null) }
+    if(pairing || disconnect != null || review != null || reviewOutgoing != null || discard != null || stopRequest != null) ObscureConversation()
+    val live = LiveConnectionService.running
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(model, lifecycle) {
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_STOP) model.flushDrafts() }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(invitation) { invitation?.let { server = it.server; code = it.code; tab = 3; pairing = true; onInvitationUsed() } }
+    LaunchedEffect(model, lifecycle, tab) { lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+        while (true) {
+            delay(5_000)
+            if (model.selected != null) model.refreshActivity()
+            else if (tab != 2) model.refresh()
+        }
+    } }
+    fun back() {
+        if (model.selected == null && tab == 0 && model.sessionProjectScope != null) { model.clearSessionScope(); tab = 1 }
+        else model.back()
+    }
+    BackHandler(model.selected != null || tab == 1 && model.selectedProject != null || tab == 0 && model.sessionProjectScope != null) { back() }
+    val selected = model.selected
+    val project = if (tab == 1) model.selectedProject else model.sessionProjectScope.takeIf { tab == 0 }
+    Scaffold(modifier = Modifier.fillMaxSize(), containerColor = Background,
+        topBar = { TopAppBar(title = {
+            if (selected == null && project != null) Text(project.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            else if (selected == null) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Image(painterResource(R.drawable.zerus_brand), "Zerus", Modifier.size(32.dp))
+                Text("Zerus", fontWeight = FontWeight.SemiBold, letterSpacing = (-0.5).sp)
+                if (model.demo) Tag("PREVIEW", Amber)
+            } else Column { Text(selected.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 18.sp)
+                val status = if (model.activity == null && !model.demo) "Checking…" else selectedStatus(selected, model.activity)
+                val freshness = if (model.demo) " / Preview" else if (model.activityVerified || model.activity == null) "" else " / Last known"
+                val provider = if (selected.target.agentId.isNotBlank()) model.activity?.string("provider").orEmpty().ifBlank { selected.agent } else selected.agent
+                Text(DesktopIcons.providerName(provider) + " / " + status + freshness, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall,
+                    color = if (model.activity == null && !model.demo) Muted else Color(DesktopSessionPalette.colors(
+                        DesktopSessionPalette.badge(SelectedSessionPresentation.session(selected,model.activity), true).kind, MaterialTheme.colorScheme.background.luminance() < .5f).foreground)) }
+        }, navigationIcon = { if (selected != null || project != null) IconButton(onClick = { back() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+            actions = {
+                UpdatesControl(model,showButton=selected == null)
+                if (selected != null && selected.target.agentId.isBlank() && selected.target.archiveId.isBlank() && model.activityVerified && model.activity?.optBoolean("interrupt_supported") == true)
+                    IconButton(onClick = { stopRequest = selected to model.activity!!.optDouble("turn_started") }) {
+                        Icon(Icons.Default.StopCircle, "Stop turn")
+                    }
+                IconButton(onClick = { if (selected == null) model.refresh(explicit = true) else model.refreshActivity(explicit = true) }) {
+                    Icon(Icons.Default.Refresh, "Refresh")
+                }
+                if (selected == null) NewSessionButton(model)
+            }, colors = TopAppBarDefaults.topAppBarColors(containerColor = Background)) },
+        bottomBar = { if (selected == null) NavigationBar(containerColor = Background) {
+            listOf("Sessions" to DesktopIcons.Sessions, "Projects" to DesktopIcons.Projects, "Drafts" to Icons.Default.EditNote, "Machines" to DesktopIcons.Machines).forEachIndexed { i, (label, icon) ->
+                NavigationBarItem(selected = tab == i, onClick = { tab = i; model.clearSessionScope(); model.clearProject() }, icon = { Icon(icon, label) }, label = { Text(label) })
+            }
+        } }) { padding ->
+        Column(Modifier.padding(padding).consumeWindowInsets(padding).fillMaxSize()) {
+            Box(Modifier.fillMaxWidth().height(4.dp)) {
+                if (model.busy || if (selected == null) model.catalogProgress else model.detailProgress)
+                    LinearProgressIndicator(Modifier.fillMaxWidth(), color = Mint)
+            }
+            if (selected != null) SessionHeaderTools(model,selected) { messageJump = it }
+            if (model.error.isNotBlank()) Surface(color = Color(0xFF3A2821), modifier = Modifier.fillMaxWidth()) {
+                Row(Modifier.padding(start = 16.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(model.error, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                    IconButton(onClick = { model.clearError() }) { Icon(Icons.Default.Close, "Dismiss error") }
+                }
+            }
+            if (selected != null) Conversation(model, selected, onReview = { review = it }, onReviewOutgoing = { reviewOutgoing = it }, onAttach = onAttach, positions = readingPositions,jumpRequest = messageJump,onJumpConsumed = { messageJump = null })
+            else when (tab) {
+                0 -> SessionsScreen(model, onPair = { tab = 3 })
+                1 -> if (project != null) ProjectDetails(model, project, onViewSessions = { model.viewProjectSessions(project); tab = 0 })
+                    else ProjectsScreen(model, onPair = { tab = 3 })
+                2 -> DraftsScreen(model, onReview = { review = it }, onReviewOutgoing = { reviewOutgoing = it }, onDiscard = { discard = it })
+                else -> MachinesScreen(model, live, onPair = { pairing = true }, onDisconnect = { disconnect = it },
+                    onNotifications = { model.updateNotifications(it); if (it) onNotifications() }, onLive = {
+                        if (it) onNotifications(); onLive(it)
+                    }, onPush = { onNotifications(); onPush() }, onFirebase = { onNotifications(); onFirebase() })
+            }
+        }
+    }
+    LaunchSessionDialog(model)
+    if (pairing) AlertDialog(onDismissRequest = { if (!model.busy) { pairing = false;code = "" } }, title = { Text("Pair a workspace") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Text("Scan an invitation from your machine, or enter its code. Review the gateway before pairing.", color = Muted)
+            ScanPairingButton(enabled = !model.busy) { invite -> server = invite.server;code = invite.code }
+            OutlinedTextField(server, { server = it }, label = { Text("Gateway URL") }, placeholder = { Text("https://zerus.example") }, singleLine = true)
+            OutlinedTextField(code, { code = it }, label = { Text("Invitation code") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
+            Text("The gateway can read relayed messages. Credentials and drafts stay encrypted on this phone.", style = MaterialTheme.typography.bodySmall, color = Muted)
+        } }, confirmButton = { TextButton(enabled = !model.busy && model.storageReady && code.isNotBlank() && server.isNotBlank(),
+            onClick = { model.pair(server, code) { pairing = false; code = ""; onNotifications() } }) { Text("Pair") } },
+        dismissButton = { TextButton(onClick = { pairing = false;code = "" }, enabled = !model.busy) { Text("Cancel") } })
+    disconnect?.let { connection -> AlertDialog(onDismissRequest = { disconnect = null }, title = { Text("Disconnect ${connection.displayName}?") },
+        text = { Text("This removes the gateway credential from this phone. Saved drafts remain available.") },
+        confirmButton = { TextButton(onClick = { model.disconnect(connection); disconnect = null }) { Text("Disconnect") } },
+        dismissButton = { TextButton(onClick = { disconnect = null }) { Text("Cancel") } }) }
+    review?.let { draft -> AlertDialog(onDismissRequest = { review = null }, title = { Text("Review unconfirmed delivery") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Your message may already have reached ${draft.target.session}. Check its conversation and receipt before preparing another send.")
+            SelectionContainer { Text(draft.text.ifBlank { draft.answers }, maxLines = 8, overflow = TextOverflow.Ellipsis) }
+            Text("Preparing again keeps the draft. Sending remains a separate action.", color = Muted, style = MaterialTheme.typography.bodySmall)
+        } }, confirmButton = { TextButton(onClick = { model.review(draft); review = null }) { Text("Prepare again") } },
+        dismissButton = { TextButton(onClick = { model.checkReceipt(draft); review = null }) { Text("Check receipt") } }) }
+    reviewOutgoing?.let { message -> AlertDialog(onDismissRequest = { reviewOutgoing = null }, title = { Text("Review delivery") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(if (message.status == "uncertain") "This message may already have reached ${message.target.session}. Check its receipt and conversation before preparing another send."
+                else "This message was not accepted. Review it before trying again.")
+            if (message.text.isNotBlank()) SelectionContainer { Text(message.text, maxLines = 8, overflow = TextOverflow.Ellipsis) }
+            AttachmentRows(message.attachments.map { DisplayedAttachment(it.name, it.mime, it.bytes) })
+            Text("Your current composition is kept in Saved drafts. Preparing again does not send the message.", color = Muted, style = MaterialTheme.typography.bodySmall)
+        } }, confirmButton = { TextButton(enabled = "outgoing:${message.requestId}" !in model.receiptFlights,
+            onClick = { model.prepareOutgoing(message); reviewOutgoing = null }) { Text("Prepare again") } },
+        dismissButton = { TextButton(enabled = "outgoing:${message.requestId}" !in model.receiptFlights,
+            onClick = { model.checkOutgoing(message); reviewOutgoing = null }) { Text("Check receipt") } }) }
+    discard?.let { draft -> AlertDialog(onDismissRequest = { discard = null }, title = { Text("Discard saved draft?") },
+        text = { Text("This removes the private draft for ${draft.target.session} from this phone.") },
+        confirmButton = { TextButton(onClick = { model.discard(draft); discard = null }) { Text("Discard") } },
+        dismissButton = { TextButton(onClick = { discard = null }) { Text("Cancel") } }) }
+    stopRequest?.let { (session, turn) -> AlertDialog(onDismissRequest = { stopRequest = null }, title = { Text("Stop this turn?") },
+        text = { Text("Interrupt the current turn in " + session.title + ". The session remains available.") },
+        confirmButton = { TextButton(onClick = { model.interrupt(session.target, turn); stopRequest = null }) { Text("Stop turn") } },
+        dismissButton = { TextButton(onClick = { stopRequest = null }) { Text("Cancel") } }) }
+}
+
+@Composable private fun Tag(text: String, color: Color = Mint) {
+    Surface(color = color.copy(alpha = .12f), shape = RoundedCornerShape(6.dp)) {
+        Text(text, Modifier.padding(horizontal = 8.dp, vertical = 4.dp), color = color, style = MaterialTheme.typography.labelSmall)
+    }
+}
+@Composable private fun SessionBadge(session: Session, online: Boolean) {
+    val badge = DesktopSessionPalette.badge(session, online)
+    val dark = MaterialTheme.colorScheme.background.luminance() < .5f
+    val colors = DesktopSessionPalette.colors(badge.kind, dark)
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Surface(color = Color(colors.background), shape = RoundedCornerShape(5.dp)) {
+            Row(Modifier.padding(horizontal = 8.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                when (badge.kind) {
+                    DesktopBadgeKind.Working -> Box(Modifier.size(5.dp).background(Color(colors.foreground), CircleShape))
+                    DesktopBadgeKind.Attention, DesktopBadgeKind.Error -> Text("!", color = Color(colors.foreground),
+                        fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall)
+                    DesktopBadgeKind.Paused -> Icon(DesktopIcons.Paused, null, Modifier.size(12.dp), tint = Color(colors.foreground))
+                    DesktopBadgeKind.Unread -> Icon(Icons.Default.MarkEmailUnread, null, Modifier.size(12.dp), tint = Color(colors.foreground))
+                    DesktopBadgeKind.Neutral -> Unit
+                }
+                Text(badge.caption, color = Color(colors.foreground), style = MaterialTheme.typography.labelSmall)
+            }
+        }
+        if (badge.additionalUnread) {
+            val unread = DesktopSessionPalette.colors(DesktopBadgeKind.Unread, dark)
+            Surface(color = Color(unread.background), shape = RoundedCornerShape(5.dp)) {
+                Icon(Icons.Default.MarkEmailUnread, "New reply", Modifier.padding(4.dp).size(12.dp), tint = Color(unread.foreground))
+            }
+        }
+    }
+}
+@Composable private fun SessionDetailBadge(session: Session,raw: JSONObject?) {
+    val displayed = SelectedSessionPresentation.session(session,raw)
+    val kind = if (session.target.agentId.isNotBlank()) DesktopBadgeKind.Neutral else DesktopSessionPalette.badge(displayed, true).kind
+    val colors = DesktopSessionPalette.colors(kind,
+        MaterialTheme.colorScheme.background.luminance() < .5f)
+    Surface(color = Color(colors.background), shape = RoundedCornerShape(5.dp)) {
+        Text(selectedStatus(session, raw), Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            color = Color(colors.foreground), style = MaterialTheme.typography.labelSmall)
+    }
+}
+private fun selectedStatus(session: Session, raw: JSONObject?): String = SelectedSessionPresentation.status(session,raw)
+@Composable private fun ProjectsScreen(model: ZerusViewModel, onPair: () -> Unit) {
+    var query by rememberSaveable { mutableStateOf("") }
+    if (model.connections.isEmpty() && !model.demo) { SessionsScreen(model, onPair); return }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Text("Projects", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold) }
+        item { Text("Your work across connected machines", color = Muted) }
+        item { OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("Search projects") },
+            leadingIcon = { Icon(Icons.Default.Search, "Search projects") }, shape = RoundedCornerShape(14.dp)) }
+        if (model.demo) item { Text("Preview data. Pair a workspace to view your projects.", color = Amber, style = MaterialTheme.typography.bodySmall) }
+        if (model.projectWarnings.isNotEmpty()) item { Text("Project catalog unavailable on ${model.projectWarnings.joinToString(", ")}. Sessions and ordinary folders remain available.", color = Amber, style = MaterialTheme.typography.bodySmall) }
+        val visible = model.projects.filter { it.catalogued }.filter { query.isBlank() || it.name.contains(query, true) || it.folders.any { folder -> (folder.path + model.machineName(it.key.connectionId,folder.computerId,folder.computerName)).contains(query, true) } }
+        items(visible, key = { it.key.key }) { project ->
+            val count = model.sessions.count { it.projectKey == project.key && !SessionFilters.archived(it) }
+            val accent = runCatching { Color(android.graphics.Color.parseColor(project.color)) }.getOrDefault(Mint)
+            Card(onClick = { model.openProject(project) }, colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(18.dp)) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Icon(DesktopIcons.Projects, null, tint = accent)
+                        Text(project.name, Modifier.weight(1f), fontWeight = FontWeight.SemiBold, fontSize = 19.sp)
+                        Icon(Icons.Default.ChevronRight, "Open project", tint = Muted)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Tag("$count ${if (count == 1) "session" else "sessions"}", accent)
+                        if (project.stale) Tag("Last known catalog", Amber)
+                        if (!project.catalogued) Tag("Folder", Muted)
+                    }
+                    project.folders.take(2).forEach { folder -> Column {
+                        MachineLabel(model.machineName(project.key.connectionId,folder.computerId,folder.computerName),colorHex = model.machineColor(MachineKey(project.key.connectionId,folder.computerId)))
+                        Text(folder.path, maxLines = 1, overflow = TextOverflow.Ellipsis, color = Muted, style = MaterialTheme.typography.bodySmall)
+                    } }
+                    if (project.folders.isEmpty()) Text("No saved folders on connected machines", color = Muted, style = MaterialTheme.typography.bodySmall)
+                    else if (project.folders.size > 2) Text("${project.folders.size - 2} more folders", color = Muted, style = MaterialTheme.typography.bodySmall)
+                    if (model.connections.size > 1) Text(model.connections.find { it.id == project.key.connectionId }?.displayName.orEmpty(), color = Muted, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+        if (visible.isEmpty()) item { Text(if (model.catalogBusy && model.projects.isEmpty()) "Checking your projects…" else "No projects match this view. Sessions remain available in Sessions.", color = Muted, modifier = Modifier.padding(vertical = 24.dp)) }
+    }
+}
+
+@Composable private fun ProjectDetails(model: ZerusViewModel, project: ProjectSummary, onViewSessions: () -> Unit) {
+    val count = model.sessions.count { it.projectKey == project.key && !SessionFilters.archived(it) }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        Text(project.name, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+        Text(model.connections.find { it.id == project.key.connectionId }?.displayName.orEmpty(), color = Muted)
+        if (project.stale) Text("Last known project catalog", color = Amber, style = MaterialTheme.typography.bodySmall)
+        Text("$count ${if (count == 1) "session" else "sessions"} across ${project.computers.size} ${if (project.computers.size == 1) "machine" else "machines"}", color = Muted)
+        Button(onClick = onViewSessions, modifier = Modifier.fillMaxWidth()) { Icon(DesktopIcons.Sessions, null); Spacer(Modifier.width(8.dp)); Text("View sessions") }
+        Text("Folders", style = MaterialTheme.typography.titleLarge)
+        project.folders.forEach { folder -> Card(colors = CardDefaults.cardColors(containerColor = Surface)) {
+            Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Icon(DesktopIcons.Projects, null, tint = Mint)
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(folder.name.ifBlank { folder.path.substringAfterLast('/') }, fontWeight = FontWeight.SemiBold)
+                    MachineLabel(model.machineName(project.key.connectionId,folder.computerId,folder.computerName),colorHex = model.machineColor(MachineKey(project.key.connectionId,folder.computerId)))
+                    SelectionContainer { Text(folder.path, color = Muted, style = MaterialTheme.typography.bodySmall) }
+                }
+            }
+        } }
+        if (project.folders.isEmpty()) Text("No saved folders on connected machines", color = Muted)
+    }
+}
+
+@Composable private fun SessionsScreen(model: ZerusViewModel, onPair: () -> Unit) {
+    val project = model.sessionProjectScope
+    if (model.connections.isEmpty() && !model.demo) {
+        Column(Modifier.fillMaxSize().padding(28.dp), verticalArrangement = Arrangement.Center) {
+            Image(painterResource(R.drawable.zerus_brand), "", Modifier.size(72.dp))
+            Spacer(Modifier.height(24.dp))
+            Text("Your agents.\nWithin reach.", fontSize = 34.sp, lineHeight = 40.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(16.dp))
+            Text("Follow sessions across your machines, answer questions, and pick up the conversation from your phone.", color = Muted, lineHeight = 24.sp)
+            Spacer(Modifier.height(28.dp))
+            Button(onClick = onPair, modifier = Modifier.fillMaxWidth()) { Text("Open Machines", Modifier.padding(6.dp)) }
+            TextButton(onClick = { model.preview() }, modifier = Modifier.fillMaxWidth()) { Text("Try demo") }
+        }; return
+    }
+    val scoped = SessionFilters.scoped(model.sessions, model.machines, model.selectedMachines, model.sessionQuery, project?.key)
+    val counts = SessionFilters.counts(scoped, model.machines)
+    val visible = scoped.filter { SessionFilters.matches(it, model.sessionFilter, SessionFilters.online(it, model.machines)) }
+    val groups = SessionFilters.grouped(visible, model.projects)
+    val listState = rememberLazyListState(model.sessionListIndex, model.sessionListOffset)
+    val scrollReset = model.sessionScrollReset
+    val scrollScope = project?.key?.key.orEmpty()
+    var appliedReset by remember { mutableLongStateOf(scrollReset) }
+    LaunchedEffect(scrollReset) {
+        if (appliedReset != scrollReset) { appliedReset = scrollReset; listState.scrollToItem(model.sessionListIndex, model.sessionListOffset) }
+    }
+    DisposableEffect(listState, scrollScope, scrollReset) { onDispose { model.saveSessionScroll(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, scrollScope, scrollReset) } }
+    var machineDialog by remember { mutableStateOf(false) }
+    LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item { Text(project?.name ?: "Sessions", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold) }
+        item { OutlinedTextField(model.sessionQuery, { model.changeSessionQuery(it) }, Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("Search sessions") },
+            leadingIcon = { Icon(Icons.Default.Search, "Search sessions") }, shape = RoundedCornerShape(14.dp)) }
+        item { Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SessionFilter.entries.forEach { filter ->
+                val selected = model.sessionFilter == filter
+                val accent = if (filter == SessionFilter.Attention && counts.getValue(filter) > 0) Amber else if (selected) Mint else Muted
+                OutlinedButton(onClick = { model.chooseSessionFilter(filter) }, modifier = Modifier.height(48.dp).widthIn(min = 56.dp).semantics {
+                    contentDescription = "${filter.caption}, ${counts.getValue(filter)} sessions${if (selected) ", selected" else ""}"
+                }, contentPadding = PaddingValues(horizontal = 9.dp), shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(containerColor = if (selected) Color(0xFF243136) else Color.Transparent, contentColor = accent)) {
+                    Icon(DesktopIcons.forName(filter.id), null, Modifier.size(20.dp)); Spacer(Modifier.width(5.dp)); Text(counts.getValue(filter).toString(), style = MaterialTheme.typography.labelMedium)
+                }
+            }
+            OutlinedButton(onClick = { machineDialog = true }, modifier = Modifier.height(48.dp).widthIn(min = 56.dp).semantics { contentDescription = "Filter machines" },
+                contentPadding = PaddingValues(horizontal = 9.dp), shape = RoundedCornerShape(12.dp)) {
+                Icon(DesktopIcons.Machines, null, Modifier.size(20.dp)); Spacer(Modifier.width(5.dp))
+                Text(if (model.selectedMachines.isEmpty()) model.machines.size.toString() else model.selectedMachines.size.toString(), style = MaterialTheme.typography.labelMedium)
+            }
+        } }
+        item { Text("${model.sessionFilter.caption} (${visible.size})" + if (model.selectedMachines.isEmpty()) "" else " on selected machines", color = Muted, style = MaterialTheme.typography.bodyMedium) }
+        if (model.demo) item { Text("Preview data. Pair a workspace to interact with real sessions.", color = Amber, style = MaterialTheme.typography.bodySmall) }
+        groups.forEach { group ->
+            val accent = runCatching { Color(android.graphics.Color.parseColor(group.color)) }.getOrDefault(Mint)
+            val collapsed = group.key.key in model.collapsedProjects && model.sessionQuery.isBlank()
+            item(key = "group:${group.key.key}") { Surface(onClick = { model.toggleProject(group.key) }, color = Surface, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth().semantics {
+                contentDescription = "${group.name}, ${group.sessions.size} sessions, ${if (collapsed) "collapsed" else "expanded"}"
+            }) {
+                Row(Modifier.padding(horizontal = 12.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Box(Modifier.width(4.dp).height(24.dp).background(accent, RoundedCornerShape(2.dp)))
+                    Text(group.name, Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                    Text(group.sessions.size.toString(), color = Muted, style = MaterialTheme.typography.labelMedium)
+                    Icon(if (collapsed) Icons.Default.ExpandMore else Icons.Default.ExpandLess, if (collapsed) "Expand project" else "Collapse project", tint = Muted)
+                }
+            } }
+            if (!collapsed) items(group.sessions, key = { "session:${it.target.key}" }) { session ->
+                val online = SessionFilters.online(session, model.machines)
+                val machine = model.machines.find { it.connectionId == session.target.connectionId && it.id == session.target.computerId }
+                Card(onClick = { model.open(session, preserveProject = true) }, colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(14.dp)) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            ProviderBadge(session.agent, Modifier.size(24.dp))
+                            Text(SessionFilters.label(session), Modifier.weight(1f), fontWeight = FontWeight.SemiBold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            UnreadPresentation.badge(model.unreadCount(session.target), model.loadedUnreadCount(session.target),
+                                session.raw.optBoolean("unread_reply") || session.raw.optBoolean("mobile_unread_reply"))?.let { unread ->
+                                Surface(color = Mint, shape = CircleShape, modifier = Modifier.semantics { contentDescription = unread.description }) {
+                                    Text(unread.text, Modifier.padding(horizontal = 8.dp, vertical = 3.dp), color = Background,
+                                        style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            Icon(Icons.Default.ChevronRight, "Open", tint = Muted, modifier = Modifier.size(20.dp))
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            SessionBadge(session, online)
+                            MachineLabel(machine?.name ?: session.target.computerId,colorHex = model.machineColor(MachineKey(session.target.connectionId,session.target.computerId)))
+                        }
+                        SessionFilters.archiveDate(session).takeIf { it.isNotBlank() }?.let { archivedDate ->
+                            Text("Archived $archivedDate", color = Muted, style = MaterialTheme.typography.labelSmall)
+                        }
+                        Text(session.preview.ifBlank { "Open to view activity" }, maxLines = 2, overflow = TextOverflow.Ellipsis, color = Muted, style = MaterialTheme.typography.bodyMedium, lineHeight = 20.sp)
+                        if (model.connections.size > 1) Text(model.connections.find { it.id == session.target.connectionId }?.displayName.orEmpty(), color = Muted, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+        }
+        if (visible.isEmpty()) item { Text(if (model.catalogBusy && model.sessions.isEmpty()) "Checking your sessions…" else "No sessions match this view.", color = Muted, modifier = Modifier.padding(vertical = 24.dp)) }
+    }
+    if (machineDialog) AlertDialog(onDismissRequest = { machineDialog = false }, title = { Text("Filter machines") },
+        text = { Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = { model.allMachines() }) { Text("All machines") }
+            model.machines.forEach { machine ->
+                val key = MachineKey(machine.connectionId, machine.id)
+                Surface(onClick = { model.toggleMachine(key) }, color = Color.Transparent) { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(key in model.selectedMachines, null)
+                    Column { MachineLabel(machine.name,colorHex = model.machineColor(key)); if (model.connections.size > 1) Text(model.connections.find { it.id == machine.connectionId }?.displayName.orEmpty(), color = Muted, style = MaterialTheme.typography.labelSmall) }
+                } }
+            }
+            Text("An empty selection shows all machines.", color = Muted, style = MaterialTheme.typography.bodySmall)
+        } }, confirmButton = { TextButton(onClick = { machineDialog = false }) { Text("Done") } })
+}
+
+@Composable private fun Conversation(model: ZerusViewModel, session: Session, onReview: (Draft) -> Unit,
+    onReviewOutgoing: (OutgoingMessage) -> Unit, onAttach: (Target) -> Unit,
+    positions: MutableMap<String, ConversationAnchor>,jumpRequest: ConversationMessageJump?,onJumpConsumed: () -> Unit) {
+    val target = session.target
+    val raw = model.activity
+    val archived = target.archiveId.isNotBlank()
+    val events = if (model.demo) Demo.events else model.conversationEvents
+    val questions = if (archived || model.demo) emptyList() else model.conversationQuestions
+    val outgoing = model.conversationOutgoing
+    val ownSendId = model.ownSendId(target)
+    // Exact inspection evidence supersedes the older computer catalog while reading.
+    val online = model.activityVerified || model.demo
+    val warning = if (model.demo) "" else raw?.string("pending_questions_error", "provider_messages_error").orEmpty()
+    val queueVisible = target.agentId.isBlank() && !archived && raw?.optJSONObject("input_queue")?.string("id").orEmpty().isNotBlank()
+    val unreadBoundary = model.firstUnreadEventId.takeIf { id -> events.any { it.id == id } }.orEmpty()
+    val savedViewport = model.conversationViewport(target)
+    val readReady = model.readPositionReady || model.demo
+    val unread = UnreadPresentation.badge(model.unreadCount(target), model.loadedUnreadCount(target))
+    var unavailableSaved by remember(target.key) { mutableStateOf(false) }
+    var latestRequested by remember(target.key) { mutableStateOf(false) }
+    var searchNotice by remember(target.key) { mutableStateOf("") }
+    val historyReason = if(model.demo) "" else model.historyReason(target)
+    val boundedNotice = if(model.historyEpoch.isNotBlank()) {
+        if(model.hasOlder || model.hasNewer) "Showing part of the conversation. Use the history controls to load more messages." else ""
+    } else if(model.conversationHistoryTruncated) "Showing recent activity. Older messages may be outside the available history." else ""
+    val keys = buildList {
+        add("history:earlier")
+        add("history:status")
+        if (warning.isNotBlank()) add("history:warning")
+        if (boundedNotice.isNotBlank()) add("history:bounded")
+        add("history:missing-anchor")
+        events.forEach { if(it.id == unreadBoundary) add("history:unread"); add("event:" + it.id) }
+        if (events.isEmpty() && !model.detailBusy) add("history:empty")
+        add("history:newer")
+        if (queueVisible) add("history:queue")
+        if (questions.isNotEmpty()) add("history:questions")
+        add("history:tail")
+    }
+    val listState = rememberLazyListState()
+    val cardVisible by remember(listState) { derivedStateOf {
+        listState.layoutInfo.visibleItemsInfo.any { it.key == "history:questions" &&
+            it.offset < listState.layoutInfo.viewportEndOffset && it.offset + it.size > listState.layoutInfo.viewportStartOffset }
+    } }
+    val initialAnchor = remember(target.key) { positions[target.key] }
+    var follow by remember(target.key) { mutableStateOf(ConversationFollowState(
+        following = initialAnchor?.following ?: true, ownSendId = ownSendId, anchor = initialAnchor)) }
+    var programmatic by remember { mutableStateOf(false) }
+    val scrollMutex = remember { Mutex() }
+    var viewportHeight by remember { mutableIntStateOf(0) }
+    var viewportBounds by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
+    val cardMaxHeight = with(LocalDensity.current) { (viewportHeight.toDp() * .45f).coerceIn(160.dp, 360.dp) }
+    val scope = rememberCoroutineScope()
+    val currentHistoryTarget by rememberUpdatedState(target.key)
+    val window = LocalWindowInfo.current
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    var foreground by remember(lifecycle) { mutableStateOf(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) }
+    DisposableEffect(lifecycle) {
+        val observer = LifecycleEventObserver { _, _ -> foreground = lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
+    suspend fun jump(index: Int, offset: Int = 0) {
+        scrollMutex.withLock {
+            if (target.key != currentHistoryTarget) return@withLock
+            programmatic = true
+            try { listState.scrollToItem(index.coerceAtLeast(0), offset.coerceAtLeast(0)) }
+            finally { programmatic = false }
+        }
+    }
+    val obscured = LocalConversationObscuration.current?.obscured == true
+    LaunchedEffect(jumpRequest,obscured,events,target.key) {
+        val request = jumpRequest ?: return@LaunchedEffect
+        if(request.target != target) { onJumpConsumed();return@LaunchedEffect }
+        if(obscured) return@LaunchedEffect
+        val match = ConversationSearch.resolve(events,request.eventId)
+        if(match == null) searchNotice = "That message is no longer in the loaded window. Search again or load its earlier page."
+        else {
+            follow = follow.copy(opened = true,following = false,anchor = ConversationAnchor("event:" + match.id,0,false))
+            jump(keys.indexOf("event:" + match.id))
+        }
+        onJumpConsumed()
+    }
+    val latestKeys by rememberUpdatedState(keys)
+    LaunchedEffect(target.key, events, questions, ownSendId, model.activityVerified, warning, boundedNotice,
+        queueVisible, unreadBoundary, readReady, model.hasNewer, model.olderLoading) {
+        if (events.isEmpty() && questions.isEmpty() && raw == null && !model.demo) return@LaunchedEffect
+        val own = events.lastOrNull { it.outgoingId == ownSendId || it.requestId == ownSendId }
+        // With no cards below the message, align its bottom to the composer.
+        val ownKey = if (own == null) null else if (questions.isEmpty() && !queueVisible) "history:tail" else "event:" + own.id
+        val explicitSend = ownSendId.isNotBlank() && ownSendId != follow.ownSendId && ownKey != null
+        val firstOpen = !follow.opened
+        // Ledger hydration must not cause a second jump after the reader deliberately scrolls.
+        if (firstOpen && !explicitSend && !readReady) return@LaunchedEffect
+        if (firstOpen && !explicitSend) {
+            val opening = UnreadPresentation.opening(initialAnchor, savedViewport, unreadBoundary, keys)
+            unavailableSaved = opening.unavailableSaved
+            follow = follow.copy(anchor = opening.anchor, following = opening.anchor?.following ?: true)
+        }
+        if(latestRequested && !model.olderLoading) {
+            if(model.olderError.isBlank() && !model.hasNewer) follow = ConversationViewport.latest(follow)
+            latestRequested = false
+        }
+        if(model.hasNewer && !explicitSend) follow = follow.copy(following = false)
+        if(explicitSend && model.hasNewer && !latestRequested) {
+            latestRequested = true
+            model.jumpToLatest(target)
+        }
+        val request = ConversationViewport.content(follow, keys, ownSendId, ownKey)
+        follow = request.state
+        if (explicitSend || firstOpen || !listState.isScrollInProgress || programmatic)
+            request.index?.let { jump(it, request.offset) }
+    }
+    LaunchedEffect(listState, target.key) {
+        var userMovement = false
+        snapshotFlow {
+            val layout = listState.layoutInfo
+            val tail = layout.visibleItemsInfo.lastOrNull()
+            Triple(listState.isScrollInProgress, tail?.key == "history:tail" &&
+                tail.offset + tail.size <= layout.viewportEndOffset + 2, programmatic)
+        }.distinctUntilChanged().collect { (moving, atEnd, automatic) ->
+            if (!automatic && moving) userMovement = true
+            if (!automatic && userMovement) {
+                follow = ConversationViewport.userScrolled(follow, atEnd).copy(opened = true)
+                if (!moving) userMovement = false
+            }
+        }
+    }
+    LaunchedEffect(viewportHeight) {
+        if (viewportHeight > 0 && follow.opened && follow.following && !listState.isScrollInProgress)
+            jump(latestKeys.lastIndex)
+    }
+    val settledAtTail by remember(listState) { derivedStateOf {
+        val layout = listState.layoutInfo
+        val tail = layout.visibleItemsInfo.lastOrNull()
+        tail?.key == "history:tail" && tail.offset + tail.size <= layout.viewportEndOffset + 2
+    } }
+    LaunchedEffect(settledAtTail,listState.isScrollInProgress,programmatic,follow.opened,follow.following,follow.anchor,model.hasNewer) {
+        if(!listState.isScrollInProgress && !programmatic) follow = ConversationViewport.settled(follow,settledAtTail,model.hasNewer)
+    }
+    val readable = foreground && window.isWindowFocused && follow.opened && readReady &&
+        !obscured
+    LaunchedEffect(target.key,listState,readable,model.hasOlder,model.olderLoading,model.olderError) {
+        if(!readable || !model.hasOlder || model.olderLoading || model.olderError.isNotBlank()) return@LaunchedEffect
+        snapshotFlow { listState.isScrollInProgress && !programmatic && listState.firstVisibleItemIndex <= 3 }
+            .distinctUntilChanged().collect { nearTop -> if(nearTop) model.loadOlder(target) }
+    }
+    LaunchedEffect(target.key, listState, readable) {
+        if (!readable) return@LaunchedEffect
+        snapshotFlow {
+            val layout = listState.layoutInfo
+            if (programmatic || listState.isScrollInProgress) null else layout.visibleItemsInfo.filter {
+                it.key.toString().startsWith("event:") && it.offset < layout.viewportEndOffset &&
+                    it.offset + it.size > layout.viewportStartOffset
+            }.let { rows -> rows.map { it.key.toString().removePrefix("event:") }.toSet() to
+                rows.firstOrNull()?.let { it.key.toString().removePrefix("event:") to (-it.offset).coerceAtLeast(0) } }
+        }.distinctUntilChanged().collectLatest { viewport ->
+            if (viewport == null) return@collectLatest
+            // A transient row during initial positioning or a fling is not a deliberate read.
+            delay(350)
+            if (currentHistoryTarget == target.key && foreground && window.isWindowFocused && !programmatic) {
+                model.visibleMessages(target, viewport.first)
+                viewport.second?.let { (id, offset) -> model.saveConversationViewport(target,id,offset) }
+            }
+        }
+    }
+    DisposableEffect(target.key, listState) {
+        onDispose {
+            listState.layoutInfo.visibleItemsInfo.firstOrNull()?.let { item ->
+                positions[target.key] = ConversationAnchor(item.key.toString(), listState.firstVisibleItemScrollOffset, follow.following)
+            }
+        }
+    }
+    Column(Modifier.fillMaxSize().imePadding()) {
+        if(searchNotice.isNotBlank()) Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp),verticalAlignment = Alignment.CenterVertically) {
+            Text(searchNotice,Modifier.weight(1f),color = Amber,style = MaterialTheme.typography.bodySmall)
+            IconButton(onClick = { searchNotice = "" }) { Icon(Icons.Default.Close,"Dismiss search notice") }
+        }
+        Box(Modifier.weight(1f).fillMaxWidth().onSizeChanged { viewportHeight = it.height }
+            .onGloballyPositioned { viewportBounds = it.boundsInWindow() }) {
+            LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                item(key = "history:earlier") { Column(Modifier.fillMaxWidth(),horizontalAlignment = Alignment.CenterHorizontally) {
+                    if(model.olderLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                    if(model.olderError.isNotBlank()) {
+                        Text(model.olderError,color = Amber,style = MaterialTheme.typography.bodySmall)
+                        TextButton(onClick = { model.retryHistory(target) },enabled = !model.olderLoading && historyReason.isBlank()) { Text("Retry history") }
+                    } else if(model.hasOlder) TextButton(onClick = { model.loadOlder(target) },enabled = !model.olderLoading && historyReason.isBlank()) { Text("Load earlier messages") }
+                    else if(model.historyEpoch.isNotBlank() && !model.historyIndexing) Text(if(model.historyComplete) "Beginning of conversation" else "No earlier page reported; history may be incomplete.",color = Muted,style = MaterialTheme.typography.labelSmall)
+                    if(model.historyIndexing) Text("History is still indexing. Unread totals may be unavailable.",color = Muted,style = MaterialTheme.typography.labelSmall)
+                    if(historyReason.isNotBlank()) Text(historyReason,color = Muted,style = MaterialTheme.typography.labelSmall)
+                } }
+                item(key = "history:status") { Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (raw == null && !model.demo) Tag("Checking…", Muted) else SessionDetailBadge(session,raw)
+                    Tag(if (model.demo) "Preview" else if (model.activityVerified) "Connected" else if (raw != null) "Last known" else "Checking…",
+                        if (online) Mint else Amber)
+                } }
+                if (warning.isNotBlank()) item(key = "history:warning") { Text(warning, color = Amber, style = MaterialTheme.typography.bodySmall) }
+                if (boundedNotice.isNotBlank()) item(key = "history:bounded") {
+                    Text(boundedNotice, color = Muted, style = MaterialTheme.typography.bodySmall)
+                }
+                item(key = "history:missing-anchor") {
+                    if (unavailableSaved) Text("Your saved reading position is outside the loaded messages. Showing the earliest available messages.",
+                        color = Muted, style = MaterialTheme.typography.bodySmall)
+                }
+                events.forEach { event ->
+                    if (event.id == unreadBoundary) item(key = "history:unread") {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            HorizontalDivider(Modifier.weight(1f), color = Mint.copy(alpha = .4f))
+                            Text("Unread messages", color = Mint, style = MaterialTheme.typography.labelMedium)
+                            HorizontalDivider(Modifier.weight(1f), color = Mint.copy(alpha = .4f))
+                        }
+                    }
+                    item(key = "event:" + event.id) {
+                    val provider = if (target.agentId.isNotBlank()) raw?.string("provider").orEmpty().ifBlank { session.agent } else session.agent
+                    ConversationMessage(event, provider, outgoing.find { it.requestId == event.outgoingId },
+                        model, onReviewOutgoing)
+                    }
+                }
+                if (events.isEmpty() && !model.detailBusy) item(key = "history:empty") {
+                    Text("No recent messages are available. Refresh to load activity.", color = Muted)
+                }
+                item(key = "history:newer") {
+                    if(model.hasNewer) Row(Modifier.fillMaxWidth(),horizontalArrangement = Arrangement.Center) {
+                        TextButton(onClick = { model.loadNewer(target) },enabled = !model.olderLoading && historyReason.isBlank()) { Text("Load newer messages") }
+                        TextButton(onClick = { latestRequested = true;model.jumpToLatest(target) },enabled = !model.olderLoading && historyReason.isBlank()) { Text("Latest") }
+                    }
+                }
+                if (queueVisible) item(key = "history:queue") { NativeInputQueue(model,target) }
+                if (questions.isNotEmpty()) item(key = "history:questions") {
+                    QuestionsPane(model, target, questions, online && model.activityVerified && !model.contextBlocked(target), cardVisible,
+                        viewportBounds, cardMaxHeight, onReview)
+                }
+                item(key = "history:tail") { Spacer(Modifier.height(1.dp)) }
+            }
+            if ((!follow.following || model.hasNewer) && (events.isNotEmpty() || questions.isNotEmpty()) &&
+                !(questions.isNotEmpty() && cardVisible))
+                ExtendedFloatingActionButton(onClick = {
+                    if(model.hasNewer) { latestRequested = true;model.jumpToLatest(target) }
+                    else { follow = ConversationViewport.latest(follow);scope.launch { jump(latestKeys.lastIndex) } }
+                }, modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+                    containerColor = Color(0xFF2D4142), contentColor = Mint) {
+                    Icon(Icons.Default.KeyboardArrowDown, null)
+                    Text(unread?.let { "${it.text} unread" } ?: "Latest", Modifier.padding(start = 4.dp).semantics {
+                        contentDescription = unread?.description ?: "Jump to latest messages"
+                    }, style = MaterialTheme.typography.labelMedium)
+                }
+        }
+        if (archived) {
+            ContextFooter(model, session)
+            Text("Archived conversation. Read-only.", color = Muted, style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.fillMaxWidth().background(Surface).padding(16.dp))
+        }
+        else MessageComposer(model, session, online, onReview, onAttach)
+    }
+}
+
+@Composable private fun ConversationMessage(event: Event, agent: String, outgoing: OutgoingMessage?,
+    model: ZerusViewModel, onReview: (OutgoingMessage) -> Unit) {
+    val own = QuestionReplyPresentation.isOwnRole(event.role)
+    val parsedReply by produceState<Pair<String, List<PresentedQuestionReply>?>>(event.text to null, event.text, own) {
+        value = event.text to if (own) withContext(Dispatchers.Default) { QuestionReplyPresentation.parse(event.text) } else null
+    }
+    val replies = parsedReply.takeIf { it.first == event.text }?.second
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (own) Arrangement.End else Arrangement.Start) {
+        Surface(color = if (own) Color(0xFF203733) else Surface, shape = RoundedCornerShape(18.dp),
+            modifier = Modifier.fillMaxWidth(if (own) .92f else 1f).semantics {
+                contentDescription = if (own) "You" else agent.ifBlank { "Agent" }
+            }) {
+            Column(Modifier.padding(horizontal = 14.dp, vertical = 11.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (!own) Text(agent.ifBlank { event.role }, color = Muted, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                if (replies == null && event.role == "You (answer)") Text("You (answer)", color = Muted, style = MaterialTheme.typography.labelMedium)
+                if (replies != null) {
+                    Text("You (answer)", color = Muted, style = MaterialTheme.typography.labelMedium)
+                    SelectionContainer { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        replies.orEmpty().forEach { reply ->
+                            Text("Question", color = Muted, style = MaterialTheme.typography.labelSmall)
+                            Text(reply.question, lineHeight = 23.sp)
+                            Text("Your answer", color = Mint, style = MaterialTheme.typography.labelSmall)
+                            Text(reply.answer.ifEmpty { "(empty answer)" }, lineHeight = 23.sp)
+                        }
+                    } }
+                } else if (event.text.isNotBlank()) SelectionContainer { Text(event.text, lineHeight = 23.sp, style = MaterialTheme.typography.bodyLarge) }
+                AttachmentRows(event.attachments)
+                if(event.detailTruncated) Text("Message text shortened",color = Amber,style = MaterialTheme.typography.labelSmall)
+                if (event.delivery.isNotBlank() || event.at > 0) Row(Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                    if (event.at > 0) Text(java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+                        .format(java.util.Date((event.at * 1000).toLong())), color = Muted, style = MaterialTheme.typography.labelSmall)
+                    if (event.delivery.isNotBlank()) {
+                        Spacer(Modifier.width(8.dp))
+                        Text(deliveryLabel(event.delivery), color = if (event.delivery in listOf("failed", "uncertain")) Amber else Muted,
+                            style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+                if (outgoing != null && outgoing.status in listOf("failed", "uncertain")) {
+                    if (outgoing.error.isNotBlank()) Text(outgoing.error, color = Amber, style = MaterialTheme.typography.bodySmall)
+                    Row {
+                        if (outgoing.status == "uncertain") TextButton(onClick = { model.checkOutgoing(outgoing) },
+                            enabled = "outgoing:" + outgoing.requestId !in model.receiptFlights) { Text("Check delivery") }
+                        TextButton(onClick = { onReview(outgoing) },
+                            enabled = "outgoing:" + outgoing.requestId !in model.receiptFlights) { Text("Review") }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable private fun MessageComposer(model: ZerusViewModel, session: Session, online: Boolean,
+    onReview: (Draft) -> Unit, onAttach: (Target) -> Unit) {
+    val target = session.target
+    val draft = model.draft(target)
+    // Exclude the initial conversation ID promotion from the editor identity.
+    val lane = ComposerIdentity.lane(target)
+    val editor = remember(lane) { TextFieldState(initialText = draft.text, initialSelection = TextRange(draft.text.length)) }
+    var sync by remember(editor) { mutableStateOf(ComposerSync(draft.generation)) }
+    val currentTarget by rememberUpdatedState(target)
+    var expanded by remember(lane) { mutableStateOf(false) }
+    var visualLines by remember(lane) { mutableIntStateOf(1) }
+    var focused by remember(lane) { mutableStateOf(false) }
+    var restorePickerFocus by remember(lane) { mutableStateOf(false) }
+    var pickerStarted by remember(lane) { mutableStateOf(false) }
+    var coldDraft by remember(lane) { mutableStateOf<Draft?>(null) }
+    var coldClearTarget by remember(lane) { mutableStateOf<Target?>(null) }
+    var blockedSendReason by remember(lane) { mutableStateOf<String?>(null) }
+    if(coldDraft != null || coldClearTarget != null || blockedSendReason != null) ObscureConversation()
+    val focusRequester = remember(lane) { FocusRequester() }
+    LaunchedEffect(editor, draft.generation) {
+        val update = ComposerReconciler.external(sync, draft.generation, draft.text)
+        sync = update.sync
+        update.replacement?.let { text -> editor.edit {
+            replace(0, length, text)
+            selection = TextRange(text.length)
+        } }
+    }
+    LaunchedEffect(editor) {
+        snapshotFlow { editor.text.toString() }.distinctUntilChanged().collect { text ->
+            if (text != model.draft(currentTarget).text) model.edit(currentTarget, text)
+        }
+    }
+    LaunchedEffect(model.pickerId, model.attachmentImporting) {
+        if (restorePickerFocus && model.pickerDraft != null) pickerStarted = true
+        if (restorePickerFocus && pickerStarted && model.pickerDraft == null && !model.attachmentImporting) {
+            restorePickerFocus = false; pickerStarted = false
+            focusRequester.requestFocus()
+        }
+    }
+    val blockReason = if (model.activityVerified) {
+        if(target.agentId.isNotBlank()) model.childSendReason(target) else NativeParser.messageBlockReason(model.activity)
+    }
+        else "Refresh to verify the session before sending."
+    val canSend = (editor.text.isNotBlank() || draft.attachments.isNotEmpty()) && !model.sendingBlocked(target) && !model.contextBlocked(target) &&
+        draft.status == "editing" && !model.demo && online && target.run.isNotBlank() && model.storageReady && blockReason.isBlank()
+    val previous = model.outgoing.lastOrNull { it.belongsTo(target) && it.status in listOf("sending", "uncertain") }
+    val sendReason = when {
+        model.demo -> "Pair to send a message."
+        !model.storageReady -> "Private storage is not ready. Sending is unavailable."
+        draft.status == "submitting" -> "Sending the saved draft. Wait for its result."
+        draft.status != "editing" -> "Review the saved draft before sending again."
+        blockReason.isNotBlank() -> blockReason
+        !online || target.run.isBlank() -> "Refresh to verify the session before sending."
+        previous?.status == "uncertain" -> "Delivery unknown. Check the previous message before sending again."
+        previous?.status == "sending" -> "Sending your previous message. You can write the next message."
+        model.pickerDraft?.target == target -> "Wait for file selection and importing to finish."
+        model.contextBlocked(target) -> "Check the pending session command before sending."
+        model.sendingBlocked(target) -> "Preparing your message. You can write the next message."
+        else -> ""
+    }
+    Column(Modifier.fillMaxWidth().background(Background).padding(horizontal = 8.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        ContextFooter(model, session) {
+            model.edit(target, editor.text.toString())
+            model.draft(target)
+        }
+        if (draft.status != "editing") Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(deliveryLabel(draft.status) + ". The original draft is saved.", Modifier.weight(1f), color = Amber, style = MaterialTheme.typography.labelSmall)
+            TextButton(onClick = { onReview(draft) }, enabled = draft.status != "submitting" && draft.key !in model.receiptFlights) { Text("Review") }
+        }
+        if (draft.attachments.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            draft.attachments.forEach { attachment -> Surface(color = Color(0xFF243136), shape = RoundedCornerShape(12.dp)) {
+                Row(Modifier.padding(start = 9.dp, end = 3.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Icon(Icons.Default.AttachFile, null, Modifier.size(16.dp), tint = Muted)
+                    Text(attachment.name, Modifier.widthIn(max = 150.dp), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
+                    IconButton(onClick = { model.removeAttachment(target, attachment.id) },
+                    enabled = model.pickerDraft?.target != target && draft.status == "editing", modifier = Modifier.size(24.dp)) {
+                    Icon(Icons.Default.Close, "Remove " + attachment.name, Modifier.size(16.dp))
+                    }
+                }
+            } }
+        }
+        if (model.pickerDraft?.target == target) Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(if (model.attachmentImporting) "Saving selected files…" else "File selection is pending.", Modifier.weight(1f), color = Muted, style = MaterialTheme.typography.labelSmall)
+            TextButton(onClick = { model.cancelAttachmentPick() }) { Text("Cancel") }
+        }
+        if (previous?.status == "sending") Text("Sending… You can write the next message.", color = Muted, style = MaterialTheme.typography.labelSmall)
+        else if (previous?.status == "uncertain") Text("Delivery unknown. Check the previous message before sending again.", color = Amber, style = MaterialTheme.typography.labelSmall)
+        Surface(color = Surface, shape = RoundedCornerShape(26.dp), border = BorderStroke(1.dp, Color(0xFF354449))) {
+            Row(Modifier.fillMaxWidth().padding(start = 2.dp, end = 5.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.Bottom) {
+                IconButton(onClick = { restorePickerFocus = focused; pickerStarted = false; onAttach(target) },
+                    enabled = !model.demo && model.storageReady && draft.status == "editing" && model.pickerDraft == null && !model.attachmentPreparing && !model.attachmentImporting) {
+                    Icon(Icons.Default.AttachFile, "Attach files", tint = Muted)
+                }
+                BasicTextField(state = editor, modifier = Modifier.weight(1f).padding(horizontal = 3.dp, vertical = 10.dp)
+                    .heightIn(max = if (expanded) 280.dp else 168.dp).focusRequester(focusRequester).onFocusChanged { focused = it.isFocused },
+                    readOnly = draft.status != "editing" || model.demo,
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface, lineHeight = 24.sp),
+                    keyboardOptions = KeyboardOptions.Default.copy(imeAction = ImeAction.Default, capitalization = KeyboardCapitalization.Sentences),
+                    lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = 1, maxHeightInLines = if (expanded) 14 else 6),
+                    cursorBrush = SolidColor(Mint),
+                    onTextLayout = { result -> result()?.let { visualLines = it.lineCount } },
+                    decorator = { inner -> Box {
+                        if (editor.text.isEmpty()) Text(sendReason.ifBlank { "Message" }, maxLines = 1,
+                            overflow = TextOverflow.Ellipsis, color = Muted, style = MaterialTheme.typography.bodyLarge)
+                        inner()
+                    } })
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    if (visualLines > 3 || expanded) IconButton(onClick = { expanded = !expanded },
+                        modifier = Modifier.size(32.dp)) {
+                        Icon(if (expanded) Icons.Default.CloseFullscreen else Icons.Default.OpenInFull,
+                            if (expanded) "Collapse message" else "Expand message", tint = Muted, modifier = Modifier.size(19.dp))
+                    }
+                    FilledIconButton(onClick = {
+                        if (canSend) {
+                            model.edit(target, editor.text.toString())
+                            val captured = model.draft(target)
+                            if (ContextPresentation.isCold(model.activity)) coldDraft = captured
+                            else model.sendMessage(target, expectedDraft = captured)
+                        } else if (sendReason.isNotBlank()) blockedSendReason = sendReason
+                    }, enabled = canSend || sendReason.isNotBlank(), modifier = Modifier.size(44.dp), shape = CircleShape,
+                        colors = IconButtonDefaults.filledIconButtonColors(
+                            containerColor = if (canSend) Mint else Color(0xFF2B3B3B), contentColor = if (canSend) Background else Muted,
+                            disabledContainerColor = Color(0xFF2B3B3B), disabledContentColor = Muted)) {
+                        if (!canSend && sendReason.isNotBlank()) Icon(Icons.Default.Info, "Why sending is unavailable", Modifier.size(22.dp))
+                        else Icon(Icons.AutoMirrored.Filled.Send, "Send message", Modifier.size(22.dp))
+                    }
+                }
+            }
+        }
+    }
+    blockedSendReason?.let { reason -> AlertDialog(onDismissRequest = { blockedSendReason = null },
+        title = { Text("Sending unavailable") }, text = { Text(reason) },
+        confirmButton = { TextButton(onClick = { blockedSendReason = null }) { Text("Close") } }) }
+    coldDraft?.let { captured ->
+        val current = model.draft(captured.target)
+        val sameDraft = current.generation == captured.generation && current.revision == captured.revision &&
+            current.text == captured.text && current.attachments == captured.attachments
+        val available = sameDraft && model.activityVerified && model.selected?.target == captured.target &&
+            !model.demo && model.storageReady && !model.contextBlocked(captured.target)
+        val context = remember(model.activity, model.activityVerified) { ContextPresentation.from(model.activity, !model.activityVerified) }
+        val compactReason = model.contextActionReason(captured.target, "compact_context").ifBlank { context.compactReason }
+        val clearReason = model.contextActionReason(captured.target, "clear_context").ifBlank { context.clearReason }
+        AlertDialog(onDismissRequest = { coldDraft = null }, title = { Text("Continue with a cold cache?") },
+            text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("The next message may process the full conversation again, increasing token use or cost. Send with full context, compact it into a summary first, or clear it and keep your draft. Compaction uses tokens and may omit details.")
+                if (!sameDraft) Text("The draft changed. Cancel and review the current composition.", color = Amber)
+                OutlinedButton(onClick = { model.compactContext(captured.target, continueDraft = true, expectedDraft = captured); coldDraft = null },
+                    enabled = available && compactReason.isBlank()) { Text("Compact and continue") }
+                if (compactReason.isNotBlank()) Text(compactReason, color = Muted, style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { coldClearTarget = captured.target; coldDraft = null },
+                    enabled = available && clearReason.isBlank()) { Text("Clear context") }
+                if (clearReason.isNotBlank()) Text(clearReason, color = Muted, style = MaterialTheme.typography.bodySmall)
+            } }, confirmButton = { TextButton(onClick = {
+                model.sendMessage(captured.target, expectedDraft = captured, allowColdCache = true); coldDraft = null
+            }, enabled = available) { Text("Send with full context") } },
+            dismissButton = { TextButton(onClick = { coldDraft = null }) { Text("Cancel") } })
+    }
+    coldClearTarget?.let { captured -> ClearContextConfirmation(model, captured, onDismiss = { coldClearTarget = null },
+        beforeClear = { model.edit(captured, editor.text.toString()) }) }
+}
+
+@Composable private fun DraftsScreen(model: ZerusViewModel, onReview: (Draft) -> Unit, onReviewOutgoing: (OutgoingMessage) -> Unit, onDiscard: (Draft) -> Unit) {
+    val unsent = model.drafts.filter { (it.text.isNotBlank() || it.attachments.isNotEmpty() || it.answers.isNotBlank()) && it.status !in listOf("submitted", "recorded") }
+    val unresolved = model.outgoing.filter { it.status in listOf("sending", "uncertain", "failed") }
+    val contextOperations = model.contextOperations.filter { it.status in listOf("sending", "submitted", "uncertain", "failed") }
+    val sessionActions = model.sessionActions.filter { it.status in listOf("sending","uncertain","failed") }
+    var reviewContext by remember { mutableStateOf<ContextOperation?>(null) }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Text("Saved drafts", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold) }
+        item { Text("Private to this phone. Kept for the exact machine, session, run, and conversation.", color = Muted) }
+        if(model.actionResultNotice.isNotBlank()) item { Text(model.actionResultNotice,color = Amber,style = MaterialTheme.typography.bodySmall) }
+        items(unsent.sortedByDescending { it.updatedAt }, key = { it.key }) { draft ->
+            Card(colors = CardDefaults.cardColors(containerColor = Surface)) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(draft.target.session, fontWeight = FontWeight.SemiBold)
+                Tag(if (draft.questionId.isBlank()) { if (draft.status == "editing") "Draft" else deliveryLabel(draft.status) }
+                    else "Answer " + if (draft.status == "editing") "draft" else deliveryLabel(draft.status).lowercase(), if (draft.status == "editing") Mint else Amber)
+                if (draft.text.isNotBlank() || draft.answers.isNotBlank()) SelectionContainer { Text(draft.text.ifBlank { "Saved question answer" }, maxLines = 8, overflow = TextOverflow.Ellipsis) }
+                AttachmentRows(draft.attachments.map { DisplayedAttachment(it.name, it.mime, it.bytes) })
+                Text("Run ${draft.target.run.take(12)}", color = Muted, style = MaterialTheme.typography.labelSmall)
+                model.confirmedDraftAction(draft)?.let { action ->
+                    TextButton(onClick = { model.restoreDraftToConfirmedResult(draft,action) }) { Text("Restore draft to confirmed session") }
+                }
+                Row {
+                    val session = model.sessions.find { it.target == draft.target }
+                        ?: model.sessions.find { ContextPolicies.sameSessionRun(it.target, draft.target) }
+                    if (session != null) TextButton(onClick = { model.open(session) }) { Text(if (session.target == draft.target) "Open conversation" else "Open current conversation") }
+                    if (draft.detachedId.isNotBlank()) TextButton(onClick = { model.restoreDetached(draft) }) { Text("Restore") }
+                    if (draft.status != "editing") TextButton(onClick = { onReview(draft) }, enabled = draft.status != "submitting" && draft.key !in model.receiptFlights) { Text("Review") }
+                    TextButton(onClick = { onDiscard(draft) }, enabled = draft.status != "submitting" && draft.key !in model.receiptFlights) { Text("Discard") }
+                }
+            } }
+        }
+        if (model.pickerDraft != null) item { Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("A file selection was interrupted or is pending.", Modifier.weight(1f), color = Muted)
+            TextButton(onClick = { model.cancelAttachmentPick() }) { Text("Cancel selection") }
+        } }
+        if (unresolved.isNotEmpty()) item { Text("Outgoing messages", style = MaterialTheme.typography.titleMedium) }
+        items(unresolved.sortedByDescending { it.createdAt }, key = { "outgoing:${it.requestId}" }) { message ->
+            Card(colors = CardDefaults.cardColors(containerColor = Surface)) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(message.target.session, fontWeight = FontWeight.SemiBold)
+                Tag(deliveryLabel(message.status), if (message.blocksSending || message.status == "failed") Amber else Mint)
+                if (message.text.isNotBlank()) SelectionContainer { Text(message.text, maxLines = 8, overflow = TextOverflow.Ellipsis) }
+                AttachmentRows(message.attachments.map { DisplayedAttachment(it.name, it.mime, it.bytes) })
+                if (message.error.isNotBlank()) Text(message.error, color = Amber, style = MaterialTheme.typography.bodySmall)
+                Row {
+                    model.sessions.find { message.belongsTo(it.target) }?.let { session -> TextButton(onClick = { model.open(session) }) { Text("Open") } }
+                    if (message.status == "uncertain") TextButton(onClick = { model.checkOutgoing(message) }, enabled = "outgoing:${message.requestId}" !in model.receiptFlights) { Text("Check delivery") }
+                    if (message.status in listOf("failed", "uncertain")) TextButton(onClick = { onReviewOutgoing(message) }, enabled = "outgoing:${message.requestId}" !in model.receiptFlights) { Text("Review") }
+                }
+            } }
+        }
+        if (contextOperations.isNotEmpty()) item { Text("Context commands", style = MaterialTheme.typography.titleMedium) }
+        items(contextOperations.sortedByDescending { it.createdAt }, key = { "context:${it.requestId}" }) { operation ->
+            Card(colors = CardDefaults.cardColors(containerColor = Surface)) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(operation.target.session, fontWeight = FontWeight.SemiBold)
+                Text(contextOperationLabel(operation.operation, operation.status), color = Amber, style = MaterialTheme.typography.labelMedium)
+                if (operation.error.isNotBlank()) Text(operation.error, color = Amber, style = MaterialTheme.typography.bodySmall)
+                Text("The original command identity is saved. It is never repeated automatically.", color = Muted, style = MaterialTheme.typography.bodySmall)
+                Row {
+                    model.sessions.find { ContextPolicies.sameSessionRun(it.target, operation.target) }?.let { current ->
+                        TextButton(onClick = { model.open(current) }) { Text("Open") }
+                    }
+                    if (operation.status in listOf("submitted", "uncertain")) TextButton(onClick = { model.checkContextOperation(operation) },
+                        enabled = model.connections.any { it.id == operation.target.connectionId } && "context:${operation.requestId}" !in model.receiptFlights) { Text("Check result") }
+                    if (operation.status in listOf("failed", "uncertain")) TextButton(onClick = { reviewContext = operation },
+                        enabled = "context:${operation.requestId}" !in model.receiptFlights) { Text("Review") }
+                }
+            } }
+        }
+        if(sessionActions.isNotEmpty()) item { Text("Native actions",style = MaterialTheme.typography.titleMedium) }
+        items(sessionActions.sortedByDescending { it.createdAt },key = { "action:" + it.requestId }) { action -> SessionActionRecoveryCard(model,action) }
+        if (unsent.isEmpty() && unresolved.isEmpty() && contextOperations.isEmpty() && sessionActions.isEmpty()) item { Text("Your unsent messages will appear here.", color = Muted, modifier = Modifier.padding(vertical = 32.dp)) }
+    }
+    reviewContext?.let { operation -> ContextOperationReview(model, operation, onDismiss = { reviewContext = null }) }
+}
+
+@Composable private fun MachinesScreen(model: ZerusViewModel, live: Boolean, onPair: () -> Unit, onDisconnect: (Connection) -> Unit,
+    onNotifications: (Boolean) -> Unit, onLive: (Boolean) -> Unit, onPush: () -> Unit, onFirebase: () -> Unit) {
+    var notices by remember { mutableStateOf(false) }
+    var naming by remember { mutableStateOf<Machine?>(null) }
+    var coloring by remember { mutableStateOf<Machine?>(null) }
+    if(notices) ThirdPartyDialog { notices = false }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Text("Machines", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+        model.machines.forEach { machine -> Card(colors = CardDefaults.cardColors(containerColor = Surface)) {
+            Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                Icon(Icons.Default.Computer, null, tint = Mint)
+                Column(Modifier.weight(1f)) { MachineLabel(machine.name,colorHex = model.machineColor(MachineKey(machine.connectionId,machine.id))); Text(if (machine.online) "Online" else "Offline", color = if (machine.online) Mint else Muted, style = MaterialTheme.typography.bodySmall) }
+                if(!model.demo) {
+                    IconButton(onClick={ coloring=machine },enabled=model.storageReady) { Icon(Icons.Default.Palette,"Machine label color") }
+                    IconButton(onClick={ naming=machine },enabled=model.storageReady) { Icon(Icons.Default.Edit,"Rename machine") }
+                }
+            }
+        } }
+        if (model.demo) OutlinedButton(onClick = { model.stopPreview() }) { Text("Exit preview") }
+        model.connections.forEach { connection -> Column {
+            Text(connection.displayName, fontWeight = FontWeight.SemiBold)
+            Text(connection.endpoint, color = Muted, style = MaterialTheme.typography.bodySmall)
+            Text(model.pushStatuses[connection.id].orEmpty().ifBlank { "Push not configured" }, color = Muted, style = MaterialTheme.typography.bodySmall)
+            model.pushCapabilities[connection.id]?.let { Text(it, color = Muted, style = MaterialTheme.typography.bodySmall) }
+            TextButton(onClick = { onDisconnect(connection) }) { Text("Disconnect workspace") }
+        } }
+        OutlinedButton(onClick = onPair, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(8.dp)); Text("Pair another workspace") }
+        HorizontalDivider()
+        Text("Notifications", style = MaterialTheme.typography.titleLarge)
+        Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Session alerts"); Text("Generic alerts keep message content private.", style = MaterialTheme.typography.bodySmall, color = Muted) }; Switch(model.notifications, onNotifications) }
+        Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Keep a live connection"); Text("Uses an ongoing notification. Android may delay alerts during battery saving.", style = MaterialTheme.typography.bodySmall, color = Muted) }; Switch(live, onLive, enabled = model.connections.isNotEmpty()) }
+        OutlinedButton(onClick = onPush, enabled = model.connections.isNotEmpty()) { Text("Set up UnifiedPush") }
+        if (BuildConfig.FIREBASE_ENABLED) OutlinedButton(onClick = onFirebase, enabled = model.connections.isNotEmpty()) { Text("Set up Firebase push") }
+        Text("UnifiedPush needs a distributor installed on your phone. The app works without Google services.", style = MaterialTheme.typography.bodySmall, color = Muted)
+        Text("Zerus Android ${BuildConfig.VERSION_NAME}", color = Muted, style = MaterialTheme.typography.labelSmall)
+        TextButton(onClick = { notices = true }) { Text("Third-party notices") }
+    }
+    coloring?.let { machine ->
+        val key = MachineKey(machine.connectionId,machine.id)
+        ObscureConversation()
+        MachineColorDialog(model.machineName(key.connectionId,key.computerId,machine.name),key,
+            model.machineColorOverride(key),key in model.machineColorSaving,
+            onSave = { color -> model.setMachineColor(key,color) { coloring=null } },onDismiss = { coloring=null })
+    }
+    naming?.let { machine ->
+        val key=MachineKey(machine.connectionId,machine.id)
+        var name by remember(key) { mutableStateOf(machine.name) }
+        val saving=key in model.machineNameSaving
+        val valid=runCatching { MachineNames.checked(name) }.isSuccess
+        fun saveName() { if(valid&&!saving) model.renameMachine(key,name) { naming=null } }
+        AlertDialog(onDismissRequest={ if(!saving) naming=null },title={ Text("Name on this phone") },text={
+            Column(verticalArrangement=Arrangement.spacedBy(12.dp)) {
+                Text("This private label applies only to this machine in this workspace. Its hostname, SSH settings and session identity stay unchanged.")
+                Text(model.connections.find { it.id==machine.connectionId }?.displayName.orEmpty(),style=MaterialTheme.typography.labelMedium)
+                OutlinedTextField(name,{name=it},label={Text("Machine name")},singleLine=true,readOnly=saving,isError=!valid,keyboardOptions=KeyboardOptions(imeAction=ImeAction.Done),keyboardActions=KeyboardActions(onDone={saveName()}))
+                Text("Reported name: ${machine.nativeName}",style=MaterialTheme.typography.bodySmall)
+                if(model.machineAlias(key).isNotBlank()) TextButton(onClick={model.renameMachine(key,null) { naming=null }},enabled=!saving) { Text("Reset to reported name") }
+            }
+        },confirmButton={TextButton(onClick=::saveName,enabled=valid&&!saving) { Text(if(saving) "Saving…" else "Save") }},
+            dismissButton={TextButton(onClick={naming=null},enabled=!saving) { Text("Cancel") }})
+    }
+
+}
+
+private fun deliveryLabel(status: String) = when (status) {
+    "sending", "submitting" -> "Sending…"
+    "uncertain" -> "Delivery unknown"
+    "failed" -> "Not sent"
+    "submitted", "recorded" -> "Sent"
+    else -> status.replaceFirstChar { it.uppercase() }
+}
+private fun fileSize(bytes: Long): String = if (bytes >= 1_048_576) "%.1f MiB".format(java.util.Locale.ROOT, bytes / 1_048_576.0)
+    else if (bytes >= 1024) "${(bytes + 1023) / 1024} KiB" else "$bytes bytes"
+@Composable private fun AttachmentRows(attachments: List<DisplayedAttachment>) {
+    attachments.forEach { file -> Surface(color = Color(0xFF243136), shape = RoundedCornerShape(10.dp)) {
+        Row(Modifier.fillMaxWidth().padding(10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Icon(if (file.mime.startsWith("image/")) Icons.Default.Image else Icons.AutoMirrored.Filled.InsertDriveFile, null, tint = Mint, modifier = Modifier.size(20.dp))
+            Column(Modifier.weight(1f)) {
+                Text(file.name, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+                Text("${fileSize(file.bytes)}  ${file.mime}", color = Muted, style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    } }
+}

@@ -38,6 +38,10 @@ pub(super) fn inspection(name: &str, id: &str, archive_id: Option<&str>) -> Resu
         "conversation_id":format!("{}/{}",string(&record,"conversation_id"),id),"run_id":record["run_id"],
         "provider":native_record["agent"],"model":child["model"],"label":child["name"],"tracked":true,"read_only":true,"cwd":native_record["cwd"],
         "history_scope":"Recorded subagent activity","state":child["state"],"cursor":0});
+    if let Some(archive) = archive_id {
+        output["archive_id"] = json!(archive);
+        output["state"] = json!("archived");
+    }
     let db = journal::event_db()?;
     let mut query = db.prepare("SELECT seq,payload FROM events WHERE name=?1 AND conversation IS ?2 AND json_extract(payload,'$.agent_id')=?3 ORDER BY seq DESC LIMIT 200").map_err(|e|e.to_string())?;
     let rows = query

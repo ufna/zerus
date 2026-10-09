@@ -2,7 +2,9 @@
 use super::*;
 use std::time::{Duration, Instant};
 
-pub(super) fn dispatch(args: &[String], dry: bool) -> Result<i32> {
+pub(super) fn dispatch(args: &[String], dry: bool) -> Result<i32> { dispatch_scoped(args,dry,None,false) }
+
+pub(super) fn dispatch_scoped(args: &[String], dry: bool, scope: Option<&session_action::Scope>, forget: bool) -> Result<i32> {
     let (name, expected_run) = match args {
         [name] => (name.as_str(), None),
         [name, flag, run] if flag == "--expected-run-id" && !run.is_empty() => {
@@ -13,6 +15,7 @@ pub(super) fn dispatch(args: &[String], dry: bool) -> Result<i32> {
     let original = {
         let _guard = lock(None)?;
         let record = read(name)?;
+        if let Some(scope)=scope {scope.check(&record)?;}
         if expected_run.is_some_and(|run| run != string(&record, "run_id")) {
             return Err("session changed before termination; refresh and try again".into());
         }
@@ -45,6 +48,7 @@ pub(super) fn dispatch(args: &[String], dry: bool) -> Result<i32> {
             if !dry {
                 // Pin the tmux instance, never resolve a reusable name a second time.
                 // The writer lock prevents a concurrent HGS rename/relaunch here.
+                if let Some(scope)=scope {scope.changing();}
                 tmux(&["kill-session".into(), "-t".into(), target], true)?;
             }
         } else if process_alive(&record) {
@@ -78,10 +82,26 @@ pub(super) fn dispatch(args: &[String], dry: bool) -> Result<i32> {
                 || (!string(&original, "restore_archive_id").is_empty()
                     && entry["archive_id"] == original["restore_archive_id"]))
     }) {
-        println!("hgs: archived {name} ({})", string(&archived, "archive_id"));
+        if forget {
+            // Check every retained binding and recovery reference before the
+            // first removal. A newly launched/awaiting restore owns its source.
+            let current = if record_path(name).exists() {Some(read(name)?)} else {None};
+            forget_archive_preflight(&archived,current.as_ref(),scope)?;
+            if live()?.contains_key(name) || current.as_ref().is_some_and(process_alive) {
+                return Err("Session is still running; no archive or binding was forgotten".into());
+            }
+            if let Some(scope)=scope {scope.changing();}
+            archive::remove_synced(&archive::path(string(&archived,"archive_id"))?)?;
+            if let Some(record)=current {
+                rename::remove_legacy(&record)?;
+                archive::remove_synced(&record_path(name))?;
+            }
+        } else if let Some(scope)=scope {scope.result_record(&archived);}
+        else {println!("hgs: archived {name} ({})", string(&archived, "archive_id"));}
         return Ok(0);
     }
     let mut record = read(name)?;
+    if let Some(scope)=scope {scope.check(&record)?;}
     if record["run_id"] != original["run_id"] || record["created"] != original["created"] {
         return Err(
             "session binding changed while terminating; the replacement was left intact".into(),
@@ -91,9 +111,35 @@ pub(super) fn dispatch(args: &[String], dry: bool) -> Result<i32> {
     if live()?.contains_key(name) || process_alive(&record) {
         return Err("session is still running; its saved binding was kept".into());
     }
+    if let Some(scope)=scope {scope.changing();}
+    if forget {
+        rename::remove_legacy(&record)?;
+        archive::remove_synced(&record_path(name))?;
+        return Ok(0);
+    }
     record["completion_source"] = json!("manual_terminate");
     record["completion_reason"] = json!("user_terminated");
     let id = archive::save(&record)?;
-    println!("hgs: terminated and archived {name} ({id})");
+    if let Some(scope)=scope {scope.result_record(&archive::read_archive(name,&id)?);} else {println!("hgs: terminated and archived {name} ({id})");}
     Ok(0)
+}
+
+fn forget_archive_preflight(archived: &Value, current: Option<&Value>, scope: Option<&session_action::Scope>) -> Result<()> {
+    if let Some(current)=current {
+        if !string(current,"restore_archive_id").is_empty() && current["restore_archive_id"] == archived["archive_id"] {
+            return Err("Archive restore is awaiting confirmation; its recovery source was kept".into());
+        }
+        if let Some(scope)=scope {scope.check(current)?;}
+    }
+    Ok(())
+}
+
+#[cfg(test)] mod scoped_tests {
+    use super::*;
+    #[test] fn replacement_restore_protects_archive_before_any_removal() {
+        let archived=json!({"archive_id":"archive","run_id":"old"});
+        let replacement=json!({"run_id":"new","restore_archive_id":"archive"});
+        assert!(forget_archive_preflight(&archived,Some(&replacement),None).is_err());
+        assert!(forget_archive_preflight(&archived,None,None).is_ok());
+    }
 }

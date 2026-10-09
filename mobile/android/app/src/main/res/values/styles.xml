@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.Zerus.Base" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#101517</item>
+        <item name="android:navigationBarColor">#101517</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowBackground">@color/zerus_icon_background</item>
+    </style>
+    <style name="Theme.Zerus" parent="Theme.Zerus.Base" />
+</resources>

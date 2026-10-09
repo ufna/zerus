@@ -54,6 +54,7 @@ public:
     explicit SessionsWindow(const QString &hgsPath, QWidget *parent = nullptr);
     void setFleet(const FleetState &fleet);
     void showSessionList();
+    void showUpdates();
     void showSession(const QString &host, const QString &name);
     void showAttentionSession(const QString &host, const QString &name);
     void showNotificationNotice(const QString &message) { showNotice(message, false); }
@@ -91,6 +92,7 @@ protected:
 private:
     struct Entry { QString host, machine, key, identity; SessionInfo session; bool online; };
     void applyTheme();
+    void updateWindowPinAppearance();
     void applyContentScale();
     void saveOrganization();
     void savePendingLaunches();
@@ -292,7 +294,7 @@ private:
     void renderAccountUsage();
     void updateDashboardAccounts(bool request = false, bool force = false);
     QPushButton *m_open, *m_shell, *m_fileManager, *m_pause, *m_more;
-    QAction *m_renameAction, *m_forkAction, *m_archiveAction, *m_forgetAction;
+    QAction *m_renameAction, *m_forkAction, *m_clearAction, *m_archiveAction, *m_forgetAction;
     QAction *m_markAllReadAction = nullptr;
     QMenu *m_sessionMenu;
     QTextBrowser *m_children = nullptr, *m_info = nullptr;
@@ -332,6 +334,7 @@ private:
     QStackedWidget *m_pages;
     SettingsPage *m_settingsPage;
     QPushButton *m_settingsNav;
+    QPushButton *m_windowPin = nullptr;
     ProjectsDialog *m_projectsPage;
     QPushButton *m_projectsNav;
     bool m_dark = false;

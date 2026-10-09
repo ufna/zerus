@@ -751,6 +751,16 @@ fn inspect_with_processes(name: &str, agent_id: Option<&str>, include_processes:
     result["replace_events"] = json!(true);
     result["history_truncated"] = inspected["page"]["hasMore"].clone();
     result["host_generation"] = inspected["generation"].clone();
+    let ping=rpc(&record,"ping",json!({})).unwrap_or(Value::Null);
+    result["terminal_supported"]=json!(false);
+    result["terminal_reason"]=json!("DeepSeek uses a structured native API without a tmux Terminal");
+    result["allowed_actions"]=if agent_id.is_none() && ping["sessionActions"]==true && ping["generation"]==inspected["generation"] {
+        inspected["lifecycleActions"].clone()
+    } else {json!([])};
+    result["action_reasons"]=json!({"archive":"Native DeepSeek has no archive lifecycle API","fork":"Native DeepSeek has no fork lifecycle API",
+        "terminate":"Use Pause for this native DeepSeek session","restore":"Native DeepSeek has no archive lifecycle API",
+        "pause":"Requires a supported resident adapter and its owned handle","resume":"Requires a supported resident adapter and a stopped session",
+        "rename":"Requires the supported resident scoped adapter","forget":"Requires a supported resident adapter and its owned handle"});
     result["pending_questions"] = json!(question_cards(&record, &inspected));
     result["native_questions"] = inspected["pendingQuestions"].clone();
     result["native_projections"] = inspected["baseline"]["values"].clone();
@@ -869,6 +879,45 @@ fn checked_request(record: &Value) -> Result<Value> {
     }
     Ok(request)
 }
+/// Lifecycle remains confined to a supported resident host. Never start,
+/// dispose, reload or replace a host to implement a mobile scoped action.
+pub(super) fn session_action(name: &str, action: &str, new_name: Option<&str>, scope: &session_action::Scope) -> Result<()> {
+    if !["pause","resume","rename","forget"].contains(&action) {return Err("This native DeepSeek adapter has no archive/fork lifecycle API".into());}
+    let _guard=lock(Some(&root().join("dsh/bindings.lock")))?;
+    let mut record=binding(name)?;scope.check(&record)?;
+    if let Some(new)=new_name {
+        let old:Vec<_>=name.split('/').collect();let parts:Vec<_>=new.split('/').collect();
+        if parts.len()!=3 || old.len()!=3 || parts[..2]!=old[..2] || parts.iter().any(|p|p.is_empty() || p.trim()!=*p || p.contains([':', '.']) || p.chars().any(char::is_control)) {
+            return Err("Rename must preserve the original DeepSeek provider and project".into());
+        }
+        if new!=name && exists(new) {return Err("The destination session already exists".into());}
+    }
+    let ping=rpc(&record,"ping",json!({}))?;
+    if ping["sessionActions"]!=true {return Err("The resident DeepSeek adapter lacks scoped lifecycle; it was left running".into());}
+    let inspected=rpc(&record,"inspect",json!({"sessionId":record["conversation_id"],"includeProcesses":false}))?;
+    if ping["generation"]!=inspected["generation"] || !inspected["lifecycleActions"].as_array().is_some_and(|values|values.iter().any(|value|value==action)) {
+        return Err("This action is unavailable for the exact native DeepSeek handle".into());
+    }
+    let mode=crate::accounts::permission_mode(&crate::config::Config::load().map_err(|e|e.message)?,"native-dsh","dsh").map_err(|e|e.message)?;
+    scope.changing();
+    let answer=rpc(&record,"session-action",json!({"sessionId":record["conversation_id"],"generation":inspected["generation"],
+        "action":action,"title":new_name.map(|name|name.rsplit('/').next().unwrap()),"permissionMode":mode}))?;
+    if answer["sessionId"]!=record["conversation_id"] || answer["action"]!=action {return Err("DeepSeek lifecycle acknowledgement did not match".into());}
+    if answer["generation"]!=inspected["generation"] {return Err("DeepSeek host changed during lifecycle handoff".into());}
+    if answer["status"]=="failed" {scope.unchanged();return Err(string(&answer,"error").into());}
+    if answer["status"]!="completed" {return Err("DeepSeek lifecycle handoff was not confirmed".into());}
+    match action {
+        "pause"=>record["paused"]=json!(true),
+        "resume"=>{record["paused"]=json!(false);record["run_id"]=json!(uuid::Uuid::new_v4().to_string());record.as_object_mut().unwrap().remove("permissions_pending");},
+        "rename"=>{record["name"]=json!(new_name.unwrap());recovery::rename_job(name,new_name.unwrap(),string(&record,"run_id"))?;},
+        "forget"=>{archive::remove_synced(&binding_path(name))?;return Ok(());},
+        _=>unreachable!(),
+    }
+    save(&record)?;
+    if action=="rename" && new_name!=Some(name) {archive::remove_synced(&binding_path(name))?;}
+    scope.result_record(&record);Ok(())
+}
+
 pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
     let name = args.first().ok_or("Choose a DeepSeek session")?;
     let _guard = if !["inspect", "exists"].contains(&command) {

@@ -21,6 +21,7 @@ public:
 
 signals:
     void aboutToShow();
+    void updatesRequested();
     // A remote tty belongs to another machine and must never raise a local window.
     void sessionActivated(const QString &peer, const QString &session, const QString &tty);
     void savedSessionRequested(const QString &peer, const QString &session);

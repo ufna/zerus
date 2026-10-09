@@ -291,7 +291,7 @@ fn spawn_agent(argv: &[String], name: &str, run_id: &str) -> Result<std::process
     }
 }
 
-fn safe_to_pause(record: &Value) -> bool {
+pub(super) fn safe_to_pause(record: &Value) -> bool {
     string(record, "activity") == "idle"
         && telemetry::grouped_active(record) == 0
         && string(record, "expected_id").is_empty()
@@ -336,11 +336,12 @@ fn pause_check(name: &str, snapshot: &Snapshot) -> Result<Value> {
     Ok(record)
 }
 
-fn pause_one(record: &Value) -> Result<()> {
+fn pause_one(record: &Value, scope: Option<&session_action::Scope>) -> Result<()> {
     let name = string(record, "name");
     {
         let _guard = lock(None)?;
         let current = read(name)?;
+        if let Some(scope)=scope {scope.check(&current)?;}
         if current["run_id"] != record["run_id"]
             || !safe_to_pause(&current)
             || !matches(&current, live()?.get(name))
@@ -355,6 +356,7 @@ fn pause_one(record: &Value) -> Result<()> {
             .ok_or("invalid tracked process ID")?;
         // Only signal the exact PID whose start identity was just checked.
         // Never target a process group, terminal input or the tmux server.
+        if let Some(scope)=scope {scope.changing();}
         if unsafe { libc::kill(pid, libc::SIGTERM) } != 0 {
             return Err(io::Error::last_os_error().to_string());
         }
@@ -384,6 +386,7 @@ fn pause_one(record: &Value) -> Result<()> {
     {
         let _guard = lock(None)?;
         let mut current = read(name)?;
+        if let Some(scope)=scope {scope.check(&current)?;}
         if current["run_id"] != record["run_id"] {
             return Err("session changed while pausing".into());
         }
@@ -392,6 +395,8 @@ fn pause_one(record: &Value) -> Result<()> {
         write(&mut current)?;
     }
     if remaining {
+        let _guard=lock(None)?;
+        if let Some(scope)=scope {scope.check(&read(name)?)?;}
         // Revalidate the dead pane before deleting it: tmux may reuse IDs after
         // a server restart while a delayed pause command is still finishing.
         let snapshot = live()?;
@@ -415,11 +420,13 @@ fn pause_one(record: &Value) -> Result<()> {
             )?;
         }
     }
-    println!("hgs: paused {name}");
+    if let Some(scope)=scope {scope.result(name,string(record,"run_id"),string(record,"conversation_id"),None);} else {println!("hgs: paused {name}");}
     Ok(())
 }
 
-pub(super) fn pause(names: &[String], dry: bool) -> Result<i32> {
+pub(super) fn pause(names: &[String], dry: bool) -> Result<i32> { pause_scoped(names,dry,None) }
+
+pub(super) fn pause_scoped(names: &[String], dry: bool, scope: Option<&session_action::Scope>) -> Result<i32> {
     let snapshot = live()?;
     let names: Vec<String> = if names == ["--all"] {
         snapshot.keys().cloned().collect()
@@ -445,6 +452,7 @@ pub(super) fn pause(names: &[String], dry: bool) -> Result<i32> {
         let _guard = lock(None)?;
         for record in &saved {
             let current = read(string(record, "name"))?;
+            if let Some(scope)=scope {scope.check(&current)?;}
             if current["run_id"] != record["run_id"] || current["updated"] != record["updated"] {
                 return Err(format!(
                     "{}: activity changed while checking; retry pause",
@@ -453,6 +461,7 @@ pub(super) fn pause(names: &[String], dry: bool) -> Result<i32> {
             }
         }
         for record in &mut saved {
+            if let Some(scope)=scope {scope.changing();}
             record["pausing"] = owner.clone();
             write(record)?;
         }
@@ -460,7 +469,7 @@ pub(super) fn pause(names: &[String], dry: bool) -> Result<i32> {
     let mut failures = Vec::new();
     for record in &saved {
         let name = string(record, "name");
-        if let Err(error) = pause_one(record) {
+        if let Err(error) = pause_one(record, scope) {
             failures.push(format!("{name}: {error}"));
         }
         let cleanup: Result<()> = (|| {
@@ -468,6 +477,7 @@ pub(super) fn pause(names: &[String], dry: bool) -> Result<i32> {
             if record_path(name).exists() {
                 let mut current = read(name)?;
                 if current["run_id"] == record["run_id"] {
+                    if let Some(scope)=scope {scope.check(&current)?;}
                     current.as_object_mut().unwrap().remove("pausing");
                     write(&mut current)?;
                 }
@@ -564,7 +574,7 @@ fn print_resume(arguments: &[String]) {
     println!("{}", join_command(&display));
 }
 
-fn resume_archive(name: &str, id: &str, dry: bool) -> Result<i32> {
+fn resume_archive(name: &str, id: &str, dry: bool, scope: Option<&session_action::Scope>) -> Result<i32> {
     let archived = archive::read_archive(name, id)?;
     recipes::verify_history(&archived, true)?;
     let run_id = uuid::Uuid::new_v4().to_string();
@@ -574,6 +584,7 @@ fn resume_archive(name: &str, id: &str, dry: bool) -> Result<i32> {
         return Err(format!("{name}: a live or saved session already uses this name; finish or archive it before restoring"));
     }
     let current_archive = archive::read_archive(name, id)?;
+    if let Some(scope)=scope {scope.check(&current_archive)?;}
     if current_archive["run_id"] != archived["run_id"]
         || current_archive["conversation_id"] != archived["conversation_id"]
     {
@@ -611,6 +622,7 @@ fn resume_archive(name: &str, id: &str, dry: bool) -> Result<i32> {
     pending["phase"] = json!("unknown");
     pending["pid"] = json!(0);
     pending["process_start"] = json!("");
+    if let Some(scope)=scope {scope.changing();}
     write(&mut pending)?;
     if let Err(error) = tmux(&arguments, true) {
         let mut failed = read(name)?;
@@ -620,20 +632,22 @@ fn resume_archive(name: &str, id: &str, dry: bool) -> Result<i32> {
         }
         return Err(error);
     }
-    println!("hgs: restoring {name} from archive {id}");
+    if let Some(scope)=scope {scope.result(name,&run_id,string(&pending,"conversation_id"),None);} else {println!("hgs: restoring {name} from archive {id}");}
     Ok(0)
 }
 
-pub(super) fn resume(names: &[String], dry: bool) -> Result<i32> {
-    archive::reconcile()?;
+pub(super) fn resume(names: &[String], dry: bool) -> Result<i32> { resume_scoped(names,dry,None) }
+
+pub(super) fn resume_scoped(names: &[String], dry: bool, scope: Option<&session_action::Scope>) -> Result<i32> {
+    if scope.is_none() {archive::reconcile()?;}
     if names.len() == 3 && names[1] == "--archive" {
-        return resume_archive(&names[0], &names[2], dry);
+        return resume_archive(&names[0], &names[2], dry, scope);
     }
     if names.iter().any(|name| name == "--archive") {
         return Err("usage: hgs resume <session> --archive ID".into());
     }
     let snapshot = live()?;
-    let requested = nonempty_env("HGS_REQUESTED_ID");
+    let requested = if scope.is_none() {nonempty_env("HGS_REQUESTED_ID")} else {None};
     let archived = archive::records()?;
     let names = if names == ["--all"] {
         records()?
@@ -654,9 +668,11 @@ pub(super) fn resume(names: &[String], dry: bool) -> Result<i32> {
             verify_requested(&read(&name)?, &snapshot, id)?;
         }
         if snapshot.contains_key(&name) {
+            if scope.is_some() {return Err("Session is already live; no resume was launched".into());}
             continue;
         }
         let record = read(&name)?;
+        if let Some(scope)=scope {scope.check(&record)?;}
         if archive::equivalent(&record, &archived) {
             return Err(format!(
                 "{name}: this session is archived; restore it using --archive ID"
@@ -664,31 +680,35 @@ pub(super) fn resume(names: &[String], dry: bool) -> Result<i32> {
         }
         recipes::verify_history(&record, true)?;
         let restore_id = nonempty_value(&record, "restore_archive_id");
+        let new_run=uuid::Uuid::new_v4().to_string();
         let arguments = resume_arguments(
             &record,
-            &uuid::Uuid::new_v4().to_string(),
+            &new_run,
             restore_id.as_deref(),
         )?;
-        recipes.push((name, arguments, record["run_id"].clone()));
+        recipes.push((name, arguments, record["run_id"].clone(), record["conversation_id"].clone(),new_run));
     }
     let _guard = lock(None)?;
-    for (name, arguments, original_run) in recipes {
+    for (name, arguments, original_run, original_conversation,new_run) in recipes {
         let current_snapshot = live()?;
         let current = read(&name)?;
+        if let Some(scope)=scope {scope.check(&current)?;}
         if let Some(id) = &requested {
             verify_requested(&current, &current_snapshot, id)?;
         }
         if current_snapshot.contains_key(&name) {
+            if scope.is_some() {return Err("Session became live before resume; no replacement was launched".into());}
             continue;
         }
-        if current["run_id"] != original_run {
+        if current["run_id"] != original_run || current["conversation_id"] != original_conversation {
             return Err(format!("{name}: saved binding changed; retry resume"));
         }
         if dry {
             print_resume(&arguments);
         } else {
+            if let Some(scope)=scope {scope.changing();}
             tmux(&arguments, true)?;
-            println!("hgs: resuming {name}");
+            if let Some(scope)=scope {scope.result(&name,&new_run,string(&current,"conversation_id"),None);} else {println!("hgs: resuming {name}");}
         }
     }
     Ok(0)

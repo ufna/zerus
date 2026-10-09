@@ -13,6 +13,12 @@ source provenance and archive checksum are in `UPSTREAM.md` beside it.
 under MIT. Its original license is retained in `tray/vendor/md4c/LICENSE.md`;
 source provenance and archive checksum are in `UPSTREAM.md` beside it.
 
+## GitHub logo
+
+The About page uses the [GitHub mark from Primer Octicons](
+https://github.com/primer/octicons/blob/97825f832c98f817867f770d084c08e3edc6f78c/icons/mark-github-16.svg). Its complete MIT license and GitHub copyright notice are retained
+in `tray/resources/icons/github-mark.svg`, including the embedded Qt resource.
+
 ## Dependencies obtained during build
 
 Rust dependencies and versions are locked in `Cargo.lock`. Their license

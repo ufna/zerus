@@ -133,6 +133,19 @@ print(json.dumps(result))
         QTest::qWait(30);
         const auto preview=qEnvironmentVariable("HGS_CONFLICT_PREVIEW");if(!preview.isEmpty())QVERIFY(review.grab().save(preview));
     }
+    void wrappedConflictChoicesResizeWithoutLosingSelection() {
+        FleetState fleet;SwarmConflictReview review(fleet);review.resize(900,560);review.show();QTest::qWait(30);
+        const QJsonObject folder{{"project","p"},{"machine","node-b"},{"name","Application sources and shared integration fixtures"},
+            {"path","/workspace/example-project/components/application/integration/fixtures"}};
+        review.setConflict(conflict({{"kind","folder"},{"id","folder-id"}},folder,QJsonValue::Null),conflictSnapshot());
+        auto *choices=review.findChild<QTableWidget*>("swarmConflictChoices");choices->setCurrentCell(0,0);QTest::qWait(30);
+        const auto wideHeight=choices->rowHeight(0);const auto chosen=choices->item(0,0)->data(Qt::UserRole);
+        review.resize(420,560);QTRY_VERIFY(choices->rowHeight(0)>wideHeight);
+        QCOMPARE(choices->currentRow(),0);QCOMPARE(choices->item(0,0)->data(Qt::UserRole),chosen);
+        QVERIFY(review.findChild<QPushButton*>("swarmResolve")->isEnabled());
+        review.resize(900,560);QTRY_VERIFY(choices->rowHeight(0)<=wideHeight);
+        QCOMPARE(choices->currentRow(),0);
+    }
     void archiveIdentityIsReadableAndNewVersionsClearTheChoice() {
         FleetState fleet;BoxState local;local.host="arch";SessionInfo archive;archive.name="claude/demo/old-plan";archive.project="demo";archive.tag="old-plan";archive.state="archived";archive.archiveId="archive-id";local.sessions.append(archive);fleet.setLocal(local,0);
         SwarmConflictReview review(fleet);auto snapshot=conflictSnapshot();auto c=conflict({{"kind","session"},{"machine","node-a"},{"session","archive\narchive-id"}},"p","ungrouped");

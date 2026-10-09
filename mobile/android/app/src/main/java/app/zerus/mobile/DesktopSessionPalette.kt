@@ -1,0 +1,81 @@
+package app.zerus.mobile
+
+enum class DesktopBadgeKind { Neutral, Working, Attention, Error, Paused, Unread }
+data class DesktopBadgeColors(val background: Long, val foreground: Long)
+data class DesktopSessionBadge(val caption: String, val kind: DesktopBadgeKind, val additionalUnread: Boolean)
+
+/** Native predicates and precedence from SessionCardDelegate.h; colors from SessionStatusBadge.h. */
+object DesktopSessionPalette {
+    fun badge(session: Session, online: Boolean): DesktopSessionBadge {
+        val raw = session.raw
+        val state = SessionFilters.status(session, online)
+        val attention = raw.optBoolean("review_later") || raw.optBoolean("mobile_review_later") || online && !raw.optBoolean("attention_acknowledged") &&
+            (SessionFilters.needsAction(session) || childAttention(session, online))
+        val working = SessionFilters.matches(session, SessionFilter.Working, online)
+        val unread = raw.optBoolean("unread_reply") || raw.optBoolean("mobile_unread_reply")
+        val kind = when {
+            attention -> if (detailKind(session, online) == DetailKind.Error) DesktopBadgeKind.Error else DesktopBadgeKind.Attention
+            working -> DesktopBadgeKind.Working
+            unread -> DesktopBadgeKind.Unread
+            online && SessionFilters.state(session) == "paused" && !SessionFilters.archived(session) -> DesktopBadgeKind.Paused
+            else -> DesktopBadgeKind.Neutral
+        }
+        val caption = when {
+            working -> if (raw.string("phase") == "compacting") "Compacting" else "Working"
+            unread && !attention -> "New reply"
+            online && !SessionFilters.archived(session) && SessionFilters.state(session) !in listOf("paused", "stopped") &&
+                raw.string("process_state") != "exited" && !raw.optBoolean("tracked") && raw.string("activity").isBlank() -> "Untracked"
+            else -> state
+        }
+        return DesktopSessionBadge(caption, kind, unread && (working || attention))
+    }
+
+    private fun childAttention(session: Session, online: Boolean): Boolean {
+        if (!SessionFilters.currentActivity(session, online) || session.raw.string("subagent_source") == "hook_profiles") return false
+        val children = session.raw.optJSONObject("subagents")?.let { roster ->
+            roster.keys().asSequence().mapNotNull { roster.optJSONObject(it) }.toList()
+        }.orEmpty() + session.raw.optJSONArray("subagent_previews")?.objects().orEmpty()
+        return children.any { it.string("display_state", "state") in listOf("approval", "input", "attention") }
+    }
+
+    fun colors(kind: DesktopBadgeKind, dark: Boolean): DesktopBadgeColors = when (kind) {
+        DesktopBadgeKind.Working -> if (dark) DesktopBadgeColors(0xFF194D36, 0xFF97F0BA) else DesktopBadgeColors(0xFFCCEFDC, 0xFF145B37)
+        DesktopBadgeKind.Attention, DesktopBadgeKind.Unread -> DesktopBadgeColors(if (dark) 0xFFFFDA76 else 0xFFF4CE65, 0xFF392900)
+        DesktopBadgeKind.Error -> if (dark) DesktopBadgeColors(0xFFFFABB6, 0xFF46202A) else DesktopBadgeColors(0xFFB73750, 0xFFFFFFFF)
+        DesktopBadgeKind.Paused -> if (dark) DesktopBadgeColors(0xFF443654, 0xFFDEC3FF) else DesktopBadgeColors(0xFFE8DDF5, 0xFF634187)
+        DesktopBadgeKind.Neutral -> if (dark) DesktopBadgeColors(0xFF2B343E, 0xFFB6C2D0) else DesktopBadgeColors(0xFFE7EDF2, 0xFF566575)
+    }
+
+    private enum class DetailKind { Neutral, Working, Ready, Attention, Error, Paused }
+    // This follows SessionPresentation::status ordering, rather than interpreting translated labels.
+    private fun detailKind(session: Session, online: Boolean): DetailKind {
+        val raw = session.raw
+        val phase = raw.string("phase")
+        return when {
+            !online || SessionFilters.archived(session) -> DetailKind.Neutral
+            SessionFilters.state(session) == "paused" -> DetailKind.Paused
+            SessionFilters.state(session) == "stopped" || raw.string("process_state") == "exited" -> DetailKind.Neutral
+            !raw.optBoolean("tracked") && raw.string("activity").isBlank() -> DetailKind.Neutral
+            phase in listOf("approval", "input") -> DetailKind.Attention
+            raw.optJSONObject("recovery")?.string("state") in listOf("waiting", "dispatching", "retrying") -> DetailKind.Neutral
+            phase == "error" -> DetailKind.Error
+            phase in listOf("interrupted", "starting") -> DetailKind.Neutral
+            phase in listOf("compacting", "tool") || raw.string("activity") == "busy" -> DetailKind.Working
+            raw.string("activity") == "idle" -> DetailKind.Ready
+            else -> DetailKind.Neutral
+        }
+    }
+
+    /** SessionsWindow.cpp tone() and its detail badge background. */
+    fun detailColors(session: Session, online: Boolean, dark: Boolean): DesktopBadgeColors {
+        val foreground = when (detailKind(session, online)) {
+            DetailKind.Working -> if (dark) 0xFF55E39A else 0xFF12834E
+            DetailKind.Ready -> if (dark) 0xFF78DABB else 0xFF11775D
+            DetailKind.Attention -> if (dark) 0xFFF0C77B else 0xFF885400
+            DetailKind.Error -> if (dark) 0xFFFF9298 else 0xFFB52B3D
+            DetailKind.Paused -> if (dark) 0xFFB9A5ED else 0xFF7051A4
+            DetailKind.Neutral -> if (dark) 0xFF9AA4B2 else 0xFF646F7E
+        }
+        return DesktopBadgeColors(if (dark) 0xFF2B323D else 0xFFEDF1F5, foreground)
+    }
+}

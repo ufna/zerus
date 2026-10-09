@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zerus-mobile"
+version = "0.1.0"
+description = "Self-hosted trusted Zerus mobile relay and computer connector"
+requires-python = ">=3.11"
+dependencies = ["aiohttp==3.14.4"]
+
+[project.optional-dependencies]
+fcm = ["firebase-admin==7.7.0"]
+
+[project.scripts]
+zerus-mobile = "zerus_mobile.__main__:main"
+zerus-mobile-connector = "zerus_mobile.connector:main"
+
+[tool.setuptools.packages.find]
+include = ["zerus_mobile*"]

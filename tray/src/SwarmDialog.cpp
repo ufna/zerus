@@ -87,8 +87,8 @@ void showSwarmDialog(HgsClient *client,SwarmController *controller,const FleetSt
     auto *noConflicts=message(QObject::tr("No conflicting changes.\nChanges from connected computers are merged automatically."));conflictStack->addWidget(noConflicts);
     auto *conflictPage=new QWidget;auto *conflictLayout=new QVBoxLayout(conflictPage);
     auto *conflictTitle=new QLabel(QObject::tr("These changes need your decision. Review one item at a time; each choice is shared with the swarm."));conflictTitle->setWordWrap(true);conflictLayout->addWidget(conflictTitle);
-    auto *conflictSplit=new QSplitter;conflictLayout->addWidget(conflictSplit,1);
-    auto *conflicts=new QListWidget;conflicts->setObjectName("swarmConflicts");conflicts->setWordWrap(true);conflicts->setMinimumWidth(170);conflicts->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);conflictSplit->addWidget(conflicts);
+    auto *conflictSplit=new QSplitter;conflictSplit->setObjectName("swarmConflictSplit");conflictSplit->setHandleWidth(14);conflictLayout->addWidget(conflictSplit,1);
+    auto *conflicts=new QListWidget;conflicts->setObjectName("swarmConflicts");conflicts->setWordWrap(true);conflicts->setResizeMode(QListView::Adjust);conflicts->setMinimumWidth(190);conflicts->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);conflicts->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);conflictSplit->addWidget(conflicts);
     auto *review=new SwarmConflictReview(fleet);review->setObjectName("swarmConflictDetails");conflictSplit->addWidget(review);conflictSplit->setChildrenCollapsible(false);conflictSplit->setStretchFactor(1,1);conflictSplit->setSizes({210,480});
     conflictStack->addWidget(conflictPage);
     const int conflictTab=tabs->addTab(conflictStack,QObject::tr("Conflicts (0)"));

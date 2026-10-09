@@ -13,6 +13,7 @@
 #include "ClipboardBackend.h"
 #include "CommandBackend.h"
 #include "SessionsWindow.h"
+#include "UpdateController.h"
 #include "SessionCommands.h"
 #ifdef Q_OS_LINUX
 #include "KonsoleBackend.h"
@@ -133,7 +134,20 @@ TrayAgent::TrayAgent(const AppConfig &cfg, QObject *parent)
     , m_peerTimer(this)
 {
     m_icons.setForegroundOverride(m_cfg.iconColor);
+    auto *updates=UpdateController::instance();
+    connect(updates,&UpdateController::changed,this,[this]{if(!m_menu.isOpen())m_menu.rebuild(m_state);});
+    connect(updates,&UpdateController::newerReleaseVerified,this,[this](const QString &token,const QString &version){m_notifier->post(token,tr("Zerus update available"),tr("Zerus %1 is available. Open Updates for installation instructions.").arg(version));});
+    connect(&m_menu,&TrayMenu::updatesRequested,this,[this]{showSessions();m_sessionsWindow->showUpdates();});
     connect(m_notifier.get(), &AttentionNotifier::activated, this, [this](const QString &token, const QString &activationToken) {
+        if(UpdateController::isUpdateToken(token)){
+            auto *updates=UpdateController::instance();if(!updates->updateAvailable()||updates->updateToken()!=token)return;
+            showSessions();m_sessionsWindow->showUpdates();
+#ifdef Q_OS_LINUX
+            if(!activationToken.isEmpty())KWindowSystem::setCurrentXdgActivationToken(activationToken);
+            KWindowSystem::activateWindow(m_sessionsWindow->windowHandle());
+#endif
+            return;
+        }
         const auto target = AttentionTracker::target(token);
         if (target.isEmpty()) return;
         m_pendingAttention = token;
@@ -152,6 +166,7 @@ TrayAgent::TrayAgent(const AppConfig &cfg, QObject *parent)
     });
     connect(m_notifier.get(), &AttentionNotifier::failed, this, [this](const QString &token, const QString &detail) {
         qWarning().noquote() << "hgs zerus: notification:" << detail;
+        if(UpdateController::isUpdateToken(token))return;
         m_attention.deliveryFailed(token);
         QSettings().setValue("attention/observed", QJsonDocument(m_attention.state()).toJson(QJsonDocument::Compact));
         if (m_sessionsWindow) m_sessionsWindow->showNotificationNotice(tr("System notification was not delivered: %1").arg(detail));

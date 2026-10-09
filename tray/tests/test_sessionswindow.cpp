@@ -45,6 +45,9 @@
 #include "QuestionCard.h"
 #include "RecoveryWidgets.h"
 #include "SettingsPage.h"
+#include "WindowLayer.h"
+#include "SwarmDialog.h"
+#include "SwarmController.h"
 #include "TerminalView.h"
 #include "TerminalScreen.h"
 #include "NewSessionDialog.h"
@@ -77,13 +80,17 @@ class TestSessionsWindow : public QObject {
     Q_OBJECT
 private slots:
     void initTestCase();
+    void updatesEntryOpensExactSettingsPage();
     void init() { QSettings().remove("workspace"); QSettings().remove("processes"); QVERIFY(QDir(ComposerDraftStore::directory()).removeRecursively()); }
     void workspaceRestoresDraftAcrossRestartAndSessionRemoval();
     void groupsPersistFilterAndRevealAttention();
     void emptyProjectsSettingPreservesArchiveAndProjects();
     void contentScaleLeavesWorkspaceChrome();
+    void projectSwarmFollowsWorkspaceTheme();
     void alwaysOnTopSettingKeepsWindowAbove();
     void railPinTogglesAlwaysOnTop();
+    void windowLayerControlsKeepFocusAndLayout_data();
+    void windowLayerControlsKeepFocusAndLayout();
     void unreadRepliesNeedAnActiveVisibleResult();
     void markAllReadIgnoresFiltersAndKeepsCurrentDraft();
     void unsentDraftBecomesARowStatus();
@@ -91,6 +98,7 @@ private slots:
     void worktreeFilterKeepsConversationDraftAndSearchScope();
     void worktreePreview();
     void workingCardsKeepTurnClockAcrossUpdates();
+    void questionReplyPreviewUsesCompletePrompt();
     void accountUsageRejectsOtherSessionReplies();
     void usageLimitBecomesToolbarChip();
     void dashboardAndMultiMachineNavigation();
@@ -216,6 +224,7 @@ void TestSessionsWindow::initTestCase()
     QVERIFY(m_dir.isValid());
     QCoreApplication::setOrganizationName("hgs-tests");
     QCoreApplication::setApplicationName("sessions-window");
+    QGuiApplication::setDesktopFileName("org.example.ZerusSessionsWindowTest");
     QCoreApplication::setApplicationVersion(QLatin1String(HGS_TRAY_VERSION));
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, m_dir.path());
@@ -300,6 +309,23 @@ void TestSessionsWindow::workingCardsKeepTurnClockAcrossUpdates()
     box.sessions[0].activity="idle"; box.sessions[0].phase="idle";
     state.setLocal(box,QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
     QVERIFY(!row->data(SessionRoles::Working).toBool()); QVERIFY(!list->elapsedTimerRunning());
+}
+
+void TestSessionsWindow::questionReplyPreviewUsesCompletePrompt()
+{
+    auto state=fleet();auto box=state.local();auto &session=box.sessions[0];
+    const QString answer="Review the desktop changes on both machines.";
+    const QJsonObject reply{{"questionItemId","reply-one"},{"question",QString(300,'q')},{"answer",answer}};
+    session.prompt="<send_user_message_question_reply>\n"+QString::fromUtf8(QJsonDocument(QJsonArray{reply}).toJson(QJsonDocument::Compact))
+        +"\n</send_user_message_question_reply>";
+    session.activitySummary="Working";session.activityDetail=session.prompt.left(240)+QChar(0x2026);
+    state.setLocal(box,QDateTime::currentMSecsSinceEpoch());
+    SessionsWindow window(script());window.setFleet(state);window.show();window.showSession({},session.name);
+    auto *list=window.findChild<SessionList *>("sessionList");auto *row=list->currentItem();QVERIFY(row);
+    QCOMPARE(row->data(SessionRoles::Detail).toString(),"Working: Your answer: "+answer);
+    QVERIFY(row->data(Qt::AccessibleTextRole).toString().contains(answer));
+    QVERIFY(!row->data(Qt::AccessibleTextRole).toString().contains("send_user_message_question_reply"));
+    QCOMPARE(session.activityDetail,session.prompt.left(240)+QChar(0x2026));
 }
 
 void TestSessionsWindow::dashboardAndMultiMachineNavigation()
@@ -512,6 +538,24 @@ void TestSessionsWindow::groupsPersistFilterAndRevealAttention()
     QVERIFY(!newList->currentItem()->isHidden());
 }
 
+void TestSessionsWindow::projectSwarmFollowsWorkspaceTheme()
+{
+    const QJsonObject organization{{"version",2},{"projects",QJsonArray{}}};
+    for(const auto &theme:{QStringLiteral("dark"),QStringLiteral("light")}) {
+        QSettings().setValue("workspace/theme",theme);SessionsWindow window(script());window.show();
+        HgsClient client(script());SwarmController controller(&client);
+        controller.acceptExternal({{"schema",1},{"organization",organization},{"machines",QJsonArray{}},{"conflicts",QJsonArray{}}});
+        FleetState fleet;bool checked=false;
+        QTimer::singleShot(30,&window,[&]{
+            auto *dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget());QVERIFY(dialog);
+            QCOMPARE(dialog->palette().color(QPalette::Window),window.palette().color(QPalette::Window));
+            checked=true;dialog->reject();
+        });
+        QTimer timeout;timeout.setSingleShot(true);connect(&timeout,&QTimer::timeout,&window,[]{if(auto *dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget()))dialog->reject();});timeout.start(5000);
+        showSwarmDialog(&client,&controller,fleet,&window,[]{});QVERIFY(checked);
+    }
+}
+
 void TestSessionsWindow::contentScaleLeavesWorkspaceChrome()
 {
     QSettings().remove("workspace/contentScale");
@@ -603,18 +647,81 @@ void TestSessionsWindow::railPinTogglesAlwaysOnTop()
     SessionsWindow window(script()); window.setFleet(fleet()); window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
     auto *pin = window.findChild<QPushButton *>("windowPin");
     QVERIFY(pin && pin->isVisible() && pin->isCheckable() && !pin->isChecked());
+    const auto unpinnedIcon = pin->icon().pixmap(pin->iconSize()).toImage();
+    const auto pinAction = pin->toolTip();
     pin->click();
     QVERIFY(pin->isChecked()); QVERIFY(above(window)); QVERIFY(window.isVisible());
+    QVERIFY(pin->icon().pixmap(pin->iconSize()).toImage() != unpinnedIcon);
+    QVERIFY(pin->toolTip() != pinAction); QCOMPARE(pin->accessibleName(), pin->toolTip());
     QVERIFY(QSettings().value("workspace/alwaysOnTop").toBool());
     auto *option = window.findChild<QCheckBox *>("workspaceAlwaysOnTop"); QVERIFY(option && option->isChecked());
     option->setChecked(false);
     QVERIFY(!pin->isChecked()); QVERIFY(!above(window));
+    QCOMPARE(pin->icon().pixmap(pin->iconSize()).toImage(), unpinnedIcon); QCOMPARE(pin->toolTip(), pinAction);
     option->setChecked(true);
     QVERIFY(pin->isChecked()); QVERIFY(above(window));
+    auto *theme = window.findChild<QComboBox *>("workspaceTheme"); QVERIFY(theme);
+    const int originalTheme = theme->currentIndex();
+    theme->setCurrentIndex(1); const auto darkPinned = pin->icon().pixmap(pin->iconSize()).toImage();
+    theme->setCurrentIndex(2);
+    QVERIFY(pin->isChecked()); QVERIFY(above(window));
+    QVERIFY(pin->icon().pixmap(pin->iconSize()).toImage() != darkPinned);
+    theme->setCurrentIndex(originalTheme);
     SessionsWindow restored(script()); restored.setFleet(fleet());
     QVERIFY(restored.findChild<QPushButton *>("windowPin")->isChecked());
     pin->click();
     QVERIFY(!option->isChecked()); QVERIFY(!above(window));
+    QSettings().remove("workspace/alwaysOnTop");
+}
+
+void TestSessionsWindow::windowLayerControlsKeepFocusAndLayout_data()
+{
+    QTest::addColumn<QString>("controlName");
+    QTest::addColumn<bool>("keyboard");
+    QTest::newRow("checkbox-keyboard") << QString("workspaceAlwaysOnTop") << true;
+    QTest::newRow("checkbox-mouse") << QString("workspaceAlwaysOnTop") << false;
+    QTest::newRow("rail-pin-keyboard") << QString("windowPin") << true;
+    QTest::newRow("rail-pin-mouse") << QString("windowPin") << false;
+}
+
+void TestSessionsWindow::windowLayerControlsKeepFocusAndLayout()
+{
+    QFETCH(QString, controlName); QFETCH(bool, keyboard);
+    SessionsWindow window(script()); window.setFleet(fleet());
+    // Give the synthetic window its own title, separate from the live workspace.
+    window.setWindowTitle("Zerus window-layer controls " + QUuid::createUuid().toString(QUuid::Id128));
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window)); window.activateWindow();
+    QVERIFY(QTest::qWaitForWindowActive(&window));
+    window.findChild<QPushButton *>("workspaceSettings")->click();
+    auto *layer = window.findChild<WindowLayer *>();
+    auto *control = window.findChild<QAbstractButton *>(controlName);
+    auto *hint = window.findChild<QLabel *>("workspaceAlwaysOnTopHint");
+    QVERIFY(layer && control && hint);
+    QTRY_VERIFY(layer->supported() && !layer->busy());
+    QTest::qWait(30);
+    const auto text = hint->text(); const auto geometry = hint->geometry();
+    int pending = 0;
+    bool pendingKeptFocus = true, pendingKeptLayout = true;
+    connect(layer, &WindowLayer::changed, &window, [&] {
+        if (!layer->busy()) return;
+        ++pending;
+        pendingKeptFocus &= control->isEnabled() && control->hasFocus();
+        pendingKeptLayout &= hint->text() == text && hint->geometry() == geometry;
+    });
+    for (const bool on : {true, false}) {
+        control->setFocus(Qt::TabFocusReason); QTRY_VERIFY(control->hasFocus());
+        if (keyboard) QTest::keyClick(control, Qt::Key_Space);
+        else QTest::mouseClick(control, Qt::LeftButton, Qt::NoModifier, QPoint(8,control->height()/2));
+        QVERIFY(control->isEnabled()); QVERIFY(control->hasFocus());
+        QCOMPARE(hint->text(), text); QCOMPARE(hint->geometry(), geometry);
+        QTRY_VERIFY(!layer->busy() && layer->onTop() == on);
+        QTest::qWait(30);
+        QVERIFY(control->hasFocus()); QCOMPARE(control->isChecked(), on);
+        QCOMPARE(hint->text(), text); QCOMPARE(hint->geometry(), geometry);
+    }
+    if (QGuiApplication::platformName().startsWith("wayland")) QVERIFY(pending >= 2);
+    QVERIFY(pendingKeptFocus); QVERIFY(pendingKeptLayout);
     QSettings().remove("workspace/alwaysOnTop");
 }
 
@@ -1080,9 +1187,29 @@ else: print('{}')
     QTRY_VERIFY(std::any_of(inspections.cbegin(),inspections.cend(),[](const QList<QVariant> &args){return args[2].toJsonObject()["run_id"]=="new-run";}));
     confirmClear();detailsClear->click();QTRY_VERIFY(QFileInfo::exists(capture));QCOMPARE(tabs->currentIndex(),1);
     QCOMPARE(composer->editor()->toPlainText(),QString("Keep this draft"));QCOMPARE(launched.size(),0);
-    QTRY_COMPARE(finished.size(),3);tabs->setCurrentIndex(0);window.findChild<QPushButton *>("toggleInspector")->setChecked(false);
+    QTRY_COMPARE(finished.size(),3);QVERIFY(QFile::remove(capture));
+    window.findChild<QPushButton *>("toggleInspector")->setChecked(false);
+    // The header menu exposes the same confirmed reset with the inspector hidden.
+    auto *more=window.findChild<QPushButton *>("more");QVERIFY(more);QVERIFY(more->menu());
+    auto *menuClear=window.findChild<QAction *>("clearSessionAction");QVERIFY(menuClear);
+    QVERIFY(more->menu()->actions().contains(menuClear));QVERIFY(menuClear->isEnabled());
+    QCOMPARE(menuClear->text(),QString("Clear session…"));
+    QTimer::singleShot(0,&window,[&]{auto *dialog=window.findChild<QMessageBox *>("clearSessionConfirm");QVERIFY(dialog);dialog->button(QMessageBox::Cancel)->click();});
+    menuClear->trigger();QVERIFY(!QFileInfo::exists(capture));QCOMPARE(tabs->currentIndex(),1);
+    QCOMPARE(composer->editor()->toPlainText(),QString("Keep this draft"));
+    details["clear_context_supported"]=false;applyDetails();QVERIFY(!menuClear->isEnabled());QVERIFY(!detailsClear->isEnabled());
+    details["clear_context_supported"]=true;applyDetails();QVERIFY(menuClear->isEnabled());
+    details.remove("conversation_id");applyDetails();QTRY_VERIFY(!menuClear->isEnabled());
+    details["conversation_id"]="conversation-one";applyDetails();QTRY_VERIFY(menuClear->isEnabled());
+    confirmClear();menuClear->trigger();QVERIFY(!menuClear->isEnabled());
+    QTRY_VERIFY(QFileInfo::exists(capture));QVERIFY(sent.open(QIODevice::ReadOnly));
+    const auto menuPayload=QJsonDocument::fromJson(sent.readAll()).object();sent.close();
+    QCOMPARE(menuPayload["expected_run_id"].toString(),QString("new-run"));
+    QCOMPARE(menuPayload["expected_conversation_id"].toString(),QString("conversation-one"));
+    QCOMPARE(composer->editor()->toPlainText(),QString("Keep this draft"));QCOMPARE(tabs->currentIndex(),1);
+    QTRY_COMPARE(finished.size(),4);tabs->setCurrentIndex(0);
     QTest::qWait(350);details["phase"]="compacting";details["activity"]="busy";details["clear_context_supported"]=false;details.remove("cache_hint");details["session_usage"]=QJsonObject{{"status","ok"},{"context",QJsonObject{{"used",215900},{"limit",258400}}}};
-    applyDetails();QTest::qWait(50);
+    applyDetails();QTest::qWait(50);QVERIFY(!menuClear->isEnabled());
     auto *progress=window.findChild<ActivityView *>("mainActivity")->compactionIndicator();auto *context=window.findChild<QWidget *>("activityContext");
     QVERIFY(progress->isVisible());QVERIFY(qAbs(progress->mapToGlobal(progress->rect().center()).y()-context->mapToGlobal(context->rect().center()).y())<=2);
     const auto preview=qEnvironmentVariable("HGS_WORKTREE_PREVIEW");if(!preview.isEmpty()){QDir().mkpath(preview);QVERIFY(window.grab().save(preview+"/compaction-footer.png"));}
@@ -3782,6 +3909,17 @@ void TestSessionsWindow::preview()
         previewOrg.moveSession(previewOrg.observe("mac", "claude/infra/review", ""), infraGroup); previewOrg.setCollapsed(infraGroup, true);
         QSettings().setValue("workspace/organization", QJsonDocument(previewOrg.toJson()).toJson(QJsonDocument::Compact));
         SessionsWindow window(script()); window.setFleet(previewFleet); window.resize(1240, 800); window.show(); QTest::qWait(100);
+        auto *pin = window.findChild<QPushButton *>("windowPin");
+        for (bool pinned : {false, true}) {
+            pin->setChecked(pinned);
+            QTest::mouseMove(&window, QPoint(window.width() - 10, 10)); QTest::qWait(30);
+            const auto name = QString("/window-%1-%2").arg(pinned ? "pinned" : "unpinned", dark ? "dark" : "light");
+            const auto crop = pin->geometry().adjusted(-7, -8, 7, 55);
+            QVERIFY(pin->parentWidget()->grab(crop).save(destination + name + ".png"));
+            QTest::mouseMove(pin, pin->rect().center()); QTest::qWait(30);
+            QVERIFY(pin->parentWidget()->grab(crop).save(destination + name + "-hover.png"));
+        }
+        pin->setChecked(false);
         window.showSession({}, "codex/hgs/dashboard"); QTest::qWait(100);
         auto *client = window.findChild<HgsClient *>();
         QJsonObject data{{"tracked", true}, {"conversation_id", "conversation-one"}, {"phase", "tool"}, {"activity", "busy"},
@@ -3916,7 +4054,7 @@ void TestSessionsWindow::preview()
         SessionsWindow stateWindow(script()); stateWindow.setFleet(stateFleet); stateWindow.resize(1000, 1180); stateWindow.show();
         stateWindow.showSession({}, states.sessions[0].name);
         auto *stateList = stateWindow.findChild<SessionList *>("sessionList");
-        auto *railSplitter = qobject_cast<QSplitter *>(stateWindow.findChild<QWidget *>("sessionListPanel")->parentWidget());
+        auto *railSplitter = qobject_cast<QSplitter *>(stateWindow.findChild<QWidget *>("sessionListSlot")->parentWidget());
         QVERIFY(railSplitter);
         for (const int railWidth : {270, 380}) for (bool compact : {true, false}) {
             railSplitter->setSizes({railWidth, railSplitter->width() - railSplitter->handleWidth() - railWidth});
@@ -4685,4 +4823,10 @@ void TestSessionsWindow::worktreePreview()
         QTimer::singleShot(0,&launch,[&]{auto *picker=launch.findChild<QDialog *>("chooseWorktreeDialog");QVERIFY(picker);QTest::qWait(100);QVERIFY(picker->grab().save(destination+(dark?"/picker-dark.png":"/picker-light.png")));picker->reject();});launch.findChild<QPushButton *>("chooseLaunchWorktree")->click();launch.reject();
     }
     qApp->setPalette(original);
+}
+
+void TestSessionsWindow::updatesEntryOpensExactSettingsPage(){
+    SessionsWindow window(script());window.show();window.showUpdates();
+    auto *sections=window.findChild<QListWidget *>("settingsSections");QVERIFY(sections);QCOMPARE(sections->currentRow(),4);QCOMPARE(sections->currentItem()->text(),QString("Updates"));
+    QVERIFY(window.findChild<QWidget *>("settingsPage")->isVisible());window.showSessionList();window.showUpdates();QCOMPARE(sections->currentRow(),4);
 }

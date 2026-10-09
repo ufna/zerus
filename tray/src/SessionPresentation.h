@@ -1,6 +1,7 @@
 #pragma once
 
 #include "HgsClient.h"
+#include "QuestionReply.h"
 #include <QObject>
 #include <QDateTime>
 
@@ -97,19 +98,41 @@ inline bool currentActivity(const SessionInfo &s, bool online = true)
         && s.activity != "unknown" && !(s.conversationState == "ended" && s.activity != "idle");
 }
 
+inline QString promptPreview(const QString &text)
+{
+    const auto replies = QuestionReply::parse(text);
+    return replies.isEmpty() ? text : QuestionReply::preview(replies);
+}
+
+inline QString activityDetailPreview(const SessionInfo &s)
+{
+    const auto replies = QuestionReply::parse(s.activityDetail);
+    if (!replies.isEmpty()) return QuestionReply::preview(replies);
+    // Telemetry clips the detail at 240 characters, often inside the JSON.
+    // Use the complete prompt only when this detail is its actual excerpt;
+    // an older answer must never replace the current tool or approval text.
+    QString excerpt = s.activityDetail;
+    if (excerpt.endsWith(QChar(0x2026))) excerpt.chop(1);
+    if (!excerpt.isEmpty() && s.prompt.startsWith(excerpt)) {
+        const auto promptReplies = QuestionReply::parse(s.prompt);
+        if (!promptReplies.isEmpty()) return QuestionReply::preview(promptReplies);
+    }
+    return s.activityDetail;
+}
+
 inline QString currentAction(const SessionInfo &s, bool online = true)
 {
     // A tool excerpt must not hide the fact that the agent is waiting for us.
     if (online && s.needsAction()) {
-        const QString detail = !s.activityDetail.isEmpty() ? s.activityDetail : !s.toolDetail.isEmpty() ? s.toolDetail : s.prompt;
+        const QString detail = !s.activityDetail.isEmpty() ? activityDetailPreview(s) : !s.toolDetail.isEmpty() ? s.toolDetail : promptPreview(s.prompt);
         return status(s) + (detail.isEmpty() ? QString() : QStringLiteral(": ") + detail);
     }
     if (s.unreadReply && s.activity != "busy" && !s.needsAction()) return status(s, online);
     if (!currentActivity(s, online)) return status(s, online);
 
-    if (!s.activitySummary.isEmpty()) return s.activitySummary + (s.activityDetail.isEmpty() ? QString() : QStringLiteral(": ") + s.activityDetail);
+    if (!s.activitySummary.isEmpty()) return s.activitySummary + (s.activityDetail.isEmpty() ? QString() : QStringLiteral(": ") + activityDetailPreview(s));
     if (!s.currentTool.isEmpty()) return s.currentTool + (s.toolDetail.isEmpty() ? QString() : QStringLiteral(": ") + s.toolDetail);
-    if (!s.prompt.isEmpty()) return status(s) + QStringLiteral(": ") + s.prompt;
+    if (!s.prompt.isEmpty()) return status(s) + QStringLiteral(": ") + promptPreview(s.prompt);
     return s.tracked ? status(s) : QObject::tr("Open terminal to view activity");
 }
 

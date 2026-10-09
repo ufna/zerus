@@ -1,0 +1,960 @@
+"""Outbound-only connector. Native hgs owns agent identity and input validation.
+
+Run with ``python -m zerus_mobile.connector --config /private/connector.json``.
+The config contains server_url, node_token, hgs_path and optionally poll_interval
+and state_dir (the connector's private journal, separate from HGS_STATE_DIR).
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import contextlib
+import fcntl
+import hashlib
+import json
+import logging
+import math
+import os
+from pathlib import Path
+import sqlite3
+import stat
+import time
+import uuid
+from urllib.parse import urlsplit
+
+import aiohttp
+
+from .managed_relay import transport, identity_url
+from .attachments import MAX_REQUEST_BYTES, validate_send
+from .recovery import validate_recovery
+from .history import validate_history
+from .context import CONTEXT_COMMANDS, LIFECYCLE_OPERATIONS, TERMINAL_OPERATIONS, LAUNCH_OPERATIONS, OPERATIONS, FEATURES, READ_OPERATIONS, READ_SQL, validate_context, validate_core, validate_inspect, validate_lifecycle
+from .launch import catalog as project_catalog, validate as validate_launch
+from .terminal import validate as validate_terminal
+from .history import bound_inspection
+from .projects import apply_memberships, is_archived, normalize as normalize_projects, unavailable as unavailable_projects
+
+LOG = logging.getLogger("zerus.connector")
+MUTATIONS = OPERATIONS - READ_OPERATIONS
+CONTEXT_KEYS = frozenset({
+    "TMUX", "TMUX_PANE", "HGS_SESSION", "HGS_RUN_ID", "HGS_EXPECTED_ID",
+    "HGS_EXECUTABLE", "HGS_AGENT", "HGS_FRESH", "HGS_REQUESTED_ID",
+    "HGS_ARCHIVE_ID", "HGS_LAUNCH_ID", "HGS_FORK_PARENT_ID", "HGS_ACCOUNT_ID",
+    "HGS_CLIENT", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "KIMI_CODE_HOME",
+    "DSH_HOME", "DSH_CONFIG_DIR",
+})
+MAX_BYTES = 8 * 1024 * 1024
+MAX_PAYLOAD = MAX_REQUEST_BYTES
+MAX_RESULT = 1024 * 1024
+ARCHIVE_SNAPSHOT_TTL = 45
+
+
+class ConnectorError(Exception):
+    """A deliberately sanitized error, suitable for transmission and logs."""
+
+
+class RelayError(ConnectorError):
+    def __init__(self, status: int):
+        super().__init__("relay request failed")
+        self.status = status
+
+
+def checked_uuid(value: object) -> str:
+    if not isinstance(value, str):
+        raise ConnectorError("request_id must be a canonical UUID")
+    try:
+        if str(uuid.UUID(value)) != value:
+            raise ValueError
+    except ValueError:
+        raise ConnectorError("request_id must be a canonical UUID") from None
+    return value
+
+
+def checked_url(value: object, allow_insecure_localhost: bool = False) -> str:
+    if not isinstance(value, str) or any(ord(c) < 33 or ord(c) == 127 for c in value):
+        raise ConnectorError("invalid server_url")
+    try:
+        parsed = urlsplit(value)
+        parsed.port  # Validate port without displaying the URL.
+        valid = bool(parsed.hostname) and not (
+            parsed.username is not None or parsed.password is not None
+            or parsed.query or parsed.fragment
+        )
+        secure = parsed.scheme == "https"
+        local = (allow_insecure_localhost and parsed.scheme == "http"
+                 and parsed.hostname in {"localhost", "127.0.0.1", "::1"})
+        if not valid or not (secure or local):
+            raise ValueError
+    except ValueError:
+        raise ConnectorError("server_url requires HTTPS; development HTTP is loopback-only") from None
+    return value.rstrip("/")
+
+
+def native_environment() -> dict[str, str]:
+    # Preserve HGS_CONFIG_DIR/HGS_STATE_DIR, HOME, PATH, native API settings and
+    # other machine configuration; discard only the calling agent's identity.
+    return {key: value for key, value in os.environ.items() if key not in CONTEXT_KEYS}
+
+
+class Journal:
+    def __init__(self, directory: Path, binding: str):
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        info = directory.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077):
+            raise ConnectorError("connector state_dir must be an owned private directory")
+
+        def private_file(path: Path) -> int:
+            try:
+                fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            except OSError:
+                raise ConnectorError("connector journal file is not safe") from None
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_mode & 0o077 or info.st_nlink != 1):
+                os.close(fd)
+                raise ConnectorError("connector journal file must be owned and private")
+            return fd
+
+        self.lock = os.fdopen(private_file(directory / "connector.lock"), "r+b")
+        try:
+            fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self.lock.close()
+            raise ConnectorError("connector journal is already in use") from None
+        try:
+            os.close(private_file(directory / "journal.sqlite3"))
+            for suffix in ("-journal", "-wal", "-shm"):
+                sidecar = directory / ("journal.sqlite3" + suffix)
+                if sidecar.exists() or sidecar.is_symlink():
+                    os.close(private_file(sidecar))
+            self.db = sqlite3.connect(directory / "journal.sqlite3")
+            self.db.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            with self.db:
+                stored = self.db.execute("SELECT value FROM metadata WHERE key='relay_binding'").fetchone()
+                if stored and stored[0] != binding:
+                    raise ConnectorError("journal belongs to different relay credentials; preserve its existing configuration")
+                self.db.execute("INSERT OR IGNORE INTO metadata VALUES('relay_binding',?)", (binding,))
+        except Exception:
+            if hasattr(self, "db"):
+                self.db.close()
+            self.lock.close()
+            raise
+        self.db.execute("PRAGMA synchronous=FULL")
+        self.db.execute("PRAGMA secure_delete=ON")
+        self.db.execute("""CREATE TABLE IF NOT EXISTS requests (
+            request_id TEXT PRIMARY KEY, operation TEXT NOT NULL,
+            state TEXT NOT NULL, response TEXT, delivered INTEGER NOT NULL DEFAULT 0,
+            request_hash TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL,
+            delivered_at REAL, response_expired INTEGER NOT NULL DEFAULT 0
+        )""")
+        now = time.time()
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(requests)")}
+        with self.db:
+            # Legacy records have no reliable age or request fingerprint. Give
+            # them the current time rather than pruning old unknown deliveries.
+            for name, kind in (("request_hash", "TEXT"), ("created_at", "REAL"),
+                               ("updated_at", "REAL"), ("delivered_at", "REAL"),
+                               ("response_expired", "INTEGER NOT NULL DEFAULT 0")):
+                if name not in columns:
+                    self.db.execute(f"ALTER TABLE requests ADD COLUMN {name} {kind}")
+            self.db.execute("UPDATE requests SET created_at=? WHERE created_at IS NULL", (now,))
+            self.db.execute("UPDATE requests SET updated_at=? WHERE updated_at IS NULL", (now,))
+            self.db.execute("UPDATE requests SET delivered_at=? WHERE delivered=1 AND delivered_at IS NULL", (now,))
+            rows = self.db.execute(
+                "SELECT request_id, operation FROM requests WHERE state='running'").fetchall()
+            for request_id, operation in rows:
+                state = "uncertain" if operation in MUTATIONS else "failed"
+                response = {"state": state, "result": None,
+                            "error": "connector stopped before recording the native result"}
+                self.db.execute("UPDATE requests SET state=?,response=?,updated_at=? WHERE request_id=?",
+                                (state, json.dumps(response), now, request_id))
+        self.db.execute("CREATE INDEX IF NOT EXISTS delivered_history ON requests(delivered,delivered_at)")
+        self.db.execute("CREATE INDEX IF NOT EXISTS terminal_delivered_reads ON requests(delivered_at) WHERE operation='terminal_snapshot' AND delivered=1 AND state!='running'")
+        self.db.execute("CREATE INDEX IF NOT EXISTS journal_operation ON requests(operation)")
+        self.db.execute("CREATE INDEX IF NOT EXISTS delivered_reads ON requests(delivered_at) WHERE operation='inspect' AND delivered=1 AND state!='running'")
+        self.db.execute("CREATE INDEX IF NOT EXISTS mutation_retention ON requests(delivered_at) WHERE operation!='inspect' AND delivered=1 AND state!='running' AND response IS NOT NULL AND response_expired=0")
+        self.prune()
+
+    def prune(self, *, now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        with self.db:
+            self.db.execute("DELETE FROM requests WHERE operation='terminal_snapshot' AND delivered=1 AND state!='running' AND delivered_at<?", (now - 120,))
+            self.db.execute(f"DELETE FROM requests WHERE operation IN {READ_SQL} AND operation!='terminal_snapshot' AND delivered=1 AND state!='running' AND delivered_at<?", (now - 3600,))
+            rows = self.db.execute(f"SELECT request_id,state FROM requests WHERE operation NOT IN {READ_SQL} AND delivered=1 AND state!='running' AND delivered_at<? AND response IS NOT NULL AND response_expired=0", (now - 7 * 86400,)).fetchall()
+            for request_id, state in rows:
+                expired = {"state": state, "result": {"status": "history_expired"},
+                           "error": "Native result history expired; this request will not execute again"}
+                encoded = json.dumps(expired)
+                # Keep a bounded explicit receipt, never the private native result.
+                self.db.execute("UPDATE requests SET response=?,response_expired=1 WHERE request_id=?", (encoded, request_id))
+
+    def claim(self, request_id: str, operation: str, request_hash: str | None = None) -> bool:
+        self.prune()
+        now = time.time()
+        with self.db:
+            existing = self.db.execute("SELECT operation,request_hash FROM requests WHERE request_id=?", (request_id,)).fetchone()
+            if existing:
+                if existing[0] != operation or (request_hash is not None and existing[1] != request_hash):
+                    raise ConnectorError("request_id conflicts with preserved native request identity")
+                return False
+            reads = operation in READ_OPERATIONS
+            count = self.db.execute(f"SELECT count(*) FROM requests WHERE (operation IN {READ_SQL})=?", (int(reads),)).fetchone()[0]
+            if count >= (5000 if reads else 100000):
+                raise ConnectorError("connector retained request limit reached")
+            cursor = self.db.execute(
+                "INSERT OR IGNORE INTO requests(request_id,operation,state,request_hash,created_at,updated_at) VALUES(?,?,'running',?,?,?)",
+                (request_id, operation, request_hash, now, now))
+        return cursor.rowcount == 1
+
+    def finish(self, request_id: str, response: dict) -> None:
+        with self.db:
+            self.db.execute("UPDATE requests SET state=?,response=?,delivered=0,delivered_at=NULL,response_expired=0,updated_at=? WHERE request_id=?",
+                            (response["state"], json.dumps(response), time.time(), request_id))
+
+    def replay(self, request_id: str) -> dict:
+        row = self.db.execute("SELECT response FROM requests WHERE request_id=?",
+                              (request_id,)).fetchone()
+        if not row or row[0] is None:
+            return {"state": "uncertain", "result": None,
+                    "error": "request is already in progress"}
+        with self.db:
+            self.db.execute("UPDATE requests SET delivered=0,delivered_at=NULL WHERE request_id=?", (request_id,))
+        return json.loads(row[0])
+
+    def pending(self) -> list[tuple[str, dict]]:
+        return [(key, json.loads(body)) for key, body in self.db.execute(
+            "SELECT request_id,response FROM requests WHERE delivered=0 AND response IS NOT NULL LIMIT 100")]
+
+    def delivered(self, request_id: str) -> None:
+        with self.db:
+            self.db.execute("UPDATE requests SET delivered=1,delivered_at=?,updated_at=? WHERE request_id=?", (time.time(), time.time(), request_id))
+
+    def close(self) -> None:
+        self.db.close()
+        self.lock.close()
+
+
+class Connector:
+    def __init__(self, config: dict, *, allow_insecure_localhost: bool = False,
+                 subprocess_timeout: float = 45, max_bytes: int = MAX_BYTES):
+        stored_url = checked_url(config.get("server_url"), allow_insecure_localhost)
+        explicit_identity = config.get("identity_url")
+        if explicit_identity is not None:
+            explicit_identity = checked_url(explicit_identity, allow_insecure_localhost)
+        try:
+            self.identity_url = identity_url(stored_url, explicit_identity)
+        except ValueError as exc:
+            raise ConnectorError(str(exc)) from None
+        self.server_url = transport(stored_url)
+        token = config.get("node_token")
+        if not isinstance(token, str) or not token or any(ord(c) < 33 or ord(c) > 126 for c in token):
+            raise ConnectorError("invalid node_token")
+        self.token = token
+        hgs = config.get("hgs_path", "hgs")
+        if not isinstance(hgs, str) or not hgs or "\0" in hgs:
+            raise ConnectorError("invalid hgs_path")
+        self.hgs = hgs
+        interval = config.get("poll_interval", 5)
+        if not isinstance(interval, (int, float)) or not math.isfinite(interval) or interval < 1:
+            raise ConnectorError("poll_interval must be at least one second")
+        self.interval = interval
+        self.timeout = subprocess_timeout
+        self.max_bytes = max_bytes
+        state = config.get("state_dir") or str(Path.home() / ".local/state/hgs/mobile-connector")
+        if not isinstance(state, str):
+            raise ConnectorError("invalid state_dir")
+        binding = hashlib.sha256((self.identity_url + "\0" + self.token).encode()).hexdigest()
+        self.journal = Journal(Path(state).expanduser(), binding)
+        self.sessions: set[str] = set()
+        self.archives: set[tuple[str, str]] = set()
+        self.snapshot_seen_at = 0.0
+        self.snapshot_ready = asyncio.Event()
+        self.attention_cache: dict[tuple[str, str, str], list[dict[str, str]]] = {}
+        self.attention_cursor = 0
+        self.project_fallback_id = binding
+        self.project_cache = None
+        self.project_next_poll = 0.0
+        self.lifecycle_supported = False
+        self.terminal_supported = False
+        self.recovery_supported = False
+        self.history_supported = False
+        self.launch_supported = False
+        self.capabilities_next_poll = 0.0
+
+    async def native(self, argv: list[str], payload: dict | None = None,
+                     *, timeout: float | None = None, json_output: bool = True) -> object:
+        stdin = None if payload is None else json.dumps(payload, ensure_ascii=False).encode()
+        if stdin is not None and len(stdin) > MAX_PAYLOAD:
+            raise ConnectorError("native request exceeds size limit")
+        process = None
+
+        async def read(stream: asyncio.StreamReader) -> bytes:
+            chunks, size = [], 0
+            while chunk := await stream.read(65536):
+                size += len(chunk)
+                if size > self.max_bytes:
+                    raise ConnectorError("native output exceeds size limit")
+                chunks.append(chunk)
+            return b"".join(chunks)
+
+        async def write() -> None:
+            if process.stdin is not None:
+                try:
+                    if stdin is not None:
+                        process.stdin.write(stdin)
+                        await process.stdin.drain()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                finally:
+                    process.stdin.close()
+
+        tasks = []
+        joined = None
+        try:
+            process = await asyncio.create_subprocess_exec(
+                self.hgs, *argv, stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                env=native_environment())
+            tasks = [asyncio.create_task(read(process.stdout)),
+                     asyncio.create_task(read(process.stderr)),
+                     asyncio.create_task(write()), asyncio.create_task(process.wait())]
+            joined = asyncio.gather(*tasks)
+            stdout, _, _, code = await asyncio.wait_for(joined, self.timeout if timeout is None else timeout)
+            if code != 0:
+                raise ConnectorError("native command failed")
+            if not json_output:
+                return stdout.decode("utf-8", errors="strict")
+            try:
+                return json.loads(stdout)
+            except (ValueError, UnicodeError):
+                raise ConnectorError("native command returned invalid JSON") from None
+        except asyncio.TimeoutError:
+            raise ConnectorError("native command timed out") from None
+        except OSError:
+            raise ConnectorError("native command could not start") from None
+        finally:
+            if process is not None and process.returncode is None:
+                # Only this connector-owned CLI child; never its native agent,
+                # its process group, a tmux server, or a DeepSeek host.
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            if joined is not None:
+                with contextlib.suppress(Exception, asyncio.CancelledError):
+                    await joined
+            if process is not None:
+                # A size-limit reader has stopped before EOF. Drain remaining
+                # bytes without retaining them so asyncio can reap the CLI;
+                # wait() alone deadlocks when its pipe transport is paused.
+                async def discard(stream: asyncio.StreamReader) -> None:
+                    while await stream.read(65536):
+                        pass
+                cleanup = asyncio.gather(discard(process.stdout), discard(process.stderr), process.wait())
+                try:
+                    await asyncio.wait_for(cleanup, 0.5)
+                except asyncio.TimeoutError:
+                    # A descendant may still hold inherited pipe descriptors.
+                    # Close our pipe transports; do not kill that descendant.
+                    process._transport.close()
+                finally:
+                    with contextlib.suppress(Exception, asyncio.CancelledError):
+                        await cleanup
+
+    async def snapshot(self) -> dict:
+        snapshot = await self.native(["ls", "--json", "--local"])
+        if not isinstance(snapshot, dict) or not isinstance(snapshot.get("sessions"), list):
+            raise ConnectorError("native snapshot has invalid format")
+        self.sessions = {row["name"] for row in snapshot["sessions"]
+                         if isinstance(row, dict) and isinstance(row.get("name"), str)
+                         and not is_archived(row)}
+        self.archives = {(row["name"], row["archive_id"]) for row in snapshot["sessions"]
+                         if isinstance(row, dict) and is_archived(row)
+                         and isinstance(row.get("name"), str) and isinstance(row.get("archive_id"), str)}
+        self.snapshot_seen_at = time.monotonic()
+        self.snapshot_ready.set()
+        await asyncio.gather(self.enrich_attention(snapshot), self.enrich_projects(snapshot))
+        await self.probe_capabilities()
+        operations = OPERATIONS - (set() if self.lifecycle_supported else LIFECYCLE_OPERATIONS) - (set() if self.terminal_supported else TERMINAL_OPERATIONS) - (set() if self.launch_supported else LAUNCH_OPERATIONS) - (set() if self.history_supported else {"history"}) - (set() if self.recovery_supported else {"recovery_action"})
+        snapshot["mobile_capabilities"] = {"protocol_version": 1,
+            "operations": sorted(operations), "features": sorted(FEATURES),
+            "reasons": {**({} if self.lifecycle_supported else {"session_actions": "Native CLI lacks the scoped session-action ABI"}),
+                        **({} if self.terminal_supported else {"terminal": "Native CLI lacks the scoped Terminal ABI"})}}
+
+        return snapshot
+
+    async def probe_capabilities(self):
+        if time.monotonic() < self.capabilities_next_poll:
+            return
+        self.capabilities_next_poll = time.monotonic() + 300
+        self.lifecycle_supported = False
+        self.terminal_supported = False
+        self.recovery_supported = False
+        self.history_supported = False
+        self.launch_supported = False
+        try:
+            help_text = await self.native(["--help"], timeout=3, json_output=False)
+            self.lifecycle_supported = isinstance(help_text, str) and any(
+                "session-action <session> --json" in line for line in help_text.splitlines())
+            self.terminal_supported = isinstance(help_text, str) and "terminal <session> --json" in help_text
+            self.recovery_supported = isinstance(help_text,str) and "recovery action --scoped-json" in help_text
+            self.history_supported = isinstance(help_text,str) and "history <session> --json" in help_text
+            self.launch_supported = isinstance(help_text,str) and "--launch-id" in help_text
+        except (ConnectorError, UnicodeError):
+            pass
+
+    async def enrich_projects(self, snapshot: dict) -> None:
+        """Poll native logical groups every fifteen seconds; retain stale data."""
+        if time.monotonic() >= self.project_next_poll:
+            self.project_next_poll = time.monotonic() + 15
+            try:
+                native = await self.native(["swarm", "get"], timeout=3)
+                self.project_cache = normalize_projects(native, snapshot, self.project_fallback_id)
+            except (ConnectorError, ValueError, TypeError, KeyError):
+                self.project_cache = {**(self.project_cache or unavailable_projects(self.project_fallback_id)), "stale": True}
+        snapshot["mobile_projects"] = self.project_cache or unavailable_projects(self.project_fallback_id)
+        apply_memberships(snapshot, snapshot["mobile_projects"])
+
+    async def enrich_attention(self, snapshot: dict) -> None:
+        """Inspect two live Codex sessions per poll, without submitting input.
+
+        A stable fleet of N eligible sessions is scanned every ceil(N/2) polls.
+        The nominal interval is ceil(N/2) * poll_interval, plus CLI/network time.
+        Each optional inspection has a one-second timeout; expired/changed
+        identities discard cached attention. Only IDs and hashes leave the node.
+        """
+        eligible = []
+        for row in snapshot["sessions"]:
+            if (not isinstance(row, dict) or row.get("cmd") != "codex"
+                    or row.get("tracked") is not True or row.get("runtime_state") != "live"
+                    or row.get("process_state") != "running"
+                    or is_archived(row) or row.get("state") in {"paused", "stopped"}):
+                continue
+            name, run, conversation = row.get("name"), row.get("run_id"), row.get("conversation_id")
+            if (not all(isinstance(value, str) and value for value in (name, run, conversation))
+                    or name.startswith(("@", "-")) or "@" in name
+                    or any(ord(c) < 32 or ord(c) == 127 for c in name)):
+                continue
+            eligible.append(((name, run, conversation), row))
+        active = {key for key, _ in eligible}
+        self.attention_cache = {key: cards for key, cards in self.attention_cache.items() if key in active}
+        if not eligible:
+            self.attention_cursor = 0
+            return
+        selected = [eligible[(self.attention_cursor + i) % len(eligible)]
+                    for i in range(min(2, len(eligible)))]
+        self.attention_cursor = (self.attention_cursor + len(selected)) % len(eligible)
+
+        async def inspect(key: tuple[str, str, str]) -> None:
+            name, run, conversation = key
+            try:
+                detail = await self.native(["inspect", name], timeout=min(self.timeout, 1))
+                if (not isinstance(detail, dict) or detail.get("run_id") != run
+                        or detail.get("conversation_id") != conversation
+                        or detail.get("runtime_state") != "live"
+                        or detail.get("process_state") != "running"
+                        or not isinstance(detail.get("pending_questions"), list)):
+                    self.attention_cache.pop(key, None)
+                    return
+                cards = []
+                for card in detail["pending_questions"]:
+                    if (not isinstance(card, dict) or card.get("run_id") != run
+                            or card.get("conversation_id") != conversation
+                            or not all(isinstance(card.get(field), str) and card[field]
+                                       for field in ("question_id", "question_hash"))):
+                        continue
+                    delivery = card.get("answer_delivery")
+                    if isinstance(delivery, dict) and delivery.get("status") == "submitted":
+                        continue
+                    cards.append({field: card[field] for field in ("question_id", "question_hash")})
+                self.attention_cache[key] = sorted(cards, key=lambda card: (card["question_id"], card["question_hash"]))
+            except ConnectorError:
+                self.attention_cache.pop(key, None)
+        await asyncio.gather(*(inspect(key) for key, _ in selected))
+        for key, row in eligible:
+            if key in self.attention_cache:
+                row["mobile_attention"] = self.attention_cache[key]
+
+    def validate(self, request: dict) -> tuple[str, str, dict | None]:
+        operation, session = request.get("operation"), request.get("session")
+        if not isinstance(operation, str) or operation not in OPERATIONS:
+            raise ConnectorError("unsupported operation")
+        if operation in LAUNCH_OPERATIONS:
+            if session != "": raise ConnectorError("catalog/launch use no existing session target")
+            try: validate_launch(operation,request.get("payload"),request["request_id"])
+            except ValueError as error: raise ConnectorError(str(error)) from None
+            return operation,session,request["payload"]
+        if (not isinstance(session, str) or not session or len(session) > 512
+                or session.startswith(("-", "@")) or "@" in session
+                or any(ord(c) < 32 or ord(c) == 127 for c in session)):
+            raise ConnectorError("session must match an exact local snapshot entry")
+        if "archive_id" in request:
+            raise ConnectorError("archive identity belongs only in inspect payload")
+        if operation == "inspect":
+            payload = request.get("payload", {})
+            try:
+                validate_inspect(payload)
+            except ValueError as error:
+                raise ConnectorError(str(error)) from None
+            if "archive_id" in payload:
+                archive_id = checked_uuid(payload["archive_id"])
+                if time.monotonic() - self.snapshot_seen_at > ARCHIVE_SNAPSHOT_TTL:
+                    raise ConnectorError("archive snapshot is stale; refresh before inspection")
+                if (session, archive_id) not in self.archives:
+                    raise ConnectorError("archive must match an exact local snapshot entry")
+                return operation, session, payload
+            if session not in self.sessions:
+                raise ConnectorError("session must match an exact nonarchived snapshot entry")
+            return operation, session, payload or None
+        payload = request.get("payload")
+        archived_output = operation in {"process_output", "history", "restore", "forget", "rename", "fork"} and isinstance(payload, dict) and "archive_id" in payload
+        if isinstance(payload, dict) and "archive_id" in payload and not archived_output:
+            raise ConnectorError("archived targets support inspection only")
+        if archived_output:
+            archive_id = checked_uuid(payload["archive_id"])
+            if time.monotonic() - self.snapshot_seen_at > ARCHIVE_SNAPSHOT_TTL or (session, archive_id) not in self.archives:
+                raise ConnectorError("archive must match a fresh exact local snapshot entry")
+        elif session not in self.sessions:
+            raise ConnectorError("session must match an exact nonarchived snapshot entry")
+        if not isinstance(payload, dict) or payload.get("request_id") != request["request_id"]:
+            raise ConnectorError("payload request_id must match request identity")
+        if not isinstance(payload.get("expected_run_id"), str) or not payload["expected_run_id"]:
+            raise ConnectorError("expected_run_id is required")
+        if operation == "recovery_action":
+            try: validate_recovery(payload,request["request_id"])
+            except ValueError as error: raise ConnectorError(str(error)) from None
+        if operation == "history":
+            try: validate_history(payload,request["request_id"])
+            except ValueError as error: raise ConnectorError(str(error)) from None
+        if operation in TERMINAL_OPERATIONS:
+            try:
+                validate_terminal(operation, payload, request["request_id"])
+            except ValueError as error:
+                raise ConnectorError(str(error)) from None
+        if operation in LIFECYCLE_OPERATIONS:
+            try:
+                validate_lifecycle(operation, payload, request["request_id"])
+            except ValueError as error:
+                raise ConnectorError(str(error)) from None
+        if operation in CONTEXT_COMMANDS:
+            try:
+                validate_context(payload, request["request_id"])
+            except ValueError as error:
+                raise ConnectorError(str(error)) from None
+        if operation in {"send_now", "settings", "process_output", "process_stop"}:
+            try:
+                validate_core(operation, payload, request["request_id"])
+            except ValueError as error:
+                raise ConnectorError(str(error)) from None
+        if operation == "send":
+            try:
+                validate_send(payload)
+            except (ValueError, TypeError):
+                raise ConnectorError("invalid or oversized inline attachment/message") from None
+        try:
+            if len(json.dumps(payload, ensure_ascii=False).encode()) > MAX_PAYLOAD:
+                raise ConnectorError("native request exceeds size limit")
+        except (TypeError, ValueError):
+            raise ConnectorError("invalid native payload") from None
+        return operation, session, payload
+
+    async def context_preflight(self, operation, session, payload):
+        """Read fresh native state before attempting a context mutation.
+
+        Native commands recheck identity and availability atomically themselves.
+        This gate also makes old native binaries fail closed without typing.
+        """
+        detail = await self.native(["inspect", session])
+        if (not isinstance(detail, dict) or is_archived(detail) or detail.get("name") != session
+                or detail.get("run_id") != payload["expected_run_id"]
+                or ("" if detail.get("conversation_id") is None else detail.get("conversation_id")) != payload["expected_conversation_id"]):
+            raise ConnectorError("fresh native context identity did not match")
+        if operation in CONTEXT_COMMANDS:
+            if detail.get(operation + "_supported") is not True:
+                raise ConnectorError("native context operation is unavailable")
+        elif operation == "settings":
+            if detail.get("settings_change_supported") is not True:
+                raise ConnectorError("native per-session settings are unavailable")
+            if "expected_pending_id" in payload and detail.get("pending_settings_id") != payload["expected_pending_id"]:
+                raise ConnectorError("native pending setting changed; refresh before applying")
+        elif operation == "send_now":
+            queue = detail.get("input_queue")
+            if not isinstance(queue, dict) or queue.get("id") != payload["queue_id"] or queue.get("can_send_now") is not True:
+                raise ConnectorError("native queue changed or cannot be sent now")
+        else:
+            compact = detail.get("compact_context_request")
+            if (not isinstance(compact, dict) or compact.get("request_id") != payload["expected_compaction_id"]
+                    or compact.get("run_id") != payload["expected_run_id"]
+                    or compact.get("conversation_id") != payload["expected_conversation_id"]
+                    or compact.get("status") != "completed"
+                    or detail.get("phase") != "idle" or detail.get("activity") != "idle"):
+                raise ConnectorError("compaction is not confirmed for this conversation; message was not sent")
+
+    async def child_send_preflight(self, session, payload):
+        if not session.startswith("dsh/"):
+            raise ConnectorError("this native provider has no child-send ABI")
+        parent = await self.native(["inspect", session, "--skip-processes"])
+        if (not isinstance(parent, dict) or is_archived(parent) or parent.get("name") != session
+                or parent.get("run_id") != payload["expected_run_id"] or parent.get("conversation_id") != payload["expected_conversation_id"]
+                or not isinstance(parent.get("subagents"), dict) or payload["agent_id"] not in parent["subagents"]):
+            raise ConnectorError("child does not belong to the exact selected parent")
+        child = await self.native(["inspect", session, "--agent", payload["agent_id"], "--skip-processes"])
+        if (not isinstance(child, dict) or is_archived(child) or child.get("name") != session
+                or child.get("run_id") != payload["expected_run_id"] or child.get("parent_conversation_id") != payload["expected_conversation_id"]
+                or child.get("agent_id") != payload["agent_id"] or child.get("conversation_id") != payload["expected_conversation_id"] + "/" + payload["agent_id"]
+                or child.get("send_supported") is not True):
+            raise ConnectorError("native child cannot accept messages under this exact parent")
+
+    async def execute(self, request: dict) -> dict:
+        if not isinstance(request, dict):
+            raise ConnectorError("invalid request")
+        request_id = checked_uuid(request.get("request_id"))
+        operation = request.get("operation")
+        journal_operation = operation if isinstance(operation, str) else "invalid"
+        try:
+            request_hash = hashlib.sha256(json.dumps(request, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+        except (TypeError, ValueError, RecursionError):
+            raise ConnectorError("invalid native request JSON") from None
+        if not self.journal.claim(request_id, journal_operation, request_hash):
+            return self.journal.replay(request_id)
+        mutation_started = False
+        try:
+            operation, session, payload = await asyncio.to_thread(self.validate, request)
+            if operation in {*CONTEXT_COMMANDS, "settings", "send_now"} or (operation == "send" and payload.get("expected_compaction_id")):
+                await self.context_preflight(operation, session, payload)
+            if operation == "send" and "agent_id" in payload:
+                await self.child_send_preflight(session, payload)
+            if operation == "history" and not self.history_supported:
+                raise ConnectorError("native public history ABI is unavailable")
+            if operation in LIFECYCLE_OPERATIONS and not self.lifecycle_supported:
+                raise ConnectorError("native scoped lifecycle ABI is unavailable")
+            if operation in TERMINAL_OPERATIONS:
+                if not self.terminal_supported:
+                    raise ConnectorError("native scoped Terminal ABI is unavailable")
+                if operation == "terminal_input":
+                    deadline = request.get("expires_at")
+                    if type(deadline) not in (int, float) or not math.isfinite(deadline) or deadline <= time.time() or deadline > time.time()+6:
+                        raise ConnectorError("terminal input expired before native delivery")
+                    base = {key: payload[key] for key in ("request_id", "expected_run_id", "expected_conversation_id")}
+                    fresh = await self.native(["terminal", session, "--json"], {**base, "action": "snapshot"}, timeout=3)
+                    if (not isinstance(fresh, dict) or fresh.get("name") != session or fresh.get("run_id") != payload["expected_run_id"]
+                            or fresh.get("conversation_id") != payload["expected_conversation_id"] or fresh.get("terminal_binding_id") != payload["terminal_binding_id"]
+                            or fresh.get("input_supported") is not True or ("\n" in payload.get("text", "") and fresh.get("multiline_supported") is not True)):
+                        raise ConnectorError("native Terminal binding or input support changed")
+                    if deadline <= time.time():
+                        raise ConnectorError("terminal input expired before native delivery")
+            if operation in LAUNCH_OPERATIONS and not self.launch_supported:
+                raise ConnectorError("native exact launch-ID ABI is unavailable")
+            launch_directory = None
+            if operation == "launch":
+                try: accounts = project_catalog(await self.native(["account", "ls"], timeout=5))
+                except ValueError as error: raise ConnectorError(str(error)) from None
+                if payload["agent"] not in accounts["agents"] or ("account_id" in payload and not any(row["id"] == payload["account_id"] and row["provider"] == payload["agent"] for row in accounts["accounts"])):
+                    raise ConnectorError("selected native provider/account is unavailable")
+                directory = await self.native(["dirs", payload["directory"]], timeout=5)
+                if not isinstance(directory, dict) or not isinstance(directory.get("path"), str) or not Path(directory["path"]).is_absolute():
+                    raise ConnectorError("native directory is unavailable")
+                launch_directory = directory["path"]
+            if operation == "recovery_action":
+                if not self.recovery_supported: raise ConnectorError("native scoped recovery ABI is unavailable")
+                fresh=await self.native(["inspect",session,"--skip-processes"])
+                job=fresh.get("recovery") if isinstance(fresh,dict) else None
+                if (not isinstance(fresh,dict) or fresh.get("name") != session or is_archived(fresh)
+                        or fresh.get("run_id") != payload["expected_run_id"] or fresh.get("conversation_id") != payload["expected_conversation_id"]
+                        or not isinstance(job,dict) or job.get("id") != payload["job_id"] or job.get("state") != "waiting"
+                        or not isinstance(job.get("identity"),list) or len(job["identity"]) != 5
+                        or job["identity"][:2] != [payload["expected_run_id"],payload["expected_conversation_id"]]):
+                    raise ConnectorError("native recovery job changed; refresh before action")
+            mutation_started = operation in MUTATIONS
+            if operation == "catalog":
+                try: result = project_catalog(await self.native(["account", "ls"], timeout=5))
+                except ValueError as error: raise ConnectorError(str(error)) from None
+                result["request_id"] = request_id
+            elif operation == "dirs":
+                result = await self.native(["dirs", payload["path"]], timeout=5)
+                if not isinstance(result, dict) or not isinstance(result.get("path"), str) or not isinstance(result.get("directories"), list):
+                    raise ConnectorError("native directory catalog is invalid")
+                result = {key: result[key] for key in ("path", "parent", "home", "directories", "truncated") if key in result}
+                result["request_id"] = request_id
+            elif operation == "launch":
+                argv = [payload["agent"], launch_directory, "--new", "-n", payload["tag"], "-d", "--launch-id", request_id]
+                if "account_id" in payload: argv.extend(["--account", payload["account_id"]])
+                await self.native(argv, timeout=15, json_output=False)
+                target = None
+                until = time.monotonic()+5
+                while time.monotonic() < until:
+                    snapshot = await self.native(["ls", "--json", "--local"], timeout=3)
+                    matches = [row for row in snapshot.get("sessions", []) if isinstance(row, dict) and row.get("launch_id") == request_id and not is_archived(row)] if isinstance(snapshot, dict) else []
+                    if len(matches) == 1 and all(isinstance(matches[0].get(key), str) and matches[0][key] for key in ("name", "run_id")) and (matches[0].get("conversation_id") is None or isinstance(matches[0]["conversation_id"],str)):
+                        row = matches[0]
+                        target = {"name": row["name"], "run_id": row["run_id"], "conversation_id": row.get("conversation_id") or ""}
+                        break
+                    await asyncio.sleep(.1)
+                if target is None: raise ConnectorError("native launch could not be verified by exact launch UUID; check computers before creating another")
+                result = {"request_id": request_id, "status": "created", "result_target": target}
+            elif operation == "inspect":
+                argv = ["inspect", session]
+                if payload is not None and "archive_id" in payload:
+                    argv.extend(["--archive", payload["archive_id"]])
+                if payload is not None and "agent_id" in payload:
+                    # Parent membership and immutable identity are checked
+                    # before the native child inspector enforces its roster.
+                    parent_argv = ["inspect", session]
+                    if "archive_id" in payload:
+                        parent_argv.extend(["--archive", payload["archive_id"]])
+                    parent = await self.native(parent_argv)
+                    if (not isinstance(parent, dict) or parent.get("name") != session
+                            or parent.get("run_id") != payload["expected_run_id"]
+                            or parent.get("conversation_id") != payload["expected_conversation_id"]
+                            or parent.get("archive_id", "") != payload.get("archive_id", "")
+                            or not isinstance(parent.get("subagents"), dict) or payload["agent_id"] not in parent["subagents"]):
+                        raise ConnectorError("subagent does not belong to the exact selected parent")
+                    argv.extend(["--agent", payload["agent_id"], "--skip-processes"])
+                if payload is not None and "after" in payload:
+                    argv.extend(["--after", str(payload["after"])])
+                result = await self.native(argv)
+                if payload is not None and "archive_id" in payload and (not isinstance(result, dict) or result.get("archive_id") != payload["archive_id"] or result.get("name") != session):
+                    raise ConnectorError("native archive inspection identity did not match")
+                if (payload is None or "archive_id" not in payload) and (not isinstance(result, dict) or is_archived(result) or ("name" in result and result["name"] != session)):
+                    raise ConnectorError("native ordinary inspection returned a different or archived target")
+                if payload and "expected_run_id" in payload:
+                    conversation = result.get("parent_conversation_id") if "agent_id" in payload else result.get("conversation_id")
+                    if result.get("run_id") != payload["expected_run_id"] or conversation != payload["expected_conversation_id"]:
+                        raise ConnectorError("native inspection run/conversation identity did not match")
+                if payload and "agent_id" in payload and (result.get("agent_id") != payload["agent_id"] or result.get("conversation_id") != payload["expected_conversation_id"] + "/" + payload["agent_id"]):
+                    raise ConnectorError("native subagent inspection identity did not match")
+                try:
+                    # GET's device envelope also adds request_id; leave room for
+                    # that metadata below the ordinary one-MiB response bound.
+                    result = await asyncio.to_thread(bound_inspection, result, MAX_RESULT - 1024)
+                except ValueError as error:
+                    raise ConnectorError(str(error)) from None
+            elif operation == "recovery_action":
+                result=await self.native(["recovery","action","--scoped-json"],{**payload,"name":session})
+                if (not isinstance(result,dict) or result.get("request_id") != request_id or result.get("name") != session
+                        or result.get("run_id") != payload["expected_run_id"] or result.get("conversation_id") != payload["expected_conversation_id"]
+                        or result.get("job_id") != payload["job_id"] or result.get("action") != payload["action"]
+                        or result.get("status") not in {"scheduled","cancelled","failed","uncertain"}):
+                    raise ConnectorError("native recovery acknowledgement identity did not match")
+            elif operation == "history":
+                # Head indexing makes bounded native progress locally rather
+                # than requiring one network roundtrip for each two-MiB chunk.
+                until=time.monotonic()+2
+                result=await self.native(["history",session,"--json"],payload,timeout=2)
+                if not {"before","after","around","around_incoming_seq"} & set(payload):
+                    for _ in range(31):
+                        if not isinstance(result,dict) or result.get("indexing") is not True: break
+                        remaining=until-time.monotonic()
+                        if remaining<=0: break
+                        previous=json.dumps([result.get("source_status"),result.get("head"),result.get("events")],sort_keys=True)
+                        try: following=await self.native(["history",session,"--json"],payload,timeout=remaining)
+                        except ConnectorError: break
+                        following_progress=json.dumps([following.get("source_status"),following.get("head"),following.get("events")],sort_keys=True) if isinstance(following,dict) else None
+                        result=following
+                        if following_progress==previous: break
+                if (not isinstance(result,dict) or result.get("request_id") != request_id or result.get("name") != session
+                        or result.get("run_id") != payload["expected_run_id"]
+                        or result.get("archive_id","") != payload.get("archive_id","")
+                        or result.get("agent_id","") != payload.get("agent_id","")
+                        or (result.get("parent_conversation_id") if "agent_id" in payload else result.get("conversation_id")) != payload["expected_conversation_id"]
+                        or ("agent_id" in payload and result.get("conversation_id") != payload["expected_conversation_id"]+"/"+payload["agent_id"])
+                        or not isinstance(result.get("events"),list) or not isinstance(result.get("history_epoch"),str)
+                        or not isinstance(result.get("head"),dict)):
+                    raise ConnectorError("native public history identity or envelope did not match")
+            elif operation in TERMINAL_OPERATIONS:
+                native_payload = {**payload, "action": "snapshot" if operation == "terminal_snapshot" else "input"}
+                if operation == "terminal_input":
+                    native_payload["expires_at"] = request["expires_at"]
+                result = await self.native(["terminal", session, "--json"], native_payload, timeout=3)
+                statuses = {"snapshot"} if operation == "terminal_snapshot" else {"submitted", "failed", "uncertain"}
+                if (not isinstance(result, dict) or result.get("request_id") != request_id or result.get("name") != session
+                        or result.get("run_id") != payload["expected_run_id"] or result.get("conversation_id") != payload["expected_conversation_id"]
+                        or result.get("status") not in statuses or (operation == "terminal_input" and result.get("terminal_binding_id") != payload["terminal_binding_id"])):
+                    raise ConnectorError("native Terminal acknowledgement identity or status did not match")
+            elif operation in LIFECYCLE_OPERATIONS:
+                result = await self.native(["session-action", session, "--json"], {**payload, "action": operation})
+                if (not isinstance(result, dict) or result.get("request_id") != request_id or result.get("name") != session
+                        or result.get("run_id") != payload["expected_run_id"] or result.get("conversation_id") != payload["expected_conversation_id"]
+                        or result.get("status") not in {"completed", "failed", "uncertain"}):
+                    raise ConnectorError("native lifecycle acknowledgement identity or status did not match")
+                if "archive_id" in payload:
+                    if result.get("archive_id",payload["archive_id"]) != payload["archive_id"]:
+                        raise ConnectorError("native lifecycle archive identity did not match")
+                    result["archive_id"] = payload["archive_id"]
+                target = result.get("result_target")
+                if target is not None and (not isinstance(target, dict) or set(target) - {"name", "run_id", "conversation_id", "archive_id"}
+                        or not all(isinstance(target.get(field), str) for field in ("name", "run_id", "conversation_id"))
+                        or not target["name"] or not target["run_id"]):
+                    raise ConnectorError("native lifecycle result target was invalid")
+                if result["status"] == "completed" and target is not None and not target.get("archive_id"):
+                    # An authoritative action target can be inspected immediately
+                    # while the normal heartbeat catalog catches up. Native
+                    # inspection still enforces the requested run/conversation.
+                    self.sessions.add(target["name"])
+                    if operation == "rename" and target["name"] != session:
+                        self.sessions.discard(session)
+            elif operation in {"process_output", "process_stop"}:
+                argv = ["processes", session, "--output" if operation == "process_output" else "--stop", payload["process_id"],
+                        "--run", payload["expected_run_id"], "--conversation", payload["expected_conversation_id"]]
+                for field in ("generation", "archive_id"):
+                    if field in payload:
+                        argv.extend(["--" + field.replace("_id", ""), payload[field]])
+                result = await self.native(argv)
+                if (not isinstance(result, dict) or result.get("id") != payload["process_id"] or result.get("run_id") != payload["expected_run_id"]
+                        or result.get("conversation_id") != payload["expected_conversation_id"]):
+                    raise ConnectorError("native process acknowledgement identity did not match")
+                result = {**result, "request_id": request_id, "name": session, "process_id": payload["process_id"]}
+                if "archive_id" in payload:
+                    result["archive_id"] = payload["archive_id"]
+            else:
+                result = await self.native([CONTEXT_COMMANDS.get(operation, "send-now" if operation == "send_now" else operation), session, "--json"], payload)
+                if operation == "send" and "agent_id" in payload:
+                    if (not isinstance(result, dict) or result.get("request_id") != request_id or result.get("name") != session
+                            or result.get("run_id") != payload["expected_run_id"] or result.get("conversation_id") != payload["expected_conversation_id"]
+                            or result.get("agent_id") != payload["agent_id"] or result.get("status") != "submitted"):
+                        raise ConnectorError("native child send acknowledgement identity did not match")
+                if operation in {*CONTEXT_COMMANDS, "settings", "send_now"}:
+                    statuses = {"submitted", "confirmed"} if operation == "clear_context" else {"applied", "scheduled"} if operation == "settings" else {"submitted"}
+                    if (not isinstance(result, dict) or result.get("request_id") != request_id
+                            or result.get("name") != session or result.get("run_id") != payload["expected_run_id"]
+                            or result.get("conversation_id") != payload["expected_conversation_id"]
+                            or result.get("status") not in statuses):
+                        raise ConnectorError("native context acknowledgement identity or status did not match")
+                    if operation == "send_now" and result.get("queue_id") != payload["queue_id"]:
+                        raise ConnectorError("native queue acknowledgement identity did not match")
+                    if operation == "settings" and any(result.get(field) != payload[field] for field in ("model", "effort") if field in payload):
+                        raise ConnectorError("native settings acknowledgement did not match")
+                    if operation == "settings" and result["status"] == "scheduled":
+                        checked_uuid(result.get("pending_settings_id"))
+            native_state = result["status"] if operation in LIFECYCLE_OPERATIONS or operation in {"terminal_input","recovery_action"} else "completed"
+            response = {"state": "completed" if native_state in {"submitted","scheduled","cancelled"} else native_state,
+                        "result": result, "error": result.get("error") if (operation in LIFECYCLE_OPERATIONS or operation in {"terminal_input","recovery_action"}) and result["status"] in {"failed", "uncertain"} else None}
+            if len(json.dumps(response).encode()) > MAX_RESULT:
+                raise ConnectorError("native result exceeds relay size limit")
+        except ConnectorError as error:
+            response = {"state": "uncertain" if mutation_started else "failed",
+                        "result": None, "error": str(error)}
+        except asyncio.CancelledError:
+            self.journal.finish(request_id, {
+                "state": "uncertain" if mutation_started else "failed", "result": None,
+                "error": "connector stopped before recording the native result"})
+            raise
+        except Exception:
+            response = {"state": "uncertain" if mutation_started else "failed",
+                        "result": None, "error": "connector could not record native outcome"}
+        self.journal.finish(request_id, response)
+        return response
+
+    async def http(self, client: aiohttp.ClientSession, method: str, path: str,
+                   body: dict | None = None, *, max_response_bytes: int = MAX_BYTES) -> object:
+        try:
+            async with client.request(method, self.server_url + path, json=body,
+                                      headers={"Authorization": "Bearer " + self.token},
+                                      allow_redirects=False) as response:
+                if response.status < 200 or response.status >= 300:
+                    raise RelayError(response.status)
+                data = bytearray()
+                async for chunk in response.content.iter_chunked(65536):
+                    data.extend(chunk)
+                    if len(data) > max_response_bytes:
+                        raise ConnectorError("relay response exceeds size limit")
+                if not data:
+                    return None
+                try:
+                    return await asyncio.to_thread(json.loads, data) if len(data) > 1024 * 1024 else json.loads(data)
+                except (ValueError, UnicodeError):
+                    raise ConnectorError("relay returned invalid JSON") from None
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            raise ConnectorError("relay is unavailable") from None
+
+    async def flush(self, client: aiohttp.ClientSession) -> None:
+        self.journal.prune()
+        for request_id, response in self.journal.pending():
+            try:
+                await self.http(client, "POST", f"/v1/node/requests/{request_id}/result", response)
+            except RelayError as error:
+                if error.status not in {404, 409}:
+                    raise
+                # Relay expiry/restart can retire a claim. Preserve the local
+                # native outcome and its no-replay tombstone, retire only upload.
+                LOG.warning("Relay retired a result claim; preserving local outcome")
+            self.journal.delivered(request_id)
+
+    async def heartbeats(self, client: aiohttp.ClientSession) -> None:
+        delay = self.interval
+        while True:
+            try:
+                snapshot = await self.snapshot()
+                await self.http(client, "POST", "/v1/node/heartbeat", {"snapshot": snapshot})
+                delay = self.interval
+            except ConnectorError as error:
+                LOG.warning("Heartbeat: %s", error)
+                delay = min(60, max(self.interval, delay * 2))
+            await asyncio.sleep(delay)
+
+    async def requests(self, client: aiohttp.ClientSession) -> None:
+        delay = 1
+        while True:
+            try:
+                await self.flush(client)
+                await self.snapshot_ready.wait()
+                batch = await self.http(client, "GET", "/v1/node/requests?wait=25", max_response_bytes=MAX_PAYLOAD + 4096)
+                if not isinstance(batch, dict) or not isinstance(batch.get("requests"), list):
+                    raise ConnectorError("relay returned invalid request list")
+                if len(batch["requests"]) > 100:
+                    raise ConnectorError("relay request list exceeds size limit")
+                for request in batch["requests"]:
+                    try:
+                        await self.execute(request)
+                    except ConnectorError as error:
+                        LOG.warning("Rejected relay request: %s", error)
+                await self.flush(client)
+                delay = 1
+                if not batch["requests"]:
+                    await asyncio.sleep(0.25)
+            except ConnectorError as error:
+                LOG.warning("Requests: %s", error)
+                await asyncio.sleep(delay)
+                delay = min(60, delay * 2)
+
+    async def run(self) -> None:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=35), trust_env=False) as client:
+            tasks = [asyncio.create_task(self.heartbeats(client)),
+                     asyncio.create_task(self.requests(client))]
+            try:
+                await asyncio.gather(*tasks)
+            finally:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--allow-insecure-localhost", action="store_true")
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    connector = None
+    try:
+        config = json.loads(Path(args.config).read_text())
+        if not isinstance(config, dict):
+            raise ConnectorError("configuration must be a JSON object")
+        connector = Connector(config, allow_insecure_localhost=args.allow_insecure_localhost)
+        asyncio.run(connector.run())
+    except (OSError, ValueError, ConnectorError):
+        LOG.error("Connector could not start; verify private configuration and journal availability")
+        raise SystemExit(1) from None
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if connector is not None:
+            connector.journal.close()
+
+
+if __name__ == "__main__":
+    main()

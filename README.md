@@ -121,7 +121,10 @@ hgs ls                                # sessions here and on connected machines
 hgs a codex/orbit/api                  # attach from any terminal
 ```
 
-**On the roadmap: a mobile client** to follow agents, receive notifications and
-reply from your phone.
+**Android pilot:** follow existing sessions, read replies, answer questions and
+send messages from your phone through a self-hostable HTTPS relay. Notifications
+support UnifiedPush, an optional FCM build and a foreground live connection.
+[Build and connect the Android client](docs/mobile-deployment.md), or read the
+[architecture and trust model](docs/mobile-architecture.md). iOS remains planned.
 
 [Command and settings reference](docs/reference.md) | [CI and Arch packages](docs/ci-and-aur.md) | [MIT](LICENSE)

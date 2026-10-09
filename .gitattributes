@@ -13,3 +13,7 @@ design/** linguist-documentation
 design export-ignore
 AGENTS.md export-ignore
 CLAUDE.md export-ignore
+
+# Preserve the upstream Windows Gradle wrapper and CameraX license verbatim.
+mobile/android/gradlew.bat -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+mobile/android/app/src/main/assets/licenses/camerax.txt -whitespace

@@ -1,0 +1,218 @@
+package app.zerus.mobile
+
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONArray
+import org.json.JSONObject
+import java.util.UUID
+import java.util.concurrent.TimeUnit
+import java.io.ByteArrayOutputStream
+import java.net.URI
+import java.security.MessageDigest
+
+class RelayException(val status: Int, message: String) : Exception(message)
+class RelayApi(private val client: OkHttpClient = OkHttpClient.Builder()
+    .connectTimeout(10, TimeUnit.SECONDS).readTimeout(35, TimeUnit.SECONDS)
+    .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false).build()) {
+    suspend fun call(url: String, token: String, path: String, body: JSONObject? = null, delete: Boolean = false): JSONObject = withContext(Dispatchers.IO) {
+        val request = Request.Builder().url(ManagedRelay.transport(url) + path).header("Accept", "application/json")
+        if (token.isNotBlank()) request.header("Authorization", "Bearer $token")
+        if (delete) request.delete() else if (body != null) request.post(JsonRequestBody(body, if (path == "/v1/requests") 30_408_704L else 1_048_576L))
+        client.newCall(request.build()).execute().use { response ->
+            val value = response.body?.byteStream()?.use { stream ->
+                val bytes = ByteArrayOutputStream(); val buffer = ByteArray(8192)
+                while (true) {
+                    val count = stream.read(buffer)
+                    if (count < 0) break
+                    require(bytes.size() + count <= 1024 * 1024) { "Gateway response exceeded the 1 MiB safety limit." }
+                    bytes.write(buffer, 0, count)
+                }
+                bytes.toString(Charsets.UTF_8.name())
+            }.orEmpty()
+            if (!response.isSuccessful) throw RelayException(response.code,
+                runCatching { JSONObject(value).string("error", "message") }.getOrDefault("").ifBlank { "Server returned ${response.code}." })
+            if (value.isBlank()) JSONObject() else JSONObject(value)
+        }
+    }
+    suspend fun pair(url: String, code: String): Connection {
+        val normalized = EndpointPolicy.normalize(url)
+        require(code.isNotBlank()) { "Enter the invitation code shown on your computer." }
+        val result = call(normalized, "", "/v1/pair", JSONObject().put("code", code.trim()).put("device_name", "Zerus Android"))
+        return Connection(UUID.randomUUID().toString(), result.string("workspace_name").ifBlank { URI(normalized).host ?: "Workspace" }, normalized, result.getString("device_token"))
+    }
+    suspend fun computers(connection: Connection) = call(connection.url, connection.token, "/v1/computers")
+    suspend fun submit(connection: Connection, target: Target, operation: String, payload: JSONObject, id: String): JSONObject {
+        require(target.agentId.isBlank() || operation in setOf("inspect", "history", "send")) { "This control belongs to the parent session." }
+        require(target.archiveId.isBlank() && payload.string("archive_id").isBlank() || operation in setOf("inspect", "history", "process_output", "restore", "forget", "rename", "fork") && target.archiveId.isNotBlank() && payload.string("archive_id") == target.archiveId) { "Archived conversations are read-only." }
+        return call(connection.url, connection.token, "/v1/requests", JSONObject().put("request_id", id)
+            .put("computer_id", target.computerId).put("session", target.session).put("operation", operation).put("payload", payload)).also {
+                check(it.string("request_id") == id) { "Gateway returned a mismatched receipt. Delivery remains unconfirmed." }
+            }
+    }
+    suspend fun receipt(connection: Connection, id: String) = call(connection.url, connection.token, "/v1/requests/$id").also {
+        check(it.string("request_id") == id) { "Gateway returned a mismatched receipt. Delivery remains unconfirmed." }
+    }
+    suspend fun await(connection: Connection, initial: JSONObject, maxPolls: Int = 35, pollDelayMs:Long = 800): JSONObject {
+        var result = initial
+        repeat(maxPolls) {
+            if (result.string("state") !in listOf("queued", "claimed")) return result
+            delay(pollDelayMs.coerceIn(50,1000))
+            result = receipt(connection, result.getString("request_id"))
+        }
+        return result
+    }
+    suspend fun inspect(connection: Connection, target: Target): JSONObject {
+        val payload = JSONObject().also {
+            if (target.archiveId.isNotBlank()) it.put("archive_id", target.archiveId)
+            if (target.agentId.isNotBlank()) it.put("agent_id",target.agentId).put("expected_run_id",target.run).put("expected_conversation_id",target.parentConversation)
+        }
+        val result = await(connection, submit(connection, target, "inspect", payload, UUID.randomUUID().toString()))
+        check(result.string("state") == "completed") { result.string("error").ifBlank { "Computer has not returned its activity yet. Refresh to check again." } }
+        return result.getJSONObject("result").also { activity ->
+            if(target.agentId.isNotBlank()) check(activity.string("agent_id") == target.agentId && activity.string("parent_conversation_id") == target.parentConversation && activity.string("run_id") == target.run && activity.string("name") == target.session) { "Computer returned a different child conversation." }
+            else check(activity.string("agent_id").isBlank()) { "Computer returned a child conversation for the parent." }
+            if (target.archiveId.isNotBlank()) check(activity.string("archive_id") == target.archiveId && activity.string("name") == target.session) { "Computer returned a different archived conversation." }
+            else check(activity.string("archive_id").isBlank() && activity.string("state") != "archived" &&
+                (activity.string("name").isBlank() || activity.string("name") == target.session)) { "Computer returned a different conversation for this session." }
+        }
+    }
+    suspend fun history(connection:Connection,target:Target,direction:String="",cursor:String="",limit:Int=100):HistoryPage {
+        require(target.run.isNotBlank() && target.conversation.isNotBlank() && limit in 1..100)
+        require(direction in setOf("","before","after","around","unread") && (direction.isEmpty() == cursor.isEmpty()) && cursor.length<=8192)
+        val id=UUID.randomUUID().toString()
+        val payload=HistoryRequests.payload(target,id,direction,cursor,limit)
+        val receipt=await(connection,submit(connection,target,"history",payload,id))
+        check(receipt.string("state")=="completed") { receipt.string("error").ifBlank { "History is not available yet. Try again." } }
+        return withContext(Dispatchers.Default) { HistoryPage.parse(target,id,receipt.getJSONObject("result")) }
+    }
+    suspend fun events(connection: Connection, after: Long, wait: Int = 25) = call(connection.url, connection.token, "/v1/events?after=$after&wait=$wait")
+}
+
+object NativeParser {
+    fun sessions(connection: Connection, machine: JSONObject): List<Session> {
+        val snapshot = machine.optJSONObject("snapshot") ?: return emptyList()
+        return snapshot.optJSONArray("sessions")?.objects().orEmpty().mapNotNull { raw ->
+            val archive = raw.string("archive_id")
+            if (raw.string("state") == "archived" || archive.isNotBlank()) {
+                if (archive.isBlank() || runCatching { UUID.fromString(archive).toString() == archive }.getOrDefault(false).not()) return@mapNotNull null
+            }
+            Session(Target(machine.getString("id"), raw.string("name"), raw.string("run_id"), raw.string("conversation_id"), connection.id, archive),
+                raw.string("title", "label", "name"), raw.string("agent", "cmd"),
+                if (raw.string("phase") in listOf("input", "approval", "error")) raw.string("phase") else raw.string("activity", "phase", "state"),
+                raw.string("project", "cwd"), SessionPreview.render(raw.string("last_message", "prompt")), raw.optJSONArray("mobile_attention")?.length() ?: raw.optInt("pending_question_count"), raw)
+        }
+    }
+    fun events(raw: JSONObject): List<Event> {
+        val providers = raw.optJSONArray("provider_messages")?.objects().orEmpty()
+        // Native child inspection may normalize its own journal agent_id to blank.
+        // Explicit child rows must still match that exact inspected child.
+        val inspectedAgent = raw.string("agent_id")
+        fun inScope(value: JSONObject) = value.string("agent_id") in
+            if (inspectedAgent.isBlank()) listOf("", "main") else listOf("", inspectedAgent)
+        // message_events is the separately bounded main-message window. Keep
+        // the journal namespace so matching native seq IDs deduplicate safely.
+        val seenJournal = mutableSetOf<String>()
+        val journal = (raw.optJSONArray("events")?.objects().orEmpty() + raw.optJSONArray("message_events")?.objects().orEmpty()).filter { value ->
+            val seq = value.string("seq")
+            seq.isBlank() || seenJournal.add("${value.string("history_stream")}:$seq")
+        }
+        val occurrences = mutableMapOf<String, Int>()
+        fun parse(value: JSONObject, streamArgument: String): Event? {
+            val stream = value.string("history_stream").takeIf { it in listOf("journal", "provider", "attachment") } ?: streamArgument
+            val type = value.string("type")
+            if (type !in listOf("UserPromptSubmit", "UserPromptQueued", "UserMessage", "TurnStarted", "QuestionAnswered", "AgentMessage", "Stop") ||
+                !inScope(value)) return null
+            val role = when (type) {
+                "QuestionAnswered" -> "You (answer)"
+                "UserPromptSubmit", "UserPromptQueued", "UserMessage", "TurnStarted" -> "You"
+                else -> "AgentMessage"
+            }
+            val source = value.string("source").ifBlank { stream }
+            val files = value.optJSONArray("attachments")?.objects().orEmpty().map {
+                DisplayedAttachment(it.string("name"), it.string("mime"), it.optLong("bytes"), it.string("reference"))
+            }
+            val text = if (source == "hgs_delivery" && files.isNotEmpty()) value.optString("detail", "")
+                else value.string("detail", "text", "message", "prompt", "submitted_text")
+            if (text.isBlank() && files.isEmpty()) return null
+            val at = value.optDouble("at", 0.0).takeIf { it.isFinite() } ?: 0.0
+            val nativeId = value.string("message_id", "seq", "source_offset")
+            // Count only indistinguishable rows, rather than the whole array.
+            // Prepending unrelated history therefore preserves existing keys.
+            val fallback = if (nativeId.isBlank()) {
+                val identity = JSONArray(listOf(type, role, source, at, value.string("timestamp"), text,
+                    files.map { listOf(it.name, it.mime, it.bytes, it.reference) })).toString()
+                val digest = MessageDigest.getInstance("SHA-256").digest(identity.toByteArray(Charsets.UTF_8))
+                    .joinToString("") { "%02x".format(it) }
+                val key = "$stream:$source:$role:$digest"
+                val occurrence = occurrences[key] ?: 0
+                occurrences[key] = occurrence + 1
+                "fallback:$digest:$occurrence"
+            } else "native:$nativeId"
+            val originalId = value.string("original_id").ifBlank { "$stream:$source:$role:$fallback" }
+            val historyId = value.string("history_id")
+            return Event(if (historyId.isBlank()) originalId else "history:$historyId", role,
+                text, value.string("at", "timestamp"), at, if (source == "hgs_delivery" && role == "You") value.string("message_id") else "", files, source,
+                nativeType = type, submittedText = if (source == "hgs_delivery") value.string("submitted_text") else "",
+                originalId = originalId, historyId = historyId, historyCursor = value.string("history_cursor"),
+                historyEpoch = raw.string("history_epoch"), incomingSeq = (value.opt("incoming_seq") as? Number)?.toLong()?.takeIf { it >= 0 },
+                originalIds = value.optJSONArray("original_ids")?.let { ids -> (0 until minOf(ids.length(),8)).mapNotNull { ids.opt(it) as? String } }.orEmpty(), detailTruncated = value.optBoolean("detail_truncated"))
+        }
+        val rows = (journal.mapNotNull { item ->
+            fun replaces(provider: JSONObject, hook: JSONObject) = provider.string("type") == "AgentMessage" && inScope(provider) && inScope(hook) &&
+                hook.string("type") == "Stop" && NativeStopExcerpt.matches(provider.string("detail"), hook.string("detail")) &&
+                kotlin.math.abs(provider.optDouble("at") - hook.optDouble("at")) < 10
+            val replacement = if (item.string("type") == "Stop") providers.filter { replaces(it,item) }.singleOrNull() else null
+            if (replacement != null && journal.count { replaces(replacement,it) } == 1) null else parse(item,"journal")
+        } + providers.mapNotNull { item -> parse(item, "provider") })
+            .distinctBy { it.id }.toMutableList()
+        val used = mutableSetOf<Int>()
+        raw.optJSONArray("attachment_messages")?.objects().orEmpty().forEach { item ->
+            val metadata = parse(item, "attachment") ?: return@forEach
+            val exact = rows.indices.filter { it !in used && rows[it].role == "You" && rows[it].requestId.isBlank() &&
+                item.string("submitted_text").isNotBlank() && rows[it].text.trim() == item.string("submitted_text").trim() &&
+                kotlin.math.abs(rows[it].at - metadata.at) <= 10 }.singleOrNull()
+            if (exact != null) { used += exact; rows[exact] = metadata.copy(at = rows[exact].at) }
+            else if (rows.none { it.role == "You" && it.requestId == metadata.requestId && metadata.requestId.isNotBlank() }) rows += metadata
+        }
+        return if (raw.string("history_epoch").isNotBlank()) rows.toList() else rows.sortedBy { it.at }
+    }
+    fun messageBlockReason(raw: JSONObject?): String {
+        if (raw == null) return "Refresh to verify the session before sending."
+        if(raw.string("agent_id").isNotBlank() && raw.string("agent_id") != "main") return if(raw.optBoolean("can_send")) "" else raw.string("send_reason","can_send_reason").ifBlank { "This child conversation is read-only." }
+        if (!raw.optBoolean("tracked")) return "This session has no native tracking."
+        if (raw.string("run_id").isBlank()) return "Waiting for the agent to finish starting."
+        if (raw.string("runtime_state") != "live" || raw.string("process_state") != "running") return "The agent is not running. Resume it on your computer."
+        if (raw.optBoolean("auth_required") || raw.string("error").isNotBlank()) return "Complete login or setup on your computer."
+        if (raw.string("expected_id").isNotBlank()) return if (raw.optBoolean("resume_message_can_send")) "" else raw.string("resume_message_reason").ifBlank { "Waiting for the restored conversation." }
+        if (raw.string("conversation_id").isBlank()) return if (raw.optBoolean("first_message_can_send")) "" else raw.string("first_message_reason").ifBlank { "Waiting for the new conversation." }
+        val phase = raw.string("phase")
+        if (phase in listOf("approval", "input")) return "Answer the pending request or continue on your computer."
+        if (phase == "interrupted") return if (raw.optBoolean("interrupted_message_can_send")) "" else raw.string("interrupted_message_reason").ifBlank { "Waiting for the input prompt after interruption." }
+        if (phase == "error" && raw.optJSONObject("provider_error") != null) return if (raw.optBoolean("error_message_can_send")) "" else raw.string("error_message_reason").ifBlank { "Check the agent before retrying." }
+        if (raw.string("activity") == "idle" && phase == "idle" || raw.string("activity") == "busy" && phase in listOf("idle", "working", "tool", "compacting")) return ""
+        return "Waiting for the agent to confirm its input state."
+    }
+    fun questions(raw: JSONObject): List<Question> = raw.optJSONArray("pending_questions")?.objects().orEmpty().map { card ->
+        val nativeDelivery = card.optJSONObject("answer_delivery")?.let { delivery ->
+            NativeQuestionDelivery(delivery.string("request_id"), delivery.string("question_id"), delivery.string("question_hash"),
+                delivery.string("run_id"), delivery.string("conversation_id"), delivery.string("status"),
+                delivery.optJSONArray("answers")?.objects().orEmpty().map { answer ->
+                    NativeQuestionAnswer(answer.string("question_id"), answer.optJSONArray("selected_option_ids")?.let { ids ->
+                        (0 until ids.length()).mapNotNull { ids.opt(it) as? String }
+                    }.orEmpty(), answer.string("text"), answer.optBoolean("skip"))
+                })
+        }
+        Question(card.string("question_id"), card.string("question_hash"), card.optJSONArray("questions")?.objects().orEmpty().map { prompt ->
+            Prompt(prompt.string("id"), prompt.string("question"), prompt.optJSONArray("options")?.objects().orEmpty().map {
+                Choice(it.string("id"), it.string("label"), it.string("description"))
+            }, prompt.optBoolean("multi_select"), prompt.optBoolean("required", true), prompt.optBoolean("allow_other", false),
+                prompt.string("header"), prompt.string("body"), prompt.string("other_label"), prompt.string("other_description"))
+        }, card.optBoolean("can_answer"), card.optBoolean("can_skip"), card.optBoolean("optional"),
+            nativeDelivery?.status.orEmpty(), (card.opt("created_at") as? Number)?.toDouble()?.takeIf { it.isFinite() && it > 0 && it < 253402300800.0 } ?: 0.0,
+            card.string("source"), card.optBoolean("approval"), card.optBoolean("trust_request"), card.string("answer_unavailable_reason"),
+            card.string("run_id"), card.string("conversation_id"), card.string("tool_call_id"), nativeDelivery)
+    }
+}

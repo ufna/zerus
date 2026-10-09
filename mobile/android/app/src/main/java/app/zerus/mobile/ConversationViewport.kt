@@ -1,0 +1,27 @@
+package app.zerus.mobile
+
+/** UI-only reading position. Message keys survive incoming rows and transcript windows. */
+data class ConversationAnchor(val itemKey: String, val offset: Int, val following: Boolean)
+data class ConversationFollowState(val opened: Boolean = false, val following: Boolean = true,
+    val ownSendId: String = "", val anchor: ConversationAnchor? = null)
+data class ConversationScroll(val state: ConversationFollowState, val index: Int? = null, val offset: Int = 0)
+
+object ConversationViewport {
+    fun content(state: ConversationFollowState, keys: List<String>, ownSendId: String, ownItemKey: String?): ConversationScroll {
+        if (keys.isEmpty()) return ConversationScroll(state)
+        val ownIndex = ownItemKey?.let(keys::indexOf)?.takeIf { it >= 0 }
+        if (ownSendId.isNotBlank() && ownSendId != state.ownSendId && ownIndex != null)
+            return ConversationScroll(state.copy(opened = true, following = true, ownSendId = ownSendId, anchor = null), ownIndex)
+        if (!state.opened) {
+            val anchor = state.anchor
+            val index = anchor?.takeIf { !it.following }?.let { keys.indexOf(it.itemKey) }?.takeIf { it >= 0 }
+            return if (index != null) ConversationScroll(state.copy(opened = true, following = false, ownSendId = ownSendId), index, anchor!!.offset)
+                else ConversationScroll(state.copy(opened = true, following = true, ownSendId = ownSendId, anchor = null), keys.lastIndex)
+        }
+        return ConversationScroll(state, if (state.following) keys.lastIndex else null)
+    }
+    fun userScrolled(state: ConversationFollowState, atEnd: Boolean) = state.copy(following = atEnd)
+    fun settled(state: ConversationFollowState,atEnd: Boolean,hasNewer: Boolean): ConversationFollowState =
+        if(state.opened && atEnd && !hasNewer) state.copy(following = true,anchor = null) else state
+    fun latest(state: ConversationFollowState) = state.copy(following = true, anchor = null)
+}

@@ -1,0 +1,93 @@
+import java.util.Properties
+import java.io.File
+
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
+}
+val signingPropertiesPath = providers.gradleProperty("zerusSigningProperties").orNull
+    ?: providers.environmentVariable("ZERUS_ANDROID_SIGNING_PROPERTIES").orNull
+    ?: "${System.getProperty("user.home")}/.config/hgs/mobile/dev-signing/signing.properties"
+val privateSigningFile = file(signingPropertiesPath)
+val privateSigning = Properties().apply { if(privateSigningFile.isFile) privateSigningFile.inputStream().use { load(it) } }
+val firebaseEnabled = providers.gradleProperty("zerusFirebase").orNull == "true"
+if (firebaseEnabled) {
+    require(file("google-services.json").isFile) { "Optional Firebase builds require a private app/google-services.json." }
+    apply(plugin = "com.google.gms.google-services")
+}
+android {
+    namespace = "app.zerus.mobile"
+    compileSdk = 36
+    defaultConfig {
+        applicationId = "app.zerus.mobile"
+        minSdk = 26
+        targetSdk = 36
+        versionCode = 11
+        versionName = "0.1.10"
+        buildConfigField("boolean", "FIREBASE_ENABLED", firebaseEnabled.toString())
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+    if(privateSigningFile.isFile) signingConfigs.create("development") {
+        val keyFile = File(checkNotNull(privateSigning.getProperty("storeFile")))
+        storeFile = if(keyFile.isAbsolute) keyFile else File(privateSigningFile.parentFile,keyFile.path)
+        storePassword = checkNotNull(privateSigning.getProperty("storePassword"))
+        keyAlias = checkNotNull(privateSigning.getProperty("keyAlias"))
+        keyPassword = checkNotNull(privateSigning.getProperty("keyPassword"))
+    }
+    buildTypes {
+        getByName("release") { if(privateSigningFile.isFile) signingConfig = signingConfigs.getByName("development") }
+        create("pilot") {
+            initWith(getByName("release"))
+            isDebuggable = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            if(privateSigningFile.isFile) signingConfig = signingConfigs.getByName("development")
+            matchingFallbacks += "release"
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+    }
+    buildFeatures { compose = true; buildConfig = true }
+    if (firebaseEnabled) {
+        sourceSets.getByName("main").java.srcDir("src/firebase/java")
+        sourceSets.getByName("debug").manifest.srcFile("src/firebase/AndroidManifest.xml")
+        sourceSets.getByName("release").manifest.srcFile("src/firebase/AndroidManifest.xml")
+        sourceSets.getByName("pilot").manifest.srcFile("src/firebase/AndroidManifest.xml")
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions { jvmTarget = "17" }
+    packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+}
+gradle.taskGraph.whenReady {
+    if(allTasks.any { it.name in setOf("packagePilot","packageRelease","signPilotBundle","signReleaseBundle") })
+        require(privateSigningFile.isFile) { "Distributable builds require private development signing configuration." }
+}
+dependencies {
+    implementation(platform("androidx.compose:compose-bom:2025.06.01"))
+    implementation("androidx.activity:activity-compose:1.10.1")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.1")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.1")
+    implementation("androidx.work:work-runtime-ktx:2.10.2")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("org.unifiedpush.android:connector:3.3.5")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    implementation("androidx.camera:camera-camera2:1.6.2")
+    implementation("androidx.camera:camera-lifecycle:1.6.2")
+    implementation("androidx.camera:camera-view:1.6.2")
+    implementation("com.google.zxing:core:3.5.4")
+    debugImplementation("androidx.compose.ui:ui-tooling")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20250517")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    if (firebaseEnabled) {
+        implementation(platform("com.google.firebase:firebase-bom:34.0.0"))
+        implementation("com.google.firebase:firebase-messaging")
+        implementation("androidx.fragment:fragment:1.8.8")
+    }
+}

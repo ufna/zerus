@@ -27,6 +27,7 @@
 #include "RecoveryWidgets.h"
 #include "SettingsPage.h"
 #include "ContentScale.h"
+#include "UpdateController.h"
 #include "ProcessSettings.h"
 #include "TerminalView.h"
 #include "TerminalScreen.h"
@@ -292,8 +293,8 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     auto *refresh = new QPushButton(this); refresh->hide();
     connect(refresh, &QPushButton::clicked, this, [this]() { emit refreshRequested(); inspect(); m_machinesPage->reload(); });
     side->addStretch();
-    auto *windowPin = iconButton("pin", tr("Keep Zerus above other windows"), "windowPin"); windowPin->setCheckable(true);
-    windowPin->setFixedSize(42, 44); windowPin->setIconSize(QSize(24,24)); windowPin->setVisible(WindowLayer::supported()); side->addWidget(windowPin);
+    auto *windowPin = m_windowPin = iconButton("unpinned", tr("Keep Zerus above other windows"), "windowPin"); windowPin->setCheckable(true);
+    windowPin->setFixedSize(42, 44); windowPin->setIconSize(QSize(24,24)); side->addWidget(windowPin);
     auto *settingsButton = m_settingsNav = iconButton("settings", tr("Settings"), "workspaceSettings"); settingsButton->setCheckable(true); settingsButton->setFixedSize(42, 44); settingsButton->setIconSize(QSize(24,24)); side->addWidget(settingsButton);
     connect(settingsButton, &QPushButton::clicked, this, &SessionsWindow::showWorkspaceSettings);
     auto *versionLabel = label(version, "appVersion"); versionLabel->setAlignment(Qt::AlignCenter); side->addWidget(versionLabel);
@@ -490,6 +491,9 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     m_forkAction = moreMenu->addAction(tr("Fork session…")); m_forkAction->setObjectName("forkSessionAction");
     connect(m_forkAction, &QAction::triggered, this, &SessionsWindow::forkSession);
     moreMenu->addSeparator();
+    m_clearAction = moreMenu->addAction(tr("Clear session…")); m_clearAction->setObjectName("clearSessionAction");
+    m_clearAction->setToolTip(tr("Start this agent's conversation from scratch, like /clear in Terminal. Your unsent draft is kept."));
+    connect(m_clearAction, &QAction::triggered, this, &SessionsWindow::clearContext);
     m_archiveAction = moreMenu->addAction(tr("Move to archive")); m_archiveAction->setObjectName("archiveSessionAction");
     connect(m_archiveAction, &QAction::triggered, this, &SessionsWindow::archiveSession);
     m_forgetAction = moreMenu->addAction(tr("Terminate / forget session…")); m_forgetAction->setObjectName("forgetSessionAction");
@@ -989,14 +993,19 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     };
     m_settingsPage->contentScaleChanged=[this]{applyContentScale();};
     // The rail pin and Settings → Appearance switch the same preference.
-    const auto applyWindowLayer=[this,windowPin]{
-        const bool on=WindowLayer::alwaysOnTop();
-        {const QSignalBlocker block(windowPin);windowPin->setChecked(on);}
-        m_settingsPage->setAlwaysOnTop(on);WindowLayer::apply(this,on);
+    auto *windowLayer=new WindowLayer(this);
+    const auto updateWindowLayer=[this,windowPin,windowLayer]{
+        const QSignalBlocker block(windowPin);windowPin->setChecked(windowLayer->onTop());
+        // Disabling a focused control moves focus to the next rail button.
+        // WindowLayer already rejects duplicate requests while KWin is busy.
+        windowPin->setVisible(windowLayer->supported());windowPin->setEnabled(windowLayer->supported());
+        updateWindowPinAppearance();
+        m_settingsPage->setWindowLayerState(windowLayer->onTop(),windowLayer->supported(),windowLayer->hint());
     };
-    m_settingsPage->windowLayerChanged=applyWindowLayer;
-    connect(windowPin,&QPushButton::toggled,this,[applyWindowLayer](bool on){QSettings().setValue("workspace/alwaysOnTop",on);applyWindowLayer();});
-    applyWindowLayer();
+    m_settingsPage->windowLayerChanged=[windowLayer](bool on){windowLayer->request(on);};
+    connect(windowPin,&QPushButton::toggled,windowLayer,&WindowLayer::request);
+    connect(windowLayer,&WindowLayer::changed,this,updateWindowLayer);
+    updateWindowLayer();
     connect(m_accountsPage,&AccountsPage::loginRequested,this,&SessionsWindow::accountLoginRequested);
     connect(m_accountsPage,&AccountsPage::installRequested,this,&SessionsWindow::accountInstallRequested);
     connect(m_accountsPage,&AccountsPage::accountsChanged,this,&SessionsWindow::refreshRequested);
@@ -1015,6 +1024,8 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     auto *statusLayout = new QHBoxLayout(statusBar); statusLayout->setContentsMargins(12, 3, 12, 3);
     m_connectionStatus = new StatusMessage; m_connectionStatus->setObjectName("workspaceConnectionStatus");
     statusLayout->addWidget(m_connectionStatus, 1);
+    auto *updateEntry=new QPushButton(tr("Update available"));updateEntry->setObjectName("updatesAvailable");updateEntry->setFlat(true);statusLayout->addWidget(updateEntry);
+    auto *updates=UpdateController::instance();auto updateEntryState=[updates,updateEntry]{updateEntry->setVisible(updates->updateAvailable());updateEntry->setToolTip(tr("Zerus %1 — open Updates").arg(updates->feed().version));};connect(updates,&UpdateController::changed,this,updateEntryState);connect(updateEntry,&QPushButton::clicked,this,&SessionsWindow::showUpdates);updateEntryState();
     m_connectionRetry = new QPushButton(tr("Retry now")); m_connectionRetry->setObjectName("connectionRetry");
     m_connectionRetry->setFlat(true); m_connectionRetry->hide(); statusLayout->addWidget(m_connectionRetry);
     connect(m_connectionRetry, &QPushButton::clicked, this, &SessionsWindow::refreshRequested);
@@ -1132,6 +1143,23 @@ void SessionsWindow::applyContentScale()
     m_question->setContentScale(scale); m_terminal->setContentScale(scale);
 }
 
+void SessionsWindow::updateWindowPinAppearance()
+{
+    if (!m_windowPin) return;
+    const bool pinned = m_windowPin->isChecked();
+    const QString glyph = pinned ? QStringLiteral("pinned") : QStringLiteral("unpinned");
+    const QColor color = pinned ? QColor(m_dark ? "#ffda76" : "#a66000")
+                                : (m_muted.isEmpty() ? palette().color(QPalette::WindowText) : QColor(m_muted));
+    // Native state polling should not rebuild the icon when nothing changed.
+    if (m_windowPin->property("glyph").toString() != glyph || m_windowPin->property("iconColor").value<QColor>() != color) {
+        m_windowPin->setProperty("glyph", glyph); m_windowPin->setProperty("iconColor", color);
+        m_windowPin->setIcon(workspaceIcon(glyph, color));
+    }
+    const QString action = pinned ? tr("Unpin Zerus") : tr("Keep Zerus above other windows");
+    m_windowPin->setToolTip(action); m_windowPin->setAccessibleName(action);
+    m_windowPin->setAccessibleDescription(pinned ? tr("Zerus stays above other windows.") : tr("Other windows can cover Zerus."));
+}
+
 void SessionsWindow::applyTheme()
 {
     const QString theme = QSettings().value("workspace/theme", "system").toString();
@@ -1145,7 +1173,7 @@ void SessionsWindow::applyTheme()
     const QString hover = m_dark ? "#2b3540" : "#edf2f5";
     const QString selected = m_dark ? "#233d35" : "#e0f0e9";
     setStyleSheet(QString(R"(
-        QWidget#settingsPage, QWidget#recoverySettingsPage, QWidget#sessionsWindow, QWidget#machinesPage, QWidget#accountsPage, QDialog#accountDialog, QDialog#accountPermissionsDialog, QDialog#machineSetupDialog, QDialog#projectsPage, QDialog#projectColorDialog, QDialog#projectFolderDialog, QDialog#deleteProjectDialog, QDialog#newSessionDialog, QDialog#folderBrowser, QDialog#forkSessionDialog, QDialog#renameSessionDialog, QDialog#workspaceSettingsDialog, QDialog#sessionFileDialog { background:%1; color:%2; }
+        QWidget#settingsPage, QWidget#recoverySettingsPage, QWidget#sessionsWindow, QWidget#machinesPage, QWidget#accountsPage, QDialog#accountDialog, QDialog#accountPermissionsDialog, QDialog#machineSetupDialog, QDialog#projectsPage, QDialog#projectColorDialog, QDialog#projectFolderDialog, QDialog#deleteProjectDialog, QDialog#newSessionDialog, QDialog#folderBrowser, QDialog#forkSessionDialog, QDialog#renameSessionDialog, QDialog#workspaceSettingsDialog, QDialog#sessionFileDialog, QDialog#swarmDialog { background:%1; color:%2; }
         QWidget { font-size:13px; }
         QLabel { color:%2; background:transparent; }
         QWidget#sidebar { background:%3; border-right:1px solid %4; }
@@ -1177,13 +1205,14 @@ void SessionsWindow::applyTheme()
         QPushButton#brandMark:hover, QPushButton#brandMark:checked { background:%10; }
         QPushButton#railButton, QPushButton#workspaceSettings, QPushButton#windowPin { min-height:42px; max-height:42px; background:transparent; border:1px solid transparent; padding:0; }
         QPushButton#railButton:hover, QPushButton#workspaceSettings:hover, QPushButton#windowPin:hover { background:%7; }
-        QPushButton#workspaceSettings:checked, QPushButton#windowPin:checked { background:%7; border-color:%4; }
+        QPushButton#workspaceSettings:checked { background:%7; border-color:%4; }
+        QPushButton#windowPin:focus[keyboardFocus="true"] { border-color:%5; }
         QFrame#settingsCard { background:%3;border:1px solid %4;border-radius:9px; }
         QListWidget#settingsSections { background:transparent;color:%2;border:0;outline:0; }
         QListWidget#settingsSections::item { padding:11px 10px;margin-bottom:5px;border-radius:6px; }
         QListWidget#settingsSections::item:selected { background:%10;color:%5; }
         QListWidget#settingsSections::item:hover { background:%7; }
-        QWidget#settingsPage QScrollArea, QWidget#settingsContent { background:transparent;border:0; }
+        QWidget#settingsPage QScrollArea, QWidget#settingsContent, QWidget#relaySettings, QDialog#swarmDialog QScrollArea, QWidget#swarmConflictContent { background:transparent;border:0; }
         QPushButton#railButton:checked { background:%10; border-color:%4; }
         QPushButton#sessionFilter { padding:4px 2px; min-height:22px; font-size:11px; background:transparent; border-color:transparent; }
         QPushButton#sessionFilter:checked { background:%10; border-color:%4; color:%5; }
@@ -1217,10 +1246,12 @@ void SessionsWindow::applyTheme()
         QTableWidget, QTreeWidget#worktreeCatalog, QTreeWidget#processList, QListWidget#folderList { background:%3; color:%2; border:1px solid %4; border-radius:8px; gridline-color:%4; selection-background-color:%10; selection-color:%2; }
         QHeaderView::section { background:%3; color:%6; border:0; border-bottom:1px solid %4; padding:10px; }
         QListWidget#folderList::item { padding:9px 12px; }
-        QListWidget#logicalProjects { background:%3; color:%2; border:1px solid %4; border-radius:8px; padding:5px; outline:0; }
-        QListWidget#logicalProjects::item { padding:12px 10px; border-radius:6px; margin:2px 0; }
-        QListWidget#logicalProjects::item:selected { background:%7; color:%2; }
-        QListWidget#logicalProjects::item:hover { background:%10; }
+        QListWidget#logicalProjects, QListWidget#swarmConflicts { background:%3; color:%2; border:1px solid %4; border-radius:8px; padding:5px; outline:0; }
+        QListWidget#logicalProjects::item, QListWidget#swarmConflicts::item { padding:12px 10px; border-radius:6px; margin:2px 0; }
+        QListWidget#logicalProjects::item:selected, QListWidget#swarmConflicts::item:selected { background:%7; color:%2; }
+        QListWidget#logicalProjects::item:hover, QListWidget#swarmConflicts::item:hover { background:%10; }
+        QSplitter#swarmConflictSplit::handle { width:14px; }
+        QTableWidget#swarmConflictChoices::item { padding:8px 10px; }
         QTreeWidget#worktreeCatalog::item, QTreeWidget#processList::item { padding:6px 4px; }
         QTableWidget#projectFolders::item { padding:0 10px; }
         QSpinBox { background:%3; color:%2; border:1px solid %4; border-radius:7px; padding:8px 10px; }
@@ -1252,7 +1283,7 @@ void SessionsWindow::applyTheme()
         QFrame#workspaceStatus { background:%1; border:0; border-top:1px solid %4; }
         QLabel#notice { color:%6; font-size:11px; }
         QLabel#workspaceConnectionStatus { color:%12; font-size:11px; }
-        QPushButton#connectionRetry { color:%2; background:transparent; border:0; padding:0 6px; min-height:18px; font-size:11px; }
+        QPushButton#connectionRetry, QPushButton#updatesAvailable { color:%2; background:transparent; border:0; padding:0 6px; min-height:18px; font-size:11px; }
         QLabel#notice[error="true"] { color:%12; }
         QSplitter::handle { background:transparent; width:8px; }
         QFrame#sessionInspectorPanel { background:%11; border:1px solid %4; border-radius:8px; }
@@ -1262,8 +1293,9 @@ void SessionsWindow::applyTheme()
     )").arg(bg, m_fg, m_surface, m_border, m_accent, m_muted, hover,
               m_dark ? "#12372b" : "#ffffff", m_dark ? "#aae9d2" : "#115d46", selected,
               m_dark ? "#151b21" : "#f3f6f8", tone("Error", m_dark).name()) + workspaceScrollbars(m_dark));
-    for (auto *button : findChildren<QPushButton *>()) if (!button->property("glyph").toString().isEmpty())
+    for (auto *button : findChildren<QPushButton *>()) if (button != m_windowPin && !button->property("glyph").toString().isEmpty())
         button->setIcon(workspaceIcon(button->property("glyph").toString(), QColor(m_muted)));
+    updateWindowPinAppearance();
     if (m_sessionDock) m_sessionDock->setEdgeColor(QColor(m_border));
     if (m_brand) m_brand->setAppearance(m_dark ? QColor(Qt::white) : QColor(m_accent), QColor(m_dark ? "#ffda76" : "#a66000"),
         m_attentionCount > 0, QSettings().value("workspace/reduceMotion", false).toBool());
@@ -1556,6 +1588,8 @@ void SessionsWindow::dropTerminalFiles(const QStringList &paths)
     m_terminalDropRequest=m_client.requestStageFiles(entry->host,entry->session.name,paths,run,conversation);
     showNotice(tr("Transferring files to %1…").arg(entry->machine));
 }
+
+void SessionsWindow::showUpdates(){m_pages->setCurrentIndex(5);m_settingsPage->openUpdates();}
 
 void SessionsWindow::showWorkspaceSettings()
 {
@@ -2358,8 +2392,14 @@ void SessionsWindow::renderDetails()
     m_cacheClear->setEnabled(entry && entry->online && !m_clearRequest && m_details.value("clear_context_supported").toBool());
     const bool mainContext=m_subagentId.isEmpty();
     m_detailsClear->setVisible(mainContext);m_detailsContext->setVisible(mainContext);
-    m_detailsClear->setEnabled(mainContext && entry && entry->online && !m_clearRequest && !m_composer->isSending(m_selectedKey) && m_details.value("clear_context_supported").toBool());
+    const bool canClear=mainContext && entry && entry->online && entry->session.state!="archived"
+        && !m_clearRequest && !m_composer->isSending(m_selectedKey) && m_inspectError.isEmpty()
+        && !m_details.value("run_id").toString().isEmpty() && !m_details.value("conversation_id").toString().isEmpty()
+        && m_details.value("clear_context_supported").toBool();
+    m_detailsClear->setEnabled(canClear);
     m_detailsClear->setText(m_clearRequest?tr("Clearing…"):tr("Clear session"));
+    m_clearAction->setVisible(mainContext);m_clearAction->setEnabled(canClear);
+    m_clearAction->setText(m_clearRequest?tr("Clearing…"):tr("Clear session…"));
     m_detailsContext->setText(tr("Context: %1").arg(m_contextUsage->text().isEmpty()?tr("Not reported"):m_contextUsage->text()));m_detailsContext->setToolTip(m_contextUsage->toolTip());
     m_subagentContextUsage->setData(entry?m_subagentDetails.value("session_usage").toObject():QJsonObject(),recorded);
     if (!m_subagentId.isEmpty() && (!entry || (m_subagentConversation != m_details.value("conversation_id").toString(entry->session.conversationId))

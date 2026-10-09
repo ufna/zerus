@@ -1,0 +1,111 @@
+package app.zerus.mobile
+
+import org.json.JSONArray
+import java.text.DateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
+
+/** Machine and project scopes include the workspace, even when native names coincide. */
+data class MachineKey(val connectionId: String, val computerId: String) {
+    val key: String get() = JSONArray(listOf(connectionId, computerId)).toString()
+}
+enum class SessionFilter(val id: String, val caption: String) {
+    All("all", "All sessions"), Attention("attention", "Needs attention"), Working("working", "Working"),
+    Saved("paused", "Saved sessions"), Archive("archived", "Archive")
+}
+data class SessionGroup(val key: ProjectKey, val name: String, val color: String, val sessions: List<Session>)
+
+object SessionFilters {
+    fun machineKey(target: Target) = MachineKey(target.connectionId, target.computerId)
+    fun online(session: Session, machines: List<Machine>) = machines.any {
+        it.connectionId == session.target.connectionId && it.id == session.target.computerId && it.online
+    }
+    fun archived(session: Session) = session.target.archiveId.isNotBlank() || session.raw.string("state") == "archived"
+    fun state(session: Session) = session.raw.string("state").ifBlank { if (archived(session)) "archived" else "running" }
+    fun currentActivity(session: Session, online: Boolean) = online && state(session) == "running" &&
+        session.raw.string("process_state") != "exited" && session.raw.string("activity") != "unknown" &&
+        !(session.raw.string("conversation_state") == "ended" && session.raw.string("activity") != "idle")
+    fun needsAction(session: Session): Boolean {
+        val recovery = session.raw.optJSONObject("recovery")?.string("state").orEmpty()
+        val phase = session.raw.string("phase")
+        return !archived(session) && state(session) == "running" && session.raw.string("process_state") != "exited" &&
+            (phase in listOf("approval", "input") || phase == "error" && recovery !in listOf("waiting", "dispatching", "retrying") ||
+                recovery in listOf("uncertain", "blocked", "exhausted"))
+    }
+    fun needsAttention(session: Session, online: Boolean): Boolean {
+        if (archived(session)) return false
+        if (session.raw.optBoolean("review_later") || session.raw.optBoolean("mobile_review_later")) return true
+        if (!online) return false
+        val acknowledged = session.raw.optBoolean("attention_acknowledged")
+        val children = session.raw.optJSONObject("subagents")?.let { roster -> roster.keys().asSequence().mapNotNull { roster.optJSONObject(it) }.toList() }.orEmpty() +
+            session.raw.optJSONArray("subagent_previews")?.objects().orEmpty()
+        val childAttention = currentActivity(session, online) && session.raw.string("subagent_source") != "hook_profiles" && children.any { it.string("display_state", "state") in listOf("approval", "input", "attention") }
+        return !acknowledged && (needsAction(session) || childAttention) || session.raw.optBoolean("unread_reply") || session.raw.optBoolean("mobile_unread_reply") ||
+            currentActivity(session, online) && session.pendingCount > 0
+    }
+    fun matches(session: Session, filter: SessionFilter, online: Boolean): Boolean = when (filter) {
+        SessionFilter.All -> !archived(session)
+        SessionFilter.Attention -> needsAttention(session, online)
+        SessionFilter.Working -> !archived(session) && currentActivity(session, online) && session.raw.string("activity") == "busy" && !needsAction(session)
+        SessionFilter.Saved -> !archived(session) && state(session) != "running"
+        SessionFilter.Archive -> archived(session)
+    }
+    fun label(session: Session): String = session.raw.string("tag").ifBlank {
+        session.target.session.split('/').drop(2).joinToString("/").ifBlank {
+            session.raw.string("project").ifBlank { session.target.session }
+        }
+    }
+    fun archiveDate(session: Session, locale: Locale = Locale.getDefault(), zone: TimeZone = TimeZone.getDefault()): String {
+        if (!archived(session)) return ""
+        val seconds = session.raw.optDouble("archived_at", Double.NaN)
+        if (!seconds.isFinite() || seconds <= 0 || seconds > 253_402_300_799.0) return ""
+        return runCatching {
+            DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.MEDIUM, locale).apply { timeZone = zone }
+                .format(Date((seconds * 1000).toLong()))
+        }.getOrDefault("")
+    }
+    fun status(session: Session, online: Boolean): String {
+        val raw = session.raw
+        return when {
+            !online -> "Offline"
+            archived(session) -> "Archived"
+            state(session) == "paused" -> "Paused"
+            state(session) == "stopped" -> "Stopped"
+            raw.string("process_state") == "exited" -> "Agent exited"
+            !raw.optBoolean("tracked") && raw.string("activity").isBlank() -> "Not tracked"
+            raw.string("phase") == "approval" -> "Needs approval"
+            raw.string("phase") == "input" -> "Needs input"
+            raw.optJSONObject("recovery")?.string("state") == "waiting" -> "Waiting to retry"
+            raw.optJSONObject("recovery")?.string("state") in listOf("dispatching", "retrying") -> "Retrying"
+            raw.string("phase") == "error" -> "Error"
+            raw.string("phase") == "interrupted" -> "Interrupted"
+            raw.string("phase") == "compacting" -> "Compacting"
+            raw.string("phase") == "starting" -> "Starting"
+            raw.string("phase") == "tool" -> "Using a tool"
+            raw.string("activity") == "busy" -> "Working"
+            raw.string("activity") == "idle" -> "Ready"
+            raw.string("activity") in listOf("ended", "unknown") -> "Status unknown"
+            else -> "Connecting"
+        }
+    }
+    fun scoped(sessions: List<Session>, machines: List<Machine>, selectedMachines: Set<MachineKey>, query: String,
+        project: ProjectKey? = null): List<Session> = sessions.filter { session ->
+        (project == null || session.projectKey == project) && (selectedMachines.isEmpty() || machineKey(session.target) in selectedMachines) &&
+            (query.isBlank() || (listOf(session.target.session, label(session), session.title, session.preview, session.agent, session.project) +
+                listOf("prompt", "current_tool", "git_branch", "git_worktree_name", "activity_summary", "activity_detail", "cwd").map { SessionPreview.render(session.raw.string(it)) } +
+                machines.filter { machineKey(session.target) == MachineKey(it.connectionId, it.id) }.map { it.name }).joinToString(" ").contains(query.trim(), true))
+    }
+    fun counts(sessions: List<Session>, machines: List<Machine>): Map<SessionFilter, Int> = SessionFilter.entries.associateWith { filter ->
+        sessions.count { matches(it, filter, online(it, machines)) }
+    }
+    fun grouped(sessions: List<Session>, projects: List<ProjectSummary>): List<SessionGroup> {
+        val grouped = sessions.groupBy { it.projectKey ?: ProjectKey(it.target.connectionId, "unassigned:${it.target.computerId}", "unassigned") }
+        val order = projects.map { it.key } + grouped.keys.filter { key -> projects.none { it.key == key } }
+        return order.mapNotNull { key -> grouped[key]?.takeIf { it.isNotEmpty() }?.let { members ->
+            val project = projects.find { it.key == key }
+            SessionGroup(key, project?.name ?: members.first().project.ifBlank { "Unassigned sessions" }, project?.color.orEmpty(),
+                if (members.all(::archived)) members.sortedByDescending { it.raw.optDouble("archived_at", 0.0) } else members)
+        } }
+    }
+}

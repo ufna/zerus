@@ -48,6 +48,11 @@ const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [-n tag] [-d
        hgs [@host] processes <session> [--archive <id>]   observed shell commands as JSON
        hgs [@host] processes <session> --output ID | --stop ID --run RUN --conversation ID [--generation ID]
        hgs [@host] send <session> --json   submit message/attachments from JSON stdin
+       hgs [@host] recovery action --scoped-json exact waiting-job control
+       hgs [@host] history <session> --json bounded exact public history
+       hgs [@host] terminal <session> --json scoped terminal screen/input
+       hgs [@host] AGENT DIRECTORY --new -n TAG -d --launch-id UUID
+       hgs [@host] session-action <session> --json scoped native lifecycle action
        hgs [@host] compact-context <session> --json compact the idle agent context using its native command
        hgs [@host] clear-context <session> --json   clear the idle agent context using its native command
        hgs [@host] interrupt <session> --json   interrupt the current turn, keep the session
@@ -270,12 +275,12 @@ pub fn dispatch(args: Vec<String>) -> Result<i32> {
             }
             state_command(command, &args)
         }
-        "inspect" | "processes" | "worktrees" | "dirs" | "send" | "send-now" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search"
+        "inspect" | "processes" | "worktrees" | "dirs" | "send" | "send-now" | "session-action" | "terminal" | "history" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search"
         | "attachment" | "recovery" => {
             if command == "worktrees" && args.first().is_some_and(|s| s == "create") && dry {
                 return Err(Error::new(1, "worktree creation does not support --dry-run"));
             }
-            if (matches!(command.as_str(), "processes" | "send" | "send-now" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "recovery") || (command=="attachment" && has(args,"--stage"))) && dry {
+            if (matches!(command.as_str(), "processes" | "send" | "send-now" | "session-action" | "terminal" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "recovery") || (command=="attachment" && has(args,"--stage"))) && dry {
                 return Err(Error::new(1, "message input does not support --dry-run"));
             }
             state_command(command, args)
@@ -498,7 +503,7 @@ fn remote(
             all
         }
         "kill" | "terminate" | "pause" | "inspect" | "processes" | "worktrees" | "dirs" | "project" | "archive" | "rename"
-        | "send" | "send-now" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search" | "dsh" | "attachment" | "recovery" | "swarm" => {
+        | "send" | "send-now" | "session-action" | "terminal" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search" | "dsh" | "attachment" | "recovery" | "swarm" => {
             flags = vec![
                 "-o".into(),
                 "BatchMode=yes".into(),

@@ -10,6 +10,7 @@
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QTableWidget>
+#include <QTimer>
 #include <QVBoxLayout>
 
 namespace {
@@ -46,13 +47,16 @@ SwarmConflictReview::SwarmConflictReview(const FleetState &fleet, QWidget *paren
     : QWidget(parent), m_fleet(fleet)
 {
     auto *outer = new QVBoxLayout(this);
-    outer->setContentsMargins(0, 0, 0, 0);
+    outer->setContentsMargins(10, 0, 0, 0); outer->setSpacing(12);
     auto *scroll = new QScrollArea(this);
+    scroll->setObjectName("swarmConflictScroll");
     scroll->setWidgetResizable(true); scroll->setFrameShape(QFrame::NoFrame);
     auto *content = new QWidget;
+    content->setObjectName("swarmConflictContent");
     scroll->setWidget(content); outer->addWidget(scroll, 1);
     auto *layout = new QVBoxLayout(content);
     layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(12);
     m_title = paragraph("swarmConflictTitle", this);
     auto font = m_title->font(); font.setBold(true); m_title->setFont(font);
     m_subject = paragraph("swarmConflictSubject", this);
@@ -62,6 +66,7 @@ SwarmConflictReview::SwarmConflictReview(const FleetState &fleet, QWidget *paren
     m_choices->setObjectName("swarmConflictChoices");
     m_choices->setColumnCount(3);
     m_choices->setHorizontalHeaderLabels({tr("Value to keep"), tr("Changed on"), tr("Display")});
+    m_choices->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     m_choices->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_choices->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Interactive);
     m_choices->setColumnWidth(1, 125);
@@ -71,6 +76,13 @@ SwarmConflictReview::SwarmConflictReview(const FleetState &fleet, QWidget *paren
     m_choices->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_choices->setSelectionMode(QAbstractItemView::SingleSelection);
     m_choices->setShowGrid(false);
+    m_choices->setWordWrap(true);
+    m_choices->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    // Wrapping depends on column widths, including a dragged splitter. Coalesce
+    // header changes after layout and keep the user's selected value intact.
+    auto *rowLayout = new QTimer(m_choices); rowLayout->setSingleShot(true);
+    connect(m_choices->horizontalHeader(), &QHeaderView::sectionResized, rowLayout, [rowLayout] { rowLayout->start(); });
+    connect(rowLayout, &QTimer::timeout, m_choices, &QTableWidget::resizeRowsToContents);
     m_choices->setMinimumHeight(130);
     m_choices->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
     layout->addWidget(m_choices, 1);

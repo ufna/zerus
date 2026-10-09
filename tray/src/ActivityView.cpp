@@ -3,6 +3,7 @@
 #include "MarkdownHtml.h"
 #include "MarkdownObjects.h"
 #include "ProcessSettings.h"
+#include "QuestionReply.h"
 #include "SessionFileReference.h"
 
 #include <QDateTime>
@@ -144,32 +145,6 @@ QString userMessage(const QString &text)
     // The composer accepts plain text. Markdown would consume quote markers,
     // list numbers and line breaks that are part of the user's actual request.
     return "<p style='white-space:pre-wrap;'>" + escaped(text) + "</p>";
-}
-
-QJsonArray questionReplies(QString text)
-{
-    text = text.trimmed();
-    if (text.startsWith("# Context from my IDE setup:\n")) {
-        const QString marker = "\n## My request for Codex:\n";
-        const auto request = text.lastIndexOf(marker);
-        if (request < 0) return {};
-        text = text.mid(request + marker.size()).trimmed();
-    }
-    const QString start = "<send_user_message_question_reply>";
-    const QString end = "</send_user_message_question_reply>";
-    if (!text.startsWith(start) || !text.endsWith(end)) return {};
-    QJsonParseError error;
-    const auto document = QJsonDocument::fromJson(text.mid(start.size(), text.size() - start.size() - end.size()).toUtf8(), &error);
-    if (error.error != QJsonParseError::NoError) return {};
-    const auto replies = document.isObject() ? QJsonArray{document.object()} : document.array();
-    for (const auto &value : replies) {
-        if (!value.isObject()) return {};
-        const auto reply = value.toObject();
-        if (!reply.value("questionItemId").isString() || reply.value("questionItemId").toString().isEmpty()
-            || !reply.value("question").isString() || reply.value("question").toString().trimmed().isEmpty()
-            || !reply.value("answer").isString()) return {};
-    }
-    return replies;
 }
 
 QString questionReplyBody(const QJsonArray &replies, const QString &muted, const QString &accent,
@@ -891,7 +866,7 @@ void ActivityView::render(bool contentUpdate)
         html += QString("<p style='font-size:10px;color:%1;margin:12px 0 8px;'>%2</p>")
             .arg(muted, tr("RECORDED CONTEXT — Outside the available timeline"));
         if (!prompt.isEmpty()) {
-            const auto replies = questionReplies(prompt);
+            const auto replies = QuestionReply::parse(prompt);
             html += card("prompt-snapshot", replies.isEmpty() ? tr("You (recorded request)") : tr("You (recorded answer)"), {},
                 replies.isEmpty() ? userMessage(prompt) : questionReplyBody(replies, muted, accent, codeSurface, border), true);
         }
@@ -936,7 +911,7 @@ void ActivityView::render(bool contentUpdate)
         }
         if (!role.isEmpty()) {
             const auto text = event.value("detail").toString();
-            const auto replies = role == "user" ? questionReplies(text) : QJsonArray();
+            const auto replies = role == "user" ? QuestionReply::parse(text) : QJsonArray();
             const QString label = role == "user" ? (event.value("type") == "UserPromptQueued" ? tr("You (queued)") :
                 event.value("type") == "QuestionAnswered" || !replies.isEmpty() ? tr("You (answer)") : tr("You")) : tr("Agent");
             auto stamp=timeText(event);
