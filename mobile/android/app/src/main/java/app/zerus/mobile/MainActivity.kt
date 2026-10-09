@@ -38,6 +38,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -218,7 +219,7 @@ class MainActivity : ComponentActivity() {
         } }) { padding ->
         Column(Modifier.padding(padding).consumeWindowInsets(padding).fillMaxSize()) {
             Box(Modifier.fillMaxWidth().height(4.dp)) {
-                if (model.busy || if (selected == null) model.catalogProgress else model.detailProgress)
+                if (model.busy || selected != null && model.detailProgress)
                     LinearProgressIndicator(Modifier.fillMaxWidth(), color = Mint)
             }
             if (selected != null) SessionHeaderTools(model,selected) { messageJump = it }
@@ -229,7 +230,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
             if (selected != null) Conversation(model, selected, onReview = { review = it }, onReviewOutgoing = { reviewOutgoing = it }, onAttach = onAttach, positions = readingPositions,jumpRequest = messageJump,onJumpConsumed = { messageJump = null })
-            else when (tab) {
+            else MainListsRefresh(model) { when (tab) {
                 0 -> SessionsScreen(model, onPair = { tab = 3 })
                 1 -> if (project != null) ProjectDetails(model, project, onViewSessions = { model.viewProjectSessions(project); tab = 0 })
                     else ProjectsScreen(model, onPair = { tab = 3 })
@@ -239,7 +240,7 @@ class MainActivity : ComponentActivity() {
                         if (it) onNotifications(); onLive(it)
                     }, onPush = { onNotifications(); onPush() }, onFirebase = { onNotifications(); onFirebase() })
                 else -> AccountsScreen(model,onMachines = { tab=3 })
-            }
+            } }
         }
     }
     LaunchSessionDialog(model)
@@ -328,6 +329,13 @@ class MainActivity : ComponentActivity() {
     }
 }
 private fun selectedStatus(session: Session, raw: JSONObject?): String = SelectedSessionPresentation.status(session,raw)
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable private fun MainListsRefresh(model:ZerusViewModel,content:@Composable BoxScope.()->Unit) {
+    if(model.demo || !model.storageReady) Box(Modifier.fillMaxSize(),content=content)
+    else PullToRefreshBox(isRefreshing=model.catalogProgress,onRefresh={ model.refresh(explicit=true) },
+        modifier=Modifier.fillMaxSize(),content=content)
+}
+
 @Composable private fun ProjectsScreen(model: ZerusViewModel, onPair: () -> Unit) {
     var query by rememberSaveable { mutableStateOf("") }
     if (model.connections.isEmpty() && !model.demo) { SessionsScreen(model, onPair); return }
@@ -393,7 +401,8 @@ private fun selectedStatus(session: Session, raw: JSONObject?): String = Selecte
 @Composable private fun SessionsScreen(model: ZerusViewModel, onPair: () -> Unit) {
     val project = model.sessionProjectScope
     if (model.connections.isEmpty() && !model.demo) {
-        Column(Modifier.fillMaxSize().padding(28.dp), verticalArrangement = Arrangement.Center) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).heightIn(min=maxHeight).padding(28.dp), verticalArrangement = Arrangement.Center) {
             Image(painterResource(R.drawable.zerus_brand), "", Modifier.size(72.dp))
             Spacer(Modifier.height(24.dp))
             Text("Your agents.\nWithin reach.", fontSize = 34.sp, lineHeight = 40.sp, fontWeight = FontWeight.SemiBold)
@@ -402,7 +411,7 @@ private fun selectedStatus(session: Session, raw: JSONObject?): String = Selecte
             Spacer(Modifier.height(28.dp))
             Button(onClick = onPair, modifier = Modifier.fillMaxWidth()) { Text("Open Machines", Modifier.padding(6.dp)) }
             TextButton(onClick = { model.preview() }, modifier = Modifier.fillMaxWidth()) { Text("Try demo") }
-        }; return
+        } }; return
     }
     val scoped = SessionFilters.scoped(model.sessions, model.machines, model.selectedMachines, model.sessionQuery, project?.key)
     val counts = SessionFilters.counts(scoped, model.machines)
