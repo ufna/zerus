@@ -300,7 +300,9 @@ main native conversation.
 
 Enter sends, Shift-Enter inserts a line and Escape releases focus while keeping
 the draft, unless a turn is working. Paste images, drag local files or use the
-attachment button. Labels such as `[Image #1]` and `[File #2]` preserve
+attachment button. Attachments collect in one chip in the fixed-height toolbar
+above the message field, next to session notices (cache, account limit,
+recovery) and the context counter; its popover previews, opens and removes them. Labels such as `[Image #1]` and `[File #2]` preserve
 attachment placement within the text; removing one does not renumber the rest. Text, cursor/selection and attachment
 bytes are saved locally as they change, separately for each machine, session and
 subagent. They survive GUI crashes, restarts, unavailable machines and ended
@@ -739,8 +741,8 @@ structured failed turn completions, including compaction failures. Tool output
 and quoted error examples cannot change the session state. New native progress
 clears the failure; changing the account counter alone does not.
 
-Activity shows countdown, attempt number, **Attempts**, **Retry now** and
-**Cancel retry**. Retry now respects a known Retry-After. Policy edits apply to new
+A chip in the toolbar above the message field shows the countdown; its popover
+shows the attempt number, **Attempts**, **Retry now** and **Cancel retry**. Retry now respects a known Retry-After. Policy edits apply to new
 episodes; already scheduled episodes retain their delays. Disabling recovery
 cancels automatic continuation. Uncertain delivery stops the episode rather than
 sending Enter again.
