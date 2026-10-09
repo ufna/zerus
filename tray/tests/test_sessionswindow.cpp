@@ -1067,7 +1067,12 @@ void TestSessionsWindow::recoveryCountdownKeepsHistoryDraftAndFocus()
     // Finish them before measuring the effect of the countdown alone.
     auto *usage=static_cast<AccountUsage::RefreshButton *>(window.findChild<QPushButton *>("sessionUsageRefresh"));
     QTRY_VERIFY(!usage->isRefreshing());
+    // Deferred startup callbacks can post an ancestor layout after the composer
+    // already matches its own size hint. Apply that layout before the baseline.
+    QCoreApplication::processEvents();
+    QCoreApplication::sendPostedEvents(nullptr,QEvent::LayoutRequest);
     QTRY_COMPARE(composer->height(),composer->layout()->totalHeightForWidth(composer->width()));
+    QCoreApplication::sendPostedEvents(nullptr,QEvent::LayoutRequest);
     const int revision=browser->document()->revision();const auto geometry=browser->geometry();const auto label=chip->fullLabel();
     QTest::qWait(1100);
     QVERIFY(editor->hasFocus());QCOMPARE(editor->toPlainText(),QString("Keep my draft"));

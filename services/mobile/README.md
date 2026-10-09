@@ -91,13 +91,17 @@ this is a bounded inline-payload deployment, not a demonstrated capacity for
 ten thousand computers or fifty thousand phones.
 
 Create `services/mobile/private/` outside version control with mode 0700. The
-PostgreSQL password file is `private/postgres-password`; the relay configuration
-is `private/relay.json`. Generate a random password privately, URL-encode it
-inside the DSN and never pass it in command arguments. Configuration example:
+bootstrap password file is `private/postgres-password`; the relay configuration
+is `private/relay.json`. Compose's `POSTGRES_USER=zerus_relay` creates the
+bootstrap superuser for initialization and local administration only. The relay
+must use a distinct restricted login, `zerus_relay_app`, which owns its database
+and schema. Generate independent random passwords privately; URL-encode only
+the application password inside the DSN. Never pass passwords in command
+arguments or record them in logs. Configuration example:
 
 ```json
 {
-  "database_url": "postgresql://zerus_relay:REPLACE_WITH_URL_ENCODED_PRIVATE_PASSWORD@postgres:5432/zerus_relay",
+  "database_url": "postgresql://zerus_relay_app:REPLACE_WITH_URL_ENCODED_PRIVATE_APP_PASSWORD@postgres:5432/zerus_relay",
   "trusted_proxy_cidrs": ["172.30.78.2/32"],
   "pool_min": 2,
   "pool_max": 10,
@@ -123,6 +127,27 @@ services; a bare `up` also selects the default SQLite service:
 ```sh
 docker compose --profile postgres build relay-postgres
 docker compose --profile postgres up -d postgres
+docker compose --profile postgres exec postgres psql -U zerus_relay -d postgres
+```
+
+Before provisioning, use that private administrator session to create the
+application role and assign ownership. `\password` prompts without echo; enter
+the application password used in `private/relay.json`. Keep the bootstrap secret
+out of the relay configuration and do not grant application superuser privileges:
+
+```sql
+CREATE ROLE zerus_relay_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
+  NOREPLICATION NOBYPASSRLS;
+\password zerus_relay_app
+ALTER DATABASE zerus_relay OWNER TO zerus_relay_app;
+\connect zerus_relay
+ALTER SCHEMA public OWNER TO zerus_relay_app;
+\quit
+```
+
+Then provision and start the relay with its application DSN:
+
+```sh
 docker compose --profile postgres run --rm --no-deps relay-postgres \
   provision --config /run/secrets/relay.json \
   --name 'Example workspace' --computer-name 'Example computer'
@@ -182,6 +207,10 @@ Neither profile proves the planned ten-thousand-computer fleet. Include the
 query-pool and direct LISTEN connection budget when sizing replicas.
 
 ## Offline SQLite migration
+
+Create the restricted application role and assign database/schema ownership as
+described above before importing into an empty target; use that application DSN
+for migration.
 
 Rehearse first using synthetic state and a separate empty PostgreSQL database.
 The command refuses nonempty targets, preserves IDs, token/code/body hashes,

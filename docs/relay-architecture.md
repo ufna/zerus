@@ -2,8 +2,9 @@
 
 This is the implementation contract for the October 2026 relay audit remediation
 (`zerus-6ir`, `zerus-bp9`, `zerus-bou`, `zerus-cvz`, coordinated by `zerus-rvc`).
-It records the implemented boundaries and isolated validation evidence. Larger
-fleet capacities remain planning targets. No production cutover is implied.
+It records the implemented boundaries, isolated validation evidence and the
+owner-authorized production cutover on 2026-10-09. Larger fleet capacities remain
+planning targets.
 
 ## Decision
 
@@ -304,6 +305,19 @@ copies. Before new writes, rollback can restore the unchanged old relay;
 after new writes, rollback requires preserving new receipts through a verified
 reverse migration or forward repair. Merely switching back to the old snapshot
 would reopen mutation replay risk.
+
+The 2026-10-09 deployment uses revision `b8fa821` with two HTTP workers, each
+limited to 256 MiB, and a shared PostgreSQL database. The final import matched
+all eight source-table digests, allocation counters and sequence high-water
+marks after the command queue drained. The runtime database role has no
+superuser, database-creation, role-creation, replication or RLS-bypass privileges.
+An authority marker prevents subsequent deployment or backup of the frozen
+SQLite database as the live backend. Both the rehearsal archive and the first
+scheduled-backup-format production archive were restored successfully into
+separate databases. Live synthetic checks verified cross-worker notification,
+single claim, shared receipts, duplicate suppression, conflict rejection and
+credential revocation. This deployment retains one database failure domain;
+multiple HTTP workers alone do not provide database high availability.
 
 ## Evidence required before claiming completion
 
