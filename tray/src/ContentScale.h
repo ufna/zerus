@@ -5,16 +5,17 @@
 #include <QStringList>
 #include <QtMath>
 
-// Session content (Activity, its composer and Terminal) can be enlarged
+// Session content (Activity, its composer and Terminal) can be resized
 // independently of the surrounding workspace chrome. 1.0 is the native size.
 namespace ContentScale {
-constexpr double Minimum = 1.0;
-constexpr double Maximum = 2.5;
+constexpr double Minimum = 0.75;
+constexpr double Maximum = 2.0;
+constexpr double Default = 1.0;
 inline double clamp(double scale) { return qBound(Minimum, scale, Maximum); }
-inline double factor() { return clamp(QSettings().value("workspace/contentScale", Minimum).toDouble()); }
+inline double factor() { return clamp(QSettings().value("workspace/contentScale", Default).toDouble()); }
 inline int px(double size, double scale) { return qRound(size * scale); }
 
-// Enlarges every pixel length of generated rich text. Only markup is touched:
+// Scales every pixel length of generated rich text. Only markup is touched:
 // text nodes are escaped and can contain neither tags nor style attributes.
 inline QString html(const QString &source, double scale)
 {

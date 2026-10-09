@@ -511,6 +511,7 @@ void TestSessionsWindow::groupsPersistFilterAndRevealAttention()
 
 void TestSessionsWindow::contentScaleLeavesWorkspaceChrome()
 {
+    QSettings().remove("workspace/contentScale");
     SessionsWindow window(script()); window.resize(1280, 860); window.setFleet(fleet()); window.show();
     window.showSession({}, "codex/hgs/dashboard");
     const auto preview = [&window](const QString &name) {
@@ -536,24 +537,37 @@ void TestSessionsWindow::contentScaleLeavesWorkspaceChrome()
     window.findChild<QPushButton *>("workspaceSettings")->click();
     auto *settings = window.findChild<QWidget *>("settingsPage"); QVERIFY(settings && settings->isVisible());
     auto *slider = settings->findChild<QSlider *>("workspaceContentScale"); QVERIFY(slider && slider->isVisible());
-    QCOMPARE(slider->minimum(), 10); QCOMPARE(slider->maximum(), 25); QCOMPARE(slider->value(), 10);
+    QCOMPARE(slider->minimum(), 15); QCOMPARE(slider->maximum(), 40); QCOMPARE(slider->value(), 20);
     QCOMPARE(settings->findChild<QLabel *>("workspaceContentScaleValue")->text(), QString("100%"));
-    slider->setValue(15); slider->setValue(25);
-    QCOMPARE(QSettings().value("workspace/contentScale").toDouble(), 2.5);
-    QCOMPARE(settings->findChild<QLabel *>("workspaceContentScaleValue")->text(), QString("250%"));
-    QTRY_COMPARE(editorPixels(), 33);
+    slider->setValue(15);
+    QCOMPARE(QSettings().value("workspace/contentScale").toDouble(), 0.75);
+    QCOMPARE(settings->findChild<QLabel *>("workspaceContentScaleValue")->text(), QString("75%"));
+    QTRY_COMPARE(editorPixels(), 10);
+    QCOMPARE(pixels("activity"), 10); QCOMPARE(pixels("subagentJournal"), 10); QCOMPARE(pixels("terminalScreen"), 10);
+    for (const auto &name : chrome) QCOMPARE(pixels(name), before.value(name));
+    QCOMPARE(QFontInfo(window.findChild<QTabWidget *>("sessionDetailTabs")->tabBar()->font()).pixelSize(), tabs);
+    QVERIFY(preview("content-scale-75.png"));
+    window.findChild<QPushButton *>("workspaceSettings")->click();
+    slider->setValue(30); slider->setValue(40);
+    QCOMPARE(QSettings().value("workspace/contentScale").toDouble(), 2.0);
+    QCOMPARE(settings->findChild<QLabel *>("workspaceContentScaleValue")->text(), QString("200%"));
+    QTRY_COMPARE(editorPixels(), 26);
     if (!qEnvironmentVariable("HGS_PREVIEW_DIR").isEmpty())
         QVERIFY(window.grab().save(qEnvironmentVariable("HGS_PREVIEW_DIR") + "/content-scale-settings.png"));
-    QCOMPARE(pixels("activity"), 33); QCOMPARE(pixels("subagentJournal"), 33); QCOMPARE(pixels("terminalScreen"), 33);
+    QCOMPARE(pixels("activity"), 26); QCOMPARE(pixels("subagentJournal"), 26); QCOMPARE(pixels("terminalScreen"), 26);
     for (const auto &name : chrome) QCOMPARE(pixels(name), before.value(name));
     QCOMPARE(QFontInfo(window.findChild<QTabWidget *>("sessionDetailTabs")->tabBar()->font()).pixelSize(), tabs);
     // Theme changes rebuild workspace styles without dropping the preference.
     QSettings().setValue("workspace/theme", "dark"); settings->findChild<QComboBox *>("workspaceTheme")->setCurrentIndex(1);
-    QCOMPARE(editorPixels(), 33); QCOMPARE(pixels("activity"), 33);
-    QVERIFY(preview("content-scale-250.png"));
+    QCOMPARE(editorPixels(), 26); QCOMPARE(pixels("activity"), 26);
+    QVERIFY(preview("content-scale-200.png"));
     SessionsWindow restored(script()); restored.setFleet(fleet());
-    QCOMPARE(QFontInfo(restored.findChild<MessageComposer *>("messageComposer")->editor()->font()).pixelSize(), 33);
-    window.findChild<QPushButton *>("workspaceSettings")->click(); slider->setValue(10);
+    QCOMPARE(QFontInfo(restored.findChild<MessageComposer *>("messageComposer")->editor()->font()).pixelSize(), 26);
+    QSettings().setValue("workspace/contentScale", 2.5);
+    SessionsWindow legacy(script()); legacy.setFleet(fleet());
+    QCOMPARE(QSettings().value("workspace/contentScale").toDouble(), 2.0);
+    QCOMPARE(QFontInfo(legacy.findChild<MessageComposer *>("messageComposer")->editor()->font()).pixelSize(), 26);
+    window.findChild<QPushButton *>("workspaceSettings")->click(); slider->setValue(20);
     QTRY_COMPARE(editorPixels(), 13);
     QCOMPARE(pixels("activity"), 13); QCOMPARE(pixels("terminalScreen"), 13);
 }

@@ -27,17 +27,20 @@ public:
         auto *appearance=makePage(tr("Appearance"));auto *theme=new QComboBox;theme->setObjectName("workspaceTheme");theme->addItem(tr("Follow system appearance"),"system");theme->addItem(tr("Dark"),"dark");theme->addItem(tr("Light"),"light");theme->setCurrentIndex(qMax(0,theme->findData(QSettings().value("workspace/theme","system"))));appearance->addWidget(new QLabel(tr("Theme")));appearance->addWidget(theme);
         appearance->addWidget(new QLabel(tr("Content scale")));
         auto *scaleRow=new QHBoxLayout;scaleRow->setSpacing(12);auto *scale=new QSlider(Qt::Horizontal);scale->setObjectName("workspaceContentScale");
-        // Tenths keep the slider on 10% steps for both dragging and the keyboard.
-        scale->setRange(qRound(ContentScale::Minimum*10),qRound(ContentScale::Maximum*10));scale->setPageStep(5);
-        scale->setValue(qRound(ContentScale::factor()*10));scale->setAccessibleName(tr("Content scale"));scale->setMaximumWidth(360);
-        auto *scaleValue=new QLabel;scaleValue->setObjectName("workspaceContentScaleValue");scaleValue->setMinimumWidth(scaleValue->fontMetrics().horizontalAdvance("250%")+8);
+        // Twentieths keep the slider on 5% steps for both dragging and the keyboard.
+        scale->setRange(qRound(ContentScale::Minimum*20),qRound(ContentScale::Maximum*20));scale->setPageStep(5);
+        const auto scaleFactor=ContentScale::factor();scale->setValue(qRound(scaleFactor*20));
+        // Normalize preferences saved by older versions to the current bounds.
+        QSettings().setValue("workspace/contentScale",scaleFactor);
+        scale->setAccessibleName(tr("Content scale"));scale->setMaximumWidth(360);
+        auto *scaleValue=new QLabel;scaleValue->setObjectName("workspaceContentScaleValue");scaleValue->setMinimumWidth(scaleValue->fontMetrics().horizontalAdvance("200%")+8);
         scaleRow->addWidget(scale,1);scaleRow->addWidget(scaleValue);scaleRow->addStretch();appearance->addLayout(scaleRow);
-        auto *scaleHint=new QLabel(tr("Enlarges Activity, the message field and Terminal. The session list and the side panel keep their size."));scaleHint->setWordWrap(true);appearance->addWidget(scaleHint);
+        auto *scaleHint=new QLabel(tr("Adjusts Activity, the message field and Terminal from 75% to 200%. The session list and the side panel keep their size."));scaleHint->setWordWrap(true);appearance->addWidget(scaleHint);
         // Rebuilding a long transcript on every slider step would stall dragging.
         auto *scaleApply=new QTimer(this);scaleApply->setSingleShot(true);scaleApply->setInterval(150);
         connect(scaleApply,&QTimer::timeout,this,[this]{if(contentScaleChanged)contentScaleChanged();});
-        auto showScale=[scaleValue](int tenths){scaleValue->setText(QStringLiteral("%1%").arg(tenths*10));};showScale(scale->value());
-        connect(scale,&QSlider::valueChanged,this,[scaleApply,showScale](int tenths){QSettings().setValue("workspace/contentScale",tenths/10.);showScale(tenths);scaleApply->start();});
+        auto showScale=[scaleValue](int steps){scaleValue->setText(QStringLiteral("%1%").arg(steps*5));};showScale(scale->value());
+        connect(scale,&QSlider::valueChanged,this,[scaleApply,showScale](int steps){QSettings().setValue("workspace/contentScale",steps/20.);showScale(steps);scaleApply->start();});
         onTop=new QCheckBox(tr("Keep Zerus above other windows"));onTop->setObjectName("workspaceAlwaysOnTop");onTop->setChecked(WindowLayer::alwaysOnTop());onTop->setEnabled(WindowLayer::supported());appearance->addWidget(onTop);
         auto *onTopHint=new QLabel(WindowLayer::supported()?tr("Files and terminals opened from Zerus may appear behind it while this is on."):tr("This desktop does not let applications stay above other windows."));onTopHint->setWordWrap(true);appearance->addWidget(onTopHint);
         connect(onTop,&QCheckBox::toggled,this,[this](bool on){QSettings().setValue("workspace/alwaysOnTop",on);if(windowLayerChanged)windowLayerChanged();});

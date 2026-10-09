@@ -143,8 +143,8 @@ void TestActivityView::contentScaleScalesMarkupOnly()
         "<td><a href='https://example.com/icon-16px.png' title='width=\"4\" 18px'>link</a>"
         "<span style=\" font-family:'monospace'; margin-left:18px;\">code 20px</span></td></tr></table>"
         "<img src='hgs-thumbnail:key' width='192' height='128'></body></html>"));
-    QCOMPARE(ContentScale::clamp(0.5), 1.0);
-    QCOMPARE(ContentScale::clamp(4.0), 2.5);
+    QCOMPARE(ContentScale::clamp(0.5), 0.75);
+    QCOMPARE(ContentScale::clamp(4.0), 2.0);
 }
 
 void TestActivityView::contentScaleEnlargesTranscriptAndQueue()
@@ -175,6 +175,12 @@ void TestActivityView::contentScaleEnlargesTranscriptAndQueue()
     QVERIFY(links(browser).contains("https://example.com/icon-16px.png"));
     view->setActivity(details, events);
     QCOMPARE(fontPixels(browser, "Agent body"), 28);
+    view->setContentScale(0.75);
+    QCOMPARE(fontPixels(browser, "Agent body"), 11);
+    QCOMPARE(QFontInfo(queue->font()).pixelSize(), 10);
+    QCOMPARE(QFontInfo(view->jumpButton()->font()).pixelSize(), jump);
+    QVERIFY(browser->toPlainText().contains(literal));
+    QVERIFY(links(browser).contains("https://example.com/icon-16px.png"));
     view->setContentScale(1.0);
     QCOMPARE(fontPixels(browser, "Agent body"), body);
     QCOMPARE(fontPixels(browser, "Plan heading"), heading);
@@ -325,7 +331,7 @@ void TestActivityView::agentCardsKeepZerusSurface()
 void TestActivityView::wideChipsStayTextInNarrowPanes()
 {
     // At a large content scale a 35-character chip is wider than half a narrow pane.
-    ActivityView view; view.resize(420, 400); view.setContentScale(2.5); view.show();
+    ActivityView view; view.resize(420, 400); view.setContentScale(2.0); view.show();
     view.setActivity({}, {journalEvent(1, "Stop", "Run `cargo test --workspace --all-feat` now")});
     const auto chipCount = [&] {
         int count = 0;

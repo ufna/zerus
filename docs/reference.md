@@ -206,9 +206,10 @@ Session rows show provider, machine, current action, model, effort and Git conte
 **Ready** means a reply ended, not that a long-running task is complete. Working
 and compacting timers use native start evidence and update locally without extra
 host requests. Theme, density, animation and machine/project label appearance are
-local preferences. **Settings → Appearance → Content scale** enlarges Activity,
-questions, the message field and Terminal from 100% to 250%; the session list,
-the side panel, the session header and its tabs keep their size.
+local preferences. **Settings → Appearance → Content scale** adjusts Activity,
+questions, the message field and Terminal from 75% to 200% in 5% steps, with 100%
+as the default; the session list, the side panel, the session header and its tabs
+keep their size.
 **Settings → Appearance → Keep Zerus above other windows** keeps the Zerus window
 over other applications on X11 and macOS; Wayland does not allow it. The pin
 above Settings on the left rail switches the same option. Files and terminals
