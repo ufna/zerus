@@ -403,7 +403,7 @@ fn prompt_empty(agent: &str, row: &str, previous: &str, screen: &str, cursor: us
 /// Cursor at the start is not evidence that the entire composer is empty: a
 /// multiline draft can continue underneath it. Scan until the provider's input
 /// boundary, preserving ANSI state across rows as tmux capture-pane does.
-fn composer_empty(agent: &str, screen: &str, cursor_x: usize, cursor_y: usize) -> bool {
+pub(super) fn composer_empty(agent: &str, screen: &str, cursor_x: usize, cursor_y: usize) -> bool {
     let lines: Vec<_> = screen.lines().collect();
     let Some(row) = lines.get(cursor_y) else {
         return false;

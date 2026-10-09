@@ -326,9 +326,12 @@ the selected session's turn is working, after first clearing a search being
 typed. Once the turn is interrupted, its prompt returns to an empty message field
 for editing; a started draft is kept. Claude, Codex and Kimi use verified native
 Escape; Claude sends no event for it, so HGS records the interruption once
-Claude shows it. Supported DeepSeek hosts use native cancel. Native queue
-behavior still applies: Codex Escape may start a queued follow-up. Uncertain
-interruption is not repeated.
+Claude shows it. Stopped before its first reply, Claude rewinds the turn and
+puts the prompt back into its own input instead; HGS then moves exactly that
+text from Terminal to the message field (Ctrl+Y in Terminal brings it back) and
+leaves any other input untouched. Supported DeepSeek hosts use native cancel.
+Native queue behavior still applies: Codex Escape may start a queued follow-up.
+Uncertain interruption is not repeated.
 
 When Claude suggests your next message after a turn, Activity shows it as the
 empty message field's placeholder, as Claude's terminal does; Tab inserts it.

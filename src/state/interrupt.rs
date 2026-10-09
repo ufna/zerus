@@ -67,12 +67,19 @@ const CLAUDE_INTERRUPTED:&str="Interrupted · What should Claude do instead?";
 fn interruptions(screen:&str)->usize {screen.matches(CLAUDE_INTERRUPTED).count()}
 
 /// Record the interruption once Claude shows one more interruption line than
-/// before Escape, so the session leaves Working and the prompt can return.
+/// before Escape, or once it has rewound the turn, so the session leaves
+/// Working and the prompt can return.
 fn settle_claude(original:&Value,seen:usize)->bool {
     let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
     while std::time::Instant::now()<deadline {
         std::thread::sleep(std::time::Duration::from_millis(60));
-        if !kimi_tui_choice::capture(original).is_ok_and(|screen|interruptions(&screen)>seen) {continue;}
+        let Ok(screen)=kimi_tui_choice::capture(original) else {continue};
+        if interruptions(&screen)<=seen {
+            if !rewound(&screen,string(original,"prompt")) {continue;}
+            // Activity restores the prompt, so it leaves Terminal; a draft that
+            // cannot be taken safely stays there.
+            take_rewound_prompt(original);
+        }
         let settled=(||->Result<bool>{
             let _guard=lock(None)?;
             let Some(mut record)=read_run(string(original,"name"),string(original,"run_id"))? else {return Ok(false)};
@@ -86,4 +93,93 @@ fn settle_claude(original:&Value,seen:usize)->bool {
         return settled.unwrap_or(false);
     }
     false
+}
+
+/// Claude rewinds a turn stopped before its first reply: the turn leaves the
+/// transcript and its prompt returns to the input, with no interruption line.
+fn rewound(screen:&str,prompt:&str)->bool {
+    returnable(prompt) && claude_input(screen).is_some_and(|(_,rows)|squash(&rows.concat())==squash(prompt))
+}
+
+/// Prompts Activity can restore in full: not clipped by the journal, not automatic.
+fn returnable(prompt:&str)->bool {
+    !squash(prompt).is_empty() && !prompt.ends_with('…') && !prompt.starts_with("[HGS automatic recovery]")
+}
+
+/// Wrapping changes only whitespace, so drafts compare without it.
+fn squash(text:&str)->String {text.chars().filter(|ch|!ch.is_whitespace()).collect()}
+
+/// The rows of Claude's input box, without the ❯ prompt and continuation indent:
+/// from the ❯ row under a full-width rule to the next rule.
+fn claude_input(screen:&str)->Option<(usize,Vec<String>)> {
+    let lines:Vec<&str>=screen.lines().collect();
+    let rule=|line:&str|line.chars().count()>=12 && line.chars().all(|ch|"─━╌".contains(ch));
+    let start=(1..lines.len()).rev().find(|&i|rule(lines[i-1]) && lines[i].starts_with('❯'))?;
+    let end=(start..lines.len()).find(|&i|rule(lines[i]))?;
+    Some((start,lines[start..end].iter().map(|row|row.chars().skip(2).collect::<String>().trim_end().to_owned()).collect()))
+}
+
+fn cursor(record:&Value)->Option<(usize,usize)> {
+    let out=tmux(&["display-message","-p","-t",string(record,"pane"),"#{cursor_x}\t#{cursor_y}"].map(str::to_owned),true).ok()?;
+    let text=String::from_utf8_lossy(&out.stdout);
+    let (x,y)=text.trim_end().split_once('\t')?;
+    Some((x.parse().ok()?,y.parse().ok()?))
+}
+
+/// Deletes the rewound prompt from the end, one terminal row at a time: Ctrl+U
+/// clears a row, Backspace removes the emptied row, and Ctrl+Y in Terminal
+/// brings deleted text back. Each step must leave less of the prompt's start,
+/// so nothing typed meanwhile is touched. True once the input is empty.
+fn take_rewound_prompt(record:&Value)->bool {
+    let target=squash(string(record,"prompt"));
+    let pane=string(record,"pane");
+    // Text and rows left: Ctrl+U shortens the text, Backspace removes a row.
+    let left=|rows:&[String]|squash(&rows.concat()).len()+rows.len();
+    let mut last:Option<usize>=None;
+    loop {
+        let Some((x,y))=cursor(record) else {return false};
+        let Ok(styled)=tmux(&["capture-pane","-p","-e","-t",pane].map(str::to_owned),true) else {return false};
+        if last.is_some() && input::composer_empty("claude",&String::from_utf8_lossy(&styled.stdout),x,y) {return true;}
+        let Some((start,rows))=kimi_tui_choice::capture(record).ok().and_then(|screen|claude_input(&screen)) else {return false};
+        let now=squash(&rows.concat());
+        if !target.starts_with(&now) || last.is_some_and(|last|left(&rows)>=last) {return false;}
+        if last.is_none() {
+            // Start only from the end of the whole prompt; wide characters make
+            // the cursor column ambiguous.
+            let end=rows.last().map(String::as_str).unwrap_or("");
+            if now!=target || y!=start+rows.len()-1 || end.chars().any(|ch|ch>='\u{1100}') || x!=2+end.chars().count() {return false;}
+        }
+        last=Some(left(&rows));
+        let key=if x<=2 {"BSpace"} else {"C-u"};
+        if tmux(&["send-keys","-t",pane,key].map(str::to_owned),true).is_err() {return false;}
+        // Wait for Claude to redraw the input before the next step.
+        let deadline=std::time::Instant::now()+std::time::Duration::from_millis(600);
+        while std::time::Instant::now()<deadline {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            let input=kimi_tui_choice::capture(record).ok().and_then(|screen|claude_input(&screen));
+            if input.is_none_or(|(_,rows)|Some(left(&rows))!=last) {break;}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    const RULE:&str="──────────────────────────────";
+    fn screen(input:&[&str])->String {format!("❯ earlier prompt\n⏺ Reply\n{RULE}\n{}\n{RULE}\n  ⏵⏵ auto mode on",input.join("\n"))}
+
+    #[test]
+    fn a_rewound_turn_is_its_prompt_back_in_the_input() {
+        let prompt="first line of the prompt\n\nsecond line";
+        assert_eq!(claude_input(&screen(&["❯\u{a0}first","  second"])),Some((3,vec!["first".to_owned(),"second".to_owned()])));
+        // Wrapping and the space after ❯ do not matter.
+        assert!(rewound(&screen(&["❯\u{a0}first line of the","  prompt","","  second line"]),prompt));
+        for input in [&["❯\u{a0}"][..],&["❯\u{a0}first line of the prompt"],&["❯\u{a0}first line of the prompt","  second line and more"]] {
+            assert!(!rewound(&screen(input),prompt));
+        }
+        // Clipped and automatic prompts never leave Terminal.
+        for prompt in ["long…","[HGS automatic recovery] continue"," "] {
+            assert!(!rewound(&screen(&[&format!("❯\u{a0}{prompt}")]),prompt));
+        }
+    }
 }

@@ -34,6 +34,11 @@ try:
         with (root / 'received').open('ab') as file: file.write(value)
         # Optionally redraw like an agent that stops its turn on Escape.
         if value == b'\x1b' and (root / 'on-escape').exists(): os.write(1, (root / 'on-escape').read_bytes())
+        # Or answer scripted keys in order, one redraw each: [[key hex, output], ...].
+        replies = root / 'replies'
+        queue = json.loads(replies.read_text()) if replies.exists() else []
+        if queue and value.hex() == queue[0][0]:
+            os.write(1, queue.pop(0)[1].encode()); replies.write_text(json.dumps(queue))
 finally:
     termios.tcsetattr(fd, termios.TCSANOW, original)
 '''

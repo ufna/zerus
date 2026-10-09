@@ -47,6 +47,28 @@ class SessionActions(unittest.TestCase):
         receipt=self.request('interrupt',dict(self.identity(),expected_turn_started=self.record['turn_started']))
         self.assertFalse(receipt['confirmed'])
         self.assertEqual(json.loads(self.record_path.read_text())['phase'],'working')
+    def test_claude_rewound_prompt_moves_from_terminal_to_activity(self):
+        # Escape before Claude's first reply rewinds the turn: no interruption line, the
+        # prompt returns to Claude's input. It leaves Terminal row by row for Activity.
+        rule='\u2500'*30
+        def box(rows,x,y):return ('\x1b[2J\x1b[H'+rule+'\r\n'+'\r\n'.join(rows)+'\r\n'+rule+f'\x1b[{y+1};{x+1}H').encode()
+        self.working('claude');self.record.update(prompt='first line\nsecond');self.write_record()
+        self.screen(box(['\u276f\u00a0'],2,1).decode(),'2:1')
+        (self.root/'on-escape').write_bytes(box(['\u276f\u00a0first line','  second'],8,2))
+        (self.root/'replies').write_text(json.dumps([['15',box(['\u276f\u00a0first line','  '],2,2).decode()],
+            ['7f',box(['\u276f\u00a0first line'],12,1).decode()],['15',box(['\u276f\u00a0'],2,1).decode()]]))
+        before=self.received()
+        receipt=self.request('interrupt',dict(self.identity(),expected_turn_started=self.record['turn_started']))
+        self.assertTrue(receipt['confirmed'])
+        self.assertEqual(self.received()[len(before):],b'\x1b\x15\x7f\x15')
+        self.assertEqual(json.loads(self.record_path.read_text())['phase'],'interrupted')
+        # Text that is not exactly the prompt stays in Terminal, and the turn stays working.
+        (self.root/'replies').unlink();self.working('claude');self.record.update(prompt='first line');self.write_record()
+        (self.root/'on-escape').write_bytes(box(['\u276f\u00a0first line and an edit'],25,1))
+        before=self.received()
+        receipt=self.request('interrupt',dict(self.identity(),expected_turn_started=self.record['turn_started']))
+        self.assertFalse(receipt['confirmed']);self.assertEqual(self.received()[len(before):],b'\x1b')
+        self.assertEqual(json.loads(self.record_path.read_text())['phase'],'working')
     def test_changed_turn_and_idle_state_receive_nothing(self):
         self.working('codex');data=dict(self.identity(),expected_turn_started=self.record['turn_started']-1)
         self.request('interrupt',data,ok=False)
