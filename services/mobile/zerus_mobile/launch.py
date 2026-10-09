@@ -3,15 +3,18 @@ import re
 from pathlib import PurePosixPath
 from .context import bounded
 from .projects import normalize
+from . import worktrees
 
-OPERATIONS = frozenset({'catalog','dirs','launch'})
+OPERATIONS = frozenset({'catalog','dirs','launch'}) | worktrees.OPERATIONS
 AGENTS = frozenset({'codex','claude','kimi','dsh'})
 
 
 def validate(operation, payload, request_id):
+    if operation in worktrees.OPERATIONS:
+        return worktrees.validate(operation, payload, request_id)
     fields = {'catalog': {'request_id'}, 'dirs': {'request_id','path'},
               'launch': {'request_id','agent','directory','tag'}}[operation]
-    extras = {'account_id','swarm_id','project_id','project_folder_id','add_folder'} if operation=='launch' else set()
+    extras = {'account_id','swarm_id','project_id','project_folder_id','add_folder','worktree_folder_id','worktree_common_dir'} if operation=='launch' else set()
     if not isinstance(payload, dict) or not fields <= set(payload) or set(payload)-fields-extras or payload.get('request_id')!=request_id:
         raise ValueError('invalid scoped catalog/launch fields')
     if operation=='dirs':
@@ -26,6 +29,12 @@ def validate(operation, payload, request_id):
         if 'account_id' in payload:
             value=bounded(payload['account_id'],80)
             if not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_-]*',value): raise ValueError('invalid native account identifier')
+        if {'worktree_folder_id','worktree_common_dir'} & set(payload):
+            if not {'swarm_id','project_id','add_folder','worktree_folder_id','worktree_common_dir'} <= set(payload) or payload['add_folder'] is not False or 'project_folder_id' in payload:
+                raise ValueError('worktree placement requires a distinct current project anchor')
+            anchor=bounded(payload['worktree_folder_id'],128)
+            if anchor.strip()!=anchor or len(anchor.encode('utf-8'))>128: raise ValueError('invalid worktree anchor identifier')
+            worktrees.absolute(payload['worktree_common_dir'])
         project_fields = {'swarm_id','project_id','project_folder_id','add_folder'} & set(payload)
         if project_fields:
             if not {'swarm_id','project_id','add_folder'} <= set(payload) or type(payload['add_folder']) is not bool:
@@ -65,7 +74,7 @@ def projects(raw):
             'projects': [{key: row[key] for key in ('id','name','color','folders','accessible')} for row in value['projects'] if row['accessible']]}
 
 
-def project_choice(catalog, payload, directory):
+def project_choice(catalog, payload, directory, worktree_catalog=None):
     if catalog.get('swarm_id') != payload['swarm_id']:
         raise ValueError('project catalog identity changed')
     project = next((row for row in catalog['projects'] if row['id'] == payload['project_id']), None)
@@ -76,5 +85,8 @@ def project_choice(catalog, payload, directory):
         if not any(row['id'] == folder_id and row['path'] == directory for row in project['folders']):
             raise ValueError('selected local project folder changed')
     elif not payload['add_folder']:
-        raise ValueError('choose a current project folder or explicitly add the browsed folder')
+        anchor = next((row for row in project['folders'] if row['id'] == payload.get('worktree_folder_id')), None)
+        if (anchor is None or not isinstance(worktree_catalog,dict) or worktree_catalog.get('common_dir') != payload.get('worktree_common_dir')
+                or not worktrees.contains(worktree_catalog,directory) or not worktrees.contains(worktree_catalog,anchor['path'])):
+            raise ValueError('choose a current project folder, a verified related worktree, or explicitly add the folder')
     return project

@@ -263,6 +263,60 @@ fn validate(request: &LocalRequest) -> Result<()> {
             );
             no_payload()?;
         }
+        "worktrees" => {
+            no_payload()?;
+            let create = rest.first().is_some_and(|v| v == "create");
+            let values = if create {
+                options(
+                    &rest[1..],
+                    &["--json", "--mobile"],
+                    &[
+                        "--path",
+                        "--common-dir",
+                        "--destination",
+                        "--branch",
+                        "--base",
+                        "--request-id",
+                    ],
+                )?
+            } else {
+                options(rest, &["--json", "--refresh"], &["--path"])?
+            };
+            ensure!(
+                values.len() == if create { 8 } else { 3 },
+                "incomplete worktree request"
+            );
+            for field in if create {
+                vec!["--path", "--common-dir", "--destination"]
+            } else {
+                vec!["--path"]
+            } {
+                ensure!(
+                    values
+                        .get(field)
+                        .is_some_and(|v| std::path::Path::new(v).is_absolute()),
+                    "worktree path must be absolute"
+                );
+            }
+            if create {
+                ensure!(
+                    values.contains_key("--mobile"),
+                    "mobile creation deadline is required"
+                );
+                ensure!(
+                    values.get("--request-id").is_some_and(|v| uuid(v)),
+                    "invalid worktree request UUID"
+                );
+                for field in ["--branch", "--base"] {
+                    ensure!(
+                        values
+                            .get(field)
+                            .is_some_and(|v| text(v, 256, false) && !v.starts_with('-')),
+                        "invalid worktree branch or revision"
+                    );
+                }
+            }
+        }
         "inspect" => {
             ensure!(
                 rest.first().is_some_and(|v| session(v)),
@@ -580,7 +634,10 @@ fn supervise() -> Result<i32> {
     // This helper performs no native operations itself. It owns exactly one
     // SSH/identity child and survives cancellation of the gateway wrapper.
     unsafe {
-        libc::signal(libc::SIGTERM, stop_transport as *const () as libc::sighandler_t);
+        libc::signal(
+            libc::SIGTERM,
+            stop_transport as *const () as libc::sighandler_t,
+        );
     }
     let envelope: TransportRequest = input()?;
     let now = monotonic_ms()?;
@@ -970,6 +1027,36 @@ mod tests {
         ))
         .is_ok());
         assert!(validate(&request(&["swarm", "assign-launch", "--json"], None)).is_err());
+    }
+
+    #[test]
+    fn worktree_operations_are_exact_and_creation_is_bounded() {
+        let read = ["worktrees", "--path", "/repo", "--refresh", "--json"];
+        assert!(validate(&request(&read, None)).is_ok());
+        let create = [
+            "worktrees",
+            "create",
+            "--path",
+            "/repo",
+            "--common-dir",
+            "/repo/.git",
+            "--destination",
+            "/linked",
+            "--branch",
+            "feature",
+            "--base",
+            "HEAD",
+            "--request-id",
+            ID,
+            "--json",
+            "--mobile",
+        ];
+        assert!(validate(&request(&create, None)).is_ok());
+        assert!(validate(&request(&create[..create.len() - 1], None)).is_err());
+        let mut extra = create.to_vec();
+        extra.extend(["--shell", "bad"]);
+        assert!(validate(&request(&extra, None)).is_err());
+        assert!(validate(&request(&read, Some(scope()))).is_err());
     }
 
     #[test]

@@ -13,6 +13,7 @@ with (root / 'calls.jsonl').open('a') as log:
     log.write(json.dumps({'argv': argv, 'payload': payload}) + '\n')
 if argv[0] == 'swarm' and argv[1] in {'mobile-peers', 'mobile-peer', '__mobile-peer-local'}:
     argv = argv[1:]
+if argv[:2] == ["__state", "worktrees"]: argv=argv[1:]
 local = inventory['local']['machine_id']
 machine = local
 if argv == ['mobile-peers', '--json']:
@@ -32,7 +33,7 @@ run = 'local-run' if machine == local else 'peer-run'
 conversation = 'local-conversation' if machine == local else 'peer-conversation'
 base = {'name': 'codex/example', 'run_id': run, 'conversation_id': conversation, 'machine': machine}
 if argv == ['--help']:
-    print('mobile-peers --json\nmobile-peer --json\nhistory <session> --json\n--launch-id\nswarm assign-launch --json')
+    print('mobile-peers --json\nmobile-peer --json\nhistory <session> --json\n--launch-id\nswarm assign-launch --json\nMobile worktree ABI: worktrees-v1')
 elif argv[0] == 'ls':
     launch = root / ('launch-' + machine + '.json')
     sessions = [base] + ([json.loads(launch.read_text())] if launch.exists() else [])
@@ -49,6 +50,15 @@ elif argv == ['swarm', 'get']:
 elif argv == ['swarm', 'assign-launch', '--json']:
     (root / ('assigned-' + machine + '.json')).write_text(json.dumps(payload))
     print(json.dumps({**base, **payload, 'run_id': run, 'conversation_id': conversation, 'status': 'assigned'}))
+elif argv[0] == 'worktrees':
+    source='/example/'+run
+    common=source+'/.git'
+    if argv[1]=='create':
+        result={'request_id':argv[argv.index('--request-id')+1],'status':'created','path':argv[argv.index('--destination')+1],'branch':argv[argv.index('--branch')+1],'common_dir':common}
+        (root/('worktree-'+machine+'.json')).write_text(json.dumps(result))
+    else:
+        result={'path':argv[argv.index('--path')+1],'state':'ok','stale':False,'common_dir':common,'worktrees':[{'path':source,'kind':'main','available':True}]}
+    print(json.dumps(result))
 elif argv[0] == 'dirs':
     print(json.dumps({'path': '/example/' + run, 'directories': []}))
 elif argv[0] == 'codex':

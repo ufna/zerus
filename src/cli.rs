@@ -79,6 +79,7 @@ const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [-n tag] [-d
        hgs account copy ID --from MACHINE --to MACHINE --as NEW_ID [--label NAME]
        hgs [@host] worktrees --path PATH [--refresh] [--json]   existing checkouts as JSON
        hgs [@host] worktrees create --path REPO --branch NAME --destination PATH [--base HEAD] [--json]
+       Mobile worktree ABI: worktrees-v1 (catalog/create/verified project placement)
        hgs [@host] dirs [--hidden] [path]   directories as JSON (default: home)
        hgs [@host] kill <session> [--archive <id>]
        hgs [@host] rename <session> <new-full-name> [--archive <id>]

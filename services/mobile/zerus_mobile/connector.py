@@ -33,6 +33,7 @@ from .history import validate_history
 from .context import CONTEXT_COMMANDS, LIFECYCLE_OPERATIONS, TERMINAL_OPERATIONS, LAUNCH_OPERATIONS, OPERATIONS, FEATURES, READ_OPERATIONS, READ_SQL, validate_context, validate_core, validate_inspect, validate_lifecycle
 from .launch import catalog as project_catalog, validate as validate_launch
 from .launch import projects as launch_projects, project_choice
+from . import worktrees
 from .terminal import validate as validate_terminal
 from .history import bound_inspection
 from .projects import apply_memberships, is_archived, normalize as normalize_projects, unavailable as unavailable_projects
@@ -291,6 +292,7 @@ class Connector:
         self.history_supported = False
         self.launch_supported = False
         self.project_launch_supported = False
+        self.worktree_supported = False
         self.capabilities_next_poll = 0.0
         self.accounts = AccountCache(lambda *args, **kwargs: self.native(*args, **kwargs),
                                      errors=(ConnectorError, ValueError, RuntimeError, UnicodeError))
@@ -310,6 +312,8 @@ class Connector:
             payload = {"schema": 1, "target_machine_id": machine_id,
                        "argv": argv, "payload": payload}
             argv = ["swarm", "__mobile-peer-local", "--json"]
+        if argv and argv[0] == "worktrees":
+            argv = ["__state", *argv]
         return await self._native(argv, payload, timeout=timeout, json_output=json_output)
 
     async def _native(self, argv: list[str], payload: dict | None = None,
@@ -319,13 +323,20 @@ class Connector:
         if stdin is not None and len(stdin) > MAX_PAYLOAD + (4096 if argv[:2] in (["swarm", "mobile-peer"], ["swarm", "__mobile-peer-local"]) else 0):
             raise ConnectorError("native request exceeds size limit")
         process = None
+        inner_argv = payload.get("argv", argv) if isinstance(payload, dict) else argv
+        mobile_create = "worktrees" in inner_argv and "create" in inner_argv and "--mobile" in inner_argv
+        drain_deadline = time.monotonic() + 35
+        oversized = False
 
         async def read(stream: asyncio.StreamReader) -> bytes:
+            nonlocal oversized
             chunks, size = [], 0
             while chunk := await stream.read(65536):
                 size += len(chunk)
                 if size > (self.max_bytes if max_output_bytes is None else max_output_bytes):
-                    raise ConnectorError("native output exceeds size limit")
+                    if not mobile_create: raise ConnectorError("native output exceeds size limit")
+                    oversized = True
+                    continue  # Keep draining the owned supervisor without retaining excess.
                 chunks.append(chunk)
             return b"".join(chunks)
 
@@ -343,15 +354,27 @@ class Connector:
         tasks = []
         joined = None
         try:
-            process = await asyncio.create_subprocess_exec(
+            cancelled_during_spawn = False
+            spawning = asyncio.create_task(asyncio.create_subprocess_exec(
                 self.hgs, *argv, stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                env=native_environment())
+                env=native_environment()))
+            if mobile_create:
+                while True:
+                    try:
+                        process = await asyncio.shield(spawning)
+                        break
+                    except asyncio.CancelledError:
+                        cancelled_during_spawn = True
+            else:
+                process = await spawning
             tasks = [asyncio.create_task(read(process.stdout)),
                      asyncio.create_task(read(process.stderr)),
                      asyncio.create_task(write()), asyncio.create_task(process.wait())]
             joined = asyncio.gather(*tasks)
-            stdout, _, _, code = await asyncio.wait_for(joined, self.timeout if timeout is None else timeout)
+            if cancelled_during_spawn: raise asyncio.CancelledError()
+            stdout, _, _, code = await asyncio.wait_for(asyncio.shield(joined) if mobile_create else joined, self.timeout if timeout is None else timeout)
+            if oversized: raise ConnectorError("native output exceeds size limit")
             if code != 0:
                 raise ConnectorError("native command failed")
             if not json_output:
@@ -365,6 +388,16 @@ class Connector:
         except OSError:
             raise ConnectorError("native command could not start") from None
         finally:
+            if mobile_create and joined is not None and process is not None:
+                # Keep only this operation's bounded supervisor alive until it cleans
+                # its owned Git group. Repeated cancellation must not cut the drain short.
+                while not joined.done() and time.monotonic() < drain_deadline:
+                    try:
+                        await asyncio.wait_for(asyncio.shield(joined), max(.001, drain_deadline - time.monotonic()))
+                    except asyncio.CancelledError:
+                        continue
+                    except (Exception, asyncio.TimeoutError):
+                        break
             if process is not None and process.returncode is None:
                 # Only this connector-owned CLI child; never its native agent,
                 # its process group, a tmux server, or a DeepSeek host.
@@ -412,7 +445,7 @@ class Connector:
         await asyncio.gather(self.enrich_attention(snapshot), self.enrich_projects(snapshot))
         snapshot["mobile_accounts"] = await self.accounts.update()
         await self.probe_capabilities()
-        operations = OPERATIONS - (set() if self.lifecycle_supported else LIFECYCLE_OPERATIONS) - (set() if self.terminal_supported else TERMINAL_OPERATIONS) - (set() if self.launch_supported else LAUNCH_OPERATIONS) - (set() if self.history_supported else {"history"}) - (set() if self.recovery_supported else {"recovery_action"})
+        operations = (OPERATIONS - (set() if self.worktree_supported else worktrees.OPERATIONS)) - (set() if self.lifecycle_supported else LIFECYCLE_OPERATIONS) - (set() if self.terminal_supported else TERMINAL_OPERATIONS) - (set() if self.launch_supported else LAUNCH_OPERATIONS) - (set() if self.history_supported else {"history"}) - (set() if self.recovery_supported else {"recovery_action"})
         snapshot["mobile_capabilities"] = {"protocol_version": 1,
             "operations": sorted(operations), "features": sorted(FEATURES | {"accounts_snapshot"} | ({"gateway_one_hop"} if getattr(self, "fleet", None) and self.fleet.available else set()) | ({"launch_project"} if self.project_launch_supported else set())),
             "reasons": {**({} if self.lifecycle_supported else {"session_actions": "Native CLI lacks the scoped session-action ABI"}),
@@ -430,6 +463,7 @@ class Connector:
         self.history_supported = False
         self.launch_supported = False
         self.project_launch_supported = False
+        self.worktree_supported = False
         if getattr(self, "fleet", None):
             self.fleet.supported = False
         try:
@@ -441,6 +475,7 @@ class Connector:
             self.history_supported = isinstance(help_text,str) and "history <session> --json" in help_text
             self.launch_supported = isinstance(help_text,str) and "--launch-id" in help_text
             self.project_launch_supported = isinstance(help_text,str) and "swarm assign-launch --json" in help_text
+            self.worktree_supported = isinstance(help_text,str) and "Mobile worktree ABI: worktrees-v1" in help_text
             if getattr(self, "fleet", None):
                 self.fleet.supported = isinstance(help_text, str) and all(
                     marker in help_text for marker in ("mobile-peers --json", "mobile-peer --json"))
@@ -711,6 +746,18 @@ class Connector:
                         raise ConnectorError("terminal input expired before native delivery")
             if operation in LAUNCH_OPERATIONS and not self.launch_supported:
                 raise ConnectorError("native exact launch-ID ABI is unavailable")
+            if operation in worktrees.OPERATIONS and not self.worktree_supported:
+                raise ConnectorError("native mobile worktree ABI is unavailable")
+            if operation == "worktree_create":
+                from pathlib import PurePosixPath
+                destination = PurePosixPath(payload["destination"])
+                if destination.name in ("", ".", ".."):
+                    raise ConnectorError("invalid worktree destination")
+                parent = await self.native(["dirs", str(destination.parent)], timeout=5)
+                confirmed_destination = str(PurePosixPath(worktrees.absolute(parent.get("path"))) / destination.name)
+                fresh = worktrees.catalog(await self.native(["worktrees", "--path", payload['path'], "--refresh", "--json"], timeout=5), payload['path'])
+                if fresh.get('state') != 'ok' or fresh.get('stale') or fresh.get('common_dir') != payload['common_dir']:
+                    raise ConnectorError("repository changed; refresh worktrees before creation")
             launch_directory = None
             if operation == "launch":
                 try: accounts = project_catalog(await self.native(["account", "ls"], timeout=5))
@@ -735,7 +782,16 @@ class Connector:
                             if not isinstance(checked_folder, dict) or checked_folder.get("path") != launch_directory:
                                 raise ValueError("selected local project folder changed")
                             selected_folder["path"] = checked_folder["path"]
-                        project_choice(project_data, payload, launch_directory)
+                        worktree_data = None
+                        if "worktree_folder_id" in payload:
+                            if not self.worktree_supported: raise ValueError("native verified worktree placement is unavailable")
+                            anchor = next((row for project in project_data['projects'] if project['id'] == payload['project_id']
+                                           for row in project['folders'] if row['id'] == payload['worktree_folder_id']), None)
+                            if anchor is None: raise ValueError("selected local project anchor changed")
+                            checked = await self.native(["dirs", anchor['path']], timeout=5)
+                            anchor['path'] = worktrees.absolute(checked.get('path'))
+                            worktree_data = worktrees.catalog(await self.native(["worktrees", "--path", anchor['path'], "--refresh", "--json"], timeout=5), anchor['path'])
+                        project_choice(project_data, payload, launch_directory, worktree_data)
                     except ValueError as error:
                         raise ConnectorError(str(error)) from None
             if operation == "recovery_action":
@@ -753,6 +809,7 @@ class Connector:
                 try: result = project_catalog(await self.native(["account", "ls"], timeout=5))
                 except ValueError as error: raise ConnectorError(str(error)) from None
                 result["project_launch_supported"] = False
+                result["worktree_supported"] = self.worktree_supported
                 if self.project_launch_supported:
                     try:
                         result.update(launch_projects(await self.native(["swarm", "get"], timeout=3)))
@@ -765,6 +822,13 @@ class Connector:
                     raise ConnectorError("native directory catalog is invalid")
                 result = {key: result[key] for key in ("path", "parent", "home", "directories", "truncated") if key in result}
                 result["request_id"] = request_id
+            elif operation == "worktrees":
+                result = worktrees.catalog(await self.native(["worktrees", "--path", payload['path'], "--refresh", "--json"], timeout=5), payload['path'])
+                result['request_id'] = request_id
+            elif operation == "worktree_create":
+                argv = ["worktrees", "create", "--path", payload['path'], "--common-dir", payload['common_dir'],
+                        "--branch", payload['branch'], "--base", payload['base'], "--destination", payload['destination'], "--request-id", request_id, "--json", "--mobile"]
+                result = worktrees.created(await self.native(argv, timeout=35), payload, request_id, confirmed_destination)
             elif operation == "launch":
                 argv = [payload["agent"], launch_directory, "--new", "-n", payload["tag"], "-d", "--launch-id", request_id]
                 if "account_id" in payload: argv.extend(["--account", payload["account_id"]])
@@ -786,6 +850,8 @@ class Connector:
                         "expected_run_id": target["run_id"], "expected_conversation_id": target["conversation_id"],
                         "swarm_id": payload["swarm_id"], "project_id": payload["project_id"],
                         "directory": launch_directory, "add_folder": payload["add_folder"]}
+                    for field in ('worktree_folder_id', 'worktree_common_dir'):
+                        if field in payload: assignment_payload[field] = payload[field]
                     if "project_folder_id" in payload:
                         assignment_payload["project_folder_id"] = payload["project_folder_id"]
                     assignment = {"status": "uncertain", "swarm_id": payload["swarm_id"], "project_id": payload["project_id"]}

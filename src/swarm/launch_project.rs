@@ -24,6 +24,10 @@ struct Request {
     #[serde(skip_serializing_if = "Option::is_none")]
     project_folder_id: Option<String>,
     add_folder: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    worktree_folder_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    worktree_common_dir: Option<String>,
 }
 fn canonical_uuid(id: &str) -> bool {
     uuid::Uuid::parse_str(id).is_ok_and(|id_uuid| !id_uuid.is_nil() && id_uuid.to_string() == id)
@@ -68,6 +72,22 @@ impl Request {
                 && !self.directory.chars().any(char::is_control),
             "directory must be absolute"
         );
+        ensure!(
+            self.worktree_folder_id.is_some() == self.worktree_common_dir.is_some(),
+            "worktree placement needs anchor and repository identity"
+        );
+        if let (Some(anchor), Some(common)) = (&self.worktree_folder_id, &self.worktree_common_dir)
+        {
+            ensure!(
+                !self.add_folder
+                    && self.project_folder_id.is_none()
+                    && identifier(anchor)
+                    && common.len() <= 4096
+                    && Path::new(common).is_absolute()
+                    && !common.chars().any(char::is_control),
+                "invalid worktree project placement"
+            );
+        }
         Ok(())
     }
     fn check_binding(&self, record: &Value) -> Result<String> {
@@ -280,7 +300,47 @@ fn assign(store: &mut Store, request: &Request, _conversation: &str) -> Result<S
                     .is_ok_and(|saved| saved == directory)
             })
     };
-    let existing = if let Some(id) = &request.project_folder_id {
+    let existing = if let Some(anchor) = &request.worktree_folder_id {
+        let folder = values
+            .get(&Key::Folder { id: anchor.clone() })
+            .ok_or_else(|| anyhow::anyhow!("Requested worktree project anchor no longer exists"))?;
+        ensure!(
+            folder["project"] == request.project_id
+                && folder["machine"]
+                    .as_str()
+                    .is_some_and(|id| store.catalog.machine(id) == local),
+            "Worktree anchor is outside this local project"
+        );
+        let anchor_path = Path::new(
+            folder["path"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Invalid worktree anchor path"))?,
+        )
+        .canonicalize()?;
+        let evidence = crate::state::worktree_catalog(&anchor_path);
+        ensure!(
+            evidence["state"] == "ok"
+                && evidence["stale"] == false
+                && evidence["common_dir"].as_str() == request.worktree_common_dir.as_deref(),
+            "Worktree repository identity changed"
+        );
+        let contains = |path: &Path| {
+            evidence["worktrees"].as_array().is_some_and(|trees| {
+                trees.iter().any(|tree| {
+                    tree["available"] == true
+                        && tree["kind"] != "bare"
+                        && tree["path"]
+                            .as_str()
+                            .is_some_and(|root| path == Path::new(root))
+                })
+            })
+        };
+        ensure!(
+            contains(&directory) && contains(&anchor_path),
+            "Launch directory is not a verified worktree of this project"
+        );
+        Some(anchor.clone())
+    } else if let Some(id) = &request.project_folder_id {
         let folder = values
             .get(&Key::Folder { id: id.clone() })
             .ok_or_else(|| anyhow::anyhow!("Requested project folder no longer exists"))?;
@@ -353,6 +413,8 @@ mod tests {
             directory: dir.path().to_str().unwrap().into(),
             project_folder_id: None,
             add_folder: true,
+            worktree_folder_id: None,
+            worktree_common_dir: None,
         };
         let record = json!({"name":request.name,"run_id":request.expected_run_id,"launch_id":request.request_id,
             "conversation_id":"new-conversation","launch_dir":request.directory});
@@ -508,6 +570,84 @@ mod tests {
         std::fs::remove_file(&alias).unwrap();
         std::os::unix::fs::symlink(other.path(), &alias).unwrap();
         request.project_folder_id = Some("saved-alias".into());
+        assert!(assign(&mut store, &request, "").is_err());
+    }
+
+    #[test]
+    fn related_worktree_keeps_anchor_and_rejects_nested_repository() {
+        let (dir, mut store, mut request, _) = fixture();
+        let repo = dir.path().join("repo");
+        let linked = dir.path().join("linked");
+        let git = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap()
+                .status
+                .success());
+        };
+        git(&["init", "-q", "-b", "main", repo.to_str().unwrap()]);
+        git(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "initial",
+        ]);
+        git(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "worktree",
+            "add",
+            "-qb",
+            "feature",
+            linked.to_str().unwrap(),
+        ]);
+        let anchor = Key::Folder {
+            id: "anchor".into(),
+        };
+        store
+            .catalog
+            .set(
+                &store.node_id,
+                anchor.clone(),
+                json!({"project":"ungrouped","machine":store.node_id,"path":repo,"name":"Repo"}),
+            )
+            .unwrap();
+        request.add_folder = false;
+        request.worktree_folder_id = Some("anchor".into());
+        request.worktree_common_dir = Some(
+            repo.join(".git")
+                .canonicalize()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .into(),
+        );
+        request.directory = linked.to_str().unwrap().into();
+        assert_eq!(assign(&mut store, &request, "").unwrap(), "anchor");
+        assert_eq!(
+            store
+                .catalog
+                .values()
+                .keys()
+                .filter(|key| matches!(key, Key::Folder { .. }))
+                .count(),
+            1
+        );
+        let nested = repo.join("unrelated");
+        git(&["init", "-q", nested.to_str().unwrap()]);
+        request.directory = nested.to_str().unwrap().into();
+        assert!(assign(&mut store, &request, "").is_err());
+        request.directory = linked.to_str().unwrap().into();
+        request.worktree_common_dir = Some(nested.join(".git").to_str().unwrap().into());
         assert!(assign(&mut store, &request, "").is_err());
     }
 

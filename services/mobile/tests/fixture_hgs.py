@@ -240,14 +240,17 @@ def main():
         path = next((entry for entry, row in launched if row["name"] == args[1]), path)
     record = json.loads(path.read_text()) if path.exists() else initial()
     fixture_config = json.loads((root / "fixture-config.json").read_text()) if (root / "fixture-config.json").exists() else {}
+    if fixture_config.get("pending_questions") and not record.get("fixture_question_seeded"):
+        record["pending_questions"]=fixture_config["pending_questions"];record["fixture_question_seeded"]=True;record["phase"]="input";record["activity"]="busy";persist(path,record)
     context_metadata(record, fixture_config)
     if advance_context(record, fixture_config):
         persist(path, record)
     states = [row for entry,row in launched if entry != path]
     states += extra_states(record) if fixture_config.get("all_states") is True or os.environ.get("ZERUS_MOBILE_FIXTURE_ALL_STATES") == "1" or os.environ.get("ZERUS_MOBILE_FIXTURE_CATALOG_MODE") == "filters" else []
     args = sys.argv[1:]
+    if args[:2] == ["__state", "worktrees"]: args=args[1:]
     if args == ["--help"]:
-        print("hgs session-action <session> --json scoped native lifecycle action\nhgs --launch-id UUID\nhgs swarm assign-launch --json\nhgs terminal <session> --json\nhgs history <session> --json\nhgs recovery action --scoped-json")
+        print("hgs session-action <session> --json scoped native lifecycle action\nhgs --launch-id UUID\nhgs swarm assign-launch --json\nhgs terminal <session> --json\nhgs history <session> --json\nhgs recovery action --scoped-json\nMobile worktree ABI: worktrees-v1")
         return
     if args == ["ls", "--json", "--local"]:
         summaries = [{key: value for key, value in row.items()
@@ -300,6 +303,21 @@ def main():
         result = {"profiles": account_profiles(fixture_config)}
     elif len(args) == 3 and args[:2] == ["account", "inspect"]:
         result = account_usage(args[2], fixture_config)
+    elif args and args[0] == "worktrees":
+        options = dict(zip(args[2::2],args[3::2])) if args[1] == "create" else {"--path": args[args.index("--path")+1]}
+        trees_path=root/"worktrees.json"
+        catalog=json.loads(trees_path.read_text()) if trees_path.exists() else fixture_config.get("worktrees", {"state":"not_repo","path":options["--path"],"stale":False,"worktrees":[]})
+        if args[1] == "create":
+            options={key:args[args.index(key)+1] for key in ("--path","--common-dir","--destination","--branch","--request-id")}
+            assert catalog["state"]=="ok" and catalog["common_dir"]==options["--common-dir"]
+            time.sleep(min(25,max(0,float(fixture_config.get("worktree_create_delay",0)))))
+            result={"status":"created","request_id":options["--request-id"],"path":options["--destination"],"branch":options["--branch"],"common_dir":catalog["common_dir"]}
+            catalog["worktrees"].append({"path":result["path"],"kind":"linked","available":True,"branch":result["branch"]});persist(trees_path,catalog)
+            with (root/"mutations.jsonl").open("a") as output: output.write(json.dumps({"operation":"worktree_create","request_id":result["request_id"]})+"\n")
+        else:
+            requested=options["--path"]
+            matching=next((tree for tree in catalog.get("worktrees",[]) if requested==tree["path"] or requested.startswith(tree["path"].rstrip('/')+'/')),None)
+            result={**catalog,"path":requested} if matching else {"state":"not_repo","stale":False,"path":requested,"worktrees":[]}
     elif len(args) == 2 and args[0] == "dirs":
         directory = "/example" if args[1] == "~" else args[1]
         assert directory.startswith("/")
@@ -482,7 +500,8 @@ def main():
             question = record["pending_questions"][0]
             assert payload["question_id"] == question["question_id"]
             assert payload["expected_question_hash"] == question["question_hash"]
-            record["pending_questions"] = []
+            time.sleep(min(25,max(0,float(fixture_config.get("answer_delay",0)))))
+            if not fixture_config.get("answer_stale_question"): record["pending_questions"] = []
             record["phase"] = record["activity"] = "idle"
         if args[0] == "interrupt":
             assert payload["expected_turn_started"] == record["turn_started"]

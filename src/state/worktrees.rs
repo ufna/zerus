@@ -12,6 +12,22 @@ use std::time::{Duration, Instant};
 const MAX_OUTPUT: usize = 1024 * 1024;
 const MAX_TREES: usize = 512;
 const TTL: f64 = 30.0;
+static MOBILE_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+extern "C" fn stop_mobile(_: libc::c_int) { MOBILE_STOP.store(true, std::sync::atomic::Ordering::Relaxed); }
+struct MobileSignals(Vec<(libc::c_int, libc::sighandler_t)>);
+impl MobileSignals {
+    fn install() -> Self {
+        MOBILE_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
+        Self([libc::SIGHUP, libc::SIGTERM].iter().map(|signal| (*signal, unsafe {
+            libc::signal(*signal, stop_mobile as *const () as libc::sighandler_t)
+        })).collect())
+    }
+}
+impl Drop for MobileSignals {
+    fn drop(&mut self) { for (signal, old) in &self.0 { unsafe { libc::signal(*signal, *old); } } }
+}
+fn mobile_stopped() -> bool { MOBILE_STOP.load(std::sync::atomic::Ordering::Relaxed) }
+
 
 struct GitError {
     state: &'static str,
@@ -25,6 +41,7 @@ fn error(state: &'static str, detail: impl Into<String>) -> GitError {
 }
 
 fn git(cwd: &Path, args: &[&str], deadline: Instant) -> std::result::Result<Vec<u8>, GitError> {
+    if mobile_stopped() || Instant::now() >= deadline { return Err(error("timeout", "Git operation cancelled or timed out")); }
     let mut command = Command::new("git");
     command
         .process_group(0)
@@ -128,8 +145,8 @@ fn git(cwd: &Path, args: &[&str], deadline: Instant) -> std::result::Result<Vec<
                 };
             }
         }
-        if Instant::now() >= deadline {
-            break Err(error("timeout", "Git operation timed out"));
+        if mobile_stopped() || Instant::now() >= deadline {
+            break Err(error("timeout", "Git operation cancelled or timed out"));
         }
         std::thread::sleep(Duration::from_millis(3));
     };
@@ -382,11 +399,14 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
 }
 
 fn create(args: &[String]) -> Result<Value> {
+    let mobile = args.iter().any(|value| value == "--mobile");
+    let _signals = mobile.then(MobileSignals::install);
+    let total_deadline = Instant::now() + Duration::from_secs(if mobile { 25 } else { 315 });
     let mut options = BTreeMap::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--json" => {}
+            "--json" | "--mobile" => {}
             key @ ("--path" | "--destination" | "--branch" | "--base" | "--common-dir" | "--request-id") => {
                 i += 1;
                 let value = args.get(i).ok_or_else(|| format!("{key} needs a value"))?;
@@ -421,7 +441,7 @@ fn create(args: &[String]) -> Result<Value> {
     if fs::symlink_metadata(&destination).is_ok() {
         return Err("Destination already exists. Choose a new folder.".into());
     }
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = total_deadline.min(Instant::now() + Duration::from_secs(5));
     let read = |args: &[&str]| -> Result<String> {
         String::from_utf8(git(&source, args, deadline).map_err(|e| e.detail)?)
             .map(|s| s.trim_end_matches('\n').to_owned())
@@ -489,6 +509,7 @@ fn create(args: &[String]) -> Result<Value> {
     }
     // Atomic reservation rejects simultaneous creators and existing/symlinked
     // destinations. Git accepts this empty directory but never overwrites files.
+    if mobile_stopped() || Instant::now() >= total_deadline { return Err("Worktree creation cancelled before checkout".into()); }
     fs::create_dir(&destination).map_err(|e| format!("Cannot reserve destination: {e}"))?;
     let outcome = git(
         &source,
@@ -502,13 +523,13 @@ fn create(args: &[String]) -> Result<Value> {
             &destination.to_string_lossy(),
             &head,
         ],
-        Instant::now() + Duration::from_secs(300),
+        total_deadline.min(Instant::now() + Duration::from_secs(if mobile { 15 } else { 300 })),
     );
     let _ = fs::remove_file(cache);
     outcome.map_err(|e| format!("{}\nCheck {} and branch '{branch}' before retrying. Any created files and branch have been kept.", e.detail, destination.display()))?;
     // Confirm the resulting checkout, not merely the exit code (hooks may fail
     // after creation, or another process may have changed the destination).
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = total_deadline.min(Instant::now() + Duration::from_secs(5));
     let actual = git(
         &destination,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
