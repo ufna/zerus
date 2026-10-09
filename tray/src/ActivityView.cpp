@@ -942,7 +942,12 @@ void ActivityView::render(bool contentUpdate)
     edit.endEditBlock();
     // QTextDocument lays out long tables lazily. Resolve the final scroll
     // range before restoring the viewport and allowing its next paint.
-    m_browser->document()->documentLayout()->documentSize();
+    auto *layout = m_browser->document()->documentLayout();
+    // documentSize() finishes that layout but announces the final size only on
+    // the layout's next timer tick. Until then the scroll range keeps the lazy
+    // estimate, and following the latest message would paint one frame past
+    // the end of the document.
+    emit layout->documentSizeChanged(layout->documentSize());
     const auto updatedAnchors = bookmarks(m_browser->document());
     const int length = m_browser->document()->characterCount();
     QTextCursor restored(m_browser->document()); restored.setPosition(selectionStart.restored(updatedAnchors, length));

@@ -72,6 +72,7 @@ private slots:
     void caughtUpActivityAcknowledgesEarlierReplyWithoutIntermediatePaint();
     void updatesRemainPaintableBeforeTheNextEventLoop();
     void startsAtLatestAndFollows();
+    void followingPaintsAtTheFinalScrollRange();
     void jumpToLatestKeepsFocusInActivity_data();
     void jumpToLatestKeepsFocusInActivity();
     void jumpOverlayPreservesViewportAndReadingPosition();
@@ -755,6 +756,29 @@ void TestActivityView::attachmentThumbnailArrivesWithoutMovingTranscript()
     view.setSessionKey("other/session");view.setActivity({},history(4));
     const auto otherRevision=browser->document()->revision();view.setAttachmentPreview(key,image);
     QCOMPARE(browser->document()->revision(),otherRevision);QVERIFY(!browser->toPlainText().contains("screen.png"));
+}
+
+void TestActivityView::followingPaintsAtTheFinalScrollRange()
+{
+    // A long journal is laid out lazily. Every rebuild must paint at its final
+    // scroll range: the lazy estimate showed one frame past the end, a flicker.
+    ActivityView view; view.resize(900, 700); view.show(); QVERIFY(QTest::qWaitForWindowExposed(&view));
+    auto events = history(400); view.setActivity({}, events); QTest::qWait(50);
+    auto *bar = view.browser()->verticalScrollBar();
+    struct Paints : QObject {
+        QScrollBar *bar = nullptr; QList<int> maxima;
+        bool eventFilter(QObject *object, QEvent *event) override
+        { if (event->type() == QEvent::Paint) maxima << bar->maximum(); return QObject::eventFilter(object, event); }
+    } paints;
+    paints.bar = bar; view.browser()->viewport()->installEventFilter(&paints);
+    for (int i = 401; i <= 403; ++i) {
+        events.append(journalEvent(i, "Stop", QString("Update %1").arg(i)));
+        paints.maxima.clear(); view.setActivity({}, events);
+        const int range = bar->maximum(); QCOMPARE(bar->value(), range);
+        QTest::qWait(60);
+        QCOMPARE(bar->maximum(), range); QVERIFY(!paints.maxima.isEmpty());
+        for (const int painted : paints.maxima) QCOMPARE(painted, range);
+    }
 }
 
 void TestActivityView::startsAtLatestAndFollows()
