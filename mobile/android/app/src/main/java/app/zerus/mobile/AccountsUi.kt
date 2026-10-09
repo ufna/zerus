@@ -6,6 +6,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.HourglassEmpty
+import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -92,8 +94,14 @@ private fun workspaceName(model:ZerusViewModel,catalog:AccountCatalog)=model.con
                     Row(Modifier.fillMaxWidth().clearAndSetSemantics {
                         contentDescription="${AccountPresentation.period(window)}, ${AccountPresentation.resetSummary(window,now)}, $percentage"
                     },horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                        Text(AccountPresentation.shortPeriod(window),Modifier.width(36.dp).alignByBaseline(),style=MaterialTheme.typography.bodySmall,maxLines=1,softWrap=false,overflow=TextOverflow.Ellipsis)
-                        Text(remaining,Modifier.weight(1f).alignByBaseline(),style=MaterialTheme.typography.bodySmall,color=if(AccountPresentation.ended(window,now)) Color(0xFFF0A35B) else muted,maxLines=1,softWrap=false,overflow=TextOverflow.Ellipsis)
+                        Row(Modifier.width(52.dp).alignByBaseline(),horizontalArrangement=Arrangement.spacedBy(4.dp),verticalAlignment=Alignment.CenterVertically) {
+                            Icon(Icons.Filled.Repeat,null,Modifier.size(14.dp),tint=muted)
+                            Text(AccountPresentation.shortPeriod(window),Modifier.alignByBaseline(),style=MaterialTheme.typography.bodySmall,maxLines=1,softWrap=false,overflow=TextOverflow.Ellipsis)
+                        }
+                        Row(Modifier.weight(1f).alignByBaseline(),horizontalArrangement=Arrangement.spacedBy(4.dp),verticalAlignment=Alignment.CenterVertically) {
+                            Icon(Icons.Filled.HourglassEmpty,null,Modifier.size(14.dp),tint=muted)
+                            Text(remaining,Modifier.weight(1f).alignByBaseline(),style=MaterialTheme.typography.bodySmall,color=if(AccountPresentation.ended(window,now)) Color(0xFFF0A35B) else muted,maxLines=1,softWrap=false,overflow=TextOverflow.Ellipsis)
+                        }
                         Text(percentage,Modifier.alignByBaseline(),style=MaterialTheme.typography.bodySmall,color=windowTone(catalog,account,window,now),textAlign=TextAlign.End,maxLines=1,softWrap=false,overflow=TextOverflow.Ellipsis)
                     }
                 }
@@ -144,11 +152,17 @@ private fun compactBalance(account:ReportedAccount):String?=when {
         account.windows.forEach { window ->
             Column(verticalArrangement=Arrangement.spacedBy(4.dp)) {
                 Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                    Text(AccountPresentation.period(window),Modifier.weight(1f),style=MaterialTheme.typography.bodyMedium)
-                    Text(AccountPresentation.percent(window.usedPercent),style=MaterialTheme.typography.labelLarge,color=windowTone(catalog,account,window,now))
+                    Row(Modifier.weight(1f).alignByBaseline(),horizontalArrangement=Arrangement.spacedBy(4.dp),verticalAlignment=Alignment.CenterVertically) {
+                        Icon(Icons.Filled.Repeat,null,Modifier.size(14.dp),tint=muted)
+                        Text(AccountPresentation.period(window),Modifier.alignByBaseline(),style=MaterialTheme.typography.bodyMedium)
+                    }
+                    Text(AccountPresentation.percent(window.usedPercent),Modifier.alignByBaseline(),style=MaterialTheme.typography.labelLarge,color=windowTone(catalog,account,window,now))
                 }
                 window.usedPercent?.let { LinearProgressIndicator(progress={ (it/100.0).coerceIn(0.0,1.0).toFloat() },modifier=Modifier.fillMaxWidth(),color=windowTone(catalog,account,window,now),trackColor=MaterialTheme.colorScheme.surfaceVariant) }
-                Text(AccountPresentation.resetSummary(window,now)+(if(AccountPresentation.ended(window,now)) " / Refresh needed" else ""),style=MaterialTheme.typography.bodySmall,color=muted)
+                Row(horizontalArrangement=Arrangement.spacedBy(4.dp),verticalAlignment=Alignment.CenterVertically) {
+                    Icon(Icons.Filled.HourglassEmpty,null,Modifier.size(14.dp),tint=muted)
+                    Text(AccountPresentation.resetSummary(window,now)+(if(AccountPresentation.ended(window,now)) " / Refresh needed" else ""),style=MaterialTheme.typography.bodySmall,color=muted)
+                }
                 AccountPresentation.date(window.resetsAt)?.let { Text("Reported reset: $it",style=MaterialTheme.typography.bodySmall,color=muted) }
             }
         }
