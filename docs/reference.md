@@ -214,8 +214,10 @@ metadata does not turn a folder into a repository.
 The button beside **⋯** in the session list header collapses the list into a
 strip. Every project band and session row keeps its height, so each session
 becomes a square tile: status and provider icons, the session name on up to two
-lines and a short state such as the working time, with the usual attention
-edge. Each band shows the project name and its most urgent counter. Rows open
+lines and a short state such as the working time. Instead of the attention
+edge, a tile's frame takes the color of its state (working, needing an answer,
+error, paused, draft or a new reply) with a faint glow inward. Each band shows
+the project name and its most urgent counter. Rows open
 on click and name their session in a tooltip. Expanding grows the same rows
 back into cards. The strip's search button opens the full
 list over the conversation without resizing it; Escape or a click outside returns

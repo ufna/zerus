@@ -9,6 +9,7 @@
 #include "WorkspaceIcons.h"
 #include <QPainter>
 #include <QStyledItemDelegate>
+#include <QtMath>
 
 // One renderer for session-list rows and overview cards.
 inline QRect sessionCardRect(const QRect &row) { return row.adjusted(2, 4, -2, -6); }
@@ -315,12 +316,37 @@ private:
             p->restore(); return;
         }
         // Every tile has its own surface in the strip; cards in the list do not.
+        const bool selected = option.state & QStyle::State_Selected, hovered = option.state & QStyle::State_MouseOver;
+        const QColor surface(dark ? "#1c2229" : "#ffffff");
         if (strip > 0) {
-            p->save(); p->setOpacity(strip); p->setPen(QPen(QColor(dark ? "#29313a" : "#dfe5eb"), 1));
-            p->setBrush(QColor(dark ? "#1c2229" : "#ffffff")); p->drawRoundedRect(QRectF(r).adjusted(.5, .5, -.5, -.5), 8, 8); p->restore();
+            p->save(); p->setOpacity(strip); p->setPen(Qt::NoPen); p->setBrush(surface);
+            p->drawRoundedRect(QRectF(r), 8, 8); p->restore();
         }
         QStyleOptionViewItem cardOption(option); cardOption.rect.adjust(0, 2, 0, -4);
-        IdentityBadges::paintRow(p, cardOption, dark, status.emphasis);
+        IdentityBadges::paintRow(p, cardOption, dark);
+        // A tile shows its state in the color of its frame, with a faint glow
+        // inward; the card's attention edge appears only as it grows.
+        const QColor edge = SessionStatusBadge::edge(status.kind, dark);
+        if (strip > 0) {
+            p->save(); p->setOpacity(strip); p->setBrush(Qt::NoBrush);
+            for (int i = 1; edge.isValid() && i <= 7; ++i) {
+                QColor glow(edge); glow.setAlphaF(.26 * qPow(1 - (i - 1) / 7.0, 1.6));
+                const qreal radius = qMax(1.0, 7.5 - i);
+                p->setPen(QPen(glow, 1)); p->drawRoundedRect(QRectF(r).adjusted(i + .5, i + .5, -i - .5, -i - .5), radius, radius);
+            }
+            // A selected tile without a state keeps the selection frame.
+            if (edge.isValid() || !selected) {
+                p->setPen(QPen(edge.isValid() ? edge : QColor(dark ? "#29313a" : "#dfe5eb"), edge.isValid() ? 1.5 : 1));
+                const qreal half = edge.isValid() ? .75 : .5;
+                p->drawRoundedRect(QRectF(r).adjusted(half, half, -half, -half), 8, 8);
+            }
+            p->restore();
+        }
+        if (status.emphasis != IdentityBadges::Normal && full > 0) {
+            p->save(); p->setOpacity(full);
+            IdentityBadges::paintEdge(p, cardOption.rect, IdentityBadges::attentionColor(dark, status.emphasis == IdentityBadges::Error));
+            p->restore();
+        }
         SharedBadges shared;
         p->save(); p->setOpacity(full); paintCard(p, wide, index, &shared); p->restore();
         const QRect statusBadge = SessionStrip::mix(stripStatus, shared.status, expansion);
@@ -329,11 +355,10 @@ private:
         if (status.additionalUnread) {
             // A dot on the strip badge grows into the separate unread badge.
             const QRect badge = SessionStrip::mix(QRect(stripStatus.right() - 6, stripStatus.y() - 4, 10, 10), shared.unread, expansion);
-            const bool selected = option.state & QStyle::State_Selected, hovered = option.state & QStyle::State_MouseOver;
             p->setPen(Qt::NoPen);
             if (strip > 0) {
                 p->setOpacity(strip);
-                p->setBrush(QColor(selected ? (dark ? "#303b47" : "#dde7ef") : hovered ? (dark ? "#242c34" : "#edf1f4") : (dark ? "#161b21" : "#f5f7f9")));
+                p->setBrush(selected ? QColor(dark ? "#303b47" : "#dde7ef") : hovered ? QColor(dark ? "#242c34" : "#edf1f4") : surface);
                 p->drawRoundedRect(badge.adjusted(-2, -2, 2, 2), 7, 7);
             }
             p->setOpacity(1); p->setBrush(QColor(dark ? "#ffda76" : "#f4ce65")); p->drawRoundedRect(badge, 5, 5);

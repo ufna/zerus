@@ -5,6 +5,18 @@
 namespace SessionStatusBadge {
 enum Kind { Neutral, Working, Attention, Error, Paused, Unread, Draft };
 inline QFont font(QFont base) { base.setPixelSize(11); base.setWeight(QFont::Medium); return base; }
+// The state's color for a frame around the session; invalid for Neutral.
+inline QColor edge(Kind kind, bool dark) {
+    switch (kind) {
+    case Working: return QColor(dark ? "#4cc98a" : "#2a9d63");
+    case Attention: case Unread: return QColor(dark ? "#ffda76" : "#e0a82e");
+    case Error: return QColor(dark ? "#ff8fa0" : "#c7405a");
+    case Paused: return QColor(dark ? "#a988d6" : "#9474c0");
+    case Draft: return QColor(dark ? "#6b9bd8" : "#5b8cc9");
+    case Neutral: break;
+    }
+    return {};
+}
 inline int width(const QString &text, Kind kind, const QFont &base) {
     // Leave room for fractional glyph advances before elidedText rounds them.
     return QFontMetrics(font(base)).horizontalAdvance(text) + 16 + (kind == Neutral ? 0 : 16);

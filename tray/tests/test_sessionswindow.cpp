@@ -3281,6 +3281,20 @@ void TestSessionsWindow::sessionListCollapsesIntoWorkingStrip()
     QCOMPARE(list->currentRow(), target);
     QImage strip = list->viewport()->grab().toImage(); QVERIFY(!strip.isNull());
     shot(window.get(), "collapsed.png");
+    // A tile's frame takes its state's color; the card's attention edge stays away.
+    const bool dark = list->property("hgsDark").toBool(); int framed = 0;
+    const auto near = [](QColor a, QColor b) { return qAbs(a.red() - b.red()) + qAbs(a.green() - b.green()) + qAbs(a.blue() - b.blue()) <= 24; };
+    for (int i = 0; i < list->count(); ++i) {
+        const auto *row = list->item(i);
+        if (row->isHidden() || row->data(SessionRoles::Header).toBool() || !row->data(SessionRoles::ChildId).toString().isEmpty()) continue;
+        const auto status = SessionDelegate::statusOf(list->model()->index(i, 0), row == list->currentItem());
+        const QColor edge = SessionStatusBadge::edge(status.kind, dark);
+        if (!edge.isValid()) continue;
+        const QRect card = sessionCardRect(list->visualItemRect(row)); ++framed;
+        QVERIFY2(near(strip.pixelColor(card.x(), card.center().y()), edge), qPrintable(row->data(SessionRoles::Title).toString()));
+        QVERIFY(!near(strip.pixelColor(card.x() + 4, card.center().y()), IdentityBadges::attentionColor(dark, status.kind == SessionStatusBadge::Error)));
+    }
+    QVERIFY(framed >= 3);
 
     // The collapsed state survives a restart and keeps the docked width for later.
     window.reset(); QSettings().setValue("workspace/sessionsWidth", 360);

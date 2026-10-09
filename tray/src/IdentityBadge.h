@@ -58,6 +58,13 @@ enum RowEmphasis { Normal, Attention, Error, Unread };
 inline QColor attentionColor(bool dark, bool error = false) {
     return QColor(error ? (dark ? "#ffabb6" : "#a32238") : (dark ? "#ffda76" : "#805000"));
 }
+// The edge mark of an actionable or unread row.
+inline void paintEdge(QPainter *p, const QRect &row, const QColor &color) {
+    const QRect r = row.adjusted(2, 2, -2, -2);
+    p->save(); p->setRenderHint(QPainter::Antialiasing); p->setPen(Qt::NoPen); p->setBrush(color);
+    p->drawRoundedRect(QRect(r.x() + 1, r.y() + 10, 3, r.height() - 20), 1.5, 1.5);
+    p->restore();
+}
 inline void paintRow(QPainter *p, const QStyleOptionViewItem &option, bool dark, RowEmphasis emphasis = Normal) {
     p->save(); p->setRenderHint(QPainter::Antialiasing);
     const QRect r = option.rect.adjusted(2, 2, -2, -2);
@@ -72,10 +79,7 @@ inline void paintRow(QPainter *p, const QStyleOptionViewItem &option, bool dark,
         : hovered ? QColor(dark ? "#242c34" : "#edf1f4") : Qt::transparent;
     p->setPen(QPen(border, 1)); p->setBrush(background);
     p->drawRoundedRect(r, 8, 8);
-    if (attention || emphasis == Unread) {
-        p->setPen(Qt::NoPen); p->setBrush(accent);
-        p->drawRoundedRect(QRect(r.x() + 1, r.y() + 10, 3, r.height() - 20), 1.5, 1.5);
-    }
+    if (attention || emphasis == Unread) paintEdge(p, option.rect, accent);
     if ((option.state & QStyle::State_HasFocus) && (option.state & QStyle::State_KeyboardFocusChange)) {
         p->setPen(QPen(QColor(dark ? "#8bdfc0" : "#167357"), 1, Qt::DotLine)); p->setBrush(Qt::NoBrush);
         p->drawRoundedRect(r.adjusted(2, 2, -2, -2), 6, 6);
