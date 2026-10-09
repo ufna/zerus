@@ -450,7 +450,7 @@ void ActivityView::setTheme(bool dark)
     palette.setColor(QPalette::Highlight, QColor(dark ? "#375e54" : "#b6e2d2"));
     palette.setColor(QPalette::HighlightedText, palette.color(QPalette::Text));
     m_browser->setPalette(palette);
-    m_latest->setStyleSheet(QString("QPushButton { color:%1; background:%2; border:1px solid %3; border-radius:12px; padding:5px 13px; font-size:11px; } QPushButton[footer=true] { padding:0 10px; min-height:22px; max-height:22px; } QPushButton:hover { border-color:%1; }")
+    m_latest->setStyleSheet(QString("QPushButton { color:%1; background:%2; border:1px solid %3; border-radius:12px; padding:5px 13px; font-size:11px; } QPushButton:hover { border-color:%1; }")
         .arg(dark ? "#8bdfc0" : "#167357", dark ? "#233a35" : "#e7f3ed", dark ? "#456e61" : "#a5c8b8"));
     m_compaction->setStyleSheet(QString("QWidget#activityCompaction { background:%3; } QLabel { color:%1; background:transparent; font-size:12px; } QProgressBar { background:%2; border:0; border-radius:2px; } QProgressBar::chunk { background:%1; border-radius:2px; }")
         .arg(dark ? "#8bdfc0" : "#167357", dark ? "#34404a" : "#dbe3e9", dark ? "#1c2229" : "#ffffff"));

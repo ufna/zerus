@@ -970,6 +970,14 @@ void TestMessageComposer::toolbarPreview()
         auto *cache = chip(ComposerToolbar::Slot::Cache, "cache", "Cache ~4m", "~4m", {}, ChipTone::Success);
         auto *limit = chip(ComposerToolbar::Slot::UsageLimit, "limit", "Limit reached · 2h 14m", "Limit", "attention", ChipTone::Danger);
         auto *context = new QPushButton("70,1k"); context->setFlat(true); context->setFixedHeight(24); composer->toolbar()->add(ComposerToolbar::Slot::Context, context);
+        // Stand-ins for the window's compaction indicator and Cancel send link.
+        auto *compaction = new QLabel("Compacting context…"); compaction->hide(); composer->toolbar()->add(ComposerToolbar::Slot::Compaction, compaction);
+        auto *cancel = new QPushButton("Cancel send"); cancel->setFlat(true); cancel->setFixedHeight(20); cancel->hide();
+        composer->toolbar()->add(ComposerToolbar::Slot::CompactionCancel, cancel);
+        auto *panel = new QWidget; auto *panelLayout = new QVBoxLayout(panel); panelLayout->setContentsMargins(14, 10, 14, 10);
+        panelLayout->addWidget(new QLabel("Retry in 42 s (1/4 attempts)")); auto *actions = new QHBoxLayout;
+        for (const auto *label : {"Retry now", "Cancel retry", "Attempts…", "Settings…"}) actions->addWidget(new QPushButton(label));
+        panelLayout->addLayout(actions); recovery->setPopoverContent(panel);
         composer->setTheme(dark); cache->setActive(true);
         window.resize(760, 200); window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
         const auto save = [&](const QString &name) {
@@ -983,8 +991,12 @@ void TestMessageComposer::toolbarPreview()
         auto *attachments = composer->findChild<ToolbarChip *>("attachmentsChip"); attachments->openPopover(); QTest::qWait(80);
         QVERIFY(attachments->popover()->grab().save(QString("%1/3-attachments-popover-%2.png").arg(directory, dark ? "dark" : "light")));
         attachments->closePopover();
+        compaction->show(); cancel->show(); save("4-compaction"); compaction->hide(); cancel->hide();
         cache->setLabels("Cold cache", "Cold"); cache->setTone(ChipTone::Danger); cache->setIconName("context-warning");
         recovery->setActive(true); save("5-recovery");
+        window.move(40, 360); recovery->openPopover(); QTest::qWait(80);
+        QVERIFY(recovery->popover()->grab().save(QString("%1/5-recovery-popover-%2.png").arg(directory, dark ? "dark" : "light")));
+        recovery->closePopover();
         recovery->setActive(false); limit->setActive(true); save("6-limit");
         recovery->setActive(true); window.resize(420, 200); save("7-narrow");
     }
