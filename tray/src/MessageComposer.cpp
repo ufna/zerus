@@ -1,4 +1,6 @@
 #include "MessageComposer.h"
+#include "AttachmentViewer.h"
+#include "ComposerToolbar.h"
 #include "ContentScale.h"
 #include "WorkspaceIcons.h"
 #include "WorkspaceStyle.h"
@@ -7,6 +9,7 @@
 #include <QBuffer>
 #include <QComboBox>
 #include <QClipboard>
+#include <QDesktopServices>
 #include <QDialog>
 #include <QDropEvent>
 #include <QDragLeaveEvent>
@@ -24,6 +27,7 @@
 #include <QMessageBox>
 #include <QMimeData>
 #include <QMimeDatabase>
+#include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
@@ -44,19 +48,16 @@ constexpr qsizetype MaxAttachmentBytes = HgsClient::MaximumAttachmentBytes;
 constexpr qsizetype MaxTotalBytes = HgsClient::MaximumAttachmentsBytes;
 constexpr qsizetype MaxAttachments = HgsClient::MaximumAttachments;
 
-// Paint the rounded surface explicitly: translucent top-level widgets skip
-// Qt's automatic background fill, which otherwise leaves the popup unpainted.
-class SettingsPopup : public QFrame {
-public:
-    explicit SettingsPopup(QWidget *parent) : QFrame(parent, Qt::Popup | Qt::FramelessWindowHint) {
-        setAttribute(Qt::WA_TranslucentBackground);
-    }
-protected:
-    void paintEvent(QPaintEvent *) override {
-        QStyleOption option; option.initFrom(this);
-        QPainter painter(this); style()->drawPrimitive(QStyle::PE_Widget, &option, &painter, this);
-    }
-};
+// Decodes at most bounds; oversized or unreadable images give a null image.
+QImage attachmentImage(const QByteArray &data, const QSize &bounds)
+{
+    QBuffer source; source.setData(data); source.open(QIODevice::ReadOnly);
+    QImageReader reader(&source);
+    const QSize size = reader.size();
+    if (!size.isValid() || qint64(size.width()) * size.height() > 32000000) return {};
+    reader.setScaledSize(size.scaled(bounds, Qt::KeepAspectRatio));
+    return reader.read();
+}
 
 // The model may be long, but the effort and disclosure arrow must remain
 // readable when the inspector leaves only a narrow composer column.
@@ -162,18 +163,23 @@ private:
 MessageComposer::MessageComposer(QWidget *parent) : QWidget(parent)
 {
     setObjectName("messageComposer");
-    auto *layout = new QVBoxLayout(this); layout->setContentsMargins(0, 8, 0, 0); layout->setSpacing(7);
-    m_attachmentScroll = new QScrollArea; m_attachmentScroll->setObjectName("messageAttachments");
-    m_attachmentScroll->setWidgetResizable(true); m_attachmentScroll->setFrameShape(QFrame::NoFrame);
-    m_attachmentScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_attachmentScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded); m_attachmentScroll->setFixedHeight(78);
-    m_attachmentList = new QWidget; m_attachmentsLayout = new QHBoxLayout(m_attachmentList);
-    m_attachmentsLayout->setContentsMargins(0, 0, 0, 0); m_attachmentsLayout->setSpacing(8);
-    m_attachmentScroll->setWidget(m_attachmentList); m_attachmentScroll->hide(); layout->addWidget(m_attachmentScroll);
+    auto *layout = new QVBoxLayout(this); layout->setContentsMargins(0, 4, 0, 0); layout->setSpacing(0);
+    m_toolbar = new ComposerToolbar(this); layout->addWidget(m_toolbar);
+    m_attachmentsChip = new ToolbarChip; m_attachmentsChip->setObjectName("attachmentsChip");
+    m_attachmentsChip->setTone(ChipTone::Neutral); m_attachmentsChip->setIconName("attachment");
+    m_attachmentList = new QWidget; m_attachmentList->setObjectName("attachmentsPopover");
+    m_attachmentsLayout = new QVBoxLayout(m_attachmentList); m_attachmentsLayout->setContentsMargins(8, 8, 8, 8); m_attachmentsLayout->setSpacing(2);
+    m_attachmentsChip->setPopoverContent(m_attachmentList);
+    m_toolbar->add(ComposerToolbar::Slot::Attachments, m_attachmentsChip);
+    m_preview = new QLabel(this, Qt::ToolTip); m_preview->setObjectName("attachmentPreview"); m_preview->hide();
+    openUrl = [](const QUrl &url) { return QDesktopServices::openUrl(url); };
+    m_input = new QWidget(this); m_input->setObjectName("messageInputArea");
+    auto *inputLayout = new QVBoxLayout(m_input); inputLayout->setContentsMargins(0, 0, 0, 0); inputLayout->setSpacing(7);
+    layout->addWidget(m_input);
     auto *edit = new ComposeEdit(this); m_editor = edit; edit->setObjectName("messageInput");
     edit->setAccessibleName(tr("Message to selected agent")); edit->setPlaceholderText(tr("Message this agent…"));
     edit->setFixedHeight(76); edit->setTabChangesFocus(true);
-    layout->addWidget(edit);
+    inputLayout->addWidget(edit);
     auto *actions = new QHBoxLayout; m_actions = actions; actions->setContentsMargins(0, 0, 0, 0); actions->setSpacing(8);
     m_attach = new QPushButton; m_attach->setObjectName("attachMessageFile");
     m_attach->setFixedSize(34, 34); m_attach->setIconSize(QSize(19, 19));
@@ -189,7 +195,7 @@ MessageComposer::MessageComposer(QWidget *parent) : QWidget(parent)
     connect(m_stop,&QPushButton::clicked,this,[this]{emit interruptRequested(m_key);});
     m_settings = new SettingsButton(this); m_settings->setObjectName("sessionModelSettings"); m_settings->setFixedHeight(34);
     m_settings->setAccessibleName(tr("Model and reasoning effort for this session"));
-    m_settingsPopup = new SettingsPopup(this); m_settingsPopup->setObjectName("sessionSettingsPopup");
+    m_settingsPopup = new ChipPopover(this); m_settingsPopup->setObjectName("sessionSettingsPopup");
     auto *settingsLayout = new QVBoxLayout(m_settingsPopup); settingsLayout->setContentsMargins(14, 12, 14, 12); settingsLayout->setSpacing(8);
     auto *modelLabel = m_modelLabel = new QLabel(tr("Model"));
     m_models = new QComboBox; m_models->setObjectName("sessionModelChoice"); m_models->setAccessibleName(tr("Model"));
@@ -221,8 +227,8 @@ MessageComposer::MessageComposer(QWidget *parent) : QWidget(parent)
         m_settingsPopup->hide(); emit settingsRequested(m_key, model, effort);
     });
     actions->addWidget(m_attach); actions->addStretch(0); actions->addWidget(m_status, 1); actions->addWidget(m_retry); actions->addWidget(m_settings); actions->addWidget(m_stop); actions->addWidget(m_send);
-    layout->addLayout(actions);
-    m_feedback = new QHBoxLayout; m_feedback->setContentsMargins(0, 0, 0, 0); m_feedback->setSpacing(8); layout->addLayout(m_feedback);
+    inputLayout->addLayout(actions);
+    m_feedback = new QHBoxLayout; m_feedback->setContentsMargins(0, 0, 0, 0); m_feedback->setSpacing(8); inputLayout->addLayout(m_feedback);
     connect(edit, &QPlainTextEdit::textChanged, this, [this]() {
         if (m_loading || m_key.isEmpty()) return;
         auto &draft = m_drafts[m_key]; draft.text = m_editor->toPlainText();
@@ -290,6 +296,7 @@ void MessageComposer::setSessionKey(const QString &key)
 {
     if (key == m_key) return;
     m_settingsPopup->hide();
+    m_toolbar->closePopovers(); m_preview->hide();
     if (!key.isEmpty() && !m_drafts.contains(key)) m_drafts.insert(key, m_draftStore.load(key));
     m_key = key; m_loading = true;
     restoreDraft();
@@ -510,7 +517,7 @@ bool MessageComposer::addAttachment(const QString &name, const QString &mime, co
     cursor.insertText((leading ? " " : "") + reference + (trailing ? " " : ""));
     m_editor->setTextCursor(cursor);
     if (!draft.uncertain) { draft.notice.clear(); draft.error = false; }
-    saveDraft(m_key); rebuildAttachments(); updateControls(); return true;
+    saveDraft(m_key); rebuildAttachments(); updateControls(); m_attachmentsChip->flash(); return true;
 }
 
 void MessageComposer::showError(const QString &text)
@@ -521,48 +528,114 @@ void MessageComposer::showError(const QString &text)
 
 void MessageComposer::rebuildAttachments()
 {
-    while (auto *item = m_attachmentsLayout->takeAt(0)) { delete item->widget(); delete item; }
-    const auto draft = m_drafts.value(m_key);
-    m_attachmentScroll->setVisible(!draft.sending && !draft.attachments.isEmpty());
-    if (draft.sending) return;
-    for (int i = 0; i < draft.attachments.size(); ++i) {
-        const auto &attachment = draft.attachments[i];
-        auto *tile = new QWidget; tile->setObjectName("attachmentTile"); tile->setFixedSize(174, 58);
-        auto *row = new QHBoxLayout(tile); row->setContentsMargins(7, 6, 5, 6); row->setSpacing(7);
-        auto *image = new QLabel; image->setFixedSize(38, 38); image->setAlignment(Qt::AlignCenter);
-        QBuffer source; source.setData(attachment.data); source.open(QIODevice::ReadOnly);
-        QImageReader reader(&source);
-        const QSize sourceSize = reader.size();
-        if (sourceSize.isValid() && qint64(sourceSize.width()) * sourceSize.height() <= 32000000) {
-            reader.setScaledSize(sourceSize.scaled(76, 76, Qt::KeepAspectRatio));
-            const QImage thumbnail = reader.read();
-            if (!thumbnail.isNull()) image->setPixmap(QPixmap::fromImage(thumbnail).scaled(38, 38, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-        }
-        if (image->pixmap().isNull()) image->setPixmap(style()->standardIcon(QStyle::SP_FileIcon).pixmap(26, 26));
-        auto *text = new QLabel; text->setTextFormat(Qt::PlainText); text->setWordWrap(true);
-        text->setText(attachment.reference + '\n' + text->fontMetrics().elidedText(attachment.name, Qt::ElideMiddle, 94) + '\n' + tr("%1 KiB").arg(qMax<qsizetype>(1, (attachment.data.size() + 1023) / 1024)));
-        text->setToolTip(attachment.name); text->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-        auto *remove = new QPushButton(QStringLiteral("×")); remove->setObjectName("removeAttachment"); remove->setFixedSize(20, 26);
-        remove->setAccessibleName(tr("Remove attachment %1").arg(attachment.name)); remove->setEnabled(!draft.sending);
-        connect(remove, &QPushButton::clicked, this, [this, i]() {
-            auto &current = m_drafts[m_key]; if (current.sending || i >= current.attachments.size()) return;
-            const auto reference = current.attachments.takeAt(i).reference;
-            current.attachmentHashes.clear();
-            if (!reference.isEmpty()) {
-                auto edit = m_editor->textCursor(); edit.beginEditBlock();
-                auto match = m_editor->document()->find(reference);
-                while (!match.isNull()) {
-                    match.removeSelectedText();
-                    match = m_editor->document()->find(reference, match);
-                }
-                edit.endEditBlock();
-            }
-            saveDraft(m_key); rebuildAttachments(); updateControls();
-        });
-        row->addWidget(image); row->addWidget(text, 1); row->addWidget(remove); m_attachmentsLayout->addWidget(tile);
+    m_preview->hide();
+    // Detach before deleting: a row's remove button may be the caller.
+    while (auto *item = m_attachmentsLayout->takeAt(0)) {
+        if (auto *row = item->widget()) { row->hide(); row->setParent(nullptr); row->deleteLater(); }
+        delete item;
     }
-    m_attachmentsLayout->addStretch();
+    const auto draft = m_drafts.value(m_key);
+    const int count = draft.sending ? 0 : int(draft.attachments.size());
+    QStringList names;
+    for (int i = 0; i < count; ++i) {
+        const auto &attachment = draft.attachments[i];
+        names << attachment.reference + ' ' + attachment.name;
+        auto *row = new QWidget; row->setObjectName("attachmentRow"); row->setProperty("attachmentIndex", i);
+        row->setAttribute(Qt::WA_StyledBackground); row->setAttribute(Qt::WA_Hover); row->setFocusPolicy(Qt::TabFocus);
+        row->setCursor(Qt::PointingHandCursor); row->setToolTip(tr("Open %1").arg(attachment.name)); row->installEventFilter(this);
+        auto *line = new QHBoxLayout(row); line->setContentsMargins(6, 4, 4, 4); line->setSpacing(8);
+        auto *image = new QLabel; image->setFixedSize(30, 22); image->setAlignment(Qt::AlignCenter);
+        const QImage thumbnail = attachmentImage(attachment.data, QSize(60, 44));
+        image->setPixmap(thumbnail.isNull() ? style()->standardIcon(QStyle::SP_FileIcon).pixmap(18, 18)
+            : QPixmap::fromImage(thumbnail).scaled(30, 22, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        auto *text = new QLabel; text->setTextFormat(Qt::PlainText);
+        text->setText(attachment.reference + ' ' + text->fontMetrics().elidedText(attachment.name, Qt::ElideMiddle, 180)
+            + '\n' + tr("%1 KiB").arg(qMax<qsizetype>(1, (attachment.data.size() + 1023) / 1024)));
+        auto *remove = new QPushButton(QStringLiteral("×")); remove->setObjectName("removeAttachment"); remove->setFixedSize(24, 24);
+        remove->setAccessibleName(tr("Remove attachment %1").arg(attachment.name));
+        connect(remove, &QPushButton::clicked, this, [this, i] { removeAttachment(i); });
+        line->addWidget(image); line->addWidget(text, 1); line->addWidget(remove);
+        m_attachmentsLayout->addWidget(row);
+    }
+    m_attachmentsChip->setLabels(tr("%1 attached").arg(count), QString::number(count));
+    m_attachmentsChip->setDetail(names.join('\n'));
+    m_attachmentsChip->setActive(count > 0);   // closes the popover with the last one
+    if (m_attachmentsChip->popover()->isVisible()) m_attachmentsChip->popover()->reposition();
 }
+
+void MessageComposer::removeAttachment(int index)
+{
+    auto &current = m_drafts[m_key]; if (current.sending || index < 0 || index >= current.attachments.size()) return;
+    const auto reference = current.attachments.takeAt(index).reference;
+    current.attachmentHashes.clear();
+    if (!reference.isEmpty()) {
+        auto edit = m_editor->textCursor(); edit.beginEditBlock();
+        auto match = m_editor->document()->find(reference);
+        while (!match.isNull()) {
+            match.removeSelectedText();
+            match = m_editor->document()->find(reference, match);
+        }
+        edit.endEditBlock();
+    }
+    saveDraft(m_key); rebuildAttachments(); updateControls();
+}
+
+void MessageComposer::openAttachment(int index)
+{
+    const auto draft = m_drafts.value(m_key); if (draft.sending || index < 0 || index >= draft.attachments.size()) return;
+    const auto &attachment = draft.attachments[index];
+    const QString path = AttachmentFiles::store(attachment.name, attachment.data);
+    if (path.isEmpty()) { showError(tr("Could not open %1.").arg(attachment.name)); return; }
+    m_attachmentsChip->closePopover();
+    // Wayland launches only after the popup has gone: dispatch once it closed.
+    QTimer::singleShot(0, this, [this, path] {
+        if (!openUrl(QUrl::fromLocalFile(path))) showError(tr("Could not open the attachment with its default application."));
+    });
+}
+
+void MessageComposer::showAttachmentPreview(QWidget *row, int index)
+{
+    const auto draft = m_drafts.value(m_key); if (index < 0 || index >= draft.attachments.size()) return;
+    const QImage image = attachmentImage(draft.attachments[index].data, QSize(320, 240));
+    if (image.isNull()) { m_preview->hide(); return; }
+    m_preview->setPixmap(QPixmap::fromImage(image)); m_preview->adjustSize();
+    const QRect screen = row->screen()->availableGeometry();
+    QPoint position = row->mapToGlobal(QPoint(row->width() + 10, 0));
+    if (position.x() + m_preview->width() > screen.right()) position.setX(row->mapToGlobal(QPoint(0, 0)).x() - m_preview->width() - 10);
+    position.setY(qBound(screen.top() + 8, position.y(), screen.bottom() - m_preview->height() - 8));
+    m_preview->move(position); m_preview->show();
+}
+
+bool MessageComposer::eventFilter(QObject *watched, QEvent *event)
+{
+    auto *row = qobject_cast<QWidget *>(watched);
+    if (row && row->objectName() == "attachmentRow") {
+        const int index = row->property("attachmentIndex").toInt();
+        switch (event->type()) {
+        case QEvent::Enter: showAttachmentPreview(row, index); break;
+        case QEvent::Leave: m_preview->hide(); break;
+        case QEvent::MouseButtonPress: return true;   // take the grab so the release comes here
+        case QEvent::MouseButtonRelease:
+            if (static_cast<QMouseEvent *>(event)->button() == Qt::LeftButton) { openAttachment(index); return true; }
+            break;
+        case QEvent::KeyPress: {
+            const int key = static_cast<QKeyEvent *>(event)->key();
+            if (key == Qt::Key_Return || key == Qt::Key_Enter || key == Qt::Key_Space) { openAttachment(index); return true; }
+            break;
+        }
+        default: break;
+        }
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
+void MessageComposer::setInputVisible(bool visible)
+{
+    if (!visible) m_settingsPopup->hide();
+    m_input->setVisible(visible);
+}
+
+bool MessageComposer::isInputVisible() const { return m_input->isVisibleTo(this); }
 
 void MessageComposer::updateControls()
 {
@@ -751,15 +824,19 @@ void MessageComposer::setTheme(bool dark)
 {
     m_dark = dark;
     updateSettingsButton();
+    m_toolbar->setTheme(dark);
     m_attach->setIcon(workspaceIcon("attachment", dark ? QColor("#c5cfdb") : QColor("#536477")));
     m_stop->setIcon(workspaceIcon("stop",dark ? QColor("#ff9ca8") : QColor("#b52d48")));
     setStyleSheet(QString(R"(
         QPlainTextEdit#messageInput { background:%1; color:%2; border:1px solid %3; border-radius:9px; padding:%8px; font-size:%9px; selection-background-color:%4; }
         QPlainTextEdit#messageInput:focus { border-color:%5; }
-        QScrollArea#messageAttachments, QWidget#messageComposer { background:transparent; border:0; }
-        QWidget#attachmentTile { background:%1; border:1px solid %3; border-radius:8px; }
-        QWidget#attachmentTile QLabel { font-size:10px; border:0; }
-        QPushButton#removeAttachment { padding:0; border:0; background:transparent; }
+        QWidget#messageComposer { background:transparent; border:0; }
+        QWidget#attachmentRow { border-radius:6px; }
+        QWidget#attachmentRow:hover, QWidget#attachmentRow:focus { background:%4; }
+        QWidget#attachmentsPopover QLabel { font-size:11px; border:0; background:transparent; }
+        QPushButton#removeAttachment { padding:0; border:0; background:transparent; font-size:15px; color:%7; }
+        QPushButton#removeAttachment:hover { color:%2; }
+        QLabel#attachmentPreview { background:%1; border:1px solid %3; border-radius:6px; padding:4px; }
         QPushButton#sendMessage { background:%5; color:%6; border:1px solid %5; padding:8px 15px; border-radius:7px; font-weight:600; }
         QPushButton#sendMessage:disabled { background:%1; color:%7; border-color:%3; }
         QPushButton#sessionModelSettings { padding:0 10px; font-size:11px; min-height:0; border:1px solid transparent; border-radius:7px; color:%2; background:transparent; }

@@ -5,12 +5,16 @@
 #include <QHash>
 #include <QSet>
 #include <QWidget>
+#include <functional>
 
 class QLabel;
 class QComboBox;
 class QPlainTextEdit;
 class QPushButton;
-class QScrollArea;
+class ComposerToolbar;
+class ToolbarChip;
+class QUrl;
+class QVBoxLayout;
 class QHBoxLayout;
 class QFrame;
 
@@ -51,6 +55,13 @@ public:
     QString sessionKey() const { return m_key; }
     void attachDroppedFiles(const QStringList &paths);
     QPlainTextEdit *editor() const { return m_editor; }
+    // Notices and attachments above the field; the window adds its own chips.
+    ComposerToolbar *toolbar() const { return m_toolbar; }
+    // A required question replaces the field and its actions; the toolbar stays.
+    void setInputVisible(bool visible);
+    bool isInputVisible() const;
+    // Opens a stored copy of an attachment; tests replace the desktop handler.
+    std::function<bool(const QUrl &)> openUrl;
 
 signals:
     void interruptRequested(const QString &sessionKey);
@@ -62,6 +73,7 @@ signals:
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     using Draft = ComposerDraft;
@@ -77,6 +89,9 @@ private:
     void attachFile(const QString &path);
     void updateControls();
     void rebuildAttachments();
+    void removeAttachment(int index);
+    void openAttachment(int index);
+    void showAttachmentPreview(QWidget *row, int index);
     void showError(const QString &text);
     void openSettings();
     void updateSettingsButton();
@@ -105,9 +120,11 @@ private:
     bool m_settingsEnabled = false;
     QPushButton *m_attach, *m_send, *m_retry;
     QPushButton *m_stop;
-    QScrollArea *m_attachmentScroll;
-    QWidget *m_attachmentList;
-    QHBoxLayout *m_attachmentsLayout;
+    ComposerToolbar *m_toolbar;
+    ToolbarChip *m_attachmentsChip;
+    QWidget *m_attachmentList, *m_input;
+    QVBoxLayout *m_attachmentsLayout;
+    QLabel *m_preview;
     QHBoxLayout *m_actions;
     QHBoxLayout *m_feedback;
     bool m_narrow = false;

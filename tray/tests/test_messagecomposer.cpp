@@ -1,6 +1,10 @@
 #include "MessageComposer.h"
+#include "AttachmentViewer.h"
+#include "ComposerToolbar.h"
 
 #include <QApplication>
+#include <QBuffer>
+#include <QEnterEvent>
 #include <QComboBox>
 #include <QDialog>
 #include <QDir>
@@ -48,6 +52,21 @@ void observe(MessageComposer &composer, QList<Submission> &submissions)
 }
 
 QPushButton *sendButton(MessageComposer &composer) { return composer.findChild<QPushButton *>("sendMessage"); }
+
+QByteArray pngBytes()
+{
+    QImage image(8, 6, QImage::Format_RGB32); image.fill(Qt::darkCyan);
+    QByteArray data; QBuffer buffer(&data); buffer.open(QIODevice::WriteOnly); image.save(&buffer, "PNG"); return data;
+}
+
+struct Window {
+    QWidget widget; MessageComposer *composer = new MessageComposer;
+    explicit Window(const QString &key) {
+        auto *layout = new QVBoxLayout(&widget); layout->addWidget(composer);
+        composer->setSessionKey(key); composer->setAvailability(true); widget.resize(720, 260); widget.show();
+    }
+    ToolbarChip *chip() const { return composer->findChild<ToolbarChip *>("attachmentsChip"); }
+};
 QLabel *status(MessageComposer &composer) { return composer.findChild<QLabel *>("messageStatus"); }
 
 // Exercise the editor's MIME insertion path without reading or overwriting the
@@ -107,6 +126,10 @@ private slots:
     void unsupportedModelOffersTerminal();
     void contentScaleEnlargesOnlyTheMessageField();
     void draftStateFollowsUnsentContent();
+    void attachmentsChipSummarizesAndRemoves();
+    void attachmentsPopoverFollowsSessionAndSending();
+    void attachmentRowOpensStoredCopyAndPreviews();
+    void hiddenInputKeepsToolbar();
 private:
     QTemporaryDir m_settings;
 };
@@ -280,6 +303,7 @@ void TestMessageComposer::contentScaleEnlargesOnlyTheMessageField()
     QCOMPARE(QFontInfo(composer->editor()->font()).pixelSize(), 26);
     QCOMPARE(composer->editor()->height(), 2 * height);
     QCOMPARE(QFontInfo(send->font()).pixelSize(), sendFont);
+    QCOMPARE(composer->toolbar()->height(), ComposerToolbar::RowHeight);
     QCOMPARE(composer->editor()->toPlainText(), QString("draft survives"));
     composer->setTheme(true);
     QCOMPARE(QFontInfo(composer->editor()->font()).pixelSize(), 26);
@@ -815,6 +839,75 @@ void TestMessageComposer::draftStateFollowsUnsentContent()
     QVERIFY(!composer.hasDraft("arch/two")); QVERIFY(composer.hasDraft("arch/renamed"));
     QVERIFY(composer.offerDraft("arch/offered", "Continue the interrupted turn"));
     QVERIFY(composer.hasDraft("arch/offered"));
+}
+
+void TestMessageComposer::attachmentsChipSummarizesAndRemoves()
+{
+    Window window("local/chip"); QVERIFY(QTest::qWaitForWindowExposed(&window.widget));
+    auto *chip = window.chip(); QVERIFY(chip); QVERIFY(chip->isHidden());
+    QVERIFY(window.composer->addAttachment("one.png", "image/png", pngBytes()));
+    QVERIFY(window.composer->addAttachment("notes.md", "text/markdown", "# notes"));
+    QVERIFY(chip->isVisible()); QCOMPARE(chip->fullLabel(), QString("2 attached")); QCOMPARE(chip->shortLabel(), QString("2"));
+    QVERIFY(chip->property("flashing").toBool());
+    QVERIFY(chip->toolTip().contains("[Image #1] one.png")); QVERIFY(chip->toolTip().contains("[File #2] notes.md"));
+    QCOMPARE(window.composer->editor()->toPlainText(), QString("[Image #1] [File #2] "));
+    QTest::mouseClick(chip, Qt::LeftButton); QTRY_VERIFY(chip->popover()->isVisible());
+    QCOMPARE(chip->popover()->findChildren<QWidget *>("attachmentRow").size(), 2);
+    chip->popover()->findChildren<QPushButton *>("removeAttachment").first()->click();
+    QCOMPARE(chip->fullLabel(), QString("1 attached")); QVERIFY(chip->popover()->isVisible());
+    QVERIFY(!window.composer->editor()->toPlainText().contains("[Image #1]"));
+    QCOMPARE(chip->popover()->findChildren<QWidget *>("attachmentRow").size(), 1);
+    chip->popover()->findChildren<QPushButton *>("removeAttachment").first()->click();
+    QVERIFY(chip->isHidden()); QVERIFY(!chip->popover()->isVisible());
+    QVERIFY(window.composer->findChildren<QPushButton *>("removeAttachment").isEmpty());
+}
+
+void TestMessageComposer::attachmentsPopoverFollowsSessionAndSending()
+{
+    Window window("local/a"); QVERIFY(QTest::qWaitForWindowExposed(&window.widget));
+    QVERIFY(window.composer->addAttachment("a.txt", "text/plain", "a"));
+    window.composer->setSessionKey("local/b");
+    QVERIFY(window.composer->addAttachment("b.txt", "text/plain", "b")); QVERIFY(window.composer->addAttachment("c.txt", "text/plain", "c"));
+    auto *chip = window.chip(); QTest::mouseClick(chip, Qt::LeftButton); QTRY_VERIFY(chip->popover()->isVisible());
+    // Switching session never shows the previous session's list.
+    window.composer->setSessionKey("local/a");
+    QVERIFY(!chip->popover()->isVisible()); QCOMPARE(chip->fullLabel(), QString("1 attached"));
+    QTest::mouseClick(chip, Qt::LeftButton); QTRY_VERIFY(chip->popover()->isVisible());
+    QVERIFY(window.composer->setSending("local/a"));
+    QVERIFY(!chip->popover()->isVisible()); QVERIFY(chip->isHidden());
+    window.composer->deliveryFinished("local/a", false, "Network down");
+    QVERIFY(chip->isVisible()); QCOMPARE(chip->fullLabel(), QString("1 attached"));
+}
+
+void TestMessageComposer::attachmentRowOpensStoredCopyAndPreviews()
+{
+    Window window("local/open"); QVERIFY(QTest::qWaitForWindowExposed(&window.widget));
+    QList<QUrl> opened; window.composer->openUrl = [&opened](const QUrl &url) { opened << url; return true; };
+    const QByteArray png = pngBytes(); QVERIFY(window.composer->addAttachment("shot.png", "image/png", png));
+    auto *chip = window.chip(); QTest::mouseClick(chip, Qt::LeftButton); QTRY_VERIFY(chip->popover()->isVisible());
+    auto *row = chip->popover()->findChild<QWidget *>("attachmentRow"); QVERIFY(row);
+    QEnterEvent enter(QPointF(4, 4), row->mapToGlobal(QPointF(4, 4)), row->mapToGlobal(QPointF(4, 4)));
+    QApplication::sendEvent(row, &enter);
+    auto *preview = window.composer->findChild<QLabel *>("attachmentPreview");
+    QVERIFY(preview->isVisible()); QVERIFY(!preview->pixmap().isNull());
+    QEvent leave(QEvent::Leave); QApplication::sendEvent(row, &leave); QVERIFY(preview->isHidden());
+    QTest::mouseClick(row, Qt::LeftButton, Qt::NoModifier, QPoint(row->width() / 2, row->height() / 2));
+    QTRY_COMPARE(opened.size(), 1); QVERIFY(opened[0].isLocalFile());
+    QFile stored(opened[0].toLocalFile()); QVERIFY(stored.open(QIODevice::ReadOnly)); QCOMPARE(stored.readAll(), png);
+    QVERIFY(!chip->popover()->isVisible());
+    QVERIFY(QDir(AttachmentFiles::root()).removeRecursively());
+}
+
+void TestMessageComposer::hiddenInputKeepsToolbar()
+{
+    Window window("local/question"); QVERIFY(QTest::qWaitForWindowExposed(&window.widget));
+    QVERIFY(window.composer->isInputVisible());
+    window.composer->setInputVisible(false);
+    QVERIFY(!window.composer->isInputVisible()); QVERIFY(window.composer->isVisible());
+    QVERIFY(window.composer->toolbar()->isVisible());
+    QVERIFY(!window.composer->editor()->isVisible()); QVERIFY(!sendButton(*window.composer)->isVisible());
+    window.composer->setInputVisible(true);
+    QVERIFY(window.composer->editor()->isVisible()); QVERIFY(sendButton(*window.composer)->isVisible());
 }
 
 int main(int argc, char **argv)

@@ -2216,7 +2216,7 @@ void TestSessionsWindow::fileDropsAcrossSessionPanelKeepDraftAndTarget()
         QVERIFY(enter.isAccepted());QVERIFY(overlay->isVisible());QCOMPARE(overlay->geometry(),panel->rect());
         const auto preview=qEnvironmentVariable("HGS_DROP_PREVIEW");if(!preview.isEmpty()&&count==0){QDir().mkpath(preview);QVERIFY(window.grab().save(preview+"/session-file-drop.png"));}
         QDropEvent drop(QPointF(10,10),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(target,&drop);
-        QVERIFY(drop.isAccepted());QVERIFY(overlay->isHidden());QCOMPARE(composer->findChildren<QWidget *>("attachmentTile").size(),++count);
+        QVERIFY(drop.isAccepted());QVERIFY(overlay->isHidden());QCOMPARE(composer->findChildren<QWidget *>("attachmentRow").size(),++count);
         QVERIFY(composer->editor()->toPlainText().contains("Keep every word of this draft"));
     }
     auto *tabs=window.findChild<QTabWidget *>("sessionDetailTabs");
@@ -2225,14 +2225,14 @@ void TestSessionsWindow::fileDropsAcrossSessionPanelKeepDraftAndTarget()
         if(target==tabs->widget(1))tabs->setCurrentIndex(1);
         QDragEnterEvent enter(QPoint(10,10),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(target,&enter);QVERIFY(enter.isAccepted());
         QDropEvent drop(QPointF(10,10),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(target,&drop);
-        QVERIFY(drop.isAccepted());QCOMPARE(tabs->currentIndex(),0);QCOMPARE(composer->findChildren<QWidget *>("attachmentTile").size(),++count);
+        QVERIFY(drop.isAccepted());QCOMPARE(tabs->currentIndex(),0);QCOMPARE(composer->findChildren<QWidget *>("attachmentRow").size(),++count);
     }
     QCOMPARE(sent.size(),0);QVERIFY(QFileInfo::exists(file.fileName()));
     QDragEnterEvent enter(QPoint(10,10),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(panel,&enter);QVERIFY(enter.isAccepted());
     window.showSession("mac","claude/infra/review");
     QDropEvent stale(QPointF(10,10),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(panel,&stale);
-    QVERIFY(!stale.isAccepted());QCOMPARE(composer->findChildren<QWidget *>("attachmentTile").size(),0);
-    window.showSession({},"codex/hgs/dashboard");QCOMPARE(composer->findChildren<QWidget *>("attachmentTile").size(),count);
+    QVERIFY(!stale.isAccepted());QCOMPARE(composer->findChildren<QWidget *>("attachmentRow").size(),0);
+    window.showSession({},"codex/hgs/dashboard");QCOMPARE(composer->findChildren<QWidget *>("attachmentRow").size(),count);
     QMimeData web;web.setUrls({QUrl("https://example.test/file.pdf")});
     QDragEnterEvent remote(QPoint(10,10),Qt::CopyAction,&web,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(panel,&remote);QVERIFY(!remote.isAccepted());
     // A visible subagent composer owns the panel's drop; the parent draft stays intact.
@@ -2244,8 +2244,8 @@ void TestSessionsWindow::fileDropsAcrossSessionPanelKeepDraftAndTarget()
     auto *child=window.findChild<MessageComposer *>("subagentComposer");QVERIFY(child->isVisible());child->editor()->setPlainText("Child draft");
     QDragEnterEvent childEnter(QPoint(10,10),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(panel,&childEnter);QVERIFY(childEnter.isAccepted());
     QDropEvent childDrop(QPointF(10,10),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(panel,&childDrop);QVERIFY(childDrop.isAccepted());
-    QCOMPARE(child->findChildren<QWidget *>("attachmentTile").size(),1);QVERIFY(child->editor()->toPlainText().contains("Child draft"));
-    QCOMPARE(composer->findChildren<QWidget *>("attachmentTile").size(),count);QCOMPARE(sent.size(),0);
+    QCOMPARE(child->findChildren<QWidget *>("attachmentRow").size(),1);QVERIFY(child->editor()->toPlainText().contains("Child draft"));
+    QCOMPARE(composer->findChildren<QWidget *>("attachmentRow").size(),count);QCOMPARE(sent.size(),0);
 }
 
 void TestSessionsWindow::terminalDropKeepsActivityDraftAndDoesNotSubmit()
@@ -2264,12 +2264,12 @@ void TestSessionsWindow::terminalDropKeepsActivityDraftAndDoesNotSubmit()
     QDragEnterEvent enter(QPoint(10,10),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(panel,&enter);QVERIFY(enter.isAccepted());
     QDropEvent drop(QPointF(10,10),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(panel,&drop);QVERIFY(drop.isAccepted());
     QCOMPARE(tabs->currentWidget(),terminal);QCOMPARE(composer->editor()->toPlainText(),QString("Keep Activity draft"));
-    QCOMPARE(composer->findChildren<QWidget *>("attachmentTile").size(),0);QCOMPARE(sent.size(),0);
+    QCOMPARE(composer->findChildren<QWidget *>("attachmentRow").size(),0);QCOMPARE(sent.size(),0);
     QByteArray pasted;for(const auto &item:output)pasted+=item.first().toByteArray();
     QVERIFY(pasted.contains("report'\\''s draft.pdf"));QVERIFY(!pasted.contains('\r'));QVERIFY(!pasted.contains('\n'));
     output.clear();QDragEnterEvent second(QPoint(10,10),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(panel,&second);
     tabs->setCurrentIndex(0);QDropEvent stale(QPointF(10,10),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(panel,&stale);
-    QVERIFY(!stale.isAccepted());QCOMPARE(output.size(),0);QCOMPARE(composer->findChildren<QWidget *>("attachmentTile").size(),0);
+    QVERIFY(!stale.isAccepted());QCOMPARE(output.size(),0);QCOMPARE(composer->findChildren<QWidget *>("attachmentRow").size(),0);
 }
 
 void TestSessionsWindow::sessionAttentionMenuPersistsWithoutSelection()
