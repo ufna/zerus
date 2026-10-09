@@ -83,14 +83,30 @@ it with `positionJumpButton()`; `SessionsWindow` stops reparenting it into the f
     `Qt::Popup | Qt::FramelessWindowHint`, translucent, painted with
     `PE_Widget`. The model settings popup uses it as well.
   - Opens above its anchor chip, aligned to the chip's nearer edge and kept inside
-    the window. Escape closes it and returns focus to the chip. Closing by any other
-    means returns focus to the widget that had it before opening.
+    the window. Escape closes it. Closing returns focus to the widget that had it
+    when the popover opened: the chip after keyboard activation, the message field
+    after a mouse click (chips never take focus on click).
 - `ComposerToolbar : QWidget`
   - Fixed height 34 px; never wraps.
-  - `addLeading(QWidget *, int priority, bool hideable = false)` and
-    `addTrailing(...)`. Items can be any widget; `ToolbarChip` items take part in
-    compaction.
-  - Relayout on resize and whenever an item's visibility or label changes.
+  - `add(Slot, QWidget *)`. A fixed slot table owns each item's zone, visual order,
+    priority and hideability, so the order does not depend on which code adds an
+    item first:
+
+    | Slot | Zone | Priority (lower gives way first) | Hideable |
+    |---|---|---|---|
+    | `Attachments` | leading | 20 | no |
+    | `MarkRead` | leading | 10 | yes |
+    | `Compaction` | leading | never shortened | no |
+    | `CompactionCancel` | leading | never shortened | no |
+    | `UsageLimit` | trailing | 50 | no |
+    | `Recovery` | trailing | 40 | no |
+    | `Cache` | trailing | 30 | no |
+    | `Context` | trailing | never shortened | no |
+
+    Items can be any widget; `ToolbarChip` items take part in compaction. Owners show
+    and hide chips only through `ToolbarChip::setActive()`, because the toolbar may
+    additionally hide a hideable chip that does not fit.
+  - Refits on resize and whenever an item's visibility or label changes.
 
 ### `MessageComposer`
 
@@ -125,7 +141,9 @@ it with `positionJumpButton()`; `SessionsWindow` stops reparenting it into the f
 
 ### `CacheStatus`
 
-`CacheStatus::Button` is replaced by a function that configures a `ToolbarChip`:
+`CacheStatus::Button` is replaced by `CacheStatus::Chip : ToolbarChip`, which keeps
+the one-second countdown timer. The labels come from a pure
+`CacheStatus::chipState(data)`, testable without widgets:
 
 | State | Tone | Full / short label |
 |---|---|---|
@@ -153,13 +171,13 @@ button that opens the inspector.
 
 ### `SessionsWindow`
 
-- Removes `activityFooter`, `m_cacheNotice`, `m_cacheWarning`, `m_cacheClear` and the
-  `m_usageWarning` label; `m_recovery` leaves the activity layout.
+- Removes `activityFooter` and `m_cacheNotice`. `m_cacheWarning` and `m_cacheClear`
+  move into the cache popover, `m_usageWarning` into the usage-limit popover, and
+  `m_recovery` leaves the activity layout for the recovery popover.
 - Adds to `m_composer->toolbar()`:
   - leading: Mark as read (Quiet, `read-all` icon, "Mark as read" / icon only,
-    hideable, lowest priority) and a compaction item holding
-    `ActivityView::compactionIndicator()` and `m_compactCancel` (shown as an
-    underlined link);
+    hideable, lowest priority), then `ActivityView::compactionIndicator()` and
+    `m_compactCancel` (shown as an underlined link) as two adjacent items;
   - trailing: usage limit, recovery (`refresh` icon), cache (`context-warning` icon
     when Warning or Danger), `m_contextUsage`.
 - `renderDetails()` and `renderAccountUsage()` set chip labels, tones and visibility
@@ -190,20 +208,27 @@ On every relayout the toolbar fits its items into the available width:
 
 - Chips are reachable with Tab and Shift+Tab; Enter or Space opens a popover, Escape
   closes it and returns focus to the chip. Popover buttons are keyboard operable.
+- Attachment rows in the popover are focusable; Enter or Space opens the attachment.
 - Tone is conveyed by icon and text, never by colour alone.
 - Escape in the field still interrupts a working turn; chips do not change that.
 
 ## Removed object names
 
 Tests and styles that refer to `messageAttachments`, `attachmentTile`,
-`activityCacheNotice`, `activityCacheWarning`,
-`clearContextFromCache`, `activityUsageWarning`, `activityCache` and the footer
-placement of `activityJumpLatest` move to the new names:
-`composerToolbar`, `attachmentsChip`, `attachmentsPopover`, `markReadChip`,
-`compactionItem`, `usageLimitChip`, `recoveryChip`, `cacheChip`, `cacheClearContext`,
-`chipPopover`. `recoveryPanel`, `recoveryNow`, `recoveryCancel`, `cancelCompactSend`,
-`activityContext`, `subagentContext`, `activityJumpLatest` and `removeAttachment`
-(now the remove button of a popover row) keep their names.
+`activityCacheNotice`, `activityCacheWarning`, `clearContextFromCache`,
+`activityCache` and the footer placement of `activityJumpLatest` move to the new
+names: `composerToolbar`, `messageInputArea`, `attachmentsChip`,
+`attachmentsPopover`, `attachmentRow`, `attachmentPreview`, `usageLimitChip`,
+`usageLimitPopover`, `usageLimitRefresh`, `recoveryChip`, `cacheChip`,
+`cachePopover`, `cacheWarning`, `cacheDetail`, `cacheUsageDetails`,
+`cacheClearContext`, `chipPopover`.
+
+These keep their names: `activityMarkRead` (now a chip), `activityUsageWarning`
+(now the text inside the usage-limit popover), `recoveryPanel`, `recoveryNow`,
+`recoveryCancel`, `recoveryHistory`, `providerErrorTerminal`,
+`providerErrorRefresh`, `cancelCompactSend`, `activityCompaction`,
+`activityContext`, `subagentContext`, `activityJumpLatest`, `sessionSettingsPopup`
+and `removeAttachment` (now the remove button of a popover row).
 
 ## Testing
 
