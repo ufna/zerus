@@ -45,6 +45,7 @@
 #include "QuestionCard.h"
 #include "RecoveryWidgets.h"
 #include "SettingsPage.h"
+#include "WindowLayer.h"
 #include "TerminalView.h"
 #include "TerminalScreen.h"
 #include "NewSessionDialog.h"
@@ -83,6 +84,8 @@ private slots:
     void contentScaleLeavesWorkspaceChrome();
     void alwaysOnTopSettingKeepsWindowAbove();
     void railPinTogglesAlwaysOnTop();
+    void windowLayerControlsKeepFocusAndLayout_data();
+    void windowLayerControlsKeepFocusAndLayout();
     void unreadRepliesNeedAnActiveVisibleResult();
     void markAllReadIgnoresFiltersAndKeepsCurrentDraft();
     void unsentDraftBecomesARowStatus();
@@ -213,6 +216,7 @@ void TestSessionsWindow::initTestCase()
     QVERIFY(m_dir.isValid());
     QCoreApplication::setOrganizationName("hgs-tests");
     QCoreApplication::setApplicationName("sessions-window");
+    QGuiApplication::setDesktopFileName("org.example.ZerusSessionsWindowTest");
     QCoreApplication::setApplicationVersion(QLatin1String(HGS_TRAY_VERSION));
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, m_dir.path());
@@ -612,6 +616,56 @@ void TestSessionsWindow::railPinTogglesAlwaysOnTop()
     QVERIFY(restored.findChild<QPushButton *>("windowPin")->isChecked());
     pin->click();
     QVERIFY(!option->isChecked()); QVERIFY(!above(window));
+    QSettings().remove("workspace/alwaysOnTop");
+}
+
+void TestSessionsWindow::windowLayerControlsKeepFocusAndLayout_data()
+{
+    QTest::addColumn<QString>("controlName");
+    QTest::addColumn<bool>("keyboard");
+    QTest::newRow("checkbox-keyboard") << QString("workspaceAlwaysOnTop") << true;
+    QTest::newRow("checkbox-mouse") << QString("workspaceAlwaysOnTop") << false;
+    QTest::newRow("rail-pin-keyboard") << QString("windowPin") << true;
+    QTest::newRow("rail-pin-mouse") << QString("windowPin") << false;
+}
+
+void TestSessionsWindow::windowLayerControlsKeepFocusAndLayout()
+{
+    QFETCH(QString, controlName); QFETCH(bool, keyboard);
+    SessionsWindow window(script()); window.setFleet(fleet());
+    // Give the synthetic window its own title, separate from the live workspace.
+    window.setWindowTitle("Zerus window-layer controls " + QUuid::createUuid().toString(QUuid::Id128));
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window)); window.activateWindow();
+    window.findChild<QPushButton *>("workspaceSettings")->click();
+    auto *layer = window.findChild<WindowLayer *>();
+    auto *control = window.findChild<QAbstractButton *>(controlName);
+    auto *hint = window.findChild<QLabel *>("workspaceAlwaysOnTopHint");
+    QVERIFY(layer && control && hint);
+    QTRY_VERIFY(layer->supported() && !layer->busy());
+    QTest::qWait(30);
+    const auto text = hint->text(); const auto geometry = hint->geometry();
+    int pending = 0;
+    bool pendingKeptFocus = true, pendingKeptLayout = true;
+    connect(layer, &WindowLayer::changed, &window, [&] {
+        if (!layer->busy()) return;
+        ++pending;
+        pendingKeptFocus &= control->isEnabled() && control->hasFocus();
+        pendingKeptLayout &= hint->text() == text && hint->geometry() == geometry;
+    });
+    for (const bool on : {true, false}) {
+        control->setFocus(Qt::TabFocusReason); QTRY_VERIFY(control->hasFocus());
+        if (keyboard) QTest::keyClick(control, Qt::Key_Space);
+        else QTest::mouseClick(control, Qt::LeftButton, Qt::NoModifier, QPoint(8,control->height()/2));
+        QVERIFY(control->isEnabled()); QVERIFY(control->hasFocus());
+        QCOMPARE(hint->text(), text); QCOMPARE(hint->geometry(), geometry);
+        QTRY_VERIFY(!layer->busy() && layer->onTop() == on);
+        QTest::qWait(30);
+        QVERIFY(control->hasFocus()); QCOMPARE(control->isChecked(), on);
+        QCOMPARE(hint->text(), text); QCOMPARE(hint->geometry(), geometry);
+    }
+    if (QGuiApplication::platformName().startsWith("wayland")) QVERIFY(pending >= 2);
+    QVERIFY(pendingKeptFocus); QVERIFY(pendingKeptLayout);
     QSettings().remove("workspace/alwaysOnTop");
 }
 

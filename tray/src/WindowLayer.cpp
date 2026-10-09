@@ -51,7 +51,6 @@ WindowLayer::WindowLayer(QWidget *window)
 QString WindowLayer::hint() const
 {
     if (m_busy && m_id.isEmpty()) return tr("Checking whether this desktop supports keeping Zerus above other windows…");
-    if (m_busy) return tr("Applying the window preference…");
     if (m_error == "denied") return tr("KWin did not apply this preference. Check the window's Keep Above rule in KDE settings.");
     if (m_error == "ambiguous") return tr("Zerus could not uniquely identify its window in KWin. Close duplicate workspace windows and reopen Zerus from the tray to try again.");
     if (!m_supported) return tr("Keep Above is unavailable in this Zerus session. On Wayland, KDE Plasma 6 with KWin scripting is required. You can use your desktop's window menu or rules.");

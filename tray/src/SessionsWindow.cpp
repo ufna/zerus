@@ -977,8 +977,10 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     auto *windowLayer=new WindowLayer(this);
     const auto updateWindowLayer=[this,windowPin,windowLayer]{
         const QSignalBlocker block(windowPin);windowPin->setChecked(windowLayer->onTop());
-        windowPin->setVisible(windowLayer->supported());windowPin->setEnabled(!windowLayer->busy());
-        m_settingsPage->setWindowLayerState(windowLayer->onTop(),windowLayer->supported()&&!windowLayer->busy(),windowLayer->hint());
+        // Disabling a focused control moves focus to the next rail button.
+        // WindowLayer already rejects duplicate requests while KWin is busy.
+        windowPin->setVisible(windowLayer->supported());windowPin->setEnabled(windowLayer->supported());
+        m_settingsPage->setWindowLayerState(windowLayer->onTop(),windowLayer->supported(),windowLayer->hint());
     };
     m_settingsPage->windowLayerChanged=[windowLayer](bool on){windowLayer->request(on);};
     connect(windowPin,&QPushButton::toggled,windowLayer,&WindowLayer::request);

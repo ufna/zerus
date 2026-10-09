@@ -46,6 +46,8 @@ and leaves unrelated windows and desktop rules alone:
 ```sh
 QT_QPA_PLATFORM=wayland ZERUS_TEST_KWIN=1 \
   tray/build/tests/test_kwinwindowlayer nativeKWinChangesOnlyOurWindowAndRestores
+QT_QPA_PLATFORM=wayland \
+  tray/build/tests/test_sessionswindow windowLayerControlsKeepFocusAndLayout
 ```
 
 The ordinary `kwinwindowlayer` test runs on a private D-Bus session with a fake
