@@ -90,6 +90,7 @@ protected:
 private:
     struct Entry { QString host, machine, key, identity; SessionInfo session; bool online; };
     void applyTheme();
+    void updateWindowPinAppearance();
     void applyContentScale();
     void saveOrganization();
     void savePendingLaunches();
@@ -329,6 +330,7 @@ private:
     QStackedWidget *m_pages;
     SettingsPage *m_settingsPage;
     QPushButton *m_settingsNav;
+    QPushButton *m_windowPin = nullptr;
     ProjectsDialog *m_projectsPage;
     QPushButton *m_projectsNav;
     bool m_dark = false;

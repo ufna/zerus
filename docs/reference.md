@@ -215,7 +215,11 @@ over other applications on X11, macOS and KDE Plasma 6 on Wayland. On KDE Waylan
 Zerus uses temporary KWin scripts scoped to its own window and confirms the
 compositor's state; it installs no window rules. The pin above Settings on the
 left rail switches the same option, and both controls follow changes made in
-KDE's window menu. KWin rules can override the preference; Zerus explains a
+KDE's window menu. The unpinned icon is a muted tilted outline; the pinned icon
+is upright, filled and gold, with a small line beneath it. The icon follows the
+confirmed window state and retains its color across theme changes. Hover only
+highlights the button background; its tooltip names the next action.
+KWin rules can override the preference; Zerus explains a
 refused change. Other Wayland desktops require their own integration and show
 the option disabled with a window-menu/rules workaround. Files and terminals
 opened from Zerus may appear behind it. Missing Git metadata does not turn

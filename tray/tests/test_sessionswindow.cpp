@@ -625,14 +625,26 @@ void TestSessionsWindow::railPinTogglesAlwaysOnTop()
     SessionsWindow window(script()); window.setFleet(fleet()); window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
     auto *pin = window.findChild<QPushButton *>("windowPin");
     QVERIFY(pin && pin->isVisible() && pin->isCheckable() && !pin->isChecked());
+    const auto unpinnedIcon = pin->icon().pixmap(pin->iconSize()).toImage();
+    const auto pinAction = pin->toolTip();
     pin->click();
     QVERIFY(pin->isChecked()); QVERIFY(above(window)); QVERIFY(window.isVisible());
+    QVERIFY(pin->icon().pixmap(pin->iconSize()).toImage() != unpinnedIcon);
+    QVERIFY(pin->toolTip() != pinAction); QCOMPARE(pin->accessibleName(), pin->toolTip());
     QVERIFY(QSettings().value("workspace/alwaysOnTop").toBool());
     auto *option = window.findChild<QCheckBox *>("workspaceAlwaysOnTop"); QVERIFY(option && option->isChecked());
     option->setChecked(false);
     QVERIFY(!pin->isChecked()); QVERIFY(!above(window));
+    QCOMPARE(pin->icon().pixmap(pin->iconSize()).toImage(), unpinnedIcon); QCOMPARE(pin->toolTip(), pinAction);
     option->setChecked(true);
     QVERIFY(pin->isChecked()); QVERIFY(above(window));
+    auto *theme = window.findChild<QComboBox *>("workspaceTheme"); QVERIFY(theme);
+    const int originalTheme = theme->currentIndex();
+    theme->setCurrentIndex(1); const auto darkPinned = pin->icon().pixmap(pin->iconSize()).toImage();
+    theme->setCurrentIndex(2);
+    QVERIFY(pin->isChecked()); QVERIFY(above(window));
+    QVERIFY(pin->icon().pixmap(pin->iconSize()).toImage() != darkPinned);
+    theme->setCurrentIndex(originalTheme);
     SessionsWindow restored(script()); restored.setFleet(fleet());
     QVERIFY(restored.findChild<QPushButton *>("windowPin")->isChecked());
     pin->click();
@@ -658,6 +670,7 @@ void TestSessionsWindow::windowLayerControlsKeepFocusAndLayout()
     window.setWindowTitle("Zerus window-layer controls " + QUuid::createUuid().toString(QUuid::Id128));
     window.show();
     QVERIFY(QTest::qWaitForWindowExposed(&window)); window.activateWindow();
+    QVERIFY(QTest::qWaitForWindowActive(&window));
     window.findChild<QPushButton *>("workspaceSettings")->click();
     auto *layer = window.findChild<WindowLayer *>();
     auto *control = window.findChild<QAbstractButton *>(controlName);
@@ -3789,6 +3802,17 @@ void TestSessionsWindow::preview()
         previewOrg.moveSession(previewOrg.observe("mac", "claude/infra/review", ""), infraGroup); previewOrg.setCollapsed(infraGroup, true);
         QSettings().setValue("workspace/organization", QJsonDocument(previewOrg.toJson()).toJson(QJsonDocument::Compact));
         SessionsWindow window(script()); window.setFleet(previewFleet); window.resize(1240, 800); window.show(); QTest::qWait(100);
+        auto *pin = window.findChild<QPushButton *>("windowPin");
+        for (bool pinned : {false, true}) {
+            pin->setChecked(pinned);
+            QTest::mouseMove(&window, QPoint(window.width() - 10, 10)); QTest::qWait(30);
+            const auto name = QString("/window-%1-%2").arg(pinned ? "pinned" : "unpinned", dark ? "dark" : "light");
+            const auto crop = pin->geometry().adjusted(-7, -8, 7, 55);
+            QVERIFY(pin->parentWidget()->grab(crop).save(destination + name + ".png"));
+            QTest::mouseMove(pin, pin->rect().center()); QTest::qWait(30);
+            QVERIFY(pin->parentWidget()->grab(crop).save(destination + name + "-hover.png"));
+        }
+        pin->setChecked(false);
         window.showSession({}, "codex/hgs/dashboard"); QTest::qWait(100);
         auto *client = window.findChild<HgsClient *>();
         QJsonObject data{{"tracked", true}, {"conversation_id", "conversation-one"}, {"phase", "tool"}, {"activity", "busy"},
@@ -3923,7 +3947,7 @@ void TestSessionsWindow::preview()
         SessionsWindow stateWindow(script()); stateWindow.setFleet(stateFleet); stateWindow.resize(1000, 1180); stateWindow.show();
         stateWindow.showSession({}, states.sessions[0].name);
         auto *stateList = stateWindow.findChild<SessionList *>("sessionList");
-        auto *railSplitter = qobject_cast<QSplitter *>(stateWindow.findChild<QWidget *>("sessionListPanel")->parentWidget());
+        auto *railSplitter = qobject_cast<QSplitter *>(stateWindow.findChild<QWidget *>("sessionListSlot")->parentWidget());
         QVERIFY(railSplitter);
         for (const int railWidth : {270, 380}) for (bool compact : {true, false}) {
             railSplitter->setSizes({railWidth, railSplitter->width() - railSplitter->handleWidth() - railWidth});

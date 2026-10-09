@@ -291,7 +291,7 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     auto *refresh = new QPushButton(this); refresh->hide();
     connect(refresh, &QPushButton::clicked, this, [this]() { emit refreshRequested(); inspect(); m_machinesPage->reload(); });
     side->addStretch();
-    auto *windowPin = iconButton("pin", tr("Keep Zerus above other windows"), "windowPin"); windowPin->setCheckable(true);
+    auto *windowPin = m_windowPin = iconButton("unpinned", tr("Keep Zerus above other windows"), "windowPin"); windowPin->setCheckable(true);
     windowPin->setFixedSize(42, 44); windowPin->setIconSize(QSize(24,24)); side->addWidget(windowPin);
     auto *settingsButton = m_settingsNav = iconButton("settings", tr("Settings"), "workspaceSettings"); settingsButton->setCheckable(true); settingsButton->setFixedSize(42, 44); settingsButton->setIconSize(QSize(24,24)); side->addWidget(settingsButton);
     connect(settingsButton, &QPushButton::clicked, this, &SessionsWindow::showWorkspaceSettings);
@@ -980,6 +980,7 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         // Disabling a focused control moves focus to the next rail button.
         // WindowLayer already rejects duplicate requests while KWin is busy.
         windowPin->setVisible(windowLayer->supported());windowPin->setEnabled(windowLayer->supported());
+        updateWindowPinAppearance();
         m_settingsPage->setWindowLayerState(windowLayer->onTop(),windowLayer->supported(),windowLayer->hint());
     };
     m_settingsPage->windowLayerChanged=[windowLayer](bool on){windowLayer->request(on);};
@@ -1121,6 +1122,23 @@ void SessionsWindow::applyContentScale()
     m_question->setContentScale(scale); m_terminal->setContentScale(scale);
 }
 
+void SessionsWindow::updateWindowPinAppearance()
+{
+    if (!m_windowPin) return;
+    const bool pinned = m_windowPin->isChecked();
+    const QString glyph = pinned ? QStringLiteral("pinned") : QStringLiteral("unpinned");
+    const QColor color = pinned ? QColor(m_dark ? "#ffda76" : "#a66000")
+                                : (m_muted.isEmpty() ? palette().color(QPalette::WindowText) : QColor(m_muted));
+    // Native state polling should not rebuild the icon when nothing changed.
+    if (m_windowPin->property("glyph").toString() != glyph || m_windowPin->property("iconColor").value<QColor>() != color) {
+        m_windowPin->setProperty("glyph", glyph); m_windowPin->setProperty("iconColor", color);
+        m_windowPin->setIcon(workspaceIcon(glyph, color));
+    }
+    const QString action = pinned ? tr("Unpin Zerus") : tr("Keep Zerus above other windows");
+    m_windowPin->setToolTip(action); m_windowPin->setAccessibleName(action);
+    m_windowPin->setAccessibleDescription(pinned ? tr("Zerus stays above other windows.") : tr("Other windows can cover Zerus."));
+}
+
 void SessionsWindow::applyTheme()
 {
     const QString theme = QSettings().value("workspace/theme", "system").toString();
@@ -1166,7 +1184,8 @@ void SessionsWindow::applyTheme()
         QPushButton#brandMark:hover, QPushButton#brandMark:checked { background:%10; }
         QPushButton#railButton, QPushButton#workspaceSettings, QPushButton#windowPin { min-height:42px; max-height:42px; background:transparent; border:1px solid transparent; padding:0; }
         QPushButton#railButton:hover, QPushButton#workspaceSettings:hover, QPushButton#windowPin:hover { background:%7; }
-        QPushButton#workspaceSettings:checked, QPushButton#windowPin:checked { background:%7; border-color:%4; }
+        QPushButton#workspaceSettings:checked { background:%7; border-color:%4; }
+        QPushButton#windowPin:focus[keyboardFocus="true"] { border-color:%5; }
         QFrame#settingsCard { background:%3;border:1px solid %4;border-radius:9px; }
         QListWidget#settingsSections { background:transparent;color:%2;border:0;outline:0; }
         QListWidget#settingsSections::item { padding:11px 10px;margin-bottom:5px;border-radius:6px; }
@@ -1253,8 +1272,9 @@ void SessionsWindow::applyTheme()
     )").arg(bg, m_fg, m_surface, m_border, m_accent, m_muted, hover,
               m_dark ? "#12372b" : "#ffffff", m_dark ? "#aae9d2" : "#115d46", selected,
               m_dark ? "#151b21" : "#f3f6f8", tone("Error", m_dark).name()) + workspaceScrollbars(m_dark));
-    for (auto *button : findChildren<QPushButton *>()) if (!button->property("glyph").toString().isEmpty())
+    for (auto *button : findChildren<QPushButton *>()) if (button != m_windowPin && !button->property("glyph").toString().isEmpty())
         button->setIcon(workspaceIcon(button->property("glyph").toString(), QColor(m_muted)));
+    updateWindowPinAppearance();
     if (m_sessionDock) m_sessionDock->setEdgeColor(QColor(m_border));
     if (m_brand) m_brand->setAppearance(m_dark ? QColor(Qt::white) : QColor(m_accent), QColor(m_dark ? "#ffda76" : "#a66000"),
         m_attentionCount > 0, QSettings().value("workspace/reduceMotion", false).toBool());
