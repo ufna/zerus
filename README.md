@@ -96,6 +96,19 @@ optional FCM build and a foreground live connection. **iOS is planned.**
 [Connect your phone](docs/mobile-deployment.md#pair-the-phone) |
 [Architecture and trust model](docs/mobile-architecture.md)
 
+<table>
+  <tr>
+    <th width="33%">Your sessions</th>
+    <th width="34%">Talk to your agents</th>
+    <th width="33%">Accounts and limits</th>
+  </tr>
+  <tr>
+    <td><a href="docs/assets/readme/android-sessions.webp"><img src="docs/assets/readme/android-sessions.webp" alt="Android session overview with agents on a workstation, MacBook and build server" width="280" /></a></td>
+    <td><a href="docs/assets/readme/android-conversation.webp"><img src="docs/assets/readme/android-conversation.webp" alt="A conversation with Codex in the Android client" width="280" /></a></td>
+    <td><a href="docs/assets/readme/android-accounts.webp"><img src="docs/assets/readme/android-accounts.webp" alt="Shared Codex, Claude and Kimi accounts with usage limits across machines" width="280" /></a></td>
+  </tr>
+</table>
+
 ### Persistent sessions, your choice of client
 
 Terminal agents run in **tmux**. Closing Zerus, losing SSH or putting your laptop
