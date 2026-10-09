@@ -20,6 +20,7 @@
 #include <QTextBrowser>
 #include <QTextCursor>
 #include <QTextFragment>
+#include <QTextLayout>
 #include <QTextTable>
 #include <QRegularExpression>
 #include <QTest>
@@ -119,6 +120,7 @@ private slots:
     void agentCardsKeepZerusSurface();
     void wideChipsStayTextInNarrowPanes();
     void darkCardsUseNeutralTablesAndVisibleChips();
+    void cardsKeepTheirSpacingAfterChips();
     void preview();
 };
 
@@ -286,6 +288,22 @@ void TestActivityView::darkCardsUseNeutralTablesAndVisibleChips()
     }
     QCOMPARE(stripe, QString("#2a333d"));
     QVERIFY2(chipAlpha >= 0.3, qPrintable(QString::number(chipAlpha)));
+}
+
+void TestActivityView::cardsKeepTheirSpacingAfterChips()
+{
+    // Qt lays out a long journal lazily. Converting chips must not leave later
+    // paragraphs, such as the spacers between cards, without layout and height.
+    ActivityView view; view.resize(540, 320); view.show();
+    QJsonArray events{journalEvent(1, "Stop", "Reply with `inline code`.")};
+    for (int i = 0; i < 40; ++i) {
+        events.append(journalEvent(2 * i + 2, "UserPromptSubmit", QString("Request %1").arg(i)));
+        events.append(journalEvent(2 * i + 3, "Stop", QString("Reply %1.").arg(i)));
+    }
+    view.setActivity({}, events);
+    for (auto block = view.browser()->document()->begin(); block.isValid(); block = block.next())
+        QVERIFY2(block.layout()->lineCount() > 0, qPrintable(QString("block %1 after \"%2\"")
+            .arg(block.blockNumber()).arg(block.previous().text())));
 }
 
 void TestActivityView::contextCounterKeepsPhysicalRightAlignment()

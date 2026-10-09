@@ -930,11 +930,16 @@ void ActivityView::render(bool contentUpdate)
     const bool updatesEnabled = m_browser->updatesEnabled();
     m_browser->setUpdatesEnabled(false);
     static_cast<JournalDocument *>(m_browser->document())->pixelRatio = m_browser->devicePixelRatioF();
+    // One edit block for the markup and its chips. Qt lays out a long document
+    // lazily, and a second edit would move later paragraphs without their layout:
+    // the spacers between cards would keep zero height.
+    QTextCursor edit(m_browser->document()); edit.beginEditBlock();
     m_browser->setHtml(html);
     // Before bookmarks are read: offsets on both sides of a refresh count chips as one character.
     // A chip may take at most half the pane, so that it and its container still fit.
     m_chipWidth = m_browser->viewport()->width();
     MarkdownObjects::convertChips(m_browser->document(), agentTheme, !searching, m_chipWidth / 2.0);
+    edit.endEditBlock();
     // QTextDocument lays out long tables lazily. Resolve the final scroll
     // range before restoring the viewport and allowing its next paint.
     m_browser->document()->documentLayout()->documentSize();
