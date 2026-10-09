@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QCursor>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QHash>
@@ -61,6 +62,9 @@ private:
     void updateJumpButton();
     void positionJumpButton();
     void activateLink(const QUrl &url);
+    void copyMarkdown(const QString &key);
+    QString copyButton(const QString &state, const QString &key) const;
+    QString copyKeyAt(const QPoint &position) const;
     bool nearBottom() const;
     void scheduleFollow();
 
@@ -81,6 +85,10 @@ private:
     QHash<QString, QJsonObject> m_attachmentLinks;
     QHash<QString, QJsonObject> m_previewFiles;
     QHash<QString, QPair<QString, QString>> m_messageActions;
+    QHash<QString, QString> m_copyTexts;   // copy button key -> the reply's Markdown source
+    QString m_copyPressed;
+    QCursor m_copyCursor;
+    bool m_copyHover = false;
     QSet<QString> m_knownEvents, m_toggleKeys, m_processLinks;
     bool m_dark = false, m_tracked = true, m_initial = true;
     bool m_rendering = false, m_followLatest = true, m_followScheduled = false;

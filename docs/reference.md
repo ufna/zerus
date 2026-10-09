@@ -267,7 +267,9 @@ An archive needs explicit **Restore**; Enter does not start it.
 
 Activity shows recorded public messages and tool events rather than a full copy
 of native history. User messages preserve literal text, Markdown markers and
-line breaks; agent replies render Markdown. Claude's recorded thinking appears in
+line breaks; agent replies render Markdown. The copy button at the right of a
+reply's header puts its Markdown source on the clipboard; a text selection still
+copies the visible text. Claude's recorded thinking appears in
 full as a quieter **Thinking** card: the same Markdown at the same size, without
 the card fill and with dimmer text. Adjacent tool events collapse into groups.
 Reading older history preserves scroll and selection; **Jump to latest** returns

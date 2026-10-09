@@ -117,6 +117,7 @@ private slots:
     void agentMarkdownLooksLikeGitHub();
     void searchResultKeepsInlineCodeSearchable();
     void copyGivesVisibleText();
+    void agentRepliesCopyAsMarkdown();
     void markdownFollowsThemeAndScale();
     void agentCardsKeepZerusSurface();
     void wideChipsStayTextInNarrowPanes();
@@ -214,6 +215,71 @@ void TestActivityView::copyGivesVisibleText()
     const auto copied = QGuiApplication::clipboard()->text();
     QVERIFY2(copied.contains("Edit src/cli.rs:\n1. first\n2. second"), qPrintable(copied));
     QVERIFY(!copied.contains(QChar::ObjectReplacementCharacter));
+}
+
+void TestActivityView::agentRepliesCopyAsMarkdown()
+{
+    ActivityView view; view.setSessionKey("arch/copy"); view.resize(560, 500); view.show();
+    const QString reply = "## Done\n\n- `src/cli.rs` — **fixed**\n\n```sh\nctest -R activityview\n```";
+    view.setActivity({{"last_message", "An older *recorded* response"}},
+        {journalEvent(1, "UserPromptSubmit", "Fix the launcher"), journalEvent(2, "AgentThinking", "Considering the fix."),
+         journalEvent(3, "Stop", reply)});
+    auto *browser = view.browser(); auto *viewport = browser->viewport();
+    // Replies only: not the request, not thinking. The recorded response is a reply too.
+    QList<QTextCursor> buttons; QStringList images; QTextCursor label;
+    for (auto block = browser->document()->begin(); block.isValid(); block = block.next()) {
+        if (block.text().startsWith("Agent") && !block.text().contains("recorded")) label = QTextCursor(block);
+        for (auto it = block.begin(); !it.atEnd(); ++it) {
+            const auto format = it.fragment().charFormat();
+            if (!format.isImageFormat() || !format.toImageFormat().name().startsWith("hgs-ui:copy/light/100")) continue;
+            buttons.append(QTextCursor(browser->document())); buttons.last().setPosition(it.fragment().position());
+            images.append(format.toImageFormat().name());
+        }
+    }
+    QCOMPARE(buttons.size(), 2);
+    // Images, not links: Tab and Enter keep moving between the journal's toggles.
+    QVERIFY(links(browser).isEmpty());
+    const auto centre = [&](const QTextCursor &at) {
+        QTextCursor after(at); after.setPosition(at.position() + 1);
+        const auto rect = browser->cursorRect(at);
+        return QPoint((rect.left() + browser->cursorRect(after).left()) / 2, rect.center().y());
+    };
+
+    // The button sits at the right end of the header line, beside the label.
+    QVERIFY(!label.isNull());
+    const auto icon = centre(buttons.last());
+    QVERIFY2(qAbs(icon.y() - browser->cursorRect(label).center().y()) <= 4,
+             qPrintable(QString("%1 vs %2").arg(icon.y()).arg(browser->cursorRect(label).center().y())));
+    QVERIFY2(icon.x() > viewport->width() - 40, qPrintable(QString::number(icon.x())));
+    // A copied selection reads as before: the button gives no text.
+    QVERIFY(view.plainText().contains("Fix the launcher"));
+    QVERIFY(!view.plainText().contains(QChar::ObjectReplacementCharacter));
+
+    QTest::mouseMove(viewport, icon);
+    QTRY_COMPARE(viewport->cursor().shape(), Qt::PointingHandCursor);
+    QTest::mouseMove(viewport, icon - QPoint(80, 0));
+    QTRY_VERIFY(viewport->cursor().shape() != Qt::PointingHandCursor);
+
+    const auto resource = [&] { return browser->document()->resource(QTextDocument::ImageResource, QUrl(images.last())).value<QImage>(); };
+    const auto idle = resource();
+    QVERIFY(!idle.isNull());
+    browser->setTextCursor(browser->document()->find("Fix the launcher"));
+    const auto revision = browser->document()->revision();
+    QGuiApplication::clipboard()->clear();
+    QTest::mouseClick(viewport, Qt::LeftButton, {}, icon);
+    QCOMPARE(QGuiApplication::clipboard()->text(), reply);
+    // The pressed button confirms in place, without editing the document or the selection, then returns.
+    QVERIFY(resource() != idle);
+    QCOMPARE(browser->document()->revision(), revision);
+    QCOMPARE(browser->textCursor().selectedText(), QString("Fix the launcher"));
+    QTRY_VERIFY_WITH_TIMEOUT(resource() == idle, 3000);
+
+    QTest::mouseClick(viewport, Qt::LeftButton, {}, centre(buttons.first()));
+    QCOMPARE(QGuiApplication::clipboard()->text(), QString("An older *recorded* response"));
+    // Beside the button is ordinary text.
+    QGuiApplication::clipboard()->setText("unchanged");
+    QTest::mouseClick(viewport, Qt::LeftButton, {}, icon - QPoint(80, 0));
+    QCOMPARE(QGuiApplication::clipboard()->text(), QString("unchanged"));
 }
 
 void TestActivityView::markdownFollowsThemeAndScale()
@@ -895,8 +961,15 @@ void TestActivityView::rejectsMarkupResourcesAndUnsafeLinks()
     QVERIFY(allLinks.contains("https://example.com/docs"));
     for (const auto &link : allLinks) QVERIFY(link.startsWith("https://") || link.startsWith("hgs-file:") || link == "hgs-activity:group-2");
     QVERIFY(browser->toPlainText().contains("[Image attachment]"));
+    // Drawn decorations, and the reply's own copy button.
+    QStringList buttons;
     for (auto block = browser->document()->begin(); block.isValid(); block = block.next())
-        for (auto it = block.begin(); !it.atEnd(); ++it) QVERIFY(!it.fragment().charFormat().isImageFormat() || it.fragment().charFormat().toImageFormat().name().startsWith("hgs-md:"));
+        for (auto it = block.begin(); !it.atEnd(); ++it) {
+            if (!it.fragment().charFormat().isImageFormat()) continue;
+            const auto name = it.fragment().charFormat().toImageFormat().name();
+            if (name.startsWith("hgs-ui:")) buttons.append(name); else QVERIFY(name.startsWith("hgs-md:"));
+        }
+    QCOMPARE(buttons.size(), 1); QVERIFY(buttons.first().startsWith("hgs-ui:copy/"));
     QVERIFY(browser->document()->resource(QTextDocument::ImageResource, QUrl("file:///etc/passwd")).value<QImage>().isNull());
     QSignalSpy opened(&view, &ActivityView::externalLinkActivated);
     activate(browser, "javascript:alert(1)"); activate(browser, "file:///etc/passwd");

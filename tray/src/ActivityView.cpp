@@ -7,17 +7,23 @@
 
 #include <QDateTime>
 #include <QAbstractTextDocumentLayout>
+#include <QClipboard>
 #include <QCryptographicHash>
+#include <QCursor>
 #include <QDesktopServices>
 #include <QEvent>
 #include <QElapsedTimer>
+#include <QGuiApplication>
+#include <QHelpEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QHideEvent>
 #include <QShowEvent>
 #include <QImage>
 #include <QJsonDocument>
 #include <QLabel>
 #include <QMimeData>
+#include <QMouseEvent>
 #include <QProgressBar>
 #include <QHBoxLayout>
 #include <QPushButton>
@@ -28,11 +34,14 @@
 #include <QTextDocument>
 #include <QTextFragment>
 #include <QTimer>
+#include <QToolTip>
 #include <QUrl>
+#include <QUrlQuery>
 #include <QVBoxLayout>
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace {
 // A slow, smooth cycle independent of the platform's busy-bar speed.
@@ -64,6 +73,36 @@ private:
     QTimer m_timer;
 };
 
+// Card buttons drawn in the journal colours: "hgs-ui:<copy|copied>/<light|dark>/<scale percent>".
+// A query names the card, so that one pressed button can change its image alone.
+QImage cardButton(const QUrl &url, qreal devicePixelRatio)
+{
+    if (url.scheme() != QLatin1String("hgs-ui")) return {};
+    const QStringList parts = url.path().split('/');
+    if (parts.size() != 3 || (parts[0] != "copy" && parts[0] != "copied") || (parts[1] != "light" && parts[1] != "dark")) return {};
+    bool ok = false; const double scale = parts[2].toInt(&ok) / 100.0;
+    if (!ok || scale < 0.5 || scale > 4.0) return {};
+    const bool dark = parts[1] == "dark";
+    const qreal ratio = qMax<qreal>(1.0, devicePixelRatio);
+    QImage image(qCeil(14 * scale * ratio), qCeil(14 * scale * ratio), QImage::Format_ARGB32_Premultiplied);
+    image.setDevicePixelRatio(ratio); image.fill(Qt::transparent);
+    QPainter painter(&image); painter.setRenderHint(QPainter::Antialiasing); painter.scale(scale, scale);
+    if (parts[0] == "copied") {
+        painter.setPen(QPen(QColor(dark ? "#8bdfc0" : "#167357"), 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawPolyline(QPolygonF{QPointF(2.5, 7.5), QPointF(5.5, 10.5), QPointF(11.5, 4)});
+        return image;
+    }
+    // Two sheets; the one behind stops short of the front sheet's outline.
+    const QRectF front(4.5, 4.5, 8, 8);
+    painter.setPen(QPen(QColor(dark ? "#9eabba" : "#657487"), 1.2)); painter.setBrush(Qt::NoBrush);
+    QPainterPath visible, covered; visible.addRect(0, 0, 14, 14); covered.addRect(front.adjusted(-1.5, -1.5, 1.5, 1.5));
+    painter.setClipPath(visible.subtracted(covered));
+    painter.drawRoundedRect(QRectF(1.5, 1.5, 8, 8), 2, 2);
+    painter.setClipping(false);
+    painter.drawRoundedRect(front, 2, 2);
+    return image;
+}
+
 // QTextDocument can otherwise read local files as well as network resources.
 // Hook text is display data, never a source of images, CSS or local file reads.
 class JournalDocument final : public QTextDocument {
@@ -71,8 +110,12 @@ public:
     using QTextDocument::QTextDocument;
     qreal pixelRatio = 1.0;
 protected:
-    // Only drawn Markdown decorations load; remote and file resources never do.
-    QVariant loadResource(int, const QUrl &url) override { return MarkdownObjects::resource(url, pixelRatio); }
+    // Only drawn Markdown decorations and card buttons load; remote and file resources never do.
+    QVariant loadResource(int, const QUrl &url) override
+    {
+        if (url.scheme() == QLatin1String("hgs-ui")) return cardButton(url, pixelRatio);
+        return MarkdownObjects::resource(url, pixelRatio);
+    }
 };
 
 // Copies what the reader sees instead of U+FFFC for chips and markers.
@@ -322,7 +365,7 @@ void ActivityView::setSessionKey(const QString &key)
     m_sessionKey = key; m_conversation.clear(); m_expanded.clear(); m_knownEvents.clear();
     m_attachmentLinks.clear();m_fileLinks.clear();
     m_previewFiles.clear(); m_deliveryKeys.clear();
-    m_messageActions.clear();
+    m_messageActions.clear(); m_copyTexts.clear();
     m_localMessages = {}; m_searchResult = {}; m_searchQuery.clear(); m_browser->setExtraSelections({});
     m_initial = true; m_followLatest = true; m_unseen = 0; m_html.clear();
     m_browser->clear(); updateJumpButton();
@@ -536,6 +579,32 @@ void ActivityView::positionJumpButton()
 
 bool ActivityView::eventFilter(QObject *watched, QEvent *event)
 {
+    // Copy buttons are images, not links: Tab, Enter and text selection never stop at them.
+    if (watched == m_browser->viewport()) {
+        auto *viewport = m_browser->viewport();
+        const auto *mouse = dynamic_cast<QMouseEvent *>(event);
+        if (event->type() == QEvent::ToolTip) {
+            const auto *help = static_cast<QHelpEvent *>(event);
+            if (!copyKeyAt(help->pos()).isEmpty()) {
+                QToolTip::showText(help->globalPos(), tr("Copy as Markdown"), viewport);
+                return true;
+            }
+        } else if (event->type() == QEvent::MouseMove || event->type() == QEvent::Leave) {
+            const bool over = mouse && !copyKeyAt(mouse->position().toPoint()).isEmpty();
+            if (over && !m_copyHover) { m_copyCursor = viewport->cursor(); viewport->setCursor(Qt::PointingHandCursor); }
+            else if (!over && m_copyHover) viewport->setCursor(m_copyCursor);
+            m_copyHover = over;
+        } else if (mouse && mouse->button() == Qt::LeftButton
+                   && (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonDblClick)) {
+            // A press on the button keeps the reader's selection and position.
+            m_copyPressed = copyKeyAt(mouse->position().toPoint());
+            if (!m_copyPressed.isEmpty()) return true;
+        } else if (mouse && mouse->button() == Qt::LeftButton && event->type() == QEvent::MouseButtonRelease && !m_copyPressed.isEmpty()) {
+            const auto pressed = std::exchange(m_copyPressed, QString());
+            if (copyKeyAt(mouse->position().toPoint()) == pressed) copyMarkdown(pressed);
+            return true;
+        }
+    }
     if (watched == m_browser->viewport() && (event->type() == QEvent::Resize || event->type() == QEvent::Show)) {
         positionJumpButton();
         if (m_followLatest) scheduleFollow();
@@ -563,6 +632,37 @@ void ActivityView::activateLink(const QUrl &url)
     else if (webLink(url)) emit externalLinkActivated(url);
 }
 
+QString ActivityView::copyButton(const QString &state, const QString &key) const
+{
+    return QString("hgs-ui:%1/%2/%3?card=%4").arg(state, m_dark ? "dark" : "light", QString::number(qRound(m_scale * 100)), key);
+}
+
+QString ActivityView::copyKeyAt(const QPoint &position) const
+{
+    const QPointF content = position + QPoint(m_browser->horizontalScrollBar()->value(), m_browser->verticalScrollBar()->value());
+    const QUrl image(m_browser->document()->documentLayout()->imageAt(content));
+    if (image.scheme() != QLatin1String("hgs-ui") || !image.path().startsWith(QLatin1String("copy/"))) return {};
+    const auto key = QUrlQuery(image).queryItemValue("card");
+    return m_copyTexts.contains(key) ? key : QString();
+}
+
+void ActivityView::copyMarkdown(const QString &key)
+{
+    QGuiApplication::clipboard()->setText(m_copyTexts.value(key));
+    // Only the pressed button's image changes. Its size stays, so the document
+    // needs no edit and the reading position and selection stay where they are.
+    auto *document = static_cast<JournalDocument *>(m_browser->document());
+    const QUrl button(copyButton("copy", key));
+    document->addResource(QTextDocument::ImageResource, button, cardButton(QUrl(copyButton("copied", key)), document->pixelRatio));
+    m_browser->viewport()->update();
+    QToolTip::showText(QCursor::pos(), tr("Copied as Markdown"), m_browser->viewport());
+    QTimer::singleShot(1500, this, [this, button] {
+        auto *document = static_cast<JournalDocument *>(m_browser->document());
+        document->addResource(QTextDocument::ImageResource, button, cardButton(button, document->pixelRatio));
+        m_browser->viewport()->update();
+    });
+}
+
 void ActivityView::setAttachmentPreview(const QString &key, const QImage &image)
 {
     if (image.isNull() || !m_previewFiles.contains(key) || !m_attachmentLinks.contains(key)) return;
@@ -581,6 +681,7 @@ void ActivityView::render(bool contentUpdate)
     m_fileLinks.clear();
     m_attachmentLinks.clear();
     m_messageActions.clear();
+    m_copyTexts.clear();
     const bool searching = !m_searchResult.isEmpty();
     const QJsonObject details = searching ? QJsonObject() : m_details;
     const auto queue = details["input_queue"].toObject();
@@ -689,18 +790,29 @@ void ActivityView::render(bool contentUpdate)
         }
         return result;
     };
-    const auto card = [&](const QString &key, const QString &label, const QString &stamp, const QString &body, bool user, bool notice = false, bool thinking = false) {
+    // A non-empty markdown source adds a button that copies it at the right of the header.
+    const auto card = [&](const QString &key, const QString &label, const QString &stamp, const QString &body, bool user,
+                          bool notice = false, bool thinking = false, const QString &markdownSource = {}) {
         auto content = body;
         // User text always starts with a paragraph. Anchor inside that block:
         // Qt discards an empty anchor between paragraphs, and a header-relative
         // offset shifts when Sending changes to Submitted or Sent.
         if (user) content.insert(content.indexOf('>') + 1, QString("<a name='item-body-%1'></a>").arg(escaped(key)));
+        const auto title = QString("<a name='item-%1'></a><b style='color:%2;'>%3</b><span style='color:%4;'>%5</span>")
+            .arg(escaped(key), thinking ? thinkingLabel : notice ? violet : user ? accent : blue, escaped(label), muted,
+                 stamp.isEmpty() ? QString() : QStringLiteral(" &nbsp;&nbsp; ") + escaped(stamp));
+        auto header = "<p style='font-size:11px;margin-top:0;margin-bottom:8px;'>" + title + "</p>";
+        if (!markdownSource.trimmed().isEmpty()) {
+            const auto copyKey = QString::fromLatin1(QCryptographicHash::hash((m_sessionKey + '\n' + key).toUtf8(), QCryptographicHash::Sha256).toHex());
+            m_copyTexts.insert(copyKey, markdownSource);
+            // Qt drops the bottom margin of a cell's last paragraph: the table keeps the header spacing.
+            header = QString("<table width='100%' cellspacing='0' cellpadding='0' style='margin-bottom:8px;'><tr><td><p style='font-size:11px;margin:0;'>%1</p></td>"
+                "<td align='right' valign='top'><img src='%2' width='14' height='14'></td></tr></table>").arg(title, copyButton("copy", copyKey));
+        }
         return QString("<table width='100%' cellspacing='0' cellpadding='0'><tr><td width='3' bgcolor='%1'></td><td bgcolor='%2' style='padding:11px 13px;'>"
-            "<p style='font-size:11px;margin-top:0;margin-bottom:8px;'><a name='item-%3'></a><b style='color:%8;'>%4</b><span style='color:%5;'>%6</span></p>%7</td></tr></table><p style='font-size:5px;margin:0;'>&nbsp;</p>")
+            "%3%4</td></tr></table><p style='font-size:5px;margin:0;'>&nbsp;</p>")
             .arg(thinking ? thinkingBar : notice ? violet : user ? accent : blue,
-                 thinking ? pageTheme.canvas.name() : notice ? noticeSurface : user ? userSurface : surface, escaped(key), escaped(label), muted,
-                stamp.isEmpty() ? QString() : QStringLiteral(" &nbsp;&nbsp; ") + escaped(stamp), content,
-                 thinking ? thinkingLabel : notice ? violet : user ? accent : blue);
+                 thinking ? pageTheme.canvas.name() : notice ? noticeSurface : user ? userSurface : surface, header, content);
     };
 
     QList<QJsonObject> events;
@@ -775,7 +887,7 @@ void ActivityView::render(bool contentUpdate)
             html += card("prompt-snapshot", replies.isEmpty() ? tr("You (recorded request)") : tr("You (recorded answer)"), {},
                 replies.isEmpty() ? userMessage(prompt) : questionReplyBody(replies, muted, accent, codeSurface, border), true);
         }
-        if (!answer.isEmpty()) html += card("answer-snapshot", tr("Agent (recorded response)"), {}, markdown(answer, agentTheme, m_fileLinks), false);
+        if (!answer.isEmpty()) html += card("answer-snapshot", tr("Agent (recorded response)"), {}, markdown(answer, agentTheme, m_fileLinks), false, false, false, answer);
     }
     m_toggleKeys.clear();m_processLinks.clear();
     for (int i = 0; i < events.size();) {
@@ -846,7 +958,9 @@ void ActivityView::render(bool contentUpdate)
                 body+=QString("<table cellspacing='6' cellpadding='4'><tr>%1%2</tr></table>")
                     .arg(event.value("uncertain").toBool()?button("inspect",details.value("native_ui_available").toBool()?tr("Check native UI"):tr("Check Terminal")):button("retry",tr("Retry")),button("delete",tr("Delete")));
             }
-            html += card(eventKey(event), label, stamp, body, role == "user");
+            // A search excerpt is not the whole reply.
+            const bool copyable = role == "assistant" && !(searching && m_searchResult.value("content_truncated").toBool());
+            html += card(eventKey(event), label, stamp, body, role == "user", false, false, copyable ? text : QString());
             ++i; continue;
         }
         // Collapse adjacent operational events together. Message and attention
