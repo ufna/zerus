@@ -122,7 +122,7 @@ private:
     QHash<QString, InterruptedPrompt> m_interruptPrompts;
     void applySessionStrip();
     SessionPanelDock *m_sessionDock = nullptr;
-    QPushButton *m_sessionsToggle = nullptr, *m_stripSearch = nullptr, *m_batchButton = nullptr;
+    QPushButton *m_sessionsToggle = nullptr, *m_stripSearch = nullptr, *m_batchButton = nullptr, *m_panelNewSession = nullptr;
     QHBoxLayout *m_sessionHeader = nullptr, *m_filterRow = nullptr;
     QString m_countFull, m_countShort;
     bool m_focusSearch = false;

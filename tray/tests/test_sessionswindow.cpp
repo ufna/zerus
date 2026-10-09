@@ -170,6 +170,7 @@ private slots:
     void launchInitialFolderFollowsProject();
     void launchFoldersFollowProject();
     void launchListsSurviveFleetRefreshes();
+    void sessionPanelHeaderStartsNewSession();
     void launchAddsOnlyFoldersOutsideTheProject();
     void arbitraryFolderAndTerminalPreference_data();
     void arbitraryFolderAndTerminalPreference();
@@ -3907,6 +3908,26 @@ void TestSessionsWindow::launchListsSurviveFleetRefreshes()
     // A changed folder list is still shown.
     projects.addFolder(id,"mac","/remote/three");dialog.setGroups(projects,id);
     QVERIFY(folder->findData("/remote/three",Qt::UserRole+2)>=0);
+}
+
+void TestSessionsWindow::sessionPanelHeaderStartsNewSession()
+{
+    QSettings().setValue("workspace/expandSessionsOnHover", false);
+    SessionsWindow window(script()); window.resize(1280, 860); window.setFleet(fleet()); window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    auto *create = window.findChild<QPushButton *>("sessionPanelNewSession"), *toggle = window.findChild<QPushButton *>("sessionPanelToggle");
+    QVERIFY(create && toggle); QVERIFY(create->isVisible()); QCOMPARE(create->parentWidget()->objectName(), QString("sessionListPanel"));
+    QCOMPARE(create->property("glyph").toString(), QString("add")); QVERIFY(create->x() < toggle->x());
+    bool opened = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto *dialog = qobject_cast<NewSessionDialog *>(QApplication::activeModalWidget());
+        opened = dialog != nullptr; if (dialog) dialog->reject();
+    });
+    create->click(); QVERIFY(opened);
+    // The strip keeps only its toggle; the rail still offers New session.
+    toggle->click(); QTRY_COMPARE(window.findChild<SessionList *>("sessionList")->property("expansion").toReal(), 0.0);
+    QVERIFY(!create->isVisible());
+    toggle->click(); QTRY_VERIFY(create->isVisible());
 }
 
 void TestSessionsWindow::launchAddsOnlyFoldersOutsideTheProject()

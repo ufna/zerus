@@ -215,8 +215,9 @@ above Settings on the left rail switches the same option. Files and terminals
 opened from Zerus may then appear behind it. Missing Git metadata does not turn
 a folder into a repository.
 
-The button beside **⋯** in the session list header collapses the list into a
-strip. Every project band and session row keeps its height, so each session
+The **+** in the session list header opens **New session**, like the one in the
+side rail. The button beside **⋯** collapses the list into a strip. Every project
+band and session row keeps its height, so each session
 becomes a square tile: status and provider icons, the session name on up to two
 lines and a short state such as the working time. Instead of the attention
 edge, a tile's frame takes the color of its state (working, needing an answer,

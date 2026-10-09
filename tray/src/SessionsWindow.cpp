@@ -331,6 +331,8 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     auto *batchButton = iconButton("more", tr("Session and machine actions"), "batchActions");
     auto *batchMenu = new QMenu(batchButton); batchButton->setMenu(batchMenu); batchMenu->setToolTipsVisible(true);
     connect(batchMenu, &QMenu::aboutToShow, this, [this, batchMenu]() { populateBatchActions(batchMenu); });
+    m_panelNewSession = iconButton("add", tr("New session"), "sessionPanelNewSession"); header->addWidget(m_panelNewSession);
+    connect(m_panelNewSession, &QPushButton::clicked, this, [this]() { showNewSession({}, {}, selectedHostTarget()); });
     m_sessionsToggle = iconButton("collapse-sessions", tr("Collapse session list"), "sessionPanelToggle"); header->addWidget(m_sessionsToggle);
     header->addWidget(batchButton); m_batchButton = batchButton; m_sessionHeader = header;
     listLayout->addLayout(header);
@@ -1165,8 +1167,8 @@ void SessionsWindow::applyTheme()
         QPushButton#sessionFilter { padding:4px 2px; min-height:22px; font-size:11px; background:transparent; border-color:transparent; }
         QPushButton#sessionFilter:checked { background:%10; border-color:%4; color:%5; }
         QPushButton#sessionFilter:hover { background:%7; }
-        QPushButton#newSession, QPushButton#batchActions, QPushButton#sessionPanelToggle { padding:0; background:transparent; border-color:transparent; }
-        QPushButton#newSession:hover, QPushButton#batchActions:hover, QPushButton#sessionPanelToggle:hover, QPushButton#sessionStripSearch:hover { background:%7; }
+        QPushButton#newSession, QPushButton#sessionPanelNewSession, QPushButton#batchActions, QPushButton#sessionPanelToggle { padding:0; background:transparent; border-color:transparent; }
+        QPushButton#newSession:hover, QPushButton#sessionPanelNewSession:hover, QPushButton#batchActions:hover, QPushButton#sessionPanelToggle:hover, QPushButton#sessionStripSearch:hover { background:%7; }
         QPushButton#sessionStripSearch { padding:0; background:%3; border:1px solid %4; }
         QWidget#sessionListPanel { background:%1; }
         QPushButton#newSession { background:%10; }
@@ -1328,7 +1330,7 @@ void SessionsWindow::applySessionStrip()
         m_sessionHeader->setAlignment(m_sessionsToggle, strip ? Qt::AlignHCenter : Qt::Alignment());
         m_filterRow->setContentsMargins(filters ? SessionStrip::tileColumn() : QMargins());
     }
-    m_heading->setVisible(!strip); m_batchButton->setVisible(!strip); m_savedDrafts->setVisible(!strip);
+    m_heading->setVisible(!strip); m_panelNewSession->setVisible(!strip); m_batchButton->setVisible(!strip); m_savedDrafts->setVisible(!strip);
     // The search button stands in for the field at the same height and as wide
     // as a tile, border included. A widget style survives the window style's
     // repolish, which resets button minimums.
