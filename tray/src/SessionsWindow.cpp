@@ -1134,7 +1134,7 @@ void SessionsWindow::applyTheme()
     const QString hover = m_dark ? "#2b3540" : "#edf2f5";
     const QString selected = m_dark ? "#233d35" : "#e0f0e9";
     setStyleSheet(QString(R"(
-        QWidget#settingsPage, QWidget#recoverySettingsPage, QWidget#sessionsWindow, QWidget#machinesPage, QWidget#accountsPage, QDialog#accountDialog, QDialog#accountPermissionsDialog, QDialog#machineSetupDialog, QDialog#projectsPage, QDialog#projectColorDialog, QDialog#projectFolderDialog, QDialog#deleteProjectDialog, QDialog#newSessionDialog, QDialog#folderBrowser, QDialog#forkSessionDialog, QDialog#renameSessionDialog, QDialog#workspaceSettingsDialog, QDialog#sessionFileDialog { background:%1; color:%2; }
+        QWidget#settingsPage, QWidget#recoverySettingsPage, QWidget#sessionsWindow, QWidget#machinesPage, QWidget#accountsPage, QDialog#accountDialog, QDialog#accountPermissionsDialog, QDialog#machineSetupDialog, QDialog#projectsPage, QDialog#projectColorDialog, QDialog#projectFolderDialog, QDialog#deleteProjectDialog, QDialog#newSessionDialog, QDialog#folderBrowser, QDialog#forkSessionDialog, QDialog#renameSessionDialog, QDialog#workspaceSettingsDialog, QDialog#sessionFileDialog, QDialog#swarmDialog { background:%1; color:%2; }
         QWidget { font-size:13px; }
         QLabel { color:%2; background:transparent; }
         QWidget#sidebar { background:%3; border-right:1px solid %4; }
@@ -1172,7 +1172,7 @@ void SessionsWindow::applyTheme()
         QListWidget#settingsSections::item { padding:11px 10px;margin-bottom:5px;border-radius:6px; }
         QListWidget#settingsSections::item:selected { background:%10;color:%5; }
         QListWidget#settingsSections::item:hover { background:%7; }
-        QWidget#settingsPage QScrollArea, QWidget#settingsContent { background:transparent;border:0; }
+        QWidget#settingsPage QScrollArea, QWidget#settingsContent, QDialog#swarmDialog QScrollArea, QWidget#swarmConflictContent { background:transparent;border:0; }
         QPushButton#railButton:checked { background:%10; border-color:%4; }
         QPushButton#sessionFilter { padding:4px 2px; min-height:22px; font-size:11px; background:transparent; border-color:transparent; }
         QPushButton#sessionFilter:checked { background:%10; border-color:%4; color:%5; }
@@ -1206,10 +1206,12 @@ void SessionsWindow::applyTheme()
         QTableWidget, QTreeWidget#worktreeCatalog, QTreeWidget#processList, QListWidget#folderList { background:%3; color:%2; border:1px solid %4; border-radius:8px; gridline-color:%4; selection-background-color:%10; selection-color:%2; }
         QHeaderView::section { background:%3; color:%6; border:0; border-bottom:1px solid %4; padding:10px; }
         QListWidget#folderList::item { padding:9px 12px; }
-        QListWidget#logicalProjects { background:%3; color:%2; border:1px solid %4; border-radius:8px; padding:5px; outline:0; }
-        QListWidget#logicalProjects::item { padding:12px 10px; border-radius:6px; margin:2px 0; }
-        QListWidget#logicalProjects::item:selected { background:%7; color:%2; }
-        QListWidget#logicalProjects::item:hover { background:%10; }
+        QListWidget#logicalProjects, QListWidget#swarmConflicts { background:%3; color:%2; border:1px solid %4; border-radius:8px; padding:5px; outline:0; }
+        QListWidget#logicalProjects::item, QListWidget#swarmConflicts::item { padding:12px 10px; border-radius:6px; margin:2px 0; }
+        QListWidget#logicalProjects::item:selected, QListWidget#swarmConflicts::item:selected { background:%7; color:%2; }
+        QListWidget#logicalProjects::item:hover, QListWidget#swarmConflicts::item:hover { background:%10; }
+        QSplitter#swarmConflictSplit::handle { width:14px; }
+        QTableWidget#swarmConflictChoices::item { padding:8px 10px; }
         QTreeWidget#worktreeCatalog::item, QTreeWidget#processList::item { padding:6px 4px; }
         QTableWidget#projectFolders::item { padding:0 10px; }
         QSpinBox { background:%3; color:%2; border:1px solid %4; border-radius:7px; padding:8px 10px; }

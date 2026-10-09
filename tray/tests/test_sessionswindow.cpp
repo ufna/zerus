@@ -46,6 +46,8 @@
 #include "RecoveryWidgets.h"
 #include "SettingsPage.h"
 #include "WindowLayer.h"
+#include "SwarmDialog.h"
+#include "SwarmController.h"
 #include "TerminalView.h"
 #include "TerminalScreen.h"
 #include "NewSessionDialog.h"
@@ -82,6 +84,7 @@ private slots:
     void groupsPersistFilterAndRevealAttention();
     void emptyProjectsSettingPreservesArchiveAndProjects();
     void contentScaleLeavesWorkspaceChrome();
+    void projectSwarmFollowsWorkspaceTheme();
     void alwaysOnTopSettingKeepsWindowAbove();
     void railPinTogglesAlwaysOnTop();
     void windowLayerControlsKeepFocusAndLayout_data();
@@ -511,6 +514,24 @@ void TestSessionsWindow::groupsPersistFilterAndRevealAttention()
     reopened.showAttentionSession("mac", "claude/infra/review");
     auto *newList = reopened.findChild<SessionList *>("sessionList"); QCOMPARE(newList->currentItem()->data(SessionRoles::Group).toString(), docs);
     QVERIFY(!newList->currentItem()->isHidden());
+}
+
+void TestSessionsWindow::projectSwarmFollowsWorkspaceTheme()
+{
+    const QJsonObject organization{{"version",2},{"projects",QJsonArray{}}};
+    for(const auto &theme:{QStringLiteral("dark"),QStringLiteral("light")}) {
+        QSettings().setValue("workspace/theme",theme);SessionsWindow window(script());window.show();
+        HgsClient client(script());SwarmController controller(&client);
+        controller.acceptExternal({{"schema",1},{"organization",organization},{"machines",QJsonArray{}},{"conflicts",QJsonArray{}}});
+        FleetState fleet;bool checked=false;
+        QTimer::singleShot(30,&window,[&]{
+            auto *dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget());QVERIFY(dialog);
+            QCOMPARE(dialog->palette().color(QPalette::Window),window.palette().color(QPalette::Window));
+            checked=true;dialog->reject();
+        });
+        QTimer timeout;timeout.setSingleShot(true);connect(&timeout,&QTimer::timeout,&window,[]{if(auto *dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget()))dialog->reject();});timeout.start(5000);
+        showSwarmDialog(&client,&controller,fleet,&window,[]{});QVERIFY(checked);
+    }
 }
 
 void TestSessionsWindow::contentScaleLeavesWorkspaceChrome()

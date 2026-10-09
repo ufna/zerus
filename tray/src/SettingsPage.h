@@ -1,14 +1,17 @@
 #pragma once
 #include "RecoverySettings.h"
 #include "ContentScale.h"
+#include "WorkspaceIcons.h"
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QDesktopServices>
 #include <QListWidget>
 #include <QScrollArea>
 #include <QSlider>
 #include <QStackedWidget>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QUrl>
 #include "ProcessSettings.h"
 
 class SettingsPage : public QWidget {
@@ -64,7 +67,12 @@ public:
         timing("unknownSeconds",tr("Unconfirmed process output"),ProcessSettings::unknownMs(),1,600);
         timing("loadingSeconds",tr("Show loading indicator after"),ProcessSettings::loadingMs(),0,5);
         auto *processHint=new QLabel(tr("Off by default. When disabled, the tab is hidden and processes are not polled. Enable it to inspect running shells and background commands, read recorded output and stop selected processes. Only the selected session is inspected; opening Processes refreshes immediately. Output is read only while the tab is visible. Timings apply to this Zerus. Background refresh also controls session inspection while Terminal or Native UI is open; session overview and account limits refresh separately."));processHint->setWordWrap(true);processes->addWidget(processHint);processes->addStretch();
-        auto *about=makePage(tr("About"));about->addWidget(new QLabel(tr("hgs zerus %1").arg(QCoreApplication::applicationVersion())));about->addStretch();
+        auto *about=makePage(tr("About"));about->addWidget(new QLabel(tr("hgs zerus %1").arg(QCoreApplication::applicationVersion())));
+        auto *repository=new QPushButton(QStringLiteral("ufna/zerus"));repository->setObjectName("aboutRepository");repository->setProperty("glyph","github");
+        repository->setIcon(workspaceIcon("github",palette().color(QPalette::WindowText)));repository->setIconSize(QSize(20,20));repository->setAutoDefault(false);
+        repository->setCursor(Qt::PointingHandCursor);repository->setToolTip(QStringLiteral("https://github.com/ufna/zerus"));repository->setAccessibleName(tr("Open Zerus repository on GitHub"));
+        connect(repository,&QPushButton::clicked,this,[]{QDesktopServices::openUrl(QUrl(QStringLiteral("https://github.com/ufna/zerus")));});
+        about->addWidget(repository,0,Qt::AlignLeft);about->addStretch();
         connect(nav,&QListWidget::currentRowChanged,pages,&QStackedWidget::setCurrentIndex);nav->setCurrentRow(0);
     }
     void setPeers(const QStringList &peers){sync->setPeers(peers);}
