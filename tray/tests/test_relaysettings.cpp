@@ -5,6 +5,9 @@
 
 class TestRelaySettings : public QObject {
     Q_OBJECT
+    // macOS temporary paths may start at /var, a system symlink to /private/var.
+    // Resolve only the existing test root; production no-follow traversal stays strict.
+    static QString temporaryRoot(const QTemporaryDir &dir){return QFileInfo(dir.path()).canonicalFilePath();}
     static RelaySettings::Snapshot original(const QString &state){
         RelaySettings::Snapshot old;
         old.exists=true;
@@ -50,14 +53,14 @@ private slots:
         QString error;QVERIFY(!RelaySettings::prepare(old,{"https://relay.example.test",{},"/fixture/receipts"},&error));
     }
     void foreignRelayRequiresNewCredentialAndDirectory(){
-        QTemporaryDir dir;QVERIFY(dir.isValid());auto old=original(dir.path()+"/old");QString error;
-        QVERIFY(!RelaySettings::prepare(old,{"https://other.example.test",{},dir.path()+"/new"},&error));
-        QVERIFY(!RelaySettings::prepare(old,{"https://other.example.test","synthetic-old-node-token",dir.path()+"/new"},&error));
-        QVERIFY(!RelaySettings::prepare(old,{"https://other.example.test","synthetic-new-node-token",dir.path()+"/old"},&error));
-        auto p=RelaySettings::prepare(old,{"https://other.example.test","synthetic-new-node-token",dir.path()+"/new"},&error);
+        QTemporaryDir dir;QVERIFY(dir.isValid());auto old=original(temporaryRoot(dir)+"/old");QString error;
+        QVERIFY(!RelaySettings::prepare(old,{"https://other.example.test",{},temporaryRoot(dir)+"/new"},&error));
+        QVERIFY(!RelaySettings::prepare(old,{"https://other.example.test","synthetic-old-node-token",temporaryRoot(dir)+"/new"},&error));
+        QVERIFY(!RelaySettings::prepare(old,{"https://other.example.test","synthetic-new-node-token",temporaryRoot(dir)+"/old"},&error));
+        auto p=RelaySettings::prepare(old,{"https://other.example.test","synthetic-new-node-token",temporaryRoot(dir)+"/new"},&error);
         QVERIFY2(p.has_value(),qPrintable(error));QVERIFY(p->newState);QVERIFY(!p->object.contains("identity_url"));
-        QVERIFY(QDir().mkdir(dir.path()+"/new"));
-        QVERIFY(!RelaySettings::prepare(old,{"https://other.example.test","synthetic-new-node-token",dir.path()+"/new"},&error));
+        QVERIFY(QDir().mkdir(temporaryRoot(dir)+"/new"));
+        QVERIFY(!RelaySettings::prepare(old,{"https://other.example.test","synthetic-new-node-token",temporaryRoot(dir)+"/new"},&error));
     }
     void sameRelayCredentialRotationNeedsNewJournal(){
         auto old=original("/fixture/old");QString error;
@@ -76,12 +79,12 @@ private slots:
 #if defined(__unix__) || defined(__APPLE__)
     void pendingStatusProbeIsCancelledBeforeWidgetTeardown(){
 #ifdef Q_OS_LINUX
-        QTemporaryDir dir;QVERIFY(dir.isValid());const auto executable=dir.path()+"/systemctl";
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto executable=temporaryRoot(dir)+"/systemctl";
         QFile program(executable);QVERIFY(program.open(QIODevice::WriteOnly));
         program.write("#!/bin/sh\nexec /bin/sleep 30\n");program.close();
         QVERIFY(QFile::setPermissions(executable,QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner));
-        const auto previous=qgetenv("PATH");qputenv("PATH",dir.path().toUtf8()+":"+previous);
-        auto *panel=new RelaySettings::Panel(dir.path()+"/connector.json");
+        const auto previous=qgetenv("PATH");qputenv("PATH",temporaryRoot(dir).toUtf8()+":"+previous);
+        auto *panel=new RelaySettings::Panel(temporaryRoot(dir)+"/connector.json");
         auto *process=panel->findChild<QProcess*>();
         const bool started=process&&process->waitForStarted(1000);qputenv("PATH",previous);
         QVERIFY(started);QCOMPARE(process->state(),QProcess::Running);
@@ -90,28 +93,28 @@ private slots:
 #endif
     }
     void atomicPrivateSavePreservesUnrelatedConfiguration(){
-        QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.path()+"/connector.json";
-        auto old=original(dir.path()+"/existing-state");QVERIFY(write(path,old.object));
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=temporaryRoot(dir)+"/connector.json";
+        auto old=original(temporaryRoot(dir)+"/existing-state");QVERIFY(write(path,old.object));
         RelaySettings::ConfigStore store(path);RelaySettings::Snapshot loaded,saved;QString error;
         QVERIFY2(store.load(&loaded,&error),qPrintable(error));
-        auto p=RelaySettings::prepare(loaded,{"https://relay.example.test",{},dir.path()+"/existing-state"},&error);QVERIFY(p);
+        auto p=RelaySettings::prepare(loaded,{"https://relay.example.test",{},temporaryRoot(dir)+"/existing-state"},&error);QVERIFY(p);
         QVERIFY2(store.save(loaded,*p,&saved,&error),qPrintable(error));
         QCOMPARE(saved.object,loaded.object);
         QCOMPARE(QFileInfo(path).permissions()&(QFile::ReadGroup|QFile::WriteGroup|QFile::ReadOther|QFile::WriteOther),QFile::Permissions{});
     }
     void freshSetupAllocatesPrivateStateWithoutCopyingReceipts(){
-        QTemporaryDir dir;QVERIFY(dir.isValid());RelaySettings::ConfigStore store(dir.path()+"/config/connector.json");
+        QTemporaryDir dir;QVERIFY(dir.isValid());RelaySettings::ConfigStore store(temporaryRoot(dir)+"/config/connector.json");
         RelaySettings::Snapshot loaded,saved;QString error;QVERIFY(store.load(&loaded,&error));QVERIFY(!loaded.exists);
-        auto p=RelaySettings::prepare(loaded,{RelaySettings::canonicalRelay(),"synthetic-new-node-token",dir.path()+"/new-state"},&error);QVERIFY(p);
+        auto p=RelaySettings::prepare(loaded,{RelaySettings::canonicalRelay(),"synthetic-new-node-token",temporaryRoot(dir)+"/new-state"},&error);QVERIFY(p);
         QVERIFY2(store.save(loaded,*p,&saved,&error),qPrintable(error));
-        QVERIFY(saved.exists);QVERIFY(QFileInfo(dir.path()+"/new-state").isDir());
-        QVERIFY(QDir(dir.path()+"/new-state").entryList(QDir::NoDotAndDotDot|QDir::AllEntries).isEmpty());
-        QCOMPARE(QFileInfo(dir.path()+"/new-state").permissions()&(QFile::ReadGroup|QFile::WriteGroup|QFile::ExeGroup|QFile::ReadOther|QFile::WriteOther|QFile::ExeOther),QFile::Permissions{});
+        QVERIFY(saved.exists);QVERIFY(QFileInfo(temporaryRoot(dir)+"/new-state").isDir());
+        QVERIFY(QDir(temporaryRoot(dir)+"/new-state").entryList(QDir::NoDotAndDotDot|QDir::AllEntries).isEmpty());
+        QCOMPARE(QFileInfo(temporaryRoot(dir)+"/new-state").permissions()&(QFile::ReadGroup|QFile::WriteGroup|QFile::ExeGroup|QFile::ReadOther|QFile::WriteOther|QFile::ExeOther),QFile::Permissions{});
     }
     void ownedReadableStateParentAllowsPrivateNewChild(){
-        QTemporaryDir dir;QVERIFY(dir.isValid());const auto parent=dir.path()+"/shared-parent";QVERIFY(QDir().mkdir(parent));
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto parent=temporaryRoot(dir)+"/shared-parent";QVERIFY(QDir().mkdir(parent));
         QVERIFY(QFile::setPermissions(parent,QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner|QFile::ReadGroup|QFile::ExeGroup|QFile::ReadOther|QFile::ExeOther));
-        RelaySettings::ConfigStore store(dir.path()+"/connector.json");RelaySettings::Snapshot old,saved;QString error;
+        RelaySettings::ConfigStore store(temporaryRoot(dir)+"/connector.json");RelaySettings::Snapshot old,saved;QString error;
         QVERIFY(store.load(&old,&error));
         auto p=RelaySettings::prepare(old,{RelaySettings::canonicalRelay(),"synthetic-new-node-token",parent+"/fresh"},&error);QVERIFY(p);
         QVERIFY2(store.save(old,*p,&saved,&error),qPrintable(error));
@@ -119,25 +122,27 @@ private slots:
         QCOMPARE(QFileInfo(parent+"/fresh").permissions()&(QFile::ReadGroup|QFile::ExeGroup|QFile::ReadOther|QFile::ExeOther),QFile::Permissions{});
     }
     void externalEditAndAtomicReplacementRefuseOverwrite(){
-        QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=dir.path()+"/connector.json";
-        auto old=original(dir.path()+"/state");QVERIFY(write(path,old.object));
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto path=temporaryRoot(dir)+"/connector.json";
+        auto old=original(temporaryRoot(dir)+"/state");QVERIFY(write(path,old.object));
         RelaySettings::ConfigStore store(path);RelaySettings::Snapshot loaded,saved;QString error;QVERIFY(store.load(&loaded,&error));
-        auto p=RelaySettings::prepare(loaded,{"https://relay.example.test",{},dir.path()+"/state"},&error);QVERIFY(p);
+        auto p=RelaySettings::prepare(loaded,{"https://relay.example.test",{},temporaryRoot(dir)+"/state"},&error);QVERIFY(p);
         auto edited=old.object;edited.insert("poll_interval",11);QVERIFY(write(path,edited));
         QVERIFY(!store.save(loaded,*p,&saved,&error));QVERIFY(store.load(&saved,&error));QCOMPARE(saved.object,edited);
-        QVERIFY(store.load(&loaded,&error));QVERIFY(write(dir.path()+"/replacement",loaded.object));
-        QVERIFY(QFile::remove(path));QVERIFY(QFile::rename(dir.path()+"/replacement",path));
+        QVERIFY(store.load(&loaded,&error));QVERIFY(write(temporaryRoot(dir)+"/replacement",loaded.object));
+        QVERIFY(QFile::remove(path));QVERIFY(QFile::rename(temporaryRoot(dir)+"/replacement",path));
         QVERIFY(!store.save(loaded,*p,&saved,&error));
     }
     void symlinkAndPublicFilesAreRefused(){
-        QTemporaryDir dir;QVERIFY(dir.isValid());const auto real=dir.path()+"/real.json";
-        QVERIFY(write(real,original(dir.path()+"/state").object));QString error;RelaySettings::Snapshot loaded;
-        QVERIFY(QFile::link(real,dir.path()+"/link.json"));QVERIFY(!RelaySettings::ConfigStore(dir.path()+"/link.json").load(&loaded,&error));
+        QTemporaryDir dir;QVERIFY(dir.isValid());const auto real=temporaryRoot(dir)+"/real.json";
+        QVERIFY(write(real,original(temporaryRoot(dir)+"/state").object));QString error;RelaySettings::Snapshot loaded;
+        QVERIFY2(RelaySettings::ConfigStore(real).load(&loaded,&error),qPrintable(error));
+        QVERIFY(QFile::link(real,temporaryRoot(dir)+"/link.json"));QVERIFY(!RelaySettings::ConfigStore(temporaryRoot(dir)+"/link.json").load(&loaded,&error));
         QVERIFY(QFile::setPermissions(real,QFile::ReadOwner|QFile::WriteOwner|QFile::ReadOther));
         QVERIFY(!RelaySettings::ConfigStore(real).load(&loaded,&error));
         QVERIFY(QFile::setPermissions(real,QFile::ReadOwner|QFile::WriteOwner));
-        QVERIFY(QFile::link(dir.path(),dir.path()+"/parent-link"));
-        QVERIFY(!RelaySettings::ConfigStore(dir.path()+"/parent-link/real.json").load(&loaded,&error));
+        QVERIFY2(RelaySettings::ConfigStore(real).load(&loaded,&error),qPrintable(error));
+        QVERIFY(QFile::link(temporaryRoot(dir),temporaryRoot(dir)+"/parent-link"));
+        QVERIFY(!RelaySettings::ConfigStore(temporaryRoot(dir)+"/parent-link/real.json").load(&loaded,&error));
     }
 #endif
 };

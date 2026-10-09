@@ -48,8 +48,20 @@ private slots:
         package.package="unrecognized; sudo command";QVERIFY(UpdateController::updateCommand(package).isEmpty());
         package.kind="source";package.package="zerus";QCOMPARE(UpdateController::updateCommand(package),QString("paru -Syu zerus-ade-bin"));
         auto catalog=UpdateController::parseFeed(QJsonDocument(raw()).toJson(),"stable");
-        DesktopInstallation unknown{"unknown",{},"0.99.0"};QVERIFY(UpdateController::comparisonMessage(unknown,catalog,"0.99.0",0,false).contains("unconfirmed"));
-        DesktopInstallation actual{"package","zerus-ade-bin","0.9.0-1"};QVERIFY(UpdateController::comparisonMessage(actual,catalog,"0.9.0",1,true).contains("Update available"));QVERIFY(UpdateController::comparisonMessage(actual,catalog,"0.9.0",-1,true).contains("at least"));QVERIFY(UpdateController::comparisonMessage(actual,catalog,"0.9.0",0,false).contains("No matching"));
+        DesktopInstallation unknown{"unknown",{},"0.99.0"};
+        DesktopInstallation actual{"package","zerus-ade-bin","0.9.0-1"};
+#ifdef Q_OS_MACOS
+        const auto unavailable=QString("No macOS installer is published. See release or source build instructions.");
+        QCOMPARE(UpdateController::comparisonMessage(unknown,catalog,"0.99.0",0,false),unavailable);
+        QCOMPARE(UpdateController::comparisonMessage(actual,catalog,"0.9.0",1,true),unavailable);
+        QCOMPARE(UpdateController::comparisonMessage(actual,catalog,"0.9.0",-1,true),unavailable);
+        QCOMPARE(UpdateController::comparisonMessage(actual,catalog,"0.9.0",0,false),unavailable);
+#else
+        QVERIFY(UpdateController::comparisonMessage(unknown,catalog,"0.99.0",0,false).contains("unconfirmed"));
+        QVERIFY(UpdateController::comparisonMessage(actual,catalog,"0.9.0",1,true).contains("Update available"));
+        QVERIFY(UpdateController::comparisonMessage(actual,catalog,"0.9.0",-1,true).contains("at least"));
+        QVERIFY(UpdateController::comparisonMessage(actual,catalog,"0.9.0",0,false).contains("No matching"));
+#endif
     }
     void canonicalOwnershipAsync(){
 #ifdef Q_OS_LINUX
