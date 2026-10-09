@@ -38,7 +38,7 @@ public:
         connect(scaleApply,&QTimer::timeout,this,[this]{if(contentScaleChanged)contentScaleChanged();});
         auto showScale=[scaleValue](int tenths){scaleValue->setText(QStringLiteral("%1%").arg(tenths*10));};showScale(scale->value());
         connect(scale,&QSlider::valueChanged,this,[scaleApply,showScale](int tenths){QSettings().setValue("workspace/contentScale",tenths/10.);showScale(tenths);scaleApply->start();});
-        auto *onTop=new QCheckBox(tr("Keep Zerus above other windows"));onTop->setObjectName("workspaceAlwaysOnTop");onTop->setChecked(WindowLayer::alwaysOnTop());onTop->setEnabled(WindowLayer::supported());appearance->addWidget(onTop);
+        onTop=new QCheckBox(tr("Keep Zerus above other windows"));onTop->setObjectName("workspaceAlwaysOnTop");onTop->setChecked(WindowLayer::alwaysOnTop());onTop->setEnabled(WindowLayer::supported());appearance->addWidget(onTop);
         auto *onTopHint=new QLabel(WindowLayer::supported()?tr("Files and terminals opened from Zerus may appear behind it while this is on."):tr("This desktop does not let applications stay above other windows."));onTopHint->setWordWrap(true);appearance->addWidget(onTopHint);
         connect(onTop,&QCheckBox::toggled,this,[this](bool on){QSettings().setValue("workspace/alwaysOnTop",on);if(windowLayerChanged)windowLayerChanged();});
         auto *local=new QLabel(tr("Appearance and session list preferences apply to this Zerus."));local->setWordWrap(true);appearance->addWidget(local);appearance->addStretch();
@@ -67,8 +67,9 @@ public:
     }
     void setPeers(const QStringList &peers){sync->setPeers(peers);}
     void openRecovery(){nav->setCurrentRow(2);sync->refresh();}
+    void setAlwaysOnTop(bool on){const QSignalBlocker block(onTop);onTop->setChecked(on);}
     void refresh(){sync->refresh();}
 private:
     void addPage(QWidget *page){if(page->objectName().isEmpty())page->setObjectName("settingsContent");auto *scroll=new QScrollArea;scroll->setFrameShape(QFrame::NoFrame);scroll->setWidgetResizable(true);scroll->setWidget(page);scroll->setMinimumWidth(0);pages->addWidget(scroll);}
-    QListWidget *nav;QStackedWidget *pages;RecoverySync *sync;RecoverySettings *recovery;
+    QListWidget *nav;QStackedWidget *pages;RecoverySync *sync;RecoverySettings *recovery;QCheckBox *onTop;
 };

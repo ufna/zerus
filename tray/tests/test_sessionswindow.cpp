@@ -82,6 +82,7 @@ private slots:
     void emptyProjectsSettingPreservesArchiveAndProjects();
     void contentScaleLeavesWorkspaceChrome();
     void alwaysOnTopSettingKeepsWindowAbove();
+    void railPinTogglesAlwaysOnTop();
     void unreadRepliesNeedAnActiveVisibleResult();
     void markAllReadIgnoresFiltersAndKeepsCurrentDraft();
     void unsentDraftBecomesARowStatus();
@@ -571,6 +572,28 @@ void TestSessionsWindow::alwaysOnTopSettingKeepsWindowAbove()
     option->setChecked(false);
     QVERIFY(!above(window)); QVERIFY(window.isVisible());
     QVERIFY(!QSettings().value("workspace/alwaysOnTop").toBool());
+    QSettings().remove("workspace/alwaysOnTop");
+}
+
+void TestSessionsWindow::railPinTogglesAlwaysOnTop()
+{
+    // The pin above Settings switches the same preference as Settings → Appearance.
+    const auto above = [](QWidget &window) { return window.windowHandle()->flags().testFlag(Qt::WindowStaysOnTopHint); };
+    SessionsWindow window(script()); window.setFleet(fleet()); window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
+    auto *pin = window.findChild<QPushButton *>("windowPin");
+    QVERIFY(pin && pin->isVisible() && pin->isCheckable() && !pin->isChecked());
+    pin->click();
+    QVERIFY(pin->isChecked()); QVERIFY(above(window)); QVERIFY(window.isVisible());
+    QVERIFY(QSettings().value("workspace/alwaysOnTop").toBool());
+    auto *option = window.findChild<QCheckBox *>("workspaceAlwaysOnTop"); QVERIFY(option && option->isChecked());
+    option->setChecked(false);
+    QVERIFY(!pin->isChecked()); QVERIFY(!above(window));
+    option->setChecked(true);
+    QVERIFY(pin->isChecked()); QVERIFY(above(window));
+    SessionsWindow restored(script()); restored.setFleet(fleet());
+    QVERIFY(restored.findChild<QPushButton *>("windowPin")->isChecked());
+    pin->click();
+    QVERIFY(!option->isChecked()); QVERIFY(!above(window));
     QSettings().remove("workspace/alwaysOnTop");
 }
 

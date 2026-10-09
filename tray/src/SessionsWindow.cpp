@@ -291,6 +291,8 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     auto *refresh = new QPushButton(this); refresh->hide();
     connect(refresh, &QPushButton::clicked, this, [this]() { emit refreshRequested(); inspect(); m_machinesPage->reload(); });
     side->addStretch();
+    auto *windowPin = iconButton("pin", tr("Keep Zerus above other windows"), "windowPin"); windowPin->setCheckable(true);
+    windowPin->setFixedSize(42, 44); windowPin->setIconSize(QSize(24,24)); windowPin->setVisible(WindowLayer::supported()); side->addWidget(windowPin);
     auto *settingsButton = m_settingsNav = iconButton("settings", tr("Settings"), "workspaceSettings"); settingsButton->setCheckable(true); settingsButton->setFixedSize(42, 44); settingsButton->setIconSize(QSize(24,24)); side->addWidget(settingsButton);
     connect(settingsButton, &QPushButton::clicked, this, &SessionsWindow::showWorkspaceSettings);
     auto *versionLabel = label(version, "appVersion"); versionLabel->setAlignment(Qt::AlignCenter); side->addWidget(versionLabel);
@@ -963,8 +965,15 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         m_sessionDock->setHoverExpands(QSettings().value("workspace/expandSessionsOnHover",true).toBool());applyTheme();rebuild();
     };
     m_settingsPage->contentScaleChanged=[this]{applyContentScale();};
-    m_settingsPage->windowLayerChanged=[this]{WindowLayer::apply(this,WindowLayer::alwaysOnTop());};
-    WindowLayer::apply(this,WindowLayer::alwaysOnTop());
+    // The rail pin and Settings → Appearance switch the same preference.
+    const auto applyWindowLayer=[this,windowPin]{
+        const bool on=WindowLayer::alwaysOnTop();
+        {const QSignalBlocker block(windowPin);windowPin->setChecked(on);}
+        m_settingsPage->setAlwaysOnTop(on);WindowLayer::apply(this,on);
+    };
+    m_settingsPage->windowLayerChanged=applyWindowLayer;
+    connect(windowPin,&QPushButton::toggled,this,[applyWindowLayer](bool on){QSettings().setValue("workspace/alwaysOnTop",on);applyWindowLayer();});
+    applyWindowLayer();
     connect(m_accountsPage,&AccountsPage::loginRequested,this,&SessionsWindow::accountLoginRequested);
     connect(m_accountsPage,&AccountsPage::installRequested,this,&SessionsWindow::accountInstallRequested);
     connect(m_accountsPage,&AccountsPage::accountsChanged,this,&SessionsWindow::refreshRequested);
@@ -1143,9 +1152,9 @@ void SessionsWindow::applyTheme()
         QPushButton#nav:focus[keyboardFocus="true"] { border-color:%5; }
         QPushButton#brandMark { min-height:42px; max-height:42px; padding:0; border:1px solid transparent; background:transparent; }
         QPushButton#brandMark:hover, QPushButton#brandMark:checked { background:%10; }
-        QPushButton#railButton, QPushButton#workspaceSettings { min-height:42px; max-height:42px; background:transparent; border:1px solid transparent; padding:0; }
-        QPushButton#railButton:hover, QPushButton#workspaceSettings:hover { background:%7; }
-        QPushButton#workspaceSettings:checked { background:%7; border-color:%4; }
+        QPushButton#railButton, QPushButton#workspaceSettings, QPushButton#windowPin { min-height:42px; max-height:42px; background:transparent; border:1px solid transparent; padding:0; }
+        QPushButton#railButton:hover, QPushButton#workspaceSettings:hover, QPushButton#windowPin:hover { background:%7; }
+        QPushButton#workspaceSettings:checked, QPushButton#windowPin:checked { background:%7; border-color:%4; }
         QFrame#settingsCard { background:%3;border:1px solid %4;border-radius:9px; }
         QListWidget#settingsSections { background:transparent;color:%2;border:0;outline:0; }
         QListWidget#settingsSections::item { padding:11px 10px;margin-bottom:5px;border-radius:6px; }
