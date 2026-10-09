@@ -44,6 +44,18 @@ private slots:
         QCOMPARE(state.label,QString("Cold cache"));QCOMPARE(state.shortLabel,QString("Cold"));
         QVERIFY(!CacheStatus::details(data,true).contains("cold cache"));QVERIFY(CacheStatus::details(data,true).contains("Last recorded"));
     }
+    void exhaustedSummaryNamesNearestReset() {
+        const auto now=QDateTime::currentSecsSinceEpoch();
+        QJsonObject data{{"windows",QJsonArray{QJsonObject{{"window_minutes",300},{"used_percent",80}}}}};
+        QVERIFY(AccountUsage::exhaustedSummary(data).isEmpty());
+        data["windows"]=QJsonArray{QJsonObject{{"window_minutes",10080},{"used_percent",100},{"resets_at",now+3*86400}},
+            QJsonObject{{"window_minutes",300},{"used_percent",100},{"resets_at",now+2*3600+30}}};
+        QCOMPARE(AccountUsage::exhaustedSummary(data),QString("Limit reached · 2h 1m"));
+        data["windows"]=QJsonArray{QJsonObject{{"window_minutes",300},{"used_percent",100}}};
+        QCOMPARE(AccountUsage::exhaustedSummary(data),QString("Limit reached"));
+        data["windows"]=QJsonArray{QJsonObject{{"window_minutes",300},{"used_percent",100},{"resets_at",now-60}}};
+        QCOMPARE(AccountUsage::exhaustedSummary(data),QString("Refresh usage"));
+    }
     void failedRefreshKeepsQuotaWarningExplicitlyHistorical() {
         QJsonObject data{{"status","ok"},{"windows",QJsonArray{QJsonObject{{"window_minutes",10080},
             {"used_percent",100},{"resets_at",QDateTime::currentSecsSinceEpoch()+3600}}}}};

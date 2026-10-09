@@ -92,6 +92,7 @@ private slots:
     void worktreePreview();
     void workingCardsKeepTurnClockAcrossUpdates();
     void accountUsageRejectsOtherSessionReplies();
+    void usageLimitBecomesToolbarChip();
     void dashboardAndMultiMachineNavigation();
     void multiSelectionKeepsConversationAndGroupMenu_data();
     void multiSelectionKeepsConversationAndGroupMenu();
@@ -794,6 +795,25 @@ void TestSessionsWindow::compactWorkspaceGeometry()
     QVERIFY(tabs->height() > 500);
     QVERIFY(window.findChild<QPushButton *>("pauseAction")->toolTip().contains("Pause"));
     QVERIFY(window.findChild<QLabel *>("sessionMeta")->toolTip().contains("gpt-6.1-sol"));
+}
+
+void TestSessionsWindow::usageLimitBecomesToolbarChip()
+{
+    SessionsWindow window(script());window.resize(1100,760);window.setFleet(fleet());window.show();window.showSession({},"codex/hgs/dashboard");
+    auto *client=window.findChild<AccountUsageStore *>()->findChild<HgsClient *>();
+    auto *chip=window.findChild<ToolbarChip *>("usageLimitChip");QVERIFY(chip);QVERIFY(chip->isHidden());
+    const auto now=QDateTime::currentSecsSinceEpoch();
+    client->accountsReady(1,{},QJsonObject{{"id","native-codex"},{"status","ok"},{"windows",QJsonArray{
+        QJsonObject{{"window_minutes",300},{"used_percent",100},{"resets_at",now+3600}}}}});
+    QTRY_VERIFY(chip->isVisible());QVERIFY(chip->fullLabel().startsWith("Limit reached"));QCOMPARE(chip->tone(),ChipTone::Danger);
+    QVERIFY(chip->toolTip().contains("Resets in"));
+    QTest::mouseClick(chip,Qt::LeftButton);QTRY_VERIFY(chip->popover()->isVisible());
+    QVERIFY(window.findChild<QLabel *>("activityUsageWarning")->text().contains("Resets in"));
+    auto *refresh=window.findChild<QPushButton *>("usageLimitRefresh");QVERIFY(refresh->isVisible());refresh->click();
+    QVERIFY(static_cast<AccountUsage::RefreshButton *>(window.findChild<QPushButton *>("sessionUsageRefresh"))->isRefreshing());
+    // Switching session closes the popover rather than showing another account's limit.
+    QTest::mouseClick(chip,Qt::LeftButton);QTRY_VERIFY(chip->popover()->isVisible());
+    window.showSession("mac","claude/infra/review");QVERIFY(!chip->popover()->isVisible());
 }
 
 void TestSessionsWindow::accountUsageRejectsOtherSessionReplies()

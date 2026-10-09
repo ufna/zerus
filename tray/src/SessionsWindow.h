@@ -283,6 +283,7 @@ private:
     class AccountUsageStore *m_usageStore;
     QJsonObject m_accountUsageData;
     QLabel *m_usageWarning;
+    ToolbarChip *m_usageLimit;
     QLabel *m_cacheWarning;
     QLabel *m_cacheDetail;
     QPushButton *m_cacheClear;

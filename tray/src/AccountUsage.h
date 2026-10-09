@@ -58,6 +58,19 @@ inline QString exhausted(const QJsonObject &data) {
     return !text.isEmpty() && (data.value("offline").toBool() || data.value("refresh_error").toBool())
         ? QObject::tr("Last reported usage: %1. Refresh to check current limits.").arg(text) : text;
 }
+// Chip label: the nearest reset of an exhausted current window, or a reminder to
+// refresh when only windows that already ended still report 100%.
+inline QString exhaustedSummary(const QJsonObject &data) {
+    QDateTime nearest;bool reached=false,ended=false;
+    for(const auto &value:data.value("windows").toArray()){
+        const auto w=value.toObject();if(w.value("used_percent").toDouble()<100)continue;
+        if(!current(w)){ended=true;continue;}
+        reached=true;const auto at=reset(w.value("resets_at"));
+        if(at.isValid()&&(!nearest.isValid()||at<nearest))nearest=at;
+    }
+    if(reached)return nearest.isValid()?QObject::tr("Limit reached · %1").arg(remaining(nearest)):QObject::tr("Limit reached");
+    return ended?QObject::tr("Refresh usage"):QString();
+}
 inline QColor color(double value,bool dark) {return QColor(value>=90 ? (dark?"#f07878":"#ce3d47") : value>=70 ? (dark?"#f0a35b":"#bd6519") : (dark?"#72cdb2":"#237a62"));}
 inline QString state(const QJsonObject &data) {
     return data.isEmpty() || data.value("status")=="loading" ? QObject::tr("Loading account details…")

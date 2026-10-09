@@ -598,7 +598,15 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     activityLayout->addWidget(m_nativeSignIn);
     m_contextUsage=new SessionUsage::ContextButton;m_contextUsage->setObjectName("activityContext");
     activityLayout->addWidget(m_activityView, 1); activityLayout->addWidget(m_question);
-    m_usageWarning=new QLabel;m_usageWarning->setObjectName("activityUsageWarning");m_usageWarning->setTextFormat(Qt::PlainText);m_usageWarning->setWordWrap(true);m_usageWarning->hide();activityLayout->addWidget(m_usageWarning);
+    m_usageLimit=new ToolbarChip;m_usageLimit->setObjectName("usageLimitChip");m_usageLimit->setTone(ChipTone::Danger);m_usageLimit->setIconName("attention");
+    auto *usagePanel=new QWidget;usagePanel->setObjectName("usageLimitPopover");
+    auto *limitLayout=new QVBoxLayout(usagePanel);limitLayout->setContentsMargins(14,12,14,12);limitLayout->setSpacing(8);
+    m_usageWarning=new QLabel;m_usageWarning->setObjectName("activityUsageWarning");m_usageWarning->setTextFormat(Qt::PlainText);m_usageWarning->setWordWrap(true);
+    auto *usageActions=new QHBoxLayout;usageActions->addStretch();
+    auto *usageRefresh=new QPushButton(tr("Refresh usage"));usageRefresh->setObjectName("usageLimitRefresh");usageRefresh->setAutoDefault(false);
+    usageActions->addWidget(usageRefresh);limitLayout->addWidget(m_usageWarning);limitLayout->addLayout(usageActions);
+    m_usageLimit->setPopoverContent(usagePanel);m_composer->toolbar()->add(ComposerToolbar::Slot::UsageLimit,m_usageLimit);
+    connect(usageRefresh,&QPushButton::clicked,this,[this]{refreshAccountUsage(true);});
     m_recovery = new RecoveryUi::Panel; activityLayout->addWidget(m_recovery);
     m_recovery->openTerminal = [this] {
         const auto *entry=selected();if(!entry || !entry->online)return;
@@ -1255,7 +1263,7 @@ void SessionsWindow::applyTheme()
     m_sessions->setActivityAnimationEnabled(QSettings().value("workspace/animateActivity", true).toBool());
     m_projectsPage->setTheme(m_dark); m_accountsPage->setTheme(m_dark); m_machinesPage->setTheme(m_dark); m_providerBadge->setTheme(m_dark); m_machineBadge->setTheme(m_dark);
     m_accountUsage->setTheme(m_dark);
-    m_usageWarning->setStyleSheet(QString("QLabel{color:%1;background:%2;border-radius:6px;padding:8px 12px;}").arg(m_dark?"#ffabab":"#a42330",m_dark?"#35252b":"#fff0f1"));
+    m_usageWarning->setStyleSheet(QString("QLabel{color:%1;}").arg(m_dark?"#ffabab":"#a42330"));
     m_usageRefresh->setTheme(m_dark);
     m_contextUsage->setTheme(m_dark);m_subagentContextUsage->setTheme(m_dark);
     m_cacheStatus->setTheme(m_dark);
@@ -2227,9 +2235,11 @@ void SessionsWindow::inspect()
 void SessionsWindow::renderAccountUsage()
 {
     const auto *entry=selected();const bool visible=m_pages->currentIndex()==0 && entry && entry->session.tracked && entry->session.archiveId.isEmpty() && m_subagentId.isEmpty();
-    m_usageStrip->setVisible(visible);m_usageWarning->setVisible(false);if(!visible){m_usageRefresh->setRefreshing(false);return;}
+    m_usageStrip->setVisible(visible);m_usageLimit->setActive(false);if(!visible){m_usageRefresh->setRefreshing(false);return;}
     m_accountUsageData=m_usageStore->data(AccountUsageRef::bound(entry->host,entry->session));m_accountUsage->setData(m_accountUsageData);
-    const auto warning=AccountUsage::exhausted(m_accountUsageData);m_usageWarning->setText(warning);m_usageWarning->setVisible(!warning.isEmpty());
+    const auto warning=AccountUsage::exhausted(m_accountUsageData);m_usageWarning->setText(warning);
+    m_usageLimit->setLabels(AccountUsage::exhaustedSummary(m_accountUsageData),tr("Limit"));m_usageLimit->setDetail(warning);
+    m_usageLimit->setActive(!warning.isEmpty());
     m_usageRefresh->setRefreshing(m_accountUsageData["refreshing"].toBool());
     m_usageRefresh->setEnabled(entry->online && !m_accountUsageData["refreshing"].toBool());
 }
