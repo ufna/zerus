@@ -489,6 +489,9 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     m_forkAction = moreMenu->addAction(tr("Fork session…")); m_forkAction->setObjectName("forkSessionAction");
     connect(m_forkAction, &QAction::triggered, this, &SessionsWindow::forkSession);
     moreMenu->addSeparator();
+    m_clearAction = moreMenu->addAction(tr("Clear session…")); m_clearAction->setObjectName("clearSessionAction");
+    m_clearAction->setToolTip(tr("Start this agent's conversation from scratch, like /clear in Terminal. Your unsent draft is kept."));
+    connect(m_clearAction, &QAction::triggered, this, &SessionsWindow::clearContext);
     m_archiveAction = moreMenu->addAction(tr("Move to archive")); m_archiveAction->setObjectName("archiveSessionAction");
     connect(m_archiveAction, &QAction::triggered, this, &SessionsWindow::archiveSession);
     m_forgetAction = moreMenu->addAction(tr("Terminate / forget session…")); m_forgetAction->setObjectName("forgetSessionAction");
@@ -2370,8 +2373,14 @@ void SessionsWindow::renderDetails()
     m_cacheClear->setEnabled(entry && entry->online && !m_clearRequest && m_details.value("clear_context_supported").toBool());
     const bool mainContext=m_subagentId.isEmpty();
     m_detailsClear->setVisible(mainContext);m_detailsContext->setVisible(mainContext);
-    m_detailsClear->setEnabled(mainContext && entry && entry->online && !m_clearRequest && !m_composer->isSending(m_selectedKey) && m_details.value("clear_context_supported").toBool());
+    const bool canClear=mainContext && entry && entry->online && entry->session.state!="archived"
+        && !m_clearRequest && !m_composer->isSending(m_selectedKey) && m_inspectError.isEmpty()
+        && !m_details.value("run_id").toString().isEmpty() && !m_details.value("conversation_id").toString().isEmpty()
+        && m_details.value("clear_context_supported").toBool();
+    m_detailsClear->setEnabled(canClear);
     m_detailsClear->setText(m_clearRequest?tr("Clearing…"):tr("Clear session"));
+    m_clearAction->setVisible(mainContext);m_clearAction->setEnabled(canClear);
+    m_clearAction->setText(m_clearRequest?tr("Clearing…"):tr("Clear session…"));
     m_detailsContext->setText(tr("Context: %1").arg(m_contextUsage->text().isEmpty()?tr("Not reported"):m_contextUsage->text()));m_detailsContext->setToolTip(m_contextUsage->toolTip());
     m_subagentContextUsage->setData(entry?m_subagentDetails.value("session_usage").toObject():QJsonObject(),recorded);
     if (!m_subagentId.isEmpty() && (!entry || (m_subagentConversation != m_details.value("conversation_id").toString(entry->session.conversationId))

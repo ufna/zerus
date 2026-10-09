@@ -1108,9 +1108,29 @@ else: print('{}')
     QTRY_VERIFY(std::any_of(inspections.cbegin(),inspections.cend(),[](const QList<QVariant> &args){return args[2].toJsonObject()["run_id"]=="new-run";}));
     confirmClear();detailsClear->click();QTRY_VERIFY(QFileInfo::exists(capture));QCOMPARE(tabs->currentIndex(),1);
     QCOMPARE(composer->editor()->toPlainText(),QString("Keep this draft"));QCOMPARE(launched.size(),0);
-    QTRY_COMPARE(finished.size(),3);tabs->setCurrentIndex(0);window.findChild<QPushButton *>("toggleInspector")->setChecked(false);
+    QTRY_COMPARE(finished.size(),3);QVERIFY(QFile::remove(capture));
+    window.findChild<QPushButton *>("toggleInspector")->setChecked(false);
+    // The header menu exposes the same confirmed reset with the inspector hidden.
+    auto *more=window.findChild<QPushButton *>("more");QVERIFY(more);QVERIFY(more->menu());
+    auto *menuClear=window.findChild<QAction *>("clearSessionAction");QVERIFY(menuClear);
+    QVERIFY(more->menu()->actions().contains(menuClear));QVERIFY(menuClear->isEnabled());
+    QCOMPARE(menuClear->text(),QString("Clear session…"));
+    QTimer::singleShot(0,&window,[&]{auto *dialog=window.findChild<QMessageBox *>("clearSessionConfirm");QVERIFY(dialog);dialog->button(QMessageBox::Cancel)->click();});
+    menuClear->trigger();QVERIFY(!QFileInfo::exists(capture));QCOMPARE(tabs->currentIndex(),1);
+    QCOMPARE(composer->editor()->toPlainText(),QString("Keep this draft"));
+    details["clear_context_supported"]=false;applyDetails();QVERIFY(!menuClear->isEnabled());QVERIFY(!detailsClear->isEnabled());
+    details["clear_context_supported"]=true;applyDetails();QVERIFY(menuClear->isEnabled());
+    details.remove("conversation_id");applyDetails();QTRY_VERIFY(!menuClear->isEnabled());
+    details["conversation_id"]="conversation-one";applyDetails();QTRY_VERIFY(menuClear->isEnabled());
+    confirmClear();menuClear->trigger();QVERIFY(!menuClear->isEnabled());
+    QTRY_VERIFY(QFileInfo::exists(capture));QVERIFY(sent.open(QIODevice::ReadOnly));
+    const auto menuPayload=QJsonDocument::fromJson(sent.readAll()).object();sent.close();
+    QCOMPARE(menuPayload["expected_run_id"].toString(),QString("new-run"));
+    QCOMPARE(menuPayload["expected_conversation_id"].toString(),QString("conversation-one"));
+    QCOMPARE(composer->editor()->toPlainText(),QString("Keep this draft"));QCOMPARE(tabs->currentIndex(),1);
+    QTRY_COMPARE(finished.size(),4);tabs->setCurrentIndex(0);
     QTest::qWait(350);details["phase"]="compacting";details["activity"]="busy";details["clear_context_supported"]=false;details.remove("cache_hint");details["session_usage"]=QJsonObject{{"status","ok"},{"context",QJsonObject{{"used",215900},{"limit",258400}}}};
-    applyDetails();QTest::qWait(50);
+    applyDetails();QTest::qWait(50);QVERIFY(!menuClear->isEnabled());
     auto *progress=window.findChild<ActivityView *>("mainActivity")->compactionIndicator();auto *context=window.findChild<QWidget *>("activityContext");
     QVERIFY(progress->isVisible());QVERIFY(qAbs(progress->mapToGlobal(progress->rect().center()).y()-context->mapToGlobal(context->rect().center()).y())<=2);
     const auto preview=qEnvironmentVariable("HGS_WORKTREE_PREVIEW");if(!preview.isEmpty()){QDir().mkpath(preview);QVERIFY(window.grab().save(preview+"/compaction-footer.png"));}

@@ -291,7 +291,7 @@ private:
     void renderAccountUsage();
     void updateDashboardAccounts(bool request = false, bool force = false);
     QPushButton *m_open, *m_shell, *m_fileManager, *m_pause, *m_more;
-    QAction *m_renameAction, *m_forkAction, *m_archiveAction, *m_forgetAction;
+    QAction *m_renameAction, *m_forkAction, *m_clearAction, *m_archiveAction, *m_forgetAction;
     QAction *m_markAllReadAction = nullptr;
     QMenu *m_sessionMenu;
     QTextBrowser *m_children = nullptr, *m_info = nullptr;
