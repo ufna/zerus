@@ -103,27 +103,32 @@ object AccountPresentation {
         val catalog=catalogs.find { it.key==selection.machine } ?: return null
         return catalog.accounts.find { it.provider==selection.provider && it.id==selection.accountId }?.let { catalog to it }
     }
-    fun resetSummary(window:AccountWindow,now:Double):String {
-        val reset=window.resetsAt?.takeIf { it.isFinite() && it>=0 && it<253402300800.0 } ?: return "Reset unknown"
-        if(!now.isFinite()) return "Reset unknown"
-        if(reset<=now) return "Window ended"
+    fun resetSummary(window:AccountWindow,now:Double):String=when(val remaining=remaining(window,now)) {
+        "Unknown" -> "Reset unknown"
+        "Ended" -> "Window ended"
+        else -> "Resets in $remaining"
+    }
+    fun remaining(window:AccountWindow,now:Double):String {
+        val reset=window.resetsAt?.takeIf { it.isFinite() && it>=0 && it<253402300800.0 } ?: return "Unknown"
+        if(!now.isFinite()) return "Unknown"
+        if(reset<=now) return "Ended"
         val minutes=kotlin.math.ceil((reset-now)/60.0).toLong()
         val remaining=when {
             minutes>=1440 -> "${minutes/1440}d"+(if(minutes%1440/60>0) " ${minutes%1440/60}h" else "")
             minutes>=60 -> "${minutes/60}h"+(if(minutes%60>0) " ${minutes%60}m" else "")
             else -> "${minutes}m"
         }
-        return "Resets in $remaining"
+        return remaining
     }
     fun warning(account:ReportedAccount)=account.status in setOf("expired","signed_out","credentials_locked","desktop_session_unavailable","credentials_unavailable","error") || account.authStatus in setOf("expired","signed_out","locked","credentials_locked")
     fun type(account:ReportedAccount)=account.identity.plan.ifBlank { account.identity.authMethod.ifBlank { "Plan not reported" } }
-    fun compactStatus(catalog:AccountCatalog,account:ReportedAccount,now:Double):String {
+    fun compactStatus(catalog:AccountCatalog,account:ReportedAccount):String {
         val problem=when(account.authStatus) {
             "expired" -> "Sign-in expired";"signed_out" -> "Signed out";"locked","credentials_locked" -> "Credentials locked"
             else -> if(warning(account) || account.status=="offline") status(account) else ""
         }
-        val freshness=when { !catalog.online -> "Offline / Last reported";stale(catalog,account,now) -> "Last reported";else -> "" }
-        return listOf(problem,freshness,if(!account.installed) "Provider not installed" else "",if(account.refreshError) "Refresh failed" else if(account.refreshing) "Refreshing" else "").filter(String::isNotBlank).joinToString(" / ")
+        val offline=if(!catalog.online) "Offline" else ""
+        return listOf(problem,offline,if(!account.installed) "Provider not installed" else "",if(account.refreshError) "Refresh failed" else if(account.refreshing) "Refreshing" else "").filter(String::isNotBlank).joinToString(" / ")
     }
     fun stale(catalog:AccountCatalog,account:ReportedAccount,now:Double):Boolean = !catalog.online || catalog.stale || account.stale || account.refreshError || account.checkedAt==null || account.checkedAt>now+60 || now-account.checkedAt>600
     fun ended(window:AccountWindow,now:Double)=window.resetsAt?.let { it<=now } == true
@@ -131,10 +136,17 @@ object AccountPresentation {
     fun date(seconds:Double?):String?=seconds?.takeIf { it.isFinite() && it>=0 && it<253402300800.0 }?.let {
         runCatching { java.time.format.DateTimeFormatter.ofLocalizedDateTime(java.time.format.FormatStyle.MEDIUM,java.time.format.FormatStyle.SHORT).withZone(java.time.ZoneId.systemDefault()).format(Instant.ofEpochSecond(it.toLong())) }.getOrNull()
     }
-    fun period(window:AccountWindow):String {
+    private fun duration(window:AccountWindow):String {
         val n=window.minutes?.takeIf { it>0 && it<=52560000 && it%1==0.0 }?.toLong()
-        val duration=n?.let { when { it%1440L==0L -> "${it/1440}d";it%60L==0L -> "${it/60}h";else -> "${it}m" } }.orEmpty()
-        return listOf(window.label.ifBlank { "Usage window" },duration).filter(String::isNotBlank).joinToString(" ")
+        return n?.let { when { it%1440L==0L -> "${it/1440}d";it%60L==0L -> "${it/60}h";else -> "${it}m" } }.orEmpty()
+    }
+    fun shortPeriod(window:AccountWindow):String=duration(window).ifBlank {
+        val label=window.label.ifBlank { "Window" }
+        val count=label.codePointCount(0,label.length)
+        if(count<=12) label else label.substring(0,label.offsetByCodePoints(0,12))+"…"
+    }
+    fun period(window:AccountWindow):String {
+        return listOf(window.label.ifBlank { "Usage window" },duration(window)).filter(String::isNotBlank).joinToString(" ")
     }
     fun status(account:ReportedAccount)=when(account.status) {
         "ok" -> "Reported usage";"configured" -> "Configured";"loading" -> "Loading provider data";"expired" -> "Sign-in expired";"signed_out" -> "Signed out";"credentials_locked" -> "Credentials locked";"desktop_session_unavailable" -> "Desktop session unavailable";"credentials_unavailable" -> "Credentials unavailable";"offline" -> "Provider offline";else -> "Usage unavailable"

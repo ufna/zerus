@@ -57,18 +57,18 @@ class AccountSnapshotsTest {
         val a=parse(JSONObject().put("credits",JSONObject().put("balance","NaN")).put("balances",JSONArray().put(JSONObject().put("balance",10)))).accounts.single();assertNull(a.creditBalance);assertNull(a.balances.single().balance)
         val unknown=parse(JSONObject()).accounts.single();assertTrue(unknown.windows.isEmpty());assertEquals("Usage unavailable",AccountPresentation.status(unknown))
     }
-    @Test fun resetSummaryRoundsUpAndPreservesEndedUnknownBoundaries() {
+    @Test fun remainingTimeRoundsUpAndPreservesEndedUnknownBoundaries() {
         fun window(at:Double?)=AccountWindow("window","Session",42.0,300.0,at)
-        assertEquals("Resets in 1m",AccountPresentation.resetSummary(window(1000.001),1000.0))
-        assertEquals("Resets in 1m",AccountPresentation.resetSummary(window(1060.0),1000.0))
-        assertEquals("Resets in 1h 1m",AccountPresentation.resetSummary(window(4600.001),1000.0))
-        assertEquals("Resets in 2h 10m",AccountPresentation.resetSummary(window(8800.0),1000.0))
-        assertEquals("Resets in 2d 3h",AccountPresentation.resetSummary(window(184600.0),1000.0))
-        assertEquals("Window ended",AccountPresentation.resetSummary(window(1000.0),1000.0))
-        assertEquals("Window ended",AccountPresentation.resetSummary(window(999.0),1000.0))
-        assertEquals("Reset unknown",AccountPresentation.resetSummary(window(null),1000.0))
-        assertEquals("Reset unknown",AccountPresentation.resetSummary(window(Double.NaN),1000.0))
-        assertEquals("Reset unknown",AccountPresentation.resetSummary(window(9_007_199_254_740_991.0),1000.0))
+        assertEquals("1m",AccountPresentation.remaining(window(1000.001),1000.0))
+        assertEquals("1m",AccountPresentation.remaining(window(1060.0),1000.0))
+        assertEquals("1h 1m",AccountPresentation.remaining(window(4600.001),1000.0))
+        assertEquals("2h 10m",AccountPresentation.remaining(window(8800.0),1000.0))
+        assertEquals("2d 3h",AccountPresentation.remaining(window(184600.0),1000.0))
+        assertEquals("Ended",AccountPresentation.remaining(window(1000.0),1000.0))
+        assertEquals("Ended",AccountPresentation.remaining(window(999.0),1000.0))
+        assertEquals("Unknown",AccountPresentation.remaining(window(null),1000.0))
+        assertEquals("Unknown",AccountPresentation.remaining(window(Double.NaN),1000.0))
+        assertEquals("Unknown",AccountPresentation.remaining(window(9_007_199_254_740_991.0),1000.0))
     }
     @Test fun detailSelectionResolvesExactLatestTupleAndDisappearsOnRemoval() {
         val a=AccountSnapshots.parse("w",computer(JSONArray().put(account("one")).put(account("two")).put(account("one","claude"))))
@@ -84,9 +84,22 @@ class AccountSnapshotsTest {
         val c=parse(JSONObject().put("status","ok").put("auth_status","expired").put("checked_at",1000).put("identity",JSONObject().put("auth_method","API key")))
         val a=c.accounts.single().copy(installed=true)
         assertEquals("API key",AccountPresentation.type(a));assertEquals("Pro",AccountPresentation.type(a.copy(identity=a.identity.copy(plan="Pro"))))
-        assertTrue(AccountPresentation.compactStatus(c.copy(online=false),a,1000.0).contains("Sign-in expired"))
-        assertTrue(AccountPresentation.compactStatus(c.copy(online=false),a,1000.0).contains("Offline"))
-        assertEquals("Provider offline",AccountPresentation.compactStatus(c,a.copy(authStatus="signed_in",status="offline"),1000.0))
+        assertTrue(AccountPresentation.compactStatus(c.copy(online=false),a).contains("Sign-in expired"))
+        assertTrue(AccountPresentation.compactStatus(c.copy(online=false),a).contains("Offline"))
+        assertEquals("Provider offline",AccountPresentation.compactStatus(c,a.copy(authStatus="signed_in",status="offline")))
+    }
+
+    @Test fun shortPeriodUsesOnlyValidWholeMinuteUnitsAndBoundsUnicodeFallback() {
+        fun window(minutes:Double?,label:String="Session")=AccountWindow("window",label,0.0,minutes,null)
+        assertEquals("5h",AccountPresentation.shortPeriod(window(300.0)))
+        assertEquals("7d",AccountPresentation.shortPeriod(window(10080.0)))
+        assertEquals("Session",AccountPresentation.shortPeriod(window(300.5)))
+        assertEquals("Session",AccountPresentation.shortPeriod(window(Double.NaN)))
+        val short=AccountPresentation.shortPeriod(window(null,"😀".repeat(20)))
+        assertEquals(13,short.codePointCount(0,short.length))
+        assertEquals("😀".repeat(12)+"…",short)
+        assertEquals("Session 5h",AccountPresentation.period(window(300.0)))
+        assertEquals("Window ended",AccountPresentation.resetSummary(window(300.0).copy(resetsAt=1000.0),1000.0))
     }
 
 }

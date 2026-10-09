@@ -13,6 +13,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 
@@ -27,7 +30,6 @@ import kotlinx.coroutines.delay
     LazyColumn(Modifier.fillMaxSize(),contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
         item { Column(verticalArrangement=Arrangement.spacedBy(4.dp)) {
             Text("Accounts",style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.SemiBold)
-            Text("Reported limits and account status",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
             if(model.demo) Text("PREVIEW / Sample account data",color=MaterialTheme.colorScheme.primary,style=MaterialTheme.typography.labelMedium)
             if(model.accountsError.isNotBlank()) Text(model.accountsError,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.error)
         } }
@@ -39,9 +41,9 @@ import kotlinx.coroutines.delay
             item(key="machine:"+catalog.key.toString()) { Column(verticalArrangement=Arrangement.spacedBy(6.dp)) {
                 Text(workspaceName(model,catalog),style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
                 MachineLabel(model.machineName(catalog.key.connectionId,catalog.key.computerId,catalog.machineName),colorHex=model.machineColor(catalog.key))
-                if(!catalog.online) Text("Offline / Last reported data",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                if(!catalog.online) Text("Offline",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
                 if(!catalog.supported) Text("Update the machine connector to view accounts.",style=MaterialTheme.typography.bodySmall)
-                else if(!catalog.available) Text("Account catalog is not available yet. Last reported values are shown when retained.",style=MaterialTheme.typography.bodySmall)
+                else if(!catalog.available) Text("Account catalog is not available yet.",style=MaterialTheme.typography.bodySmall)
                 else if(catalog.accounts.isEmpty()) Text("No account profiles reported on this machine.",style=MaterialTheme.typography.bodySmall)
             } }
             items(catalog.accounts,key={ "account:"+org.json.JSONArray(listOf(catalog.key.connectionId,catalog.key.computerId,it.provider,it.id)).toString() }) { account ->
@@ -62,7 +64,7 @@ import kotlinx.coroutines.delay
                     MachineLabel(model.machineName(catalog.key.connectionId,catalog.key.computerId,catalog.machineName),colorHex=model.machineColor(catalog.key))
                 } }
                 item { AccountDetails(catalog,account,now) }
-                item { Text("Limits update automatically about every five minutes. Refresh reads the latest report from your machine. Last reported values remain available offline.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant) }
+                item { Text("Limits update automatically about every five minutes. Refresh reads the latest report from your machine. Saved values remain available offline.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant) }
             }
         }
     }
@@ -72,7 +74,7 @@ private fun workspaceName(model:ZerusViewModel,catalog:AccountCatalog)=model.con
 
 @Composable private fun CompactAccountCard(catalog:AccountCatalog,account:ReportedAccount,now:Double,onClick:()->Unit) {
     val muted=MaterialTheme.colorScheme.onSurfaceVariant
-    val marker=AccountPresentation.compactStatus(catalog,account,now)
+    val marker=AccountPresentation.compactStatus(catalog,account)
     Surface(onClick=onClick,shape=MaterialTheme.shapes.large,color=MaterialTheme.colorScheme.surfaceContainer) {
         Column(Modifier.fillMaxWidth().padding(12.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)) {
@@ -83,13 +85,17 @@ private fun workspaceName(model:ZerusViewModel,catalog:AccountCatalog)=model.con
                 }
                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight,"View account details",Modifier.size(20.dp),tint=muted)
             }
-            account.windows.take(2).forEach { window -> Column(verticalArrangement=Arrangement.spacedBy(1.dp)) {
-                Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                    Text(AccountPresentation.period(window),Modifier.weight(1f),style=MaterialTheme.typography.bodySmall,maxLines=1,overflow=TextOverflow.Ellipsis)
-                    Text(AccountPresentation.percent(window.usedPercent),style=MaterialTheme.typography.labelMedium,color=windowTone(catalog,account,window,now))
+            account.windows.take(2).forEach { window ->
+                val remaining=AccountPresentation.remaining(window,now)
+                val percentage=AccountPresentation.percent(window.usedPercent)
+                Row(Modifier.fillMaxWidth().clearAndSetSemantics {
+                    contentDescription="${AccountPresentation.period(window)}, ${AccountPresentation.resetSummary(window,now)}, $percentage"
+                },horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                    Text(AccountPresentation.shortPeriod(window),Modifier.weight(.22f).alignByBaseline(),style=MaterialTheme.typography.bodySmall,maxLines=1,softWrap=false,overflow=TextOverflow.Ellipsis)
+                    Text(remaining,Modifier.weight(.35f).alignByBaseline(),style=MaterialTheme.typography.bodySmall,color=if(AccountPresentation.ended(window,now)) Color(0xFFF0A35B) else muted,maxLines=1,softWrap=false,overflow=TextOverflow.Ellipsis)
+                    Text(percentage,Modifier.weight(.43f).alignByBaseline(),style=MaterialTheme.typography.bodySmall,color=windowTone(catalog,account,window,now),textAlign=TextAlign.End,maxLines=1,softWrap=false,overflow=TextOverflow.Ellipsis)
                 }
-                Text(AccountPresentation.resetSummary(window,now),style=MaterialTheme.typography.labelSmall,color=if(AccountPresentation.ended(window,now)) Color(0xFFF0A35B) else muted,maxLines=1,overflow=TextOverflow.Ellipsis)
-            } }
+            }
             if(account.windows.size>2) Text("+${account.windows.size-2} more usage windows",style=MaterialTheme.typography.labelSmall,color=muted)
             if(account.windows.isEmpty()) Text(compactBalance(account) ?: "Usage unknown",style=MaterialTheme.typography.bodySmall,color=muted,maxLines=1,overflow=TextOverflow.Ellipsis)
             if(marker.isNotBlank()) Text(marker,style=MaterialTheme.typography.labelSmall,color=if(AccountPresentation.warning(account) || account.refreshError) Color(0xFFF0A35B) else muted,maxLines=1,overflow=TextOverflow.Ellipsis)
@@ -127,8 +133,8 @@ private fun compactBalance(account:ReportedAccount):String?=when {
             Text("Profile: ${account.id}",style=MaterialTheme.typography.bodySmall,color=muted)
         } }
         if(!account.installed) Text("Provider not installed on this machine",style=MaterialTheme.typography.bodySmall,color=muted)
-        Text(AccountPresentation.status(account)+(if(AccountPresentation.stale(catalog,account,now)) " / Last reported" else ""),style=MaterialTheme.typography.labelMedium,color=if(AccountPresentation.warning(account)) Color(0xFFF0A35B) else muted)
-        val marker=AccountPresentation.compactStatus(catalog,account,now)
+        Text(AccountPresentation.status(account),style=MaterialTheme.typography.labelMedium,color=if(AccountPresentation.warning(account)) Color(0xFFF0A35B) else muted)
+        val marker=AccountPresentation.compactStatus(catalog,account)
         if(marker.isNotBlank()) Text(marker,style=MaterialTheme.typography.bodySmall,color=muted)
         if(account.identityCached) Text("Identity retained from the last provider report",style=MaterialTheme.typography.bodySmall,color=muted)
         if(account.refreshing) Text("Provider refresh in progress",style=MaterialTheme.typography.bodySmall,color=muted)
