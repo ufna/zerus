@@ -656,7 +656,7 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         renderDetails();
     });
     m_markRead=new ToolbarChip;m_markRead->setObjectName("activityMarkRead");
-    m_markRead->setLabels(tr("Mark as read"));m_markRead->setIconName("read-all");m_markRead->setTone(ChipTone::Quiet);
+    m_markRead->setLabels(tr("Mark as read"));m_markRead->setIconName("read-all");m_markRead->setTone(ChipTone::Accent);
     toolbar->add(ComposerToolbar::Slot::MarkRead,m_markRead);
     auto *compaction=m_activityView->compactionIndicator();compaction->layout()->setContentsMargins(0,0,0,0);
     toolbar->add(ComposerToolbar::Slot::Compaction,compaction);toolbar->add(ComposerToolbar::Slot::CompactionCancel,m_compactCancel);

@@ -27,6 +27,7 @@ ToneColors toneColors(ChipTone tone, bool dark)
     case ChipTone::Success: return dark ? ToneColors{"#72cdb2", "transparent", "transparent", "#27313b"} : ToneColors{"#237a62", "transparent", "transparent", "#e8edf3"};
     case ChipTone::Warning: return dark ? ToneColors{"#efbd78", "#2a2419", "#5a4a2e", "#33291b"} : ToneColors{"#91621a", "#fbf3e4", "#e6cf9f", "#f6e8cc"};
     case ChipTone::Danger: return dark ? ToneColors{"#ff9ca8", "#2a1e24", "#5a3540", "#33222a"} : ToneColors{"#b52d48", "#fdeef0", "#efc2ca", "#f9dde2"};
+    case ChipTone::Accent: return dark ? ToneColors{"#8bdfc0", "#233a35", "#456e61", "#2a4640"} : ToneColors{"#167357", "#e7f3ed", "#a5c8b8", "#dcefe6"};
     }
     return {};
 }
@@ -202,10 +203,10 @@ void ToolbarChip::render()
     const auto colors = toneColors(m_tone, m_dark);
     const QString border = m_flashing ? accent(m_dark) : QString(colors.border);
     // Select the chip type alone: a QPushButton rule would also restyle the buttons in its popover.
-    setWorkspaceStyle(this, QString("ToolbarChip { font-size:11px; min-height:0; padding:0 %6px; border-radius:6px; text-align:left;"
+    setWorkspaceStyle(this, QString("ToolbarChip { font-size:11px; min-height:0; padding:0 %6px; border-radius:%7px; text-align:left;"
         " color:%1; background:%2; border:1px solid %3; } ToolbarChip:hover { background:%4; }"
         " ToolbarChip:focus[keyboardFocus=\"true\"] { border-color:%5; }")
-        .arg(colors.text, colors.background, border, colors.hover, accent(m_dark)).arg(ChipPadding));
+        .arg(colors.text, colors.background, border, colors.hover, accent(m_dark)).arg(ChipPadding).arg(m_tone == ChipTone::Accent ? 11 : 6));
     const QString iconKey = m_icon + '|' + colors.text;
     if (iconKey != m_renderedIcon) {
         m_renderedIcon = iconKey; setIcon(m_icon.isEmpty() ? QIcon() : workspaceIcon(m_icon, QColor(colors.text)));

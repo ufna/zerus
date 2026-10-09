@@ -8,7 +8,8 @@
 class QHBoxLayout;
 class QTimer;
 
-enum class ChipTone { Quiet, Neutral, Success, Warning, Danger };
+// Accent is the green pill of a positive action (Mark as read).
+enum class ChipTone { Quiet, Neutral, Success, Warning, Danger, Accent };
 
 // Popup panel anchored above a chip. Escape closes it; closing returns focus to
 // the widget that had it at opening: the chip after keyboard activation, the

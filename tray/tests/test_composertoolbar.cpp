@@ -81,6 +81,7 @@ private slots:
     void hiddenChipHandsFocusToTheField();
     void openPopoverFollowsItsContent();
     void exactWidthNeedsNoShortening();
+    void accentChipIsAGreenPill();
 };
 
 void TestComposerToolbar::slotsFixOrderAndRowHeight()
@@ -255,6 +256,17 @@ void TestComposerToolbar::exactWidthNeedsNoShortening()
     row.window.resize(needed, 90); QTRY_COMPARE(row.toolbar->width(), needed); QCoreApplication::processEvents();
     for (auto *chip : {row.attachments, row.read, row.recovery, row.cache}) QVERIFY2(!chip->isCompact(), qPrintable(chip->objectName()));
     verifyFits(row);
+}
+
+void TestComposerToolbar::accentChipIsAGreenPill()
+{
+    // Mark as read keeps its green pill inside the toolbar.
+    Row row; row.read->setTone(ChipTone::Accent);
+    for (const auto &[dark, text, fill, border] : {std::tuple{true, "#8bdfc0", "#233a35", "#456e61"}, std::tuple{false, "#167357", "#e7f3ed", "#a5c8b8"}}) {
+        row.toolbar->setTheme(dark); const auto style = row.read->styleSheet();
+        QVERIFY2(style.contains(QString("color:%1;").arg(text)) && style.contains(QString("background:%1;").arg(fill))
+            && style.contains(QString("border:1px solid %1;").arg(border)) && style.contains("border-radius:11px;"), qPrintable(style));
+    }
 }
 
 QTEST_MAIN(TestComposerToolbar)

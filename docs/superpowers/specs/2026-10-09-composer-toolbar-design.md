@@ -67,7 +67,8 @@ it with `positionJumpButton()`; `SessionsWindow` stops reparenting it into the f
 
 - `ToolbarChip : QPushButton`
   - Height 24 px, radius 6 px, font 11 px, optional leading `workspaceIcon`.
-  - `Tone`: `Quiet`, `Neutral`, `Success`, `Warning`, `Danger`. Colours come from
+  - `Tone`: `Quiet`, `Neutral`, `Success`, `Warning`, `Danger`, `Accent` (a green pill, radius 11 px:
+    text `#8bdfc0` / `#167357`, fill `#233a35` / `#e7f3ed`, border `#456e61` / `#a5c8b8`). Colours come from
     the existing palette (dark / light): Danger `#ff9ca8` / `#b52d48`, Warning
     `#efbd78` / `#91621a`, Success `#72cdb2` / `#237a62`, Quiet `#a1adbb` /
     `#647386`. Neutral uses the composer field colours. Warning and Danger chips
@@ -175,7 +176,7 @@ button that opens the inspector.
   move into the cache popover, `m_usageWarning` into the usage-limit popover, and
   `m_recovery` leaves the activity layout for the recovery popover.
 - Adds to `m_composer->toolbar()`:
-  - leading: Mark as read (Quiet, `read-all` icon, "Mark as read" / icon only,
+  - leading: Mark as read (Accent: the former green pill, `read-all` icon, "Mark as read" / icon only,
     hideable, lowest priority), then `ActivityView::compactionIndicator()` and
     `m_compactCancel` (shown as an underlined link) as two adjacent items;
   - trailing: usage limit, recovery (`refresh` icon), cache (`context-warning` icon

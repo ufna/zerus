@@ -2354,6 +2354,7 @@ void TestSessionsWindow::activityMarkReadKeepsReadingPosition()
     client->inspectionReady({},session.name,{{"tracked",true},{"conversation_id",session.conversationId},{"phase","working"},{"activity","busy"},{"cursor",30},{"events",events},
         {"session_usage",QJsonObject{{"context",QJsonObject{{"used",139000},{"limit",258400}}}}}});
     auto *button=window.findChild<QPushButton *>("activityMarkRead");QVERIFY(button);QVERIFY(button->isVisible());QVERIFY(!button->icon().isNull());
+    QCOMPARE(static_cast<ToolbarChip *>(button)->tone(),ChipTone::Accent);
     auto *browser=window.findChild<ActivityView *>("mainActivity")->browser();auto *composer=window.findChild<MessageComposer *>("messageComposer");
     composer->editor()->setPlainText("Unsent draft");QTest::qWait(30);
     const auto initialGeometry=browser->geometry();
