@@ -2242,7 +2242,7 @@ void TestSessionsWindow::fileDropsAcrossSessionPanelKeepDraftAndTarget()
         {"subagents",QJsonObject{{"child-1",QJsonObject{{"name","Review"},{"state","working"}}}}}});
     window.findChild<QTextBrowser *>("subagents")->anchorClicked(QUrl("hgs-agent:child-1"));
     client->subagentInspectionReady({},"codex/hgs/dashboard","child-1",{},{{"parent_conversation_id","conversation-one"},{"conversation_id","child-one"},{"run_id","run-one"},{"send_supported",true}});
-    auto *child=window.findChild<MessageComposer *>("subagentComposer");QVERIFY(child->isVisible());child->editor()->setPlainText("Child draft");
+    auto *child=window.findChild<MessageComposer *>("subagentComposer");QVERIFY(child->isInputVisible());child->editor()->setPlainText("Child draft");
     QDragEnterEvent childEnter(QPoint(10,10),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(panel,&childEnter);QVERIFY(childEnter.isAccepted());
     QDropEvent childDrop(QPointF(10,10),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);QApplication::sendEvent(panel,&childDrop);QVERIFY(childDrop.isAccepted());
     QCOMPARE(child->findChildren<QWidget *>("attachmentRow").size(),1);QVERIFY(child->editor()->toPlainText().contains("Child draft"));
@@ -2785,6 +2785,9 @@ void TestSessionsWindow::subagentActivityKeepsMainDraftAndRejectsStaleHistory()
     client->subagentInspectionReady({},"codex/hgs/dashboard","child-1",{},child);
     QVERIFY(view->browser()->toPlainText().contains("Review finished"));
     QCOMPARE(window.findChild<QPushButton *>("subagentContext")->property("contextPercent").toDouble(),25.);
+    auto *childComposer=window.findChild<MessageComposer *>("subagentComposer");auto *childContext=window.findChild<QPushButton *>("subagentContext");
+    QVERIFY(childComposer->isVisible());QVERIFY(!childComposer->isInputVisible());QVERIFY(childContext->isVisible());
+    QVERIFY(childComposer->toolbar()->isAncestorOf(childContext));
     QCOMPARE(window.findChild<QPushButton *>("activityContext")->property("contextPercent").toDouble(),80.);
     window.findChild<QPushButton *>("subagentBack")->click(); QCOMPARE(stack->currentIndex(),0);
     QCOMPARE(editor->toPlainText(),QString("Keep my main draft"));

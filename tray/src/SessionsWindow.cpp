@@ -680,9 +680,9 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     m_subagentHint = new QLabel; m_subagentHint->setTextFormat(Qt::PlainText); m_subagentHint->setWordWrap(true);
     subagentLayout->addWidget(m_subagentHint);
     m_subagentView = new ActivityView; m_subagentView->setObjectName("subagentActivity"); m_subagentView->browser()->setObjectName("subagentJournal"); subagentLayout->addWidget(m_subagentView, 1);
-    m_subagentComposer = new MessageComposer; m_subagentComposer->setObjectName("subagentComposer"); m_subagentComposer->hide();
+    m_subagentComposer = new MessageComposer; m_subagentComposer->setObjectName("subagentComposer"); m_subagentComposer->setInputVisible(false);
     m_subagentContextUsage=new SessionUsage::ContextButton;m_subagentContextUsage->setObjectName("subagentContext");
-    subagentLayout->addWidget(m_subagentContextUsage,0,Qt::AlignRight);
+    m_subagentComposer->toolbar()->add(ComposerToolbar::Slot::Context,m_subagentContextUsage);
     subagentLayout->addWidget(m_subagentComposer);
     for(auto *context:{m_contextUsage,m_subagentContextUsage})connect(context,&QPushButton::clicked,this,[this]{setInspectorVisible(true);m_inspector->setCurrentIndex(1);});
     connect(m_subagentComposer, &MessageComposer::sendRequested, this,
@@ -878,7 +878,7 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     detail->addWidget(m_workSplitter, 1); m_detailStack->addWidget(details); m_splitter->addWidget(m_detailStack);
     m_fileDrop=new SessionFileDrop(details,[this]()->MessageComposer *{
         if(!selected()||m_detailTabs->currentWidget()==m_terminal)return nullptr;
-        if(m_detailTabs->currentIndex()==0&&!m_subagentId.isEmpty())return m_subagentComposer->isVisible()?m_subagentComposer:nullptr;
+        if(m_detailTabs->currentIndex()==0&&!m_subagentId.isEmpty())return m_subagentComposer->isInputVisible()?m_subagentComposer:nullptr;
         return m_composer;
     },[this](MessageComposer *composer){if(composer==m_composer)closeSubagent();m_detailTabs->setCurrentIndex(0);},
     [this]{return terminalDropTarget();},[this](const QStringList &paths){dropTerminalFiles(paths);});
@@ -1040,7 +1040,7 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
                 + (data.value("history_truncated").toBool() ? tr(". Showing recent activity.") : QString())
                 + (data.value("send_supported").toBool() ? tr(" Messages go directly to this agent.")
                     : tr(" Read only. This agent is managed by the parent conversation.")));
-            m_subagentComposer->setVisible(data.value("send_supported").toBool());
+            m_subagentComposer->setInputVisible(data.value("send_supported").toBool());
             m_subagentComposer->setAvailability(!isTerminating(*entry) && entry->online && data.value("send_supported").toBool());
             m_subagentView->setActivity(data,data.value("events").toArray()); renderDetails();
         });
@@ -2251,7 +2251,7 @@ void SessionsWindow::openSubagent(const QString &id)
     const auto roster = entry ? childRoster(*entry) : QJsonObject();
     if (!entry || !roster.contains(id)) return;
     if (m_subagentId == id) return;
-    m_subagentDetails = {}; m_subagentComposer->hide();
+    m_subagentDetails = {}; m_subagentComposer->setInputVisible(false);
     m_subagentComposer->setSessionKey(childKey(*entry, id));
     m_subagentId = id; m_subagentConversation = m_details.value("conversation_id").toString(entry->session.conversationId);
     m_subagentCwd = selectedDirectory();
