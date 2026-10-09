@@ -309,6 +309,7 @@ private:
     QHash<quint64, QString> m_childMessages;
     QuestionCard *m_question = nullptr;
     RecoveryUi::Panel *m_recovery = nullptr;
+    ToolbarChip *m_recoveryChip = nullptr;
     quint64 m_recoveryAction = 0;
     QString m_recoveryActionKey;
     TerminalView *m_terminal = nullptr;

@@ -927,33 +927,41 @@ void TestSessionsWindow::recoveryCountdownKeepsHistoryDraftAndFocus()
     client->inspectionReady({},"codex/hgs/dashboard",details);
     auto *browser=window.findChild<ActivityView *>("mainActivity")->browser();
     auto *composer=window.findChild<MessageComposer *>("messageComposer");auto *editor=composer->editor();
-    auto *panel=window.findChild<QFrame *>("recoveryPanel");QVERIFY(panel->isVisible());
+    auto *chip=window.findChild<ToolbarChip *>("recoveryChip");QVERIFY(chip && chip->isVisible());QCOMPARE(chip->tone(),ChipTone::Warning);
+    QVERIFY(chip->fullLabel().startsWith("Retry in"));QVERIFY(chip->shortLabel().endsWith(" s"));
+    auto *panel=window.findChild<QFrame *>("recoveryPanel");QVERIFY(!panel->isVisible());
     editor->setPlainText("Keep my draft");window.activateWindow();editor->setFocus();QTRY_VERIFY(editor->hasFocus());
     // Account inspection and the initial composer layout are unrelated to retries.
     // Finish them before measuring the effect of the countdown alone.
     auto *usage=static_cast<AccountUsage::RefreshButton *>(window.findChild<QPushButton *>("sessionUsageRefresh"));
     QTRY_VERIFY(!usage->isRefreshing());
     QTRY_COMPARE(composer->height(),composer->layout()->totalHeightForWidth(composer->width()));
-    const int revision=browser->document()->revision();const auto geometry=browser->geometry();
+    const int revision=browser->document()->revision();const auto geometry=browser->geometry();const auto label=chip->fullLabel();
     QTest::qWait(1100);
     QVERIFY(editor->hasFocus());QCOMPARE(editor->toPlainText(),QString("Keep my draft"));
     QCOMPARE(browser->document()->revision(),revision);QCOMPARE(browser->geometry(),geometry);
+    // The panel timer has its own phase: allow one more tick for the next whole second.
+    QTRY_VERIFY_WITH_TIMEOUT(chip->fullLabel()!=label,2500);   // the countdown ticks while the popover is closed
     QVERIFY(panel->findChild<QPushButton *>("recoveryNow")->isEnabled());
     const auto preview=qEnvironmentVariable("HGS_RECOVERY_PREVIEW");
     if(!preview.isEmpty()){QDir().mkpath(preview);QVERIFY(window.grab().save(preview+"/activity.png"));}
+    QTest::mouseClick(chip,Qt::LeftButton);QTRY_VERIFY(panel->isVisible());
+    if(!preview.isEmpty())QVERIFY(chip->popover()->grab().save(preview+"/recovery-popover.png"));
     QTimer::singleShot(0,&window,[&]{
         auto *dialog=qobject_cast<QDialog *>(QApplication::activeModalWidget());QVERIFY(dialog);
         auto *history=dialog->findChild<QPlainTextEdit *>();QVERIFY(history);QVERIFY(history->toPlainText().contains("Retry scheduled"));dialog->reject();
     });
     panel->findChild<QPushButton *>("recoveryHistory")->click();
     window.activateWindow();QTest::qWait(20);
+    if(!panel->isVisible()){QTest::mouseClick(chip,Qt::LeftButton);QTRY_VERIFY(panel->isVisible());}
     details["events"]=QJsonArray();job["state"]="cancelled";job["reason"]="Cancelled by you";details["recovery"]=job;
     panel->findChild<QPushButton *>("recoveryNow")->setFocus();
     QTRY_VERIFY(panel->findChild<QPushButton *>("recoveryNow")->hasFocus());
     client->inspectionReady({},"codex/hgs/dashboard",details);
     QVERIFY(panel->hasFocus());QVERIFY(!panel->findChild<QPushButton *>("recoveryNow")->isVisible());
+    QCOMPARE(chip->tone(),ChipTone::Warning);QCOMPARE(chip->shortLabel(),QString("Off"));
     job["state"]="succeeded";details["recovery"]=job;client->inspectionReady({},"codex/hgs/dashboard",details);
-    QVERIFY(!panel->isVisible());QVERIFY(editor->hasFocus());QCOMPARE(editor->toPlainText(),QString("Keep my draft"));
+    QVERIFY(chip->isHidden());QVERIFY(!panel->isVisible());QTRY_VERIFY(editor->hasFocus());QCOMPARE(editor->toPlainText(),QString("Keep my draft"));
 }
 
 void TestSessionsWindow::coldCacheConfirmationPreservesDraftAndPinsConversation()
@@ -1557,24 +1565,29 @@ void TestSessionsWindow::quotaFailureExplainsRecoveryAndKeepsDraft()
         {"provider_error",QJsonObject{{"error_kind","quota"},{"detail","7d limit reached. Resets in 4d18h"}}},
         {"events",QJsonArray{}},{"cursor",0}};
     client->inspectionReady({},"codex/hgs/dashboard",details,{});
-    auto *panel=window.findChild<QFrame *>("recoveryPanel");QVERIFY(panel && panel->isVisible());
+    auto *chip=window.findChild<ToolbarChip *>("recoveryChip");QVERIFY(chip && chip->isVisible());
+    QCOMPARE(chip->fullLabel(),QString("Provider error"));QCOMPARE(chip->tone(),ChipTone::Danger);
+    auto *panel=window.findChild<QFrame *>("recoveryPanel");QVERIFY(panel && !panel->isVisible());
+    window.activateWindow();QTest::mouseClick(chip,Qt::LeftButton);QTRY_VERIFY(panel->isVisible());
     const auto *row=window.findChild<SessionList *>("sessionList")->currentItem();
     QCOMPARE(row->data(SessionRoles::Status).toString(),QString("Usage limit reached"));
     QVERIFY(!row->data(SessionRoles::Working).toBool());QVERIFY(row->data(SessionRoles::Attention).toBool());
     QVERIFY(panel->findChild<QLabel *>("providerErrorHelp")->text().contains("will not retry automatically"));
     QVERIFY(panel->findChild<QPushButton *>("providerErrorTerminal")->isVisible());
     QVERIFY(panel->findChild<QPushButton *>("providerErrorRefresh")->isVisible());
-    window.activateWindow();auto *action=panel->findChild<QPushButton *>("providerErrorTerminal");action->setFocus();
+    auto *action=panel->findChild<QPushButton *>("providerErrorTerminal");action->setFocus();
     QTRY_COMPARE(QApplication::focusWidget(),action);
     client->inspectionReady({},"codex/hgs/dashboard",details,{});
     QCOMPARE(QApplication::focusWidget(),action);
     QCOMPARE(composer->editor()->toPlainText(),QString("Continue after account access is restored"));
     const auto preview=qEnvironmentVariable("HGS_QUOTA_PREVIEW");
     if(!preview.isEmpty()) {QDir().mkpath(preview);window.resize(1120,800);QTest::qWait(30);QVERIFY(window.grab().save(preview+"/quota-failure.png"));}
+    // Switching session closes the popover instead of showing this session's error elsewhere.
+    window.showSession("mac","claude/infra/review");QVERIFY(!panel->isVisible());window.showSession({},"codex/hgs/dashboard");
     // Restored native progress clears the failure without submitting the draft.
     details["phase"]="working";details["activity"]="busy";details.remove("provider_error");
     client->inspectionReady({},"codex/hgs/dashboard",details,{});
-    QVERIFY(!panel->isVisible());
+    QVERIFY(!panel->isVisible());QVERIFY(chip->isHidden());
     QCOMPARE(composer->editor()->toPlainText(),QString("Continue after account access is restored"));
 }
 

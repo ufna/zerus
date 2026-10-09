@@ -607,15 +607,23 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     usageActions->addWidget(usageRefresh);limitLayout->addWidget(m_usageWarning);limitLayout->addLayout(usageActions);
     m_usageLimit->setPopoverContent(usagePanel);m_composer->toolbar()->add(ComposerToolbar::Slot::UsageLimit,m_usageLimit);
     connect(usageRefresh,&QPushButton::clicked,this,[this]{refreshAccountUsage(true);});
-    m_recovery = new RecoveryUi::Panel; activityLayout->addWidget(m_recovery);
+    m_recovery = new RecoveryUi::Panel;
+    m_recoveryChip=new ToolbarChip;m_recoveryChip->setObjectName("recoveryChip");m_recoveryChip->setIconName("refresh");
+    m_recoveryChip->setPopoverContent(m_recovery);m_composer->toolbar()->add(ComposerToolbar::Slot::Recovery,m_recoveryChip);
+    m_recovery->summaryChanged = [this] {
+        const auto summary=m_recovery->summary();
+        m_recoveryChip->setLabels(summary.label,summary.shortLabel);m_recoveryChip->setTone(summary.tone);
+        m_recoveryChip->setDetail(m_recovery->detailText());m_recoveryChip->setActive(m_recovery->active());
+    };
     m_recovery->openTerminal = [this] {
+        m_recoveryChip->closePopover();
         const auto *entry=selected();if(!entry || !entry->online)return;
         m_detailTabs->setCurrentWidget(entry->session.cmd=="dsh"?static_cast<QWidget *>(m_nativeUi):m_terminal);
         if(entry->session.cmd!="dsh")m_terminal->connectSession();
     };
     m_recovery->refreshUsage = [this] { refreshAccountUsage();inspect();emit refreshRequested(); };
     m_recovery->openSettings = [this] {
-        showWorkspaceSettings();m_settingsPage->openRecovery();
+        m_recoveryChip->closePopover();showWorkspaceSettings();m_settingsPage->openRecovery();
     };
     m_recovery->action = [this](const QJsonObject &payload) {
         const auto *entry=selected();if(!entry||!entry->online)return;
@@ -1271,7 +1279,7 @@ void SessionsWindow::applyTheme()
     m_cacheDetail->setStyleSheet(QString("QLabel{color:%1;font-size:11px;}").arg(m_muted));
     m_cacheClear->setIcon(workspaceIcon("refresh",QColor(m_muted)));m_cacheClear->setIconSize(QSize(14,14));
     m_fileDrop->setTheme(m_dark);
-    m_recovery->setStyleSheet(QString("QFrame#recoveryPanel {background:%1;border:1px solid %2;border-radius:8px;} QLabel {border:0;background:transparent;}").arg(m_surface,m_border));
+    m_recovery->setStyleSheet(QStringLiteral("QFrame#recoveryPanel {background:transparent;border:0;} QLabel {border:0;background:transparent;}"));
     m_machineFilter->setTheme(m_dark); m_dashboard->setTheme(m_dark); m_searchResults->setTheme(m_dark); m_activityView->setTheme(m_dark); m_composer->setTheme(m_dark); m_question->setTheme(m_dark); m_terminal->setTheme(m_dark);
     m_subagentView->setTheme(m_dark); m_subagentComposer->setTheme(m_dark);
     m_processes->setTheme(m_dark);

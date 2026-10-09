@@ -1,6 +1,7 @@
 #pragma once
 #include "HgsClient.h"
 #include "SessionPresentation.h"
+#include "ComposerToolbar.h"
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDateTime>
@@ -41,6 +42,9 @@ public:
     std::function<void()> openSettings;
     std::function<void()> openTerminal;
     std::function<void()> refreshUsage;
+    // The toolbar chip follows the panel: called on every refresh, also while hidden.
+    std::function<void()> summaryChanged;
+    struct Summary { QString label, shortLabel; ChipTone tone; };
     explicit Panel(QWidget *parent=nullptr):QFrame(parent) {
         setObjectName("recoveryPanel"); setFrameShape(QFrame::StyledPanel);setFocusPolicy(Qt::StrongFocus);
         auto *layout=new QVBoxLayout(this); layout->setContentsMargins(14,10,14,10); layout->setSpacing(8);
@@ -72,20 +76,31 @@ public:
         for(auto *button:{m_now,m_cancel})connect(button,&QPushButton::clicked,this,[this,button]{
             if(!action)return; m_pending=true;refresh(); action({{"name",m_job.value("name")},{"id",m_job.value("id")},{"action",button==m_now?"now":"cancel"}});
         });
-        auto *timer=new QTimer(this);connect(timer,&QTimer::timeout,this,[this]{if(isVisible())refresh();});timer->start(1000);hide();
+        auto *timer=new QTimer(this);connect(timer,&QTimer::timeout,this,[this]{if(m_active)refresh();});timer->start(1000);
     }
     void setState(const QJsonObject &details,bool online) {
         const auto job=details.value("recovery").toObject();
         if(job.value("id")!=m_job.value("id")) {m_pending=false;m_error.clear();}
         m_job=job;m_online=online;
         m_failure=details.value("phase")=="error"?details.value("provider_error").toObject():QJsonObject();
-        setVisible((!job.isEmpty() && job.value("state")!="succeeded") || !m_failure.isEmpty()); refresh();
+        m_active=(!job.isEmpty() && job.value("state")!="succeeded") || !m_failure.isEmpty(); refresh();
     }
     void finished(const QString &error) { m_pending=false;m_error=error;refresh(); }
+    bool active() const { return m_active; }
+    QString detailText() const { return QStringList{m_status->text(),m_detail->text()}.join('\n').trimmed(); }
+    Summary summary() const {
+        if(isFailure())return {tr("Provider error"),tr("Error"),ChipTone::Danger};
+        const auto state=m_job.value("state").toString();const auto label=RecoveryUi::status(m_job);
+        if(state=="waiting"||state=="dispatching"||state=="retrying") {
+            const int remaining=qMax(0,int(std::ceil(m_job.value("due_at").toDouble()-QDateTime::currentMSecsSinceEpoch()/1000.0)));
+            return {label,state=="waiting"&&remaining>0?tr("%1 s").arg(remaining):QStringLiteral("…"),ChipTone::Warning};
+        }
+        if(state=="cancelled")return {label,tr("Off"),ChipTone::Warning};
+        return {label,tr("Error"),ChipTone::Danger};
+    }
 private:
     void refresh() {
-        const bool failure=!m_failure.isEmpty() && (m_job.isEmpty() || m_job.value("state")=="succeeded"
-            || m_failure.value("error_kind")=="quota");
+        const bool failure=isFailure();
         m_terminal->setVisible(failure);m_usage->setVisible(failure && m_failure.value("error_kind")=="quota");
         m_terminal->setEnabled(m_online);m_usage->setEnabled(m_online);
         m_help->setVisible(failure);m_settings->setVisible(!failure);m_history->setVisible(!failure);
@@ -96,7 +111,7 @@ private:
             m_help->setText(m_failure.value("error_kind")=="quota"
                 ? tr("The provider stopped this turn. Wait for the limit to reset or restore account access, then refresh usage and send a message to continue. Your draft is kept; Zerus will not retry automatically.")
                 : tr("The provider stopped this turn. Check Terminal and resolve the error, then send a message to continue. Your draft is kept."));
-            m_now->hide();m_cancel->setVisible(m_job.value("state")=="waiting");m_cancel->setEnabled(m_online&&!m_pending);return;
+            m_now->hide();m_cancel->setVisible(m_job.value("state")=="waiting");m_cancel->setEnabled(m_online&&!m_pending);notify();return;
         }
         const auto state=m_job.value("state").toString(); const bool waiting=state=="waiting";
         if(!waiting&&(m_now->hasFocus()||m_cancel->hasFocus()))setFocus(Qt::OtherFocusReason);
@@ -109,8 +124,13 @@ private:
         m_history->setEnabled(!m_job.value("history").toArray().isEmpty());
         m_now->setEnabled(waiting&&m_online&&!m_pending&&m_job.value("not_before").toDouble()<=QDateTime::currentMSecsSinceEpoch()/1000.0);
         m_cancel->setEnabled(waiting&&m_online&&!m_pending);
+        notify();
     }
-    QJsonObject m_job,m_failure; bool m_online=false,m_pending=false; QString m_error;
+    bool isFailure() const {
+        return !m_failure.isEmpty() && (m_job.isEmpty() || m_job.value("state")=="succeeded" || m_failure.value("error_kind")=="quota");
+    }
+    void notify() { if(summaryChanged)summaryChanged(); }
+    QJsonObject m_job,m_failure; bool m_online=false,m_pending=false,m_active=false; QString m_error;
     QLabel *m_status,*m_detail,*m_help; QPushButton *m_now,*m_cancel,*m_history,*m_terminal,*m_usage,*m_settings;
 };
 }
