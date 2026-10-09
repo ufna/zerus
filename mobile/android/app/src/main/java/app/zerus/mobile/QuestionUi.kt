@@ -302,7 +302,7 @@ import org.json.JSONObject
         ObscureConversation()
         Dialog(onDismissRequest = { checkpoint(); onCollapse() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
             Surface(Modifier.fillMaxSize().imePadding().padding(8.dp), color = MaterialTheme.colorScheme.background) {
-                BoxWithConstraints(Modifier.fillMaxSize()) { Content(true, maxHeight) }
+                BoxWithConstraints(Modifier.fillMaxSize()) { Content(true, this.maxHeight) }
             }
         }
     } else Content(false, maxHeight)
