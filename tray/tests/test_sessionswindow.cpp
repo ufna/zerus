@@ -96,6 +96,7 @@ private slots:
     void worktreeFilterKeepsConversationDraftAndSearchScope();
     void worktreePreview();
     void workingCardsKeepTurnClockAcrossUpdates();
+    void questionReplyPreviewUsesCompletePrompt();
     void accountUsageRejectsOtherSessionReplies();
     void dashboardAndMultiMachineNavigation();
     void multiSelectionKeepsConversationAndGroupMenu_data();
@@ -304,6 +305,23 @@ void TestSessionsWindow::workingCardsKeepTurnClockAcrossUpdates()
     box.sessions[0].activity="idle"; box.sessions[0].phase="idle";
     state.setLocal(box,QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
     QVERIFY(!row->data(SessionRoles::Working).toBool()); QVERIFY(!list->elapsedTimerRunning());
+}
+
+void TestSessionsWindow::questionReplyPreviewUsesCompletePrompt()
+{
+    auto state=fleet();auto box=state.local();auto &session=box.sessions[0];
+    const QString answer="Review the desktop changes on both machines.";
+    const QJsonObject reply{{"questionItemId","reply-one"},{"question",QString(300,'q')},{"answer",answer}};
+    session.prompt="<send_user_message_question_reply>\n"+QString::fromUtf8(QJsonDocument(QJsonArray{reply}).toJson(QJsonDocument::Compact))
+        +"\n</send_user_message_question_reply>";
+    session.activitySummary="Working";session.activityDetail=session.prompt.left(240)+QChar(0x2026);
+    state.setLocal(box,QDateTime::currentMSecsSinceEpoch());
+    SessionsWindow window(script());window.setFleet(state);window.show();window.showSession({},session.name);
+    auto *list=window.findChild<SessionList *>("sessionList");auto *row=list->currentItem();QVERIFY(row);
+    QCOMPARE(row->data(SessionRoles::Detail).toString(),"Working: Your answer: "+answer);
+    QVERIFY(row->data(Qt::AccessibleTextRole).toString().contains(answer));
+    QVERIFY(!row->data(Qt::AccessibleTextRole).toString().contains("send_user_message_question_reply"));
+    QCOMPARE(session.activityDetail,session.prompt.left(240)+QChar(0x2026));
 }
 
 void TestSessionsWindow::dashboardAndMultiMachineNavigation()

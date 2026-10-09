@@ -14,6 +14,9 @@ private slots:
     void parsesSavedSessions();
     void parsesActivityMetadata();
     void providerFailuresRequireAttentionAndPreserveSpecificStatus();
+    void questionReplyPreviews_data();
+    void questionReplyPreviews();
+    void unrecognizedQuestionPreviewsStayLiteral();
     void archiveIdentityAndCommands();
     void archiveInspectionKeepsDistinctIdentities();
     void renameCommands();
@@ -49,6 +52,61 @@ private slots:
     void nativeLaunchReportsProcessResult();
     void attachmentsUseCapturedIdentityAndValidateResponses();
 };
+
+void TestHgsClient::questionReplyPreviews_data()
+{
+    QTest::addColumn<QString>("prompt");
+    QTest::addColumn<QString>("preview");
+    const QString answer = "Keep **literal** <b>markup</b> & `code`\nReview the desktop changes.";
+    const QJsonObject reply{{"questionItemId", "reply-one"}, {"question", QString(300, 'q')}, {"answer", answer}};
+    const auto envelope = [](const QJsonDocument &document) {
+        return "<send_user_message_question_reply>\n" + QString::fromUtf8(document.toJson(QJsonDocument::Compact))
+            + "\n</send_user_message_question_reply>";
+    };
+    const QString expected = "Your answer: " + answer;
+    QTest::newRow("object") << envelope(QJsonDocument(reply)) << expected;
+    QTest::newRow("array") << envelope(QJsonDocument(QJsonArray{reply})) << expected;
+    QTest::newRow("ide") << "# Context from my IDE setup:\nOpen files: src/example.rs\n## My request for Codex:\n"
+        + envelope(QJsonDocument(QJsonArray{reply})) << expected;
+    auto second = reply; second["questionItemId"] = "reply-two"; second["answer"] = "Include macOS";
+    QTest::newRow("multiple") << envelope(QJsonDocument(QJsonArray{reply, second})) << "Your answers: " + answer + " / Include macOS";
+    second["answer"] = "";
+    QTest::newRow("empty-answer") << envelope(QJsonDocument(second)) << QString("Your answer: (empty answer)");
+    second["answer"] = QString::fromUtf8("Résumé 東京 ") + QString(300, 'a');
+    QTest::newRow("long-unicode-answer") << envelope(QJsonDocument(second)) << "Your answer: " + second["answer"].toString();
+}
+
+void TestHgsClient::questionReplyPreviews()
+{
+    QFETCH(QString, prompt); QFETCH(QString, preview);
+    SessionInfo session;session.tracked=true;session.phase="working";session.activity="busy";
+    session.prompt=prompt;session.activitySummary="Working";
+    session.activityDetail=prompt.left(240)+QChar(0x2026);
+    QCOMPARE(SessionPresentation::currentAction(session),"Working: "+preview);
+    session.activityDetail=prompt;
+    QCOMPARE(SessionPresentation::currentAction(session),"Working: "+preview);
+    session.phase="input";
+    QCOMPARE(SessionPresentation::currentAction(session),"Needs input: "+preview);
+    session.phase="working";session.activitySummary.clear();session.activityDetail.clear();
+    QCOMPARE(SessionPresentation::currentAction(session),"Working: "+preview);
+    // A previous question reply must not replace a subsequent tool excerpt.
+    session.activitySummary="Read";session.currentTool="Read";session.toolDetail="src/example.rs";session.activityDetail=session.toolDetail;
+    QCOMPARE(SessionPresentation::currentAction(session),QString("Read: src/example.rs"));
+    QCOMPARE(session.prompt,prompt);
+}
+
+void TestHgsClient::unrecognizedQuestionPreviewsStayLiteral()
+{
+    const QString start="<send_user_message_question_reply>\n";
+    for(const auto &prompt:QStringList{"Review **these** changes.", start+"not json\n</send_user_message_question_reply>",
+        start+"[{\"answer\":\"Unconfirmed excerpt", "Example: "+start+"[]\n</send_user_message_question_reply>"}) {
+        SessionInfo session;session.tracked=true;session.phase="working";session.activity="busy";
+        session.prompt=prompt;session.activitySummary="Working";session.activityDetail=prompt;
+        QCOMPARE(SessionPresentation::currentAction(session),"Working: "+prompt);
+        session.activitySummary.clear();session.activityDetail.clear();
+        QCOMPARE(SessionPresentation::currentAction(session),"Working: "+prompt);
+    }
+}
 
 void TestHgsClient::providerFailuresRequireAttentionAndPreserveSpecificStatus()
 {
