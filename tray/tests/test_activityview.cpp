@@ -120,6 +120,7 @@ private slots:
     void markdownFollowsThemeAndScale();
     void agentCardsKeepZerusSurface();
     void wideChipsStayTextInNarrowPanes();
+    void resizingWithoutChipChangesKeepsTheJournal();
     void darkCardsUseNeutralTablesAndVisibleChips();
     void cardsKeepTheirSpacingAfterChips();
     void preview();
@@ -269,6 +270,27 @@ void TestActivityView::wideChipsStayTextInNarrowPanes()
     QVERIFY(view.plainText().contains("cargo test --workspace --all-feat"));
     view.resize(2400, 400);
     QTRY_COMPARE(chipCount(), 1);
+    // The relayout settles the chips once; its own scrollbar changes do not start another.
+    QSignalSpy replaced(view.browser()->document(), &QTextDocument::contentsChanged);
+    QTest::qWait(400);
+    QCOMPARE(replaced.count(), 0);
+}
+
+void TestActivityView::resizingWithoutChipChangesKeepsTheJournal()
+{
+    // Toggling the session panel widens the conversation once. These chips fit
+    // either way, so a re-render would only shift a transcript the reader follows.
+    ActivityView view; view.resize(864, 400); view.show(); QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QJsonArray events;
+    for (int i = 1; i <= 40; ++i) events.append(journalEvent(i, i % 2 ? "UserPromptSubmit" : "Stop",
+        QString("Message %1 runs `cargo test` in `src/file-%1.rs` with enough words to wrap across the pane.").arg(i)));
+    view.setActivity({}, events);
+    auto *bar = view.browser()->verticalScrollBar(); QTRY_VERIFY(bar->maximum() > 0); QTest::qWait(200);
+    QCOMPARE(bar->value(), bar->maximum());
+    QSignalSpy replaced(view.browser()->document(), &QTextDocument::contentsChanged);
+    view.resize(1110, 400); QTest::qWait(400);
+    QCOMPARE(replaced.count(), 0);
+    QCOMPARE(bar->value(), bar->maximum());
 }
 
 void TestActivityView::darkCardsUseNeutralTablesAndVisibleChips()

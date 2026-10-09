@@ -155,7 +155,8 @@ QImage MarkdownObjects::resource(const QUrl &url, qreal devicePixelRatio)
     return {};
 }
 
-int MarkdownObjects::convertChips(QTextDocument *document, const MarkdownTheme &theme, bool objects, qreal maxWidth)
+int MarkdownObjects::convertChips(QTextDocument *document, const MarkdownTheme &theme, bool objects, qreal maxWidth,
+                                  QList<qreal> *widths)
 {
     struct Run { int position = 0, length = 0; QString text; QTextCharFormat format; };
     QList<Run> runs;
@@ -188,6 +189,7 @@ int MarkdownObjects::convertChips(QTextDocument *document, const MarkdownTheme &
         format.setProperty(ChipHeading, it->format.background().color() == MarkdownHtml::headingChipSentinel());
         format.setProperty(ChipWeight, it->format.fontWeight()); format.setProperty(ChipItalic, it->format.fontItalic());
         const qreal width = QFontMetricsF(chipFont(format)).horizontalAdvance(text) + 2 * chipPadding(format).x();
+        if (widths && objects && text.size() <= MaximumChipLength) widths->append(width);
         if (!objects || text.size() > MaximumChipLength || (maxWidth > 0 && width > maxWidth)) {
             // Plain spaces again, so that find() matches and long runs can wrap.
             QTextCharFormat plain = it->format;
