@@ -33,6 +33,7 @@
 #include "WorkspaceIcons.h"
 #include "WorkspaceStyle.h"
 #include "WorkspaceFocus.h"
+#include "WindowLayer.h"
 #include "SwarmButton.h"
 #include "MachinesPage.h"
 #include "MachineFilter.h"
@@ -961,6 +962,8 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         m_sessionDock->setHoverExpands(QSettings().value("workspace/expandSessionsOnHover",true).toBool());applyTheme();rebuild();
     };
     m_settingsPage->contentScaleChanged=[this]{applyContentScale();};
+    m_settingsPage->windowLayerChanged=[this]{WindowLayer::apply(this,WindowLayer::alwaysOnTop());};
+    WindowLayer::apply(this,WindowLayer::alwaysOnTop());
     connect(m_accountsPage,&AccountsPage::loginRequested,this,&SessionsWindow::accountLoginRequested);
     connect(m_accountsPage,&AccountsPage::installRequested,this,&SessionsWindow::accountInstallRequested);
     connect(m_accountsPage,&AccountsPage::accountsChanged,this,&SessionsWindow::refreshRequested);

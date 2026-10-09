@@ -10,11 +10,13 @@
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include "ProcessSettings.h"
+#include "WindowLayer.h"
 
 class SettingsPage : public QWidget {
 public:
     std::function<void()> appearanceChanged;
     std::function<void()> contentScaleChanged;
+    std::function<void()> windowLayerChanged;
     std::function<void()> pollingChanged;
     explicit SettingsPage(const QString &executable,QWidget *parent=nullptr):QWidget(parent){
         setObjectName("settingsPage");auto *outer=new QVBoxLayout(this);outer->setContentsMargins(24,20,24,20);outer->setSpacing(20);
@@ -36,6 +38,9 @@ public:
         connect(scaleApply,&QTimer::timeout,this,[this]{if(contentScaleChanged)contentScaleChanged();});
         auto showScale=[scaleValue](int tenths){scaleValue->setText(QStringLiteral("%1%").arg(tenths*10));};showScale(scale->value());
         connect(scale,&QSlider::valueChanged,this,[scaleApply,showScale](int tenths){QSettings().setValue("workspace/contentScale",tenths/10.);showScale(tenths);scaleApply->start();});
+        auto *onTop=new QCheckBox(tr("Keep Zerus above other windows"));onTop->setObjectName("workspaceAlwaysOnTop");onTop->setChecked(WindowLayer::alwaysOnTop());onTop->setEnabled(WindowLayer::supported());appearance->addWidget(onTop);
+        auto *onTopHint=new QLabel(WindowLayer::supported()?tr("Files and terminals opened from Zerus may appear behind it while this is on."):tr("This desktop does not let applications stay above other windows."));onTopHint->setWordWrap(true);appearance->addWidget(onTopHint);
+        connect(onTop,&QCheckBox::toggled,this,[this](bool on){QSettings().setValue("workspace/alwaysOnTop",on);if(windowLayerChanged)windowLayerChanged();});
         auto *local=new QLabel(tr("Appearance and session list preferences apply to this Zerus."));local->setWordWrap(true);appearance->addWidget(local);appearance->addStretch();
         connect(theme,&QComboBox::currentIndexChanged,this,[this,theme]{QSettings().setValue("workspace/theme",theme->currentData());if(appearanceChanged)appearanceChanged();});
         auto *sessions=makePage(tr("Sessions"));

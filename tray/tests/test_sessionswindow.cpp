@@ -39,6 +39,7 @@
 #include <QFontInfo>
 #include <QVBoxLayout>
 #include <QTableWidget>
+#include <QWindow>
 #include "SessionsWindow.h"
 #include "ActivityView.h"
 #include "QuestionCard.h"
@@ -80,6 +81,7 @@ private slots:
     void groupsPersistFilterAndRevealAttention();
     void emptyProjectsSettingPreservesArchiveAndProjects();
     void contentScaleLeavesWorkspaceChrome();
+    void alwaysOnTopSettingKeepsWindowAbove();
     void unreadRepliesNeedAnActiveVisibleResult();
     void markAllReadIgnoresFiltersAndKeepsCurrentDraft();
     void unsentDraftBecomesARowStatus();
@@ -548,6 +550,27 @@ void TestSessionsWindow::contentScaleLeavesWorkspaceChrome()
     window.findChild<QPushButton *>("workspaceSettings")->click(); slider->setValue(10);
     QTRY_COMPARE(editorPixels(), 13);
     QCOMPARE(pixels("activity"), 13); QCOMPARE(pixels("terminalScreen"), 13);
+}
+
+void TestSessionsWindow::alwaysOnTopSettingKeepsWindowAbove()
+{
+    // Off by default. The option applies in place: changing a visible window's
+    // flags through QWidget would hide it from the user's workspace.
+    const auto above = [](QWidget &window) { return window.windowHandle()->flags().testFlag(Qt::WindowStaysOnTopHint); };
+    SessionsWindow window(script()); window.setFleet(fleet()); window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
+    QVERIFY(!above(window));
+    window.findChild<QPushButton *>("workspaceSettings")->click();
+    auto *option = window.findChild<QCheckBox *>("workspaceAlwaysOnTop");
+    QVERIFY(option && option->isVisible() && option->isEnabled() && !option->isChecked());
+    option->setChecked(true);
+    QVERIFY(QSettings().value("workspace/alwaysOnTop").toBool());
+    QVERIFY(above(window)); QVERIFY(window.windowFlags().testFlag(Qt::WindowStaysOnTopHint)); QVERIFY(window.isVisible());
+    SessionsWindow restored(script()); restored.setFleet(fleet()); restored.show(); QVERIFY(QTest::qWaitForWindowExposed(&restored));
+    QVERIFY(above(restored));
+    option->setChecked(false);
+    QVERIFY(!above(window)); QVERIFY(window.isVisible());
+    QVERIFY(!QSettings().value("workspace/alwaysOnTop").toBool());
+    QSettings().remove("workspace/alwaysOnTop");
 }
 
 void TestSessionsWindow::emptyProjectsSettingPreservesArchiveAndProjects()

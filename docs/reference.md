@@ -208,8 +208,11 @@ and compacting timers use native start evidence and update locally without extra
 host requests. Theme, density, animation and machine/project label appearance are
 local preferences. **Settings → Appearance → Content scale** enlarges Activity,
 questions, the message field and Terminal from 100% to 250%; the session list,
-the side panel, the session header and its tabs keep their size. Missing Git
-metadata does not turn a folder into a repository.
+the side panel, the session header and its tabs keep their size.
+**Settings → Appearance → Keep Zerus above other windows** keeps the Zerus window
+over other applications on X11 and macOS; Wayland does not allow it. Files and
+terminals opened from Zerus may then appear behind it. Missing Git metadata does
+not turn a folder into a repository.
 
 The button beside **⋯** in the session list header collapses the list into a
 strip. Every project band and session row keeps its height, so each session
