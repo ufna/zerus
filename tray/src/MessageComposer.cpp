@@ -30,7 +30,6 @@
 #include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QPushButton>
-#include <QScrollArea>
 #include <QScreen>
 #include <QSignalBlocker>
 #include <QStyle>
@@ -529,7 +528,7 @@ void MessageComposer::showError(const QString &text)
 
 void MessageComposer::rebuildAttachments()
 {
-    m_preview->hide();
+    m_preview->hide(); m_previews.clear();
     // Detach before deleting: a row's remove button may be the caller.
     while (auto *item = m_attachmentsLayout->takeAt(0)) {
         if (auto *row = item->widget()) { row->hide(); row->setParent(nullptr); row->deleteLater(); }
@@ -556,7 +555,7 @@ void MessageComposer::rebuildAttachments()
         remove->setAccessibleName(tr("Remove attachment %1").arg(attachment.name));
         connect(remove, &QPushButton::clicked, this, [this, i] { removeAttachment(i); });
         line->addWidget(image); line->addWidget(text, 1); line->addWidget(remove);
-        m_attachmentsLayout->addWidget(row);
+        m_attachmentsLayout->addWidget(row); row->show();   // now, not on the next pass: focus and size need it
     }
     m_attachmentsChip->setLabels(tr("%1 attached").arg(count), QString::number(count));
     m_attachmentsChip->setDetail(names.join('\n'));
@@ -567,6 +566,8 @@ void MessageComposer::rebuildAttachments()
 void MessageComposer::removeAttachment(int index)
 {
     auto &current = m_drafts[m_key]; if (current.sending || index < 0 || index >= current.attachments.size()) return;
+    QWidget *focus = QApplication::focusWidget();
+    const bool keepFocus = focus && focus->objectName() == "removeAttachment" && m_attachmentList->isAncestorOf(focus);
     const auto reference = current.attachments.takeAt(index).reference;
     current.attachmentHashes.clear();
     if (!reference.isEmpty()) {
@@ -579,6 +580,9 @@ void MessageComposer::removeAttachment(int index)
         edit.endEditBlock();
     }
     saveDraft(m_key); rebuildAttachments(); updateControls();
+    // Stay in the list: the row that took this place, else the one before it.
+    const auto removes = m_attachmentList->findChildren<QPushButton *>("removeAttachment");
+    if (keepFocus && !removes.isEmpty()) removes[qMin(index, int(removes.size()) - 1)]->setFocus(Qt::TabFocusReason);
 }
 
 void MessageComposer::openAttachment(int index)
@@ -597,9 +601,10 @@ void MessageComposer::openAttachment(int index)
 void MessageComposer::showAttachmentPreview(QWidget *row, int index)
 {
     const auto draft = m_drafts.value(m_key); if (index < 0 || index >= draft.attachments.size()) return;
-    const QImage image = attachmentImage(draft.attachments[index].data, QSize(320, 240));
+    if (!m_previews.contains(index)) m_previews.insert(index, QPixmap::fromImage(attachmentImage(draft.attachments[index].data, QSize(320, 240))));
+    const QPixmap image = m_previews.value(index);
     if (image.isNull()) { m_preview->hide(); return; }
-    m_preview->setPixmap(QPixmap::fromImage(image)); m_preview->adjustSize();
+    m_preview->setPixmap(image); m_preview->adjustSize();
     const QRect screen = row->screen()->availableGeometry();
     QPoint position = row->mapToGlobal(QPoint(row->width() + 10, 0));
     if (position.x() + m_preview->width() > screen.right()) position.setX(row->mapToGlobal(QPoint(0, 0)).x() - m_preview->width() - 10);

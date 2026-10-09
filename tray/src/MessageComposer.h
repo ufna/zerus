@@ -3,6 +3,7 @@
 #include "HgsClient.h"
 #include "ComposerDraftStore.h"
 #include <QHash>
+#include <QPixmap>
 #include <QSet>
 #include <QWidget>
 #include <functional>
@@ -125,6 +126,7 @@ private:
     QWidget *m_attachmentList, *m_input;
     QVBoxLayout *m_attachmentsLayout;
     QLabel *m_preview;
+    QHash<int, QPixmap> m_previews;   // decoded once per list; a null pixmap marks a non-image
     QHBoxLayout *m_actions;
     QHBoxLayout *m_feedback;
     bool m_narrow = false;

@@ -131,6 +131,7 @@ private slots:
     void attachmentRowOpensStoredCopyAndPreviews();
     void hiddenInputKeepsToolbar();
     void attachmentsPopoverShrinksAndTakesPreviewAlong();
+    void keyboardRemovalKeepsFocusInTheList();
     void toolbarPreview();
 private:
     QTemporaryDir m_settings;
@@ -915,6 +916,26 @@ void TestMessageComposer::attachmentsPopoverShrinksAndTakesPreviewAlong()
     QApplication::sendEvent(row, &enter);
     auto *preview = window.composer->findChild<QLabel *>("attachmentPreview"); QVERIFY(preview->isVisible());
     chip->closePopover(); QVERIFY(preview->isHidden());
+}
+
+void TestMessageComposer::keyboardRemovalKeepsFocusInTheList()
+{
+    Window window("local/keys"); window.widget.move(40, 300); window.widget.activateWindow(); QVERIFY(QTest::qWaitForWindowActive(&window.widget));
+    for (const auto *name : {"a.txt", "b.txt", "c.txt"}) QVERIFY(window.composer->addAttachment(name, "text/plain", name));
+    auto *chip = window.chip(); chip->setFocus(Qt::TabFocusReason); QTRY_VERIFY(chip->hasFocus());
+    QTest::keyClick(chip, Qt::Key_Return); QTRY_VERIFY(chip->popover()->isVisible());
+    const auto removes = [&] { return chip->popover()->findChildren<QPushButton *>("removeAttachment"); };
+    // Removing a middle row moves focus to the row that took its place.
+    removes()[1]->setFocus(); QTRY_VERIFY(removes()[1]->hasFocus());
+    QTest::keyClick(removes()[1], Qt::Key_Space);
+    QCOMPARE(removes().size(), 2); QTRY_VERIFY(removes()[1]->hasFocus());
+    QVERIFY(removes()[1]->accessibleName().contains("c.txt"));
+    // Removing the last row moves focus to the one before it.
+    QTest::keyClick(removes()[1], Qt::Key_Space);
+    QCOMPARE(removes().size(), 1); QTRY_VERIFY(removes()[0]->hasFocus());
+    // Removing the only row closes the list and returns to the message field.
+    QTest::keyClick(removes()[0], Qt::Key_Space);
+    QVERIFY(!chip->popover()->isVisible()); QTRY_VERIFY(window.composer->editor()->hasFocus());
 }
 
 void TestMessageComposer::hiddenInputKeepsToolbar()
