@@ -426,6 +426,8 @@ Busy-session choices remain **Pending** until the agent is ready, including afte
 navigation away. A message sent before application uses the current model.
 **Save for resume** stores a stopped session's choice without starting it. A stale
 queued setting cannot replace a newer choice from another device.
+If a message or another client already consumed or replaced it, Zerus refreshes
+the current settings without retrying the stale request or showing a failure.
 `hgs [@host] settings SESSION --json` exposes the same scoped operation.
 
 Native clear/compact operations are capability-gated and require exact identity.

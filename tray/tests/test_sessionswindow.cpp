@@ -1458,16 +1458,28 @@ void TestSessionsWindow::messageDeliveryKeepsSessionIdentityAndDrafts_data()
 
 void TestSessionsWindow::modelSettingsKeepSessionIdentity_data()
 {
-    QTest::addColumn<QString>("state"); QTest::addColumn<bool>("failApply");
-    QTest::newRow("paused") << QString("paused") << false;
-    QTest::newRow("stopped") << QString("stopped") << false;
-    QTest::newRow("busy-background-applied") << QString("running") << false;
-    QTest::newRow("busy-background-failed-once") << QString("running") << true;
+    QTest::addColumn<QString>("state"); QTest::addColumn<QString>("applyError");
+    QTest::addColumn<bool>("preflightRefusal"); QTest::addColumn<bool>("keepSelected");
+    QTest::newRow("paused") << QString("paused") << QString() << false << false;
+    QTest::newRow("stopped") << QString("stopped") << QString() << false << false;
+    QTest::newRow("busy-background-applied") << QString("running") << QString() << false << false;
+    QTest::newRow("busy-background-failed-once") << QString("running") << QString("Native model picker unavailable") << false << false;
+    QTest::newRow("busy-background-consumed") << QString("running")
+        << QString("hgs: pending settings changed; refresh before applying") << true << false;
+    QTest::newRow("busy-selected-consumed") << QString("running")
+        << QString("pending settings changed; refresh before applying") << true << true;
+    QTest::newRow("busy-background-target-changed") << QString("running")
+        << QString("pending settings target changed; refresh before applying") << true << false;
+    QTest::newRow("busy-selected-target-changed") << QString("running")
+        << QString("hgs: pending settings target changed; refresh before applying") << true << true;
+    QTest::newRow("busy-background-native-error-with-similar-detail") << QString("running")
+        << QString("settings change not confirmed: pending settings changed; refresh before applying") << false << false;
 }
 
 void TestSessionsWindow::modelSettingsKeepSessionIdentity()
 {
-    QFETCH(QString, state); QFETCH(bool, failApply);
+    QFETCH(QString, state); QFETCH(QString, applyError);
+    QFETCH(bool, preflightRefusal); QFETCH(bool, keepSelected);
     QTemporaryDir directory; QVERIFY(directory.isValid());
     const QString program = directory.filePath("hgs"), snapshot = directory.filePath("snapshot.json"), capture = directory.filePath("calls.jsonl");
     QJsonObject details{{"tracked", true}, {"run_id", "run-original"}, {"conversation_id", "conversation-one"},
@@ -1479,7 +1491,8 @@ void TestSessionsWindow::modelSettingsKeepSessionIdentity()
     QVERIFY(saveSnapshot());
     QFile executable(program); QVERIFY(executable.open(QIODevice::WriteOnly));
     QByteArray body = "#!/usr/bin/env python3\nimport json,sys,pathlib,time\nroot=pathlib.Path(__file__).parent\nargs=sys.argv[1:]\n";
-    body += failApply ? "fail=True\n" : "fail=False\n";
+    body += "apply_error=" + QJsonDocument(QJsonArray{applyError}).toJson(QJsonDocument::Compact) + "[0]\n";
+    body += preflightRefusal ? "preflight=True\n" : "preflight=False\n";
     body += R"PY(if args[0]=='inspect':
  print((root/'snapshot.json').read_text())
 elif args[0]=='settings':
@@ -1488,10 +1501,15 @@ elif args[0]=='settings':
  previous=calls.read_text().count('\n') if calls.exists() else 0
  with calls.open('a') as out: out.write(json.dumps({'args':args,'payload':p})+'\n')
  time.sleep(.12)
- if previous and fail:
-  print('Native model picker unavailable',file=sys.stderr);sys.exit(1)
- result='applied' if previous else 'scheduled'
  data=json.loads((root/'snapshot.json').read_text())
+ if previous and apply_error:
+  if preflight:
+   # A send or another client consumed the pending request before this guard.
+   data['model']=p['model'];data['effort']=p['effort']
+   for field in ['pending_model','pending_effort','pending_settings_id']:data.pop(field,None)
+   (root/'snapshot.json').write_text(json.dumps(data))
+  print(apply_error,file=sys.stderr);sys.exit(1)
+ result='applied' if previous else 'scheduled'
  if result=='scheduled':
   data['pending_model']=p['model'];data['pending_effort']=p['effort'];data['pending_settings_id']=p['request_id']
  else:
@@ -1511,14 +1529,20 @@ elif args[0]=='settings':
     auto *settings = window.findChild<MessageComposer *>("messageComposer")->findChild<QPushButton *>("sessionModelSettings"); settings->click();
     auto *efforts = window.findChild<MessageComposer *>("messageComposer")->findChild<QComboBox *>("sessionEffortChoice"); efforts->setCurrentIndex(efforts->findData("xhigh"));
     auto *apply = window.findChild<MessageComposer *>("messageComposer")->findChild<QPushButton *>("applySessionSettings"); QVERIFY(apply->isEnabled()); apply->click();
-    window.showSession({}, "kimi/docs/research"); composer->editor()->setPlainText("Other session draft");
-    QTRY_COMPARE(changes.size(), 1); QVERIFY(changes[0][1].toBool()); QCOMPARE(composer->editor()->toPlainText(), QString("Other session draft"));
+    if (!keepSelected) { window.showSession({}, "kimi/docs/research"); composer->editor()->setPlainText("Other session draft"); }
+    const QString currentDraft = keepSelected ? "[File #1] Saved draft for original session" : "Other session draft";
+    QTRY_COMPARE(changes.size(), 1); QVERIFY(changes[0][1].toBool()); QCOMPARE(composer->editor()->toPlainText(), currentDraft);
     if (state == "running") {
         box.sessions[0].phase = "idle"; box.sessions[0].activity = "idle"; box.sessions[0].processState = "running";
         current.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(current);
-        QTRY_COMPARE(changes.size(), 2); QCOMPARE(changes[1][1].toBool(), !failApply);
+        QTRY_COMPARE(changes.size(), 2); QCOMPARE(changes[1][1].toBool(), applyError.isEmpty());
+        auto *notice = window.findChild<QLabel *>("notice"); QVERIFY(notice);
+        if (!applyError.isEmpty() && !preflightRefusal) {
+            QVERIFY(notice->isVisible()); QVERIFY(notice->property("error").toBool());
+            QVERIFY(notice->text().contains(applyError));
+        } else QVERIFY(notice->isHidden());
         window.setFleet(current); window.setFleet(current); QTest::qWait(80); QCOMPARE(changes.size(), 2);
-        QCOMPARE(composer->editor()->toPlainText(), QString("Other session draft"));
+        QCOMPARE(composer->editor()->toPlainText(), currentDraft);
     } else {
         window.setFleet(current); QTest::qWait(80); QCOMPARE(changes.size(), 1);
     }
@@ -1535,6 +1559,7 @@ elif args[0]=='settings':
         else QCOMPARE(payload.value("expected_pending_id").toString(), originalRequest);
     }
     window.showSession({}, "codex/hgs/dashboard");
+    if (preflightRefusal) QTRY_VERIFY(!settings->toolTip().contains("Pending:"));
     QCOMPARE(composer->editor()->toPlainText(), QString("[File #1] Saved draft for original session"));
     QCOMPARE(composer->findChildren<QPushButton *>("removeAttachment").size(), 1);
     QTest::qWait(80); QCOMPARE(changes.size(), state == "running" ? 2 : 1);
