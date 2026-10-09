@@ -1,6 +1,7 @@
 #include "ComposerToolbar.h"
 
 #include <QApplication>
+#include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QSignalSpy>
@@ -77,6 +78,8 @@ private slots:
     void roomyRowsShowWholeLabels();
     void chipStyleStaysOutOfPopover();
     void popoverFitsItsContent();
+    void hiddenChipHandsFocusToTheField();
+    void openPopoverFollowsItsContent();
 };
 
 void TestComposerToolbar::slotsFixOrderAndRowHeight()
@@ -209,6 +212,37 @@ void TestComposerToolbar::popoverFitsItsContent()
     row.recovery->openPopover(); QTRY_VERIFY(row.recovery->popover()->isVisible());
     QVERIFY2(row.recovery->popover()->width() >= 500, qPrintable(QString::number(row.recovery->popover()->width())));
     QVERIFY(row.recovery->popover()->geometry().right() <= row.window.screen()->availableGeometry().right());
+}
+
+void TestComposerToolbar::hiddenChipHandsFocusToTheField()
+{
+    // A chip that ends (recovery succeeded) must not strand keyboard focus on hidden widgets.
+    Row row; row.toolbar->setFocusFallback(row.field);
+    auto *content = new QWidget; auto *action = new QPushButton("Retry now", content); (new QVBoxLayout(content))->addWidget(action);
+    row.recovery->setPopoverContent(content);
+    row.window.move(40, 300); row.show(600); row.window.activateWindow(); QVERIFY(QTest::qWaitForWindowActive(&row.window));
+    row.recovery->setFocus(Qt::TabFocusReason); QTRY_VERIFY(row.recovery->hasFocus());
+    QTest::keyClick(row.recovery, Qt::Key_Return); QTRY_VERIFY(row.recovery->popover()->isVisible());
+    action->setFocus(); QTRY_VERIFY(action->hasFocus());
+    row.recovery->setActive(false);
+    QVERIFY(!row.recovery->popover()->isVisible()); QTRY_VERIFY(row.field->hasFocus());
+    // A focused chip without an open popover hands focus over too.
+    row.cache->setFocus(Qt::TabFocusReason); QTRY_VERIFY(row.cache->hasFocus());
+    row.cache->setActive(false); QTRY_VERIFY(row.field->hasFocus());
+}
+
+void TestComposerToolbar::openPopoverFollowsItsContent()
+{
+    // Content that grows or shrinks while open keeps the popover above its chip.
+    Row row; auto *content = new QWidget; auto *text = new QLabel("One line", content); (new QVBoxLayout(content))->addWidget(text);
+    row.recovery->setPopoverContent(content);
+    row.window.move(40, 300); row.show(600); QVERIFY(QTest::qWaitForWindowExposed(&row.window));
+    row.recovery->openPopover(); QTRY_VERIFY(row.recovery->popover()->isVisible());
+    auto *popover = row.recovery->popover(); const int chipTop = row.recovery->mapToGlobal(QPoint(0, 0)).y(); const int small = popover->height();
+    text->setText(QStringList(8, "Another line").join('\n'));
+    QTRY_VERIFY(popover->height() > small + 40); QTRY_VERIFY(popover->geometry().bottom() < chipTop);
+    text->setText("One line");
+    QTRY_COMPARE(popover->height(), small); QTRY_VERIFY(popover->geometry().bottom() < chipTop);
 }
 
 QTEST_MAIN(TestComposerToolbar)

@@ -77,6 +77,14 @@ void ChipPopover::reposition()
     move(x, y);
 }
 
+bool ChipPopover::event(QEvent *event)
+{
+    // A top-level window grows downward; keep the bottom edge above the chip instead.
+    const bool handled = QFrame::event(event);
+    if (event->type() == QEvent::LayoutRequest && isVisible()) reposition();
+    return handled;
+}
+
 void ChipPopover::paintEvent(QPaintEvent *)
 {
     QStyleOption option; option.initFrom(this);
@@ -207,8 +215,11 @@ void ToolbarChip::render()
 void ToolbarChip::updateVisibility()
 {
     const bool visible = m_active && !m_fitHidden;
-    if (!visible) closePopover();
-    setVisible(visible);
+    if (visible) { setVisible(true); return; }
+    QWidget *focus = QApplication::focusWidget();
+    const bool heldFocus = focus && (focus == this || (m_popover && (focus == m_popover || m_popover->isAncestorOf(focus))));
+    closePopover(); setVisible(false);
+    if (heldFocus) emit focusReleased();
 }
 
 ComposerToolbar::ComposerToolbar(QWidget *parent) : QWidget(parent)
@@ -246,6 +257,9 @@ void ComposerToolbar::add(Slot slot, QWidget *item)
     m_items.append({slot, item});
     if (auto *chip = qobject_cast<ToolbarChip *>(item)) {
         chip->setTheme(m_dark); connect(chip, &ToolbarChip::fitChanged, this, &ComposerToolbar::scheduleFit);
+        connect(chip, &ToolbarChip::focusReleased, this, [this] {
+            if (m_focusFallback && m_focusFallback->isVisible() && m_focusFallback->isEnabled()) m_focusFallback->setFocus(Qt::OtherFocusReason);
+        });
     } else item->installEventFilter(this);
     scheduleFit();
 }

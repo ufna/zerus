@@ -171,12 +171,13 @@ MessageComposer::MessageComposer(QWidget *parent) : QWidget(parent)
     m_attachmentsLayout = new QVBoxLayout(m_attachmentList); m_attachmentsLayout->setContentsMargins(8, 8, 8, 8); m_attachmentsLayout->setSpacing(2);
     m_attachmentsChip->setPopoverContent(m_attachmentList);
     m_toolbar->add(ComposerToolbar::Slot::Attachments, m_attachmentsChip);
+    m_attachmentsChip->popover()->installEventFilter(this);   // the preview closes with the list
     m_preview = new QLabel(this, Qt::ToolTip); m_preview->setObjectName("attachmentPreview"); m_preview->hide();
     openUrl = [](const QUrl &url) { return QDesktopServices::openUrl(url); };
     m_input = new QWidget(this); m_input->setObjectName("messageInputArea");
     auto *inputLayout = new QVBoxLayout(m_input); inputLayout->setContentsMargins(0, 0, 0, 0); inputLayout->setSpacing(7);
     layout->addWidget(m_input);
-    auto *edit = new ComposeEdit(this); m_editor = edit; edit->setObjectName("messageInput");
+    auto *edit = new ComposeEdit(this); m_editor = edit; m_toolbar->setFocusFallback(edit); edit->setObjectName("messageInput");
     edit->setAccessibleName(tr("Message to selected agent")); edit->setPlaceholderText(tr("Message this agent…"));
     edit->setFixedHeight(76); edit->setTabChangesFocus(true);
     inputLayout->addWidget(edit);
@@ -608,6 +609,7 @@ void MessageComposer::showAttachmentPreview(QWidget *row, int index)
 
 bool MessageComposer::eventFilter(QObject *watched, QEvent *event)
 {
+    if (watched == m_attachmentsChip->popover() && event->type() == QEvent::Hide) m_preview->hide();
     auto *row = qobject_cast<QWidget *>(watched);
     if (row && row->objectName() == "attachmentRow") {
         const int index = row->property("attachmentIndex").toInt();

@@ -130,6 +130,7 @@ private slots:
     void attachmentsPopoverFollowsSessionAndSending();
     void attachmentRowOpensStoredCopyAndPreviews();
     void hiddenInputKeepsToolbar();
+    void attachmentsPopoverShrinksAndTakesPreviewAlong();
     void toolbarPreview();
 private:
     QTemporaryDir m_settings;
@@ -897,6 +898,23 @@ void TestMessageComposer::attachmentRowOpensStoredCopyAndPreviews()
     QFile stored(opened[0].toLocalFile()); QVERIFY(stored.open(QIODevice::ReadOnly)); QCOMPARE(stored.readAll(), png);
     QVERIFY(!chip->popover()->isVisible());
     QVERIFY(QDir(AttachmentFiles::root()).removeRecursively());
+}
+
+void TestMessageComposer::attachmentsPopoverShrinksAndTakesPreviewAlong()
+{
+    Window window("local/rows"); window.widget.move(40, 300); QVERIFY(QTest::qWaitForWindowExposed(&window.widget));
+    for (const auto *name : {"a.png", "b.png", "c.png"}) QVERIFY(window.composer->addAttachment(name, "image/png", pngBytes()));
+    auto *chip = window.chip(); QTest::mouseClick(chip, Qt::LeftButton); QTRY_VERIFY(chip->popover()->isVisible());
+    auto *popover = chip->popover(); QTRY_VERIFY(popover->height() > 0); const int three = popover->height();
+    const int chipTop = chip->mapToGlobal(QPoint(0, 0)).y();
+    popover->findChildren<QPushButton *>("removeAttachment").first()->click();
+    QTRY_VERIFY(popover->height() < three); QTRY_VERIFY(popover->geometry().bottom() < chipTop);
+    // The hover preview never outlives the list it belongs to.
+    auto *row = popover->findChild<QWidget *>("attachmentRow"); QVERIFY(row);
+    QEnterEvent enter(QPointF(4, 4), row->mapToGlobal(QPointF(4, 4)), row->mapToGlobal(QPointF(4, 4)));
+    QApplication::sendEvent(row, &enter);
+    auto *preview = window.composer->findChild<QLabel *>("attachmentPreview"); QVERIFY(preview->isVisible());
+    chip->closePopover(); QVERIFY(preview->isHidden());
 }
 
 void TestMessageComposer::hiddenInputKeepsToolbar()

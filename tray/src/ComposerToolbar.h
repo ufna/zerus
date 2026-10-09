@@ -23,6 +23,7 @@ public:
     // Keeps an open popover above its anchor after its content changed size.
     void reposition();
 protected:
+    bool event(QEvent *event) override;
     void paintEvent(QPaintEvent *event) override;
     void hideEvent(QHideEvent *event) override;
 private:
@@ -65,6 +66,8 @@ public:
 signals:
     // Anything the row width depends on changed.
     void fitChanged();
+    // The chip disappeared while it or its popover held keyboard focus.
+    void focusReleased();
 protected:
     void keyPressEvent(QKeyEvent *event) override;
     void paintEvent(QPaintEvent *event) override;
@@ -91,6 +94,8 @@ public:
     void add(Slot slot, QWidget *item);
     void setTheme(bool dark);
     void closePopovers();
+    // Takes keyboard focus when a chip that held it disappears.
+    void setFocusFallback(QWidget *widget) { m_focusFallback = widget; }
     // Fits the row now; other changes refit on the next event-loop pass.
     void fit();
 protected:
@@ -107,5 +112,6 @@ private:
     QList<Item> m_items;
     QHBoxLayout *m_leading, *m_trailing;
     QList<int> m_fitted;
+    QPointer<QWidget> m_focusFallback;
     bool m_dark = true, m_fitting = false, m_scheduled = false;
 };

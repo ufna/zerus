@@ -107,6 +107,7 @@ private slots:
     void backgroundPollKeepsActivityAndComposerStable();
     void processPollingFollowsVisibilityAndSettings();
     void recoveryCountdownKeepsHistoryDraftAndFocus();
+    void recoveryEndingReturnsKeyboardFocusToField();
     void recoverySettingsValidateAndSaveForSelectedMachine();
     void sharedRecoverySyncCatchesUpOfflinePeer();
     void coldCacheConfirmationPreservesDraftAndPinsConversation();
@@ -811,8 +812,11 @@ void TestSessionsWindow::usageLimitBecomesToolbarChip()
     QVERIFY(window.findChild<QLabel *>("activityUsageWarning")->text().contains("Resets in"));
     auto *refresh=window.findChild<QPushButton *>("usageLimitRefresh");QVERIFY(refresh->isVisible());refresh->click();
     QVERIFY(static_cast<AccountUsage::RefreshButton *>(window.findChild<QPushButton *>("sessionUsageRefresh"))->isRefreshing());
+    // Routine re-rendering (refresh, polling inspections) keeps the open popover.
+    QVERIFY(chip->popover()->isVisible());
+    window.findChild<HgsClient *>()->inspectionReady({},"codex/hgs/dashboard",{{"tracked",true},{"conversation_id","conversation-one"}});
+    QVERIFY(chip->popover()->isVisible());
     // Switching session closes the popover rather than showing another account's limit.
-    QTest::mouseClick(chip,Qt::LeftButton);QTRY_VERIFY(chip->popover()->isVisible());
     window.showSession("mac","claude/infra/review");QVERIFY(!chip->popover()->isVisible());
 }
 
@@ -910,6 +914,27 @@ void TestSessionsWindow::backgroundPollKeepsActivityAndComposerStable()
     QVERIFY(browser->updatesEnabled()); QVERIFY(browser->toPlainText().contains("A new live response"));
     QCOMPARE(browser->textCursor().selectedText(), text); QCOMPARE(browser->verticalScrollBar()->value(), scroll);
     QCOMPARE(composer->editor()->toPlainText(), QString("Unsent draft"));
+}
+
+void TestSessionsWindow::recoveryEndingReturnsKeyboardFocusToField()
+{
+    SessionsWindow window(script()); window.resize(1280,900); window.setFleet(fleet()); window.show();
+    auto *client=window.findChild<HgsClient *>(); QSignalSpy inspections(client,&HgsClient::inspectionReady);
+    window.showSession({},"codex/hgs/dashboard");QTRY_VERIFY(!inspections.isEmpty());
+    const auto at=QDateTime::currentMSecsSinceEpoch()/1000.0;
+    QJsonObject job{{"id","episode"},{"name","codex/hgs/dashboard"},{"state","waiting"},{"action","continue_message"},
+        {"due_at",at+20},{"attempt",0},{"delays",QJsonArray{15,30,60,300}}};
+    QJsonObject details{{"tracked",true},{"conversation_id","conversation-one"},{"run_id","run-one"},
+        {"activity","attention"},{"phase","error"},{"last_event_at",at},{"cursor",1},{"recovery",job}};
+    client->inspectionReady({},"codex/hgs/dashboard",details);
+    auto *editor=window.findChild<MessageComposer *>("messageComposer")->editor();
+    auto *chip=window.findChild<ToolbarChip *>("recoveryChip");auto *panel=window.findChild<QFrame *>("recoveryPanel");
+    window.activateWindow();QVERIFY(QTest::qWaitForWindowActive(&window));
+    chip->setFocus(Qt::TabFocusReason);QTRY_VERIFY(chip->hasFocus());
+    QTest::keyClick(chip,Qt::Key_Return);QTRY_VERIFY(panel->isVisible());
+    auto *now=panel->findChild<QPushButton *>("recoveryNow");now->setFocus();QTRY_VERIFY(now->hasFocus());
+    job["state"]="succeeded";details["recovery"]=job;client->inspectionReady({},"codex/hgs/dashboard",details);
+    QVERIFY(chip->isHidden());QVERIFY(!panel->isVisible());QTRY_VERIFY(editor->hasFocus());
 }
 
 void TestSessionsWindow::recoveryCountdownKeepsHistoryDraftAndFocus()
