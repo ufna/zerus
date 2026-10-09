@@ -90,9 +90,18 @@ object AccountSnapshots {
     }
     fun demo(now:Double):List<AccountCatalog> {
         val payload=JSONObject().put("schema",1).put("available",true).put("checked_at",now).put("accounts",JSONArray()
-            .put(JSONObject().put("id","sample").put("provider","codex").put("installed",true).put("native",true).put("label","Personal (preview)").put("is_default",true).put("usage",JSONObject().put("status","ok").put("checked_at",now).put("identity",JSONObject().put("name","Example account").put("plan","Example plan")).put("windows",JSONArray().put(JSONObject().put("id","current").put("label","Session").put("used_percent",42).put("window_minutes",300).put("resets_at",now+7200)).put(JSONObject().put("id","ended").put("label","Weekly").put("used_percent",91).put("window_minutes",10080).put("resets_at",now-60)))))
+            .put(JSONObject().put("id","sample").put("provider","codex").put("installed",true).put("native",true).put("label","Personal (preview)").put("is_default",true).put("usage",JSONObject().put("status","ok").put("checked_at",now).put("identity",JSONObject().put("name","Example account").put("plan","Example plan").put("account_id","example-personal").put("email","personal@example.com")).put("windows",JSONArray().put(JSONObject().put("id","current").put("label","Session").put("used_percent",42).put("window_minutes",300).put("resets_at",now+7200)).put(JSONObject().put("id","ended").put("label","Weekly").put("used_percent",91).put("window_minutes",10080).put("resets_at",now-60)))))
             .put(JSONObject().put("id","unknown").put("provider","claude").put("installed",true).put("native",true).put("label","Work (preview)").put("usage",JSONObject().put("status","unavailable").put("identity",JSONObject().put("plan","Not reported")))))
-        return listOf(parse("demo",JSONObject().put("id","demo-computer").put("name","Preview machine").put("online",true).put("snapshot",JSONObject().put("mobile_accounts",payload).put("mobile_capabilities",JSONObject().put("features",JSONArray().put("accounts_snapshot"))))))
+        fun catalog(id:String,name:String,online:Boolean,accounts:JSONArray)=parse("demo",JSONObject().put("id",id).put("name",name).put("online",online).put("snapshot",JSONObject().put("mobile_accounts",JSONObject(payload.toString()).put("accounts",accounts)).put("mobile_capabilities",JSONObject().put("features",JSONArray().put("accounts_snapshot")))))
+        fun alias(profile:String,accountId:String)=JSONObject(payload.getJSONArray("accounts").getJSONObject(0).toString()).put("id",profile).put("label","Default account").also {
+            it.getJSONObject("usage").getJSONObject("identity").put("account_id",accountId).put("email","shared@example.com")
+        }
+        val local=payload.getJSONArray("accounts")
+        local.put(alias("shared-one","example-shared-one")).put(alias("shared-two","example-shared-two"))
+        val laptop=JSONArray().put(JSONObject(local.getJSONObject(0).toString()).put("id","laptop-personal").put("is_default",false))
+            .put(alias("shared-email",""))
+        return listOf(catalog("demo","Preview machine",true,local),catalog("demo-laptop","Preview laptop",true,laptop),
+            catalog("demo-build","Preview build machine with a long display name",false,JSONArray().put(JSONObject(local.getJSONObject(0).toString()).put("id","build-personal").also { it.getJSONObject("usage").put("refresh_error",true) })))
     }
 }
 

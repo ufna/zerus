@@ -96,9 +96,11 @@ groups, and list position survive opening a conversation and background polling.
 Provider badges match the desktop identity motifs.
 
 Projects shows the canonical logical catalog, including empty projects, and its
-saved folders grouped by machine. Overview cards show a bounded folder-name
-preview with overflow counts; details show every selectable full path under one
-machine header. Ordinary folders and local aliases remain visible in Sessions.
+saved folders grouped by machine. Overview cards show each folder's name and
+selectable full wrapping path under one machine header, limited to two folders
+on each of the first two machines with counts for remaining folders and machines.
+Details show every folder using the same rows. Ordinary folders and local aliases
+remain visible in Sessions.
 Opening a project shows its folder details; View sessions opens a scoped Sessions
 view. Back returns to project details and preserves the normal Sessions query
 and filter. Archives are assigned by their UUID, so an archived and live session
@@ -263,7 +265,7 @@ Pairing QR codes use CameraX 1.6.2 and ZXing core 3.5.4 without Google Play serv
 
 CameraX is Apache 2.0 and includes libyuv under BSD-3-Clause; ZXing is Apache 2.0. Full license texts and source attribution are available in Third-party notices. Pins follow the [official CameraX releases](https://developer.android.com/jetpack/androidx/releases/camera) and [ZXing 3.5.4 release](https://github.com/zxing/zxing/releases/tag/zxing-3.5.4). CameraX requires compile SDK 36 and AGP 8.9.1 or newer, covered by this build.
 
-Accounts is a read-only viewer grouped by workspace and machine, using the same machine names and colors as Sessions. Compact cards show account type and aligned period, remaining reset time and usage columns, with recurring-period and hourglass glyphs; tap a card for the full identity, limits and update time. It shows reported account identity, plan, usage windows and wallet balances when the connector provides them. Unknown limits stay unknown; ended windows need a provider refresh. Account snapshots use a separate encrypted private cache, so offline values remain available with their original provider update time and stale styling; offline and authentication problems stay visible. A connector advertising `accounts_snapshot` is required; Refresh reads its latest snapshot and does not force a provider refresh.
+Accounts is a read-only viewer grouped by workspace and provider-reported account identity, matching desktop accounts. Each card contains its machine labels, using the same names and colors as Sessions. Provider account IDs and organization scope own identity; email-only reports join an ID only when unambiguous. Signed-out and unidentified profiles stay machine-local. Compact cards show account type and aligned period, remaining reset time and usage columns, with recurring-period and hourglass glyphs; tap a card for the full identity, limits, per-machine profiles and update times. Usage selects one best-quality report and never adds quotas across machines. It shows reported account identity, plan, usage windows and wallet balances when the connector provides them. Unknown limits stay unknown; ended windows need a provider refresh. Account snapshots use a separate encrypted private cache, so offline values remain available with their original provider update time and stale styling; offline and authentication problems stay visible. A connector advertising `accounts_snapshot` is required; Refresh reads its latest snapshot and does not force a provider refresh.
 
 ## Project and account selection
 
