@@ -816,8 +816,9 @@ void ActivityView::render(bool contentUpdate)
             header = QString("<table width='100%' cellspacing='0' cellpadding='0' style='margin-bottom:8px;'><tr><td><p style='font-size:11px;margin:0;'>%1</p></td>"
                 "<td align='right' valign='top'><img src='%2' width='14' height='14'></td></tr></table>").arg(title, copyButton("copy", copyKey));
         }
-        return QString("<table width='100%' cellspacing='0' cellpadding='0'><tr><td width='3' bgcolor='%1'></td><td bgcolor='%2' style='padding:11px 13px;'>"
-            "%3%4</td></tr></table><p style='font-size:5px;margin:0;'>&nbsp;</p>")
+        // The spacer goes before each card, so nothing pads the journal below the last one.
+        return QString("<p style='font-size:5px;margin:0;'>&nbsp;</p><table width='100%' cellspacing='0' cellpadding='0'><tr><td width='3' bgcolor='%1'></td><td bgcolor='%2' style='padding:11px 13px;'>"
+            "%3%4</td></tr></table>")
             .arg(thinking ? thinkingBar : notice ? violet : user ? accent : blue,
                  thinking ? pageTheme.canvas.name() : notice ? noticeSurface : user ? userSurface : surface, header, content);
     };
@@ -994,7 +995,7 @@ void ActivityView::render(bool contentUpdate)
         const auto last = group.last();
         QString preview = last.value("detail").toString().simplified();
         if (preview.size() > 110) preview = preview.left(109) + QChar(0x2026);
-        html += QString("<table width='100%' cellspacing='0' cellpadding='9' style='border:1px solid %1;'><tr><td><a name='item-%2'></a>"
+        html += QString("<p style='font-size:5px;margin:0;'>&nbsp;</p><table width='100%' cellspacing='0' cellpadding='9' style='border:1px solid %1;'><tr><td><a name='item-%2'></a>"
             "<a href='hgs-activity:%3' style='color:%4;'><b>%5 %6</b></a><span style='font-size:10px;color:%7;'> &nbsp; %8</span>")
             .arg(border, escaped(key), key, color, expanded ? QStringLiteral("▾") : QStringLiteral("▸"), escaped(title), muted, escaped(timeText(last)));
         if (!expanded && !preview.isEmpty()) html += QString("<p style='color:%1;font-size:11px;margin:4px 0 0;'>%2</p>").arg(muted, escaped(preview));
@@ -1015,7 +1016,7 @@ void ActivityView::render(bool contentUpdate)
             if (!detail.isEmpty()) html += QString("<p style='font-family:monospace;font-size:12px;background:%1;padding:7px;'>%2</p>")
                 .arg(codeSurface, escaped(detail).replace('\n', "<br>"));
         }
-        html += "</td></tr></table><p style='font-size:5px;margin:0;'>&nbsp;</p>";
+        html += "</td></tr></table>";
     }
     const bool hasContent = !events.isEmpty() || !prompt.isEmpty() || !answer.isEmpty() || !localMessages.isEmpty();
     if (!hasContent) {

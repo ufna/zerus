@@ -21,6 +21,7 @@
 #include <QTextCursor>
 #include <QTextFragment>
 #include <QTextLayout>
+#include <QAbstractTextDocumentLayout>
 #include <QTextTable>
 #include <QRegularExpression>
 #include <QTest>
@@ -125,6 +126,8 @@ private slots:
     void resizingWithoutChipChangesKeepsTheJournal();
     void darkCardsUseNeutralTablesAndVisibleChips();
     void cardsKeepTheirSpacingAfterChips();
+    void lastCardEndsTheJournal_data();
+    void lastCardEndsTheJournal();
     void preview();
 };
 
@@ -384,6 +387,34 @@ void TestActivityView::darkCardsUseNeutralTablesAndVisibleChips()
     }
     QCOMPARE(stripe, QString("#2a333d"));
     QVERIFY2(chipAlpha >= 0.3, qPrintable(QString::number(chipAlpha)));
+}
+
+void TestActivityView::lastCardEndsTheJournal_data()
+{
+    QTest::addColumn<bool>("toolsLast");
+    QTest::newRow("reply") << false; QTest::newRow("tools") << true;
+}
+
+void TestActivityView::lastCardEndsTheJournal()
+{
+    // Cards are spaced apart, but nothing pads the journal below the last one.
+    QFETCH(bool, toolsLast);
+    ActivityView view; view.resize(540, 320); view.show();
+    QJsonArray events{journalEvent(1, "UserPromptSubmit", "Please inspect the source"), journalEvent(2, "Stop", "Done.")};
+    if (toolsLast) events.append(journalEvent(3, "PostToolUse", "command completed", "Bash"));
+    view.setActivity({}, events); QTest::qWait(20);
+    auto *document = view.browser()->document(); auto *layout = document->documentLayout();
+    // Qt follows each table with an empty block laid over its last line: that block ends
+    // where the card visibly ends. The table's frame rectangle includes cell padding.
+    QList<qreal> tops, bottoms; bool afterCard = false;
+    for (auto it = document->rootFrame()->begin(); !it.atEnd(); ++it) {
+        if (auto *frame = it.currentFrame()) { tops << layout->frameBoundingRect(frame).top(); afterCard = true; }
+        else if (afterCard) { bottoms << layout->blockBoundingRect(it.currentBlock()).bottom(); afterCard = false; }
+    }
+    QCOMPARE(tops.size(), toolsLast ? 3 : 2);
+    for (qsizetype i = 1; i < tops.size(); ++i) QVERIFY2(tops[i] - bottoms[i - 1] >= 7, qPrintable(QString("gap before card %1").arg(i)));
+    const qreal tail = layout->documentSize().height() - bottoms.last();
+    QVERIFY2(tail <= document->documentMargin() + 6, qPrintable(QString("%1 px below the last card").arg(tail)));
 }
 
 void TestActivityView::cardsKeepTheirSpacingAfterChips()
