@@ -60,7 +60,12 @@ public:
         connect(m_terminal,&QPushButton::clicked,this,[this]{if(openTerminal)openTerminal();});
         connect(m_usage,&QPushButton::clicked,this,[this]{if(refreshUsage)refreshUsage();});
         connect(m_history,&QPushButton::clicked,this,[this]{
-            QDialog dialog(this);dialog.setObjectName("recoveryHistoryDialog");dialog.setWindowTitle(tr("Recovery attempts — hgs zerus"));dialog.resize(560,360);
+            // Close the popover first and centre the dialog on the window: a dialog parented to a
+            // hidden popup has no place, and reopening a popup without user input is unreliable.
+            auto *popover=dynamic_cast<ChipPopover *>(window());
+            QDialog dialog(popover&&popover->parentWidget()?popover->parentWidget()->window():static_cast<QWidget *>(this));
+            if(popover)popover->hide();
+            dialog.setObjectName("recoveryHistoryDialog");dialog.setWindowTitle(tr("Recovery attempts — hgs zerus"));dialog.resize(560,360);
             auto *layout=new QVBoxLayout(&dialog);layout->setContentsMargins(20,20,20,20);layout->setSpacing(12);
             auto *history=new QPlainTextEdit;history->setReadOnly(true);QStringList entries;
             for(const auto &value:m_job.value("history").toArray()) {

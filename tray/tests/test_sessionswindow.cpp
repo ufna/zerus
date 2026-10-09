@@ -974,11 +974,13 @@ void TestSessionsWindow::recoveryCountdownKeepsHistoryDraftAndFocus()
     if(!preview.isEmpty())QVERIFY(chip->popover()->grab().save(preview+"/recovery-popover.png"));
     QTimer::singleShot(0,&window,[&]{
         auto *dialog=qobject_cast<QDialog *>(QApplication::activeModalWidget());QVERIFY(dialog);
-        auto *history=dialog->findChild<QPlainTextEdit *>();QVERIFY(history);QVERIFY(history->toPlainText().contains("Retry scheduled"));dialog->reject();
+        auto *history=dialog->findChild<QPlainTextEdit *>();QVERIFY(history);QVERIFY(history->toPlainText().contains("Retry scheduled"));
+        // The dialog belongs to the window, not to the popup it was opened from.
+        QCOMPARE(dialog->parentWidget(),static_cast<QWidget *>(&window));QVERIFY(!panel->isVisible());dialog->reject();
     });
     panel->findChild<QPushButton *>("recoveryHistory")->click();
     window.activateWindow();QTest::qWait(20);
-    if(!panel->isVisible()){QTest::mouseClick(chip,Qt::LeftButton);QTRY_VERIFY(panel->isVisible());}
+    QVERIFY(!panel->isVisible());QTest::mouseClick(chip,Qt::LeftButton);QTRY_VERIFY(panel->isVisible());
     details["events"]=QJsonArray();job["state"]="cancelled";job["reason"]="Cancelled by you";details["recovery"]=job;
     panel->findChild<QPushButton *>("recoveryNow")->setFocus();
     QTRY_VERIFY(panel->findChild<QPushButton *>("recoveryNow")->hasFocus());
