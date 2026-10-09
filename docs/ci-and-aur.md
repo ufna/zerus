@@ -440,10 +440,17 @@ run and version**. Completed recipes become no-ops; the remaining updates retry.
 The two services are not an atomic transaction, so inspect the failed job's output.
 Do not rebuild or replace published archives to recover a partial AUR update.
 
+Description-only AUR maintenance updates both `PKGBUILD` and generated `.SRCINFO`
+without changing `pkgver`, `pkgrel`, dependencies or release assets. It does not
+trigger package upgrades. Retrying a retained candidate preserves the explicitly
+approved description refresh; every other recipe difference still follows the
+normal version and provenance checks. Older sealed nightlies accept their exact
+previous description, with the rest of the trusted binary template unchanged.
+
 Publication retries require the same retained candidate artifact. After expiry,
 recover the exact published assets/recipes for local review; do not regenerate
-archives and assume identical checksums. A packaging-only stable update needs an
-explicit `pkgrel` bump and a separately reviewed recipe change.
+archives and assume identical checksums. A functional packaging-only stable update
+needs an explicit `pkgrel` bump and a separately reviewed recipe change.
 
 ### Publication credentials
 

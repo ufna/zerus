@@ -123,6 +123,72 @@ class PublicationTests(unittest.TestCase):
         self.assertGreater(version("0.37.0.r20.gabcd"), version("0.37.0.r19.g1234"))
         self.assertGreater(version("0.37.0", "2"), version("0.37.0"))
 
+    def test_aur_retry_preserves_refreshed_descriptions_without_writes(self):
+        directory = self.candidate()
+        previous, current = common.DESCRIPTION_UPDATES[0]
+        for package in common.PACKAGES:
+            source = directory / "aur" / package
+            for name, line in (("PKGBUILD", f"pkgdesc='{previous}'\n"),
+                               (".SRCINFO", f"\tpkgdesc = {previous}\n")):
+                path = source / name
+                path.write_text(path.read_text() + line)
+
+        def clone(args, **kwargs):
+            destination = Path(args[-1])
+            destination.mkdir(parents=True)
+            source = directory / "aur" / destination.name
+            for name in ("PKGBUILD", ".SRCINFO"):
+                text = (source / name).read_text().replace(previous, current)
+                if destination.name == "zerus-git":
+                    text = text.replace(VERSION, "0.36.2.r8.gabcd")
+                (destination / name).write_text(text)
+
+        def git(directory, *args, **kwargs):
+            self.assertEqual(args, ("ls-files",), "A retry must not write AUR refs or files")
+            return "PKGBUILD\n.SRCINFO"
+
+        with patch.object(publish.subprocess, "check_output", return_value=" ".join(common.PACKAGES)), \
+                patch.object(publish.subprocess, "run", side_effect=clone), \
+                patch.object(publish, "git", side_effect=git), \
+                patch.object(publish.urllib.request, "urlopen", return_value=io.StringIO('{"results": []}')):
+            self.assertEqual(publish.prepare_aur(directory, self.directory / "retry", [], {}), [])
+        for package in common.PACKAGES:
+            self.assertIn(current, (self.directory / "retry" / package / "PKGBUILD").read_text())
+
+    def test_description_retry_exception_does_not_hide_recipe_or_version_changes(self):
+        directory = self.candidate()
+        package = "zerus-ade-bin"
+        source = directory / "aur" / package
+        previous, current = common.DESCRIPTION_UPDATES[0]
+        for name, line in (("PKGBUILD", f"pkgdesc='{previous}'\n"),
+                           (".SRCINFO", f"\tpkgdesc = {previous}\n")):
+            path = source / name
+            path.write_text(path.read_text() + line)
+        cases = (("PKGBUILD", "\nunreviewed_command\n"),
+                 (".SRCINFO", "\tdepends = unreviewed-library\n"),
+                 (".SRCINFO", "\tsha256sums = " + "f" * 64 + "\n"),
+                 (".SRCINFO", "\tpkgver = 0.38.0\n"))
+        for index, (changed_file, addition) in enumerate(cases):
+            def clone(args, **kwargs):
+                destination = Path(args[-1])
+                destination.mkdir(parents=True)
+                for name in ("PKGBUILD", ".SRCINFO"):
+                    text = (source / name).read_text().replace(previous, current)
+                    if name == changed_file:
+                        if "pkgver =" in addition:
+                            text = text.replace("pkgver = " + VERSION, "pkgver = 0.38.0")
+                        else:
+                            text += addition
+                    (destination / name).write_text(text)
+            with self.subTest(changed_file=changed_file, addition=addition), \
+                    patch.object(publish.subprocess, "check_output", return_value=package), \
+                    patch.object(publish.subprocess, "run", side_effect=clone), \
+                    patch.object(publish, "git", return_value="PKGBUILD\n.SRCINFO") as git, \
+                    patch.object(publish.urllib.request, "urlopen", return_value=io.StringIO('{"results": []}')):
+                with self.assertRaisesRegex(ValueError, "pkgrel/version bump|downgrade"):
+                    publish.prepare_aur(directory, self.directory / f"retry-{index}", [], {}, (package,))
+                self.assertEqual(git.call_count, 1)
+
     def test_binary_library_floors_come_from_buildinfo(self):
         text = "".join(f"installed = {name}-1:6.11.2-3\n" for name in common.BINARY_LIBRARIES)
         self.assertEqual(common.binary_dependencies(text), {name: "1:6.11.2" for name in common.BINARY_LIBRARIES})

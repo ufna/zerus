@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 import tarfile
 
-from release_common import BINARY_LIBRARIES, metadata, require, sha256
+from release_common import BINARY_LIBRARIES, metadata, retains_description_update, require, sha256
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "zerus-ade-nightly-bin"
@@ -78,7 +78,9 @@ def validate_nightly(directory, commit=None, run_id=None, run_number=None):
                     path.read_bytes() == archive.extractfile(member).read(), "Unsealed nightly recipe.")
     binary_hash = sums[f"zerus-{version}-arch-x86_64.tar.gz"]
     recipe = directory / "aur" / PACKAGE
-    require((recipe / "PKGBUILD").read_text() == render_recipe(info, binary_hash),
+    actual_recipe = (recipe / "PKGBUILD").read_text()
+    trusted_recipe = render_recipe(info, binary_hash)
+    require(actual_recipe == trusted_recipe or retains_description_update(trusted_recipe, actual_recipe),
             "Nightly recipe differs from the trusted binary template.")
     data = metadata((recipe / ".SRCINFO").read_text())
     url = f"https://github.com/ufna/zerus/releases/download/{info['release_tag']}/zerus-{version}-arch-x86_64.tar.gz"

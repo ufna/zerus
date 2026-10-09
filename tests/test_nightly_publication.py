@@ -91,6 +91,22 @@ class NightlyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "trusted binary template"):
             nightly.validate_nightly(directory)
 
+    def test_sealed_legacy_description_remains_valid_without_relaxing_the_template(self):
+        directory = self.candidate()
+        path = directory / "aur" / nightly.PACKAGE / "PKGBUILD"
+        previous, current = common.DESCRIPTION_UPDATES[1]
+        original = path.read_text()
+        path.write_text(original.replace(current, previous))
+        common.finish_candidate(directory, nightly.PACKAGES)
+        nightly.validate_nightly(directory, COMMIT, 123, 7)
+        for replacement in (original.replace(current, "Unapproved description"),
+                            original.replace(current, previous).replace("tmux>=3.7", "tmux>=3.4"),
+                            original.replace(current, previous) + "\nunreviewed_command\n"):
+            path.write_text(replacement)
+            common.finish_candidate(directory, nightly.PACKAGES)
+            with self.assertRaisesRegex(ValueError, "trusted binary template"):
+                nightly.validate_nightly(directory)
+
     def test_moving_url_missing_floors_and_extra_files_are_rejected(self):
         directory = self.candidate()
         path = directory / "aur" / nightly.PACKAGE / ".SRCINFO"
