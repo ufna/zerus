@@ -390,6 +390,9 @@ Codex folder access and **Hooks need review**, and Kimi folder/MCP trust. These
 can appear before a conversation exists, but only with verified startup identity.
 Claude workspace trust preserves its full permissions warning; Kimi includes the
 visible MCP commands. Trust persistence belongs to the native agent.
+Claude's auto-mode prompt accepts absolute workspace paths and native `~/…`
+abbreviations that match the verified launch directory. It remains answerable
+after the initial conversation is bound, until a turn starts.
 For Codex hooks, **Review hooks** opens the native browser in Terminal;
 **Trust all and continue** and **Continue without trusting** are explicit choices.
 Review input with an uncertain result is never retried automatically.
