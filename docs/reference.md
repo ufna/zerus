@@ -465,6 +465,8 @@ explicitly chosen through **Browse…** stays pinned per machine within that dia
 closing it clears this temporary choice. Selecting a listed folder unpins it.
 A folder outside the project shows a warning and is added only after a successful
 launch with the matching launch ID. Cancellation and launch failure add nothing.
+A worktree of a project folder on that computer is not outside the project, so
+starting there adds no folder; **Other worktrees…** offers it again.
 
 New launches immediately show **Starting…** until the matching session appears.
 Controls stay disabled before confirmation. Errors remove the placeholder and

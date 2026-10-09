@@ -1693,10 +1693,10 @@ void SessionsWindow::showNewSession(const QString &agent, const QString &project
     if(!path.isEmpty())dialog.selectPath(path);
     if(!account.isNull())dialog.selectAccount(account);
     connect(&dialog, &NewSessionDialog::launchRequested, this,
-        [this](const QString &host, const QString &cmd, const QString &target, const QString &name, const QString &account, const QString &group, bool openTerminal) {
+        [this](const QString &host, const QString &cmd, const QString &target, const QString &name, const QString &account, const QString &group, bool openTerminal, bool addFolder) {
             const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
             m_pendingLaunches.insert(id, QJsonObject{{"host", host}, {"cmd", cmd}, {"tag", name}, {"group", group},
-                {"target", target}, {"show_pending", true}, {"created", QDateTime::currentSecsSinceEpoch()}});
+                {"target", target}, {"add_folder", addFolder}, {"show_pending", true}, {"created", QDateTime::currentSecsSinceEpoch()}});
             savePendingLaunches();
             m_organization.setCollapsed(group, false);
             m_filter = "all"; m_folderFilterPath.clear(); m_hostFilters.clear(); m_search->clear(); showSessionList();
@@ -1748,7 +1748,7 @@ void SessionsWindow::placeLaunchedSessions()
             const QString requested = launch.value("group").toString();
             const QString group = m_organization.group(requested) ? requested : m_organization.defaultProject();
             const auto path=launch.value("target").toString();
-            if(path.startsWith('/'))m_organization.addFolder(group,entry.machine,path);
+            if(launch.value("add_folder").toBool()&&path.startsWith('/'))m_organization.addFolder(group,entry.machine,path);
             m_organization.moveSession(entry.identity, group); m_organization.setCollapsed(group, false); consumed = true;
         }
         if (consumed) { it = m_pendingLaunches.erase(it); changed = true; } else ++it;
