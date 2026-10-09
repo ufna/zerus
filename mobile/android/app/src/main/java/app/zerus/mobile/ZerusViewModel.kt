@@ -422,7 +422,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
                 val indexed=messageState.conversationIndex.filter { row -> connections.any { it.id == row.target.connectionId } }
                 sessions=indexed.map(IndexedConversation::session)
                 refreshReadAttention()
-                machines=indexed.distinctBy { MachineKey(it.target.connectionId,it.target.computerId) }.map { MachineNames.apply(Machine(it.target.connectionId,it.target.computerId,it.computerName,false),messageState.machineAliases) }
+                machines=indexed.distinctBy { MachineKey(it.target.connectionId,it.target.computerId) }.map { MachineNames.apply(Machine(it.target.connectionId,it.target.computerId,it.computerName,false,lastKnown=true),messageState.machineAliases) }
                 storageReady = true
                 if (connections.isNotEmpty()) refresh()
                 launch { while(true) { delay(10_000);runCatching { watchScheduledSettings() } } }
@@ -1300,7 +1300,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
                         newOperations[MachineKey(connection.id, raw.getString("id"))] = if (capabilities?.optInt("protocol_version") == 1)
                             capabilities.optJSONArray("operations")?.let { value -> (0 until value.length()).map { value.optString(it) }.toSet() }.orEmpty() else emptySet()
                         machineFeatures=machineFeatures + (MachineKey(connection.id,raw.getString("id")) to capabilities?.optJSONArray("features")?.let { value -> (0 until value.length()).map { value.optString(it) }.toSet() }.orEmpty())
-                        newMachines += Machine(connection.id, raw.getString("id"), raw.string("name", "id"), raw.optBoolean("online"))
+                        newMachines += MachineCatalog.parse(connection.id, raw)
                         connectionSessions += NativeParser.sessions(connection, raw)
                     }
                     val catalog = ProjectParser.parse(connection, computerRecords, connectionSessions)
@@ -1315,7 +1315,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
             if (!catalogGate.owns(operation.id) || connections != originalConnections) return@launch
             val unavailable=originalConnections.map { it.id }.toSet() - successfulConnections
             newSessions += sessions.filter { it.target.connectionId in unavailable }.map { old -> old.copy(raw=JSONObject(old.raw.toString()).put("last_known",true)) }
-            newMachines += machines.filter { it.connectionId in unavailable }.map { it.copy(online=false) }
+            newMachines += machines.filter { it.connectionId in unavailable }.map { it.copy(online=false,lastKnown=true) }
             newProjects += projects.filter { it.key.connectionId in unavailable }
             accountsWriter?.edit { old -> AccountSnapshots.merge(old,newAccounts,successfulConnections,originalConnections.map { it.id }.toSet()) }
             sessions = newSessions; machines = newMachines.map { MachineNames.apply(it,messageState.machineAliases) }; machineOperations = newOperations

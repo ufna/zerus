@@ -1,0 +1,136 @@
+package app.zerus.mobile
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.unit.dp
+
+private val Mint = Color(0xFF67E8CB)
+private val Surface = Color(0xFF1A2225)
+private val Muted = Color(0xFF9AACB2)
+
+@Composable internal fun MachinesScreen(model: ZerusViewModel, live: Boolean, onPair: () -> Unit, onDisconnect: (Connection) -> Unit,
+    onNotifications: (Boolean) -> Unit, onLive: (Boolean) -> Unit, onPush: () -> Unit, onFirebase: () -> Unit) {
+    var notices by remember { mutableStateOf(false) }
+    var naming by remember { mutableStateOf<Machine?>(null) }
+    var coloring by remember { mutableStateOf<Machine?>(null) }
+    val trees = remember(model.machines) { MachineCatalog.groupsByConnection(model.machines) }
+    if(notices) ThirdPartyDialog { notices = false }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Text("Machines", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+        if (model.demo) {
+            MachineTree(model, trees["demo"].orEmpty(), onRename = { naming = it }, onColor = { coloring = it })
+            OutlinedButton(onClick = { model.stopPreview() }) { Text("Exit preview") }
+        }
+        model.connections.forEach { connection -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(connection.displayName, fontWeight = FontWeight.SemiBold)
+            Text(connection.endpoint, color = Muted, style = MaterialTheme.typography.bodySmall)
+            if (!model.demo) MachineTree(model, trees[connection.id].orEmpty(),
+                onRename = { naming = it }, onColor = { coloring = it })
+            Text(model.pushStatuses[connection.id].orEmpty().ifBlank { "Push not configured" }, color = Muted, style = MaterialTheme.typography.bodySmall)
+            model.pushCapabilities[connection.id]?.let { Text(it, color = Muted, style = MaterialTheme.typography.bodySmall) }
+            TextButton(onClick = { onDisconnect(connection) }) { Text("Disconnect workspace") }
+        } }
+        OutlinedButton(onClick = onPair, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(8.dp)); Text("Pair another workspace") }
+        HorizontalDivider()
+        Text("Notifications", style = MaterialTheme.typography.titleLarge)
+        Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Session alerts"); Text("Generic alerts keep message content private.", style = MaterialTheme.typography.bodySmall, color = Muted) }; Switch(model.notifications, onNotifications) }
+        Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Keep a live connection"); Text("Uses an ongoing notification. Android may delay alerts during battery saving.", style = MaterialTheme.typography.bodySmall, color = Muted) }; Switch(live, onLive, enabled = model.connections.isNotEmpty()) }
+        OutlinedButton(onClick = onPush, enabled = model.connections.isNotEmpty()) { Text("Set up UnifiedPush") }
+        if (BuildConfig.FIREBASE_ENABLED) OutlinedButton(onClick = onFirebase, enabled = model.connections.isNotEmpty()) { Text("Set up Firebase push") }
+        Text("UnifiedPush needs a distributor installed on your phone. The app works without Google services.", style = MaterialTheme.typography.bodySmall, color = Muted)
+        Text("Zerus Android ${BuildConfig.VERSION_NAME}", color = Muted, style = MaterialTheme.typography.labelSmall)
+        TextButton(onClick = { notices = true }) { Text("Third-party notices") }
+    }
+    coloring?.let { machine ->
+        val key = MachineKey(machine.connectionId,machine.id)
+        ObscureConversation()
+        MachineColorDialog(model.machineName(key.connectionId,key.computerId,machine.name),key,
+            model.machineColorOverride(key),key in model.machineColorSaving,
+            onSave = { color -> model.setMachineColor(key,color) { coloring=null } },onDismiss = { coloring=null })
+    }
+    naming?.let { machine ->
+        val key=MachineKey(machine.connectionId,machine.id)
+        var name by remember(key) { mutableStateOf(machine.name) }
+        val saving=key in model.machineNameSaving
+        val valid=runCatching { MachineNames.checked(name) }.isSuccess
+        fun saveName() { if(valid&&!saving) model.renameMachine(key,name) { naming=null } }
+        AlertDialog(onDismissRequest={ if(!saving) naming=null },title={ Text("Name on this phone") },text={
+            Column(verticalArrangement=Arrangement.spacedBy(12.dp)) {
+                Text("This private label applies only to this machine in this workspace. Its hostname, SSH settings and session identity stay unchanged.")
+                Text(model.connections.find { it.id==machine.connectionId }?.displayName.orEmpty(),style=MaterialTheme.typography.labelMedium)
+                OutlinedTextField(name,{name=it},label={Text("Machine name")},singleLine=true,readOnly=saving,isError=!valid,keyboardOptions=KeyboardOptions(imeAction=ImeAction.Done),keyboardActions=KeyboardActions(onDone={saveName()}))
+                Text("Reported name: ${machine.nativeName}",style=MaterialTheme.typography.bodySmall)
+                if(model.machineAlias(key).isNotBlank()) TextButton(onClick={model.renameMachine(key,null) { naming=null }},enabled=!saving) { Text("Reset to reported name") }
+            }
+        },confirmButton={TextButton(onClick=::saveName,enabled=valid&&!saving) { Text(if(saving) "Saving…" else "Save") }},
+            dismissButton={TextButton(onClick={naming=null},enabled=!saving) { Text("Cancel") }})
+    }
+
+}
+
+@Composable private fun MachineTree(model: ZerusViewModel, groups: List<MachineTreeGroup>,
+    onRename: (Machine) -> Unit, onColor: (Machine) -> Unit) {
+    groups.forEach { group ->
+        val root = group.root
+        key(MachineKey(root.machine.connectionId, root.machine.id)) {
+            Card(colors = CardDefaults.cardColors(containerColor = Surface)) {
+                Column {
+                    MachineTreeRowContent(model, root, onRename, onColor)
+                    group.children.forEach { child ->
+                        key(MachineKey(child.machine.connectionId, child.machine.id)) {
+                            MachineTreeRowContent(model, child, onRename, onColor)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable private fun MachineTreeRowContent(model: ZerusViewModel, row: MachineTreeRow,
+    onRename: (Machine) -> Unit, onColor: (Machine) -> Unit) {
+    val machine = row.machine
+    val caption = when (machine.route) {
+        MachineRoute.Direct -> "Gateway"
+        MachineRoute.Unknown -> ""
+        is MachineRoute.Via -> row.gatewayName.takeIf { it.isNotBlank() }
+            ?.let { "Through $it" } ?: "Through another computer"
+    }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        if (row.parent != null) {
+            Box(Modifier.width(24.dp), contentAlignment = Alignment.Center) {
+                Box(Modifier.width(12.dp).height(1.dp).background(Muted.copy(alpha = .5f)))
+            }
+        }
+        Row(Modifier.weight(1f).padding(18.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                MachineLabel(machine.name, colorHex = model.machineColor(MachineKey(machine.connectionId, machine.id)))
+                if (caption.isNotEmpty()) Text(caption, color = Muted, style = MaterialTheme.typography.bodySmall)
+                Text(if (machine.lastKnown) "Last known" else if (machine.online) "Online" else "Offline",
+                    color = if (machine.online && !machine.lastKnown) Mint else Muted, style = MaterialTheme.typography.bodySmall)
+            }
+            if (!model.demo) {
+                Column {
+                    IconButton(onClick = { onColor(machine) }, enabled = model.storageReady) { Icon(Icons.Default.Palette, "Machine label color") }
+                    IconButton(onClick = { onRename(machine) }, enabled = model.storageReady) { Icon(Icons.Default.Edit, "Rename machine") }
+                }
+            }
+        }
+    }
+}

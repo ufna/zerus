@@ -11,7 +11,9 @@ data class Connection(val id: String, val label: String, val url: String, val to
         endpoint != url && label.equals(runCatching { URI(url).host }.getOrNull(),ignoreCase=true))
         runCatching { URI(endpoint).host }.getOrNull().orEmpty().ifBlank { "Workspace" } else label
 }
-data class Machine(val connectionId: String, val id: String, val name: String, val online: Boolean, val nativeName: String = name)
+data class Machine(val connectionId: String, val id: String, val name: String, val online: Boolean,
+    val nativeName: String = name, val serverAliases: Set<String> = emptySet(),
+    val route: MachineRoute = MachineRoute.Unknown, val lastKnown: Boolean = false)
 data class Target(val computerId: String, val session: String, val run: String, val conversation: String, val connectionId: String = "demo", val archiveId: String = "", val agentId: String = "", val parentConversation: String = "") {
     val key: String get() = JSONArray(listOf(connectionId, computerId, session, run, conversation) + (if (archiveId.isBlank()) emptyList() else listOf(archiveId)) + (if(agentId.isBlank()) emptyList() else listOf("agent",agentId,parentConversation))).toString()
     fun json(): JSONObject {

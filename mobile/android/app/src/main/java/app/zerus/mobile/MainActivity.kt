@@ -1125,69 +1125,6 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
     reviewContext?.let { operation -> ContextOperationReview(model, operation, onDismiss = { reviewContext = null }) }
 }
 
-@Composable private fun MachinesScreen(model: ZerusViewModel, live: Boolean, onPair: () -> Unit, onDisconnect: (Connection) -> Unit,
-    onNotifications: (Boolean) -> Unit, onLive: (Boolean) -> Unit, onPush: () -> Unit, onFirebase: () -> Unit) {
-    var notices by remember { mutableStateOf(false) }
-    var naming by remember { mutableStateOf<Machine?>(null) }
-    var coloring by remember { mutableStateOf<Machine?>(null) }
-    if(notices) ThirdPartyDialog { notices = false }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text("Machines", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
-        model.machines.forEach { machine -> Card(colors = CardDefaults.cardColors(containerColor = Surface)) {
-            Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                Icon(Icons.Default.Computer, null, tint = Mint)
-                Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(6.dp)) { MachineLabel(machine.name,colorHex = model.machineColor(MachineKey(machine.connectionId,machine.id))); Text(if (machine.online) "Online" else "Offline", color = if (machine.online) Mint else Muted, style = MaterialTheme.typography.bodySmall) }
-                if(!model.demo) {
-                    IconButton(onClick={ coloring=machine },enabled=model.storageReady) { Icon(Icons.Default.Palette,"Machine label color") }
-                    IconButton(onClick={ naming=machine },enabled=model.storageReady) { Icon(Icons.Default.Edit,"Rename machine") }
-                }
-            }
-        } }
-        if (model.demo) OutlinedButton(onClick = { model.stopPreview() }) { Text("Exit preview") }
-        model.connections.forEach { connection -> Column {
-            Text(connection.displayName, fontWeight = FontWeight.SemiBold)
-            Text(connection.endpoint, color = Muted, style = MaterialTheme.typography.bodySmall)
-            Text(model.pushStatuses[connection.id].orEmpty().ifBlank { "Push not configured" }, color = Muted, style = MaterialTheme.typography.bodySmall)
-            model.pushCapabilities[connection.id]?.let { Text(it, color = Muted, style = MaterialTheme.typography.bodySmall) }
-            TextButton(onClick = { onDisconnect(connection) }) { Text("Disconnect workspace") }
-        } }
-        OutlinedButton(onClick = onPair, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(8.dp)); Text("Pair another workspace") }
-        HorizontalDivider()
-        Text("Notifications", style = MaterialTheme.typography.titleLarge)
-        Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Session alerts"); Text("Generic alerts keep message content private.", style = MaterialTheme.typography.bodySmall, color = Muted) }; Switch(model.notifications, onNotifications) }
-        Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Keep a live connection"); Text("Uses an ongoing notification. Android may delay alerts during battery saving.", style = MaterialTheme.typography.bodySmall, color = Muted) }; Switch(live, onLive, enabled = model.connections.isNotEmpty()) }
-        OutlinedButton(onClick = onPush, enabled = model.connections.isNotEmpty()) { Text("Set up UnifiedPush") }
-        if (BuildConfig.FIREBASE_ENABLED) OutlinedButton(onClick = onFirebase, enabled = model.connections.isNotEmpty()) { Text("Set up Firebase push") }
-        Text("UnifiedPush needs a distributor installed on your phone. The app works without Google services.", style = MaterialTheme.typography.bodySmall, color = Muted)
-        Text("Zerus Android ${BuildConfig.VERSION_NAME}", color = Muted, style = MaterialTheme.typography.labelSmall)
-        TextButton(onClick = { notices = true }) { Text("Third-party notices") }
-    }
-    coloring?.let { machine ->
-        val key = MachineKey(machine.connectionId,machine.id)
-        ObscureConversation()
-        MachineColorDialog(model.machineName(key.connectionId,key.computerId,machine.name),key,
-            model.machineColorOverride(key),key in model.machineColorSaving,
-            onSave = { color -> model.setMachineColor(key,color) { coloring=null } },onDismiss = { coloring=null })
-    }
-    naming?.let { machine ->
-        val key=MachineKey(machine.connectionId,machine.id)
-        var name by remember(key) { mutableStateOf(machine.name) }
-        val saving=key in model.machineNameSaving
-        val valid=runCatching { MachineNames.checked(name) }.isSuccess
-        fun saveName() { if(valid&&!saving) model.renameMachine(key,name) { naming=null } }
-        AlertDialog(onDismissRequest={ if(!saving) naming=null },title={ Text("Name on this phone") },text={
-            Column(verticalArrangement=Arrangement.spacedBy(12.dp)) {
-                Text("This private label applies only to this machine in this workspace. Its hostname, SSH settings and session identity stay unchanged.")
-                Text(model.connections.find { it.id==machine.connectionId }?.displayName.orEmpty(),style=MaterialTheme.typography.labelMedium)
-                OutlinedTextField(name,{name=it},label={Text("Machine name")},singleLine=true,readOnly=saving,isError=!valid,keyboardOptions=KeyboardOptions(imeAction=ImeAction.Done),keyboardActions=KeyboardActions(onDone={saveName()}))
-                Text("Reported name: ${machine.nativeName}",style=MaterialTheme.typography.bodySmall)
-                if(model.machineAlias(key).isNotBlank()) TextButton(onClick={model.renameMachine(key,null) { naming=null }},enabled=!saving) { Text("Reset to reported name") }
-            }
-        },confirmButton={TextButton(onClick=::saveName,enabled=valid&&!saving) { Text(if(saving) "Saving…" else "Save") }},
-            dismissButton={TextButton(onClick={naming=null},enabled=!saving) { Text("Cancel") }})
-    }
-
-}
 
 private fun deliveryLabel(status: String) = when (status) {
     "sending", "submitting" -> "Sending…"

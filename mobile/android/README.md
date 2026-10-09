@@ -24,6 +24,14 @@ The encrypted phone-local override is scoped to the same workspace and machine
 UUID and works offline. Automatic reset restores a UUID-derived color that stays
 stable when the label is renamed.
 
+Machines shows each reported gateway with its direct peer computers visibly
+indented beneath it. A peer's “Through” caption uses the gateway's private phone
+label when available. These computers belong to the same workspace connection;
+each keeps its own name, color, status and controls, and session and project
+filters still select individual computers. Cached routes show “Last known” until
+the catalog refreshes. The tree describes the selected one-hop route, not a
+permanent master computer.
+
 The retired official relay origin is a narrow transport alias for
 `https://relay.zerus.dev`. Existing encrypted connection URLs remain stored as
 original identity; requests, receipts, push setup and displayed endpoints use the
