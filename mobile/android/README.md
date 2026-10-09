@@ -96,7 +96,9 @@ groups, and list position survive opening a conversation and background polling.
 Provider badges match the desktop identity motifs.
 
 Projects shows the canonical logical catalog, including empty projects, and its
-saved folders. Ordinary folders and local aliases remain visible in Sessions.
+saved folders grouped by machine. Overview cards show a bounded folder-name
+preview with overflow counts; details show every selectable full path under one
+machine header. Ordinary folders and local aliases remain visible in Sessions.
 Opening a project shows its folder details; View sessions opens a scoped Sessions
 view. Back returns to project details and preserves the normal Sessions query
 and filter. Archives are assigned by their UUID, so an archived and live session

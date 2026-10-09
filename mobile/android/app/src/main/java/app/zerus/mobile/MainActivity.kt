@@ -448,12 +448,7 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
                         if (project.stale) Tag("Last known catalog", Amber)
                         if (!project.catalogued) Tag("Folder", Muted)
                     }
-                    project.folders.take(2).forEach { folder -> Column {
-                        MachineLabel(model.machineName(project.key.connectionId,folder.computerId,folder.computerName),colorHex = model.machineColor(MachineKey(project.key.connectionId,folder.computerId)))
-                        Text(folder.path, maxLines = 1, overflow = TextOverflow.Ellipsis, color = Muted, style = MaterialTheme.typography.bodySmall)
-                    } }
-                    if (project.folders.isEmpty()) Text("No saved folders on connected machines", color = Muted, style = MaterialTheme.typography.bodySmall)
-                    else if (project.folders.size > 2) Text("${project.folders.size - 2} more folders", color = Muted, style = MaterialTheme.typography.bodySmall)
+                    ProjectFoldersPreview(model,project,Muted)
                     if (model.connections.size > 1) Text(model.connections.find { it.id == project.key.connectionId }?.displayName.orEmpty(), color = Muted, style = MaterialTheme.typography.labelSmall)
                 }
             }
@@ -471,17 +466,7 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
         Text("$count ${if (count == 1) "session" else "sessions"} across ${project.computers.size} ${if (project.computers.size == 1) "machine" else "machines"}", color = Muted)
         Button(onClick = onViewSessions, modifier = Modifier.fillMaxWidth()) { Icon(DesktopIcons.Sessions, null); Spacer(Modifier.width(8.dp)); Text("View sessions") }
         Text("Folders", style = MaterialTheme.typography.titleLarge)
-        project.folders.forEach { folder -> Card(colors = CardDefaults.cardColors(containerColor = Surface)) {
-            Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Icon(DesktopIcons.Projects, null, tint = Mint)
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(folder.name.ifBlank { folder.path.substringAfterLast('/') }, fontWeight = FontWeight.SemiBold)
-                    MachineLabel(model.machineName(project.key.connectionId,folder.computerId,folder.computerName),colorHex = model.machineColor(MachineKey(project.key.connectionId,folder.computerId)))
-                    SelectionContainer { Text(folder.path, color = Muted, style = MaterialTheme.typography.bodySmall) }
-                }
-            }
-        } }
-        if (project.folders.isEmpty()) Text("No saved folders on connected machines", color = Muted)
+        ProjectFolderDetails(model,project,Surface,Muted)
     }
 }
 

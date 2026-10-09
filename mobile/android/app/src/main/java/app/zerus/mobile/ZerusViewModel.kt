@@ -1199,9 +1199,19 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
     fun clearError() { error = "" }
     fun preview() {
         demo = true
-        val project = ProjectSummary(ProjectKey("demo", "demo", "zerus"), "Zerus", "#67E8CB", listOf(ProjectFolder("demo", "Zerus", "/workspace/zerus", "demo", Demo.computer.label)), mapOf("demo" to Demo.computer.label))
-        projects = listOf(project); sessions = Demo.sessions.map { it.copy(projectKey = project.key) }
-        machines = listOf(Machine("demo", "demo", Demo.computer.label, true))
+        val previewMachines = linkedMapOf("demo" to Demo.computer.label,"demo-laptop" to "Preview laptop","demo-build" to "Preview build machine with a long display name")
+        val project = ProjectSummary(ProjectKey("demo", "demo", "zerus"), "Zerus", "#67E8CB", listOf(
+            ProjectFolder("demo", "Zerus", "/workspace/zerus", "demo", previewMachines.getValue("demo")),
+            ProjectFolder("demo-design", "Design sandbox", "/workspace/zerus/design", "demo", previewMachines.getValue("demo")),
+            ProjectFolder("demo-long", "mobile", "/workspace/research/experiments/a-long-folder-name-for-previewing-wrapped-paths/mobile", "demo", previewMachines.getValue("demo")),
+            ProjectFolder("demo-laptop-main", "zerus", "/workspace/zerus", "demo-laptop", previewMachines.getValue("demo-laptop")),
+            ProjectFolder("demo-laptop-mobile", "mobile", "/workspace/zerus/mobile", "demo-laptop", previewMachines.getValue("demo-laptop")),
+            ProjectFolder("demo-laptop-test", "mobile", "/workspace/testing/mobile", "demo-laptop", previewMachines.getValue("demo-laptop")),
+            ProjectFolder("demo-build-main", "zerus", "/workspace/build/zerus", "demo-build", previewMachines.getValue("demo-build"))
+        ), previewMachines)
+        projects = listOf(project,ProjectSummary(ProjectKey("demo","demo","empty-preview"),"Empty preview project","#8DA9E8",emptyList(),emptyMap()))
+        sessions = Demo.sessions.map { it.copy(projectKey = project.key) }
+        machines = previewMachines.map { (id,name) -> Machine("demo",id,name,true) }
     }
     fun stopPreview() { demo = false; back(); selectedProject = null; sessions = emptyList(); projects = emptyList(); machines = emptyList(); refresh() }
     fun pair(url: String, code: String, onDone: () -> Unit) = viewModelScope.launch {
