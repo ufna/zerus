@@ -891,10 +891,15 @@ void TestSessionsWindow::recoveryCountdownKeepsHistoryDraftAndFocus()
         {"events",QJsonArray{QJsonObject{{"seq",1},{"at",at},{"type","StopFailure"},{"detail","503 Service unavailable"}}}}};
     client->inspectionReady({},"codex/hgs/dashboard",details);
     auto *browser=window.findChild<ActivityView *>("mainActivity")->browser();
-    auto *editor=window.findChild<MessageComposer *>("messageComposer")->editor();
+    auto *composer=window.findChild<MessageComposer *>("messageComposer");auto *editor=composer->editor();
     auto *panel=window.findChild<QFrame *>("recoveryPanel");QVERIFY(panel->isVisible());
     editor->setPlainText("Keep my draft");window.activateWindow();editor->setFocus();QTRY_VERIFY(editor->hasFocus());
-    QTest::qWait(30);const int revision=browser->document()->revision();const auto geometry=browser->geometry();
+    // Account inspection and the initial composer layout are unrelated to retries.
+    // Finish them before measuring the effect of the countdown alone.
+    auto *usage=static_cast<AccountUsage::RefreshButton *>(window.findChild<QPushButton *>("sessionUsageRefresh"));
+    QTRY_VERIFY(!usage->isRefreshing());
+    QTRY_COMPARE(composer->height(),composer->layout()->totalHeightForWidth(composer->width()));
+    const int revision=browser->document()->revision();const auto geometry=browser->geometry();
     QTest::qWait(1100);
     QVERIFY(editor->hasFocus());QCOMPARE(editor->toPlainText(),QString("Keep my draft"));
     QCOMPARE(browser->document()->revision(),revision);QCOMPARE(browser->geometry(),geometry);
@@ -1520,6 +1525,10 @@ void TestSessionsWindow::quotaFailureExplainsRecoveryAndKeepsDraft()
     QVERIFY(panel->findChild<QLabel *>("providerErrorHelp")->text().contains("will not retry automatically"));
     QVERIFY(panel->findChild<QPushButton *>("providerErrorTerminal")->isVisible());
     QVERIFY(panel->findChild<QPushButton *>("providerErrorRefresh")->isVisible());
+    window.activateWindow();auto *action=panel->findChild<QPushButton *>("providerErrorTerminal");action->setFocus();
+    QTRY_COMPARE(QApplication::focusWidget(),action);
+    client->inspectionReady({},"codex/hgs/dashboard",details,{});
+    QCOMPARE(QApplication::focusWidget(),action);
     QCOMPARE(composer->editor()->toPlainText(),QString("Continue after account access is restored"));
     const auto preview=qEnvironmentVariable("HGS_QUOTA_PREVIEW");
     if(!preview.isEmpty()) {QDir().mkpath(preview);window.resize(1120,800);QTest::qWait(30);QVERIFY(window.grab().save(preview+"/quota-failure.png"));}

@@ -68,7 +68,7 @@ private slots:
     }
     void refreshButtonShowsMotionUntilComplete() {
         AccountUsage::RefreshButton button;button.show();button.setRefreshing(true);
-        const auto before=button.grab().toImage();QTest::qWait(100);QVERIFY(button.isRefreshing());QVERIFY(button.grab().toImage()!=before);
+        const auto before=button.grab().toImage();QTRY_VERIFY(button.grab().toImage()!=before);QVERIFY(button.isRefreshing());
         button.setRefreshing(false);QVERIFY(!button.isRefreshing());QVERIFY(!button.icon().isNull());QVERIFY(button.toolTip().contains("Refresh"));
     }
     void footerExpandsOnlyForExtraText() {

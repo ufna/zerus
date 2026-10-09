@@ -2318,12 +2318,14 @@ void SessionsWindow::renderDetails()
         cancelCompactContinuation(tr("Session changed. Your draft was kept without sending."));
     m_compactCancel->setVisible(!m_compact.key.isEmpty());
     const auto *entry = selected(); m_detailStack->setCurrentIndex(entry ? 1 : 0);
-    const auto recoveryState=m_details.value("recovery").toObject().value("state").toString();
+    const auto recoveryDetails=entry && entry->session.state != "archived"
+        && m_details.value("provider_status_at").toDouble() >= entry->session.providerStatusAt ? m_details : QJsonObject();
+    const auto recoveryState=recoveryDetails.value("recovery").toObject().value("state").toString();
+    const bool providerFailure=recoveryDetails.value("phase")=="error" && !recoveryDetails.value("provider_error").toObject().isEmpty();
     auto *recoveryFocus=QApplication::focusWidget();
-    if((recoveryState.isEmpty()||recoveryState=="succeeded")&&m_recovery->isVisible()&&recoveryFocus
+    if(!providerFailure&&(recoveryState.isEmpty()||recoveryState=="succeeded")&&m_recovery->isVisible()&&recoveryFocus
         &&(recoveryFocus==m_recovery||m_recovery->isAncestorOf(recoveryFocus)))m_composer->editor()->setFocus(Qt::OtherFocusReason);
-    m_recovery->setState(entry && entry->session.state != "archived"
-        && m_details.value("provider_status_at").toDouble() >= entry->session.providerStatusAt ? m_details : QJsonObject(),entry && entry->online);
+    m_recovery->setState(recoveryDetails,entry && entry->online);
     m_markRead->setVisible(entry && entry->session.state!="archived" && entryNeedsAttention(*entry));
     m_markRead->setToolTip(entry && entry->session.reviewLater
         ? tr("Marked for later. Mark as read to clear this reminder.")
