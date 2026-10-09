@@ -130,6 +130,7 @@ private slots:
     void attachmentsPopoverFollowsSessionAndSending();
     void attachmentRowOpensStoredCopyAndPreviews();
     void hiddenInputKeepsToolbar();
+    void toolbarPreview();
 private:
     QTemporaryDir m_settings;
 };
@@ -908,6 +909,46 @@ void TestMessageComposer::hiddenInputKeepsToolbar()
     QVERIFY(!window.composer->editor()->isVisible()); QVERIFY(!sendButton(*window.composer)->isVisible());
     window.composer->setInputVisible(true);
     QVERIFY(window.composer->editor()->isVisible()); QVERIFY(sendButton(*window.composer)->isVisible());
+}
+
+void TestMessageComposer::toolbarPreview()
+{
+    const auto directory = qEnvironmentVariable("HGS_COMPOSER_PREVIEW");
+    if (directory.isEmpty()) QSKIP("Set HGS_COMPOSER_PREVIEW to write screenshots");
+    QVERIFY(QDir().mkpath(directory));
+    for (const bool dark : {true, false}) {
+        QWidget window; window.setAutoFillBackground(true);
+        QPalette palette = window.palette(); palette.setColor(QPalette::Window, QColor(dark ? "#1b2129" : "#ffffff")); window.setPalette(palette);
+        auto *layout = new QVBoxLayout(&window); layout->setContentsMargins(16, 12, 16, 12);
+        auto *composer = new MessageComposer; layout->addWidget(composer);
+        composer->setSessionKey(QString("local/preview-%1").arg(dark ? "dark" : "light")); composer->setAvailability(true);
+        const auto chip = [&](ComposerToolbar::Slot slot, const char *name, const QString &full, const QString &shortText, const QString &icon, ChipTone tone) {
+            auto *item = new ToolbarChip; item->setObjectName(name); item->setLabels(full, shortText); item->setIconName(icon); item->setTone(tone);
+            composer->toolbar()->add(slot, item); return item;
+        };
+        auto *read = chip(ComposerToolbar::Slot::MarkRead, "read", "Mark as read", {}, "read-all", ChipTone::Quiet);
+        auto *recovery = chip(ComposerToolbar::Slot::Recovery, "recovery", "Retry in 42 s", "42 s", "refresh", ChipTone::Warning);
+        auto *cache = chip(ComposerToolbar::Slot::Cache, "cache", "Cache ~4m", "~4m", {}, ChipTone::Success);
+        auto *limit = chip(ComposerToolbar::Slot::UsageLimit, "limit", "Limit reached · 2h 14m", "Limit", "attention", ChipTone::Danger);
+        auto *context = new QPushButton("70,1k"); context->setFlat(true); context->setFixedHeight(24); composer->toolbar()->add(ComposerToolbar::Slot::Context, context);
+        composer->setTheme(dark); cache->setActive(true);
+        window.resize(760, 200); window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
+        const auto save = [&](const QString &name) {
+            QTest::qWait(80); QVERIFY(window.grab().save(QString("%1/%2-%3.png").arg(directory, name, dark ? "dark" : "light")));
+        };
+        save("1-normal");
+        read->setActive(true);
+        for (const auto *name : {"shot.png", "screen.png"}) QVERIFY(composer->addAttachment(name, "image/png", pngBytes()));
+        QVERIFY(composer->addAttachment("notes.md", "text/markdown", "# notes"));
+        save("2-attached-unread");
+        auto *attachments = composer->findChild<ToolbarChip *>("attachmentsChip"); attachments->openPopover(); QTest::qWait(80);
+        QVERIFY(attachments->popover()->grab().save(QString("%1/3-attachments-popover-%2.png").arg(directory, dark ? "dark" : "light")));
+        attachments->closePopover();
+        cache->setLabels("Cold cache", "Cold"); cache->setTone(ChipTone::Danger); cache->setIconName("context-warning");
+        recovery->setActive(true); save("5-recovery");
+        recovery->setActive(false); limit->setActive(true); save("6-limit");
+        recovery->setActive(true); window.resize(420, 200); save("7-narrow");
+    }
 }
 
 int main(int argc, char **argv)
