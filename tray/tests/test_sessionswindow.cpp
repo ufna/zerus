@@ -191,6 +191,7 @@ private slots:
     void sessionListCollapsesIntoWorkingStrip();
     void collapsedStripExpandsOverContentOnlyWhenEnabled();
     void collapsedStripSearchOpensPanel();
+    void collapsedStripDoesNotOpenSubagents();
     void collapsingKeepsRowsInPlace();
     void escapeInActivityInterruptsAndRestoresPrompt();
     void escapeInterruptsFromAnywhereAndNeverCloses();
@@ -3282,8 +3283,26 @@ void TestSessionsWindow::sessionListCollapsesIntoWorkingStrip()
     QCOMPARE(panel->width(), SessionStrip::width(true)); QCOMPARE(slot->width(), SessionStrip::width(true)); QVERIFY(detail->width() > detailWidth);
     QVERIFY(QSettings().value("workspace/sessionsCollapsed").toBool());
     QVERIFY(!window->findChild<QLineEdit *>("search")->isVisible()); QVERIFY(window->findChild<QPushButton *>("sessionStripSearch")->isVisible());
-    int filters = 0; for (auto *filter : window->findChildren<QPushButton *>("sessionFilter")) filters += filter->isVisible();
-    QCOMPARE(filters, 1);
+    // The strip keeps the active filter and the most urgent one, together as wide
+    // as a tile, under a search button of the same width.
+    const auto shownFilters = [&] {
+        QStringList ids; for (auto *filter : window->findChildren<QPushButton *>("sessionFilter")) if (filter->isVisible()) ids << filter->property("filter").toString();
+        return ids;
+    };
+    const auto filterButton = [&](const QString &id) {
+        for (auto *filter : window->findChildren<QPushButton *>("sessionFilter")) if (filter->property("filter") == id) return filter;
+        return static_cast<QPushButton *>(nullptr);
+    };
+    QCOMPARE(shownFilters(), QStringList({"all", "attention"}));
+    {
+        auto *all = filterButton("all"), *attention = filterButton("attention"), *search = window->findChild<QPushButton *>("sessionStripSearch");
+        const auto *first = list->item(0)->data(SessionRoles::Header).toBool() ? list->item(1) : list->item(0);
+        const QRect tile = sessionCardRect(list->visualItemRect(first)).translated(list->viewport()->mapTo(panel, QPoint()));
+        const auto edges = [panel](QWidget *w) { const QPoint at = w->mapTo(panel, QPoint()); return std::pair{at.x(), at.x() + w->width()}; };
+        QTRY_COMPARE(edges(search), std::pair(tile.x(), tile.x() + tile.width()));
+        QCOMPARE(edges(all).first, tile.x()); QCOMPARE(edges(attention).second, tile.x() + tile.width());
+        QVERIFY(edges(attention).first > edges(all).second);
+    }
     auto *summary = window->findChild<QLabel *>("listSummary");
     QVERIFY(summary->toolTip().contains("shown")); QCOMPARE(summary->text(), summary->toolTip().section(' ', 0, 0));
     QCOMPARE(toggle->property("glyph").toString(), QString("expand-sessions"));
@@ -3318,6 +3337,10 @@ void TestSessionsWindow::sessionListCollapsesIntoWorkingStrip()
         QVERIFY(!near(strip.pixelColor(card.x() + 4, card.center().y()), IdentityBadges::attentionColor(dark, status.kind == SessionStatusBadge::Error)));
     }
     QVERIFY(framed >= 3);
+    // Taking the urgent filter offers the next one: working sessions.
+    filterButton("attention")->click();
+    QTRY_COMPARE(shownFilters(), QStringList({"attention", "working"}));
+    filterButton("all")->click(); QTRY_COMPARE(shownFilters(), QStringList({"all", "attention"}));
 
     // The collapsed state survives a restart and keeps the docked width for later.
     window.reset(); QSettings().setValue("workspace/sessionsWidth", 360);
@@ -3511,6 +3534,30 @@ void TestSessionsWindow::suggestedMessageIsPlaceholderAndTabTakesIt()
     update(); QCOMPARE(editor->placeholderText(), placeholder);
     details["prompt_suggestion"] = QJsonObject{{"text", "push it"}, {"at", 1790928100.0}}; update();
     QCOMPARE(editor->placeholderText(), QString("push it"));
+}
+
+void TestSessionsWindow::collapsedStripDoesNotOpenSubagents()
+{
+    QSettings().setValue("workspace/sessionsCollapsed", true); QSettings().setValue("workspace/expandSessionsOnHover", false);
+    FleetState state; auto box = fleet().local(); auto session = box.sessions[0];
+    session.subagents = {{"agent-a", QJsonObject{{"name","Review"},{"state","working"}}}, {"agent-b", QJsonObject{{"name","Tests"},{"state","finished"}}}};
+    box.sessions = {session}; state.setLocal(box, QDateTime::currentMSecsSinceEpoch());
+    SessionsWindow window(script()); window.resize(1280, 860); window.setFleet(state); window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    auto *panel = window.findChild<QWidget *>("sessionListPanel"); auto *list = window.findChild<SessionList *>("sessionList");
+    QTRY_COMPARE(panel->width(), SessionStrip::width(true));
+    int parent = -1; for (int i = 0; i < list->count(); ++i) if (list->item(i)->data(SessionRoles::HasChildren).toBool()) parent = i;
+    QVERIFY(parent >= 0); const int count = list->count();
+    // Where a card has its agents counter, a tile only selects the session; Right opens nothing either.
+    const QPoint corner = sessionCardRect(list->visualItemRect(list->item(parent))).bottomRight() - QPoint(12, 10);
+    QTest::mouseMove(list->viewport(), corner); QVERIFY(list->viewport()->cursor().shape() != Qt::PointingHandCursor);
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, {}, corner);
+    QCOMPARE(list->count(), count); QCOMPARE(list->currentRow(), parent);
+    QTest::keyClick(list, Qt::Key_Right); QCOMPARE(list->count(), count);
+    // The docked list still opens them.
+    window.findChild<QPushButton *>("sessionPanelToggle")->click();
+    QTRY_COMPARE(list->property("expansion").toReal(), 1.0);
+    QTest::keyClick(list, Qt::Key_Right); QTRY_COMPARE(list->count(), count + 2);
 }
 
 void TestSessionsWindow::collapsedStripSearchOpensPanel()

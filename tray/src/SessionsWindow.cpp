@@ -342,7 +342,8 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     }); listLayout->addWidget(m_search);
     // In the strip, search opens the panel over the conversation with focus in the field.
     m_stripSearch = iconButton("search", tr("Search sessions"), "sessionStripSearch"); m_stripSearch->hide();
-    listLayout->addWidget(m_stripSearch, 0, Qt::AlignHCenter);
+    auto *stripSearchRow = new QHBoxLayout; stripSearchRow->setContentsMargins(SessionStrip::tileColumn());
+    stripSearchRow->addWidget(m_stripSearch, 0, Qt::AlignHCenter); listLayout->addLayout(stripSearchRow);
     connect(m_stripSearch, &QPushButton::clicked, this, [this] { m_focusSearch = true; m_sessionDock->peek(); });
     connect(m_search, &QLineEdit::textEdited, this, [this]() { m_restoreKey.clear(); m_renameKey.clear(); });
     auto *filterRow = m_filterRow = new QHBoxLayout; filterRow->setSpacing(3);
@@ -1316,18 +1317,39 @@ void SessionsWindow::applySessionStrip()
         }
         m_stripLayout = int(strip) * 2 + int(filters);
         m_sessionHeader->setAlignment(m_sessionsToggle, strip ? Qt::AlignHCenter : Qt::Alignment());
-        for (auto *button : m_filters) {
-            button->setMaximumWidth(filters ? 48 : QWIDGETSIZE_MAX);
-            m_filterRow->setAlignment(button, filters ? Qt::AlignHCenter : Qt::Alignment());
-        }
+        m_filterRow->setContentsMargins(filters ? SessionStrip::tileColumn() : QMargins());
     }
     m_heading->setVisible(!strip); m_batchButton->setVisible(!strip); m_savedDrafts->setVisible(!strip);
-    // The search button stands in for the field at the same height. A widget
-    // style survives the window style's repolish, which resets button minimums.
-    setWorkspaceStyle(m_stripSearch, QString("QPushButton { min-height:%1px; max-height:%1px; }").arg(qMax(0, m_search->sizeHint().height() - 2)));
+    // The search button stands in for the field at the same height and as wide
+    // as a tile, border included. A widget style survives the window style's
+    // repolish, which resets button minimums.
+    const int side = SessionStrip::cardSide(m_sessions->property("compact").toBool());
+    setWorkspaceStyle(m_stripSearch, QString("QPushButton { min-height:%1px; max-height:%1px; min-width:%2px; max-width:%2px; }")
+        .arg(qMax(0, m_search->sizeHint().height() - 2)).arg(side - 2));
     m_search->setVisible(!strip); m_stripSearch->setVisible(strip);
     m_stripSpacer->setFixedHeight(m_stripReserve); m_stripSpacer->setVisible(strip && m_stripReserve > 0);
-    for (auto *button : m_filters) button->setVisible(!filters || button->isChecked());
+    // Narrow filters keep the active one and the most urgent beside it: sessions
+    // that need attention, otherwise working ones, otherwise all of them.
+    QString urgent;
+    for (const char *id : {"attention", "working", "all"}) {
+        const auto found = std::find_if(m_filters.cbegin(), m_filters.cend(), [id](auto *button) { return button->property("filter").toString() == id; });
+        if (found == m_filters.cend() || (*found)->isChecked() || (QString(id) != "all" && (*found)->property("count").toInt() == 0)) continue;
+        urgent = id; break;
+    }
+    QList<QPushButton *> shown;
+    for (auto *button : m_filters) {
+        const bool visible = !filters || button->isChecked() || button->property("filter").toString() == urgent;
+        button->setVisible(visible); if (visible) shown.append(button);
+    }
+    // Together they span a tile and meet in the middle.
+    for (auto *button : m_filters) {
+        const int index = shown.indexOf(button);
+        const Qt::Alignment align = !filters ? Qt::Alignment() : shown.size() < 2 ? Qt::AlignHCenter : index == 0 ? Qt::AlignRight : Qt::AlignLeft;
+        const int half = (side - m_filterRow->spacing()) / 2;
+        if (filters) button->setFixedWidth(shown.size() < 2 ? side : index == 0 ? half : side - m_filterRow->spacing() - half);
+        else { button->setMinimumWidth(0); button->setMaximumWidth(QWIDGETSIZE_MAX); }
+        if (m_filterRow->itemAt(m_filterRow->indexOf(button))->alignment() != align) m_filterRow->setAlignment(button, align);
+    }
     m_machineFilter->button()->setVisible(!filters);
     m_machineFilter->setVisible(!strip && !m_hostFilters.isEmpty());
     m_folderFilterClear->setVisible(!strip && !m_folderFilterPath.isEmpty());
@@ -1888,7 +1910,7 @@ void SessionsWindow::rebuild()
     const QMap<QString, int> counts{{"all", active}, {"working", working}, {"attention", attention}, {"paused", saved}, {"archived", archived}};
     for (auto *button : m_filters) {
         const auto id = button->property("filter").toString(); button->setChecked(m_pages->currentIndex() == 0 && id == m_filter);
-        button->setText(QString::number(counts.value(id)));
+        button->setText(QString::number(counts.value(id))); button->setProperty("count", counts.value(id));
         button->setToolTip(button->property("caption").toString() + QString(" / %1").arg(counts.value(id)));
         button->setIcon(workspaceIcon(id, QColor(id == "attention" && attention > 0 ? (m_dark ? "#f0c77b" : "#885400") : id == m_filter ? m_accent : m_muted)));
     }

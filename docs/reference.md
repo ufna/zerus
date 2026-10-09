@@ -220,11 +220,14 @@ becomes a square tile: status and provider icons, the session name on up to two
 lines and a short state such as the working time. Instead of the attention
 edge, a tile's frame takes the color of its state (working, needing an answer,
 error, paused, draft or a new reply) with a faint glow inward. Each band shows
-the project name and its most urgent counter. Rows open
-on click and name their session in a tooltip. Expanding grows the same rows
-back into cards. The strip's search button opens the full
-list over the conversation without resizing it; Escape or a click outside returns
-to the strip, and the pin docks the list again. While the pointer rests on the
+the project name and its most urgent counter. Above the tiles and as wide as
+them, the strip keeps a search button and two filters: the active one and the
+most urgent other one (sessions needing an answer, otherwise working sessions,
+otherwise all). Rows open on click and name their session in a tooltip;
+tiles do not open a session's subagents. Expanding grows the same rows back
+into cards. The strip's search button opens the full list over the conversation
+without resizing it; Escape or a click outside returns to the strip, and the pin
+docks the list again. While the pointer rests on the
 strip, the full list opens over the conversation; turn this off with **Settings →
 Sessions → Expand the collapsed session list on hover**. The collapsed state and
 the docked width are local preferences.

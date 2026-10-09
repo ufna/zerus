@@ -22,6 +22,9 @@ namespace SessionStrip {
 inline int cardSide(bool compact) { return (compact ? 94 : 104) - 10; }
 // The panel adds its margins, the list's padding and the card inset.
 inline int width(bool compact) { return cardSide(compact) + 14; }
+// Controls above the tiles line up with them: a tile sits 2px inside the list,
+// which pads its right side by another 2px.
+inline QMargins tileColumn() { return {2, 0, 4, 0}; }
 inline qreal expansion(const QWidget *list) {
     const auto value = list ? list->property("expansion") : QVariant();
     return value.isValid() ? qBound(0.0, value.toReal(), 1.0) : 1.0;

@@ -112,14 +112,22 @@ QRect SessionList::childrenControlRect(const QRect &row, const QModelIndex &inde
     return QRect(row.right() - 13 - width, row.bottom() - 26, width, 20);
 }
 
+// The collapsed strip, or the list on its way there, shows tiles instead of cards.
+static bool narrow(const QWidget *list)
+{
+    const auto expansion = list->property("expansion");
+    return expansion.isValid() && expansion.toReal() < 1;
+}
+
+// Tiles keep a session's subagents closed: they have no counter to open them.
 QRect SessionList::childrenControlRect(const QListWidgetItem *item) const
 {
-    return item ? childrenControlRect(visualItemRect(item), indexFromItem(item), font()) : QRect();
+    return item && !narrow(this) ? childrenControlRect(visualItemRect(item), indexFromItem(item), font()) : QRect();
 }
 
 bool SessionList::viewportEvent(QEvent *event)
 {
-    if (event->type() == QEvent::ToolTip && property("expansion").isValid() && property("expansion").toReal() < 1) {
+    if (event->type() == QEvent::ToolTip && narrow(this)) {
         // The collapsed strip hides card text; its tooltip names the session and its state.
         const auto *help = static_cast<QHelpEvent *>(event);
         const auto *row = itemAt(help->pos());
@@ -333,8 +341,10 @@ void SessionList::keyPressEvent(QKeyEvent *e)
         }
         if (current->data(SessionRoles::HasChildren).toBool()) {
             const bool expanded = current->data(SessionRoles::Expanded).toBool();
-            if (expanded != (e->key() == Qt::Key_Right)) emit childrenToggled(current->data(SessionRoles::Key).toString());
-            else if (expanded && row(current) + 1 < count()) setCurrentRow(row(current) + 1);
+            if (expanded != (e->key() == Qt::Key_Right)) {
+                // The strip may close a session's subagents but does not open them.
+                if (expanded || !narrow(this)) emit childrenToggled(current->data(SessionRoles::Key).toString());
+            } else if (expanded && row(current) + 1 < count()) setCurrentRow(row(current) + 1);
             e->accept(); return;
         }
         const auto id = currentItem()->data(SessionRoles::Group).toString();
