@@ -51,6 +51,7 @@
 #include "DirectoryDialog.h"
 #include "ProjectsDialog.h"
 #include "MessageComposer.h"
+#include "ComposerToolbar.h"
 #include "SessionList.h"
 #include "SessionCardDelegate.h"
 #include "SessionOrganization.h"
@@ -1651,7 +1652,7 @@ elif args[0]=='answer':
     auto *client = window.findChild<HgsClient *>(); QVERIFY(client);
     auto *list = window.findChild<QListWidget *>("sessionList"); QVERIFY(list);
     QSignalSpy answered(client, &HgsClient::questionAnswered);
-    QTRY_VERIFY(card->isVisible()); QVERIFY(!composer->isVisible());
+    QTRY_VERIFY(card->isVisible()); QVERIFY(!composer->isInputVisible()); QVERIFY(composer->toolbar()->isVisible());
     if (!qEnvironmentVariable("HGS_PREVIEW_DIR").isEmpty()) {
         window.resize(1240, 900); QTest::qWait(30);
         QVERIFY(window.grab().save(qEnvironmentVariable("HGS_PREVIEW_DIR") + "/sessions-question.png"));
@@ -1675,7 +1676,7 @@ elif args[0]=='answer':
     QCOMPARE(payload["expected_question_hash"].toString(), QString("exact-hash"));
     QCOMPARE(payload["expected_run_id"].toString(), QString("run-one"));
     window.showSession({}, "kimi/docs/research");
-    QTRY_VERIFY(!card->isVisible()); QVERIFY(composer->isVisible());
+    QTRY_VERIFY(!card->isVisible()); QVERIFY(composer->isInputVisible());
     card->answerRequested(key, "interaction-one", choices); // resolved question is no longer actionable
     QTest::qWait(30);
     QFile calls(directory.filePath("calls")); QVERIFY(calls.open(QIODevice::ReadOnly)); QCOMPARE(calls.readAll(), QByteArray("call\n"));
@@ -1723,7 +1724,7 @@ elif sys.argv[1]=='answer':
     QTRY_VERIFY(card->isVisible());auto *editor=card->findChild<QLineEdit *>("questionFreeText");QVERIFY(editor);
     editor->setText("Run unit tests and a desktop preview.");composer->editor()->setPlainText("Keep my next-message draft");
     auto *send=card->findChild<QPushButton *>("submitQuestionAnswer");QVERIFY(send->isEnabled());
-    QVERIFY(composer->isVisible());editor->setFocus();QTRY_VERIFY(editor->hasFocus());QTest::keyClick(editor,Qt::Key_Return);
+    QVERIFY(composer->isInputVisible());editor->setFocus();QTRY_VERIFY(editor->hasFocus());QTest::keyClick(editor,Qt::Key_Return);
     QTRY_COMPARE(submitted.size(),1);QCOMPARE(answered.size(),0);QVERIFY(card->isHidden());
     QCOMPARE(messages.size(),0);QCOMPARE(stopped.size(),0);
     QVERIFY(composer->editor()->hasFocus());
@@ -1733,7 +1734,7 @@ elif sys.argv[1]=='answer':
     QVERIFY(card->isHidden());QCOMPARE(details["pending_questions"].toArray().size(),1);
     QVERIFY(activity->findChild<QWidget *>("activityInputQueue")->isVisible());
     QVERIFY(activity->findChild<QPushButton *>("queueSendNow")->isEnabled());QCOMPARE(promoted.size(),0);
-    QVERIFY(composer->isVisible());QCOMPARE(composer->editor()->toPlainText(),QString("Keep my next-message draft"));
+    QVERIFY(composer->isInputVisible());QCOMPARE(composer->editor()->toPlainText(),QString("Keep my next-message draft"));
     auto stale=details;stale["pending_questions"]=QJsonArray{question};
     client->inspectionReady({},"codex/hgs/dashboard",stale);QVERIFY(card->isHidden());
     auto *list=window.findChild<QListWidget *>("sessionList");
@@ -1824,7 +1825,7 @@ void TestSessionsWindow::optionalQuestionKeepsComposerAvailable()
     QJsonObject details{{"tracked",true},{"run_id","run-one"},{"conversation_id","conversation-one"},{"runtime_state","live"},{"process_state","running"},
         {"activity","idle"},{"phase","idle"},{"pending_questions",QJsonArray{question}}};
     client->inspectionReady({},"codex/hgs/dashboard",details);
-    QVERIFY(card->isVisible());QVERIFY(composer->isVisible());QVERIFY(composer->findChild<QPushButton *>("sendMessage")->isEnabled());
+    QVERIFY(card->isVisible());QVERIFY(composer->isInputVisible());QVERIFY(composer->findChild<QPushButton *>("sendMessage")->isEnabled());
     QVERIFY(card->findChild<QPushButton *>("skipQuestion")->isEnabled());
     client->inspectionReady({},"codex/hgs/dashboard",details);QCOMPARE(composer->editor()->toPlainText(),QString("An unrelated follow-up"));
     auto latest=question;latest["question_id"]="latest";latest["created_at"]=20;
@@ -1865,13 +1866,13 @@ void TestSessionsWindow::optionalQuestionKeepsComposerAvailable()
     // A required confirmation preempts browsing, then returns to the chosen draft.
     auto required=latest;required["optional"]=false;required["question_id"]="required";required["can_answer"]=true;
     details["pending_questions"]=QJsonArray{newest,question,required,latest};client->inspectionReady({},"codex/hgs/dashboard",details);
-    QVERIFY(previous->isHidden());QVERIFY(next->isHidden());QVERIFY(composer->isHidden());
+    QVERIFY(previous->isHidden());QVERIFY(next->isHidden());QVERIFY(!composer->isInputVisible());
     QCOMPARE(card->findChild<QLabel *>("questionHeading")->text(),QString("Agent needs your answer"));
     card->queueNavigationRequested(1); // Stale navigation cannot bypass a required request.
-    QVERIFY(composer->isHidden());QVERIFY(next->isHidden());
+    QVERIFY(!composer->isInputVisible());QVERIFY(next->isHidden());
     details["pending_questions"]=QJsonArray{newest,question,latest};client->inspectionReady({},"codex/hgs/dashboard",details);
     QCOMPARE(firstAnswer()->text(),QString("Older draft"));
-    QVERIFY(composer->isVisible());QCOMPARE(answers.size(),0);
+    QVERIFY(composer->isInputVisible());QCOMPARE(answers.size(),0);
     // A different conversation must start from its own newest question.
     details["conversation_id"]="conversation-two";client->inspectionReady({},"codex/hgs/dashboard",details);
     client->inspectionReady({},"codex/hgs/dashboard",details); // Initial history fetch after the conversation changed.
@@ -1885,7 +1886,7 @@ void TestSessionsWindow::optionalQuestionKeepsComposerAvailable()
     QCOMPARE(firstAnswer()->text(),QString("Latest draft"));
     QVERIFY(previous->isHidden());QVERIFY(next->isHidden());
     details["pending_questions"]=QJsonArray{};client->inspectionReady({},"codex/hgs/dashboard",details);
-    QVERIFY(card->isHidden());QVERIFY(composer->isVisible());QCOMPARE(composer->editor()->toPlainText(),QString("An unrelated follow-up"));
+    QVERIFY(card->isHidden());QVERIFY(composer->isInputVisible());QCOMPARE(composer->editor()->toPlainText(),QString("An unrelated follow-up"));
 }
 
 void TestSessionsWindow::questionCompletionKeepsInputFocus_data()
@@ -1951,7 +1952,7 @@ elif sys.argv[1]=='answer':
         QFile complete(directory.filePath("complete")); QVERIFY(complete.open(QIODevice::WriteOnly)); complete.close();
         QTRY_COMPARE(answered.size(),1);
     }
-    QTRY_VERIFY(card->isHidden()); QVERIFY(composer->isVisible());
+    QTRY_VERIFY(card->isHidden()); QVERIFY(composer->isInputVisible());
     if(action=="navigate") QVERIFY(context->hasFocus());
     else {QVERIFY(composer->editor()->hasFocus()); QTest::keyClicks(composer->editor()," + next");}
     QCOMPARE(composer->editor()->toPlainText(),action=="navigate" ? QString("Keep this draft") : QString("Keep this draft + next"));
@@ -2171,11 +2172,11 @@ void TestSessionsWindow::activityMarkReadKeepsReadingPosition()
     auto *context=window.findChild<QPushButton *>("activityContext");
     auto *latest=window.findChild<ActivityView *>("mainActivity")->jumpButton();QVERIFY(latest->isVisible());
     const auto bounds=[&](QWidget *widget){return QRect(widget->mapTo(&window,QPoint()),widget->size());};
-    QVERIFY(bounds(latest).top()>bounds(browser).bottom());
-    QVERIFY(qAbs(bounds(latest).center().y()-bounds(button).center().y())<=1);
-    QVERIFY(qAbs(bounds(latest).center().x()-bounds(composer).center().x())<=1);
-    QVERIFY(bounds(button).right()<bounds(latest).left());QVERIFY(bounds(latest).right()<bounds(context).left());
-    QCOMPARE(browser->geometry(),initialGeometry);QCOMPARE(latest->height(),24);
+    // Jump to latest floats over the journal; Mark as read and the context share the toolbar row.
+    QCOMPARE(latest->parentWidget(),browser);QVERIFY(bounds(browser).contains(bounds(latest)));
+    QVERIFY(qAbs(bounds(button).center().y()-bounds(context).center().y())<=1);
+    QVERIFY(bounds(button).top()>bounds(browser).bottom());QVERIFY(bounds(button).right()<bounds(context).left());
+    QCOMPARE(browser->geometry(),initialGeometry);
     QVERIFY(bounds(button).right()<bounds(context).left());
     QCOMPARE(button->height(),24);
     QVERIFY(qAbs(bounds(context).right()-bounds(composer).right())<=2);
@@ -2187,7 +2188,7 @@ void TestSessionsWindow::activityMarkReadKeepsReadingPosition()
     QCoreApplication::sendPostedEvents(nullptr,QEvent::LayoutRequest);
     QCOMPARE(browser->geometry(),geometry);QCOMPARE(browser->document()->revision(),revision);QCOMPARE(browser->verticalScrollBar()->value(),0);
     QCOMPARE(browser->textCursor().selectedText(),selection);QCOMPARE(composer->editor()->toPlainText(),QString("Unsent draft"));
-    QVERIFY(qAbs(bounds(latest).center().x()-bounds(composer).center().x())<=1);
+    QVERIFY(!latest->isVisible() || bounds(browser).contains(bounds(latest)));
     auto *list=window.findChild<SessionList *>("sessionList");QVERIFY(list->currentItem()->data(SessionRoles::Key).toString().contains(session.name));
     window.setFleet(state);QVERIFY(button->isHidden());
     session.phase="input";session.activity="waiting";session.attentionId="new-question";state.setLocal(box,QDateTime::currentMSecsSinceEpoch());window.setFleet(state);QVERIFY(button->isVisible());
@@ -2709,7 +2710,7 @@ void TestSessionsWindow::nativeSessionUsageStaysWithSelectedConversation()
     QVERIFY(!info->toPlainText().simplified().contains(QLocale().toString(12345).simplified()));
     client->inspectionReady("mac","claude/infra/review",{{"conversation_id","conversation-one"}});
     QVERIFY(info->toPlainText().contains("No native usage reported"));
-    QVERIFY(!context->property("contextPercent").isValid());QCOMPARE(context->size(),indicatorSize);
+    QVERIFY(!context->property("contextPercent").isValid());QCOMPARE(context->height(),indicatorSize.height());   // width follows the text
     QVERIFY(context->text().isEmpty());QVERIFY(!context->isEnabled());
     auto noCapacity=usage;noCapacity["context"]=QJsonObject{{"used",32000}};
     client->inspectionReady("mac","claude/infra/review",{{"conversation_id","conversation-one"},{"session_usage",noCapacity}});

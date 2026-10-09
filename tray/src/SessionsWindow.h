@@ -3,6 +3,7 @@ namespace AccountUsage {class Button;class RefreshButton;}
 namespace SessionUsage {class ContextButton;}
 namespace CacheStatus {class Button;}
 namespace RecoveryUi {class Panel;}
+class ToolbarChip;
 class SettingsPage;
 class SwarmController;
 
@@ -267,7 +268,7 @@ private:
     QSet<QString> m_pollingHosts;
     void updateConnectionStatus();
     QPushButton *m_goal;
-    QPushButton *m_markRead;
+    ToolbarChip *m_markRead;
     class SessionFileDrop *m_fileDrop;
     QString terminalDropTarget() const;
     void dropTerminalFiles(const QStringList &paths);

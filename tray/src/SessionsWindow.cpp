@@ -6,6 +6,7 @@
 #include "AccountUsage.h"
 #include "SessionUsage.h"
 #include "CacheStatus.h"
+#include "ComposerToolbar.h"
 #include "AccountUsageStore.h"
 #include "IdentityBadge.h"
 #include "ProjectAppearance.h"
@@ -618,15 +619,7 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         if(m_recoveryActionKey==m_selectedKey)m_recovery->finished(ok?QString():error);
         inspect();emit refreshRequested();
     });
-    auto *activityFooter=new QGridLayout;activityFooter->setContentsMargins(0,8,0,0);activityFooter->setSpacing(8);
-    activityFooter->setColumnStretch(0,1);activityFooter->setColumnStretch(2,1);
-    activityFooter->setRowMinimumHeight(0,24);
-    auto *leftStatus=new QWidget;auto *rightStatus=new QWidget;
-    auto *footerLeft=new QHBoxLayout(leftStatus);footerLeft->setContentsMargins(14,0,0,0);footerLeft->setSpacing(8);
-    auto *footerRight=new QHBoxLayout(rightStatus);footerRight->setContentsMargins(0,0,0,0);footerRight->setSpacing(8);
-    activityFooter->addWidget(leftStatus,0,0);activityFooter->addWidget(rightStatus,0,2);
-    auto *latest=m_activityView->jumpButton();latest->setProperty("footer",true);latest->setFixedHeight(24);
-    activityFooter->addWidget(latest,0,1,Qt::AlignCenter);
+    auto *toolbar=m_composer->toolbar();
     m_compactCancel = new QPushButton(tr("Cancel send")); m_compactCancel->setObjectName("cancelCompactSend");
     m_compactCancel->setToolTip(tr("Keep the draft without sending it after compaction. Use Stop to interrupt the agent."));
     m_compactCancel->setAutoDefault(false); m_compactCancel->setFixedHeight(20);
@@ -642,13 +635,13 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         else { m_compact.commandId=receipt.value("request_id").toString(); inspect(); }
         renderDetails();
     });
-    m_markRead=new QPushButton(tr("Mark as read"));m_markRead->setObjectName("activityMarkRead");
-    m_markRead->setFixedHeight(24);m_markRead->setIconSize(QSize(14,14));m_markRead->setCursor(Qt::PointingHandCursor);
-    m_markRead->setFocusPolicy(Qt::TabFocus);m_markRead->hide();footerLeft->addWidget(m_markRead);
-    auto *compaction=m_activityView->compactionIndicator();
-    compaction->layout()->setContentsMargins(0,0,0,0);footerLeft->addWidget(compaction);footerLeft->addWidget(m_compactCancel);footerLeft->addStretch();
-    footerRight->addStretch();m_cacheStatus=new CacheStatus::Button;m_cacheStatus->setSizePolicy(QSizePolicy::Preferred,QSizePolicy::Fixed);
-    footerRight->addWidget(m_cacheStatus);footerRight->addWidget(m_contextUsage);
+    m_markRead=new ToolbarChip;m_markRead->setObjectName("activityMarkRead");
+    m_markRead->setLabels(tr("Mark as read"));m_markRead->setIconName("read-all");m_markRead->setTone(ChipTone::Quiet);
+    toolbar->add(ComposerToolbar::Slot::MarkRead,m_markRead);
+    auto *compaction=m_activityView->compactionIndicator();compaction->layout()->setContentsMargins(0,0,0,0);
+    toolbar->add(ComposerToolbar::Slot::Compaction,compaction);toolbar->add(ComposerToolbar::Slot::CompactionCancel,m_compactCancel);
+    m_cacheStatus=new CacheStatus::Button;m_cacheStatus->setSizePolicy(QSizePolicy::Preferred,QSizePolicy::Fixed);
+    toolbar->add(ComposerToolbar::Slot::Cache,m_cacheStatus);toolbar->add(ComposerToolbar::Slot::Context,m_contextUsage);
     m_cacheWarning=new QLabel;m_cacheWarning->setObjectName("activityCacheWarning");m_cacheWarning->setWordWrap(true);m_cacheWarning->setTextFormat(Qt::PlainText);m_cacheWarning->hide();
     m_cacheNotice=new QWidget;m_cacheNotice->setObjectName("activityCacheNotice");
     auto *cacheRow=new QHBoxLayout(m_cacheNotice);cacheRow->setContentsMargins(0,0,0,0);cacheRow->setSpacing(8);cacheRow->addWidget(m_cacheWarning,1);
@@ -666,7 +659,7 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         emit refreshRequested();
     });
     connect(m_cacheStatus,&QPushButton::clicked,this,[this]{setInspectorVisible(true);m_inspector->setCurrentIndex(1);});
-    activityLayout->addLayout(activityFooter);activityLayout->addWidget(m_composer);
+    activityLayout->addWidget(m_composer);
     connect(m_markRead,&QPushButton::clicked,this,[this]{
         const auto *entry=selected();if(!entry||entry->session.state=="archived"||!entryNeedsAttention(*entry))return;
         const auto original=*entry;
@@ -1264,11 +1257,6 @@ void SessionsWindow::applyTheme()
     m_cacheClear->setIcon(workspaceIcon("refresh",QColor(m_muted)));m_cacheClear->setIconSize(QSize(14,14));
     m_fileDrop->setTheme(m_dark);
     m_recovery->setStyleSheet(QString("QFrame#recoveryPanel {background:%1;border:1px solid %2;border-radius:8px;} QLabel {border:0;background:transparent;}").arg(m_surface,m_border));
-    const auto readColor=m_dark?QString("#8bdfc0"):QString("#167357");
-    m_markRead->setIcon(workspaceIcon("read-all",QColor(readColor)));
-    m_markRead->setStyleSheet(QString("QPushButton {color:%1;background:%2;border:1px solid %3;border-radius:11px;padding:0 10px;min-height:0;font-size:11px;} QPushButton:hover,QPushButton:focus[keyboardFocus=\"true\"] {border-color:%1;}")
-        .arg(readColor,m_dark?"#233a35":"#e7f3ed",m_dark?"#456e61":"#a5c8b8"));
-    m_markRead->setFixedHeight(24);
     m_machineFilter->setTheme(m_dark); m_dashboard->setTheme(m_dark); m_searchResults->setTheme(m_dark); m_activityView->setTheme(m_dark); m_composer->setTheme(m_dark); m_question->setTheme(m_dark); m_terminal->setTheme(m_dark);
     m_subagentView->setTheme(m_dark); m_subagentComposer->setTheme(m_dark);
     m_processes->setTheme(m_dark);
@@ -2326,8 +2314,8 @@ void SessionsWindow::renderDetails()
     if(!providerFailure&&(recoveryState.isEmpty()||recoveryState=="succeeded")&&m_recovery->isVisible()&&recoveryFocus
         &&(recoveryFocus==m_recovery||m_recovery->isAncestorOf(recoveryFocus)))m_composer->editor()->setFocus(Qt::OtherFocusReason);
     m_recovery->setState(recoveryDetails,entry && entry->online);
-    m_markRead->setVisible(entry && entry->session.state!="archived" && entryNeedsAttention(*entry));
-    m_markRead->setToolTip(entry && entry->session.reviewLater
+    m_markRead->setActive(entry && entry->session.state!="archived" && entryNeedsAttention(*entry));
+    m_markRead->setDetail(entry && entry->session.reviewLater
         ? tr("Marked for later. Mark as read to clear this reminder.")
         : tr("Mark this session's current notification as read. This does not answer a pending question."));
     renderAccountUsage();
@@ -3026,7 +3014,7 @@ void SessionsWindow::renderQuestion(const Entry &entry, int navigation)
         && (focus == m_question || m_question->isAncestorOf(focus));
     // Show and focus the replacement before clearing the focused question's
     // children. Background completion must not interrupt navigation elsewhere.
-    m_composer->setVisible(!available || question.value("optional").toBool());
+    m_composer->setInputVisible(!available || question.value("optional").toBool());
     if (returnToComposer) m_composer->editor()->setFocus(Qt::OtherFocusReason);
     m_question->setQuestion(m_selectedKey, question, pendingQuestions);
     m_question->setQueueNavigation(index,int(optional.size()));

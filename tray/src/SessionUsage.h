@@ -10,7 +10,7 @@ namespace SessionUsage {
 class ContextButton : public QPushButton {
 public:
     explicit ContextButton(QWidget *parent=nullptr):QPushButton(parent) {
-        setFixedSize(220,24);setCursor(Qt::PointingHandCursor);setIconSize(QSize(12,12));setData({});
+        setFixedHeight(24);setSizePolicy(QSizePolicy::Fixed,QSizePolicy::Fixed);setCursor(Qt::PointingHandCursor);setIconSize(QSize(12,12));setData({});
     }
     void setTheme(bool dark) {if(m_initialized && m_dark==dark)return;m_dark=dark;render();}
     void setData(const QJsonObject &usage,bool recorded=false) {
