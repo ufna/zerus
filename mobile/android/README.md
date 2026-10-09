@@ -247,6 +247,23 @@ and [launcher asset documentation](https://developer.android.com/studio/write/cr
 
 ## Notifications
 
+In Machines, Session alerts has independent settings for input and approvals,
+errors, and turn completion. Input and errors are on by default; completed turns
+are off. The master switch disables all session alerts. Disabling a type also
+removes its existing cards.
+
+There is one updated card per workspace, computer and live session slot. The
+normal shade shows the authenticated session title and the computer's private
+name on this phone. The lock-screen public version is generic. No question text
+or conversation content is included. Repeated wakes do not reannounce the same
+unresolved question; historical backlog is silent and old completed turns are
+suppressed. A batch can sound once, with a cooldown between new audible alerts.
+When many sessions need attention, a bounded set of individual cards is kept
+and one summary represents the remaining sessions. The summary opens Zerus;
+individual cards retain their exact workspace, computer and session destination.
+Cards refresh with events, settings changes and app startup. A resolved input
+request can remain until the next refresh when the relay emits no new event.
+
 “Keep a live connection” starts an explicit foreground remote messaging service
 with a visible Stop action. It listens to the gateway event stream and follows
 additional paired gateways. Android battery saving or network loss can delay
@@ -254,10 +271,14 @@ this connection; it is not a Doze wake-up guarantee.
 
 “Set up UnifiedPush” discovers installed distributors and lets the user choose
 one. A distributor such as ntfy or NextPush must already be installed and
-configured. Registration status and gateway capabilities appear under Computers.
-Push content acts only as a wake-up hint: the app immediately posts a generic
-alert and schedules an expedited authenticated event fetch. Notifications contain
-no conversation text. Once fetched, tapping an alert opens its computer/session.
+configured. Registration status and gateway capabilities appear under Machines.
+Push content acts only as a wake-up hint and schedules an authenticated event
+fetch without a separate generic alert. Bounded pages are coalesced and checked
+against a current catalog; a failed catalog read retains pending events for
+retry. Tapping a card refreshes and opens the current live session in that exact
+workspace and computer, without archive fallback. The event schema does not
+identify historical runs, so optional completion alerts conservatively filter
+recent events against a previously observed matching current conversation.
 
 Firebase is an optional build, excluded from the default APK. Create an Android
 Firebase project for `app.zerus.mobile`, place its private local configuration in

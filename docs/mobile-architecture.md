@@ -627,6 +627,39 @@ snapshots. An initial baseline is silent. Push payloads contain only generic
 wake information, never conversation text, project names or credentials. Opening
 a notification refreshes the authenticated session state.
 
+Android notification preferences distinguish input and approvals, errors, and
+turn completion. Input and errors are enabled by default; completion is opt-in.
+The master Session alerts switch controls all three. Each paired workspace,
+canonical computer and live session slot has one replaceable notification,
+showing its current authenticated session title and the computer's private name
+on this phone. The explicit lock-screen public version remains generic and
+never includes question text or conversation content.
+
+Push is only a wake hint and does not create a second visible alert. The client
+drains bounded event pages, coalesces session slots and validates candidates
+against one current computer catalog per batch. It saves dedicated encrypted
+notification state, independently of drafts, to avoid repeating an unresolved
+question after another wake or application restart. Historical backlog is
+silent; initial synchronization does not announce old completed turns. Turning
+off an event type removes that type's existing session cards.
+The card budget is shared across paired workspaces. Existing eligible cards are
+kept to avoid eviction churn; one global summary represents excess needs, and
+later promotions to individual cards are silent. The summary opens the app
+without pretending to identify a particular session.
+Cards reconcile on events, settings changes and application startup. Resolving
+input and returning to work does not itself emit a relay event, so removal of
+that card can wait for the next reconciliation. Empty event polls do not fetch
+the full computer catalog.
+
+The event schema contains a session slot but no historical run or conversation
+identity. A notification therefore opens the freshly resolved current live
+session, with no archive fallback. Stale completion events cannot replace a
+current input request or error. Completion alerts require a previously observed
+matching current run and conversation and a recent event newer than that
+observation. These timestamp checks conservatively filter stale history; they
+cannot prove the historical event's run identity. An unobserved or replaced
+conversation is suppressed.
+
 Optional Codex questions are discovered by a bounded rotating inspection of two
 live sessions per connector heartbeat. Only their IDs and fingerprints are added
 to snapshots. With many live Codex sessions, these alerts can lag by a complete

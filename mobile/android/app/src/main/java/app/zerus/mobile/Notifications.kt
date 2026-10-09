@@ -43,55 +43,239 @@ import org.unifiedpush.android.connector.data.PushEndpoint
 import org.unifiedpush.android.connector.data.PushMessage
 
 object SessionNotifications {
-    private const val ALERTS = "zerus_session_alerts"
+    internal const val ALERTS = "zerus_session_alerts"
     const val LIVE = "zerus_live_connection"
+    private const val CARD_ID = 40
+    private const val SUMMARY_ID = 41
+    private const val SUMMARY_TAG = "zerus:overflow:v2"
+    private const val PREFIX = "zerus:session:v2:"
     private val locks = ConcurrentHashMap<String, Mutex>()
-    fun channels(context: Context) {
-        context.getSystemService(NotificationManager::class.java).createNotificationChannels(listOf(
+    private val delivery = Mutex()
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val api = RelayApi()
+    private var lastPost = -1L
+    private var migrated = false
+
+    private fun manager(context: Context) = context.getSystemService(NotificationManager::class.java)
+    private fun cards(context: Context) = manager(context).activeNotifications.filter { it.tag?.startsWith(PREFIX) == true && it.id == CARD_ID }
+    fun channels(context: Context) = synchronized(NotificationSettings.deliveryLock) {
+        val manager = manager(context)
+        manager.createNotificationChannels(listOf(
             NotificationChannel(ALERTS, "Session alerts", NotificationManager.IMPORTANCE_DEFAULT),
             NotificationChannel(LIVE, "Live connection", NotificationManager.IMPORTANCE_LOW)))
-    }
-    fun alert(context: Context, connection: Connection, event: JSONObject) {
-        if (!PrivateStore(context).notificationEnabled()) return
-        channels(context)
-        val intent = Intent(context, MainActivity::class.java).putExtra("connection", connection.id)
-            .putExtra("computer", event.string("computer_id")).putExtra("session", event.string("session"))
-            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-        val id = (connection.id + ":" + event.string("id")).hashCode()
-        val pending = PendingIntent.getActivity(context, id, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val notification = NotificationCompat.Builder(context, ALERTS).setSmallIcon(R.drawable.ic_zerus)
-            .setContentTitle("Zerus").setContentText(when (event.string("kind")) {
-                "attention" -> "A session needs your input."
-                "completed" -> "A session finished its turn."
-                "error" -> "A session needs attention."
-                else -> "Session activity changed."
-            }).setContentIntent(pending).setAutoCancel(true).setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-            .setSilent(context.getSystemService(NotificationManager::class.java).activeNotifications.any { it.id == ("wake:${connection.id}").hashCode() }).build()
-        runCatching { context.getSystemService(NotificationManager::class.java).notify(id, notification) }
-    }
-    fun wake(context: Context, connectionId: String) {
-        val store = PrivateStore(context)
-        if (!store.notificationEnabled() || store.connections().none { it.id == connectionId }) return
-        channels(context)
-        val pending = PendingIntent.getActivity(context, connectionId.hashCode(), Intent(context, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
-        val alert = NotificationCompat.Builder(context, ALERTS).setSmallIcon(R.drawable.ic_zerus)
-            .setContentTitle("Zerus").setContentText("New session activity. Open Zerus to check your agents.")
-            .setContentIntent(pending).setAutoCancel(true).setOnlyAlertOnce(true).setVisibility(NotificationCompat.VISIBILITY_PRIVATE).build()
-        runCatching { context.getSystemService(NotificationManager::class.java).notify(("wake:$connectionId").hashCode(), alert) }
-    }
-    suspend fun sync(context: Context, connection: Connection, wait: Int = 0) {
-        locks.getOrPut(connection.id) { Mutex() }.withLock {
-        val preferences = context.getSharedPreferences("zerus_event_cursors", Context.MODE_PRIVATE)
-        val cursor = preferences.getLong(connection.id, 0)
-        val response = RelayApi().events(connection, cursor, wait)
-        currentCoroutineContext().ensureActive()
-        response.optJSONArray("events")?.objects().orEmpty().forEach { alert(context, connection, it) }
-        preferences.edit().putLong(connection.id, maxOf(cursor, response.optLong("cursor", cursor))).commit()
-        if ((response.optJSONArray("events")?.length() ?: 0) > 0) context.getSystemService(NotificationManager::class.java).cancel(("wake:${connection.id}").hashCode())
+        if (!migrated) {
+            manager.activeNotifications.filter { it.notification.channelId == ALERTS &&
+                it.tag?.startsWith(PREFIX) != true && it.tag != SUMMARY_TAG }.forEach { manager.cancel(it.tag, it.id) }
+            migrated = true
         }
     }
-    fun enqueue(context: Context, connectionId: String) {
-        val work = OneTimeWorkRequestBuilder<NotificationSyncWorker>().setInputData(Data.Builder().putString("connection", connectionId).build())
+    fun initialize(context: Context) {
+        val app = context.applicationContext
+        scope.launch {
+            runCatching {
+                channels(app)
+                val store = PrivateStore(app)
+                val connections = store.connections()
+                store.pruneNotificationStates(connections.map { it.id }.toSet())
+                synchronized(NotificationSettings.deliveryLock) {
+                    cards(app).filter { it.notification.extras.getString("zerus_connection") !in connections.map { row -> row.id } }
+                        .forEach { manager(app).cancel(it.tag, it.id) }
+                }
+                connections.forEach { connection ->
+                    locks.getOrPut(connection.id) { Mutex() }.withLock {
+                        val state = store.notificationState(connection.id)
+                        store.saveNotificationState(connection.id, state.copy(deliveryNeeded = true))
+                    }
+                    enqueue(app, connection.id, true)
+                }
+            }
+        }
+    }
+    // Providers already enqueue authenticated work. A wake hint has no user-visible content.
+    fun wake(context: Context, connectionId: String) = Unit
+
+    fun cancelDisabled(context: Context, preferences: NotificationPreferences) = synchronized(NotificationSettings.deliveryLock) {
+        cards(context).filter { row ->
+            val kind = runCatching { SessionAlertKind.valueOf(row.notification.extras.getString("zerus_kind").orEmpty()) }.getOrNull()
+            kind == null || !preferences.allows(kind)
+        }.forEach { manager(context).cancel(it.tag, it.id) }
+        // A type change invalidates the aggregate; queued catalogs rebuild it without stale counts.
+        manager(context).cancel(SUMMARY_TAG, SUMMARY_ID)
+    }
+
+    private fun connected(store: PrivateStore, connection: Connection) = store.connections().any {
+        it.id == connection.id && it.url == connection.url && it.token == connection.token
+    }
+
+    /** true means durable work remains; the worker retries instead of replacing itself. */
+    suspend fun sync(context: Context, connection: Connection, wait: Int = 0, forceCatalog: Boolean = false): Boolean =
+        locks.getOrPut(connection.id) { Mutex() }.withLock {
+            channels(context)
+            val store = PrivateStore(context)
+            var state = store.notificationState(connection.id)
+            var force = forceCatalog
+            var operations = 0
+            while (operations < 10) {
+                currentCoroutineContext().ensureActive()
+                if (!connected(store, connection)) return@withLock false
+                val preferences = store.notificationPreferences()
+                val response = api.events(connection, state.cursor,
+                    if (operations == 0 && !state.bootstrap && !state.draining && state.pending.isEmpty() && !force &&
+                        state.settingsGeneration == preferences.generation && state.pendingPosts.isEmpty() && !state.deliveryNeeded) wait else 0)
+                operations++
+                currentCoroutineContext().ensureActive()
+                val page = NotificationPolicy.ingest(state, NotificationCatalogParser.events(response))
+                state = page.state
+                store.saveNotificationState(connection.id, state)
+                val needsCatalog = page.full || page.empty || operations >= 9
+                if (needsCatalog && (state.bootstrap || state.pending.isNotEmpty() || force ||
+                    state.settingsGeneration != preferences.generation || state.pendingPosts.isNotEmpty() || state.deliveryNeeded)) {
+                    val raw = api.computers(connection).getJSONArray("computers").objects()
+                    operations++
+                    currentCoroutineContext().ensureActive()
+                    if (!connected(store, connection)) return@withLock false
+                    val catalog = NotificationCatalogParser.parse(connection, raw, store.messageState().machineAliases)
+                    val active = synchronized(NotificationSettings.deliveryLock) {
+                        cards(context).mapNotNull { it.notification.extras.getString("zerus_slot") }.toSet()
+                    }
+                    val plan = NotificationPolicy.plan(NotificationPolicy.clockGuard(state, android.os.SystemClock.elapsedRealtime()),
+                        catalog.sessions, state.pending.mapNotNull { catalog.resolve(connection.id, it) },
+                        store.notificationPreferences(), System.currentTimeMillis() / 1000.0, active)
+                    state = plan.state
+                    store.saveNotificationState(connection.id, state)
+                    state = deliver(context, connection, store, state, plan)
+                    force = false
+                }
+                if (page.empty) return@withLock false
+            }
+            true
+        }
+
+    private suspend fun pace() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (lastPost >= 0 && now >= lastPost) delay((350 - (now - lastPost)).coerceAtLeast(0))
+        currentCoroutineContext().ensureActive()
+    }
+    private suspend fun deliver(context: Context, connection: Connection, store: PrivateStore,
+        initial: NotificationState, plan: NotificationPlan): NotificationState = delivery.withLock {
+        var state = initial
+        synchronized(NotificationSettings.deliveryLock) {
+            cards(context).filter { it.notification.extras.getString("zerus_connection") == connection.id &&
+                it.notification.extras.getString("zerus_slot") !in plan.retained }.forEach { manager(context).cancel(it.tag, it.id) }
+        }
+        if (!androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled() ||
+            manager(context).getNotificationChannel(ALERTS)?.importance == NotificationManager.IMPORTANCE_NONE) {
+            state = state.copy(deliveryNeeded = false, pendingPosts = emptySet(), overflowKinds = emptySet(),
+                records = state.records.map { record -> if (record.slot.key in state.pendingPosts)
+                    record.copy(postedFingerprint = "", postedKind = null) else record })
+            store.saveNotificationState(connection.id, state)
+            summary(context)
+            return@withLock state
+        }
+        val alreadyActive = synchronized(NotificationSettings.deliveryLock) { cards(context).mapNotNull { it.notification.extras.getString("zerus_slot") }.toSet() }
+        val overflowKinds = plan.overflowKinds.toMutableSet()
+        val ordered = plan.desired.sortedWith(compareByDescending<SessionNotice> { it.current.slot.key in alreadyActive }
+            .thenBy { it.kind == SessionAlertKind.Finished }.thenBy { it.current.slot.key })
+        for (notice in ordered) {
+            currentCoroutineContext().ensureActive()
+            val record = state.records.find { it.slot == notice.current.slot }
+            val existing = synchronized(NotificationSettings.deliveryLock) { cards(context).find { it.tag == notice.current.slot.tag } }
+            val changed = existing?.notification?.let { it.extras.getString("zerus_fingerprint") != notice.fingerprint ||
+                it.extras.getString(android.app.Notification.EXTRA_TITLE) != notice.current.title ||
+                it.extras.getString(android.app.Notification.EXTRA_TEXT) != notice.body } ?: false
+            val recovering = notice.current.slot.key in state.pendingPosts
+            val restore = notice.kind in plan.restoreKinds && (record?.restoredAt ?: -1) < store.notificationPreferences().enabledAt(notice.kind)
+            if (existing == null && record?.postedFingerprint == notice.fingerprint && !recovering && !restore) continue
+            if (existing != null && !changed && !recovering) continue
+            pace()
+            val preferences = store.notificationPreferences()
+            if (!preferences.allows(notice.kind) || !connected(store, connection)) continue
+            val admitted = synchronized(NotificationSettings.deliveryLock) {
+                val active = cards(context)
+                if (active.any { it.tag == notice.current.slot.tag } || active.size < 24) true
+                else if (notice.kind != SessionAlertKind.Finished) {
+                    active.find { it.notification.extras.getString("zerus_kind") == SessionAlertKind.Finished.name }?.let {
+                        manager(context).cancel(it.tag, it.id); true
+                    } ?: false
+                } else false
+            }
+            if (!admitted) { if (notice.kind != SessionAlertKind.Finished) overflowKinds += notice.kind; continue }
+            val elapsed = android.os.SystemClock.elapsedRealtime()
+            val audible = notice.fresh && record?.postedFingerprint != notice.fingerprint && !recovering &&
+                NotificationPolicy.canSound(state, elapsed)
+            state = NotificationPolicy.reserve(state, notice, audible, elapsed, preferences.enabledAt(notice.kind))
+            // Save evidence before Android delivery. A crash resumes this outbox silently.
+            store.saveNotificationState(connection.id, state)
+            currentCoroutineContext().ensureActive()
+            val posted = synchronized(NotificationSettings.deliveryLock) {
+                val latest = store.notificationPreferences()
+                if (!latest.allows(notice.kind) || !connected(store, connection)) false else {
+                    manager(context).notify(notice.current.slot.tag, CARD_ID, notification(context, notice, !audible))
+                    lastPost = android.os.SystemClock.elapsedRealtime(); true
+                }
+            }
+            if (posted) {
+                state = state.copy(pendingPosts = state.pendingPosts - notice.current.slot.key)
+                store.saveNotificationState(connection.id, state)
+            }
+        }
+        val latest = store.notificationPreferences()
+        state = state.copy(overflowKinds = if (latest.generation == plan.state.settingsGeneration)
+            overflowKinds.filter(latest::allows).toSet() else emptySet())
+        store.saveNotificationState(connection.id, state)
+        summary(context)
+        state = state.copy(deliveryNeeded = false, pendingRestoreKinds = emptySet(), records = state.records.map {
+            it.copy(candidateFingerprint = "", candidateTarget = "", candidateEventId = 0, candidateEventAt = 0.0)
+        })
+        store.saveNotificationState(connection.id, state)
+        state
+    }
+
+    private fun publicVersion(context: Context) = NotificationCompat.Builder(context, ALERTS).setSmallIcon(R.drawable.ic_zerus)
+        .setContentTitle("Zerus").setContentText("New session activity.").setSilent(true).build()
+    private fun intent(context: Context, slot: NotificationSlot?): PendingIntent {
+        val uri = android.net.Uri.Builder().scheme("zerus-alert").authority(if (slot == null) "overview" else "session")
+        slot?.let { uri.appendPath(it.connection).appendPath(it.computer).appendPath(it.session) }
+        val intent = Intent(context, MainActivity::class.java).setData(uri.build())
+            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        slot?.let { intent.putExtra("connection", it.connection).putExtra("computer", it.computer).putExtra("session", it.session) }
+        return PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+    }
+    private fun notification(context: Context, notice: SessionNotice, silent: Boolean) =
+        NotificationCompat.Builder(context, ALERTS).setSmallIcon(R.drawable.ic_zerus)
+            .setContentTitle(notice.current.title).setContentText(notice.body).setStyle(NotificationCompat.BigTextStyle().bigText(notice.body))
+            .setContentIntent(intent(context, notice.current.slot)).setAutoCancel(true)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE).setPublicVersion(publicVersion(context))
+            .setGroup("zerus_workspace:${notice.current.slot.connection}").setSilent(silent)
+            .addExtras(android.os.Bundle().apply {
+                putString("zerus_connection", notice.current.slot.connection); putString("zerus_slot", notice.current.slot.key)
+                putString("zerus_kind", notice.kind.name); putString("zerus_fingerprint", notice.fingerprint)
+            }).build()
+    private suspend fun summary(context: Context) {
+        val store = PrivateStore(context)
+        val preferences = store.notificationPreferences()
+        // Read durable membership even in a background-only process after restart.
+        val needed = preferences.master && store.connections().any { connection ->
+            store.notificationState(connection.id).overflowKinds.any(preferences::allows)
+        }
+        if (!needed) { synchronized(NotificationSettings.deliveryLock) { manager(context).cancel(SUMMARY_TAG, SUMMARY_ID) }; return }
+        val existing = synchronized(NotificationSettings.deliveryLock) { manager(context).activeNotifications.any { it.tag == SUMMARY_TAG } }
+        if (existing) return
+        pace()
+        synchronized(NotificationSettings.deliveryLock) {
+            if (needed && PrivateStore(context).notificationPreferences() == preferences) {
+                val notification = NotificationCompat.Builder(context, ALERTS).setSmallIcon(R.drawable.ic_zerus)
+                    .setContentTitle("More sessions need attention").setContentText("Open Zerus to review all workspaces")
+                    .setContentIntent(intent(context, null)).setAutoCancel(true).setSilent(true)
+                    .setVisibility(NotificationCompat.VISIBILITY_PRIVATE).setPublicVersion(publicVersion(context)).build()
+                manager(context).notify(SUMMARY_TAG, SUMMARY_ID, notification)
+                lastPost = android.os.SystemClock.elapsedRealtime()
+            }
+        }
+    }
+    fun enqueue(context: Context, connectionId: String, forceCatalog: Boolean = false) {
+        val work = OneTimeWorkRequestBuilder<NotificationSyncWorker>().setInputData(Data.Builder()
+            .putString("connection", connectionId).putBoolean("catalog", forceCatalog).build())
             .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST).build()
         WorkManager.getInstance(context).enqueueUniqueWork("zerus_push_$connectionId", ExistingWorkPolicy.REPLACE, work)
     }
@@ -106,8 +290,8 @@ class NotificationSyncWorker(context: Context, parameters: WorkerParameters) : C
     }
     override suspend fun doWork(): Result {
         val connection = PrivateStore(applicationContext).connections().find { it.id == inputData.getString("connection") } ?: return Result.success()
-        return try { SessionNotifications.sync(applicationContext, connection); Result.success() }
-        catch (e: RelayException) { if (e.status in 400..499) Result.failure() else Result.retry() }
+        return try { if (SessionNotifications.sync(applicationContext, connection, forceCatalog = inputData.getBoolean("catalog", false))) Result.retry() else Result.success() }
+        catch (e: RelayException) { if (e.status in listOf(401, 403)) Result.failure() else Result.retry() }
         catch (e: kotlinx.coroutines.CancellationException) { throw e }
         catch (_: Exception) { Result.retry() }
     }
@@ -136,7 +320,7 @@ class LiveConnectionService : Service() {
             if (listeners[connection.id]?.isActive != true) listeners[connection.id] = scope.launch {
                 while (isActive) {
                     if (PrivateStore(this@LiveConnectionService).connections().none { it.id == connection.id }) break
-                    try { SessionNotifications.sync(this@LiveConnectionService, connection, 25) }
+                    try { if (SessionNotifications.sync(this@LiveConnectionService, connection, 25)) delay(1_000) }
                     catch (e: RelayException) { if (e.status in listOf(401, 403)) break else delay(15_000) }
                     catch (e: kotlinx.coroutines.CancellationException) { throw e }
                     catch (_: Exception) { delay(15_000) }

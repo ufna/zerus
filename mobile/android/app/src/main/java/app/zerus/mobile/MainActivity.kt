@@ -105,7 +105,9 @@ private val Scheme = darkColorScheme(primary = Mint, onPrimary = Background, sec
 class MainActivity : ComponentActivity() {
     private val model: ZerusViewModel by viewModels()
     private var invitation by mutableStateOf<PairingInvite?>(null)
-    private val requestNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    private val requestNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) SessionNotifications.initialize(this)
+    }
     private val fileLaunchers = mutableMapOf<String, ActivityResultLauncher<Array<String>>>()
     private fun fileLauncher(selectionId: String): ActivityResultLauncher<Array<String>> = fileLaunchers.getOrPut(selectionId) {
         activityResultRegistry.register("zerus-files:$selectionId", ActivityResultContracts.OpenMultipleDocuments()) { uris ->
@@ -115,6 +117,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() { fileLaunchers.values.forEach { it.unregister() }; super.onDestroy() }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        SessionNotifications.initialize(this)
         enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.rgb(16, 21, 23)))
         readIntent(intent)

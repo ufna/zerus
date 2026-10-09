@@ -1753,5 +1753,8 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
             flushDrafts(); error = "Interruption is unconfirmed. Check the conversation before trying again."
         }
     }
-    fun updateNotifications(value: Boolean) { store.setNotificationEnabled(value); notifications = value }
+    fun updateNotifications(value: Boolean) = viewModelScope.launch {
+        try { withContext(Dispatchers.IO) { store.setNotificationEnabled(value) }; notifications = value }
+        catch (_: Exception) { notifications = store.notificationEnabled(); error = "Notification choices could not be saved. Try again." }
+    }
 }

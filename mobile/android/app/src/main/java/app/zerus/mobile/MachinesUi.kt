@@ -51,7 +51,8 @@ private val Muted = Color(0xFF9AACB2)
         OutlinedButton(onClick = onPair, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(8.dp)); Text("Pair another workspace") }
         HorizontalDivider()
         Text("Notifications", style = MaterialTheme.typography.titleLarge)
-        Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Session alerts"); Text("Generic alerts keep message content private.", style = MaterialTheme.typography.bodySmall, color = Muted) }; Switch(model.notifications, onNotifications) }
+        Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Session alerts"); Text("Choose which session updates can alert you.", style = MaterialTheme.typography.bodySmall, color = Muted) }; Switch(model.notifications, onNotifications) }
+        NotificationTypeSettings(model.notifications)
         Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Keep a live connection"); Text("Uses an ongoing notification. Android may delay alerts during battery saving.", style = MaterialTheme.typography.bodySmall, color = Muted) }; Switch(live, onLive, enabled = model.connections.isNotEmpty()) }
         OutlinedButton(onClick = onPush, enabled = model.connections.isNotEmpty()) { Text("Set up UnifiedPush") }
         if (BuildConfig.FIREBASE_ENABLED) OutlinedButton(onClick = onFirebase, enabled = model.connections.isNotEmpty()) { Text("Set up Firebase push") }
