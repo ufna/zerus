@@ -38,9 +38,25 @@ QStringList anchors(const QTextDocument &doc)
             if (it.fragment().charFormat().isAnchor()) result.append(it.fragment().charFormat().anchorHref());
     return result;
 }
+// Linked text and its destination, one entry per link.
+QStringList linked(const QTextDocument &doc)
+{
+    QList<QPair<QString, QString>> links; QString previous;
+    for (auto block = doc.begin(); block.isValid(); block = block.next())
+        for (auto it = block.begin(); !it.atEnd(); ++it) {
+            const auto format = it.fragment().charFormat();
+            const QString href = format.isAnchor() ? format.anchorHref() : QString();
+            if (!href.isEmpty() && href == previous) links.last().first += it.fragment().text();
+            else if (!href.isEmpty()) links.append({it.fragment().text(), href});
+            previous = href;
+        }
+    QStringList result;
+    for (const auto &[text, href] : links) result.append(text + " -> " + href);
+    return result;
+}
 MarkdownLink policy(const QString &destination)
 {
-    if (destination.startsWith("https://")) return {destination, {}, {}};
+    if (destination.startsWith("https://") || destination.startsWith("http://")) return {destination, {}, {}};
     if (destination == "notes.txt") return {"hgs-file:key", "notes.txt", "notes.txt"};
     return {};
 }
@@ -55,6 +71,8 @@ private slots:
     void rawHtmlStaysText();
     void headingsHaveGitHubSizes();
     void linksFollowPolicy();
+    void bareUrlsLinkLikeGitHub_data();
+    void bareUrlsLinkLikeGitHub();
     void imagesBecomePlaceholders();
     void entitiesAreDecoded();
     void inlineCodeUsesSentinelAndTallerLine();
@@ -141,6 +159,41 @@ void TestMarkdownHtml::linksFollowPolicy()
     QCOMPARE(formatOf(*doc, "ok").foreground().color().name(), QString("#0969da"));
     QVERIFY(!formatOf(*doc, "ok").fontUnderline());
     QCOMPARE(formatOf(*doc, "Label").toolTip(), QString("notes.txt"));
+}
+
+void TestMarkdownHtml::bareUrlsLinkLikeGitHub_data()
+{
+    // GitHub's extended autolinks: a scheme URL needs no dot in its host, and the
+    // link runs to whitespace without trailing punctuation or unbalanced ")".
+    QTest::addColumn<QString>("markdown");
+    QTest::addColumn<QStringList>("links");
+    QTest::newRow("local server") << "Open http://localhost:3060/ now"
+        << QStringList{"http://localhost:3060/ -> http://localhost:3060/"};
+    QTest::newRow("fragments") << "See http://localhost:3060/#a (Hills), http://127.0.0.1:8765/#settings."
+        << QStringList{"http://localhost:3060/#a -> http://localhost:3060/#a", "http://127.0.0.1:8765/#settings -> http://127.0.0.1:8765/#settings"};
+    QTest::newRow("strong") << "Open **http://localhost:3060/**."
+        << QStringList{"http://localhost:3060/ -> http://localhost:3060/"};
+    QTest::newRow("port and query") << "https://example.com:8443/path?x=1&y=2!"
+        << QStringList{"https://example.com:8443/path?x=1&y=2 -> https://example.com:8443/path?x=1&y=2"};
+    QTest::newRow("parentheses") << "(see https://example.com/a_(b))"
+        << QStringList{"https://example.com/a_(b) -> https://example.com/a_(b)"};
+    QTest::newRow("unicode path") << "https://example.com/путь, done"
+        << QStringList{"https://example.com/путь -> https://example.com/путь"};
+    QTest::newRow("www") << "Visit www.example.com." << QStringList{"www.example.com -> http://www.example.com"};
+    QTest::newRow("table cell") << "| Site |\n|---|\n| http://localhost:3050/ |"
+        << QStringList{"http://localhost:3050/ -> http://localhost:3050/"};
+    QTest::newRow("explicit link") << "[label](https://example.com/x) https://example.org"
+        << QStringList{"label -> https://example.com/x", "https://example.org -> https://example.org"};
+    QTest::newRow("code") << "`http://localhost:3060/`\n\n```\nhttp://localhost:3060/\n```" << QStringList{};
+    QTest::newRow("inside a word") << "xhttp://localhost:3060/ awww.example.com" << QStringList{};
+    QTest::newRow("no host") << "http:// and https://?x" << QStringList{};
+    QTest::newRow("policy") << "ftp://example.com/file" << QStringList{};
+}
+
+void TestMarkdownHtml::bareUrlsLinkLikeGitHub()
+{
+    QFETCH(QString, markdown); QFETCH(QStringList, links);
+    QCOMPARE(linked(*document(markdown, policy)), links);
 }
 
 void TestMarkdownHtml::imagesBecomePlaceholders()

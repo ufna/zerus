@@ -4,6 +4,7 @@
 #include <QFontMetricsF>
 #include <QGuiApplication>
 #include <QObject>
+#include <QRegularExpression>
 #include <QStringList>
 #include <QVector>
 
@@ -313,8 +314,7 @@ public:
                 Style style = m_styles.last(); style.color = m_theme.accent;
                 html += QString("<span style=\"%1\">").arg(style.css()) + (" (" + location + ")").toHtmlEscaped() + "</span>";
             }
-            html.insert(link.start, QString("<a href=\"%1\" title=\"%2\" style=\"color:%3;text-decoration:none;\">")
-                                        .arg(link.target.href.toHtmlEscaped(), link.target.tooltip.toHtmlEscaped(), m_theme.accent.name()));
+            html.insert(link.start, anchor(link.target));
             html += "</a>";
             break;
         }
@@ -337,7 +337,7 @@ public:
         if (!m_linkStack.isEmpty()) m_linkStack.last().label += value;
         if (frame.type == MD_BLOCK_CODE) { frame.raw += value; return 0; }
         if (m_inCode) frame.html += value.toHtmlEscaped().replace(' ', QStringLiteral("&nbsp;"));
-        else frame.html += run(value);
+        else frame.html += type == MD_TEXT_NORMAL && m_linkStack.isEmpty() ? autolinked(value) : run(value);
         return 0;
     }
 
@@ -346,7 +346,61 @@ private:
     // The first block of a container has no gap; a block after a rule keeps the rule's gap.
     int gap(int wanted) const { const Frame &c = m_frames.last(); return c.blocks == 0 ? 0 : c.afterRule ? RuleGap : wanted; }
     void append(const QString &html, bool rule = false) { Frame &c = m_frames.last(); c.html += html; ++c.blocks; c.afterRule = rule; }
-    QString run(const QString &value) const { return QString("<span style=\"%1\">").arg(m_styles.last().css()) + value.toHtmlEscaped() + "</span>"; }
+    QString run(const QString &value, const Style &style) const { return QString("<span style=\"%1\">").arg(style.css()) + value.toHtmlEscaped() + "</span>"; }
+    QString run(const QString &value) const { return run(value, m_styles.last()); }
+    QString anchor(const MarkdownLink &target) const
+    {
+        return QString("<a href=\"%1\" title=\"%2\" style=\"color:%3;text-decoration:none;\">")
+            .arg(target.href.toHtmlEscaped(), target.tooltip.toHtmlEscaped(), m_theme.accent.name());
+    }
+    // GitHub's extended autolinks for bare http(s):// and www. addresses. md4c 0.5
+    // drops a whole URL whose host has no dot or has a port, or whose path is not ASCII.
+    QString autolinked(const QString &text) const
+    {
+        if (!m_links || (!text.contains(QLatin1String("://")) && !text.contains(QLatin1String("www."), Qt::CaseInsensitive))) return run(text);
+        static const QRegularExpression start(QStringLiteral("(?<![\\p{L}\\p{N}_./@:-])(?:https?://|www\\.)"),
+            QRegularExpression::CaseInsensitiveOption);
+        QString result; qsizetype done = 0;
+        for (auto it = start.globalMatch(text); it.hasNext();) {
+            const auto match = it.next();
+            const bool www = match.captured().endsWith('.');
+            if (match.capturedStart() < done) continue;
+            if (www && (match.capturedEnd() >= text.size() || !text[match.capturedEnd()].isLetterOrNumber())) continue;
+            const qsizetype end = autolinkEnd(text, www ? match.capturedStart() : match.capturedEnd());
+            if (end < 0) continue;
+            const QString url = text.mid(match.capturedStart(), end - match.capturedStart());
+            const MarkdownLink target = m_links(www ? "http://" + url : url);
+            if (target.href.isEmpty()) continue;
+            Style style = m_styles.last(); style.color = m_theme.accent;
+            if (match.capturedStart() > done) result += run(text.mid(done, match.capturedStart() - done));
+            result += anchor(target) + run(url, style) + "</a>";
+            done = end;
+        }
+        if (done == 0) return run(text);
+        return done < text.size() ? result + run(text.mid(done)) : result;
+    }
+    // The end of a link whose host starts at `host`, or -1. The host has no underscore
+    // in its last two labels. The link runs to whitespace or "<", without trailing
+    // punctuation, closing quotes or unbalanced ")".
+    static qsizetype autolinkEnd(const QString &text, qsizetype host)
+    {
+        qsizetype end = host;
+        while (end < text.size() && (text[end].isLetterOrNumber() || QStringLiteral("-_.").contains(text[end]))) ++end;
+        if (end == host || !text[host].isLetterOrNumber()) return -1;
+        const auto labels = text.mid(host, end - host).split('.');
+        for (qsizetype i = qMax<qsizetype>(0, labels.size() - 2); i < labels.size(); ++i)
+            if (labels[i].contains('_')) return -1;
+        while (end < text.size() && !text[end].isSpace() && text[end] != '<') ++end;
+        int open = 0, close = 0;
+        for (qsizetype i = host; i < end; ++i) { open += text[i] == '('; close += text[i] == ')'; }
+        while (end > host) {
+            const QChar last = text[end - 1];
+            if (last == ')' && close > open) { --close; --end; }
+            else if (QStringLiteral("?!.,:;*\"'_~…").contains(last) || last.category() == QChar::Punctuation_FinalQuote) --end;
+            else break;
+        }
+        return end;
+    }
     int listDepth() const
     {
         int depth = 0;
@@ -463,7 +517,8 @@ QString MarkdownHtml::render(const QString &markdown, const MarkdownTheme &theme
     MD_PARSER parser{};
     parser.abi_version = 0;
     // GitHub semantics: `_x_` is emphasis, so MD_FLAG_UNDERLINE stays off. Raw HTML remains text.
-    parser.flags = MD_DIALECT_GITHUB | MD_FLAG_NOHTML;
+    // Bare URLs follow GitHub in Renderer::autolinked(); md4c still links e-mail addresses.
+    parser.flags = (MD_DIALECT_GITHUB & ~(MD_FLAG_PERMISSIVEURLAUTOLINKS | MD_FLAG_PERMISSIVEWWWAUTOLINKS)) | MD_FLAG_NOHTML;
     parser.enter_block = [](MD_BLOCKTYPE type, void *detail, void *self) { return static_cast<Renderer *>(self)->enterBlock(type, detail); };
     parser.leave_block = [](MD_BLOCKTYPE type, void *detail, void *self) { return static_cast<Renderer *>(self)->leaveBlock(type, detail); };
     parser.enter_span = [](MD_SPANTYPE type, void *detail, void *self) { return static_cast<Renderer *>(self)->enterSpan(type, detail); };
