@@ -139,7 +139,7 @@ class TerminalRetention(unittest.TestCase):
                         journal.finish(identity,{'state':'completed','result':{},'error':None});journal.delivered(identity)
                 self.assertLess(store.db.execute('SELECT count(*) FROM requests').fetchone()[0],500)
                 self.assertLess(journal.db.execute('SELECT count(*) FROM requests').fetchone()[0],500)
-                with patch('time.time',return_value=now+121): store.maintain();journal.prune()
+                with patch('time.time',return_value=now+121): store.maintain();store.maintain();journal.prune()
                 self.assertEqual(store.db.execute('SELECT count(*) FROM requests').fetchone()[0],0)
                 self.assertEqual(journal.db.execute('SELECT count(*) FROM requests').fetchone()[0],0)
                 with patch('time.time',return_value=now+200):
@@ -149,7 +149,7 @@ class TerminalRetention(unittest.TestCase):
                     claim=store.claim(node)[0];self.assertEqual(claim['expires_at'],now+205)
                     store.result(node,body['request_id'],{'state':'uncertain','result':None,'error':'fixture'})
                     journal.claim(body['request_id'],'terminal_input');journal.finish(body['request_id'],{'state':'uncertain','result':None,'error':'fixture'});journal.delivered(body['request_id'])
-                with patch('time.time',return_value=now+1000):store.maintain();journal.prune()
+                with patch('time.time',return_value=now+1000):store.maintain();store.maintain();journal.prune()
                 self.assertEqual(store.db.execute('SELECT operation FROM requests').fetchone()[0],'terminal_input')
                 self.assertFalse(journal.claim(body['request_id'],'terminal_input'))
             finally: journal.close();store.db.close()

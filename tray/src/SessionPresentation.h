@@ -36,6 +36,7 @@ inline QString providerFailure(const QJsonObject &error)
     if (kind == "rate_limit") return QObject::tr("Rate limit reached");
     if (kind == "capacity") return QObject::tr("Model at capacity");
     if (kind == "authentication") return QObject::tr("Sign-in failed");
+    if (kind == "provider_policy") return QObject::tr("Request blocked by provider");
     if (kind == "context_limit") return QObject::tr("Context limit reached");
     if (kind == "model_unavailable") return QObject::tr("Model unavailable");
     return QObject::tr("Provider error");
@@ -51,7 +52,8 @@ inline QString status(const SessionInfo &s, bool reachable = true)
     if (s.phase == "approval") return QObject::tr("Needs approval");
     if (s.phase == "input" && s.cmd == "dsh" && s.activitySummary == "Sign in required") return QObject::tr("Sign in");
     if (s.phase == "input") return QObject::tr("Needs input");
-    if (s.phase == "error" && s.providerError.value("error_kind")=="quota") return providerFailure(s.providerError);
+    if (s.phase == "error" && (s.providerError.value("error_kind")=="quota"
+        || s.providerError.value("error_kind")=="provider_policy")) return providerFailure(s.providerError);
     if (s.recovery.value("state") == "waiting") {
         const auto seconds = qMax(0, int(s.recovery.value("due_at").toDouble()-QDateTime::currentMSecsSinceEpoch()/1000.0));
         return seconds ? QObject::tr("Retry in %1 s").arg(seconds) : QObject::tr("Waiting to retry");

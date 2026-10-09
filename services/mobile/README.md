@@ -40,8 +40,10 @@ zerus-mobile --database ./data/relay.sqlite3 revoke-node --id NODE_UUID
 
 The default listener is `127.0.0.1:8787`. Place it behind a TLS proxy before using
 it on another machine. Keep access/body/header logging disabled at the proxy.
-Only one relay process should serve a database; restarting marks existing claimed
-requests uncertain. Back up the entire private state directory while stopped or
+SQLite supports one relay process only, behind the serialized async adapter;
+restarting that exclusive process marks existing claims uncertain. PostgreSQL is
+the production backend for multiple workers; worker restart does not retire
+another worker's claim. Back up the entire private state directory while stopped or
 use SQLite's online backup API. A backup contains session data and push endpoints.
 
 ## Docker and optional Caddy TLS
@@ -58,7 +60,156 @@ Compose publishes the relay only on loopback. For Caddy TLS, edit `Caddyfile` to
 replace the reserved `relay.example.com` domain, point that domain at the server,
 and run `docker compose --profile tls up -d`. Caddy needs ports 80 and 443; do not
 publish port 8787 on a public interface. If using an existing TLS proxy, route it
-to the loopback port instead. Health: `GET /healthz` reports protocol version 1.
+to the loopback port instead. Liveness: `GET /healthz` reports protocol version 1 independently of storage.
+Readiness: `GET /readyz` returns 503 when the database cannot answer. Caddy
+replaces inbound `X-Forwarded-For`; configure the relay to trust only its actual
+peer address. The supplied network assigns Caddy `172.30.78.2`, so use
+`"trusted_proxy_cidrs": ["172.30.78.2/32"]` in private relay configuration.
+For SQLite, mount that private configuration with a Compose override and pass
+`serve --host 0.0.0.0 --config /private/relay.json`. Without explicit proxy trust,
+rate identity remains the socket peer. Review the subnet for local conflicts. The dynamic IPAM range
+`172.30.78.128/25` deliberately excludes Caddy's static `.2` address; preserve
+that separation in any private network override.
+
+The relay uses a private disk-backed `/spool` volume for response encoding;
+`/tmp` remains a small tmpfs. Each worker reserves at most 64 MiB of spool
+capacity before encoding, with 32 MiB per claim response and 1 MiB per ordinary
+response, and closes/unlinks files on completion or cancellation. Reserve
+64 MiB of free disk per worker plus filesystem overhead. Named spool volumes
+may be shared safely; this capacity multiplies by worker count. Keep their
+permissions 0700 and include them in host disk monitoring. Do not move the
+spool to tmpfs under the 256 MiB worker memory limit.
+
+## PostgreSQL production profile
+
+Read the [relay implementation contract](../../docs/relay-architecture.md) before
+sizing production. The supplied `postgres` profile runs a private PostgreSQL
+service and two independent 256 MiB HTTP workers. PostgreSQL stays on major 17
+and pins the verified 17.11 image manifest; review minor security updates against
+[the official versioning policy](https://www.postgresql.org/support/versioning/). It preserves the v1 protocol;
+this is a bounded inline-payload deployment, not a demonstrated capacity for
+ten thousand computers or fifty thousand phones.
+
+Create `services/mobile/private/` outside version control with mode 0700. The
+PostgreSQL password file is `private/postgres-password`; the relay configuration
+is `private/relay.json`. Generate a random password privately, URL-encode it
+inside the DSN and never pass it in command arguments. Configuration example:
+
+```json
+{
+  "database_url": "postgresql://zerus_relay:REPLACE_WITH_URL_ENCODED_PRIVATE_PASSWORD@postgres:5432/zerus_relay",
+  "trusted_proxy_cidrs": ["172.30.78.2/32"],
+  "pool_min": 2,
+  "pool_max": 10,
+  "global_max_bytes": 34359738368,
+  "quota_shards": 64,
+  "max_polls_per_credential": 2,
+  "max_polls_per_workspace": 32,
+  "max_polls_global": 256,
+  "large_payload_slots": 1
+}
+```
+
+Both files must have mode 0600. Local Docker Compose secrets use bind mounts,
+so host file ownership matters: make `relay.json` readable by UID 10001 and
+`postgres-password` by the PostgreSQL image's UID 70 (Alpine). Verify those IDs
+against the reviewed images before starting. Do not weaken file modes to make
+mounts work. Keep private overrides, provider credentials and backups outside
+version control. The database port is never published.
+
+For a new, empty installation, build and start only the named production
+services; a bare `up` also selects the default SQLite service:
+
+```sh
+docker compose --profile postgres build relay-postgres
+docker compose --profile postgres up -d postgres
+docker compose --profile postgres run --rm --no-deps relay-postgres \
+  provision --config /run/secrets/relay.json \
+  --name 'Example workspace' --computer-name 'Example computer'
+RELAY_HOST=relay-postgres docker compose --profile postgres --profile tls \
+  up -d postgres relay-postgres caddy
+```
+
+Provisioning prints credentials deliberately; transfer them privately. The two
+relay workers share durable rates, long-poll leases, queue claims and payload
+accounting. Their idle waits hold no query-pool connection. Database connection
+planning includes the configured query pool plus one dedicated LISTEN connection
+per worker. Caddy's built-in dynamic A-record upstream refreshes the Compose service DNS
+list every five seconds and round-robins across replica addresses, with passive
+failure detection and no request replay retries. Verify both replica addresses
+appear before load testing. A Caddy restart is necessary after changing its
+upstream environment. See [Caddy dynamic upstream documentation](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#dynamic-upstreams).
+For an existing SQLite installation, migrate instead of provisioning identities.
+
+## Isolated capacity probes
+
+Run resource regressions and probes from the repository root with the relay's
+Python environment. They use synthetic loopback workers and never accept a live
+relay URL. The repeated-upload profile reuses one worker, submits five maximum
+Unicode attachment requests before claiming, and verifies quota rejections,
+results, receipts and no replay:
+
+```sh
+PYTHONPATH=services/mobile python services/mobile/tests/relay_load.py \
+  --kind attachments_unicode --concurrency 1 --repeats 5
+```
+
+This reports process RSS, not a container memory guarantee. For cgroup testing,
+keep `/data` and `/spool` on a real disk filesystem, enforce the supplied
+256 MiB limit, and inspect cgroup peak/reclaim and OOM events as well as RSS.
+A host tmpfs bind mount charges persistent database storage to the container.
+The final-image PostgreSQL warm profile passed at 170.44 MiB cgroup peak;
+maximum payload parsing still delayed health p99 to 157.4 ms. See the architecture
+contract for the dataset, results and limits rather than extrapolating from a
+single cold upload.
+
+The two-process PostgreSQL probe requires a mode-0600 JSON admin configuration
+containing `database_url` for a disposable loopback test instance with permission
+to create databases. It creates and removes its own synthetic database and HTTP
+workers; never point it at production:
+
+```sh
+PYTHONPATH=services/mobile python services/mobile/tests/relay_scale.py \
+  --admin-config /private/test-admin.json \
+  --workspaces 1000 --history 100000 --duration 10
+```
+
+Default admission reaches 512 simultaneous polls across two workers, with
+controlled overload, responsive metadata/heartbeats and complete disconnect
+cleanup. `--poll-cap 1000` is an experimental measurement option; it admitted
+2,000 idle polls with complete cleanup but some wake bursts returned 429.
+Neither profile proves the planned ten-thousand-computer fleet. Include the
+query-pool and direct LISTEN connection budget when sizing replicas.
+
+## Offline SQLite migration
+
+Rehearse first using synthetic state and a separate empty PostgreSQL database.
+The command refuses nonempty targets, preserves IDs, token/code/body hashes,
+event cursors and claimed/uncertain states, rebuilds accounting and reports
+verification counts/digests without credential values. Existing pending requests
+reserve result capacity. Above-budget workspaces remain intact and cannot admit
+new work until usage allows it; oversized historical results retain their old
+outcome. Verify the imported duplicate UUID, uncertain claim, revoked credential
+and event cursor behavior before approving a cutover.
+
+For a reviewed live cutover, require owner approval and tested backups. Pause
+admission, preserve outstanding claims, stop only relay writers and take a
+consistent SQLite backup. Keep computer agents, tmux and DeepSeek hosts running.
+Never serve old SQLite and PostgreSQL copies simultaneously. Run the installed
+CLI from a private environment that can read the backup and reach the target:
+
+```sh
+zerus-mobile migrate-sqlite --config /private/relay.json \
+  --source /private/relay-final.sqlite3 --source-offline
+```
+
+`--source-offline` is an explicit assertion that SQLite writers are stopped.
+Start the PostgreSQL workers only after verification passes, keeping connector
+URLs and credentials unchanged. Before new writes, rollback can restore the
+unchanged SQLite relay. After new writes, switching to the old backup would lose
+new receipts and risk mutation replay: require a verified reverse migration or
+forward repair. Back up PostgreSQL with a reviewed PostgreSQL backup/restore
+procedure, including the permanent mutation ledger.
 
 ## Push configuration
 
@@ -108,15 +259,41 @@ Defaults: 1 MiB HTTP body for ordinary endpoints, 29 MiB for native send request
 envelopes, 10-second ordinary body timeout, 60-second send body timeout,
 25-second long poll, 40-second ordinary handler deadline and 75 seconds for
 request submission, 120-second queued expiry, 90-second claim timeout, and
-200 pending requests per workspace. Retained request bodies across all states
-have a 100 MiB workspace budget plus a reserved 1 MiB allowance for small text
-and control requests. Identical UUID retries still return their receipt when
+200 pending requests per workspace. Retained request and result/error bytes plus result reservations across all states
+have a 100 MiB workspace payload budget plus a separately bounded 1 MiB
+allowance for small text and control requests. Each new request reserves a
+maximum 1 MiB canonical UTF-8 result/error data before admission. The HTTP layer
+also checks the complete escaped receipt envelope against the installed phone's
+1 MiB total response cap before accepting a result. Unicode
+escaping counts toward that stored ceiling; oversized results receive 413. Identical UUID retries still return their receipt when
 the budget is full; uncertain requests are never evicted to make room.
 Payload/result/event retention is seven days. Completed
 read-only inspections expire after one hour; repeating an expired inspection is
 safe. Mutation UUID tombstones remain indefinitely, with a 100,000-mutation
 workspace ceiling. Retained inspections have a separate 5,000-entry ceiling.
 These limits never evict a mutation tombstone to permit accidental redelivery.
+
+Local transport defaults admit one large v1 pipeline per worker, covering body
+ingestion through parsing, validation, database work and claim serialization
+until response completion. Unknown-length bodies also use that lane. Occupied
+capacity returns 429 with `Retry-After`; there is no unbounded waiter queue.
+Ordinary bodies share an 8 MiB aggregate wire budget, and at most eight ordinary
+responses are retrieved/encoded concurrently. A computer catalog is rejected
+with 413 if its aggregate stored snapshots and metadata exceed 1 MiB; v1 has no
+catalog pagination. Ordinary catalogs and receipts enforce the actual 1 MiB
+escaped response limit before headers are written. Event pages return the fitting
+prefix and advance the cursor only through returned rows; one oversized legacy
+event or receipt reports 413 instead of silently truncating it. JSON is limited to depth 32 and 50,000 lexical values before
+full parsing, and base64 validation uses aligned 64 KiB chunks. Parsing and
+SQLite work run off the HTTP event loop; cancellation keeps permits until real
+thread completion. Compressed bodies are rejected.
+
+Long polls use shared leases: two per credential, 32 per workspace and 256 per
+worker. Notifications trigger durable rereads with a five-second fallback;
+maintenance runs independently in bounded batches. A worker must be sized from
+measured RSS, container memory, CPU, query latency, disk and bandwidth. The
+single large-payload lane is the compatible v1 ceiling; increasing it requires
+new resource evidence. A negotiated streaming blob protocol remains future work.
 
 The computer connector uses the same retention policy for delivered results:
 inspections expire after one hour; mutation responses become an explicit
@@ -180,7 +357,7 @@ validated native ABI without introducing a shell or path-based upload command.
 Its permanent request fingerprint includes the attachment bytes, so uncertain
 or duplicate sends cannot repeat delivery. Request polling claims at most one
 command per batch and permits bounded 29 MiB node responses; native inspection
-and result limits remain unchanged. At most two large uploads are read
+and result limits remain unchanged. At most one large upload or claim response is read
 concurrently; small authenticated requests retain separate capacity.
 
 `GET /v1/capabilities` exposes these limits in `attachment_limits`. A TLS proxy
@@ -323,8 +500,9 @@ executes the supplied text. The fixture help advertises Terminal alongside scope
 lifecycle; `fixture_terminal_text` records only the synthetic screen content.
 
 Terminal screen polling is capped at four frames per second, with slower idle
-polling. Authenticated credential and source-IP budgets are 2,400 requests per
-minute, and the relay-wide budget remains 6,000. Pairing and failed-login limits
+polling. Authenticated credential budgets are 2,400 requests per minute and are
+workspace-scoped. Anonymous pairing and failed-login counters use separate
+bounded state, so failed credentials do not debit authenticated quotas. Pairing and failed-login limits
 retain their stricter independent budgets. These transport limits include receipt
 polling and node result uploads; they do not permit replaying delayed input.
 

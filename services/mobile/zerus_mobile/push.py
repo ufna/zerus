@@ -28,7 +28,9 @@ class PinnedResolver(AbstractResolver):
 
 class PushWorker:
     def __init__(self, store, config):
-        self.store, self.config = store, config
+        from .async_store import adapt_store
+        self.store, self.config = adapt_store(store), config
+        self._owns_adapter = self.store is not store
         self.allowed = {h.encode("idna").decode("ascii").lower() for h in config.push_hosts}
         self.fcm = None
         self.messaging = None
@@ -80,29 +82,24 @@ class PushWorker:
 
     async def one(self, job):
         # Refresh registration and revocation immediately before network delivery.
-        registration = self.store.db.execute("SELECT p.* FROM pushes p JOIN devices d ON d.id=p.device_id WHERE p.device_id=? AND d.revoked=0", (job["device_id"],)).fetchone()
+        registration = await self.store.push_registration(job["device_id"])
         if not registration:
-            with self.store.db:
-                self.store.db.execute("DELETE FROM push_jobs WHERE id=?", (job["id"],))
+            await self.store.finish_push(job, False, False, None)
             return
         try:
             delivered, invalid = await self.deliver(registration["provider"], registration["target"], json.loads(job["payload"]))
         except Exception:
             # Transient failures stay generic. No exception/URL/token is logged.
             delivered, invalid = False, False
-        with self.store.db:
-            if delivered or invalid or job["attempts"] >= 4:
-                self.store.db.execute("DELETE FROM push_jobs WHERE id=?", (job["id"],))
-                if invalid:
-                    self.store.db.execute("DELETE FROM pushes WHERE device_id=? AND provider=? AND target=?", (job["device_id"], registration["provider"], registration["target"]))
-            else:
-                self.store.db.execute("UPDATE push_jobs SET attempts=attempts+1,next_at=? WHERE id=?", (time.time() + min(3600, 5 * 2 ** job["attempts"]), job["id"]))
+        await self.store.finish_push(job, delivered, invalid, registration)
 
     async def once(self):
-        jobs = self.store.db.execute("SELECT * FROM push_jobs WHERE next_at<=? AND attempts<5 ORDER BY id LIMIT 4", (time.time(),)).fetchall()
+        jobs = await self.store.claim_push_jobs(limit=4, lease_ttl=60)
         await asyncio.gather(*(self.one(job) for job in jobs))
 
     async def close(self):
+        if self._owns_adapter:
+            await self.store.close()
         if self.fcm:
             import firebase_admin
             firebase_admin.delete_app(self.fcm)

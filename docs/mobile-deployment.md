@@ -31,8 +31,10 @@ See [Android build details](../mobile/android/README.md) for optional FCM setup.
 ## Start the relay
 
 The [relay README](../services/mobile/README.md) documents Python and Docker
-installation, administrator commands, limits and push configuration. A minimal
-Docker deployment is:
+installation, administrator commands, limits and push configuration. The default SQLite profile supports one relay process for local/private setups.
+Production multiple-worker deployments use the documented
+[PostgreSQL profile and offline migration](../services/mobile/README.md#postgresql-production-profile).
+A minimal SQLite Docker deployment is:
 
 ```sh
 cd services/mobile
@@ -52,13 +54,35 @@ Terminate TLS with your existing reverse proxy, forwarding to
 40 seconds for long polls and 1 MiB ordinary request bodies. File-bearing sends
 use a larger envelope only at `/v1/requests`: allow 29 MiB there and 75 seconds
 for a mobile upload. Disable API request buffering to disk and request/body/header
-logging. Only the HTTPS port should be accessible remotely.
+logging. Only the HTTPS port should be accessible remotely. Configure
+`trusted_proxy_cidrs` to the exact proxy peer IP/CIDR visible to the relay; for a
+host-local Nginx this is normally `127.0.0.1/32`. Never trust every private subnet
+or caller-supplied forwarding headers. The supplied Caddy profile overwrites
+`X-Forwarded-For` and uses its explicitly assigned bridge address; change both
+its network and the relay's private trust configuration if the subnet conflicts.
+Keep the dynamic IPAM range separate from Caddy's static address; the supplied
+`172.30.78.128/25` allocation range excludes its `.2` address.
+
+`/healthz` is cheap process liveness, independent of database availability.
+`/readyz` coalesces a bounded database readiness probe with a one-second cache. Inline attachment ingestion and claim
+responses share one large-payload lane per worker until complete; overload
+returns 429 with a retry hint. Private response spooling uses disk, with a
+64 MiB reservation budget per worker, rather than the container's small tmpfs.
+Phone catalogs and receipts enforce the installed 1 MiB total response limit
+before sending headers. Event pages fit an encoded prefix and advance only
+through returned IDs; oversized legacy data returns an explicit 413.
+Keep spool permissions 0700, reserve free disk for all workers and monitor actual
+container memory as well as process RSS. A 256 MiB limit is a safety setting,
+not demonstrated high-fanout capacity. See the relay README for limits and the
+[storage/admission contract](relay-architecture.md) for scale boundaries.
 
 ```nginx
 location / {
     proxy_pass http://127.0.0.1:8787;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header Forwarded "";
     proxy_set_header Connection "";
     proxy_read_timeout 45s;
     proxy_send_timeout 45s;
@@ -71,6 +95,8 @@ location = /v1/requests {
     proxy_pass http://127.0.0.1:8787;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header Forwarded "";
     proxy_set_header Connection "";
     proxy_read_timeout 75s;
     proxy_send_timeout 75s;
@@ -280,7 +306,14 @@ Run the Python tests in an environment with the relay dependencies installed.
 Android unit tests and lint are separate from these tests. No command in this
 runbook dispatches hosted CI.
 
-Back up relay data through SQLite's online backup API or with the relay stopped.
+For SQLite, back up relay data through its online backup API or with the relay
+stopped. PostgreSQL needs a reviewed PostgreSQL backup/restore procedure.
+SQLite-to-PostgreSQL cutover is an offline owner-approved operation: keep the
+old relay writers stopped, preserve outstanding claims and identities, import
+into an empty target with `migrate-sqlite --source-offline`, and verify before
+starting new admission. After new PostgreSQL writes, an old SQLite snapshot is
+not a safe rollback because it loses new mutation receipts. Follow the
+[full migration procedure](../services/mobile/README.md#offline-sqlite-migration).
 Never restore old command claims to the queued state. A claimed request after a
 relay or connector crash remains uncertain until reviewed. Keep API access logs
 off, preserve the connector journal, and revoke exposed credentials individually.

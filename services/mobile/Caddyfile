@@ -1,26 +1,55 @@
 # Replace this reserved hostname with your public relay domain before deployment.
 relay.example.com {
-    @uploads {
-        method POST
-        path /v1/requests
-    }
-    handle @uploads {
-        request_body {
-            max_size 29MB
-        }
-        reverse_proxy relay:8787 {
-            transport http {
-                response_header_timeout 75s
-                read_timeout 75s
-                write_timeout 75s
-            }
-        }
-    }
-    handle {
-        request_body {
-            max_size 1MB
-        }
-        reverse_proxy relay:8787
-    }
-    # Access logging is deliberately disabled. Never add headers/body logging.
+	@uploads {
+		method POST
+		path /v1/requests
+	}
+	handle @uploads {
+		request_body {
+			max_size 29MiB
+		}
+		reverse_proxy {
+			dynamic a {
+				name {$RELAY_HOST:relay}
+				port 8787
+				refresh 5s
+				versions ipv4
+			}
+			lb_policy round_robin
+			fail_duration 10s
+			max_fails 1
+			# Replace caller-supplied forwarding identity with the socket peer.
+			header_up X-Forwarded-For {http.request.remote.host}
+			header_up -Forwarded
+			transport http {
+				response_header_timeout 75s
+				read_timeout 75s
+				write_timeout 75s
+			}
+		}
+	}
+	handle {
+		request_body {
+			max_size 1MiB
+		}
+		reverse_proxy {
+			dynamic a {
+				name {$RELAY_HOST:relay}
+				port 8787
+				refresh 5s
+				versions ipv4
+			}
+			lb_policy round_robin
+			fail_duration 10s
+			max_fails 1
+			header_up X-Forwarded-For {http.request.remote.host}
+			header_up -Forwarded
+			transport http {
+				response_header_timeout 45s
+				read_timeout 75s
+				write_timeout 45s
+			}
+		}
+	}
+	# Access logging is deliberately disabled. Never add headers/body logging.
 }
