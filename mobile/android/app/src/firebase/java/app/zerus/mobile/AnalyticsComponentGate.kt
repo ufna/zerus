@@ -20,9 +20,10 @@ internal class AnalyticsComponentGate(context: Context) {
             if (durable && Build.VERSION.SDK_INT >= 30) PackageManager.SYNCHRONOUS else 0
         components.forEach { component ->
             val current = manager.getComponentEnabledSetting(component)
-            // DEFAULT is disabled in the manifest. Avoid startup disk writes;
-            // settings changes request synchronous persistence on their IO thread.
-            if (current != desired && !(current == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT && !enabled)) {
+            // Manifest enabled is required for SDK validation. Explicitly apply
+            // owner OFF even from DEFAULT before any Firebase initialization.
+            // Only settings changes request synchronous disk persistence on IO.
+            if (current != desired) {
                 manager.setComponentEnabledSetting(component, desired, flags)
             }
         }

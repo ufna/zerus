@@ -320,8 +320,9 @@ start enabled in Firebase builds and persist separately on this phone. Analytics
 stops through the SDK when disabled. OFF is authoritative at cold startup:
 the app does not instantiate Analytics while the saved preference is off, and
 eager Analytics connector registration is removed. The measurement receiver,
-service and job service start disabled and follow the same switch; settings
-disable them durably before saving OFF. This does not rely on the asynchronous
+service and job service follow the saved switch before Firebase initialization;
+their manifest declarations remain enabled for SDK validation, while settings
+disable their runtime components durably before saving OFF. This does not rely on the asynchronous
 SDK flag reaching disk before process termination. Crash reporting changes require an app
 restart. SDK automatic uploads stay disabled; the app's default-on crash setting
 uses documented manual send/delete APIs after startup checks. Normal ON-period
