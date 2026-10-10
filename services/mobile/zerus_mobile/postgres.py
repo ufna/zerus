@@ -85,7 +85,7 @@ class BoundedPool:
 
     def configure_cleanup(self, max_pending):
         if type(max_pending) is not int or not 1 <= max_pending <= 65536:
-            raise ValueError("cleanup capacity must be an integer between1 and65536")
+            raise ValueError("cleanup capacity must be an integer between 1 and 65536")
         if self._cleanup_in_use:
             raise RuntimeError(
                 "cleanup capacity must be configured before serving requests"
