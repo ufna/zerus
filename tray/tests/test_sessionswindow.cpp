@@ -1369,23 +1369,37 @@ void TestSessionsWindow::recoveryCountdownKeepsHistoryDraftAndFocus()
 
 void TestSessionsWindow::coldCacheConfirmationPreservesDraftAndPinsConversation()
 {
-    const auto program=m_dir.filePath("cache-hgs"),capture=m_dir.filePath("cache-send.json");
+    const auto program=m_dir.filePath("cache-hgs"),capture=m_dir.filePath("cache-send.json"),inspected=m_dir.filePath("cache-inspect.json");
+    // Background inspections return the injected state: an empty reply arriving
+    // late would drop the cold cache and leave no confirmation to answer.
+    QJsonObject details{{"tracked",true},{"run_id","run-cache"},{"conversation_id","conversation-cache"},{"runtime_state","live"},{"process_state","running"},
+        {"activity","idle"},{"phase","idle"},{"cache_hint",QJsonObject{{"status","cold"},{"tokens",756000}}}};
+    const auto writeDetails=[&]{QSaveFile data(inspected);QVERIFY(data.open(QIODevice::WriteOnly));data.write(QJsonDocument(details).toJson());QVERIFY(data.commit());};
+    writeDetails();
     QFile fixture(program);QVERIFY(fixture.open(QIODevice::WriteOnly));
-    fixture.write("#!/usr/bin/env python3\nimport sys,json\na=sys.argv[1:]\nif a[0].startswith('@'):a=a[1:]\nif a[0]=='send':\n p=json.load(sys.stdin)\n open("+QJsonDocument(QJsonArray{capture}).toJson(QJsonDocument::Compact)+"[0],'w').write(json.dumps(p))\n print(json.dumps(dict(status='submitted',request_id=p['request_id'],name=a[1],run_id=p['expected_run_id'],conversation_id=p['expected_conversation_id'])))\nelse:print('{}')\n");
+    fixture.write("#!/usr/bin/env python3\nimport sys,json\na=sys.argv[1:]\nif a[0].startswith('@'):a=a[1:]\nif a[0]=='send':\n p=json.load(sys.stdin)\n open("+QJsonDocument(QJsonArray{capture}).toJson(QJsonDocument::Compact)+"[0],'w').write(json.dumps(p))\n print(json.dumps(dict(status='submitted',request_id=p['request_id'],name=a[1],run_id=p['expected_run_id'],conversation_id=p['expected_conversation_id'])))\nelif a[0]=='inspect':print(open("+QJsonDocument(QJsonArray{inspected}).toJson(QJsonDocument::Compact)+"[0]).read())\nelse:print('{}')\n");
     fixture.close();QVERIFY(fixture.setPermissions(QFileDevice::ReadOwner|QFileDevice::WriteOwner|QFileDevice::ExeOwner));
     SessionsWindow window(program);window.setFleet(fleet());window.show();window.showSession({},"codex/hgs/dashboard");
     QTest::qWait(100);auto *client=window.findChild<HgsClient *>();
-    QJsonObject details{{"tracked",true},{"run_id","run-cache"},{"conversation_id","conversation-cache"},{"runtime_state","live"},{"process_state","running"},
-        {"activity","idle"},{"phase","idle"},{"cache_hint",QJsonObject{{"status","cold"},{"tokens",756000}}}};
     client->inspectionReady({},"codex/hgs/dashboard",details);
     auto *composer=window.findChild<MessageComposer *>("messageComposer");auto *send=composer->findChild<QPushButton *>("sendMessage");
     composer->editor()->setPlainText("Preserve this draft");QVERIFY(send->isEnabled());
-    bool shown=false;QTimer::singleShot(0,&window,[&]{auto *dialog=window.findChild<QMessageBox *>("coldCacheConfirm");shown=dialog!=nullptr;if(dialog)dialog->button(QMessageBox::Cancel)->click();});
+    // Act on the confirmation once it is actually shown; a zero timer could fire
+    // in another event loop first and find no dialog at all.
+    const auto onConfirm=[&](std::function<void(QMessageBox *)> act){
+        auto *poll=new QTimer(&window);poll->setInterval(5);QElapsedTimer age;age.start();
+        QObject::connect(poll,&QTimer::timeout,&window,[poll,act,age,&window]{
+            auto *dialog=window.findChild<QMessageBox *>("coldCacheConfirm");
+            if(!(dialog&&dialog->isVisible())&&age.elapsed()<5000)return;
+            poll->stop();poll->deleteLater();if(dialog&&dialog->isVisible())act(dialog);});
+        poll->start();};
+    const auto accept=[](QMessageBox *dialog){for(auto *b:dialog->buttons())if(dialog->buttonRole(b)==QMessageBox::AcceptRole)b->click();};
+    bool shown=false;onConfirm([&](QMessageBox *dialog){shown=true;dialog->button(QMessageBox::Cancel)->click();});
     send->click();QVERIFY(shown);QVERIFY(!QFileInfo::exists(capture));QCOMPARE(composer->editor()->toPlainText(),QString("Preserve this draft"));
-    QTimer::singleShot(0,&window,[&]{details["conversation_id"]="conversation-new";client->inspectionReady({},"codex/hgs/dashboard",details);auto *dialog=window.findChild<QMessageBox *>("coldCacheConfirm");for(auto *b:dialog->buttons())if(dialog->buttonRole(b)==QMessageBox::AcceptRole)b->click();});
-    send->click();QVERIFY(!QFileInfo::exists(capture));QCOMPARE(composer->editor()->toPlainText(),QString("Preserve this draft"));
-    QTimer::singleShot(0,&window,[&]{auto *dialog=window.findChild<QMessageBox *>("coldCacheConfirm");for(auto *b:dialog->buttons())if(dialog->buttonRole(b)==QMessageBox::AcceptRole)b->click();});
-    send->click();QTRY_VERIFY(QFileInfo::exists(capture));QFile sent(capture);QVERIFY(sent.open(QIODevice::ReadOnly));
+    shown=false;onConfirm([&](QMessageBox *dialog){shown=true;details["conversation_id"]="conversation-new";writeDetails();client->inspectionReady({},"codex/hgs/dashboard",details);accept(dialog);});
+    send->click();QVERIFY(shown);QVERIFY(!QFileInfo::exists(capture));QCOMPARE(composer->editor()->toPlainText(),QString("Preserve this draft"));
+    shown=false;onConfirm([&](QMessageBox *dialog){shown=true;accept(dialog);});
+    send->click();QVERIFY(shown);QTRY_VERIFY(QFileInfo::exists(capture));QFile sent(capture);QVERIFY(sent.open(QIODevice::ReadOnly));
     const auto payload=QJsonDocument::fromJson(sent.readAll()).object();QCOMPARE(payload["expected_conversation_id"].toString(),QString("conversation-new"));QCOMPARE(payload["text"].toString(),QString("Preserve this draft"));
 }
 
@@ -2096,7 +2110,8 @@ elif args[0]=='send':
  print(json.dumps({'status':'submitted','request_id':p['request_id'],'name':args[1],'run_id':p['expected_run_id'],'conversation_id':p['expected_conversation_id'],'submitted_text':p['text'],'submitted_at':time.time()}))
 )PY");script.close();QVERIFY(script.setPermissions(QFileDevice::ReadOwner|QFileDevice::WriteOwner|QFileDevice::ExeOwner));
     QJsonObject details{{"tracked",true},{"run_id","run-ready"},{"conversation_id","conversation-ready"},{"runtime_state","live"},{"process_state","running"},{"activity","idle"},{"phase","idle"},{"events",QJsonArray{}},{"cursor",0}};
-    const auto save=[&]{QFile f(directory.filePath("inspect.json"));if(!f.open(QIODevice::WriteOnly))return false;return f.write(QJsonDocument(details).toJson())>0;};QVERIFY(save());
+    // Atomic: a background inspection must never read a truncated file and reset the run identity a retry checks.
+    const auto save=[&]{QSaveFile f(directory.filePath("inspect.json"));if(!f.open(QIODevice::WriteOnly))return false;return f.write(QJsonDocument(details).toJson())>0&&f.commit();};QVERIFY(save());
     SessionsWindow window(program);window.setFleet(fleet());window.show();window.showSession({},"codex/hgs/dashboard");
     auto *composer=window.findChild<MessageComposer *>("messageComposer");auto *send=composer->findChild<QPushButton *>("sendMessage");
     auto *client=window.findChild<HgsClient *>();auto *view=composer->parentWidget()->findChild<ActivityView *>();QVERIFY(view);
