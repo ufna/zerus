@@ -1,7 +1,6 @@
 //! Failed launch attempts have diagnostic value but no confirmed conversation.
 //! They never become Saved or Archive entries and never enable fuzzy resume.
 use super::*;
-use std::process::Command;
 
 fn identity_gone(identity: &Value, start_key: &str) -> bool {
     let Some(pid) = identity["pid"]
@@ -20,16 +19,10 @@ fn identity_gone(identity: &Value, start_key: &str) -> bool {
     if expected.is_empty() {
         return false;
     }
-    let Ok(output) = Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "lstart="])
-        .env("LC_ALL", "C")
-        .env("TZ", "UTC")
-        .output()
-    else {
+    let Some(actual) = crate::platform::process_start_time(pid as u32).or_else(|| ps_process_start(pid as u32)) else {
         return false;
     };
-    let actual = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    output.status.success() && !actual.is_empty() && actual != expected
+    !actual.is_empty() && actual != expected
 }
 
 pub(super) fn identities_gone(record: &Value) -> bool {

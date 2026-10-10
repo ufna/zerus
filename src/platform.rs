@@ -80,6 +80,90 @@ pub fn available(program: &str) -> bool {
 pub fn is_macos() -> bool {
     capture("uname", &[]).is_some_and(|name| name.trim() == "Darwin")
 }
+/// When `pid` started, as `ps -o lstart=` prints it with `LC_ALL=C TZ=UTC`, for
+/// example "Sat Oct 10 08:27:57 2026". Stored run identities compare this text,
+/// so older records written through ps keep matching. Read from the kernel:
+/// session listings check several identities per poll, and each ps launch cost
+/// more than the rest of the listing. Empty when the process does not exist;
+/// None when its start time cannot be read here, so callers can ask ps instead.
+pub fn process_start_time(pid: u32) -> Option<String> {
+    if pid == 0 {
+        return Some(String::new());
+    }
+    process_started_at(pid).map(|started| started.map(lstart_text).unwrap_or_default())
+}
+
+#[cfg(target_os = "macos")]
+fn process_started_at(pid: u32) -> Option<Option<u64>> {
+    // The kinfo_proc that ps reads, which also covers other users' processes.
+    // Its extern_proc begins with p_starttime, a timeval whose seconds come first.
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid as libc::c_int];
+    let mut info = [0u64; 128]; // kinfo_proc is 648 bytes
+    let mut size = std::mem::size_of_val(&info);
+    let rc = unsafe {
+        libc::sysctl(mib.as_mut_ptr(), 4, info.as_mut_ptr().cast(), &mut size, std::ptr::null_mut(), 0)
+    };
+    match (rc, size) {
+        (0, 0) => Some(None), // no such process
+        (0, size) if size >= 8 => Some(Some(info[0])),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn process_started_at(pid: u32) -> Option<Option<u64>> {
+    use std::sync::OnceLock;
+    // procps: boot time from /proc/stat plus the start in clock ticks, truncated.
+    static BOOT: OnceLock<Option<u64>> = OnceLock::new();
+    let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => stat,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Some(None),
+        Err(_) => return None,
+    };
+    // The command name may contain spaces and parentheses; fields follow its last ')'.
+    let ticks: u64 = stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()?;
+    let boot = (*BOOT.get_or_init(|| {
+        fs::read_to_string("/proc/stat")
+            .ok()?
+            .lines()
+            .find_map(|line| line.strip_prefix("btime ")?.trim().parse().ok())
+    }))?;
+    let hertz = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) }).ok().filter(|&hz| hz > 0)?;
+    Some(Some(boot + ticks / hertz))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn process_started_at(_pid: u32) -> Option<Option<u64>> {
+    None
+}
+
+/// `%a %b %e %H:%M:%S %Y` in the C locale and UTC, the form ps and ctime print.
+fn lstart_text(seconds: u64) -> String {
+    const DAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let (days, time) = (seconds / 86_400, seconds % 86_400);
+    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+    let shifted = days as i64 + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 { month_index + 3 } else { month_index - 9 };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!(
+        "{} {} {:>2} {:02}:{:02}:{:02} {}",
+        DAYS[(days % 7) as usize],
+        MONTHS[(month - 1) as usize],
+        day,
+        time / 3600,
+        time % 3600 / 60,
+        time % 60,
+        year
+    )
+}
+
 pub fn quote(word: &str) -> String {
     if !word.is_empty()
         && word
@@ -608,4 +692,73 @@ pub fn paste(config: &Config, session: &str, pane: &str, client: &str) -> Result
         .args(["send-keys", "-t", pane, "C-v"])
         .status();
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ps_start(pid: u32) -> Option<String> {
+        let output = Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "lstart="])
+            .env("LC_ALL", "C")
+            .env("TZ", "UTC")
+            .output()
+            .ok()?;
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+
+    #[test]
+    fn start_time_text_matches_ps_lstart_form() {
+        // C locale, UTC, the day padded with a space: stored identities compare as text.
+        assert_eq!(lstart_text(0), "Thu Jan  1 00:00:00 1970");
+        assert_eq!(lstart_text(1_791_620_877), "Sat Oct 10 08:27:57 2026");
+        assert_eq!(lstart_text(1_759_309_200), "Wed Oct  1 09:00:00 2025");
+        assert_eq!(lstart_text(951_782_400), "Tue Feb 29 00:00:00 2000");
+    }
+
+    #[test]
+    fn process_start_time_matches_ps() {
+        let parent = unsafe { libc::getppid() } as u32;
+        for pid in [std::process::id(), parent, 1] {
+            let Some(expected) = ps_start(pid) else { return };
+            let actual = process_start_time(pid).expect("readable start time");
+            // A process that cannot be read must stay unknown rather than look absent.
+            if expected.is_empty() {
+                continue;
+            }
+            assert_eq!(actual, expected, "pid {pid}");
+        }
+    }
+
+    #[test]
+    fn missing_process_has_no_start_time() {
+        assert_eq!(process_start_time(0), Some(String::new()));
+        // pid_max is far below this on Linux and macOS.
+        assert_eq!(process_start_time(99_999_999), Some(String::new()));
+    }
+
+    #[test]
+    #[ignore = "compares every visible process with ps; run manually on each platform"]
+    fn every_process_start_time_matches_ps() {
+        let output = Command::new("ps")
+            .args(["-axo", "pid=,lstart="])
+            .env("LC_ALL", "C")
+            .env("TZ", "UTC")
+            .output()
+            .unwrap();
+        let (mut checked, mut differ) = (0, Vec::new());
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let line = line.trim_start();
+            let Some((pid, expected)) = line.split_once(' ') else { continue };
+            let pid: u32 = pid.parse().unwrap();
+            match process_start_time(pid) {
+                Some(actual) if actual == expected.trim() => checked += 1,
+                Some(actual) if actual.is_empty() => {} // exited since ps listed it
+                other => differ.push(format!("{pid}: {other:?} != {expected:?}")),
+            }
+        }
+        assert!(differ.is_empty(), "{checked} matched; differ: {differ:#?}");
+        assert!(checked > 10);
+    }
 }

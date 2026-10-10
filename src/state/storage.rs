@@ -236,17 +236,21 @@ pub(super) fn matches(record: &Value, panes: Option<&Vec<Pane>>) -> bool {
 }
 
 pub(super) fn process_start(pid: u32) -> String {
-    if pid == 0 {
-        return String::new();
-    }
-    Command::new("ps")
+    crate::platform::process_start_time(pid).unwrap_or_else(|| ps_process_start(pid).unwrap_or_default())
+}
+
+/// ps's own start time: `Some` with its (possibly empty) output when ps ran successfully.
+pub(super) fn ps_process_start(pid: u32) -> Option<String> {
+    let output = Command::new("ps")
         .args(["-p", &pid.to_string(), "-o", "lstart="])
         .env("LC_ALL", "C")
         .env("TZ", "UTC")
         .output()
-        .ok()
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-        .unwrap_or_default()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 pub(super) fn process_alive(record: &Value) -> bool {
