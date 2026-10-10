@@ -727,6 +727,21 @@ References: [Android foreground service types](https://developer.android.com/dev
 [FCM server authorization](https://firebase.google.com/docs/cloud-messaging/send/v1-api),
 and [UnifiedPush Android protocol](https://unifiedpush.org/developers/spec/android/).
 
+### Application settings
+
+The main Android toolbar orders New session, Refresh and Settings. Settings is
+a full-window screen with its own Back action; it retains the underlying tab,
+project, filters, scroll position and drafts. It contains telemetry controls,
+the application version, a direct GitHub repository link, update controls and
+an offline third-party notices page. Back from notices returns to Settings;
+Back from Settings returns to the previous workspace view.
+
+Update discovery and installer recovery remain active independently of whether
+Settings is open. Available updates and pending installer sessions mark the
+Settings icon. Opening or recomposing Settings does not submit a download or
+installation. Machine notification, live connection and push setup controls
+remain in Machines.
+
 ### Firebase diagnostics and usage analytics
 
 The managed Android pilot uses Firebase Crashlytics, Google Analytics for

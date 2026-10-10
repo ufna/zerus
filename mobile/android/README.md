@@ -224,10 +224,15 @@ local test key independently. Pilot is not a store production release.
 
 ## Updates
 
-About and updates is available from the main toolbar, including before pairing.
+The main toolbar places New session, Refresh and Settings in that order.
+Settings opens a full screen with Privacy, About Zerus and Updates, including
+before pairing. About shows the installed version and build, a direct GitHub
+link, and offline bundled Third-party notices with selectable license text.
+Back returns to the same app content; notification and push controls stay in Machines.
 Anonymous checks use `https://zerus.dev/updates/v1/android/dev.json` at startup
 and through WorkManager every six hours when a network is available. Android
-may defer background work. The indicator remains available without notification
+may defer background work. An available update or pending installation badges
+the Settings button. The indicator remains available without notification
 permission. Check, Download and Install are separate actions; no update silently
 repoints or removes a paired workspace. The suggested relay for new pairing is
 `https://relay.zerus.dev`, and custom HTTPS relays remain editable.
@@ -315,7 +320,7 @@ provider remains selected until the user chooses Firebase setup. Only data messa
 gateway, allowing the app to show a private alert and fetch authenticated events.
 No Firebase project credentials are included in this repository.
 
-The top bar Settings button exposes Usage analytics and Crash reports. Both
+The full-screen Settings Privacy section exposes Usage analytics and Crash reports. Both
 start enabled in Firebase builds and persist separately on this phone. Analytics
 stops through the SDK when disabled. OFF is authoritative at cold startup:
 the app does not instantiate Analytics while the saved preference is off, and
