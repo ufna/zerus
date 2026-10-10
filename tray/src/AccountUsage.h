@@ -12,6 +12,7 @@
 #include <QLocale>
 #include <cmath>
 #include <QTimer>
+#include "IdentityBadge.h"
 #include "WorkspaceIcons.h"
 
 namespace AccountUsage {
@@ -84,7 +85,11 @@ inline QString state(const QJsonObject &data) {
         : QObject::tr("Usage is unavailable from this provider. Open its native account page or refresh after signing in.");
 }
 inline QString tooltip(const QJsonObject &data) {
-    QStringList lines{data.value("label").toString()};
+    QStringList lines;
+    const auto provider=IdentityBadges::providerName(data.value("provider").toString());
+    const auto label=data.value("label").toString();
+    if(!provider.isEmpty())lines<<provider;
+    if(!label.isEmpty()&&label!=provider)lines<<label;
     const auto identity=data.value("identity").toObject();
     for(const auto *key:{"name","email","plan","organization"}) if(!identity.value(key).toString().isEmpty())lines<<identity.value(key).toString();
     for(const auto &value:data.value("windows").toArray()) {
@@ -152,7 +157,7 @@ protected:
         const int slotCount=loading?2:qMin(2,int(windows.size()));
         const int provider=providerWidth();
         int x=m_compact?4:6;
-        if(provider){p.setPen(muted);p.drawText(QRect(x,0,provider-12,height()),Qt::AlignVCenter,m_data.value("provider").toString());x+=provider;}
+        if(provider){IdentityBadges::paint(&p,QRect(x,(height()-18)/2,provider-6,18),IdentityBadges::Provider,m_data.value("provider").toString(),m_dark);x+=provider;}
         for(int i=0;i<slotCount;++i) {
             const auto w=loading?QJsonObject():windows[i].toObject();const double used=w.value("used_percent").toDouble();const bool fresh=!loading && current(w);
             const int barWidth=m_compact?20:34, textOffset=barWidth+6;
@@ -176,7 +181,7 @@ private:
         // Leave room for the complete percentage, including its last glyph.
         return qMin(150,int(std::ceil(QFontMetricsF(f).horizontalAdvance(text)))+2);
     }
-    int providerWidth() const {const auto name=m_data.value("provider").toString();return m_showProvider&&!m_compact&&!name.isEmpty()?compactTextWidth(name)+12:0;}
+    int providerWidth() const {const auto name=m_data.value("provider").toString();return m_showProvider&&!m_compact&&!name.isEmpty()?IdentityBadges::width(IdentityBadges::Provider,name,font(),95)+6:0;}
     int indicatorTextWidth(const QJsonObject &window,bool loading) const {
         if(loading)return m_compact?40:48;
         const int text=compactTextWidth(windowText(window));

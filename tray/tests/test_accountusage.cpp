@@ -110,6 +110,49 @@ private slots:
         first["used_percent"]=69;setUsage();QCOMPARE(button.size(),size);
         button.setData({{"status","unavailable"}});QVERIFY(button.width()<size.width());QCOMPARE(button.height(),size.height());
     }
+    void footerProviderBadgesPreserveCompactLayoutAndAccessibleIdentity() {
+        AccountUsage::Button button;button.show();
+        const QJsonArray windows{QJsonObject{{"used_percent",15},{"window_minutes",300}},
+            QJsonObject{{"used_percent",4},{"window_minutes",10080}}};
+        const auto directory=qEnvironmentVariable("HGS_DASHBOARD_PREVIEW");
+        for(const auto &provider:{"claude","codex","kimi","dsh","example-provider"}) {
+            const QString name=IdentityBadges::providerName(provider);
+            for(const auto &status:{"ok","loading","configured","signed_out"}) {
+                QJsonObject data{{"provider",provider},{"label","Work"},{"status",status}};
+                if(QString(status)=="ok")data["windows"]=windows;
+                button.setCompact(false);button.setShowProvider(false);button.setData(data);
+                const auto withoutProvider=button.size();
+                button.setShowProvider(true);const auto withProvider=button.size();
+                QVERIFY(withProvider.width()>withoutProvider.width());
+                QCOMPARE(withProvider.height(),22);QCOMPARE(button.sizeHint(),withProvider);
+                QVERIFY(button.toolTip().contains(name));QVERIFY(button.toolTip().contains("Work"));
+                QVERIFY(button.accessibleName().contains(name));
+                button.setTheme(false);QCOMPARE(button.size(),withProvider);
+                button.setTheme(true);QCOMPARE(button.size(),withProvider);
+                button.setCompact(true);const auto compactSize=button.size();
+                QVERIFY(compactSize.width()<withoutProvider.width());
+                button.setShowProvider(false);QCOMPARE(button.size(),compactSize);
+                QVERIFY(button.accessibleName().contains(name));
+                button.setCompact(false);QCOMPARE(button.size(),withoutProvider);
+                data.remove("provider");button.setData(data);button.setShowProvider(true);
+                QCOMPARE(button.size(),withoutProvider);
+            }
+            // Render both themes for visual review without checking platform-specific pixels.
+            if(!directory.isEmpty()) {
+                QDir().mkpath(directory);
+                button.setData({{"provider",provider},{"status","ok"},{"windows",windows}});
+                for(const bool dark:{false,true}) {
+                    button.setTheme(dark);
+                    QVERIFY(button.grab().save(directory+"/quota-"+provider+(dark?"-dark":"-light")+".png"));
+                }
+            }
+        }
+        QFont font=button.font();font.setFamily("DejaVu Sans");font.setWeight(QFont::Light);button.setFont(font);
+        button.setData({{"provider","dsh"},{"status","ok"},{"windows",windows}});
+        QCOMPARE(button.size(),button.sizeHint());
+        font.setFamily("DejaVu Sans Mono");button.setFont(font);QCOMPARE(button.size(),button.sizeHint());
+        QVERIFY(button.toolTip().contains("DeepSeek"));QVERIFY(button.accessibleName().contains("DeepSeek"));
+    }
 };
 QTEST_MAIN(TestAccountUsage)
 #include "test_accountusage.moc"
