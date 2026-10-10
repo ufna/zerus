@@ -200,7 +200,11 @@ request; resolved notifications are removed. Main-agent replies and explicit chi
 questions can notify; ordinary child results and errors stay with the parent.
 Delivery failures show a reason and retry after a minute while still relevant.
 macOS uses Notification Center and needs its system permission; Focus and OS
-notification settings still apply.
+notification settings still apply. Notification Center looks up the icon by bundle
+ID, so a stale per-user IconServices entry can keep an earlier icon after updates
+while Finder and the Dock show the current one. Remove
+`$(getconf DARWIN_USER_CACHE_DIR)com.apple.iconservices/store.index`, then run
+`killall iconservicesagent NotificationCenter`; both restart on demand.
 
 **Sessions**, **Projects**, **Machines** and **Accounts** share the navigation rail;
 click the logo for **Overview**. Overview shows attention, work in progress,
