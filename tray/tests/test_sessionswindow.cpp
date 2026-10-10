@@ -29,6 +29,7 @@
 #include <QSettings>
 #include <QStandardItemModel>
 #include <QUuid>
+#include <algorithm>
 #include <memory>
 #include <QTemporaryDir>
 #include <QTextBrowser>
@@ -86,6 +87,8 @@ private slots:
     void groupsPersistFilterAndRevealAttention();
     void emptyProjectsSettingPreservesArchiveAndProjects();
     void contentScaleLeavesWorkspaceChrome();
+    void activityReadingColumnFollowsSettingsAndEdges();
+    void settingsSlidersResetToDefaults();
     void projectSwarmFollowsWorkspaceTheme();
     void alwaysOnTopSettingKeepsWindowAbove();
     void railPinTogglesAlwaysOnTop();
@@ -624,6 +627,167 @@ void TestSessionsWindow::contentScaleLeavesWorkspaceChrome()
     window.findChild<QPushButton *>("workspaceSettings")->click(); slider->setValue(20);
     QTRY_COMPARE(editorPixels(), 13);
     QCOMPARE(pixels("activity"), 13); QCOMPARE(pixels("terminalScreen"), 13);
+}
+
+void TestSessionsWindow::activityReadingColumnFollowsSettingsAndEdges()
+{
+    SessionsWindow window(script()); window.resize(2200, 900); window.setFleet(fleet()); window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    const auto open = [&window] {
+        window.showSession({}, "codex/hgs/dashboard");
+        const QJsonObject details{{"tracked", true}, {"run_id", "run"}, {"conversation_id", "conversation-one"}, {"runtime_state", "live"},
+            {"process_state", "running"}, {"activity", "idle"}, {"phase", "idle"}, {"cursor", 2}, {"events", QJsonArray{
+                QJsonObject{{"seq", 1}, {"at", 2000000000}, {"type", "UserPromptSubmit"}, {"detail", "Keep long lines readable in a maximized window."}},
+                QJsonObject{{"seq", 2}, {"at", 2000000010}, {"type", "Stop"}, {"detail", "## Done\n\nActivity, questions and the message field now share **one centered column**."}}}}};
+        window.findChild<HgsClient *>()->inspectionReady({}, "codex/hgs/dashboard", details);
+    };
+    const auto preview = [&window, &open](const QString &name) {
+        const auto directory = qEnvironmentVariable("HGS_PREVIEW_DIR"); if (directory.isEmpty()) return true;
+        open(); QTest::qWait(50); return window.grab().save(directory + "/" + name);
+    };
+    open();
+    auto *activity = window.findChild<ActivityView *>("mainActivity"); QVERIFY(activity);
+    auto *viewport = activity->browser()->viewport();
+    auto *composer = window.findChild<MessageComposer *>("messageComposer"); QVERIFY(composer);
+    const auto left = [&window](QWidget *widget) { return widget->mapTo(&window, QPoint()).x(); };
+    // A wide pane centers the transcript and the message field in one column.
+    QTRY_COMPARE(viewport->width(), 900);
+    const int pane = activity->width(); QVERIFY2(pane > 1500, qPrintable(QString::number(pane)));
+    QCOMPARE(left(viewport) - left(activity), (pane - 900) / 2);
+    QTRY_COMPARE(composer->width(), 900); QCOMPARE(left(composer), left(viewport));
+    // The margins are Activity's own surface in either theme.
+    const auto plainMargins = [activity, viewport] {
+        const QImage surface = activity->grab().toImage();
+        // The document margin inside the column is always its background.
+        const QPoint empty = viewport->mapTo(activity, QPoint(1, viewport->height() / 2));
+        return surface.pixelColor(20, empty.y()) == surface.pixelColor(empty)
+            && surface.pixelColor(activity->width() - 30, empty.y()) == surface.pixelColor(empty);
+    };
+    QVERIFY(plainMargins());
+    QVERIFY(preview("activity-column.png"));
+    window.findChild<QPushButton *>("workspaceSettings")->click();
+    auto *settings = window.findChild<QWidget *>("settingsPage"); QVERIFY(settings && settings->isVisible());
+    auto *slider = settings->findChild<QSlider *>("workspaceActivityWidth"); QVERIFY(slider && slider->isVisible());
+    auto *value = settings->findChild<QLabel *>("workspaceActivityWidthValue"); QVERIFY(value);
+    auto *full = settings->findChild<QCheckBox *>("workspaceActivityFullWidth"); QVERIFY(full && !full->isChecked());
+    QCOMPARE(slider->minimum(), 480); QCOMPARE(slider->maximum(), 2400); QCOMPARE(slider->value(), 900);
+    QCOMPARE(value->text(), QString("900 px"));
+    slider->setValue(1100);
+    QCOMPARE(QSettings().value("workspace/activityWidth").toInt(), 1100); QCOMPARE(value->text(), QString("1100 px"));
+    if (!qEnvironmentVariable("HGS_PREVIEW_DIR").isEmpty())
+        QVERIFY(window.grab().save(qEnvironmentVariable("HGS_PREVIEW_DIR") + "/activity-width-settings.png"));
+    open();
+    QTRY_COMPARE(viewport->width(), 1100); QTRY_COMPARE(composer->width(), 1100); QCOMPARE(left(composer), left(viewport));
+    // Enlarged content keeps the same line length.
+    window.findChild<QPushButton *>("workspaceSettings")->click();
+    settings->findChild<QSlider *>("workspaceContentScale")->setValue(30);
+    open();
+    QTRY_COMPARE(viewport->width(), 1650); QTRY_COMPARE(composer->width(), 1650);
+    window.findChild<QPushButton *>("workspaceSettings")->click();
+    settings->findChild<QSlider *>("workspaceContentScale")->setValue(20);
+    full->setChecked(true);
+    QVERIFY(QSettings().value("workspace/activityFullWidth").toBool()); QVERIFY(!slider->isEnabled());
+    open();
+    QTRY_COMPARE(composer->width(), pane); QCOMPARE(left(viewport), left(activity));
+    QVERIFY(preview("activity-full-width.png"));
+    // Activity's own menu returns to the column and Settings follows.
+    emit activity->fullWidthRequested(false);
+    QTRY_COMPARE(viewport->width(), 1100); QTRY_COMPARE(composer->width(), 1100);
+    QVERIFY(!QSettings().value("workspace/activityFullWidth").toBool()); QVERIFY(!full->isChecked()); QVERIFY(slider->isEnabled());
+    // Dragging a column edge stores the width for both Activity views.
+    auto edges = activity->browser()->findChildren<QWidget *>("activityColumnEdge");
+    std::sort(edges.begin(), edges.end(), [](QWidget *a, QWidget *b) { return a->x() < b->x(); });
+    QCOMPARE(edges.size(), 2); QVERIFY(edges[1]->isVisible());
+    if (!qEnvironmentVariable("HGS_PREVIEW_DIR").isEmpty()) {
+        QEnterEvent enter(QPointF(4, 100), edges[1]->mapToGlobal(QPointF(4, 100)), edges[1]->mapToGlobal(QPointF(4, 100)));
+        QApplication::sendEvent(edges[1], &enter);
+        QVERIFY(window.grab().save(qEnvironmentVariable("HGS_PREVIEW_DIR") + "/activity-column-edge.png"));
+        QEvent leave(QEvent::Leave); QApplication::sendEvent(edges[1], &leave);
+    }
+    const QPoint start = edges[1]->mapToGlobal(QPoint(edges[1]->width() / 2, 100));
+    const auto mouse = [](QWidget *widget, QEvent::Type type, const QPoint &global, Qt::MouseButton button, Qt::MouseButtons buttons) {
+        QMouseEvent event(type, widget->mapFromGlobal(QPointF(global)), QPointF(global), button, buttons, Qt::NoModifier);
+        QApplication::sendEvent(widget, &event);
+    };
+    mouse(edges[1], QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+    mouse(edges[1], QEvent::MouseMove, start + QPoint(60, 0), Qt::NoButton, Qt::LeftButton);
+    mouse(edges[1], QEvent::MouseMove, start + QPoint(100, 0), Qt::NoButton, Qt::LeftButton);
+    mouse(edges[1], QEvent::MouseButtonRelease, start + QPoint(100, 0), Qt::LeftButton, Qt::NoButton);
+    QCOMPARE(viewport->width(), 1300); QTRY_COMPARE(composer->width(), 1300); QCOMPARE(left(composer), left(viewport));
+    QCOMPARE(QSettings().value("workspace/activityWidth").toInt(), 1300);
+    QCOMPARE(slider->value(), 1300); QCOMPARE(value->text(), QString("1300 px"));
+    QCOMPARE(window.findChild<ActivityView *>("subagentActivity")->columnWidth(), 1300);
+    emit activity->columnResetRequested();
+    QTRY_COMPARE(viewport->width(), 900); QCOMPARE(slider->value(), 900);
+    QCOMPARE(QSettings().value("workspace/activityWidth").toInt(), 900);
+    settings->findChild<QComboBox *>("workspaceTheme")->setCurrentIndex(1);
+    open(); QTRY_COMPARE(composer->width(), 900); QVERIFY(plainMargins());
+    QVERIFY(preview("activity-column-dark.png"));
+    SessionsWindow restored(script()); restored.setFleet(fleet());
+    QCOMPARE(restored.findChild<ActivityView *>("mainActivity")->columnWidth(), 900);
+    full->setChecked(true);
+    SessionsWindow fullWidth(script()); fullWidth.setFleet(fleet());
+    QCOMPARE(fullWidth.findChild<ActivityView *>("mainActivity")->columnWidth(), 0);
+    QCOMPARE(fullWidth.findChild<ActivityView *>("subagentActivity")->columnWidth(), 0);
+}
+
+void TestSessionsWindow::settingsSlidersResetToDefaults()
+{
+    SessionsWindow window(script()); window.resize(1280, 860); window.setFleet(fleet()); window.show();
+    window.activateWindow(); QVERIFY(QTest::qWaitForWindowActive(&window));
+    window.findChild<QPushButton *>("workspaceSettings")->click();
+    auto *settings = window.findChild<QWidget *>("settingsPage"); QVERIFY(settings && settings->isVisible());
+    auto *scale = settings->findChild<QSlider *>("workspaceContentScale"), *width = settings->findChild<QSlider *>("workspaceActivityWidth");
+    auto *resetScale = settings->findChild<QPushButton *>("resetContentScale"), *resetWidth = settings->findChild<QPushButton *>("resetActivityWidth");
+    auto *full = settings->findChild<QCheckBox *>("workspaceActivityFullWidth");
+    QVERIFY(scale && width && full && resetScale && resetWidth);
+    QCOMPARE(resetScale->toolTip(), QString("Reset to 100%")); QCOMPARE(resetWidth->toolTip(), QString("Reset to 900 px"));
+    // Defaults leave nothing to reset, so the buttons appear only after a change.
+    QVERIFY(!resetScale->isVisible()); QVERIFY(!resetWidth->isVisible());
+    const int below = full->mapTo(settings, QPoint()).y();
+    scale->setValue(30); width->setValue(1300);
+    QVERIFY(resetScale->isVisible()); QVERIFY(resetWidth->isVisible());
+    // Appearing does not move the rows beneath.
+    QTest::qWait(50); QCOMPARE(full->mapTo(settings, QPoint()).y(), below);
+    // Icon buttons right after each value, named by the default they restore.
+    const QList<QPair<QPushButton *, QLabel *>> rows{{resetScale, settings->findChild<QLabel *>("workspaceContentScaleValue")},
+                                                     {resetWidth, settings->findChild<QLabel *>("workspaceActivityWidthValue")}};
+    for (const auto &[button, value] : rows) {
+        QVERIFY(button->text().isEmpty()); QVERIFY(!button->icon().isNull());
+        QCOMPARE(button->property("glyph").toString(), QString("reset"));
+        QCOMPARE(button->accessibleName(), button->toolTip());
+        const auto center = [settings](QWidget *widget) { return widget->mapTo(settings, widget->rect().center()); };
+        QVERIFY(qAbs(center(button).y() - center(value).y()) <= 2);
+        const int textEnd = value->mapTo(settings, QPoint()).x() + value->fontMetrics().horizontalAdvance(value->text());
+        const int gap = button->mapTo(settings, QPoint()).x() - textEnd;
+        QVERIFY2(gap >= 0 && gap <= 8, qPrintable(QString("%1: %2").arg(button->objectName()).arg(gap)));
+    }
+    if (const auto directory = qEnvironmentVariable("HGS_PREVIEW_DIR"); !directory.isEmpty()) {
+        auto *theme = settings->findChild<QComboBox *>("workspaceTheme");
+        theme->setCurrentIndex(1); QVERIFY(window.grab().save(directory + "/settings-reset-dark.png"));
+        theme->setCurrentIndex(2); QVERIFY(window.grab().save(directory + "/settings-reset-light.png"));
+        theme->setCurrentIndex(0);
+    }
+    // Resetting from the keyboard leaves focus on the slider, not on a later control.
+    resetScale->setFocus(Qt::TabFocusReason); QVERIFY(resetScale->hasFocus());
+    QTest::keyClick(resetScale, Qt::Key_Space);
+    QCOMPARE(scale->value(), 20); QCOMPARE(QSettings().value("workspace/contentScale").toDouble(), 1.0);
+    QCOMPARE(settings->findChild<QLabel *>("workspaceContentScaleValue")->text(), QString("100%"));
+    QVERIFY(!resetScale->isVisible()); QVERIFY(scale->hasFocus());
+    QTest::mouseClick(resetWidth, Qt::LeftButton);
+    QCOMPARE(width->value(), 900); QCOMPARE(QSettings().value("workspace/activityWidth").toInt(), 900);
+    QCOMPARE(settings->findChild<QLabel *>("workspaceActivityWidthValue")->text(), QString("900 px"));
+    QVERIFY(!resetWidth->isVisible());
+    QTest::qWait(50); QCOMPARE(full->mapTo(settings, QPoint()).y(), below);
+    // Full width has no column width to reset.
+    width->setValue(1300); QVERIFY(resetWidth->isVisible());
+    full->setChecked(true); QVERIFY(!resetWidth->isVisible());
+    full->setChecked(false); QVERIFY(resetWidth->isVisible());
+    // Activity's column edges and menu keep the button current.
+    emit window.findChild<ActivityView *>("mainActivity")->columnResetRequested();
+    QCOMPARE(width->value(), 900); QVERIFY(!resetWidth->isVisible());
+    emit window.findChild<ActivityView *>("mainActivity")->columnWidthRequested(1200);
+    QVERIFY(resetWidth->isVisible());
 }
 
 void TestSessionsWindow::alwaysOnTopSettingKeepsWindowAbove()

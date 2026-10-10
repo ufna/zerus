@@ -3,6 +3,7 @@ namespace AccountUsage {class Button;class RefreshButton;}
 namespace SessionUsage {class ContextButton;}
 namespace CacheStatus {class Chip;}
 namespace RecoveryUi {class Panel;}
+namespace ActivityWidth {class ColumnLayout;}
 class ToolbarChip;
 class SettingsPage;
 class SwarmController;
@@ -94,6 +95,7 @@ private:
     void applyTheme();
     void updateWindowPinAppearance();
     void applyContentScale();
+    void applyActivityWidth();
     void saveOrganization();
     void savePendingLaunches();
     void placeLaunchedSessions();
@@ -310,6 +312,7 @@ private:
     MessageComposer *m_composer = nullptr, *m_subagentComposer = nullptr;
     QHash<quint64, QString> m_childMessages;
     QuestionCard *m_question = nullptr;
+    QList<ActivityWidth::ColumnLayout *> m_activityColumns;   // content sharing Activity's reading column
     RecoveryUi::Panel *m_recovery = nullptr;
     ToolbarChip *m_recoveryChip = nullptr;
     quint64 m_recoveryAction = 0;

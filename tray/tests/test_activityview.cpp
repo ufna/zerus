@@ -5,13 +5,17 @@
 #include "SessionUsage.h"
 #include "WorkspaceFocus.h"
 
+#include <QApplication>
 #include <QClipboard>
+#include <QContextMenuEvent>
 #include <QDir>
 #include <QFontInfo>
 #include <QGuiApplication>
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
+#include <QMouseEvent>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QScrollBar>
@@ -26,6 +30,9 @@
 #include <QRegularExpression>
 #include <QTest>
 #include <QVBoxLayout>
+#include <QWheelEvent>
+
+#include <algorithm>
 
 namespace {
 QJsonObject journalEvent(int seq, const QString &type, const QString &detail, const QString &tool = {})
@@ -64,6 +71,43 @@ int fontPixels(QTextBrowser *browser, const QString &text)
 void activate(QTextBrowser *browser, const QString &url)
 {
     QMetaObject::invokeMethod(browser, "anchorClicked", Qt::DirectConnection, Q_ARG(QUrl, QUrl(url)));
+}
+
+void mouse(QWidget *widget, QEvent::Type type, const QPoint &global, Qt::MouseButton button, Qt::MouseButtons buttons)
+{
+    QMouseEvent event(type, widget->mapFromGlobal(QPointF(global)), QPointF(global), button, buttons, Qt::NoModifier);
+    QApplication::sendEvent(widget, &event);
+}
+
+// Left edge first.
+QList<QWidget *> columnEdges(ActivityView &view)
+{
+    auto edges = view.browser()->findChildren<QWidget *>("activityColumnEdge");
+    std::sort(edges.begin(), edges.end(), [](QWidget *a, QWidget *b) { return a->x() < b->x(); });
+    return edges;
+}
+
+// Drags an edge outward (positive) or inward, as the pointer moves in steps.
+void dragEdge(QWidget *edge, int distance)
+{
+    const QPoint start = edge->mapToGlobal(QPoint(edge->width() / 2, 100));
+    mouse(edge, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+    for (int step = 1; step <= 4; ++step)
+        mouse(edge, QEvent::MouseMove, start + QPoint(distance * step / 4, 0), Qt::NoButton, Qt::LeftButton);
+    mouse(edge, QEvent::MouseButtonRelease, start + QPoint(distance, 0), Qt::LeftButton, Qt::NoButton);
+}
+
+QMenu *contextMenu(QWidget *target, const QPoint &position)
+{
+    QContextMenuEvent event(QContextMenuEvent::Mouse, position, target->mapToGlobal(position));
+    QApplication::sendEvent(target, &event);
+    return qobject_cast<QMenu *>(QApplication::activePopupWidget());
+}
+
+QAction *menuAction(QMenu *menu, const QString &text)
+{
+    for (auto *action : menu->actions()) if (action->text() == text) return action;
+    return nullptr;
 }
 }
 
@@ -129,6 +173,9 @@ private slots:
     void cardsKeepTheirSpacingAfterChips();
     void lastCardEndsTheJournal_data();
     void lastCardEndsTheJournal();
+    void readingColumnCentersTranscriptAndQueue();
+    void columnEdgesResizeSymmetrically();
+    void contextMenuSwitchesFullWidth();
     void preview();
 };
 
@@ -1506,6 +1553,111 @@ void TestActivityView::caughtUpActivityAcknowledgesEarlierReplyWithoutIntermedia
     view.setActivity(details,events);QVERIFY(changed);QVERIFY(!paintedDuringUpdate);
     QTRY_VERIFY(browser->updatesEnabled());QCOMPARE(browser->verticalScrollBar()->value(),0);
     const auto revision=browser->document()->revision();view.setActivity(details,events);QCOMPARE(browser->document()->revision(),revision);
+}
+
+void TestActivityView::readingColumnCentersTranscriptAndQueue()
+{
+    ActivityView view; view.resize(1400, 400); view.show(); QVERIFY(QTest::qWaitForWindowExposed(&view));
+    const QJsonObject details{{"input_queue", QJsonObject{{"id", "queue"}, {"text", "queued words"}}}};
+    view.setActivity(details, history(30));
+    auto *browser = view.browser(); auto *viewport = browser->viewport(); auto *bar = browser->verticalScrollBar();
+    auto *queue = view.findChild<QWidget *>("activityInputQueue"); QVERIFY(queue && queue->isVisible());
+    QTRY_VERIFY(bar->isVisible());
+    // Without a column the scroll bar takes its usual place beside the text.
+    const int reserve = browser->width() - viewport->width(); QVERIFY(reserve > 0);
+    QCOMPARE(queue->width(), 1400);
+    view.setColumnWidth(800);
+    QTRY_COMPARE(viewport->width(), 800);
+    QCOMPARE(viewport->x(), 300);
+    QTRY_COMPARE(queue->geometry().x(), 300); QCOMPARE(queue->width(), 800);
+    // The scroll bar stays at the pane edge, outside the column.
+    QCOMPARE(bar->mapTo(browser, QPoint(bar->width(), 0)).x(), browser->width());
+    // The margins scroll the transcript as the column does.
+    bar->setValue(0);
+    QWheelEvent wheel(QPointF(40, 200), browser->mapToGlobal(QPointF(40, 200)), {}, QPoint(0, -120),
+                      Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(browser, &wheel);
+    QVERIFY(bar->value() > 0);
+    // A pane narrower than the column keeps its whole width.
+    view.resize(700, 400);
+    QTRY_COMPARE(viewport->width(), 700 - reserve); QCOMPARE(viewport->x(), 0);
+    QTRY_COMPARE(queue->width(), 700);
+    view.resize(1400, 400);
+    QTRY_COMPARE(viewport->width(), 800); QCOMPARE(viewport->x(), 300);
+    view.setColumnWidth(0);
+    QTRY_COMPARE(viewport->width(), 1400 - reserve); QCOMPARE(viewport->x(), 0);
+    QTRY_COMPARE(queue->width(), 1400);
+}
+
+void TestActivityView::columnEdgesResizeSymmetrically()
+{
+    ActivityView view; view.resize(1400, 400); view.show(); QVERIFY(QTest::qWaitForWindowExposed(&view));
+    view.setActivity({}, history(30));
+    // The owner stores the requested width and applies it to every column.
+    connect(&view, &ActivityView::columnWidthRequested, &view, &ActivityView::setColumnWidth);
+    QSignalSpy requested(&view, &ActivityView::columnWidthRequested), reset(&view, &ActivityView::columnResetRequested);
+    auto *viewport = view.browser()->viewport();
+    QCOMPARE(columnEdges(view).size(), 2);
+    for (auto *edge : columnEdges(view)) QVERIFY(!edge->isVisible());
+    view.setColumnWidth(800);
+    QTRY_VERIFY(columnEdges(view)[0]->isVisible() && columnEdges(view)[1]->isVisible());
+    // Each edge sits in the margin, right beside the column.
+    QCOMPARE(columnEdges(view)[0]->geometry().right() + 1, viewport->x());
+    QCOMPARE(columnEdges(view)[1]->x(), viewport->geometry().right() + 1);
+    QCOMPARE(columnEdges(view)[1]->cursor().shape(), Qt::SizeHorCursor);
+    // Both sides move together, so the column stays centered.
+    dragEdge(columnEdges(view)[1], 50);
+    QCOMPARE(requested.last().first().toInt(), 900); QCOMPARE(viewport->width(), 900); QCOMPARE(viewport->x(), 250);
+    dragEdge(columnEdges(view)[0], -30);
+    QCOMPARE(viewport->width(), 960); QCOMPARE(viewport->x(), 220);
+    dragEdge(columnEdges(view)[1], -40);
+    QCOMPARE(viewport->width(), 880);
+    // The column keeps a readable minimum and its edges stay within the pane.
+    dragEdge(columnEdges(view)[1], -1000);
+    QCOMPARE(viewport->width(), 480);
+    dragEdge(columnEdges(view)[0], -1000);
+    QVERIFY2(viewport->width() > 1300 && viewport->width() < 1400, qPrintable(QString::number(viewport->width())));
+    QVERIFY(columnEdges(view)[0]->isVisible() && columnEdges(view)[1]->isVisible());
+    QCOMPARE(reset.count(), 0);
+    const auto *edge = columnEdges(view)[1]; const QPoint at = edge->mapToGlobal(QPoint(edge->width() / 2, 50));
+    mouse(columnEdges(view)[1], QEvent::MouseButtonDblClick, at, Qt::LeftButton, Qt::LeftButton);
+    QCOMPARE(reset.count(), 1);
+    // A pane without margins leaves its edges to text selection.
+    view.resize(1000, 400);
+    QTRY_VERIFY(!columnEdges(view)[0]->isVisible() && !columnEdges(view)[1]->isVisible());
+}
+
+void TestActivityView::contextMenuSwitchesFullWidth()
+{
+    ActivityView view; view.resize(1400, 400); view.show(); QVERIFY(QTest::qWaitForWindowExposed(&view));
+    view.setActivity({}, history(4));
+    QSignalSpy full(&view, &ActivityView::fullWidthRequested), reset(&view, &ActivityView::columnResetRequested);
+    view.setColumnWidth(800);
+    auto *browser = view.browser();
+    // The transcript keeps its own actions; its margins offer only the column.
+    auto *menu = contextMenu(browser->viewport(), QPoint(20, 20)); QVERIFY(menu);
+    const auto copies = [](QMenu *menu) {
+        return std::any_of(menu->actions().cbegin(), menu->actions().cend(), [](QAction *action) { return action->text().startsWith("&Copy"); });
+    };
+    QVERIFY(copies(menu));
+    auto *option = menuAction(menu, tr("Full-width Activity")); QVERIFY(option);
+    QVERIFY(option->isCheckable() && !option->isChecked());
+    QVERIFY(menuAction(menu, tr("Reset Activity width"))->isEnabled());
+    option->trigger(); menu->close();
+    QCOMPARE(full.count(), 1); QCOMPARE(full.last().first().toBool(), true);
+    view.setColumnWidth(0);
+    QTRY_COMPARE(browser->viewport()->x(), 0);
+    view.setColumnWidth(800);
+    QTRY_COMPARE(browser->viewport()->x(), 300);
+    menu = contextMenu(browser, QPoint(40, 200)); QVERIFY(menu);
+    QVERIFY(!copies(menu)); QVERIFY(menuAction(menu, tr("Full-width Activity")));
+    menuAction(menu, tr("Reset Activity width"))->trigger(); menu->close();
+    QCOMPARE(reset.count(), 1);
+    view.setColumnWidth(0);
+    menu = contextMenu(browser->viewport(), QPoint(20, 20)); QVERIFY(menu);
+    option = menuAction(menu, tr("Full-width Activity")); QVERIFY(option->isChecked());
+    option->trigger(); menu->close();
+    QCOMPARE(full.count(), 2); QCOMPARE(full.last().first().toBool(), false);
 }
 
 QTEST_MAIN(TestActivityView)

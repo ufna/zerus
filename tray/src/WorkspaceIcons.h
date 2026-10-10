@@ -71,6 +71,9 @@ inline QIcon workspaceIcon(const QString &name, const QColor &color)
         } else if (name == "add") { p.drawLine(12, 5, 12, 19); p.drawLine(5, 12, 19, 12); }
         else if (name == "refresh") {
             p.drawArc(QRectF(5, 5, 14, 14), 40*16, 290*16); p.drawLine(19, 4, 19, 9); p.drawLine(14, 9, 19, 9);
+        } else if (name == "reset") {
+            // Refresh turned back: counterclockwise, to the default value.
+            p.drawArc(QRectF(5, 5, 14, 14), 140*16, -290*16); p.drawLine(5, 4, 5, 9); p.drawLine(5, 9, 10, 9);
         } else if (name == "connect" || name == "disconnect") {
             // Opposing chain links, separated for a terminal detach.
             QPainterPath left, right;

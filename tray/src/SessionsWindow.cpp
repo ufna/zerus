@@ -27,6 +27,7 @@
 #include "RecoveryWidgets.h"
 #include "SettingsPage.h"
 #include "ContentScale.h"
+#include "ActivityWidth.h"
 #include "UpdateController.h"
 #include "ProcessSettings.h"
 #include "TerminalView.h"
@@ -599,9 +600,15 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         if (entry && entry->online && entry->session.cmd == "dsh" && m_details.value("auth_required").toBool())
             m_detailTabs->setCurrentWidget(m_nativeUi);
     });
-    activityLayout->addWidget(m_nativeSignIn);
+    // Activity's transcript keeps the full pane for its scroll bar. The content
+    // around it shares the transcript's centered reading column.
+    const auto activityColumn = [this](QBoxLayout *page) {
+        auto *column = new ActivityWidth::ColumnLayout; page->addLayout(column); m_activityColumns.append(column); return column;
+    };
+    activityColumn(activityLayout)->addWidget(m_nativeSignIn);
     m_contextUsage=new SessionUsage::ContextButton;m_contextUsage->setObjectName("activityContext");
-    activityLayout->addWidget(m_activityView, 1); activityLayout->addWidget(m_question);
+    activityLayout->addWidget(m_activityView, 1);
+    auto *inputColumn = activityColumn(activityLayout); inputColumn->addWidget(m_question);
     m_usageLimit=new ToolbarChip;m_usageLimit->setObjectName("usageLimitChip");m_usageLimit->setTone(ChipTone::Danger);m_usageLimit->setIconName("attention");
     auto *usagePanel=new QWidget;usagePanel->setObjectName("usageLimitPopover");
     auto *limitLayout=new QVBoxLayout(usagePanel);limitLayout->setContentsMargins(14,12,14,12);limitLayout->setSpacing(8);
@@ -685,7 +692,7 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         }
         emit refreshRequested();
     });
-    activityLayout->addWidget(m_composer);
+    inputColumn->addWidget(m_composer);
     connect(m_markRead,&QPushButton::clicked,this,[this]{
         const auto *entry=selected();if(!entry||entry->session.state=="archived"||!entryNeedsAttention(*entry))return;
         const auto original=*entry;
@@ -696,20 +703,21 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     m_activityStack->addWidget(activityPage);
     auto *subagentPage = new QWidget; auto *subagentLayout = new QVBoxLayout(subagentPage);
     subagentLayout->setContentsMargins(0, 8, 0, 0); subagentLayout->setSpacing(8);
+    auto *subagentTop = activityColumn(subagentLayout); subagentTop->setSpacing(8);
     auto *subagentHeader = new QHBoxLayout;
     auto *back = new QPushButton(tr("← Main activity")); back->setObjectName("subagentBack");
     connect(back, &QPushButton::clicked, this, &SessionsWindow::closeSubagent);
     subagentHeader->addWidget(back);
     m_subagentTitle = new QLabel; m_subagentTitle->setTextFormat(Qt::PlainText);
     m_subagentTitle->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    subagentHeader->addWidget(m_subagentTitle, 1); subagentLayout->addLayout(subagentHeader);
+    subagentHeader->addWidget(m_subagentTitle, 1); subagentTop->addLayout(subagentHeader);
     m_subagentHint = new QLabel; m_subagentHint->setTextFormat(Qt::PlainText); m_subagentHint->setWordWrap(true);
-    subagentLayout->addWidget(m_subagentHint);
+    subagentTop->addWidget(m_subagentHint);
     m_subagentView = new ActivityView; m_subagentView->setObjectName("subagentActivity"); m_subagentView->browser()->setObjectName("subagentJournal"); subagentLayout->addWidget(m_subagentView, 1);
     m_subagentComposer = new MessageComposer; m_subagentComposer->setObjectName("subagentComposer"); m_subagentComposer->setInputVisible(false);
     m_subagentContextUsage=new SessionUsage::ContextButton;m_subagentContextUsage->setObjectName("subagentContext");
     m_subagentComposer->toolbar()->add(ComposerToolbar::Slot::Context,m_subagentContextUsage);
-    subagentLayout->addWidget(m_subagentComposer);
+    activityColumn(subagentLayout)->addWidget(m_subagentComposer);
     for(auto *context:{m_contextUsage,m_subagentContextUsage})connect(context,&QPushButton::clicked,this,[this]{setInspectorVisible(true);m_inspector->setCurrentIndex(1);});
     connect(m_subagentComposer, &MessageComposer::sendRequested, this,
         [this](const QString &key, const QString &text, const QList<MessageAttachment> &files) {
@@ -742,6 +750,17 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         });
     }
     m_activityStack->addWidget(subagentPage);
+    for (auto *view : {m_activityView, m_subagentView}) {
+        // Activity's column edges and menu change the preference for every column.
+        const auto changed = [this] { applyActivityWidth(); m_settingsPage->syncActivityWidth(); };
+        connect(view, &ActivityView::columnWidthRequested, this, [changed](int width) {
+            ActivityWidth::setWidth(qRound(width / ContentScale::factor())); ActivityWidth::setFullWidth(false); changed();
+        });
+        connect(view, &ActivityView::columnResetRequested, this, [changed] {
+            ActivityWidth::setWidth(ActivityWidth::Default); ActivityWidth::setFullWidth(false); changed();
+        });
+        connect(view, &ActivityView::fullWidthRequested, this, [changed](bool full) { ActivityWidth::setFullWidth(full); changed(); });
+    }
     m_question->hide();
     connect(m_question, &QuestionCard::answerRequested, this, &SessionsWindow::answerQuestion);
     connect(m_question, &QuestionCard::queueNavigationRequested, this, [this](int direction) {
@@ -999,6 +1018,7 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         m_sessionDock->setHoverExpands(QSettings().value("workspace/expandSessionsOnHover",true).toBool());applyTheme();rebuild();
     };
     m_settingsPage->contentScaleChanged=[this]{applyContentScale();};
+    m_settingsPage->activityWidthChanged=[this]{applyActivityWidth();};
     // The rail pin and Settings → Appearance switch the same preference.
     auto *windowLayer=new WindowLayer(this);
     const auto updateWindowLayer=[this,windowPin,windowLayer]{
@@ -1148,6 +1168,14 @@ void SessionsWindow::applyContentScale()
     for (auto *view : {m_activityView, m_subagentView}) view->setContentScale(scale);
     for (auto *composer : {m_composer, m_subagentComposer}) composer->setContentScale(scale);
     m_question->setContentScale(scale); m_terminal->setContentScale(scale);
+    applyActivityWidth();
+}
+
+void SessionsWindow::applyActivityWidth()
+{
+    const int column = ActivityWidth::column(ContentScale::factor());
+    for (auto *view : {m_activityView, m_subagentView}) view->setColumnWidth(column);
+    for (auto *layout : m_activityColumns) layout->setColumnWidth(column);
 }
 
 void SessionsWindow::updateWindowPinAppearance()
@@ -1231,11 +1259,11 @@ void SessionsWindow::applyTheme()
         QPushButton#newSession { background:%10; }
         QPushButton#machineFilter::menu-indicator, QPushButton#batchActions::menu-indicator { image:none; width:0; }
         QPushButton#hostFilterChip { padding:3px 8px; font-size:11px; text-align:left; color:%5; background:%10; }
-        QPushButton[sessionHeaderAction="true"] { background:transparent; border:1px solid transparent; border-radius:6px; padding:0; }
-        QPushButton[sessionHeaderAction="true"]:hover { background:%7; }
-        QPushButton[sessionHeaderAction="true"]:checked, QPushButton[sessionHeaderAction="true"]:pressed { background:%10; }
+        QPushButton[sessionHeaderAction="true"], QPushButton[settingReset="true"] { background:transparent; border:1px solid transparent; border-radius:6px; padding:0; }
+        QPushButton[sessionHeaderAction="true"]:hover, QPushButton[settingReset="true"]:hover { background:%7; }
+        QPushButton[sessionHeaderAction="true"]:checked, QPushButton[sessionHeaderAction="true"]:pressed, QPushButton[settingReset="true"]:pressed { background:%10; }
         QPushButton[sessionHeaderAction="true"]:disabled { background:transparent; border-color:transparent; }
-        QPushButton[sessionHeaderAction="true"]:focus[keyboardFocus="true"] { border-color:%5; }
+        QPushButton[sessionHeaderAction="true"]:focus[keyboardFocus="true"], QPushButton[settingReset="true"]:focus[keyboardFocus="true"] { border-color:%5; }
         QPushButton[sessionHeaderAction="true"]::menu-indicator { image:none; width:0; }
         QMenu { background:%3; color:%2; border:1px solid %4; padding:4px; }
         QMenu::item { padding:8px 32px 8px 12px; min-width:110px; border-radius:4px; }
@@ -1269,11 +1297,12 @@ void SessionsWindow::applyTheme()
         QPlainTextEdit#machineSetupLog, QPlainTextEdit#processOutput { background:%3; color:%2; border:1px solid %4; border-radius:7px; }
         QPushButton#machineFilter { padding:0; border-color:transparent; background:transparent; }
         QCheckBox { color:%2; spacing:8px; }
-        QSlider#workspaceContentScale { min-height:22px; }
-        QSlider#workspaceContentScale::groove:horizontal { height:4px; background:%4; border-radius:2px; }
-        QSlider#workspaceContentScale::sub-page:horizontal { background:%5; border-radius:2px; }
-        QSlider#workspaceContentScale::handle:horizontal { background:%5; width:16px; margin:-6px 0; border-radius:8px; }
-        QSlider#workspaceContentScale::handle:horizontal:hover { background:%9; }
+        QSlider#workspaceContentScale, QSlider#workspaceActivityWidth { min-height:22px; }
+        QSlider#workspaceContentScale::groove:horizontal, QSlider#workspaceActivityWidth::groove:horizontal { height:4px; background:%4; border-radius:2px; }
+        QSlider#workspaceContentScale::sub-page:horizontal, QSlider#workspaceActivityWidth::sub-page:horizontal { background:%5; border-radius:2px; }
+        QSlider#workspaceContentScale::handle:horizontal, QSlider#workspaceActivityWidth::handle:horizontal { background:%5; width:16px; margin:-6px 0; border-radius:8px; }
+        QSlider#workspaceContentScale::handle:horizontal:hover, QSlider#workspaceActivityWidth::handle:horizontal:hover { background:%9; }
+        QSlider#workspaceActivityWidth::sub-page:horizontal:disabled, QSlider#workspaceActivityWidth::handle:horizontal:disabled { background:%6; }
         QListWidget#sessionList { background:transparent; border:0; outline:0; padding-right:2px; }
         QListWidget#hosts { background:transparent; border:0; outline:0; color:%6; }
         QListWidget#hosts::item { padding:9px 8px; border-radius:6px; }
