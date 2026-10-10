@@ -120,6 +120,8 @@ private slots:
     void recoveryCountdownKeepsHistoryDraftAndFocus();
     void recoveryEndingReturnsKeyboardFocusToField();
     void recoverySettingsValidateAndSaveForSelectedMachine();
+    void recoverySettingsValidateAndSaveForSelectedMachine_data();
+    void sessionLimitRecoveryShowsResetAndKeepsDraft();
     void sharedRecoverySyncCatchesUpOfflinePeer();
     void coldCacheConfirmationPreservesDraftAndPinsConversation();
     void coldCacheClearKeepsDraftAndPinsIdentity();
@@ -1535,13 +1537,16 @@ if args[1]=='sync':
  if order(incoming)>order(p):p=incoming;path.write_text(json.dumps(p))
 print(json.dumps({'policy':p,'order':order(p)}))
 )PY");fixture.close();fixture.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner);
-    const QJsonObject latest{{"version",2},{"revision",4},{"writer","local-writer"},{"enabled",false},{"service",true},{"network",true},{"rate_limit",true},
-        {"delays",QJsonArray{15,30,-1}},{"schedules",QJsonObject{{"network",QJsonArray{5,0}}}}};
+    const QJsonObject latest{{"version",3},{"revision",4},{"writer","local-writer"},{"enabled",false},{"service",true},{"network",true},{"rate_limit",true},
+        {"session_limit",true},{"session_limit_mode","interval"},
+        {"delays",QJsonArray{15,30,-1}},{"schedules",QJsonObject{{"network",QJsonArray{5,0}},{"session_limit",QJsonArray{600,0}}}}};
     auto older=latest;older["revision"]=2;older["writer"]="peer";
     for(const auto &host:QStringList{"local","mac"}){QFile file(temp.filePath(host+".json"));QVERIFY(file.open(QIODevice::WriteOnly));file.write(QJsonDocument(host=="local"?latest:older).toJson());}
     QFile offline(temp.filePath("offline"));QVERIFY(offline.open(QIODevice::WriteOnly));offline.close();QSettings().remove("recovery/sharedPolicy");
-    QObject parent;RecoverySync sync(program,&parent);sync.setPeers({"mac"});QTRY_VERIFY(!sync.busy());
+    QObject parent;RecoverySync sync(program,&parent);RecoverySettings settings(&sync);sync.setPeers({"mac"});QTRY_VERIFY(!sync.busy());
     QCOMPARE(sync.envelope().value("policy").toObject(),latest);QVERIFY(sync.status().contains("mac"));
+    QCOMPARE(settings.findChild<QComboBox *>("recoverySessionLimitMode")->currentData().toString(),QString("interval"));
+    QCOMPARE(settings.findChild<QLineEdit *>("recoveryDelays_session_limit")->text(),QString("600, 0"));
     QVERIFY(QFile::remove(offline.fileName()));sync.refresh();QTRY_VERIFY(!sync.busy());
     QFile remote(temp.filePath("mac.json"));QVERIFY(remote.open(QIODevice::ReadOnly));QCOMPARE(QJsonDocument::fromJson(remote.readAll()).object(),latest);remote.close();
     auto newer=latest;newer["revision"]=5;newer["writer"]="remote-writer";newer["service"]=false;
@@ -1550,9 +1555,18 @@ print(json.dumps({'policy':p,'order':order(p)}))
     sync.save(latest,{{"policy",latest},{"order",QJsonArray{4,"local-writer"}}});QVERIFY(sync.error().contains("another Zerus"));
 }
 
+void TestSessionsWindow::recoverySettingsValidateAndSaveForSelectedMachine_data()
+{
+    QTest::addColumn<QString>("sessionMode");
+    QTest::newRow("wait-for-reset") << QString("reset");
+    QTest::newRow("interval") << QString("interval");
+}
+
 void TestSessionsWindow::recoverySettingsValidateAndSaveForSelectedMachine()
 {
+    QFETCH(QString, sessionMode);
     const auto program=m_dir.filePath("recovery-hgs"), capture=m_dir.filePath("recovery-policy.json");
+    QFile::remove(capture);
     QFile fixture(program); QVERIFY(fixture.open(QIODevice::WriteOnly));
     fixture.write("#!/bin/sh\nif [ \"$1\" = '@mac' ]; then shift; fi\nif [ \"$1\" != 'recovery' ]; then exit 2; fi\n"
                   "if [ \"$2\" = 'set' ]; then cat > '"+capture.toUtf8()+"'; fi\n"
@@ -1564,15 +1578,54 @@ void TestSessionsWindow::recoverySettingsValidateAndSaveForSelectedMachine()
     auto *enabled=page.findChild<QCheckBox *>("recoveryEnabled");QTRY_VERIFY(enabled->isEnabled());QVERIFY(!enabled->isChecked());
     auto *save=page.findChild<QPushButton *>("recoverySave");QTRY_VERIFY(save->isEnabled());
     auto *delays=page.findChild<QLineEdit *>("recoveryDelays_network");QCOMPARE(delays->text(),QString("15, 30, 60, 300, -1"));
+    auto *limit=page.findChild<QCheckBox *>("recoveryRule_session_limit");QVERIFY(limit->isChecked());
+    auto *mode=page.findChild<QComboBox *>("recoverySessionLimitMode");QCOMPARE(mode->currentData().toString(),QString("reset"));
+    auto *limitDelays=page.findChild<QLineEdit *>("recoveryDelays_session_limit");QCOMPARE(limitDelays->text(),QString("300, 0"));QVERIFY(!limitDelays->isEnabled());
     const auto before=page.size();page.refresh();QTRY_VERIFY(save->isEnabled());QCOMPARE(page.size(),before);
     const auto preview=qEnvironmentVariable("HGS_SETTINGS_PREVIEW");if(!preview.isEmpty()){QDir().mkpath(preview);QVERIFY(window.grab().save(preview+"/recovery.png"));window.resize(850,600);QTest::qWait(30);QVERIFY(window.grab().save(preview+"/recovery-narrow.png"));}
-    enabled->setChecked(true);delays->setText("0");save->click();QVERIFY(!QFile::exists(capture));
+    enabled->setChecked(true);QVERIFY(mode->isEnabled());QVERIFY(!limitDelays->isEnabled());
+    mode->setCurrentIndex(mode->findData(sessionMode));QCOMPARE(limitDelays->isEnabled(),sessionMode=="interval");
+    if(sessionMode=="interval")limitDelays->setText("600, 0");
+    limit->setChecked(false);QVERIFY(!mode->isEnabled());QVERIFY(!limitDelays->isEnabled());limit->setChecked(true);
+    delays->setText("0");save->click();QVERIFY(!QFile::exists(capture));
     delays->setText("5, 20, 0");save->click();QTRY_VERIFY(QFile::exists(capture));
     const auto readPolicy=[&]{QFile saved(capture);if(!saved.open(QIODevice::ReadOnly))return QJsonObject();return QJsonDocument::fromJson(saved.readAll()).object();};
     QTRY_VERIFY(!readPolicy().isEmpty());const auto policy=readPolicy();
     QVERIFY(policy.value("enabled").toBool());QCOMPARE(policy.value("revision").toInt(),7);
+    QCOMPARE(policy.value("version").toInt(),3);QVERIFY(policy.value("session_limit").toBool());QCOMPARE(policy.value("session_limit_mode").toString(),sessionMode);
+    QCOMPARE(policy.value("schedules").toObject().value("session_limit").toArray(),QJsonArray({sessionMode=="interval"?600:300,0}));
     QCOMPARE(policy.value("schedules").toObject().value("network").toArray(),QJsonArray({5,20,0}));
     QCOMPARE(policy.value("schedules").toObject().value("service").toArray(),QJsonArray({15,30,60,300,-1}));
+}
+
+void TestSessionsWindow::sessionLimitRecoveryShowsResetAndKeepsDraft()
+{
+    SessionsWindow window(script());window.setFleet(fleet());window.show();window.showSession({},"codex/hgs/dashboard");
+    auto *client=window.findChild<HgsClient *>();auto *composer=window.findChild<MessageComposer *>("messageComposer");
+    QTRY_VERIFY(composer->findChild<QLabel *>("messageStatus")->text().contains("starting"));
+    composer->editor()->setPlainText("Continue this draft after reset");
+    window.activateWindow();composer->editor()->setFocus();QTRY_VERIFY(composer->editor()->hasFocus());
+    const auto reset=QDateTime::currentMSecsSinceEpoch()/1000.0+7200;
+    QJsonObject job{{"id","limit-job"},{"name","codex/hgs/dashboard"},{"class","session_limit"},{"session_limit_mode","reset"},
+        {"state","waiting"},{"attempt",0},{"due_at",reset},{"not_before",reset},{"action","continue_message"}};
+    QJsonObject details{{"tracked",true},{"run_id","run-one"},{"conversation_id","conversation-one"},
+        {"runtime_state","live"},{"process_state","running"},{"activity","attention"},{"phase","error"},
+        {"last_event_at",2000000000},{"cursor",0},{"recovery",job},
+        {"provider_error",QJsonObject{{"error_kind","session_limit"},{"detail","You've hit your session limit · resets 2:10pm (Europe/Moscow)"}}}};
+    client->inspectionReady({},"codex/hgs/dashboard",details,{});
+    auto *chip=window.findChild<ToolbarChip *>("recoveryChip");QVERIFY(chip->isVisible());
+    QVERIFY(chip->fullLabel().contains("Waiting for reset"));QCOMPARE(chip->tone(),ChipTone::Warning);
+    QCOMPARE(composer->editor()->toPlainText(),QString("Continue this draft after reset"));QVERIFY(composer->editor()->hasFocus());
+    QTest::mouseClick(chip,Qt::LeftButton);auto *panel=static_cast<RecoveryUi::Panel *>(window.findChild<QFrame *>("recoveryPanel"));QTRY_VERIFY(panel->isVisible());
+    QVERIFY(panel->detailText().contains("Europe/Moscow"));QVERIFY(!panel->findChild<QPushButton *>("recoveryNow")->isEnabled());
+    // Interval mode shows the ordinary countdown and permits an explicit retry before reset.
+    job["session_limit_mode"]="interval";job["not_before"]=0;job["due_at"]=QDateTime::currentMSecsSinceEpoch()/1000.0+300;
+    job["delays"]=QJsonArray{300,0};details["recovery"]=job;client->inspectionReady({},"codex/hgs/dashboard",details,{});
+    QVERIFY(chip->fullLabel().contains("Retry in"));QVERIFY(panel->findChild<QPushButton *>("recoveryNow")->isEnabled());
+    job["session_limit_mode"]="reset";job["state"]="blocked";job["reason"]="The reset time is unknown";
+    details["recovery"]=job;client->inspectionReady({},"codex/hgs/dashboard",details,{});
+    QVERIFY(panel->detailText().contains("reset time is unknown"));QVERIFY(!panel->findChild<QPushButton *>("recoveryNow")->isVisible());
+    QCOMPARE(composer->editor()->toPlainText(),QString("Continue this draft after reset"));
 }
 
 void TestSessionsWindow::composerNavigationDuringPolling()

@@ -32,6 +32,7 @@ inline SessionInfo inspected(SessionInfo s, const QJsonObject &details)
 inline QString providerFailure(const QJsonObject &error)
 {
     const auto kind = error.value("error_kind").toString();
+    if (kind == "session_limit") return QObject::tr("Session limit reached");
     if (kind == "quota") return QObject::tr("Usage limit reached");
     if (kind == "rate_limit") return QObject::tr("Rate limit reached");
     if (kind == "capacity") return QObject::tr("Model at capacity");
@@ -55,6 +56,8 @@ inline QString status(const SessionInfo &s, bool reachable = true)
     if (s.phase == "error" && (s.providerError.value("error_kind")=="quota"
         || s.providerError.value("error_kind")=="provider_policy")) return providerFailure(s.providerError);
     if (s.recovery.value("state") == "waiting") {
+        if (s.recovery.value("class") == "session_limit" && s.recovery.value("session_limit_mode") == "reset")
+            return QObject::tr("Reset at %1").arg(QDateTime::fromMSecsSinceEpoch(qint64(s.recovery.value("due_at").toDouble()*1000)).toLocalTime().toString("HH:mm"));
         const auto seconds = qMax(0, int(s.recovery.value("due_at").toDouble()-QDateTime::currentMSecsSinceEpoch()/1000.0));
         return seconds ? QObject::tr("Retry in %1 s").arg(seconds) : QObject::tr("Waiting to retry");
     }

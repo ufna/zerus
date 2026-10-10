@@ -941,9 +941,10 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
                     "provider_hook",
                 );
                 let category = provider_errors::category(&format!(
-                    "{} {}",
+                    "{} {} {}",
                     string(event, "error_type"),
-                    string(event, "error")
+                    string(event, "error"),
+                    detail(event)
                 ));
                 if category != "provider" {
                     failure["error_kind"] = json!(category);
@@ -954,6 +955,7 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
                         failure["retry_not_before"]=json!(timestamp+delay*scale);
                     }
                 }
+                session_limits::enrich(&mut failure);
                 record["provider_error"] = failure;
             }
         }
@@ -1129,7 +1131,12 @@ mod attention_regressions {
             (
                 "claude",
                 json!({"hook_event_name":"StopFailure","error":"rate_limit","error_details":"Usage limit reached. Try after reset."}),
-                "rate_limit",
+                "quota",
+            ),
+            (
+                "claude",
+                json!({"hook_event_name":"StopFailure","error":"rate_limit","error_details":"You've hit your session limit · resets 2:10pm (Europe/Moscow)"}),
+                "session_limit",
             ),
             (
                 "kimi",

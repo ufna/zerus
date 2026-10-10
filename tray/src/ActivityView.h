@@ -13,7 +13,6 @@ class QMenu;
 class QPushButton;
 class QLabel;
 class QTextBrowser;
-class QTimer;
 class QUrl;
 class QImage;
 
@@ -111,9 +110,6 @@ private:
     bool m_dark = false, m_tracked = true, m_initial = true;
     bool m_rendering = false, m_followLatest = true, m_followScheduled = false;
     int m_unseen = 0;
-    QTimer *m_relayout = nullptr;   // re-renders chips after the pane width changes
-    int m_chipWidth = 0;            // viewport width the chips were sized for
-    QList<qreal> m_chipWidths;      // chips whose form depends on that width
     double m_scale = 1.0;
     int m_column = 0;               // 0: the transcript fills the pane
     int m_dragOrigin = 0;           // column width when an edge was pressed

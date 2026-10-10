@@ -34,6 +34,7 @@
 #include <QPushButton>
 #include <QScrollBar>
 #include <QStyle>
+#include <QStyleOption>
 #include <QTextBlock>
 #include <QTextBrowser>
 #include <QTextCursor>
@@ -126,7 +127,8 @@ protected:
     }
 };
 
-// Copies what the reader sees instead of U+FFFC for chips and markers.
+// Copies what the reader sees instead of U+FFFC for markers, and draws the
+// chips of inline code, which stays text so that it wraps and selects freely.
 class ActivityBrowser final : public QTextBrowser {
 public:
     using QTextBrowser::QTextBrowser;
@@ -139,6 +141,26 @@ protected:
         auto *data = new QMimeData;
         data->setText(MarkdownObjects::plainText(textCursor()));
         return data;
+    }
+    void paintEvent(QPaintEvent *event) override
+    {
+        QTextBrowser::paintEvent(event);
+        // The selections as QTextEdit paints them: found text, then the reader's.
+        QList<QAbstractTextDocumentLayout::Selection> selections;
+        for (const auto &extra : extraSelections()) selections.append({extra.cursor, extra.format});
+        if (textCursor().hasSelection()) {
+            const auto group = hasFocus() ? QPalette::Active : QPalette::Inactive;
+            QTextCharFormat format;
+            format.setBackground(palette().brush(group, QPalette::Highlight));
+            format.setForeground(palette().brush(group, QPalette::HighlightedText));
+            QStyleOption option; option.initFrom(this);
+            if (style()->styleHint(QStyle::SH_RichText_FullWidthSelection, &option, this)) format.setProperty(QTextFormat::FullWidthSelection, true);
+            selections.append({textCursor(), format});
+        }
+        QPainter painter(viewport());
+        const QPoint scroll(horizontalScrollBar()->value(), verticalScrollBar()->value());
+        painter.translate(-scroll);
+        MarkdownObjects::paintChips(&painter, document(), QRectF(event->rect().translated(scroll)), viewport()->palette(), selections);
     }
     void contextMenuEvent(QContextMenuEvent *event) override
     {
@@ -421,11 +443,6 @@ ActivityView::ActivityView(QWidget *parent) : QWidget(parent)
     });
     connect(m_browser, &QTextBrowser::selectionChanged, this, [this] {
         if (!m_rendering && m_browser->textCursor().hasSelection()) m_followLatest = false;
-    });
-    m_relayout = new QTimer(this); m_relayout->setSingleShot(true); m_relayout->setInterval(150);
-    connect(m_relayout, &QTimer::timeout, this, [this] {
-        if (m_html.isEmpty()) return;
-        m_html.clear(); render(false);
     });
     setTheme(false); updateColumnActions();
 }
@@ -764,15 +781,6 @@ bool ActivityView::eventFilter(QObject *watched, QEvent *event)
         if (event->type() == QEvent::Resize) layoutColumn();
         positionJumpButton();
         if (m_followLatest) scheduleFollow();
-        // Chips cannot wrap; size them again once the pane settles at another width.
-        // Only a chip crossing the half-pane limit changes the journal: re-rendering
-        // otherwise shifts the transcript after a panel toggle. A render's own
-        // scrollbar changes are measured against the previous width, so skip them.
-        const int width = m_browser->viewport()->width();
-        const auto text = [](qreal chip, int pane) { return pane > 0 && chip > pane / 2.0; };
-        if (!m_rendering && !m_html.isEmpty() && qAbs(width - m_chipWidth) > m_chipWidth / 10
-            && std::any_of(m_chipWidths.cbegin(), m_chipWidths.cend(), [&](qreal chip) { return text(chip, width) != text(chip, m_chipWidth); }))
-            m_relayout->start();
     }
     return QWidget::eventFilter(watched, event);
 }
@@ -1224,11 +1232,7 @@ void ActivityView::render(bool contentUpdate)
     // the spacers between cards would keep zero height.
     QTextCursor edit(m_browser->document()); edit.beginEditBlock();
     m_browser->setHtml(html);
-    // Before bookmarks are read: offsets on both sides of a refresh count chips as one character.
-    // A chip may take at most half the pane, so that it and its container still fit.
-    m_chipWidth = m_browser->viewport()->width();
-    m_chipWidths.clear();
-    MarkdownObjects::convertChips(m_browser->document(), agentTheme, !searching, m_chipWidth / 2.0, &m_chipWidths);
+    MarkdownObjects::convertChips(m_browser->document(), agentTheme);
     edit.endEditBlock();
     // QTextDocument lays out long tables lazily. Resolve the final scroll
     // range before restoring the viewport and allowing its next paint.

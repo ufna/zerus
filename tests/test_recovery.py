@@ -85,9 +85,52 @@ class Recovery(unittest.TestCase):
 
     def test_policy_is_off_by_default_and_compare_and_swap_rejects_stale_settings(self):
         policy=self.command('recovery','get')['policy'];self.assertFalse(policy['enabled'])
+        self.assertTrue(policy['session_limit']);self.assertEqual(policy['session_limit_mode'],'reset')
         result=self.command('recovery','set',payload=policy);self.assertEqual(result['policy']['revision'],1)
+        self.assertEqual(result['policy']['version'],3)
         self.assertIn('changed',self.command('recovery','set',payload=policy,ok=False))
         self.assertEqual(self.received(),b'')
+
+    def session_limit(self):
+        from datetime import datetime, timezone
+        reset=int((time.time()+7200)//60)*60
+        detail="You've hit your session limit · resets "+datetime.fromtimestamp(reset,timezone.utc).strftime('%H:%M')+' (UTC)'
+        self.hook('StopFailure',error='rate_limit',error_details=detail)
+        return reset
+
+    def test_session_limit_waits_until_native_reset_and_retry_now_preserves_deadline(self):
+        self.prepare('claude');reset=self.session_limit();self.tick()
+        info=self.inspect();job=info['recovery']
+        self.assertEqual(info['provider_error']['error_kind'],'session_limit')
+        self.assertEqual(info['provider_error']['reset_at'],reset)
+        self.assertEqual(job['class'],'session_limit');self.assertEqual(job['due_at'],reset)
+        self.assertEqual(job['not_before'],reset);self.assertEqual(job['state'],'waiting')
+        self.command('recovery','action',payload=dict(name=self.name,id=job['id'],action='now'))
+        self.tick();self.assertEqual(self.inspect()['recovery']['due_at'],reset)
+        self.assertEqual(self.received(),b'')
+        self.hook('UserPromptSubmit',prompt='Changed task');self.tick()
+        self.assertEqual(self.inspect()['recovery']['state'],'cancelled');self.assertEqual(self.received(),b'')
+
+    def test_session_limit_interval_can_retry_before_reset_with_native_acknowledgement(self):
+        self.prepare('claude')
+        policy=json.loads(self.policy.read_text());policy.update(version=3,session_limit=True,
+            session_limit_mode='interval',schedules=dict(session_limit=[30,0]))
+        self.policy.write_text(json.dumps(policy))
+        reset=self.session_limit();before=time.time();self.tick();job=self.inspect()['recovery']
+        self.assertEqual(job['class'],'session_limit');self.assertEqual(job['delays'],[30,0])
+        self.assertGreaterEqual(job['due_at'],before+30);self.assertLess(job['due_at'],reset)
+        self.command('recovery','action',payload=dict(name=self.name,id=job['id'],action='now'))
+        self.tick();sent=self.inspect()['recovery'];self.assertEqual(sent['state'],'retrying')
+        self.wait_for(lambda:self.received().endswith(b'\r'));raw=self.received()
+        self.hook('UserPromptSubmit',prompt=sent['receipt']['text'])
+        self.session_limit();self.tick();following=self.inspect()['recovery']
+        self.assertEqual(following['state'],'waiting');self.assertEqual(following['class_attempt'],1)
+        self.assertEqual(self.received(),raw)
+
+    def test_session_limit_without_reset_is_blocked_without_input(self):
+        self.prepare('claude');self.hook('StopFailure',error='rate_limit',error_details="You've hit your session limit")
+        self.tick();job=self.inspect()['recovery'];self.assertEqual(job['state'],'blocked')
+        self.tick();self.assertEqual(self.received(),b'')
 
     def test_native_quota_completion_requires_attention_without_automatic_input(self):
         self.native_quota_completion(False)
@@ -127,13 +170,16 @@ class Recovery(unittest.TestCase):
 
     def test_shared_sync_converges_and_stale_writes_cannot_overwrite(self):
         first=self.command('recovery','get')['policy']
-        first['schedules']={'service':[3,7,-1],'network':[5,20,0],'rate_limit':[-1]}
+        first['session_limit_mode']='interval'
+        first['schedules']={'service':[3,7,-1],'network':[5,20,0],'rate_limit':[-1],'session_limit':[600,0]}
         saved=self.command('recovery','set',payload=first)['policy']
-        self.assertEqual(saved['version'],2)
+        self.assertEqual(saved['version'],3)
         incoming=dict(saved,revision=saved['revision']+1,writer='remote-writer',service=False)
         result=self.command('recovery','sync',payload=incoming)
         self.assertEqual(result['policy']['writer'],'remote-writer')
         self.assertFalse(result['policy']['service'])
+        self.assertEqual(result['policy']['session_limit_mode'],'interval')
+        self.assertEqual(result['policy']['schedules']['session_limit'],[600,0])
         stale=self.command('recovery','sync',payload=saved)['policy']
         self.assertEqual(stale['writer'],'remote-writer')
         self.command('recovery','set',payload=saved,ok=False)

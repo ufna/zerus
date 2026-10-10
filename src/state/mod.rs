@@ -29,6 +29,7 @@ mod kimi_tui_choice;
 mod lifecycle;
 mod provider_errors;
 mod recovery;
+mod session_limits;
 mod provider_messages;
 mod processes;
 mod prompt_suggestion;

@@ -1,6 +1,7 @@
 #pragma once
 #include "HgsClient.h"
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDateTime>
 #include <QFormLayout>
 #include <QFrame>
@@ -79,14 +80,20 @@ public:
         auto *title=new QLabel(tr("Automatic recovery"));title->setObjectName("heading");layout->addWidget(title);
         auto *scope=new QLabel(tr("Shared by all connected machines. Agents finish their own retries first; recovery continues the same task."));scope->setWordWrap(true);layout->addWidget(scope);
         enable=new QCheckBox(tr("Recover automatically after temporary failures"));enable->setObjectName("recoveryEnabled");layout->addWidget(enable);
-        for(const auto &rule:QList<QPair<QString,QString>>{{"service",tr("Overload / server unavailable")},{"rate_limit",tr("Temporary rate limit")},{"network",tr("Connection / timeout")}}){
+        for(const auto &rule:QList<QPair<QString,QString>>{{"service",tr("Overload / server unavailable")},{"rate_limit",tr("Temporary rate limit")},{"session_limit",tr("Session usage limit")},{"network",tr("Connection / timeout")}}){
             auto *frame=new QFrame;frame->setObjectName("settingsCard");auto *box=new QVBoxLayout(frame);box->setContentsMargins(16,14,16,14);box->setSpacing(10);
             auto *on=new QCheckBox(rule.second);on->setObjectName("recoveryRule_"+rule.first);choices.insert(rule.first,on);box->addWidget(on);
+            if(rule.first=="session_limit") {
+                sessionMode=new QComboBox;sessionMode->setObjectName("recoverySessionLimitMode");
+                sessionMode->addItem(tr("Wait for reset"),"reset");sessionMode->addItem(tr("Retry on a schedule"),"interval");box->addWidget(sessionMode);
+                auto *hint=new QLabel(tr("Wait until the provider's reset time by default. If no reset time is available, recovery needs your attention. Choose a schedule to retry at your own intervals."));hint->setWordWrap(true);box->addWidget(hint);
+                connect(sessionMode,qOverload<int>(&QComboBox::currentIndexChanged),this,[this]{dirty=true;refreshControls();});
+            }
             auto *row=new QHBoxLayout;row->addWidget(new QLabel(tr("Retry after (seconds)")));auto *delays=new QLineEdit;delays->setObjectName("recoveryDelays_"+rule.first);delays->setPlaceholderText("15, 30, 60, 300, -1");row->addWidget(delays,1);box->addLayout(row);schedules.insert(rule.first,delays);layout->addWidget(frame);
-            connect(on,&QCheckBox::toggled,this,[this,delays](bool on){delays->setEnabled(on&&enable->isChecked());dirty=true;});
+            connect(on,&QCheckBox::toggled,this,[this]{dirty=true;refreshControls();});
             connect(delays,&QLineEdit::textEdited,this,[this]{dirty=true;});
         }
-        auto *help=new QLabel(tr("Each positive number is a delay before the next attempt. End with −1 to stop, or 0 to repeat the previous delay forever.\nExample: 15, 30, 60, 0 retries every 60 seconds after the first two attempts.\n\nNew messages and Stop cancel recovery. Sign-in, balance, quota and context errors require your action."));help->setWordWrap(true);layout->addWidget(help);
+        auto *help=new QLabel(tr("Each positive number is a delay before the next attempt. End with −1 to stop, or 0 to repeat the previous delay forever.\nExample: 300, 0 retries every 5 minutes until stopped.\n\nNew messages and Stop cancel recovery. Sign-in, balance, other quota and context errors require your action."));help->setWordWrap(true);layout->addWidget(help);
         state=new QLabel;state->setWordWrap(true);state->setObjectName("recoverySyncStatus");state->setMinimumHeight(48);layout->addWidget(state);
         message=new QLabel;message->setWordWrap(true);message->setMinimumHeight(36);message->setObjectName("recoverySettingsStatus");layout->addWidget(message);
         auto *row=new QHBoxLayout;save=new QPushButton(tr("Save recovery settings"));save->setObjectName("recoverySave");auto *reload=new QPushButton(tr("Reload"));reload->setObjectName("recoveryReload");row->addWidget(save);row->addWidget(reload);row->addStretch();layout->addLayout(row);layout->addStretch();
@@ -98,7 +105,7 @@ public:
                 for(int n=0;n<parts.size();++n){bool ok;const int v=parts[n].trimmed().toInt(&ok);valid&=ok&&((v>=1&&v<=86400)||(n==parts.size()-1&&(v==-1||(v==0&&n>0))));list.append(v);}
                 if(!valid){message->setText(tr("Use 1–16 values: delays from 1 to 86400 seconds; −1 or 0 may only be last, and 0 needs a preceding delay."));return;}delays[i.key()]=list;policy[i.key()]=choices[i.key()]->isChecked();
             }
-            policy["version"]=2;policy["enabled"]=enable->isChecked();policy["schedules"]=delays;
+            policy["version"]=3;policy["enabled"]=enable->isChecked();policy["schedules"]=delays;policy["session_limit_mode"]=sessionMode->currentData().toString();
             saving=true;m_sync->save(policy,base);
         });
         m_sync->changed=[this]{
@@ -111,9 +118,11 @@ public:
     void load(){
         base=m_sync->envelope();if(base.isEmpty())return;const auto policy=base.value("policy").toObject();
         enable->setChecked(policy.value("enabled").toBool());
-        for(auto i=schedules.begin();i!=schedules.end();++i){choices[i.key()]->setChecked(policy.value(i.key()).toBool());const auto patterns=policy.value("schedules").toObject();auto sequence=patterns.contains(i.key())?patterns.value(i.key()).toArray():policy.value("delays").toArray();if(!sequence.isEmpty()&&sequence.last().toInt()>0)sequence.append(-1);QStringList text;for(const auto &v:sequence)text<<QString::number(v.toInt());i.value()->setText(text.join(", "));}dirty=false;
+        sessionMode->setCurrentIndex(qMax(0,sessionMode->findData(policy.value("session_limit_mode").toString("reset"))));
+        for(auto i=schedules.begin();i!=schedules.end();++i){const bool session=i.key()=="session_limit";choices[i.key()]->setChecked(policy.value(i.key()).toBool(session));const auto patterns=policy.value("schedules").toObject();auto sequence=patterns.contains(i.key())?patterns.value(i.key()).toArray():session?QJsonArray{300,0}:policy.value("delays").toArray();if(!sequence.isEmpty()&&sequence.last().toInt()>0)sequence.append(-1);QStringList text;for(const auto &v:sequence)text<<QString::number(v.toInt());i.value()->setText(text.join(", "));}dirty=false;
     }
 private:
-    void refreshControls(){enable->setEnabled(!base.isEmpty());for(auto i=choices.begin();i!=choices.end();++i){i.value()->setEnabled(enable->isChecked());schedules[i.key()]->setEnabled(enable->isChecked()&&i.value()->isChecked());}save->setEnabled(!base.isEmpty()&&!m_sync->busy());}
+    void refreshControls(){enable->setEnabled(!base.isEmpty());for(auto i=choices.begin();i!=choices.end();++i){i.value()->setEnabled(enable->isChecked());schedules[i.key()]->setEnabled(enable->isChecked()&&i.value()->isChecked()&&(i.key()!="session_limit"||sessionMode->currentData()=="interval"));}sessionMode->setEnabled(enable->isChecked()&&choices["session_limit"]->isChecked());save->setEnabled(!base.isEmpty()&&!m_sync->busy());}
+    QComboBox *sessionMode=nullptr;
     RecoverySync *m_sync;QJsonObject base;bool dirty=false,saving=false;QCheckBox *enable;QMap<QString,QCheckBox *> choices;QMap<QString,QLineEdit *> schedules;QLabel *state,*message;QPushButton *save;
 };

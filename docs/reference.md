@@ -793,17 +793,26 @@ keyless model, covering history, lifecycle, questions, settings and browser logi
 
 ## Automatic recovery
 
-**Settings → Automatic recovery** shares rules for temporary overload, rate limits
-and network failures. Automation is off by default. Each class has its own delays:
+**Settings → Automatic recovery** shares rules for temporary overload, rate limits,
+session usage limits and network failures. Automation is off by default. Each class has its own delays:
 `15, 30, 60, 300, -1` stops after four attempts; `15, 30, 60, 0` repeats the previous
 60-second delay indefinitely after the first two attempts; `-1` alone does nothing.
 Small jitter is applied. Class counters persist within an episode when errors change.
+
+**Session usage limit** is separate from a temporary rate limit. Its default mode,
+**Wait for reset**, schedules a continuation at the provider's reset time, using
+the failure's date and reported timezone. The toolbar shows that reset time.
+If the deadline is unknown, ambiguous or was already reached when the turn failed, recovery needs attention
+instead of starting short retries. **Retry on a schedule** uses the same delay
+syntax as other classes: `300, 0` retries about every five minutes until stopped,
+even before the reported reset. Explicit native Retry-After deadlines still apply.
+Existing shared policies keep their settings and gain the reset mode by default.
 
 Native agent retries finish first. Claude, Codex and Kimi receive an explicitly
 marked `[HGS automatic recovery]` continuation in the same conversation; HGS does
 not replay the original request or tool command. The newer DeepSeek adapter retries
 the failed model request; an older host uses continuation messages. Sign-in,
-balance, quota and context exhaustion require manual action. Questions, new input,
+balance, other quota and context exhaustion require manual action. Questions, new input,
 Stop, session termination and identity changes cancel waiting; a native draft
 blocks delivery. Unknown providers do not receive automatic input.
 
@@ -822,8 +831,8 @@ and quoted error examples cannot change the session state. New native progress
 clears the failure; changing the account counter alone does not.
 
 A chip in the toolbar above the message field shows the countdown; its popover
-shows the attempt number, **Attempts**, **Retry now** and **Cancel retry**. Retry now respects a known Retry-After. Policy edits apply to new
-episodes; already scheduled episodes retain their delays. Disabling recovery
+shows the attempt number, **Attempts**, **Retry now** and **Cancel retry**. Retry now respects a known Retry-After and the reset deadline in reset mode. Policy edits apply to new
+episodes; already scheduled episodes retain their delays and session-limit mode. Disabling recovery
 cancels automatic continuation. Uncertain delivery stops the episode rather than
 sending Enter again.
 
