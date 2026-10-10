@@ -68,7 +68,8 @@ class InputTransport(unittest.TestCase):
         self.addCleanup(lambda: subprocess.run([TMUX, "-S", str(self.socket), "kill-server"], capture_output=True))
         self.tmux("new-session", "-d", "-s", self.name, "-x", "100", "-y", "30",
                   "python3", str(self.root / "agent.py"))
-        self.wait_for(lambda: (self.root / "agent-pid").exists())
+        # The agent creates the file before writing its PID; wait for the content.
+        self.wait_for(lambda: (self.root / "agent-pid").exists() and (self.root / "agent-pid").read_text().strip())
         pid = int((self.root / "agent-pid").read_text())
         start = subprocess.check_output(["ps", "-p", str(pid), "-o", "lstart="],
                                        env=dict(self.env, LC_ALL="C", TZ="UTC"), text=True).strip()
@@ -198,7 +199,7 @@ int main(int argc,char **argv) {
         native = self.bin / 'codex'
         subprocess.run(['cc', str(source), '-o', str(native)], check=True, capture_output=True)
         self.tmux('new-session','-d','-s',self.name,'-x','100','-y','30',str(native),str(self.root),str(self.rollout))
-        self.wait_for(lambda:(self.root/'agent-pid').exists())
+        self.wait_for(lambda:(self.root/'agent-pid').exists() and (self.root/'agent-pid').read_text().strip())
         pid = int((self.root/'agent-pid').read_text())
         parent = int(subprocess.check_output(['ps','-p',str(pid),'-o','ppid='],text=True).strip())
         def start(p):
