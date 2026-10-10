@@ -22,7 +22,8 @@ NATIVE_MEMBER = 'package/vendor/x86_64-unknown-linux-musl/bin/codex'
 MAX_PACKAGE_BYTES = 512 * 1024 * 1024
 NATIVE_RUNNER = '''
 import json, sys, unittest
-suite = unittest.defaultTestLoader.loadTestsFromName('test_clear_context_native.NativeCodexClear')
+suite = unittest.defaultTestLoader.loadTestsFromNames(['test_clear_context_native.NativeCodexClear',
+                                                       'test_codex_update.NativeCodexUpdate'])
 result = unittest.TextTestRunner(verbosity=2).run(suite)
 print('ZERUS_NATIVE_RESULT=' + json.dumps({'tests': result.testsRun, 'skipped': len(result.skipped)}))
 sys.exit(not result.wasSuccessful() or bool(result.skipped) or result.testsRun == 0)

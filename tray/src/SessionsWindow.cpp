@@ -785,13 +785,14 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     });
     connect(&m_client, &HgsClient::questionAnswered, this, [this](quint64 request, const QString &, const QString &, const QJsonObject &receipt) {
         const auto pending = m_pendingAnswers.value(request);
-        const bool reviewHooks = !pending.key.isEmpty() && pending.key == m_selectedKey
-            && pending.questionId.startsWith("codex-hooks-trust:")
+        // Hook review and Codex's native installer continue in Terminal.
+        const bool openTerminal = !pending.key.isEmpty() && pending.key == m_selectedKey
+            && (pending.questionId.startsWith("codex-hooks-trust:") || pending.questionId.startsWith("codex-update:"))
             && pending.questionHash == receipt.value("question_hash").toString()
             && m_details.value("run_id") == receipt.value("run_id")
             && receipt.value("open_terminal").toBool();
         finishQuestion(request, true);
-        if (reviewHooks) { m_detailTabs->setCurrentWidget(m_terminal); m_terminal->connectSession(); }
+        if (openTerminal) { m_detailTabs->setCurrentWidget(m_terminal); m_terminal->connectSession(); }
     });
     connect(&m_client, &HgsClient::questionAnswerFailed, this, [this](quint64 request, const QString &, const QString &, const QString &error, bool uncertain) {
         finishQuestion(request, false, error, uncertain);

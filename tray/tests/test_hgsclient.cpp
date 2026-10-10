@@ -482,6 +482,11 @@ print(json.dumps({'status':'answered','request_id':p['request_id'],'name':sys.ar
     client.requestAnswerQuestion({},"codex/project/startup",hooks,hookAnswer);QTRY_COMPARE(sent.size(),3);
     captured.close();QVERIFY(captured.open(QIODevice::ReadOnly));const auto hookPayload=QJsonDocument::fromJson(captured.readAll()).object()["payload"].toObject();
     QCOMPARE(hookPayload["expected_conversation_id"].toString(),QString());QCOMPARE(hookPayload["answers"].toArray(),hookAnswer);
+    auto update=hooks;update["question_id"]="codex-update:"+hookHash;update["source"]="codex_update";
+    const QJsonArray updateAnswer{QJsonObject{{"question_id","codex_update"},{"selected_option_ids",QJsonArray{"skip"}},{"text",""}}};
+    client.requestAnswerQuestion({},"codex/project/startup",update,updateAnswer);QTRY_COMPARE(sent.size(),4);
+    captured.close();QVERIFY(captured.open(QIODevice::ReadOnly));const auto updatePayload=QJsonDocument::fromJson(captured.readAll()).object()["payload"].toObject();
+    QCOMPARE(updatePayload["question_id"].toString(),"codex-update:"+hookHash);QCOMPARE(updatePayload["answers"].toArray(),updateAnswer);
 }
 
 void TestHgsClient::unconfirmedQuestionCannotStartTransport()
@@ -493,10 +498,13 @@ void TestHgsClient::unconfirmedQuestionCannotStartTransport()
     HgsClient client(program.fileName());
     QSignalSpy sent(&client, &HgsClient::questionAnswered), failed(&client, &HgsClient::questionAnswerFailed);
     const QString hash(64, QChar('a'));
-    for (const QString provider : {QString("kimi"), QString("claude"), QString("codex"), QString("claude-permissions"), QString("codex-hooks")}) {
-    const QJsonObject startup{{"question_id", (provider == "claude-permissions" ? "claude-permissions:" : provider + "-trust:") + hash}, {"question_hash", hash},
-        {"source", provider == "codex-hooks" ? "codex_hooks_trust" : provider == "claude-permissions" ? "claude_permission_mode" : provider + "_folder_trust"},
-        {"answer_transport", provider == "codex-hooks" ? "codex_tui" : provider == "claude-permissions" ? "claude_tui" : provider + "_tui"},
+    const QList<QStringList> requests{{"kimi", "kimi-trust:", "kimi_folder_trust", "kimi_tui"},
+        {"claude", "claude-trust:", "claude_folder_trust", "claude_tui"}, {"codex", "codex-trust:", "codex_folder_trust", "codex_tui"},
+        {"claude-permissions", "claude-permissions:", "claude_permission_mode", "claude_tui"},
+        {"codex-hooks", "codex-hooks-trust:", "codex_hooks_trust", "codex_tui"}, {"codex-update", "codex-update:", "codex_update", "codex_tui"}};
+    for (const auto &kind : requests) {
+    const QString provider = kind[0];
+    const QJsonObject startup{{"question_id", kind[1] + hash}, {"question_hash", hash}, {"source", kind[2]}, {"answer_transport", kind[3]},
         {"run_id", "run"}, {"conversation_id", QJsonValue::Null}, {"can_answer", true}};
     const QList<QPair<QString, QJsonValue>> invalid{
         {"source", "kimi_wire"}, {"question_id", "other-question"},

@@ -185,8 +185,11 @@ cursor and lifecycle state. The tests resume synthetic
 history, then verify GUI-command clear, Terminal clear, the deferred native
 identity transition, stale usage suppression, a single durable clear boundary,
 preserved process/run identity, unsent native drafts and foreign-directory
-rejection. Every fixture owns a private home and tmux socket and uses only a
-localhost provider. No authenticated inference or existing session is involved.
+rejection. A separate fixture caches a newer version for the startup update
+picker and verifies its Activity identity, **Skip** and **Skip until next
+version**; it never selects **Update now**. Every fixture owns a private home
+and tmux socket and uses only a localhost provider. No authenticated inference
+or existing session is involved.
 Fixture shutdown waits for its owned panes to exit before deleting the private
 home, so a shell's final history write cannot race with filesystem cleanup.
 

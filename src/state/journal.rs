@@ -386,6 +386,12 @@ pub(super) fn summary(record: &Value, live_pane: bool) -> Value {
             output["attention_id"] = question["question_id"].clone();
             output["status_detail"] = json!("Codex is waiting for hook trust review");
         }
+        if let Some(question) = codex_update::current(record) {
+            output["activity"] = json!("busy");
+            output["phase"] = json!("input");
+            output["attention_id"] = question["question_id"].clone();
+            output["status_detail"] = json!("Codex is waiting for an update choice");
+        }
         if let Some(question) = kimi_trust::current(record) {
             output["activity"] = json!("busy");
             output["phase"] = json!("approval");

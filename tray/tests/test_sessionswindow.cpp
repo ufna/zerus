@@ -168,7 +168,8 @@ private slots:
     void modelSettingsKeepSessionIdentity();
     void questionAnswersStayWithOriginalSession();
     void queuedQuestionAnswersDisappearAfterSubmission();
-    void hookReviewOpensOnlyTheRequestingTerminal();
+    void terminalChoiceOpensOnlyTheRequestingTerminal_data();
+    void terminalChoiceOpensOnlyTheRequestingTerminal();
     void optionalQuestionKeepsComposerAvailable();
     void questionCompletionKeepsInputFocus_data();
     void questionCompletionKeepsInputFocus();
@@ -2341,17 +2342,24 @@ elif sys.argv[1]=='answer':
     QCOMPARE(promoted.size(),0);
 }
 
-void TestSessionsWindow::hookReviewOpensOnlyTheRequestingTerminal()
+void TestSessionsWindow::terminalChoiceOpensOnlyTheRequestingTerminal_data()
 {
+    QTest::addColumn<QString>("prefix");QTest::addColumn<QString>("source");QTest::addColumn<QString>("item");QTest::addColumn<QString>("option");
+    QTest::newRow("hook review")<<"codex-hooks-trust:"<<"codex_hooks_trust"<<"hooks_trust"<<"review";
+    QTest::newRow("codex update")<<"codex-update:"<<"codex_update"<<"codex_update"<<"update_now";
+}
+
+void TestSessionsWindow::terminalChoiceOpensOnlyTheRequestingTerminal()
+{
+    QFETCH(QString,prefix);QFETCH(QString,source);QFETCH(QString,item);QFETCH(QString,option);
     QTemporaryDir directory;QFile file(directory.filePath("hgs"));QVERIFY(file.open(QIODevice::WriteOnly));
-    file.write(R"PY(#!/usr/bin/env python3
+    file.write(QString(R"PY(#!/usr/bin/env python3
 import json,pathlib,sys,time
 args=sys.argv[1:];root=pathlib.Path(__file__).parent
-question={'question_id':'codex-hooks-trust:'+'a'*64,'question_hash':'a'*64,'run_id':'startup-run','conversation_id':None,
- 'source':'codex_hooks_trust','answer_transport':'codex_tui','trust_request':True,'can_answer':True,
- 'questions':[{'id':'hooks_trust','question':'Hooks need review','allow_other':False,
- 'options':[{'id':'review','label':'Review hooks'},{'id':'trust','label':'Trust all and continue'},
- {'id':'continue_without_trusting','label':"Continue without trusting (hooks won't run)"}]}]}
+question={'question_id':'%1'+'a'*64,'question_hash':'a'*64,'run_id':'startup-run','conversation_id':None,
+ 'source':'%2','answer_transport':'codex_tui','can_answer':True,
+ 'questions':[{'id':'%3','question':'Startup choice','allow_other':False,
+ 'options':[{'id':'%4','label':'Continue in Terminal'},{'id':'other','label':'Continue here'}]}]}
 if args[0]=='inspect':
  print(json.dumps({'tracked':True,'run_id':'startup-run','conversation_id':None,'runtime_state':'live','process_state':'running',
  'activity':'busy','phase':'approval','pending_questions':[question] if not (root/'done').exists() else [],'events':[],'cursor':0}))
@@ -2360,14 +2368,14 @@ elif args[0]=='answer':
  print(json.dumps({'status':'answered','request_id':p['request_id'],'name':args[1],
  'run_id':p['expected_run_id'],'conversation_id':p['expected_conversation_id'],'question_id':p['question_id'],
  'question_hash':p['expected_question_hash'],'open_terminal':True}))
-)PY");file.close();QVERIFY(file.setPermissions(QFileDevice::ReadOwner|QFileDevice::WriteOwner|QFileDevice::ExeOwner));
+)PY").arg(prefix,source,item,option).toUtf8());file.close();QVERIFY(file.setPermissions(QFileDevice::ReadOwner|QFileDevice::WriteOwner|QFileDevice::ExeOwner));
     SessionsWindow window(file.fileName());window.setFleet(fleet());window.show();window.showSession({},"codex/hgs/dashboard");
     auto *card=window.findChild<QuestionCard *>();auto *client=window.findChild<HgsClient *>();
     auto *list=window.findChild<QListWidget *>("sessionList");auto *tabs=window.findChild<QTabWidget *>("sessionDetailTabs");
     QSignalSpy answered(client,&HgsClient::questionAnswered);
     QTRY_VERIFY(card->isVisible());const auto key=list->currentItem()->data(Qt::UserRole).toString();
-    const QJsonArray answer{QJsonObject{{"question_id","hooks_trust"},{"selected_option_ids",QJsonArray{"review"}},{"text",""}}};
-    const QString id="codex-hooks-trust:"+QString(64,QChar('a'));
+    const QJsonArray answer{QJsonObject{{"question_id",item},{"selected_option_ids",QJsonArray{option}},{"text",""}}};
+    const QString id=prefix+QString(64,QChar('a'));
     card->answerRequested(key,id,answer);QTRY_COMPARE(answered.size(),1);
     QCOMPARE(tabs->currentWidget()->objectName(),QString("terminalView"));
     // A delayed review acknowledgement must not steal another session's tab.

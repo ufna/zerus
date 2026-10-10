@@ -38,6 +38,7 @@ mod questions;
 mod codex_questions;
 mod codex_trust;
 mod codex_hooks_trust;
+mod codex_update;
 mod recipes;
 mod rename;
 mod resume_input;

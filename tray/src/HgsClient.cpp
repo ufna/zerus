@@ -1013,6 +1013,9 @@ quint64 HgsClient::requestAnswerQuestion(const QString &host, const QString &nam
     const bool startupHooks = question.value("source") == "codex_hooks_trust"
         && question.value("answer_transport") == "codex_tui" && questionHash.size() == 64
         && questionId == "codex-hooks-trust:" + questionHash;
+    const bool startupUpdate = question.value("source") == "codex_update"
+        && question.value("answer_transport") == "codex_tui" && questionHash.size() == 64
+        && questionId == "codex-update:" + questionHash;
     auto reject = [this, request, host, name](const QString &detail) {
         QTimer::singleShot(0, this, [this, request, host, name, detail] {
             emit questionAnswerFailed(request, host, name, detail, false);
@@ -1025,7 +1028,7 @@ quint64 HgsClient::requestAnswerQuestion(const QString &host, const QString &nam
         && question.value("source")=="codex_async" && !answers.isEmpty()
         && std::all_of(answers.begin(),answers.end(),[](const QJsonValue &value){return value.toObject().value("skip").toBool();});
     if (name.isEmpty() || questionId.isEmpty() || questionHash.isEmpty() || runId.isEmpty()
-        || (conversationId.isEmpty() && !startupTrust && !startupPermission && !startupHooks) || answers.isEmpty() || (!question.value("can_answer").toBool() && !canSkip)) {
+        || (conversationId.isEmpty() && !startupTrust && !startupPermission && !startupHooks && !startupUpdate) || answers.isEmpty() || (!question.value("can_answer").toBool() && !canSkip)) {
         reject(tr("This request is not ready to answer. Wait for an updated request or open Terminal.")); return request;
     }
     const QString program = m_hgs.contains(QLatin1Char('/')) ? m_hgs : QStandardPaths::findExecutable(m_hgs);

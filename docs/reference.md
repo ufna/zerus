@@ -404,8 +404,9 @@ prompt is verified. A clipped or unrecognized panel, a mismatched request and
 plan approval stay visible with **Open Terminal**.
 
 Supported startup prompts include Claude workspace trust and auto-mode consent,
-Codex folder access and **Hooks need review**, and Kimi folder/MCP trust. These
-can appear before a conversation exists, but only with verified startup identity.
+Codex folder access, **Hooks need review** and **Update available**, and Kimi
+folder/MCP trust. These can appear before a conversation exists, but only with
+verified startup identity.
 Claude workspace trust preserves its full permissions warning; Kimi includes the
 visible MCP commands. Trust persistence belongs to the native agent.
 Claude's auto-mode prompt accepts absolute workspace paths and native `~/…`
@@ -414,6 +415,12 @@ after the initial conversation is bound, until a turn starts.
 For Codex hooks, **Review hooks** opens the native browser in Terminal;
 **Trust all and continue** and **Continue without trusting** are explicit choices.
 Review input with an uncertain result is never retried automatically.
+Codex's **Update available** picker shows both versions and the exact update
+command. **Update now** switches to Terminal while Codex runs that command; Codex
+then exits and the session needs an explicit resume. **Skip** and **Skip until
+next version** continue startup, and Codex records the dismissal itself. Only
+reviewed npm, Bun, Vite+, pnpm, Homebrew and standalone Unix commands are
+recognized; other or clipped commands stay in Terminal.
 
 Optional Codex questions preserve the regular composer and support **Skip**.
 Queue arrows navigate optional requests from newest to oldest while retaining
