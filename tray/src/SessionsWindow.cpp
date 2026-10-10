@@ -1057,6 +1057,9 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     m_connectionRetry->setFlat(true); m_connectionRetry->hide(); statusLayout->addWidget(m_connectionRetry);
     connect(m_connectionRetry, &QPushButton::clicked, this, &SessionsWindow::refreshRequested);
     m_notice = new StatusMessage; m_notice->hide(); statusLayout->addWidget(m_notice, 1);
+    m_worktreeCleanup = new QPushButton(tr("Clean up worktree…")); m_worktreeCleanup->setObjectName("archivedWorktreeCleanup");
+    m_worktreeCleanup->setFlat(true); m_worktreeCleanup->hide(); statusLayout->addWidget(m_worktreeCleanup);
+    connect(m_worktreeCleanup, &QPushButton::clicked, this, &SessionsWindow::cleanUpArchivedWorktree);
     statusLayout->addWidget(m_usageStrip,0,Qt::AlignRight);
     workspace->addWidget(statusBar); root->addLayout(workspace, 1);
 
@@ -1117,6 +1120,9 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     });
     connect(&m_client, &HgsClient::writeDone, this, [this](const QString &operation, bool ok, const QString &detail) {
         if (finishSelectionAction(operation, ok, detail)) return;
+        if (m_archivedWorktree.size() == 4 && operation == QStringLiteral("archive %1").arg(m_archivedWorktree[1])) {
+            if (ok) offerWorktreeCleanup(); else m_archivedWorktree.clear();
+        }
         if (!m_terminationCommand.isEmpty() && (operation == QStringLiteral("kill %1").arg(m_terminating.value(m_terminationCommand).session.name) || operation == QStringLiteral("terminate %1").arg(m_terminating.value(m_terminationCommand).session.name))) {
             if(ok)m_terminationFinished.insert(m_terminationCommand);
             else m_terminating.remove(m_terminationCommand);
@@ -3409,8 +3415,33 @@ void SessionsWindow::archiveSession()
     const auto *e = selected();
     if (!e || !e->online || m_pending || !m_renameKey.isEmpty() || (e->session.state != "paused" && e->session.state != "stopped")) return;
     const QString host = e->host, name = e->session.name;
+    ++m_worktreeCleanupRevision; m_worktreeCleanup->hide();
+    m_archivedWorktree = e->session.gitWorktree && !e->session.gitRoot.isEmpty()
+        ? QStringList{host, name, e->session.gitRoot, e->session.gitCommonDir} : QStringList{};
     m_pending = true; m_restoreKey.clear(); m_client.archiveSession(host, name);
     showNotice(tr("Moving session to archive…")); renderDetails();
+}
+
+void SessionsWindow::offerWorktreeCleanup()
+{
+    const auto host = m_archivedWorktree[0], name = m_archivedWorktree[1], root = m_archivedWorktree[2];
+    // Another running, paused or saved session keeps the checkout in use.
+    for (const auto &entry : m_entries)
+        if (entry.host == host && entry.session.name != name && entry.session.state != "archived" && entry.session.gitRoot == root) { m_archivedWorktree.clear(); return; }
+    m_worktreeCleanup->setToolTip(tr("Review %1 for removal. Nothing is removed without your confirmation.").arg(root));
+    m_worktreeCleanup->show();
+    const int revision = ++m_worktreeCleanupRevision;
+    QTimer::singleShot(60000, m_worktreeCleanup, [this, revision] { if (revision == m_worktreeCleanupRevision) { m_worktreeCleanup->hide(); m_archivedWorktree.clear(); } });
+}
+
+void SessionsWindow::cleanUpArchivedWorktree()
+{
+    if (m_archivedWorktree.size() != 4) return;
+    const auto offer = m_archivedWorktree; m_archivedWorktree.clear(); ++m_worktreeCleanupRevision; m_worktreeCleanup->hide();
+    // The common directory still answers after the worktree folder is gone.
+    WorktreeCleanupDialog dialog(&m_client, offer[0], offer[0].isEmpty() ? m_fleet.local().host : offer[0], offer[3].isEmpty() ? offer[2] : offer[3], offer[2], this);
+    dialog.exec();
+    if (dialog.changed()) { emit refreshRequested(); updateWorktrees(); }
 }
 
 void SessionsWindow::forkSession()

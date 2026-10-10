@@ -116,6 +116,13 @@ public:
     quint64 requestWorktrees(const QString &host, const QString &path, bool refresh = false);
     quint64 createWorktree(const QString &host, const QString &path, const QString &commonDir,
                            const QString &branch, const QString &base, const QString &destination);
+    // Cleanup verdicts are computed on the owning machine. Whole-repository reviews
+    // stay cached for five minutes for the Clean up reminder; removal repeats every
+    // check there, never forces and is never retried automatically.
+    quint64 reviewWorktrees(const QString &host, const QString &path, const QString &worktree = {});
+    QJsonObject worktreeReview(const QString &host, const QString &commonDir) const;
+    quint64 removeWorktree(const QString &host, const QString &path, const QString &commonDir,
+                           const QString &fingerprint, bool deleteBranch);
     quint64 requestDirectories(const QString &host, const QString &path, bool hidden = false);
     bool requestInspection(const QString &host, const QString &name, qint64 after = 0, const QString &archiveId = {}, bool includeProcesses = true);
     quint64 requestProcess(const QString &host, const QString &name, const QString &processId, const QString &run,
@@ -210,6 +217,9 @@ signals:
     void worktreesReady(quint64 request, const QString &host, const QString &path, const QJsonObject &data);
     void worktreesFailed(quint64 request, const QString &host, const QString &path, const QString &detail);
     void worktreeCreated(quint64 request, bool ok, const QJsonObject &result, const QString &error);
+    void worktreeReviewReady(quint64 request, const QString &host, const QString &path, const QJsonObject &data);
+    void worktreeReviewFailed(quint64 request, const QString &host, const QString &path, const QString &detail);
+    void worktreeRemoved(quint64 request, bool ok, const QJsonObject &result, const QString &error);
     void directoriesReady(quint64 request, const QString &host, const QJsonObject &data);
     void directoriesFailed(quint64 request, const QString &host, const QString &detail);
     // Процесс не запустился или не уложился в таймаут. Это НЕ то же самое, что ok:false:
@@ -240,6 +250,8 @@ private:
     QSet<QString> m_inspectionsInFlight;
     quint64 m_directoryRequest = 0, m_worktreeRequest = 0;
     QHash<QString, QList<QPair<quint64, QString>>> m_worktreesInFlight;
+    QHash<QString, QList<quint64>> m_reviewsInFlight;
+    QHash<QString, QJsonObject> m_worktreeReviews;
     quint64 m_nativeUiRequest = 0;
     quint64 m_searchRequest = 0;
     quint64 m_attachmentRequest = 0;

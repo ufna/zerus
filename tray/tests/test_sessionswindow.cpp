@@ -175,6 +175,7 @@ private slots:
     void startupTrustAnswerBeforeConversation();
     void archiveFiltersIdentityRestoreAndForget();
     void savedSessionsCanMoveToArchive();
+    void archivingLastWorktreeSessionOffersCleanup();
     void renameValidationCancelAndSelection();
     void forkValidationCancelAndPinnedPayload();
     void forkKeepsSourceAndGroup_data();
@@ -3473,6 +3474,30 @@ void TestSessionsWindow::savedSessionsCanMoveToArchive()
     action->trigger(); QTest::qWait(25); QCOMPARE(writes.size(), 1); // Live sessions cannot be archived from this action.
 }
 
+void TestSessionsWindow::archivingLastWorktreeSessionOffersCleanup()
+{
+    for (const bool shared : {false, true}) {
+        auto state = fleet(); auto box = state.local();
+        for (auto &session : box.sessions) {
+            if (session.name == "codex/website/navigation") { session.gitWorktree = true; session.gitRoot = "/workspace/website-nav"; session.gitCommonDir = "/workspace/website/.git"; }
+            else if (shared && session.name == "codex/hgs/dashboard") session.gitRoot = "/workspace/website-nav";
+        }
+        state.setLocal(box, QDateTime::currentMSecsSinceEpoch());
+        SessionsWindow window(script()); window.setFleet(state); window.show(); window.showSession({}, "codex/website/navigation");
+        auto *offer = window.findChild<QPushButton *>("archivedWorktreeCleanup"); QVERIFY(!offer->isVisible());
+        auto *client = window.findChild<HgsClient *>(); QSignalSpy writes(client, &HgsClient::writeDone);
+        window.findChild<QAction *>("archiveSessionAction")->trigger(); QTRY_COMPARE(writes.size(), 1); QVERIFY(writes[0][1].toBool());
+        if (shared) { QTest::qWait(50); QVERIFY(!offer->isVisible()); continue; } // Another session still uses the checkout.
+        QTRY_VERIFY(offer->isVisible()); QVERIFY(offer->toolTip().contains("/workspace/website-nav")); bool opened = false;
+        QTimer::singleShot(0, &window, [&] {
+            auto *dialog = window.findChild<QDialog *>("worktreeCleanupDialog"); QVERIFY(dialog); QTimer::singleShot(3000, dialog, [dialog] { dialog->done(0); });
+            QCOMPARE(dialog->windowTitle(), QString("Remove worktree"));
+            QVERIFY(dialog->findChild<QLabel *>("worktreeCleanupContext")->text().contains("Worktree: /workspace/website-nav")); opened = true; dialog->reject();
+        });
+        offer->click(); QVERIFY(opened); QVERIFY(!offer->isVisible());
+    }
+}
+
 void TestSessionsWindow::forkValidationCancelAndPinnedPayload()
 {
     auto state = fleet(); auto box = state.local();
@@ -5041,6 +5066,11 @@ void TestSessionsWindow::projectFolderNewSessionPrefillsExactTarget()
         QVERIFY(folderActions->mapTo(page,QPoint()).y()>=table->mapTo(page,QPoint(0,table->height())).y());
         auto *catalog=page->findChild<QTreeWidget *>("worktreeCatalog");auto *all=page->findChild<QPushButton *>("allWorktreeSessions");
         QVERIFY(all->mapTo(page,QPoint(0,all->height())).y()<=catalog->mapTo(page,QPoint()).y());
+        // The compact heading keeps every worktree action visible without overlap.
+        auto *panel=page->findChild<QWidget *>("worktreePanel");QWidget *previous=panel->findChild<QLabel *>("heading");
+        for(const char *name:{"allWorktreeSessions","cleanUpWorktrees","refreshWorktrees","useWorktreeFolder"}){auto *button=panel->findChild<QPushButton *>(name);
+            QVERIFY2(button->isVisible()&&previous->geometry().right()<button->geometry().left()&&button->geometry().right()<=panel->width(),name);previous=button;}
+        if(const auto preview=qEnvironmentVariable("HGS_PROJECT_LAUNCH_PREVIEW");!preview.isEmpty()){QDir().mkpath(preview);QVERIFY(page->grab().save(preview+QString("/projects-%1.png").arg(height)));}
         QVERIFY(defaultProject->mapTo(page,QPoint()).y()-metadata->mapTo(page,QPoint(0,metadata->height())).y()<45);
     }
     bool localOpened=false;

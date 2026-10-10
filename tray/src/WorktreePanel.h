@@ -1,6 +1,10 @@
 #pragma once
 #include "FleetState.h"
+#include "WorktreeCleanupDialog.h"
+#include <QApplication>
+#include <QClipboard>
 #include <QDateTime>
+#include <QMenu>
 #include <QDir>
 #include <QJsonDocument>
 #include <QScrollBar>
@@ -25,14 +29,17 @@ public:
         auto *actions=new QHBoxLayout;
         m_all=new QPushButton(tr("All sessions"));m_all->setObjectName("allWorktreeSessions");m_all->setAutoDefault(false);m_all->setVisible(!picker);
         m_launch=new QPushButton(picker?tr("Use folder"):tr("New session…"));m_launch->setObjectName("useWorktreeFolder");m_launch->setAutoDefault(false);
-        if(m_compact){row->insertWidget(row->count()-1,m_all);row->addWidget(m_launch);}
-        else{actions->addWidget(m_all);actions->addStretch();actions->addWidget(m_launch);}
+        m_cleanup=new QPushButton(tr("Clean up…"));m_cleanup->setObjectName("cleanUpWorktrees");m_cleanup->setAutoDefault(false);m_cleanup->setVisible(!picker);
+        if(m_compact){row->insertWidget(row->count()-1,m_all);row->insertWidget(row->count()-1,m_cleanup);row->addWidget(m_launch);}
+        else{actions->addWidget(m_all);actions->addWidget(m_cleanup);actions->addStretch();actions->addWidget(m_launch);}
         if(picker){auto *cancel=new QPushButton(tr("Cancel"));cancel->setAutoDefault(false);actions->addWidget(cancel);connect(cancel,&QPushButton::clicked,this,[this]{if(cancelRequested)cancelRequested();});}
         if(m_compact)delete actions;else layout->addLayout(actions);
         connect(m_refresh,&QPushButton::clicked,this,[this]{request(true);});
         connect(m_all,&QPushButton::clicked,this,[this]{if(filterRequested)filterRequested({},false);});
         connect(m_launch,&QPushButton::clicked,this,[this]{auto *item=rootItem();if(item&&m_launch->isEnabled()&&launchRequested)launchRequested(item->data(0,Qt::UserRole).toString());});
         connect(m_tree,&QTreeWidget::itemSelectionChanged,this,[this]{updateActions();});
+        connect(m_cleanup,&QPushButton::clicked,this,[this]{cleanUp({});});
+        if(!picker){m_tree->setContextMenuPolicy(Qt::CustomContextMenu);connect(m_tree,&QTreeWidget::customContextMenuRequested,this,[this](const QPoint &position){showMenu(position);});}
         connect(m_tree,&QTreeWidget::itemClicked,this,[this](QTreeWidgetItem *item,int){
             if(m_picker)return;
             if(item->parent()){if(sessionRequested)sessionRequested(item->data(0,Qt::UserRole).toString(),item->data(0,Qt::UserRole+1).toString());}
@@ -44,6 +51,8 @@ public:
         connect(m_client,&HgsClient::worktreesFailed,this,[this](quint64 id,const QString &host,const QString &path,const QString &error){
             if(id!=m_request||host!=m_host||path!=m_path)return;m_request=0;m_error=error;render();
         });
+        connect(m_client,&HgsClient::worktreeReviewReady,this,[this](quint64 id){if(id!=m_review)return;m_review=0;updateCleanup();});
+        connect(m_client,&HgsClient::worktreeReviewFailed,this,[this](quint64 id){if(id!=m_review)return;m_review=0;updateCleanup();});
     }
     std::function<void()> cancelRequested;
     std::function<void(const QString &,bool)> filterRequested;
@@ -61,6 +70,41 @@ private:
     const BoxState *box() const {return m_host.isEmpty()?&m_fleet.local():m_fleet.peer(m_host);}
     bool online() const {const auto *b=box();return b&&b->ok&&(m_host.isEmpty()||QDateTime::currentMSecsSinceEpoch()-m_fleet.peerPolledAt(m_host)<FleetState::kPeerStaleMs);}
     QTreeWidgetItem *rootItem() const {auto *item=m_tree->currentItem();return item&&item->parent()?item->parent():item;}
+    QString commonDir() const {return m_data["common_dir"].toString();}
+    bool hasLinked() const {for(const auto &value:m_data["worktrees"].toArray())if(value.toObject()["kind"]=="linked")return true;return false;}
+    // Cleanup needs a current catalog: verdicts and removals are always computed
+    // again on the owning machine, but the panel must not offer stale rows.
+    bool cleanupAvailable() const {return online()&&!m_request&&m_error.isEmpty()&&m_data["state"]=="ok"&&!m_data["stale"].toBool()&&!commonDir().isEmpty()&&hasLinked();}
+    void cleanUp(const QString &focus){
+        if(!cleanupAvailable())return;
+        WorktreeCleanupDialog dialog(m_client,m_host,m_host.isEmpty()?m_fleet.local().host:m_host,commonDir(),focus,window());dialog.exec();
+        if(dialog.changed()){m_reviewedAt.remove(m_host+'\n'+commonDir());request(true);}else updateCleanup();
+    }
+    void showMenu(const QPoint &position){
+        auto *item=m_tree->itemAt(position);if(item&&item->parent())item=item->parent();if(!item)return;m_tree->setCurrentItem(item);
+        const auto path=item->data(0,Qt::UserRole).toString();QJsonObject row;
+        for(const auto &value:m_data["worktrees"].toArray())if(value.toObject()["path"]==path)row=value.toObject();
+        auto *menu=new QMenu(this);menu->setObjectName("worktreeMenu");menu->setToolTipsVisible(true);
+        if(row["kind"]=="linked"){
+            auto *remove=menu->addAction(row["available"].toBool()?tr("Remove worktree…"):tr("Forget missing worktree…"));remove->setObjectName("removeWorktreeAction");
+            remove->setEnabled(cleanupAvailable());remove->setToolTip(tr("Review this worktree on its computer before anything is removed."));
+            connect(remove,&QAction::triggered,this,[this,path]{cleanUp(path);});menu->addSeparator();
+        }
+        auto *copy=menu->addAction(tr("Copy path"));copy->setObjectName("copyWorktreePath");connect(copy,&QAction::triggered,this,[path]{QApplication::clipboard()->setText(path);});
+        connect(menu,&QMenu::aboutToHide,menu,&QObject::deleteLater);menu->popup(m_tree->viewport()->mapToGlobal(position));
+    }
+    // The reminder only counts; it never removes. One review per repository and
+    // machine every five minutes while the panel is visible.
+    void updateCleanup(){
+        if(m_picker)return;
+        const bool available=cleanupAvailable();const auto review=available?m_client->worktreeReview(m_host,commonDir()):QJsonObject();int ready=0;
+        for(const auto &value:review["worktrees"].toArray()){const auto verdict=value.toObject()["verdict"].toString();ready+=verdict=="ready"||verdict=="missing";}
+        m_cleanup->setEnabled(available);m_cleanup->setText(ready?tr("Clean up (%1)").arg(ready):tr("Clean up…"));
+        m_cleanup->setToolTip(!available?(m_data["state"]!="ok"?tr("Cleanup is available for Git repositories with linked worktrees."):hasLinked()?tr("Waiting for a current worktree catalog."):tr("This repository has no linked worktrees.")):
+            ready==1?tr("1 worktree can be removed without losing work. Review it first."):ready?tr("%1 worktrees can be removed without losing work. Review them first.").arg(ready):tr("Review linked worktrees and remove the ones you no longer need."));
+        const auto key=m_host+'\n'+commonDir();const auto now=QDateTime::currentSecsSinceEpoch();
+        if(available&&review.isEmpty()&&isVisible()&&!m_review&&now-m_reviewedAt.value(key,0)>=300){m_reviewedAt.insert(key,now);m_review=m_client->reviewWorktrees(m_host,commonDir());}
+    }
     void request(bool force=false){
         if(m_path.isEmpty()||!online()||m_request)return;
         m_requested=true;m_error.clear();m_request=m_client->requestWorktrees(m_host,m_path,force);render();
@@ -108,8 +152,8 @@ private:
             }
             if(!m_tree->currentItem()&&m_tree->topLevelItemCount())m_tree->setCurrentItem(m_tree->topLevelItem(0));m_tree->verticalScrollBar()->setValue(scroll);
         }
-        updateActions();
+        updateActions();updateCleanup();
     }
     HgsClient *m_client;bool m_picker=false,m_compact=false,m_requested=false;FleetState m_fleet;QString m_host,m_path,m_error;QJsonObject m_data;QByteArray m_rendered;quint64 m_request=0;
-    QLabel *m_status;QTreeWidget *m_tree;QPushButton *m_refresh,*m_launch,*m_all;
+    QLabel *m_status;QTreeWidget *m_tree;QPushButton *m_refresh,*m_launch,*m_all,*m_cleanup;quint64 m_review=0;QHash<QString,qint64> m_reviewedAt;
 };

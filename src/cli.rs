@@ -79,6 +79,8 @@ const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [-n tag] [-d
        hgs account copy ID --from MACHINE --to MACHINE --as NEW_ID [--label NAME]
        hgs [@host] worktrees --path PATH [--refresh] [--json]   existing checkouts as JSON
        hgs [@host] worktrees create --path REPO --branch NAME --destination PATH [--base HEAD] [--json]
+       hgs [@host] worktrees review --path PATH [--worktree WORKTREE] [--json]   cleanup verdicts and fingerprints
+       hgs [@host] worktrees remove --path WORKTREE --common-dir DIR --fingerprint HASH [--delete-branch] [--json]
        Mobile worktree ABI: worktrees-v1 (catalog/create/verified project placement)
        hgs [@host] dirs [--hidden] [path]   directories as JSON (default: home)
        hgs [@host] kill <session> [--archive <id>]
@@ -295,8 +297,8 @@ pub fn dispatch(args: Vec<String>) -> Result<i32> {
         }
         "inspect" | "processes" | "worktrees" | "dirs" | "send" | "send-now" | "session-action" | "terminal" | "history" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search"
         | "attachment" | "recovery" => {
-            if command == "worktrees" && args.first().is_some_and(|s| s == "create") && dry {
-                return Err(Error::new(1, "worktree creation does not support --dry-run"));
+            if command == "worktrees" && args.first().is_some_and(|s| s == "create" || s == "remove") && dry {
+                return Err(Error::new(1, "worktree creation and removal do not support --dry-run"));
             }
             if (matches!(command.as_str(), "processes" | "send" | "send-now" | "session-action" | "terminal" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "recovery") || (command=="attachment" && has(args,"--stage"))) && dry {
                 return Err(Error::new(1, "message input does not support --dry-run"));

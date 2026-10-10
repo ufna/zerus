@@ -907,6 +907,57 @@ quint64 HgsClient::createWorktree(const QString &host,const QString &path,const 
     return request;
 }
 
+namespace {
+QString cleanupError(const QString &host,const QString &detail) {
+    // An older hgs prints the catalog usage for the new review/remove actions.
+    if(detail.contains(QStringLiteral("usage: hgs worktrees --path")))
+        return host.isEmpty()?HgsClient::tr("Update Zerus on this computer to clean up worktrees."):HgsClient::tr("Update Zerus on %1 to clean up worktrees.").arg(host);
+    return detail;
+}
+}
+quint64 HgsClient::reviewWorktrees(const QString &host,const QString &path,const QString &worktree)
+{
+    const auto request=++m_worktreeRequest;const auto key=host+'\n'+path+'\n'+worktree;
+    if(m_reviewsInFlight.contains(key)){m_reviewsInFlight[key].append(request);return request;}
+    m_reviewsInFlight[key].append(request);
+    QStringList args{"worktrees","review","--path",path,"--json"};if(!worktree.isEmpty())args<<"--worktree"<<worktree;if(!host.isEmpty())args.prepend('@'+host);
+    runHgs(m_hgs,args,host.isEmpty()?30000:45000,this,[this,host,path,key,worktree](const QByteArray &out){
+        const auto requests=m_reviewsInFlight.take(key);
+        const auto data=out.size()<=4*1024*1024?QJsonDocument::fromJson(out).object():QJsonObject();
+        if(!data.value("worktrees").isArray()||!data.value("state").isString()){for(const auto r:requests)emit worktreeReviewFailed(r,host,path,tr("Invalid worktree review response"));return;}
+        if(worktree.isEmpty()&&data["state"]=="ok")m_worktreeReviews.insert(host+'\n'+data["common_dir"].toString(),data);
+        for(const auto r:requests)emit worktreeReviewReady(r,host,path,data);
+    },[this,host,path,key](const QString &,const QString &detail){for(const auto r:m_reviewsInFlight.take(key))emit worktreeReviewFailed(r,host,path,cleanupError(host,detail));});
+    return request;
+}
+QJsonObject HgsClient::worktreeReview(const QString &host,const QString &commonDir) const
+{
+    const auto data=m_worktreeReviews.value(host+'\n'+commonDir);
+    const auto age=QDateTime::currentSecsSinceEpoch()-qint64(data.value("sampled_at").toDouble());
+    return age>=0&&age<300?data:QJsonObject();
+}
+quint64 HgsClient::removeWorktree(const QString &host,const QString &path,const QString &commonDir,const QString &fingerprint,bool deleteBranch)
+{
+    const auto request=++m_worktreeRequest;const auto token=QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QStringList args{"worktrees","remove","--path",path,"--common-dir",commonDir,"--fingerprint",fingerprint,"--request-id",token,"--json"};
+    if(deleteBranch)args<<"--delete-branch";if(!host.isEmpty())args.prepend('@'+host);
+    const auto forget=[this,host,commonDir]{
+        // Removal changes the repository whatever the outcome; never trust old verdicts.
+        m_worktreeReviews.remove(host+'\n'+commonDir);
+        QSettings settings;auto snapshots=QJsonDocument::fromJson(settings.value("workspace/worktreeSnapshots").toByteArray()).object();
+        for(auto i=snapshots.begin();i!=snapshots.end();++i){auto value=i.value().toObject();if(value["common_dir"]==commonDir){value["stale"]=true;i.value()=value;}}
+        settings.setValue("workspace/worktreeSnapshots",QJsonDocument(snapshots).toJson(QJsonDocument::Compact));
+    };
+    runHgs(m_hgs,args,330000,this,[this,request,token,path,forget](const QByteArray &out){
+        forget();const auto data=QJsonDocument::fromJson(out).object();
+        if(data["request_id"]!=token||(data["status"]!="removed"&&data["status"]!="forgotten")||data["path"]!=path){
+            emit worktreeRemoved(request,false,{},tr("Removal could not be confirmed. Review the worktrees again."));return;
+        }
+        emit worktreeRemoved(request,true,data,{});
+    },[this,request,host,forget](const QString &,const QString &error){forget();emit worktreeRemoved(request,false,{},cleanupError(host,error));});
+    return request;
+}
+
 quint64 HgsClient::requestDirectories(const QString &host, const QString &path, bool hidden)
 {
     const quint64 request = ++m_directoryRequest;

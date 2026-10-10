@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Catalogs and explicit worktree creation against isolated real Git repositories."""
 import concurrent.futures
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -10,12 +11,15 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 
 REPO=Path(__file__).resolve().parents[1]
 HGS=Path(os.environ.get('HGS_TEST_BIN',REPO/'target/debug/hgs')).resolve()
 GIT=shutil.which('git')
 
-class Worktrees(unittest.TestCase):
+def codes(items):return [item['code'] for item in items]
+
+class Repository:
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='hgs-worktrees-');self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);self.home=self.root/'home';self.home.mkdir()
@@ -33,6 +37,8 @@ class Worktrees(unittest.TestCase):
         file.write_text('#!'+sys.executable+'\nimport os,sys,time\n'+body);file.chmod(0o755)
     def linked(self,name='linked tree'):
         path=self.root/name;self.git('-C',str(self.repo),'worktree','add','-qb','feature/'+name.replace(' ','-'),str(path));return path
+
+class Worktrees(Repository,unittest.TestCase):
     def test_main_linked_subdirectory_symlink_and_identity(self):
         linked=self.linked();nested=linked/'nested';nested.mkdir();alias=self.root/'alias';alias.symlink_to(nested,target_is_directory=True)
         data=self.catalog(alias);self.assertEqual(data['state'],'ok');self.assertEqual(data['path'],str(nested.resolve()));self.assertEqual(data['selected_root'],str(linked.resolve()))
@@ -133,5 +139,116 @@ class Worktrees(unittest.TestCase):
         with concurrent.futures.ThreadPoolExecutor() as pool:results=list(pool.map(lambda branch:self.create(branch=branch),['first','second']))
         self.assertEqual(sum(r.returncode==0 for r in results),1)
         self.assertEqual(len(self.catalog()['worktrees']),2)
+
+class Cleanup(Repository,unittest.TestCase):
+    """Review and guarded removal: nothing is forced and every check repeats before removal."""
+    def setUp(self):
+        super().setUp();(self.repo/'.gitignore').write_text('target/\nartifacts/\n');self.commit(self.repo,'ignore build output',add=True)
+    def commit(self,path,message,add=False):
+        if add:self.git('-C',str(path),'add','-A')
+        self.git('-C',str(path),'-c','user.name=Fixture','-c','user.email=fixture@example.test','commit','--allow-empty','-qm',message)
+    def age(self,path,days=2):
+        gitdir=Path(self.git('-C',str(path),'rev-parse','--absolute-git-dir'));old=time.time()-days*86400
+        for name in ('HEAD','index','logs/HEAD'):
+            if (gitdir/name).exists():os.utime(gitdir/name,(old,old))
+    def review(self,path=None,worktree=None):
+        result=subprocess.run([str(HGS),'worktrees','review','--path',str(path or self.repo),*(['--worktree',str(worktree)] if worktree else []),'--json'],env=self.env,text=True,capture_output=True,timeout=30)
+        self.assertEqual(result.returncode,0,result.stderr);return json.loads(result.stdout)
+    def row(self,path,data=None):
+        data=data or self.review();names={str(path),str(Path(path).resolve())}
+        return next(row for row in data['worktrees'] if row['path'] in names)
+    def remove(self,path,fingerprint,common=None,extra=()):
+        return subprocess.run([str(HGS),'worktrees','remove','--path',str(path),'--common-dir',str(common or self.repo/'.git'),'--fingerprint',fingerprint,
+            '--request-id','test-remove','--json',*extra],env=self.env,text=True,capture_output=True,timeout=30)
+    def binding(self,name,cwd,archived=False,backend=None):
+        state=self.root/'state'
+        if archived:
+            identity=str(uuid.uuid4());path=state/'archives'/(identity+'.json')
+            record={'version':1,'name':name,'agent':'codex','archive_id':identity,'cwd':str(cwd),'archived_at':time.time()}
+        elif backend=='dsh':
+            path=state/'dsh/bindings'/(hashlib.sha256(name.encode()).hexdigest()+'.json');record={'backend':'dsh','name':name,'agent':'dsh','cwd':str(cwd)}
+        else:
+            path=state/(hashlib.sha256(name.encode()).hexdigest()+'.json');record={'version':1,'name':name,'agent':'codex','launch_dir':str(cwd),'cwd':str(self.root)}
+        path.parent.mkdir(parents=True,exist_ok=True);path.write_text(json.dumps(record))
+    def test_review_separates_ready_review_and_blocked_checkouts(self):
+        merged=self.linked('merged');feature=self.linked('feature');self.commit(feature,'feature work')
+        dirty=self.linked('dirty');(dirty/'.gitignore').write_text('changed\n')
+        untracked=self.linked('untracked');(untracked/'notes.txt').write_text('keep')
+        fresh=self.linked('fresh')
+        for path in (merged,feature,dirty,untracked):self.age(path)
+        data=self.review();self.assertEqual(data['state'],'ok');self.assertEqual(data['common_dir'],str((self.repo/'.git').resolve()));self.assertIn('main',data['base'])
+        self.assertEqual(data['machine'],'fixture');self.assertFalse(data['partial'])
+        main=self.row(self.repo,data);self.assertEqual(main['verdict'],'blocked');self.assertEqual(codes(main['reasons']),['main_checkout'])
+        row=self.row(merged,data);self.assertEqual(row['verdict'],'ready',row);self.assertTrue(row['merged']);self.assertEqual(row['reasons'],[]);self.assertEqual(row['notes'],[])
+        self.assertEqual(len(row['fingerprint']),64);self.assertEqual(row['branch'],'feature/merged');self.assertLess(row['last_activity'],time.time()-86400)
+        row=self.row(feature,data);self.assertEqual(row['verdict'],'review');self.assertFalse(row['merged']);self.assertEqual(row['ahead'],1);self.assertEqual(codes(row['notes']),['not_merged'])
+        row=self.row(dirty,data);self.assertEqual(row['verdict'],'blocked');self.assertEqual(codes(row['reasons']),['changes']);self.assertEqual(row['changes'],1)
+        row=self.row(untracked,data);self.assertEqual(codes(row['reasons']),['untracked']);self.assertEqual(row['untracked'],1)
+        row=self.row(fresh,data);self.assertEqual(row['verdict'],'review');self.assertEqual(codes(row['notes']),['recent'])
+        one=self.review(merged/'.',worktree=merged);self.assertEqual([r['path'] for r in one['worktrees']],[str(merged.resolve())]);self.assertEqual(one['worktrees'][0]['fingerprint'],self.row(merged,data)['fingerprint'])
+        plain=self.root/'plain';plain.mkdir();self.assertEqual(self.review(plain)['state'],'not_repo');self.assertFalse((plain/'.git').exists())
+    def test_review_blocks_locks_nesting_processes_sessions_and_lost_commits(self):
+        locked=self.linked('locked');self.git('-C',str(self.repo),'worktree','lock','--reason','in use',str(locked))
+        parent=self.linked('parent');(parent/'artifacts').mkdir();nested=parent/'artifacts'/'nested';self.git('-C',str(self.repo),'worktree','add','-qb','nested',str(nested))
+        busy=self.linked('busy');process=subprocess.Popen(['sleep','60'],cwd=busy/'.');self.addCleanup(process.wait);self.addCleanup(process.kill)
+        bound=self.linked('bound');(bound/'src').mkdir();self.binding('codex/bound',bound/'src')
+        deep=self.linked('deep');self.binding('dsh/deep',deep,backend='dsh')
+        archived=self.linked('archived');self.binding('codex/old',archived,archived=True)
+        lost=self.linked('lost');self.git('-C',str(lost),'checkout','-q','--detach');self.commit(lost,'only here')
+        kept=self.linked('kept');self.git('-C',str(kept),'checkout','-q','--detach','main')
+        for path in (locked,parent,nested,busy,bound,deep,archived,lost,kept):self.age(path)
+        data=self.review()
+        row=self.row(locked,data);self.assertEqual(codes(row['reasons']),['locked']);self.assertIn('in use',row['reasons'][0]['message'])
+        row=self.row(parent,data);self.assertEqual(codes(row['reasons']),['nested']);self.assertEqual(row['nested'],[str(nested.resolve())])
+        row=self.row(busy,data);self.assertEqual(codes(row['reasons']),['processes']);self.assertIn(process.pid,[p['pid'] for p in row['processes']])
+        row=self.row(bound,data);self.assertEqual(codes(row['reasons']),['sessions']);self.assertEqual(row['sessions'],['codex/bound'])
+        self.assertEqual(self.row(deep,data)['sessions'],['dsh/deep'])
+        row=self.row(archived,data);self.assertEqual(row['verdict'],'review');self.assertEqual(codes(row['notes']),['archived_sessions']);self.assertEqual(row['archived_sessions'],1)
+        row=self.row(lost,data);self.assertEqual(codes(row['reasons']),['detached_unreachable'])
+        row=self.row(kept,data);self.assertEqual(row['verdict'],'ready',row);self.assertTrue(row['detached'])
+    def test_review_reports_ignored_data_and_missing_checkouts(self):
+        built=self.linked('built');(built/'target').mkdir();(built/'target'/'big.bin').write_bytes(b'x'*1000);(built/'target'/'small').write_bytes(b'y'*24)
+        gone=self.linked('gone');shutil.rmtree(gone);self.age(built)
+        data=self.review();row=self.row(built,data)
+        self.assertEqual(row['verdict'],'ready',row);self.assertEqual(row['ignored'],[{'path':'target','bytes':1024,'complete':True}]);self.assertEqual(row['ignored_bytes'],1024)
+        row=self.row(gone,data);self.assertEqual(row['verdict'],'missing');self.assertFalse(row['available'])
+    def test_remove_rechecks_fingerprint_and_keeps_branch(self):
+        tree=self.linked('task');self.age(tree);before=self.row(tree);self.catalog()
+        self.commit(tree,'late work')
+        stale=self.remove(tree,before['fingerprint']);self.assertNotEqual(stale.returncode,0);self.assertIn('changed since the review',stale.stderr);self.assertTrue(tree.exists())
+        result=self.remove(tree,self.row(tree)['fingerprint']);self.assertEqual(result.returncode,0,result.stderr)
+        data=json.loads(result.stdout);self.assertEqual(data['status'],'removed');self.assertEqual(data['request_id'],'test-remove');self.assertFalse(data['branch_deleted'])
+        self.assertEqual(data['path'],str(tree.resolve()));self.assertEqual(data['common_dir'],str((self.repo/'.git').resolve()))
+        self.assertFalse(tree.exists());self.assertIn('feature/task',self.git('-C',str(self.repo),'branch','--list','feature/task'))
+        self.assertNotIn(str(tree.resolve()),[r['path'] for r in self.catalog()['worktrees']])
+    def test_remove_deletes_ignored_data_and_only_merged_branches(self):
+        merged=self.linked('merged');(merged/'target').mkdir();(merged/'target'/'out').write_text('build');self.age(merged)
+        result=self.remove(merged,self.row(merged)['fingerprint'],extra=('--delete-branch',));self.assertEqual(result.returncode,0,result.stderr)
+        data=json.loads(result.stdout);self.assertTrue(data['branch_deleted']);self.assertFalse(merged.exists());self.assertEqual(self.git('-C',str(self.repo),'branch','--list','feature/merged'),'')
+        feature=self.linked('feature');self.commit(feature,'unmerged');self.age(feature)
+        result=self.remove(feature,self.row(feature)['fingerprint'],extra=('--delete-branch',));self.assertEqual(result.returncode,0,result.stderr)
+        data=json.loads(result.stdout);self.assertFalse(data['branch_deleted']);self.assertIn('not merged',data['branch_error']);self.assertFalse(feature.exists())
+        self.assertIn('feature/feature',self.git('-C',str(self.repo),'branch','--list','feature/feature'))
+    def test_remove_refuses_blocked_checkouts_without_changes(self):
+        dirty=self.linked('dirty');(dirty/'notes.txt').write_text('keep')
+        result=self.remove(dirty,self.row(dirty)['fingerprint']);self.assertNotEqual(result.returncode,0);self.assertIn('untracked',result.stderr.lower());self.assertEqual((dirty/'notes.txt').read_text(),'keep')
+        parent=self.linked('parent');(parent/'artifacts').mkdir();nested=parent/'artifacts'/'nested';self.git('-C',str(self.repo),'worktree','add','-qb','nested',str(nested));(nested/'work.txt').write_text('unsaved')
+        result=self.remove(parent,self.row(parent)['fingerprint']);self.assertNotEqual(result.returncode,0);self.assertIn('nested',result.stderr.lower());self.assertEqual((nested/'work.txt').read_text(),'unsaved')
+        main=self.row(self.repo);self.assertNotEqual(self.remove(self.repo,main['fingerprint'] or '0'*64).returncode,0);self.assertTrue((self.repo/'.git').is_dir())
+        clean=self.linked('clean');row=self.row(clean)
+        other=self.root/'other';self.git('init','-q',str(other))
+        changed=self.remove(clean,row['fingerprint'],common=other/'.git');self.assertNotEqual(changed.returncode,0);self.assertIn('Repository changed',changed.stderr);self.assertTrue(clean.exists())
+        self.assertNotEqual(self.remove(clean,row['fingerprint'],extra=('--dry-run',)).returncode,0);self.assertTrue(clean.exists())
+        dry=subprocess.run([str(HGS),'--dry-run','worktrees','remove','--path',str(clean),'--common-dir',str(self.repo/'.git'),'--fingerprint',row['fingerprint']],env=self.env,text=True,capture_output=True,timeout=30)
+        self.assertNotEqual(dry.returncode,0);self.assertTrue(clean.exists())
+        relative=subprocess.run([str(HGS),'worktrees','remove','--path','clean','--common-dir',str(self.repo/'.git'),'--fingerprint',row['fingerprint'],'--json'],cwd=self.root,env=self.env,text=True,capture_output=True,timeout=30)
+        self.assertNotEqual(relative.returncode,0);self.assertTrue(clean.exists())
+    def test_forget_missing_checkout_keeps_branch_and_locks(self):
+        gone=self.linked('gone');shutil.rmtree(gone);row=self.row(gone);self.assertEqual(row['verdict'],'missing')
+        result=self.remove(gone,row['fingerprint']);self.assertEqual(result.returncode,0,result.stderr);self.assertEqual(json.loads(result.stdout)['status'],'forgotten')
+        self.assertFalse((self.repo/'.git/worktrees/gone').exists());self.assertIn('feature/gone',self.git('-C',str(self.repo),'branch','--list','feature/gone'))
+        locked=self.linked('locked');self.git('-C',str(self.repo),'worktree','lock',str(locked));shutil.rmtree(locked)
+        row=self.row(locked);self.assertEqual(row['verdict'],'blocked');self.assertNotEqual(self.remove(locked,row['fingerprint']).returncode,0)
+        self.assertTrue((self.repo/'.git/worktrees/locked').exists())
 
 if __name__=='__main__':unittest.main()

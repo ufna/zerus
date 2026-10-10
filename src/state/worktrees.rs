@@ -29,18 +29,18 @@ impl Drop for MobileSignals {
 fn mobile_stopped() -> bool { MOBILE_STOP.load(std::sync::atomic::Ordering::Relaxed) }
 
 
-struct GitError {
-    state: &'static str,
-    detail: String,
+pub(super) struct GitError {
+    pub(super) state: &'static str,
+    pub(super) detail: String,
 }
-fn error(state: &'static str, detail: impl Into<String>) -> GitError {
+pub(super) fn error(state: &'static str, detail: impl Into<String>) -> GitError {
     GitError {
         state,
         detail: detail.into(),
     }
 }
 
-fn git(cwd: &Path, args: &[&str], deadline: Instant) -> std::result::Result<Vec<u8>, GitError> {
+pub(super) fn git(cwd: &Path, args: &[&str], deadline: Instant) -> std::result::Result<Vec<u8>, GitError> {
     if mobile_stopped() || Instant::now() >= deadline { return Err(error("timeout", "Git operation cancelled or timed out")); }
     let mut command = Command::new("git");
     command
@@ -162,7 +162,7 @@ fn git(cwd: &Path, args: &[&str], deadline: Instant) -> std::result::Result<Vec<
     result
 }
 
-fn cache_file(kind: &str, identity: &str) -> PathBuf {
+pub(super) fn cache_file(kind: &str, identity: &str) -> PathBuf {
     root().join("worktree-cache").join(format!(
         "{}-{:x}.json",
         kind,
@@ -175,7 +175,7 @@ fn load(path: &Path) -> Option<Value> {
         .filter(|m| m.len() <= 2 * MAX_OUTPUT as u64)?;
     serde_json::from_slice(&fs::read(path).ok()?).ok()
 }
-fn canonical(path: &str) -> PathBuf {
+pub(super) fn canonical(path: &str) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path))
 }
 
@@ -257,6 +257,32 @@ fn parse(bytes: &[u8]) -> std::result::Result<(Vec<Value>, bool), GitError> {
     Ok((trees, partial))
 }
 
+/// Current checkouts of the repository at `path`, whose common directory is `common`.
+pub(super) fn list(
+    path: &Path,
+    common: &Path,
+    deadline: Instant,
+) -> std::result::Result<(Vec<Value>, bool), GitError> {
+    let bytes = git(path, &["worktree", "list", "--porcelain", "-z"], deadline)?;
+    let (mut trees, partial) = parse(&bytes)?;
+    // Git's porcelain reports the gitdir for a submodule's main
+    // checkout. Resolve core.worktree through Git; never offer the
+    // metadata directory itself as a working folder.
+    if trees[0]["kind"] == "main" && trees[0]["path"] == json!(common) {
+        let working = git(common, &["rev-parse", "--show-toplevel"], deadline)
+            .ok()
+            .and_then(|b| String::from_utf8(b).ok())
+            .map(|s| canonical(s.trim_end_matches('\n')));
+        if let Some(working) = working.filter(|p| p.is_absolute() && p != common) {
+            trees[0]["available"] = json!(working.is_dir());
+            trees[0]["path"] = json!(working);
+        } else {
+            trees[0]["available"] = json!(false);
+        }
+    }
+    Ok((trees, partial))
+}
+
 pub(super) fn catalog(path: &Path, refresh: bool) -> Value {
     let requested = path.to_string_lossy();
     let path_cache = cache_file("path", &requested);
@@ -306,23 +332,7 @@ pub(super) fn catalog(path: &Path, refresh: bool) -> Value {
                 }
             }
             if refresh || !snapshot.as_ref().is_some_and(fresh) {
-                let bytes = git(&path, &["worktree", "list", "--porcelain", "-z"], deadline)?;
-                let (mut trees, partial) = parse(&bytes)?;
-                // Git's porcelain reports the gitdir for a submodule's main
-                // checkout. Resolve core.worktree through Git; never offer the
-                // metadata directory itself as a working folder.
-                if trees[0]["kind"] == "main" && trees[0]["path"] == json!(common) {
-                    let working = git(&common, &["rev-parse", "--show-toplevel"], deadline)
-                        .ok()
-                        .and_then(|b| String::from_utf8(b).ok())
-                        .map(|s| canonical(s.trim_end_matches('\n')));
-                    if let Some(working) = working.filter(|p| p.is_absolute() && p != &common) {
-                        trees[0]["available"] = json!(working.is_dir());
-                        trees[0]["path"] = json!(working);
-                    } else {
-                        trees[0]["available"] = json!(false);
-                    }
-                }
+                let (trees, partial) = list(&path, &common, deadline)?;
                 let value = json!({"state":"ok","common_dir":common,"worktrees":trees,"partial":partial,"sampled_at":now()});
                 let _ = atomic(&cache, &value.to_string());
                 snapshot = Some(value);
@@ -366,8 +376,13 @@ pub(super) fn catalog(path: &Path, refresh: bool) -> Value {
 }
 
 pub(super) fn dispatch(args: &[String]) -> Result<i32> {
-    if args.first().is_some_and(|s| s == "create") {
-        let value = create(&args[1..])?;
+    let action = args.first().map(String::as_str);
+    if let Some(action @ ("create" | "review" | "remove")) = action {
+        let value = match action {
+            "create" => create(&args[1..])?,
+            "review" => super::worktree_cleanup::review_command(&args[1..])?,
+            _ => super::worktree_cleanup::remove_command(&args[1..])?,
+        };
         println!("{value}");
         return Ok(0);
     }

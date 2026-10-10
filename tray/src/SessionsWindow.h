@@ -145,6 +145,13 @@ private:
     void changeSession();
     void terminateSession();
     void archiveSession();
+    // After the last session in a linked worktree is archived, offer (never run)
+    // a review of that worktree for removal. Host, session, root, common dir.
+    QStringList m_archivedWorktree;
+    QPushButton *m_worktreeCleanup = nullptr;
+    int m_worktreeCleanupRevision = 0;
+    void offerWorktreeCleanup();
+    void cleanUpArchivedWorktree();
     void renameSession();
     void forkSession();
     void populateBatchActions(QMenu *menu);

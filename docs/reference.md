@@ -620,8 +620,43 @@ bypasses it. Identity is machine plus canonical Git common directory, not equal
 paths or repository names. Limits are three seconds, 1 MiB of Git output and
 512 worktrees. Errors distinguish `not_repo`, `git_unavailable`, `metadata_error`,
 `timeout`, `too_large` and `folder_unavailable`; previous data is explicitly stale.
-The UI caches at most 64 snapshots and 8 MiB. See the
-[worktree design](../design/worktree-support/index.html) for future cleanup ideas.
+The UI caches at most 64 snapshots and 8 MiB. Cleanup is described in
+[the cleanup design](superpowers/specs/2026-10-10-worktree-cleanup-design.md).
+
+### Cleaning up worktrees
+
+Removal is always explicit and is reviewed on the computer that owns the
+checkout. **Clean up…** in Projects or the session inspector lists the linked
+worktrees of the repository as **Ready** (preselected), **Review** (removable but
+with notes such as unmerged commits, archived sessions or activity in the last
+24 hours), **Missing** (the folder is gone; only Git's record is forgotten) or
+**Blocked**. The button shows the number of ready and missing worktrees; that
+review runs at most every five minutes while the panel is visible and never
+removes anything. A worktree row's menu offers **Remove worktree…** or
+**Forget missing worktree…** for that checkout alone.
+
+A worktree is blocked when it is the main checkout or bare, is locked, has
+uncommitted or untracked files, contains another worktree, has initialized
+submodules, has a detached commit that no branch, tag or remote branch contains,
+or is used by a process of this user or by a running, paused or saved Zerus
+session (archive the sessions first). Git's own removal would silently delete a
+nested worktree inside an ignored folder; Zerus refuses it.
+
+Confirmation lists the folders, the ignored data deleted with them (such as build
+output) and any branches that will be deleted. Each removal then repeats the
+review under the repository lock used by creation, compares the reviewed
+fingerprint and runs `git worktree remove` without force, one worktree at a time.
+**Also delete merged branches** (off by default, remembered locally) uses
+`git branch -d` only for branches merged into the main checkout's branch or
+`origin/HEAD`; other branches are kept. A failure is reported for that worktree
+and never retried automatically.
+
+When **Move to archive** succeeds for the last session in a linked worktree, the
+status bar briefly offers **Clean up worktree…**, which opens the same review for
+that worktree. The CLI is `hgs [@host] worktrees review --path PATH
+[--worktree WORKTREE] --json` and `hgs [@host] worktrees remove --path WORKTREE
+--common-dir DIR --fingerprint HASH [--delete-branch] --json`. Machines with an
+older `hgs` must be updated before cleanup is available there.
 
 ## Machines and accounts
 
