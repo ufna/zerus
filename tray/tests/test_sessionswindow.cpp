@@ -3740,6 +3740,9 @@ void TestSessionsWindow::forkValidationCancelAndPinnedPayload()
     client->inspectionReady({}, "codex/hgs/dashboard", details);
     QTimer::singleShot(0, &window, [&]() {
         auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget()); QVERIFY(dialog);
+        // The dialog's loop also delivers polls from the fixture, whose inspect
+        // lacks fork support; confirm with the injected details still current.
+        client->inspectionReady({}, "codex/hgs/dashboard", details);
         dialog->findChild<QLineEdit *>("forkSessionName")->setText("Новая ветка");
         dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok)->click();
     });
@@ -3780,13 +3783,16 @@ void TestSessionsWindow::forkKeepsSourceAndGroup()
     QCOMPARE(list->currentItem()->data(SessionRoles::Identity).toString(), sourceIdentity);
     auto *client = window.findChild<HgsClient *>(); QSignalSpy inspected(client, &HgsClient::inspectionReady);
     QSignalSpy writes(client, &HgsClient::writeDone); QTRY_VERIFY(!inspected.isEmpty());
-    client->inspectionReady({}, original.name, QJsonObject{{"tracked", true}, {"run_id", original.runId},
+    const QJsonObject details{{"tracked", true}, {"run_id", original.runId},
         {"conversation_id", "conversation-one"}, {"fork_supported", true}, {"cwd", original.cwd},
-        {"activity", "idle"}, {"phase", "idle"}, {"last_event_at", 2000000000}, {"events", QJsonArray{}}, {"cursor", 0}}, original.archiveId);
+        {"activity", "idle"}, {"phase", "idle"}, {"last_event_at", 2000000000}, {"events", QJsonArray{}}, {"cursor", 0}};
+    client->inspectionReady({}, original.name, details, original.archiveId);
     auto *action = window.findChild<QAction *>("forkSessionAction"); QVERIFY(action->isEnabled());
     QTimer::singleShot(0, &window, [&]() {
         auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget()); QVERIFY(dialog);
         QCOMPARE(dialog->findChild<QLineEdit *>("forkSessionName")->text(), QString("topic-fork"));
+        // Fixture polls delivered in the dialog's loop lack fork support.
+        client->inspectionReady({}, original.name, details, original.archiveId);
         dialog->accept();
     });
     action->trigger(); QTRY_COMPARE(writes.size(), 1); QVERIFY(writes[0][1].toBool());
