@@ -1,4 +1,5 @@
 #include "ActivityView.h"
+#include "MarkdownHtml.h"
 #include "ContentScale.h"
 #include "MarkdownObjects.h"
 #include "SessionFileReference.h"
@@ -129,6 +130,7 @@ QAction *menuAction(QMenu *menu, const QString &text)
 class TestActivityView : public QObject {
     Q_OBJECT
 private slots:
+    void toolDetailsUseAnInstalledMonospaceFamily();
     void caughtUpActivityAcknowledgesEarlierReplyWithoutIntermediatePaint();
     void updatesRemainPaintableBeforeTheNextEventLoop();
     void startsAtLatestAndFollows();
@@ -195,6 +197,19 @@ private slots:
     void contextMenuSwitchesFullWidth();
     void preview();
 };
+
+void TestActivityView::toolDetailsUseAnInstalledMonospaceFamily()
+{
+    // The generic "monospace" is no macOS family: Qt spent ~60 ms populating
+    // aliases and then fell back to the proportional system font.
+    ActivityView view; view.resize(600, 500); view.setSessionKey("codex/session");
+    view.setActivity({}, {journalEvent(4, "Stop", "Answer"), journalEvent(5, "PostToolUse", "printf fixture-detail", "Bash")});
+    activate(view.browser(), "hgs-activity:group-5");
+    const auto found = view.browser()->document()->find("printf fixture-detail");
+    QVERIFY(!found.isNull());
+    const auto families = found.charFormat().fontFamilies().toStringList();
+    QCOMPARE(families.value(0), MarkdownHtml::monospaceFamily());
+}
 
 void TestActivityView::contentScaleScalesMarkupOnly()
 {

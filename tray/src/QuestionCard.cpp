@@ -1,4 +1,5 @@
 #include "QuestionCard.h"
+#include "MonospaceFont.h"
 #include "ContentScale.h"
 
 #include <QAbstractButton>
@@ -367,7 +368,7 @@ void QuestionCard::rebuild()
             auto *detail = new QLabel(body); detail->setObjectName("questionBody"); detail->setTextFormat(Qt::PlainText); detail->setWordWrap(true);
             detail->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
             detail->setTextInteractionFlags(Qt::TextSelectableByMouse);
-            if(m_question.value("approval").toBool()) {auto font=detail->font();font.setFamily("monospace");detail->setFont(font);}
+            if(m_question.value("approval").toBool()) {auto font=detail->font();font.setFamily(monospaceFamily());detail->setFont(font);}
             column->addWidget(detail);
         }
         auto *mode = new QLabel(form.multi ? tr("Select one or more") : tr("Select one")); mode->setObjectName("questionMode"); column->addWidget(mode);

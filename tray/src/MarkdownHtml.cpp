@@ -1,4 +1,5 @@
 #include "MarkdownHtml.h"
+#include "MonospaceFont.h"
 
 #include <QFontDatabase>
 #include <QFontMetricsF>
@@ -529,16 +530,7 @@ QString MarkdownTheme::resource(const QString &name) const
 QColor MarkdownHtml::chipSentinel() { return QColor(1, 2, 3); }
 QColor MarkdownHtml::headingChipSentinel() { return QColor(1, 2, 4); }
 
-QString MarkdownHtml::monospaceFamily()
-{
-    static const QString family = [] {
-        const QStringList installed = QFontDatabase::families();
-        for (const char *candidate : {"ui-monospace", "SFMono-Regular", "SF Mono", "Menlo", "Consolas", "Liberation Mono"})
-            if (installed.contains(QLatin1String(candidate), Qt::CaseInsensitive)) return QString::fromLatin1(candidate);
-        return QFontDatabase::systemFont(QFontDatabase::FixedFont).family();
-    }();
-    return family;
-}
+QString MarkdownHtml::monospaceFamily() { return ::monospaceFamily(); }
 
 QString MarkdownHtml::render(const QString &markdown, const MarkdownTheme &theme, const MarkdownLinkPolicy &links)
 {

@@ -1208,8 +1208,8 @@ void ActivityView::render(bool contentUpdate)
                 html+=QString("<a href='hgs-process:%1' style='color:%2;'>%3</a>").arg(process,accent,tr("View process"));
             }
             const auto detail = e.value("detail").toString();
-            if (!detail.isEmpty()) html += QString("<p style='font-family:monospace;font-size:12px;background:%1;padding:7px;'>%2</p>")
-                .arg(codeSurface, escaped(detail).replace('\n', "<br>"));
+            if (!detail.isEmpty()) html += QString("<p style=\"font-family:'%1';font-size:12px;background:%2;padding:7px;\">%3</p>")
+                .arg(MarkdownHtml::monospaceFamily(), codeSurface, escaped(detail).replace('\n', "<br>"));
         }
         html += "</td></tr></table>";
     }

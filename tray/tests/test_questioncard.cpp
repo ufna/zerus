@@ -1,4 +1,5 @@
 #include "QuestionCard.h"
+#include "MonospaceFont.h"
 
 #include <QAbstractButton>
 #include <QDir>
@@ -260,6 +261,10 @@ void TestQuestionCard::reviewCountdownAndNextNavigation()
     approval["questions"]=QJsonArray{QJsonObject{{"id","approval"},{"question","Approve this Bash command?"},{"body","printf fixture > fixture.txt"},
         {"options",QJsonArray{QJsonObject{{"id","allow"},{"label","Approve once"}},QJsonObject{{"id","deny"},{"label","Deny"}}}}}};
     card.setQuestion("session",approval);
+    // Approval commands read as code: an installed fixed-pitch family, never the
+    // generic "monospace" that macOS lacks and resolves to its proportional font.
+    const auto *command = card.findChild<QLabel *>("questionBody"); QVERIFY(command);
+    QCOMPARE(command->font().family(), monospaceFamily());
     auto *allow=card.findChild<QPushButton *>("approveToolRequest");auto *deny=card.findChild<QPushButton *>("denyToolRequest");
     QSignalSpy sent(&card,&QuestionCard::answerRequested);
     QVERIFY(!allow->isEnabled());QVERIFY(deny->isEnabled());QVERIFY(allow->text().contains("(3)"));
