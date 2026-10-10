@@ -210,6 +210,18 @@ local preferences. **Settings → Appearance → Content scale** adjusts Activit
 questions, the message field and Terminal from 75% to 200% in 5% steps, with 100%
 as the default; the session list, the side panel, the session header and its tabs
 keep their size.
+**Settings → Appearance → Activity width** keeps Activity readable in a wide or
+fullscreen window: the transcript, its queued input, questions and the message
+field share one centered column of at most 900 px by default (480–2400 px). The
+width is measured at 100% and grows with content scale, so lines keep their
+length. The scroll bar stays at the pane edge and the side margins scroll the
+transcript. Drag either column edge in Activity to resize the column
+symmetrically, or double-click an edge to restore 900 px. **Full-width Activity**,
+in Settings and in Activity's context menu, fills the whole pane; **Reset Activity
+width** in the same menu restores the default column. Narrower panes use their
+full width, and Terminal, Processes and Native UI are not affected. A reset icon
+appears beside an Appearance slider's value once it differs from the default and
+restores that default.
 **Settings → Appearance → Keep Zerus above other windows** keeps the Zerus window
 over other applications on X11, macOS and KDE Plasma 6 on Wayland. On KDE Wayland,
 Zerus uses temporary KWin scripts scoped to its own window and confirms the

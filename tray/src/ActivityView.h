@@ -7,6 +7,9 @@
 #include <QSet>
 #include <QWidget>
 
+namespace ActivityWidth { class ColumnLayout; }
+class QAction;
+class QMenu;
 class QPushButton;
 class QLabel;
 class QTextBrowser;
@@ -31,6 +34,10 @@ public:
     void setTheme(bool dark);
     // Enlarges the transcript and queued input, not the overlay controls.
     void setContentScale(double scale);
+    // Centers the transcript and queued input in a column of at most this
+    // many pixels. The scroll bar stays at the pane edge; 0 fills the pane.
+    void setColumnWidth(int width);
+    int columnWidth() const { return m_column; }
     void showSearchResult(const QJsonObject &event, const QString &query);
     void clearSearchResult();
     QWidget *compactionIndicator() const { return m_compaction; }
@@ -53,6 +60,11 @@ signals:
     void queueSendNowRequested(const QString &queueId);
     void messageActionRequested(const QString &id, const QString &action);
     void processRequested(const QString &id);
+    // Column edges and the context menu ask the owner, which stores the
+    // preference and applies it to every column.
+    void columnWidthRequested(int width);
+    void columnResetRequested();
+    void fullWidthRequested(bool full);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -67,6 +79,12 @@ private:
     QString copyKeyAt(const QPoint &position) const;
     bool nearBottom() const;
     void scheduleFollow();
+    void layoutColumn();
+    int scrollBarReserve() const;
+    void dragColumn(int distance);
+    void addColumnActions(QMenu *menu);
+    void showColumnMenu(const QPoint &position);
+    void updateColumnActions();
 
     QTextBrowser *m_browser;
     QWidget *m_queue;
@@ -97,4 +115,9 @@ private:
     int m_chipWidth = 0;            // viewport width the chips were sized for
     QList<qreal> m_chipWidths;      // chips whose form depends on that width
     double m_scale = 1.0;
+    int m_column = 0;               // 0: the transcript fills the pane
+    int m_dragOrigin = 0;           // column width when an edge was pressed
+    QList<QWidget *> m_edges;
+    ActivityWidth::ColumnLayout *m_queueColumn = nullptr;
+    QAction *m_fullWidth = nullptr, *m_resetWidth = nullptr;
 };
