@@ -493,6 +493,11 @@ the sort. Sorting preserves the selected folder and does not reorder the shared
 catalog. The divider below the list adjusts the folder/worktree heights and
 remembers that choice locally; additional window height goes to the folders.
 Worktree actions share its heading row, leaving more space for the folder list.
+The general **New session** action inherits the selected session's project,
+computer and matching project folder. For a linked worktree, a verified catalog
+selects the main checkout instead. Choosing another folder, project or computer
+cancels this automatic selection; explicit folder and worktree launch actions
+keep their requested path.
 Project switches in **New session** keep the machine and select that project's
 folder. Only a path explicitly chosen through **Browse…** stays pinned per machine
 within that dialog;

@@ -181,6 +181,12 @@ private slots:
     void renameFailureKeepsSelection();
     void launchInitialFolderFollowsProject_data();
     void launchInitialFolderFollowsProject();
+    void launchFolderFollowsSelectedSession_data();
+    void launchFolderFollowsSelectedSession();
+    void launchFolderPrefillPreservesUserChoices_data();
+    void launchFolderPrefillPreservesUserChoices();
+    void launchFolderPrefillRejectsUnverifiedMain_data();
+    void launchFolderPrefillRejectsUnverifiedMain();
     void launchFoldersFollowProject();
     void launchListsSurviveFleetRefreshes();
     void sessionPanelHeaderStartsNewSession();
@@ -4184,6 +4190,124 @@ void TestSessionsWindow::launchInitialFolderFollowsProject()
         QCOMPARE(actualProject,target);QCOMPARE(actualPath,expected);QVERIFY(!outside);
     });
     window.showNewSession();QVERIFY(checked);
+}
+
+void TestSessionsWindow::launchFolderFollowsSelectedSession_data()
+{
+    QTest::addColumn<QString>("machine");QTest::addColumn<QString>("cwd");
+    QTest::addColumn<QString>("canonical");QTest::addColumn<QString>("expected");
+    QTest::newRow("ordinary-folder")<<QString("arch")<<QString("/notes")<<QString()<<QString("/notes");
+    QTest::newRow("nested-folder")<<QString("arch")<<QString("/notes/drafts")<<QString()<<QString("/notes");
+    QTest::newRow("path-boundary")<<QString("arch")<<QString("/notes-copy")<<QString()<<QString("/notes-copy");
+    QTest::newRow("canonical-alias")<<QString("arch")<<QString("/alias/drafts")<<QString("/notes/drafts")<<QString("/notes");
+    QTest::newRow("remote-folder")<<QString("mac")<<QString("/notes/drafts")<<QString()<<QString("/notes");
+    QTest::newRow("main-checkout")<<QString("arch")<<QString("/repo/src")<<QString()<<QString("/repo");
+    QTest::newRow("linked-worktree")<<QString("arch")<<QString("/linked/src")<<QString()<<QString("/repo");
+    QTest::newRow("remote-linked-worktree")<<QString("mac")<<QString("/linked/src")<<QString()<<QString("/repo");
+}
+void TestSessionsWindow::launchFolderFollowsSelectedSession()
+{
+    QFETCH(QString,machine);QFETCH(QString,cwd);QFETCH(QString,canonical);QFETCH(QString,expected);
+    QTemporaryDir fixture;QFile program(fixture.filePath("hgs"));QFile original(script());
+    QVERIFY(original.open(QIODevice::ReadOnly));QVERIFY(program.open(QIODevice::WriteOnly));program.write(original.readAll());program.close();
+    QVERIFY(program.setPermissions(QFileDevice::ReadOwner|QFileDevice::WriteOwner|QFileDevice::ExeOwner));
+    QFile response(program.fileName()+".worktrees");QVERIFY(response.open(QIODevice::WriteOnly));
+    response.write(QJsonDocument(QJsonObject{{"state","ok"},{"selected_root",cwd.startsWith("/linked/")?"/linked":"/repo"},
+        {"common_dir","/repo/.git"},{"sampled_at",QDateTime::currentSecsSinceEpoch()},
+        {"worktrees",QJsonArray{QJsonObject{{"path","/repo"},{"kind","main"},{"available",true}},
+            QJsonObject{{"path","/linked"},{"kind","linked"},{"available",true}}}}}).toJson());response.close();
+    SessionOrganization projects;const auto project=projects.createGroup("Selected"),other=projects.createGroup("Other");
+    projects.addFolder(project,machine,"/unrelated");projects.addFolder(project,machine,"/repo");
+    projects.addFolder(project,machine,"/notes");projects.addFolder(other,machine,"/elsewhere");
+    projects.moveSession("arch\nkimi/docs/research",other);
+    // Same paths on another computer must never supply the launch target.
+    projects.addFolder(project,machine=="mac"?"arch":"mac","/notes");
+    auto state=fleet();const QString target=machine=="arch"?QString():machine;
+    auto box=target.isEmpty()?state.local():*state.peer(target);auto &session=box.sessions[0];
+    session.cwd=cwd;session.canonicalCwd=canonical;
+    projects.moveSession(machine+'\n'+session.name,project);
+    if(target.isEmpty())state.setLocal(box,QDateTime::currentMSecsSinceEpoch());else state.setPeer(box,QDateTime::currentMSecsSinceEpoch());
+    QSettings().setValue("workspace/organization",QJsonDocument(projects.toJson()).toJson(QJsonDocument::Compact));
+    SessionsWindow window(program.fileName());window.setFleet(state);window.show();window.showSession(target,session.name);
+    bool checked=false;
+    QTimer::singleShot(0,&window,[&]{
+        auto *dialog=qobject_cast<NewSessionDialog *>(QApplication::activeModalWidget());QVERIFY(dialog);
+        QTimer::singleShot(5000,dialog,&QDialog::reject);
+        QCOMPARE(dialog->findChild<QComboBox *>("launchComputer")->currentData().toString(),target);
+        QCOMPARE(dialog->findChild<QComboBox *>("launchProject")->currentData().toString(),project);
+        QTRY_COMPARE(dialog->findChild<QComboBox *>("launchProjectFolder")->currentData(Qt::UserRole+2).toString(),expected);
+        QTRY_VERIFY(!dialog->findChild<QLabel *>("muted")->text().contains("Checking"));
+        checked=true;dialog->reject();
+    });
+    window.findChild<QPushButton *>("newSession")->click();QVERIFY(checked);
+    // Explicit launch paths keep linked worktrees; inheritance applies only to +.
+    QTimer::singleShot(0,&window,[&]{
+        auto *dialog=qobject_cast<NewSessionDialog *>(QApplication::activeModalWidget());QVERIFY(dialog);
+        QCOMPARE(dialog->findChild<QComboBox *>("launchProjectFolder")->currentData(Qt::UserRole+2).toString(),QString("/linked"));dialog->reject();
+    });
+    window.showNewSession({},project,target,{},"/linked");
+    auto *list=window.findChild<SessionList *>("sessionList");QVERIFY(list);
+    // Selecting a project heading leaves the previous conversation open. It
+    // must not inherit that conversation's folder into the heading's project.
+    for(int row=0;row<list->count();++row)if(list->item(row)->data(SessionRoles::Header).toBool()
+        &&list->item(row)->data(SessionRoles::Group).toString()==other){list->setCurrentRow(row);break;}
+    QTimer::singleShot(0,&window,[&]{
+        auto *dialog=qobject_cast<NewSessionDialog *>(QApplication::activeModalWidget());QVERIFY(dialog);
+        QCOMPARE(dialog->findChild<QComboBox *>("launchProjectFolder")->currentData(Qt::UserRole+2).toString(),QString("/elsewhere"));dialog->reject();
+    });
+    window.showNewSession({}, {},target);
+}
+void TestSessionsWindow::launchFolderPrefillPreservesUserChoices_data()
+{
+    QTest::addColumn<QString>("choice");
+    for(const auto *choice:{"folder","same-folder","project","machine","path","fleet-refresh"})QTest::newRow(choice)<<QString(choice);
+}
+void TestSessionsWindow::launchFolderPrefillPreservesUserChoices()
+{
+    QFETCH(QString,choice);
+    SessionOrganization projects;const auto project=projects.createGroup("First"),other=projects.createGroup("Other");
+    const auto linked=projects.addFolder(project,"arch","/linked"),alternate=projects.addFolder(project,"arch","/alternate");
+    projects.addFolder(project,"arch","/repo");projects.addFolder(project,"mac","/remote");projects.addFolder(other,"arch","/other");
+    NewSessionDialog dialog(script(),fleet(),{},"codex",project);dialog.setGroups(projects,project);dialog.prefillSessionFolder("/linked");
+    auto *folder=dialog.findChild<QComboBox *>("launchProjectFolder");auto *machine=dialog.findChild<QComboBox *>("launchComputer");
+    auto *client=dialog.findChild<HgsClient *>();QVERIFY(client);
+    QString expected=choice=="fleet-refresh"?"/repo":"/linked";
+    if(choice=="folder"){folder->setCurrentIndex(folder->findData(alternate));expected="/alternate";}
+    if(choice=="same-folder")folder->activated(folder->findData(linked));
+    if(choice=="project"){auto *projectBox=dialog.findChild<QComboBox *>("launchProject");projectBox->setCurrentIndex(projectBox->findData(other));expected="/other";}
+    if(choice=="machine"){machine->setCurrentIndex(machine->findData("mac"));expected="/remote";}
+    if(choice=="path"){dialog.selectPath("/custom");expected="/custom";}
+    if(choice=="fleet-refresh")dialog.setFleet(fleet());
+    const QJsonObject catalog{{"state","ok"},{"selected_root","/linked"},{"common_dir","/repo/.git"},
+        {"worktrees",QJsonArray{QJsonObject{{"path","/repo"},{"kind","main"},{"available",true}},QJsonObject{{"path","/linked"},{"kind","linked"},{"available",true}}}}};
+    // Inject all outstanding IDs before the scripted process finishes. Only the
+    // exact inherited request may change the folder, and only until user choice.
+    for(quint64 id=1;id<=8;++id)client->worktreesReady(id,{},"/linked",catalog);
+    QCOMPARE(folder->currentData(Qt::UserRole+2).toString(),expected);
+}
+void TestSessionsWindow::launchFolderPrefillRejectsUnverifiedMain_data()
+{
+    QTest::addColumn<QString>("problem");
+    for(const auto *problem:{"stale","partial","foreign-root","foreign-host","unavailable","bare","ambiguous","failed"})QTest::newRow(problem)<<QString(problem);
+}
+void TestSessionsWindow::launchFolderPrefillRejectsUnverifiedMain()
+{
+    QFETCH(QString,problem);
+    SessionOrganization projects;const auto project=projects.createGroup("First");projects.addFolder(project,"arch","/linked");projects.addFolder(project,"arch","/repo");
+    NewSessionDialog dialog(script(),fleet(),{},"codex",project);dialog.setGroups(projects,project);dialog.prefillSessionFolder("/linked/sub");
+    auto *client=dialog.findChild<HgsClient *>();QVERIFY(client);
+    QJsonObject main{{"path","/repo"},{"kind","main"},{"available",true}};
+    if(problem=="unavailable")main["available"]=false;
+    if(problem=="bare")main["kind"]="bare";
+    QJsonArray trees{main,QJsonObject{{"path","/linked"},{"kind","linked"},{"available",true}}};
+    if(problem=="ambiguous")trees.append(main);
+    QJsonObject catalog{{"state","ok"},{"selected_root",problem=="foreign-root"?"/linked-other":"/linked"},{"common_dir","/repo/.git"},{"worktrees",trees}};
+    if(problem=="stale"||problem=="partial")catalog[problem]=true;
+    for(quint64 id=1;id<=8;++id){
+        if(problem=="failed")client->worktreesFailed(id,{},"/linked/sub","Unavailable");
+        else client->worktreesReady(id,problem=="foreign-host"?"mac":QString(),"/linked/sub",catalog);
+    }
+    QCOMPARE(dialog.findChild<QComboBox *>("launchProjectFolder")->currentData(Qt::UserRole+2).toString(),QString("/linked"));
 }
 
 void TestSessionsWindow::launchFoldersFollowProject()
