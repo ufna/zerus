@@ -15,6 +15,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFile>
+#include <QSaveFile>
 #include <QJsonDocument>
 #include <QLineEdit>
 #include <QLabel>
@@ -1415,11 +1416,16 @@ if 'clear-context' in args:
 elif 'inspect' in args: print((root/'details.json').read_text() if (root/'details.json').exists() else '{}')
 else: print('{}')
 )PY");fixture.close();fixture.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner);
-    SessionsWindow window(program);window.resize(1080,760);window.setFleet(fleet());window.show();window.showSession("mac","claude/infra/review");QTest::qWait(150);
-    auto *client=window.findChild<HgsClient *>();
     QJsonObject details{{"tracked",true},{"run_id","run-one"},{"phase","idle"},{"activity","idle"},{"runtime_state","live"},{"process_state","running"},
         {"conversation_id","conversation-one"},{"clear_context_supported",true},{"cache_hint",QJsonObject{{"status","cold"},{"tokens",756000}}}};
-    const auto applyDetails=[&]{QFile data(temp.filePath("details.json"));QVERIFY(data.open(QIODevice::WriteOnly));data.write(QJsonDocument(details).toJson());data.close();client->inspectionReady("mac","claude/infra/review",details);};
+    // Background inspections read this file at any time: replace it atomically and
+    // write it before selecting the session, so a slow first inspection cannot
+    // deliver empty details after the test applies its own.
+    const auto writeDetails=[&]{QSaveFile data(temp.filePath("details.json"));QVERIFY(data.open(QIODevice::WriteOnly));data.write(QJsonDocument(details).toJson());QVERIFY(data.commit());};
+    writeDetails();
+    SessionsWindow window(program);window.resize(1080,760);window.setFleet(fleet());window.show();window.showSession("mac","claude/infra/review");QTest::qWait(150);
+    auto *client=window.findChild<HgsClient *>();
+    const auto applyDetails=[&]{writeDetails();client->inspectionReady("mac","claude/infra/review",details);};
     applyDetails();
     auto *composer=window.findChild<MessageComposer *>("messageComposer");composer->editor()->setPlainText("Keep this draft");
     auto *cacheChip=window.findChild<ToolbarChip *>("cacheChip");QVERIFY(cacheChip && cacheChip->isVisible());
