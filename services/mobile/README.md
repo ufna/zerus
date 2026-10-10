@@ -2,6 +2,11 @@
 
 A self-hosted Python 3.11+ relay connects the Android client to computers running
 `hgs`. Computers make outbound HTTPS connections; phones never receive SSH keys.
+An enrolled gateway also exposes its enabled direct Zerus peers through its
+existing SSH access. Requests to a peer go through that gateway; the peer's own
+neighbors are not discovered or authorized recursively. See the
+[gateway upgrade procedure](../../docs/mobile-deployment.md#upgrade-gateway-sharing)
+before updating a multiple-worker installation.
 The relay is trusted with snapshots, requests and conversation results. TLS protects
 transport. Version 1 does **not** provide end-to-end encryption.
 
@@ -36,7 +41,15 @@ zerus-mobile --database ./data/relay.sqlite3 node \
 zerus-mobile --database ./data/relay.sqlite3 invite --workspace WORKSPACE_UUID
 zerus-mobile --database ./data/relay.sqlite3 revoke-device --id DEVICE_UUID
 zerus-mobile --database ./data/relay.sqlite3 revoke-node --id NODE_UUID
+zerus-mobile --database ./data/relay.sqlite3 revoke-computer --id COMPUTER_UUID
 ```
+
+`revoke-node` removes that gateway's credential and routes. Independently enrolled
+routes to the same computer remain valid. `revoke-computer` blocks the physical
+computer and its aliases through every gateway in the workspace.
+Revoking a computer as a target leaves its gateway credential intact: it can
+still provide access to other authorized peers. Revoke its node credential too
+when the gateway itself must lose access.
 
 The default listener is `127.0.0.1:8787`. Place it behind a TLS proxy before using
 it on another machine. Keep access/body/header logging disabled at the proxy.
@@ -91,13 +104,17 @@ this is a bounded inline-payload deployment, not a demonstrated capacity for
 ten thousand computers or fifty thousand phones.
 
 Create `services/mobile/private/` outside version control with mode 0700. The
-PostgreSQL password file is `private/postgres-password`; the relay configuration
-is `private/relay.json`. Generate a random password privately, URL-encode it
-inside the DSN and never pass it in command arguments. Configuration example:
+bootstrap password file is `private/postgres-password`; the relay configuration
+is `private/relay.json`. Compose's `POSTGRES_USER=zerus_relay` creates the
+bootstrap superuser for initialization and local administration only. The relay
+must use a distinct restricted login, `zerus_relay_app`, which owns its database
+and schema. Generate independent random passwords privately; URL-encode only
+the application password inside the DSN. Never pass passwords in command
+arguments or record them in logs. Configuration example:
 
 ```json
 {
-  "database_url": "postgresql://zerus_relay:REPLACE_WITH_URL_ENCODED_PRIVATE_PASSWORD@postgres:5432/zerus_relay",
+  "database_url": "postgresql://zerus_relay_app:REPLACE_WITH_URL_ENCODED_PRIVATE_APP_PASSWORD@postgres:5432/zerus_relay",
   "trusted_proxy_cidrs": ["172.30.78.2/32"],
   "pool_min": 2,
   "pool_max": 10,
@@ -123,6 +140,27 @@ services; a bare `up` also selects the default SQLite service:
 ```sh
 docker compose --profile postgres build relay-postgres
 docker compose --profile postgres up -d postgres
+docker compose --profile postgres exec postgres psql -U zerus_relay -d postgres
+```
+
+Before provisioning, use that private administrator session to create the
+application role and assign ownership. `\password` prompts without echo; enter
+the application password used in `private/relay.json`. Keep the bootstrap secret
+out of the relay configuration and do not grant application superuser privileges:
+
+```sql
+CREATE ROLE zerus_relay_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
+  NOREPLICATION NOBYPASSRLS;
+\password zerus_relay_app
+ALTER DATABASE zerus_relay OWNER TO zerus_relay_app;
+\connect zerus_relay
+ALTER SCHEMA public OWNER TO zerus_relay_app;
+\quit
+```
+
+Then provision and start the relay with its application DSN:
+
+```sh
 docker compose --profile postgres run --rm --no-deps relay-postgres \
   provision --config /run/secrets/relay.json \
   --name 'Example workspace' --computer-name 'Example computer'
@@ -182,6 +220,10 @@ Neither profile proves the planned ten-thousand-computer fleet. Include the
 query-pool and direct LISTEN connection budget when sizing replicas.
 
 ## Offline SQLite migration
+
+Create the restricted application role and assign database/schema ownership as
+described above before importing into an empty target; use that application DSN
+for migration.
 
 Rehearse first using synthetic state and a separate empty PostgreSQL database.
 The command refuses nonempty targets, preserves IDs, token/code/body hashes,

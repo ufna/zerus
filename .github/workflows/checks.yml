@@ -129,6 +129,9 @@ jobs:
           npm install --prefix "$RUNNER_TEMP/dsh" --no-audit --no-fund @deepseek-ai/dsh@0.2.0-rc.2
           echo "$RUNNER_TEMP/dsh/node_modules/.bin" >> "$GITHUB_PATH"
       - run: bash scripts/ci/cli.sh
+      - name: Keyless native Codex compatibility matrix
+        if: runner.os == 'Linux'
+        run: python3 scripts/ci/agent-compatibility.py
       - name: Retain test logs
         if: always() && (github.event_name != 'schedule' || failure())
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

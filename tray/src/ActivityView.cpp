@@ -357,6 +357,11 @@ void ActivityView::setActivity(const QJsonObject &details, const QJsonArray &eve
     }
     if (!conversation.isEmpty()) m_conversation = conversation;
     m_details = details; m_events = events; m_fallbackPrompt = fallbackPrompt; m_tracked = tracked;
+    const auto clear = details.value("session_clear").toObject();
+    if (clear.value("type") == "SessionCleared") m_fallbackPrompt.clear();
+    if (clear.value("type") == "SessionCleared" && !std::any_of(m_events.cbegin(), m_events.cend(), [&clear](const QJsonValue &value) {
+            return value.toObject().value("type") == "SessionCleared" && value.toObject().value("activity_key") == clear.value("activity_key");
+        })) m_events.append(clear);
     for(const auto &value:details.value("attachment_messages").toArray()) {
         const auto receipt=value.toObject();if(receipt.value("source")!="hgs_delivery" || receipt.value("attachments").toArray().isEmpty())continue;
         const auto submitted=receipt.value("submitted_text").toString().trimmed();int match=-1;double nearest=10.;
@@ -875,6 +880,12 @@ void ActivityView::render(bool contentUpdate)
     m_toggleKeys.clear();m_processLinks.clear();
     for (int i = 0; i < events.size();) {
         const auto event = events[i]; const auto role = messageRole(event);
+        if (event.value("type") == "SessionCleared") {
+            html += card(eventKey(event), tr("Session cleared"), timeText(event),
+                QString("<p style='margin:0;color:%1;'>%2</p>").arg(accent,
+                    tr("New messages start with a fresh conversation context.")), true);
+            ++i; continue;
+        }
         if (event.value("type") == "AgentThinking") {
             const auto text = event.value("detail").toString();
             if (!text.trimmed().isEmpty()) {
@@ -950,7 +961,7 @@ void ActivityView::render(bool contentUpdate)
         // boundaries always remain visible; tools from separate turns do not mix.
         const bool thinking=event.value("type")=="AgentThinking";
         QList<QJsonObject> group{event}; ++i;
-        while (!thinking && i < events.size() && events[i].value("type")!="AgentThinking" && group.size() < 24 && messageRole(events[i]).isEmpty()
+        while (!thinking && i < events.size() && events[i].value("type")!="AgentThinking" && events[i].value("type")!="SessionCleared" && group.size() < 24 && messageRole(events[i]).isEmpty()
                && !attention(event) && !attention(events[i])) group.append(events[i++]);
         const QString key = "group-" + eventKey(event); m_toggleKeys.insert(key);
         if (!m_expanded.contains(key) && attention(event)) m_expanded.insert(key, true);

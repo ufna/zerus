@@ -107,6 +107,32 @@ class ConversationPagingTest {
         val occupied=state.head(destination,"epoch",10,10,true)
         assertEquals(occupied,occupied.promote(action))
     }
+    @Test fun allProvisionalOrMissingCanonicalAnchorCannotCreateRetainedPages() {
+        val provisional = event(2).copy(id="journal:fixture:AgentMessage:native:2",historyId="",historyCursor="",historyEpoch="",incomingSeq=null)
+        val window = HistoryWindow.from(page(1,1).copy(events=listOf(provisional)))
+        assertNull(HistoryPage.retained(window,"opaque:1"))
+        assertTrue(HistoryPage.neighbors(window,"opaque:1").isEmpty())
+        val canonical = HistoryWindow.from(page(1,10))
+        assertNull(HistoryPage.retained(canonical,"foreign cursor"))
+        assertTrue(HistoryPage.neighbors(canonical,"foreign cursor").isEmpty())
+    }
+    @Test fun inspectionTailCannotPoisonRetainedAnchorOrNeighborPages() {
+        val inspection = event(901).copy(id="journal:fixture:AgentMessage:native:901",historyId="",historyCursor="",historyEpoch="",incomingSeq=null)
+        val live = HistoryWindow.from(page(401,900)).inspection(listOf(inspection),
+            listOf(event(900).copy(id="journal:fixture:AgentMessage:native:900")))
+        assertEquals(inspection.id,live.events.last().id)
+        val retained = HistoryPage.retained(live,"opaque:880")!!
+        val restored = HistoryPage.cached(target,retained)
+        assertTrue(restored.events.any { it.historyCursor=="opaque:880" })
+        assertFalse(restored.events.any { it.id==inspection.id })
+        assertTrue(restored.hasAfter)
+        assertFalse(restored.complete)
+        assertNull(restored.latestIncoming)
+        HistoryPage.neighbors(live,"opaque:700").forEach { (_,_,raw) ->
+            assertTrue(HistoryPage.cached(target,raw).events.all { it.historyEpoch=="epoch" && it.historyId.isNotBlank() && it.historyCursor.isNotBlank() })
+        }
+        assertNull(HistoryPage.retained(live,inspection.historyCursor))
+    }
     @Test fun retainedWindowIsDisplayOnlyAndRestoresExactAnchor() {
         val window=HistoryWindow.from(page(401,500,after=true))
         val raw=HistoryPage.retained(window,"opaque:450")!!

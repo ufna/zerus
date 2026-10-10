@@ -18,7 +18,7 @@ CREATE INDEX IF NOT EXISTS request_claim_expiry ON requests(claimed,id) WHERE st
 CREATE INDEX IF NOT EXISTS terminal_expiry ON requests(expires_at,id) WHERE state='queued' AND expires_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS terminal_history ON requests(updated,id) WHERE operation='terminal_snapshot' AND state IN ('completed','failed','uncertain');
 CREATE INDEX IF NOT EXISTS request_history ON requests(updated,id) WHERE body!='' AND state IN ('completed','failed','uncertain');
-CREATE INDEX IF NOT EXISTS read_history ON requests(updated,id) WHERE operation IN ('inspect','history','process_output','terminal_snapshot','catalog','dirs') AND state IN ('completed','failed','uncertain');
+CREATE INDEX IF NOT EXISTS read_history_v2 ON requests(updated,id) WHERE operation IN ('inspect','history','process_output','terminal_snapshot','catalog','dirs','worktrees') AND state IN ('completed','failed','uncertain');
 CREATE INDEX IF NOT EXISTS request_workspace ON requests(workspace_id,state);
 CREATE TABLE IF NOT EXISTS workspace_usage(workspace_id text PRIMARY KEY REFERENCES workspaces(id),payload_bytes bigint NOT NULL DEFAULT 0,active bigint NOT NULL DEFAULT 0,reads bigint NOT NULL DEFAULT 0,mutations bigint NOT NULL DEFAULT 0,events bigint NOT NULL DEFAULT 0,push_jobs bigint NOT NULL DEFAULT 0,active_polls bigint NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS payload_shards(id integer PRIMARY KEY,payload_bytes bigint NOT NULL DEFAULT 0);
@@ -43,3 +43,13 @@ CREATE TABLE IF NOT EXISTS rate_limits(key text PRIMARY KEY,count bigint NOT NUL
 ALTER TABLE rate_limits ADD COLUMN IF NOT EXISTS bucket integer NOT NULL DEFAULT 1;
 CREATE INDEX IF NOT EXISTS rate_expiry ON rate_limits(expires,key);
 """
+
+from .routes import SCHEMA as ROUTE_SCHEMA
+SCHEMA += """
+ALTER TABLE nodes ADD COLUMN IF NOT EXISTS computer_id TEXT;
+ALTER TABLE nodes ADD COLUMN IF NOT EXISTS machine_id TEXT;
+ALTER TABLE nodes ADD COLUMN IF NOT EXISTS manifest_hash TEXT;
+ALTER TABLE requests ADD COLUMN IF NOT EXISTS target_computer_id TEXT;
+ALTER TABLE requests ADD COLUMN IF NOT EXISTS target_machine_id TEXT;
+ALTER TABLE requests ADD COLUMN IF NOT EXISTS route_id TEXT;
+""" + ROUTE_SCHEMA

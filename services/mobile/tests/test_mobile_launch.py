@@ -63,7 +63,7 @@ class LaunchTransport(unittest.IsolatedAsyncioTestCase):
             self.connector.hgs=str(Path(__file__).with_name('fixture_hgs.py').resolve())
             catalog=await self.connector.execute(self.request('catalog'))
             self.assertEqual(catalog['state'],'completed')
-            self.assertEqual(set(catalog['result']['accounts'][0]),{'id','provider','label'})
+            self.assertEqual(set(catalog['result']['accounts'][0]),{'id','provider','label','native','installed','is_default','auth_status'})
             result=await self.connector.execute(self.request())
             self.assertEqual(result['state'],'completed',result)
             target=result['result']['result_target']
@@ -80,4 +80,4 @@ class LaunchTransport(unittest.IsolatedAsyncioTestCase):
 class CatalogPrivacy(unittest.TestCase):
     def test_only_selected_public_fields_are_forwarded(self):
         value=catalog({'profiles':[{'id':'native-codex','provider':'codex','label':'Synthetic','installed':True,'home':'/private','credentials':{'secret':'private'}}],'defaults':{'private':'secret'}})
-        self.assertEqual(value,{'accounts':[{'id':'native-codex','provider':'codex','label':'Synthetic'}],'agents':['codex']})
+        self.assertEqual(value,{'accounts':[{'id':'native-codex','provider':'codex','label':'Synthetic','native':False,'installed':True,'is_default':False,'auth_status':'unknown'}],'agents':['codex']})

@@ -1,0 +1,379 @@
+#!/usr/bin/env python3
+"""Direct-peer native boundary, using isolated homes and a synthetic SSH transport."""
+import asyncio
+import importlib.util
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+import uuid
+from unittest.mock import patch
+
+REPO = Path(__file__).resolve().parents[1]
+HGS = Path(os.environ.get('HGS_TEST_BIN', REPO / 'target/debug/hgs')).resolve()
+SSH = r'''#!/usr/bin/env python3
+import json, os, pathlib, shlex, subprocess, sys, time
+root = pathlib.Path(os.environ['MOBILE_PEERS_TEST_ROOT'])
+alias = sys.argv[-2]
+args = shlex.split(sys.argv[-1])[1:]
+with (root / 'calls').open('a') as file:
+    file.write(json.dumps([alias, args]) + '\n')
+if (root / ('offline-' + alias)).exists():
+    print('synthetic private error', file=sys.stderr); sys.exit(255)
+if (root / ('old-' + alias)).exists() or (root / ('flip-' + alias)).exists():
+    if args[0] == '--help':
+        if (root / ('flip-' + alias)).exists():
+            print('mobile-peer ABI 1'); sys.exit(0)
+        print('usage: hgs [@host] <cmd>'); sys.exit(0)
+    if args[0] == 'swarm':
+        print('unknown swarm command', file=sys.stderr); sys.exit(1)
+    (root / 'old-launch').touch(); sys.exit(1)
+if (root / ('delay-' + alias)).exists() and args[:2] == ['swarm', '__mobile-peer-identity']:
+    time.sleep(4)
+if (root / 'discovery-hang').exists() and args[:2] == ['swarm', '__mobile-peer-identity']:
+    (root / ('discovery-pids-' + alias)).write_text(json.dumps([os.getpid(), os.getppid()]))
+    time.sleep(30); sys.exit(0)
+if args[:2] == ['swarm', '__mobile-peer-local']:
+    if (root / 'hang').exists():
+        if (root / 'ssh-child').exists():
+            child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(2)'],
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            (root / 'ssh-child-pid').write_text(str(child.pid))
+        (root / 'hanging-pids').write_text(json.dumps([os.getpid(), os.getppid()]))
+        time.sleep(30); sys.exit(0)
+    if (root / 'binary').exists():
+        sys.stdout.buffer.write(bytes([0, 255, 128, 10, 13, 42]))
+        sys.stderr.write('fixture'); sys.exit(7)
+    if (root / 'stdout-overflow').exists():
+        sys.stdout.buffer.write(b'x' * (33 * 1024 * 1024)); sys.exit(0)
+    if (root / 'stderr-overflow').exists():
+        sys.stderr.write('x' * 70000); sys.exit(0)
+    if (root / 'inherited-pipe').exists():
+        subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(31)'])
+        sys.exit(0)
+env = dict(os.environ, HGS_CONFIG_DIR=str(root / alias), HGS_STATE_DIR=str(root / alias / 'state'))
+os.execve(os.environ['MOBILE_PEERS_TEST_HGS'], [os.environ['MOBILE_PEERS_TEST_HGS'], *args], env)
+'''
+# Keep all tmux interactions synthetic, including snapshots that intentionally
+# reach the native CLI. No fixture can address a development tmux server.
+TMUX = '''#!/usr/bin/env python3
+import os, pathlib
+pathlib.Path(os.environ['MOBILE_PEERS_TEST_ROOT'], 'native-called').touch()
+raise SystemExit(1)
+'''
+
+
+class MobilePeers(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix='hgs-mobile-peers-')
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        home = self.root / 'home'
+        bin_dir = home / '.local/bin'
+        bin_dir.mkdir(parents=True)
+        (self.root / 'tmux').mkdir()
+        for name, source in [('ssh', SSH), ('tmux', TMUX)]:
+            path = bin_dir / name
+            path.write_text(source)
+            path.chmod(0o755)
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith('HGS_')}
+        self.env.update(HOME=str(home), PATH=str(bin_dir) + ':' + os.environ['PATH'],
+                        MOBILE_PEERS_TEST_ROOT=str(self.root), MOBILE_PEERS_TEST_HGS=str(HGS),
+                        HGS_TAB='0', TMUX_TMPDIR=str(self.root / 'tmux'))
+        self.env.pop('TMUX', None)
+        for node, peers in [('a', 'b d'), ('b', 'c'), ('c', ''), ('d', '')]:
+            directory = self.root / node
+            directory.mkdir()
+            (directory / 'config').write_text(f'HGS_SELF="{node}"\nHGS_PEERS="{peers}"\n')
+        (self.root / 'a/machines.local.json').write_text(json.dumps({'machines': {
+            'b': dict(hostname='private-fixture.invalid', user='private-fixture', identity_file='/synthetic/private-key', enabled=True),
+            'd': dict(enabled=False)}}))
+        self.ids = {node: self.call(node, '__mobile-peer-identity', '--json').json()['machine_id'] for node in ['a', 'b', 'c', 'd']}
+
+    def call(self, node, *argv, data=None, ok=True, timeout=15):
+        env = dict(self.env, HGS_CONFIG_DIR=str(self.root / node), HGS_STATE_DIR=str(self.root / node / 'state'))
+        result = subprocess.run([str(HGS), *argv], input=json.dumps(data) if data is not None else None,
+                                env=env, capture_output=True, text=True, timeout=timeout)
+        result.json = lambda: json.loads(result.stdout)
+        if ok:
+            self.assertEqual(result.returncode, 0, result.stderr)
+        else:
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+        return result
+
+    def request(self, argv=None, target=None, via='b', payload=None):
+        return dict(schema=1, via=via, target_machine_id=target or self.ids['b'], argv=argv or ['--help'], payload=payload)
+
+    def calls(self):
+        path = self.root / 'calls'
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    @staticmethod
+    def running(pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        proc = Path(f'/proc/{pid}/stat')
+        if proc.exists():
+            try:
+                return proc.read_text().split(') ', 1)[1][0] != 'Z'
+            except FileNotFoundError:
+                return False
+        status = subprocess.run(['ps', '-p', str(pid), '-o', 'stat='], capture_output=True, text=True)
+        return status.returncode == 0 and not status.stdout.strip().startswith('Z')
+
+    def wait_hanging_pids(self):
+        until = time.monotonic() + 5
+        path = self.root / 'hanging-pids'
+        while time.monotonic() < until:
+            if path.exists():
+                try:
+                    return json.loads(path.read_text())
+                except ValueError:
+                    pass
+            time.sleep(.01)
+        self.fail('owned SSH fixture did not start')
+
+    def assert_owned_transports_exit(self, pids):
+        until = time.monotonic() + 2
+        while time.monotonic() < until and any(self.running(pid) for pid in pids):
+            time.sleep(.01)
+        self.assertFalse(any(self.running(pid) for pid in pids), 'owned SSH/supervisor survived cancellation')
+
+    def test_discovery_is_direct_enabled_and_does_not_export_connection_settings(self):
+        result = self.call('a', 'mobile-peers', '--json').json()
+        self.assertEqual(result['local'], dict(machine_id=self.ids['a'], name='a'))
+        self.assertEqual(result['peers'], [dict(via='b', machine_id=self.ids['b'], name='b', online=True, error=None)])
+        self.assertEqual({alias for alias, _ in self.calls()}, {'b'})
+        self.assertNotIn('c', [row['via'] for row in result['peers']])
+        for private in ['private-fixture', 'private-key', 'hostname', 'identity_file']:
+            self.assertNotIn(private, json.dumps(result))
+        self.assertFalse((self.root / 'native-called').exists())
+
+    def test_offline_and_old_peers_are_generic_and_never_attempt_native_launch(self):
+        for marker in ['offline-b', 'old-b']:
+            path = self.root / marker
+            path.touch()
+            result = self.call('a', 'mobile-peers', '--json').json()['peers'][0]
+            self.assertEqual(result, dict(via='b', machine_id=None, name='b', online=False, error='unavailable'))
+            self.call('a', 'mobile-peer', '--json', data=self.request(), ok=False)
+            self.assertFalse((self.root / 'old-launch').exists())
+            path.unlink()
+        self.assertFalse((self.root / 'native-called').exists())
+
+    def test_native_downgrade_after_probe_uses_fail_closed_swarm_namespace(self):
+        (self.root / 'flip-b').touch()
+        self.call('a', 'swarm', 'mobile-peer', '--json', data=self.request(), ok=False)
+        result = self.call('a', 'swarm', 'mobile-peers', '--json').json()
+        self.assertFalse(result['peers'][0]['online'])
+        self.assertIn(['b', ['swarm', '__mobile-peer-local', '--json']], self.calls())
+        self.assertFalse((self.root / 'old-launch').exists())
+        self.assertFalse((self.root / 'native-called').exists())
+
+    def test_remote_and_local_calls_pin_uuid_and_preserve_text_output(self):
+        direct = self.call('b', '--help').stdout
+        remote = self.call('a', 'mobile-peer', '--json', data=self.request()).stdout
+        self.assertEqual(remote, direct)
+        local = self.request(target=self.ids['a'])
+        del local['via']
+        self.assertEqual(self.call('a', 'swarm', '__mobile-peer-local', '--json', data=local).stdout, direct)
+        bad = self.request(['ls', '--json', '--local'], target=self.ids['c'])
+        result = self.call('a', 'mobile-peer', '--json', data=bad, ok=False)
+        self.assertIn('identity changed', result.stderr)
+        self.assertFalse((self.root / 'native-called').exists())
+        local['target_machine_id'] = self.ids['b']
+        self.call('a', '__mobile-peer-local', '--json', data=local, ok=False)
+
+    def test_replaced_persistent_identity_cannot_execute_old_bound_request(self):
+        path = self.root / 'b/swarm/catalog.json'
+        data = json.loads(path.read_text())
+        data['node_id'] = str(uuid.uuid4())
+        path.write_text(json.dumps(data))
+        self.call('a', 'mobile-peer', '--json', data=self.request(['ls', '--json', '--local']), ok=False)
+        self.assertFalse((self.root / 'native-called').exists())
+
+    def test_unknown_routes_fields_and_forwarding_fail_before_ssh(self):
+        for via in ['c', 'd', 'a', '-oProxyCommand=fixture', 'b;fixture', 'b/c']:
+            self.call('a', 'mobile-peer', '--json', data=self.request(via=via), ok=False)
+        for argv in [['@c', 'ls', '--json', '--local'], ['swarm', 'sync'], ['account', 'export', 'native-codex'],
+                     ['sh', '-c', 'echo fixture'], ['mobile-peer', '--json'], ['send', 'codex/fixture', 'text']]:
+            self.call('a', 'mobile-peer', '--json', data=self.request(argv), ok=False)
+        for field in ['path', 'depth', 'command']:
+            request = self.request()
+            request[field] = 'fixture'
+            self.call('a', 'mobile-peer', '--json', data=request, ok=False)
+        self.assertEqual(self.calls(), [])
+        request = self.request()
+        self.call('b', '__mobile-peer-local', '--json', data=request, ok=False)
+        self.assertFalse((self.root / 'native-called').exists())
+
+    def test_payload_reaches_existing_scoped_json_dispatch(self):
+        payload = dict(request_id=str(uuid.uuid4()), expected_run_id='fixture-run', expected_conversation_id='fixture-conversation', action='snapshot')
+        request = self.request(['terminal', 'codex/missing', '--json'], payload=payload)
+        result = self.call('a', 'mobile-peer', '--json', data=request, ok=False)
+        self.assertNotIn('EOF', result.stderr)
+        self.assertNotIn('scoped native payload is required', result.stderr)
+        self.assertNotIn('native operation requires scoped JSON', result.stderr)
+
+    def test_discovery_timeout_remains_bounded_and_leaves_local_identity_available(self):
+        (self.root / 'delay-b').touch()
+        start = time.monotonic()
+        result = self.call('a', 'mobile-peers', '--json').json()
+        self.assertLess(time.monotonic() - start, 5)
+        self.assertEqual(result['local']['machine_id'], self.ids['a'])
+        self.assertFalse(result['peers'][0]['online'])
+
+    def test_transport_preserves_binary_stdout_and_native_exit_status(self):
+        (self.root / 'binary').touch()
+        env = dict(self.env, HGS_CONFIG_DIR=str(self.root / 'a'), HGS_STATE_DIR=str(self.root / 'a/state'))
+        result = subprocess.run([str(HGS), 'swarm', 'mobile-peer', '--json'], input=json.dumps(self.request()).encode(),
+                                env=env, capture_output=True, timeout=5)
+        self.assertEqual(result.returncode, 7)
+        self.assertEqual(result.stdout, bytes([0, 255, 128, 10, 13, 42]))
+        self.assertEqual(result.stderr, b'fixture')
+
+    def test_transport_caps_stdout_and_stderr_before_forwarding(self):
+        for marker in ['stdout-overflow', 'stderr-overflow']:
+            path = self.root / marker
+            path.touch()
+            result = self.call('a', 'swarm', 'mobile-peer', '--json', data=self.request(), ok=False)
+            self.assertIn('output is too large', result.stderr)
+            self.assertEqual(result.stdout, '')
+            path.unlink()
+
+    def test_whole_ssh_deadline_covers_inherited_descendant_output_pipes(self):
+        (self.root / 'inherited-pipe').touch()
+        start = time.monotonic()
+        result = self.call('a', 'swarm', 'mobile-peer', '--json', data=self.request(), ok=False, timeout=35)
+        self.assertIn('timed out', result.stderr)
+        self.assertGreater(time.monotonic() - start, 29)
+        self.assertLess(time.monotonic() - start, 33)
+
+    def test_gateway_kill_reaps_only_owned_ssh_and_supervisor(self):
+        (self.root / 'hang').touch()
+        (self.root / 'ssh-child').touch()
+        env = dict(self.env, HGS_CONFIG_DIR=str(self.root / 'a'), HGS_STATE_DIR=str(self.root / 'a/state'))
+        process = subprocess.Popen([str(HGS), 'swarm', 'mobile-peer', '--json'], env=env,
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.addCleanup(lambda: process.kill() if process.poll() is None else None)
+        process.stdin.write(json.dumps(self.request()).encode())
+        process.stdin.close()
+        pids = self.wait_hanging_pids()
+        process.kill()
+        process.wait(timeout=5)
+        process.stdout.close()
+        process.stderr.close()
+        self.assert_owned_transports_exit(pids)
+        # A stand-in child outside the owned transport boundary must survive.
+        # It exits naturally after two seconds; no process group is signalled.
+        child = int((self.root / 'ssh-child-pid').read_text())
+        self.assertTrue(self.running(child))
+
+    def test_supervisor_exits_if_gateway_dies_during_partial_input(self):
+        env = dict(self.env, HGS_CONFIG_DIR=str(self.root / 'a'), HGS_STATE_DIR=str(self.root / 'a/state'))
+        script = '''import os, pathlib, subprocess, sys, time
+child = subprocess.Popen([sys.argv[1], 'swarm', '__mobile-peer-transport', '--json'],
+                         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+child.stdin.write(b'{'); child.stdin.flush()
+pathlib.Path(os.environ['MOBILE_PEERS_TEST_ROOT'], 'partial-pid').write_text(str(child.pid))
+time.sleep(10)
+'''
+        process = subprocess.Popen([sys.executable, '-c', script, str(HGS)], env=env)
+        self.addCleanup(lambda: process.kill() if process.poll() is None else None)
+        path = self.root / 'partial-pid'
+        until = time.monotonic() + 3
+        while not path.exists() and time.monotonic() < until:
+            time.sleep(.01)
+        self.assertTrue(path.exists())
+        pid = int(path.read_text())
+        process.kill()
+        process.wait(timeout=3)
+        self.assert_owned_transports_exit([pid])
+        self.assertEqual(self.calls(), [])
+
+    def test_discovery_fanout_transports_exit_after_gateway_kill(self):
+        (self.root / 'a/config').write_text('HGS_SELF="a"\nHGS_PEERS="b c d"\n')
+        (self.root / 'a/machines.local.json').write_text('{"machines":{}}')
+        (self.root / 'discovery-hang').touch()
+        env = dict(self.env, HGS_CONFIG_DIR=str(self.root / 'a'), HGS_STATE_DIR=str(self.root / 'a/state'))
+        process = subprocess.Popen([str(HGS), 'swarm', 'mobile-peers', '--json'], env=env,
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.addCleanup(lambda: process.kill() if process.poll() is None else None)
+        paths = [self.root / ('discovery-pids-' + alias) for alias in ['b', 'c', 'd']]
+        until = time.monotonic() + 2
+        while not all(path.exists() for path in paths) and time.monotonic() < until:
+            time.sleep(.01)
+        self.assertTrue(all(path.exists() for path in paths))
+        pids = [pid for path in paths for pid in json.loads(path.read_text())]
+        process.kill()
+        process.wait(timeout=5)
+        process.stdout.close()
+        process.stderr.close()
+        self.assert_owned_transports_exit(pids)
+
+    def test_supervisor_rejects_arbitrary_helpers_and_deadline_overrides(self):
+        original = dict(schema=1, via='b', helper='help', request=None, parent_pid=os.getpid(), deadline_ms=int(time.monotonic()*1000)+2000)
+        for field, value in [('helper', 'sh -c fixture'), ('deadline_ms', 0),
+                             ('deadline_ms', int(time.monotonic()*1000)+60000), ('parent_pid', 1), ('command', 'fixture')]:
+            request = {**original, field: value}
+            self.call('a', 'swarm', '__mobile-peer-transport', '--json', data=request, ok=False)
+        self.assertEqual(self.calls(), [])
+
+    @unittest.skipUnless(importlib.util.find_spec('aiohttp'), 'requires the mobile service test environment')
+    def test_connector_timeout_and_cancellation_reap_owned_transports(self):
+        sys.path.insert(0, str(REPO / 'services/mobile'))
+        from zerus_mobile.connector import Connector, ConnectorError
+
+        # The native gateway probes peer support before launching the owned SSH
+        # operation. Cold Mac/CI interpreter startup must fit inside this budget;
+        # the synthetic SSH then stalls for 30 seconds, well beyond our timeout.
+        operation_timeout = 5
+
+        async def scenario(cancel):
+            connector = Connector.__new__(Connector)
+            connector.hgs, connector.timeout, connector.max_bytes = str(HGS), operation_timeout, 32 * 1024 * 1024
+            (self.root / 'hang').touch()
+            path = self.root / 'hanging-pids'
+            path.unlink(missing_ok=True)
+            task = asyncio.create_task(connector._native(['swarm', 'mobile-peer', '--json'], self.request(),
+                                                       timeout=operation_timeout, json_output=False))
+            try:
+                until = time.monotonic() + operation_timeout
+                pids = None
+                while time.monotonic() < until and pids is None:
+                    if path.exists():
+                        try:
+                            pids = json.loads(path.read_text())
+                        except ValueError:
+                            pass  # The fixture may still be writing its ownership receipt.
+                    if pids is None:
+                        if task.done():
+                            break
+                        await asyncio.sleep(.01)
+                self.assertIsNotNone(pids, 'owned SSH must be running before deadline or cancellation')
+                if cancel:
+                    task.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await task
+                else:
+                    with self.assertRaises(ConnectorError):
+                        await task
+                self.assert_owned_transports_exit(pids)
+            finally:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+        env = dict(self.env, HGS_CONFIG_DIR=str(self.root / 'a'), HGS_STATE_DIR=str(self.root / 'a/state'))
+        with patch.dict(os.environ, env, clear=True):
+            asyncio.run(scenario(False))
+            asyncio.run(scenario(True))
+
+
+if __name__ == '__main__':
+    unittest.main()

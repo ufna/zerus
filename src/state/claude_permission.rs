@@ -20,7 +20,9 @@ fn parse(screen: &str) -> Option<Panel> {
     if rows.len() < 10 || !rows[0].contains("Claude Code v") {
         return None;
     }
-    let folder = rows[2].get(rows[2].find('/')?..)?.to_owned();
+    let folder = rows[2]
+        .get(rows[2].find(|c| c == '/' || c == '~')?..)?
+        .to_owned();
     let divider = rows
         .iter()
         .position(|row| row.chars().count() >= 40 && row.chars().all(|c| c == '─'))?;
@@ -85,7 +87,24 @@ fn eligible(record: &Value) -> bool {
 }
 
 fn card(record: &Value, panel: &Panel) -> Option<Value> {
-    if !eligible(record) || panel.folder != string(record, "launch_dir") {
+    let launch_dir = string(record, "launch_dir");
+    // Claude's startup banner abbreviates paths inside the user's home. Derive
+    // that one display alias from the exact launch directory; never infer a
+    // folder from the suffix after '~' or resolve arbitrary relative paths.
+    let short_folder = nonempty_env("HOME")
+        .filter(|home| Path::new(home).is_absolute())
+        .and_then(|home| {
+            if launch_dir == home {
+                Some("~".to_owned())
+            } else {
+                launch_dir
+                    .strip_prefix(&format!("{}/", home.trim_end_matches('/')))
+                    .map(|relative| format!("~/{relative}"))
+            }
+        });
+    if !eligible(record)
+        || (panel.folder != launch_dir && short_folder.as_deref() != Some(panel.folder.as_str()))
+    {
         return None;
     }
     let hash = format!(
@@ -98,6 +117,7 @@ fn card(record: &Value, panel: &Panel) -> Option<Value> {
                 record["process_start"],
                 record["conversation_id"],
                 record["expected_id"],
+                record["launch_dir"],
                 panel.folder,
                 TITLE,
                 panel.body,
@@ -173,6 +193,7 @@ pub(super) fn answer(record: &Value, question: &Value, answers: &Value) -> Resul
 mod tests {
     use super::*;
     const SCREEN: &str = include_str!("../../tests/fixtures/claude-auto-mode.txt");
+    const HOME_SCREEN: &str = include_str!("../../tests/fixtures/claude-auto-mode-home.txt");
     fn record() -> Value {
         json!({"agent":"claude","run_id":"run","run_identity_version":1,
         "supervisor":{},"launch_dir":"/work/example","conversation_id":"bound","phase":"idle","last_event_at":100})
@@ -194,6 +215,33 @@ mod tests {
             format!("{SCREEN}\n❯ "),
             SCREEN.replace("No, keep", "❯ No, keep"),
             SCREEN.replace("❯ Yes", "Yes"),
+        ] {
+            assert!(parse(&invalid).is_none());
+        }
+    }
+    #[test]
+    fn home_abbreviations_match_only_the_exact_launch_directory() {
+        let mut r = record();
+        r["launch_dir"] = json!(home().join("work/example"));
+        let panel = parse(HOME_SCREEN).unwrap();
+        assert_eq!(panel.folder, "~/work/example");
+        let question = card(&r, &panel).unwrap();
+        assert_eq!(question["source"], "claude_permission_mode");
+        assert_eq!(question["questions"][0]["options"][1]["label"], "No, keep bypass permissions");
+        assert!(card(&record(), &panel).is_none());
+        for folder in ["~/work/other", "~other/work/example", "~/../work/example", "~//work/example"] {
+            assert!(card(&r, &parse(&HOME_SCREEN.replace("~/work/example", folder)).unwrap()).is_none());
+        }
+        r["launch_dir"] = json!(home());
+        assert!(card(&r, &parse(&HOME_SCREEN.replace("~/work/example", "~")).unwrap()).is_some());
+        // A banner repaint does not change a decision's identity.
+        let changed_banner = HOME_SCREEN.replace("Got 47 features", "Got 48 features");
+        r["launch_dir"] = json!(home().join("work/example"));
+        assert_eq!(question["question_hash"], card(&r, &parse(&changed_banner).unwrap()).unwrap()["question_hash"]);
+        for invalid in [
+            HOME_SCREEN.replace("and blocks the rest.", ""),
+            format!("User quoted:\n{HOME_SCREEN}"),
+            format!("{HOME_SCREEN}\nAnother prompt"),
         ] {
             assert!(parse(&invalid).is_none());
         }

@@ -14,8 +14,9 @@ import javax.crypto.spec.GCMParameterSpec
 
 /** All credentials and drafts are encrypted with a non-exportable Android Keystore key. */
 class PrivateStore(context: Context) {
+    private val notificationContext = context.applicationContext
     private val preferences = context.getSharedPreferences("zerus_private", Context.MODE_PRIVATE)
-    companion object { private val keyCreationLock=Any() }
+    companion object { private val keyCreationLock=Any(); internal val notificationLock=Any() }
     private val key: SecretKey by lazy { synchronized(keyCreationLock) {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (store.getKey("zerus_private_v1", null) as? SecretKey) ?: KeyGenerator.getInstance(
@@ -53,7 +54,36 @@ class PrivateStore(context: Context) {
     fun readState()=ConversationReadPolicies.decode(read("conversation_read_v1"))
     fun saveReadState(state:ConversationReadState)=write("conversation_read_v1",ConversationReadPolicies.encode(state))
     fun notificationEnabled() = preferences.getBoolean("notifications", true)
-    fun setNotificationEnabled(enabled: Boolean) { preferences.edit().putBoolean("notifications", enabled).apply() }
+    fun setNotificationEnabled(enabled: Boolean) = synchronized(NotificationSettings.deliveryLock) {
+        check(preferences.edit().putBoolean("notifications", enabled).commit())
+        try { NotificationSettings.masterChanged(notificationContext, enabled) }
+        finally { if (!enabled) SessionNotifications.cancelDisabled(notificationContext, NotificationPreferences(master = false)) }
+    }
+    fun notificationPreferences(): NotificationPreferences = synchronized(notificationLock) {
+        val value = read("notification_settings_v1").optJSONObject(0) ?: JSONObject()
+        NotificationPreferences(value.optBoolean("input", true), value.optBoolean("errors", true),
+            value.optBoolean("finished", false), value.optLong("generation"), notificationEnabled(), value.optLong("input_enabled"),
+            value.optLong("errors_enabled"), value.optLong("finished_enabled"))
+    }
+    fun saveNotificationPreferences(value: NotificationPreferences) = synchronized(notificationLock) {
+        write("notification_settings_v1", JSONArray().put(JSONObject().put("input", value.input).put("errors", value.errors)
+            .put("finished", value.finished).put("generation", value.generation).put("input_enabled", value.inputEnabledAt)
+            .put("errors_enabled", value.errorsEnabledAt).put("finished_enabled", value.finishedEnabledAt)))
+    }
+    fun notificationState(connection: String): NotificationState = synchronized(notificationLock) {
+        val value = read("notification_state_v1:$connection").optJSONObject(0) ?: return@synchronized NotificationState()
+        NotificationStateCodec.decode(value)
+    }
+    fun saveNotificationState(connection: String, value: NotificationState) = synchronized(notificationLock) {
+        val encoded = NotificationStateCodec.encode(value)
+        require(encoded.toString().toByteArray(Charsets.UTF_8).size <= 2 * 1024 * 1024) { "Notification state exceeded its safety limit." }
+        write("notification_state_v1:$connection", JSONArray().put(encoded))
+    }
+    fun pruneNotificationStates(connections: Set<String>) = synchronized(notificationLock) {
+        val prefix = "notification_state_v1:"
+        val removed = preferences.all.keys.filter { it.startsWith(prefix) && it.removePrefix(prefix) !in connections }
+        if (removed.isNotEmpty()) check(preferences.edit().also { edit -> removed.forEach(edit::remove) }.commit())
+    }
     fun savePushEndpoint(connection: String, endpoint: String) {
         val records = read("push").objects().filterNot { it.string("connection") == connection } + JSONObject().put("connection", connection).put("endpoint", endpoint)
         write("push", JSONArray(records))

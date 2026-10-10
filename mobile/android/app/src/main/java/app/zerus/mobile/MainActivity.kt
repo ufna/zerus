@@ -32,16 +32,31 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.luminance
@@ -67,6 +82,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
@@ -89,7 +106,9 @@ private val Scheme = darkColorScheme(primary = Mint, onPrimary = Background, sec
 class MainActivity : ComponentActivity() {
     private val model: ZerusViewModel by viewModels()
     private var invitation by mutableStateOf<PairingInvite?>(null)
-    private val requestNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    private val requestNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) SessionNotifications.initialize(this)
+    }
     private val fileLaunchers = mutableMapOf<String, ActivityResultLauncher<Array<String>>>()
     private fun fileLauncher(selectionId: String): ActivityResultLauncher<Array<String>> = fileLaunchers.getOrPut(selectionId) {
         activityResultRegistry.register("zerus-files:$selectionId", ActivityResultContracts.OpenMultipleDocuments()) { uris ->
@@ -99,6 +118,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() { fileLaunchers.values.forEach { it.unregister() }; super.onDestroy() }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        SessionNotifications.initialize(this)
         enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.rgb(16, 21, 23)))
         readIntent(intent)
@@ -212,13 +232,15 @@ class MainActivity : ComponentActivity() {
                 if (selected == null) NewSessionButton(model)
             }, colors = TopAppBarDefaults.topAppBarColors(containerColor = Background)) },
         bottomBar = { if (selected == null) NavigationBar(containerColor = Background) {
-            listOf("Sessions" to DesktopIcons.Sessions, "Projects" to DesktopIcons.Projects, "Drafts" to Icons.Default.EditNote, "Machines" to DesktopIcons.Machines, "Accounts" to Icons.Default.AccountCircle).forEachIndexed { i, (label, icon) ->
-                NavigationBarItem(selected = tab == i, onClick = { tab = i; model.clearSessionScope(); model.clearProject() }, icon = { Icon(icon, label) }, label = { Text(label) })
+            listOf(Triple(0, "Sessions", DesktopIcons.Sessions), Triple(1, "Projects", DesktopIcons.Projects),
+                Triple(2, "Drafts", Icons.Default.EditNote), Triple(4, "Accounts", Icons.Default.AccountCircle),
+                Triple(3, "Machines", DesktopIcons.Machines)).forEach { (id, label, icon) ->
+                NavigationBarItem(selected = tab == id, onClick = { tab = id; model.clearSessionScope(); model.clearProject() }, icon = { Icon(icon, label) }, label = { Text(label) })
             }
         } }) { padding ->
         Column(Modifier.padding(padding).consumeWindowInsets(padding).fillMaxSize()) {
-            Box(Modifier.fillMaxWidth().height(4.dp)) {
-                if (model.busy || if (selected == null) model.catalogProgress else model.detailProgress)
+            if (selected == null) Box(Modifier.fillMaxWidth().height(4.dp)) {
+                if (!model.demo && (model.busy || model.catalogProgress))
                     LinearProgressIndicator(Modifier.fillMaxWidth(), color = Mint)
             }
             if (selected != null) SessionHeaderTools(model,selected) { messageJump = it }
@@ -229,7 +251,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
             if (selected != null) Conversation(model, selected, onReview = { review = it }, onReviewOutgoing = { reviewOutgoing = it }, onAttach = onAttach, positions = readingPositions,jumpRequest = messageJump,onJumpConsumed = { messageJump = null })
-            else when (tab) {
+            else MainListsRefresh(model,tab to project?.key?.key) { when (tab) {
                 0 -> SessionsScreen(model, onPair = { tab = 3 })
                 1 -> if (project != null) ProjectDetails(model, project, onViewSessions = { model.viewProjectSessions(project); tab = 0 })
                     else ProjectsScreen(model, onPair = { tab = 3 })
@@ -239,7 +261,7 @@ class MainActivity : ComponentActivity() {
                         if (it) onNotifications(); onLive(it)
                     }, onPush = { onNotifications(); onPush() }, onFirebase = { onNotifications(); onFirebase() })
                 else -> AccountsScreen(model,onMachines = { tab=3 })
-            }
+            } }
         }
     }
     LaunchSessionDialog(model)
@@ -328,6 +350,87 @@ class MainActivity : ComponentActivity() {
     }
 }
 private fun selectedStatus(session: Session, raw: JSONObject?): String = SelectedSessionPresentation.status(session,raw)
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable private fun MainListsRefresh(model:ZerusViewModel,screen:Any,content:@Composable BoxScope.()->Unit) {
+    if(model.demo || !model.storageReady) Box(Modifier.fillMaxSize(),content=content)
+    else {
+        val state=rememberPullToRefreshState()
+        val scope=rememberCoroutineScope()
+        val maximum=with(LocalDensity.current) { 28.dp.toPx() }
+        val motion=remember(scope,maximum) { MainListPullMotion(scope,maximum) }
+        val refreshing by rememberUpdatedState(model.catalogProgress)
+        // Observe without consuming: Material3 still owns the refresh threshold and gesture.
+        val before=remember(motion,state) { object:NestedScrollConnection {
+            override fun onPreScroll(available:Offset,source:NestedScrollSource):Offset {
+                if(source==NestedScrollSource.UserInput && available.y<0 && !refreshing && !state.isAnimating) motion.drag(available.y)
+                return Offset.Zero
+            }
+        } }
+        val after=remember(motion,state) { object:NestedScrollConnection {
+            override fun onPostScroll(consumed:Offset,available:Offset,source:NestedScrollSource):Offset {
+                if(source==NestedScrollSource.UserInput && available.y>0 && !refreshing && !state.isAnimating) motion.drag(available.y)
+                return Offset.Zero
+            }
+        } }
+        LaunchedEffect(screen,motion) { motion.reset() }
+        val lifecycle=LocalLifecycleOwner.current.lifecycle
+        DisposableEffect(lifecycle,motion) {
+            val observer=LifecycleEventObserver { _,event -> if(event==Lifecycle.Event.ON_STOP) motion.release() }
+            lifecycle.addObserver(observer)
+            onDispose { lifecycle.removeObserver(observer); motion.reset() }
+        }
+        Box(Modifier.fillMaxSize().clipToBounds().nestedScroll(before).pointerInput(motion,screen) {
+            try {
+                awaitPointerEventScope {
+                    while(true) {
+                        val event=awaitPointerEvent(PointerEventPass.Initial)
+                        if(event.changes.any { it.pressed }) motion.begin() else motion.release()
+                    }
+                }
+            } finally { motion.release() }
+        }) {
+            PullToRefreshBox(isRefreshing=model.catalogProgress,onRefresh={ model.refresh(explicit=true) },
+                state=state,modifier=Modifier.fillMaxSize()) {
+                Box(Modifier.fillMaxSize().nestedScroll(after).graphicsLayer { translationY=motion.offset },content=content)
+            }
+        }
+    }
+}
+
+/** Touch-only visual resistance; refresh-state animations never move the content. */
+private class MainListPullMotion(private val scope:CoroutineScope,private val maximum:Float) {
+    var offset by mutableFloatStateOf(0f)
+        private set
+    private var distance=0f
+    private var held=false
+    private var returning:Job?=null
+    fun begin() {
+        if(held) return
+        returning?.cancel()
+        distance=offset*4f
+        held=true
+    }
+    fun drag(delta:Float) {
+        if(!held) return
+        distance=(distance+delta).coerceIn(0f,maximum*4f)
+        offset=distance*.25f
+    }
+    fun release() {
+        if(!held) return
+        held=false
+        returning=scope.launch {
+            animate(offset,0f,animationSpec=tween(180)) { value,_ -> offset=value }
+            distance=0f
+        }
+    }
+    fun reset() {
+        returning?.cancel()
+        held=false
+        distance=0f
+        offset=0f
+    }
+}
+
 @Composable private fun ProjectsScreen(model: ZerusViewModel, onPair: () -> Unit) {
     var query by rememberSaveable { mutableStateOf("") }
     if (model.connections.isEmpty() && !model.demo) { SessionsScreen(model, onPair); return }
@@ -353,12 +456,7 @@ private fun selectedStatus(session: Session, raw: JSONObject?): String = Selecte
                         if (project.stale) Tag("Last known catalog", Amber)
                         if (!project.catalogued) Tag("Folder", Muted)
                     }
-                    project.folders.take(2).forEach { folder -> Column {
-                        MachineLabel(model.machineName(project.key.connectionId,folder.computerId,folder.computerName),colorHex = model.machineColor(MachineKey(project.key.connectionId,folder.computerId)))
-                        Text(folder.path, maxLines = 1, overflow = TextOverflow.Ellipsis, color = Muted, style = MaterialTheme.typography.bodySmall)
-                    } }
-                    if (project.folders.isEmpty()) Text("No saved folders on connected machines", color = Muted, style = MaterialTheme.typography.bodySmall)
-                    else if (project.folders.size > 2) Text("${project.folders.size - 2} more folders", color = Muted, style = MaterialTheme.typography.bodySmall)
+                    ProjectFoldersPreview(model,project,Muted)
                     if (model.connections.size > 1) Text(model.connections.find { it.id == project.key.connectionId }?.displayName.orEmpty(), color = Muted, style = MaterialTheme.typography.labelSmall)
                 }
             }
@@ -376,24 +474,15 @@ private fun selectedStatus(session: Session, raw: JSONObject?): String = Selecte
         Text("$count ${if (count == 1) "session" else "sessions"} across ${project.computers.size} ${if (project.computers.size == 1) "machine" else "machines"}", color = Muted)
         Button(onClick = onViewSessions, modifier = Modifier.fillMaxWidth()) { Icon(DesktopIcons.Sessions, null); Spacer(Modifier.width(8.dp)); Text("View sessions") }
         Text("Folders", style = MaterialTheme.typography.titleLarge)
-        project.folders.forEach { folder -> Card(colors = CardDefaults.cardColors(containerColor = Surface)) {
-            Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Icon(DesktopIcons.Projects, null, tint = Mint)
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(folder.name.ifBlank { folder.path.substringAfterLast('/') }, fontWeight = FontWeight.SemiBold)
-                    MachineLabel(model.machineName(project.key.connectionId,folder.computerId,folder.computerName),colorHex = model.machineColor(MachineKey(project.key.connectionId,folder.computerId)))
-                    SelectionContainer { Text(folder.path, color = Muted, style = MaterialTheme.typography.bodySmall) }
-                }
-            }
-        } }
-        if (project.folders.isEmpty()) Text("No saved folders on connected machines", color = Muted)
+        ProjectFolderDetails(model,project,Surface,Muted)
     }
 }
 
 @Composable private fun SessionsScreen(model: ZerusViewModel, onPair: () -> Unit) {
     val project = model.sessionProjectScope
     if (model.connections.isEmpty() && !model.demo) {
-        Column(Modifier.fillMaxSize().padding(28.dp), verticalArrangement = Arrangement.Center) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).heightIn(min=maxHeight).padding(28.dp), verticalArrangement = Arrangement.Center) {
             Image(painterResource(R.drawable.zerus_brand), "", Modifier.size(72.dp))
             Spacer(Modifier.height(24.dp))
             Text("Your agents.\nWithin reach.", fontSize = 34.sp, lineHeight = 40.sp, fontWeight = FontWeight.SemiBold)
@@ -402,12 +491,15 @@ private fun selectedStatus(session: Session, raw: JSONObject?): String = Selecte
             Spacer(Modifier.height(28.dp))
             Button(onClick = onPair, modifier = Modifier.fillMaxWidth()) { Text("Open Machines", Modifier.padding(6.dp)) }
             TextButton(onClick = { model.preview() }, modifier = Modifier.fillMaxWidth()) { Text("Try demo") }
-        }; return
+        } }; return
     }
     val scoped = SessionFilters.scoped(model.sessions, model.machines, model.selectedMachines, model.sessionQuery, project?.key)
     val counts = SessionFilters.counts(scoped, model.machines)
     val visible = scoped.filter { SessionFilters.matches(it, model.sessionFilter, SessionFilters.online(it, model.machines)) }
     val groups = SessionFilters.grouped(visible, model.projects)
+    val readAllTargets = scoped.filterNot(SessionFilters::archived).map { it.target }
+    val canReadAll = !model.demo && readAllTargets.any(model::canMarkRead)
+    var readAllNotice by remember(project?.key, model.sessionQuery, model.selectedMachines) { mutableStateOf("") }
     val listState = rememberLazyListState(model.sessionListIndex, model.sessionListOffset)
     val scrollReset = model.sessionScrollReset
     val scrollScope = project?.key?.key.orEmpty()
@@ -418,7 +510,21 @@ private fun selectedStatus(session: Session, raw: JSONObject?): String = Selecte
     DisposableEffect(listState, scrollScope, scrollReset) { onDispose { model.saveSessionScroll(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, scrollScope, scrollReset) } }
     var machineDialog by remember { mutableStateOf(false) }
     LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { Text(project?.name ?: "Sessions", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold) }
+        item { Column {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(project?.name ?: "Sessions", Modifier.weight(1f), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+                TextButton(onClick = {
+                    val capturedTargets = readAllTargets.toList()
+                    val result = model.markAllRead(capturedTargets)
+                    readAllNotice = ConversationLoadPresentation.readAllOutcome(result.marked, result.skipped, result.partial)
+                }, enabled = canReadAll, modifier = Modifier.semantics {
+                    contentDescription = if (canReadAll) "Read all conversations in the current project, machine and search scope on this phone"
+                        else if (model.demo) "Read all unavailable in preview"
+                        else "Read all unavailable. The current scope needs verified history or loaded replies on this phone"
+                }) { Text("Read all") }
+            }
+            ReadAllNotice(readAllNotice) { readAllNotice = "" }
+        } }
         item { OutlinedTextField(model.sessionQuery, { model.changeSessionQuery(it) }, Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("Search sessions") },
             leadingIcon = { Icon(Icons.Default.Search, "Search sessions") }, shape = RoundedCornerShape(14.dp)) }
         item { Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -507,6 +613,14 @@ private fun selectedStatus(session: Session, raw: JSONObject?): String = Selecte
     val archived = target.archiveId.isNotBlank()
     val events = if (model.demo) Demo.events else model.conversationEvents
     val questions = if (archived || model.demo) emptyList() else model.conversationQuestions
+    var savedQuestionDisplay by rememberSaveable(stateSaver = Saver< QuestionDisplayState, String>(
+        save = { it.encode() }, restore = { QuestionDisplayState.decode(it) })) { mutableStateOf(QuestionDisplayState(target.key)) }
+    val questionDisplay = savedQuestionDisplay.forTarget(target.key)
+    fun updateQuestionDisplay(change: (QuestionDisplayState) -> QuestionDisplayState) {
+        savedQuestionDisplay = change(savedQuestionDisplay.forTarget(target.key))
+    }
+    val questionQueue = remember(questions, target, questionDisplay.chosen) { QuestionPolicies.queue(questions, target, questionDisplay.chosen) }
+    val offeredQuestionCount = questions.filter { it.prompts.isNotEmpty() && it.id.isNotBlank() && QuestionPolicies.submitted(it, target) == null }.distinctBy { it.id }.size
     val outgoing = model.conversationOutgoing
     val ownSendId = model.ownSendId(target)
     // Exact inspection evidence supersedes the older computer catalog while reading.
@@ -524,6 +638,20 @@ private fun selectedStatus(session: Session, raw: JSONObject?): String = Selecte
     val boundedNotice = if(model.historyEpoch.isNotBlank()) {
         if(model.hasOlder || model.hasNewer) "Showing part of the conversation. Use the history controls to load more messages." else ""
     } else if(model.conversationHistoryTruncated) "Showing recent activity. Older messages may be outside the available history." else ""
+    val historyGate = remember(target.key) { LoadingGate(android.os.SystemClock::elapsedRealtime) }
+    var historyProgress by remember(target.key) { mutableStateOf(false) }
+    LaunchedEffect(target.key, model.olderLoading, model.demo) {
+        historyProgress = false
+        if (!model.olderLoading || model.demo) { historyGate.cancel(); return@LaunchedEffect }
+        val operation = historyGate.begin(target.key).operation
+        delay(historyGate.remaining(operation.id))
+        if (historyGate.owns(operation.id)) historyProgress = historyGate.visible()
+    }
+    val loadStatus = ConversationLoadPresentation.status(events.isNotEmpty() || questions.isNotEmpty(),
+        model.detailBusy, model.detailProgress, model.olderLoading, historyProgress, model.demo)
+    val conversationLoading = !model.demo && (model.detailBusy || model.olderLoading)
+    val canReadAll = !archived && !model.demo && model.canMarkRead(target)
+    var readAllNotice by remember(target.key) { mutableStateOf("") }
     val keys = buildList {
         add("history:earlier")
         add("history:status")
@@ -531,7 +659,7 @@ private fun selectedStatus(session: Session, raw: JSONObject?): String = Selecte
         if (boundedNotice.isNotBlank()) add("history:bounded")
         add("history:missing-anchor")
         events.forEach { if(it.id == unreadBoundary) add("history:unread"); add("event:" + it.id) }
-        if (events.isEmpty() && !model.detailBusy) add("history:empty")
+        if (events.isEmpty() && !conversationLoading) add("history:empty")
         add("history:newer")
         if (queueVisible) add("history:queue")
         if (questions.isNotEmpty()) add("history:questions")
@@ -672,6 +800,31 @@ private fun selectedStatus(session: Session, raw: JSONObject?): String = Selecte
         }
     }
     Column(Modifier.fillMaxSize().imePadding()) {
+        Box(Modifier.fillMaxWidth().height(4.dp)) {
+            if (!obscured && !model.demo && (model.detailProgress || historyProgress))
+                LinearProgressIndicator(Modifier.fillMaxWidth(), color = Mint)
+        }
+        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val stripStatus = loadStatus?.takeIf { !it.initial || queueVisible }
+            if (stripStatus?.spinner == true && !obscured) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+            Text(stripStatus?.text ?: unread?.let { "${it.text} unread" } ?: "Messages",
+                Modifier.weight(1f).semantics { if (!obscured && stripStatus != null) liveRegion = LiveRegionMode.Polite },
+                color = if (stripStatus == null && unread != null) Mint else Muted, style = MaterialTheme.typography.bodySmall)
+            if (offeredQuestionCount > 0) TextButton(onClick = {
+                if (!questionDisplay.expanded) questionQueue.selected?.let { question -> updateQuestionDisplay { it.open(question) } }
+            }) { Text("Questions ($offeredQuestionCount)") }
+            TextButton(onClick = {
+                val result = model.markAllRead(listOf(target))
+                readAllNotice = ConversationLoadPresentation.readAllOutcome(result.marked, result.skipped, result.partial)
+            }, enabled = canReadAll, modifier = Modifier.semantics {
+                contentDescription = if (canReadAll) "Read all replies in this conversation on this phone"
+                    else if (model.demo) "Read all unavailable in preview"
+                    else if (archived) "Read all unavailable for archived conversations"
+                    else "Read all unavailable. This conversation needs verified history or loaded replies on this phone"
+            }) { Text("Read all") }
+        }
+        ReadAllNotice(readAllNotice, Modifier.padding(horizontal = 16.dp)) { readAllNotice = "" }
         if(searchNotice.isNotBlank()) Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp),verticalAlignment = Alignment.CenterVertically) {
             Text(searchNotice,Modifier.weight(1f),color = Amber,style = MaterialTheme.typography.bodySmall)
             IconButton(onClick = { searchNotice = "" }) { Icon(Icons.Default.Close,"Dismiss search notice") }
@@ -680,8 +833,7 @@ private fun selectedStatus(session: Session, raw: JSONObject?): String = Selecte
             .onGloballyPositioned { viewportBounds = it.boundsInWindow() }) {
             LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                item(key = "history:earlier") { Column(Modifier.fillMaxWidth(),horizontalAlignment = Alignment.CenterHorizontally) {
-                    if(model.olderLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                item(key = "history:earlier") { if (loadStatus?.initial != true) Column(Modifier.fillMaxWidth(),horizontalAlignment = Alignment.CenterHorizontally) {
                     if(model.olderError.isNotBlank()) {
                         Text(model.olderError,color = Amber,style = MaterialTheme.typography.bodySmall)
                         TextButton(onClick = { model.retryHistory(target) },enabled = !model.olderLoading && historyReason.isBlank()) { Text("Retry history") }
@@ -690,7 +842,7 @@ private fun selectedStatus(session: Session, raw: JSONObject?): String = Selecte
                     if(model.historyIndexing) Text("History is still indexing. Unread totals may be unavailable.",color = Muted,style = MaterialTheme.typography.labelSmall)
                     if(historyReason.isNotBlank()) Text(historyReason,color = Muted,style = MaterialTheme.typography.labelSmall)
                 } }
-                item(key = "history:status") { Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                item(key = "history:status") { if (loadStatus?.initial != true) Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (raw == null && !model.demo) Tag("Checking…", Muted) else SessionDetailBadge(session,raw)
                     Tag(if (model.demo) "Preview" else if (model.activityVerified) "Connected" else if (raw != null) "Last known" else "Checking…",
                         if (online) Mint else Amber)
@@ -717,7 +869,7 @@ private fun selectedStatus(session: Session, raw: JSONObject?): String = Selecte
                         model, onReviewOutgoing)
                     }
                 }
-                if (events.isEmpty() && !model.detailBusy) item(key = "history:empty") {
+                if (events.isEmpty() && !conversationLoading) item(key = "history:empty") {
                     Text("No recent messages are available. Refresh to load activity.", color = Muted)
                 }
                 item(key = "history:newer") {
@@ -729,9 +881,14 @@ private fun selectedStatus(session: Session, raw: JSONObject?): String = Selecte
                 if (queueVisible) item(key = "history:queue") { NativeInputQueue(model,target) }
                 if (questions.isNotEmpty()) item(key = "history:questions") {
                     QuestionsPane(model, target, questions, online && model.activityVerified && !model.contextBlocked(target), cardVisible,
-                        viewportBounds, cardMaxHeight, onReview)
+                        viewportBounds, cardMaxHeight, questionDisplay, ::updateQuestionDisplay, onReview)
                 }
                 item(key = "history:tail") { Spacer(Modifier.height(1.dp)) }
+            }
+            if (loadStatus?.initial == true && !queueVisible) Column(Modifier.align(Alignment.Center).padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (loadStatus.spinner && !obscured) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                Text(loadStatus.text, Modifier.semantics { if (!obscured) liveRegion = LiveRegionMode.Polite }, color = Muted, style = MaterialTheme.typography.bodyMedium)
             }
             if ((!follow.following || model.hasNewer) && (events.isNotEmpty() || questions.isNotEmpty()) &&
                 !(questions.isNotEmpty() && cardVisible))
@@ -752,6 +909,17 @@ private fun selectedStatus(session: Session, raw: JSONObject?): String = Selecte
                 modifier = Modifier.fillMaxWidth().background(Surface).padding(16.dp))
         }
         else MessageComposer(model, session, online, onReview, onAttach)
+    }
+    ExpandedQuestionHost(model, target, questions, online && model.activityVerified && !model.contextBlocked(target),
+        questionDisplay, ::updateQuestionDisplay, onReview)
+}
+
+@Composable private fun ReadAllNotice(notice: String, modifier: Modifier = Modifier, onDismiss: () -> Unit) {
+    if (notice.isBlank()) return
+    Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(notice, Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite },
+            color = Muted, style = MaterialTheme.typography.bodySmall)
+        IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Dismiss Read all result") }
     }
 }
 
@@ -775,12 +943,15 @@ private fun selectedStatus(session: Session, raw: JSONObject?): String = Selecte
                     SelectionContainer { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         replies.orEmpty().forEach { reply ->
                             Text("Question", color = Muted, style = MaterialTheme.typography.labelSmall)
-                            Text(reply.question, lineHeight = 23.sp)
+                            MarkdownText(reply.question)
                             Text("Your answer", color = Mint, style = MaterialTheme.typography.labelSmall)
                             Text(reply.answer.ifEmpty { "(empty answer)" }, lineHeight = 23.sp)
                         }
                     } }
-                } else if (event.text.isNotBlank()) SelectionContainer { Text(event.text, lineHeight = 23.sp, style = MaterialTheme.typography.bodyLarge) }
+                } else if (event.text.isNotBlank()) {
+                    if(own) SelectionContainer { Text(event.text, lineHeight = 23.sp, style = MaterialTheme.typography.bodyLarge) }
+                    else ProvideTextStyle(MaterialTheme.typography.bodyLarge.copy(lineHeight=23.sp)) { MarkdownText(event.text) }
+                }
                 AttachmentRows(event.attachments)
                 if(event.detailTruncated) Text("Message text shortened",color = Amber,style = MaterialTheme.typography.labelSmall)
                 if (event.delivery.isNotBlank() || event.at > 0) Row(Modifier.fillMaxWidth(),
@@ -973,7 +1144,7 @@ private fun selectedStatus(session: Session, raw: JSONObject?): String = Selecte
     val unsent = model.drafts.filter { (it.text.isNotBlank() || it.attachments.isNotEmpty() || it.answers.isNotBlank()) && it.status !in listOf("submitted", "recorded") }
     val unresolved = model.outgoing.filter { it.status in listOf("sending", "uncertain", "failed") }
     val contextOperations = model.contextOperations.filter { it.status in listOf("sending", "submitted", "uncertain", "failed") }
-    val sessionActions = model.sessionActions.filter { it.status in listOf("sending","uncertain","failed") }
+    val sessionActions = model.sessionActions.filter { it.status in listOf("sending","uncertain","failed") || it.needsProjectReview }
     var reviewContext by remember { mutableStateOf<ContextOperation?>(null) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("Saved drafts", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold) }
@@ -1044,69 +1215,6 @@ private fun selectedStatus(session: Session, raw: JSONObject?): String = Selecte
     reviewContext?.let { operation -> ContextOperationReview(model, operation, onDismiss = { reviewContext = null }) }
 }
 
-@Composable private fun MachinesScreen(model: ZerusViewModel, live: Boolean, onPair: () -> Unit, onDisconnect: (Connection) -> Unit,
-    onNotifications: (Boolean) -> Unit, onLive: (Boolean) -> Unit, onPush: () -> Unit, onFirebase: () -> Unit) {
-    var notices by remember { mutableStateOf(false) }
-    var naming by remember { mutableStateOf<Machine?>(null) }
-    var coloring by remember { mutableStateOf<Machine?>(null) }
-    if(notices) ThirdPartyDialog { notices = false }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text("Machines", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
-        model.machines.forEach { machine -> Card(colors = CardDefaults.cardColors(containerColor = Surface)) {
-            Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                Icon(Icons.Default.Computer, null, tint = Mint)
-                Column(Modifier.weight(1f)) { MachineLabel(machine.name,colorHex = model.machineColor(MachineKey(machine.connectionId,machine.id))); Text(if (machine.online) "Online" else "Offline", color = if (machine.online) Mint else Muted, style = MaterialTheme.typography.bodySmall) }
-                if(!model.demo) {
-                    IconButton(onClick={ coloring=machine },enabled=model.storageReady) { Icon(Icons.Default.Palette,"Machine label color") }
-                    IconButton(onClick={ naming=machine },enabled=model.storageReady) { Icon(Icons.Default.Edit,"Rename machine") }
-                }
-            }
-        } }
-        if (model.demo) OutlinedButton(onClick = { model.stopPreview() }) { Text("Exit preview") }
-        model.connections.forEach { connection -> Column {
-            Text(connection.displayName, fontWeight = FontWeight.SemiBold)
-            Text(connection.endpoint, color = Muted, style = MaterialTheme.typography.bodySmall)
-            Text(model.pushStatuses[connection.id].orEmpty().ifBlank { "Push not configured" }, color = Muted, style = MaterialTheme.typography.bodySmall)
-            model.pushCapabilities[connection.id]?.let { Text(it, color = Muted, style = MaterialTheme.typography.bodySmall) }
-            TextButton(onClick = { onDisconnect(connection) }) { Text("Disconnect workspace") }
-        } }
-        OutlinedButton(onClick = onPair, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(8.dp)); Text("Pair another workspace") }
-        HorizontalDivider()
-        Text("Notifications", style = MaterialTheme.typography.titleLarge)
-        Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Session alerts"); Text("Generic alerts keep message content private.", style = MaterialTheme.typography.bodySmall, color = Muted) }; Switch(model.notifications, onNotifications) }
-        Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Keep a live connection"); Text("Uses an ongoing notification. Android may delay alerts during battery saving.", style = MaterialTheme.typography.bodySmall, color = Muted) }; Switch(live, onLive, enabled = model.connections.isNotEmpty()) }
-        OutlinedButton(onClick = onPush, enabled = model.connections.isNotEmpty()) { Text("Set up UnifiedPush") }
-        if (BuildConfig.FIREBASE_ENABLED) OutlinedButton(onClick = onFirebase, enabled = model.connections.isNotEmpty()) { Text("Set up Firebase push") }
-        Text("UnifiedPush needs a distributor installed on your phone. The app works without Google services.", style = MaterialTheme.typography.bodySmall, color = Muted)
-        Text("Zerus Android ${BuildConfig.VERSION_NAME}", color = Muted, style = MaterialTheme.typography.labelSmall)
-        TextButton(onClick = { notices = true }) { Text("Third-party notices") }
-    }
-    coloring?.let { machine ->
-        val key = MachineKey(machine.connectionId,machine.id)
-        ObscureConversation()
-        MachineColorDialog(model.machineName(key.connectionId,key.computerId,machine.name),key,
-            model.machineColorOverride(key),key in model.machineColorSaving,
-            onSave = { color -> model.setMachineColor(key,color) { coloring=null } },onDismiss = { coloring=null })
-    }
-    naming?.let { machine ->
-        val key=MachineKey(machine.connectionId,machine.id)
-        var name by remember(key) { mutableStateOf(machine.name) }
-        val saving=key in model.machineNameSaving
-        val valid=runCatching { MachineNames.checked(name) }.isSuccess
-        fun saveName() { if(valid&&!saving) model.renameMachine(key,name) { naming=null } }
-        AlertDialog(onDismissRequest={ if(!saving) naming=null },title={ Text("Name on this phone") },text={
-            Column(verticalArrangement=Arrangement.spacedBy(12.dp)) {
-                Text("This private label applies only to this machine in this workspace. Its hostname, SSH settings and session identity stay unchanged.")
-                Text(model.connections.find { it.id==machine.connectionId }?.displayName.orEmpty(),style=MaterialTheme.typography.labelMedium)
-                OutlinedTextField(name,{name=it},label={Text("Machine name")},singleLine=true,readOnly=saving,isError=!valid,keyboardOptions=KeyboardOptions(imeAction=ImeAction.Done),keyboardActions=KeyboardActions(onDone={saveName()}))
-                Text("Reported name: ${machine.nativeName}",style=MaterialTheme.typography.bodySmall)
-                if(model.machineAlias(key).isNotBlank()) TextButton(onClick={model.renameMachine(key,null) { naming=null }},enabled=!saving) { Text("Reset to reported name") }
-            }
-        },confirmButton={TextButton(onClick=::saveName,enabled=valid&&!saving) { Text(if(saving) "Saving…" else "Save") }},
-            dismissButton={TextButton(onClick={naming=null},enabled=!saving) { Text("Cancel") }})
-    }
-
-}
 
 private fun deliveryLabel(status: String) = when (status) {
     "sending", "submitting" -> "Sending…"

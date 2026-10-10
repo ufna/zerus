@@ -66,6 +66,23 @@ class PermissionMode(unittest.TestCase):
         before=self.received();self.assertEqual(self.answer(p),receipt);self.assertEqual(self.received(),before)
         self.assertEqual(self.inspect()['pending_questions'],[])
 
+    def test_home_abbreviation_keeps_explicit_choice_and_exact_folder(self):
+        self.record['launch_dir']=str(self.root/'work/example');self.write_record()
+        self.redraw('folder','~/work/example','~/work/example')
+        self.card=self.inspect()['pending_questions'][0]
+        self.assertEqual(self.card['source'],'claude_permission_mode')
+        self.assertTrue(self.card['can_answer']);self.assertEqual(self.received(),b'')
+        p=self.payload();receipt=self.answer(p)
+        self.assertEqual(receipt['status'],'answered')
+        self.assertEqual((self.root/'submitted').read_text(),'No, keep bypass permissions')
+        before=self.received();self.assertEqual(self.answer(p),receipt);self.assertEqual(self.received(),before)
+        self.assertEqual(self.inspect()['pending_questions'],[])
+
+    def test_home_abbreviation_does_not_match_an_unrelated_absolute_folder(self):
+        self.redraw('folder','~/work/example','~/work/example')
+        self.assertEqual(self.inspect()['pending_questions'],[])
+        self.answer(self.payload(),success=False);self.assertEqual(self.received(),b'')
+
     def test_explicit_auto_navigates_back_from_current_selection(self):
         self.redraw('selection','1','❯ No, keep')
         self.assertEqual(self.inspect()['pending_questions'][0]['question_hash'],self.card['question_hash'])

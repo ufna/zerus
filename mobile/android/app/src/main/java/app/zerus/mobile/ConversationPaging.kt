@@ -21,17 +21,26 @@ data class HistoryPage(val target:Target,val epoch:String,val events:List<Event>
                 .put("has_before",window.hasBefore || start>0).put("has_after",window.hasAfter || end<window.events.size)
             return raw.takeIf { it.toString().toByteArray(Charsets.UTF_8).size<900*1024 }
         }
+        private fun canonicalRetention(window:HistoryWindow):HistoryWindow {
+            // Inspection may append provisional journal rows. They remain visible in memory,
+            // but have no authority to supply a canonical page cursor or read sequence.
+            val rows=window.events.filter { it.historyEpoch==window.epoch && it.historyId.isNotBlank() && it.historyCursor.isNotBlank() }
+            val omitted=rows.size!=window.events.size
+            return window.copy(events=rows,hasAfter=window.hasAfter || omitted,atHead=window.atHead && !omitted)
+        }
         fun retained(window:HistoryWindow,anchor:String):JSONObject? {
-            val index=window.events.indexOfFirst { it.historyCursor==anchor };if(index<0) return null
+            val canonical=canonicalRetention(window)
+            val index=canonical.events.indexOfFirst { it.historyCursor==anchor };if(index<0) return null
             val start=(index-49).coerceAtLeast(0)
-            return slice(window,start,(start+100).coerceAtMost(window.events.size))
+            return slice(canonical,start,(start+100).coerceAtMost(canonical.events.size))
         }
         fun neighbors(window:HistoryWindow,anchor:String):List<Triple<String,String,JSONObject>> {
-            val index=window.events.indexOfFirst { it.historyCursor==anchor };if(index<0) return emptyList()
-            val start=(index-49).coerceAtLeast(0);val end=(start+100).coerceAtMost(window.events.size)
+            val canonical=canonicalRetention(window)
+            val index=canonical.events.indexOfFirst { it.historyCursor==anchor };if(index<0) return emptyList()
+            val start=(index-49).coerceAtLeast(0);val end=(start+100).coerceAtMost(canonical.events.size)
             return buildList {
-                if(start>0) slice(window,(start-100).coerceAtLeast(0),start)?.let { add(Triple("before",window.events[start].historyCursor,it)) }
-                if(end<window.events.size) slice(window,end,(end+100).coerceAtMost(window.events.size))?.let { add(Triple("after",window.events[end-1].historyCursor,it)) }
+                if(start>0) slice(canonical,(start-100).coerceAtLeast(0),start)?.let { add(Triple("before",canonical.events[start].historyCursor,it)) }
+                if(end<canonical.events.size) slice(canonical,end,(end+100).coerceAtMost(canonical.events.size))?.let { add(Triple("after",canonical.events[end-1].historyCursor,it)) }
             }
         }
         fun parse(target:Target,id:String,raw:JSONObject):HistoryPage {

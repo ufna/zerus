@@ -54,6 +54,13 @@ mod usage;
 mod workspace;
 mod worktrees;
 
+/// Current bounded native Git evidence for exact project/worktree placement.
+pub(crate) fn worktree_catalog(path: &std::path::Path) -> serde_json::Value {
+    worktrees::catalog(path, true)
+}
+mod launch_project;
+pub(crate) use launch_project::with_launch_binding;
+
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::io::{self, Read};

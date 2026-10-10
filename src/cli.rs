@@ -40,6 +40,8 @@ impl From<std::io::Error> for Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [-n tag] [-d] [--rc] [--dry-run] [-- args...]
+       hgs mobile-peers --json        guarded direct-peer discovery (mobile-peer ABI 1)
+       hgs mobile-peer --json         guarded direct-peer native request from JSON stdin
        hgs [@host] a <session>        attach by full name (see hgs ls)
        hgs [@host] a <session> --existing [--run-id ID]   attach only to this live run
        hgs [@host] ls                 sessions here and on peers
@@ -66,6 +68,7 @@ const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [-n tag] [-d
        hgs machine ls | set <alias> --json <profile> | remove <alias> | reset <alias>
        hgs machine resolve <alias>          effective SSH settings (no connection)
        hgs swarm get | preview PEER | join PEER | sync | worker   shared project catalog
+       hgs swarm assign-launch --json   assign an exact launch to its selected project
        hgs machine check <alias> | ssh <alias> [--directory PATH] | setup <alias> [--source <checkout>]
        hgs [@host] account ls | add ID --provider AGENT --label NAME | rm ID | restore ID | login ID
        hgs [@host] account rename ID --label NAME | inspect ID [--refresh]
@@ -76,6 +79,7 @@ const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [-n tag] [-d
        hgs account copy ID --from MACHINE --to MACHINE --as NEW_ID [--label NAME]
        hgs [@host] worktrees --path PATH [--refresh] [--json]   existing checkouts as JSON
        hgs [@host] worktrees create --path REPO --branch NAME --destination PATH [--base HEAD] [--json]
+       Mobile worktree ABI: worktrees-v1 (catalog/create/verified project placement)
        hgs [@host] dirs [--hidden] [path]   directories as JSON (default: home)
        hgs [@host] kill <session> [--archive <id>]
        hgs [@host] rename <session> <new-full-name> [--archive <id>]
@@ -197,6 +201,20 @@ pub fn dispatch(args: Vec<String>) -> Result<i32> {
         return state::dispatch(&args[1..]).map_err(|e| Error::new(1, e));
     }
     let config = Config::load()?;
+    // The existing swarm namespace fails closed on unknown operations in older
+    // installations, so transport helpers cannot fall through to agent launch.
+    if args.first().is_some_and(|a| a == "swarm")
+        && args.get(1).is_some_and(|a| {
+            matches!(a.as_str(), "mobile-peers" | "mobile-peer" | "__mobile-peer-local" | "__mobile-peer-identity" | "__mobile-peer-transport")
+        })
+    {
+        return crate::mobile_peers::dispatch(&config, &args[1..]);
+    }
+    if args.first().is_some_and(|a| {
+        matches!(a.as_str(), "mobile-peers" | "mobile-peer" | "__mobile-peer-local" | "__mobile-peer-identity" | "__mobile-peer-transport")
+    }) {
+        return crate::mobile_peers::dispatch(&config, &args);
+    }
     if args.first().is_some_and(|a| a == "--run") {
         return run(&args[1..]);
     }

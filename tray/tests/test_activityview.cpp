@@ -104,6 +104,7 @@ private slots:
     void attachmentsStayWithTheirMessageAndOpenExactFile();
     void attachmentThumbnailArrivesWithoutMovingTranscript();
     void liveCompactionProgressPreservesTranscriptAndClears();
+    void sessionClearIsAColoredBoundaryAndSurvivesReload();
     void confirmedQuestionAnswerStaysInTimeline();
     void unmatchedContextPrecedesTimeline();
     void localDeliveryCards();
@@ -618,6 +619,37 @@ void TestActivityView::jumpToLatestKeepsFocusInActivity()
     composer.setFocus(Qt::MouseFocusReason);
     view.setActivity({}, history(26));
     QTRY_COMPARE(bar->value(), bar->maximum()); QVERIFY(composer.hasFocus());
+}
+
+void TestActivityView::sessionClearIsAColoredBoundaryAndSurvivesReload()
+{
+    ActivityView view; view.resize(560, 420); view.show(); view.setSessionKey("codex/session");
+    auto clear=journalEvent(3,"SessionCleared",{});clear["activity_key"]="confirmed-clear";
+    const QJsonObject details{{"conversation_id","old"},{"session_clear",clear}};
+    const QJsonArray events{journalEvent(1,"Stop","Previous answer"),journalEvent(2,"PostToolUse","Before clear","Read"),
+        clear,journalEvent(4,"PostToolUse","After clear","Read")};
+    for (bool dark:{false,true}) {
+        view.setTheme(dark);view.setActivity(details,events,"Old request snapshot");
+        const auto text=view.plainText();QCOMPARE(text.count("Session cleared"),1);
+        QVERIFY(text.indexOf("Previous answer")<text.indexOf("Session cleared"));
+        QVERIFY(!text.contains("Old request snapshot"));
+        QVERIFY(!links(view.browser()).contains("hgs-toggle:group-confirmed-clear"));
+        const auto cursor=view.browser()->document()->find("Session cleared");QVERIFY(!cursor.isNull());
+        QCOMPARE(cursor.charFormat().foreground().color(),QColor(dark?"#8bdfc0":"#167357"));
+        const auto revision=view.browser()->document()->revision();view.setActivity(details,events);
+        QCOMPARE(view.browser()->document()->revision(),revision);
+    }
+    // The durable marker keeps the notice on a cold reader even after the
+    // operation has fallen outside the bounded tool-event window.
+    view.setSessionKey("codex/reopened");view.setActivity(details,{journalEvent(4,"PostToolUse","Later tool","Read")});
+    QCOMPARE(view.plainText().count("Session cleared"),1);
+    view.setSessionKey("codex/unrelated");view.setActivity({},{journalEvent(1,"SessionStart",{})});
+    QVERIFY(!view.plainText().contains("Session cleared"));
+    const auto preview=qEnvironmentVariable("HGS_CLEAR_PREVIEW");
+    if(!preview.isEmpty()) {
+        view.setSessionKey("codex/session");
+        for(bool dark:{false,true}) {view.setTheme(dark);view.setActivity(details,events);QTest::qWait(50);QVERIFY(view.grab().save(preview+(dark?"-dark.png":"-light.png")));}
+    }
 }
 
 void TestActivityView::liveCompactionProgressPreservesTranscriptAndClears()

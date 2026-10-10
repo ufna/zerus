@@ -830,7 +830,14 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
                 m_details.remove("pending_model"); m_details.remove("pending_effort"); m_details.remove("pending_settings_id");
             }
         }
-        if (!ok) showNotice(tr("Model settings for %1: %2").arg(m_settingsName, error), true);
+        // A send or another client can consume/replace the pending request.
+        // These exact preflight refusals send no native input; refresh below
+        // without reporting a failed mutation or retrying the stale request.
+        const QString detail = error.startsWith("hgs: ") ? error.mid(5) : error;
+        const bool stalePending = m_settingsAutomatic &&
+            (detail == "pending settings changed; refresh before applying"
+             || detail == "pending settings target changed; refresh before applying");
+        if (!ok && !stalePending) showNotice(tr("Model settings for %1: %2").arg(m_settingsName, error), true);
         m_settingsKey.clear(); m_settingsRun.clear(); m_settingsConversation.clear();
         renderDetails(); emit refreshRequested(); inspect();
     });
@@ -2341,7 +2348,8 @@ void SessionsWindow::acceptInspection(const QString &host, const QString &name, 
     if (!m_details.isEmpty() && m_details.value("conversation_id") != data.value("conversation_id")) {
         // The conversation changed under this terminal. Fetch its initial window;
         // a cursor from the previous conversation must never skip the new history.
-        m_events = {}; m_cursor = 0; m_details = data; m_processPollAge.invalidate(); continueAfterCompact(); inspect(); return;
+        m_events = data.value("events").toArray(); m_cursor = 0; m_details = data; m_processPollAge.invalidate();
+        reconcileMessages(); continueAfterCompact(); renderDetails(); inspect(); return;
     }
     const auto previousRoster = childRoster(*entry);
     const auto inspected=SessionPresentation::inspected(entry->session,data);

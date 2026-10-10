@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import contextvars
 import fcntl
 import hashlib
 import json
@@ -31,6 +32,8 @@ from .recovery import validate_recovery
 from .history import validate_history
 from .context import CONTEXT_COMMANDS, LIFECYCLE_OPERATIONS, TERMINAL_OPERATIONS, LAUNCH_OPERATIONS, OPERATIONS, FEATURES, READ_OPERATIONS, READ_SQL, validate_context, validate_core, validate_inspect, validate_lifecycle
 from .launch import catalog as project_catalog, validate as validate_launch
+from .launch import projects as launch_projects, project_choice
+from . import worktrees
 from .terminal import validate as validate_terminal
 from .history import bound_inspection
 from .projects import apply_memberships, is_archived, normalize as normalize_projects, unavailable as unavailable_projects
@@ -48,6 +51,7 @@ MAX_BYTES = 8 * 1024 * 1024
 MAX_PAYLOAD = MAX_REQUEST_BYTES
 MAX_RESULT = 1024 * 1024
 ARCHIVE_SNAPSHOT_TTL = 45
+LOCAL_MACHINE_GUARD = contextvars.ContextVar("mobile_local_machine_guard", default=None)
 
 
 class ConnectorError(Exception):
@@ -267,13 +271,19 @@ class Connector:
             raise ConnectorError("invalid state_dir")
         binding = hashlib.sha256((self.identity_url + "\0" + self.token).encode()).hexdigest()
         self.journal = Journal(Path(state).expanduser(), binding)
+        self._init_machine_context(binding)
+        from .fleet import Fleet
+        self.fleet = Fleet(self, ConnectorError)
+
+    def _init_machine_context(self, fallback_id: str) -> None:
+        """Initialize only machine caches; never open another durable journal."""
         self.sessions: set[str] = set()
         self.archives: set[tuple[str, str]] = set()
         self.snapshot_seen_at = 0.0
         self.snapshot_ready = asyncio.Event()
         self.attention_cache: dict[tuple[str, str, str], list[dict[str, str]]] = {}
         self.attention_cursor = 0
-        self.project_fallback_id = binding
+        self.project_fallback_id = fallback_id
         self.project_cache = None
         self.project_next_poll = 0.0
         self.lifecycle_supported = False
@@ -281,23 +291,52 @@ class Connector:
         self.recovery_supported = False
         self.history_supported = False
         self.launch_supported = False
+        self.project_launch_supported = False
+        self.worktree_supported = False
         self.capabilities_next_poll = 0.0
         self.accounts = AccountCache(lambda *args, **kwargs: self.native(*args, **kwargs),
                                      errors=(ConnectorError, ValueError, RuntimeError, UnicodeError))
 
+    def peer_context(self, machine_id: str, native) -> Connector:
+        context = Connector.__new__(Connector)
+        for field in ("journal", "hgs", "interval", "timeout", "max_bytes"):
+            setattr(context, field, getattr(self, field))
+        context.native = native
+        context._init_machine_context(machine_id)
+        return context
+
     async def native(self, argv: list[str], payload: dict | None = None,
                      *, timeout: float | None = None, json_output: bool = True) -> object:
+        machine_id = LOCAL_MACHINE_GUARD.get()
+        if machine_id is not None:
+            payload = {"schema": 1, "target_machine_id": machine_id,
+                       "argv": argv, "payload": payload}
+            argv = ["swarm", "__mobile-peer-local", "--json"]
+        if argv and argv[0] == "worktrees":
+            argv = ["__state", *argv]
+        return await self._native(argv, payload, timeout=timeout, json_output=json_output)
+
+    async def _native(self, argv: list[str], payload: dict | None = None,
+                      *, timeout: float | None = None, json_output: bool = True,
+                      max_output_bytes: int | None = None) -> object:
         stdin = None if payload is None else json.dumps(payload, ensure_ascii=False).encode()
-        if stdin is not None and len(stdin) > MAX_PAYLOAD:
+        if stdin is not None and len(stdin) > MAX_PAYLOAD + (4096 if argv[:2] in (["swarm", "mobile-peer"], ["swarm", "__mobile-peer-local"]) else 0):
             raise ConnectorError("native request exceeds size limit")
         process = None
+        inner_argv = payload.get("argv", argv) if isinstance(payload, dict) else argv
+        mobile_create = "worktrees" in inner_argv and "create" in inner_argv and "--mobile" in inner_argv
+        drain_deadline = time.monotonic() + 35
+        oversized = False
 
         async def read(stream: asyncio.StreamReader) -> bytes:
+            nonlocal oversized
             chunks, size = [], 0
             while chunk := await stream.read(65536):
                 size += len(chunk)
-                if size > self.max_bytes:
-                    raise ConnectorError("native output exceeds size limit")
+                if size > (self.max_bytes if max_output_bytes is None else max_output_bytes):
+                    if not mobile_create: raise ConnectorError("native output exceeds size limit")
+                    oversized = True
+                    continue  # Keep draining the owned supervisor without retaining excess.
                 chunks.append(chunk)
             return b"".join(chunks)
 
@@ -315,15 +354,27 @@ class Connector:
         tasks = []
         joined = None
         try:
-            process = await asyncio.create_subprocess_exec(
+            cancelled_during_spawn = False
+            spawning = asyncio.create_task(asyncio.create_subprocess_exec(
                 self.hgs, *argv, stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                env=native_environment())
+                env=native_environment()))
+            if mobile_create:
+                while True:
+                    try:
+                        process = await asyncio.shield(spawning)
+                        break
+                    except asyncio.CancelledError:
+                        cancelled_during_spawn = True
+            else:
+                process = await spawning
             tasks = [asyncio.create_task(read(process.stdout)),
                      asyncio.create_task(read(process.stderr)),
                      asyncio.create_task(write()), asyncio.create_task(process.wait())]
             joined = asyncio.gather(*tasks)
-            stdout, _, _, code = await asyncio.wait_for(joined, self.timeout if timeout is None else timeout)
+            if cancelled_during_spawn: raise asyncio.CancelledError()
+            stdout, _, _, code = await asyncio.wait_for(asyncio.shield(joined) if mobile_create else joined, self.timeout if timeout is None else timeout)
+            if oversized: raise ConnectorError("native output exceeds size limit")
             if code != 0:
                 raise ConnectorError("native command failed")
             if not json_output:
@@ -337,6 +388,16 @@ class Connector:
         except OSError:
             raise ConnectorError("native command could not start") from None
         finally:
+            if mobile_create and joined is not None and process is not None:
+                # Keep only this operation's bounded supervisor alive until it cleans
+                # its owned Git group. Repeated cancellation must not cut the drain short.
+                while not joined.done() and time.monotonic() < drain_deadline:
+                    try:
+                        await asyncio.wait_for(asyncio.shield(joined), max(.001, drain_deadline - time.monotonic()))
+                    except asyncio.CancelledError:
+                        continue
+                    except (Exception, asyncio.TimeoutError):
+                        break
             if process is not None and process.returncode is None:
                 # Only this connector-owned CLI child; never its native agent,
                 # its process group, a tmux server, or a DeepSeek host.
@@ -372,6 +433,7 @@ class Connector:
         snapshot = await self.native(["ls", "--json", "--local"])
         if not isinstance(snapshot, dict) or not isinstance(snapshot.get("sessions"), list):
             raise ConnectorError("native snapshot has invalid format")
+        snapshot.pop("peers", None)  # Native SSH aliases and peer-of-peer inventory stay local.
         self.sessions = {row["name"] for row in snapshot["sessions"]
                          if isinstance(row, dict) and isinstance(row.get("name"), str)
                          and not is_archived(row)}
@@ -383,9 +445,9 @@ class Connector:
         await asyncio.gather(self.enrich_attention(snapshot), self.enrich_projects(snapshot))
         snapshot["mobile_accounts"] = await self.accounts.update()
         await self.probe_capabilities()
-        operations = OPERATIONS - (set() if self.lifecycle_supported else LIFECYCLE_OPERATIONS) - (set() if self.terminal_supported else TERMINAL_OPERATIONS) - (set() if self.launch_supported else LAUNCH_OPERATIONS) - (set() if self.history_supported else {"history"}) - (set() if self.recovery_supported else {"recovery_action"})
+        operations = (OPERATIONS - (set() if self.worktree_supported else worktrees.OPERATIONS)) - (set() if self.lifecycle_supported else LIFECYCLE_OPERATIONS) - (set() if self.terminal_supported else TERMINAL_OPERATIONS) - (set() if self.launch_supported else LAUNCH_OPERATIONS) - (set() if self.history_supported else {"history"}) - (set() if self.recovery_supported else {"recovery_action"})
         snapshot["mobile_capabilities"] = {"protocol_version": 1,
-            "operations": sorted(operations), "features": sorted(FEATURES | {"accounts_snapshot"}),
+            "operations": sorted(operations), "features": sorted(FEATURES | {"accounts_snapshot"} | ({"gateway_one_hop"} if getattr(self, "fleet", None) and self.fleet.available else set()) | ({"launch_project"} if self.project_launch_supported else set())),
             "reasons": {**({} if self.lifecycle_supported else {"session_actions": "Native CLI lacks the scoped session-action ABI"}),
                         **({} if self.terminal_supported else {"terminal": "Native CLI lacks the scoped Terminal ABI"})}}
 
@@ -400,6 +462,10 @@ class Connector:
         self.recovery_supported = False
         self.history_supported = False
         self.launch_supported = False
+        self.project_launch_supported = False
+        self.worktree_supported = False
+        if getattr(self, "fleet", None):
+            self.fleet.supported = False
         try:
             help_text = await self.native(["--help"], timeout=3, json_output=False)
             self.lifecycle_supported = isinstance(help_text, str) and any(
@@ -408,8 +474,16 @@ class Connector:
             self.recovery_supported = isinstance(help_text,str) and "recovery action --scoped-json" in help_text
             self.history_supported = isinstance(help_text,str) and "history <session> --json" in help_text
             self.launch_supported = isinstance(help_text,str) and "--launch-id" in help_text
+            self.project_launch_supported = isinstance(help_text,str) and "swarm assign-launch --json" in help_text
+            self.worktree_supported = isinstance(help_text,str) and "Mobile worktree ABI: worktrees-v1" in help_text
+            if getattr(self, "fleet", None):
+                self.fleet.supported = isinstance(help_text, str) and all(
+                    marker in help_text for marker in ("mobile-peers --json", "mobile-peer --json"))
         except (ConnectorError, UnicodeError):
             pass
+        finally:
+            if getattr(self, "fleet", None):
+                self.fleet.probe_complete = True
 
     async def enrich_projects(self, snapshot: dict) -> None:
         """Poll native logical groups every fifteen seconds; retain stale data."""
@@ -625,6 +699,25 @@ class Connector:
             raise ConnectorError("invalid native request JSON") from None
         if not self.journal.claim(request_id, journal_operation, request_hash):
             return self.journal.replay(request_id)
+        try:
+            target, machine_id = await self.fleet.resolve(request.get("gateway_route"),
+                                                       present="gateway_route" in request)
+        except asyncio.CancelledError:
+            self.journal.finish(request_id, {"state": "failed", "result": None,
+                "error": "connector stopped before native route resolution"})
+            raise
+        except ConnectorError as error:
+            response = {"state": "failed", "result": None, "error": str(error)}
+            self.journal.finish(request_id, response)
+            return response
+        token = LOCAL_MACHINE_GUARD.set(machine_id)
+        try:
+            return await target._execute_claimed(request)
+        finally:
+            LOCAL_MACHINE_GUARD.reset(token)
+
+    async def _execute_claimed(self, request: dict) -> dict:
+        request_id = request["request_id"]
         mutation_started = False
         try:
             operation, session, payload = await asyncio.to_thread(self.validate, request)
@@ -653,6 +746,18 @@ class Connector:
                         raise ConnectorError("terminal input expired before native delivery")
             if operation in LAUNCH_OPERATIONS and not self.launch_supported:
                 raise ConnectorError("native exact launch-ID ABI is unavailable")
+            if operation in worktrees.OPERATIONS and not self.worktree_supported:
+                raise ConnectorError("native mobile worktree ABI is unavailable")
+            if operation == "worktree_create":
+                from pathlib import PurePosixPath
+                destination = PurePosixPath(payload["destination"])
+                if destination.name in ("", ".", ".."):
+                    raise ConnectorError("invalid worktree destination")
+                parent = await self.native(["dirs", str(destination.parent)], timeout=5)
+                confirmed_destination = str(PurePosixPath(worktrees.absolute(parent.get("path"))) / destination.name)
+                fresh = worktrees.catalog(await self.native(["worktrees", "--path", payload['path'], "--refresh", "--json"], timeout=5), payload['path'])
+                if fresh.get('state') != 'ok' or fresh.get('stale') or fresh.get('common_dir') != payload['common_dir']:
+                    raise ConnectorError("repository changed; refresh worktrees before creation")
             launch_directory = None
             if operation == "launch":
                 try: accounts = project_catalog(await self.native(["account", "ls"], timeout=5))
@@ -663,6 +768,32 @@ class Connector:
                 if not isinstance(directory, dict) or not isinstance(directory.get("path"), str) or not Path(directory["path"]).is_absolute():
                     raise ConnectorError("native directory is unavailable")
                 launch_directory = directory["path"]
+                if "project_id" in payload:
+                    if not self.project_launch_supported:
+                        raise ConnectorError("native scoped project assignment is unavailable")
+                    try:
+                        project_data = launch_projects(await self.native(["swarm", "get"], timeout=3))
+                        if "project_folder_id" in payload:
+                            selected_project = next((row for row in project_data["projects"] if row["id"] == payload["project_id"]), None)
+                            selected_folder = next((row for row in selected_project["folders"] if row["id"] == payload["project_folder_id"]), None) if selected_project else None
+                            if selected_folder is None:
+                                raise ValueError("selected local project folder changed")
+                            checked_folder = await self.native(["dirs", selected_folder["path"]], timeout=5)
+                            if not isinstance(checked_folder, dict) or checked_folder.get("path") != launch_directory:
+                                raise ValueError("selected local project folder changed")
+                            selected_folder["path"] = checked_folder["path"]
+                        worktree_data = None
+                        if "worktree_folder_id" in payload:
+                            if not self.worktree_supported: raise ValueError("native verified worktree placement is unavailable")
+                            anchor = next((row for project in project_data['projects'] if project['id'] == payload['project_id']
+                                           for row in project['folders'] if row['id'] == payload['worktree_folder_id']), None)
+                            if anchor is None: raise ValueError("selected local project anchor changed")
+                            checked = await self.native(["dirs", anchor['path']], timeout=5)
+                            anchor['path'] = worktrees.absolute(checked.get('path'))
+                            worktree_data = worktrees.catalog(await self.native(["worktrees", "--path", anchor['path'], "--refresh", "--json"], timeout=5), anchor['path'])
+                        project_choice(project_data, payload, launch_directory, worktree_data)
+                    except ValueError as error:
+                        raise ConnectorError(str(error)) from None
             if operation == "recovery_action":
                 if not self.recovery_supported: raise ConnectorError("native scoped recovery ABI is unavailable")
                 fresh=await self.native(["inspect",session,"--skip-processes"])
@@ -677,6 +808,13 @@ class Connector:
             if operation == "catalog":
                 try: result = project_catalog(await self.native(["account", "ls"], timeout=5))
                 except ValueError as error: raise ConnectorError(str(error)) from None
+                result["project_launch_supported"] = False
+                result["worktree_supported"] = self.worktree_supported
+                if self.project_launch_supported:
+                    try:
+                        result.update(launch_projects(await self.native(["swarm", "get"], timeout=3)))
+                    except (ConnectorError, ValueError):
+                        pass
                 result["request_id"] = request_id
             elif operation == "dirs":
                 result = await self.native(["dirs", payload["path"]], timeout=5)
@@ -684,6 +822,13 @@ class Connector:
                     raise ConnectorError("native directory catalog is invalid")
                 result = {key: result[key] for key in ("path", "parent", "home", "directories", "truncated") if key in result}
                 result["request_id"] = request_id
+            elif operation == "worktrees":
+                result = worktrees.catalog(await self.native(["worktrees", "--path", payload['path'], "--refresh", "--json"], timeout=5), payload['path'])
+                result['request_id'] = request_id
+            elif operation == "worktree_create":
+                argv = ["worktrees", "create", "--path", payload['path'], "--common-dir", payload['common_dir'],
+                        "--branch", payload['branch'], "--base", payload['base'], "--destination", payload['destination'], "--request-id", request_id, "--json", "--mobile"]
+                result = worktrees.created(await self.native(argv, timeout=35), payload, request_id, confirmed_destination)
             elif operation == "launch":
                 argv = [payload["agent"], launch_directory, "--new", "-n", payload["tag"], "-d", "--launch-id", request_id]
                 if "account_id" in payload: argv.extend(["--account", payload["account_id"]])
@@ -700,6 +845,33 @@ class Connector:
                     await asyncio.sleep(.1)
                 if target is None: raise ConnectorError("native launch could not be verified by exact launch UUID; check computers before creating another")
                 result = {"request_id": request_id, "status": "created", "result_target": target}
+                if "project_id" in payload:
+                    assignment_payload = {"request_id": request_id, "name": target["name"],
+                        "expected_run_id": target["run_id"], "expected_conversation_id": target["conversation_id"],
+                        "swarm_id": payload["swarm_id"], "project_id": payload["project_id"],
+                        "directory": launch_directory, "add_folder": payload["add_folder"]}
+                    for field in ('worktree_folder_id', 'worktree_common_dir'):
+                        if field in payload: assignment_payload[field] = payload[field]
+                    if "project_folder_id" in payload:
+                        assignment_payload["project_folder_id"] = payload["project_folder_id"]
+                    assignment = {"status": "uncertain", "swarm_id": payload["swarm_id"], "project_id": payload["project_id"]}
+                    try:
+                        raw = await self.native(["swarm", "assign-launch", "--json"], assignment_payload, timeout=5)
+                        if (isinstance(raw, dict) and raw.get("request_id") == request_id
+                                and raw.get("name") == target["name"] and raw.get("run_id") == target["run_id"]
+                                and (raw.get("conversation_id") == target["conversation_id"] or not target["conversation_id"] and isinstance(raw.get("conversation_id"), str))
+                                and raw.get("swarm_id") == payload["swarm_id"] and raw.get("project_id") == payload["project_id"]
+                                and raw.get("status") in ("assigned", "failed", "uncertain")):
+                            assignment["status"] = raw["status"]
+                            if raw["status"] == "assigned":
+                                self.project_next_poll = 0
+                            if raw["status"] == "assigned" and not target["conversation_id"]:
+                                target["conversation_id"] = raw["conversation_id"]
+                    except (ConnectorError, ValueError):
+                        pass
+                    result["project_assignment"] = assignment
+                    if assignment["status"] != "assigned":
+                        result["warning"] = "The session was created, but its project assignment is " + assignment["status"] + ". Review Projects; this launch will not be repeated."
             elif operation == "inspect":
                 argv = ["inspect", session]
                 if payload is not None and "archive_id" in payload:
@@ -893,7 +1065,18 @@ class Connector:
         while True:
             try:
                 snapshot = await self.snapshot()
-                await self.http(client, "POST", "/v1/node/heartbeat", {"snapshot": snapshot})
+                body = self.fleet.heartbeat(snapshot)
+                try:
+                    await self.http(client, "POST", "/v1/node/heartbeat", body)
+                except RelayError as error:
+                    if len(body) == 1 or error.status not in {400, 404, 422}:
+                        raise
+                    self.fleet.relay_supported = False
+                    snapshot["mobile_capabilities"]["features"] = [feature for feature in
+                        snapshot["mobile_capabilities"]["features"] if feature != "gateway_one_hop"]
+                    await self.http(client, "POST", "/v1/node/heartbeat", {"snapshot": snapshot})
+                else:
+                    self.fleet.confirm_manifest(body)
                 delay = self.interval
             except ConnectorError as error:
                 LOG.warning("Heartbeat: %s", error)
@@ -906,7 +1089,10 @@ class Connector:
             try:
                 await self.flush(client)
                 await self.snapshot_ready.wait()
-                batch = await self.http(client, "GET", "/v1/node/requests?wait=25", max_response_bytes=MAX_PAYLOAD + 4096)
+                pending_capability = not self.fleet.probe_complete or (
+                    self.fleet.supported and self.fleet.relay_supported and self.fleet.local_id is None)
+                wait = 1 if pending_capability else 25
+                batch = await self.http(client, "GET", f"/v1/node/requests?wait={wait}" + ("&gateway_one_hop=1" if self.fleet.available else ""), max_response_bytes=MAX_PAYLOAD + 4096)
                 if not isinstance(batch, dict) or not isinstance(batch.get("requests"), list):
                     raise ConnectorError("relay returned invalid request list")
                 if len(batch["requests"]) > 100:
@@ -928,7 +1114,8 @@ class Connector:
     async def run(self) -> None:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=35), trust_env=False) as client:
             tasks = [asyncio.create_task(self.heartbeats(client)),
-                     asyncio.create_task(self.requests(client))]
+                     asyncio.create_task(self.requests(client)),
+                     asyncio.create_task(self.fleet.run(client))]
             try:
                 await asyncio.gather(*tasks)
             finally:
@@ -936,6 +1123,7 @@ class Connector:
                     task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
                 await self.accounts.close()
+                await self.fleet.close()
 
 
 def main() -> None:

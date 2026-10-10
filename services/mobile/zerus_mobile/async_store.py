@@ -145,7 +145,8 @@ class SyncStoreAdapter(Notifications):
     async def submit(self, device, body, max_queue, max_bytes):
         value = await self._call("submit", device, body, max_queue, max_bytes)
         if value[0] == 202:
-            self.notify("node:" + body["computer_id"])
+            gateway=await self._call("request_gateway",body["request_id"])
+            if gateway:self.notify("node:" + gateway)
         return value
 
     async def get_request(self, device, value, queue_ttl=120, claim_ttl=90):
@@ -153,19 +154,27 @@ class SyncStoreAdapter(Notifications):
             "get_request", device, value, queue_ttl=queue_ttl, claim_ttl=claim_ttl
         )
 
-    async def has_pending(self, node, queue_ttl=120):
-        return await self._call("has_pending", node, queue_ttl=queue_ttl)
+    async def has_pending(self, node, queue_ttl=120, allow_gateway=False):
+        return await self._call("has_pending", node, queue_ttl=queue_ttl, allow_gateway=allow_gateway)
 
-    async def claim(self, node, queue_ttl=120, claim_ttl=90):
-        return await self._call("claim", node, queue_ttl=queue_ttl, claim_ttl=claim_ttl)
+    async def claim(self, node, queue_ttl=120, claim_ttl=90, allow_gateway=False):
+        return await self._call("claim", node, queue_ttl=queue_ttl, claim_ttl=claim_ttl, allow_gateway=allow_gateway)
 
     async def result(self, node, value, body, claim_ttl=90):
         return await self._call("result", node, value, body, claim_ttl=claim_ttl)
 
-    async def heartbeat(self, node, snapshot):
-        changed = await self._call("heartbeat", node, snapshot)
+    async def heartbeat(self, node, snapshot, machine_id=None, peers=None):
+        changed = await self._call("heartbeat", node, snapshot, machine_id=machine_id, peers=peers)
         if changed is not False:
             self.notify("workspace:" + node["workspace_id"])
+
+    async def peer_heartbeat(self,node,route_id,machine_id,snapshot):
+        result=await self._call('peer_heartbeat',node,route_id,machine_id,snapshot)
+        self.notify('workspace:'+node['workspace_id'])
+        return result
+
+    async def revoke_computer(self,value):
+        return await self._call('revoke_computer',value)
 
     async def events(self, workspace, after, max_bytes=1024 * 1024):
         return await self._call("events", workspace, after, max_bytes=max_bytes)

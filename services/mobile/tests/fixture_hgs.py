@@ -240,14 +240,17 @@ def main():
         path = next((entry for entry, row in launched if row["name"] == args[1]), path)
     record = json.loads(path.read_text()) if path.exists() else initial()
     fixture_config = json.loads((root / "fixture-config.json").read_text()) if (root / "fixture-config.json").exists() else {}
+    if fixture_config.get("pending_questions") and not record.get("fixture_question_seeded"):
+        record["pending_questions"]=fixture_config["pending_questions"];record["fixture_question_seeded"]=True;record["phase"]="input";record["activity"]="busy";persist(path,record)
     context_metadata(record, fixture_config)
     if advance_context(record, fixture_config):
         persist(path, record)
     states = [row for entry,row in launched if entry != path]
     states += extra_states(record) if fixture_config.get("all_states") is True or os.environ.get("ZERUS_MOBILE_FIXTURE_ALL_STATES") == "1" or os.environ.get("ZERUS_MOBILE_FIXTURE_CATALOG_MODE") == "filters" else []
     args = sys.argv[1:]
+    if args[:2] == ["__state", "worktrees"]: args=args[1:]
     if args == ["--help"]:
-        print("hgs session-action <session> --json scoped native lifecycle action\nhgs --launch-id UUID\nhgs terminal <session> --json\nhgs history <session> --json\nhgs recovery action --scoped-json")
+        print("hgs session-action <session> --json scoped native lifecycle action\nhgs --launch-id UUID\nhgs swarm assign-launch --json\nhgs terminal <session> --json\nhgs history <session> --json\nhgs recovery action --scoped-json\nMobile worktree ABI: worktrees-v1")
         return
     if args == ["ls", "--json", "--local"]:
         summaries = [{key: value for key, value in row.items()
@@ -268,10 +271,53 @@ def main():
         if states:
             result["organization"]["projects"].append({"id": "66666666-6666-4666-8666-666666666666", "name": "Saved integration history", "color": "#9c78cf", "accessible": True,
                 "folders": [], "sessions": ["Integration fixture\narchive\n" + row["archive_id"] for row in states if row.get("state") == "archived"]})
+        assignments_path = root / "project-assignments.json"
+        assignments = json.loads(assignments_path.read_text()) if assignments_path.exists() else {}
+        for placement in assignments.values():
+            if placement.get("status") != "assigned":
+                continue
+            membership = "Integration fixture\n" + placement["name"]
+            for group in result["organization"]["projects"]:
+                group["sessions"] = [name for name in group["sessions"] if name != membership]
+                if group["id"] == placement["project_id"]:
+                    group["sessions"].append(membership)
+                    if not any(folder["id"] == placement["folder_id"] for folder in group["folders"]):
+                        group["folders"].append({"id": placement["folder_id"], "machine_id": node_id,
+                            "machine_name": "Integration fixture", "name": "Added folder", "path": placement["directory"]})
+    elif args == ["swarm", "assign-launch", "--json"]:
+        payload = json.load(sys.stdin)
+        created = next(row for row in [record, *states] if row["name"] == payload["name"])
+        assert created["launch_id"] == payload["request_id"] and created["run_id"] == payload["expected_run_id"]
+        assert not created.get("archive_id") and (not payload["expected_conversation_id"] or created["conversation_id"] == payload["expected_conversation_id"])
+        assert payload["swarm_id"] == "22222222-2222-4222-8222-222222222222"
+        assert payload["project_id"] in {"ungrouped", "33333333-3333-4333-8333-333333333333"}
+        result = {"request_id": payload["request_id"], "status": fixture_config.get("project_assignment_status", "assigned"),
+            "name": created["name"], "run_id": created["run_id"], "conversation_id": created["conversation_id"],
+            "swarm_id": payload["swarm_id"], "project_id": payload["project_id"],
+            "folder_id": payload.get("project_folder_id", "fixture-folder-" + payload["request_id"]), "directory": payload["directory"]}
+        assignments_path = root / "project-assignments.json"
+        assignments = json.loads(assignments_path.read_text()) if assignments_path.exists() else {}
+        result = assignments.setdefault(payload["request_id"], result)
+        persist(assignments_path, assignments)
     elif args == ["account", "ls"]:
         result = {"profiles": account_profiles(fixture_config)}
     elif len(args) == 3 and args[:2] == ["account", "inspect"]:
         result = account_usage(args[2], fixture_config)
+    elif args and args[0] == "worktrees":
+        options = dict(zip(args[2::2],args[3::2])) if args[1] == "create" else {"--path": args[args.index("--path")+1]}
+        trees_path=root/"worktrees.json"
+        catalog=json.loads(trees_path.read_text()) if trees_path.exists() else fixture_config.get("worktrees", {"state":"not_repo","path":options["--path"],"stale":False,"worktrees":[]})
+        if args[1] == "create":
+            options={key:args[args.index(key)+1] for key in ("--path","--common-dir","--destination","--branch","--request-id")}
+            assert catalog["state"]=="ok" and catalog["common_dir"]==options["--common-dir"]
+            time.sleep(min(25,max(0,float(fixture_config.get("worktree_create_delay",0)))))
+            result={"status":"created","request_id":options["--request-id"],"path":options["--destination"],"branch":options["--branch"],"common_dir":catalog["common_dir"]}
+            catalog["worktrees"].append({"path":result["path"],"kind":"linked","available":True,"branch":result["branch"]});persist(trees_path,catalog)
+            with (root/"mutations.jsonl").open("a") as output: output.write(json.dumps({"operation":"worktree_create","request_id":result["request_id"]})+"\n")
+        else:
+            requested=options["--path"]
+            matching=next((tree for tree in catalog.get("worktrees",[]) if requested==tree["path"] or requested.startswith(tree["path"].rstrip('/')+'/')),None)
+            result={**catalog,"path":requested} if matching else {"state":"not_repo","stale":False,"path":requested,"worktrees":[]}
     elif len(args) == 2 and args[0] == "dirs":
         directory = "/example" if args[1] == "~" else args[1]
         assert directory.startswith("/")
@@ -454,7 +500,8 @@ def main():
             question = record["pending_questions"][0]
             assert payload["question_id"] == question["question_id"]
             assert payload["expected_question_hash"] == question["question_hash"]
-            record["pending_questions"] = []
+            time.sleep(min(25,max(0,float(fixture_config.get("answer_delay",0)))))
+            if not fixture_config.get("answer_stale_question"): record["pending_questions"] = []
             record["phase"] = record["activity"] = "idle"
         if args[0] == "interrupt":
             assert payload["expected_turn_started"] == record["turn_started"]

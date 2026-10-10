@@ -1,0 +1,43 @@
+name: Agent upstream compatibility
+
+on:
+  schedule:
+    - cron: '41 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+cache-mode: none
+
+concurrency:
+  group: agent-upstream
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    if: github.repository == 'ufna/zerus' && github.ref == 'refs/heads/main' && github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Native fixture dependencies
+        run: sudo apt-get update && sudo apt-get install -y libevent-dev libncurses-dev bison pkg-config
+      - name: Pinned tmux with verified input-mode support
+        run: |
+          bash scripts/ci/install-tmux.sh "$RUNNER_TEMP/tmux"
+          echo "$RUNNER_TEMP/tmux/bin" >> "$GITHUB_PATH"
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo build --locked
+      - name: Discover releases, compare capabilities and test latest Codex
+        run: python3 scripts/ci/agent-compatibility.py --latest
+      - name: Retain public compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: agent-upstream-${{ github.run_id }}
+          path: artifacts/test-results/agent-compatibility
+          retention-days: 3

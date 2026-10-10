@@ -11,16 +11,18 @@ import asyncio
 import hashlib
 from pathlib import Path
 import sqlite3
-import time
 
 from .context import READ_OPERATIONS
 from .attachments import MAX_QUEUE_BYTES
 from .store import canonical
+from .routes import SCHEMA as ROUTE_SCHEMA
 from .postgres import PostgresStore, RESULT_RESERVE
 
+REGISTRY_TABLES = ("computers", "native_computers", "computer_aliases", "computer_routes")
 TABLES = (
     "workspaces",
     "nodes",
+    *REGISTRY_TABLES,
     "devices",
     "invitations",
     "requests",
@@ -38,7 +40,16 @@ COLUMNS = {
         "revoked",
         "last_seen",
         "snapshot",
+        "snapshot_hash",
+        "computer_id",
+        "machine_id",
+        "manifest_hash",
     ),
+    "computers": ("id", "workspace_id", "name", "machine_id", "revoked", "exposed"),
+    "native_computers": ("workspace_id", "machine_id", "computer_id"),
+    "computer_aliases": ("workspace_id", "alias", "computer_id"),
+    "computer_routes": ("gateway_id", "route_id", "computer_id", "machine_id", "local", "active",
+                        "online", "guarded", "name", "snapshot", "snapshot_hash", "last_seen"),
     "devices": ("id", "workspace_id", "name", "token_hash", "revoked"),
     "invitations": ("code_hash", "workspace_id", "expires"),
     "requests": (
@@ -60,6 +71,9 @@ COLUMNS = {
         "result_read",
         "result_bytes",
         "reserved_bytes",
+        "target_computer_id",
+        "target_machine_id",
+        "route_id",
     ),
     "events": ("id", "workspace_id", "node_id", "session", "kind", "created"),
     "pushes": ("device_id", "provider", "target"),
@@ -74,6 +88,14 @@ COLUMNS = {
     ),
 }
 
+OPTIONAL_COLUMNS = {
+    "nodes": {"snapshot_hash", "computer_id", "machine_id", "manifest_hash"},
+    "requests": {"result_bytes", "reserved_bytes", "target_computer_id", "target_machine_id", "route_id"},
+}
+ORDER = {"invitations": "code_hash", "pushes": "device_id",
+         "native_computers": "workspace_id,machine_id", "computer_aliases": "workspace_id,alias",
+         "computer_routes": "gateway_id,route_id"}
+
 
 def _source(path):
     path = Path(path).resolve(strict=True)
@@ -87,21 +109,34 @@ def _source(path):
         r[0]
         for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }
-    if not set(TABLES) <= tables:
+    if not (set(TABLES) - set(REGISTRY_TABLES)) <= tables:
         connection.close()
         raise ValueError("source is not a supported SQLite relay database")
+    registry = tables & set(REGISTRY_TABLES)
+    if registry and registry != set(REGISTRY_TABLES):
+        connection.close()
+        raise ValueError("source has an incomplete computer routing registry")
     # Reading every schema here establishes the read snapshot before destination
     # initialization, without modifying or running SQLite startup migrations.
     for table in TABLES:
+        if table not in tables:
+            continue
         available = {r[1] for r in connection.execute(f"PRAGMA table_info({table})")}
-        required = set(COLUMNS[table]) - (
-            {"result_bytes", "reserved_bytes"} if table == "requests" else set()
-        )
+        required = set(COLUMNS[table]) - OPTIONAL_COLUMNS.get(table, set())
         if not required <= available:
             connection.close()
             raise ValueError(
                 "source requires an up-to-date SQLite schema before offline migration"
             )
+    if not registry:
+        for table, names in (("nodes", ("computer_id", "machine_id", "manifest_hash")),
+                             ("requests", ("target_computer_id", "target_machine_id", "route_id"))):
+            available = {r[1] for r in connection.execute(f"PRAGMA table_info({table})")}
+            present = [name for name in names if name in available]
+            if present and connection.execute(f"SELECT 1 FROM {table} WHERE " +
+                    " OR ".join(f"{name} IS NOT NULL" for name in present) + " LIMIT 1").fetchone():
+                connection.close()
+                raise ValueError("source routing bindings require a complete computer registry")
     if connection.execute("PRAGMA quick_check").fetchone()[0] != "ok":
         connection.close()
         raise ValueError("source SQLite integrity check failed")
@@ -141,12 +176,14 @@ async def migrate_sqlite(
                 "SELECT EXISTS(SELECT 1 FROM poll_leases)"
             ) or await conn.fetchval("SELECT EXISTS(SELECT 1 FROM rate_limits)"):
                 raise ValueError("migration destination has active relay state")
+            source_tables = await asyncio.to_thread(lambda: {
+                r[0] for r in source.execute("SELECT name FROM sqlite_master WHERE type='table'")})
             for table in TABLES:
-                order = (
-                    "code_hash"
-                    if table == "invitations"
-                    else "device_id" if table == "pushes" else "id"
-                )
+                if table not in source_tables:
+                    continue
+                available = await asyncio.to_thread(lambda: {
+                    r[1] for r in source.execute(f"PRAGMA table_info({table})")})
+                order = ORDER.get(table, "id")
                 cursor = await asyncio.to_thread(
                     source.execute, f"SELECT * FROM {table} ORDER BY {order}"
                 )
@@ -154,7 +191,7 @@ async def migrate_sqlite(
                 original_columns = [
                     c
                     for c in COLUMNS[table]
-                    if c not in ("result_bytes", "reserved_bytes")
+                    if c in available and c not in ("result_bytes", "reserved_bytes")
                 ]
                 counts[table] = 0
                 while True:
@@ -180,7 +217,7 @@ async def migrate_sqlite(
                             # Imported claimed commands are never requeued. Leave
                             # their durable claim timestamps for ordinary timeout
                             # uncertainty; no worker-start mass transition occurs.
-                        records.append(tuple(row[c] for c in COLUMNS[table]))
+                        records.append(tuple(row.get(c) for c in COLUMNS[table]))
                     await conn.copy_records_to_table(
                         table, records=records, columns=COLUMNS[table]
                     )
@@ -195,6 +232,11 @@ async def migrate_sqlite(
                 if content_hash.digest() != destination_hash.digest():
                     raise ValueError("migration content verification failed")
                 digests[table] = content_hash.hexdigest()
+            if not set(REGISTRY_TABLES) <= source_tables:
+                # Old eight-table sources have no native UUID binding to infer.
+                # Create their ordinary local presentation rows without rewriting
+                # any preserved request body/hash or inventing guarded claims.
+                await conn.execute(ROUTE_SCHEMA)
             await conn.execute(
                 "INSERT INTO workspace_usage(workspace_id) SELECT id FROM workspaces ON CONFLICT DO NOTHING"
             )
@@ -237,7 +279,7 @@ async def migrate_sqlite(
                     max(high, 1),
                     high > 0,
                 )
-            for table in TABLES:
+            for table in counts:
                 if (
                     await conn.fetchval(f"SELECT count(*) FROM {table}")
                     != counts[table]

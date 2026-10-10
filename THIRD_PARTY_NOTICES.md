@@ -5,6 +5,12 @@ Dependency licenses and copyright notices remain in effect.
 
 ## Vendored code
 
+`src/state/data/codex-0.160.1-greetings.txt` retains the finite native empty-state
+greeting vocabulary from OpenAI Codex `rust-v0.160.1` for exact reset recognition.
+Source provenance is recorded in that file; the original Apache-2.0 license is
+retained in `docs/licenses/codex-LICENSE.txt`, which is also shipped with packages.
+No native Codex executable is bundled.
+
 `tray/vendor/libvterm` contains libvterm 0.3.3 under MIT. Its original copyright
 notice and complete license are retained in `tray/vendor/libvterm/LICENSE`;
 source provenance and archive checksum are in `UPSTREAM.md` beside it.
@@ -46,3 +52,15 @@ notices also preserve its upstream public-domain dedication, separate from the
 Rust binding's MIT notice. [SQLite copyright](https://www.sqlite.org/copyright.html).
 
 Native agent CLIs are installed separately by the user and are not included here.
+
+## Android Markdown dependencies
+
+The Android application bundles CommonMark Java 0.30.0 and its GFM tables,
+strikethrough, task-list and autolink extensions under BSD-2-Clause, plus
+autolink-java 0.12.0 under MIT. Both projects are maintained by Robin Stocker
+and contributors. Their exact upstream license texts are retained in
+`mobile/android/app/src/main/assets/licenses/commonmark-java.txt` and
+`mobile/android/app/src/main/assets/licenses/autolink-java.txt` and shown in the
+application's third-party notices. Sources: [CommonMark Java](
+https://github.com/commonmark/commonmark-java/tree/commonmark-parent-0.30.0) and
+[autolink-java](https://github.com/robinst/autolink-java/tree/autolink-0.12.0).

@@ -24,6 +24,15 @@ The encrypted phone-local override is scoped to the same workspace and machine
 UUID and works offline. Automatic reset restores a UUID-derived color that stays
 stable when the label is renamed.
 
+Machines shows each reported gateway with its direct peer computers visibly
+indented beneath it. A peer's “Through” caption uses the gateway's private phone
+label when available. These computers belong to the same workspace connection;
+each keeps its own name, color, status and controls, and session and project
+filters still select individual computers. Each machine's action menu opens
+Rename machine and Label color. Cached routes show “Last known” until
+the catalog refreshes. The tree describes the selected one-hop route, not a
+permanent master computer.
+
 The retired official relay origin is a narrow transport alias for
 `https://relay.zerus.dev`. Existing encrypted connection URLs remain stored as
 original identity; requests, receipts, push setup and displayed endpoints use the
@@ -39,6 +48,13 @@ conversations have no message, answer, or interrupt composer. Scoped restore,
 rename, fork, and forget require fresh native capability and action evidence;
 destructive actions require a confirmation naming their target.
 
+Question cards can expand into a full-screen form while keeping the selected
+options, text and current part. Sending, Answer submitted, Not sent and Delivery
+unknown distinguish an active attempt from its result. A submitted answer stays
+locked through a stale inspection or an application restart; checking delivery
+reads the original receipt. Approval review time counts only while its disclosure
+is visible in the focused foreground form.
+
 The message composer clears after the text and immutable attachment snapshots
 are atomically saved in the private outgoing queue. It stays editable while the
 previous message is sending. Each bubble shows Sending, Sent, Not sent, or
@@ -49,6 +65,10 @@ older receipt. Native user delivery rows reconcile bubbles by exact request UUID
 Without such a row, reconciliation requires an unambiguous exact text/time match
 after a successful native receipt.
 
+A message waiting in the agent's native queue appears as one compact expandable
+card. Expand it to read and select the full text. Send now remains a manual
+action, available only when the current agent and queued message allow it.
+
 Attach files through the system document picker. The app copies and encrypts
 selected bytes privately rather than sending document URIs or trusting mutable
 files. The supported gateway limits are eight files, 10 MiB per file, 20 MiB total,
@@ -56,14 +76,25 @@ and 64 KiB of message text. The picker remains bound to its original composition
 if navigation or typing changes; interrupted selection can be canceled in Saved
 drafts. Files remain recoverable with unsent and uncertain messages.
 
-Automatic reads show progress only after five monotonic seconds. Manual refresh
-shows it immediately and reuses any matching in-flight read. Navigation cancels
+An empty conversation immediately shows “Loading conversation…” while its
+messages load. Background loading status and spinners appear only after five
+seconds; manual refresh shows progress immediately and reuses any matching
+in-flight read. A thin progress bar accompanies the existing circular refresh
+indicator in catalogs and conversations. Navigation cancels
 ownership of earlier reads so stale results cannot replace a new conversation.
 Matching history reads continue in a bounded shared queue and are reused on
 reopening. Exact-target encrypted history is cached for seven days, up to 20
 conversations and 20 MiB. Cached messages appear immediately when already
 prepared in memory; cached history permits no action until a fresh inspection
 verifies the conversation. History cache failures do not prevent live reads.
+
+Agent messages and ordinary questions render Markdown with headings, emphasis,
+lists, quotes, links, tables, strikethrough, static tasks and code blocks. Code and
+wide tables scroll horizontally inside the message. Approval commands and native
+answers stay literal. Only tapped HTTP(S) links open a browser; local file links
+stay visible text, HTML stays literal and images do not download. Parsing and
+render preparation use bounded background work and an exact-content memory cache;
+over-limit or malformed content falls back to its complete original text.
 
 Draft edits update the editor immediately and save through an ordered background
 writer with a 200 ms debounce. Navigation and backgrounding request a flush.
@@ -96,7 +127,11 @@ groups, and list position survive opening a conversation and background polling.
 Provider badges match the desktop identity motifs.
 
 Projects shows the canonical logical catalog, including empty projects, and its
-saved folders. Ordinary folders and local aliases remain visible in Sessions.
+saved folders grouped by machine. Overview cards show each folder's name and
+selectable full wrapping path under one machine header, limited to two folders
+on each of the first two machines with counts for remaining folders and machines.
+Details show every folder using the same rows. Ordinary folders and local aliases
+remain visible in Sessions.
 Opening a project shows its folder details; View sessions opens a scoped Sessions
 view. Back returns to project details and preserves the normal Sessions query
 and filter. Archives are assigned by their UUID, so an archived and live session
@@ -121,7 +156,18 @@ actually visible in the foreground with no modal covering the conversation.
 Fresh complete canonical counters are exact; partial or stale evidence is shown
 as a lower bound or unknown. First visits show the recent page without marking
 it read merely because it opened. Mark read and Review later are local choices
-and never answer a native question.
+and never answer a native question. Read all applies to the current conversation
+or the Sessions scope on this phone, respecting the current project, machines
+and search. It captures each conversation before changing local markers:
+fresh complete heads mark the captured replies,
+partial evidence marks only loaded replies, and unknown, unavailable or offline
+rows without loaded evidence are skipped. Its result reports marked conversations, partial marks and skipped
+rows. Reminders without usable reply evidence remain. New replies arriving
+after the captured evidence remain unread; reading anchors and drafts stay put.
+Bounded background metadata probes can prepare canonical heads for live sessions
+with reported reply evidence, without opening their conversations or fetching
+full history. Previously unvisited sessions with unknown evidence are not
+silently marked read.
 
 Context details show native size, limits, and cache evidence without inferring
 warmth from cache hits. Compact and continue waits for the exact native request
@@ -143,8 +189,10 @@ Terminal uses a separate saved input buffer and a fresh exact native binding.
 Snapshots poll adaptively while visible; input sends literal text or fixed keys,
 with confirmation for Ctrl+C and Ctrl+D. Submitted means native input handoff,
 not command completion. New session uses the selected computer's native provider,
-account catalog and an explicitly chosen folder; it never creates a Git repository
-or worktree. A launch is confirmed only by its own native request identity.
+account catalog and an explicitly chosen folder. Ordinary folders remain usable
+without creating a Git repository. Worktree creation is a separate explicit
+action on a verified repository. A launch is confirmed only by its own native
+request identity.
 
 ## Build and install
 
@@ -217,6 +265,23 @@ and [launcher asset documentation](https://developer.android.com/studio/write/cr
 
 ## Notifications
 
+In Machines, Session alerts has independent settings for input and approvals,
+errors, and turn completion. Input and errors are on by default; completed turns
+are off. The master switch disables all session alerts. Disabling a type also
+removes its existing cards.
+
+There is one updated card per workspace, computer and live session slot. The
+normal shade shows the authenticated session title and the computer's private
+name on this phone. The lock-screen public version is generic. No question text
+or conversation content is included. Repeated wakes do not reannounce the same
+unresolved question; historical backlog is silent and old completed turns are
+suppressed. A batch can sound once, with a cooldown between new audible alerts.
+When many sessions need attention, a bounded set of individual cards is kept
+and one summary represents the remaining sessions. The summary opens Zerus;
+individual cards retain their exact workspace, computer and session destination.
+Cards refresh with events, settings changes and app startup. A resolved input
+request can remain until the next refresh when the relay emits no new event.
+
 “Keep a live connection” starts an explicit foreground remote messaging service
 with a visible Stop action. It listens to the gateway event stream and follows
 additional paired gateways. Android battery saving or network loss can delay
@@ -224,10 +289,14 @@ this connection; it is not a Doze wake-up guarantee.
 
 “Set up UnifiedPush” discovers installed distributors and lets the user choose
 one. A distributor such as ntfy or NextPush must already be installed and
-configured. Registration status and gateway capabilities appear under Computers.
-Push content acts only as a wake-up hint: the app immediately posts a generic
-alert and schedules an expedited authenticated event fetch. Notifications contain
-no conversation text. Once fetched, tapping an alert opens its computer/session.
+configured. Registration status and gateway capabilities appear under Machines.
+Push content acts only as a wake-up hint and schedules an authenticated event
+fetch without a separate generic alert. Bounded pages are coalesced and checked
+against a current catalog; a failed catalog read retains pending events for
+retry. Tapping a card refreshes and opens the current live session in that exact
+workspace and computer, without archive fallback. The event schema does not
+identify historical runs, so optional completion alerts conservatively filter
+recent events against a previously observed matching current conversation.
 
 Firebase is an optional build, excluded from the default APK. Create an Android
 Firebase project for `app.zerus.mobile`, place its private local configuration in
@@ -261,4 +330,53 @@ Pairing QR codes use CameraX 1.6.2 and ZXing core 3.5.4 without Google Play serv
 
 CameraX is Apache 2.0 and includes libyuv under BSD-3-Clause; ZXing is Apache 2.0. Full license texts and source attribution are available in Third-party notices. Pins follow the [official CameraX releases](https://developer.android.com/jetpack/androidx/releases/camera) and [ZXing 3.5.4 release](https://github.com/zxing/zxing/releases/tag/zxing-3.5.4). CameraX requires compile SDK 36 and AGP 8.9.1 or newer, covered by this build.
 
-Accounts is a read-only viewer grouped by workspace and machine, using the same machine names and colors as Sessions. Compact cards show account type, reported usage and relative reset timing; tap a card for the full identity, limits and update time. It shows reported account identity, plan, usage windows and wallet balances when the connector provides them. Unknown limits stay unknown; ended windows need a provider refresh. Account snapshots use a separate encrypted private cache, so offline values remain available with their original provider update time and a last-reported label. A connector advertising `accounts_snapshot` is required; Refresh reads its latest snapshot and does not force a provider refresh.
+Accounts is a read-only viewer grouped by workspace and provider-reported account identity, matching desktop accounts. Each card contains its machine labels, using the same names and colors as Sessions. Provider account IDs and organization scope own identity; email-only reports join an ID only when unambiguous. Signed-out and unidentified profiles stay machine-local. Compact cards show account type and aligned period, remaining reset time and usage columns, with recurring-period and hourglass glyphs; tap a card for the full identity, limits, per-machine profiles and update times. Usage selects one best-quality report and never adds quotas across machines. It shows reported account identity, plan, usage windows and wallet balances when the connector provides them. Unknown limits stay unknown; ended windows need a provider refresh. Account snapshots use a separate encrypted private cache, so offline values remain available with their original provider update time and stale styling; offline and authentication problems stay visible. A connector advertising `accounts_snapshot` is required; Refresh reads its latest snapshot and does not force a provider refresh.
+
+## Project and account selection
+
+New session presents Project, Folder, Agent and Account as compact selectors.
+An editable session name is generated when the form opens and is kept while
+changing the other selections.
+Projects use the selected computer's fresh canonical swarm/project IDs, and
+only its local folders are offered. The native browser verifies a chosen folder
+again before creation. A folder explicitly chosen through Browse remains selected
+when changing projects in the same dialog; a listed project folder follows its
+project. Choosing an outside folder explicitly adds it to the selected project,
+as the dialog states.
+
+When the selected computer supports worktrees, a fresh catalog offers existing
+checkouts. Create worktree separately asks for a new branch, destination and
+starting revision. It never starts a session automatically or removes partial
+work after an unknown result. Check delivery reads the original creation receipt
+without repeating the operation. A related worktree is recognized only when a
+current native catalog contains both the selected checkout and a saved folder
+of the chosen project; it is not added as another project folder. Unavailable
+worktree support leaves ordinary folder launches usable.
+
+Mobile worktree creation has a 25-second native deadline and a 15-second checkout
+budget. A lost SSH connection or cancelled connector attempt drains its own
+bounded operation, preserving partial work and unrelated processes. Desktop
+worktree creation keeps its existing timeout.
+
+Accounts remain distinct native profiles. The actual reported default is
+preselected, and an offered concrete account is always sent by its exact ID.
+Identical labels include profile IDs; known cached sign-in status is shown
+without treating credential-file presence as proof of sign-in. No synthetic
+“Use native default” choice is added to a known catalog.
+
+Project assignment requires the connector's `launch_project` feature and the
+native `hgs swarm assign-launch --json` ABI. Older computers can still create
+sessions, with an explicit project-assignment-unavailable notice. Creation is
+confirmed by its launch UUID before the native helper checks the exact run,
+session and current canonical project. Assignment is a separate metadata outcome;
+it never retries session creation. A created session whose assignment failed or
+is unknown remains a completed, nonblocking action, with a durable Drafts notice
+offering Open created session and Mark reviewed.
+
+The native helper records a private write-ahead intent in
+`HGS_CONFIG_DIR/swarm/launch-assignments.json` before saving project metadata.
+An interrupted intent is permanently uncertain and never reapplied. Recorded
+outcomes survive later manual project moves, and the shared catalog keeps its
+existing schema for older desktop binaries. The sidecar is bounded to 10,000
+permanent receipts; at capacity new assignments fail before changing metadata.
+Receipts never enter swarm exports or peer synchronization.

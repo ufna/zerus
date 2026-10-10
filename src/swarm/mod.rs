@@ -1,6 +1,7 @@
 //! Shared metadata only. Transport credentials and presentation preferences never
 //! enter the catalog. All commands use one locked, atomically replaced store.
 mod catalog;
+mod launch_project;
 mod model;
 mod store;
 mod transport;
@@ -10,6 +11,18 @@ use anyhow::{bail, ensure, Result};
 use serde_json::{json, Value};
 use std::io::Read;
 use store::LockedStore;
+
+/// Persist and return the machine identity without retaining the catalog lock.
+pub(crate) fn local_node_id(config: &Config) -> Result<String> {
+    let mut store = LockedStore::load(config)?;
+    let id = uuid::Uuid::parse_str(&store.data.node_id)?;
+    ensure!(
+        !id.is_nil() && id.to_string() == store.data.node_id,
+        "invalid persisted machine identity"
+    );
+    store.save()?;
+    Ok(store.data.node_id.clone())
+}
 
 fn input() -> Result<Value> {
     let mut bytes = Vec::new();
@@ -47,6 +60,10 @@ fn execute(config: &Config, args: &[String]) -> Result<Value> {
             .ok_or_else(|| anyhow::anyhow!("choose a configured machine"))
     };
     match action {
+        "assign-launch" => {
+            ensure!(args.len() == 2 && args[1] == "--json", "usage: hgs swarm assign-launch --json");
+            Ok(launch_project::execute(config, input()?))
+        }
         "worker" => { transport::worker()?; Ok(Value::Null) }
         "hello" | "inventory" => transport::hello(config,action == "inventory"),
         "preview" => transport::preview(config,alias()?),
