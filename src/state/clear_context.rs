@@ -13,12 +13,35 @@ pub(super) fn observe_start(record: &mut Value, event: &Value) {
     if previous.is_empty() || previous == next { return; }
     let requested = record["clear_context_request"]["conversation_id"] == previous;
     if string(event, "source") == "clear" || requested {
-        let at = if awaiting_start(record) { record["session_clear"]["at"].clone() } else { json!(now()) };
+        // The agent starts over, but the local Activity timeline continues:
+        // earlier conversations stay readable above the boundary.
+        let mut earlier = earlier_conversations(record).as_array().cloned().unwrap_or_default();
+        earlier.retain(|id| id != next);
+        earlier.push(json!(previous));
+        if earlier.len() > CLEARED_CONVERSATIONS { earlier.drain(..earlier.len() - CLEARED_CONVERSATIONS); }
+        record["cleared_conversations"] = json!(earlier);
+        // A reset observed in Terminal already journaled its boundary.
+        let journaled = awaiting_start(record);
+        let at = if journaled { record["session_clear"]["at"].clone() } else { json!(now()) };
         record["session_clear"] = json!({"at":at,"run_id":record["run_id"],
-            "conversation_id":next,"previous_conversation_id":previous,"source":"native_hook"});
+            "conversation_id":next,"previous_conversation_id":previous,"source":"native_hook","journaled":journaled});
     } else {
-        record.as_object_mut().unwrap().remove("session_clear");
+        for key in ["session_clear", "cleared_conversations"] { record.as_object_mut().unwrap().remove(key); }
     }
+}
+
+const CLEARED_CONVERSATIONS: usize = 32;
+
+// Earlier conversations of this session's Activity, oldest first. Only
+// confirmed clears add to it; another conversation starts a new timeline.
+pub(super) fn earlier_conversations(record: &Value) -> Value {
+    let current = string(record, "conversation_id");
+    // A clear confirmed before this list existed still names its predecessor.
+    let ids = record["cleared_conversations"].as_array().cloned().unwrap_or_else(|| {
+        let clear = &record["session_clear"];
+        if clear["conversation_id"] == current { vec![clear["previous_conversation_id"].clone()] } else { Vec::new() }
+    });
+    json!(ids.into_iter().filter(|id| id.as_str().is_some_and(|id| !id.is_empty() && id != current)).collect::<Vec<_>>())
 }
 
 pub(super) fn awaiting_start(record: &Value) -> bool {
@@ -29,8 +52,14 @@ pub(super) fn awaiting_start(record: &Value) -> bool {
 
 fn codex_reset_panel(screen: &str, cwd: &str) -> bool {
     if !Path::new(cwd).is_absolute() || !screen.lines().any(|line| line.trim_start().starts_with('›')) { return false; }
-    let rows: Vec<_> = screen.lines().take_while(|line| !line.trim_start().starts_with('›'))
+    let mut rows: Vec<_> = screen.lines().take_while(|line| !line.trim_start().starts_with('›'))
         .map(str::trim).filter(|line| !line.is_empty()).collect();
+    // The released idle screen can include its settled decorative logo. Match
+    // the complete known pose; arbitrary braille, prose and partial frames do
+    // not confirm a reset. A replay remains unconfirmed until it settles.
+    let logo: Vec<_> = include_str!("data/codex-empty-state-60x21.txt").lines()
+        .filter(|line| !line.starts_with('#')).collect();
+    if rows.ends_with(&logo) { rows.truncate(rows.len() - logo.len()); }
     if !(2..=6).contains(&rows.len()) || !rows[0].starts_with(">_ OpenAI Codex (v")
         || !rows[0].ends_with(')') { return false; }
     let short = Path::new(cwd).strip_prefix(home()).ok().map(|path| {
@@ -195,6 +224,44 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         assert_eq!(event(&record).unwrap()["at"],123.0);
         assert!(!awaiting_start(&record));
     }
+    #[test] fn confirmed_clears_keep_the_earlier_activity_timeline() {
+        let mut record=json!({"run_id":"run","conversation_id":"first"});
+        for (next,previous) in [("second","first"),("third","second")] {
+            observe_start(&mut record,&json!({"session_id":next,"source":"clear"}));
+            record["conversation_id"]=json!(next);
+            assert_eq!(record["session_clear"]["previous_conversation_id"],previous);
+        }
+        assert_eq!(earlier_conversations(&record),json!(["first","second"]));
+        assert_eq!(record["session_clear"]["journaled"],false);
+        // A clear first confirmed in Terminal was already journaled.
+        record["session_clear"]=json!({"at":7.0,"run_id":"run","conversation_id":"third","awaiting_session_start":true});
+        observe_start(&mut record,&json!({"session_id":"fourth","source":"clear"}));
+        assert_eq!(record["session_clear"]["journaled"],true);
+        record["conversation_id"]=json!("fourth");
+        assert_eq!(earlier_conversations(&record),json!(["first","second","third"]));
+        for index in 0..40 {
+            let next=format!("later-{index}");
+            observe_start(&mut record,&json!({"session_id":next,"source":"clear"}));
+            record["conversation_id"]=json!(next);
+        }
+        let earlier=earlier_conversations(&record);
+        assert_eq!(earlier.as_array().unwrap().len(),CLEARED_CONVERSATIONS);
+        assert_eq!(earlier[CLEARED_CONVERSATIONS-1],"later-38");
+        // Clears confirmed by an earlier version continue from their predecessor.
+        let mut legacy=json!({"run_id":"run","conversation_id":"second",
+            "session_clear":{"conversation_id":"second","previous_conversation_id":"first"}});
+        assert_eq!(earlier_conversations(&legacy),json!(["first"]));
+        observe_start(&mut legacy,&json!({"session_id":"third","source":"clear"}));
+        legacy["conversation_id"]=json!("third");
+        assert_eq!(earlier_conversations(&legacy),json!(["first","second"]));
+        legacy["session_clear"]=json!({"conversation_id":"third","previous_conversation_id":"third","awaiting_session_start":true});
+        legacy.as_object_mut().unwrap().remove("cleared_conversations");
+        assert_eq!(earlier_conversations(&legacy),json!([]));
+        // Another conversation is not a continuation of this timeline.
+        observe_start(&mut record,&json!({"session_id":"resumed","source":"resume"}));
+        assert!(record["cleared_conversations"].is_null() && record["session_clear"].is_null());
+        assert_eq!(earlier_conversations(&record),json!([]));
+    }
     #[test] fn only_the_complete_native_empty_reset_header_matches() {
         let panel="\n >_ OpenAI Codex (v0.162.0)\n /fixture\n permissions: YOLO mode\n\n\n› Ask Codex to do anything\n GPT-6.1-Sol default\n ? for shortcuts\n";
         assert!(codex_reset_panel(panel,"/fixture"));
@@ -219,6 +286,20 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
             "What are we cooking up?\nPrevious agent response", "What are we cooking up?\nWhat are we cooking up?"] {
             assert!(!codex_reset_panel(&format!("{header}{prose}{footer}"), "/fixture"), "{prose}");
         }
+    }
+    #[test] fn only_the_complete_released_idle_logo_is_decoration() {
+        let header = ">_ OpenAI Codex (v0.162.0)\n/fixture\npermissions: YOLO mode\n\n";
+        let logo = include_str!("data/codex-empty-state-60x21.txt").lines()
+            .filter(|line| !line.starts_with('#')).collect::<Vec<_>>().join("\n");
+        let footer = "\n\n› Ask Codex to do anything\nGPT-6.1-Sol default\n? for shortcuts\n";
+        assert!(codex_reset_panel(&format!("{header}{logo}{footer}"), "/fixture"));
+        assert!(codex_reset_panel(&format!("{header}What are we cooking up?\n{logo}{footer}"), "/fixture"));
+        for body in [logo.replacen('⣀', "⣁", 1), logo.lines().skip(1).collect::<Vec<_>>().join("\n"),
+            format!("{logo}\nPrevious answer"), format!("Previous answer\n{logo}"),
+            format!("{logo}\n{logo}"), "⣿⣿⣿\n⣿⣿⣿".to_owned()] {
+            assert!(!codex_reset_panel(&format!("{header}{body}{footer}"), "/fixture"), "{body}");
+        }
+        assert!(!codex_reset_panel(&format!("{header}{logo}{footer}"), "/other"));
     }
     #[test] fn exact_command_only() {
         assert!(command_row("codex","› /clear",8,"/clear"));

@@ -30,6 +30,7 @@ import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.liveRegion
@@ -66,6 +67,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.painterResource
@@ -117,7 +119,9 @@ class MainActivity : ComponentActivity() {
     }
     override fun onDestroy() { fileLaunchers.values.forEach { it.unregister() }; super.onDestroy() }
     override fun onCreate(savedInstanceState: Bundle?) {
+        sanitizeLaunchIntent(intent)
         super.onCreate(savedInstanceState)
+        AppTelemetry.opened()
         SessionNotifications.initialize(this)
         enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.rgb(16, 21, 23)))
@@ -140,7 +144,15 @@ class MainActivity : ComponentActivity() {
             })
         } }
     }
-    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); readIntent(intent) }
+    override fun onNewIntent(intent: Intent) { sanitizeLaunchIntent(intent); super.onNewIntent(intent); setIntent(intent); readIntent(intent) }
+    private fun sanitizeLaunchIntent(intent: Intent) {
+        intent.data?.toString()?.let { PairingInvite.parse(it) }?.let { invitation = it }
+        intent.data = null
+        // Analytics lifecycle must never see pairing URIs or campaign/referrer extras.
+        val retained = Bundle()
+        listOf("session", "computer", "connection").forEach { key -> intent.getStringExtra(key)?.let { retained.putString(key, it) } }
+        intent.replaceExtras(retained)
+    }
     private fun readIntent(intent: Intent) {
         intent.data?.toString()?.let { PairingInvite.parse(it) }?.let { invitation = it;intent.data = null }
         val session = intent.getStringExtra("session")
@@ -167,6 +179,12 @@ class MainActivity : ComponentActivity() {
         if(sequence > 0 && sequence != handledReturnSequence) tab = 0
         handledReturnSequence = sequence
     }
+    var settings by rememberSaveable { mutableStateOf(false) }
+    val updater: AndroidUpdateViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+    val updateState by updater.state.collectAsState()
+    val keyboard = LocalSoftwareKeyboardController.current
+    if (settings) AppSettingsScreen(model, updater) { settings = false }
+    LaunchedEffect(tab, model.selected) { if (model.selected == null) AppTelemetry.screen(when (tab) { 0 -> TelemetryScreen.Sessions; 1 -> TelemetryScreen.Projects; 2 -> TelemetryScreen.Drafts; 4 -> TelemetryScreen.Accounts; else -> TelemetryScreen.Machines }) }
     var pairing by rememberSaveable { mutableStateOf(false) }
     var server by rememberSaveable { mutableStateOf("https://relay.zerus.dev") }
     var code by remember { mutableStateOf("") }
@@ -180,8 +198,11 @@ class MainActivity : ComponentActivity() {
     if(pairing || disconnect != null || review != null || reviewOutgoing != null || discard != null || stopRequest != null) ObscureConversation()
     val live = LiveConnectionService.running
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    DisposableEffect(model, lifecycle) {
-        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_STOP) model.flushDrafts() }
+    DisposableEffect(model, lifecycle, updater) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) model.flushDrafts()
+            if (event == Lifecycle.Event.ON_RESUME) updater.recover()
+        }
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer) }
     }
@@ -221,7 +242,7 @@ class MainActivity : ComponentActivity() {
                         DesktopSessionPalette.badge(SelectedSessionPresentation.session(selected,model.activity), true).kind, MaterialTheme.colorScheme.background.luminance() < .5f).foreground)) }
         }, navigationIcon = { if (selected != null || project != null) IconButton(onClick = { back() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
             actions = {
-                UpdatesControl(model,showButton=selected == null)
+                if (selected == null) NewSessionButton(model)
                 if (selected != null && selected.target.agentId.isBlank() && selected.target.archiveId.isBlank() && model.activityVerified && model.activity?.optBoolean("interrupt_supported") == true)
                     IconButton(onClick = { stopRequest = selected to model.activity!!.optDouble("turn_started") }) {
                         Icon(Icons.Default.StopCircle, "Stop turn")
@@ -229,7 +250,14 @@ class MainActivity : ComponentActivity() {
                 IconButton(onClick = { if (selected == null) model.refresh(explicit = true) else model.refreshActivity(explicit = true) }) {
                     Icon(Icons.Default.Refresh, "Refresh")
                 }
-                if (selected == null) NewSessionButton(model)
+                if (selected == null) IconButton(onClick = { keyboard?.hide(); settings = true }, modifier = Modifier.semantics {
+                    if (updateState.sessionId >= 0) stateDescription = "Installation pending"
+                    else if (updateState.available != null) stateDescription = "Update available"
+                }) {
+                    BadgedBox(badge = { if (updateState.available != null || updateState.sessionId >= 0) Badge() }) {
+                        Icon(Icons.Default.Settings, "Settings")
+                    }
+                }
             }, colors = TopAppBarDefaults.topAppBarColors(containerColor = Background)) },
         bottomBar = { if (selected == null) NavigationBar(containerColor = Background) {
             listOf(Triple(0, "Sessions", DesktopIcons.Sessions), Triple(1, "Projects", DesktopIcons.Projects),

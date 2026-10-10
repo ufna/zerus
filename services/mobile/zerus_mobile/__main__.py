@@ -1,4 +1,4 @@
-"""Offline administration and relay entrypoint. Administration has no HTTP API."""
+"""Compatibility CLI for the Rust relay and offline SQLite migration."""
 
 from __future__ import annotations
 
@@ -203,24 +203,14 @@ def main(argv=None):
         )
     args = parser.parse_args(argv)
     os.umask(0o077)
+    if args.command != "migrate-sqlite":
+        import shutil
+        import sys
+        binary = shutil.which("zerus-relay")
+        if binary is None:
+            parser.error("install the Rust zerus-relay binary; see services/mobile/relay/README.md")
+        os.execv(binary, [binary, *(sys.argv[1:] if argv is None else argv)])
     options, backend = configuration(args, parser)
-    if args.command == "serve":
-        # Proxy and application access logs must remain disabled. Disconnect
-        # cancellation releases active poll leases and drains CPU/SQLite workers.
-        web.run_app(
-            application(args, options, backend),
-            host=args.host,
-            port=args.port,
-            access_log=None,
-            handler_cancellation=True,
-            handler_args={
-                "max_headers": 100,
-                "max_field_size": 8190,
-                "keepalive_timeout": 30,
-                "auto_decompress": False,
-            },
-        )
-        return
     if args.command == "migrate-sqlite":
         if not backend.get("database_url"):
             parser.error(
@@ -239,8 +229,6 @@ def main(argv=None):
                 },
             )
         )
-    else:
-        result = asyncio.run(administer(args, backend, parser))
     # Deliberate one-time credential output, never server logging.
     print(json.dumps(result))
 

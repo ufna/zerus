@@ -456,7 +456,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
                 launch { messageRepository.error.collectLatest { failure ->
                     if (failure != null) error = "Could not save private changes. Your text remains available here; a message is sent only after its outgoing record is saved."
                 } }
-            } catch (e: Exception) { error = "Private storage could not be opened. Existing data has been preserved. ${e.message.orEmpty()}" }
+            } catch (e: Exception) { AppTelemetry.failure(DiagnosticFailure.PrivateStorage); error = "Private storage could not be opened. Existing data has been preserved. ${e.message.orEmpty()}" }
         }
     }
     private fun updateMessageState(value: MessageState) {
@@ -1313,7 +1313,7 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
             val connection = api.pair(url, code)
             val next = connections + connection
             withContext(Dispatchers.IO) { store.saveConnections(next) }; connections = next; demo = false
-            onDone(); refresh()
+            onDone(); refresh(); AppTelemetry.registerPush(getApplication())
             if (LiveConnectionService.running) getApplication<Application>().startService(android.content.Intent(getApplication(), LiveConnectionService::class.java))
         } catch (e: Exception) { error = e.message ?: "Pairing failed." }
         finally { busy = false }

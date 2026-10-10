@@ -28,11 +28,9 @@ private val Muted = Color(0xFF9AACB2)
 
 @Composable internal fun MachinesScreen(model: ZerusViewModel, live: Boolean, onPair: () -> Unit, onDisconnect: (Connection) -> Unit,
     onNotifications: (Boolean) -> Unit, onLive: (Boolean) -> Unit, onPush: () -> Unit, onFirebase: () -> Unit) {
-    var notices by remember { mutableStateOf(false) }
     var naming by remember { mutableStateOf<Machine?>(null) }
     var coloring by remember { mutableStateOf<Machine?>(null) }
     val trees = remember(model.machines) { MachineCatalog.groupsByConnection(model.machines) }
-    if(notices) ThirdPartyDialog { notices = false }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("Machines", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
         if (model.demo) {
@@ -57,8 +55,6 @@ private val Muted = Color(0xFF9AACB2)
         OutlinedButton(onClick = onPush, enabled = model.connections.isNotEmpty()) { Text("Set up UnifiedPush") }
         if (BuildConfig.FIREBASE_ENABLED) OutlinedButton(onClick = onFirebase, enabled = model.connections.isNotEmpty()) { Text("Set up Firebase push") }
         Text("UnifiedPush needs a distributor installed on your phone. The app works without Google services.", style = MaterialTheme.typography.bodySmall, color = Muted)
-        Text("Zerus Android ${BuildConfig.VERSION_NAME}", color = Muted, style = MaterialTheme.typography.labelSmall)
-        TextButton(onClick = { notices = true }) { Text("Third-party notices") }
     }
     coloring?.let { machine ->
         val key = MachineKey(machine.connectionId,machine.id)

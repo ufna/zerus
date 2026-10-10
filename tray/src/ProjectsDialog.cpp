@@ -9,6 +9,7 @@
 #include "WorkspaceIcons.h"
 #include "WorkspaceList.h"
 #include <QColorDialog>
+#include <QCollator>
 #include <QApplication>
 #include <QClipboard>
 #include <QComboBox>
@@ -32,10 +33,35 @@
 #include <QVBoxLayout>
 #include <QAction>
 #include <QMenu>
+#include <QPainter>
 #include <QTimer>
 #include <QUrl>
 
 namespace {
+class FolderSplitterHandle : public QSplitterHandle {
+public:
+    using QSplitterHandle::QSplitterHandle;
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QPainter painter(this);painter.setPen(palette().color(QPalette::Mid));
+        const int y=rect().center().y();painter.drawLine(0,y,width()-1,y);
+    }
+};
+class FolderSplitter : public QSplitter {
+public:
+    using QSplitter::QSplitter;
+protected:
+    QSplitterHandle *createHandle() override {return new FolderSplitterHandle(orientation(),this);}
+};
+class FolderSortItem : public QTableWidgetItem {
+public:
+    using QTableWidgetItem::QTableWidgetItem;
+    bool operator<(const QTableWidgetItem &other) const override {
+        QCollator collator;collator.setCaseSensitivity(Qt::CaseInsensitive);collator.setNumericMode(true);
+        const int order=collator.compare(text(),other.text());
+        return order ? order<0 : data(Qt::UserRole).toString()<other.data(Qt::UserRole).toString();
+    }
+};
 class FolderMachineDelegate : public QStyledItemDelegate {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
@@ -122,11 +148,18 @@ ProjectsDialog::ProjectsDialog(HgsClient *client, QWidget *parent, bool embedded
     fields->addRow(tr("Name"),nameRow); fields->addRow(tr("Color"),colorRow); form->addWidget(metadata);
     m_default=new QCheckBox(tr("Default for sessions started outside Zerus"));m_default->setObjectName("defaultProject");form->addWidget(m_default);
     connect(m_default,&QCheckBox::clicked,this,[this](bool checked){if(checked){m_projects->setDefaultProject(currentId());changed();}else showProject();});
+    m_folderSplitter=new FolderSplitter(Qt::Vertical);m_folderSplitter->setObjectName("projectFolderSplitter");
+    m_folderSplitter->setChildrenCollapsible(false);m_folderSplitter->setHandleWidth(16);
+    form->addWidget(m_folderSplitter,1);
+    auto *folderPane=new QWidget;auto *folderLayout=new QVBoxLayout(folderPane);folderLayout->setContentsMargins(0,0,0,0);folderLayout->setSpacing(8);
+    m_folderSplitter->addWidget(folderPane);
     auto *foldersLabel = new QLabel(tr("Folders")); foldersLabel->setObjectName("heading");
     m_newSession=new QPushButton(tr("New session…"));m_newSession->setObjectName("newProjectFolderSession");m_newSession->setAutoDefault(false);
-    auto *foldersHeading=new QHBoxLayout;foldersHeading->addWidget(foldersLabel);foldersHeading->addStretch();foldersHeading->addWidget(m_newSession);form->addLayout(foldersHeading);
+    auto *foldersHeading=new QHBoxLayout;foldersHeading->addWidget(foldersLabel);foldersHeading->addStretch();foldersHeading->addWidget(m_newSession);folderLayout->addLayout(foldersHeading);
     m_folders = new QTableWidget; m_folders->setObjectName("projectFolders"); m_folders->setColumnCount(3);
     m_folders->setHorizontalHeaderLabels({tr("Name"),tr("Computer"),tr("Folder")});
+    m_folders->setSortingEnabled(true);m_folders->sortItems(0,Qt::AscendingOrder);
+    m_folders->horizontalHeader()->setToolTip(tr("Click a column heading to sort folders."));
     m_folders->horizontalHeader()->setSectionResizeMode(0,QHeaderView::Interactive); m_folders->setColumnWidth(0,160);
     m_folders->horizontalHeader()->setSectionResizeMode(1,QHeaderView::Interactive); m_folders->setColumnWidth(1,110);
     m_folders->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft|Qt::AlignVCenter);
@@ -135,15 +168,22 @@ ProjectsDialog::ProjectsDialog(HgsClient *client, QWidget *parent, bool embedded
     m_folders->setSelectionBehavior(QAbstractItemView::SelectRows); m_folders->setSelectionMode(QAbstractItemView::SingleSelection);
     m_folders->setWordWrap(false); m_folders->setTextElideMode(Qt::ElideMiddle);
     m_folders->setItemDelegateForColumn(1,new FolderMachineDelegate(m_folders));
-    m_folders->setEditTriggers(QAbstractItemView::NoEditTriggers); form->addWidget(m_folders,1);
+    m_folders->setEditTriggers(QAbstractItemView::NoEditTriggers); folderLayout->addWidget(m_folders,1);
     auto *folderActions = new QHBoxLayout; auto *addFolderButton = new QPushButton(tr("Add folder…")); addFolderButton->setObjectName("addProjectFolder");
     m_openFolder = new QPushButton(tr("Open folder")); m_openFolder->setObjectName("openProjectFolder");
     m_editFolder = new QPushButton(tr("Edit folder…")); m_editFolder->setObjectName("editProjectFolder");
     m_removeFolder = new QPushButton(tr("Remove folder")); m_removeFolder->setObjectName("removeProjectFolder");
     m_removeFolder->setToolTip(tr("Remove this folder from the project. Files stay in place."));
-    folderActions->addWidget(addFolderButton); folderActions->addWidget(m_editFolder); folderActions->addWidget(m_removeFolder); folderActions->addStretch(); folderActions->addWidget(m_openFolder); form->addLayout(folderActions);
+    folderActions->addWidget(addFolderButton); folderActions->addWidget(m_editFolder); folderActions->addWidget(m_removeFolder); folderActions->addStretch(); folderActions->addWidget(m_openFolder); folderLayout->addLayout(folderActions);
     m_folders->setMinimumHeight(140);
-    m_worktrees=new WorktreePanel(m_client);form->addWidget(m_worktrees,2);
+    m_worktrees=new WorktreePanel(m_client,false,nullptr,WorktreePanel::Layout::Compact);m_folderSplitter->addWidget(m_worktrees);
+    // The entire gap belongs to the handle, so its line sits between both action rows.
+    m_worktrees->layout()->setContentsMargins(0,0,0,0);
+    m_folderSplitter->setStretchFactor(0,1);m_folderSplitter->setStretchFactor(1,0);
+    m_folderSplitter->handle(1)->setToolTip(tr("Drag to resize folders and worktrees."));
+    connect(m_folderSplitter,&QSplitter::splitterMoved,this,[this]{
+        if(m_folderSplitInitialized&&m_worktrees->isVisible())QSettings().setValue("workspace/projectFolderSplit",m_folderSplitter->saveState());
+    });
     m_worktrees->filterRequested=[this](const QString &path,bool checkout){const auto folder=selectedFolder();emit folderSessionsRequested(folder.machine==m_fleet.local().host?QString():folder.machine,path,checkout);};
     m_worktrees->sessionRequested=[this](const QString &name,const QString &archive){const auto folder=selectedFolder();emit relatedSessionRequested(folder.machine==m_fleet.local().host?QString():folder.machine,name,archive);};
     m_worktrees->launchRequested=[this](const QString &path){const auto folder=selectedFolder();if(folderLaunchProblem(folder).isEmpty())emit newPathSessionRequested(currentId(),folder.machine==m_fleet.local().host?QString():folder.machine,path);};
@@ -210,16 +250,18 @@ void ProjectsDialog::showProject()
     m_preview->setProject(project->name,QColor(project->color),project->vivid,project->id==m_projects->defaultProject());
     m_default->setChecked(project->id==m_projects->defaultProject());
     const auto selected=selectedFolder().id;const QSignalBlocker blockFolders(m_folders);
-    m_remove->setEnabled(m_projects->groups().size()>1); m_folders->setRowCount(0);
+    m_remove->setEnabled(m_projects->groups().size()>1);m_folders->setSortingEnabled(false); m_folders->setRowCount(0);
     for (const auto &folder : project->folders) {
         const int row = m_folders->rowCount(); m_folders->insertRow(row);
         const QString name = folder.name.isEmpty() ? suggestName(folder.path) : folder.name;
-        m_folders->setItem(row,0,new QTableWidgetItem(name)); m_folders->item(row,0)->setData(Qt::UserRole,folder.id);
+        m_folders->setItem(row,0,new FolderSortItem(name)); m_folders->item(row,0)->setData(Qt::UserRole,folder.id);
         m_folders->item(row,0)->setToolTip(name);
-        m_folders->setItem(row,1,new QTableWidgetItem(folder.machineName.isEmpty()?folder.machine:folder.machineName)); m_folders->setItem(row,2,new QTableWidgetItem(folder.path));
+        m_folders->setItem(row,1,new FolderSortItem(folder.machineName.isEmpty()?folder.machine:folder.machineName)); m_folders->setItem(row,2,new FolderSortItem(folder.path));
+        for(int column=1;column<3;++column)m_folders->item(row,column)->setData(Qt::UserRole,folder.id);
         m_folders->item(row,2)->setToolTip(folder.path);
-        if(folder.id==selected)m_folders->setCurrentCell(row,0);
     }
+    m_folders->setSortingEnabled(true);
+    for(int row=0;row<m_folders->rowCount();++row)if(m_folders->item(row,0)->data(Qt::UserRole).toString()==selected){m_folders->setCurrentCell(row,0);break;}
     updateFolderActions();
 }
 void ProjectsDialog::changed()
@@ -340,8 +382,17 @@ QString ProjectsDialog::folderOpenProblem(const SessionOrganization::Folder &fol
 void ProjectsDialog::updateFolderActions()
 {
     const auto folder=selectedFolder(); const auto problem=folderOpenProblem(folder);
-    m_folders->setMaximumHeight(folder.id.isEmpty()?QWIDGETSIZE_MAX:230);
     m_worktrees->setVisible(!folder.id.isEmpty());
+    if(!folder.id.isEmpty()&&!m_folderSplitInitialized)QTimer::singleShot(0,this,[this]{
+        if(m_folderSplitInitialized||selectedFolder().id.isEmpty())return;
+        const auto saved=QSettings().value("workspace/projectFolderSplit").toByteArray();
+        if(saved.isEmpty()||!m_folderSplitter->restoreState(saved)) {
+            const int worktreeHeight=qMin(240,m_folderSplitter->height()/3);
+            m_folderSplitter->setSizes({m_folderSplitter->height()-worktreeHeight,worktreeHeight});
+        }
+        m_folderSplitter->setHandleWidth(16);
+        m_folderSplitInitialized=true;
+    });
     m_worktrees->setContext(folder.machine==m_fleet.local().host?QString():folder.machine,folder.path,m_fleet);
     m_editFolder->setEnabled(!folder.id.isEmpty());m_removeFolder->setEnabled(!folder.id.isEmpty());
     m_openFolder->setEnabled(problem.isEmpty());

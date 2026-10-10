@@ -1,6 +1,6 @@
 # Zerus mobile relay
 
-A self-hosted Python 3.11+ relay connects the Android client to computers running
+A self-hosted Rust relay connects the Android client to computers running
 `hgs`. Computers make outbound HTTPS connections; phones never receive SSH keys.
 An enrolled gateway also exposes its enabled direct Zerus peers through its
 existing SSH access. Requests to a peer go through that gateway; the peer's own
@@ -18,14 +18,21 @@ CLI operation. A phone can revoke its own credential with `DELETE /v1/device`.
 ## Local installation
 
 ```sh
-cd services/mobile
-python3 -m venv .venv
-.venv/bin/pip install .
-# Install .[fcm] instead if this deployment needs Firebase Cloud Messaging.
-.venv/bin/zerus-mobile --database ./data/relay.sqlite3 provision \
+cd services/mobile/relay
+cargo +1.85.0 build --release --locked
+mkdir -p "$HOME/.local/bin"
+install -m 0755 target/release/zerus-relay "$HOME/.local/bin/zerus-relay"
+zerus-relay --database ./data/relay.sqlite3 provision \
   --name 'Example workspace' --computer-name 'Example computer'
-.venv/bin/zerus-mobile --database ./data/relay.sqlite3 serve
+zerus-relay --database ./data/relay.sqlite3 serve
 ```
+
+The server is a standalone Rust executable built on Tokio, Axum and SQLx. The
+outbound computer connector remains the Python 3.11+ `zerus-mobile-connector`
+package. The relay image contains no Python interpreter. FCM HTTP v1 and
+UnifiedPush support are built into the server; provider credentials remain
+private runtime configuration. See [the Rust runtime contract](relay/README.md)
+for resource ownership, compatibility validation and the upgrade procedure.
 
 Provisioning deliberately prints the node token and a single-use phone pairing
 code. Transfer them privately; never paste them into logs or repository files.
@@ -36,12 +43,12 @@ symlinks. It never changes permissions on an existing parent directory.
 Add another computer, invite another phone, or revoke a credential locally:
 
 ```sh
-zerus-mobile --database ./data/relay.sqlite3 node \
+zerus-relay --database ./data/relay.sqlite3 node \
   --workspace WORKSPACE_UUID --name 'Another computer'
-zerus-mobile --database ./data/relay.sqlite3 invite --workspace WORKSPACE_UUID
-zerus-mobile --database ./data/relay.sqlite3 revoke-device --id DEVICE_UUID
-zerus-mobile --database ./data/relay.sqlite3 revoke-node --id NODE_UUID
-zerus-mobile --database ./data/relay.sqlite3 revoke-computer --id COMPUTER_UUID
+zerus-relay --database ./data/relay.sqlite3 invite --workspace WORKSPACE_UUID
+zerus-relay --database ./data/relay.sqlite3 revoke-device --id DEVICE_UUID
+zerus-relay --database ./data/relay.sqlite3 revoke-node --id NODE_UUID
+zerus-relay --database ./data/relay.sqlite3 revoke-computer --id COMPUTER_UUID
 ```
 
 `revoke-node` removes that gateway's credential and routes. Independently enrolled
@@ -181,49 +188,40 @@ For an existing SQLite installation, migrate instead of provisioning identities.
 
 ## Isolated capacity probes
 
-Run resource regressions and probes from the repository root with the relay's
-Python environment. They use synthetic loopback workers and never accept a live
-relay URL. The repeated-upload profile reuses one worker, submits five maximum
-Unicode attachment requests before claiming, and verifies quota rejections,
-results, receipts and no replay:
+Build the Rust image, then exercise its complete upload, claim, result and
+receipt lifecycle inside a disposable 256 MiB cgroup:
 
 ```sh
-PYTHONPATH=services/mobile python services/mobile/tests/relay_load.py \
-  --kind attachments_unicode --concurrency 1 --repeats 5
+docker build -t zerus-relay-contract services/mobile
+PYTHONPATH=services/mobile python services/mobile/relay/tests/load.py \
+  --image zerus-relay-contract --kind attachments_unicode --repeats 5
+PYTHONPATH=services/mobile python services/mobile/relay/tests/load.py \
+  --image zerus-relay-contract --kind late-malformed --repeats 5
+PYTHONPATH=services/mobile python services/mobile/relay/tests/load.py \
+  --image zerus-relay-contract --backend postgres
 ```
 
-This reports process RSS, not a container memory guarantee. For cgroup testing,
-keep `/data` and `/spool` on a real disk filesystem, enforce the supplied
-256 MiB limit, and inspect cgroup peak/reclaim and OOM events as well as RSS.
-A host tmpfs bind mount charges persistent database storage to the container.
-The final-image PostgreSQL warm profile passed at 170.44 MiB cgroup peak;
-maximum payload parsing still delayed health p99 to 157.4 ms. See the architecture
-contract for the dataset, results and limits rather than extrapolating from a
-single cold upload.
+Run from the repository root in a Python environment with the connector/test
+dependencies installed. The harness accepts no live URL or credentials. It
+creates and removes its own container and disk-backed database/spool volumes,
+streams fixture files, samples health latency and reports process RSS, cgroup
+peak memory and OOM events. `--concurrency 2` also exercises early backpressure.
+Other profiles cover dense, deeply nested and mixed Unicode JSON.
 
-The two-process PostgreSQL probe requires a mode-0600 JSON admin configuration
-containing `database_url` for a disposable loopback test instance with permission
-to create databases. It creates and removes its own synthetic database and HTTP
-workers; never point it at production:
-
-```sh
-PYTHONPATH=services/mobile python services/mobile/tests/relay_scale.py \
-  --admin-config /private/test-admin.json \
-  --workspaces 1000 --history 100000 --duration 10
-```
-
-Default admission reaches 512 simultaneous polls across two workers, with
-controlled overload, responsive metadata/heartbeats and complete disconnect
-cleanup. `--poll-cap 1000` is an experimental measurement option; it admitted
-2,000 idle polls with complete cleanup but some wake bursts returned 429.
-Neither profile proves the planned ten-thousand-computer fleet. Include the
-query-pool and direct LISTEN connection budget when sizing replicas.
+The previous `tests/relay_load.py` and `tests/relay_scale.py` remain comparison
+probes for the Python reference implementation. Their historical measurements
+in `docs/relay-architecture.md` do not certify the Rust implementation. Neither
+the functional contracts nor a small payload probe establishes fleet capacity;
+measure database/WAL, query pools, bandwidth and notification fanout before
+raising limits or sizing a ten-thousand-computer deployment.
 
 ## Offline SQLite migration
 
 Create the restricted application role and assign database/schema ownership as
 described above before importing into an empty target; use that application DSN
-for migration.
+for migration. The offline `zerus-mobile migrate-sqlite` utility remains in the
+Python package; install it in an operator virtual environment for that operation.
+It is not included in the Rust server image.
 
 Rehearse first using synthetic state and a separate empty PostgreSQL database.
 The command refuses nonempty targets, preserves IDs, token/code/body hashes,
@@ -289,8 +287,9 @@ phone deletes its push registration and pending delivery jobs.
 
 ## Delivery and resource limits
 
-Requests require a UUID and one of `inspect`, `send`, `answer`, `interrupt`,
-`compact_context` or `clear_context`.
+Requests require a UUID and an operation advertised by `/v1/capabilities`.
+The existing inspection, history, message, question, session lifecycle, Terminal,
+project and worktree operations retain their API v1 envelopes.
 Mutation payloads carry the same UUID plus exact run/conversation expectations.
 An identical repeated mutation gets the existing envelope. Changed content gets
 409. The relay commits a durable claim before delivery and never requeues a
@@ -522,6 +521,10 @@ PYTHONPATH=services/mobile .deps/mobile-venv/bin/python \
 ```
 
 Run from the repository root with an environment containing the pinned package.
+For the Rust server, also run the contracts in [relay/README.md](relay/README.md),
+including the explicit real PostgreSQL test. Set `ZERUS_RELAY_BINARY` to its
+built executable to run the released HTTP assertions and both connector end-to-end
+scenarios against Rust.
 Tests use temporary databases, synthetic sessions and loopback HTTP. No live
 agent, tmux server or provider credentials are required.
 

@@ -1,0 +1,215 @@
+# Rust relay runtime
+
+`zerus-relay` is the standalone server for Zerus mobile API v1. It runs on Rust
+1.85 or newer, Tokio, Axum/Hyper and SQLx. PostgreSQL serves multiple workers;
+SQLite is an exclusive local backend. The production image contains the Rust
+binary and its system libraries, without Python. The Python outbound connector
+and installed Android clients use their existing protocol and credentials.
+
+## Build and verify
+
+From this directory:
+
+```sh
+cargo +1.85.0 build --release --locked
+cargo +1.85.0 fmt --check
+cargo +1.85.0 clippy --locked --all-targets -- -D warnings
+cargo +1.85.0 test --locked
+```
+
+The PostgreSQL contract is explicit, never silently treated as passed by a local
+SQLite run. Point `ZERUS_RELAY_TEST_DATABASE_URL` at a **disposable** PostgreSQL
+instance whose fixture role may create databases. The test creates and removes
+a uniquely named database; credentials are not logged:
+
+```sh
+cargo +1.85.0 test --locked --test contracts postgres_cross_worker -- --ignored
+```
+
+From the repository root, with the `services/mobile` test dependencies installed:
+
+```sh
+export ZERUS_RELAY_BINARY="$PWD/services/mobile/relay/target/debug/zerus-relay"
+export PATH="$PWD/services/mobile/relay/target/debug:$PATH"
+python -m unittest discover -s services/mobile/tests -p test_rust_relay.py -v
+python -m unittest discover -s services/mobile/tests -p 'test*end_to_end.py' -v
+python -m unittest discover -s services/mobile/tests -p test_peer_migration.py -v
+```
+
+These replay the released Python HTTP assertions against a Rust process and
+exercise the actual Python connector with synthetic native subprocesses. They
+include persisted Python receipts, exact canonical hashes, Unicode, attachments,
+one-hop routing and cancellation. The full reference/connector suite remains
+`python -m unittest discover -s services/mobile/tests -v`. The reference Python
+HTTP module is retained as an independent compatibility oracle, not selected by
+the supported server CLI. `zerus-mobile` delegates administration/serving to
+`zerus-relay`; the offline `migrate-sqlite` utility remains Python.
+
+## Boundaries
+
+- `http.rs` owns authentication before ingestion, separate anonymous,
+  authenticated and long-poll admission, trusted proxy parsing, request/body
+  deadlines, disconnect cleanup and bounded response spools.
+- `protocol.rs` validates exact operation envelopes and native identities.
+  Attachment validation decodes into one reusable 48 KiB buffer. The relay never
+  executes native commands or follows paths supplied by a phone.
+- `json.rs` bounds depth and lexical structure before object materialization.
+  Canonical ASCII escaping, key ordering, arbitrary integer precision and Python
+  float formatting preserve API v1 request identities. A deterministic 20,000
+  float differential test compares the independent Python encoder. Containers
+  are decoded from borrowed raw JSON so the legal object key
+  `$serde_json::private::Number` cannot be interpreted as serializer metadata.
+  Legacy Python receipt tests cover this key as well as Unicode and large numbers.
+- `store/requests.rs` owns queue admission, result reservations, committed claims,
+  receipts, expiry and permanent mutation identity tombstones. A prepared
+  submission owns one canonical payload plus small typed metadata; SQL work does
+  not retain its decoded attachment tree. Claim payloads leave storage only
+  after commit. No error path changes `claimed` back to `queued`.
+- `db.rs` supplies bounded pool acquisition and one transaction implementation
+  for both SQL dialects. PostgreSQL workers share the existing schema and quota
+  allocation. PostgreSQL network buffers are shrunk before connections return to
+  the pool, preventing the largest transferred payload from remaining allocated
+  on every pooled socket. SQLite uses a private file, an exclusive process lock, one
+  connection and SQLx's database worker thread. Dropping a transaction rolls it
+  back; cancelling a response never retries an external operation.
+- `registry.rs` binds physical computers, aliases and immutable one-hop routes.
+  Catalog size is checked before fetching selected payloads, then fetched in a
+  batch. A withdrawn or revoked route fails queued requests and makes claimed
+  requests uncertain. It never reroutes a claimed request.
+- `store/snapshots.rs` separates liveness and event-free snapshot changes from
+  shared payload accounting. Event publication and wake jobs have transactional
+  caps. Lock order is global event accounting, payload shard when needed,
+  workspace, credential, then route/request; multi-workspace locks are sorted.
+- `store/background.rs` owns bounded indexed maintenance batches and durable
+  poll/push leases. PostgreSQL advisory locks elect maintenance transactions;
+  PostgreSQL startup never retires another worker's claims.
+- `push.rs` sends generic wake hints through UnifiedPush or FCM HTTP v1. Provider
+  requests run outside transactions. UnifiedPush requires an exact operator
+  host allowlist, public DNS addresses pinned through TLS, and no redirects or
+  environment proxy. FCM uses short-lived service-account OAuth tokens and an
+  RS256 signature from `ring`; tokens/endpoints/provider errors are never logged.
+
+Idle polls hold no query-pool connection. Each PostgreSQL worker has one dedicated
+LISTEN connection and a bounded local broadcast channel; notifications contain
+IDs only. Polls subscribe before querying, recheck authorization on each wake and
+fall back to durable reads every five seconds. Listener reconnect wakes waiters.
+A notification is a hint, never proof of delivery.
+
+## Resource ownership
+
+Defaults retain the existing 29 MiB inline-request and 1 MiB ordinary-response
+limits, one large payload lane, 8 MiB of aggregate small request bodies and eight
+small response slots. Parsing/encoding work runs on a bounded blocking executor;
+its ownership guard retains admission even if the HTTP future is cancelled.
+The canonical encoder preallocates its exact output size rather than doubling
+large buffers for final delimiters. Responses use immediately unlinked files
+with 64 MiB total reservation per worker and a 32 MiB maximum claim reservation.
+Keep `TMPDIR` on a private disk-backed spool, as in Compose. The Debian image
+also fixes glibc's arena count and mmap/trim thresholds (`MALLOC_ARENA_MAX=2`,
+`MALLOC_MMAP_THRESHOLD_=131072`, `MALLOC_TRIM_THRESHOLD_=131072`): deallocated
+maximum payloads must return to the OS instead of accumulating in allocator
+arenas between tasks. Apply the same environment before starting a glibc binary
+outside Docker when reproducing its memory measurements.
+
+Long polls have separate local and durable quotas (256 per worker, two per
+credential, 32 per workspace). Cancellation transfers the local permit to a
+tracked lease-cleanup task until SQL cleanup finishes. Failed cleanup also has a
+durable expiry. Ordinary requests cannot consume that reserved cleanup capacity.
+
+The server bounds accepted TCP connections (default 1024), headers (100 and a
+32 KiB buffer), header ingestion (10 seconds) and connection lifetime (120 seconds).
+Connections closing at their lifetime ceiling are normal: clients retry reads,
+while mutation receipt recovery uses the original UUID. There are two async
+runtime threads per process. Worker overload returns 429 and `Retry-After: 1`.
+Health is independent of SQL/admission; readiness coalesces a two-second probe
+and caches its result for one second. Errors omit SQL, bodies, tokens and URLs.
+
+SIGINT/SIGTERM stops accepting connections, wakes idle polls, drains tracked
+work and closes pools. Final database cleanup has a five-second deadline so an
+unresponsive database cannot prevent process exit; durable leases then expire.
+Compose allows 45 seconds. Command claims committed before
+a shutdown retain their normal deadlines and can become uncertain; restarting a
+worker never makes those commands executable again.
+
+## Upgrade and operation
+
+The listener, API, private JSON configuration, database tables, IDs, token hashes,
+pairing invitations, event cursors and connector journal bindings are preserved.
+The default state path remains `~/.local/share/zerus-mobile/relay.sqlite3`.
+PostgreSQL workers must use identical pool/quota settings, including allocation
+shard count; mismatched allocation is refused. Local administration stays CLI
+only. The image also supplies `zerus-mobile` as a binary alias.
+
+An existing PostgreSQL installation needs a runtime replacement, not a data
+export or identity reprovisioning. Before an owner-authorized cutover, verify a
+backup restore, drain ingress and stop only the old relay workers. Start the Rust
+workers against the same authoritative database and existing configuration;
+verify readiness, a synthetic request/receipt and revocation. Keep native agents,
+connectors, tmux and DeepSeek hosts running. A Rust-to-Python rollback must use the
+same current database, never a snapshot predating newly accepted receipts.
+
+Stop the sole SQLite server before local administration or a runtime replacement;
+Rust refuses a second owner of that file. Never run Python and Rust SQLite
+writers simultaneously. SQLite-to-PostgreSQL is a distinct offline migration,
+using the preserved utility and verification procedure in the parent README.
+The Python historical service remains available to tests through `create_app`,
+but normal CLI/server packaging always selects Rust.
+
+Production deployment requires separate owner authorization. Repository tests
+and a built image do not establish a live cutover. FCM delivery to a real device
+requires operator credentials and a device; local tests do not claim that result.
+
+The owner-authorized production rollout on 2026-10-10 deployed source
+`770f00c7557527fcda0f641034c544e5ee7c82d5` to both PostgreSQL workers.
+Pre-cutover and post-deployment backups restored successfully into disposable
+databases. Quiescent Rust initialization preserved all 21 application tables;
+credential hashes, permanent mutation receipts and private configuration remained
+unchanged. Public pairing, cross-worker single claim, duplicate/conflicting
+submissions, result recovery and revocation passed with synthetic identities.
+The active connector resumed heartbeats, and FCM configuration loaded successfully.
+PostgreSQL and unrelated services retained their container IDs and start times.
+
+[Hosted qualification](https://github.com/ufna/zerus/actions/runs/38034012114)
+passed the full Linux, Arch and macOS suite, including Rust relay contracts,
+released HTTP/connector compatibility, PostgreSQL recovery and repeated 256 MiB
+container workloads. An unchanged GUI clear-context fixture passed on rerun;
+its timing instability is tracked separately in `zerus-wvl`.
+
+## Capacity evidence
+
+Run `tests/load.py` through the repository's Python test environment after building
+`services/mobile/Dockerfile`. It creates only disposable containers and volumes,
+with a 256 MiB memory/swap ceiling, no capabilities, a read-only image and a
+private disk-backed spool. Repeated maximum attachments and late syntax failures
+exercise warm allocations, committed claims, results and cleanup. Inspect both
+RSS and cgroup memory, since SQLite page cache and spool writes also count.
+
+Use `--backend postgres` to create a private disposable PostgreSQL 17.11 container
+and exercise the production SQL path. The harness suspends that database,
+checks independent health and failed readiness, resumes it and verifies recovery
+and delivery of the queued commands. It also checks graceful process exit while
+the database is suspended again. PostgreSQL is measured separately from the
+relay worker's cgroup. The SQL contract also terminates only its own LISTEN
+sockets and checks reconnect wakeups and durable visibility across workers.
+
+Local Linux x86_64 qualification on 2026-10-10, Rust 1.85 release image, default
+limits, disk-backed spools, 256 MiB worker memory/swap limit:
+
+| Backend and profile | Upload outcomes | Peak RSS MiB | Peak cgroup MiB | Resting RSS MiB | Health p99 ms |
+| --- | --- | ---: | ---: | ---: | ---: |
+| PostgreSQL, five maximum Unicode/attachment uploads, database outage/recovery | 3 accepted, 2 quota refusals | 139.30 | 137.18 | 9.79 | 29.28 |
+| SQLite, five maximum Unicode/attachment uploads | 3 accepted, 2 quota refusals | 117.57 | 222.66 | 13.34 | 31.71 |
+| SQLite, two simultaneous maximum uploads, twice | 2 accepted, 2 admission refusals | 117.51 | 195.82 | 13.52 | 46.31 |
+| SQLite, five maximum bodies with late syntax errors | 5 rejected with 400 | 36.79 | 30.57 | 11.33 | 1.27 |
+| SQLite, five dense JSON bodies | 5 rejected with 413 | 36.90 | 33.44 | 11.20 | 1.70 |
+
+All profiles reported zero OOM kills. Every accepted request was claimed once,
+completed and recovered by its receipt. The harness also requires resting RSS
+below 64 MiB to catch retained payload/driver allocations. Health samples are
+local observations during these short probes, not a latency SLO or a throughput
+benchmark; RSS and cgroup accounting include different kinds of memory.
+
+Historical Python measurements are in `docs/relay-architecture.md`. This Rust
+migration does not certify the 10,000-computer/50,000-phone planning target.
+Measure sustained metadata/heartbeat rates, notification fanout, PostgreSQL WAL,
+autovacuum, storage and pool saturation before changing deployment limits.

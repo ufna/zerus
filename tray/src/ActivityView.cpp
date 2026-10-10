@@ -1,4 +1,5 @@
 #include "ActivityView.h"
+#include "ActivityWidth.h"
 #include "ContentScale.h"
 #include "MarkdownHtml.h"
 #include "MarkdownObjects.h"
@@ -8,7 +9,9 @@
 
 #include <QDateTime>
 #include <QAbstractTextDocumentLayout>
+#include <QAction>
 #include <QClipboard>
+#include <QContextMenuEvent>
 #include <QCryptographicHash>
 #include <QCursor>
 #include <QDesktopServices>
@@ -23,6 +26,7 @@
 #include <QImage>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QMenu>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QProgressBar>
@@ -41,9 +45,11 @@
 #include <QUrl>
 #include <QUrlQuery>
 #include <QVBoxLayout>
+#include <QWheelEvent>
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <utility>
 
 namespace {
@@ -126,6 +132,9 @@ protected:
 class ActivityBrowser final : public QTextBrowser {
 public:
     using QTextBrowser::QTextBrowser;
+    std::function<void(QMenu *)> extendMenu;
+    // The margins beside the reading column. The scroll bar keeps the pane edge.
+    void setColumnMargins(const QMargins &margins) { if (viewportMargins() != margins) setViewportMargins(margins); }
 protected:
     QMimeData *createMimeDataFromSelection() const override
     {
@@ -153,6 +162,66 @@ protected:
         painter.translate(-scroll);
         MarkdownObjects::paintChips(&painter, document(), QRectF(event->rect().translated(scroll)), viewport()->palette(), selections);
     }
+    void contextMenuEvent(QContextMenuEvent *event) override
+    {
+        auto *menu = createStandardContextMenu(event->pos() + QPoint(horizontalScrollBar()->value(), verticalScrollBar()->value()));
+        if (extendMenu) extendMenu(menu);
+        menu->setAttribute(Qt::WA_DeleteOnClose);
+        menu->popup(event->globalPos());
+    }
+};
+
+// A reading column edge in the transcript margin. Both edges move together,
+// so the column stays centered; a double-click restores the default width.
+class ColumnEdge final : public QWidget {
+public:
+    static constexpr int Width = 10;
+    std::function<void()> pressed;
+    std::function<void(int)> dragged;   // outward pointer distance since the press
+    std::function<void()> reset;
+    std::function<void(const QPoint &)> menuRequested;
+    QColor color;
+    ColumnEdge(bool right, QWidget *parent) : QWidget(parent), m_right(right)
+    {
+        setObjectName("activityColumnEdge"); setCursor(Qt::SizeHorCursor);
+        setToolTip(QObject::tr("Drag to resize Activity. Double-click to restore the default width."));
+        hide();
+    }
+protected:
+    void enterEvent(QEnterEvent *) override { m_hover = true; update(); }
+    void leaveEvent(QEvent *) override { m_hover = false; update(); }
+    // An edge hidden under the pointer never receives its leave event.
+    void hideEvent(QHideEvent *) override { m_hover = m_dragging = false; }
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() != Qt::LeftButton) { event->ignore(); return; }
+        m_origin = event->globalPosition().x(); m_dragging = true; update();
+        if (pressed) pressed();
+    }
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        if (!m_dragging || !dragged) return;
+        const int distance = qRound(event->globalPosition().x() - m_origin);
+        dragged(m_right ? distance : -distance);
+    }
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton) { m_dragging = false; update(); }
+    }
+    void mouseDoubleClickEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton && reset) reset();
+    }
+    void contextMenuEvent(QContextMenuEvent *event) override { if (menuRequested) menuRequested(event->globalPos()); }
+    void paintEvent(QPaintEvent *) override
+    {
+        if (!m_hover && !m_dragging) return;
+        QPainter painter(this); QColor line = color; line.setAlpha(m_dragging ? 255 : 150);
+        painter.fillRect(QRect(width() / 2 - 1, 0, 2, height()), line);
+    }
+private:
+    bool m_right, m_hover = false, m_dragging = false;
+    qreal m_origin = 0;
 };
 
 bool webLink(const QUrl &url)
@@ -199,6 +268,15 @@ QString eventKey(const QJsonObject &event)
     if (event.value("seq").toInteger() > 0) return QString::number(event.value("seq").toInteger());
     return QString::fromLatin1(QCryptographicHash::hash(QJsonDocument(event).toJson(QJsonDocument::Compact),
                                                        QCryptographicHash::Sha256).toHex().left(20));
+}
+
+// A clear first confirmed in Terminal is journaled in the old conversation,
+// and older versions journaled it again under the new one. The same moment
+// is one boundary, whatever key either copy carries.
+bool sameSessionClear(const QJsonObject &event, const QJsonObject &clear)
+{
+    return event.value("type") == "SessionCleared" && (event.value("activity_key") == clear.value("activity_key")
+        || (event.value("run_id") == clear.value("run_id") && event.value("at").toDouble() > 0 && event.value("at") == clear.value("at")));
 }
 
 QString eventTitle(const QString &type)
@@ -298,20 +376,35 @@ ActivityView::ActivityView(QWidget *parent) : QWidget(parent)
 {
     setObjectName("activityView");
     auto *layout = new QVBoxLayout(this); layout->setContentsMargins(0, 0, 0, 0); layout->setSpacing(5);
-    m_browser = new ActivityBrowser(this); m_browser->setObjectName("activity");
+    auto *browser = new ActivityBrowser(this); m_browser = browser; m_browser->setObjectName("activity");
     m_browser->setDocument(new JournalDocument(m_browser));
     m_browser->setFrameShape(QFrame::NoFrame);
     m_browser->setOpenLinks(false); m_browser->setOpenExternalLinks(false);
     m_browser->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_browser->setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
     m_browser->setAccessibleName(tr("Session activity"));
-    m_browser->viewport()->installEventFilter(this);
     layout->addWidget(m_browser, 1);
     // A browser child overlays the viewport without participating in layout
     // or moving with its scrolled contents.
     m_latest = new QPushButton(m_browser); m_latest->setObjectName("activityJumpLatest");
     m_latest->setAccessibleName(tr("Jump to latest activity"));
     m_latest->hide();
+    m_fullWidth = new QAction(tr("Full-width Activity"), this); m_fullWidth->setCheckable(true);
+    connect(m_fullWidth, &QAction::triggered, this, &ActivityView::fullWidthRequested);
+    m_resetWidth = new QAction(tr("Reset Activity width"), this);
+    connect(m_resetWidth, &QAction::triggered, this, &ActivityView::columnResetRequested);
+    browser->extendMenu = [this](QMenu *menu) { addColumnActions(menu); };
+    for (const bool right : {false, true}) {
+        auto *edge = new ColumnEdge(right, m_browser);
+        edge->pressed = [this] { m_dragOrigin = m_browser->viewport()->width(); };
+        edge->dragged = [this](int distance) { dragColumn(distance); };
+        edge->reset = [this] { emit columnResetRequested(); };
+        edge->menuRequested = [this](const QPoint &position) { showColumnMenu(position); };
+        m_edges.append(edge);
+    }
+    // Viewport events need the column edges.
+    m_browser->viewport()->installEventFilter(this);
+    m_browser->installEventFilter(this);
     m_compaction = new QWidget(this); m_compaction->setObjectName("activityCompaction");
     m_compaction->setAttribute(Qt::WA_StyledBackground);
     auto *progressRow = new QHBoxLayout(m_compaction); progressRow->setContentsMargins(12, 3, 12, 3); progressRow->setSpacing(10);
@@ -332,7 +425,9 @@ ActivityView::ActivityView(QWidget *parent) : QWidget(parent)
     queueLayout->addLayout(queueHeader);
     m_queueText = new QLabel; m_queueText->setObjectName("queueText"); m_queueText->setTextFormat(Qt::PlainText); m_queueText->setWordWrap(true);
     m_queueText->setTextInteractionFlags(Qt::TextSelectableByMouse); m_queueText->setMaximumHeight(100);
-    queueLayout->addWidget(m_queueText); layout->addWidget(m_queue); m_queue->hide();
+    queueLayout->addWidget(m_queueText);
+    m_queueColumn = new ActivityWidth::ColumnLayout; layout->addLayout(m_queueColumn);
+    m_queueColumn->addWidget(m_queue); m_queue->hide();
     connect(m_queueSend, &QPushButton::clicked, this, [this] { emit queueSendNowRequested(m_details["input_queue"].toObject()["id"].toString()); });
     connect(m_latest, &QPushButton::clicked, this, &ActivityView::jumpToLatest);
     connect(m_browser, &QTextBrowser::anchorClicked, this, &ActivityView::activateLink);
@@ -349,7 +444,7 @@ ActivityView::ActivityView(QWidget *parent) : QWidget(parent)
     connect(m_browser, &QTextBrowser::selectionChanged, this, [this] {
         if (!m_rendering && m_browser->textCursor().hasSelection()) m_followLatest = false;
     });
-    setTheme(false);
+    setTheme(false); updateColumnActions();
 }
 
 void ActivityView::setSessionKey(const QString &key)
@@ -368,7 +463,8 @@ void ActivityView::setSessionKey(const QString &key)
 void ActivityView::setActivity(const QJsonObject &details, const QJsonArray &events, const QString &fallbackPrompt, bool tracked)
 {
     const auto conversation = details.value("conversation_id").toString();
-    if (!m_conversation.isEmpty() && !conversation.isEmpty() && conversation != m_conversation) {
+    if (!m_conversation.isEmpty() && !conversation.isEmpty() && conversation != m_conversation
+        && !details.value("cleared_conversations").toArray().contains(m_conversation)) {
         m_previewFiles.clear(); m_deliveryKeys.clear();
         m_searchResult = {}; m_searchQuery.clear(); m_browser->setExtraSelections({});
         m_expanded.clear(); m_knownEvents.clear(); m_initial = true; m_followLatest = true; m_unseen = 0; m_html.clear();
@@ -378,7 +474,7 @@ void ActivityView::setActivity(const QJsonObject &details, const QJsonArray &eve
     const auto clear = details.value("session_clear").toObject();
     if (clear.value("type") == "SessionCleared") m_fallbackPrompt.clear();
     if (clear.value("type") == "SessionCleared" && !std::any_of(m_events.cbegin(), m_events.cend(), [&clear](const QJsonValue &value) {
-            return value.toObject().value("type") == "SessionCleared" && value.toObject().value("activity_key") == clear.value("activity_key");
+            return sameSessionClear(value.toObject(), clear);
         })) m_events.append(clear);
     for(const auto &value:details.value("attachment_messages").toArray()) {
         const auto receipt=value.toObject();if(receipt.value("source")!="hgs_delivery" || receipt.value("attachments").toArray().isEmpty())continue;
@@ -450,6 +546,7 @@ void ActivityView::setTheme(bool dark)
     m_browser->setPalette(palette);
     m_latest->setStyleSheet(QString("QPushButton { color:%1; background:%2; border:1px solid %3; border-radius:12px; padding:5px 13px; font-size:11px; } QPushButton:hover { border-color:%1; }")
         .arg(dark ? "#8bdfc0" : "#167357", dark ? "#233a35" : "#e7f3ed", dark ? "#456e61" : "#a5c8b8"));
+    for (auto *edge : m_edges) { static_cast<ColumnEdge *>(edge)->color = QColor(dark ? "#8bdfc0" : "#167357"); edge->update(); }
     m_compaction->setStyleSheet(QString("QWidget#activityCompaction { background:%3; } QLabel { color:%1; background:transparent; font-size:12px; } QProgressBar { background:%2; border:0; border-radius:2px; } QProgressBar::chunk { background:%1; border-radius:2px; }")
         .arg(dark ? "#8bdfc0" : "#167357", dark ? "#34404a" : "#dbe3e9", dark ? "#1c2229" : "#ffffff"));
     m_queue->setStyleSheet(QString("QWidget#activityInputQueue{background:%1;border:1px solid %2;border-radius:7px;} QLabel#queueCaption{color:%3;font-weight:600;}")
@@ -473,7 +570,67 @@ void ActivityView::setContentScale(double scale)
     m_browser->setStyleSheet(qFuzzyCompare(scale, 1.0) ? QString()
         : QString("QTextBrowser { font-size:%1px; }").arg(ContentScale::px(13, scale)));
     m_queueText->setMaximumHeight(ContentScale::px(100, scale));
-    setTheme(m_dark);
+    setTheme(m_dark); updateColumnActions();
+}
+
+void ActivityView::setColumnWidth(int width)
+{
+    width = qMax(0, width);
+    if (width != m_column) { m_column = width; m_queueColumn->setColumnWidth(width); layoutColumn(); }
+    updateColumnActions();
+}
+
+int ActivityView::scrollBarReserve() const
+{
+    // As QAbstractScrollArea lays it out: a shown scroll bar takes its extent,
+    // less any overlap, from the side of the viewport.
+    auto *bar = m_browser->verticalScrollBar(); auto *container = bar->parentWidget();
+    if (!container || container == m_browser || !container->isVisibleTo(m_browser)) return 0;
+    return qMax(0, bar->sizeHint().width() - bar->style()->pixelMetric(QStyle::PM_ScrollView_ScrollBarOverlap, nullptr, bar));
+}
+
+void ActivityView::layoutColumn()
+{
+    const int pane = m_browser->width(), reserve = scrollBarReserve(), side = ActivityWidth::inset(pane, m_column);
+    // The scroll bar stays at the pane edge and takes its width from the right
+    // margin, so showing it does not rewrap the column.
+    static_cast<ActivityBrowser *>(m_browser)->setColumnMargins(QMargins(side, 0, qMax(0, side - reserve), 0));
+    // Edges need room beside the scroll bar. Without margins the pane edge
+    // remains where a text selection starts.
+    const auto viewport = m_browser->viewport()->geometry();
+    const bool edges = side - reserve >= ColumnEdge::Width;
+    m_edges[0]->setGeometry(viewport.left() - ColumnEdge::Width, 0, ColumnEdge::Width, m_browser->height());
+    m_edges[1]->setGeometry(viewport.right() + 1, 0, ColumnEdge::Width, m_browser->height());
+    for (auto *edge : m_edges) { edge->setVisible(edges); if (edges) edge->raise(); }
+}
+
+void ActivityView::dragColumn(int distance)
+{
+    // Both edges follow the pointer, so the column changes by twice its distance.
+    // Its edges stay within the pane and its width keeps a readable minimum.
+    const int widest = m_browser->width() - 2 * (scrollBarReserve() + ColumnEdge::Width);
+    const int narrowest = qMin(widest, ContentScale::px(ActivityWidth::Minimum, m_scale));
+    const int width = qBound(narrowest, m_dragOrigin + 2 * distance, widest);
+    if (width != m_column) emit columnWidthRequested(width);
+}
+
+void ActivityView::addColumnActions(QMenu *menu)
+{
+    updateColumnActions();
+    if (!menu->isEmpty()) menu->addSeparator();
+    menu->addAction(m_fullWidth); menu->addAction(m_resetWidth);
+}
+
+void ActivityView::showColumnMenu(const QPoint &position)
+{
+    auto *menu = new QMenu(this); addColumnActions(menu);
+    menu->setAttribute(Qt::WA_DeleteOnClose); menu->popup(position);
+}
+
+void ActivityView::updateColumnActions()
+{
+    m_fullWidth->setChecked(m_column == 0);
+    m_resetWidth->setEnabled(m_column != ContentScale::px(ActivityWidth::Default, m_scale));
 }
 
 QString ActivityView::plainText() const
@@ -578,6 +735,21 @@ void ActivityView::positionJumpButton()
 
 bool ActivityView::eventFilter(QObject *watched, QEvent *event)
 {
+    if (watched == m_browser) {
+        // Before the scroll area places its viewport for the new width.
+        if (event->type() == QEvent::Resize) layoutColumn();
+        else if (event->type() == QEvent::Wheel) {
+            // The margins scroll the transcript like the column between them.
+            if (!m_browser->viewport()->geometry().contains(static_cast<QWheelEvent *>(event)->position().toPoint())) {
+                QCoreApplication::sendEvent(m_browser->verticalScrollBar(), event); return true;
+            }
+        } else if (event->type() == QEvent::ContextMenu) {
+            const auto *menu = static_cast<QContextMenuEvent *>(event);
+            if (menu->reason() == QContextMenuEvent::Mouse && !m_browser->viewport()->geometry().contains(menu->pos())) {
+                showColumnMenu(menu->globalPos()); return true;
+            }
+        }
+    }
     // Copy buttons are images, not links: Tab, Enter and text selection never stop at them.
     if (watched == m_browser->viewport()) {
         auto *viewport = m_browser->viewport();
@@ -605,6 +777,8 @@ bool ActivityView::eventFilter(QObject *watched, QEvent *event)
         }
     }
     if (watched == m_browser->viewport() && (event->type() == QEvent::Resize || event->type() == QEvent::Show)) {
+        // A scroll bar that appears or hides moves the viewport's side.
+        if (event->type() == QEvent::Resize) layoutColumn();
         positionJumpButton();
         if (m_followLatest) scheduleFollow();
     }
@@ -728,6 +902,7 @@ void ActivityView::render(bool contentUpdate)
     const QString userSurface = m_dark ? "#243730" : "#edf6f1";
     const QString codeSurface = m_dark ? "#171e25" : "#e8eef2";
     const QString warning = m_dark ? "#edbd77" : "#9b6216";
+    const QString warningSurface = m_dark ? "#2d2c23" : "#fff7e4";
     const QString blue = m_dark ? "#98bdeb" : "#366ba9";
     const QString violet = m_dark ? "#c5a8f5" : "#6c43b8";
     const QString noticeSurface = m_dark ? "#2a2536" : "#f4f0fb";
@@ -787,15 +962,16 @@ void ActivityView::render(bool contentUpdate)
         return result;
     };
     // A non-empty markdown source adds a button that copies it at the right of the header.
+    // A boundary marks a change that needs attention, such as a cleared context.
     const auto card = [&](const QString &key, const QString &label, const QString &stamp, const QString &body, bool user,
-                          bool notice = false, bool thinking = false, const QString &markdownSource = {}) {
+                          bool notice = false, bool thinking = false, const QString &markdownSource = {}, bool boundary = false) {
         auto content = body;
         // User text always starts with a paragraph. Anchor inside that block:
         // Qt discards an empty anchor between paragraphs, and a header-relative
         // offset shifts when Sending changes to Submitted or Sent.
         if (user) content.insert(content.indexOf('>') + 1, QString("<a name='item-body-%1'></a>").arg(escaped(key)));
         const auto title = QString("<a name='item-%1'></a><b style='color:%2;'>%3</b><span style='color:%4;'>%5</span>")
-            .arg(escaped(key), thinking ? thinkingLabel : notice ? violet : user ? accent : blue, escaped(label), muted,
+            .arg(escaped(key), boundary ? warning : thinking ? thinkingLabel : notice ? violet : user ? accent : blue, escaped(label), muted,
                  stamp.isEmpty() ? QString() : QStringLiteral(" &nbsp;&nbsp; ") + escaped(stamp));
         auto header = "<p style='font-size:11px;margin-top:0;margin-bottom:8px;'>" + title + "</p>";
         if (!markdownSource.trimmed().isEmpty()) {
@@ -808,8 +984,8 @@ void ActivityView::render(bool contentUpdate)
         // The spacer goes before each card, so nothing pads the journal below the last one.
         return QString("<p style='font-size:5px;margin:0;'>&nbsp;</p><table width='100%' cellspacing='0' cellpadding='0'><tr><td width='3' bgcolor='%1'></td><td bgcolor='%2' style='padding:11px 13px;'>"
             "%3%4</td></tr></table>")
-            .arg(thinking ? thinkingBar : notice ? violet : user ? accent : blue,
-                 thinking ? pageTheme.canvas.name() : notice ? noticeSurface : user ? userSurface : surface, header, content);
+            .arg(boundary ? warning : thinking ? thinkingBar : notice ? violet : user ? accent : blue,
+                 boundary ? warningSurface : thinking ? pageTheme.canvas.name() : notice ? noticeSurface : user ? userSurface : surface, header, content);
     };
 
     QList<QJsonObject> events;
@@ -826,6 +1002,8 @@ void ActivityView::render(bool contentUpdate)
         // (an empty Notification, or idle_prompt); approvals and questions have their own events.
         if (event.value("type") == "Notification" && (event.value("detail").toString().trimmed().isEmpty()
             || event.value("notification_type") == "idle_prompt")) continue;
+        if (event.value("type") == "SessionCleared" && std::any_of(events.cbegin(), events.cend(),
+                [&event](const QJsonObject &other) { return sameSessionClear(other, event); })) continue;
         if (!seen.contains(key)) { seen.insert(key); events.append(event); }
     }
     const bool sequenced = std::all_of(events.cbegin(), events.cend(), [](const QJsonObject &e) { return e.value("seq").toInteger() > 0; });
@@ -890,9 +1068,11 @@ void ActivityView::render(bool contentUpdate)
     for (int i = 0; i < events.size();) {
         const auto event = events[i]; const auto role = messageRole(event);
         if (event.value("type") == "SessionCleared") {
+            // Earlier activity stays readable above; the agent no longer has it.
             html += card(eventKey(event), tr("Session cleared"), timeText(event),
-                QString("<p style='margin:0;color:%1;'>%2</p>").arg(accent,
-                    tr("New messages start with a fresh conversation context.")), true);
+                QString("<p style='margin:0;color:%1;'>%2</p>").arg(warning,
+                    tr("The agent no longer sees the activity above. New messages start with a fresh conversation context.")),
+                false, false, false, {}, true);
             ++i; continue;
         }
         if (event.value("type") == "AgentThinking") {

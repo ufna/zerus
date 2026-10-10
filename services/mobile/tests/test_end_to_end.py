@@ -9,10 +9,11 @@ import unittest
 from unittest.mock import patch
 import uuid
 
-from aiohttp import ClientSession, web
+from aiohttp import ClientSession
 
 from zerus_mobile.connector import Connector
-from zerus_mobile.server import Config, create_app
+from zerus_mobile.server import Config
+from relay_fixture import start_relay
 from zerus_mobile.store import Store
 
 
@@ -26,11 +27,7 @@ class EndToEndTests(unittest.IsolatedAsyncioTestCase):
             workspace = store.workspace("Integration")
             node = store.node(workspace, "Fixture computer")
             invitation = store.invite(workspace)
-            runner = web.AppRunner(create_app(store, Config(background=False)))
-            await runner.setup()
-            site = web.TCPSite(runner, "127.0.0.1", 0)
-            await site.start()
-            url = "http://127.0.0.1:" + str(site._server.sockets[0].getsockname()[1])
+            runner, url = await start_relay(store, Config(background=False))
             connector = Connector({"server_url": url, "node_token": node["node_token"],
                 "hgs_path": str(fixture), "state_dir": str(root / "journal"), "poll_interval": 1},
                 allow_insecure_localhost=True)

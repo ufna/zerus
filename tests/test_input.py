@@ -82,7 +82,22 @@ class InputTransport(unittest.TestCase):
         self.write_record()
 
     def tearDown(self):
+        pids = {pid for pid in self.tmux('list-panes', '-a', '-F', '#{pane_pid}', check=False).splitlines()
+                if pid.isdigit()}
         self.tmux("kill-server", check=False)
+        # kill-server acknowledges before its panes finish exiting. An
+        # interactive shell can still save history into the fixture home;
+        # wait for owned processes before removing that home.
+        deadline = time.monotonic() + 2
+        while pids:
+            status = subprocess.run(['ps', '-p', ','.join(sorted(pids)), '-o', 'pid=,stat='],
+                                    capture_output=True, text=True, timeout=5)
+            pids = {parts[0] for line in status.stdout.splitlines()
+                    if len(parts := line.split()) >= 2 and not parts[1].startswith('Z')}
+            if not pids or time.monotonic() >= deadline:
+                break
+            time.sleep(.02)
+        self.assertFalse(pids, 'owned fixture panes survived tmux shutdown')
         self.temp.cleanup()
 
     def script(self, name, value):

@@ -177,12 +177,18 @@ has an exact version and SHA-512 integrity pin. Only its native executable is
 extracted into a disposable directory; agent binaries are neither committed
 nor bundled. The runner treats skipped or empty native suites as failures.
 
-Real native checks run at 95x47 and 110x35 terminal sizes. They resume synthetic
+Real native checks run at 95x47 and 110x35 terminal sizes with animations explicitly
+enabled and disabled. Animated 95x47 checks require the actual released settled
+idle logo before inspecting a Terminal clear; unknown or partial logo frames do
+not confirm a reset. Assertion failures retain the synthetic native panel,
+cursor and lifecycle state. The tests resume synthetic
 history, then verify GUI-command clear, Terminal clear, the deferred native
 identity transition, stale usage suppression, a single durable clear boundary,
 preserved process/run identity, unsent native drafts and foreign-directory
 rejection. Every fixture owns a private home and tmux socket and uses only a
 localhost provider. No authenticated inference or existing session is involved.
+Fixture shutdown waits for its owned panes to exit before deleting the private
+home, so a shell's final history write cannot race with filesystem cleanup.
 
 The separate **Agent upstream compatibility** workflow runs daily at 04:41 UTC
 and is also available manually on upstream main. It discovers published Codex,

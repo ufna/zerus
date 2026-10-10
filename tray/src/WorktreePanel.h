@@ -15,17 +15,20 @@
 // Shared, on-demand folder/catalog view. Responses never change its address.
 class WorktreePanel : public QWidget {
 public:
-    WorktreePanel(HgsClient *client,bool picker=false,QWidget *parent=nullptr):QWidget(parent),m_client(client),m_picker(picker) {
+    enum class Layout { Standard, Compact };
+    WorktreePanel(HgsClient *client,bool picker=false,QWidget *parent=nullptr,Layout mode=Layout::Standard):QWidget(parent),m_client(client),m_picker(picker),m_compact(mode==Layout::Compact&&!picker) {
         setObjectName("worktreePanel");auto *layout=new QVBoxLayout(this);layout->setContentsMargins(0,6,0,0);layout->setSpacing(8);
         auto *row=new QHBoxLayout;auto *title=new QLabel(tr("Folder and worktrees"));title->setObjectName("heading");row->addWidget(title);row->addStretch();
         m_refresh=new QPushButton(tr("Refresh"));m_refresh->setObjectName("refreshWorktrees");m_refresh->setAutoDefault(false);row->addWidget(m_refresh);layout->addLayout(row);
         m_status=new QLabel;m_status->setObjectName("worktreeStatus");m_status->setTextFormat(Qt::PlainText);m_status->setWordWrap(true);layout->addWidget(m_status);
-        m_tree=new QTreeWidget;m_tree->setObjectName("worktreeCatalog");m_tree->setHeaderHidden(true);m_tree->setColumnCount(1);m_tree->setMinimumHeight(120);m_tree->setTextElideMode(Qt::ElideMiddle);layout->addWidget(m_tree,1);
+        m_tree=new QTreeWidget;m_tree->setObjectName("worktreeCatalog");m_tree->setHeaderHidden(true);m_tree->setColumnCount(1);m_tree->setMinimumHeight(m_compact?60:120);m_tree->setTextElideMode(Qt::ElideMiddle);layout->addWidget(m_tree,1);
         auto *actions=new QHBoxLayout;
-        m_all=new QPushButton(tr("All sessions"));m_all->setObjectName("allWorktreeSessions");m_all->setAutoDefault(false);m_all->setVisible(!picker);actions->addWidget(m_all);actions->addStretch();
-        m_launch=new QPushButton(picker?tr("Use folder"):tr("New session…"));m_launch->setObjectName("useWorktreeFolder");m_launch->setAutoDefault(false);actions->addWidget(m_launch);
+        m_all=new QPushButton(tr("All sessions"));m_all->setObjectName("allWorktreeSessions");m_all->setAutoDefault(false);m_all->setVisible(!picker);
+        m_launch=new QPushButton(picker?tr("Use folder"):tr("New session…"));m_launch->setObjectName("useWorktreeFolder");m_launch->setAutoDefault(false);
+        if(m_compact){row->insertWidget(row->count()-1,m_all);row->addWidget(m_launch);}
+        else{actions->addWidget(m_all);actions->addStretch();actions->addWidget(m_launch);}
         if(picker){auto *cancel=new QPushButton(tr("Cancel"));cancel->setAutoDefault(false);actions->addWidget(cancel);connect(cancel,&QPushButton::clicked,this,[this]{if(cancelRequested)cancelRequested();});}
-        layout->addLayout(actions);
+        if(m_compact)delete actions;else layout->addLayout(actions);
         connect(m_refresh,&QPushButton::clicked,this,[this]{request(true);});
         connect(m_all,&QPushButton::clicked,this,[this]{if(filterRequested)filterRequested({},false);});
         connect(m_launch,&QPushButton::clicked,this,[this]{auto *item=rootItem();if(item&&m_launch->isEnabled()&&launchRequested)launchRequested(item->data(0,Qt::UserRole).toString());});
@@ -77,8 +80,8 @@ private:
         else if(state!="ok")status=state=="folder_unavailable"?tr("Folder is missing or inaccessible."):tr("Git information unavailable. You can still use an accessible folder.");
         else if(m_data.value("partial").toBool())status=tr("Partial catalog (first 512 worktrees).");
         else status=tr("Existing working folders on %1").arg(m_host.isEmpty()?m_fleet.local().host:m_host);
-        if(m_data["sampled_at"].toDouble()>0)status+=tr("\nSnapshot: %1%2").arg(QDateTime::fromSecsSinceEpoch(qint64(m_data["sampled_at"].toDouble())).toLocalTime().toString("d MMM HH:mm:ss"),stale?tr(" (outdated)"):QString());
-        m_status->setText(status);
+        if(m_data["sampled_at"].toDouble()>0)status+=(m_compact?tr(" (%1%2)"):tr("\nSnapshot: %1%2")).arg(QDateTime::fromSecsSinceEpoch(qint64(m_data["sampled_at"].toDouble())).toLocalTime().toString("d MMM HH:mm:ss"),stale?(m_compact?tr(", outdated"):tr(" (outdated)")):QString());
+        m_status->setText(status);m_status->setToolTip(status);
         QJsonArray roots=m_data["worktrees"].toArray();
         if(roots.isEmpty()&&!m_path.isEmpty())roots.append(QJsonObject{{"path",m_data["path"].toString(m_path)},{"kind","folder"},{"available",state!="folder_unavailable"&&!m_data.isEmpty()}});
         QJsonArray rows;
@@ -107,6 +110,6 @@ private:
         }
         updateActions();
     }
-    HgsClient *m_client;bool m_picker=false,m_requested=false;FleetState m_fleet;QString m_host,m_path,m_error;QJsonObject m_data;QByteArray m_rendered;quint64 m_request=0;
+    HgsClient *m_client;bool m_picker=false,m_compact=false,m_requested=false;FleetState m_fleet;QString m_host,m_path,m_error;QJsonObject m_data;QByteArray m_rendered;quint64 m_request=0;
     QLabel *m_status;QTreeWidget *m_tree;QPushButton *m_refresh,*m_launch,*m_all;
 };

@@ -122,7 +122,7 @@ TrayMenu::~TrayMenu()
 void TrayMenu::rebuild(const FleetState &state)
 {
     m_menu->clear();
-    QAction *dashboard = m_menu->addAction(tr("Open hgs"));
+    QAction *dashboard = m_menu->addAction(tr("Open Zerus"));
     connect(dashboard, &QAction::triggered, this, &TrayMenu::sessionsRequested);
     auto *updates=UpdateController::instance();if(updates->updateAvailable()){auto *entry=m_menu->addAction(tr("Update available: Zerus %1").arg(updates->feed().version));entry->setObjectName("updatesAvailable");connect(entry,&QAction::triggered,this,&TrayMenu::updatesRequested);}
     m_menu->addSeparator();

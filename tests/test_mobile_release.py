@@ -3,6 +3,8 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+import zipfile
 SCRIPTS=Path(__file__).resolve().parents[1]/'scripts';sys.path.insert(0,str(SCRIPTS))
 spec=importlib.util.spec_from_file_location('mobile_seal',SCRIPTS/'prepare-mobile-release.py');seal=importlib.util.module_from_spec(spec);spec.loader.exec_module(seal)
 
@@ -33,5 +35,30 @@ class MobileSealTest(unittest.TestCase):
         with self.assertRaises(ValueError):seal.seal(self.apk,self.source,self.root/'candidate','a'*40,'stable',True,Path('a'),Path('b'),self.tool)
         existing=self.root/'existing';existing.mkdir()
         with self.assertRaises(ValueError):seal.seal(self.apk,self.source,existing,'a'*40,'dev',True,Path('a'),Path('b'),self.tool)
+
+    def test_private_exact_mapping_retention_and_mismatch(self):
+        mapping=self.root/'mapping.txt';mapping.write_text('# pg_map_id: abcdef0\nfixture -> a:\n')
+        with zipfile.ZipFile(self.apk,'w') as archive:
+            archive.writestr('classes.dex',b'fixture~~R8{"pg-map-id":"abcdef0"}\x00')
+        out=self.root/'candidate';info=seal.seal(self.apk,self.source,out,'a'*40,'dev',True,Path('a'),Path('b'),self.tool)
+        private=self.root/'private-diagnostics'
+        identity=seal.retain_diagnostics(out/self.apk.name,mapping,private,info)
+        self.assertEqual(identity['r8_map_id'],'abcdef0')
+        self.assertEqual(identity['apk_sha256'],seal.file_hash(self.apk))
+        self.assertEqual((private/'mapping.txt').stat().st_mode & 0o777,0o600)
+        self.assertEqual(private.stat().st_mode & 0o777,0o700)
+        self.assertFalse((out/'mapping.txt').exists())
+        self.assertEqual([item['kind'] for item in info['artifacts']],['apk','source'])
+        mapping.write_text('# pg_map_id: 1234567\nfixture -> a:\n')
+        with self.assertRaises(ValueError):seal.retain_diagnostics(out/self.apk.name,mapping,self.root/'wrong',info)
+        self.assertFalse((self.root/'wrong').exists())
+        mapping.write_text('# pg_map_id: abcdef0\nfixture -> a:\n')
+        original_copy=seal.shutil.copyfile
+        def changed_mapping(source,destination):
+            mapping.write_text('# pg_map_id: 1234567\nfixture -> a:\n')
+            return original_copy(source,destination)
+        with patch.object(seal.shutil,'copyfile',side_effect=changed_mapping),self.assertRaises(ValueError):
+            seal.retain_diagnostics(out/self.apk.name,mapping,self.root/'changed',info)
+        self.assertFalse((self.root/'changed').exists())
 
 if __name__=='__main__':unittest.main()

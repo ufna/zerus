@@ -15,6 +15,7 @@ val firebaseEnabled = providers.gradleProperty("zerusFirebase").orNull == "true"
 if (firebaseEnabled) {
     require(file("google-services.json").isFile) { "Optional Firebase builds require a private app/google-services.json." }
     apply(plugin = "com.google.gms.google-services")
+    apply(plugin = "com.google.firebase.crashlytics")
 }
 android {
     namespace = "app.zerus.mobile"
@@ -23,8 +24,8 @@ android {
         applicationId = "app.zerus.mobile"
         minSdk = 26
         targetSdk = 36
-        versionCode = 24
-        versionName = "0.1.23"
+        versionCode = 26
+        versionName = "0.1.25"
         buildConfigField("boolean", "FIREBASE_ENABLED", firebaseEnabled.toString())
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -99,6 +100,8 @@ dependencies {
     if (firebaseEnabled) {
         implementation(platform("com.google.firebase:firebase-bom:34.0.0"))
         implementation("com.google.firebase:firebase-messaging")
+        implementation("com.google.firebase:firebase-crashlytics")
+        implementation("com.google.firebase:firebase-analytics")
         implementation("androidx.fragment:fragment:1.8.8")
     }
 }

@@ -371,7 +371,7 @@ pub(super) fn hook() -> Result<i32> {
     compact_context::observe(&mut record, &event);
     questions::observe(&mut record, &event);
     journal::log_event(&record, &event)?;
-    if changed_conversation {
+    if changed_conversation && record["session_clear"]["journaled"] != true {
         if let Some(mut clear) = clear_context::event(&record) {
             clear["hook_event_name"] = json!("SessionCleared");
             journal::log_event(&record, &clear)?;
