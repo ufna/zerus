@@ -524,9 +524,9 @@ The expanded session tree and inspector hide children whose latest reported turn
 is finished by default. **Settings → Sessions → Show completed subagents** restores
 them; this local preference does not delete history or change active/total counts.
 Unknown states, errors, paused agents and input/approval requests remain visible.
-An open child's Activity and draft stay in place when its turn finishes. Children
-with an unsent draft also remain visible. Finished turns are not proof that the
-agent's task or process has ended.
+An open child's Activity and draft stay in place when its turn finishes. A child's
+draft keeps its row visible after returning to main Activity. Finished turns are
+not proof that the agent's task or process has ended.
 
 **Fork session…** creates an independent native conversation in the same folder,
 next to the original session in its group. Files remain shared. The CLI is
