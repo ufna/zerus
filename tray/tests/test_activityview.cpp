@@ -12,6 +12,7 @@
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMouseEvent>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QScrollBar>
@@ -31,6 +32,20 @@ namespace {
 QJsonObject journalEvent(int seq, const QString &type, const QString &detail, const QString &tool = {})
 {
     return {{"seq", seq}, {"at", 1791018000 + seq}, {"type", type}, {"detail", detail}, {"tool", tool}};
+}
+
+// The format of the first character of each inline code run.
+QList<QTextCharFormat> codeRuns(QTextDocument *document)
+{
+    QList<QTextCharFormat> result; int end = -1;
+    for (auto block = document->begin(); block.isValid(); block = block.next())
+        for (auto it = block.begin(); !it.atEnd(); ++it) {
+            const auto fragment = it.fragment();
+            if (!MarkdownObjects::isInlineCode(fragment.charFormat())) continue;
+            if (fragment.position() != end) result.append(fragment.charFormat());
+            end = fragment.position() + fragment.length();
+        }
+    return result;
 }
 
 QJsonArray history(int count)
@@ -123,7 +138,7 @@ private slots:
     void agentRepliesCopyAsMarkdown();
     void markdownFollowsThemeAndScale();
     void agentCardsKeepZerusSurface();
-    void wideChipsStayTextInNarrowPanes();
+    void mouseSelectsProseAndPartOfInlineCode();
     void wrappedCodeIsDrawnAsARoundedChip();
     void resizingWithoutChipChangesKeepsTheJournal();
     void darkCardsUseNeutralTablesAndVisibleChips();
@@ -198,14 +213,13 @@ void TestActivityView::agentMarkdownLooksLikeGitHub()
     ActivityView view; view.resize(560, 600); view.show();
     view.setActivity({}, {journalEvent(1, "Stop", "Use `ctest` and:\n\n- one\n- two\n\n```\ncode\n```")});
     auto *document = view.browser()->document();
-    int chips = 0; QStringList images;
+    QStringList images;
     for (auto block = document->begin(); block.isValid(); block = block.next())
         for (auto it = block.begin(); !it.atEnd(); ++it) {
             const auto format = it.fragment().charFormat();
-            chips += format.objectType() == MarkdownObjects::ChipObjectType;
             if (format.isImageFormat()) images.append(format.toImageFormat().name());
         }
-    QCOMPARE(chips, 1);
+    QCOMPARE(codeRuns(document).size(), 1);
     QVERIFY(images.contains("hgs-md:disc/light/100")); QVERIFY(images.contains("hgs-md:corner-tl/light/100?fill=e8eef2"));
     for (const auto &name : images) QVERIFY(!document->resource(QTextDocument::ImageResource, QUrl(name)).value<QImage>().isNull());
     QVERIFY(view.plainText().contains(QString::fromUtf8("Use ctest and:\n• one\n• two\ncode")));
@@ -215,8 +229,8 @@ void TestActivityView::searchResultKeepsInlineCodeSearchable()
 {
     ActivityView view; view.resize(560, 400); view.show();
     view.showSearchResult(journalEvent(1, "AgentMessage", "Run `ctest -R markdown` now"), "ctest");
-    for (auto block = view.browser()->document()->begin(); block.isValid(); block = block.next())
-        for (auto it = block.begin(); !it.atEnd(); ++it) QVERIFY(it.fragment().charFormat().objectType() != MarkdownObjects::ChipObjectType);
+    QCOMPARE(codeRuns(view.browser()->document()).size(), 1);
+    QVERIFY(!view.browser()->document()->find("ctest -R markdown").isNull());
     QVERIFY(!view.browser()->extraSelections().isEmpty());
 }
 
@@ -300,16 +314,16 @@ void TestActivityView::markdownFollowsThemeAndScale()
     ActivityView view; view.resize(560, 400); view.show();
     view.setActivity({}, {journalEvent(1, "Stop", "- item with `code`")});
     view.setTheme(true); view.setContentScale(2.0);
-    QStringList images; QList<QTextCharFormat> chips;
+    QStringList images;
     for (auto block = view.browser()->document()->begin(); block.isValid(); block = block.next())
         for (auto it = block.begin(); !it.atEnd(); ++it) {
             const auto format = it.fragment().charFormat();
             if (format.isImageFormat()) images.append(format.toImageFormat().name());
-            if (format.objectType() == MarkdownObjects::ChipObjectType) chips.append(format);
         }
+    const auto chips = codeRuns(view.browser()->document());
     QVERIFY(images.contains("hgs-md:disc/dark/200"));
     QCOMPARE(chips.size(), 1);
-    QCOMPARE(chips.first().property(QTextFormat::UserProperty + 45).toDouble(), 2.0);
+    QCOMPARE(chips.first().property(MarkdownObjects::ChipScale).toDouble(), 2.0);
     const auto disc = view.browser()->document()->resource(QTextDocument::ImageResource, QUrl("hgs-md:disc/dark/200")).value<QImage>();
     QCOMPARE(disc.size(), (QSizeF(56, 24) * view.browser()->devicePixelRatioF()).toSize());
 }
@@ -333,25 +347,24 @@ void TestActivityView::agentCardsKeepZerusSurface()
     }
 }
 
-void TestActivityView::wideChipsStayTextInNarrowPanes()
+void TestActivityView::mouseSelectsProseAndPartOfInlineCode()
 {
-    // At a large content scale a 35-character chip is wider than half a narrow pane.
-    ActivityView view; view.resize(420, 400); view.setContentScale(2.0); view.show();
-    view.setActivity({}, {journalEvent(1, "Stop", "Run `cargo test --workspace --all-feat` now")});
-    const auto chipCount = [&] {
-        int count = 0;
-        for (auto block = view.browser()->document()->begin(); block.isValid(); block = block.next())
-            for (auto it = block.begin(); !it.atEnd(); ++it) count += it.fragment().charFormat().objectType() == MarkdownObjects::ChipObjectType;
-        return count;
-    };
-    QTRY_COMPARE(chipCount(), 0);
-    QVERIFY(view.plainText().contains("cargo test --workspace --all-feat"));
-    view.resize(2400, 400);
-    QTRY_COMPARE(chipCount(), 1);
-    // The relayout settles the chips once; its own scrollbar changes do not start another.
-    QSignalSpy replaced(view.browser()->document(), &QTextDocument::contentsChanged);
-    QTest::qWait(400);
-    QCOMPARE(replaced.count(), 0);
+    // Inline code is text: a drag from prose may end on any character of the code.
+    ActivityView view; view.resize(560, 300); view.show(); QVERIFY(QTest::qWaitForWindowExposed(&view));
+    view.setActivity({}, {journalEvent(1, "Stop", "Please run `ctest --output-on-failure` today.")});
+    auto *browser = view.browser(); auto *document = browser->document();
+    const QTextCursor prose = document->find("Please"), code = document->find("ctest");
+    QVERIFY(!prose.isNull() && !code.isNull());
+    QTextCursor from(document), to(document);
+    from.setPosition(prose.selectionStart() + 3); to.setPosition(code.selectionStart() + 3);
+    const QPoint start = browser->cursorRect(from).center(), end = browser->cursorRect(to).center();
+    QTest::mousePress(browser->viewport(), Qt::LeftButton, {}, start);
+    QMouseEvent move(QEvent::MouseMove, end, browser->viewport()->mapToGlobal(end), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(browser->viewport(), &move);
+    QTest::mouseRelease(browser->viewport(), Qt::LeftButton, {}, end);
+    QCOMPARE(browser->textCursor().selectedText(), QString("ase run cte"));
+    browser->copy();
+    QCOMPARE(QGuiApplication::clipboard()->text(), QString("ase run cte"));
 }
 
 void TestActivityView::wrappedCodeIsDrawnAsARoundedChip()
@@ -385,8 +398,8 @@ void TestActivityView::wrappedCodeIsDrawnAsARoundedChip()
 
 void TestActivityView::resizingWithoutChipChangesKeepsTheJournal()
 {
-    // Toggling the session panel widens the conversation once. These chips fit
-    // either way, so a re-render would only shift a transcript the reader follows.
+    // Toggling the session panel widens the conversation once. Inline code wraps
+    // with its text, so a re-render would only shift a transcript the reader follows.
     ActivityView view; view.resize(864, 400); view.show(); QVERIFY(QTest::qWaitForWindowExposed(&view));
     QJsonArray events;
     for (int i = 1; i <= 40; ++i) events.append(journalEvent(i, i % 2 ? "UserPromptSubmit" : "Stop",
@@ -413,8 +426,8 @@ void TestActivityView::darkCardsUseNeutralTablesAndVisibleChips()
             stripe = cursor.currentTable()->cellAt(cursor).format().background().color().name();
         }
         for (auto it = block.begin(); !it.atEnd(); ++it)
-            if (it.fragment().charFormat().objectType() == MarkdownObjects::ChipObjectType)
-                chipAlpha = it.fragment().charFormat().colorProperty(QTextFormat::UserProperty + 42).alphaF();
+            if (MarkdownObjects::isInlineCode(it.fragment().charFormat()))
+                chipAlpha = it.fragment().charFormat().colorProperty(MarkdownObjects::ChipFill).alphaF();
     }
     QCOMPARE(stripe, QString("#2a333d"));
     QVERIFY2(chipAlpha >= 0.3, qPrintable(QString::number(chipAlpha)));

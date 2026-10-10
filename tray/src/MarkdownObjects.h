@@ -2,6 +2,7 @@
 
 #include "MarkdownHtml.h"
 
+#include <QAbstractTextDocumentLayout>
 #include <QImage>
 #include <QList>
 #include <QRectF>
@@ -15,23 +16,23 @@ class QTextDocument;
 
 // Pieces of GitHub Markdown that HTML cannot express in Qt rich text.
 namespace MarkdownObjects {
-constexpr int ChipObjectType = QTextFormat::UserObject + 41;
+// Inline code formats carry their chip colour, the content scale and whether
+// they sit in a heading (GitHub pads those 0 .2em).
+enum : int { ChipFill = QTextFormat::UserProperty + 41, ChipScale, ChipHeading };
 
 // Draws hgs-md: resources named by MarkdownTheme::resource(); null for anything else.
 QImage resource(const QUrl &url, qreal devicePixelRatio);
-// Replaces inline-code sentinel runs by painted chips (GitHub padding and radius).
-// With objects=false, for runs longer than 40 characters, or for chips wider than
-// maxWidth (when positive), the run stays text in chip colours so that find()
-// matches it and narrow panes can wrap it. widths, when given, receives the width
-// of every run whose chip or text form depends on maxWidth.
-int convertChips(QTextDocument *document, const MarkdownTheme &theme, bool objects, qreal maxWidth = 0,
-                 QList<qreal> *widths = nullptr);
-// Draws the chips of runs that stayed text beneath their glyphs, once the document
-// itself is drawn: painter in document coordinates, palette's Base under the document.
-// Characters inside selections keep the look the document layout gave them.
-void paintTextChips(QPainter *painter, QTextDocument *document, const QRectF &exposed, const QPalette &palette,
-                    const QList<QTextCursor> &selections);
-// The selection as a reader sees it: chips give their code, list markers
-// "• ", "1. ", "[x] "; code-block corners and rule fillers give nothing.
+// Turns inline-code sentinel runs into text in the code font, padded like GitHub's
+// chips. It stays text: find() matches it, a selection may start or end anywhere
+// in it, and long runs wrap. paintChips() draws the chips.
+int convertChips(QTextDocument *document, const MarkdownTheme &theme);
+bool isInlineCode(const QTextFormat &format);
+// Draws the rounded chips beneath the inline code once the document itself is drawn:
+// painter in document coordinates, palette's Base under the document, selections as
+// the view painted them (they stay on top of the chips).
+void paintChips(QPainter *painter, QTextDocument *document, const QRectF &exposed, const QPalette &palette,
+                const QList<QAbstractTextDocumentLayout::Selection> &selections);
+// The selection as a reader sees it: list markers "• ", "1. ", "[x] ";
+// code-block corners and rule fillers give nothing.
 QString plainText(const QTextCursor &selection);
 }

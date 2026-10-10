@@ -84,7 +84,7 @@ Activity content scale. Spacing between blocks uses `margin-top` (16 px; heading
 | Heading 1–6 | Single-cell table; text at 2/1.5/1.25/1/0.875/0.85 em, weight 600; h1/h2 have a 1 px bottom border (`border.muted`) and 0.3 em padding; h6 uses `fg.muted`. |
 | Lists | One table per list, one cell per item with a 28 px left padding. The marker hangs on the item's first line (`text-indent: -28px`) as a 28 px wide image, so it shares the text baseline whatever font the line uses (a separate marker cell drifted under fixed line heights). Items after the first get 3 px top padding (16 px in loose lists). Nested lists sit in the cell without extra margin. Markers: disc → circle → square for bullets, the dot 5.5 px above the baseline; decimal → lower-roman → lower-alpha for ordered lists, right-aligned text between transparent spacers, honouring the start number. |
 | Task list item | The hanging marker is a drawn checkbox (checked/unchecked) centred on the line, no bullet. |
-| Inline code | A text object (see below): 85 % of the surrounding text, with its colour, weight and slant; inside headings the heading size and 0 .2em padding (GitHub's `h1 code { font-size: inherit }`). |
+| Inline code | Text with a painted chip (see below): 85 % of the surrounding text, with its colour, weight and slant; inside headings the heading size and 0 .2em padding (GitHub's `h1 code { font-size: inherit }`). |
 | Code block | 3×3 table: 6 px corner images with a 6 px radius, `canvas.subtle` edges, centre cell padded 7/10/13/10 px (top/right/bottom/left) with the monospace font at 12 px and 17 px line height. Text wraps. |
 | Blockquote | Two-cell table: 4 px left bar (`border.default`) and a content cell with 14 px horizontal padding in `fg.muted`. |
 | Table | `border-collapse` table, cells padded 6 px 13 px with 1 px `border.default`; header cells bold and centred unless aligned; even rows `canvas.subtle`. Column alignment from Markdown. |
@@ -93,44 +93,34 @@ Activity content scale. Spacing between blocks uses `margin-top` (16 px; heading
 | Link | `fg.accent`, no underline, href from the link policy. |
 | Hard break | `<br>`. |
 
-### Inline code as text objects
+### Inline code as text with painted chips
 
 Qt fills a text background across the whole line box, so a styled span can never
 match GitHub's chip (padding 0.2 em 0.4 em, radius 6 px). Inline code is therefore
-emitted as a span with a sentinel background colour and, right after `setHtml()`,
-each such run is replaced by one `QTextObjectInterface` object that paints the
-rounded rectangle and the code text itself (monospace, 85 % of the base size).
-The object uses `AlignMiddle`; its format font is chosen so that Qt's centring
-(`xHeight / 4` above the baseline) places the chip where GitHub does. Blocks
-that can hold chips declare `-qt-line-height-type: fixed`: Qt reads a plain px
-`line-height` as a minimum and aligns each line to the bottom of its box, so a
-chip reaching below the text would lift or grow its line.
+emitted as a span with a sentinel background colour. Right after `setHtml()`,
+`MarkdownObjects::convertChips()` turns each such run into text in the monospace
+font that carries the chip properties (fill, content scale, heading) and no
+character background. Letter spacing on the character before the run and on its
+last character provides GitHub's 0.4 em side padding.
 
-Conversion happens before `ActivityView` restores bookmarks and the selection, so
-offsets are computed in converted documents on both sides of a refresh.
+The code stays text, as in a browser: a selection may start in prose and end
+anywhere inside the code, `QTextDocument::find()` matches it (search results need
+no separate form), copying gives its characters, and long runs wrap at spaces like
+GitHub's (`white-space: break-spaces`). Blocks that can hold code declare
+`-qt-line-height-type: fixed`: Qt reads a plain px `line-height` as a minimum and
+aligns each line to the bottom of its box.
 
-Trade-offs, accepted:
-
-- A chip is selected as a whole, like an image; partial selection inside it is not
-  possible.
-- In search-result mode chips are not converted (they stay text), so
-  `QTextDocument::find()` highlights matches inside code.
-- A run longer than 40 characters, or a chip wider than half the Activity pane,
-  also stays text: a chip cannot wrap, and a long path or command must not
-  be clipped in a narrow pane or at a large content scale. The view re-renders
-  chips (debounced) when the pane width changes by more than 10 %.
-
-Code that stays text carries the chip properties but no character background,
-which Qt would paint as a square box a line high. Letter spacing on the character
-before it and on its last character provides GitHub's 0.4 em side padding. After
-Qt draws the document, `ActivityView`'s browser calls
-`MarkdownObjects::paintTextChips()`, which paints GitHub's chip under each line
-of the run, like `box-decoration-break: slice`: rounded and padded where the code
-begins and ends, cut square where a line breaks it, without the spaces hanging
-at the break. Within the chip's (aliased) clip it repaints the view base and the
-document with transparent text, fills the antialiased chip, then draws the run's
-block again, so glyphs are drawn once and sit on the chip. Selected and found
-characters are excluded and keep Qt's selection look.
+After Qt draws the document, `ActivityView`'s browser calls
+`MarkdownObjects::paintChips()`. It draws GitHub's chip under each line of a run,
+symmetric around the code text on its baseline, like `box-decoration-break:
+slice`: rounded and padded where the code begins and ends, cut square where a
+line breaks it, without the spaces hanging at the break. Within the chips'
+(aliased) clip it repaints the view base and the document with transparent text
+and no selection, fills the antialiased chips, then draws the blocks again with
+the view's selections, so selections and glyphs lie on top of the chip and are
+drawn once. The browser rebuilds the selections as `QTextEdit` paints them (found
+text, then the reader's selection in the palette's highlight colours); the focus
+outline of a keyboard-focused link shows as a selection inside its code.
 
 ### Drawn resources
 
@@ -151,8 +141,8 @@ drops inherited font properties on nested coloured spans inside table cells.
 ## Copying
 
 `ActivityView` uses a small `QTextBrowser` subclass whose
-`createMimeDataFromSelection()` produces plain text: chip objects contribute their
-code text, list markers contribute `• `/`◦ `/`▪ ` or the item number, checkboxes
+`createMimeDataFromSelection()` produces plain text: inline code gives its
+characters, list markers contribute `• `/`◦ `/`▪ ` or the item number, checkboxes
 `[ ] `/`[x] `, corner images nothing. No `U+FFFC` reaches the clipboard.
 
 ## Theme tokens (github-markdown-css 5.8.1)
@@ -178,8 +168,8 @@ the dark chip fill is `#1f232a` over `#0d1117`).
   numbers, task lists, `MD_FLAG_NOHTML` (raw HTML stays text), link policy
   (file, web, rejected, images), and that `_x_` is emphasis.
 - `tray/tests/test_activityview.cpp`: update expectations that read the old
-  `setMarkdown()` structure; add chip conversion, search-mode exemption, clean
-  copy text, and resource loading for `hgs-md:` only.
+  `setMarkdown()` structure; add chip conversion, drawn chips, mouse selection
+  from prose into code, clean copy text, and resource loading for `hgs-md:` only.
 - Visual check: render the prototype sample through `ActivityView` with the
   existing `HGS_*_PREVIEW` screenshot hooks in both themes and compare with the
   GitHub reference.

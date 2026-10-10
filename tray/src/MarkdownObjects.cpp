@@ -2,7 +2,6 @@
 
 #include <QAbstractTextDocumentLayout>
 #include <QFontMetricsF>
-#include <QGuiApplication>
 #include <QHash>
 #include <QPainter>
 #include <QPainterPath>
@@ -12,7 +11,6 @@
 #include <QTextDocument>
 #include <QTextDocumentFragment>
 #include <QTextFragment>
-#include <QTextObjectInterface>
 #include <QTextTable>
 #include <QUrlQuery>
 
@@ -20,67 +18,26 @@
 #include <functional>
 
 namespace {
-enum : int { ChipText = QTextFormat::UserProperty + 41, ChipFill, ChipInk, ChipFamily, ChipScale, ChipPixels, ChipHeading,
-             ChipWeight, ChipItalic };
-constexpr int MaximumChipLength = 40;
+using MarkdownObjects::ChipFill, MarkdownObjects::ChipScale, MarkdownObjects::ChipHeading;
 
-QFont chipFont(const QTextFormat &format)
-{
-    QFont font(format.stringProperty(ChipFamily));
-    font.setPixelSize(qMax(1, format.intProperty(ChipPixels)));
-    if (format.intProperty(ChipWeight) > 0) font.setWeight(QFont::Weight(format.intProperty(ChipWeight)));
-    font.setItalic(format.boolProperty(ChipItalic));
-    return font;
-}
 // GitHub pads code .2em .4em, and 0 .2em inside headings.
-QPointF chipPadding(const QTextFormat &format)
+QPointF chipPadding(const QTextCharFormat &format)
 {
-    const qreal em = format.intProperty(ChipPixels);
+    const qreal em = format.font().pixelSize();
     return format.boolProperty(ChipHeading) ? QPointF(0.2 * em, 0) : QPointF(0.4 * em, 0.2 * em);
 }
 
-class ChipHandler final : public QObject, public QTextObjectInterface {
-    Q_OBJECT
-    Q_INTERFACES(QTextObjectInterface)
-public:
-    using QObject::QObject;
-    QSizeF intrinsicSize(QTextDocument *, int, const QTextFormat &format) override
-    {
-        const QFontMetricsF metrics(chipFont(format)); const QPointF padding = chipPadding(format);
-        return {metrics.horizontalAdvance(format.stringProperty(ChipText)) + 2 * padding.x(), metrics.ascent() + metrics.descent() + 2 * padding.y()};
-    }
-    void drawObject(QPainter *painter, const QRectF &rect, QTextDocument *, int, const QTextFormat &format) override
-    {
-        const QFont font = chipFont(format); const QFontMetricsF metrics(font);
-        const QPointF padding = chipPadding(format); const qreal radius = 6 * format.doubleProperty(ChipScale);
-        painter->save();
-        painter->setRenderHint(QPainter::Antialiasing);
-        painter->setPen(Qt::NoPen); painter->setBrush(format.colorProperty(ChipFill));
-        painter->drawRoundedRect(rect, radius, radius);
-        painter->setFont(font); painter->setPen(format.colorProperty(ChipInk));
-        painter->drawText(QPointF(rect.x() + padding.x(), rect.y() + padding.y() + metrics.ascent()), format.stringProperty(ChipText));
-        painter->restore();
-    }
-};
-
-void install(QTextDocument *document)
-{
-    auto *layout = document->documentLayout();
-    if (layout->findChild<ChipHandler *>()) return;
-    layout->registerHandler(MarkdownObjects::ChipObjectType, new ChipHandler(layout));
-}
-
-// The code runs that stayed text (they carry a chip fill but no object), found
-// again after each change so that painting never walks a whole long journal.
-class TextChips final : public QObject {
+// The inline code runs of a document, found again after each change so that
+// painting never walks a whole long journal.
+class Chips final : public QObject {
     Q_OBJECT
 public:
     struct Run { int start = 0, end = 0; QTextCharFormat format; };
-    explicit TextChips(QTextDocument *document) : QObject(document), m_document(document)
+    explicit Chips(QTextDocument *document) : QObject(document), m_document(document)
     {
         connect(document, &QTextDocument::contentsChange, this, [this] { m_stale = true; });
     }
-    static TextChips *of(QTextDocument *document) { return document->findChild<TextChips *>(QString(), Qt::FindDirectChildrenOnly); }
+    static Chips *of(QTextDocument *document) { return document->findChild<Chips *>(QString(), Qt::FindDirectChildrenOnly); }
     const QList<Run> &runs()
     {
         if (!m_stale) return m_runs;
@@ -88,7 +45,7 @@ public:
         for (auto block = m_document->begin(); block.isValid(); block = block.next())
             for (auto it = block.begin(); !it.atEnd(); ++it) {
                 const auto fragment = it.fragment(); const auto format = fragment.charFormat();
-                if (!format.hasProperty(ChipFill) || format.objectType() == MarkdownObjects::ChipObjectType) continue;
+                if (!MarkdownObjects::isInlineCode(format)) continue;
                 if (!m_runs.isEmpty() && m_runs.last().end == fragment.position()) m_runs.last().end += fragment.length();
                 else m_runs.append({fragment.position(), fragment.position() + fragment.length(), format});
             }
@@ -99,24 +56,6 @@ private:
     QList<Run> m_runs;
     bool m_stale = true;
 };
-
-// Qt centres an AlignMiddle object xHeight / 4 above the baseline. GitHub pads
-// the code symmetrically around text on the line's baseline, so the chip centre
-// lies (ascent − descent) / 2 above it; pick the format font that puts it there.
-QFont alignmentFont(const QFont &code)
-{
-    static QHash<int, QFont> cache;
-    const QFontMetricsF metrics(code);
-    const int key = qRound((metrics.ascent() - metrics.descent()) * 200);   // 4 × centre, in 1/100 px
-    if (const auto found = cache.constFind(key); found != cache.cend()) return *found;
-    QFont font = QGuiApplication::font();
-    for (int pixels = 1; pixels < 400; ++pixels) {
-        font.setPixelSize(pixels);
-        if (QFontMetricsF(font).xHeight() * 100 >= key) break;
-    }
-    cache.insert(key, font);
-    return font;
-}
 
 QString markerText(const QString &imageName)
 {
@@ -186,8 +125,7 @@ QImage MarkdownObjects::resource(const QUrl &url, qreal devicePixelRatio)
     return {};
 }
 
-int MarkdownObjects::convertChips(QTextDocument *document, const MarkdownTheme &theme, bool objects, qreal maxWidth,
-                                  QList<qreal> *widths)
+int MarkdownObjects::convertChips(QTextDocument *document, const MarkdownTheme &theme)
 {
     struct Run { int position = 0, length = 0; QString text; QTextCharFormat format; };
     QList<Run> runs;
@@ -203,71 +141,59 @@ int MarkdownObjects::convertChips(QTextDocument *document, const MarkdownTheme &
         }
     if (runs.isEmpty()) return 0;
     const double scale = theme.scalePercent / 100.0;
-    if (objects) install(document);
+    if (!Chips::of(document)) new Chips(document);
     // One edit block: per-run edits would each relayout the document (seconds on long journals).
     QTextCursor cursor(document);
     cursor.beginEditBlock();
     for (auto it = runs.crbegin(); it != runs.crend(); ++it) {
         cursor.setPosition(it->position); cursor.setPosition(it->position + it->length, QTextCursor::KeepAnchor);
+        // Plain spaces again: long code wraps like GitHub's (white-space: break-spaces).
         QString text = it->text; text.replace(QChar::Nbsp, ' ');
         // The renderer sized and coloured the run after its surroundings (already content-scaled).
-        const int pixels = it->format.font().pixelSize() > 0 ? it->format.font().pixelSize() : qRound(12 * scale);
-        const QColor ink = it->format.hasProperty(QTextFormat::ForegroundBrush) ? it->format.foreground().color() : theme.fg;
-        QTextCharFormat format;
-        format.setObjectType(ChipObjectType);
-        format.setProperty(ChipText, text); format.setProperty(ChipFill, theme.chip); format.setProperty(ChipInk, ink);
-        format.setProperty(ChipFamily, theme.monoFamily); format.setProperty(ChipScale, scale); format.setProperty(ChipPixels, pixels);
+        // A character background would be a square box a line high: paintChips() draws the chip.
+        QTextCharFormat format = it->format;
+        format.clearBackground();
+        if (!format.hasProperty(QTextFormat::ForegroundBrush)) format.setForeground(theme.fg);
+        format.setFontFamilies(QStringList{theme.monoFamily});
+        format.setProperty(QTextFormat::FontPixelSize, it->format.font().pixelSize() > 0 ? it->format.font().pixelSize() : qRound(12 * scale));
+        format.setProperty(ChipFill, theme.chip); format.setProperty(ChipScale, scale);
         format.setProperty(ChipHeading, it->format.background().color() == MarkdownHtml::headingChipSentinel());
-        format.setProperty(ChipWeight, it->format.fontWeight()); format.setProperty(ChipItalic, it->format.fontItalic());
-        const qreal width = QFontMetricsF(chipFont(format)).horizontalAdvance(text) + 2 * chipPadding(format).x();
-        if (widths && objects && text.size() <= MaximumChipLength) widths->append(width);
-        if (!objects || text.size() > MaximumChipLength || (maxWidth > 0 && width > maxWidth)) {
-            // Plain spaces again, so that find() matches and long runs can wrap. A character
-            // background would be a square box a line high: paintTextChips() draws the chip.
-            QTextCharFormat plain = it->format;
-            plain.clearBackground(); plain.setForeground(ink);
-            plain.setFontFamilies(QStringList{theme.monoFamily});
-            plain.setProperty(QTextFormat::FontPixelSize, pixels);
-            for (const int property : {ChipFill, ChipFamily, ChipScale, ChipPixels, ChipHeading, ChipWeight, ChipItalic})
-                plain.setProperty(property, format.property(property));
-            // GitHub's horizontal padding: the character before the code and its last one advance further.
-            QTextCharFormat padded;
-            padded.setFontLetterSpacingType(QFont::AbsoluteSpacing); padded.setFontLetterSpacing(chipPadding(format).x());
-            cursor.insertText(text.chopped(1), plain);
-            plain.merge(padded); cursor.insertText(text.right(1), plain);
-            if (it->position > cursor.block().position()) {
-                QTextCursor before(document);
-                before.setPosition(it->position - 1); before.setPosition(it->position, QTextCursor::KeepAnchor);
-                if (before.charFormat().objectType() == QTextFormat::NoObject) before.mergeCharFormat(padded);
-            }
-            if (!TextChips::of(document)) new TextChips(document);
-            continue;
+        // GitHub's horizontal padding: the character before the code and its last one advance further.
+        QTextCharFormat padded;
+        padded.setFontLetterSpacingType(QFont::AbsoluteSpacing); padded.setFontLetterSpacing(chipPadding(format).x());
+        cursor.insertText(text.chopped(1), format);
+        format.merge(padded); cursor.insertText(text.right(1), format);
+        if (it->position > cursor.block().position()) {
+            QTextCursor before(document);
+            before.setPosition(it->position - 1); before.setPosition(it->position, QTextCursor::KeepAnchor);
+            if (before.charFormat().objectType() == QTextFormat::NoObject) before.mergeCharFormat(padded);
         }
-        format.setVerticalAlignment(QTextCharFormat::AlignMiddle); format.setFont(alignmentFont(chipFont(format)));
-        if (it->format.isAnchor()) {
-            format.setAnchor(true); format.setAnchorHref(it->format.anchorHref()); format.setToolTip(it->format.toolTip());
-        }
-        cursor.insertText(QString(QChar::ObjectReplacementCharacter), format);
     }
     cursor.endEditBlock();
     return runs.size();
 }
 
-void MarkdownObjects::paintTextChips(QPainter *painter, QTextDocument *document, const QRectF &exposed, const QPalette &palette,
-                                     const QList<QTextCursor> &selections)
+bool MarkdownObjects::isInlineCode(const QTextFormat &format)
 {
-    auto *chips = TextChips::of(document);
+    return format.hasProperty(ChipFill);
+}
+
+void MarkdownObjects::paintChips(QPainter *painter, QTextDocument *document, const QRectF &exposed, const QPalette &palette,
+                                 const QList<QAbstractTextDocumentLayout::Selection> &selections)
+{
+    auto *chips = Chips::of(document);
     if (!chips) return;
     auto *layout = document->documentLayout();
     struct Piece { QPainterPath shape; QColor fill; };
     QList<Piece> pieces; QList<QTextBlock> blocks;
-    QPainterPath area, selected; area.setFillRule(Qt::WindingFill);
+    QPainterPath area; area.setFillRule(Qt::WindingFill);
+    QTextBlock block; QRectF bounds;
     for (const auto &run : chips->runs()) {
-        const QTextBlock block = document->findBlock(run.start);
-        const QRectF bounds = layout->blockBoundingRect(block);
-        const qreal em = run.format.intProperty(ChipPixels);
+        // Runs come in document order, often several to a block.
+        if (!block.isValid() || !block.contains(run.start)) { block = document->findBlock(run.start); bounds = layout->blockBoundingRect(block); }
+        const QFont font = run.format.font(); const qreal em = font.pixelSize();
         if (!bounds.adjusted(-em, -em, em, em).intersects(exposed)) continue;
-        const QFontMetricsF metrics(chipFont(run.format)); const QPointF padding = chipPadding(run.format);
+        const QFontMetricsF metrics(font); const QPointF padding = chipPadding(run.format);
         const qreal radius = 6 * run.format.doubleProperty(ChipScale);
         const QTextLayout *text = block.layout(); const QString content = block.text();
         const int from = run.start - block.position(), to = run.end - block.position();
@@ -290,25 +216,16 @@ void MarkdownObjects::paintTextChips(QPainter *painter, QTextDocument *document,
             const qreal square = qMin(radius, rect.width() / 2);
             if (!first) shape.addRect(QRectF(rect.left(), rect.top(), square, rect.height()));
             if (!last) shape.addRect(QRectF(rect.right() - square, rect.top(), square, rect.height()));
-            for (const QTextCursor &selection : selections) {
-                const int a = qMax(start, selection.selectionStart() - block.position());
-                const int b = qMin(end, selection.selectionEnd() - block.position());
-                if (a < b) selected.addRect(QRectF(QPointF(bounds.left() + line.cursorToX(a), rect.top() - 1),
-                                                   QPointF(bounds.left() + line.cursorToX(b), rect.bottom() + 1)));
-            }
             pieces.append({shape, run.format.colorProperty(ChipFill)}); area.addPath(shape); drawn = true;
         }
         if (drawn && (blocks.isEmpty() || blocks.last() != block)) blocks.append(block);
     }
     if (pieces.isEmpty()) return;
-    // Selected and found characters keep the look the document layout gave them.
-    const QPainterPath covered = selected.isEmpty() ? area : area.subtracted(selected);
-    const QRectF reach = covered.boundingRect();
-    if (reach.isEmpty()) return;
-    // What lies beneath the code, without any glyph: the view's base, then the document
-    // drawn with transparent text. The clip is aliased, so glyphs are drawn only once.
+    const QRectF reach = area.boundingRect();
+    // What lies beneath the chips: the view's base, then the document with transparent
+    // text and no selection. The clip is aliased, so glyphs are drawn only once.
     painter->save();
-    painter->setClipPath(covered, Qt::IntersectClip);
+    painter->setClipPath(area, Qt::IntersectClip);
     painter->fillRect(reach, palette.brush(QPalette::Base));
     QAbstractTextDocumentLayout::PaintContext context;
     context.palette = palette; context.clip = reach;
@@ -319,19 +236,21 @@ void MarkdownObjects::paintTextChips(QPainter *painter, QTextDocument *document,
     painter->restore();
     // The chips themselves, antialiased.
     painter->save();
-    if (!selected.isEmpty()) {
-        QPainterPath outside; outside.addRect(area.boundingRect().adjusted(-1, -1, 1, 1));
-        painter->setClipPath(outside.subtracted(selected), Qt::IntersectClip);
-    }
     painter->setRenderHint(QPainter::Antialiasing);
     for (const auto &piece : std::as_const(pieces)) painter->fillPath(piece.shape, piece.fill);
     painter->restore();
-    // The code on top.
+    // On top, as in a browser: the selections as the view painted them, then the text.
     painter->save();
-    painter->setClipPath(covered, Qt::IntersectClip);
+    painter->setClipPath(area, Qt::IntersectClip);
     painter->setPen(palette.color(QPalette::Text));
-    for (const QTextBlock &block : std::as_const(blocks))
-        block.layout()->draw(painter, layout->blockBoundingRect(block).topLeft() - block.layout()->position(), {}, reach);
+    for (const QTextBlock &each : std::as_const(blocks)) {
+        QList<QTextLayout::FormatRange> ranges;
+        for (const auto &selection : selections) {
+            const int start = selection.cursor.selectionStart() - each.position(), end = selection.cursor.selectionEnd() - each.position();
+            if (start < each.length() && end > 0 && end > start) ranges.append({start, end - start, selection.format});
+        }
+        each.layout()->draw(painter, layout->blockBoundingRect(each).topLeft() - each.layout()->position(), ranges, reach);
+    }
     painter->restore();
 }
 
@@ -345,9 +264,7 @@ QString MarkdownObjects::plainText(const QTextCursor &selection)
         QString line;
         for (auto it = block.begin(); !it.atEnd(); ++it) {
             const auto fragment = it.fragment(); const auto format = fragment.charFormat();
-            if (format.objectType() == ChipObjectType) {
-                for (int i = 0; i < fragment.length(); ++i) line += format.stringProperty(ChipText);
-            } else if (format.isImageFormat()) {
+            if (format.isImageFormat()) {
                 line += markerText(format.toImageFormat().name());
             } else {
                 QString text = fragment.text();
