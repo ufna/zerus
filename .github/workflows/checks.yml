@@ -265,7 +265,7 @@ jobs:
   gate:
     name: Suite results
     if: always() && (github.event.repository.private == false || github.event_name == 'workflow_dispatch')
-    needs: [source, cli, arch, mac-desktop]
+    needs: [source, relay, cli, arch, mac-desktop]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
@@ -280,6 +280,7 @@ jobs:
           results = json.loads(os.environ['RESULTS'])
           selected = {
               'source': True,
+              'relay': True,
               'cli': json.loads(os.environ['RUN_CLI']),
               'arch': json.loads(os.environ['RUN_ARCH']),
               'mac-desktop': json.loads(os.environ['RUN_MACOS']),
