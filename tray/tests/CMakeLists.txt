@@ -223,6 +223,12 @@ target_link_libraries(test_workspace PRIVATE Qt6::Test Qt6::Widgets)
 add_test(NAME workspace COMMAND test_workspace)
 set_tests_properties(workspace PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+add_executable(test_swarmbutton test_swarmbutton.cpp ../resources.qrc)
+target_include_directories(test_swarmbutton PRIVATE ../src)
+target_link_libraries(test_swarmbutton PRIVATE Qt6::Test Qt6::Widgets)
+add_test(NAME swarmbutton COMMAND test_swarmbutton)
+set_tests_properties(swarmbutton PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 add_executable(test_machinespage test_machinespage.cpp ../src/MachinesPage.cpp ../src/HgsClient.cpp ../src/FleetState.cpp)
 target_include_directories(test_machinespage PRIVATE ../src)
 target_link_libraries(test_machinespage PRIVATE Qt6::Test Qt6::Widgets)
