@@ -298,7 +298,7 @@ workspace and computer, without archive fallback. The event schema does not
 identify historical runs, so optional completion alerts conservatively filter
 recent events against a previously observed matching current conversation.
 
-Firebase is an optional build, excluded from the default APK. Create an Android
+Firebase remains an optional build for Google-free installations; published development pilots include Crashlytics, Analytics and FCM. Create an Android
 Firebase project for `app.zerus.mobile`, place its private local configuration in
 `app/google-services.json`, and run:
 
@@ -307,10 +307,46 @@ Firebase project for `app.zerus.mobile`, place its private local configuration i
 ```
 
 The gateway must advertise and configure FCM separately. The app checks that
-capability before registering its token. Firebase automatic initialization is
-disabled until the user chooses setup. Only data messages should be sent by the
+capability before registering its token. FCM initializes independently of telemetry,
+registers automatically for eligible paired gateways, and retries each gateway
+separately after network loss. Token changes re-register existing connections;
+new connections register the current token. An explicitly chosen UnifiedPush
+provider remains selected until the user chooses Firebase setup. Only data messages should be sent by the
 gateway, allowing the app to show a private alert and fetch authenticated events.
 No Firebase project credentials are included in this repository.
+
+The top bar Settings button exposes Usage analytics and Crash reports. Both
+start enabled in Firebase builds and persist separately on this phone. Analytics
+stops through the SDK when disabled. OFF is authoritative at cold startup:
+the app does not instantiate Analytics while the saved preference is off, and
+eager Analytics connector registration is removed. The measurement receiver,
+service and job service follow the saved switch before Firebase initialization;
+their manifest declarations remain enabled for SDK validation, while settings
+disable their runtime components durably before saving OFF. This does not rely on the asynchronous
+SDK flag reaching disk before process termination. Crash reporting changes require an app
+restart. SDK automatic uploads stay disabled; the app's default-on crash setting
+uses documented manual send/delete APIs after startup checks. Normal ON-period
+reports upload on the next launch. Opting out persists a discard boundary and
+requests deletion. Re-enabling preserves that boundary until a later startup
+confirms no pending reports remain; diagnostics during this transition may be
+discarded. A boundary persistence failure never grants upload permission. FCM and session notification preferences are independent.
+Firebase receives standard app/device metadata and SDK installation identifiers.
+Custom events are only app_open and screen_open with a fixed screen name;
+nonfatal diagnostics accept fixed failure categories. Custom reports and events
+exclude conversation content, identifiers, names, paths, URLs, accounts and
+credentials. Automatic crash reports may include thread names and technical network metadata,
+including gateway addresses. Fatal exceptions pass a message/cause-free bounded stack to the
+Crashlytics handler. Pairing URIs and campaign/referrer extras are removed before
+activity lifecycle callbacks; automatic screen and advertising ID collection
+are disabled and advertising consent is denied. These controls do not provide
+an anonymous SDK installation.
+
+Minified pilot builds use the Crashlytics Gradle plugin for exact R8 mapping
+upload. Retain a private copy for every shipped APK by passing `--mapping` and
+`--diagnostics-output` to `scripts/prepare-mobile-release.py`. Diagnostics stay
+outside the public candidate directory; the sealer verifies the mapping ID
+against the APK's embedded R8 marker and records APK/mapping hashes and signing
+identity in private metadata. Do not publish mapping files or configuration.
 
 ## Local validation
 

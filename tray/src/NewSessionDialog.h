@@ -19,6 +19,7 @@ public:
     void setGroups(const SessionOrganization &organization,const QString &selectedProject = {});
     bool selectFolder(const QString &folderId);
     void selectPath(const QString &path);
+    void prefillSessionFolder(const QString &path, const QString &canonicalPath = {});
     void selectAccount(const QString &account);
 signals:
     // addFolder: the folder is outside the project and joins it once the session starts.
@@ -30,6 +31,8 @@ private:
     void loadFolders(const QString &selectedPath = {});
     void browseFolder();
     void updateWorktrees();
+    QString matchingProjectFolder(const QString &path, const QString &canonicalPath = {}) const;
+    void finishFolderPrefill(const QJsonObject &catalog);
     void chooseWorktree();
     void createWorktree();
     bool projectWorktree(const QString &path, const QJsonObject &catalog) const;
@@ -57,6 +60,8 @@ private:
     QMap<QString, QJsonObject> m_verifiedWorktrees;
     QString m_worktreeContext;
     quint64 m_catalogRequest=0;
+    quint64 m_prefillRequest=0;
+    QString m_prefillPath,m_prefillCanonicalPath,m_prefillContext;
     QToolButton *m_manage;
     quint64 m_validation = 0,m_accountRequest = 0;
     QJsonArray m_accounts,m_removedAccounts;

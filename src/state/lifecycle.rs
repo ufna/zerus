@@ -170,6 +170,7 @@ pub(super) fn run(args: &[String]) -> Result<i32> {
                 "pending_settings",
                 "fork_parent_id",
                 "fork_source_name",
+                "cleared_conversations",
             ] {
                 if let Some(value) = previous.get(key) {
                     record[key] = value.clone();
@@ -256,6 +257,7 @@ pub(super) fn run(args: &[String]) -> Result<i32> {
             current["activity"] = json!("unknown");
             current["conversation_id"] = Value::Null;
             current["transcript"] = Value::Null;
+            current.as_object_mut().unwrap().remove("cleared_conversations");
             current["startup_kind"] = json!("new");
             write(&mut current)?;
         }

@@ -20,6 +20,9 @@
 #include <QVBoxLayout>
 namespace {
 QLabel *plainLabel(const QString &text = {}) {auto *l=new QLabel(text);l->setTextFormat(Qt::PlainText);l->setWordWrap(true);return l;}
+bool withinFolder(const QString &path,const QString &folder) {
+    return QDir::isAbsolutePath(folder)&&(path==folder||path.startsWith(folder=="/"?folder:folder+'/'));
+}
 }
 NewSessionDialog::NewSessionDialog(const QString &hgsPath,const FleetState &fleet,const QString &selectedHost,
     const QString &agent,const QString &project,QWidget *parent)
@@ -72,13 +75,15 @@ NewSessionDialog::NewSessionDialog(const QString &hgsPath,const FleetState &flee
     layout->addStretch();auto *buttons=new QDialogButtonBox(QDialogButtonBox::Cancel);m_start=buttons->addButton(tr("Start session"),QDialogButtonBox::AcceptRole);m_start->setObjectName("primary");layout->addWidget(buttons);
     connect(buttons,&QDialogButtonBox::rejected,this,&QDialog::reject);connect(m_start,&QPushButton::clicked,this,&NewSessionDialog::start);
     connect(m_manage,&QToolButton::clicked,this,[this]{const auto id=m_project->currentData().toString();reject();emit projectFoldersRequested(id);});
-    connect(m_project,&QComboBox::currentIndexChanged,this,[this]{loadMachines();loadFolders();});
-    connect(m_machine,&QComboBox::currentIndexChanged,this,[this]{m_accountPreset=false;loadFolders();});
+    connect(m_project,&QComboBox::currentIndexChanged,this,[this]{m_prefillRequest=0;loadMachines();loadFolders();});
+    connect(m_machine,&QComboBox::currentIndexChanged,this,[this]{m_prefillRequest=0;m_accountPreset=false;loadFolders();});
     connect(m_browse,&QPushButton::clicked,this,&NewSessionDialog::browseFolder);
     connect(m_folder,&QComboBox::currentIndexChanged,this,[this]{
+        m_prefillRequest=0;
         m_browsedFolders.remove(host());
         loadAccounts();updateForm();updateWorktrees();
     });
+    connect(m_folder,&QComboBox::activated,this,[this]{m_prefillRequest=0;updateForm();});
     connect(m_agent,&QComboBox::currentIndexChanged,this,[this]{m_accountPreset=false;updateAccounts();updateForm();});
     connect(m_account,&QComboBox::activated,this,[this]{m_preferredAccount=m_account->currentData().toString();m_accountPreset=true;updateForm();});
     connect(m_name,&QLineEdit::textChanged,this,&NewSessionDialog::updateForm);
@@ -102,11 +107,15 @@ NewSessionDialog::NewSessionDialog(const QString &hgsPath,const FleetState &flee
         m_accountRequest=0;m_accounts={};updateAccounts();m_account->setToolTip(tr("Could not load accounts: %1").arg(error));
     });
     connect(&m_client,&HgsClient::worktreesReady,this,[this](quint64 request,const QString &machine,const QString &path,const QJsonObject &data){
+        if(m_prefillRequest&&request==m_prefillRequest&&machine==host()&&path==m_prefillPath){
+            m_prefillRequest=0;finishFolderPrefill(data);updateForm();return;
+        }
         if(request!=m_catalogRequest||machine!=host()||path!=m_folder->currentData(Qt::UserRole+2).toString())return;
         m_catalogRequest=0;m_worktreeCatalog=data;m_worktrees->setVisible(!data["worktrees"].toArray().isEmpty());
         m_newWorktree->setVisible(data["state"]=="ok");updateForm();
     });
     connect(&m_client,&HgsClient::worktreesFailed,this,[this](quint64 request,const QString &,const QString &,const QString &){
+        if(m_prefillRequest&&request==m_prefillRequest){m_prefillRequest=0;updateForm();return;}
         if(request!=m_catalogRequest)return;m_catalogRequest=0;m_worktreeCatalog["stale"]=true;updateForm();
     });
     setGroups(SessionOrganization(QJsonDocument::fromJson(QSettings().value("workspace/organization").toByteArray()).object()),project);
@@ -142,6 +151,7 @@ void NewSessionDialog::loadMachines()
 
 void NewSessionDialog::setGroups(const SessionOrganization &projects,const QString &selected)
 {
+    m_prefillRequest=0;
     m_projects=projects;const QSignalBlocker block(m_project);m_project->clear();
     for(const auto &p:m_projects.groups())if(p.accessible)m_project->addItem(workspaceIcon("projects",QColor(p.color)),p.name,p.id);
     int index=m_project->findData(selected);if(index<0)index=m_project->findText(m_initialProject);
@@ -149,6 +159,7 @@ void NewSessionDialog::setGroups(const SessionOrganization &projects,const QStri
 }
 bool NewSessionDialog::selectFolder(const QString &folderId)
 {
+    m_prefillRequest=0;
     const auto *project=m_projects.group(m_project->currentData().toString());
     if(!project)return false;
     for(const auto &folder:project->folders)if(folder.id==folderId){
@@ -222,14 +233,15 @@ void NewSessionDialog::updateForm()
     const bool outside=!path.isEmpty()&&m_folder->currentData().toString().isEmpty()&&!worktree;
     m_preview->setProperty("outsideProject",outside);
     m_preview->setStyleSheet(outside?QStringLiteral("color: %1;").arg(palette().color(QPalette::Window).lightness()<128?"#f0b65a":"#9b6300"):QString());
-    m_preview->setText(path.isEmpty()?tr("Browse to choose a folder on this computer."):
+    m_preview->setText(m_prefillRequest?tr("Checking the session's main working folder…"):
+        path.isEmpty()?tr("Browse to choose a folder on this computer."):
         outside?tr("This folder is outside the project.\nStarting here will add it to this project."):
         worktree?tr("Worktree in %1").arg(m_project->currentText()):
         tr("Folder in %1").arg(m_project->currentText()));
     m_preview->setToolTip(m_preview->text());m_preview->ensurePolished();m_preview->setFixedHeight(2*m_preview->fontMetrics().lineSpacing());
     const QString nameProblem=SessionTag::problem(m_name->text());const bool validName=nameProblem.isEmpty();
     m_nameError->setText(nameProblem);m_nameError->setVisible(!validName);
-    m_start->setEnabled(m_account->currentIndex()>=0&&!m_accountRequest&&!m_validation&&validName&&!path.isEmpty()&&m_folder->currentData(Qt::UserRole+3).toBool());
+    m_start->setEnabled(m_account->currentIndex()>=0&&!m_accountRequest&&!m_validation&&!m_prefillRequest&&validName&&!path.isEmpty()&&m_folder->currentData(Qt::UserRole+3).toBool());
     for(auto *widget:QList<QWidget *>{m_project,m_machine,m_folder,m_agent,m_name,m_manage,m_worktrees})widget->setEnabled(!m_validation);
     const auto *machine=host().isEmpty()?&m_fleet.local():m_fleet.peer(host());
     m_browse->setEnabled(!m_validation&&machine&&machine->ok);
@@ -301,9 +313,54 @@ void NewSessionDialog::selectAccount(const QString &account)
 
 void NewSessionDialog::selectPath(const QString &path)
 {
+    m_prefillRequest=0;
     if(!QDir::isAbsolutePath(path))return;
     m_browsedFolders.remove(host());
     loadFolders(QDir::cleanPath(path));
+}
+QString NewSessionDialog::matchingProjectFolder(const QString &path,const QString &canonicalPath) const
+{
+    QString best;
+    if(const auto *project=m_projects.group(m_project->currentData().toString()))
+        for(const auto &folder:project->folders){
+            if((folder.machine==m_fleet.local().host?QString():folder.machine)!=host())continue;
+            const auto root=QDir::cleanPath(folder.path);
+            if((withinFolder(path,root)||withinFolder(canonicalPath,root))&&root.size()>best.size())best=root;
+        }
+    return best.isEmpty()?path:best;
+}
+void NewSessionDialog::prefillSessionFolder(const QString &path,const QString &canonicalPath)
+{
+    if(!QDir::isAbsolutePath(path))return;
+    m_prefillPath=QDir::cleanPath(path);m_prefillCanonicalPath=QDir::isAbsolutePath(canonicalPath)?QDir::cleanPath(canonicalPath):QString();
+    selectPath(matchingProjectFolder(m_prefillPath,m_prefillCanonicalPath));
+    m_prefillContext=m_project->currentData().toString()+'\n'+host()+'\n'+m_folder->currentData(Qt::UserRole+2).toString();
+    const auto *box=host().isEmpty()?&m_fleet.local():m_fleet.peer(host());
+    if(box&&box->ok)m_prefillRequest=m_client.requestWorktrees(host(),m_prefillPath,true);
+    updateForm();
+}
+void NewSessionDialog::finishFolderPrefill(const QJsonObject &catalog)
+{
+    const auto context=m_project->currentData().toString()+'\n'+host()+'\n'+m_folder->currentData(Qt::UserRole+2).toString();
+    const auto *box=host().isEmpty()?&m_fleet.local():m_fleet.peer(host());
+    if(context!=m_prefillContext||!box||!box->ok||catalog["state"]!="ok"||catalog["stale"].toBool()
+        ||catalog["partial"].toBool()||catalog["common_dir"].toString().isEmpty())return;
+    const auto selected=QDir::cleanPath(catalog["selected_root"].toString());
+    if(!withinFolder(m_prefillPath,selected)&&!withinFolder(m_prefillCanonicalPath,selected))return;
+    bool linked=false;QString main;
+    for(const auto &value:catalog["worktrees"].toArray()){
+        const auto entry=value.toObject();const auto root=QDir::cleanPath(entry["path"].toString());
+        if(!QDir::isAbsolutePath(root)||!entry["available"].toBool())continue;
+        if(root==selected&&entry["kind"]=="linked")linked=true;
+        if(entry["kind"]=="main"){
+            if(!main.isEmpty())return;
+            main=root;
+        }
+    }
+    if(!linked||main.isEmpty())return;
+    const auto target=matchingProjectFolder(main);
+    m_verifiedWorktrees[host()+'\n'+target]=catalog;
+    selectPath(target);
 }
 void NewSessionDialog::updateWorktrees()
 {

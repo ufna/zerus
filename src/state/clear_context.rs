@@ -13,12 +13,35 @@ pub(super) fn observe_start(record: &mut Value, event: &Value) {
     if previous.is_empty() || previous == next { return; }
     let requested = record["clear_context_request"]["conversation_id"] == previous;
     if string(event, "source") == "clear" || requested {
-        let at = if awaiting_start(record) { record["session_clear"]["at"].clone() } else { json!(now()) };
+        // The agent starts over, but the local Activity timeline continues:
+        // earlier conversations stay readable above the boundary.
+        let mut earlier = earlier_conversations(record).as_array().cloned().unwrap_or_default();
+        earlier.retain(|id| id != next);
+        earlier.push(json!(previous));
+        if earlier.len() > CLEARED_CONVERSATIONS { earlier.drain(..earlier.len() - CLEARED_CONVERSATIONS); }
+        record["cleared_conversations"] = json!(earlier);
+        // A reset observed in Terminal already journaled its boundary.
+        let journaled = awaiting_start(record);
+        let at = if journaled { record["session_clear"]["at"].clone() } else { json!(now()) };
         record["session_clear"] = json!({"at":at,"run_id":record["run_id"],
-            "conversation_id":next,"previous_conversation_id":previous,"source":"native_hook"});
+            "conversation_id":next,"previous_conversation_id":previous,"source":"native_hook","journaled":journaled});
     } else {
-        record.as_object_mut().unwrap().remove("session_clear");
+        for key in ["session_clear", "cleared_conversations"] { record.as_object_mut().unwrap().remove(key); }
     }
+}
+
+const CLEARED_CONVERSATIONS: usize = 32;
+
+// Earlier conversations of this session's Activity, oldest first. Only
+// confirmed clears add to it; another conversation starts a new timeline.
+pub(super) fn earlier_conversations(record: &Value) -> Value {
+    let current = string(record, "conversation_id");
+    // A clear confirmed before this list existed still names its predecessor.
+    let ids = record["cleared_conversations"].as_array().cloned().unwrap_or_else(|| {
+        let clear = &record["session_clear"];
+        if clear["conversation_id"] == current { vec![clear["previous_conversation_id"].clone()] } else { Vec::new() }
+    });
+    json!(ids.into_iter().filter(|id| id.as_str().is_some_and(|id| !id.is_empty() && id != current)).collect::<Vec<_>>())
 }
 
 pub(super) fn awaiting_start(record: &Value) -> bool {
@@ -200,6 +223,44 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         record["conversation_id"]=json!("new");
         assert_eq!(event(&record).unwrap()["at"],123.0);
         assert!(!awaiting_start(&record));
+    }
+    #[test] fn confirmed_clears_keep_the_earlier_activity_timeline() {
+        let mut record=json!({"run_id":"run","conversation_id":"first"});
+        for (next,previous) in [("second","first"),("third","second")] {
+            observe_start(&mut record,&json!({"session_id":next,"source":"clear"}));
+            record["conversation_id"]=json!(next);
+            assert_eq!(record["session_clear"]["previous_conversation_id"],previous);
+        }
+        assert_eq!(earlier_conversations(&record),json!(["first","second"]));
+        assert_eq!(record["session_clear"]["journaled"],false);
+        // A clear first confirmed in Terminal was already journaled.
+        record["session_clear"]=json!({"at":7.0,"run_id":"run","conversation_id":"third","awaiting_session_start":true});
+        observe_start(&mut record,&json!({"session_id":"fourth","source":"clear"}));
+        assert_eq!(record["session_clear"]["journaled"],true);
+        record["conversation_id"]=json!("fourth");
+        assert_eq!(earlier_conversations(&record),json!(["first","second","third"]));
+        for index in 0..40 {
+            let next=format!("later-{index}");
+            observe_start(&mut record,&json!({"session_id":next,"source":"clear"}));
+            record["conversation_id"]=json!(next);
+        }
+        let earlier=earlier_conversations(&record);
+        assert_eq!(earlier.as_array().unwrap().len(),CLEARED_CONVERSATIONS);
+        assert_eq!(earlier[CLEARED_CONVERSATIONS-1],"later-38");
+        // Clears confirmed by an earlier version continue from their predecessor.
+        let mut legacy=json!({"run_id":"run","conversation_id":"second",
+            "session_clear":{"conversation_id":"second","previous_conversation_id":"first"}});
+        assert_eq!(earlier_conversations(&legacy),json!(["first"]));
+        observe_start(&mut legacy,&json!({"session_id":"third","source":"clear"}));
+        legacy["conversation_id"]=json!("third");
+        assert_eq!(earlier_conversations(&legacy),json!(["first","second"]));
+        legacy["session_clear"]=json!({"conversation_id":"third","previous_conversation_id":"third","awaiting_session_start":true});
+        legacy.as_object_mut().unwrap().remove("cleared_conversations");
+        assert_eq!(earlier_conversations(&legacy),json!([]));
+        // Another conversation is not a continuation of this timeline.
+        observe_start(&mut record,&json!({"session_id":"resumed","source":"resume"}));
+        assert!(record["cleared_conversations"].is_null() && record["session_clear"].is_null());
+        assert_eq!(earlier_conversations(&record),json!([]));
     }
     #[test] fn only_the_complete_native_empty_reset_header_matches() {
         let panel="\n >_ OpenAI Codex (v0.162.0)\n /fixture\n permissions: YOLO mode\n\n\n› Ask Codex to do anything\n GPT-6.1-Sol default\n ? for shortcuts\n";

@@ -117,7 +117,9 @@ class MainActivity : ComponentActivity() {
     }
     override fun onDestroy() { fileLaunchers.values.forEach { it.unregister() }; super.onDestroy() }
     override fun onCreate(savedInstanceState: Bundle?) {
+        sanitizeLaunchIntent(intent)
         super.onCreate(savedInstanceState)
+        AppTelemetry.opened()
         SessionNotifications.initialize(this)
         enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.rgb(16, 21, 23)))
@@ -140,7 +142,15 @@ class MainActivity : ComponentActivity() {
             })
         } }
     }
-    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); readIntent(intent) }
+    override fun onNewIntent(intent: Intent) { sanitizeLaunchIntent(intent); super.onNewIntent(intent); setIntent(intent); readIntent(intent) }
+    private fun sanitizeLaunchIntent(intent: Intent) {
+        intent.data?.toString()?.let { PairingInvite.parse(it) }?.let { invitation = it }
+        intent.data = null
+        // Analytics lifecycle must never see pairing URIs or campaign/referrer extras.
+        val retained = Bundle()
+        listOf("session", "computer", "connection").forEach { key -> intent.getStringExtra(key)?.let { retained.putString(key, it) } }
+        intent.replaceExtras(retained)
+    }
     private fun readIntent(intent: Intent) {
         intent.data?.toString()?.let { PairingInvite.parse(it) }?.let { invitation = it;intent.data = null }
         val session = intent.getStringExtra("session")
@@ -167,6 +177,9 @@ class MainActivity : ComponentActivity() {
         if(sequence > 0 && sequence != handledReturnSequence) tab = 0
         handledReturnSequence = sequence
     }
+    var settings by rememberSaveable { mutableStateOf(false) }
+    if (settings) AppSettingsDialog { settings = false }
+    LaunchedEffect(tab, model.selected) { if (model.selected == null) AppTelemetry.screen(when (tab) { 0 -> TelemetryScreen.Sessions; 1 -> TelemetryScreen.Projects; 2 -> TelemetryScreen.Drafts; 4 -> TelemetryScreen.Accounts; else -> TelemetryScreen.Machines }) }
     var pairing by rememberSaveable { mutableStateOf(false) }
     var server by rememberSaveable { mutableStateOf("https://relay.zerus.dev") }
     var code by remember { mutableStateOf("") }
@@ -221,6 +234,7 @@ class MainActivity : ComponentActivity() {
                         DesktopSessionPalette.badge(SelectedSessionPresentation.session(selected,model.activity), true).kind, MaterialTheme.colorScheme.background.luminance() < .5f).foreground)) }
         }, navigationIcon = { if (selected != null || project != null) IconButton(onClick = { back() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
             actions = {
+                if (selected == null) IconButton(onClick = { settings = true }) { Icon(Icons.Default.Settings, "Settings") }
                 UpdatesControl(model,showButton=selected == null)
                 if (selected != null && selected.target.agentId.isBlank() && selected.target.archiveId.isBlank() && model.activityVerified && model.activity?.optBoolean("interrupt_supported") == true)
                     IconButton(onClick = { stopRequest = selected to model.activity!!.optDouble("turn_started") }) {

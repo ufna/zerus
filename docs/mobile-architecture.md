@@ -727,6 +727,65 @@ References: [Android foreground service types](https://developer.android.com/dev
 [FCM server authorization](https://firebase.google.com/docs/cloud-messaging/send/v1-api),
 and [UnifiedPush Android protocol](https://unifiedpush.org/developers/spec/android/).
 
+### Firebase diagnostics and usage analytics
+
+The managed Android pilot uses Firebase Crashlytics, Google Analytics for
+Firebase and FCM. These are independent services: disabling usage analytics or
+crash reports must not disable push delivery or change session notification
+preferences. Builds without the optional Firebase configuration retain
+UnifiedPush and the foreground live connection.
+
+Usage analytics is enabled by default, as requested by the owner. The app's
+settings expose separate Usage analytics and Crash reports switches, initially
+on. A saved choice applies across process restarts and background-only starts.
+Collection is gated during initialization until the saved preferences have been
+applied; the app must not briefly enable analytics for a phone that opted out.
+Analytics is initialized lazily after a saved opt-in. Its eager Firebase
+connector registration is removed, and its three Android measurement entrypoints
+are disabled before saving an opt-out. This also prevents old SDK jobs from
+starting collection while the app is closed; Crashlytics and FCM stay available.
+
+Crash reports upload on a subsequent application start when reporting is on.
+The SDK's automatic upload stays disabled; the app uses the documented manual
+send and delete APIs to enforce the saved preference. Opting out records a
+durable discard boundary. Enabling reports again requires a restart and does
+not clear that boundary until a later startup observes an empty retained-report
+queue. Reports from the first resumed period can be discarded during this
+cleanup. Ordinary on-to-on launches preserve and send the preceding fatal
+report. This deliberate upload policy does not provide the SDK's full automatic
+crash-free session metrics.
+
+Custom analytics events and diagnostic context use a small static allowlist of
+event names and enum values. Session content, session and computer labels,
+project paths, account identities, pairing links, relay URLs and credentials do
+not belong in those events or breadcrumbs. Advertising identifiers,
+personalized advertising and automatic screen reporting are disabled. FCM wakes
+contain no conversation content; authenticated relay reads continue to determine
+which local session alert, if any, should appear.
+The Crashlytics SDK additionally records technical stacks, thread information
+and installation identifiers; thread metadata can include a gateway address.
+The settings disclosure distinguishes this SDK metadata from the restricted
+custom context. These controls do not make a Firebase installation anonymous.
+
+The Android Firebase configuration is a private build input. Relay push
+credentials are a separate private server input and never enter the APK or
+source archive. Prefer a dedicated service account with only
+`cloudmessaging.messages.create` in the target project. Cloud administration
+permissions and runtime push permissions are separate operational concerns.
+
+Every shipped minified APK requires its exact R8 mapping, retained privately
+with the APK hash, source revision and build identifier. Crashlytics mapping
+upload must use that build's mapping; rebuilding an already published version
+does not recover its symbols. Mapping files are excluded from public release
+assets and update catalogs. A private test crash and subsequent application
+restart qualify upload and decoding before a Firebase-enabled pilot is
+published.
+
+References: [Analytics collection controls](https://firebase.google.com/docs/analytics/android/configure-data-collection),
+[Crashlytics Android setup](https://firebase.google.com/docs/crashlytics/android/get-started),
+[R8 mapping upload](https://firebase.google.com/docs/crashlytics/android/get-deobfuscated-reports),
+and [FCM permissions](https://firebase.google.com/docs/projects/iam/permissions).
+
 ## Self-hosting and future managed service
 
 ### Public distribution and update channels

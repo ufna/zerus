@@ -434,11 +434,14 @@ Native clear/compact operations are capability-gated and require exact identity.
 **Clear session** requires confirmation naming the session and host, preserves
 unsent drafts and rechecks identity. DeepSeek context reset is unavailable until
 its native Session Controller provides the supported operation. A confirmed clear
-adds a green **Session cleared** notice to Activity. Codex can defer its new-session
-hook until the next message; its verified empty native reset panel also confirms
-the clear, including `/clear` in Terminal. Old context and prompt-cache values are
-hidden until the new conversation reports native usage. The saved native identity
-changes only on the real hook, and an unconfirmed command does not reset counters.
+adds an amber **Session cleared** boundary to Activity and keeps the earlier local
+timeline above it: the agent no longer sees that history, but you can still read
+and search it. Resuming or opening another conversation starts a new timeline.
+Codex can defer its new-session hook until the next message; its verified empty
+native reset panel also confirms the clear, including `/clear` in Terminal. Old
+context and prompt-cache values are hidden until the new conversation reports
+native usage. The saved native identity changes only on the real hook, and an
+unconfirmed command does not reset counters.
 **Compact and continue** sends only after confirmed successful compaction with the same
 unedited draft; errors, cancellation or identity/draft changes cancel submission.
 Context metrics use native telemetry, without guessing a capacity from a model name.
@@ -484,9 +487,20 @@ order. Empty-project visibility, collapse state and default project are local.
 **All swarm projects** explicitly shows the full shared catalog.
 
 Folder entries contain a machine, path and optional label. Browse works for local
-and remote folders, including ordinary non-Git directories. Project switches in
-**New session** keep the machine and select that project's folder. Only a path
-explicitly chosen through **Browse…** stays pinned per machine within that dialog;
+and remote folders, including ordinary non-Git directories. The desktop folder
+list starts in alphabetical name order, ignoring case; column headings change
+the sort. Sorting preserves the selected folder and does not reorder the shared
+catalog. The divider below the list adjusts the folder/worktree heights and
+remembers that choice locally; additional window height goes to the folders.
+Worktree actions share its heading row, leaving more space for the folder list.
+The general **New session** action inherits the selected session's project,
+computer and matching project folder. For a linked worktree, a verified catalog
+selects the main checkout instead. Choosing another folder, project or computer
+cancels this automatic selection; explicit folder and worktree launch actions
+keep their requested path.
+Project switches in **New session** keep the machine and select that project's
+folder. Only a path explicitly chosen through **Browse…** stays pinned per machine
+within that dialog;
 closing it clears this temporary choice. Selecting a listed folder unpins it.
 A folder outside the project shows a warning and is added only after a successful
 launch with the matching launch ID. Cancellation and launch failure add nothing.

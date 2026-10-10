@@ -1747,8 +1747,14 @@ void SessionsWindow::showNewSession(const QString &agent, const QString &project
     else if (const auto *entry = selected()) group = m_organization.groupFor(entry->identity);
     QString launchProject = group;
     if (!project.isEmpty()) for (const auto &p : m_organization.groups()) if (p.id == project || p.name == project) { launchProject=p.id; break; }
-    NewSessionDialog dialog(m_client.executable(), m_fleet, host, agent, launchProject, this);
+    // Only generic creation inherits the selected session. Folder/worktree and
+    // account actions already carry an explicit launch target.
+    const auto *row=m_sessions->currentItem();
+    const bool sessionRow=!row||(!row->data(SessionRoles::Header).toBool()&&row->data(SessionRoles::LaunchId).toString().isEmpty());
+    const auto *context=sessionRow&&project.isEmpty()&&folder.isEmpty()&&path.isEmpty()&&account.isNull()?selected():nullptr;
+    NewSessionDialog dialog(m_client.executable(), m_fleet, context?context->host:host, agent, launchProject, this);
     dialog.setGroups(m_organization, launchProject);
+    if(context)dialog.prefillSessionFolder(selectedDirectory(),m_details.value("cwd_canonical").toString(context->session.canonicalCwd));
     if(!folder.isEmpty()&&!dialog.selectFolder(folder)){showNotice(tr("This project folder changed. Select it again."),true);return;}
     if(!path.isEmpty())dialog.selectPath(path);
     if(!account.isNull())dialog.selectAccount(account);
@@ -2345,7 +2351,10 @@ void SessionsWindow::acceptInspection(const QString &host, const QString &name, 
 {
     if (!m_pending && !m_renameKey.isEmpty()) return;
     const auto *entry = selected(); if (!entry || entry->host != host || entry->session.name != name || entry->session.archiveId != archiveId) return;
-    if (!m_details.isEmpty() && m_details.value("conversation_id") != data.value("conversation_id")) {
+    // A confirmed clear continues the same Activity timeline, and its global
+    // journal cursor stays valid. Keep the earlier events in place.
+    if (!m_details.isEmpty() && m_details.value("conversation_id") != data.value("conversation_id")
+        && !data.value("cleared_conversations").toArray().contains(m_details.value("conversation_id"))) {
         // The conversation changed under this terminal. Fetch its initial window;
         // a cursor from the previous conversation must never skip the new history.
         m_events = data.value("events").toArray(); m_cursor = 0; m_details = data; m_processPollAge.invalidate();
