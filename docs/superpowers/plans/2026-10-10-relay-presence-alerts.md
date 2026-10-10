@@ -58,7 +58,7 @@
   ```
 - Android on arch: `JAVA_HOME=$HOME/.cache/zerus-toolchains/jdk-17.0.20.1+1 ANDROID_HOME=$HOME/Android/Sdk ./gradlew testDebugUnitTest lintDebug` from `mobile/android`, and the same with `-PzerusFirebase=true`.
 - Track execution in Beads under epic `zerus-rk5b` (`bd create`, `bd update`, `bd close`); run `bd export -o .beads/issues.jsonl` before staging tracker changes.
-- Commit steps run only when the owner has authorized commits for this execution; otherwise leave the work uncommitted and report it ready. Commit messages are imperative sentence case (repository style) and end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- Commit steps run only when the owner has authorized commits for this execution; otherwise leave the work uncommitted and report it ready. Commit messages are imperative sentence case (repository style) and end with the attribution trailer the executing session requires.
 
 ## Review Focus
 
@@ -642,8 +642,6 @@ Expected: 10 tests PASS; clippy reports no warnings.
 git add services/mobile/relay/src/alerts.rs services/mobile/relay/src/lib.rs services/mobile/relay/src/registry.rs services/mobile/relay/tests/alerts.rs
 git commit -F - <<'EOF'
 Add the presence alert rule and relay events for every phone alert
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 EOF
 ```
 
@@ -1052,8 +1050,6 @@ Expected: all contract tests PASS, including `heartbeats_store_presence_outside_
 git add services/mobile/zerus_mobile/connector.py services/mobile/zerus_mobile/fleet.py services/mobile/tests/fixture_peer_hgs.py services/mobile/tests/test_connector.py services/mobile/tests/test_connector_peers.py services/mobile/relay/src services/mobile/relay/tests/contracts.rs
 git commit -F - <<'EOF'
 Send desktop presence beside connector snapshots and remember it per machine
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 EOF
 ```
 
@@ -1718,8 +1714,6 @@ Expected: every test PASS (the Python reference run proves the shared assertions
 git add services/mobile/relay/src services/mobile/relay/tests/contracts.rs services/mobile/tests/test_relay.py services/mobile/tests/test_rust_relay.py
 git commit -F - <<'EOF'
 Hold relay notifications as alert candidates and deliver alert events
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 EOF
 ```
 
@@ -1979,8 +1973,6 @@ Expected: all PASS, including `postgres_cross_worker_contract` and `postgres_cro
 git add services/mobile/relay/src/store/candidates.rs services/mobile/relay/src/store/background.rs services/mobile/relay/tests/contracts.rs services/mobile/relay/README.md
 git commit -F - <<'EOF'
 Expire, bound and deliver due relay alert candidates in maintenance
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 EOF
 ```
 
@@ -2225,8 +2217,6 @@ Expected: BUILD SUCCESSFUL; all unit tests, including the six new ones, PASS; li
 git add mobile/android/app/src/main/java/app/zerus/mobile/NotificationPolicy.kt mobile/android/app/src/main/java/app/zerus/mobile/NotificationCatalog.kt mobile/android/app/src/main/java/app/zerus/mobile/Notifications.kt mobile/android/app/src/main/java/app/zerus/mobile/RelayApi.kt mobile/android/app/src/test/java/app/zerus/mobile/NotificationPolicyTest.kt mobile/android/app/src/test/java/app/zerus/mobile/NotificationCatalogTest.kt mobile/android/README.md
 git commit -F - <<'EOF'
 Create Android session cards only from relay alert events
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 EOF
 ```
 
@@ -2477,7 +2467,5 @@ Expected: every suite PASS; the reference-only run reports `test_presence_end_to
 git add services/mobile/tests/fixture_hgs.py services/mobile/tests/test_presence_end_to_end.py docs/mobile-architecture.md
 git commit -F - <<'EOF'
 Verify presence-aware alerts end to end and document delivery
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 EOF
 ```

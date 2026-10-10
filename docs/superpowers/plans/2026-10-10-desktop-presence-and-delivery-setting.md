@@ -24,7 +24,7 @@
 - The owner's Linux desktop is Arch with KDE Plasma 6 on Wayland; there `org.freedesktop.ScreenSaver.GetSessionIdleTime` fails with "GetSessionIdleTime is not supported on this platform" (verified 2026-10-10) while `GetActive` works. The Mac runs macOS (deployment target 12.0).
 - KDE Frameworks 6 KIdleTime (`kidletime`) becomes a Linux desktop build and runtime dependency; add it wherever `kwindowsystem` is listed (packaging, CI, docs, notices). Do not add paid runners or raise cache limits. Validate workflow edits locally (actionlint when available, `python3 scripts/ci/check-source.py`, `python3 -m unittest discover -s tests -p 'test_ci_security.py'`).
 - Repository text is English. Match the surrounding code style and comment density. Use synthetic fixtures and reserved example domains only.
-- Commit steps apply only when the owner has authorized commits for this execution; otherwise stage nothing and report the change set. Commit messages end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Never push or synchronize Beads without explicit authorization.
+- Commit steps apply only when the owner has authorized commits for this execution; otherwise stage nothing and report the change set. Commit messages end with the attribution trailer the executing session requires. Never push or synchronize Beads without explicit authorization.
 
 ## Review Focus
 
@@ -449,9 +449,7 @@ Expected: PASS.
 
 ```bash
 git add src/presence.rs src/main.rs src/cli.rs tests/test_presence.py docs/reference.md
-git commit -m "Record desktop presence in hgs listings
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git commit -m "Record desktop presence in hgs listings"
 ```
 
 ---
@@ -835,9 +833,7 @@ Expected: PASS.
 
 ```bash
 git add src/swarm src/mobile_peers.rs src/cli.rs tests/test_presence.py tests/test_swarm.py docs/reference.md
-git commit -m "Share the phone delivery timing through the swarm catalog
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git commit -m "Share the phone delivery timing through the swarm catalog"
 ```
 
 ---
@@ -1088,9 +1084,7 @@ Expected: PASS.
 
 ```bash
 git add src/swarm tests/test_swarm.py docs/reference.md
-git commit -m "Keep older swarm members syncing without the shared preference
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git commit -m "Keep older swarm members syncing without the shared preference"
 ```
 
 ---
@@ -1418,9 +1412,7 @@ as `desktop_presence`.
 
 ```bash
 git add services/mobile docs/mobile-architecture.md
-git commit -m "Add the set_mobile_delivery relay operation
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git commit -m "Add the set_mobile_delivery relay operation"
 ```
 
 ---
@@ -1797,9 +1789,7 @@ Expected: PASS.
 
 ```bash
 git add tray/src/DesktopPresence.h tray/src/DesktopPresence.cpp tray/src/HgsClient.h tray/src/HgsClient.cpp tray/CMakeLists.txt tray/tests/test_desktoppresence.cpp tray/tests/test_hgsclient.cpp tray/tests/CMakeLists.txt
-git commit -m "Sample desktop presence and write it through hgs
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git commit -m "Sample desktop presence and write it through hgs"
 ```
 
 ---
@@ -2118,9 +2108,7 @@ Expected: PASS.
 
 ```bash
 git add tray/src/LinuxPresenceSource.h tray/src/LinuxPresenceSource.cpp tray/CMakeLists.txt tray/tests/test_linuxpresence.cpp tray/tests/CMakeLists.txt packaging scripts/release_common.py .github/workflows docs/installation.md docs/ci-and-aur.md THIRD_PARTY_NOTICES.md
-git commit -m "Read Linux desktop idle time and screen lock
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git commit -m "Read Linux desktop idle time and screen lock"
 ```
 
 ---
@@ -2281,9 +2269,7 @@ notifications.
 
 ```bash
 git add tray/src/MacPresenceSource.cpp tray/src/TrayAgent.h tray/src/TrayAgent.cpp tray/CMakeLists.txt tray/tests/test_macpresence.cpp tray/tests/CMakeLists.txt docs/reference.md
-git commit -m "Record desktop presence from the tray agent
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git commit -m "Record desktop presence from the tray agent"
 ```
 
 ---
@@ -2581,9 +2567,7 @@ In `docs/reference.md` "Desktop workspace", add: "Settings → Mobile connection
 
 ```bash
 git add tray/src/MobileDeliverySettings.h tray/src/SettingsPage.h tray/src/SessionsWindow.cpp tray/tests/test_mobiledeliverysettings.cpp tray/tests/test_sessionswindow.cpp tray/tests/CMakeLists.txt docs/reference.md
-git commit -m "Choose the shared phone delivery timing in desktop Settings
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git commit -m "Choose the shared phone delivery timing in desktop Settings"
 ```
 
 ---
@@ -2859,9 +2843,7 @@ Expected: PASS.
 
 ```bash
 git add mobile/android/app/src/main/java/app/zerus/mobile/MobileDelivery.kt mobile/android/app/src/main/java/app/zerus/mobile/Models.kt mobile/android/app/src/main/java/app/zerus/mobile/MachineCatalog.kt mobile/android/app/src/main/java/app/zerus/mobile/SessionAction.kt mobile/android/app/src/main/java/app/zerus/mobile/ZerusViewModel.kt mobile/android/app/src/test/java/app/zerus/mobile/MobileDeliveryTest.kt
-git commit -m "Request the shared phone delivery timing from Android
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git commit -m "Request the shared phone delivery timing from Android"
 ```
 
 ---
@@ -2946,9 +2928,7 @@ read-only with the reason.
 
 ```bash
 git add mobile/android/app/src/main/java/app/zerus/mobile/NotificationSettings.kt mobile/android/app/src/main/java/app/zerus/mobile/MachinesUi.kt mobile/android/app/src/main/java/app/zerus/mobile/SessionDetailsUi.kt docs/mobile-architecture.md
-git commit -m "Show the shared phone delivery timing in Android notifications
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git commit -m "Show the shared phone delivery timing in Android notifications"
 ```
 
 ---
