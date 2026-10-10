@@ -439,7 +439,7 @@ class PostgresResourceTests(unittest.IsolatedAsyncioTestCase):
         first, second = await self.open(), await self.open()
         workspace, node, phone, _, node_row = await self.identity(first)
         await first.register_push(
-            phone["device_id"], "unifiedpush", "https://push.example.test/fixture"
+            phone["device_id"], "fcm", "fixture-token"
         )
         await first.heartbeat(node_row, {"sessions": []})
         await first.heartbeat(

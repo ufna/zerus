@@ -289,12 +289,13 @@ request can remain until the next refresh when the relay emits no new event.
 
 “Keep a live connection” starts an explicit foreground remote messaging service
 with a visible Stop action. It listens to the gateway event stream and follows
-additional paired gateways. Android battery saving or network loss can delay
-this connection; it is not a Doze wake-up guarantee.
+additional paired gateways. It is the fallback for builds without Firebase and
+phones without Google Play services. Android battery saving or network loss can
+delay this connection; it is not a Doze wake-up guarantee.
 
-“Set up UnifiedPush” discovers installed distributors and lets the user choose
-one. A distributor such as ntfy or NextPush must already be installed and
-configured. Registration status and gateway capabilities appear under Machines.
+Firebase builds register FCM automatically; there is no setup button. Machines
+shows each workspace's push status, including when Firebase is unavailable on
+the phone or in the build. UnifiedPush was removed on 2026-10-10.
 Push content acts only as a wake-up hint and schedules an authenticated event
 fetch without a separate generic alert. Bounded pages are coalesced and checked
 against a current catalog; a failed catalog read retains pending events for
@@ -315,8 +316,7 @@ The gateway must advertise and configure FCM separately. The app checks that
 capability before registering its token. FCM initializes independently of telemetry,
 registers automatically for eligible paired gateways, and retries each gateway
 separately after network loss. Token changes re-register existing connections;
-new connections register the current token. An explicitly chosen UnifiedPush
-provider remains selected until the user chooses Firebase setup. Only data messages should be sent by the
+new connections register the current token. Only data messages should be sent by the
 gateway, allowing the app to show a private alert and fetch authenticated events.
 No Firebase project credentials are included in this repository.
 
@@ -364,7 +364,7 @@ atomic composer/outgoing transitions, legacy draft migration, first-conversation
 creation, ambiguous event reconciliation, immutable encrypted file copies,
 tamper/cancellation handling, attachment presentation, and large bounded streamed
 JSON envelopes. Android lint checks the app.
-Device/emulator checks are still needed for push distributor setup and delivery,
+Device/emulator checks are still needed for push delivery,
 Keystore persistence, notification permissions, and native conversation controls.
 
 Pairing QR codes use CameraX 1.6.2 and ZXing core 3.5.4 without Google Play services. In Machines, open Pair a workspace and choose Scan QR to request camera access. Scanning only prefills the editable HTTPS gateway and invitation code; Pair remains an explicit action. The shared bounded parser also validates pairing deep links. Camera images and invitation codes are not saved or logged; leaving the scanner stops its camera. Manual entry remains available when access is denied or a camera is unavailable.

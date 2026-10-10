@@ -83,11 +83,11 @@ the supported server CLI. `zerus-mobile` delegates administration/serving to
 - `store/background.rs` owns bounded indexed maintenance batches and durable
   poll/push leases. PostgreSQL advisory locks elect maintenance transactions;
   PostgreSQL startup never retires another worker's claims.
-- `push.rs` sends generic wake hints through UnifiedPush or FCM HTTP v1. Provider
-  requests run outside transactions. UnifiedPush requires an exact operator
-  host allowlist, public DNS addresses pinned through TLS, and no redirects or
-  environment proxy. FCM uses short-lived service-account OAuth tokens and an
-  RS256 signature from `ring`; tokens/endpoints/provider errors are never logged.
+- `push.rs` sends generic wake hints through FCM HTTP v1. Provider requests run
+  outside transactions and never target client-supplied URLs. FCM uses
+  short-lived service-account OAuth tokens and an RS256 signature from `ring`;
+  tokens and provider errors are never logged. Registrations from the removed
+  UnifiedPush provider are deleted on their next delivery attempt.
 
 Idle polls hold no query-pool connection. Each PostgreSQL worker has one dedicated
 LISTEN connection and a bounded local broadcast channel; notifications contain

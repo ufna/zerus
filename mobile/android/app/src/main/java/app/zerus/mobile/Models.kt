@@ -64,11 +64,6 @@ object EndpointPolicy {
         }
         return uri.toASCIIString().trimEnd('/')
     }
-    fun push(value: String): String {
-        val uri = URI(value)
-        require(uri.scheme == "https" && !uri.host.isNullOrBlank() && uri.userInfo == null && uri.fragment == null) { "Push endpoint must use HTTPS." }
-        return value
-    }
 }
 
 object Demo {

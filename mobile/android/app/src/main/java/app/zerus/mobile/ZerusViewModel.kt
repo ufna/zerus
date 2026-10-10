@@ -423,7 +423,6 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
     var receiptFlights by mutableStateOf<Set<String>>(emptySet()); private set
     var notifications by mutableStateOf(store.notificationEnabled()); private set
     var pushStatuses by mutableStateOf<Map<String, String>>(emptyMap()); private set
-    var pushCapabilities by mutableStateOf<Map<String, String>>(emptyMap()); private set
     private var pendingNotification: Triple<String, String, String>? = null
     init {
         viewModelScope.launch {
@@ -1338,7 +1337,6 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
             historyFlights.values.filter { it.first.connectionId==connection.id }.forEach { it.second.cancel() }
             historyFlights.entries.removeAll { it.value.first.connectionId==connection.id }
             runCatching { historyCache.purgeWorkspace(connection.id);pageCache.purgeWorkspace(connection.id) }
-            runCatching { org.unifiedpush.android.connector.UnifiedPush.unregister(getApplication(), instance = connection.id) }
             sessions = sessions.filterNot { it.target.connectionId == connection.id }
             projects = projects.filterNot { it.key.connectionId == connection.id }
             if (selectedProject?.key?.connectionId == connection.id) selectedProject = null
@@ -1371,16 +1369,12 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
         try {
             for (connection in originalConnections) {
                 try {
-                    if (explicit || connection.id !in pushCapabilities || connection.id !in relayOperations) {
+                    if (explicit || connection.id !in relayOperations) {
                         try {
                             val capabilities = api.call(connection.url, connection.token, "/v1/capabilities")
                             val operations = capabilities.optJSONArray("operations")
                             relayFeatures=relayFeatures + (connection.id to capabilities.optJSONArray("features")?.let { value -> (0 until value.length()).map { value.optString(it) }.toSet() }.orEmpty())
                             relayOperations = relayOperations + (connection.id to operations?.let { value -> (0 until value.length()).map { value.optString(it) }.toSet() }.orEmpty())
-                            val providers = capabilities.optJSONArray("push_providers")
-                            val names = providers?.let { value -> (0 until value.length()).map { value.optString(it) } }.orEmpty()
-                            pushCapabilities = pushCapabilities + (connection.id to if (names.isEmpty()) "Gateway push is not configured" else
-                                "Gateway supports " + names.joinToString(", ") { if (it == "fcm") "Firebase" else if (it == "unifiedpush") "UnifiedPush" else "another provider" })
                         } catch (e: CancellationException) { throw e }
                         catch (_: Exception) { /* Session discovery remains available if optional capability discovery fails. */ }
                     }

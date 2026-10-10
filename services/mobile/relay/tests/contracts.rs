@@ -433,6 +433,48 @@ async fn snapshot_events_and_push_claims() {
     assert_eq!(count["events"], 1);
     f.close().await;
 }
+#[tokio::test]
+async fn retired_unifiedpush_registration_is_removed_on_delivery() {
+    let f = Fixture::new().await;
+    f.store
+        .register_push(&f.phone, "unifiedpush", "https://push.example.test/opaque")
+        .await
+        .unwrap();
+    for phase in ["idle", "input"] {
+        let snapshot = json!({"sessions":[{"name":"example","phase":phase,"run_id":"r","conversation_id":"c"}]});
+        f.store
+            .heartbeat(
+                &f.node,
+                &json!({"snapshot":snapshot}),
+                &canonical(&snapshot).unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+    let push = zerus_relay::push::Push::new(f.store.clone()).await.unwrap();
+    assert!(push.providers().is_empty());
+    push.once().await.unwrap();
+    assert!(f
+        .store
+        .push_registration(&f.phone.id)
+        .await
+        .unwrap()
+        .is_none());
+    f.close().await;
+}
+#[test]
+fn retired_push_hosts_config_still_loads() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("relay.json");
+    std::fs::write(&path, br#"{"push_hosts":["push.example.test"]}"#).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let cfg = Config::read(Some(&path)).unwrap();
+    assert!(serde_json::to_value(&cfg)
+        .unwrap()
+        .get("push_hosts")
+        .is_none());
+}
 #[test]
 fn canonical_python_identity() {
     for (raw, expected) in [
@@ -460,22 +502,8 @@ fn canonical_python_identity() {
     );
 }
 #[test]
-fn malformed_and_deep_json_and_unsafe_targets() {
+fn malformed_and_deep_json() {
     assert!(zerus_relay::json::parse(&[b'['; 33], 32, 50000).is_err());
-    for ip in [
-        "127.0.0.1",
-        "10.0.0.1",
-        "169.254.169.254",
-        "::1",
-        "::ffff:127.0.0.1",
-        "2001:db8::1",
-        "224.0.0.1",
-    ] {
-        assert!(!zerus_relay::push::public_address(ip.parse().unwrap()));
-    }
-    assert!(zerus_relay::push::public_address(
-        "8.8.8.8".parse().unwrap()
-    ));
 }
 #[test]
 fn proxy_trust_is_explicit() {

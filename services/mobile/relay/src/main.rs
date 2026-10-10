@@ -89,6 +89,9 @@ async fn run(cli: Cli) -> Result<()> {
         };
     }
     let cfg = Arc::new(Config::read(cli.config.as_deref())?);
+    if !cfg.push_hosts.is_empty() {
+        eprintln!("zerus-relay: ignoring push_hosts; UnifiedPush support was removed");
+    }
     let path = cli.database.unwrap_or_else(|| {
         PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
             .join(".local/share/zerus-mobile/relay.sqlite3")
