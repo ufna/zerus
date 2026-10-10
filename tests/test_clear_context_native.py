@@ -82,6 +82,9 @@ class NativeCodexClear(unittest.TestCase):
         self.native_version = version.removeprefix('codex-cli ')
         width, height = os.environ.get('HGS_CODEX_TEST_SIZE', '110x35').split('x')
         self.assertTrue(width.isdigit() and height.isdigit(), 'Expected WIDTHxHEIGHT fixture geometry')
+        self.geometry = (int(width), int(height))
+        self.animations = os.environ.get('HGS_CODEX_TEST_ANIMATIONS', 'true')
+        self.assertIn(self.animations, ('true', 'false'))
         (native_home / 'config.toml').write_text('''model="gpt-6.1-sol"
 model_provider="fixture"
 check_for_update_on_startup=false
@@ -110,6 +113,7 @@ wire_api="responses"
         path.write_text('\n'.join([json.dumps(metadata), *map(json.dumps, messages), events[1]]) + '\n')
         self.tmux('new-session', '-d', '-s', self.name, '-x', width, '-y', height,
             'env', 'CODEX_HOME=' + str(native_home), os.environ['HGS_CODEX_TEST_BIN'], '--no-daemon',
+            '-c', 'tui.animations=' + self.animations,
             '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust',
             '-C', str(self.root), 'resume', self.conversation_id)
         self.pane = self.tmux('display-message', '-p', '-t', '=' + self.name + ':', '#{pane_id}').strip()
@@ -123,12 +127,25 @@ wire_api="responses"
             agent_home=str(native_home), transcript=str(path), last_message='Previous fixture answer')
         self.write_record()
 
+    def assert_reset_decoration(self):
+        logo = [row for row in (test_input.REPO / 'src/state/data/codex-empty-state-60x21.txt').read_text().splitlines()
+                if not row.startswith('#')]
+        def visible():
+            rows = [row.strip() for row in self.tmux('capture-pane', '-p', '-t', self.pane).splitlines()
+                    if row.strip()]
+            return any(rows[index:index + len(logo)] == logo for index in range(len(rows)))
+        if self.animations == 'true' and self.geometry == (95, 47):
+            self.wait_for(visible)
+        elif self.animations == 'false':
+            self.assertFalse(visible(), 'The reduced-motion fixture must not draw the native logo')
+
     def test_clear_is_visible_before_the_deferred_native_hook(self):
         import test_clear_context
         before = test_clear_context.ClearContext.inspect(self)
         self.assertEqual(before['session_usage']['context']['used'], 109000)
         self.assertFalse(before.get('session_clear'))
         receipt = test_clear_context.ClearContext.clear(self)
+        self.assert_reset_decoration()
         self.assertEqual(receipt['status'], 'confirmed')
         fresh = test_clear_context.ClearContext.inspect(self)
         self.assertEqual(fresh['session_clear']['type'], 'SessionCleared')
@@ -145,6 +162,7 @@ wire_api="responses"
         self.tmux('send-keys', '-t', self.pane, '-l', '/clear')
         self.wait_for(lambda: '/clear' in self.tmux('capture-pane', '-p', '-t', self.pane))
         self.tmux('send-keys', '-t', self.pane, 'Enter')
+        self.assert_reset_decoration()
         self.wait_for(lambda: bool(test_clear_context.ClearContext.inspect(self).get('session_clear')))
         first = test_clear_context.ClearContext.inspect(self)
         second = test_clear_context.ClearContext.inspect(self)

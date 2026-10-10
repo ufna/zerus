@@ -7,7 +7,9 @@ Dependency licenses and copyright notices remain in effect.
 
 `src/state/data/codex-0.160.1-greetings.txt` retains the finite native empty-state
 greeting vocabulary from OpenAI Codex `rust-v0.160.1` for exact reset recognition.
-Source provenance is recorded in that file; the original Apache-2.0 license is
+`src/state/data/codex-empty-state-60x21.txt` retains its released settled idle-logo
+glyphs, verified against 0.160.1, 0.162.0 and 0.162.1. Source provenance is recorded
+in each file; the original Apache-2.0 license is
 retained in `docs/licenses/codex-LICENSE.txt`, which is also shipped with packages.
 No native Codex executable is bundled.
 

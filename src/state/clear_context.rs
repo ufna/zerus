@@ -29,8 +29,14 @@ pub(super) fn awaiting_start(record: &Value) -> bool {
 
 fn codex_reset_panel(screen: &str, cwd: &str) -> bool {
     if !Path::new(cwd).is_absolute() || !screen.lines().any(|line| line.trim_start().starts_with('›')) { return false; }
-    let rows: Vec<_> = screen.lines().take_while(|line| !line.trim_start().starts_with('›'))
+    let mut rows: Vec<_> = screen.lines().take_while(|line| !line.trim_start().starts_with('›'))
         .map(str::trim).filter(|line| !line.is_empty()).collect();
+    // The released idle screen can include its settled decorative logo. Match
+    // the complete known pose; arbitrary braille, prose and partial frames do
+    // not confirm a reset. A replay remains unconfirmed until it settles.
+    let logo: Vec<_> = include_str!("data/codex-empty-state-60x21.txt").lines()
+        .filter(|line| !line.starts_with('#')).collect();
+    if rows.ends_with(&logo) { rows.truncate(rows.len() - logo.len()); }
     if !(2..=6).contains(&rows.len()) || !rows[0].starts_with(">_ OpenAI Codex (v")
         || !rows[0].ends_with(')') { return false; }
     let short = Path::new(cwd).strip_prefix(home()).ok().map(|path| {
@@ -219,6 +225,20 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
             "What are we cooking up?\nPrevious agent response", "What are we cooking up?\nWhat are we cooking up?"] {
             assert!(!codex_reset_panel(&format!("{header}{prose}{footer}"), "/fixture"), "{prose}");
         }
+    }
+    #[test] fn only_the_complete_released_idle_logo_is_decoration() {
+        let header = ">_ OpenAI Codex (v0.162.0)\n/fixture\npermissions: YOLO mode\n\n";
+        let logo = include_str!("data/codex-empty-state-60x21.txt").lines()
+            .filter(|line| !line.starts_with('#')).collect::<Vec<_>>().join("\n");
+        let footer = "\n\n› Ask Codex to do anything\nGPT-6.1-Sol default\n? for shortcuts\n";
+        assert!(codex_reset_panel(&format!("{header}{logo}{footer}"), "/fixture"));
+        assert!(codex_reset_panel(&format!("{header}What are we cooking up?\n{logo}{footer}"), "/fixture"));
+        for body in [logo.replacen('⣀', "⣁", 1), logo.lines().skip(1).collect::<Vec<_>>().join("\n"),
+            format!("{logo}\nPrevious answer"), format!("Previous answer\n{logo}"),
+            format!("{logo}\n{logo}"), "⣿⣿⣿\n⣿⣿⣿".to_owned()] {
+            assert!(!codex_reset_panel(&format!("{header}{body}{footer}"), "/fixture"), "{body}");
+        }
+        assert!(!codex_reset_panel(&format!("{header}{logo}{footer}"), "/other"));
     }
     #[test] fn exact_command_only() {
         assert!(command_row("codex","› /clear",8,"/clear"));

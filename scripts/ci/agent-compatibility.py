@@ -169,18 +169,21 @@ def qualify(package, work, results, hgs):
             row['schema_' + label] = schema_snapshot(schemas)
         row['geometries'] = {}
         for geometry in ('95x47', '110x35'):
-            test_env = dict(env, HGS_TEST_BIN=str(hgs), HGS_CODEX_TEST_BIN=str(native), HGS_CODEX_TEST_SIZE=geometry)
-            run = subprocess.run([sys.executable, '-c', NATIVE_RUNNER], cwd=ROOT, env=test_env,
-                                 capture_output=True, text=True, timeout=180)
-            output = run.stdout + run.stderr
-            (directory / (geometry + '.log')).write_text(output)
-            print(output, flush=True)
-            marker = next((line.removeprefix('ZERUS_NATIVE_RESULT=') for line in run.stdout.splitlines()
-                           if line.startswith('ZERUS_NATIVE_RESULT=')), None)
-            if marker is not None:
-                row['geometries'][geometry] = json.loads(marker)
-            if run.returncode or marker is None:
-                raise ValueError('Native contract failed at ' + geometry)
+            for mode, animations in (('animated', 'true'), ('reduced', 'false')):
+                case = geometry + '-' + mode
+                test_env = dict(env, HGS_TEST_BIN=str(hgs), HGS_CODEX_TEST_BIN=str(native),
+                                HGS_CODEX_TEST_SIZE=geometry, HGS_CODEX_TEST_ANIMATIONS=animations)
+                run = subprocess.run([sys.executable, '-c', NATIVE_RUNNER], cwd=ROOT, env=test_env,
+                                     capture_output=True, text=True, timeout=180)
+                output = run.stdout + run.stderr
+                (directory / (case + '.log')).write_text(output)
+                print(output, flush=True)
+                marker = next((line.removeprefix('ZERUS_NATIVE_RESULT=') for line in run.stdout.splitlines()
+                               if line.startswith('ZERUS_NATIVE_RESULT=')), None)
+                if marker is not None:
+                    row['geometries'][case] = json.loads(marker)
+                if run.returncode or marker is None:
+                    raise ValueError('Native contract failed at ' + case)
         row['status'] = 'passed'
     except Exception as error:
         row['error'] = str(error)
@@ -198,7 +201,7 @@ def write_report(report, results):
             lines.append(f"- {row['name']}: `{row['version']}` ({row['review']}). [Official changes]({row['notes']})")
     lines.extend(['', '## Real Codex contracts', ''])
     for row in report['contracts']:
-        lines.append(f"- `{row['version']}`: {row['status']}; clear, draft preservation, identity and two terminal sizes.")
+        lines.append(f"- `{row['version']}`: {row['status']}; clear, draft preservation, identity, two terminal sizes and animation modes.")
     for label, changes in report.get('capability_changes', {}).items():
         lines.extend(['', '## ' + label + ' protocol changes', '', 'Experimental methods remain separate from supported APIs.'])
         for kind in ('added_methods', 'removed_methods', 'added_schemas', 'removed_schemas', 'changed_schemas'):
