@@ -16,7 +16,7 @@ import javax.crypto.spec.GCMParameterSpec
 class PrivateStore(context: Context) {
     private val notificationContext = context.applicationContext
     private val preferences = context.getSharedPreferences("zerus_private", Context.MODE_PRIVATE)
-    companion object { private val keyCreationLock=Any(); internal val notificationLock=Any() }
+    companion object { private val keyCreationLock=Any(); internal val notificationLock=Any(); private val pushLock=Any() }
     private val key: SecretKey by lazy { synchronized(keyCreationLock) {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (store.getKey("zerus_private_v1", null) as? SecretKey) ?: KeyGenerator.getInstance(
@@ -41,9 +41,9 @@ class PrivateStore(context: Context) {
         }
     }
     fun connections() = read("computers").objects().map { Connection(it.getString("id"), it.getString("label"), it.getString("url"), it.getString("token")) }
-    fun saveConnections(computers: List<Connection>) = write("computers", JSONArray(computers.map {
+    fun saveConnections(computers: List<Connection>) = synchronized(pushLock) { write("computers", JSONArray(computers.map {
         JSONObject().put("id", it.id).put("label", it.label).put("url", it.url).put("token", it.token)
-    }))
+    })) }
     fun messageState(): MessageState = if (preferences.contains("message_state"))
         MessageCodec.state(read("message_state").getJSONObject(0))
     else MessageState(read("drafts").objects().map(MessageCodec::draft))
@@ -89,8 +89,25 @@ class PrivateStore(context: Context) {
         write("push", JSONArray(records))
     }
     fun pushEndpoint(connection: String) = read("push").objects().find { it.string("connection") == connection }?.string("endpoint").orEmpty()
-    fun saveFirebaseToken(token: String) = write("firebase", JSONArray().put(JSONObject().put("token", token)))
+    fun pushProvider(connection: String) = read("push_provider:$connection").optJSONObject(0)?.string("provider")
+        ?: if (pushEndpoint(connection).isNotBlank()) "unifiedpush" else "fcm"
+    fun savePushProvider(connection: String, provider: String) = synchronized(pushLock) {
+        if (provider == "fcm" && pushProvider(connection) != "fcm") saveFirebaseBinding(connection, "")
+        write("push_provider:$connection", JSONArray().put(JSONObject().put("provider", provider)))
+    }
+    fun firebaseBinding(connection: String) = read("firebase_binding:$connection").optJSONObject(0)?.string("token").orEmpty()
+    fun saveFirebaseBinding(connection: String, token: String) = write("firebase_binding:$connection", JSONArray().put(JSONObject().put("token", token)))
+    fun saveFirebaseToken(token: String) = synchronized(pushLock) { write("firebase", JSONArray().put(JSONObject().put("token", token))) }
     fun firebaseToken() = read("firebase").optJSONObject(0)?.string("token").orEmpty()
+    fun confirmFirebaseBinding(connection: Connection, token: String) = synchronized(pushLock) {
+        if (connections().contains(connection) && firebaseToken() == token && pushProvider(connection.id) != "unifiedpush") {
+            saveFirebaseBinding(connection.id, token)
+            savePushStatus(connection.id, "Firebase push configured")
+        }
+    }
+    fun savePushStatusIfCurrent(connection: Connection, provider: String, status: String) = synchronized(pushLock) {
+        if (connections().contains(connection) && pushProvider(connection.id) == provider) savePushStatus(connection.id, status)
+    }
     fun savePushStatus(connection: String, status: String) = write("push_status:$connection", JSONArray().put(JSONObject().put("status", status)))
     fun pushStatus(connection: String) = read("push_status:$connection").optJSONObject(0)?.string("status").orEmpty()
 }
