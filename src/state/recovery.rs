@@ -19,6 +19,8 @@ struct Policy {
     enabled_at: f64,
     service: bool,
     rate_limit: bool,
+    session_limit: bool,
+    session_limit_mode: String,
     network: bool,
     delays: Vec<i64>, // Legacy v1 default; per-class schedules take precedence.
     schedules: std::collections::BTreeMap<String, Vec<i64>>,
@@ -27,12 +29,14 @@ struct Policy {
 impl Default for Policy {
     fn default() -> Self {
         Self {
-            version: 2,
+            version: 3,
             revision: 0,
             enabled: false,
             enabled_at: 0.0,
             service: true,
             rate_limit: true,
+            session_limit: true,
+            session_limit_mode: "reset".into(),
             network: true,
             delays: vec![15, 30, 60, 300],
             schedules: Default::default(),
@@ -74,12 +78,15 @@ fn validate_delays(delays: &[i64]) -> Result<()> {
     Ok(())
 }
 fn validate_policy(p: &Policy) -> Result<()> {
-    if ![1, 2].contains(&p.version) || p.writer.len() > 128 || p.revision >= 9_000_000_000_000_000 {
+    if ![1, 2, 3].contains(&p.version) || p.writer.len() > 128 || p.revision >= 9_000_000_000_000_000 {
         return Err("Unsupported recovery policy version or revision".into());
     }
     validate_delays(&p.delays)?;
+    if !["reset", "interval"].contains(&p.session_limit_mode.as_str()) {
+        return Err("Use reset or interval for session-limit recovery".into());
+    }
     for (class, delays) in &p.schedules {
-        if !["service", "rate_limit", "network"].contains(&class.as_str()) {
+        if !["service", "rate_limit", "session_limit", "network"].contains(&class.as_str()) {
             return Err("Unknown recovery class".into());
         }
         validate_delays(delays)?;
@@ -91,13 +98,19 @@ fn policy_order(p: &Policy) -> (u64, String) {
     // policies created independently before shared settings existed.
     let writer = if p.writer.is_empty() {
         format!(
-            "legacy:{:?}:{}:{}:{}:{}:{:?}",
-            p.delays, p.enabled, p.service, p.rate_limit, p.network, p.schedules
+            "legacy:{:?}:{}:{}:{}:{}:{:?}{}",
+            p.delays, p.enabled, p.service, p.rate_limit, p.network, p.schedules,
+            if p.version >= 3 { format!(":{}:{}", p.session_limit, p.session_limit_mode) } else { String::new() }
         )
     } else {
         p.writer.clone()
     };
     (p.revision, writer)
+}
+fn delays_for<'a>(p: &'a Policy, class: &str) -> &'a [i64] {
+    p.schedules.get(class).map(Vec::as_slice).unwrap_or_else(|| {
+        if class == "session_limit" { &[300, 0] } else { &p.delays }
+    })
 }
 fn next_delay(delays: &[Value], attempt: usize) -> Option<f64> {
     match delays.get(attempt).and_then(Value::as_i64) {
@@ -231,6 +244,9 @@ fn class(error: &Value) -> &'static str {
     ) {
         return "manual";
     }
+    if session_limits::recognized(&text) {
+        return "session_limit";
+    }
     if contains(
         &text,
         &[
@@ -280,6 +296,7 @@ fn enabled(p: &Policy, class: &str) -> bool {
         && match class {
             "service" => p.service,
             "rate_limit" => p.rate_limit,
+            "session_limit" => p.session_limit,
             "network" => p.network,
             _ => false,
         }
@@ -314,14 +331,27 @@ fn schedule(job: &mut Value, s: &Value, time: f64) {
     let delays = job["delays"].as_array().cloned().unwrap_or_default();
     job["failure_id"] = json!(failure_id(s));
     job["failure_at"] = s["provider_error"]["at"].clone();
-    job["class"] = json!(class(&s["provider_error"]));
+    job["class"] = json!(category);
+    let minimum = seconds(&s["provider_error"], "retry_not_before");
+    job["reset_at"] = Value::Null;
+    if category == "session_limit" && job["session_limit_mode"].as_str().unwrap_or("reset") == "reset" {
+        let reset = session_limits::reset_at(&s["provider_error"]);
+        job["reset_at"] = json!(reset);
+        let Some(reset) = reset.filter(|v| *v > seconds(&s["provider_error"], "at")) else {
+            stop(job, "blocked", "The session limit reset time is unknown or was already reached when the turn failed. Check Terminal or choose interval retries in Settings for future failures.");
+            return;
+        };
+        job["not_before"] = json!(reset.max(minimum));
+        job["due_at"] = job["not_before"].clone();
+        stop(job, "waiting", "");
+        return;
+    }
     let Some(delay) = next_delay(&delays, n) else {
         stop(job, "exhausted", "Automatic attempts exhausted");
         return;
     };
     // Stable per-episode jitter survives restarts and avoids synchronized fleets.
     let jitter = string(job, "id").bytes().map(u64::from).sum::<u64>() % 101;
-    let minimum = seconds(&s["provider_error"], "retry_not_before");
     job["not_before"] = json!(minimum);
     job["due_at"] = json!((time + delay * (1.0 + jitter as f64 / 1000.0)).max(minimum));
     stop(job, "waiting", "");
@@ -347,6 +377,17 @@ fn advance(mut job: Value, s: &Value, p: &Policy, time: f64) -> Value {
         return job;
     }
     if same && active(&job) {
+        // Upgrade durable pre-v3 episodes without restarting them or losing budgets.
+        if job["session_limit_mode"].is_null() {
+            job["session_limit_mode"] = json!(p.session_limit_mode);
+            if !job["schedules"].is_object() {
+                let legacy = job["delays"].clone();
+                job["schedules"] = json!({"service":legacy,"rate_limit":legacy,"network":legacy});
+                let previous_class = string(&job, "class").to_owned();
+                job["attempts"] = json!({previous_class:job["attempt"]});
+            }
+            job["schedules"]["session_limit"] = json!(delays_for(p, "session_limit"));
+        }
         if own_input {
             job["acknowledged"] = json!(true);
             job["user_at"] = json!(user_at);
@@ -408,6 +449,9 @@ fn advance(mut job: Value, s: &Value, p: &Policy, time: f64) -> Value {
                 );
             } else if !enabled(p, class(error)) {
                 stop(&mut job, "cancelled", "This reaction is disabled");
+            } else if job["class"] != class(error) {
+                // A saved generic rate-limit failure can now have exact session-limit evidence.
+                schedule(&mut job, s, time);
             }
             return job;
         } else {
@@ -432,8 +476,9 @@ fn advance(mut job: Value, s: &Value, p: &Policy, time: f64) -> Value {
     }
     let mut fresh = json!({"version":1,"id":uuid::Uuid::new_v4().to_string(),"name":s["name"],
         "identity":identity(s),"action":adapter(s),"attempt":0,"attempts":{},
-        "schedules":(["service","rate_limit","network"].into_iter().map(|k|(k,p.schedules.get(k).unwrap_or(&p.delays))).collect::<BTreeMap<_,_>>()),
-        "delays":p.schedules.get(class(error)).unwrap_or(&p.delays),
+        "schedules":(["service","rate_limit","session_limit","network"].into_iter().map(|k|(k,delays_for(p,k))).collect::<BTreeMap<_,_>>()),
+        "session_limit_mode":p.session_limit_mode,
+        "delays":delays_for(p,class(error)),
         "started_at":time,"user_at":user_at,"state":"waiting"});
     schedule(&mut fresh, s, time);
     fresh
@@ -557,6 +602,82 @@ mod tests {
         assert_eq!(job["due_at"], 1000.0);
         let restored: Value = serde_json::from_str(&job.to_string()).unwrap();
         assert_eq!(advance(restored, &s, &on(), 500.0), job);
+    }
+    #[test]
+    fn session_limits_wait_for_reset_and_interval_mode_uses_its_own_budget() {
+        let mut s = snapshot("claude");
+        s["provider_error"] = json!({"source":"provider_hook","message_id":"limit","at":10.0,
+            "error_kind":"rate_limit","detail":"You've hit your session limit","reset_at":3600.0});
+        let p = on();
+        let job = advance(Value::Null, &s, &p, 11.0);
+        assert_eq!(job["class"], "session_limit");
+        assert_eq!(job["session_limit_mode"], "reset");
+        assert_eq!(job["state"], "waiting");
+        assert_eq!(job["due_at"], 3600.0);
+        assert_eq!(job["not_before"], 3600.0);
+        assert_eq!(advance(serde_json::from_str(&job.to_string()).unwrap(), &s, &p, 1000.0), job);
+        // A worker recovering after the deadline can still make the scheduled attempt.
+        assert_eq!(advance(Value::Null, &s, &p, 4000.0)["due_at"], 3600.0);
+        assert_eq!(advance(job.clone(), &s, &Policy::default(), 12.0)["state"], "cancelled");
+        let mut disabled = p.clone(); disabled.session_limit = false;
+        assert!(advance(Value::Null, &s, &disabled, 11.0).is_null());
+        assert_eq!(advance(job.clone(), &s, &disabled, 12.0)["state"], "cancelled");
+        let mut interval = p.clone(); interval.session_limit_mode = "interval".into();
+        interval.schedules.insert("session_limit".into(), vec![90, 0]);
+        let mut repeat = advance(Value::Null, &s, &interval, 11.0);
+        assert!(seconds(&repeat, "due_at") >= 101.0 && seconds(&repeat, "due_at") <= 110.0);
+        assert_eq!(repeat["not_before"], 0.0);
+        repeat["attempts"]["session_limit"] = json!(50);
+        schedule(&mut repeat, &s, 200.0);
+        assert_eq!(repeat["state"], "waiting");
+        assert_eq!(repeat["class_attempt"], 50);
+        s["provider_error"]["retry_not_before"] = json!(1000.0);
+        schedule(&mut repeat, &s, 300.0);
+        assert_eq!(repeat["due_at"], 1000.0);
+        s["provider_error"]["detail"] = json!("429 temporary rate limit");
+        schedule(&mut repeat, &s, 400.0);
+        assert_eq!(repeat["class"], "rate_limit");
+        assert_eq!(repeat["class_attempt"], 0);
+    }
+    #[test]
+    fn missing_or_expired_reset_never_starts_a_short_retry_loop() {
+        let mut s = snapshot("claude");
+        s["provider_error"]["detail"] = json!("You've hit your session limit");
+        for reset in [Value::Null, json!(10.0)] {
+            s["provider_error"]["reset_at"] = reset;
+            let job = advance(Value::Null, &s, &on(), 11.0);
+            assert_eq!(job["state"], "blocked");
+            assert_eq!(advance(job.clone(), &s, &on(), 100000.0), job);
+        }
+        assert_eq!(class(&json!({"error_kind":"provider_policy","detail":"You've hit your session limit"})), "manual");
+        assert_eq!(class(&json!({"detail":"You've hit your session limit; insufficient balance"})), "manual");
+    }
+    #[test]
+    fn legacy_policies_and_waiting_episodes_upgrade_without_short_limit_retries() {
+        for version in [1, 2] {
+            let p: Policy = serde_json::from_value(json!({"version":version,"enabled":true,
+                "delays":[5,20,-1],"schedules":{"network":[7,0]}})).unwrap();
+            validate_policy(&p).unwrap();
+            assert!(p.session_limit);
+            assert_eq!(p.session_limit_mode, "reset");
+            assert_eq!(delays_for(&p, "network"), &[7,0]);
+            assert_eq!(delays_for(&p, "session_limit"), &[300,0]);
+        }
+        let mut invalid = on(); invalid.session_limit_mode = "guess".into();
+        assert!(validate_policy(&invalid).is_err());
+        let mut s = snapshot("claude");
+        s["provider_error"]["detail"] = json!("429 rate limit");
+        let mut old = advance(Value::Null, &s, &on(), 11.0);
+        old.as_object_mut().unwrap().remove("session_limit_mode");
+        old.as_object_mut().unwrap().remove("schedules");
+        old["attempt"] = json!(2);
+        s["provider_error"]["detail"] = json!("You've hit your session limit");
+        s["provider_error"]["reset_at"] = json!(3600.0);
+        let upgraded = advance(old.clone(), &s, &on(), 12.0);
+        assert_eq!(upgraded["id"], old["id"]);
+        assert_eq!(upgraded["attempts"]["rate_limit"], 2);
+        assert_eq!(upgraded["class"], "session_limit");
+        assert_eq!(upgraded["due_at"], 3600.0);
     }
     #[test]
     fn budget_is_finite_across_distinct_errors_not_reset_by_progress() {
@@ -929,7 +1050,7 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
                     p.revision += 1;
                     p.writer = uuid::Uuid::new_v4().to_string();
                 }
-                p.version = 2;
+                p.version = 3;
                 p.enabled_at = if p.enabled && !old.enabled {
                     now()
                 } else {

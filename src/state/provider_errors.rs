@@ -44,6 +44,8 @@ pub(super) fn category(text: &str) -> &'static str {
     .any(|s| text.contains(s))
     {
         "quota"
+    } else if session_limits::recognized(&text) {
+        "session_limit"
     } else if ["capacity", "overload", "model_capacity"]
         .iter()
         .any(|s| text.contains(s))
@@ -98,18 +100,28 @@ pub(super) fn category(text: &str) -> &'static str {
 
 pub(super) fn event(id: &str, at: f64, detail: &str, source: &str) -> Value {
     let detail = journal::clipped(&json!(detail), 1200);
-    json!({"type":"StopFailure","source":source,"message_id":id,"agent_id":"","at":at,
-        "detail":detail,"error_kind":category(&detail)})
+    let mut error = json!({"type":"StopFailure","source":source,"message_id":id,"agent_id":"","at":at,
+        "detail":detail,"error_kind":category(&detail)});
+    session_limits::enrich(&mut error);
+    error
 }
 
 pub(super) fn apply(output: &mut Value, error: &Value) {
+    // Normalize saved failures too; older hooks used the generic rate-limit kind.
+    let mut error = error.clone();
+    let kind = category(&format!("{} {}", string(&error, "error_kind"), string(&error, "detail")));
+    if ["session_limit", "quota", "provider_policy"].contains(&kind) {
+        error["error_kind"] = json!(kind);
+    }
+    session_limits::enrich(&mut error);
     output["phase"] = json!("error");
     output["activity"] = json!("attention");
     output["last_error"] = error["detail"].clone();
-    output["activity_summary"] = json!(match string(error, "error_kind") {
+    output["activity_summary"] = json!(match string(&error, "error_kind") {
         "capacity" => "Model at capacity",
         "quota" => "Usage limit reached",
         "rate_limit" => "Rate limit reached",
+        "session_limit" => "Session limit reached",
         "authentication" => "Sign-in failed",
         "provider_policy" => "Request blocked by provider",
         "context_limit" => "Context or output limit reached",
@@ -120,8 +132,8 @@ pub(super) fn apply(output: &mut Value, error: &Value) {
     output["provider_error"] = error.clone();
     output["attention_id"] = json!(format!(
         "{}:{}",
-        string(error, "source"),
-        string(error, "message_id")
+        string(&error, "source"),
+        string(&error, "message_id")
     ));
     output["current_tool"] = json!("");
     output["tool_detail"] = json!("");

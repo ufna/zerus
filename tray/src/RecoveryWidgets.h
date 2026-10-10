@@ -23,6 +23,8 @@ inline QString status(const QJsonObject &job)
 {
     const auto state = job.value("state").toString();
     if (state == "waiting") {
+        if(job.value("class")=="session_limit" && job.value("session_limit_mode")=="reset")
+            return QObject::tr("Waiting for reset at %1").arg(QDateTime::fromMSecsSinceEpoch(qint64(job.value("due_at").toDouble()*1000)).toLocalTime().toString("d MMM HH:mm"));
         const auto remaining = qMax(0, int(std::ceil(job.value("due_at").toDouble() - QDateTime::currentMSecsSinceEpoch()/1000.0)));
         return remaining > 0 ? QObject::tr("Retry in %1 s").arg(remaining) : QObject::tr("Waiting to retry");
     }
@@ -98,6 +100,8 @@ public:
         const auto state=m_job.value("state").toString();const auto label=RecoveryUi::status(m_job);
         if(state=="waiting"||state=="dispatching"||state=="retrying") {
             const int remaining=qMax(0,int(std::ceil(m_job.value("due_at").toDouble()-QDateTime::currentMSecsSinceEpoch()/1000.0)));
+            if(state=="waiting" && m_job.value("class")=="session_limit" && m_job.value("session_limit_mode")=="reset")
+                return {label,tr("Reset %1").arg(QDateTime::fromMSecsSinceEpoch(qint64(m_job.value("due_at").toDouble()*1000)).toLocalTime().toString("HH:mm")),ChipTone::Warning};
             return {label,state=="waiting"&&remaining>0?tr("%1 s").arg(remaining):QStringLiteral("…"),ChipTone::Warning};
         }
         if(state=="cancelled")return {label,tr("Off"),ChipTone::Warning};
@@ -106,14 +110,17 @@ public:
 private:
     void refresh() {
         const bool failure=isFailure();
-        m_terminal->setVisible(failure);m_usage->setVisible(failure && m_failure.value("error_kind")=="quota");
+        const bool sessionLimit=m_failure.value("error_kind")=="session_limit";
+        m_terminal->setVisible(failure);m_usage->setVisible(failure && (m_failure.value("error_kind")=="quota"||sessionLimit));
         m_terminal->setEnabled(m_online);m_usage->setEnabled(m_online);
-        m_help->setVisible(failure);m_settings->setVisible(!failure);m_history->setVisible(!failure);
+        m_help->setVisible(failure);m_settings->setVisible(!failure||sessionLimit);m_history->setVisible(!failure);
         if(failure) {
             m_status->setText(SessionPresentation::providerFailure(m_failure));
             const auto detail=m_failure.value("detail").toString();
             m_detail->setText(detail.size()>500?detail.left(500)+QStringLiteral("…"):detail);m_detail->setToolTip(detail);
-            m_help->setText(m_failure.value("error_kind")=="quota"
+            m_help->setText(sessionLimit
+                ? tr("The session usage limit stopped this turn. Automatic recovery can wait for reset or retry on a schedule when enabled in Settings. Your draft is kept.")
+                : m_failure.value("error_kind")=="quota"
                 ? tr("The provider stopped this turn. Wait for the limit to reset or restore account access, then refresh usage and send a message to continue. Your draft is kept; Zerus will not retry automatically.")
                 : tr("The provider stopped this turn. Check Terminal and resolve the error, then send a message to continue. Your draft is kept."));
             m_now->hide();m_cancel->setVisible(m_job.value("state")=="waiting");m_cancel->setEnabled(m_online&&!m_pending);notify();return;
@@ -122,9 +129,11 @@ private:
         if(!waiting&&(m_now->hasFocus()||m_cancel->hasFocus()))setFocus(Qt::OtherFocusReason);
         const auto delays=m_job.value("delays").toArray();const bool infinite=!delays.isEmpty()&&delays.last().toInt()==0;
         const int count=int(delays.size())-(!delays.isEmpty()&&delays.last().toInt()<=0?1:0);
-        m_status->setText(RecoveryUi::status(m_job)+(infinite?tr(" (%1 attempts, repeats until stopped)").arg(m_job.value("attempt").toInt()):tr(" (%1/%2 attempts)").arg(m_job.value("class_attempt").toInt(m_job.value("attempt").toInt())).arg(count)));
+        const bool reset=m_job.value("class")=="session_limit"&&m_job.value("session_limit_mode")=="reset";
+        m_status->setText(RecoveryUi::status(m_job)+(reset?tr(" (%1 attempts)").arg(m_job.value("attempt").toInt()):infinite?tr(" (%1 attempts, repeats until stopped)").arg(m_job.value("attempt").toInt()):tr(" (%1/%2 attempts)").arg(m_job.value("class_attempt").toInt(m_job.value("attempt").toInt())).arg(count)));
         m_detail->setText(!m_error.isEmpty()?m_error:(!m_job.value("reason").toString().isEmpty()?m_job.value("reason").toString():
             (m_job.value("action")=="retry_request"?tr("Retry the failed provider request"):tr("Send a continuation message in this conversation"))));
+        if(sessionLimit) m_detail->setText(m_failure.value("detail").toString()+"\n"+m_detail->text());
         m_now->setVisible(waiting);m_cancel->setVisible(waiting);
         m_history->setEnabled(!m_job.value("history").toArray().isEmpty());
         m_now->setEnabled(waiting&&m_online&&!m_pending&&m_job.value("not_before").toDouble()<=QDateTime::currentMSecsSinceEpoch()/1000.0);
@@ -132,7 +141,8 @@ private:
         notify();
     }
     bool isFailure() const {
-        return !m_failure.isEmpty() && (m_job.isEmpty() || m_job.value("state")=="succeeded" || m_failure.value("error_kind")=="quota");
+        return !m_failure.isEmpty() && (m_job.isEmpty() || m_job.value("state")=="succeeded" || m_failure.value("error_kind")=="quota"
+            || (m_failure.value("error_kind")=="session_limit" && m_job.value("class")!="session_limit"));
     }
     void notify() { if(summaryChanged)summaryChanged(); }
     QJsonObject m_job,m_failure; bool m_online=false,m_pending=false,m_active=false; QString m_error;

@@ -12,10 +12,22 @@
     "repository": "https://github.com/BurntSushi/aho-corasick"
   },
   {
+    "name": "android_system_properties",
+    "version": "0.1.6",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/nical/android_system_properties"
+  },
+  {
     "name": "anyhow",
     "version": "1.0.104",
     "license": "MIT OR Apache-2.0",
     "repository": "https://github.com/dtolnay/anyhow"
+  },
+  {
+    "name": "autocfg",
+    "version": "1.5.1",
+    "license": "Apache-2.0 OR MIT",
+    "repository": "https://github.com/cuviper/autocfg"
   },
   {
     "name": "base64",
@@ -52,6 +64,24 @@
     "version": "1.0.5",
     "license": "MIT OR Apache-2.0",
     "repository": "https://github.com/rust-lang/cfg-if"
+  },
+  {
+    "name": "chrono",
+    "version": "0.4.45",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/chronotope/chrono"
+  },
+  {
+    "name": "chrono-tz",
+    "version": "0.10.4",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/chronotope/chrono-tz"
+  },
+  {
+    "name": "core-foundation-sys",
+    "version": "0.8.7",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/servo/core-foundation-rs"
   },
   {
     "name": "cpufeatures",
@@ -162,6 +192,18 @@
     "repository": "https://github.com/kyren/hashlink"
   },
   {
+    "name": "iana-time-zone",
+    "version": "0.1.65",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/strawlab/iana-time-zone"
+  },
+  {
+    "name": "iana-time-zone-haiku",
+    "version": "0.1.2",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/strawlab/iana-time-zone"
+  },
+  {
     "name": "indexmap",
     "version": "2.14.2",
     "license": "Apache-2.0 OR MIT",
@@ -198,16 +240,40 @@
     "repository": "https://github.com/sunfishcode/linux-raw-sys"
   },
   {
+    "name": "log",
+    "version": "0.4.34",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/rust-lang/log"
+  },
+  {
     "name": "memchr",
     "version": "2.8.3",
     "license": "Unlicense OR MIT",
     "repository": "https://github.com/BurntSushi/memchr"
   },
   {
+    "name": "num-traits",
+    "version": "0.2.19",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/rust-num/num-traits"
+  },
+  {
     "name": "once_cell",
     "version": "1.21.4",
     "license": "MIT OR Apache-2.0",
     "repository": "https://github.com/matklad/once_cell"
+  },
+  {
+    "name": "phf",
+    "version": "0.12.1",
+    "license": "MIT",
+    "repository": "https://github.com/rust-phf/rust-phf"
+  },
+  {
+    "name": "phf_shared",
+    "version": "0.12.1",
+    "license": "MIT",
+    "repository": "https://github.com/rust-phf/rust-phf"
   },
   {
     "name": "pin-project-lite",
@@ -316,6 +382,12 @@
     "version": "2.0.1",
     "license": "MIT OR Apache-2.0",
     "repository": "https://github.com/comex/rust-shlex"
+  },
+  {
+    "name": "siphasher",
+    "version": "1.0.4",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/jedisct1/rust-siphash"
   },
   {
     "name": "slab",
@@ -438,8 +510,38 @@
     "repository": "https://github.com/retep998/winapi-rs"
   },
   {
+    "name": "windows-core",
+    "version": "0.62.2",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/microsoft/windows-rs"
+  },
+  {
+    "name": "windows-implement",
+    "version": "0.60.2",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/microsoft/windows-rs"
+  },
+  {
+    "name": "windows-interface",
+    "version": "0.59.3",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/microsoft/windows-rs"
+  },
+  {
     "name": "windows-link",
     "version": "0.2.1",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/microsoft/windows-rs"
+  },
+  {
+    "name": "windows-result",
+    "version": "0.4.1",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/microsoft/windows-rs"
+  },
+  {
+    "name": "windows-strings",
+    "version": "0.5.1",
     "license": "MIT OR Apache-2.0",
     "repository": "https://github.com/microsoft/windows-rs"
   },
