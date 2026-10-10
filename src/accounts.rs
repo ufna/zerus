@@ -2,6 +2,7 @@
 mod inspection;
 mod claude;
 mod claude_settings;
+mod mcp_servers;
 mod permission_status;
 mod install;
 mod deepseek;
@@ -377,6 +378,16 @@ pub fn prepare_claude_settings() -> Result<()> {
         .ok_or_else(||Error::new(1,"Managed Claude profile directory is missing."))?;
     let home = env::var("HOME").map_err(|_|Error::new(1,"User home is missing."))?;
     claude_settings::inherit(&Path::new(&home).join(".claude"),Path::new(&profile))
+}
+/// Managed profiles use the user's MCP servers; provider logins stay separate.
+pub fn prepare_mcp_servers(agent: &str) -> Result<()> {
+    let account = env::var("HGS_ACCOUNT_ID").unwrap_or_default();
+    if account.is_empty() || account.starts_with("native-") { return Ok(()); }
+    let Ok(key) = home_var(agent) else { return Ok(()) };
+    let profile = env::var(key).ok().filter(|v|!v.is_empty())
+        .ok_or_else(||Error::new(1,"Managed agent profile directory is missing."))?;
+    let home = env::var("HOME").map_err(|_|Error::new(1,"User home is missing."))?;
+    mcp_servers::inherit(agent,Path::new(&home),Path::new(&profile))
 }
 pub fn select(config: &Config, id: &str, provider: &str) -> Result<Vec<String>> {
     let (profile, home, native) = lookup(config, id)?;

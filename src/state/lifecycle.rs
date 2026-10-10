@@ -66,6 +66,7 @@ pub(super) fn run(args: &[String]) -> Result<i32> {
         let _ = crate::macos_session::join();
         crate::accounts::prepare_claude_settings().map_err(|e|e.message)?;
     }
+    crate::accounts::prepare_mcp_servers(&agent).map_err(|e|e.message)?;
     hooks::install_hooks(&agent)?;
     let requested = nonempty_env("HGS_REQUESTED_ID");
     let expected = nonempty_env("HGS_EXPECTED_ID");

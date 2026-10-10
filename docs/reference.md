@@ -750,8 +750,15 @@ without altering permissions or workspace trust.
 
 Managed Claude profiles inherit behavioral settings from `~/.claude/settings.json`,
 including permission default, model and effort, at launch/resume. Profile overrides
-remain. Auth, API keys, endpoints, directory overrides and other hooks are not
-copied. OAuth, token renewal, limits and connectors stay native.
+remain. Auth, API keys, provider endpoints, directory overrides and other hooks are
+not copied. OAuth, token renewal, limits and connectors stay native.
+
+Managed Codex, Claude and Kimi profiles also use the user's MCP servers. Each
+launch/resume merges `mcp_servers` from `~/.codex/config.toml`, `mcpServers` from
+`~/.claude.json` or `~/.kimi-code/mcp.json` into the profile, including their
+headers. A server that the profile added, changed or removed keeps its own state;
+the profile's `.hgs-inherited-mcp.json` records only digests of what was inherited.
+Provider sign-in, hooks and other settings are not shared this way.
 
 **Permissions → Change…** sets provider defaults or bypass for future launches
 and resume on that host. Explicit launch flags take precedence. Current agents
