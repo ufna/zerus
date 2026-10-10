@@ -33,10 +33,26 @@
 #include <QVBoxLayout>
 #include <QAction>
 #include <QMenu>
+#include <QPainter>
 #include <QTimer>
 #include <QUrl>
 
 namespace {
+class FolderSplitterHandle : public QSplitterHandle {
+public:
+    using QSplitterHandle::QSplitterHandle;
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QPainter painter(this);painter.setPen(palette().color(QPalette::Mid));
+        const int y=rect().center().y();painter.drawLine(0,y,width()-1,y);
+    }
+};
+class FolderSplitter : public QSplitter {
+public:
+    using QSplitter::QSplitter;
+protected:
+    QSplitterHandle *createHandle() override {return new FolderSplitterHandle(orientation(),this);}
+};
 class FolderSortItem : public QTableWidgetItem {
 public:
     using QTableWidgetItem::QTableWidgetItem;
@@ -132,9 +148,8 @@ ProjectsDialog::ProjectsDialog(HgsClient *client, QWidget *parent, bool embedded
     fields->addRow(tr("Name"),nameRow); fields->addRow(tr("Color"),colorRow); form->addWidget(metadata);
     m_default=new QCheckBox(tr("Default for sessions started outside Zerus"));m_default->setObjectName("defaultProject");form->addWidget(m_default);
     connect(m_default,&QCheckBox::clicked,this,[this](bool checked){if(checked){m_projects->setDefaultProject(currentId());changed();}else showProject();});
-    m_folderSplitter=new QSplitter(Qt::Vertical);m_folderSplitter->setObjectName("projectFolderSplitter");
-    m_folderSplitter->setChildrenCollapsible(false);m_folderSplitter->setHandleWidth(10);
-    m_folderSplitter->setStyleSheet("QSplitter#projectFolderSplitter::handle { background: transparent; border-top: 1px solid palette(mid); }");
+    m_folderSplitter=new FolderSplitter(Qt::Vertical);m_folderSplitter->setObjectName("projectFolderSplitter");
+    m_folderSplitter->setChildrenCollapsible(false);m_folderSplitter->setHandleWidth(16);
     form->addWidget(m_folderSplitter,1);
     auto *folderPane=new QWidget;auto *folderLayout=new QVBoxLayout(folderPane);folderLayout->setContentsMargins(0,0,0,0);folderLayout->setSpacing(8);
     m_folderSplitter->addWidget(folderPane);
@@ -162,6 +177,8 @@ ProjectsDialog::ProjectsDialog(HgsClient *client, QWidget *parent, bool embedded
     folderActions->addWidget(addFolderButton); folderActions->addWidget(m_editFolder); folderActions->addWidget(m_removeFolder); folderActions->addStretch(); folderActions->addWidget(m_openFolder); folderLayout->addLayout(folderActions);
     m_folders->setMinimumHeight(140);
     m_worktrees=new WorktreePanel(m_client,false,nullptr,WorktreePanel::Layout::Compact);m_folderSplitter->addWidget(m_worktrees);
+    // The entire gap belongs to the handle, so its line sits between both action rows.
+    m_worktrees->layout()->setContentsMargins(0,0,0,0);
     m_folderSplitter->setStretchFactor(0,1);m_folderSplitter->setStretchFactor(1,0);
     m_folderSplitter->handle(1)->setToolTip(tr("Drag to resize folders and worktrees."));
     connect(m_folderSplitter,&QSplitter::splitterMoved,this,[this]{
@@ -373,6 +390,7 @@ void ProjectsDialog::updateFolderActions()
             const int worktreeHeight=qMin(240,m_folderSplitter->height()/3);
             m_folderSplitter->setSizes({m_folderSplitter->height()-worktreeHeight,worktreeHeight});
         }
+        m_folderSplitter->setHandleWidth(16);
         m_folderSplitInitialized=true;
     });
     m_worktrees->setContext(folder.machine==m_fleet.local().host?QString():folder.machine,folder.path,m_fleet);
