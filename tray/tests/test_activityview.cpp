@@ -635,7 +635,8 @@ void TestActivityView::sessionClearIsAColoredBoundaryAndSurvivesReload()
         QVERIFY(!text.contains("Old request snapshot"));
         QVERIFY(!links(view.browser()).contains("hgs-toggle:group-confirmed-clear"));
         const auto cursor=view.browser()->document()->find("Session cleared");QVERIFY(!cursor.isNull());
-        QCOMPARE(cursor.charFormat().foreground().color(),QColor(dark?"#8bdfc0":"#167357"));
+        // Amber marks the boundary for attention; green stays with your messages.
+        QCOMPARE(cursor.charFormat().foreground().color(),QColor(dark?"#edbd77":"#9b6216"));
         const auto revision=view.browser()->document()->revision();view.setActivity(details,events);
         QCOMPARE(view.browser()->document()->revision(),revision);
     }
@@ -645,6 +646,21 @@ void TestActivityView::sessionClearIsAColoredBoundaryAndSurvivesReload()
     QCOMPARE(view.plainText().count("Session cleared"),1);
     view.setSessionKey("codex/unrelated");view.setActivity({},{journalEvent(1,"SessionStart",{})});
     QVERIFY(!view.plainText().contains("Session cleared"));
+    // The new conversation continues the same timeline. A clear first seen in
+    // Terminal and confirmed by the later hook is still one boundary.
+    view.setSessionKey("codex/continued");
+    auto earlier=journalEvent(5,"PostToolUse","Earlier tool","Read");earlier["agent_id"]="";
+    view.setActivity({{"conversation_id","old"}},{journalEvent(4,"Stop","Earlier answer"),earlier});
+    QVERIFY(links(view.browser()).contains("hgs-activity:group-5"));activate(view.browser(),"hgs-activity:group-5");
+    QVERIFY(view.plainText().contains("▾ Tool finished"));
+    auto terminal=journalEvent(6,"SessionCleared",{});terminal["activity_key"]="clear:run:old:6";terminal["run_id"]="run";
+    auto hook=terminal;hook["activity_key"]="clear:run:new:6";hook["seq"]=7;
+    const QJsonObject cleared{{"conversation_id","new"},{"cleared_conversations",QJsonArray{"old"}},{"session_clear",hook}};
+    view.setActivity(cleared,{journalEvent(4,"Stop","Earlier answer"),earlier,terminal,hook,journalEvent(8,"Stop","Fresh answer")});
+    const auto continued=view.plainText();QCOMPARE(continued.count("Session cleared"),1);
+    QVERIFY(continued.indexOf("Earlier answer")<continued.indexOf("Session cleared"));
+    QVERIFY(continued.indexOf("Session cleared")<continued.indexOf("Fresh answer"));
+    QVERIFY(continued.contains("▾ Tool finished"));
     const auto preview=qEnvironmentVariable("HGS_CLEAR_PREVIEW");
     if(!preview.isEmpty()) {
         view.setSessionKey("codex/session");

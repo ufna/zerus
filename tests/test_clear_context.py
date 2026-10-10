@@ -50,8 +50,8 @@ class ClearContext(unittest.TestCase):
   r=subprocess.run([str(test_input.HGS),*(['@remote'] if remote else []),'clear-context',self.name,'--json'],env=self.env,input=json.dumps(payload),text=True,capture_output=True,timeout=12)
   if success:self.assertEqual(r.returncode,0,r.stderr);return json.loads(r.stdout)
   self.assertNotEqual(r.returncode,0);return r.stderr
- def inspect(self):
-  result=subprocess.run([str(test_input.HGS),'inspect',self.name],env=self.env,text=True,capture_output=True,timeout=12)
+ def inspect(self,*args):
+  result=subprocess.run([str(test_input.HGS),'inspect',self.name,*args],env=self.env,text=True,capture_output=True,timeout=12)
   self.assertEqual(result.returncode,0,result.stderr);return json.loads(result.stdout)
  def hook(self,event):
   env=dict(self.env,HGS_SESSION=self.name,HGS_RUN_ID=self.run_id)
@@ -91,6 +91,24 @@ class ClearContext(unittest.TestCase):
   self.hook(event);self.hook(event)
   fresh=self.inspect();self.assertEqual(sum(e['type']=='SessionCleared' for e in fresh['events']),1)
   self.assertEqual(fresh['session_usage']['context']['used'],25);self.assertEqual(fresh['session_usage']['prompt_cache']['cache_read'],5)
+ def test_activity_keeps_the_earlier_conversation_after_a_clear(self):
+  old=self.conversation_id;new=str(uuid.uuid4())
+  self.hook(dict(hook_event_name='UserPromptSubmit',session_id=old,prompt='Earlier request'))
+  self.hook(dict(hook_event_name='Stop',session_id=old,last_assistant_message='Earlier answer'))
+  cursor=self.inspect()['cursor']
+  self.hook(dict(hook_event_name='SessionStart',session_id=new,source='clear'))
+  self.hook(dict(hook_event_name='UserPromptSubmit',session_id=new,prompt='Fresh request'))
+  fresh=self.inspect();self.assertEqual(fresh['conversation_id'],new);self.assertEqual(fresh['cleared_conversations'],[old])
+  timeline=[e['detail'] or e['type'] for e in fresh['events'] if e['type'] in ('UserPromptSubmit','Stop','SessionCleared')]
+  self.assertEqual(timeline,['Earlier request','Earlier answer','SessionCleared','Fresh request'])
+  self.assertEqual([e['detail'] or e['type'] for e in fresh['message_events']],timeline)
+  # Sequence numbers are global: a reader's cursor continues across the clear.
+  later=self.inspect('--after',str(cursor))
+  self.assertEqual([e['detail'] or e['type'] for e in later['events'] if e['type']!='SessionStart'],['SessionCleared','Fresh request'])
+  # Another conversation starts its own timeline.
+  other=str(uuid.uuid4());self.hook(dict(hook_event_name='SessionStart',session_id=other,source='resume'))
+  resumed=self.inspect();self.assertEqual(resumed['cleared_conversations'],[])
+  self.assertFalse(any(e['detail'] in ('Earlier request','Fresh request') for e in resumed['events']))
  def test_unconfirmed_clear_keeps_reported_usage_and_has_no_success_notice(self):
   self.record.update(transcript=self.usage_history(self.conversation_id,109000,100000),
                      clear_context_request=dict(request_id=str(uuid.uuid4()),conversation_id=self.conversation_id));self.write_record()

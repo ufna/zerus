@@ -114,13 +114,14 @@ class Harness(unittest.TestCase):
         self.project = self.root / "project with spaces"
         self.project.mkdir()
         self.socket = str(self.root / "tmux.sock")
-        self.env = dict(os.environ, HOME=str(self.root), HGS_CONFIG_DIR=str(self.root / "cfg"),
+        # Tests launched inside a native agent inherit its session and account
+        # context. A managed account would make every fake relaunch fail.
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("HGS_")}
+        self.env.update(HOME=str(self.root), HGS_CONFIG_DIR=str(self.root / "cfg"),
                         HGS_STATE_DIR=str(self.root / "state"), HGS_SELF="test", HGS_PEERS="",
                         HGS_TAB="0", HGS_TRACKING="1", SHELL=str(self.bin / "shell"),
                         PATH=str(self.bin) + ":" + os.environ["PATH"])
-        for k in ("TMUX", "TMUX_PANE", "HGS_SESSION", "HGS_RUN_ID", "HGS_EXPECTED_ID",
-                  "HGS_EXECUTABLE", "HGS_AGENT", "HGS_FRESH", "HGS_REQUESTED_ID",
-                  "CLAUDE_CONFIG_DIR", "CODEX_HOME", "KIMI_CODE_HOME"):
+        for k in ("TMUX", "TMUX_PANE", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "KIMI_CODE_HOME"):
             self.env.pop(k, None)
         for name in ("claude", "codex", "kimi"):
             self.script(name, AGENT)

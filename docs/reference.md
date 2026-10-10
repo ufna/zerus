@@ -434,11 +434,14 @@ Native clear/compact operations are capability-gated and require exact identity.
 **Clear session** requires confirmation naming the session and host, preserves
 unsent drafts and rechecks identity. DeepSeek context reset is unavailable until
 its native Session Controller provides the supported operation. A confirmed clear
-adds a green **Session cleared** notice to Activity. Codex can defer its new-session
-hook until the next message; its verified empty native reset panel also confirms
-the clear, including `/clear` in Terminal. Old context and prompt-cache values are
-hidden until the new conversation reports native usage. The saved native identity
-changes only on the real hook, and an unconfirmed command does not reset counters.
+adds an amber **Session cleared** boundary to Activity and keeps the earlier local
+timeline above it: the agent no longer sees that history, but you can still read
+and search it. Resuming or opening another conversation starts a new timeline.
+Codex can defer its new-session hook until the next message; its verified empty
+native reset panel also confirms the clear, including `/clear` in Terminal. Old
+context and prompt-cache values are hidden until the new conversation reports
+native usage. The saved native identity changes only on the real hook, and an
+unconfirmed command does not reset counters.
 **Compact and continue** sends only after confirmed successful compaction with the same
 unedited draft; errors, cancellation or identity/draft changes cancel submission.
 Context metrics use native telemetry, without guessing a capacity from a model name.

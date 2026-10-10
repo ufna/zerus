@@ -1138,7 +1138,8 @@ print(p.read_text() if 'inspect' in sys.argv and p.exists() else '{}')
     SessionsWindow window(program);window.resize(1080,760);window.setFleet(fleet());window.show();window.showSession("mac","claude/infra/review");
     auto *client=window.findChild<HgsClient *>();
     QJsonObject details{{"tracked",true},{"run_id","run-one"},{"phase","idle"},{"activity","idle"},{"runtime_state","live"},{"process_state","running"},
-        {"conversation_id","old"},{"cursor",40},{"session_usage",QJsonObject{{"status","ok"},{"context",QJsonObject{{"used",109000},{"limit",258400}}}}},
+        {"conversation_id","old"},{"cursor",40},{"events",QJsonArray{QJsonObject{{"seq",40},{"at",1791018000.0},{"type","Stop"},{"agent_id",""},{"detail","Earlier answer"}}}},
+        {"session_usage",QJsonObject{{"status","ok"},{"context",QJsonObject{{"used",109000},{"limit",258400}}}}},
         {"cache_hint",QJsonObject{{"status","cold"},{"tokens",109000}}}};
     const auto apply=[&]{QFile data(temp.filePath("details.json"));QVERIFY(data.open(QIODevice::WriteOnly));data.write(QJsonDocument(details).toJson());data.close();client->inspectionReady("mac","claude/infra/review",details);};
     apply();auto *context=window.findChild<QPushButton *>("activityContext");QVERIFY(context->text().contains("42%"));
@@ -1146,11 +1147,17 @@ print(p.read_text() if 'inspect' in sys.argv and p.exists() else '{}')
     auto *composer=window.findChild<MessageComposer *>("messageComposer");composer->editor()->setPlainText("Keep this draft");
     details["conversation_id"]="new";details["session_usage"]=QJsonObject{{"status","unavailable"}};details.remove("cache_hint");
     details["session_clear"]=QJsonObject{{"type","SessionCleared"},{"at",1791018003.0},{"activity_key","clear-new"}};
+    details["cleared_conversations"]=QJsonArray{"old"};details["cursor"]=41;
+    details["events"]=QJsonArray{QJsonObject{{"seq",41},{"at",1791018004.0},{"type","UserPromptSubmit"},{"agent_id",""},{"detail","Fresh request"}}};
     apply();
     // The first new-conversation reply paints now, before the follow-up read
     // with its reset journal cursor returns.
     auto *activity=window.findChild<ActivityView *>("mainActivity");QVERIFY(activity);
     QVERIFY(activity->plainText().contains("Session cleared"));
+    // Earlier activity stays in place above the boundary.
+    const auto timeline=activity->plainText();
+    QVERIFY(timeline.indexOf("Earlier answer")>=0);QVERIFY(timeline.indexOf("Earlier answer")<timeline.indexOf("Session cleared"));
+    QVERIFY(timeline.indexOf("Session cleared")<timeline.indexOf("Fresh request"));
     QVERIFY(context->text().isEmpty());QVERIFY(!cache->isActive());QCOMPARE(composer->editor()->toPlainText(),QString("Keep this draft"));
     details["session_usage"]=QJsonObject{{"status","ok"},{"context",QJsonObject{{"used",32},{"limit",258400}}}};
     apply();QVERIFY(context->text().contains("32/"));QVERIFY(!context->text().contains("109"));

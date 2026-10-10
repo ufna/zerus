@@ -406,15 +406,20 @@ pub(super) fn summary(record: &Value, live_pane: bool) -> Value {
 const MESSAGE_EVENTS_LIMIT: usize = 100;
 const MESSAGE_EVENTS_BYTES: usize = 256 * 1024;
 
+// Activity continues across confirmed clears: rows of the current conversation
+// and of the conversations it replaced. Sequence numbers are global, so a
+// reader's cursor stays valid when a clear changes the conversation.
+pub(super) const TIMELINE: &str = "name=?1 AND (conversation IS ?2 OR conversation IN (SELECT value FROM json_each(?3)))";
+
 // The activity tail includes tools and children. Keep main public messages in
 // a separate bounded window so a cold reader does not lose its newest prompt
 // merely because that turn has produced more than one hundred tool events.
-fn message_events(db: &Connection, name: &str, conversation: Option<&str>) -> Result<(Vec<Value>, bool)> {
-    let mut query = db.prepare("SELECT seq,payload FROM events WHERE name=?1 AND conversation IS ?2
+fn message_events(db: &Connection, name: &str, conversation: Option<&str>, earlier: &str) -> Result<(Vec<Value>, bool)> {
+    let mut query = db.prepare(&format!("SELECT seq,payload FROM events WHERE {TIMELINE}
         AND COALESCE(json_extract(payload, '$.agent_id'), '') IN ('', 'main')
         AND json_extract(payload, '$.type') IN ('SessionCleared','UserPromptSubmit','UserPromptQueued','UserMessage','TurnStarted','QuestionAnswered','AgentMessage','Stop')
-        ORDER BY seq DESC LIMIT 101").map_err(|e| e.to_string())?;
-    let rows = query.query_map(params![name, conversation], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+        ORDER BY seq DESC LIMIT 101")).map_err(|e| e.to_string())?;
+    let rows = query.query_map(params![name, conversation, earlier], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
         .map_err(|e| e.to_string())?;
     let (mut events, mut bytes, mut truncated) = (Vec::new(), 2, false);
     for row in rows {
@@ -574,18 +579,21 @@ pub(super) fn inspection(name: &str, after: i64, archive_id: Option<&str>, inclu
     let db = event_db()?;
     let journal_name = journal_name(&record);
     let conversation = record["conversation_id"].as_str();
+    let cleared = clear_context::earlier_conversations(&record);
+    let earlier = cleared.to_string();
+    output["cleared_conversations"] = cleared;
     let oldest: Option<i64> = db
         .query_row(
-            "SELECT MIN(seq) FROM events WHERE name=? AND conversation IS ?",
-            params![journal_name, conversation],
+            &format!("SELECT MIN(seq) FROM events WHERE {TIMELINE}"),
+            params![journal_name, conversation, earlier],
             |row| row.get(0),
         )
         .map_err(|e| e.to_string())?;
-    let mut statement = db.prepare(if after > 0 {
-        "SELECT seq, payload FROM events WHERE name=? AND conversation IS ? AND seq>? ORDER BY seq LIMIT 200"
-    } else { "SELECT seq, payload FROM events WHERE name=? AND conversation IS ? AND seq>? ORDER BY seq DESC LIMIT 100" }).map_err(|e| e.to_string())?;
+    let mut statement = db.prepare(&if after > 0 {
+        format!("SELECT seq, payload FROM events WHERE {TIMELINE} AND seq>?4 ORDER BY seq LIMIT 200")
+    } else { format!("SELECT seq, payload FROM events WHERE {TIMELINE} AND seq>?4 ORDER BY seq DESC LIMIT 100") }).map_err(|e| e.to_string())?;
     let mut rows: Vec<(i64, String)> = statement
-        .query_map(params![journal_name, conversation, after], |row| {
+        .query_map(params![journal_name, conversation, earlier, after], |row| {
             Ok((row.get(0)?, row.get(1)?))
         })
         .map_err(|e| e.to_string())?
@@ -605,7 +613,7 @@ pub(super) fn inspection(name: &str, after: i64, archive_id: Option<&str>, inclu
         events.push(event);
     }
     output["events"] = json!(events);
-    let (messages, truncated) = message_events(&db, &journal_name, conversation)?;
+    let (messages, truncated) = message_events(&db, &journal_name, conversation, &earlier)?;
     output["message_events"] = json!(messages);
     output["message_events_truncated"] = json!(truncated);
     output["message_events_limit"] = json!(MESSAGE_EVENTS_LIMIT);
@@ -1043,13 +1051,18 @@ mod attention_regressions {
         insert_message(&db, "other", Some("conversation"), json!({"type":"UserPromptSubmit","agent_id":"","detail":"Other session"}));
         let answer = json!({"type":"QuestionAnswered","agent_id":"main","at":302,"detail":"Literal answer","question_id":"question","question_hash":"hash"});
         let answer_seq = insert_message(&db, "example", Some("conversation"), answer.clone());
-        let (messages, truncated) = message_events(&db, "example", Some("conversation")).unwrap();
+        let (messages, truncated) = message_events(&db, "example", Some("conversation"), "[]").unwrap();
         assert!(!truncated);
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0]["seq"], seq);
         assert_eq!(messages[0]["detail"], "Synthetic latest own message");
         let mut expected = answer; expected["seq"] = json!(answer_seq);
         assert_eq!(messages[1], expected);
+        // A conversation replaced by a confirmed clear stays in the same
+        // timeline, in journal order; another session's rows never join it.
+        let (messages, _) = message_events(&db, "example", Some("conversation"), r#"["other"]"#).unwrap();
+        assert_eq!(messages.iter().map(|m| m["detail"].as_str().unwrap()).collect::<Vec<_>>(),
+            ["Synthetic latest own message", "Other conversation", "Literal answer"]);
     }
     #[test]
     fn message_window_limits_rows_and_actual_utf8_bytes_with_disclosure() {
@@ -1057,13 +1070,13 @@ mod attention_regressions {
         for index in 0..105 {
             insert_message(&db, "example", None, json!({"type":"UserMessage","at":index,"detail":"Synthetic repeated message"}));
         }
-        let (messages, truncated) = message_events(&db, "example", None).unwrap();
+        let (messages, truncated) = message_events(&db, "example", None, "[]").unwrap();
         assert!(truncated); assert_eq!(messages.len(), MESSAGE_EVENTS_LIMIT);
         assert_eq!(messages[0]["at"], 5); assert_eq!(messages[99]["at"], 104);
         for _ in 0..10 {
             insert_message(&db, "unicode", Some("conversation"), json!({"type":"UserMessage","detail":"🦀".repeat(20_000)}));
         }
-        let (messages, truncated) = message_events(&db, "unicode", Some("conversation")).unwrap();
+        let (messages, truncated) = message_events(&db, "unicode", Some("conversation"), "[]").unwrap();
         assert!(truncated); assert_eq!(messages.len(), 3);
         assert!(json!(messages).to_string().len() <= MESSAGE_EVENTS_BYTES);
     }

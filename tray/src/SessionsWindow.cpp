@@ -2345,7 +2345,10 @@ void SessionsWindow::acceptInspection(const QString &host, const QString &name, 
 {
     if (!m_pending && !m_renameKey.isEmpty()) return;
     const auto *entry = selected(); if (!entry || entry->host != host || entry->session.name != name || entry->session.archiveId != archiveId) return;
-    if (!m_details.isEmpty() && m_details.value("conversation_id") != data.value("conversation_id")) {
+    // A confirmed clear continues the same Activity timeline, and its global
+    // journal cursor stays valid. Keep the earlier events in place.
+    if (!m_details.isEmpty() && m_details.value("conversation_id") != data.value("conversation_id")
+        && !data.value("cleared_conversations").toArray().contains(m_details.value("conversation_id"))) {
         // The conversation changed under this terminal. Fetch its initial window;
         // a cursor from the previous conversation must never skip the new history.
         m_events = data.value("events").toArray(); m_cursor = 0; m_details = data; m_processPollAge.invalidate();

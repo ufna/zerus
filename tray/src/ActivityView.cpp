@@ -178,6 +178,15 @@ QString eventKey(const QJsonObject &event)
                                                        QCryptographicHash::Sha256).toHex().left(20));
 }
 
+// A clear first confirmed in Terminal is journaled in the old conversation,
+// and older versions journaled it again under the new one. The same moment
+// is one boundary, whatever key either copy carries.
+bool sameSessionClear(const QJsonObject &event, const QJsonObject &clear)
+{
+    return event.value("type") == "SessionCleared" && (event.value("activity_key") == clear.value("activity_key")
+        || (event.value("run_id") == clear.value("run_id") && event.value("at").toDouble() > 0 && event.value("at") == clear.value("at")));
+}
+
 QString eventTitle(const QString &type)
 {
     static const QMap<QString, QString> titles{
@@ -350,7 +359,8 @@ void ActivityView::setSessionKey(const QString &key)
 void ActivityView::setActivity(const QJsonObject &details, const QJsonArray &events, const QString &fallbackPrompt, bool tracked)
 {
     const auto conversation = details.value("conversation_id").toString();
-    if (!m_conversation.isEmpty() && !conversation.isEmpty() && conversation != m_conversation) {
+    if (!m_conversation.isEmpty() && !conversation.isEmpty() && conversation != m_conversation
+        && !details.value("cleared_conversations").toArray().contains(m_conversation)) {
         m_previewFiles.clear(); m_deliveryKeys.clear();
         m_searchResult = {}; m_searchQuery.clear(); m_browser->setExtraSelections({});
         m_expanded.clear(); m_knownEvents.clear(); m_initial = true; m_followLatest = true; m_unseen = 0; m_html.clear();
@@ -360,7 +370,7 @@ void ActivityView::setActivity(const QJsonObject &details, const QJsonArray &eve
     const auto clear = details.value("session_clear").toObject();
     if (clear.value("type") == "SessionCleared") m_fallbackPrompt.clear();
     if (clear.value("type") == "SessionCleared" && !std::any_of(m_events.cbegin(), m_events.cend(), [&clear](const QJsonValue &value) {
-            return value.toObject().value("type") == "SessionCleared" && value.toObject().value("activity_key") == clear.value("activity_key");
+            return sameSessionClear(value.toObject(), clear);
         })) m_events.append(clear);
     for(const auto &value:details.value("attachment_messages").toArray()) {
         const auto receipt=value.toObject();if(receipt.value("source")!="hgs_delivery" || receipt.value("attachments").toArray().isEmpty())continue;
@@ -719,6 +729,7 @@ void ActivityView::render(bool contentUpdate)
     const QString userSurface = m_dark ? "#243730" : "#edf6f1";
     const QString codeSurface = m_dark ? "#171e25" : "#e8eef2";
     const QString warning = m_dark ? "#edbd77" : "#9b6216";
+    const QString warningSurface = m_dark ? "#2d2c23" : "#fff7e4";
     const QString blue = m_dark ? "#98bdeb" : "#366ba9";
     const QString violet = m_dark ? "#c5a8f5" : "#6c43b8";
     const QString noticeSurface = m_dark ? "#2a2536" : "#f4f0fb";
@@ -778,15 +789,16 @@ void ActivityView::render(bool contentUpdate)
         return result;
     };
     // A non-empty markdown source adds a button that copies it at the right of the header.
+    // A boundary marks a change that needs attention, such as a cleared context.
     const auto card = [&](const QString &key, const QString &label, const QString &stamp, const QString &body, bool user,
-                          bool notice = false, bool thinking = false, const QString &markdownSource = {}) {
+                          bool notice = false, bool thinking = false, const QString &markdownSource = {}, bool boundary = false) {
         auto content = body;
         // User text always starts with a paragraph. Anchor inside that block:
         // Qt discards an empty anchor between paragraphs, and a header-relative
         // offset shifts when Sending changes to Submitted or Sent.
         if (user) content.insert(content.indexOf('>') + 1, QString("<a name='item-body-%1'></a>").arg(escaped(key)));
         const auto title = QString("<a name='item-%1'></a><b style='color:%2;'>%3</b><span style='color:%4;'>%5</span>")
-            .arg(escaped(key), thinking ? thinkingLabel : notice ? violet : user ? accent : blue, escaped(label), muted,
+            .arg(escaped(key), boundary ? warning : thinking ? thinkingLabel : notice ? violet : user ? accent : blue, escaped(label), muted,
                  stamp.isEmpty() ? QString() : QStringLiteral(" &nbsp;&nbsp; ") + escaped(stamp));
         auto header = "<p style='font-size:11px;margin-top:0;margin-bottom:8px;'>" + title + "</p>";
         if (!markdownSource.trimmed().isEmpty()) {
@@ -799,8 +811,8 @@ void ActivityView::render(bool contentUpdate)
         // The spacer goes before each card, so nothing pads the journal below the last one.
         return QString("<p style='font-size:5px;margin:0;'>&nbsp;</p><table width='100%' cellspacing='0' cellpadding='0'><tr><td width='3' bgcolor='%1'></td><td bgcolor='%2' style='padding:11px 13px;'>"
             "%3%4</td></tr></table>")
-            .arg(thinking ? thinkingBar : notice ? violet : user ? accent : blue,
-                 thinking ? pageTheme.canvas.name() : notice ? noticeSurface : user ? userSurface : surface, header, content);
+            .arg(boundary ? warning : thinking ? thinkingBar : notice ? violet : user ? accent : blue,
+                 boundary ? warningSurface : thinking ? pageTheme.canvas.name() : notice ? noticeSurface : user ? userSurface : surface, header, content);
     };
 
     QList<QJsonObject> events;
@@ -817,6 +829,8 @@ void ActivityView::render(bool contentUpdate)
         // (an empty Notification, or idle_prompt); approvals and questions have their own events.
         if (event.value("type") == "Notification" && (event.value("detail").toString().trimmed().isEmpty()
             || event.value("notification_type") == "idle_prompt")) continue;
+        if (event.value("type") == "SessionCleared" && std::any_of(events.cbegin(), events.cend(),
+                [&event](const QJsonObject &other) { return sameSessionClear(other, event); })) continue;
         if (!seen.contains(key)) { seen.insert(key); events.append(event); }
     }
     const bool sequenced = std::all_of(events.cbegin(), events.cend(), [](const QJsonObject &e) { return e.value("seq").toInteger() > 0; });
@@ -881,9 +895,11 @@ void ActivityView::render(bool contentUpdate)
     for (int i = 0; i < events.size();) {
         const auto event = events[i]; const auto role = messageRole(event);
         if (event.value("type") == "SessionCleared") {
+            // Earlier activity stays readable above; the agent no longer has it.
             html += card(eventKey(event), tr("Session cleared"), timeText(event),
-                QString("<p style='margin:0;color:%1;'>%2</p>").arg(accent,
-                    tr("New messages start with a fresh conversation context.")), true);
+                QString("<p style='margin:0;color:%1;'>%2</p>").arg(warning,
+                    tr("The agent no longer sees the activity above. New messages start with a fresh conversation context.")),
+                false, false, false, {}, true);
             ++i; continue;
         }
         if (event.value("type") == "AgentThinking") {

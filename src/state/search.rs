@@ -213,12 +213,13 @@ impl Search {
         } else {
             string(record, "journal_name")
         };
-        let mut statement = db.prepare("SELECT seq, payload FROM events WHERE name=? AND conversation IS ? ORDER BY seq DESC LIMIT ?")
+        let mut statement = db.prepare(&format!("SELECT seq, payload FROM events WHERE {} ORDER BY seq DESC LIMIT ?4", journal::TIMELINE))
             .map_err(|error| error.to_string())?;
         let mut rows = statement
             .query(params![
                 name,
                 record["conversation_id"].as_str(),
+                clear_context::earlier_conversations(record).to_string(),
                 self.rows_left + 1
             ])
             .map_err(|error| error.to_string())?;
