@@ -2592,7 +2592,10 @@ void SessionsWindow::renderDetails()
                           .arg(color.name(), m_dark ? "#2b323d" : "#edf1f5"));
     s.model = m_details.value("model").toString(s.model); s.effort = m_details.value("effort").toString(s.effort);
     const QString modelText = s.model + (s.effort.isEmpty() ? QString() : "  " + s.effort);
-    m_model->setText(m_model->fontMetrics().elidedText(modelText, Qt::ElideMiddle, 260)); m_model->setToolTip(modelText);
+    // Details render on every poll; elide again only when the text or font changes.
+    if (const auto elision = modelText + '\n' + m_model->font().key(); elision != m_modelElision) {
+        m_modelElision = elision; m_model->setText(m_model->fontMetrics().elidedText(modelText, Qt::ElideMiddle, 260)); m_model->setToolTip(modelText);
+    }
     m_model->setAccessibleName(modelText); m_model->setVisible(!modelText.isEmpty());
     const bool archived = s.state == "archived";
     m_forkAction->setEnabled(!terminating && entry->online && !m_pending && m_forkKey.isEmpty() && !m_settingsRequest && !m_composer->isSending(m_selectedKey)

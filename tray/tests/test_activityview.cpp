@@ -28,6 +28,7 @@
 #include <QAbstractTextDocumentLayout>
 #include <QTextTable>
 #include <QRegularExpression>
+#include <functional>
 #include <QTest>
 #include <QVBoxLayout>
 #include <QWheelEvent>
@@ -131,6 +132,7 @@ private slots:
     void caughtUpActivityAcknowledgesEarlierReplyWithoutIntermediatePaint();
     void updatesRemainPaintableBeforeTheNextEventLoop();
     void startsAtLatestAndFollows();
+    void unchangedPollsSkipRendering();
     void followingPaintsAtTheFinalScrollRange();
     void jumpToLatestKeepsFocusInActivity_data();
     void jumpToLatestKeepsFocusInActivity();
@@ -1049,6 +1051,40 @@ void TestActivityView::followingPaintsAtTheFinalScrollRange()
         QCOMPARE(bar->maximum(), range); QVERIFY(!paints.maxima.isEmpty());
         for (const int painted : paints.maxima) QCOMPARE(painted, range);
     }
+}
+
+void TestActivityView::unchangedPollsSkipRendering()
+{
+    // Polls repeat the same inspection with fresh live fields that Activity never
+    // shows. They must not rebuild the journal, scroll, selection or expanded cards.
+    ActivityView view; view.resize(640, 360); view.show(); view.setSessionKey("arch\ncodex/hgs/poll");
+    QJsonObject details{{"tracked", true}, {"conversation_id", "poll"}, {"phase", "idle"}, {"goal_observed_at", 100.},
+        {"cache_hint", QJsonObject{{"status", "warm"}}}, {"processes", QJsonObject{{"items", QJsonArray{QJsonObject{{"id", "job"}, {"cpu", 1.5}}}}}}};
+    QJsonArray events;
+    for (int i = 1; i <= 40; ++i) events.append(QJsonObject{{"seq", i}, {"type", i % 2 ? "UserPromptSubmit" : "Stop"},
+        {"detail", QString("Message %1 with enough text to wrap across the reading column.").arg(i)}, {"at", double(i)}});
+    view.setActivity(details, events, "Start", true); QTest::qWait(30);
+    auto *scroll = view.browser()->verticalScrollBar(); QVERIFY(scroll->maximum() > 0);
+    scroll->setValue(scroll->maximum() / 2); auto cursor = view.browser()->textCursor(); cursor.setPosition(5); cursor.setPosition(25, QTextCursor::KeepAnchor);
+    view.browser()->setTextCursor(cursor);
+    const int passes = view.renderPasses(), position = scroll->value(); QVERIFY(passes > 0);
+    details["goal_observed_at"] = 103.; details["cache_hint"] = QJsonObject{{"status", "cold"}};
+    details["processes"] = QJsonObject{{"items", QJsonArray{QJsonObject{{"id", "job"}, {"cpu", 7.25}}}}};
+    view.setActivity(details, events, "Start", true); view.setTimeline(details, events, {}, "Start", true); QTest::qWait(20);
+    QCOMPARE(view.renderPasses(), passes); QCOMPARE(scroll->value(), position);
+    QCOMPARE(view.browser()->textCursor().selectionStart(), 5); QCOMPARE(view.browser()->textCursor().selectionEnd(), 25);
+    // Every input that Activity shows still renders.
+    const auto renders = [&](const std::function<void()> &change) { const int before = view.renderPasses(); change(); return view.renderPasses() > before; };
+    QVERIFY(renders([&] { details["phase"] = "tool"; view.setActivity(details, events, "Start", true); }));
+    QVERIFY(renders([&] { events.append(QJsonObject{{"seq", 41}, {"type", "Stop"}, {"detail", "New reply"}, {"at", 41.}}); view.setActivity(details, events, "Start", true); }));
+    QVERIFY(renders([&] { view.setActivity(details, events, "Another prompt", true); }));
+    QVERIFY(renders([&] { view.setActivity(details, events, "Another prompt", false); }));
+    QVERIFY(renders([&] { details["processes"] = QJsonObject{{"items", QJsonArray{QJsonObject{{"id", "other"}}}}}; view.setActivity(details, events, "Another prompt", false); }));
+    QVERIFY(renders([&] { view.setTimeline(details, events, QJsonArray{QJsonObject{{"id", "local"}, {"text", "Queued"}, {"submitted_at", 42.}, {"status", "sending"}}}, "Another prompt", false); }));
+    QVERIFY(renders([&] { view.setTheme(true); }));
+    QVERIFY(renders([&] { view.setContentScale(1.25); }));
+    view.setSessionKey("arch\ncodex/hgs/other");
+    QVERIFY(renders([&] { view.setActivity(details, events, "Another prompt", false); }));
 }
 
 void TestActivityView::startsAtLatestAndFollows()

@@ -110,6 +110,7 @@ private slots:
     void usageLimitBecomesToolbarChip();
     void dashboardAndMultiMachineNavigation();
     void hiddenPagesRenderWhenShown();
+    void pollsKeepUnchangedActivity();
     void multiSelectionKeepsConversationAndGroupMenu_data();
     void multiSelectionKeepsConversationAndGroupMenu();
     void selectionCommandsKeepPinnedTargets();
@@ -406,6 +407,26 @@ void TestSessionsWindow::dashboardAndMultiMachineNavigation()
     brand->click(); dashboard->machinesRequested("mac"); auto *machines=window.findChild<MachinesPage *>(); QVERIFY(machines->isVisible());
     machines->accountsRequested("mac"); auto *accounts=window.findChild<AccountsPage *>(); QVERIFY(accounts->isVisible());
     QCOMPARE(accounts->findChild<QComboBox *>("accountMachineFilter")->currentData().toString(),QString("mac"));
+}
+
+void TestSessionsWindow::pollsKeepUnchangedActivity()
+{
+    // Fleet polls and repeated inspections of an unchanged session leave Activity alone.
+    SessionsWindow window(script()); auto state = fleet(); window.setFleet(state); window.show();
+    auto *client = window.findChild<HgsClient *>(); QSignalSpy inspected(client, &HgsClient::inspectionReady);
+    window.showSession({}, "codex/hgs/dashboard"); QTRY_VERIFY(!inspected.isEmpty()); QTest::qWait(50);
+    auto *activity = window.findChild<ActivityView *>("mainActivity"); QVERIFY(activity);
+    const int passes = activity->renderPasses();
+    QJsonObject details{{"tracked", true}, {"conversation_id", "conversation-one"}, {"events", QJsonArray{}}, {"cursor", 0}, {"goal_observed_at", 200.}};
+    window.setFleet(state); client->inspectionReady({}, "codex/hgs/dashboard", details);
+    details["goal_observed_at"] = 205.; client->inspectionReady({}, "codex/hgs/dashboard", details); window.setFleet(state);
+    QCOMPARE(activity->renderPasses(), passes);
+    details["cursor"] = 1; details["events"] = QJsonArray{QJsonObject{{"seq", 1}, {"type", "Stop"}, {"detail", "Fresh reply"}, {"at", 10.}}};
+    client->inspectionReady({}, "codex/hgs/dashboard", details); QVERIFY(activity->renderPasses() > passes);
+    QVERIFY(activity->plainText().contains("Fresh reply"));
+    // Process links depend on a setting that the next render must follow.
+    const int linked = activity->renderPasses(); QSettings().setValue("processes/enabled", true); window.setFleet(state);
+    QVERIFY(activity->renderPasses() > linked);
 }
 
 void TestSessionsWindow::hiddenPagesRenderWhenShown()

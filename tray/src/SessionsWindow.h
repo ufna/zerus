@@ -288,6 +288,7 @@ private:
     QList<QPushButton *> m_filters;
     QLineEdit *m_search;
     QLabel *m_heading, *m_count, *m_title, *m_meta, *m_badge, *m_model, *m_hint, *m_notice;
+    QString m_modelElision;
     QLabel *m_connectionStatus;
     QPushButton *m_connectionRetry;
     QSet<QString> m_pollingHosts;
