@@ -3553,12 +3553,30 @@ void TestSessionsWindow::completedSubagentsPreferenceKeepsOpenHistory()
         {"c", QJsonObject{{"name", "Approval child"}, {"state", "finished"}, {"display_state", "approval"}}},
         {"d", QJsonObject{{"name", "Unknown child"}}}};
     box.sessions = {session}; state.setLocal(box, QDateTime::currentMSecsSinceEpoch());
-    SessionsWindow window(script()); window.setFleet(state); window.show(); QTest::qWait(80);
-    auto *client = window.findChild<HgsClient *>();
     QJsonObject details{{"tracked", true}, {"conversation_id", session.conversationId}, {"run_id", session.runId},
         {"subagent_source", "hooks"}, {"subagents", session.subagents}, {"subagent_counts_complete", true},
         {"subagent_active_count", 1}, {"subagent_total_count", 29}};
-    client->inspectionReady({}, session.name, details);
+    QJsonArray events;
+    for (int i = 0; i < 80; ++i) events.append(QJsonObject{{"seq", i+1}, {"type", "AgentMessage"}, {"detail", QString("Retained child history %1").arg(i)}, {"at", 1700000000+i}});
+    const QJsonObject childDetails{{"parent_conversation_id", session.conversationId},
+        {"conversation_id", "child-conversation"}, {"run_id", "run-one"}, {"send_supported", true}, {"events", events}};
+    // Every asynchronous inspection sees the fixture's current roster, rather
+    // than replacing an injected finished turn with the generic working fleet.
+    const auto fixtureScript = m_dir.filePath("hgs-completed-subagents");
+    const auto saveSnapshot = [&](const QString &suffix, const QJsonObject &snapshot) {
+        QSaveFile file(fixtureScript + suffix); QVERIFY(file.open(QIODevice::WriteOnly));
+        const auto json = QJsonDocument(snapshot).toJson(QJsonDocument::Compact);
+        QCOMPARE(file.write(json), qint64(json.size())); QVERIFY(file.commit());
+    };
+    saveSnapshot(".parent", details); saveSnapshot(".child", childDetails);
+    QFile fixture(fixtureScript); QVERIFY(fixture.open(QIODevice::WriteOnly));
+    fixture.write("#!/bin/sh\ncase \"$1\" in @*) shift;; esac\ncase \"$1\" in\n"
+        "inspect) case \" $* \" in *\" --agent \"*) cat \"$0.child\";; *) cat \"$0.parent\";; esac;;\nesac\n");
+    fixture.close(); QVERIFY(fixture.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+    SessionsWindow window(fixtureScript); auto *client = window.findChild<HgsClient *>();
+    QSignalSpy parentInspected(client, &HgsClient::inspectionReady);
+    QSignalSpy childInspected(client, &HgsClient::subagentInspectionReady);
+    window.setFleet(state); window.show(); QTRY_VERIFY(!parentInspected.isEmpty());
     auto *list = window.findChild<SessionList *>("sessionList");
     auto *roster = window.findChild<QTextBrowser *>("subagents");
     auto *check = window.findChild<QCheckBox *>("workspaceShowCompletedSubagents"); QVERIFY(check); QVERIFY(!check->isChecked());
@@ -3571,34 +3589,35 @@ void TestSessionsWindow::completedSubagentsPreferenceKeepsOpenHistory()
     check->setChecked(true); QCOMPARE(list->count(), 5); QVERIFY(roster->toPlainText().contains("Past child"));
     check->setChecked(false); QCOMPARE(list->count(), 4);
     auto *parentComposer = window.findChild<MessageComposer *>("messageComposer"); parentComposer->editor()->setPlainText("Parent draft");
-    list->setCurrentRow(1);
-    QJsonArray events;
-    for (int i = 0; i < 80; ++i) events.append(QJsonObject{{"seq", i+1}, {"type", "AgentMessage"}, {"detail", QString("Retained child history %1").arg(i)}, {"at", 1700000000+i}});
-    client->subagentInspectionReady({}, session.name, "a", {}, {{"parent_conversation_id", session.conversationId},
-        {"conversation_id", "child-conversation"}, {"run_id", "run-one"}, {"send_supported", true}, {"events", events}});
+    const auto beforeOpen = parentInspected.size(); list->setCurrentRow(1);
+    QTRY_VERIFY(parentInspected.size() > beforeOpen); QTRY_VERIFY(!childInspected.isEmpty());
     auto *childComposer = window.findChild<MessageComposer *>("subagentComposer"); childComposer->editor()->setPlainText("Child draft");
     auto *view = window.findChild<ActivityView *>("subagentActivity"); auto *scroll = view->browser()->verticalScrollBar();
     scroll->setValue(scroll->maximum()/2); const auto position = scroll->value();
     const auto history = view->browser()->toPlainText();
     auto children = details.value("subagents").toObject(); auto child = children.value("a").toObject(); child["state"] = "finished"; children["a"] = child;
-    details["subagents"] = children; client->inspectionReady({}, session.name, details);
+    details["subagents"] = children; saveSnapshot(".parent", details); client->inspectionReady({}, session.name, details);
     check->setChecked(true); check->setChecked(false);
     QCOMPARE(list->currentItem()->data(SessionRoles::ChildId).toString(), QString("a"));
     QCOMPARE(childComposer->editor()->toPlainText(), QString("Child draft"));
     QCOMPARE(view->browser()->toPlainText(), history); QCOMPARE(scroll->value(), position);
     childComposer->editor()->clear(); window.findChild<QPushButton *>("subagentBack")->click();
     QTRY_COMPARE(list->count(), 3); QCOMPARE(parentComposer->editor()->toPlainText(), QString("Parent draft"));
+    const auto beforeReinspect = parentInspected.size();
+    QVERIFY(client->requestInspection({}, session.name, 0)); QTRY_VERIFY(parentInspected.size() > beforeReinspect);
+    QCOMPARE(list->count(), 3); QCOMPARE(parentComposer->editor()->toPlainText(), QString("Parent draft"));
     // Retained preview evidence follows the same filter, without resurrecting
     // completed children when the individual roster filters to empty.
     details["subagents"] = QJsonObject{};
     details["subagent_previews"] = QJsonArray{QJsonObject{{"id", "preview"}, {"name", "Past preview"}, {"state", "finished"}}};
-    client->inspectionReady({}, session.name, details);
+    saveSnapshot(".parent", details); client->inspectionReady({}, session.name, details);
     QVERIFY(roster->toPlainText().contains("No active subagents reported"));
     QVERIFY(!roster->toPlainText().contains("Past preview"));
     check->setChecked(true); QVERIFY(roster->toPlainText().contains("Past preview"));
     SessionsWindow reopened(script()); QVERIFY(reopened.findChild<QCheckBox *>("workspaceShowCompletedSubagents")->isChecked());
     // A saved old-conversation draft must not pin a reused ID in a new roster.
-    check->setChecked(false); details["subagents"] = children; details.remove("subagent_previews"); client->inspectionReady({}, session.name, details);
+    check->setChecked(false); details["subagents"] = children; details.remove("subagent_previews");
+    saveSnapshot(".parent", details); client->inspectionReady({}, session.name, details);
     roster->anchorClicked(QUrl("hgs-agent:a")); childComposer->editor()->setPlainText("Old conversation draft");
     box.sessions[0].conversationId = "replacement-conversation"; box.sessions[0].subagents = {{"a", child}};
     state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
