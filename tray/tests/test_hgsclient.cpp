@@ -4,7 +4,12 @@
 #include <QTemporaryDir>
 #include <QTextStream>
 #include <QJsonDocument>
+#include <QThread>
+#include <atomic>
+#include <csignal>
+#include <memory>
 #include "HgsClient.h"
+#include "ProcessRunner.h"
 #include "SessionPresentation.h"
 
 class TestHgsClient : public QObject {
@@ -52,7 +57,47 @@ private slots:
     void nativeLaunchReportsProcessResult();
     void attachmentsUseCapturedIdentityAndValidateResponses();
     void gitStatusReadsAreSharedAndScopedToMachineAndFolder();
+    void pollsLaunchOffTheGuiThreadAndReportOnIt();
+    void destroyedClientKillsItsPolls();
 };
+
+void TestHgsClient::pollsLaunchOffTheGuiThreadAndReportOnIt()
+{
+    QTemporaryDir fixture; QVERIFY(fixture.isValid());
+    const auto program = fixture.filePath("hgs"); QFile file(program); QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("#!/bin/sh\necho '{\"host\":\"arch\",\"ok\":true,\"sessions\":[]}'\n"); file.close();
+    QVERIFY(file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+    std::atomic<QThread *> launchThread{nullptr};
+    ProcessRunner::setLaunchObserver([&launchThread] { launchThread = QThread::currentThread(); });
+    HgsClient client(program); QThread *readyThread = nullptr; int ready = 0;
+    connect(&client, &HgsClient::localReady, this, [&](const BoxState &box) { readyThread = QThread::currentThread(); ready += box.host == "arch"; });
+    client.requestLocal();
+    QTRY_COMPARE(ready, 1);
+    ProcessRunner::setLaunchObserver({});
+    QVERIFY(launchThread.load() && launchThread.load() != QThread::currentThread());
+    QCOMPARE(readyThread, QThread::currentThread());
+}
+
+void TestHgsClient::destroyedClientKillsItsPolls()
+{
+    QTemporaryDir fixture; QVERIFY(fixture.isValid());
+    const auto program = fixture.filePath("hgs"); QFile file(program); QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("#!/bin/sh\necho $$ > \"$0.pid\"\nexec sleep 30\n"); file.close();
+    QVERIFY(file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+    auto client = std::make_unique<HgsClient>(program); int reports = 0;
+    connect(client.get(), &HgsClient::peerReady, this, [&reports] { ++reports; });
+    connect(client.get(), &HgsClient::stateReadFailed, this, [&reports] { ++reports; });
+    client->requestPeer("arch");
+    QFile pidFile(program + ".pid");
+    QTRY_VERIFY(pidFile.exists() && pidFile.size() > 0);
+    QVERIFY(pidFile.open(QIODevice::ReadOnly)); const auto pid = pidFile.readAll().trimmed().toLongLong(); QVERIFY(pid > 0);
+    // The old destructor killed and reaped child QProcesses; owners of worker
+    // launches keep that guarantee and receive no late report.
+    client.reset();
+    QVERIFY(::kill(pid_t(pid), 0) != 0);
+    QTest::qWait(100);
+    QCOMPARE(reports, 0);
+}
 
 void TestHgsClient::gitStatusReadsAreSharedAndScopedToMachineAndFolder()
 {

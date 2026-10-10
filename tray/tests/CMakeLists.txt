@@ -26,24 +26,29 @@ target_include_directories(test_appconfig PRIVATE ../src)
 target_link_libraries(test_appconfig PRIVATE Qt6::Test Qt6::Core)
 add_test(NAME appconfig COMMAND test_appconfig)
 
-add_executable(test_hgsclient test_hgsclient.cpp ../src/HgsClient.cpp)
+add_executable(test_hgsclient test_hgsclient.cpp ../src/HgsClient.cpp ../src/ProcessRunner.cpp)
 target_include_directories(test_hgsclient PRIVATE ../src)
 target_link_libraries(test_hgsclient PRIVATE Qt6::Test Qt6::Core)
 add_test(NAME hgsclient COMMAND test_hgsclient)
 
-add_executable(test_swarmcontroller test_swarmcontroller.cpp ../src/SwarmController.cpp ../src/SwarmDialog.cpp ../src/SwarmConflictReview.cpp ../src/HgsClient.cpp ../src/FleetState.cpp)
+add_executable(test_processrunner test_processrunner.cpp ../src/ProcessRunner.cpp)
+target_include_directories(test_processrunner PRIVATE ../src)
+target_link_libraries(test_processrunner PRIVATE Qt6::Test Qt6::Core)
+add_test(NAME processrunner COMMAND test_processrunner)
+
+add_executable(test_swarmcontroller test_swarmcontroller.cpp ../src/SwarmController.cpp ../src/SwarmDialog.cpp ../src/SwarmConflictReview.cpp ../src/HgsClient.cpp ../src/ProcessRunner.cpp ../src/FleetState.cpp)
 target_include_directories(test_swarmcontroller PRIVATE ../src)
 target_link_libraries(test_swarmcontroller PRIVATE Qt6::Test Qt6::Widgets)
 add_test(NAME swarmcontroller COMMAND test_swarmcontroller)
 set_tests_properties(swarmcontroller PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
-add_executable(test_processview test_processview.cpp ../src/ProcessView.cpp ../src/HgsClient.cpp)
+add_executable(test_processview test_processview.cpp ../src/ProcessView.cpp ../src/HgsClient.cpp ../src/ProcessRunner.cpp)
 target_include_directories(test_processview PRIVATE ../src)
 target_link_libraries(test_processview PRIVATE Qt6::Test Qt6::Widgets)
 add_test(NAME processview COMMAND test_processview)
 set_tests_properties(processview PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
-add_executable(test_fleetstate test_fleetstate.cpp ../src/FleetState.cpp ../src/HgsClient.cpp)
+add_executable(test_fleetstate test_fleetstate.cpp ../src/FleetState.cpp ../src/HgsClient.cpp ../src/ProcessRunner.cpp)
 target_include_directories(test_fleetstate PRIVATE ../src)
 target_link_libraries(test_fleetstate PRIVATE Qt6::Test Qt6::Core)
 add_test(NAME fleetstate COMMAND test_fleetstate)
@@ -83,7 +88,7 @@ set_tests_properties(terminalbackend PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=off
 # Сам ProjectsDialog здесь не конструируется (QTEST_APPLESS_MAIN, приложения нет вовсе),
 # но Qt6::Widgets всё равно нужен: ProjectsDialog.cpp наследует QDialog и тянет виджеты
 # на этапе линковки, а HgsClient.cpp -- за projectSet/projectRemove, которые он зовёт.
-add_executable(test_projectsdialog test_projectsdialog.cpp ../src/SessionOrganization.cpp ../src/ProjectsDialog.cpp ../src/HgsClient.cpp ../src/DirectoryDialog.cpp ../src/FleetState.cpp)
+add_executable(test_projectsdialog test_projectsdialog.cpp ../src/SessionOrganization.cpp ../src/ProjectsDialog.cpp ../src/HgsClient.cpp ../src/ProcessRunner.cpp ../src/DirectoryDialog.cpp ../src/FleetState.cpp)
 target_include_directories(test_projectsdialog PRIVATE ../src)
 target_link_libraries(test_projectsdialog PRIVATE Qt6::Test Qt6::Widgets)
 add_test(NAME projectsdialog COMMAND test_projectsdialog)
@@ -96,7 +101,7 @@ set_tests_properties(projectsdialog PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offsc
 # и метаобъекта, который тянет за собой его заголовок; ни одного процесса тест не
 # запускает: TrayMenu про hgs и терминалы не знает вовсе, в этом и смысл шва.
 add_executable(test_traymenu test_traymenu.cpp ../src/TrayMenu.cpp ../src/FleetState.cpp
-               ../src/HgsClient.cpp)
+               ../src/HgsClient.cpp ../src/ProcessRunner.cpp)
 target_include_directories(test_traymenu PRIVATE ../src)
 target_link_libraries(test_traymenu PRIVATE Qt6::Test Qt6::Widgets)
 add_test(NAME traymenu COMMAND test_traymenu)
@@ -175,7 +180,7 @@ add_executable(test_sessionswindow test_sessionswindow.cpp ../src/SessionsWindow
                ../src/MachineFilter.cpp ../src/DashboardPage.cpp ../src/AccountsPage.cpp ../src/AccountUsageStore.cpp
                ../src/SessionOrganization.cpp ../src/SessionList.cpp ../src/SwarmController.cpp ../src/SwarmDialog.cpp ../src/SwarmConflictReview.cpp
                ../src/ActivityView.cpp ../src/ProcessView.cpp ../src/NativeUiView.cpp ../src/MessageComposer.cpp ../src/ComposerToolbar.cpp ../src/ComposerDraftStore.cpp ../src/QuestionCard.cpp
-               ../src/FleetState.cpp ../src/HgsClient.cpp ../src/DirectoryDialog.cpp
+               ../src/FleetState.cpp ../src/HgsClient.cpp ../src/ProcessRunner.cpp ../src/DirectoryDialog.cpp
                ../src/NewSessionDialog.cpp ../src/ProjectsDialog.cpp ../resources.qrc)
 target_include_directories(test_sessionswindow PRIVATE ../src)
 target_compile_definitions(test_sessionswindow PRIVATE HGS_TRAY_VERSION="${PROJECT_VERSION}")
@@ -187,7 +192,7 @@ foreach(shard RANGE 9)
     set_tests_properties(sessionswindow-${shard} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endforeach()
 
-add_executable(test_nativeuiview test_nativeuiview.cpp ../src/NativeUiView.cpp ../src/HgsClient.cpp)
+add_executable(test_nativeuiview test_nativeuiview.cpp ../src/NativeUiView.cpp ../src/HgsClient.cpp ../src/ProcessRunner.cpp)
 target_include_directories(test_nativeuiview PRIVATE ../src)
 target_link_libraries(test_nativeuiview PRIVATE Qt6::Test Qt6::Widgets Qt6::WebEngineWidgets)
 add_test(NAME nativeuiview COMMAND test_nativeuiview)
@@ -229,49 +234,49 @@ target_link_libraries(test_swarmbutton PRIVATE Qt6::Test Qt6::Widgets)
 add_test(NAME swarmbutton COMMAND test_swarmbutton)
 set_tests_properties(swarmbutton PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
-add_executable(test_machinespage test_machinespage.cpp ../src/MachinesPage.cpp ../src/HgsClient.cpp ../src/FleetState.cpp)
+add_executable(test_machinespage test_machinespage.cpp ../src/MachinesPage.cpp ../src/HgsClient.cpp ../src/ProcessRunner.cpp ../src/FleetState.cpp)
 target_include_directories(test_machinespage PRIVATE ../src)
 target_link_libraries(test_machinespage PRIVATE Qt6::Test Qt6::Widgets)
 add_test(NAME machinespage COMMAND test_machinespage)
 set_tests_properties(machinespage PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
-add_executable(test_sessionsearch test_sessionsearch.cpp ../src/SessionSearch.cpp ../src/HgsClient.cpp ../src/FleetState.cpp)
+add_executable(test_sessionsearch test_sessionsearch.cpp ../src/SessionSearch.cpp ../src/HgsClient.cpp ../src/ProcessRunner.cpp ../src/FleetState.cpp)
 target_include_directories(test_sessionsearch PRIVATE ../src)
 target_link_libraries(test_sessionsearch PRIVATE Qt6::Test Qt6::Widgets)
 add_test(NAME sessionsearch COMMAND test_sessionsearch)
 set_tests_properties(sessionsearch PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
-add_executable(test_dashboard test_dashboard.cpp ../src/DashboardPage.cpp ../src/SessionList.cpp ../src/FleetState.cpp ../src/HgsClient.cpp)
+add_executable(test_dashboard test_dashboard.cpp ../src/DashboardPage.cpp ../src/SessionList.cpp ../src/FleetState.cpp ../src/HgsClient.cpp ../src/ProcessRunner.cpp)
 target_include_directories(test_dashboard PRIVATE ../src)
 target_link_libraries(test_dashboard PRIVATE Qt6::Test Qt6::Widgets)
 add_test(NAME dashboard COMMAND test_dashboard)
 set_tests_properties(dashboard PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
-add_executable(test_machinefilter test_machinefilter.cpp ../src/MachineFilter.cpp ../src/FleetState.cpp ../src/HgsClient.cpp)
+add_executable(test_machinefilter test_machinefilter.cpp ../src/MachineFilter.cpp ../src/FleetState.cpp ../src/HgsClient.cpp ../src/ProcessRunner.cpp)
 target_include_directories(test_machinefilter PRIVATE ../src)
 target_link_libraries(test_machinefilter PRIVATE Qt6::Test Qt6::Widgets)
 add_test(NAME machinefilter COMMAND test_machinefilter)
 set_tests_properties(machinefilter PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
-add_executable(test_accountspage test_accountspage.cpp ../src/SessionOrganization.cpp ../src/AccountsPage.cpp ../src/AccountUsageStore.cpp ../src/NewSessionDialog.cpp ../src/DirectoryDialog.cpp ../src/HgsClient.cpp ../src/FleetState.cpp)
+add_executable(test_accountspage test_accountspage.cpp ../src/SessionOrganization.cpp ../src/AccountsPage.cpp ../src/AccountUsageStore.cpp ../src/NewSessionDialog.cpp ../src/DirectoryDialog.cpp ../src/HgsClient.cpp ../src/ProcessRunner.cpp ../src/FleetState.cpp)
 target_include_directories(test_accountspage PRIVATE ../src)
 target_link_libraries(test_accountspage PRIVATE Qt6::Test Qt6::Widgets)
 add_test(NAME accountspage COMMAND test_accountspage)
 set_tests_properties(accountspage PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
-add_executable(test_accountusage test_accountusage.cpp ../src/AccountUsageStore.cpp ../src/HgsClient.cpp ../src/FleetState.cpp ../src/ComposerToolbar.cpp)
+add_executable(test_accountusage test_accountusage.cpp ../src/AccountUsageStore.cpp ../src/HgsClient.cpp ../src/ProcessRunner.cpp ../src/FleetState.cpp ../src/ComposerToolbar.cpp)
 target_include_directories(test_accountusage PRIVATE ../src)
 target_link_libraries(test_accountusage PRIVATE Qt6::Test Qt6::Widgets)
 add_test(NAME accountusage COMMAND test_accountusage)
 set_tests_properties(accountusage PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
-add_executable(test_attachmentviewer test_attachmentviewer.cpp ../src/HgsClient.cpp)
+add_executable(test_attachmentviewer test_attachmentviewer.cpp ../src/HgsClient.cpp ../src/ProcessRunner.cpp)
 target_include_directories(test_attachmentviewer PRIVATE ../src)
 target_link_libraries(test_attachmentviewer PRIVATE Qt6::Test Qt6::Widgets)
 add_test(NAME attachmentviewer COMMAND test_attachmentviewer)
 set_tests_properties(attachmentviewer PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
-add_executable(test_worktreepanel test_worktreepanel.cpp ../src/HgsClient.cpp ../src/FleetState.cpp
+add_executable(test_worktreepanel test_worktreepanel.cpp ../src/HgsClient.cpp ../src/ProcessRunner.cpp ../src/FleetState.cpp
                ../src/NewSessionDialog.cpp ../src/SessionOrganization.cpp ../src/DirectoryDialog.cpp)
 target_include_directories(test_worktreepanel PRIVATE ../src)
 target_link_libraries(test_worktreepanel PRIVATE Qt6::Test Qt6::Widgets)

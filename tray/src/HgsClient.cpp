@@ -1,4 +1,5 @@
 #include "HgsClient.h"
+#include "ProcessRunner.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -23,8 +24,9 @@
 
 namespace {
 
-void configureProcess(QProcess *process, const QString &program, const QStringList &arguments)
+ProcessRunner::Request processRequest(const QString &program, const QStringList &arguments)
 {
+    ProcessRunner::Request request;
 #ifdef Q_OS_MACOS
     // Qt encodes argv with QFile::encodeName(), which decomposes Unicode on
     // macOS. Session names are byte identities, not filesystem names: changing
@@ -42,13 +44,21 @@ void configureProcess(QProcess *process, const QString &program, const QStringLi
         script += QStringLiteral(" \"$%1\"").arg(variable);
     }
     script += QStringLiteral("; unset %1; exec \"$@\"").arg(variables.join(' '));
-    process->setProgram(QStringLiteral("/bin/sh"));
-    process->setArguments({QStringLiteral("-c"), script});
-    process->setProcessEnvironment(environment);
+    request.program = QStringLiteral("/bin/sh");
+    request.arguments = {QStringLiteral("-c"), script};
+    request.environment = environment;
 #else
-    process->setProgram(program);
-    process->setArguments(arguments);
+    request.program = program;
+    request.arguments = arguments;
 #endif
+    return request;
+}
+
+void configureProcess(QProcess *process, const QString &program, const QStringList &arguments)
+{
+    const auto request = processRequest(program, arguments);
+    process->setProgram(request.program); process->setArguments(request.arguments);
+    if (request.environment) process->setProcessEnvironment(*request.environment);
 }
 
 // null -> QString(), не пустая строка "": вызывающий код различает их через isNull().
@@ -170,43 +180,29 @@ quint64 HgsClient::requestRecovery(const QString &host, const QString &operation
 {
     const auto request = ++m_recoveryRequest;
     QStringList args{"recovery", operation}; if (!host.isEmpty()) args.prepend('@' + host);
-    auto *process = new QProcess(this); configureProcess(process, m_hgs, args);
-    auto *timer = new QTimer(process); timer->setSingleShot(true);
-    auto reported = std::make_shared<bool>(false);
-    const auto fail = [this, request, reported](const QString &error) {
-        if (*reported) return; *reported = true; emit recoveryFinished(request, false, {}, error);
-    };
-    connect(process, &QProcess::started, process, [process, data, operation] {
-        if (operation != "get") process->write(QJsonDocument(data).toJson(QJsonDocument::Compact));
-        process->closeWriteChannel();
-    });
-    connect(timer, &QTimer::timeout, process, [process, fail] {
-        fail(tr("Recovery request timed out. Reload its state before trying again.")); process->kill();
-    });
-    connect(process, &QProcess::errorOccurred, process, [process, timer, fail](QProcess::ProcessError error) {
-        if (error == QProcess::FailedToStart) { timer->stop(); fail(process->errorString()); process->deleteLater(); }
-    });
-    connect(process, &QProcess::finished, process, [this, process, timer, fail, reported, request, host, operation](int code, QProcess::ExitStatus status) {
-        timer->stop();
-        if (!*reported) {
-            if (code || status != QProcess::NormalExit) {
-                auto error = QString::fromUtf8(process->readAllStandardError()).trimmed().left(2000);
-                fail(error.isEmpty() ? tr("Could not update recovery. Reload its state.") : error);
-            } else {
-                QJsonParseError error; const auto doc = QJsonDocument::fromJson(process->readAllStandardOutput(), &error);
-                if (error.error != QJsonParseError::NoError || !doc.isObject()) fail(tr("Invalid recovery response"));
-                else { *reported = true; emit recoveryFinished(request, true, doc.object(), {}); if (operation != "get") emit sessionWriteDone(host); }
-            }
+    auto process = processRequest(m_hgs, args); process.timeoutMs = host.isEmpty() ? 10000 : 25000;
+    process.input = operation != "get" ? QJsonDocument(data).toJson(QJsonDocument::Compact) : QByteArray();
+    ProcessRunner::run(std::move(process), this, [this, request, host, operation](const ProcessRunner::Result &result) {
+        const auto fail = [this, request](const QString &error) { emit recoveryFinished(request, false, {}, error); };
+        if (result.outcome == ProcessRunner::Result::TimedOut) return fail(tr("Recovery request timed out. Reload its state before trying again."));
+        if (result.outcome == ProcessRunner::Result::FailedToStart) return fail(result.errorString);
+        if (result.exitCode || result.exitStatus != QProcess::NormalExit) {
+            const auto error = QString::fromUtf8(result.standardError).trimmed().left(2000);
+            return fail(error.isEmpty() ? tr("Could not update recovery. Reload its state.") : error);
         }
-        process->deleteLater();
+        QJsonParseError error; const auto doc = QJsonDocument::fromJson(result.standardOutput, &error);
+        if (error.error != QJsonParseError::NoError || !doc.isObject()) return fail(tr("Invalid recovery response"));
+        emit recoveryFinished(request, true, doc.object(), {}); if (operation != "get") emit sessionWriteDone(host);
     });
-    timer->start(host.isEmpty() ? 10000 : 25000); process->start(); return request;
+    return request;
 }
 
 HgsClient::~HgsClient()
 {
-    // QProcess's destructor waits and can emit finished(). Disconnect while the
-    // callback's captured maps and owner are still alive, before QObject deletes children.
+    // Worker launches (ProcessRunner) are killed when this object is destroyed.
+    // Direct QProcess children remain for interactive transfers: QProcess's
+    // destructor waits and can emit finished(). Disconnect while the callback's
+    // captured maps and owner are still alive, before QObject deletes children.
     for (auto *proc : findChildren<QProcess *>(QString(), Qt::FindDirectChildrenOnly)) {
         for (auto *timer : proc->findChildren<QTimer *>()) timer->stop();
         proc->disconnect(); proc->blockSignals(true);
@@ -286,74 +282,31 @@ namespace {
 // Общий каркас запуска hgs: считает вывод только по finished (частичные readyRead
 // не парсим — printf в hgs пишет одним куском, но QProcess вправе доставить его частями),
 // бьёт по таймауту и всегда сообщает, какой бинарь и с какими аргументами не удался.
+// Polls start hgs about once a second, so fork/exec runs on ProcessRunner's worker
+// instead of the GUI thread. ProcessRunner also reports exactly once: the finished()
+// that follows a timeout kill() must not reach onFailed() again (--selftest leaves
+// main() on the first failure).
 void runHgs(const QString &hgs, const QStringList &args, int timeoutMs, QObject *parent,
             const std::function<void(const QByteArray &)> &onFinished,
             const std::function<void(const QString &, const QString &)> &onFailed,
             const QByteArray &input = {})
 {
-    auto *proc = new QProcess(parent);
-    configureProcess(proc, hgs, args);
-
-    auto *timer = new QTimer(proc);
-    timer->setSingleShot(true);
-
-    // kill() после таймаута не обрывает процесс мгновенно: QProcess всё равно потом
-    // пришлёт finished() (CrashExit) — без этого флага onFailed() ушёл бы дважды на
-    // один вызов, а второй раз уже мог целиться в разрушенный к тому моменту loop/client
-    // (например, --selftest завершает main() сразу по первому failed()).
-    auto reported = std::make_shared<bool>(false);
-
-    QObject::connect(timer, &QTimer::timeout, proc, [proc, hgs, args, onFailed, reported]() {
-        if (*reported)
-            return;
-        *reported = true;
-        proc->kill();
-        onFailed(hgs + QLatin1Char(' ') + args.join(QLatin1Char(' ')),
-                  QStringLiteral("timed out"));
-    });
-
-    QObject::connect(proc, &QProcess::errorOccurred, proc,
-                      [proc, timer, hgs, args, onFailed, reported](QProcess::ProcessError e) {
-        if (e != QProcess::FailedToStart)
-            return;  // прочие ошибки разбираются в finished()
-        timer->stop();
-        if (*reported)
-            return;
-        *reported = true;
-        onFailed(hgs + QLatin1Char(' ') + args.join(QLatin1Char(' ')),
-                  QStringLiteral("cannot start '%1': %2").arg(hgs, proc->errorString()));
-        proc->deleteLater();
-    });
-
-    QObject::connect(proc, static_cast<void (QProcess::*)(int, QProcess::ExitStatus)>(
-                              &QProcess::finished), proc,
-                      [proc, timer, hgs, args, onFinished, onFailed, reported](
-                              int exitCode, QProcess::ExitStatus status) {
-        timer->stop();
-        if (*reported) {
-            // Уже отчитались таймаутом — просто убираем процесс, второй раз не сигналим.
-            proc->deleteLater();
-            return;
-        }
-        *reported = true;
+    auto request = processRequest(hgs, args); request.timeoutMs = timeoutMs;
+    if (!input.isEmpty()) request.input = input;
+    ProcessRunner::run(std::move(request), parent, [hgs, args, onFinished, onFailed](const ProcessRunner::Result &result) {
+        const QString what = hgs + QLatin1Char(' ') + args.join(QLatin1Char(' '));
+        if (result.outcome == ProcessRunner::Result::TimedOut)
+            return onFailed(what, QStringLiteral("timed out"));
+        if (result.outcome == ProcessRunner::Result::FailedToStart)
+            return onFailed(what, QStringLiteral("cannot start '%1': %2").arg(hgs, result.errorString));
         // hgs всегда возвращает 0 для "спящего пира" — ненулевой код или CrashExit
         // означает, что сломан сам вызов, а не то, что застали пира офлайн.
-        if (status != QProcess::NormalExit || exitCode != 0) {
-            const QString detail = QString::fromLocal8Bit(proc->readAllStandardError()).trimmed().left(4000);
-            onFailed(hgs + QLatin1Char(' ') + args.join(QLatin1Char(' ')),
-                      detail.isEmpty() ? QStringLiteral("exit code %1").arg(exitCode) : detail);
-            proc->deleteLater();
-            return;
+        if (result.exitStatus != QProcess::NormalExit || result.exitCode != 0) {
+            const QString detail = QString::fromLocal8Bit(result.standardError).trimmed().left(4000);
+            return onFailed(what, detail.isEmpty() ? QStringLiteral("exit code %1").arg(result.exitCode) : detail);
         }
-        onFinished(proc->readAllStandardOutput());
-        proc->deleteLater();
+        onFinished(result.standardOutput);
     });
-
-    if (!input.isEmpty()) QObject::connect(proc, &QProcess::started, proc, [proc, payload = QByteArray(input)]() mutable {
-        proc->write(payload); payload.fill('\0'); payload.clear(); proc->closeWriteChannel();
-    });
-    timer->start(timeoutMs);
-    proc->start();
 }
 
 } // namespace
@@ -609,54 +562,20 @@ void HgsClient::requestSubagentInspection(const QString &host, const QString &na
 void HgsClient::runWrite(const QString &op, const QStringList &args, int timeoutMs,
                          bool sessionWrite, const QString &host)
 {
-    auto *proc = new QProcess(this);
-    configureProcess(proc, m_hgs, args);
-
-    auto *timer = new QTimer(proc);
-    timer->setSingleShot(true);
-
-    // Тот же трюк с reported, что и в runHgs(): kill() после таймаута не обрывает
-    // процесс мгновенно, finished() всё равно прилетит следом (CrashExit) -- без флага
-    // writeDone ушёл бы дважды на один вызов.
-    auto reported = std::make_shared<bool>(false);
-
-    auto report = [this, op, sessionWrite, host](bool ok, const QString &detail) {
-        emit writeDone(op, ok, detail);
+    auto request = processRequest(m_hgs, args); request.timeoutMs = timeoutMs;
+    ProcessRunner::run(std::move(request), this, [this, op, sessionWrite, host](const ProcessRunner::Result &result) {
+        // Any QProcess error (failed start, crash) reports its own text, as the
+        // errorOccurred() that precedes finished() did before.
+        const bool timedOut = result.outcome == ProcessRunner::Result::TimedOut;
+        const bool error = !timedOut && result.error != QProcess::UnknownError;
+        const bool ok = !timedOut && !error && result.exitCode == 0 && result.exitStatus == QProcess::NormalExit;
+        emit writeDone(op, ok, timedOut ? QStringLiteral("timed out") : error ? result.errorString
+                                        : QString::fromLocal8Bit(result.standardError).trimmed());
         // A failed batch can have completed some sessions. Refresh its own machine
         // even on failure, without mixing it up with concurrent project edits.
         if (sessionWrite)
             emit sessionWriteDone(host);
-    };
-    connect(timer, &QTimer::timeout, this, [proc, report, reported]() {
-        if (*reported) return;
-        *reported = true;
-        proc->kill();
-        report(false, QStringLiteral("timed out"));
     });
-
-    connect(proc, &QProcess::finished, this,
-            [proc, timer, report, reported](int code, QProcess::ExitStatus status) {
-        timer->stop();
-        if (*reported) {
-            proc->deleteLater();
-            return;
-        }
-        *reported = true;
-        const QString err = QString::fromLocal8Bit(proc->readAllStandardError()).trimmed();
-        report(code == 0 && status == QProcess::NormalExit, err);
-        proc->deleteLater();
-    });
-    connect(proc, &QProcess::errorOccurred, this,
-            [proc, timer, report, reported](QProcess::ProcessError) {
-        timer->stop();
-        if (*reported) return;
-        *reported = true;
-        report(false, proc->errorString());
-        proc->deleteLater();
-    });
-
-    timer->start(timeoutMs);
-    proc->start();
 }
 
 void HgsClient::forkSession(const QString &host, const QString &name, const QString &tag, const QString &archive, const QString &run, const QString &conversation)
