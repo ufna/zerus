@@ -1053,6 +1053,9 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     connect(m_pages,&QStackedWidget::currentChanged,this,[this](int index) {
         m_sessionsNav->setChecked(index==0); m_projectsNav->setChecked(index==1); m_machinesNav->setChecked(index==2); m_brand->setChecked(index==3); m_accountsNav->setChecked(index==4); m_settingsNav->setChecked(index==5);
         renderAccountUsage();if(index==3)updateDashboardAccounts(true);updateInspectorMinimum();
+        if (index == 3 && m_dashboardStale) updateDashboard();
+        // Callers that show Sessions rebuild right away; this covers any other switch.
+        if (index == 0 && m_sessionsStale) QTimer::singleShot(0, this, [this] { if (m_sessionsStale && m_pages->currentIndex() == 0) rebuild(); });
     });
     auto *workspace = new QVBoxLayout; workspace->setContentsMargins(0, 0, 0, 0); workspace->setSpacing(0);
     workspace->addWidget(m_pages, 1);
@@ -1687,6 +1690,9 @@ void SessionsWindow::setFleet(const FleetState &fleet) {
 void SessionsWindow::setClipboardMode(bool clipboard) { m_clipboard = clipboard; renderDetails(); }
 void SessionsWindow::updateDashboard()
 {
+    // Overview renders while shown; showing it renders the latest fleet.
+    if (!isVisible() || m_pages->currentIndex() != 3) { m_dashboardStale = true; return; }
+    m_dashboardStale = false;
     auto fleet = m_fleet;
     auto enrichGit = [this](BoxState box, const QString &host, bool online) {
         for (auto &session : box.sessions) {
@@ -2044,6 +2050,13 @@ void SessionsWindow::rebuild()
     for (auto &entry : m_entries) entry.identity = m_organization.observe(entry.machine, entry.session.name, entry.session.runId, entry.session.archiveId);
     placeLaunchedSessions();
     saveOrganization();
+    // Entries, attention and the organization above stay current for other pages.
+    // A hidden Sessions list and its details render once, when the page is shown.
+    if (m_pages->currentIndex() != 0 && m_forkKey.isEmpty() && m_restoreKey.isEmpty() && m_renameKey.isEmpty()) {
+        m_sessionsNav->setChecked(false); m_machinesNav->setChecked(m_pages->currentIndex() == 2);
+        m_sessionsStale = true; m_rebuilding = false; return;
+    }
+    m_sessionsStale = false;
     if (!m_pending && !m_forkKey.isEmpty()) {
         for (const auto &entry : m_entries) if (entry.key == m_forkKey && entry.session.state == "running") {
             requestedSelection = m_forkKey;
@@ -2409,6 +2422,8 @@ void SessionsWindow::refreshAccountUsage(bool force)
 }
 void SessionsWindow::updateDashboardAccounts(bool request,bool force)
 {
+    // Showing Overview requests and renders accounts again; skip hidden updates.
+    if(!isVisible() || m_pages->currentIndex()!=3)return;
     if(request)m_accountsPage->ensureCatalogs(force);
     QJsonArray rows;
     for(const auto &value:m_accountsPage->profiles()) {
@@ -3738,7 +3753,8 @@ void SessionsWindow::terminateSession()
 
 void SessionsWindow::showEvent(QShowEvent *event)
 {
-    QWidget::showEvent(event); rebuild(); m_timer.start(); m_readTimer.start(); emit refreshRequested(); inspect();
+    QWidget::showEvent(event); rebuild(); if (m_dashboardStale) updateDashboard();
+    m_timer.start(); m_readTimer.start(); emit refreshRequested(); inspect();
 }
 bool SessionsWindow::eventFilter(QObject *watched, QEvent *event)
 {

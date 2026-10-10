@@ -108,6 +108,7 @@ private slots:
     void accountUsageRejectsOtherSessionReplies();
     void usageLimitBecomesToolbarChip();
     void dashboardAndMultiMachineNavigation();
+    void hiddenPagesRenderWhenShown();
     void multiSelectionKeepsConversationAndGroupMenu_data();
     void multiSelectionKeepsConversationAndGroupMenu();
     void selectionCommandsKeepPinnedTargets();
@@ -404,6 +405,33 @@ void TestSessionsWindow::dashboardAndMultiMachineNavigation()
     brand->click(); dashboard->machinesRequested("mac"); auto *machines=window.findChild<MachinesPage *>(); QVERIFY(machines->isVisible());
     machines->accountsRequested("mac"); auto *accounts=window.findChild<AccountsPage *>(); QVERIFY(accounts->isVisible());
     QCOMPARE(accounts->findChild<QComboBox *>("accountMachineFilter")->currentData().toString(),QString("mac"));
+}
+
+void TestSessionsWindow::hiddenPagesRenderWhenShown()
+{
+    // Polls keep hidden pages' data current; each page renders when it is shown.
+    SessionsWindow window(script()); auto state = fleet(); window.setFleet(state); window.show();
+    auto *list = window.findChild<SessionList *>("sessionList"); auto *dashboard = window.findChild<DashboardPage *>();
+    auto *badge = window.findChild<QLabel *>("railAttentionBadge"); auto *sessionsNav = qobject_cast<QPushButton *>(badge->parentWidget());
+    auto *brand = window.findChild<QPushButton *>("brandMark"); auto *total = dashboard->findChild<QPushButton *>("dashboardSessions");
+    QVERIFY(list); QVERIFY(sessionsNav); QVERIFY(brand); QVERIFY(total);
+    const int rows = list->count(); const auto attention = badge->text();
+    brand->click(); QVERIFY(dashboard->isVisible()); const auto before = total->text();
+    auto box = state.local(); auto extra = box.sessions[0]; extra.name = "codex/hgs/extra"; extra.tag = "extra"; extra.phase = "approval";
+    box.sessions.append(extra); state.setLocal(box, QDateTime::currentMSecsSinceEpoch());
+    QSignalSpy inserted(list->model(), &QAbstractItemModel::rowsInserted);
+    window.setFleet(state);
+    QCOMPARE(list->count(), rows); QCOMPARE(inserted.size(), 0);
+    QVERIFY(total->text() != before); QCOMPARE(badge->text(), QString::number(attention.toInt() + 1));
+    sessionsNav->click(); QVERIFY(list->isVisible()); QCOMPARE(list->count(), rows + 1);
+    const int shown = inserted.size(); QVERIFY(shown > 0); QTest::qWait(20); QCOMPARE(inserted.size(), shown);
+    const auto updated = total->text();
+    box.sessions.removeLast(); state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    QCOMPARE(list->count(), rows); QCOMPARE(total->text(), updated);
+    brand->click(); QCOMPARE(total->text(), before);
+    // A closed window renders its current page when it opens again.
+    window.hide(); box.sessions.append(extra); state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    window.show(); QCOMPARE(total->text(), updated);
 }
 
 void TestSessionsWindow::dashboardActivityRowsStayReadable_data()
@@ -1021,6 +1049,8 @@ void TestSessionsWindow::unreadRepliesNeedAnActiveVisibleResult()
     box.sessions[0].activity = "busy"; box.sessions[0].phase = "tool";
     box.sessions[0].activitySummary = "Bash"; box.sessions[0].activityDetail = "Check the next deployment";
     state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    // The hidden list renders when shown; reading the reply takes a visible dwell.
+    window.showSessionList();
     QVERIFY(row()->data(SessionRoles::Unread).toBool()); QVERIFY(row()->data(SessionRoles::Working).toBool());
     QCOMPARE(row()->data(SessionRoles::Detail).toString(), QString("Bash: Check the next deployment"));
     QVERIFY(window.findChild<QLabel *>("listSummary")->text().contains("1 working"));
@@ -1084,8 +1114,10 @@ void TestSessionsWindow::markAllReadIgnoresFiltersAndKeepsCurrentDraft()
     action->trigger(); QCOMPARE(seen.size(), 1); QCOMPARE(seen[0][0].toJsonObject().size(), 5);
     QVERIFY(!action->isEnabled()); QVERIFY(state.unreadReplies().isEmpty()); QCOMPARE(writes.size(), 0);
     QCOMPARE(list->currentItem()->data(SessionRoles::Key), selectedKey); QCOMPARE(composer->editor()->toPlainText(), QString("Keep this draft"));
+    // Overview renders when shown.
+    window.findChild<QPushButton *>("brandMark")->click();
     QVERIFY(window.findChild<DashboardPage *>()->findChild<QPushButton *>("dashboardAttention")->text().startsWith("1"));
-    window.findChild<MachineFilter *>()->setSelection({});
+    window.showSessionList(); window.findChild<MachineFilter *>()->setSelection({});
     window.findChild<QLineEdit *>("search")->setText("review");
     QCOMPARE(window.findChild<QListWidget *>("searchResults")->count(), 1); // The real approval still needs attention.
     FleetState restarted; restarted.setReadReplies(QJsonDocument::fromJson(QSettings().value("attention/readReplies").toByteArray()).object());
@@ -5221,7 +5253,7 @@ void TestSessionsWindow::projectOrderAndDefaultBadge()
     page->findChild<QAction *>("moveProjectUp")->trigger();QCOMPARE(stored().groups()[1].id,first);
     // Order and default are shared with Sessions and survive reopening the page.
     page->refresh();QCOMPARE(list->item(1)->data(Qt::UserRole).toString(),first);QVERIFY(list->item(1)->data(Qt::UserRole+3).toBool());
-    auto *sessions=window.findChild<SessionList *>("sessionList");QStringList headers;
+    window.showSessionList();auto *sessions=window.findChild<SessionList *>("sessionList");QStringList headers;
     for(int i=0;i<sessions->count();++i)if(sessions->item(i)->data(SessionRoles::Header).toBool())headers.append(sessions->item(i)->data(SessionRoles::Group).toString());
     QCOMPARE(headers,QStringList({"ungrouped",first,second}));QCOMPARE(stored().group(first)->folders.size(),1);
     const auto preview=qEnvironmentVariable("HGS_NAVIGATION_PREVIEW");

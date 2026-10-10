@@ -100,6 +100,8 @@ public:
         setToolTip(accessibleName().toHtmlEscaped()); setVisible(!value.isEmpty()); updateGeometry(); update();
     }
     void setTheme(bool dark) { m_dark = dark; update(); }
+    const QString &value() const { return m_value; }
+    bool dark() const { return m_dark; }
     QSize sizeHint() const override { return {IdentityBadges::width(m_kind, m_value, font(), m_kind == IdentityBadges::Provider ? 95 : 140), 18}; }
     QSize minimumSizeHint() const override { return {qMin(sizeHint().width(), 44), 18}; }
 protected:
