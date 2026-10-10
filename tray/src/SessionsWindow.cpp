@@ -72,6 +72,7 @@
 #include <QPainter>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QScopedValueRollback>
 #include <QScreen>
 #include <QSettings>
 #include <QShortcut>
@@ -3359,25 +3360,75 @@ void SessionsWindow::renderQuestion(const Entry &entry, int navigation)
 
 void SessionsWindow::answerQuestion(const QString &key, const QString &questionId, const QJsonArray &answers)
 {
-    const auto *entry = selected();
-    if (!entry || key != m_selectedKey || !entry->online || entry->session.state != "running"
-        || isTerminating(*entry) || m_pending || !m_renameKey.isEmpty() || !m_inspectError.isEmpty()
-        || m_details.value("runtime_state").toString() != "live"
-        || m_details.value("process_state").toString() != "running") return;
-    for (const auto &pending : m_pendingAnswers) if (pending.key == key) return;
-    QJsonObject question;
-    for (const auto &value : m_details.value("pending_questions").toArray())
-        if (value.toObject().value("question_id").toString() == questionId) { question = value.toObject(); break; }
-    if (m_question->hasSubmittedAnswer(key, question)) return;
-    const bool skipping = !answers.isEmpty() && answers.first().toObject().value("skip").toBool();
-    if (question.isEmpty() || !(skipping ? question.value("can_skip").toBool() : question.value("can_answer").toBool())
-        || question.value("run_id") != m_details.value("run_id")
-        || question.value("conversation_id") != m_details.value("conversation_id")) {
-        m_question->setError(key, questionId, tr("This question changed. Refresh before answering.")); return;
+    // Signals can refer to QuestionCard members which a nested modal event loop
+    // replaces. Consent and transport must use immutable copies instead.
+    const QString targetKey = key, targetQuestionId = questionId;
+    const QJsonArray requestedAnswers = answers;
+    if (m_confirmingQuestionCache) return;
+    const bool skipping = !requestedAnswers.isEmpty() && requestedAnswers.first().toObject().value("skip").toBool();
+    const auto actionableQuestion = [&](bool reportChange = false) -> QJsonObject {
+        const auto *entry = selected();
+        if (!entry || targetKey != m_selectedKey || !entry->online || entry->session.state != "running"
+            || isTerminating(*entry) || m_pending || !m_renameKey.isEmpty() || !m_inspectError.isEmpty()
+            || m_details.value("runtime_state").toString() != "live"
+            || m_details.value("process_state").toString() != "running") return {};
+        for (const auto &pending : m_pendingAnswers) if (pending.key == targetKey) return {};
+        QJsonObject question;
+        for (const auto &value : m_details.value("pending_questions").toArray())
+            if (value.toObject().value("question_id").toString() == targetQuestionId) { question = value.toObject(); break; }
+        if (m_question->hasSubmittedAnswer(targetKey, question)) return {};
+        if (question.isEmpty() || !(skipping ? question.value("can_skip").toBool() : question.value("can_answer").toBool())
+            || question.value("run_id") != m_details.value("run_id")
+            || question.value("conversation_id") != m_details.value("conversation_id")) {
+            if (reportChange) m_question->setError(targetKey, targetQuestionId, tr("This question changed. Refresh before answering."));
+            return {};
+        }
+        return question;
+    };
+    const auto consentIdentity = [](const QJsonObject &question) {
+        QJsonObject identity;
+        for (const auto *field : {"question_id", "question_hash", "run_id", "conversation_id", "questions",
+                "source", "tool", "tool_name", "tool_call_id", "native_question_id", "agent_id",
+                "answer_transport", "approval", "approval_choices", "trust_request", "optional"}) {
+            const auto name = QString::fromLatin1(field);
+            if (question.contains(name)) identity.insert(name, question.value(name));
+        }
+        return identity;
+    };
+    const auto question = actionableQuestion(true);
+    if (question.isEmpty()) return;
+    if (CacheStatus::expired(m_details)) {
+        const Entry original = *selected();
+        const auto run = m_details.value("run_id"), conversation = m_details.value("conversation_id");
+        const auto draft = m_question->submissionSnapshot(targetKey, targetQuestionId);
+        if (draft.isEmpty() || draft.value("sending").toBool() || draft.value("submitted").toBool()
+            || draft.value("answered").toBool() || draft.value("uncertain").toBool()
+            || !draft.value("storage_error").toString().isEmpty()) return;
+        QScopedValueRollback<bool> confirming(m_confirmingQuestionCache, true);
+        QMessageBox box(QMessageBox::Warning, tr("Submit with a cold cache?"),
+            CacheStatus::warning(m_details) + "\n\n" + tr("Submitting this answer may resume the agent with the entire conversation, increasing token usage, cost or subscription usage. Compaction or clearing can invalidate the pending question. Cancel keeps your answers."),
+            QMessageBox::NoButton, this);
+        box.setObjectName("questionColdCacheConfirm");
+        auto *proceed = box.addButton(tr("Submit with full context"), QMessageBox::AcceptRole);
+        auto *cancel = box.addButton(QMessageBox::Cancel);
+        box.setDefaultButton(cancel); box.setEscapeButton(cancel);
+        box.exec();
+        if (box.clickedButton() != proceed) return;
+        const auto *current = selected();
+        if (!current || current->key != original.key || current->host != original.host
+            || current->session.name != original.session.name || current->session.created != original.session.created
+            || current->session.runId != original.session.runId || current->session.conversationId != original.session.conversationId
+            || m_details.value("run_id") != run || m_details.value("conversation_id") != conversation
+            || consentIdentity(actionableQuestion()) != consentIdentity(question)
+            || m_question->submissionSnapshot(targetKey, targetQuestionId) != draft) {
+            showNotice(tr("The question or your answers changed. Your draft was kept; review it before submitting again."), true);
+            return;
+        }
     }
-    if (!m_question->setSending(key, questionId)) return;
-    const auto request = m_client.requestAnswerQuestion(entry->host, entry->session.name, question, answers);
-    m_pendingAnswers.insert(request, {key, questionId, question.value("question_hash").toString()});
+    const auto *entry = selected();
+    if (!entry || !m_question->setSending(targetKey, targetQuestionId)) return;
+    const auto request = m_client.requestAnswerQuestion(entry->host, entry->session.name, question, requestedAnswers);
+    m_pendingAnswers.insert(request, {targetKey, targetQuestionId, question.value("question_hash").toString()});
     renderDetails();
 }
 

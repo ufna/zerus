@@ -35,6 +35,8 @@ public:
     void setAnswered(const QString &sessionKey, const QString &questionId);
     void setSubmitted(const QString &sessionKey, const QString &questionId);
     bool hasSubmittedAnswer(const QString &sessionKey, const QJsonObject &question);
+    // Read-only, untrimmed editor state for consent across a nested event loop.
+    QJsonObject submissionSnapshot(const QString &sessionKey, const QString &questionId) const;
 
 signals:
     void answerRequested(const QString &sessionKey, const QString &questionId, const QJsonArray &answers);

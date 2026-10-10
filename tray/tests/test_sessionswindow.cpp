@@ -175,6 +175,8 @@ private slots:
     void failedMessagesReconcileAndRetryWithoutLosingDrafts();
     void modelSettingsKeepSessionIdentity_data();
     void modelSettingsKeepSessionIdentity();
+    void coldQuestionSubmissionRevalidatesConsent_data();
+    void coldQuestionSubmissionRevalidatesConsent();
     void questionAnswersStayWithOriginalSession();
     void queuedQuestionAnswersDisappearAfterSubmission();
     void terminalChoiceOpensOnlyTheRequestingTerminal_data();
@@ -2287,6 +2289,159 @@ elif args[0]=='send':
     state["activity"] = "busy"; state["phase"] = "working"; QVERIFY(save());
     client->requestInspection({}, "codex/hgs/dashboard", 0);
     composer->editor()->setPlainText("Next message"); QTRY_VERIFY(send->isEnabled());
+}
+
+void TestSessionsWindow::coldQuestionSubmissionRevalidatesConsent_data()
+{
+    QTest::addColumn<QString>("change");
+    QTest::addColumn<bool>("sent");
+    for (const auto *name : {"cancel", "escape", "close", "run", "conversation", "question-id", "hash",
+            "schema", "source", "tool", "tool-call", "approval-identity", "capability", "offline", "selection", "entry-identity", "raw-draft", "page", "sending"})
+        QTest::newRow(name) << QString::fromLatin1(name) << false;
+    for (const auto *name : {"proceed", "benign-poll", "duplicate", "warm", "ttl", "skip", "approval", "broader-approval"})
+        QTest::newRow(name) << QString::fromLatin1(name) << true;
+}
+
+void TestSessionsWindow::coldQuestionSubmissionRevalidatesConsent()
+{
+    QFETCH(QString, change); QFETCH(bool, sent);
+    QTemporaryDir directory;
+    const auto program = directory.filePath("hgs"), state = directory.filePath("details.json"), capture = directory.filePath("answer.json");
+    QFile fixture(program); QVERIFY(fixture.open(QIODevice::WriteOnly));
+    fixture.write(R"PY(#!/usr/bin/env python3
+import json,pathlib,sys,time
+root=pathlib.Path(__file__).parent
+if sys.argv[1]=='inspect': print((root/'details.json').read_text())
+elif sys.argv[1]=='answer':
+ p=json.load(sys.stdin)
+ (root/'answer.json').write_text(json.dumps({'args':sys.argv[1:],'payload':p}))
+ with (root/'calls').open('a') as f:f.write('call\n')
+ time.sleep(.1)
+ print(json.dumps(dict(status='answered',request_id=p['request_id'],name=sys.argv[2],run_id=p['expected_run_id'],conversation_id=p['expected_conversation_id'],question_id=p['question_id'],question_hash=p['expected_question_hash'])))
+else: print('{}')
+)PY");
+    fixture.close(); QVERIFY(fixture.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+    const bool approval = change == "approval" || change == "broader-approval";
+    QJsonArray prompts;
+    for (int index = 0; index < (approval ? 1 : 2); ++index)
+        prompts.append(QJsonObject{{"id", QString("q_%1").arg(index)}, {"header", "Scope"}, {"question", "Which area?"},
+            {"multi_select", false}, {"allow_other", !approval}, {"options", QJsonArray{
+                QJsonObject{{"id", approval ? "allow" : "documents"}, {"label", approval ? "Allow once" : "Documents"}},
+                QJsonObject{{"id", approval ? "deny" : "source"}, {"label", approval ? "Always allow" : "Source"}, {"scope", approval ? "broader" : "request"}}}}});
+    QJsonObject question{{"question_id", "interaction-cold"}, {"question_hash", "hash-cold"}, {"run_id", "run-cold"},
+        {"conversation_id", "conversation-cold"}, {"can_answer", true}, {"can_skip", true}, {"questions", prompts},
+        {"source", change == "skip" ? "codex_async" : "claude"}, {"tool", "AskUserQuestion"}, {"tool_call_id", "toolu-cold"}, {"approval", approval},
+        {"approval_choices", change == "broader-approval"}, {"optional", change == "skip"}};
+    if (change == "skip") question["can_answer"] = false;
+    QJsonObject details{{"tracked", true}, {"run_id", "run-cold"}, {"conversation_id", "conversation-cold"},
+        {"runtime_state", "live"}, {"process_state", "running"}, {"phase", "input"}, {"activity", "busy"},
+        {"pending_questions", QJsonArray{question}}, {"cache_hint", QJsonObject{{"status", "cold"}, {"tokens", 12000}}},
+        {"compact_context_supported", true}, {"clear_context_supported", true}};
+    if (change == "warm" || change == "ttl") {
+        details.remove("cache_hint");
+        details["session_usage"] = QJsonObject{{"prompt_cache", QJsonObject{{"status", "warm"},
+            {"expires_at", QDateTime::currentSecsSinceEpoch() + (change == "ttl" ? 1 : 600)}}}};
+    }
+    const auto writeDetails = [&] { QSaveFile data(state); QVERIFY(data.open(QIODevice::WriteOnly));
+        data.write(QJsonDocument(details).toJson()); QVERIFY(data.commit()); };
+    writeDetails();
+    SessionsWindow window(program); window.resize(1080, 760); window.setFleet(fleet()); window.show();
+    window.showSession({}, "kimi/docs/research");
+    auto *client = window.findChild<HgsClient *>(); auto *card = window.findChild<QuestionCard *>();
+    QTRY_VERIFY(card->isVisible());
+    auto *list = window.findChild<QListWidget *>("sessionList");
+    const QString key = list->currentItem()->data(Qt::UserRole).toString();
+    auto *tabs = card->findChild<QTabBar *>("questionTabs");
+    if (!approval) {
+        for (auto *button : card->findChildren<QAbstractButton *>("questionOther")) button->click();
+        for (auto *editor : card->findChildren<QLineEdit *>("questionFreeText")) editor->setText("  Exact  draft  ");
+        tabs->setCurrentIndex(1);
+    } else if (change == "broader-approval") {
+        for (auto *button : card->findChildren<QAbstractButton *>("questionOption"))
+            if (button->property("optionId") == "deny") button->click();
+    }
+    auto *action = card->findChild<QPushButton *>(change == "skip" ? "skipQuestion" : change == "approval" ? "denyToolRequest" : "submitQuestionAnswer");
+    if (change == "broader-approval") { window.activateWindow(); QTRY_VERIFY_WITH_TIMEOUT(action->isEnabled(), 5000); }
+    QVERIFY(action->isEnabled());
+    const auto before = card->submissionSnapshot(key, "interaction-cold");
+    QJsonArray requested;
+    QSignalSpy answerSignal(card, &QuestionCard::answerRequested);
+    QSignalSpy completed(client, &HgsClient::questionAnswered);
+    QSignalSpy failed(client, &HgsClient::questionAnswerFailed);
+    QSignalSpy submitted(client, &HgsClient::questionAnswerSubmitted);
+    bool shown = false;
+    QTimer modal;
+    modal.setInterval(5);
+    connect(&modal, &QTimer::timeout, &window, [&] {
+        auto *box = window.findChild<QMessageBox *>("questionColdCacheConfirm");
+        if (!box || !box->isVisible()) return;
+        modal.stop(); shown = true;
+        QCOMPARE(box->buttons().size(), 2);
+        QCOMPARE(box->defaultButton(), qobject_cast<QPushButton *>(box->button(QMessageBox::Cancel)));
+        QVERIFY(box->text().contains("Compaction or clearing can invalidate"));
+        QVERIFY(!QFileInfo::exists(capture));
+        QVERIFY(!card->submissionSnapshot(key, "interaction-cold").value("sending").toBool());
+        if (change == "cancel") { box->button(QMessageBox::Cancel)->click(); return; }
+        if (change == "escape") { QTest::keyClick(box, Qt::Key_Escape); return; }
+        if (change == "close") { box->close(); return; }
+        if (change == "duplicate") card->answerRequested(key, "interaction-cold", QJsonArray{QJsonObject{{"question_id", "q_0"}, {"selected_option_ids", QJsonArray{}}, {"text", "Exact  draft"}}, QJsonObject{{"question_id", "q_1"}, {"selected_option_ids", QJsonArray{}}, {"text", "Exact  draft"}}});
+        if (change == "selection") window.showSession({}, "codex/hgs/dashboard");
+        else if (change == "offline" || change == "entry-identity") {
+            auto boxes = fleet(); auto boxState = boxes.local();
+            for (auto &session : boxState.sessions)
+                if (session.name == "kimi/docs/research") { if (change == "offline") boxState.ok = false; else session.created += 1; }
+            boxes.setLocal(boxState, QDateTime::currentMSecsSinceEpoch()); window.setFleet(boxes);
+        } else if (change == "raw-draft") card->findChildren<QLineEdit *>("questionFreeText").first()->setText(" Exact  draft  ");
+        else if (change == "page") tabs->setCurrentIndex(0);
+        else if (change == "sending") card->setSending(key, "interaction-cold");
+        else {
+            if (change == "run") { details["run_id"] = "run-new"; question["run_id"] = "run-new"; }
+            if (change == "conversation") { details["conversation_id"] = "conversation-new"; question["conversation_id"] = "conversation-new"; }
+            if (change == "question-id") question["question_id"] = "interaction-new";
+            if (change == "hash") question["question_hash"] = "hash-new";
+            if (change == "schema") { auto prompt = prompts.first().toObject(); prompt["question"] = "Changed disclosure"; prompts[0] = prompt; question["questions"] = prompts; }
+            if (change == "source") question["source"] = "changed-source";
+            if (change == "tool") question["tool"] = "changed-tool";
+            if (change == "tool-call") question["tool_call_id"] = "toolu-new";
+            if (change == "approval-identity") question["approval"] = true;
+            if (change == "benign-poll") { question["created_at"] = 42; question["answer_unavailable_reason"] = "Updated evidence"; details["last_event_at"] = 43; }
+            if (change == "capability") question["can_answer"] = false;
+            details["pending_questions"] = QJsonArray{question};
+            writeDetails(); client->inspectionReady({}, "kimi/docs/research", details);
+        }
+        for (auto *button : box->buttons()) if (box->buttonRole(button) == QMessageBox::AcceptRole) button->click();
+    });
+    if (change == "ttl") QTest::qWait(1100); // No inspection is needed for click-time TTL expiry.
+    modal.start();
+    if (change == "broader-approval") { action->click(); QVERIFY(!shown); QVERIFY(!QFileInfo::exists(capture)); QCOMPARE(action->text(), QString("Confirm")); }
+    action->click();
+    modal.stop();
+    QCOMPARE(shown, change != "warm");
+    QVERIFY(!answerSignal.isEmpty()); requested = answerSignal.first().at(2).value<QJsonArray>();
+    if (!sent) {
+        // An erroneous QProcess dispatch can write after the modal returns.
+        // Drain the fixture's completion interval and watch all answer outcomes.
+        QTest::qWait(300);
+        QVERIFY(!QFileInfo::exists(capture));
+        QVERIFY(!QFileInfo::exists(directory.filePath("calls")));
+        QCOMPARE(completed.size(), 0); QCOMPARE(failed.size(), 0); QCOMPARE(submitted.size(), 0);
+        if (change == "cancel" || change == "escape" || change == "close") QCOMPARE(card->submissionSnapshot(key, "interaction-cold"), before);
+        if (change == "raw-draft") QCOMPARE(card->findChildren<QLineEdit *>("questionFreeText").first()->text(), QString(" Exact  draft  "));
+        return;
+    }
+    card->answerRequested(key, "interaction-cold", requested); // In-flight repeats create no second request or modal.
+    QTRY_VERIFY(QFileInfo::exists(capture));
+    QFile result(capture); QVERIFY(result.open(QIODevice::ReadOnly));
+    const auto record = QJsonDocument::fromJson(result.readAll()).object();
+    QCOMPARE(record["args"].toArray(), QJsonArray({"answer", "kimi/docs/research", "--json"}));
+    const auto payload = record["payload"].toObject();
+    QCOMPARE(payload["answers"].toArray(), requested);
+    QCOMPARE(payload["question_id"].toString(), QString("interaction-cold"));
+    QCOMPARE(payload["expected_question_hash"].toString(), QString("hash-cold"));
+    QCOMPARE(payload["expected_run_id"].toString(), QString("run-cold"));
+    QCOMPARE(payload["expected_conversation_id"].toString(), QString("conversation-cold"));
+    QTRY_COMPARE(completed.size(), 1);
+    QFile calls(directory.filePath("calls")); QVERIFY(calls.open(QIODevice::ReadOnly)); QCOMPARE(calls.readAll(), QByteArray("call\n"));
 }
 
 void TestSessionsWindow::questionAnswersStayWithOriginalSession()

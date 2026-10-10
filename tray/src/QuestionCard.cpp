@@ -239,6 +239,25 @@ bool QuestionCard::restoreSubmittedAnswer(const QString &key, const QJsonObject 
     return changed;
 }
 
+QJsonObject QuestionCard::submissionSnapshot(const QString &sessionKey, const QString &questionId) const
+{
+    if (sessionKey != m_session || questionId != m_id || !m_drafts.contains(m_key)) return {};
+    const auto &draft = m_drafts[m_key];
+    QJsonArray forms;
+    for (const auto &form : m_forms) {
+        QStringList options;
+        for (auto it = form.options.cbegin(); it != form.options.cend(); ++it)
+            if (it.value()->isChecked()) options.append(it.key());
+        options.sort();
+        forms.append(QJsonObject{{"id", form.id}, {"options", QJsonArray::fromStringList(options)},
+            {"other", form.other && form.other->isChecked()}, {"text", form.text ? form.text->text() : QString()}});
+    }
+    return {{"identity", m_key}, {"forms", forms}, {"page", m_tabs->currentIndex()},
+        {"confirm", draft.confirm}, {"sending", draft.sending || m_sendingKeys.values().contains(m_key)},
+        {"submitted", draft.submitted}, {"answered", draft.answered}, {"uncertain", draft.uncertain},
+        {"storage_error", draft.storageError}};
+}
+
 bool QuestionCard::hasSubmittedAnswer(const QString &sessionKey, const QJsonObject &question)
 {
     if (question.value("source") != "codex_async" || !question.value("optional").toBool()) return false;

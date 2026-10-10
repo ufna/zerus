@@ -331,6 +331,7 @@ class MainActivity : ComponentActivity() {
         text = { Text("Interrupt the current turn in " + session.title + ". The session remains available.") },
         confirmButton = { TextButton(onClick = { model.interrupt(session.target, turn); stopRequest = null }) { Text("Stop turn") } },
         dismissButton = { TextButton(onClick = { stopRequest = null }) { Text("Cancel") } }) }
+    QuestionSendConfirmationDialog(model)
 }
 
 @Composable private fun Tag(text: String, color: Color = Mint) {

@@ -420,6 +420,13 @@ draft with the form answer, including clearing it for a preset-only answer.
 Polling and inspection never edit native drafts. The exact form payload and
 matching native acknowledgement determine delivery; uncertain attempts are
 never replayed automatically.
+Desktop question submissions, including skips and approval choices, require
+**Submit with full context** confirmation when the prompt cache is cold or its
+estimated lifetime has expired. Resuming with the full conversation can increase
+token usage, cost or subscription usage. **Cancel** keeps the form answers.
+Compaction or clearing can invalidate the pending question, so this confirmation
+offers neither action. A changed question, session or draft cancels consent.
+
 Unsupported or truncated native prompts remain in Terminal.
 
 Claude tool approvals keep the session at **Needs approval** and appear in

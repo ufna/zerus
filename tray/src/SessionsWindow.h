@@ -355,6 +355,7 @@ private:
     QHash<QString, QJsonArray> m_localMessages;
     struct PendingAnswer { QString key, questionId, questionHash; };
     QHash<quint64, PendingAnswer> m_pendingAnswers;
+    bool m_confirmingQuestionCache = false;
     QStackedWidget *m_detailStack;
     QSplitter *m_splitter;
     QStackedWidget *m_pages;

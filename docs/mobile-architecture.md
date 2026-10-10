@@ -339,6 +339,29 @@ is shown as an estimated expiry. Cache-read tokens from the last request do not
 prove that a cache is still warm. A saving suggestion does not prove it is cold.
 Archived or cached inspections explicitly remain last-known data.
 
+Submitting a native question answer with a cold or expired prompt cache requires
+an explicit **Submit full context** or **Cancel** choice. The warning explains
+that the provider may process the full conversation again, increasing token use
+or cost. This same guard covers Other answers, approval decisions after their
+existing review countdown, and Skip. It never offers clear or compact while an
+answer is pending: those operations would invalidate the pending answer.
+Cancel preserves the complete saved form without allocating a delivery request
+or changing its status.
+
+The ViewModel retains the confirmation outside recycled question cards across
+rotation. It pins the exact computer/session/run/conversation, navigation,
+question ID/hash/tool/source/schema, literal answer payload, and draft
+generation/revision/raw form state. Confirm revalidates current native capability,
+verified inspection and that unchanged snapshot before one delivery can begin;
+changed or unavailable evidence cannot release transport. Consent is never
+persisted or reconstructed after process restart, while the ordinary encrypted
+question draft remains recoverable. Direct calls to the common answer method
+cannot bypass the cold-cache guard. If a warm cache expires while saving the
+prepared answer, transport is refused with a visible question notice. The exact
+original editing form is restored only while its prepared request and revision
+remain owned; a concurrent edit is preserved. This refusal never opens a new
+confirmation or retries input automatically.
+
 Compact and clear are fixed native operations scoped to the exact computer,
 session, run, conversation and request UUID. The phone saves an operation before
 transport, and uncertain delivery is checked without replaying the mutation.

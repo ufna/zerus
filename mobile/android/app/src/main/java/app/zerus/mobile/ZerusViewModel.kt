@@ -1601,25 +1601,71 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
     private val answerFlights=mutableStateMapOf<String,String>()
     fun answerInFlight(draft:Draft)=answerFlights[draft.key]==draft.requestId && draft.requestId.isNotBlank()
     fun answerStatus(draft:Draft)=if(draft.status=="submitting" && !answerInFlight(draft)) "uncertain" else draft.status
-    fun send(target: Target, question: Question? = null, answers: JSONArray? = null) = viewModelScope.launch {
-        if(question==null) { sendMessage(target);return@launch }
+    private val questionSendGate = QuestionSendGate()
+    private var questionSendRefusal by mutableStateOf<QuestionSendRefusal?>(null)
+    internal fun questionSendNotice(target: Target, question: Question): String =
+        questionSendRefusal?.textFor(target, question).orEmpty()
+    private fun refuseQuestionSend(intent: QuestionSendIntent, text: String) {
+        questionSendRefusal = QuestionSendRefusal(intent.target, intent.question.id, intent.question.hash, text)
+        contextNotice = text
+        if (selected?.target == intent.target && conversationQuestions.none { it.id == intent.question.id && it.hash == intent.question.hash })
+            error = text
+    }
+    internal var pendingQuestionSend by mutableStateOf<QuestionSendIntent?>(null); private set
+    internal fun questionSendValid(intent: QuestionSendIntent): Boolean =
+        fresh(intent.target) && !demo && storageReady && !contextBlocked(intent.target) &&
+            intent.target.key !in preparingTargets && connections.any { it.id == intent.target.connectionId } &&
+            intent.matches(selected?.target, navigationId,
+                conversationQuestions.find { it.id == intent.question.id && it.hash == intent.question.hash },
+                draft(intent.target, intent.question)) && intent.draft.key !in answerFlights
+    internal fun cancelQuestionSend(intent: QuestionSendIntent) {
+        questionSendGate.cancel(intent); pendingQuestionSend = questionSendGate.pending
+    }
+    internal fun confirmQuestionSend(intent: QuestionSendIntent) {
+        if (!questionSendGate.active(intent)) return
+        val confirmed = questionSendGate.confirm(intent, questionSendValid(intent))
+        pendingQuestionSend = questionSendGate.pending
+        if (confirmed == null) { refuseQuestionSend(intent, "The question or draft changed. Nothing was sent. Review it before submitting."); return }
+        sendQuestion(intent.target, intent.question, intent.answers, confirmed)
+    }
+    fun send(target: Target, question: Question? = null, answers: JSONArray? = null) =
+        if (question == null) sendMessage(target) else sendQuestion(target, question, answers?.toString())
+    private fun sendQuestion(target: Target, question: Question, answerText: String?, consent: QuestionSendIntent? = null) = viewModelScope.launch {
         if(target.agentId.isNotBlank() || !fresh(target) || demo || !storageReady || contextBlocked(target) || target.key in preparingTargets) return@launch
         val native=conversationQuestions.find { it.id==question.id && it.hash==question.hash } ?: return@launch
-        if((!native.canAnswer && !native.canSkip) || QuestionPolicies.submitted(native,target)!=null) return@launch
+        if(QuestionSendPolicies.schema(question) != QuestionSendPolicies.schema(native)) return@launch
         val connection=connections.find { it.id==target.connectionId } ?: return@launch
         val original=draft(target,question)
         if(original.status!="editing" || target.run.isBlank() || original.key in answerFlights) return@launch
-        val sending=original.begin().copy(answers=answers?.toString() ?: original.answers)
+        val frozenAnswers = answerText ?: original.answers
+        if (!QuestionSendPolicies.available(native, target, frozenAnswers)) return@launch
+        val intent = consent ?: QuestionSendPolicies.capture(target, navigationId, native, original, frozenAnswers)
+        if (!questionSendValid(intent) || intent.answers != frozenAnswers) return@launch
+        questionSendRefusal = null
+        if (consent == null) {
+            val authorized = questionSendGate.request(intent, ContextPresentation.isCold(activity))
+            pendingQuestionSend = questionSendGate.pending
+            if (authorized == null) return@launch
+        }
+        val sending=original.begin().copy(answers=frozenAnswers)
         var attempted=false;var refused=false
         answerFlights[sending.key]=sending.requestId;preparingTargets+=target.key
         try {
             save(sending);persistence!!.flush()
-            check(fresh(target) && draft(target,question).requestId==sending.requestId &&
-                conversationQuestions.any { it.id==question.id && it.hash==question.hash && QuestionPolicies.submitted(it,target)==null }) {
+            if (consent == null && ContextPresentation.isCold(activity)) {
+                durable({ state -> intent.restoreAfterExpiry(state, sending.requestId) })
+                refuseQuestionSend(intent, "The prompt cache expired before sending. Review your answer and confirm full context; nothing was sent.")
+                return@launch
+            }
+            val currentDraft = draft(target, question)
+            val currentQuestion = conversationQuestions.find { it.id == question.id && it.hash == question.hash }
+            check(fresh(target) && !contextBlocked(target) && !demo && storageReady && connections.any { it == connection } &&
+                intent.permitsPrepared(selected?.target, navigationId, currentQuestion, currentDraft,
+                    sending.requestId, ContextPresentation.isCold(activity), consent != null)) {
                 "The selected question changed before sending."
             }
             preparingTargets-=target.key;lastOwnSend=target to sending.requestId
-            val payload=target.json().put("request_id",sending.requestId).put("question_id",question.id).put("expected_question_hash",question.hash).put("answers",answers)
+            val payload=target.json().put("request_id",sending.requestId).put("question_id",question.id).put("expected_question_hash",question.hash).put("answers",JSONArray(frozenAnswers))
             val receipt=withTimeout(45_000) {
                 attempted=true
                 val initial=try { api.submit(connection,target,"answer",payload,sending.requestId) }

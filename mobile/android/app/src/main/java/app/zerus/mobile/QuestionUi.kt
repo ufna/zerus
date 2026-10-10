@@ -116,7 +116,7 @@ import org.json.JSONObject
     }
     fun answers() = QuestionPolicies.answers(question.prompts, options, texts)
     fun persist() { model.edit(target, texts.values.filter { it.isNotBlank() }.joinToString("\n"), question, answers().toString()) }
-    val editing = draft.status == "editing" && native == null
+    val editing = draft.status == "editing" && native == null && model.pendingQuestionSend == null
     val error = QuestionPolicies.answerError(question.prompts, options, texts)
     val complete = QuestionPolicies.complete(question.prompts, options, texts)
     val submitGate = remember(target.key,question.id,question.hash,draft.generation) { QuestionSubmitGate() }
@@ -268,6 +268,8 @@ import org.json.JSONObject
                 }
             }
             if (error.isNotBlank()) Text(error, color = Color(0xFFFFCB7D), style = MaterialTheme.typography.bodySmall)
+            val sendNotice = model.questionSendNotice(target, question)
+            if (sendNotice.isNotBlank()) Text(sendNotice, color = Color(0xFFFFCB7D), style = MaterialTheme.typography.bodySmall)
             if (question.approval) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     fun submit(option: String) { model.send(target, question, JSONArray().put(JSONObject()
