@@ -54,7 +54,7 @@ private slots:
 void TestTrayMenu::quickAccessOnly()
 {
     TrayMenu tm(kModes, "clipboard", false); tm.rebuild(twoBoxFleet());
-    QCOMPARE(labels(tm.menu()), QStringList({"Open hgs", "---", "arch", "claude/infra", "● codex/games",
+    QCOMPARE(labels(tm.menu()), QStringList({"Open Zerus", "---", "arch", "claude/infra", "● codex/games",
         "---", "mac", "● kimi/docs", "---", "Open in", "Refresh", "Quit"}));
     QSignalSpy opened(&tm, &TrayMenu::sessionsRequested);
     tm.menu()->actions().first()->trigger(); QCOMPARE(opened.size(), 1);

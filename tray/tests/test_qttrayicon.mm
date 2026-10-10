@@ -13,7 +13,7 @@ private slots:
 
 void TestQtTrayIcon::primaryClickDoesNotOpenMenu()
 {
-    QtTrayIcon icon; QMenu menu; menu.addAction("Open hgs");
+    QtTrayIcon icon; QMenu menu; menu.addAction("Open Zerus");
     icon.setContextMenu(&menu);
     // With a context menu attached, AppKit intercepts both mouse buttons.
     QVERIFY(!icon.item().contextMenu());
@@ -36,7 +36,7 @@ void TestQtTrayIcon::nativeContextMenu()
     // Opt-in: briefly shows a real native popup, then closes it without input.
     if (!qEnvironmentVariableIsSet("HGS_TEST_NATIVE_MENU"))
         QSKIP("Set HGS_TEST_NATIVE_MENU=1 with the cocoa platform for native menu integration");
-    QtTrayIcon icon; QMenu menu; auto *open = menu.addAction("Open hgs");
+    QtTrayIcon icon; QMenu menu; auto *open = menu.addAction("Open Zerus");
     icon.setContextMenu(&menu);
     QSignalSpy shown(&menu, &QMenu::aboutToShow), hidden(&menu, &QMenu::aboutToHide);
     QSignalSpy triggered(open, &QAction::triggered);

@@ -177,7 +177,7 @@ required environment is already available. Never put private keys in wrappers.
 
 ## Desktop workspace
 
-The tray's **Open hgs**, a left click or `hgs-tray --sessions` opens the workspace.
+The tray's **Open Zerus**, a left click or `hgs-tray --sessions` opens the workspace.
 On macOS, use `~/Applications/hgs-tray.app/Contents/MacOS/hgs-tray --sessions`.
 Repeated launch raises the existing window. Closing it leaves the tray and agents
 running. The installed application and service names remain `hgs-tray` for
