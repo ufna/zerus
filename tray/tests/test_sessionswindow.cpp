@@ -147,6 +147,7 @@ private slots:
     void nativeSessionUsageStaysWithSelectedConversation();
     void subagentActivityKeepsMainDraftAndRejectsStaleHistory();
     void childTreeKeepsRoutineResultsQuiet();
+    void completedSubagentsPreferenceKeepsOpenHistory();
     void sessionsRailResetsFiltersAndShowsAttention();
     void railButtonsIgnoreNativeLayoutMargins();
     void sessionRowsHaveNoHoverPopup();
@@ -3328,6 +3329,7 @@ void TestSessionsWindow::nativeSessionUsageStaysWithSelectedConversation()
 
 void TestSessionsWindow::compactMetadataAndSubagentRoster()
 {
+    QSettings().setValue("workspace/showCompletedSubagents", true);
     auto state = fleet(); auto box = state.local(); auto &session = box.sessions[0];
     session.gitBranch = "feat/compact"; session.gitWorktree = true; session.gitWorktreeName = "ui-tree";
     session.cwd = "/work/ui-tree"; session.gitRoot = session.cwd; session.activitySummary = "Read"; session.activityDetail = "view.cpp";
@@ -3373,6 +3375,7 @@ void TestSessionsWindow::compactMetadataAndSubagentRoster()
 
 void TestSessionsWindow::subagentActivityKeepsMainDraftAndRejectsStaleHistory()
 {
+    QSettings().setValue("workspace/showCompletedSubagents", true);
     SessionsWindow window(script()); window.setFleet(fleet()); window.show(); QTest::qWait(80);
     auto *client = window.findChild<HgsClient *>();
     auto *composer = window.findChild<MessageComposer *>("messageComposer"); auto *editor = composer->findChild<QPlainTextEdit *>();
@@ -3406,6 +3409,7 @@ void TestSessionsWindow::subagentActivityKeepsMainDraftAndRejectsStaleHistory()
 
 void TestSessionsWindow::childTreeKeepsRoutineResultsQuiet()
 {
+    QSettings().setValue("workspace/showCompletedSubagents", true);
     FleetState state; auto box = fleet().local(); auto session = box.sessions[0];
     session.conversationId = "tree-conversation"; session.runId = "tree-run";
     session.subagents = {{"agent-a", QJsonObject{{"name","Review"},{"state","working"},{"detail","Checking changes"}}},
@@ -3479,6 +3483,69 @@ void TestSessionsWindow::childTreeKeepsRoutineResultsQuiet()
     QVERIFY(!list->item(0)->data(SessionRoles::Unread).toBool()); QVERIFY(!readAll->isEnabled());
 }
 
+void TestSessionsWindow::completedSubagentsPreferenceKeepsOpenHistory()
+{
+    FleetState state; auto box = fleet().local(); auto session = box.sessions[0];
+    session.conversationId = "conversation-one"; session.runId = "run-one";
+    session.subagentSource = "hooks"; session.subagentCountsComplete = true;
+    session.subagentActiveCount = 1; session.subagentTotalCount = 29;
+    session.subagents = {{"a", QJsonObject{{"name", "Open child"}, {"state", "working"}}},
+        {"b", QJsonObject{{"name", "Past child"}, {"state", "finished"}}},
+        {"c", QJsonObject{{"name", "Approval child"}, {"state", "finished"}, {"display_state", "approval"}}},
+        {"d", QJsonObject{{"name", "Unknown child"}}}};
+    box.sessions = {session}; state.setLocal(box, QDateTime::currentMSecsSinceEpoch());
+    SessionsWindow window(script()); window.setFleet(state); window.show(); QTest::qWait(80);
+    auto *client = window.findChild<HgsClient *>();
+    QJsonObject details{{"tracked", true}, {"conversation_id", session.conversationId}, {"run_id", session.runId},
+        {"subagent_source", "hooks"}, {"subagents", session.subagents}, {"subagent_counts_complete", true},
+        {"subagent_active_count", 1}, {"subagent_total_count", 29}};
+    client->inspectionReady({}, session.name, details);
+    auto *list = window.findChild<SessionList *>("sessionList");
+    auto *roster = window.findChild<QTextBrowser *>("subagents");
+    auto *check = window.findChild<QCheckBox *>("workspaceShowCompletedSubagents"); QVERIFY(check); QVERIFY(!check->isChecked());
+    const auto rootKey = list->item(0)->data(SessionRoles::Key).toString();
+    list->childrenToggled(rootKey); QCOMPARE(list->count(), 4);
+    QCOMPARE(list->item(1)->data(SessionRoles::ChildId).toString(), QString("a"));
+    QCOMPARE(list->item(2)->data(SessionRoles::ChildId).toString(), QString("c"));
+    QVERIFY(roster->toPlainText().contains("Needs input")); QVERIFY(!roster->toPlainText().contains("Past child"));
+    QCOMPARE(list->item(0)->data(SessionRoles::Children).toString(), QString("1/29"));
+    check->setChecked(true); QCOMPARE(list->count(), 5); QVERIFY(roster->toPlainText().contains("Past child"));
+    check->setChecked(false); QCOMPARE(list->count(), 4);
+    auto *parentComposer = window.findChild<MessageComposer *>("messageComposer"); parentComposer->editor()->setPlainText("Parent draft");
+    list->setCurrentRow(1);
+    QJsonArray events;
+    for (int i = 0; i < 80; ++i) events.append(QJsonObject{{"seq", i+1}, {"type", "AgentMessage"}, {"detail", QString("Retained child history %1").arg(i)}, {"at", 1700000000+i}});
+    client->subagentInspectionReady({}, session.name, "a", {}, {{"parent_conversation_id", session.conversationId},
+        {"conversation_id", "child-conversation"}, {"run_id", "run-one"}, {"send_supported", true}, {"events", events}});
+    auto *childComposer = window.findChild<MessageComposer *>("subagentComposer"); childComposer->editor()->setPlainText("Child draft");
+    auto *view = window.findChild<ActivityView *>("subagentActivity"); auto *scroll = view->browser()->verticalScrollBar();
+    scroll->setValue(scroll->maximum()/2); const auto position = scroll->value();
+    const auto history = view->browser()->toPlainText();
+    auto children = details.value("subagents").toObject(); auto child = children.value("a").toObject(); child["state"] = "finished"; children["a"] = child;
+    details["subagents"] = children; client->inspectionReady({}, session.name, details);
+    check->setChecked(true); check->setChecked(false);
+    QCOMPARE(list->currentItem()->data(SessionRoles::ChildId).toString(), QString("a"));
+    QCOMPARE(childComposer->editor()->toPlainText(), QString("Child draft"));
+    QCOMPARE(view->browser()->toPlainText(), history); QCOMPARE(scroll->value(), position);
+    childComposer->editor()->clear(); window.findChild<QPushButton *>("subagentBack")->click();
+    QTRY_COMPARE(list->count(), 3); QCOMPARE(parentComposer->editor()->toPlainText(), QString("Parent draft"));
+    // Retained preview evidence follows the same filter, without resurrecting
+    // completed children when the individual roster filters to empty.
+    details["subagents"] = QJsonObject{};
+    details["subagent_previews"] = QJsonArray{QJsonObject{{"id", "preview"}, {"name", "Past preview"}, {"state", "finished"}}};
+    client->inspectionReady({}, session.name, details);
+    QVERIFY(roster->toPlainText().contains("No active subagents reported"));
+    QVERIFY(!roster->toPlainText().contains("Past preview"));
+    check->setChecked(true); QVERIFY(roster->toPlainText().contains("Past preview"));
+    SessionsWindow reopened(script()); QVERIFY(reopened.findChild<QCheckBox *>("workspaceShowCompletedSubagents")->isChecked());
+    // A saved old-conversation draft must not pin a reused ID in a new roster.
+    check->setChecked(false); details["subagents"] = children; details.remove("subagent_previews"); client->inspectionReady({}, session.name, details);
+    roster->anchorClicked(QUrl("hgs-agent:a")); childComposer->editor()->setPlainText("Old conversation draft");
+    box.sessions[0].conversationId = "replacement-conversation"; box.sessions[0].subagents = {{"a", child}};
+    state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    for (int row = 0; row < list->count(); ++row) QVERIFY(list->item(row)->data(SessionRoles::ChildId).toString() != "a");
+}
+
 namespace {
 // QMacStyle's layout rect for a push button starts 4 px lower and ends 8 px higher.
 class NativeLayoutMargins : public QProxyStyle {
@@ -3550,9 +3617,12 @@ void TestSessionsWindow::subagentGroupsAndUnavailableActivity()
     client->inspectionReady({}, session.name, details);
     auto *roster = window.findChild<QTextBrowser *>("subagents"); auto text = roster->toPlainText();
     QVERIFY(text.contains("Profile groups")); QVERIFY(text.contains("2 active / 8 observed runs"));
-    QVERIFY(text.contains("code")); QVERIFY(text.contains("review")); QVERIFY(!text.contains("Do not invent a child"));
+    QVERIFY(text.contains("code")); QVERIFY(!text.contains("Read final diff")); QVERIFY(!text.contains("Do not invent a child"));
+    auto *showCompleted = window.findChild<QCheckBox *>("workspaceShowCompletedSubagents"); QVERIFY(showCompleted);
+    showCompleted->setChecked(true); QVERIFY(roster->toPlainText().contains("Read final diff"));
+    showCompleted->setChecked(false);
     details["subagent_counts_complete"] = false; client->inspectionReady({}, session.name, details);
-    text = roster->toPlainText(); QVERIFY(text.contains("incomplete counts")); QVERIFY(!text.contains("2/5"));
+    text = roster->toPlainText(); QVERIFY(text.contains("incomplete counts")); QVERIFY(!text.contains("2/5")); QVERIFY(text.contains("Read final diff"));
     details["subagent_groups"] = QJsonObject{}; details["subagents"] = QJsonObject{};
     client->inspectionReady({}, session.name, details);
     QVERIFY(roster->toPlainText().contains("Exact subagent counts are unavailable"));

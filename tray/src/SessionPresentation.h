@@ -6,6 +6,29 @@
 #include <QDateTime>
 
 namespace SessionPresentation {
+inline QString childState(const QJsonObject &child) {
+    const auto display = child.value("display_state").toString();
+    return display.isEmpty() ? child.value("state").toString() : display;
+}
+inline bool inactiveChild(const QJsonObject &child, bool countsComplete = false) {
+    const auto state = childState(child);
+    const bool inactive = state == "finished" || state == "idle" || state == "ready";
+    // Explicit display evidence wins over an older raw turn state or count.
+    if (!state.isEmpty() && !inactive) return false;
+    if (child.value("group").toBool())
+        return countsComplete && child.value("active_count").isDouble()
+            && child.value("active_count").toDouble() == 0;
+    return inactive;
+}
+inline QString childStatus(const QJsonObject &child) {
+    const auto state = childState(child);
+    if (state == "working") return QObject::tr("Working");
+    if (state == "finished" || state == "ready" || state == "idle") return QObject::tr("Ready");
+    if (state == "error") return QObject::tr("Error");
+    if (state == "paused") return QObject::tr("Paused");
+    if (state == "approval" || state == "input" || state == "attention") return QObject::tr("Needs input");
+    return QObject::tr("Unknown");
+}
 inline QString gitStatusPath(const SessionInfo &s) {
     if (s.state == "archived" || s.gitMetadataState == "not_repo") return {};
     return s.gitRoot.isEmpty() ? (s.canonicalCwd.isEmpty() ? s.cwd : s.canonicalCwd) : s.gitRoot;

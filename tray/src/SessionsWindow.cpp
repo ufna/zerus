@@ -1958,7 +1958,7 @@ bool SessionsWindow::archiveNameOccupied(const Entry &archive) const
 
 namespace {
 QString childState(const QJsonObject &child) {
-    return child.value("display_state").toString(child.value("state").toString());
+    return SessionPresentation::childState(child);
 }
 bool childAction(const QJsonObject &child) {
     const auto state = childState(child);
@@ -1967,13 +1967,7 @@ bool childAction(const QJsonObject &child) {
     return state == "approval" || state == "input" || state == "attention";
 }
 QString childStatus(const QJsonObject &child) {
-    const auto state = childState(child);
-    if (state == "working") return QObject::tr("Working");
-    if (state == "finished" || state == "ready" || state == "idle") return QObject::tr("Ready");
-    if (state == "error") return QObject::tr("Error");
-    if (state == "paused") return QObject::tr("Paused");
-    if (childAction(child)) return QObject::tr("Needs input");
-    return QObject::tr("Unknown");
+    return SessionPresentation::childStatus(child);
 }
 QString childName(const QJsonObject &child, const QString &id) {
     auto name = child.value("label").toString(child.value("name").toString());
@@ -1993,6 +1987,17 @@ QString SessionsWindow::childKey(const Entry &entry, const QString &id) const
 {
     const auto conversation = entry.key == m_selectedKey ? m_details.value("conversation_id").toString(entry.session.conversationId) : entry.session.conversationId;
     return entry.machine + '\n' + entry.session.name + '\n' + conversation + '\n' + id;
+}
+bool SessionsWindow::showChild(const Entry &entry, const QString &id, const QJsonObject &child, bool countsComplete) const
+{
+    const auto conversation = !entry.session.conversationId.isEmpty() ? entry.session.conversationId :
+        entry.key == m_selectedKey ? m_details.value("conversation_id").toString() : QString();
+    const auto draftKey = entry.machine + '\n' + entry.session.name + '\n' + conversation + '\n' + id;
+    return QSettings().value("workspace/showCompletedSubagents", false).toBool()
+        || (entry.key == m_selectedKey && id == m_subagentId && !id.isEmpty()
+            && m_subagentConversation == conversation)
+        || (!child.value("group").toBool() && m_subagentComposer->hasDraft(draftKey))
+        || !SessionPresentation::inactiveChild(child, countsComplete);
 }
 bool SessionsWindow::childNeedsAction(const Entry &entry) const
 {
@@ -2127,7 +2132,9 @@ void SessionsWindow::rebuild()
             if (m_expandedSessions.contains(visible[i].key)) {
                 const auto roster = childRoster(visible[i]);
                 // Stable ID order avoids moving a row under the pointer when a child finishes.
-                for (auto it = roster.begin(); it != roster.end(); ++it) rows.append({group.id, i, hidden, it.key()});
+                for (auto it = roster.begin(); it != roster.end(); ++it)
+                    if (showChild(visible[i], it.key(), it.value().toObject(), visible[i].session.subagentCountsComplete))
+                        rows.append({group.id, i, hidden, it.key()});
             }
         }
         for (const auto &id : launches) rows.append({group.id, -1, hasGroups && group.collapsed, {}, id});
@@ -2441,11 +2448,15 @@ void SessionsWindow::openSubagent(const QString &id)
 
 void SessionsWindow::closeSubagent()
 {
+    const bool wasOpen = !m_subagentId.isEmpty();
     m_subagentId.clear(); m_subagentConversation.clear(); m_subagentCwd.clear(); m_subagentDetails = {};
     m_activityStack->setCurrentIndex(0);
     const QSignalBlocker block(m_sessions);
     for (int i = 0; i < m_sessions->count(); ++i) if (m_sessions->item(i)->data(KeyRole).toString() == m_selectedKey) { m_sessions->setCurrentRow(i); break; }
     if (!m_rebuilding) renderDetails();
+    // Drop the temporary visible-row pin after deliberate navigation, outside
+    // selection/render callbacks that still hold pointers into m_entries.
+    if (wasOpen && !m_rebuilding) QTimer::singleShot(0, this, [this]{ rebuild(); });
 }
 
 void SessionsWindow::acceptInspection(const QString &host, const QString &name, const QJsonObject &data, const QString &archiveId)
@@ -2702,9 +2713,13 @@ void SessionsWindow::renderDetails()
         auto child = it.value().toObject(); child["id"] = it.key(); roster.append(child);
     }
     if (roster.isEmpty()) for (const auto &value : m_details.value("subagent_previews").toArray(s.subagentPreviews)) roster.append(value.toObject());
+    const auto retainedRosterSize = roster.size();
+    roster.erase(std::remove_if(roster.begin(), roster.end(), [&](const QJsonObject &child) {
+        return !showChild(*entry, child.value("id").toString(), child, s.subagentCountsComplete);
+    }), roster.end());
     std::stable_sort(roster.begin(), roster.end(), [](const QJsonObject &a, const QJsonObject &b) {
-        const bool activeA = a.value("display_state").toString(a.value("state").toString()) == "working" || a.value("active_count").toInt() > 0;
-        const bool activeB = b.value("display_state").toString(b.value("state").toString()) == "working" || b.value("active_count").toInt() > 0;
+        const bool activeA = childState(a) == "working" || a.value("active_count").toInt() > 0;
+        const bool activeB = childState(b) == "working" || b.value("active_count").toInt() > 0;
         if (activeA != activeB) return activeA;
         return a.value("updated").toDouble() > b.value("updated").toDouble();
     });
@@ -2760,9 +2775,11 @@ void SessionsWindow::renderDetails()
         .arg(source == "hook_profiles" ? tr("Profile groups") : tr("Subagents"), m_muted,
             currentChildren ? childCount(s, true) : tr("Last recorded"));
     if (source == "hook_profiles") children += QString("<p style='color:%1'>%2</p>").arg(m_muted, tr("Observed runs grouped by profile; individual agent identities are not reported."));
+    if (retainedRosterSize > roster.size()) children += QString("<p style='color:%1'>%2</p>").arg(m_muted,
+        tr("Completed turns are hidden. Show completed subagents in Settings → Sessions to view their history."));
     if (roster.isEmpty()) {
         const bool unavailable = source == "unavailable" || !s.tracked;
-        const QString emptyHint = unavailable ? tr("Subagent activity is unavailable for this session.") :
+        const QString emptyHint = retainedRosterSize > 0 ? tr("No active subagents reported.") : unavailable ? tr("Subagent activity is unavailable for this session.") :
             source == "hook_profiles" && !s.subagentCountsComplete ? tr("Exact subagent counts are unavailable for this run.") :
             tr("No subagent activity has been reported yet.");
         children += QString("<p style='color:%1'>%2</p>").arg(m_muted, emptyHint);
@@ -2773,10 +2790,8 @@ void SessionsWindow::renderDetails()
             if (name.isEmpty()) name = child.value("name").toString();
             if (name.isEmpty()) name = child.value("id").toString();
             if (name.isEmpty()) name = tr("Unnamed agent");
-            const QString childState = child.value("display_state").toString(child.value("state").toString());
-            QString stateText = childState == "working" ? tr("Working") :
-                (childState == "finished" || childState == "idle" || childState == "ready") ? tr("Ready") :
-                childState == "error" ? tr("Error") : tr("Unknown");
+            const QString childState = SessionPresentation::childState(child);
+            QString stateText = childStatus(child);
             if (child.value("group").toBool()) {
                 if (s.subagentCountsComplete && child.value("active_count").isDouble() && child.value("total_count").isDouble())
                     stateText = QString("%1/%2").arg(child.value("active_count").toInt()).arg(child.value("total_count").toInt());
@@ -2798,7 +2813,7 @@ void SessionsWindow::renderDetails()
                 .arg(nameWidth).arg(childColor.name(), title, m_muted, elide(detail, nameWidth)).arg(stateWidth).arg(htmlText(stateText));
         }
         children += "</table>";
-        if (agents.isEmpty() && s.subagentTotalCount > roster.size()) children += QString("<p style='color:%1'>%2</p>").arg(m_muted, tr("%1 recent agents shown").arg(roster.size()));
+        if (agents.isEmpty() && s.subagentTotalCount > retainedRosterSize) children += QString("<p style='color:%1'>%2</p>").arg(m_muted, tr("%1 recent records available").arg(retainedRosterSize));
     }
     if (!m_subagentId.isEmpty()) {
         const auto child = childRoster(*entry).value(m_subagentId).toObject();

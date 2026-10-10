@@ -110,6 +110,7 @@ private:
     void openSubagent(const QString &id);
     void closeSubagent();
     QJsonObject childRoster(const Entry &entry) const;
+    bool showChild(const Entry &entry, const QString &id, const QJsonObject &child, bool countsComplete) const;
     QString childKey(const Entry &entry, const QString &id) const;
     bool childNeedsAction(const Entry &entry) const;
     bool entryNeedsAttention(const Entry &entry) const;

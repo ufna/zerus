@@ -31,7 +31,29 @@ private slots:
     void draftStatusSitsBetweenWorkAndReplies();
     void gitStatusSeparatesEvidenceAndExpires();
     void gitStatusCardsKeepMetadataAndMachineReadable();
+    void subagentInactivityKeepsConflictingAndUnknownEvidence();
 };
+
+void TestWorkspace::subagentInactivityKeepsConflictingAndUnknownEvidence()
+{
+    using SessionPresentation::inactiveChild;
+    for (const auto &state : {"finished", "ready", "idle"}) {
+        QVERIFY(inactiveChild({{"state", state}}));
+        QVERIFY(inactiveChild({{"state", state}, {"display_state", ""}}));
+        QVERIFY(inactiveChild({{"state", state}, {"display_state", QJsonValue::Null}}));
+        for (const auto &display : {"working", "input", "approval", "attention", "error", "paused", "unknown", "future-state"})
+            QVERIFY(!inactiveChild({{"state", state}, {"display_state", display}}));
+    }
+    QVERIFY(inactiveChild({{"state", "working"}, {"display_state", "idle"}}));
+    QVERIFY(!inactiveChild({})); QVERIFY(!inactiveChild({{"state", "unknown"}}));
+    const QJsonObject group{{"group", true}, {"active_count", 0}, {"total_count", 9}};
+    QVERIFY(inactiveChild(group, true)); QVERIFY(!inactiveChild(group, false));
+    auto uncertain = group; uncertain["active_count"] = "0"; QVERIFY(!inactiveChild(uncertain, true));
+    uncertain["active_count"] = -1; QVERIFY(!inactiveChild(uncertain, true));
+    uncertain = group; uncertain["display_state"] = "approval"; QVERIFY(!inactiveChild(uncertain, true));
+    QCOMPARE(SessionPresentation::childStatus(uncertain), QString("Needs input"));
+    uncertain = group; uncertain["state"] = "working"; QVERIFY(!inactiveChild(uncertain, true));
+}
 
 static QJsonObject verifiedGit() {
     return {{"state", "ok"}, {"root", "/workspace/zerus"}, {"branch", "main"}, {"upstream", "origin/main"},
