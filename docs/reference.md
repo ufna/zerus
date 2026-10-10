@@ -484,9 +484,15 @@ order. Empty-project visibility, collapse state and default project are local.
 **All swarm projects** explicitly shows the full shared catalog.
 
 Folder entries contain a machine, path and optional label. Browse works for local
-and remote folders, including ordinary non-Git directories. Project switches in
-**New session** keep the machine and select that project's folder. Only a path
-explicitly chosen through **Browse…** stays pinned per machine within that dialog;
+and remote folders, including ordinary non-Git directories. The desktop folder
+list starts in alphabetical name order, ignoring case; column headings change
+the sort. Sorting preserves the selected folder and does not reorder the shared
+catalog. The divider below the list adjusts the folder/worktree heights and
+remembers that choice locally; additional window height goes to the folders.
+Worktree actions share its heading row, leaving more space for the folder list.
+Project switches in **New session** keep the machine and select that project's
+folder. Only a path explicitly chosen through **Browse…** stays pinned per machine
+within that dialog;
 closing it clears this temporary choice. Selecting a listed folder unpins it.
 A folder outside the project shows a warning and is added only after a successful
 launch with the matching launch ID. Cancellation and launch failure add nothing.

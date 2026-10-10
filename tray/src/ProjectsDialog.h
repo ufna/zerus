@@ -11,6 +11,7 @@ class QPushButton;
 class QListWidget;
 class QTableWidget;
 class QLineEdit;
+class QSplitter;
 
 // App-owned logical projects; folders are addresses on fleet machines.
 class ProjectsDialog : public QDialog {
@@ -67,6 +68,8 @@ private:
     QListWidget *m_list;
     QAction *m_moveUp,*m_moveDown;
     QTableWidget *m_folders;
+    QSplitter *m_folderSplitter;
+    bool m_folderSplitInitialized = false;
     WorktreePanel *m_worktrees;
     QLineEdit *m_name;
     QLabel *m_id, *m_status;

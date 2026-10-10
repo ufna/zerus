@@ -4733,12 +4733,19 @@ void TestSessionsWindow::projectFolderNewSessionPrefillsExactTarget()
     SessionsWindow window(script());window.resize(1150,760);window.setFleet(fleet());window.show();window.showProjects();
     auto *page=window.findChild<ProjectsDialog *>();page->selectProject(project);
     auto *table=page->findChild<QTableWidget *>("projectFolders");auto *create=page->findChild<QPushButton *>("newProjectFolderSession");
-    QVERIFY(!create->isEnabled());table->setCurrentCell(0,0);QVERIFY(create->isEnabled());
+    const auto rowFor=[&](const QString &id){for(int row=0;row<table->rowCount();++row)if(table->item(row,0)->data(Qt::UserRole).toString()==id)return row;return -1;};
+    QVERIFY(rowFor(localId)>=0);QVERIFY(rowFor(remoteId)>=0);
+    QVERIFY(!create->isEnabled());table->setCurrentCell(rowFor(localId),0);QVERIFY(create->isEnabled());
     auto *metadata=page->findChild<QPushButton *>("projectColor");auto *defaultProject=page->findChild<QCheckBox *>("defaultProject");
     for(int height:{760,1100}) {
         window.resize(1150,height);table->clearSelection();QTest::qWait(30);
         QVERIFY(defaultProject->mapTo(page,QPoint()).y()-metadata->mapTo(page,QPoint(0,metadata->height())).y()<45);
-        const int full=table->height();table->setCurrentCell(0,0);QTest::qWait(30);QVERIFY(table->height()<=230);QVERIFY(full>=table->height());
+        const int full=table->height();table->setCurrentCell(rowFor(localId),0);QTest::qWait(30);QVERIFY(full>=table->height());
+        if(height==1100)QVERIFY(table->height()>230);
+        auto *folderActions=page->findChild<QPushButton *>("addProjectFolder");
+        QVERIFY(folderActions->mapTo(page,QPoint()).y()>=table->mapTo(page,QPoint(0,table->height())).y());
+        auto *catalog=page->findChild<QTreeWidget *>("worktreeCatalog");auto *all=page->findChild<QPushButton *>("allWorktreeSessions");
+        QVERIFY(all->mapTo(page,QPoint(0,all->height())).y()<=catalog->mapTo(page,QPoint()).y());
         QVERIFY(defaultProject->mapTo(page,QPoint()).y()-metadata->mapTo(page,QPoint(0,metadata->height())).y()<45);
     }
     bool localOpened=false;
@@ -4748,9 +4755,9 @@ void TestSessionsWindow::projectFolderNewSessionPrefillsExactTarget()
         QCOMPARE(dialog->findChild<QComboBox *>("launchProjectFolder")->currentData().toString(),localId);
         QCOMPARE(dialog->findChild<QLabel *>("launchFolderPath")->text(),local.path());localOpened=true;dialog->reject();});
     create->click();QVERIFY(localOpened);QVERIFY(page->isVisible());
-    table->customContextMenuRequested(table->visualItemRect(table->item(2,0)).center());
+    table->customContextMenuRequested(table->visualItemRect(table->item(rowFor(remoteId),0)).center());
     QPointer<QMenu> menu=page->findChild<QMenu *>("projectFolderMenu");QVERIFY(menu);auto *launch=menu->findChild<QAction *>("contextNewProjectFolderSession");
-    QVERIFY(launch->isEnabled());table->setCurrentCell(0,0);
+    QVERIFY(launch->isEnabled());table->setCurrentCell(rowFor(localId),0);
     QSignalSpy launched(&window,&SessionsWindow::newSessionRequested);bool remoteOpened=false;
     QTimer::singleShot(0,&window,[&]{auto *dialog=window.findChild<NewSessionDialog *>();QVERIFY(dialog);QTimer::singleShot(3000,dialog,&QDialog::reject);
         QCOMPARE(dialog->findChild<QComboBox *>("launchProject")->currentData().toString(),project);
@@ -4763,8 +4770,8 @@ void TestSessionsWindow::projectFolderNewSessionPrefillsExactTarget()
         auto *start=dialog->findChild<QPushButton *>("primary");QTRY_VERIFY(start->isEnabled());start->click();});
     launch->trigger();QVERIFY(remoteOpened);QCOMPARE(launched.size(),1);QCOMPARE(launched[0][0].toString(),QString("mac"));
     QCOMPARE(launched[0][1].toString(),QString("claude"));QCOMPARE(launched[0][2].toString(),QString("/remote/work tree"));delete menu.data();
-    window.showProjects();page->selectProject(project);table->setCurrentCell(2,0);
-    table->customContextMenuRequested(table->visualItemRect(table->item(2,0)).center());menu=page->findChild<QMenu *>("projectFolderMenu");
+    window.showProjects();page->selectProject(project);table->setCurrentCell(rowFor(remoteId),0);
+    table->customContextMenuRequested(table->visualItemRect(table->item(rowFor(remoteId),0)).center());menu=page->findChild<QMenu *>("projectFolderMenu");
     auto offline=fleet();BoxState missing;missing.host="mac";missing.error="offline";offline.setPeer(missing,QDateTime::currentMSecsSinceEpoch());window.setFleet(offline);
     QVERIFY(!create->isEnabled());QSignalSpy requests(page,&ProjectsDialog::newSessionRequested);
     menu->findChild<QAction *>("contextNewProjectFolderSession")->trigger();QCOMPARE(requests.size(),0);delete menu.data();
@@ -4787,8 +4794,8 @@ void TestSessionsWindow::projectFolderActionsKeepTargets()
     QCOMPARE(files.urls.size(),1);QCOMPARE(files.urls[0].toLocalFile(),path);
     const auto preview=qEnvironmentVariable("HGS_BULK_PREVIEW");
     if(!preview.isEmpty()){QDir().mkpath(preview);QTest::qWait(30);QVERIFY(page->grab().save(preview+"/project-folders.png"));}
-    table->setCurrentCell(1,0);QVERIFY(!open->isEnabled());QVERIFY(open->toolTip().contains("mac"));
-    table->customContextMenuRequested(table->visualItemRect(table->item(1,0)).center());
+    table->setCurrentCell(2,0);QCOMPARE(table->item(2,0)->text(),QString("Remote"));QVERIFY(!open->isEnabled());QVERIFY(open->toolTip().contains("mac"));
+    table->customContextMenuRequested(table->visualItemRect(table->item(2,0)).center());
     QPointer<QMenu> menu=page->findChild<QMenu *>("projectFolderMenu");QVERIFY(menu);
     QVERIFY(!menu->findChild<QAction *>("contextOpenProjectFolder")->isEnabled());
     menu->findChild<QAction *>("contextCopyProjectFolder")->trigger();QCOMPARE(QApplication::clipboard()->text(),path);
@@ -4798,7 +4805,7 @@ void TestSessionsWindow::projectFolderActionsKeepTargets()
         editedRemote=dialog->findChild<QComboBox *>("projectFolderMachine")->currentData().toString()=="mac";
         QCOMPARE(dialog->findChild<QLineEdit *>("projectFolderPath")->text(),path);dialog->reject();});
     menu->findChild<QAction *>("contextEditProjectFolder")->trigger();QVERIFY(editedRemote);delete menu.data();
-    table->setCurrentCell(2,0);QVERIFY(!open->isEnabled());
+    table->setCurrentCell(1,0);QCOMPARE(table->item(1,0)->text(),QString("Missing"));QVERIFY(!open->isEnabled());
     table->customContextMenuRequested(table->visualItemRect(table->item(0,0)).center());
     menu=page->findChild<QMenu *>("projectFolderMenu");QVERIFY(menu);
     menu->findChild<QAction *>("contextOpenProjectFolder")->trigger();QCOMPARE(files.urls.size(),2);
@@ -4873,7 +4880,9 @@ void TestSessionsWindow::worktreePreview()
     for(bool dark:{true,false}){
         auto palette=original;palette.setColor(QPalette::Window,QColor(dark?"#161b21":"#f5f7f9"));palette.setColor(QPalette::Base,QColor(dark?"#1c2229":"#ffffff"));palette.setColor(QPalette::Text,QColor(dark?"#e8edf4":"#1a2733"));palette.setColor(QPalette::WindowText,palette.color(QPalette::Text));qApp->setPalette(palette);
         auto state=fleet();auto local=state.local();local.sessions[0].cwd="/repo";local.sessions[0].canonicalCwd="/repo";local.sessions[0].gitRoot="/repo";local.sessions[1].cwd="/linked";local.sessions[1].canonicalCwd="/linked";local.sessions[1].gitRoot="/linked";state.setLocal(local,QDateTime::currentMSecsSinceEpoch());
-        SessionOrganization org;const auto project=org.createGroup("Worktree catalog");org.addFolder(project,"arch","/repo");QSettings().setValue("workspace/organization",QJsonDocument(org.toJson()).toJson(QJsonDocument::Compact));
+        SessionOrganization org;const auto project=org.createGroup("Worktree catalog");const auto rootId=org.addFolder(project,"arch","/repo","Core");
+        for(const auto &name:{"Website","Backend","Android","Scripts","Docs","Tests"})org.addFolder(project,"arch","/workspace/"+QString(name).toLower(),name);
+        org.markImported("arch");org.markImported("mac");QSettings().setValue("workspace/organization",QJsonDocument(org.toJson()).toJson(QJsonDocument::Compact));
         SessionsWindow window(script());window.setFleet(state);window.resize(1260,900);window.show();window.showSession({},"codex/hgs/dashboard");
         window.findChild<QPushButton *>("toggleInspector")->setChecked(true);window.findChild<QTabWidget *>("sessionInspector")->setCurrentIndex(1);QTest::qWait(100);
         QVERIFY(window.grab().save(destination+(dark?"/details-dark.png":"/details-light.png")));
@@ -4881,8 +4890,11 @@ void TestSessionsWindow::worktreePreview()
         QVERIFY(window.grab().save(destination+(dark?"/worktrees-dark.png":"/worktrees-light.png")));
         window.showProjects();auto *page=window.findChild<ProjectsDialog *>("projectsPage");page->selectProject(project);QTest::qWait(100);
         QVERIFY(window.grab().save(destination+(dark?"/projects-unselected-dark.png":"/projects-unselected-light.png")));
-        page->findChild<QTableWidget *>("projectFolders")->setCurrentCell(0,0);QTest::qWait(100);
+        auto *folders=page->findChild<QTableWidget *>("projectFolders");
+        for(int row=0;row<folders->rowCount();++row)if(folders->item(row,0)->data(Qt::UserRole).toString()==rootId)folders->setCurrentCell(row,0);
+        QTest::qWait(100);
         QVERIFY(window.grab().save(destination+(dark?"/projects-dark.png":"/projects-light.png")));
+        window.resize(1260,760);QTest::qWait(100);QVERIFY(window.grab().save(destination+(dark?"/projects-short-dark.png":"/projects-short-light.png")));
         NewSessionDialog launch(script(),state,{},"codex",project,&window);launch.setGroups(org,project);launch.show();QTest::qWait(100);QVERIFY(launch.grab().save(destination+(dark?"/launch-dark.png":"/launch-light.png")));
         QTimer::singleShot(0,&launch,[&]{auto *form=launch.findChild<QDialog *>("newWorktreeDialog");QVERIFY(form);QTest::qWait(50);QVERIFY(form->grab().save(destination+(dark?"/create-dark.png":"/create-light.png")));form->reject();});launch.findChild<QPushButton *>("newLaunchWorktree")->click();
         QTimer::singleShot(0,&launch,[&]{auto *picker=launch.findChild<QDialog *>("chooseWorktreeDialog");QVERIFY(picker);QTest::qWait(100);QVERIFY(picker->grab().save(destination+(dark?"/picker-dark.png":"/picker-light.png")));picker->reject();});launch.findChild<QPushButton *>("chooseLaunchWorktree")->click();launch.reject();

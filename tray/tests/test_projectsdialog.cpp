@@ -5,17 +5,88 @@
 #include <QMenu>
 #include <QSettings>
 #include <QTemporaryDir>
+#include <QHeaderView>
+#include <QPushButton>
+#include <QSplitter>
+#include <QTableWidget>
 
 class TestProjectsDialog : public QObject {
     Q_OBJECT
 private slots:
     void emptyListContextCreatesProject();
+    void sortingKeepsFolderIdentityAndLaunchTarget();
+    void folderSplitPrioritizesListAndRemembersAdjustment();
     void acceptsPlainName();
     void rejectsSlashAndSpace();
     void rejectsEmpty();
     void warnsOnDotOrColon();
     void nameDefaultsToBasename();
 };
+
+void TestProjectsDialog::sortingKeepsFolderIdentityAndLaunchTarget()
+{
+    QTemporaryDir directory;QVERIFY(directory.isValid());
+    QSettings::setDefaultFormat(QSettings::IniFormat);QSettings::setPath(QSettings::IniFormat,QSettings::UserScope,directory.path());
+    QCoreApplication::setOrganizationName("hgs-folder-sort-test");QCoreApplication::setApplicationName("projects");
+    HgsClient client("/nonexistent/hgs");SessionOrganization projects;const auto project=projects.createGroup("Work");
+    const auto zulu=projects.addFolder(project,"arch","/workspace/zulu","Zulu");
+    const auto beta=projects.addFolder(project,"mac","/workspace/beta","Beta");
+    projects.addFolder(project,"arch","/workspace/alpha");
+    const auto otherBeta=projects.addFolder(project,"arch","/workspace/other","beta");
+    projects.markImported("arch");projects.markImported("mac");const auto original=projects.toJson();
+    BoxState local;local.host="arch";local.ok=true;BoxState remote;remote.host="mac";remote.ok=true;
+    FleetState fleet;fleet.setLocal(local,QDateTime::currentMSecsSinceEpoch());fleet.setPeer(remote,QDateTime::currentMSecsSinceEpoch());
+    ProjectsDialog dialog(&client,nullptr,false,&projects);dialog.setFleet(fleet);dialog.selectProject(project);
+    auto *table=dialog.findChild<QTableWidget *>("projectFolders");QVERIFY(table);QCOMPARE(table->rowCount(),4);
+    QCOMPARE(table->item(0,0)->text(),QString("alpha"));QCOMPARE(table->item(3,0)->text(),QString("Zulu"));
+    for(int row=0;row<table->rowCount();++row) {
+        const auto id=table->item(row,0)->data(Qt::UserRole).toString();
+        const auto folders=projects.group(project)->folders;
+        const auto folder=std::find_if(folders.cbegin(),folders.cend(),[&](const auto &f){return f.id==id;});
+        QVERIFY(folder!=folders.cend());QCOMPARE(table->item(row,1)->text(),folder->machine);QCOMPARE(table->item(row,2)->text(),folder->path);
+        if(id==beta)table->setCurrentCell(row,0);
+    }
+    table->sortItems(0,Qt::DescendingOrder);dialog.refresh();
+    QCOMPARE(table->item(table->currentRow(),0)->data(Qt::UserRole).toString(),beta);
+    QCOMPARE(table->item(0,0)->data(Qt::UserRole).toString(),zulu);
+    QCOMPARE(projects.toJson(),original);
+    QVERIFY(projects.editFolder(project,beta,"mac","/workspace/beta","aardvark"));dialog.refresh();
+    QCOMPARE(table->item(table->currentRow(),0)->data(Qt::UserRole).toString(),beta);
+    QSignalSpy launch(&dialog,&ProjectsDialog::newSessionRequested);
+    dialog.findChild<QPushButton *>("newProjectFolderSession")->click();QCOMPARE(launch.size(),1);
+    QCOMPARE(launch[0],QVariantList({project,QString("mac"),beta}));
+    table->sortItems(1,Qt::AscendingOrder);dialog.refresh();
+    QCOMPARE(table->horizontalHeader()->sortIndicatorSection(),1);
+    QCOMPARE(table->item(table->currentRow(),0)->data(Qt::UserRole).toString(),beta);
+    projects.removeFolder(project,otherBeta);dialog.refresh();QCOMPARE(table->rowCount(),3);
+    QCOMPARE(table->item(table->currentRow(),0)->data(Qt::UserRole).toString(),beta);
+}
+
+void TestProjectsDialog::folderSplitPrioritizesListAndRemembersAdjustment()
+{
+    QTemporaryDir directory;QVERIFY(directory.isValid());
+    QSettings::setDefaultFormat(QSettings::IniFormat);QSettings::setPath(QSettings::IniFormat,QSettings::UserScope,directory.path());
+    QCoreApplication::setOrganizationName("hgs-folder-split-test");QCoreApplication::setApplicationName("projects");
+    HgsClient client("/nonexistent/hgs");SessionOrganization projects;const auto project=projects.createGroup("Work");
+    projects.addFolder(project,"arch","/workspace/repo");
+    ProjectsDialog dialog(&client,nullptr,true,&projects);dialog.resize(1100,1000);dialog.selectProject(project);dialog.show();
+    auto *table=dialog.findChild<QTableWidget *>("projectFolders");auto *split=dialog.findChild<QSplitter *>("projectFolderSplitter");QVERIFY(split);
+    table->setCurrentCell(0,0);QTRY_VERIFY(split->widget(1)->isVisible());QTest::qWait(30);
+    QVERIFY(table->height()>230);QVERIFY(split->sizes()[0]>split->sizes()[1]);
+    const auto initial=split->sizes();
+    auto *handle=split->handle(1);const auto center=handle->rect().center();
+    QTest::mousePress(handle,Qt::LeftButton,Qt::NoModifier,center);
+    QTest::mouseMove(handle,center-QPoint(0,80));QTest::mouseRelease(handle,Qt::LeftButton,Qt::NoModifier,center);
+    QTRY_VERIFY(split->sizes()[0]<initial[0]);
+    const auto adjusted=split->sizes();QVERIFY(!QSettings().value("workspace/projectFolderSplit").toByteArray().isEmpty());
+    dialog.refresh();QCOMPARE(split->sizes(),adjusted);
+    table->clearSelection();QTRY_VERIFY(!split->widget(1)->isVisible());table->setCurrentCell(0,0);QTest::qWait(30);
+    QVERIFY(qAbs(split->sizes()[1]-adjusted[1])<4);
+    ProjectsDialog reopened(&client,nullptr,true,&projects);reopened.resize(dialog.size());reopened.selectProject(project);reopened.show();
+    reopened.findChild<QTableWidget *>("projectFolders")->setCurrentCell(0,0);QTest::qWait(30);
+    const auto restored=reopened.findChild<QSplitter *>("projectFolderSplitter")->sizes();
+    QVERIFY(qAbs(restored[1]-adjusted[1])<4);
+}
 
 void TestProjectsDialog::emptyListContextCreatesProject()
 {
