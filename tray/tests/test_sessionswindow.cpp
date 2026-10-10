@@ -435,18 +435,18 @@ void TestSessionsWindow::dashboardActivityRowsStayReadable()
             QVERIFY2(row->height() >= 104, qPrintable(QString("Activity row collapsed to %1px").arg(row->height())));
             auto *model = row->findChild<QStandardItemModel *>("dashboardSessionModel");
             QVERIFY(model); const auto index = model->index(0, 0);
-            for (const int role : {SessionRoles::Title, SessionRoles::Meta, SessionRoles::Status,
+            for (const int role : {SessionRoles::Title, SessionRoles::Status,
                     SessionRoles::Agent, SessionRoles::Host, SessionRoles::Detail, SessionRoles::Model, SessionRoles::Effort})
                 QVERIFY(!index.data(role).toString().isEmpty());
             QVERIFY(!index.data(SessionRoles::HasChildren).toBool());
             if (index.data(SessionRoles::Working).toBool()) {
                 QCOMPARE(index.data(SessionRoles::Title).toString(), QString("dashboard"));
-                QCOMPARE(index.data(SessionRoles::Meta).toString(), QString("hgs / main"));
+                QCOMPARE(index.data(SessionRoles::Meta).toString(), QString("main"));
                 QCOMPARE(index.data(SessionRoles::WorkingSince).toDouble(), session.turnStarted);
                 QCOMPARE(index.data(SessionRoles::Children).toString(), QString("2/4"));
                 if (poll == 0) { workingRow = row; row->setFocus(); }
                 else { QCOMPARE(row, workingRow.data()); QVERIFY(row->hasFocus()); }
-            }
+            } else QCOMPARE(index.data(SessionRoles::Meta).toString(), QString());
         }
     }
     const auto directory = qEnvironmentVariable("HGS_DASHBOARD_PREVIEW");
@@ -3337,9 +3337,13 @@ void TestSessionsWindow::compactMetadataAndSubagentRoster()
     auto *list = window.findChild<QListWidget *>("sessionList"); QVERIFY(list->sizeHintForRow(0) <= 96);
     QCOMPARE(list->item(0)->data(Qt::UserRole + 1).toString(), QString("dashboard"));
     QCOMPARE(list->item(0)->data(Qt::UserRole + 7).toString(), QString("2/14"));
+    QCOMPARE(list->item(0)->data(SessionRoles::Meta).toString(), QString("feat/compact"));
     const auto accessible = list->item(0)->data(Qt::AccessibleTextRole).toString();
-    QVERIFY(accessible.contains("feat/compact")); QVERIFY(accessible.contains("worktree: ui-tree")); QVERIFY(accessible.contains("/work/ui-tree"));
+    QVERIFY(accessible.contains("feat/compact")); QVERIFY(!accessible.contains("worktree: ui-tree")); QVERIFY(accessible.contains("/work/ui-tree"));
     QVERIFY(accessible.contains("Read: view.cpp")); QVERIFY(accessible.contains("2 active / 14 total"));
+    QVERIFY(window.findChild<QLabel *>("sessionMeta")->toolTip().contains("worktree: ui-tree"));
+    const auto info = window.findChild<QTextBrowser *>("sessionInfo")->toPlainText();
+    QVERIFY(info.contains("worktree: ui-tree")); QVERIFY(info.contains("/work/ui-tree"));
     auto *search = window.findChild<QLineEdit *>("search"); search->setText("feat/compact"); QCOMPARE(window.findChild<QListWidget *>("searchResults")->count(), 1); search->clear();
     QJsonObject children;
     for (int i = 0; i < 14; ++i) children[QString("agent-%1").arg(i)] = QJsonObject{{"label", QString("Child %1").arg(i)}, {"state", i < 2 ? "working" : "finished"}, {"detail", "Review code"}};

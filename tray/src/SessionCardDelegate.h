@@ -238,8 +238,10 @@ private:
         if (!gitBadge.isEmpty()) GitStatusBadge::paint(p, gitBadge,
             GitStatusBadge::fitted(GitStatusBadge::marks(index.data(SessionRoles::GitStatus).toJsonObject()), option.font, gitBadge.width()), option.font, dark);
         const int metadataWidth = qMax(0, (gitBadge.isEmpty() ? machineBadge.left() : gitBadge.left()) - textX - 8);
-        p->drawText(QRect(textX, metadataY, metadataWidth, 18), Qt::AlignVCenter,
-                    QFontMetrics(font).elidedText(index.data(SessionRoles::Meta).toString(), Qt::ElideMiddle, metadataWidth));
+        const int branchInset = index.data(SessionRoles::BranchIcon).toBool() && metadataWidth >= 32 ? 18 : 0;
+        if (branchInset) workspaceIcon("git-branch", muted).paint(p, QRect(textX, metadataY + 2, 14, 14));
+        p->drawText(QRect(textX + branchInset, metadataY, qMax(0, metadataWidth - branchInset), 18), Qt::AlignVCenter,
+                    QFontMetrics(font).elidedText(index.data(SessionRoles::Meta).toString(), Qt::ElideMiddle, qMax(0, metadataWidth - branchInset)));
 
         QString detail = index.data(SessionRoles::Detail).toString();
         // Status is already beside the title. Keep the activity excerpt useful

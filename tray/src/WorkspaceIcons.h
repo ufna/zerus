@@ -39,6 +39,13 @@ inline QIcon workspaceIcon(const QString &name, const QColor &color)
             QPainterPath path; path.moveTo(8, 3); path.lineTo(16, 3); path.lineTo(15, 9); path.lineTo(19, 13);
             path.lineTo(5, 13); path.lineTo(9, 9); path.closeSubpath(); p.drawPath(path); p.drawLine(12, 13, 12, 21);
             if (name == "pinned") p.drawLine(8, 19, 16, 19);
+        } else if (name == "git-branch") {
+            p.drawLine(QPointF(6, 7.5), QPointF(6, 16.5));
+            QPainterPath branch; branch.moveTo(18, 7.5); branch.lineTo(18, 10);
+            branch.cubicTo(18, 15, 6, 11, 6, 16.5); p.drawPath(branch);
+            p.drawEllipse(QPointF(6, 5), 2.5, 2.5);
+            p.drawEllipse(QPointF(6, 19), 2.5, 2.5);
+            p.drawEllipse(QPointF(18, 5), 2.5, 2.5);
         } else if (name == "git-diff") {
             QPainterPath page; page.moveTo(13, 3); page.lineTo(5, 3); page.lineTo(5, 21);
             page.lineTo(19, 21); page.lineTo(19, 9); page.closeSubpath(); p.drawPath(page);

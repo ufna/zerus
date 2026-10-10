@@ -638,6 +638,11 @@ that way. Absolute paths remain available directly from the CLI.
 
 ### Worktrees and ordinary folders
 
+Session cards show only the Git branch, or **detached HEAD**, in their checkout
+line, preceded by a small Git branch icon. The opened session's header and
+**Details** retain the worktree name and folder path. Ordinary folders without
+Git metadata have no branch label.
+
 Existing Git worktrees appear in Projects and the session inspector. Clicking a
 checkout filters Sessions while preserving the open conversation and draft.
 **Other worktrees…** selects an existing checkout without changing machine, project

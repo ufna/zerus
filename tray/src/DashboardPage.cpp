@@ -143,7 +143,8 @@ public:
         using namespace SessionPresentation;
         auto *item = m_model.item(0);
         item->setData(sessionLabel(session), SessionRoles::Title);
-        item->setData(projectContext(session), SessionRoles::Meta);
+        item->setData(branchContext(session), SessionRoles::Meta);
+        item->setData(!branchContext(session).isEmpty(), SessionRoles::BranchIcon);
         item->setData(session.gitStatus, SessionRoles::GitStatus);
         item->setData(status(session), SessionRoles::Status);
         item->setData(session.phase=="error", SessionRoles::Failure);

@@ -101,11 +101,17 @@ inline QString sessionLabel(const SessionInfo &s)
     return tag.isEmpty() ? (s.project.isEmpty() ? s.name : s.project) : tag;
 }
 
+inline QString branchContext(const SessionInfo &s)
+{
+    if (!s.gitBranch.isEmpty()) return s.gitBranch;
+    return s.gitDetached ? QObject::tr("detached HEAD") : QString();
+}
+
 inline QString projectContext(const SessionInfo &s)
 {
     QStringList parts{s.project.isEmpty() ? s.name.section('/', 1, 1) : s.project};
-    if (!s.gitBranch.isEmpty()) parts << s.gitBranch;
-    else if (s.gitDetached) parts << QObject::tr("detached HEAD");
+    const QString branch = branchContext(s);
+    if (!branch.isEmpty()) parts << branch;
     if (s.gitWorktree) parts << (s.gitWorktreeName.isEmpty() ? QObject::tr("worktree") : QObject::tr("worktree: %1").arg(s.gitWorktreeName));
     return parts.join(QStringLiteral(" / "));
 }

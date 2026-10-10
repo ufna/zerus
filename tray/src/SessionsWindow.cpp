@@ -2150,6 +2150,7 @@ void SessionsWindow::rebuild()
         item->setData(SessionRoles::LaunchId, row.launch);
         item->setData(SessionRoles::WorkingSince, 0.0);
         item->setData(SessionRoles::GitStatus, QJsonObject());
+        item->setData(SessionRoles::BranchIcon, false);
         item->setData(SessionRoles::GitHost, QString()); item->setData(SessionRoles::GitPath, QString());
         item->setData(Qt::AccessibleDescriptionRole, QString());
         item->setData(SessionRoles::Header, row.entry < 0 && row.launch.isEmpty()); item->setHidden(row.hidden);
@@ -2216,8 +2217,12 @@ void SessionsWindow::rebuild()
         item->setData(SessionRoles::Model, s.model.isEmpty() ? (s.cmd == "sh" ? QString() : tr("Model unknown")) : s.model);
         item->setData(SessionRoles::Effort, s.effort.isEmpty() ? QStringLiteral("—") : s.effort);
         item->setData(TitleRole, sessionLabel(s)); item->setData(AgentRole, s.cmd);
-        QString meta = projectContext(s);
-        if (s.state == "archived" && s.archivedAt > 0) meta += QStringLiteral(" / ") + QDateTime::fromSecsSinceEpoch(qint64(s.archivedAt)).toLocalTime().toString("d MMM HH:mm");
+        QString meta = SessionPresentation::branchContext(s);
+        item->setData(SessionRoles::BranchIcon, !meta.isEmpty());
+        if (s.state == "archived" && s.archivedAt > 0) {
+            if (!meta.isEmpty()) meta += QStringLiteral(" / ");
+            meta += QDateTime::fromSecsSinceEpoch(qint64(s.archivedAt)).toLocalTime().toString("d MMM HH:mm");
+        }
         item->setData(MetaRole, meta); item->setData(StatusRole, rowStatus); item->setData(DetailRole, desc);
         const auto gitPath = SessionPresentation::gitStatusPath(s);
         const auto git = SessionPresentation::gitStatus(s, m_client.gitStatusSnapshot(e.host, gitPath), e.online);
