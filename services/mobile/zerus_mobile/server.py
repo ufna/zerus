@@ -1,4 +1,8 @@
-"""Bounded authenticated v1 HTTP API for the trusted relay."""
+"""Python API v1 reference for compatibility tests and historical load comparisons.
+
+Production HTTP runs in services/mobile/relay. The supported zerus-mobile CLI
+executes that Rust binary; this module remains an independent protocol oracle.
+"""
 from __future__ import annotations
 
 import asyncio
