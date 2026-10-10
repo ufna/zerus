@@ -564,12 +564,6 @@ impl App {
                 let b = self.body(req, budget.clone(), MIB).await?;
                 let provider = b["provider"].as_str().ok_or(Error::BAD)?;
                 let target = match provider {
-                    "unifiedpush" => {
-                        protocol::fields(&b, &["provider", "endpoint"], &[])?;
-                        let t = protocol::text(&b["endpoint"], 4096, false)?;
-                        self.push.validate_endpoint(t).await?;
-                        t
-                    }
                     "fcm" => {
                         if !self.push.fcm_enabled() {
                             return Err(Error::UNAVAILABLE);

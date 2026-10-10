@@ -2,7 +2,6 @@ package app.zerus.mobile
 
 import android.content.Context
 import android.os.Bundle
-import android.widget.Toast
 import androidx.work.*
 import com.google.firebase.FirebaseApp
 import com.google.firebase.analytics.FirebaseAnalytics
@@ -50,20 +49,21 @@ object OptionalFirebase {
                     if (generation == tokenGeneration) { PrivateStore(context).saveFirebaseToken(token); enqueue(context) }
                 } }
             }
+        }.addOnFailureListener {
+            // No Google Play services, or none reachable yet. A confirmed binding keeps working.
+            CoroutineScope(Dispatchers.IO).launch {
+                runCatching { val store = PrivateStore(context)
+                    store.connections().filter { store.firebaseBinding(it.id).isBlank() }.forEach {
+                        store.savePushStatusIfCurrent(it, "Firebase push is unavailable on this phone right now. Use the live connection if this persists.")
+                    } }
+            }
         }
-    }
-    @JvmStatic fun register(context: Context) {
-        CoroutineScope(Dispatchers.IO).launch {
-            PrivateStore(context).connections().forEach { PrivateStore(context).savePushProvider(it.id, "fcm") }
-            start(context)
-        }
-        Toast.makeText(context, "Firebase push setup will retry when connected.", Toast.LENGTH_LONG).show()
     }
     fun enqueue(context: Context) {
         val store = PrivateStore(context)
         val token = store.firebaseToken()
         if (token.isBlank()) return
-        store.connections().filter { FcmRegistrationPolicy.needsRegistration(token, store.firebaseBinding(it.id), store.pushProvider(it.id)) }.forEach { connection ->
+        store.connections().filter { FcmRegistrationPolicy.needsRegistration(token, store.firebaseBinding(it.id)) }.forEach { connection ->
             val request = OneTimeWorkRequestBuilder<FirebaseTokenWorker>()
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
                 .setInputData(Data.Builder().putString("connection", connection.id).build()).build()
@@ -140,22 +140,22 @@ class FirebaseTokenWorker(context: Context, parameters: WorkerParameters) : Coro
         val store = PrivateStore(applicationContext)
         val connection = store.connections().find { it.id == inputData.getString("connection") } ?: return Result.success()
         val token = store.firebaseToken()
-        if (!FcmRegistrationPolicy.needsRegistration(token, store.firebaseBinding(connection.id), store.pushProvider(connection.id))) return Result.success()
+        if (!FcmRegistrationPolicy.needsRegistration(token, store.firebaseBinding(connection.id))) return Result.success()
         return PushSetupLocks.withConnection(connection.id) { try {
             val api = RelayApi()
             val providers = api.call(connection.url, connection.token, "/v1/capabilities").optJSONArray("push_providers")
             if (providers == null || (0 until providers.length()).none { providers.optString(it) == "fcm" }) {
-                store.savePushStatusIfCurrent(connection, "fcm", "Gateway Firebase push is not configured. Use UnifiedPush or the live connection.")
+                store.savePushStatusIfCurrent(connection, "Gateway Firebase push is not configured. Use the live connection.")
                 return@withConnection Result.failure()
             }
             // Push registration is idempotent and separate from native session mutations.
-            if (!store.connections().contains(connection) || store.firebaseToken() != token || store.pushProvider(connection.id) == "unifiedpush") return@withConnection Result.success()
+            if (!store.connections().contains(connection) || store.firebaseToken() != token) return@withConnection Result.success()
             api.call(connection.url, connection.token, "/v1/push", JSONObject().put("provider", "fcm").put("token", token))
             store.confirmFirebaseBinding(connection, token)
             Result.success()
         } catch (e: CancellationException) { throw e }
         catch (e: RelayException) {
-            store.savePushStatusIfCurrent(connection, "fcm", "Firebase push setup waiting for gateway connection.")
+            store.savePushStatusIfCurrent(connection, "Firebase push setup waiting for gateway connection.")
             if (FcmRegistrationPolicy.retry(e.status)) Result.retry() else Result.failure()
         } catch (_: Exception) { AppTelemetry.failure(DiagnosticFailure.PushRegistration); Result.retry() }
         }

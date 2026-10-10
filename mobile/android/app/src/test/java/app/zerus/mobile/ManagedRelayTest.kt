@@ -17,7 +17,7 @@ class ManagedRelayTest {
         }.build())
         val connection=Connection("original-identity","Workspace","https://zerus.dev.guthub.dev","synthetic")
         api.receipt(connection,"original")
-        api.call(connection.url,connection.token,"/v1/push",org.json.JSONObject().put("provider","unifiedpush").put("endpoint","https://push.example"))
+        api.call(connection.url,connection.token,"/v1/push",org.json.JSONObject().put("provider","fcm").put("token","synthetic-token"))
         assertEquals(listOf("relay.zerus.dev","relay.zerus.dev"),seen.map { it.url.host })
         assertEquals("GET",seen[0].method);assertEquals("/v1/requests/original",seen[0].url.encodedPath)
         assertEquals("Bearer synthetic",seen[0].header("Authorization"))

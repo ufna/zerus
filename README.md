@@ -107,8 +107,8 @@ The **Android pilot** brings your projects and agents to your phone:
   check account limits. Private drafts and cached conversations stay available offline.
 
 Pair your phone with a computer to reach it and its directly connected Zerus peers
-through a **self-hostable HTTPS relay**. Notifications support UnifiedPush, an
-optional FCM build and a foreground live connection. **iOS is planned.**
+through a **self-hostable HTTPS relay**. Notifications use Firebase Cloud Messaging,
+with a foreground live connection for phones without it. **iOS is planned.**
 
 [Download the Android APK](https://github.com/ufna/zerus/releases?q=android-dev-&expanded=true) |
 [Connect your phone](docs/mobile-deployment.md#pair-the-phone) |

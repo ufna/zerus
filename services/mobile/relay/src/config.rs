@@ -21,6 +21,8 @@ pub struct Config {
     pub max_queue: i64,
     pub max_queue_bytes: i64,
     pub online_timeout: u64,
+    /// Retired UnifiedPush allowlist. Existing private configs still load; it is ignored.
+    #[serde(skip_serializing)]
     pub push_hosts: Vec<String>,
     pub fcm_credentials: Option<String>,
     pub background: bool,
@@ -132,11 +134,6 @@ impl Config {
             .is_some_and(|s| !s.starts_with("postgresql://") && !s.starts_with("postgres://"))
         {
             return Err(Error::BAD);
-        }
-        for host in &self.push_hosts {
-            if host.is_empty() || host.ends_with('.') || host.contains(['/', ':', '@', '*', ' ']) {
-                return Err(Error::BAD);
-            }
         }
         Ok(())
     }

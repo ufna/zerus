@@ -103,12 +103,11 @@ class TelemetryPolicyTest {
         assertFalse(clean.discardPending); assertTrue(clean.capture)
         assertEquals(PendingCrashAction.Send, CrashReportingPolicy.startup(true, clean.discardPending, true).action)
     }
-    @Test fun fcmRotationRegistrationAndUnifiedPushAreIndependent() {
-        assertTrue(FcmRegistrationPolicy.needsRegistration("new", "old", "fcm"))
-        assertTrue(FcmRegistrationPolicy.needsRegistration("new", "", "fcm"))
-        assertFalse(FcmRegistrationPolicy.needsRegistration("new", "new", "fcm"))
-        assertFalse(FcmRegistrationPolicy.needsRegistration("new", "old", "unifiedpush"))
-        assertFalse(FcmRegistrationPolicy.needsRegistration("", "old", "fcm"))
+    @Test fun fcmRotationRegistersOnlyNewTokens() {
+        assertTrue(FcmRegistrationPolicy.needsRegistration("new", "old"))
+        assertTrue(FcmRegistrationPolicy.needsRegistration("new", ""))
+        assertFalse(FcmRegistrationPolicy.needsRegistration("new", "new"))
+        assertFalse(FcmRegistrationPolicy.needsRegistration("", "old"))
         assertTrue(FcmRegistrationPolicy.retry(429)); assertTrue(FcmRegistrationPolicy.retry(503)); assertFalse(FcmRegistrationPolicy.retry(401))
     }
 }
