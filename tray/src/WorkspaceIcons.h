@@ -1,4 +1,5 @@
 #pragma once
+#include <QHash>
 #include <QIcon>
 #include <QPainter>
 #include <QPainterPath>
@@ -155,6 +156,16 @@ inline QIcon workspaceIcon(const QString &name, const QColor &color)
         p.end(); icon.addPixmap(pm);
     }
     return icon;
+}
+// Delegates paint the same few icons on every frame; building one renders six
+// pixmaps. Never destroyed: pixmaps must not outlive QGuiApplication at exit.
+inline const QIcon &cachedWorkspaceIcon(const QString &name, const QColor &color)
+{
+    static auto *icons = new QHash<std::pair<QString, QRgb>, QIcon>;
+    const std::pair<QString, QRgb> key{name, color.rgba()};
+    auto it = icons->constFind(key);
+    if (it == icons->cend()) it = icons->insert(key, workspaceIcon(name, color));
+    return *it;
 }
 
 inline void configureWorkspaceIconButton(QPushButton *button, const QString &name, const QString &caption, bool dark)

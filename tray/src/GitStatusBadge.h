@@ -1,5 +1,6 @@
 #pragma once
 
+#include "CachedText.h"
 #include "WorkspaceIcons.h"
 #include <QDateTime>
 #include <QJsonObject>
@@ -64,7 +65,7 @@ inline QString tooltip(const QJsonObject &data) {
     return lines.join('\n');
 }
 inline QFont font(QFont base) { base.setPixelSize(11); base.setWeight(QFont::Medium); return base; }
-inline int markWidth(const Mark &mark, QFont base) { return mark.count.isEmpty() ? 24 : 27 + QFontMetrics(font(base)).horizontalAdvance(mark.count); }
+inline int markWidth(const Mark &mark, QFont base) { return mark.count.isEmpty() ? 24 : 27 + CachedText::width(font(base), mark.count); }
 inline int width(const QList<Mark> &values, QFont base) {
     int result = 0; for (const auto &mark : values) result += markWidth(mark, base) + 4;
     return qMax(0, result - 4);
@@ -92,11 +93,8 @@ inline void paint(QPainter *p, const QRect &rect, const QList<Mark> &values, QFo
         QColor fill = ink; fill.setAlpha(dark ? 24 : 18);
         const QRect badge(x, rect.y(), w, 18);
         p->setPen(Qt::NoPen); p->setBrush(fill); p->drawRoundedRect(badge, 4, 4);
-        static QHash<QString, QIcon> icons;
-        const QString key = mark.icon + ink.name();
-        if (!icons.contains(key)) icons.insert(key, workspaceIcon(mark.icon, ink));
-        icons.value(key).paint(p, QRect(x + 4, rect.y() + 1, 16, 16));
-        if (!mark.count.isEmpty()) { p->setPen(ink); p->drawText(QRect(x + 23, rect.y(), w - 27, 18), Qt::AlignVCenter, mark.count); }
+        cachedWorkspaceIcon(mark.icon, ink).paint(p, QRect(x + 4, rect.y() + 1, 16, 16));
+        if (!mark.count.isEmpty()) { p->setPen(ink); CachedText::draw(p, QRect(x + 23, rect.y(), w - 27, 18), Qt::AlignVCenter, mark.count); }
         x += w + 4;
     }
     p->restore();

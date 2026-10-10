@@ -252,6 +252,12 @@ target_link_libraries(test_dashboard PRIVATE Qt6::Test Qt6::Widgets)
 add_test(NAME dashboard COMMAND test_dashboard)
 set_tests_properties(dashboard PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+add_executable(test_paintcache test_paintcache.cpp ../src/DashboardPage.cpp ../src/SessionList.cpp ../src/FleetState.cpp ../src/HgsClient.cpp ../src/ProcessRunner.cpp)
+target_include_directories(test_paintcache PRIVATE ../src)
+target_link_libraries(test_paintcache PRIVATE Qt6::Test Qt6::Widgets)
+add_test(NAME paintcache COMMAND test_paintcache)
+set_tests_properties(paintcache PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 add_executable(test_machinefilter test_machinefilter.cpp ../src/MachineFilter.cpp ../src/FleetState.cpp ../src/HgsClient.cpp ../src/ProcessRunner.cpp)
 target_include_directories(test_machinefilter PRIVATE ../src)
 target_link_libraries(test_machinefilter PRIVATE Qt6::Test Qt6::Widgets)

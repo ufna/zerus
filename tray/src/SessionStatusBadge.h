@@ -1,5 +1,5 @@
 #pragma once
-#include <QFontMetrics>
+#include "CachedText.h"
 #include <QPainter>
 
 namespace SessionStatusBadge {
@@ -19,7 +19,7 @@ inline QColor edge(Kind kind, bool dark) {
 }
 inline int width(const QString &text, Kind kind, const QFont &base) {
     // Leave room for fractional glyph advances before elidedText rounds them.
-    return QFontMetrics(font(base)).horizontalAdvance(text) + 16 + (kind == Neutral ? 0 : 16);
+    return CachedText::width(font(base), text) + 16 + (kind == Neutral ? 0 : 16);
 }
 // labelOpacity fades the caption while the collapsed session strip grows into cards.
 inline void paint(QPainter *p, const QRect &rect, const QString &text, Kind kind, bool dark, qreal pulse = 0, qreal labelOpacity = 1) {
@@ -43,7 +43,7 @@ inline void paint(QPainter *p, const QRect &rect, const QString &text, Kind kind
         p->setBrush(foreground); p->drawEllipse(center, 2.5, 2.5);
     } else if (kind == Attention || kind == Error) {
         auto bold = p->font(); bold.setBold(true); p->setFont(bold);
-        p->drawText(QRectF(center.x() - 5, rect.y(), 10, rect.height()), Qt::AlignCenter, "!");
+        CachedText::draw(p, QRectF(center.x() - 5, rect.y(), 10, rect.height()), Qt::AlignCenter, QStringLiteral("!"));
     } else if (kind == Paused) {
         p->setPen(QPen(foreground, 1.5, Qt::SolidLine, Qt::RoundCap));
         p->drawLine(center + QPointF(-2, -3), center + QPointF(-2, 3));
@@ -62,7 +62,7 @@ inline void paint(QPainter *p, const QRect &rect, const QString &text, Kind kind
     p->setPen(foreground); p->setFont(font(p->font())); p->setOpacity(p->opacity() * labelOpacity);
     const QRect label = rect.adjusted(kind == Neutral ? 7 : 23, 0, -7, 0);
     // A growing badge reveals its caption under the clip instead of re-eliding it.
-    p->drawText(label, Qt::AlignVCenter, labelOpacity < 1 ? text : QFontMetrics(p->font()).elidedText(text, Qt::ElideRight, qMax(0, label.width())));
+    CachedText::draw(p, label, Qt::AlignVCenter, labelOpacity < 1 ? text : CachedText::elided(p->font(), text, Qt::ElideRight, qMax(0, label.width())));
     p->restore();
 }
 }

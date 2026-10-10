@@ -1,26 +1,50 @@
 #pragma once
 #include <QColor>
+#include <QCoreApplication>
+#include <QHash>
 #include <QIcon>
 #include <QPainter>
 #include <QSettings>
 #include <cmath>
 
 namespace MachineAppearance {
+// Badges read these on every paint, where constructing QSettings cost a visible
+// share of each frame. Only the writers below change these keys, so they keep the
+// cache current; code that rewrites settings wholesale calls invalidate().
+struct Cache { QString organization, application; QHash<QString, QColor> colors; QHash<QString, bool> vivid; };
+inline Cache &cache() {
+    static Cache value;
+    const QString organization = QCoreApplication::organizationName(), application = QCoreApplication::applicationName();
+    if (value.organization != organization || value.application != application) value = {organization, application, {}, {}};
+    return value;
+}
+inline void invalidate() { cache() = {}; }
 inline QColor color(const QString &machine) {
-    const QColor custom(QSettings().value("machines/colors/" + machine).toString());
-    if (custom.isValid()) return custom;
-    static const char *colors[]{"#5fbfa5", "#8ea9f4", "#c098e6", "#e7ae66", "#e38f9e", "#75bfcf", "#acc577"};
-    quint32 hash = 2166136261u;
-    for (const auto &byte : machine.toUtf8()) hash = (hash ^ quint8(byte)) * 16777619u;
-    return QColor(colors[((hash >> 16) ^ hash) % 7]);
+    auto &colors = cache().colors;
+    if (const auto it = colors.constFind(machine); it != colors.cend()) return *it;
+    QColor result(QSettings().value("machines/colors/" + machine).toString());
+    if (!result.isValid()) {
+        static const char *palette[]{"#5fbfa5", "#8ea9f4", "#c098e6", "#e7ae66", "#e38f9e", "#75bfcf", "#acc577"};
+        quint32 hash = 2166136261u;
+        for (const auto &byte : machine.toUtf8()) hash = (hash ^ quint8(byte)) * 16777619u;
+        result = QColor(palette[((hash >> 16) ^ hash) % 7]);
+    }
+    colors.insert(machine, result);
+    return result;
 }
 inline void setColor(const QString &machine, const QColor &value) {
-    if (!machine.isEmpty() && value.isValid()) QSettings().setValue("machines/colors/" + machine, value.name());
+    if (machine.isEmpty() || !value.isValid()) return;
+    QSettings().setValue("machines/colors/" + machine, value.name()); cache().colors.insert(machine, QColor(value.name()));
 }
-inline void resetColor(const QString &machine) { QSettings().remove("machines/colors/" + machine); }
-inline bool vivid(const QString &machine) { return QSettings().value("machines/vivid/" + machine, false).toBool(); }
+inline void resetColor(const QString &machine) { QSettings().remove("machines/colors/" + machine); cache().colors.remove(machine); }
+inline bool vivid(const QString &machine) {
+    auto &vivid = cache().vivid;
+    if (const auto it = vivid.constFind(machine); it != vivid.cend()) return *it;
+    return *vivid.insert(machine, QSettings().value("machines/vivid/" + machine, false).toBool());
+}
 inline void setVivid(const QString &machine, bool enabled) {
-    if (!machine.isEmpty()) QSettings().setValue("machines/vivid/" + machine, enabled);
+    if (machine.isEmpty()) return;
+    QSettings().setValue("machines/vivid/" + machine, enabled); cache().vivid.insert(machine, enabled);
 }
 inline QColor blend(const QColor &a, const QColor &b, qreal amount) {
     return QColor::fromRgbF(a.redF() * (1-amount) + b.redF() * amount,

@@ -62,6 +62,15 @@ void updateLoadBar(QProgressBar *bar, double percentage, bool fresh, bool availa
     bar->setToolTip(!available ? DashboardPage::tr("No sample available") : !fresh ? DashboardPage::tr("Last known value; waiting for a fresh sample.")
         : DashboardPage::tr("Orange from 70%; red from 90%."));
 }
+// Fills itself with the stylesheet background, which the stylesheet keeps in its
+// palette. Being opaque lets Qt scroll by moving pixels and skip the page and
+// viewport backgrounds beneath it; a styled QWidget would repaint them all.
+class DashboardContent : public QWidget {
+public:
+    DashboardContent() { setObjectName("dashboardContent"); setAttribute(Qt::WA_OpaquePaintEvent); }
+protected:
+    void paintEvent(QPaintEvent *event) override { QPainter(this).fillRect(event->rect(), palette().window()); }
+};
 }
 
 // Stable widgets survive background polls, including keyboard focus and pointer clicks.
@@ -236,7 +245,7 @@ DashboardPage::DashboardPage(QWidget *parent) : QWidget(parent)
     setObjectName("dashboardPage");
     auto *outer = new QVBoxLayout(this); outer->setContentsMargins(20, 18, 0, 18); outer->setSpacing(14);
     auto *scroll = new QScrollArea; scroll->setObjectName("dashboardScroll"); scroll->setFrameShape(QFrame::NoFrame); scroll->setWidgetResizable(true);
-    auto *content = new QWidget; content->setObjectName("dashboardContent"); scroll->setWidget(content);
+    auto *content = new DashboardContent; scroll->setWidget(content);
     auto *layout = new QVBoxLayout(content); layout->setContentsMargins(0, 0, 20, 0); layout->setSpacing(14);
     auto *title = label(tr("Overview"), "dashboardTitle");
     auto *refresh = new QPushButton(tr("Refresh")); refresh->setObjectName("dashboardRefresh");
