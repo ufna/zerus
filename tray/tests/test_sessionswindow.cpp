@@ -4370,10 +4370,11 @@ void TestSessionsWindow::collapsedStripDoesNotOpenSubagents()
     QTest::mouseClick(list->viewport(), Qt::LeftButton, {}, corner);
     QCOMPARE(list->count(), count); QCOMPARE(list->currentRow(), parent);
     QTest::keyClick(list, Qt::Key_Right); QCOMPARE(list->count(), count);
-    // The docked list still opens them.
+    // The docked list opens active children; finished turns stay hidden.
     window.findChild<QPushButton *>("sessionPanelToggle")->click();
     QTRY_COMPARE(list->property("expansion").toReal(), 1.0);
-    QTest::keyClick(list, Qt::Key_Right); QTRY_COMPARE(list->count(), count + 2);
+    QTest::keyClick(list, Qt::Key_Right); QTRY_COMPARE(list->count(), count + 1);
+    QCOMPARE(list->item(parent + 1)->data(SessionRoles::ChildId).toString(), QString("agent-a"));
 }
 
 void TestSessionsWindow::collapsedStripSearchOpensPanel()
