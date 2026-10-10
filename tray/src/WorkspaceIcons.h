@@ -1,4 +1,5 @@
 #pragma once
+#include <QHash>
 #include <QIcon>
 #include <QPainter>
 #include <QPainterPath>
@@ -8,6 +9,12 @@
 // One small stroke family, drawn at native DPR instead of platform-dependent glyphs.
 inline QIcon workspaceIcon(const QString &name, const QColor &color)
 {
+    // List rebuilds, details, polls and card delegates on every frame request the
+    // same few icons, and building one renders six pixmaps. Paint each name and
+    // color once. Never destroyed: pixmaps must not outlive QGuiApplication at exit.
+    static auto *cache = new QHash<std::pair<QString, QRgb>, QIcon>;
+    const std::pair<QString, QRgb> key{name, color.rgba()};
+    if (const auto found = cache->constFind(key); found != cache->cend()) return *found;
     QIcon icon;
     const QIcon github = name == "github" ? QIcon(":/hgs/icons/github-mark.svg") : QIcon();
     for (int size : {16, 20, 24, 32, 40, 48}) {
@@ -154,6 +161,7 @@ inline QIcon workspaceIcon(const QString &name, const QColor &color)
         } else if (name == "more") { p.drawPoint(5, 12); p.drawPoint(12, 12); p.drawPoint(19, 12); }
         p.end(); icon.addPixmap(pm);
     }
+    cache->insert(key, icon);
     return icon;
 }
 

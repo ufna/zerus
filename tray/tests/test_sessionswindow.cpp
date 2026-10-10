@@ -15,6 +15,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFile>
+#include <QSaveFile>
 #include <QJsonDocument>
 #include <QLineEdit>
 #include <QLabel>
@@ -108,6 +109,8 @@ private slots:
     void accountUsageRejectsOtherSessionReplies();
     void usageLimitBecomesToolbarChip();
     void dashboardAndMultiMachineNavigation();
+    void hiddenPagesRenderWhenShown();
+    void pollsKeepUnchangedActivity();
     void multiSelectionKeepsConversationAndGroupMenu_data();
     void multiSelectionKeepsConversationAndGroupMenu();
     void selectionCommandsKeepPinnedTargets();
@@ -405,6 +408,53 @@ void TestSessionsWindow::dashboardAndMultiMachineNavigation()
     brand->click(); dashboard->machinesRequested("mac"); auto *machines=window.findChild<MachinesPage *>(); QVERIFY(machines->isVisible());
     machines->accountsRequested("mac"); auto *accounts=window.findChild<AccountsPage *>(); QVERIFY(accounts->isVisible());
     QCOMPARE(accounts->findChild<QComboBox *>("accountMachineFilter")->currentData().toString(),QString("mac"));
+}
+
+void TestSessionsWindow::pollsKeepUnchangedActivity()
+{
+    // Fleet polls and repeated inspections of an unchanged session leave Activity alone.
+    SessionsWindow window(script()); auto state = fleet(); window.setFleet(state); window.show();
+    auto *client = window.findChild<HgsClient *>(); QSignalSpy inspected(client, &HgsClient::inspectionReady);
+    window.showSession({}, "codex/hgs/dashboard"); QTRY_VERIFY(!inspected.isEmpty()); QTest::qWait(50);
+    auto *activity = window.findChild<ActivityView *>("mainActivity"); QVERIFY(activity);
+    const int passes = activity->renderPasses();
+    QJsonObject details{{"tracked", true}, {"conversation_id", "conversation-one"}, {"events", QJsonArray{}}, {"cursor", 0}, {"goal_observed_at", 200.}};
+    window.setFleet(state); client->inspectionReady({}, "codex/hgs/dashboard", details);
+    details["goal_observed_at"] = 205.; client->inspectionReady({}, "codex/hgs/dashboard", details); window.setFleet(state);
+    QCOMPARE(activity->renderPasses(), passes);
+    details["cursor"] = 1; details["events"] = QJsonArray{QJsonObject{{"seq", 1}, {"type", "Stop"}, {"detail", "Fresh reply"}, {"at", 10.}}};
+    client->inspectionReady({}, "codex/hgs/dashboard", details); QVERIFY(activity->renderPasses() > passes);
+    QVERIFY(activity->plainText().contains("Fresh reply"));
+    // Process links depend on a setting that the next render must follow.
+    const int linked = activity->renderPasses(); QSettings().setValue("processes/enabled", true); window.setFleet(state);
+    QVERIFY(activity->renderPasses() > linked);
+}
+
+void TestSessionsWindow::hiddenPagesRenderWhenShown()
+{
+    // Polls keep hidden pages' data current; each page renders when it is shown.
+    SessionsWindow window(script()); auto state = fleet(); window.setFleet(state); window.show();
+    auto *list = window.findChild<SessionList *>("sessionList"); auto *dashboard = window.findChild<DashboardPage *>();
+    auto *badge = window.findChild<QLabel *>("railAttentionBadge"); auto *sessionsNav = qobject_cast<QPushButton *>(badge->parentWidget());
+    auto *brand = window.findChild<QPushButton *>("brandMark"); auto *total = dashboard->findChild<QPushButton *>("dashboardSessions");
+    QVERIFY(list); QVERIFY(sessionsNav); QVERIFY(brand); QVERIFY(total);
+    const int rows = list->count(); const auto attention = badge->text();
+    brand->click(); QVERIFY(dashboard->isVisible()); const auto before = total->text();
+    auto box = state.local(); auto extra = box.sessions[0]; extra.name = "codex/hgs/extra"; extra.tag = "extra"; extra.phase = "approval";
+    box.sessions.append(extra); state.setLocal(box, QDateTime::currentMSecsSinceEpoch());
+    QSignalSpy inserted(list->model(), &QAbstractItemModel::rowsInserted);
+    window.setFleet(state);
+    QCOMPARE(list->count(), rows); QCOMPARE(inserted.size(), 0);
+    QVERIFY(total->text() != before); QCOMPARE(badge->text(), QString::number(attention.toInt() + 1));
+    sessionsNav->click(); QVERIFY(list->isVisible()); QCOMPARE(list->count(), rows + 1);
+    const int shown = inserted.size(); QVERIFY(shown > 0); QTest::qWait(20); QCOMPARE(inserted.size(), shown);
+    const auto updated = total->text();
+    box.sessions.removeLast(); state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    QCOMPARE(list->count(), rows); QCOMPARE(total->text(), updated);
+    brand->click(); QCOMPARE(total->text(), before);
+    // A closed window renders its current page when it opens again.
+    window.hide(); box.sessions.append(extra); state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    window.show(); QCOMPARE(total->text(), updated);
 }
 
 void TestSessionsWindow::dashboardActivityRowsStayReadable_data()
@@ -1022,6 +1072,8 @@ void TestSessionsWindow::unreadRepliesNeedAnActiveVisibleResult()
     box.sessions[0].activity = "busy"; box.sessions[0].phase = "tool";
     box.sessions[0].activitySummary = "Bash"; box.sessions[0].activityDetail = "Check the next deployment";
     state.setLocal(box, QDateTime::currentMSecsSinceEpoch()); window.setFleet(state);
+    // The hidden list renders when shown; reading the reply takes a visible dwell.
+    window.showSessionList();
     QVERIFY(row()->data(SessionRoles::Unread).toBool()); QVERIFY(row()->data(SessionRoles::Working).toBool());
     QCOMPARE(row()->data(SessionRoles::Detail).toString(), QString("Bash: Check the next deployment"));
     QVERIFY(window.findChild<QLabel *>("listSummary")->text().contains("1 working"));
@@ -1085,8 +1137,10 @@ void TestSessionsWindow::markAllReadIgnoresFiltersAndKeepsCurrentDraft()
     action->trigger(); QCOMPARE(seen.size(), 1); QCOMPARE(seen[0][0].toJsonObject().size(), 5);
     QVERIFY(!action->isEnabled()); QVERIFY(state.unreadReplies().isEmpty()); QCOMPARE(writes.size(), 0);
     QCOMPARE(list->currentItem()->data(SessionRoles::Key), selectedKey); QCOMPARE(composer->editor()->toPlainText(), QString("Keep this draft"));
+    // Overview renders when shown.
+    window.findChild<QPushButton *>("brandMark")->click();
     QVERIFY(window.findChild<DashboardPage *>()->findChild<QPushButton *>("dashboardAttention")->text().startsWith("1"));
-    window.findChild<MachineFilter *>()->setSelection({});
+    window.showSessionList(); window.findChild<MachineFilter *>()->setSelection({});
     window.findChild<QLineEdit *>("search")->setText("review");
     QCOMPARE(window.findChild<QListWidget *>("searchResults")->count(), 1); // The real approval still needs attention.
     FleetState restarted; restarted.setReadReplies(QJsonDocument::fromJson(QSettings().value("attention/readReplies").toByteArray()).object());
@@ -1384,11 +1438,16 @@ if 'clear-context' in args:
 elif 'inspect' in args: print((root/'details.json').read_text() if (root/'details.json').exists() else '{}')
 else: print('{}')
 )PY");fixture.close();fixture.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner);
-    SessionsWindow window(program);window.resize(1080,760);window.setFleet(fleet());window.show();window.showSession("mac","claude/infra/review");QTest::qWait(150);
-    auto *client=window.findChild<HgsClient *>();
     QJsonObject details{{"tracked",true},{"run_id","run-one"},{"phase","idle"},{"activity","idle"},{"runtime_state","live"},{"process_state","running"},
         {"conversation_id","conversation-one"},{"clear_context_supported",true},{"cache_hint",QJsonObject{{"status","cold"},{"tokens",756000}}}};
-    const auto applyDetails=[&]{QFile data(temp.filePath("details.json"));QVERIFY(data.open(QIODevice::WriteOnly));data.write(QJsonDocument(details).toJson());data.close();client->inspectionReady("mac","claude/infra/review",details);};
+    // Background inspections read this file at any time: replace it atomically and
+    // write it before selecting the session, so a slow first inspection cannot
+    // deliver empty details after the test applies its own.
+    const auto writeDetails=[&]{QSaveFile data(temp.filePath("details.json"));QVERIFY(data.open(QIODevice::WriteOnly));data.write(QJsonDocument(details).toJson());QVERIFY(data.commit());};
+    writeDetails();
+    SessionsWindow window(program);window.resize(1080,760);window.setFleet(fleet());window.show();window.showSession("mac","claude/infra/review");QTest::qWait(150);
+    auto *client=window.findChild<HgsClient *>();
+    const auto applyDetails=[&]{writeDetails();client->inspectionReady("mac","claude/infra/review",details);};
     applyDetails();
     auto *composer=window.findChild<MessageComposer *>("messageComposer");composer->editor()->setPlainText("Keep this draft");
     auto *cacheChip=window.findChild<ToolbarChip *>("cacheChip");QVERIFY(cacheChip && cacheChip->isVisible());
@@ -3810,6 +3869,9 @@ void TestSessionsWindow::forkValidationCancelAndPinnedPayload()
     client->inspectionReady({}, "codex/hgs/dashboard", details);
     QTimer::singleShot(0, &window, [&]() {
         auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget()); QVERIFY(dialog);
+        // The dialog's loop also delivers polls from the fixture, whose inspect
+        // lacks fork support; confirm with the injected details still current.
+        client->inspectionReady({}, "codex/hgs/dashboard", details);
         dialog->findChild<QLineEdit *>("forkSessionName")->setText("Новая ветка");
         dialog->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok)->click();
     });
@@ -3850,13 +3912,16 @@ void TestSessionsWindow::forkKeepsSourceAndGroup()
     QCOMPARE(list->currentItem()->data(SessionRoles::Identity).toString(), sourceIdentity);
     auto *client = window.findChild<HgsClient *>(); QSignalSpy inspected(client, &HgsClient::inspectionReady);
     QSignalSpy writes(client, &HgsClient::writeDone); QTRY_VERIFY(!inspected.isEmpty());
-    client->inspectionReady({}, original.name, QJsonObject{{"tracked", true}, {"run_id", original.runId},
+    const QJsonObject details{{"tracked", true}, {"run_id", original.runId},
         {"conversation_id", "conversation-one"}, {"fork_supported", true}, {"cwd", original.cwd},
-        {"activity", "idle"}, {"phase", "idle"}, {"last_event_at", 2000000000}, {"events", QJsonArray{}}, {"cursor", 0}}, original.archiveId);
+        {"activity", "idle"}, {"phase", "idle"}, {"last_event_at", 2000000000}, {"events", QJsonArray{}}, {"cursor", 0}};
+    client->inspectionReady({}, original.name, details, original.archiveId);
     auto *action = window.findChild<QAction *>("forkSessionAction"); QVERIFY(action->isEnabled());
     QTimer::singleShot(0, &window, [&]() {
         auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget()); QVERIFY(dialog);
         QCOMPARE(dialog->findChild<QLineEdit *>("forkSessionName")->text(), QString("topic-fork"));
+        // Fixture polls delivered in the dialog's loop lack fork support.
+        client->inspectionReady({}, original.name, details, original.archiveId);
         dialog->accept();
     });
     action->trigger(); QTRY_COMPARE(writes.size(), 1); QVERIFY(writes[0][1].toBool());
@@ -5286,7 +5351,7 @@ void TestSessionsWindow::projectOrderAndDefaultBadge()
     page->findChild<QAction *>("moveProjectUp")->trigger();QCOMPARE(stored().groups()[1].id,first);
     // Order and default are shared with Sessions and survive reopening the page.
     page->refresh();QCOMPARE(list->item(1)->data(Qt::UserRole).toString(),first);QVERIFY(list->item(1)->data(Qt::UserRole+3).toBool());
-    auto *sessions=window.findChild<SessionList *>("sessionList");QStringList headers;
+    window.showSessionList();auto *sessions=window.findChild<SessionList *>("sessionList");QStringList headers;
     for(int i=0;i<sessions->count();++i)if(sessions->item(i)->data(SessionRoles::Header).toBool())headers.append(sessions->item(i)->data(SessionRoles::Group).toString());
     QCOMPARE(headers,QStringList({"ungrouped",first,second}));QCOMPARE(stored().group(first)->folders.size(),1);
     const auto preview=qEnvironmentVariable("HGS_NAVIGATION_PREVIEW");

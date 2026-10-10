@@ -46,6 +46,8 @@ public:
     // The document as copied: chips and list markers spelled out.
     QString plainText() const;
     void setAttachmentPreview(const QString &key, const QImage &image);
+    // Journal HTML generations. Tests verify that unchanged polls skip them.
+    int renderPasses() const { return m_renderPasses; }
 
 public slots:
     void jumpToLatest();
@@ -92,7 +94,7 @@ private:
     QPushButton *m_latest = nullptr;
     QWidget *m_compaction;
     QString m_sessionKey, m_conversation, m_html, m_fallbackPrompt;
-    QJsonObject m_details;
+    QJsonObject m_details, m_activityInput;
     QJsonObject m_searchResult;
     QString m_searchQuery;
     QJsonArray m_events, m_localMessages;
@@ -109,7 +111,7 @@ private:
     QSet<QString> m_knownEvents, m_toggleKeys, m_processLinks;
     bool m_dark = false, m_tracked = true, m_initial = true;
     bool m_rendering = false, m_followLatest = true, m_followScheduled = false;
-    int m_unseen = 0;
+    int m_unseen = 0, m_renderPasses = 0;
     double m_scale = 1.0;
     int m_column = 0;               // 0: the transcript fills the pane
     int m_dragOrigin = 0;           // column width when an edge was pressed

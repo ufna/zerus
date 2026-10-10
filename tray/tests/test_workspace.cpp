@@ -11,6 +11,7 @@
 #include "IdentityBadge.h"
 #include "GitStatusBadge.h"
 #include "SessionPresentation.h"
+#include "WorkspaceIcons.h"
 #include <QDir>
 
 class ListProbe : public SessionList { public: using SessionList::mimeData; using SessionList::initViewItemOption; };
@@ -28,6 +29,7 @@ private slots:
     void activityAnimationOnlyRunsForVisibleWorkingRows();
     void elapsedWorkTimeKeepsUpdatingWithoutAnimation();
     void shortIdentityLabelsFitWithoutElision();
+    void workspaceIconsAreReused();
     void draftStatusSitsBetweenWorkAndReplies();
     void gitStatusSeparatesEvidenceAndExpires();
     void gitStatusCardsKeepMetadataAndMachineReadable();
@@ -127,6 +129,16 @@ void TestWorkspace::gitStatusCardsKeepMetadataAndMachineReadable()
             }
         }
     }
+}
+
+void TestWorkspace::workspaceIconsAreReused()
+{
+    // Polls and repaints request the same few icons; each must be painted once.
+    const auto first = workspaceIcon("refresh", QColor("#506278"));
+    QCOMPARE(workspaceIcon("refresh", QColor("#506278")).cacheKey(), first.cacheKey());
+    QVERIFY(workspaceIcon("refresh", QColor("#8ce3c9")).cacheKey() != first.cacheKey());
+    QVERIFY(workspaceIcon("add", QColor("#506278")).cacheKey() != first.cacheKey());
+    QVERIFY(!first.pixmap(24, 24).isNull());
 }
 
 void TestWorkspace::shortIdentityLabelsFitWithoutElision()

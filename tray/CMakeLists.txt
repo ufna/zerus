@@ -48,6 +48,7 @@ add_executable(hgs-tray
     src/main.cpp
     src/AppConfig.cpp
     src/HgsClient.cpp
+    src/ProcessRunner.cpp
     src/FleetState.cpp
     src/IconFactory.cpp
     src/CommandBackend.cpp

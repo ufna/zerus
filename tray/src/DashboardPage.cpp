@@ -50,6 +50,17 @@ QLabel *label(const QString &text, const QString &name, QWidget *parent = nullpt
     auto *result = new QLabel(text, parent); result->setObjectName(name); result->setTextFormat(Qt::PlainText);
     return result;
 }
+// Polls mostly repeat values. Re-polish, relayout or repaint only on a change.
+void setStyleProperty(QWidget *widget, const char *name, const QVariant &value)
+{
+    if (widget->property(name) == value) return;
+    widget->setProperty(name, value); widget->style()->unpolish(widget); widget->style()->polish(widget); widget->update();
+}
+void setBadge(IdentityBadge *badge, const QString &value, bool dark)
+{
+    if (badge->value() != value || (value.isEmpty() && !badge->isHidden())) badge->setValue(value);
+    if (badge->dark() != dark) badge->setTheme(dark);
+}
 void updateLoadBar(QProgressBar *bar, double percentage, bool fresh, bool available)
 {
     available = available && std::isfinite(percentage) && percentage >= 0;
@@ -62,6 +73,15 @@ void updateLoadBar(QProgressBar *bar, double percentage, bool fresh, bool availa
     bar->setToolTip(!available ? DashboardPage::tr("No sample available") : !fresh ? DashboardPage::tr("Last known value; waiting for a fresh sample.")
         : DashboardPage::tr("Orange from 70%; red from 90%."));
 }
+// Fills itself with the stylesheet background, which the stylesheet keeps in its
+// palette. Being opaque lets Qt scroll by moving pixels and skip the page and
+// viewport backgrounds beneath it; a styled QWidget would repaint them all.
+class DashboardContent : public QWidget {
+public:
+    DashboardContent() { setObjectName("dashboardContent"); setAttribute(Qt::WA_OpaquePaintEvent); }
+protected:
+    void paintEvent(QPaintEvent *event) override { QPainter(this).fillRect(event->rect(), palette().window()); }
+};
 }
 
 // Stable widgets survive background polls, including keyboard focus and pointer clicks.
@@ -94,9 +114,9 @@ public:
     void update(const BoxState &box, const QString &alias, bool local, bool fresh)
     {
         title->setText(local ? tr("This machine") : QString());
-        indicator->setValue(alias);
+        setBadge(indicator, alias, indicator->dark());
         title->setToolTip(alias); status->setText(fresh ? tr("Connected") : box.ok ? tr("Stale") : tr("Offline"));
-        status->setProperty("online", fresh); status->style()->unpolish(status); status->style()->polish(status);
+        setStyleProperty(status, "online", fresh);
         const auto metrics = box.metrics;
         const bool hasCpu = metrics.value("cpu_percent").isDouble();
         const auto percentage = metrics.value("cpu_percent").toDouble();
@@ -137,39 +157,43 @@ public:
         m_model.setObjectName("dashboardSessionModel");
         m_model.appendRow(new QStandardItem);
     }
-    void setTheme(bool dark) { setProperty("hgsDark", dark); QWidget::update(); }
+    void setTheme(bool dark) { if (property("hgsDark") != QVariant(dark)) { setProperty("hgsDark", dark); QWidget::update(); } }
     void update(const SessionInfo &session, const QString &alias)
     {
         using namespace SessionPresentation;
-        auto *item = m_model.item(0);
-        item->setData(sessionLabel(session), SessionRoles::Title);
-        item->setData(branchContext(session), SessionRoles::Meta);
-        item->setData(!branchContext(session).isEmpty(), SessionRoles::BranchIcon);
-        item->setData(session.gitStatus, SessionRoles::GitStatus);
-        item->setData(status(session), SessionRoles::Status);
-        item->setData(session.phase=="error", SessionRoles::Failure);
-        item->setData(currentAction(session).simplified(), SessionRoles::Detail);
-        item->setData(session.cmd, SessionRoles::Agent);
-        item->setData(alias, SessionRoles::Host);
-        item->setData(alias, SessionRoles::MachineName);
-        item->setData(MachineAppearance::color(alias), SessionRoles::MachineColor);
-        item->setData(session.model.isEmpty() ? (session.cmd == "sh" ? QString() : tr("Model unknown")) : session.model, SessionRoles::Model);
-        item->setData(session.effort, SessionRoles::Effort);
-        item->setData(session.reviewLater || (!session.attentionAcknowledged && session.needsAction()), SessionRoles::Attention);
-        item->setData(session.reviewLater, SessionRoles::ReviewLater);
-        item->setData(session.unreadReply, SessionRoles::Unread);
-        item->setData(working(session), SessionRoles::Working);
-        item->setData(session.phase == "compacting" ? session.compactionStarted : session.turnStarted, SessionRoles::WorkingSince);
-        item->setData(childCount(session), SessionRoles::Children);
+        auto *item = m_model.item(0); bool changed = false;
+        const auto set = [&](int role, const QVariant &value) { if (item->data(role) != value) { item->setData(value, role); changed = true; } };
+        set(SessionRoles::Title, sessionLabel(session));
+        set(SessionRoles::Meta, branchContext(session));
+        set(SessionRoles::BranchIcon, !branchContext(session).isEmpty());
+        set(SessionRoles::GitStatus, session.gitStatus);
+        set(SessionRoles::Status, status(session));
+        set(SessionRoles::Failure, session.phase=="error");
+        set(SessionRoles::Detail, currentAction(session).simplified());
+        set(SessionRoles::Agent, session.cmd);
+        set(SessionRoles::Host, alias);
+        set(SessionRoles::MachineName, alias);
+        set(SessionRoles::MachineColor, MachineAppearance::color(alias));
+        set(SessionRoles::Model, session.model.isEmpty() ? (session.cmd == "sh" ? QString() : tr("Model unknown")) : session.model);
+        set(SessionRoles::Effort, session.effort);
+        set(SessionRoles::Attention, session.reviewLater || (!session.attentionAcknowledged && session.needsAction()));
+        set(SessionRoles::ReviewLater, session.reviewLater);
+        set(SessionRoles::Unread, session.unreadReply);
+        set(SessionRoles::Working, working(session));
+        set(SessionRoles::WorkingSince, session.phase == "compacting" ? session.compactionStarted : session.turnStarted);
+        set(SessionRoles::Children, childCount(session));
         // Overview cards navigate to a session; the roster opens in its list.
-        item->setData(false, SessionRoles::HasChildren);
+        set(SessionRoles::HasChildren, false);
         const QStringList description{displayTitle(session), alias, session.cmd, status(session),
             projectContext(session), item->data(SessionRoles::Detail).toString(), session.model, session.effort,
             childCount(session, true)};
-        setAccessibleName(description.join(" / "));
-        setToolTip(description.join("\n") + (session.gitStatus.isEmpty() ? QString() : "\n\n" + GitStatusBadge::tooltip(session.gitStatus)));
-        setAccessibleDescription(GitStatusBadge::tooltip(session.gitStatus));
-        QWidget::update();
+        const auto git = GitStatusBadge::tooltip(session.gitStatus);
+        const auto name = description.join(" / "), tip = description.join("\n") + (session.gitStatus.isEmpty() ? QString() : "\n\n" + git);
+        if (accessibleName() != name) setAccessibleName(name);
+        if (toolTip() != tip) setToolTip(tip);
+        if (accessibleDescription() != git) setAccessibleDescription(git);
+        // Background polls repeat most cards unchanged; repaint only changed ones.
+        if (changed) QWidget::update();
     }
     void updateElapsed() { if (m_model.item(0)->data(SessionRoles::Working).toBool()) QWidget::update(); }
 protected:
@@ -203,32 +227,36 @@ public:
         usage=new AccountUsage::Button;usage->setObjectName("dashboardAccountUsage");usage->setShowProvider(false);usage->setCompact(true);bottom->addWidget(usage);layout->addLayout(bottom);
         for(auto *child:findChildren<QWidget *>()){child->setAttribute(Qt::WA_TransparentForMouseEvents);child->setFocusPolicy(Qt::NoFocus);}
     }
-    void setTheme(bool dark){m_dark=dark;provider->setTheme(dark);host->setTheme(dark);for(auto *badge:extraHosts)badge->setTheme(dark);usage->setTheme(dark);QPushButton::update();}
+    void setTheme(bool dark){if(m_themed&&m_dark==dark)return;m_themed=true;m_dark=dark;provider->setTheme(dark);host->setTheme(dark);for(auto *badge:extraHosts)badge->setTheme(dark);usage->setTheme(dark);QPushButton::update();}
     void update(const QJsonObject &profile) {
-        data=profile;provider->setValue(profile["provider"].toString());host->setValue(profile["machine"].toString());
+        // Polls repeat profiles. Refresh time-based text; repaint only on a visible change.
+        if(m_hasData&&profile==data){describe();if(stripe()!=m_stripe)QPushButton::update();return;}
+        m_hasData=true;data=profile;setBadge(provider,profile["provider"].toString(),m_dark);setBadge(host,profile["machine"].toString(),m_dark);
         const auto machines=profile["machines"].toArray();
         while(extraHosts.size()>qMax(0,int(machines.size())-1))delete extraHosts.takeLast();
         while(extraHosts.size()<machines.size()-1){auto *badge=new IdentityBadge(IdentityBadges::Machine);badge->setAttribute(Qt::WA_TransparentForMouseEvents);machineRow->addWidget(badge);extraHosts<<badge;}
-        for(int i=0;i<extraHosts.size();++i){extraHosts[i]->setValue(machines[i+1].toString());extraHosts[i]->setTheme(m_dark);}
-        auto value=profile["usage"].toObject();if(!profile["installed"].toBool())value["status"]="unavailable";usage->setData(value);
-        const auto info=value["identity"].toObject();identityText=info["email"].toString(info["name"].toString());
+        for(int i=0;i<extraHosts.size();++i)setBadge(extraHosts[i],machines[i+1].toString(),m_dark);
+        m_usage=profile["usage"].toObject();if(!profile["installed"].toBool())m_usage["status"]="unavailable";usage->setData(m_usage);
+        const auto info=m_usage["identity"].toObject();identityText=info["email"].toString(info["name"].toString());
         if(!info["plan"].toString().isEmpty())identityText+=(identityText.isEmpty()?QString():" / ")+info["plan"].toString();
         if(identityText.isEmpty())identityText=profile["installed"].toBool()?QString():tr("Agent not installed");
-        setToolTip(AccountUsage::tooltip(value));setAccessibleName(profile["label"].toString()+" / "+profile["machine"].toString()+"\n"+toolTip());QPushButton::update();elide();
+        describe();QPushButton::update();elide();
     }
 protected:
     void resizeEvent(QResizeEvent *event) override {QPushButton::resizeEvent(event);elide();}
     void paintEvent(QPaintEvent *event) override {
         QPushButton::paintEvent(event);
-        const double used=AccountUsage::highest(data["usage"].toObject());
-        const QColor stripe=used>=0?AccountUsage::color(used,m_dark):QColor(m_dark?"#9aaaba":"#64788a");
-        QPainter painter(this);painter.setRenderHint(QPainter::Antialiasing);painter.setPen(Qt::NoPen);painter.setBrush(stripe);
+        m_stripe=stripe();
+        QPainter painter(this);painter.setRenderHint(QPainter::Antialiasing);painter.setPen(Qt::NoPen);painter.setBrush(m_stripe);
         painter.drawRoundedRect(QRectF(2,10,3,height()-20),1.5,1.5);
     }
 private:
+    // Usage windows expire with time, so the stripe and tooltip can change without new data.
+    QColor stripe() const {const double used=AccountUsage::highest(data["usage"].toObject());return used>=0?AccountUsage::color(used,m_dark):QColor(m_dark?"#9aaaba":"#64788a");}
+    void describe(){const auto tip=AccountUsage::tooltip(m_usage);if(tip==toolTip()&&!accessibleName().isEmpty())return;setToolTip(tip);setAccessibleName(data["label"].toString()+" / "+data["machine"].toString()+"\n"+tip);}
     void elide(){int extra=0;for(auto *badge:extraHosts)extra+=badge->sizeHint().width()+6;title->setText(title->fontMetrics().elidedText(data["label"].toString(),Qt::ElideRight,qMax(20,width()-provider->sizeHint().width()-host->sizeHint().width()-extra-52)));identity->setText(identity->fontMetrics().elidedText(identityText,Qt::ElideRight,qMax(0,width()-usage->width()-32)));}
-    QJsonObject data;QString identityText;QLabel *title,*identity;IdentityBadge *provider,*host;AccountUsage::Button *usage;
-    QHBoxLayout *machineRow;QList<IdentityBadge *> extraHosts;bool m_dark=false;
+    QJsonObject data,m_usage;QString identityText;QLabel *title,*identity;IdentityBadge *provider,*host;AccountUsage::Button *usage;
+    QHBoxLayout *machineRow;QList<IdentityBadge *> extraHosts;QColor m_stripe;bool m_dark=false,m_themed=false,m_hasData=false;
 };
 
 DashboardPage::DashboardPage(QWidget *parent) : QWidget(parent)
@@ -236,7 +264,7 @@ DashboardPage::DashboardPage(QWidget *parent) : QWidget(parent)
     setObjectName("dashboardPage");
     auto *outer = new QVBoxLayout(this); outer->setContentsMargins(20, 18, 0, 18); outer->setSpacing(14);
     auto *scroll = new QScrollArea; scroll->setObjectName("dashboardScroll"); scroll->setFrameShape(QFrame::NoFrame); scroll->setWidgetResizable(true);
-    auto *content = new QWidget; content->setObjectName("dashboardContent"); scroll->setWidget(content);
+    auto *content = new DashboardContent; scroll->setWidget(content);
     auto *layout = new QVBoxLayout(content); layout->setContentsMargins(0, 0, 20, 0); layout->setSpacing(14);
     auto *title = label(tr("Overview"), "dashboardTitle");
     auto *refresh = new QPushButton(tr("Refresh")); refresh->setObjectName("dashboardRefresh");
@@ -375,7 +403,7 @@ void DashboardPage::render()
             connect(card->settings, &QPushButton::clicked, this, [this, host = machine.host] { emit machinesRequested(host); });
             connect(card->sessions, &QPushButton::clicked, this, [this, host = machine.host] { emit filterRequested(host.isEmpty() ? "@local" : host, "all"); });
         }
-        card->indicator->setTheme(m_dark);
+        setBadge(card->indicator, card->indicator->value(), m_dark);
         card->update(machine.box, machine.alias, machine.host.isEmpty(), machine.fresh);
     }
     for (auto it = m_machineCards.begin(); it != m_machineCards.end();) {
@@ -383,7 +411,7 @@ void DashboardPage::render()
     }
     if (keys != m_machineOrder) { m_machineOrder = keys; m_columns = 0; } arrangeMachines();
     m_attention->setText(tr("%1\nNeeds attention").arg(attentionCount)); m_attention->setAccessibleName(tr("%1 sessions need attention").arg(attentionCount));
-    m_attention->setProperty("active", attentionCount > 0); m_attention->style()->unpolish(m_attention); m_attention->style()->polish(m_attention);
+    setStyleProperty(m_attention, "active", attentionCount > 0);
     m_working->setText(tr("%1\nWorking").arg(workingCount)); m_connected->setText(tr("%1 / %2\nMachines online").arg(connectedCount).arg(machines.size()));
     m_sessions->setText(tr("%1\nSessions").arg(knownSessions));m_sessions->setAccessibleName(tr("%1 sessions").arg(knownSessions));
     m_inactive->setText(offlineSessions ? tr("%1 sessions are on offline or stale machines. Their last known status is shown on the machine cards.").arg(offlineSessions) : QString());

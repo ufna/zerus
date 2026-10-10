@@ -455,13 +455,32 @@ void ActivityView::setSessionKey(const QString &key)
     m_previewFiles.clear(); m_deliveryKeys.clear();
     m_messageActions.clear(); m_copyTexts.clear();
     m_localMessages = {}; m_searchResult = {}; m_searchQuery.clear(); m_browser->setExtraSelections({});
-    m_initial = true; m_followLatest = true; m_unseen = 0; m_html.clear();
+    m_initial = true; m_followLatest = true; m_unseen = 0; m_html.clear(); m_activityInput = {};
     m_browser->clear(); updateJumpButton();
     m_compaction->hide(); m_queue->hide();
 }
 
+namespace {
+// Everything setActivity renders from. Polls refresh live fields that Activity
+// never shows (goal observation time, cache age, token usage, process load);
+// of the processes only their IDs become links. Keep these out of the HTML.
+QJsonObject activityInput(QJsonObject details, const QJsonArray &events, const QString &fallbackPrompt, bool tracked)
+{
+    QJsonArray processes;
+    for (const auto &job : details.value("processes").toObject().value("items").toArray()) processes.append(job.toObject().value("id"));
+    for (const auto &key : {"goal_observed_at", "cache_hint", "session_usage"}) details.remove(QLatin1String(key));
+    details["processes"] = processes;
+    return {{"details", details}, {"events", events}, {"prompt", fallbackPrompt}, {"tracked", tracked}, {"process_links", ProcessSettings::enabled()}};
+}
+}
+
 void ActivityView::setActivity(const QJsonObject &details, const QJsonArray &events, const QString &fallbackPrompt, bool tracked)
 {
+    // Theme, scale, search, cards and local messages render on their own; an
+    // identical poll would only regenerate the same journal.
+    auto input = activityInput(details, events, fallbackPrompt, tracked);
+    if (input == m_activityInput) return;
+    m_activityInput = std::move(input);
     const auto conversation = details.value("conversation_id").toString();
     if (!m_conversation.isEmpty() && !conversation.isEmpty() && conversation != m_conversation
         && !details.value("cleared_conversations").toArray().contains(m_conversation)) {
@@ -528,7 +547,7 @@ void ActivityView::setTimeline(const QJsonObject &details, const QJsonArray &eve
 {
     // A poll can replace local delivery cards with native events. Commit both
     // inputs together so the document never contains both generations.
-    m_localMessages = localMessages;
+    if (m_localMessages != localMessages) { m_localMessages = localMessages; m_activityInput = {}; }
     setActivity(details, events, fallbackPrompt, tracked);
 }
 
@@ -848,6 +867,7 @@ void ActivityView::setAttachmentPreview(const QString &key, const QImage &image)
 
 void ActivityView::render(bool contentUpdate)
 {
+    ++m_renderPasses;
     m_fileLinks.clear();
     m_attachmentLinks.clear();
     m_messageActions.clear();

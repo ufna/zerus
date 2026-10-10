@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SessionList.h"
+#include "CachedText.h"
 #include "IdentityBadge.h"
 #include "ProjectAppearance.h"
 #include "MachineAppearance.h"
@@ -132,9 +133,9 @@ private:
         QFont font = option.font; font.setPixelSize(11); font.setWeight(QFont::Medium); p->setFont(font);
         int right = r.right();
         const auto counter = [&](const QString &text, const QColor &color, const QColor &background) {
-            const int w = QFontMetrics(font).horizontalAdvance(text) + 12;
+            const int w = CachedText::width(font, text) + 12;
             const QRect badge(right - w, r.center().y() - 9, w, 18); p->setPen(Qt::NoPen); p->setBrush(background);
-            p->drawRoundedRect(badge, 5, 5); p->setPen(color); p->drawText(badge, Qt::AlignCenter, text); right -= w + 6;
+            p->drawRoundedRect(badge, 5, 5); p->setPen(color); CachedText::draw(p, badge, Qt::AlignCenter, text); right -= w + 6;
         };
         counter(QString::number(index.data(SessionRoles::Total).toInt()), fg, MachineAppearance::blend(background,fg,.13));
         if (attention) counter(QString("! %1").arg(attention), QColor("#392900"), QColor(dark ? "#ffda76" : "#f4ce65"));
@@ -143,8 +144,8 @@ private:
         progress.setAlphaF(.72 + .28 * (option.widget ? option.widget->property("workingPulse").toReal() : 0.0));
         if (working) counter(QString("● %1").arg(working), progress, QColor(dark ? "#123624" : "#e0f5e9"));
         font.setPixelSize(12); font.setWeight(QFont::DemiBold); p->setFont(font); p->setPen(fg);
-        p->drawText(QRect(r.x() + 39, r.y(), qMax(0, right - r.x() - 39), r.height()), Qt::AlignVCenter,
-            QFontMetrics(font).elidedText(index.data(SessionRoles::Title).toString(), Qt::ElideRight, qMax(0, right - r.x() - 39)));
+        CachedText::draw(p, QRect(r.x() + 39, r.y(), qMax(0, right - r.x() - 39), r.height()), Qt::AlignVCenter,
+            CachedText::elided(font, index.data(SessionRoles::Title).toString(), Qt::ElideRight, qMax(0, right - r.x() - 39)));
         if (strip > 0) {
             // One counter per band in the strip: what needs a response, then
             // unread replies, then work in progress, then the session count.
@@ -157,14 +158,14 @@ private:
                 text = QString("● %1").arg(working); ink = progress; fill = QColor(dark ? "#123624" : "#e0f5e9");
             }
             font.setPixelSize(11); font.setWeight(QFont::Medium); p->setFont(font); p->setOpacity(strip);
-            const int w = QFontMetrics(font).horizontalAdvance(text) + 12;
+            const int w = CachedText::width(font, text) + 12;
             const QRect badge(band.right() - 5 - w, band.center().y() - 9, w, 18);
-            p->setPen(Qt::NoPen); p->setBrush(fill); p->drawRoundedRect(badge, 5, 5); p->setPen(ink); p->drawText(badge, Qt::AlignCenter, text);
+            p->setPen(Qt::NoPen); p->setBrush(fill); p->drawRoundedRect(badge, 5, 5); p->setPen(ink); CachedText::draw(p, badge, Qt::AlignCenter, text);
             // The project name takes what the counter leaves.
             const QRect name(band.x() + 8, band.y(), badge.left() - 5 - band.x() - 8, band.height());
             font.setWeight(QFont::DemiBold); p->setFont(font); p->setPen(fg);
-            if (name.width() >= 14) p->drawText(name, Qt::AlignVCenter | Qt::AlignLeft,
-                QFontMetrics(font).elidedText(index.data(SessionRoles::Title).toString(), Qt::ElideRight, name.width()));
+            if (name.width() >= 14) CachedText::draw(p, name, Qt::AlignVCenter | Qt::AlignLeft,
+                CachedText::elided(font, index.data(SessionRoles::Title).toString(), Qt::ElideRight, name.width()));
         }
         p->restore();
     }
@@ -204,15 +205,15 @@ private:
         const int statusWidth = SessionStatusBadge::width(caption, kind, option.font);
         QFont font = option.font; font.setPixelSize(14); font.setWeight(QFont::DemiBold);
         const QString agent = index.data(SessionRoles::Agent).toString(), host = index.data(SessionRoles::Host).toString();
-        const int reservedTitle = qMin(72, QFontMetrics(font).horizontalAdvance(index.data(SessionRoles::Title).toString()));
+        const int reservedTitle = qMin(72, CachedText::width(font, index.data(SessionRoles::Title).toString()));
         const int providerRoom = right - x - statusWidth - 16 - (additionalUnread ? 28 : 0) - reservedTitle;
         const int providerNaturalWidth = agent.isEmpty() ? 0 : IdentityBadges::width(IdentityBadges::Provider, agent, option.font, childRow ? 85 : 95);
         const int providerWidth = providerNaturalWidth && !childRow && providerRoom < providerNaturalWidth ? 26 : providerNaturalWidth;
         const int titleWidth = qMax(0, right - x - statusWidth - 8 - (additionalUnread ? 28 : 0) - (providerWidth ? providerWidth + 8 : 0));
         p->setFont(font); p->setPen(foreground);
-        const QString title = QFontMetrics(font).elidedText(index.data(SessionRoles::Title).toString(), Qt::ElideRight, titleWidth);
-        p->drawText(QRect(x, titleY, titleWidth, 21), Qt::AlignVCenter, title);
-        const QRect statusBadge(x + QFontMetrics(font).horizontalAdvance(title) + 8, titleY, statusWidth, 20);
+        const QString title = CachedText::elided(font, index.data(SessionRoles::Title).toString(), Qt::ElideRight, titleWidth);
+        CachedText::draw(p, QRect(x, titleY, titleWidth, 21), Qt::AlignVCenter, title);
+        const QRect statusBadge(x + CachedText::width(font, title) + 8, titleY, statusWidth, 20);
         const QRect unreadBadge = additionalUnread ? QRect(statusBadge.right() + 6, titleY, 22, 20) : QRect();
         const QRect providerBadge = providerWidth ? QRect(right - providerWidth, titleY + 1, providerWidth, 18) : QRect();
         if (shared) *shared = {statusBadge, unreadBadge, providerBadge, agent};
@@ -225,8 +226,8 @@ private:
 
         if (childRow) {
             font.setPixelSize(11); font.setWeight(QFont::Normal); p->setFont(font); p->setPen(muted);
-            p->drawText(QRect(x, titleY + 25, right - x, 18), Qt::AlignVCenter,
-                QFontMetrics(font).elidedText(index.data(SessionRoles::Detail).toString().simplified(), Qt::ElideRight, right - x));
+            CachedText::draw(p, QRect(x, titleY + 25, right - x, 18), Qt::AlignVCenter,
+                CachedText::elided(font, index.data(SessionRoles::Detail).toString().simplified(), Qt::ElideRight, right - x));
             p->restore(); return;
         }
         font.setPixelSize(11); font.setWeight(QFont::Normal); p->setFont(font);
@@ -240,8 +241,8 @@ private:
         const int metadataWidth = qMax(0, (gitBadge.isEmpty() ? machineBadge.left() : gitBadge.left()) - textX - 8);
         const int branchInset = index.data(SessionRoles::BranchIcon).toBool() && metadataWidth >= 32 ? 18 : 0;
         if (branchInset) workspaceIcon("git-branch", muted).paint(p, QRect(textX, metadataY + 2, 14, 14));
-        p->drawText(QRect(textX + branchInset, metadataY, qMax(0, metadataWidth - branchInset), 18), Qt::AlignVCenter,
-                    QFontMetrics(font).elidedText(index.data(SessionRoles::Meta).toString(), Qt::ElideMiddle, qMax(0, metadataWidth - branchInset)));
+        CachedText::draw(p, QRect(textX + branchInset, metadataY, qMax(0, metadataWidth - branchInset), 18), Qt::AlignVCenter,
+                    CachedText::elided(font, index.data(SessionRoles::Meta).toString(), Qt::ElideMiddle, qMax(0, metadataWidth - branchInset)));
 
         QString detail = index.data(SessionRoles::Detail).toString();
         // Status is already beside the title. Keep the activity excerpt useful
@@ -257,13 +258,12 @@ private:
         if (reviewLater) workspaceIcon("attention", QColor(dark ? "#f0c77b" : "#885400")).paint(p, QRect(textX, detailY + 2, 14, 14));
         const int detailWidth = width - (detailX - textX);
         font.setPixelSize(12); p->setFont(font); p->setPen(state == "Offline" ? muted : foreground);
-        p->drawText(QRect(detailX, detailY, detailWidth, 18), Qt::AlignVCenter,
-                    QFontMetrics(font).elidedText(detail, Qt::ElideRight, detailWidth));
+        CachedText::draw(p, QRect(detailX, detailY, detailWidth, 18), Qt::AlignVCenter, CachedText::elided(font, detail, Qt::ElideRight, detailWidth));
 
         font.setPixelSize(11); p->setFont(font); p->setPen(muted);
         const QString children = SessionList::childrenLabel(index);
         const QRect childrenControl = SessionList::childrenControlRect(option.rect, index, option.font);
-        const int childWidth = expandable ? childrenControl.width() : children.isEmpty() ? 0 : QFontMetrics(font).horizontalAdvance(children) + 32;
+        const int childWidth = expandable ? childrenControl.width() : children.isEmpty() ? 0 : CachedText::width(font, children) + 32;
         if (!children.isEmpty()) {
             const QRect counter = expandable ? childrenControl : QRect(right - childWidth, modelY, childWidth, 20);
             const bool hovered = expandable && option.widget && option.widget->property("hoveredChildren").toString() == index.data(SessionRoles::Key).toString();
@@ -276,7 +276,7 @@ private:
             p->setPen(QPen(ink, 1.2)); p->setBrush(Qt::NoBrush);
             p->drawEllipse(QPointF(cx, cy - 3), 2, 2); p->drawEllipse(QPointF(cx + 6, cy - 2), 2, 2);
             p->drawArc(QRectF(cx - 4, cy, 8, 6), 0, 180 * 16); p->drawArc(QRectF(cx + 2, cy + 1, 7, 5), 0, 180 * 16);
-            p->drawText(counter.adjusted(26, 0, expandable ? -20 : -6, 0), Qt::AlignCenter, children);
+            CachedText::draw(p, counter.adjusted(26, 0, expandable ? -20 : -6, 0), Qt::AlignCenter, children);
             if (expandable) {
                 p->setPen(QPen(ink, 1.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
                 const QPointF c(counter.right() - 9, cy); QPolygonF arrow;
@@ -288,14 +288,14 @@ private:
         font.setPixelSize(10); p->setFont(font);
         const QString effort = index.data(SessionRoles::Effort).toString();
         const bool hasEffort = !effort.isEmpty() && effort != "—";
-        const int effortWidth = hasEffort ? QFontMetrics(font).horizontalAdvance(effort) + 10 : 0;
+        const int effortWidth = hasEffort ? CachedText::width(font, effort) + 10 : 0;
         const int modelWidth = qMax(0, width - (childWidth ? childWidth + 10 : 0) - (hasEffort ? effortWidth + 7 : 0));
-        const QString model = QFontMetrics(font).elidedText(index.data(SessionRoles::Model).toString(), Qt::ElideMiddle, modelWidth);
-        p->setPen(muted); p->drawText(QRect(textX, modelY, modelWidth, 20), Qt::AlignVCenter, model);
+        const QString model = CachedText::elided(font, index.data(SessionRoles::Model).toString(), Qt::ElideMiddle, modelWidth);
+        p->setPen(muted); CachedText::draw(p, QRect(textX, modelY, modelWidth, 20), Qt::AlignVCenter, model);
         if (hasEffort) {
-            const QRect effortBadge(textX + QFontMetrics(font).horizontalAdvance(model) + 7, modelY + 2, effortWidth, 16);
+            const QRect effortBadge(textX + CachedText::width(font, model) + 7, modelY + 2, effortWidth, 16);
             p->setPen(Qt::NoPen); p->setBrush(QColor(dark ? "#2b343e" : "#e7edf2")); p->drawRoundedRect(effortBadge, 3, 3);
-            p->setPen(muted); p->drawText(effortBadge, Qt::AlignCenter, effort);
+            p->setPen(muted); CachedText::draw(p, effortBadge, Qt::AlignCenter, effort);
         }
         p->restore();
     }
@@ -332,7 +332,7 @@ private:
             p->setOpacity(strip); SessionStatusBadge::paint(p, badge, status.caption, status.kind, dark, pulse, 0); neutralDot(badge);
             QFont font = option.font; font.setPixelSize(11); p->setFont(font); p->setPen(muted);
             const QRect name(badge.right() + 6, badge.y(), qMax(0, r.right() - 5 - badge.right() - 6), badge.height());
-            p->drawText(name, Qt::AlignVCenter | Qt::AlignLeft, QFontMetrics(font).elidedText(index.data(SessionRoles::Title).toString(), Qt::ElideRight, name.width()));
+            CachedText::draw(p, name, Qt::AlignVCenter | Qt::AlignLeft, CachedText::elided(font, index.data(SessionRoles::Title).toString(), Qt::ElideRight, name.width()));
             p->restore(); return;
         }
         // Every tile has its own surface in the strip; cards in the list do not.
@@ -397,7 +397,7 @@ private:
             p->setOpacity(strip);
             p->setFont(nameFont); p->setPen(foreground);
             int y = top + 20 + 7;
-            for (const auto &line : lines) { p->drawText(QRect(r.x() + inset, y, textWidth, 16), Qt::AlignCenter, line); y += 16; }
+            for (const auto &line : lines) { CachedText::draw(p, QRect(r.x() + inset, y, textWidth, 16), Qt::AlignCenter, line); y += 16; }
             // The state in words: how long it has worked, or what it waits for.
             const double since = index.data(SessionRoles::WorkingSince).toDouble();
             const QString state = status.working && since > 0 ? SessionElapsed::text(since) : status.caption;
@@ -405,7 +405,7 @@ private:
                 : status.kind == SessionStatusBadge::Error ? QColor(dark ? "#ffabb6" : "#a32238")
                 : status.kind == SessionStatusBadge::Attention || status.kind == SessionStatusBadge::Unread ? QColor(dark ? "#f0c77b" : "#885400") : muted;
             QFont font = option.font; font.setPixelSize(10); font.setWeight(QFont::Medium); p->setFont(font); p->setPen(tone);
-            p->drawText(QRect(r.x() + inset, y + 5, textWidth, 13), Qt::AlignCenter, QFontMetrics(font).elidedText(state, Qt::ElideRight, textWidth));
+            CachedText::draw(p, QRect(r.x() + inset, y + 5, textWidth, 13), Qt::AlignCenter, CachedText::elided(font, state, Qt::ElideRight, textWidth));
         }
         p->restore();
     }

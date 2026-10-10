@@ -3,8 +3,8 @@
 #include <QEvent>
 #include <QPainter>
 #include <QPushButton>
-#include <QScreen>
 #include <QTimer>
+#include <QWindow>
 #include <QtMath>
 #include <cmath>
 
@@ -12,11 +12,20 @@
 // rotates: replacing QIcon on every frame also invalidates button layout.
 class SwarmButton : public QPushButton {
 public:
-    explicit SwarmButton(QWidget *parent = nullptr) : QPushButton(parent) {
-        m_timer.setTimerType(Qt::PreciseTimer); m_timer.setSingleShot(true);
-        connect(&m_timer, &QTimer::timeout, this, [this] { update(); scheduleFrame(); });
+    // The small mark reads smoothly at 30 fps. Display-rate frames (up to 120 Hz)
+    // kept the whole window flushing for an indicator that runs almost constantly.
+    static constexpr int kFrameMs = 33;
+    explicit SwarmButton(QWidget *parent = nullptr) : QPushButton(parent), m_timer(this) {
+        m_timer.setObjectName("swarmFrameTimer"); m_timer.setTimerType(Qt::PreciseTimer); m_timer.setSingleShot(true);
+        connect(&m_timer, &QTimer::timeout, this, [this] {
+            // A covered or off-screen window draws nothing; check again later without waking every frame.
+            if (!exposed()) { m_timer.start(1000); return; }
+            update(); scheduleFrame();
+        });
     }
     void setAppearance(const QColor &neutral, const QColor &attention, bool active, bool reduced) {
+        // Polls refresh this every few seconds; an unchanged state must not redraw the rail.
+        if (neutral == m_neutral && attention == m_attentionColor && active == m_attention && reduced == m_reduced) return;
         m_neutral = neutral; m_attentionColor = attention;
         m_attention = active; m_reduced = reduced;
         syncAnimation();
@@ -54,11 +63,11 @@ protected:
         painter.drawPixmap(QPointF(-14, -14), m_mark);
     }
 private:
+    bool exposed() const { const auto *handle = window()->windowHandle(); return handle && handle->isExposed(); }
     void scheduleFrame() {
         const auto phase = m_clock.elapsed() % 3000;
         // Nothing moves during the pause; wake once for the next revolution.
-        const qreal hz = screen() ? qBound<qreal>(60, screen()->refreshRate(), 120) : 60;
-        m_timer.start(phase >= 1400 ? int(3000 - phase) : qMax(8, int(1000 / hz)));
+        m_timer.start(phase >= 1400 ? int(3000 - phase) : kFrameMs);
     }
     QTimer m_timer;
     QElapsedTimer m_clock;

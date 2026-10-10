@@ -268,6 +268,8 @@ private:
     struct PendingSettings { QString host, name, run, conversation, model, effort, id; };
     QHash<QString, PendingSettings> m_queuedSettings;
     bool m_pending = false, m_clipboard = false, m_rebuilding = false;
+    // Polls keep hidden pages' data current; these pages render when shown.
+    bool m_sessionsStale = false, m_dashboardStale = false;
     int m_tick = 0;
     QTimer m_timer;
     QElapsedTimer m_processPollAge,m_inspectionAge;
@@ -287,6 +289,7 @@ private:
     QList<QPushButton *> m_filters;
     QLineEdit *m_search;
     QLabel *m_heading, *m_count, *m_title, *m_meta, *m_badge, *m_model, *m_hint, *m_notice;
+    QString m_modelElision;
     QLabel *m_connectionStatus;
     QPushButton *m_connectionRetry;
     QSet<QString> m_pollingHosts;

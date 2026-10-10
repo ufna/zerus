@@ -109,7 +109,7 @@ QRect SessionList::childrenControlRect(const QRect &row, const QModelIndex &inde
     if (!index.data(SessionRoles::HasChildren).toBool() || index.data(SessionRoles::Header).toBool()
         || !index.data(SessionRoles::ChildId).toString().isEmpty()) return {};
     font.setPixelSize(11); font.setWeight(QFont::Normal);
-    const int width = QFontMetrics(font).horizontalAdvance(childrenLabel(index)) + 46;
+    const int width = CachedText::width(font, childrenLabel(index)) + 46;
     return QRect(row.right() - 13 - width, row.bottom() - 26, width, 20);
 }
 

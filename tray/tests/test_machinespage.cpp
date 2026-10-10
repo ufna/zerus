@@ -50,7 +50,7 @@ void TestMachinesPage::init()
 {
     QVERIFY(m_dir.isValid());
     QSettings::setDefaultFormat(QSettings::IniFormat); QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, m_dir.path());
-    QCoreApplication::setOrganizationName("hgs-machines-test"); QCoreApplication::setApplicationName("MachinesPage"); QSettings().clear();
+    QCoreApplication::setOrganizationName("hgs-machines-test"); QCoreApplication::setApplicationName("MachinesPage"); QSettings().clear(); MachineAppearance::invalidate();
     for (const auto &name : {"calls.jsonl", "stale", "probe-mode", "resolve-delay", "list-delay"}) QFile::remove(m_dir.filePath(name));
     m_script = m_dir.filePath("hgs");
     QFile fixture(m_script); QVERIFY(fixture.open(QIODevice::WriteOnly));

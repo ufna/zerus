@@ -8,6 +8,13 @@
 #include <QVBoxLayout>
 #include "DashboardPage.h"
 
+class PaintCounter : public QObject {
+public:
+    QHash<QObject *, int> paints;
+    bool eventFilter(QObject *watched, QEvent *event) override { if (event->type() == QEvent::Paint) ++paints[watched]; return false; }
+    int total() const { int result = 0; for (const auto count : paints) result += count; return result; }
+};
+
 class TestDashboard : public QObject {
     Q_OBJECT
 private:
@@ -105,6 +112,27 @@ private slots:
         row->setFocus(); const auto id = row;
         page.setFleet(fixture()); QVERIFY(page.findChildren<QPushButton *>("dashboardSessionRow").contains(id));
         row->click(); QCOMPARE(sessions.takeFirst(), QVariantList({QString("mac"), QString("kimi/docs/research")}));
+    }
+    void unchangedPollsDoNotRepaint()
+    {
+        // Background polls usually repeat the same values; they must not repaint the page.
+        const auto fleet = fixture(); const auto rows = accounts();
+        DashboardPage page; page.setFleet(fleet); page.setAccounts(rows); page.resize(1120, 1100); page.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&page)); QTest::qWait(50);
+        PaintCounter counter; QPushButton *attention = nullptr;
+        // The working row repaints its turn clock every second; watch every other card.
+        for (auto *row : page.findChildren<QPushButton *>("dashboardSessionRow"))
+            if (row->accessibleName().contains("docs / research")) { attention = row; row->installEventFilter(&counter); }
+        for (auto *card : page.findChildren<QPushButton *>("dashboardAccountCard")) card->installEventFilter(&counter);
+        for (auto *card : page.findChildren<QFrame *>("dashboardMachineCard")) card->installEventFilter(&counter);
+        for (const auto &name : {"dashboardAttention", "dashboardWorking", "dashboardConnected", "dashboardSessions"})
+            page.findChild<QPushButton *>(name)->installEventFilter(&counter);
+        QVERIFY(attention);
+        page.setFleet(fleet); page.setAccounts(rows); QTest::qWait(60);
+        QCOMPARE(counter.total(), 0);
+        auto changed = fleet; auto remote = *changed.peer("mac"); remote.sessions[0].activityDetail = "Choose another deployment target";
+        changed.setPeer(remote, changed.peerPolledAt("mac")); page.setFleet(changed);
+        QTRY_VERIFY(counter.paints.value(attention) > 0);
     }
     void unknownCpuIsNotZeroAndStalePeersAreExcluded()
     {
