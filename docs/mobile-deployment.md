@@ -300,19 +300,15 @@ phone or computer through the relay CLI.
 
 ## Enable notifications
 
-Grant Android's notification permission when prompted. The Computers tab exposes
-notification setup and the optional live connection.
+Grant Android's notification permission when prompted. Machines shows each
+workspace's push status and the optional live connection.
 
-- For UnifiedPush, install and configure a distributor such as
-  [ntfy](https://docs.ntfy.sh/subscribe/phone/) or
-  [another supported distributor](https://unifiedpush.org/users/distributors/).
-  Select it in Zerus. The relay's `push_hosts` must permit its exact public HTTPS
-  hostname. A self-hosted distributor needs no Firebase service account.
 - For FCM, configure the Android build and the relay using your Firebase project.
   The relay needs its own private service-account file; never put that file in the
   APK. Both sides must use the same Firebase project. Without those credentials,
-  FCM delivery is unavailable even though the integration code builds.
-- The live connection needs no distributor or Firebase project. Enable it while
+  FCM delivery is unavailable even though the integration code builds. The app
+  registers automatically after pairing and on startup.
+- The live connection needs no Firebase project. Enable it while
   the app is open; its persistent notification exposes a Stop action. It uses
   an ongoing outbound connection. Android Doze, vendor battery management and
   force-stop can affect delivery, so it is a fallback rather than a guarantee of

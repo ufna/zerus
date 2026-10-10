@@ -1,6 +1,5 @@
 package app.zerus.mobile
 
-import android.app.AlertDialog
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -10,7 +9,6 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
-import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -35,12 +33,6 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
-import org.json.JSONObject
-import org.unifiedpush.android.connector.FailedReason
-import org.unifiedpush.android.connector.PushService
-import org.unifiedpush.android.connector.UnifiedPush
-import org.unifiedpush.android.connector.data.PushEndpoint
-import org.unifiedpush.android.connector.data.PushMessage
 
 object SessionNotifications {
     internal const val ALERTS = "zerus_session_alerts"
@@ -330,77 +322,4 @@ class LiveConnectionService : Service() {
         return START_NOT_STICKY
     }
     override fun onDestroy() { running = false; scope.cancel(); super.onDestroy() }
-}
-
-object PushRegistration {
-    fun choose(context: Context) {
-        val distributors = UnifiedPush.getDistributors(context)
-        if (distributors.isEmpty()) {
-            AlertDialog.Builder(context).setTitle("UnifiedPush distributor needed")
-                .setMessage("Install and configure a UnifiedPush distributor such as ntfy or NextPush, then return here. You can also enable the live connection in Computers.")
-                .setPositiveButton("OK", null).show(); return
-        }
-        val labels = distributors.map { name -> runCatching {
-            context.packageManager.getApplicationLabel(context.packageManager.getApplicationInfo(name, 0)).toString()
-        }.getOrDefault(name) }.toTypedArray()
-        AlertDialog.Builder(context).setTitle("Choose push distributor").setItems(labels) { _, index ->
-            UnifiedPush.saveDistributor(context, distributors[index])
-            PrivateStore(context).connections().forEach { connection -> PrivateStore(context).savePushProvider(connection.id, "unifiedpush"); UnifiedPush.register(context, instance = connection.id, messageForDistributor = "Zerus session alerts") }
-        }.setNegativeButton("Cancel", null).show()
-    }
-}
-
-class ZerusPushService : PushService() {
-    override fun onNewEndpoint(endpoint: PushEndpoint, instance: String) {
-        val connection = PrivateStore(this).connections().find { it.id == instance } ?: return
-        try { PrivateStore(this).savePushEndpoint(instance, EndpointPolicy.push(endpoint.url)) }
-        catch (_: Exception) { PrivateStore(this).savePushStatus(instance, "Could not save a secure push endpoint."); return }
-        PrivateStore(this).savePushStatus(instance, "Registering UnifiedPush with gateway…")
-        WorkManager.getInstance(this).enqueue(OneTimeWorkRequestBuilder<PushEndpointWorker>().setInputData(
-            Data.Builder().putString("connection", instance).build()).build())
-        SessionNotifications.enqueue(this, connection.id)
-    }
-    override fun onMessage(message: PushMessage, instance: String) {
-        // Push is a wake-up hint. Authoritative events are fetched with our authenticated gateway token.
-        SessionNotifications.wake(this, instance); SessionNotifications.enqueue(this, instance)
-    }
-    override fun onRegistrationFailed(reason: FailedReason, instance: String) {
-        PrivateStore(this).savePushStatus(instance, "Distributor registration failed. Check its network and settings.")
-        Toast.makeText(this, "Push registration failed. Check your distributor or use the live connection.", Toast.LENGTH_LONG).show()
-    }
-    override fun onUnregistered(instance: String) {
-        if (PrivateStore(this).pushProvider(instance) != "unifiedpush") return
-        PrivateStore(this).savePushStatus(instance, "Push distributor disconnected.")
-        WorkManager.getInstance(this).enqueue(OneTimeWorkRequestBuilder<PushEndpointWorker>().setInputData(
-            Data.Builder().putString("connection", instance).putBoolean("delete", true).build()).build())
-    }
-}
-
-class PushEndpointWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
-    override suspend fun doWork(): Result {
-        val connection = PrivateStore(applicationContext).connections().find { it.id == inputData.getString("connection") } ?: return Result.success()
-        return PushSetupLocks.withConnection(connection.id) { try {
-            val delete = inputData.getBoolean("delete", false)
-            if (PrivateStore(applicationContext).pushProvider(connection.id) != "unifiedpush") return@withConnection Result.success()
-            if (!delete) {
-                val providers = RelayApi().call(connection.url, connection.token, "/v1/capabilities").optJSONArray("push_providers")
-                if (providers == null || (0 until providers.length()).none { providers.optString(it) == "unifiedpush" }) {
-                    PrivateStore(applicationContext).savePushStatusIfCurrent(connection, "unifiedpush", "Gateway UnifiedPush is not configured. Use the live connection.")
-                    return@withConnection Result.failure()
-                }
-            }
-            if (!PrivateStore(applicationContext).connections().contains(connection) || PrivateStore(applicationContext).pushProvider(connection.id) != "unifiedpush") return@withConnection Result.success()
-            val body = if (delete) null else JSONObject().put("provider", "unifiedpush").put("endpoint", EndpointPolicy.push(PrivateStore(applicationContext).pushEndpoint(connection.id)))
-            RelayApi().call(connection.url, connection.token, "/v1/push", body, delete)
-            PrivateStore(applicationContext).savePushStatusIfCurrent(connection, "unifiedpush", if (delete) "Push disconnected." else "UnifiedPush configured")
-            Result.success()
-        } catch (e: RelayException) {
-            PrivateStore(applicationContext).savePushStatusIfCurrent(connection, "unifiedpush", "Gateway rejected push setup (${e.status}). Check gateway configuration.")
-            if (e.status in 400..499) Result.failure() else Result.retry()
-        }
-        catch (_: IllegalArgumentException) { PrivateStore(applicationContext).savePushStatusIfCurrent(connection, "unifiedpush", "Invalid push endpoint. Check the distributor."); Result.failure() }
-        catch (e: kotlinx.coroutines.CancellationException) { throw e }
-        catch (_: Exception) { PrivateStore(applicationContext).savePushStatusIfCurrent(connection, "unifiedpush", "Push setup waiting for gateway connection."); Result.retry() }
-        }
-    }
 }

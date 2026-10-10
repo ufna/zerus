@@ -84,29 +84,18 @@ class PrivateStore(context: Context) {
         val removed = preferences.all.keys.filter { it.startsWith(prefix) && it.removePrefix(prefix) !in connections }
         if (removed.isNotEmpty()) check(preferences.edit().also { edit -> removed.forEach(edit::remove) }.commit())
     }
-    fun savePushEndpoint(connection: String, endpoint: String) {
-        val records = read("push").objects().filterNot { it.string("connection") == connection } + JSONObject().put("connection", connection).put("endpoint", endpoint)
-        write("push", JSONArray(records))
-    }
-    fun pushEndpoint(connection: String) = read("push").objects().find { it.string("connection") == connection }?.string("endpoint").orEmpty()
-    fun pushProvider(connection: String) = read("push_provider:$connection").optJSONObject(0)?.string("provider")
-        ?: if (pushEndpoint(connection).isNotBlank()) "unifiedpush" else "fcm"
-    fun savePushProvider(connection: String, provider: String) = synchronized(pushLock) {
-        if (provider == "fcm" && pushProvider(connection) != "fcm") saveFirebaseBinding(connection, "")
-        write("push_provider:$connection", JSONArray().put(JSONObject().put("provider", provider)))
-    }
-    fun firebaseBinding(connection: String) = read("firebase_binding:$connection").optJSONObject(0)?.string("token").orEmpty()
-    fun saveFirebaseBinding(connection: String, token: String) = write("firebase_binding:$connection", JSONArray().put(JSONObject().put("token", token)))
+    // v2 re-registers FCM once: a v1 binding may predate a removed UnifiedPush registration.
+    fun firebaseBinding(connection: String) = read("firebase_binding_v2:$connection").optJSONObject(0)?.string("token").orEmpty()
     fun saveFirebaseToken(token: String) = synchronized(pushLock) { write("firebase", JSONArray().put(JSONObject().put("token", token))) }
     fun firebaseToken() = read("firebase").optJSONObject(0)?.string("token").orEmpty()
     fun confirmFirebaseBinding(connection: Connection, token: String) = synchronized(pushLock) {
-        if (connections().contains(connection) && firebaseToken() == token && pushProvider(connection.id) != "unifiedpush") {
-            saveFirebaseBinding(connection.id, token)
+        if (connections().contains(connection) && firebaseToken() == token) {
+            write("firebase_binding_v2:${connection.id}", JSONArray().put(JSONObject().put("token", token)))
             savePushStatus(connection.id, "Firebase push configured")
         }
     }
-    fun savePushStatusIfCurrent(connection: Connection, provider: String, status: String) = synchronized(pushLock) {
-        if (connections().contains(connection) && pushProvider(connection.id) == provider) savePushStatus(connection.id, status)
+    fun savePushStatusIfCurrent(connection: Connection, status: String) = synchronized(pushLock) {
+        if (connections().contains(connection)) savePushStatus(connection.id, status)
     }
     fun savePushStatus(connection: String, status: String) = write("push_status:$connection", JSONArray().put(JSONObject().put("status", status)))
     fun pushStatus(connection: String) = read("push_status:$connection").optJSONObject(0)?.string("status").orEmpty()

@@ -29,9 +29,8 @@ zerus-relay --database ./data/relay.sqlite3 serve
 
 The server is a standalone Rust executable built on Tokio, Axum and SQLx. The
 outbound computer connector remains the Python 3.11+ `zerus-mobile-connector`
-package. The relay image contains no Python interpreter. FCM HTTP v1 and
-UnifiedPush support are built into the server; provider credentials remain
-private runtime configuration. See [the Rust runtime contract](relay/README.md)
+package. The relay image contains no Python interpreter. FCM HTTP v1 support is
+built into the server; provider credentials remain private runtime configuration. See [the Rust runtime contract](relay/README.md)
 for resource ownership, compatibility validation and the upgrade procedure.
 
 Provisioning deliberately prints the node token and a single-use phone pairing
@@ -259,18 +258,13 @@ and lists the configured `push_providers`. Create a private JSON file with mode
 
 ```json
 {
-  "push_hosts": ["push.example.com"],
   "fcm_credentials": "/private/path/firebase-service-account.json"
 }
 ```
 
-Omit either setting when unused. The example domain is reserved; replace it with
-an explicitly trusted public UnifiedPush distributor hostname. Wildcards are not
-allowed. UnifiedPush requires HTTPS on port 443, no user information/fragments,
-public-only DNS answers and no redirects. Every delivery resolves again, rejects
-private targets and pins the validated addresses during the TLS request. Proxy
-environment variables are ignored. Allowlisting a hostname does not permit private
-addresses. The default allowlist is empty.
+UnifiedPush support was removed. A legacy `push_hosts` key is still accepted so
+existing private configurations load; it is ignored with a startup warning.
+Registrations left from UnifiedPush are removed on their next delivery attempt.
 
 FCM uses the optional pinned `firebase-admin` package and its HTTP v1 transport.
 Keep the Google service account JSON outside the repository, readable only by the

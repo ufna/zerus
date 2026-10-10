@@ -29,7 +29,7 @@ flowchart LR
     C[Computer connector] -->|Outbound HTTPS, node credential| R
     C -->|Fixed argv and JSON stdin| H[hgs]
     H --> N[Existing native sessions]
-    R -->|Generic wake notification| P[FCM or UnifiedPush]
+    R -->|Generic wake notification| P[FCM]
     P --> A
 ```
 
@@ -616,7 +616,7 @@ API errors carry an `error` string. Relay health reports the protocol version.
 | `POST /v1/requests` | Device | `{request_id, computer_id, operation, session, payload}` → request envelope |
 | `GET /v1/requests/{id}` | Owning device | Request envelope |
 | `GET /v1/events?after=N&wait=25` | Device | `{events: [...], cursor}` |
-| `POST /v1/push` | Device | `{provider: "unifiedpush", endpoint}` or `{provider: "fcm", token}` |
+| `POST /v1/push` | Device | `{provider: "fcm", token}`; other providers return 400 |
 | `DELETE /v1/push` | Device | Remove this device's push registration |
 | `DELETE /v1/device` | Device | Revoke this device, its queued requests and push registration |
 | `POST /v1/node/heartbeat` | Computer | `{snapshot}` using local `hgs ls --json --local` output |
@@ -704,17 +704,14 @@ live sessions per connector heartbeat. Only their IDs and fingerprints are added
 to snapshots. With many live Codex sessions, these alerts can lag by a complete
 scan cycle; ordinary native attention phases arrive with the next heartbeat.
 
-Android supports three delivery paths:
+Android supports two delivery paths:
 
 - FCM for a build configured with the operator's Firebase Android application,
   with server credentials supplied privately. No service-account key belongs in
-  an APK. FCM configuration is optional for building the application.
-- UnifiedPush with an installed distributor, suitable for independent hosting
-  and Android devices without Google Play Services. The relay administrator
-  explicitly permits distributor origins; arbitrary push URLs are not an open
-  HTTP proxy.
+  an APK. FCM configuration is optional for building the application. The app
+  registers automatically and shows per-workspace push status in Machines.
 - A user-enabled foreground live connection, with a visible service notification,
-  for installations without either push provider. This needs no third-party
+  for builds without Firebase and phones without Google Play services. This needs no third-party
   account. It consumes an ongoing connection and does not promise FCM-equivalent
   behavior under Doze, vendor battery restrictions or force-stop.
 
@@ -724,8 +721,10 @@ must be shown honestly in the app and deployment verification.
 
 References: [Android foreground service types](https://developer.android.com/develop/background-work/services/fgs/service-types#remote-messaging),
 [FCM Android setup](https://firebase.google.com/docs/cloud-messaging/android/get-started),
-[FCM server authorization](https://firebase.google.com/docs/cloud-messaging/send/v1-api),
-and [UnifiedPush Android protocol](https://unifiedpush.org/developers/spec/android/).
+and [FCM server authorization](https://firebase.google.com/docs/cloud-messaging/send/v1-api).
+
+UnifiedPush was removed on 2026-10-10 because it was unused. The relay never
+sends requests to client-supplied URLs. Restore it from Git history if needed.
 
 ### Application settings
 
@@ -747,8 +746,8 @@ remain in Machines.
 The managed Android pilot uses Firebase Crashlytics, Google Analytics for
 Firebase and FCM. These are independent services: disabling usage analytics or
 crash reports must not disable push delivery or change session notification
-preferences. Builds without the optional Firebase configuration retain
-UnifiedPush and the foreground live connection.
+preferences. Builds without the optional Firebase configuration retain the
+foreground live connection.
 
 Usage analytics is enabled by default, as requested by the owner. The app's
 settings expose separate Usage analytics and Crash reports switches, initially

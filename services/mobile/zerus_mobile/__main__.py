@@ -35,19 +35,14 @@ def private_file(path):
 
 def configuration(args, parser):
     options = json.loads(private_file(args.config).read_text()) if args.config else {}
+    if isinstance(options, dict):
+        # Retired UnifiedPush allowlist: existing private configs still load; it is ignored.
+        options.pop("push_hosts", None)
     allowed = {field.name for field in fields(Config)} | BACKEND_OPTIONS
     if not isinstance(options, dict) or set(options) - allowed:
         parser.error("invalid relay configuration")
     if options.get("fcm_credentials"):
         options["fcm_credentials"] = str(private_file(options["fcm_credentials"]))
-    if "push_hosts" in options:
-        hosts = options["push_hosts"]
-        if not isinstance(hosts, list) or any(
-            not isinstance(h, str) or not h or any(c in h for c in "/:@* ")
-            for h in hosts
-        ):
-            parser.error("push_hosts must list exact hostnames")
-        options["push_hosts"] = tuple(hosts)
     if "trusted_proxy_cidrs" in options:
         import ipaddress
 
@@ -59,7 +54,6 @@ def configuration(args, parser):
         options["trusted_proxy_cidrs"] = tuple(options["trusted_proxy_cidrs"])
     for key, value in options.items():
         if key not in {
-            "push_hosts",
             "trusted_proxy_cidrs",
             "fcm_credentials",
             "database_url",

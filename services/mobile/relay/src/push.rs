@@ -9,8 +9,6 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::BTreeSet,
-    net::{IpAddr, SocketAddr},
     path::Path,
     time::{Duration, Instant},
 };
@@ -82,44 +80,11 @@ impl Push {
         self.fcm.is_some()
     }
     pub fn providers(&self) -> Vec<&str> {
-        let mut p = vec![];
-        if !self.store.db.cfg.push_hosts.is_empty() {
-            p.push("unifiedpush");
-        }
         if self.fcm.is_some() {
-            p.push("fcm");
+            vec!["fcm"]
+        } else {
+            vec![]
         }
-        p
-    }
-    pub async fn validate_endpoint(&self, target: &str) -> Result<(String, Vec<SocketAddr>)> {
-        let u = url::Url::parse(target).map_err(|_| Error::BAD)?;
-        let host = u.host_str().ok_or(Error::BAD)?;
-        if u.scheme() != "https"
-            || !u.username().is_empty()
-            || u.password().is_some()
-            || u.fragment().is_some()
-            || u.port_or_known_default() != Some(443)
-            || host.ends_with('.')
-            || !self
-                .store
-                .db
-                .cfg
-                .push_hosts
-                .iter()
-                .any(|h| h.eq_ignore_ascii_case(host))
-        {
-            return Err(Error::BAD);
-        }
-        let addresses: BTreeSet<_> =
-            tokio::time::timeout(Duration::from_secs(3), tokio::net::lookup_host((host, 443)))
-                .await
-                .map_err(|_| Error::BAD)?
-                .map_err(|_| Error::BAD)?
-                .collect();
-        if addresses.is_empty() || addresses.iter().any(|a| !public_address(a.ip())) {
-            return Err(Error::BAD);
-        }
-        Ok((host.into(), addresses.into_iter().collect()))
     }
     async fn oauth(&self, fcm: &Fcm) -> Result<String> {
         let mut cache = fcm.token.lock().await;
@@ -185,28 +150,6 @@ impl Push {
         Ok(token)
     }
     async fn deliver(&self, provider: &str, target: &str, payload: &Value) -> Result<(bool, bool)> {
-        if provider == "unifiedpush" {
-            let (host, addresses) = self.validate_endpoint(target).await?;
-            // TLS SNI still uses the allowlisted hostname; DNS cannot rebind after validation.
-            let client = reqwest::Client::builder()
-                .no_proxy()
-                .redirect(reqwest::redirect::Policy::none())
-                .timeout(Duration::from_secs(10))
-                .connect_timeout(Duration::from_secs(3))
-                .resolve_to_addrs(&host, &addresses)
-                .build()
-                .map_err(|_| Error::BAD)?;
-            let response = client
-                .post(target)
-                .json(payload)
-                .send()
-                .await
-                .map_err(|_| Error::UNAVAILABLE)?;
-            return Ok((
-                response.status().is_success(),
-                matches!(response.status().as_u16(), 404 | 410),
-            ));
-        }
         if provider == "fcm" {
             if let Some(fcm) = &self.fcm {
                 let token = self.oauth(fcm).await?;
@@ -238,7 +181,8 @@ impl Push {
                 return Ok((false, invalid));
             }
         }
-        Ok((false, false))
+        // Registrations from retired providers such as UnifiedPush can never deliver.
+        Ok((false, provider != "fcm"))
     }
     async fn one(&self, job: Value) -> Result<()> {
         let registration = self.store.push_registration(s(&job, "device_id")).await?;
@@ -274,41 +218,4 @@ async fn bounded_response(r: reqwest::Response, max: usize) -> Result<Vec<u8>> {
         b.extend_from_slice(&c);
     }
     Ok(b)
-}
-pub fn public_address(ip: IpAddr) -> bool {
-    let ip = match ip {
-        IpAddr::V6(v) => v.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(ip),
-        _ => ip,
-    };
-    let denied: &[&str] = match ip {
-        IpAddr::V4(_) => &[
-            "0.0.0.0/8",
-            "10.0.0.0/8",
-            "100.64.0.0/10",
-            "127.0.0.0/8",
-            "169.254.0.0/16",
-            "172.16.0.0/12",
-            "192.0.0.0/24",
-            "192.0.2.0/24",
-            "192.168.0.0/16",
-            "198.18.0.0/15",
-            "198.51.100.0/24",
-            "203.0.113.0/24",
-            "224.0.0.0/3",
-        ],
-        IpAddr::V6(_) => &["2001::/23", "2001:db8::/32", "2002::/16", "3fff::/20"],
-    };
-    if ip.is_ipv6()
-        && !"2000::/3"
-            .parse::<ipnet::IpNet>()
-            .expect("constant network")
-            .contains(&ip)
-    {
-        return false;
-    }
-    !denied.iter().any(|net| {
-        net.parse::<ipnet::IpNet>()
-            .expect("constant network")
-            .contains(&ip)
-    })
 }

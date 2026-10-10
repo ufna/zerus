@@ -95,6 +95,6 @@ for name in (
     'claim_timeout_and_revoke', 'device_logout_revokes_token_and_cancels_queue',
     'old_read_history_does_not_consume_mutation_tombstones', 'long_poll_rechecks_revocation',
     'heartbeat_events_baseline_transition_and_privacy', 'body_cap_nonfinite_and_poll_bounds',
-    'async_question_fingerprints_add_change_remove', 'push_default_deny_and_unavailable_fcm',
+    'async_question_fingerprints_add_change_remove', 'push_retired_unifiedpush_and_unavailable_fcm',
 ):
     setattr(RustHttpContracts, 'test_' + name, getattr(test_relay.RelayTests, 'test_' + name))

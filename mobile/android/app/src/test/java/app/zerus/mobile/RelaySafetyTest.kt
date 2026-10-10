@@ -33,7 +33,6 @@ class RelaySafetyTest {
         listOf("http://gateway.example", "https://user:secret@gateway.example", "https://gateway.example?token=private", "https://gateway.example#fragment").forEach {
             assertThrows(IllegalArgumentException::class.java) { EndpointPolicy.normalize(it) }
         }
-        assertEquals("https://push.example/path?token=opaque", EndpointPolicy.push("https://push.example/path?token=opaque"))
     }
     @Test fun lostTransportMakesOnlyOneNativeMutationAttempt() = runBlocking {
         MockWebServer().use { server ->

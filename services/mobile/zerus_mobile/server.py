@@ -37,7 +37,6 @@ class Config:
     max_queue: int = 200
     max_queue_bytes: int = MAX_QUEUE_BYTES
     online_timeout: int = 45
-    push_hosts: tuple[str, ...] = ()
     fcm_credentials: str | None = None
     background: bool = True
     trusted_proxy_cidrs: tuple[str, ...] = ()
@@ -254,12 +253,7 @@ async def pair(request):
 
 async def capabilities(request):
     await auth(request, "devices")
-    cfg = request.app[CONFIG]
-    providers = []
-    if cfg.push_hosts:
-        providers.append("unifiedpush")
-    if request.app[PUSH_WORKER].fcm is not None:
-        providers.append("fcm")
+    providers = ["fcm"] if request.app[PUSH_WORKER].fcm is not None else []
     return web.json_response({"protocol_version": 1, "push_providers": providers, "attachment_limits": ATTACHMENT_LIMITS, "operations": sorted(OPERATIONS), "features": sorted(FEATURES)})
 
 
@@ -539,15 +533,7 @@ async def push_register(request):
     device = await auth(request, "devices")
     value = await body(request, ("provider",), ("endpoint", "token"))
     worker = request.app[PUSH_WORKER]
-    if value["provider"] == "unifiedpush":
-        if set(value) != {"provider", "endpoint"}:
-            raise web.HTTPBadRequest()
-        target = text(value["endpoint"], 4096)
-        try:
-            await worker.validate_endpoint(target)
-        except ValueError:
-            raise web.HTTPBadRequest(text='{"error":"push endpoint is not allowed"}', content_type="application/json")
-    elif value["provider"] == "fcm":
+    if value["provider"] == "fcm":
         if set(value) != {"provider", "token"}:
             raise web.HTTPBadRequest()
         if worker.fcm is None:

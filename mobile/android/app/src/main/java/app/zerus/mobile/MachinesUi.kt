@@ -27,7 +27,7 @@ private val Surface = Color(0xFF1A2225)
 private val Muted = Color(0xFF9AACB2)
 
 @Composable internal fun MachinesScreen(model: ZerusViewModel, live: Boolean, onPair: () -> Unit, onDisconnect: (Connection) -> Unit,
-    onNotifications: (Boolean) -> Unit, onLive: (Boolean) -> Unit, onPush: () -> Unit, onFirebase: () -> Unit) {
+    onNotifications: (Boolean) -> Unit, onLive: (Boolean) -> Unit) {
     var naming by remember { mutableStateOf<Machine?>(null) }
     var coloring by remember { mutableStateOf<Machine?>(null) }
     val trees = remember(model.machines) { MachineCatalog.groupsByConnection(model.machines) }
@@ -42,8 +42,8 @@ private val Muted = Color(0xFF9AACB2)
             Text(connection.endpoint, color = Muted, style = MaterialTheme.typography.bodySmall)
             if (!model.demo) MachineTree(model, trees[connection.id].orEmpty(),
                 onRename = { naming = it }, onColor = { coloring = it })
-            Text(model.pushStatuses[connection.id].orEmpty().ifBlank { "Push not configured" }, color = Muted, style = MaterialTheme.typography.bodySmall)
-            model.pushCapabilities[connection.id]?.let { Text(it, color = Muted, style = MaterialTheme.typography.bodySmall) }
+            Text(if (!BuildConfig.FIREBASE_ENABLED) "Push is unavailable in this build. Use the live connection."
+                else model.pushStatuses[connection.id].orEmpty().ifBlank { "Setting up Firebase push…" }, color = Muted, style = MaterialTheme.typography.bodySmall)
             TextButton(onClick = { onDisconnect(connection) }) { Text("Disconnect workspace") }
         } }
         OutlinedButton(onClick = onPair, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(8.dp)); Text("Pair another workspace") }
@@ -51,10 +51,7 @@ private val Muted = Color(0xFF9AACB2)
         Text("Notifications", style = MaterialTheme.typography.titleLarge)
         Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Session alerts"); Text("Choose which session updates can alert you.", style = MaterialTheme.typography.bodySmall, color = Muted) }; Switch(model.notifications, onNotifications) }
         NotificationTypeSettings(model.notifications)
-        Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Keep a live connection"); Text("Uses an ongoing notification. Android may delay alerts during battery saving.", style = MaterialTheme.typography.bodySmall, color = Muted) }; Switch(live, onLive, enabled = model.connections.isNotEmpty()) }
-        OutlinedButton(onClick = onPush, enabled = model.connections.isNotEmpty()) { Text("Set up UnifiedPush") }
-        if (BuildConfig.FIREBASE_ENABLED) OutlinedButton(onClick = onFirebase, enabled = model.connections.isNotEmpty()) { Text("Set up Firebase push") }
-        Text("UnifiedPush needs a distributor installed on your phone. The app works without Google services.", style = MaterialTheme.typography.bodySmall, color = Muted)
+        Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Keep a live connection"); Text("For phones without Firebase push. Uses an ongoing notification; Android may delay alerts during battery saving.", style = MaterialTheme.typography.bodySmall, color = Muted) }; Switch(live, onLive, enabled = model.connections.isNotEmpty()) }
     }
     coloring?.let { machine ->
         val key = MachineKey(machine.connectionId,machine.id)

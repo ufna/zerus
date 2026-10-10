@@ -139,8 +139,6 @@ class MainActivity : ComponentActivity() {
                     try { fileLauncher(selectionId).launch(arrayOf("*/*")) }
                     catch (_: Exception) { model.cancelAttachmentPick() }
                 }
-            }, onPush = { PushRegistration.choose(this) }, onFirebase = {
-                Class.forName("app.zerus.mobile.OptionalFirebase").getMethod("register", android.content.Context::class.java).invoke(null, this)
             })
         } }
     }
@@ -162,16 +160,16 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable private fun ZerusApp(model: ZerusViewModel, invitation: PairingInvite?, onInvitationUsed: () -> Unit,
-    onNotifications: () -> Unit, onLive: (Boolean) -> Unit, onAttach: (Target) -> Unit, onPush: () -> Unit, onFirebase: () -> Unit) {
+    onNotifications: () -> Unit, onLive: (Boolean) -> Unit, onAttach: (Target) -> Unit) {
     val obscuration = remember { ConversationObscuration() }
     CompositionLocalProvider(LocalConversationObscuration provides obscuration) {
-        ZerusAppContent(model,invitation,onInvitationUsed,onNotifications,onLive,onAttach,onPush,onFirebase)
+        ZerusAppContent(model,invitation,onInvitationUsed,onNotifications,onLive,onAttach)
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable private fun ZerusAppContent(model: ZerusViewModel, invitation: PairingInvite?, onInvitationUsed: () -> Unit,
-    onNotifications: () -> Unit, onLive: (Boolean) -> Unit, onAttach: (Target) -> Unit, onPush: () -> Unit, onFirebase: () -> Unit) {
+    onNotifications: () -> Unit, onLive: (Boolean) -> Unit, onAttach: (Target) -> Unit) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var handledReturnSequence by remember(model) { mutableLongStateOf(model.returnToSessionsSequence) }
     LaunchedEffect(model.returnToSessionsSequence) {
@@ -287,7 +285,7 @@ class MainActivity : ComponentActivity() {
                 3 -> MachinesScreen(model, live, onPair = { pairing = true }, onDisconnect = { disconnect = it },
                     onNotifications = { model.updateNotifications(it); if (it) onNotifications() }, onLive = {
                         if (it) onNotifications(); onLive(it)
-                    }, onPush = { onNotifications(); onPush() }, onFirebase = { onNotifications(); onFirebase() })
+                    })
                 else -> AccountsScreen(model,onMachines = { tab=3 })
             } }
         }

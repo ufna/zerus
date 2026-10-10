@@ -242,15 +242,15 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         await send([])
         self.assertEqual([e["kind"] for e in (await self.call("GET", "/v1/events"))["events"]], ["attention", "attention"])
 
-    async def test_push_default_deny_and_unavailable_fcm(self):
+    async def test_push_retired_unifiedpush_and_unavailable_fcm(self):
+        self.assertEqual((await self.call("GET", "/v1/capabilities"))["push_providers"], [])
         await self.call("POST", "/v1/push", {"provider": "unifiedpush", "endpoint": "https://push.example.com/token"}, expected=400)
         await self.call("POST", "/v1/push", {"provider": "fcm", "token": "example"}, expected=503)
 
     async def test_push_generic_payload_retries_and_revoke(self):
         worker = self.app[PUSH_WORKER]
-        worker.allowed = {"push.example.com"}
-        with patch.object(worker, "validate_endpoint", AsyncMock(return_value=("push.example.com", ["8.8.8.8"]))):
-            await self.call("POST", "/v1/push", {"provider": "unifiedpush", "endpoint": "https://push.example.com/opaque"})
+        with patch.object(worker, "fcm", object()):
+            await self.call("POST", "/v1/push", {"provider": "fcm", "token": "opaque"})
         node = self.store.authenticate(self.node["node_token"], "nodes")
         with self.store.db:
             self.store.event(node, "private/session", "attention")
@@ -268,7 +268,7 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
     async def test_push_retries_are_bounded_and_provider_gone_removes_registration(self):
         worker = self.app[PUSH_WORKER]
         with self.store.db:
-            self.store.db.execute("INSERT INTO pushes VALUES(?,?,?)", (self.phone["device_id"], "unifiedpush", "https://push.example.com/opaque"))
+            self.store.db.execute("INSERT INTO pushes VALUES(?,?,?)", (self.phone["device_id"], "fcm", "opaque"))
             self.store.event(self.store.authenticate(self.node["node_token"], "nodes"), "session", "attention")
         with patch.object(worker, "deliver", AsyncMock(return_value=(False, False))) as delivery:
             for _ in range(5):
@@ -283,24 +283,14 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
             await worker.once()
         self.assertEqual(self.store.db.execute("SELECT count(*) FROM pushes").fetchone()[0], 0)
 
-    async def test_push_ssrf_scheme_private_and_dns_pinning(self):
+    async def test_retired_unifiedpush_registration_is_removed_on_delivery(self):
         worker = self.app[PUSH_WORKER]
-        worker.allowed = {"push.example.com", "127.0.0.1"}
-        for endpoint in ("http://push.example.com/x", "https://u:p@push.example.test/x", "https://push.example.com:444/x", "https://other.example.com/x", "https://push.example.com/x#fragment", "https://127.0.0.1/x"):
-            with self.assertRaises(ValueError):
-                await worker.validate_endpoint(endpoint)
-        loop = asyncio.get_running_loop()
-        with patch.object(loop, "getaddrinfo", AsyncMock(return_value=[(2, 1, 6, "", ("10.0.0.1", 443))])):
-            with self.assertRaises(ValueError):
-                await worker.validate_endpoint("https://push.example.com/x")
-        with patch.object(loop, "getaddrinfo", AsyncMock(return_value=[(2, 1, 6, "", ("8.8.8.8", 443))])):
-            host, addresses = await worker.validate_endpoint("https://push.example.com/x")
-        self.assertEqual((host, addresses), ("push.example.com", ["8.8.8.8"]))
-        from zerus_mobile.push import PinnedResolver
-        resolver = PinnedResolver(host, addresses)
-        self.assertEqual((await resolver.resolve(host, 443))[0]["host"], "8.8.8.8")
-        with self.assertRaises(OSError):
-            await resolver.resolve("other.example.com", 443)
+        with self.store.db:
+            self.store.db.execute("INSERT INTO pushes VALUES(?,?,?)", (self.phone["device_id"], "unifiedpush", "https://push.example.com/opaque"))
+            self.store.event(self.store.authenticate(self.node["node_token"], "nodes"), "session", "attention")
+        await worker.once()
+        self.assertEqual(self.store.db.execute("SELECT count(*) FROM pushes").fetchone()[0], 0)
+        self.assertEqual(self.store.db.execute("SELECT count(*) FROM push_jobs").fetchone()[0], 0)
 
     @unittest.skipIf(firebase_messaging is None, "optional FCM SDK is not installed")
     async def test_fcm_sdk_message_is_generic_data_only(self):
