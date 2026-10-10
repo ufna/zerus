@@ -52,7 +52,10 @@ session. One record per session conversation:
   - `attention_signature`: a canonical digest of the current actionable state
     (run, conversation, phase when `approval`/`input`/`error`, attention and
     question identities, pending `mobile_attention`, and actionable subagent
-    requests). `null` when nothing needs attention. `hgs` is the only place that
+    requests). An error without a native identity uses its turn start, so a
+    second error is not mistaken for a read one. `null` when nothing needs
+    attention. `hgs` reads pending Codex questions from the same index the
+    connector publishes as `mobile_attention`. `hgs` is the only place that
     computes it; desktop and relay compare it opaquely.
   - `read`: the current mark or `null`.
 - A session is unread when `reply_id` differs from `read.reply_id`, and its
@@ -71,11 +74,16 @@ session. One record per session conversation:
   file is older than 120 s (GUI closed, crashed or machine asleep).
 - Values are relative durations, so the relay converts them with its own receipt
   clock and machine clock skew does not matter. No content is included.
+- Presence travels next to the snapshot, not inside it: the connector removes
+  `desktop_presence` from each listing and sends it as heartbeat field
+  `presence` (gateway and each direct peer). Changing idle time therefore never
+  rewrites or re-hashes an unchanged snapshot.
 - Platform sources:
   - macOS: `CGEventSourceSecondsSinceLastEventType` (no permission prompt) and
     `CGSessionCopyCurrentDictionary` for lock.
-  - Linux/KDE: `org.freedesktop.ScreenSaver.GetSessionIdleTime` and `GetActive`;
-    GNOME: `org.gnome.Mutter.IdleMonitor`.
+  - Linux: KIdleTime for idle time (Plasma on Wayland does not support
+    `org.freedesktop.ScreenSaver.GetSessionIdleTime`), `org.freedesktop.ScreenSaver.GetActive`
+    for lock; GNOME: `org.gnome.Mutter.IdleMonitor`.
   - Otherwise only input in Zerus windows counts, which can only cause extra
     phone alerts, never missed ones.
 
@@ -87,9 +95,9 @@ session. One record per session conversation:
   swarm uses its local catalog the same way.
 - Desktop Settings and the phone edit the same value. The connector includes
   `preferences.mobile_delivery` in its own machine snapshot.
-- Older swarm members reject unknown catalog keys, so all swarm desktops must be
-  updated before the shared value is used; desktop Settings shows when a member
-  is too old to synchronize it.
+- Older swarm members reject unknown catalog keys, so preference operations are
+  not sent to them; project synchronization keeps working. Desktop Settings
+  names members that are too old to receive the shared value.
 
 ## Relay decision rule
 
@@ -113,15 +121,20 @@ Exactly one worker evaluates a workspace at a time (existing advisory election).
      equals `read.attention_signature`;
    - completed: `read.reply_id` equals the candidate reply, a newer reply exists,
      or the session is busy again.
+   - A candidate without an attention signature (for example recovery-only
+     attention) is dropped only by resolution, never by a read mark.
 2. Deliver when the preference is `immediate`, or when the owner is away long
    enough:
    - A machine is present when its latest snapshot is at most 120 s old and
      carries `desktop_presence`.
    - The owner is active when some present machine is unlocked with
      `idle_seconds < 120`.
-   - Away since T: the end of the last activity, i.e. the latest
-     `received_at - idle_seconds + 120` over present machines, or the lock time
-     when earlier. With no present machine the owner is away.
+   - Away since T: the end of the last known activity, i.e. the latest
+     `received_at - idle_seconds + 120` over all machines with remembered
+     presence (stale ones included), or the lock time when earlier. Stale
+     machines cannot make the owner active but still bound T, so closing a
+     laptop starts the `away_N` countdown. Without any presence ever received
+     the owner has been away indefinitely.
    - `away` delivers as soon as the owner is not active; `away_N` delivers when
      `now >= T + N minutes`. A candidate created while already away for long
      enough is delivered immediately.
@@ -162,7 +175,7 @@ today with `away` and nobody present.
 
 ## Phone
 
-- Settings → Notifications shows the same six choices with the shared value
+- Machines → Notifications (where the app's notification settings live) shows the same six choices with the shared value
   from the latest snapshot. Changing it sends operation `set_mobile_delivery`
   to the gateway computer, executed by the connector as
   `hgs swarm preference set`, with the usual submitted/confirmed states and no
@@ -190,8 +203,15 @@ Each step is independently safe:
 
 1. `hgs` CLI and desktop on all machines: read marks, presence, preference and
    snapshot fields.
-2. Relay: candidates and `alert` events; unchanged behavior without new fields.
-3. Android: alert-only notifications, shared setting and `mark_read`.
+2. Android: shared setting, `mark_read` and alert-only notifications, active
+   only when the relay advertises `presence_alerts`. Older apps keep only the
+   newest event per session, so they must not meet `alert` events first.
+3. Relay: candidates and `alert` events; unchanged behavior without new
+   fields. Replace all relay workers together.
+
+Every condition the phone alerts on (including recovery-state errors and
+questions known only by count) must produce a relay event, so alert-only mode
+never loses one.
 
 Implementation phases: (1) shared read state across `hgs`, desktop and phone,
 (2) presence and the shared setting, (3) relay alerts and phone alert display.
