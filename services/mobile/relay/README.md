@@ -159,6 +159,22 @@ Production deployment requires separate owner authorization. Repository tests
 and a built image do not establish a live cutover. FCM delivery to a real device
 requires operator credentials and a device; local tests do not claim that result.
 
+The owner-authorized production rollout on 2026-10-10 deployed source
+`770f00c7557527fcda0f641034c544e5ee7c82d5` to both PostgreSQL workers.
+Pre-cutover and post-deployment backups restored successfully into disposable
+databases. Quiescent Rust initialization preserved all 21 application tables;
+credential hashes, permanent mutation receipts and private configuration remained
+unchanged. Public pairing, cross-worker single claim, duplicate/conflicting
+submissions, result recovery and revocation passed with synthetic identities.
+The active connector resumed heartbeats, and FCM configuration loaded successfully.
+PostgreSQL and unrelated services retained their container IDs and start times.
+
+[Hosted qualification](https://github.com/ufna/zerus/actions/runs/38034012114)
+passed the full Linux, Arch and macOS suite, including Rust relay contracts,
+released HTTP/connector compatibility, PostgreSQL recovery and repeated 256 MiB
+container workloads. An unchanged GUI clear-context fixture passed on rerun;
+its timing instability is tracked separately in `zerus-wvl`.
+
 ## Capacity evidence
 
 Run `tests/load.py` through the repository's Python test environment after building
