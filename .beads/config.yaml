@@ -1,7 +1,7 @@
 # This database contains only source-project tasks and shareable product decisions.
 # Never store credentials, private machine settings or session transcripts here.
 sync:
-    remote: "git+https://github.com/ufna/zerus.git"
+    remote: "git+ssh://git@github.com/ufna/zerus.git"
 export:
     auto: true
 metrics:
