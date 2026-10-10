@@ -46,7 +46,15 @@ fn sampled_cpu(root: &Path, mut current: CpuSample) -> std::io::Result<(Option<f
             .read(true)
             .write(true)
             .open(directory.join("cpu.lock"))?;
-        lock.try_lock_exclusive()?;
+        // Concurrent listings (the desktop, peers over SSH, the mobile connector)
+        // hold this lock for moments; wait briefly rather than report CPU unavailable.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        while let Err(error) = lock.try_lock_exclusive() {
+            if error.kind() != std::io::ErrorKind::WouldBlock || std::time::Instant::now() >= deadline {
+                return Err(error);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         let path = directory.join("cpu.json");
         let previous: Option<CpuSample> = fs::metadata(&path)
             .ok()
@@ -311,6 +319,31 @@ mod tests {
             (None, None)
         );
     }
+    #[test]
+    fn briefly_held_lock_delays_sampling_instead_of_failing() {
+        use fs2::FileExt;
+        let root = tempfile::tempdir().unwrap();
+        sampled_cpu(root.path(), cpu(100, 60, 100.)).unwrap();
+        // Another listing (or a child between fork and exec) holds the lock for a moment.
+        let holder = fs::File::open(root.path().join("telemetry/cpu.lock")).unwrap();
+        holder.lock_exclusive().unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            drop(holder);
+        });
+        assert_eq!(
+            sampled_cpu(root.path(), cpu(200, 90, 102.)).unwrap(),
+            (Some(70.), Some(2.))
+        );
+        release.join().unwrap();
+        // A lock that stays held still fails, within a bounded wait.
+        let holder = fs::File::open(root.path().join("telemetry/cpu.lock")).unwrap();
+        holder.lock_exclusive().unwrap();
+        let started = std::time::Instant::now();
+        assert!(sampled_cpu(root.path(), cpu(300, 130, 104.)).is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
     #[test]
     fn unavailable_cache_is_not_a_warmup() {
         let root = tempfile::tempdir().unwrap();
