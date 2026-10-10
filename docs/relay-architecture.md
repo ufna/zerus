@@ -1,5 +1,11 @@
 # Relay storage and admission architecture
 
+The current server runtime is Rust; see [its implementation and qualification
+contract](../services/mobile/relay/README.md). API v1, database identities and
+no-replay guarantees below remain authoritative. Sections describing Python
+executors, the GIL, parser allocation and the 2026-10-09 measurements describe
+the reference implementation and historical deployment, not Rust performance.
+
 This is the implementation contract for the October 2026 relay audit remediation
 (`zerus-6ir`, `zerus-bp9`, `zerus-bou`, `zerus-cvz`, coordinated by `zerus-rvc`).
 It records the implemented boundaries, isolated validation evidence and the

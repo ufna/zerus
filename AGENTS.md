@@ -2,6 +2,10 @@
 
 Zerus provides a desktop UI and the `hgs` CLI for persistent local and remote
 agent sessions. The CLI lives in `src/`; the Qt GUI lives in `tray/src/`.
+The Rust mobile relay lives in `services/mobile/relay/`; the outbound Python
+connector remains in `services/mobile/zerus_mobile/`. Keep API v1 and durable
+request identities compatible; see `services/mobile/relay/README.md` for relay
+contracts, isolated PostgreSQL tests and container memory qualification.
 `design/` contains prototypes and original artwork, not runtime dependencies.
 
 The repository language is English. Write documentation and other project-facing

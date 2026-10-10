@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sqlite3
 import subprocess
+import shutil
 import sys
 import tempfile
 import unittest
@@ -79,6 +80,7 @@ def fixture(path, *, legacy=False):
 
 
 class ComputerRevocationCliTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('zerus-relay'), 'Rust executable required for compatibility CLI')
     def test_offline_revoke_computer_accepts_alias_and_revokes_all_target_routes(self):
         with tempfile.TemporaryDirectory(prefix='zerus-computer-cli-') as directory:
             path = Path(directory) / 'relay.sqlite3'

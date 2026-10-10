@@ -53,7 +53,11 @@ QT_QPA_PLATFORM=wayland \
 The ordinary `kwinwindowlayer` test runs on a private D-Bus session with a fake
 compositor and never controls the user's desktop.
 
-For the mobile relay and connector, install `services/mobile` in a Python 3.11+
+For the Rust mobile relay, run `cargo +1.85.0 test --locked` inside
+`services/mobile/relay`, then the explicit PostgreSQL and connector contracts
+in [its README](services/mobile/relay/README.md). The Docker image uses that Rust
+binary. For the connector and reference compatibility fixtures, install
+`services/mobile` in a Python 3.11+
 virtual environment and run `python -m unittest discover -s services/mobile/tests -v`.
 These tests use synthetic subprocesses and isolated databases, without live native
 agents. For Android, run `./gradlew testDebugUnitTest lintDebug assembleDebug` from

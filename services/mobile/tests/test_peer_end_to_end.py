@@ -6,10 +6,11 @@ import tempfile
 import unittest
 import uuid
 
-from aiohttp import ClientSession, web
+from aiohttp import ClientSession
 
 from zerus_mobile.connector import Connector
-from zerus_mobile.server import Config, create_app
+from zerus_mobile.server import Config
+from relay_fixture import start_relay
 from zerus_mobile.store import Store
 
 
@@ -32,11 +33,7 @@ class PeerEndToEndTests(unittest.IsolatedAsyncioTestCase):
             workspace = store.workspace('Example workspace')
             gateway = store.node(workspace, 'Gateway')
             phone = store.pair(store.invite(workspace)['pair_code'], 'Example phone')
-            runner = web.AppRunner(create_app(store, Config(background=False)))
-            await runner.setup()
-            site = web.TCPSite(runner, '127.0.0.1', 0)
-            await site.start()
-            url = 'http://127.0.0.1:' + str(site._server.sockets[0].getsockname()[1])
+            runner, url = await start_relay(store, Config(background=False))
             connector = Connector({'server_url': url, 'node_token': gateway['node_token'],
                                    'hgs_path': str(native), 'state_dir': str(root / 'journal'),
                                    'poll_interval': 1}, allow_insecure_localhost=True)

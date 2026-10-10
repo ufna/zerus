@@ -1,0 +1,194 @@
+use crate::error::{Error, Result};
+use serde::{Deserialize, Serialize};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::{
+    fs::{File, OpenOptions},
+    io::Read,
+    path::Path,
+};
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Config {
+    pub database_url: Option<String>,
+    pub pool_min: u32,
+    pub pool_max: u32,
+    pub global_max_bytes: i64,
+    pub quota_shards: i64,
+    pub queue_ttl: u64,
+    pub claim_ttl: u64,
+    pub retention: u64,
+    pub max_queue: i64,
+    pub max_queue_bytes: i64,
+    pub online_timeout: u64,
+    pub push_hosts: Vec<String>,
+    pub fcm_credentials: Option<String>,
+    pub background: bool,
+    pub trusted_proxy_cidrs: Vec<ipnet::IpNet>,
+    pub max_forwarded_hops: usize,
+    pub max_anonymous_requests: usize,
+    pub max_authenticated_requests: usize,
+    pub max_body_bytes: usize,
+    pub large_payload_slots: usize,
+    pub max_json_depth: usize,
+    pub max_json_values: usize,
+    pub max_polls_per_credential: i64,
+    pub max_polls_per_workspace: i64,
+    pub max_polls_global: usize,
+    pub max_small_responses: usize,
+    pub max_catalog_bytes: usize,
+    pub max_rate_entries_authenticated: i64,
+    pub max_rate_entries_anonymous: i64,
+    pub maintenance_interval: f64,
+    pub maintenance_batch: i64,
+    pub max_connections: usize,
+    pub shutdown_timeout: u64,
+}
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            database_url: None,
+            pool_min: 2,
+            pool_max: 10,
+            global_max_bytes: 32 * 1024 * 1024 * 1024,
+            quota_shards: 64,
+            queue_ttl: 120,
+            claim_ttl: 90,
+            retention: 7 * 86400,
+            max_queue: 200,
+            max_queue_bytes: 100 * 1024 * 1024,
+            online_timeout: 45,
+            push_hosts: vec![],
+            fcm_credentials: None,
+            background: true,
+            trusted_proxy_cidrs: vec![],
+            max_forwarded_hops: 8,
+            max_anonymous_requests: 16,
+            max_authenticated_requests: 112,
+            max_body_bytes: 8 * 1024 * 1024,
+            large_payload_slots: 1,
+            max_json_depth: 32,
+            max_json_values: 50000,
+            max_polls_per_credential: 2,
+            max_polls_per_workspace: 32,
+            max_polls_global: 256,
+            max_small_responses: 8,
+            max_catalog_bytes: 1024 * 1024,
+            max_rate_entries_authenticated: 100000,
+            max_rate_entries_anonymous: 10000,
+            maintenance_interval: 1.0,
+            maintenance_batch: 256,
+            max_connections: 1024,
+            shutdown_timeout: 40,
+        }
+    }
+}
+impl Config {
+    pub fn read(path: Option<&Path>) -> Result<Self> {
+        let value: Self = match path {
+            Some(p) => serde_json::from_slice(&read_private(p, 1024 * 1024)?)?,
+            None => Self::default(),
+        };
+        value.validate()?;
+        Ok(value)
+    }
+    pub fn validate(&self) -> Result<()> {
+        let valid = self.pool_min > 0
+            && self.pool_min <= self.pool_max
+            && self.pool_max <= 256
+            && (1..=1024).contains(&self.quota_shards)
+            && self.global_max_bytes / self.quota_shards >= 1048576
+            && self.max_queue > 0
+            && self.max_queue_bytes >= 1048576
+            && self.queue_ttl > 0
+            && self.claim_ttl > 0
+            && self.retention > 0
+            && self.online_timeout > 0
+            && (1..=8).contains(&self.large_payload_slots)
+            && (1..=32).contains(&self.max_json_depth)
+            && (1..=50000).contains(&self.max_json_values)
+            && (1..=32).contains(&self.max_forwarded_hops)
+            && (1..=65536).contains(&self.max_polls_global)
+            && self.max_polls_per_credential > 0
+            && self.max_polls_per_workspace > 0
+            && (1..=4096).contains(&self.max_authenticated_requests)
+            && (1..=4096).contains(&self.max_anonymous_requests)
+            && (1..=64).contains(&self.max_small_responses)
+            && (1..=1048576).contains(&self.max_catalog_bytes)
+            && (1..=67108864).contains(&self.max_body_bytes)
+            && (1..=4096).contains(&self.maintenance_batch)
+            && self.maintenance_interval.is_finite()
+            && (0.1..=3600.0).contains(&self.maintenance_interval)
+            && self.max_rate_entries_authenticated > 0
+            && self.max_rate_entries_anonymous > 0
+            && (1..=65536).contains(&self.max_connections)
+            && (1..=120).contains(&self.shutdown_timeout);
+        if !valid {
+            return Err(Error::BAD);
+        }
+        if self
+            .database_url
+            .as_ref()
+            .is_some_and(|s| !s.starts_with("postgresql://") && !s.starts_with("postgres://"))
+        {
+            return Err(Error::BAD);
+        }
+        for host in &self.push_hosts {
+            if host.is_empty() || host.ends_with('.') || host.contains(['/', ':', '@', '*', ' ']) {
+                return Err(Error::BAD);
+            }
+        }
+        Ok(())
+    }
+}
+/// Open once with no-follow, then check the opened inode rather than a path race.
+pub fn read_private(path: &Path, maximum: u64) -> Result<Vec<u8>> {
+    let mut f = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    let m = f.metadata()?;
+    if !m.is_file() || m.mode() & 0o077 != 0 || m.len() > maximum {
+        return Err(Error::BAD);
+    }
+    let mut b = Vec::new();
+    (&mut f).take(maximum + 1).read_to_end(&mut b)?;
+    if b.len() as u64 > maximum {
+        return Err(Error::LARGE);
+    }
+    Ok(b)
+}
+pub fn sqlite_file(path: &Path) -> Result<File> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    if !parent.exists() {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(parent)?;
+    }
+    let m = parent.metadata()?;
+    // A temporary owned file determines the effective uid without unsafe calls.
+    let probe = tempfile::tempfile_in(parent)?;
+    if m.mode() & 0o077 != 0 || m.uid() != probe.metadata()?.uid() {
+        return Err(Error::BAD);
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    let info = file.metadata()?;
+    if !info.is_file() || info.uid() != m.uid() {
+        return Err(Error::BAD);
+    }
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    fs2::FileExt::try_lock_exclusive(&file).map_err(|_| Error::BUSY)?;
+    Ok(file)
+}

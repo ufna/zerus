@@ -30,7 +30,7 @@ See [Android build details](../mobile/android/README.md) for optional FCM setup.
 
 ## Start the relay
 
-The [relay README](../services/mobile/README.md) documents Python and Docker
+The [relay README](../services/mobile/README.md) documents Rust and Docker
 installation, administrator commands, limits and push configuration. The default SQLite profile supports one relay process for local/private setups.
 Production multiple-worker deployments use the documented
 [PostgreSQL profile and offline migration](../services/mobile/README.md#postgresql-production-profile).
