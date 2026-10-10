@@ -18,7 +18,7 @@ class GitStatus(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='hgs-git-status-')
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.repo = self.root / 'checkout with spaces'
         self.remote = self.root / 'remote.git'
         self.env = {k: v for k, v in os.environ.items() if not k.startswith(('HGS_', 'GIT_'))}
@@ -140,8 +140,9 @@ class GitStatus(unittest.TestCase):
         self.assertEqual(self.status()['remote_state'], 'missing')
 
     def test_large_status_is_bounded_and_never_claims_clean(self):
-        fake = self.root / 'bin'
-        fake.mkdir()
+        # hgs prepends HOME/.local/bin ahead of system/Homebrew programs.
+        fake = Path(self.env['HOME']) / '.local/bin'
+        fake.mkdir(parents=True)
         program = fake / 'git'
         program.write_text('#!/bin/sh\nexec yes "oversized status"\n')
         program.chmod(0o755)
@@ -151,8 +152,8 @@ class GitStatus(unittest.TestCase):
         self.assertLess(time.monotonic() - start, 4)
 
     def test_checkout_changes_during_remote_verification_are_not_certified(self):
-        fake = self.root / 'bin'
-        fake.mkdir()
+        fake = Path(self.env['HOME']) / '.local/bin'
+        fake.mkdir(parents=True)
         program = fake / 'git'
         real = shutil.which('git')
         program.write_text('#!' + sys.executable + '\nimport os,sys\nfrom pathlib import Path\n'
