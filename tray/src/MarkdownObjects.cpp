@@ -5,6 +5,7 @@
 #include <QGuiApplication>
 #include <QHash>
 #include <QPainter>
+#include <QPainterPath>
 #include <QRegularExpression>
 #include <QTextBlock>
 #include <QTextCursor>
@@ -68,6 +69,36 @@ void install(QTextDocument *document)
     if (layout->findChild<ChipHandler *>()) return;
     layout->registerHandler(MarkdownObjects::ChipObjectType, new ChipHandler(layout));
 }
+
+// The code runs that stayed text (they carry a chip fill but no object), found
+// again after each change so that painting never walks a whole long journal.
+class TextChips final : public QObject {
+    Q_OBJECT
+public:
+    struct Run { int start = 0, end = 0; QTextCharFormat format; };
+    explicit TextChips(QTextDocument *document) : QObject(document), m_document(document)
+    {
+        connect(document, &QTextDocument::contentsChange, this, [this] { m_stale = true; });
+    }
+    static TextChips *of(QTextDocument *document) { return document->findChild<TextChips *>(QString(), Qt::FindDirectChildrenOnly); }
+    const QList<Run> &runs()
+    {
+        if (!m_stale) return m_runs;
+        m_runs.clear(); m_stale = false;
+        for (auto block = m_document->begin(); block.isValid(); block = block.next())
+            for (auto it = block.begin(); !it.atEnd(); ++it) {
+                const auto fragment = it.fragment(); const auto format = fragment.charFormat();
+                if (!format.hasProperty(ChipFill) || format.objectType() == MarkdownObjects::ChipObjectType) continue;
+                if (!m_runs.isEmpty() && m_runs.last().end == fragment.position()) m_runs.last().end += fragment.length();
+                else m_runs.append({fragment.position(), fragment.position() + fragment.length(), format});
+            }
+        return m_runs;
+    }
+private:
+    QTextDocument *m_document;
+    QList<Run> m_runs;
+    bool m_stale = true;
+};
 
 // Qt centres an AlignMiddle object xHeight / 4 above the baseline. GitHub pads
 // the code symmetrically around text on the line's baseline, so the chip centre
@@ -191,12 +222,25 @@ int MarkdownObjects::convertChips(QTextDocument *document, const MarkdownTheme &
         const qreal width = QFontMetricsF(chipFont(format)).horizontalAdvance(text) + 2 * chipPadding(format).x();
         if (widths && objects && text.size() <= MaximumChipLength) widths->append(width);
         if (!objects || text.size() > MaximumChipLength || (maxWidth > 0 && width > maxWidth)) {
-            // Plain spaces again, so that find() matches and long runs can wrap.
+            // Plain spaces again, so that find() matches and long runs can wrap. A character
+            // background would be a square box a line high: paintTextChips() draws the chip.
             QTextCharFormat plain = it->format;
-            plain.setBackground(theme.chip); plain.setForeground(ink);
+            plain.clearBackground(); plain.setForeground(ink);
             plain.setFontFamilies(QStringList{theme.monoFamily});
             plain.setProperty(QTextFormat::FontPixelSize, pixels);
-            cursor.insertText(text, plain);
+            for (const int property : {ChipFill, ChipFamily, ChipScale, ChipPixels, ChipHeading, ChipWeight, ChipItalic})
+                plain.setProperty(property, format.property(property));
+            // GitHub's horizontal padding: the character before the code and its last one advance further.
+            QTextCharFormat padded;
+            padded.setFontLetterSpacingType(QFont::AbsoluteSpacing); padded.setFontLetterSpacing(chipPadding(format).x());
+            cursor.insertText(text.chopped(1), plain);
+            plain.merge(padded); cursor.insertText(text.right(1), plain);
+            if (it->position > cursor.block().position()) {
+                QTextCursor before(document);
+                before.setPosition(it->position - 1); before.setPosition(it->position, QTextCursor::KeepAnchor);
+                if (before.charFormat().objectType() == QTextFormat::NoObject) before.mergeCharFormat(padded);
+            }
+            if (!TextChips::of(document)) new TextChips(document);
             continue;
         }
         format.setVerticalAlignment(QTextCharFormat::AlignMiddle); format.setFont(alignmentFont(chipFont(format)));
@@ -207,6 +251,88 @@ int MarkdownObjects::convertChips(QTextDocument *document, const MarkdownTheme &
     }
     cursor.endEditBlock();
     return runs.size();
+}
+
+void MarkdownObjects::paintTextChips(QPainter *painter, QTextDocument *document, const QRectF &exposed, const QPalette &palette,
+                                     const QList<QTextCursor> &selections)
+{
+    auto *chips = TextChips::of(document);
+    if (!chips) return;
+    auto *layout = document->documentLayout();
+    struct Piece { QPainterPath shape; QColor fill; };
+    QList<Piece> pieces; QList<QTextBlock> blocks;
+    QPainterPath area, selected; area.setFillRule(Qt::WindingFill);
+    for (const auto &run : chips->runs()) {
+        const QTextBlock block = document->findBlock(run.start);
+        const QRectF bounds = layout->blockBoundingRect(block);
+        const qreal em = run.format.intProperty(ChipPixels);
+        if (!bounds.adjusted(-em, -em, em, em).intersects(exposed)) continue;
+        const QFontMetricsF metrics(chipFont(run.format)); const QPointF padding = chipPadding(run.format);
+        const qreal radius = 6 * run.format.doubleProperty(ChipScale);
+        const QTextLayout *text = block.layout(); const QString content = block.text();
+        const int from = run.start - block.position(), to = run.end - block.position();
+        bool drawn = false;
+        for (int i = 0; i < text->lineCount(); ++i) {
+            const QTextLine line = text->lineAt(i);
+            const int start = qMax(from, line.textStart());
+            int end = qMin(to, line.textStart() + line.textLength());
+            // Like GitHub's (box-decoration-break: slice): padded and rounded where the code begins
+            // and ends, cut square where a line breaks it, and without the spaces hanging there.
+            const bool first = start == from, last = end == to;
+            while (!last && end > start && content.at(end - 1).isSpace()) --end;
+            if (start >= end) continue;
+            const qreal baseline = bounds.top() + line.y() + line.ascent();
+            const QRectF rect(QPointF(bounds.left() + line.cursorToX(start) - (first ? padding.x() : 0), baseline - metrics.ascent() - padding.y()),
+                              QPointF(bounds.left() + line.cursorToX(end), baseline + metrics.descent() + padding.y()));
+            if (!rect.intersects(exposed)) continue;
+            QPainterPath shape; shape.setFillRule(Qt::WindingFill);
+            shape.addRoundedRect(rect, radius, radius);
+            const qreal square = qMin(radius, rect.width() / 2);
+            if (!first) shape.addRect(QRectF(rect.left(), rect.top(), square, rect.height()));
+            if (!last) shape.addRect(QRectF(rect.right() - square, rect.top(), square, rect.height()));
+            for (const QTextCursor &selection : selections) {
+                const int a = qMax(start, selection.selectionStart() - block.position());
+                const int b = qMin(end, selection.selectionEnd() - block.position());
+                if (a < b) selected.addRect(QRectF(QPointF(bounds.left() + line.cursorToX(a), rect.top() - 1),
+                                                   QPointF(bounds.left() + line.cursorToX(b), rect.bottom() + 1)));
+            }
+            pieces.append({shape, run.format.colorProperty(ChipFill)}); area.addPath(shape); drawn = true;
+        }
+        if (drawn && (blocks.isEmpty() || blocks.last() != block)) blocks.append(block);
+    }
+    if (pieces.isEmpty()) return;
+    // Selected and found characters keep the look the document layout gave them.
+    const QPainterPath covered = selected.isEmpty() ? area : area.subtracted(selected);
+    const QRectF reach = covered.boundingRect();
+    if (reach.isEmpty()) return;
+    // What lies beneath the code, without any glyph: the view's base, then the document
+    // drawn with transparent text. The clip is aliased, so glyphs are drawn only once.
+    painter->save();
+    painter->setClipPath(covered, Qt::IntersectClip);
+    painter->fillRect(reach, palette.brush(QPalette::Base));
+    QAbstractTextDocumentLayout::PaintContext context;
+    context.palette = palette; context.clip = reach;
+    QTextCursor everything(document); everything.select(QTextCursor::Document);
+    QTextCharFormat hidden; hidden.setForeground(QColor(Qt::transparent));
+    context.selections.append({everything, hidden});
+    layout->draw(painter, context);
+    painter->restore();
+    // The chips themselves, antialiased.
+    painter->save();
+    if (!selected.isEmpty()) {
+        QPainterPath outside; outside.addRect(area.boundingRect().adjusted(-1, -1, 1, 1));
+        painter->setClipPath(outside.subtracted(selected), Qt::IntersectClip);
+    }
+    painter->setRenderHint(QPainter::Antialiasing);
+    for (const auto &piece : std::as_const(pieces)) painter->fillPath(piece.shape, piece.fill);
+    painter->restore();
+    // The code on top.
+    painter->save();
+    painter->setClipPath(covered, Qt::IntersectClip);
+    painter->setPen(palette.color(QPalette::Text));
+    for (const QTextBlock &block : std::as_const(blocks))
+        block.layout()->draw(painter, layout->blockBoundingRect(block).topLeft() - block.layout()->position(), {}, reach);
+    painter->restore();
 }
 
 QString MarkdownObjects::plainText(const QTextCursor &selection)

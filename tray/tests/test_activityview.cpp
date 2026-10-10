@@ -124,6 +124,7 @@ private slots:
     void markdownFollowsThemeAndScale();
     void agentCardsKeepZerusSurface();
     void wideChipsStayTextInNarrowPanes();
+    void wrappedCodeIsDrawnAsARoundedChip();
     void resizingWithoutChipChangesKeepsTheJournal();
     void darkCardsUseNeutralTablesAndVisibleChips();
     void cardsKeepTheirSpacingAfterChips();
@@ -351,6 +352,35 @@ void TestActivityView::wideChipsStayTextInNarrowPanes()
     QSignalSpy replaced(view.browser()->document(), &QTextDocument::contentsChanged);
     QTest::qWait(400);
     QCOMPARE(replaced.count(), 0);
+}
+
+void TestActivityView::wrappedCodeIsDrawnAsARoundedChip()
+{
+    // Long code stays text so that it can wrap; the journal still draws its chip,
+    // rounded and padded, on the card below the scrolled transcript.
+    ActivityView view; view.resize(420, 300); view.show(); QVERIFY(QTest::qWaitForWindowExposed(&view));
+    QJsonArray events = history(12);
+    events.append(journalEvent(13, "Stop", "Then run `cargo test --workspace --all-features --no-fail-fast` again."));
+    view.setActivity({}, events);
+    auto *browser = view.browser(); auto *bar = browser->verticalScrollBar();
+    QTRY_VERIFY(bar->maximum() > 0); QTRY_COMPARE(bar->value(), bar->maximum());
+    const QTextCursor found = browser->document()->find("cargo test");
+    QVERIFY(!found.isNull());
+    QTextCursor inside(found); inside.setPosition(found.selectionStart() + 1);
+    const QFontMetricsF metrics(inside.charFormat().font());
+    const qreal pixels = inside.charFormat().font().pixelSize();
+    const QTextBlock block = found.block();
+    const QTextLine line = block.layout()->lineForTextPosition(found.selectionStart() - block.position());
+    const QPointF origin = browser->document()->documentLayout()->blockBoundingRect(block).topLeft() - QPointF(0, bar->value());
+    const qreal left = origin.x() + line.cursorToX(found.selectionStart() - block.position()) - 0.4 * pixels;
+    const qreal top = origin.y() + line.y() + line.ascent() - metrics.ascent() - 0.2 * pixels;
+    const QImage image = browser->viewport()->grab().toImage();
+    const auto pixel = [&](qreal x, qreal y) { return image.pixelColor(qFloor(x * image.devicePixelRatio()), qFloor(y * image.devicePixelRatio())); };
+    const QColor card("#f3f6f8");
+    const auto distance = [&](const QColor &colour) { return qAbs(colour.red() - card.red()) + qAbs(colour.green() - card.green()) + qAbs(colour.blue() - card.blue()); };
+    QVERIFY2(distance(pixel(left + 0.5, top + 0.5)) <= 6, qPrintable(pixel(left + 0.5, top + 0.5).name()));
+    QVERIFY2(distance(pixel(left + 6, top + 1)) >= 20, qPrintable(pixel(left + 6, top + 1).name()));
+    QVERIFY2(distance(pixel(left + 1, top + 0.2 * pixels + metrics.ascent() / 2)) >= 20, "padding before the code");
 }
 
 void TestActivityView::resizingWithoutChipChangesKeepsTheJournal()
@@ -1469,7 +1499,8 @@ void TestActivityView::preview()
                 "- `src/cli.rs` — `--new` now follows `rename`\n- `tests/test_hgs.sh` — new checks\n  - nested item with **bold** text\n"
                 "- see [docs](https://example.com) and [client registry](docs/client.md:24)\n\n1. First step\n2. Second step\n\n"
                 "| File | Lines | Status |\n|------|------:|--------|\n| `src/cli.rs` | 7 | changed |\n| `tests/test_hgs.sh` | 18 | added |\n| `README.md` | 0 | unchanged |\n\n"
-                "> Remote machines must update `hgs`.\n\n```sh\nctest --test-dir tray/build -R activityview\n```\n\n---\n\nAll focused checks passed.")});
+                "> Remote machines must update `hgs`.\n\n```sh\nctest --test-dir tray/build -R activityview\n```\n\n---\n\n"
+                "All focused checks passed; run `cargo test --workspace --all-features --no-fail-fast` again before pushing.")});
         QTest::qWait(40);
         QVERIFY(view.grab().save(directory + (dark ? "/activity-dark.png" : "/activity-light.png")));
     }

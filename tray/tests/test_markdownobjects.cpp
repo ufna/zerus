@@ -5,6 +5,9 @@
 #include <QAbstractTextDocumentLayout>
 #include <QElapsedTimer>
 #include <QFontMetricsF>
+#include <QImage>
+#include <QPainter>
+#include <QPalette>
 #include <QTest>
 #include <QTextBlock>
 #include <QTextCursor>
@@ -37,6 +40,45 @@ QList<QTextCharFormat> chips(QTextDocument *doc)
             if (it.fragment().charFormat().objectType() == MarkdownObjects::ChipObjectType) result.append(it.fragment().charFormat());
     return result;
 }
+// The Activity view's drawing: the document on white, then inline code that stayed text.
+QImage rendered(QTextDocument *doc, const QList<QAbstractTextDocumentLayout::Selection> &selections = {})
+{
+    auto *layout = doc->documentLayout();
+    QImage image(layout->documentSize().toSize(), QImage::Format_ARGB32_Premultiplied); image.fill(Qt::white);
+    QPalette palette; palette.setColor(QPalette::Base, Qt::white);
+    QAbstractTextDocumentLayout::PaintContext context; context.palette = palette; context.selections = selections;
+    QPainter painter(&image);
+    layout->draw(&painter, context);
+    QList<QTextCursor> cursors;
+    for (const auto &selection : selections) cursors.append(selection.cursor);
+    MarkdownObjects::paintTextChips(&painter, doc, image.rect(), palette, cursors);
+    return image;
+}
+// Equal up to the step or two that antialiasing and compositing round away.
+bool close(const QColor &a, const QColor &b)
+{
+    return qAbs(a.red() - b.red()) <= 3 && qAbs(a.green() - b.green()) <= 3 && qAbs(a.blue() - b.blue()) <= 3;
+}
+QColor over(const QColor &top, const QColor &bottom)
+{
+    const auto mix = [&](int a, int b) { return qRound(a * top.alphaF() + b * (1 - top.alphaF())); };
+    return QColor(mix(top.red(), bottom.red()), mix(top.green(), bottom.green()), mix(top.blue(), bottom.blue()));
+}
+// Where a 24 px code run of a scale-2 paragraph sits, in document pixels.
+struct CodeGeometry {
+    QTextBlock block; QPointF origin; QFontMetricsF metrics{QFont()}; int start = 0, end = 0;
+    CodeGeometry(QTextDocument *doc, const QString &code, const QString &family) : block(doc->begin())
+    {
+        QFont mono(family); mono.setPixelSize(24); metrics = QFontMetricsF(mono);
+        origin = doc->documentLayout()->blockBoundingRect(block).topLeft();
+        start = block.text().indexOf(code); end = start + code.size();
+    }
+    QTextLine line(int position) const { return block.layout()->lineForTextPosition(position); }
+    qreal x(int position) const { return origin.x() + line(position).cursorToX(position); }
+    qreal baseline(const QTextLine &l) const { return origin.y() + l.y() + l.ascent(); }
+    qreal top(const QTextLine &l) const { return baseline(l) - metrics.ascent() - 0.2 * 24; }
+    qreal bottom(const QTextLine &l) const { return baseline(l) + metrics.descent() + 0.2 * 24; }
+};
 }
 
 class TestMarkdownObjects : public QObject {
@@ -54,6 +96,8 @@ private slots:
     void narrowPanesKeepWideCodeAsText();
     void chipsShareTheTextBaseline();
     void chipLinesKeepTheParagraphPitch();
+    void wrappedCodeKeepsRoundedEnds();
+    void selectedCodeKeepsTheSelectionLook();
 };
 
 void TestMarkdownObjects::resourcesAreDrawnAtScaleAndPixelRatio()
@@ -89,6 +133,18 @@ void TestMarkdownObjects::longCodeStaysWrappableText()
     MarkdownObjects::convertChips(doc.get(), light(), true);
     QVERIFY(chips(doc.get()).isEmpty());
     QVERIFY(doc->toPlainText().contains(path));
+    // paintTextChips() draws the rounded chip: a character background would be square.
+    // GitHub pads code .4em on both sides: the character before it and its last one advance further.
+    const int start = doc->toPlainText().indexOf(path);
+    QTextCursor at(doc.get());
+    for (const int after : {start, start + int(path.size())}) {
+        at.setPosition(after);
+        QCOMPARE(at.charFormat().fontLetterSpacingType(), QFont::AbsoluteSpacing);
+        QCOMPARE(at.charFormat().fontLetterSpacing(), 0.4 * 12);
+    }
+    at.setPosition(start + 1);
+    QCOMPARE(at.charFormat().fontLetterSpacing(), 0.0);
+    QCOMPARE(at.charFormat().background().style(), Qt::NoBrush);
 }
 
 void TestMarkdownObjects::searchModeKeepsChipsAsText()
@@ -99,7 +155,7 @@ void TestMarkdownObjects::searchModeKeepsChipsAsText()
     const auto found = doc->find("ctest -R x");
     QVERIFY(!found.isNull());
     QTextCursor inside(doc.get()); inside.setPosition(found.selectionStart() + 1);
-    QCOMPARE(inside.charFormat().background().color(), light().chip);
+    QCOMPARE(inside.charFormat().colorProperty(QTextFormat::UserProperty + 42), light().chip);
     QCOMPARE(inside.charFormat().fontFamilies().toStringList().value(0), light().monoFamily);
 }
 
@@ -214,6 +270,68 @@ void TestMarkdownObjects::chipLinesKeepTheParagraphPitch()
         }
         QVERIFY2(withChips > 0 && withChips < layout->lineCount(), "the paragraph needs lines with and without chips");
     }
+}
+
+void TestMarkdownObjects::wrappedCodeKeepsRoundedEnds()
+{
+    // Code that stays text wraps like GitHub's (box-decoration-break: slice): one
+    // chip, rounded and padded where the code begins and ends, cut square where a
+    // line breaks it. The spaces hanging at a break stay outside.
+    const auto theme = MarkdownTheme::github(false, QColor("#ffffff"), 2.0);
+    const QString code = "export HGS_STATE_DIR HGS_CONFIG_DIR HGS_RUNTIME_DIR HGS_LOG_DIR";
+    QTextDocument doc; doc.setTextWidth(560);
+    doc.setHtml(ContentScale::html(MarkdownHtml::render("Then run `" + code + "` again.", theme, {}), 2.0));
+    MarkdownObjects::convertChips(&doc, theme, true);
+    const QImage image = rendered(&doc);
+    const CodeGeometry g(&doc, code, theme.monoFamily);
+    const QTextLine first = g.line(g.start), last = g.line(g.end - 1);
+    QVERIFY2(last.lineNumber() - first.lineNumber() == 2, "the code must take three lines");
+    const QTextLine middle = g.block.layout()->lineAt(first.lineNumber() + 1);
+    const auto pixel = [&](qreal x, qreal y) { return image.pixelColor(qFloor(x), qFloor(y)); };
+    const QColor fill = over(theme.chip, Qt::white);
+    const qreal padding = 0.4 * 24, radius = 12;
+    const qreal left = g.x(g.start) - padding, right = g.x(g.end);
+    QVERIFY(close(pixel(left + 1, g.top(first) + 1), Qt::white));
+    QVERIFY(close(pixel(left + radius, g.top(first) + 1), fill));
+    QVERIFY(close(pixel(left + padding / 2, (g.top(first) + g.bottom(first)) / 2), fill));
+    QVERIFY(close(pixel(right - 1, g.bottom(last) - 1), Qt::white));
+    QVERIFY(close(pixel(right - padding / 2, (g.top(last) + g.bottom(last)) / 2), fill));
+    for (const QTextLine &line : {first, middle}) {
+        const int broken = line.textStart() + line.textLength();
+        QVERIFY(g.block.text().at(broken - 1).isSpace());
+        const qreal cut = g.origin.x() + line.cursorToX(broken - 1);
+        QVERIFY(close(pixel(cut - 1, g.top(line) + 1), fill));
+        QVERIFY(close(pixel(cut + 2, (g.top(line) + g.bottom(line)) / 2), Qt::white));
+    }
+    for (const QTextLine &line : {middle, last})
+        QVERIFY(close(pixel(g.origin.x() + line.cursorToX(line.textStart()) + 1, g.bottom(line) - 1), fill));
+    // The glyphs lie on the chip, untinted.
+    bool ink = false;
+    for (int y = qCeil(g.top(first)); y < g.bottom(first); ++y)
+        for (int x = qCeil(left); x < g.origin.x() + first.naturalTextWidth(); ++x) ink = ink || close(image.pixelColor(x, y), theme.fg);
+    QVERIFY(ink);
+}
+
+void TestMarkdownObjects::selectedCodeKeepsTheSelectionLook()
+{
+    // Selected and found characters show the view's highlight, not the chip.
+    const auto theme = MarkdownTheme::github(false, QColor("#ffffff"), 2.0);
+    const QString code = "cargo test --workspace --all-features --no-fail-fast";
+    QTextDocument doc; doc.setTextWidth(1600);
+    doc.setHtml(ContentScale::html(MarkdownHtml::render("Then run `" + code + "` again.", theme, {}), 2.0));
+    MarkdownObjects::convertChips(&doc, theme, true);
+    const CodeGeometry g(&doc, code, theme.monoFamily);
+    QTextCursor selected(&doc);
+    selected.setPosition(g.block.position() + g.start + 6); selected.setPosition(g.block.position() + g.start + 13, QTextCursor::KeepAnchor);
+    QTextCharFormat highlight; highlight.setBackground(QColor("#00ff00"));
+    const QImage image = rendered(&doc, {{selected, highlight}});
+    // The spaces after "cargo" and after "test", halfway up the code.
+    const auto middleOf = [&](int offset) {
+        const QTextLine line = g.line(g.start + offset);
+        return image.pixelColor(qFloor((g.x(g.start + offset) + g.x(g.start + offset + 1)) / 2), qFloor(g.baseline(line) - g.metrics.ascent() / 2));
+    };
+    QVERIFY(close(middleOf(5), over(theme.chip, Qt::white)));
+    QVERIFY(close(middleOf(10), QColor("#00ff00")));
 }
 
 QTEST_MAIN(TestMarkdownObjects)

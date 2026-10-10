@@ -4,9 +4,12 @@
 
 #include <QImage>
 #include <QList>
+#include <QRectF>
 #include <QTextFormat>
 #include <QUrl>
 
+class QPainter;
+class QPalette;
 class QTextCursor;
 class QTextDocument;
 
@@ -23,6 +26,11 @@ QImage resource(const QUrl &url, qreal devicePixelRatio);
 // of every run whose chip or text form depends on maxWidth.
 int convertChips(QTextDocument *document, const MarkdownTheme &theme, bool objects, qreal maxWidth = 0,
                  QList<qreal> *widths = nullptr);
+// Draws the chips of runs that stayed text beneath their glyphs, once the document
+// itself is drawn: painter in document coordinates, palette's Base under the document.
+// Characters inside selections keep the look the document layout gave them.
+void paintTextChips(QPainter *painter, QTextDocument *document, const QRectF &exposed, const QPalette &palette,
+                    const QList<QTextCursor> &selections);
 // The selection as a reader sees it: chips give their code, list markers
 // "• ", "1. ", "[x] "; code-block corners and rule fillers give nothing.
 QString plainText(const QTextCursor &selection);

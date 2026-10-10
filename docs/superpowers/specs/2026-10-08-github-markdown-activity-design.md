@@ -113,12 +113,24 @@ Trade-offs, accepted:
 
 - A chip is selected as a whole, like an image; partial selection inside it is not
   possible.
-- In search-result mode chips are not converted (they stay a styled span with the
-  chip colour), so `QTextDocument::find()` highlights matches inside code.
+- In search-result mode chips are not converted (they stay text), so
+  `QTextDocument::find()` highlights matches inside code.
 - A run longer than 40 characters, or a chip wider than half the Activity pane,
-  also stays styled text: a chip cannot wrap, and a long path or command must not
+  also stays text: a chip cannot wrap, and a long path or command must not
   be clipped in a narrow pane or at a large content scale. The view re-renders
   chips (debounced) when the pane width changes by more than 10 %.
+
+Code that stays text carries the chip properties but no character background,
+which Qt would paint as a square box a line high. Letter spacing on the character
+before it and on its last character provides GitHub's 0.4 em side padding. After
+Qt draws the document, `ActivityView`'s browser calls
+`MarkdownObjects::paintTextChips()`, which paints GitHub's chip under each line
+of the run, like `box-decoration-break: slice`: rounded and padded where the code
+begins and ends, cut square where a line breaks it, without the spaces hanging
+at the break. Within the chip's (aliased) clip it repaints the view base and the
+document with transparent text, fills the antialiased chip, then draws the run's
+block again, so glyphs are drawn once and sit on the chip. Selected and found
+characters are excluded and keep Qt's selection look.
 
 ### Drawn resources
 

@@ -119,7 +119,8 @@ protected:
     }
 };
 
-// Copies what the reader sees instead of U+FFFC for chips and markers.
+// Copies what the reader sees instead of U+FFFC for chips and markers, and
+// draws the chips of inline code that stays text so that it can wrap.
 class ActivityBrowser final : public QTextBrowser {
 public:
     using QTextBrowser::QTextBrowser;
@@ -129,6 +130,16 @@ protected:
         auto *data = new QMimeData;
         data->setText(MarkdownObjects::plainText(textCursor()));
         return data;
+    }
+    void paintEvent(QPaintEvent *event) override
+    {
+        QTextBrowser::paintEvent(event);
+        QPainter painter(viewport());
+        const QPoint scroll(horizontalScrollBar()->value(), verticalScrollBar()->value());
+        painter.translate(-scroll);
+        QList<QTextCursor> selections{textCursor()};
+        for (const auto &extra : extraSelections()) selections.append(extra.cursor);
+        MarkdownObjects::paintTextChips(&painter, document(), QRectF(event->rect().translated(scroll)), viewport()->palette(), selections);
     }
 };
 
