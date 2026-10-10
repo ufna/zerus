@@ -13,6 +13,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -62,15 +65,23 @@ import androidx.lifecycle.viewmodel.compose.viewModel
                     } else Text("This build does not include Firebase analytics or crash reporting.")
                     if (preferences.error) Text("Could not fully apply this setting. Check the switch and try again.", color = MaterialTheme.colorScheme.error)
                     HorizontalDivider()
-                    Text("About Zerus", style = MaterialTheme.typography.titleLarge)
-                    Text("Version ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
-                    TextButton(onClick = {
-                        try {
-                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/ufna/zerus")))
-                            linkError = false
-                        } catch (_: Exception) { linkError = true }
-                    }) { Text("GitHub") }
-                    if (linkError) Text("No browser could open GitHub. Try again after installing a browser.", color = MaterialTheme.colorScheme.error)
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("About Zerus", style = MaterialTheme.typography.titleMedium)
+                            Text("${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        TextButton(onClick = {
+                            try {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/ufna/zerus")))
+                                linkError = false
+                            } catch (_: Exception) { linkError = true }
+                        }, modifier = Modifier.heightIn(min = 48.dp).semantics { contentDescription = "Open ufna/zerus on GitHub" }, contentPadding = PaddingValues(horizontal = 0.dp, vertical = 8.dp)) {
+                            Icon(painterResource(R.drawable.ic_github), contentDescription = null, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("ufna/zerus")
+                        }
+                        if (linkError) Text("No browser could open GitHub. Try again after installing a browser.", color = MaterialTheme.colorScheme.error)
+                    }
                     HorizontalDivider()
                     Text("Updates", style = MaterialTheme.typography.titleLarge)
                     UpdatesContent(model, updater, interactionBlocked = { preferences.saving })

@@ -226,8 +226,9 @@ local test key independently. Pilot is not a store production release.
 
 The main toolbar places New session, Refresh and Settings in that order.
 Settings opens a full screen with Privacy, About Zerus and Updates, including
-before pairing. About shows the installed version and build, a direct GitHub
-link, and offline bundled Third-party notices with selectable license text.
+before pairing. About shows the installed version and build beside its heading,
+wrapping onto the next line when needed, and a GitHub-marked `ufna/zerus` link.
+Offline bundled Third-party notices include selectable license text.
 Back returns to the same app content; notification and push controls stay in Machines.
 Anonymous checks use `https://zerus.dev/updates/v1/android/dev.json` at startup
 and through WorkManager every six hours when a network is available. Android

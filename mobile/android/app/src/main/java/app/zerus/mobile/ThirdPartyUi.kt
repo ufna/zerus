@@ -32,6 +32,11 @@ import kotlinx.coroutines.withContext
             }
         }
     }
+    val octiconsLicense by produceState("Loading icon license…",context) {
+        value = withContext(Dispatchers.IO) {
+            context.assets.open("licenses/octicons.txt").bufferedReader().use { it.readText() }
+        }
+    }
     SelectionContainer { Column(modifier.verticalScroll(scrollState),verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("MuxPod — Copyright 2025 mox",style = MaterialTheme.typography.titleSmall)
         Text("Terminal ANSI colors, styles, and selection behavior adapted to Kotlin/Compose from MuxPod (Apache License 2.0). Zerus adds bounded control suppression and explicit relay input.")
@@ -43,5 +48,8 @@ import kotlinx.coroutines.withContext
         Text("CommonMark Java 0.30.0 (BSD-2-Clause) and autolink-java 0.12.0 (MIT) — Robin Stocker and contributors.",style = MaterialTheme.typography.titleSmall)
         Text("Sources: github.com/commonmark/commonmark-java; github.com/robinst/autolink-java",style = MaterialTheme.typography.bodySmall)
         Text(markdownLicenses,style = MaterialTheme.typography.bodySmall)
+        Text("GitHub mark — Primer Octicons (MIT).",style = MaterialTheme.typography.titleSmall)
+        Text("Source: github.com/primer/octicons\nCommit 97825f832c98f817867f770d084c08e3edc6f78c",style = MaterialTheme.typography.bodySmall)
+        Text(octiconsLicense,style = MaterialTheme.typography.bodySmall)
     } }
 }
