@@ -19,7 +19,8 @@ migration deliberately after saving your sessions. Never kill a live server or
 native agents as part of a Zerus GUI/package update.
 [Official tmux releases](https://github.com/tmux/tmux/releases).
 
-For the desktop: CMake, a C++17 compiler and Qt 6 with Widgets and WebEngine.
+For the desktop: CMake, a C++17 compiler and Qt 6 with Widgets, WebEngine and
+the Linguist `lrelease` tool for interface translations.
 Linux also needs KDE Frameworks 6 KStatusNotifierItem and KWindowSystem, a system
 tray and user systemd for the standard autostart setup. On macOS, the installer
 uses Qt from Homebrew.
@@ -39,7 +40,7 @@ On macOS, install the dependencies first:
 brew install rust python tmux cmake qt qtwebengine
 ```
 
-On Arch Linux, desktop dependencies include `cmake`, `qt6-base`, `qt6-webengine`, `qt6-svg`,
+On Arch Linux, desktop dependencies include `cmake`, `qt6-base`, `qt6-webengine`, `qt6-tools`, `qt6-svg`,
 `kstatusnotifieritem`, `kwindowsystem` and C++ build tools.
 
 Add `~/.local/bin` to `PATH`. The CLI installs to `~/.local/bin/hgs`; SSH calls
@@ -53,6 +54,11 @@ Open the workspace from the command line:
 hgs-tray --sessions                         # Linux
 ~/Applications/hgs-tray.app/Contents/MacOS/hgs-tray --sessions  # macOS
 ```
+
+The interface supports English and Russian. Choose **Settings → Appearance →
+Interface language** to use either language or follow the system language.
+Restart the desktop interface to apply a change; agent sessions continue running.
+The selection is local to this computer and is not synchronized with peers.
 
 The repository's `tmux.conf` is a suggested configuration. If you already have
 your own, merge the settings you need manually: `hgs` uses the machine's shared

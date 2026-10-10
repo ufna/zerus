@@ -26,9 +26,20 @@ public:
         setObjectName("settingsPage");auto *outer=new QVBoxLayout(this);outer->setContentsMargins(24,20,24,20);outer->setSpacing(20);
         auto *title=new QLabel(tr("Settings"));title->setObjectName("heading");outer->addWidget(title);
         auto *body=new QHBoxLayout;body->setSpacing(24);nav=new QListWidget;nav->setObjectName("settingsSections");nav->setFixedWidth(180);nav->addItems({tr("Appearance"),tr("Sessions"),tr("Automatic recovery"),tr("Processes"),tr("Updates"),tr("Mobile connection"),tr("About")});body->addWidget(nav);
+        nav->setFixedWidth(qMax(180,nav->sizeHintForColumn(0)+32));
         pages=new QStackedWidget;pages->setMinimumWidth(0);body->addWidget(pages,1);outer->addLayout(body,1);
         auto makePage=[&](const QString &heading){auto *content=new QWidget;content->setMaximumWidth(850);auto *layout=new QVBoxLayout(content);layout->setContentsMargins(0,0,12,0);layout->setSpacing(18);auto *h=new QLabel(heading);h->setObjectName("heading");layout->addWidget(h);addPage(content);return layout;};
         auto *appearance=makePage(tr("Appearance"));auto *theme=new QComboBox;theme->setObjectName("workspaceTheme");theme->addItem(tr("Follow system appearance"),"system");theme->addItem(tr("Dark"),"dark");theme->addItem(tr("Light"),"light");theme->setCurrentIndex(qMax(0,theme->findData(QSettings().value("workspace/theme","system"))));appearance->addWidget(new QLabel(tr("Theme")));appearance->addWidget(theme);
+        appearance->addWidget(new QLabel(tr("Interface language")));
+        auto *language=new QComboBox;language->setObjectName("workspaceLanguage");
+        language->addItem(tr("Follow system language"),"system");
+        language->addItem(QString::fromUtf8("Русский"),"ru");
+        language->addItem(QStringLiteral("English"),"en");
+        language->setCurrentIndex(qMax(0,language->findData(QSettings().value("workspace/language","system"))));
+        appearance->addWidget(language);
+        auto *languageHint=new QLabel(tr("Restart Zerus to apply the interface language. Agent sessions keep running."));
+        languageHint->setWordWrap(true);appearance->addWidget(languageHint);
+        connect(language,&QComboBox::currentIndexChanged,this,[language]{QSettings().setValue("workspace/language",language->currentData());});
         appearance->addWidget(new QLabel(tr("Content scale")));
         auto *scaleRow=new QHBoxLayout;scaleRow->setSpacing(12);auto *scale=new QSlider(Qt::Horizontal);scale->setObjectName("workspaceContentScale");
         // Twentieths keep the slider on 5% steps for both dragging and the keyboard.

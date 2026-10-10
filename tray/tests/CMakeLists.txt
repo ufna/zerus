@@ -294,3 +294,13 @@ target_include_directories(test_relaysettings PRIVATE ../src)
 target_link_libraries(test_relaysettings PRIVATE Qt6::Test Qt6::Widgets)
 add_test(NAME relaysettings COMMAND test_relaysettings)
 set_tests_properties(relaysettings PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+add_executable(test_ui_language test_ui_language.cpp ../src/HgsClient.cpp ../src/FleetState.cpp
+    "${CMAKE_CURRENT_BINARY_DIR}/../translations.qrc")
+set_source_files_properties("${ZERUS_RU_QM}" PROPERTIES GENERATED TRUE)
+add_dependencies(test_ui_language zerus-translations)
+target_include_directories(test_ui_language PRIVATE ../src)
+target_link_libraries(test_ui_language PRIVATE Qt6::Test Qt6::Widgets Qt6::Network hgs-updates)
+add_test(NAME ui_language COMMAND test_ui_language)
+set_tests_properties(ui_language PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
+add_test(NAME translation_catalog
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../translations/test_prepare_catalog.py")

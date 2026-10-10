@@ -16,6 +16,7 @@
 #include "TrayAgent.h"
 #include "WorkspaceStyle.h"
 #include "WorkspaceFocus.h"
+#include "UiLanguage.h"
 #ifdef Q_OS_MACOS
 #include "MacAppVisibility.h"
 #endif
@@ -102,6 +103,10 @@ int main(int argc, char *argv[])
     QCoreApplication::setOrganizationName(QStringLiteral("hgdev"));
     QCoreApplication::setApplicationName(QStringLiteral("hgs-tray"));
     QCoreApplication::setApplicationVersion(QLatin1String(HGS_TRAY_VERSION));
+    ZerusTranslator translator;
+    QTranslator qtTranslator;
+    if (!installZerusTranslation(app, translator, qtTranslator))
+        errOut << "hgs-tray: Russian translation could not be loaded\n";
     QApplication::setQuitOnLastWindowClosed(false);
     QGuiApplication::setDesktopFileName(QStringLiteral("hgs-tray"));
     // Window decorations must always receive the flat silhouette. Do not mix
