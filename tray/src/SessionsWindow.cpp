@@ -299,6 +299,10 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     auto *settingsButton = m_settingsNav = iconButton("settings", tr("Settings"), "workspaceSettings"); settingsButton->setCheckable(true); settingsButton->setFixedSize(42, 44); settingsButton->setIconSize(QSize(24,24)); side->addWidget(settingsButton);
     connect(settingsButton, &QPushButton::clicked, this, &SessionsWindow::showWorkspaceSettings);
     auto *versionLabel = label(version, "appVersion"); versionLabel->setAlignment(Qt::AlignCenter); side->addWidget(versionLabel);
+    // The stylesheet paints each rail button's full rect. macOS layout margins
+    // (4 px above, 8 px below a push button) would let neighbours overlap.
+    for (int i = 0; i < side->count(); ++i)
+        if (auto *widget = side->itemAt(i)->widget()) widget->setAttribute(Qt::WA_LayoutUsesWidgetRect);
     root->addWidget(sidebar);
 
     auto *body = new QWidget; auto *layout = new QVBoxLayout(body);

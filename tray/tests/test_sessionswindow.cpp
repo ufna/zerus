@@ -39,6 +39,8 @@
 #include <QSlider>
 #include <QFontInfo>
 #include <QVBoxLayout>
+#include <QProxyStyle>
+#include <QStyleFactory>
 #include <QTableWidget>
 #include <QWindow>
 #include "SessionsWindow.h"
@@ -145,6 +147,7 @@ private slots:
     void subagentActivityKeepsMainDraftAndRejectsStaleHistory();
     void childTreeKeepsRoutineResultsQuiet();
     void sessionsRailResetsFiltersAndShowsAttention();
+    void railButtonsIgnoreNativeLayoutMargins();
     void sessionRowsHaveNoHoverPopup();
     void subagentGroupsAndUnavailableActivity();
     void inspectorPreservesWorkspaceAndReportsTasks();
@@ -3441,6 +3444,37 @@ void TestSessionsWindow::childTreeKeepsRoutineResultsQuiet()
     QVERIFY(readAll->isEnabled()); QSignalSpy read(&window, &SessionsWindow::repliesMarkedRead);
     readAll->trigger(); QCOMPARE(read.size(), 1); QCOMPARE(read[0][0].toJsonObject().size(), 1);
     QVERIFY(!list->item(0)->data(SessionRoles::Unread).toBool()); QVERIFY(!readAll->isEnabled());
+}
+
+namespace {
+// QMacStyle's layout rect for a push button starts 4 px lower and ends 8 px higher.
+class NativeLayoutMargins : public QProxyStyle {
+public:
+    using QProxyStyle::QProxyStyle;
+    QRect subElementRect(SubElement element, const QStyleOption *option, const QWidget *widget) const override
+    {
+        return element == SE_PushButtonLayoutItem ? option->rect.adjusted(0, 4, 0, -8)
+                                                  : QProxyStyle::subElementRect(element, option, widget);
+    }
+};
+}
+
+void TestSessionsWindow::railButtonsIgnoreNativeLayoutMargins()
+{
+    NativeLayoutMargins style(QStyleFactory::create("Fusion"));
+    SessionsWindow window(script()); window.setFleet(fleet()); window.show(); QTest::qWait(50);
+    // A window stylesheet would hide the native metric; apply it directly.
+    window.setStyleSheet({});
+    auto *sidebar = window.findChild<QWidget *>("sidebar"); auto *side = sidebar->layout();
+    for (auto *button : sidebar->findChildren<QPushButton *>(Qt::FindDirectChildrenOnly)) button->setStyle(&style);
+    side->activate(); QTest::qWait(20);
+    QList<QWidget *> rail;
+    for (int i = 0; i < side->count(); ++i)
+        if (auto *widget = side->itemAt(i)->widget(); widget && widget->isVisible()) rail << widget;
+    QVERIFY(rail.size() >= 7);
+    for (int i = 1; i < rail.size(); ++i)
+        QVERIFY2(rail[i - 1]->geometry().bottom() < rail[i]->geometry().top(),
+                 qPrintable(QString("%1 overlaps %2").arg(rail[i - 1]->objectName(), rail[i]->objectName())));
 }
 
 void TestSessionsWindow::sessionsRailResetsFiltersAndShowsAttention()
