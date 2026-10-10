@@ -51,7 +51,30 @@ private slots:
     void terminationPinsRun();
     void nativeLaunchReportsProcessResult();
     void attachmentsUseCapturedIdentityAndValidateResponses();
+    void gitStatusReadsAreSharedAndScopedToMachineAndFolder();
 };
+
+void TestHgsClient::gitStatusReadsAreSharedAndScopedToMachineAndFolder()
+{
+    QTemporaryDir fixture; QVERIFY(fixture.isValid());
+    const auto program = fixture.filePath("hgs"); QFile file(program); QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$0.calls\"\nsleep 0.1\nprintf '%s\\n' '{\"state\":\"ok\",\"root\":\"/repo\",\"branch\":\"main\",\"changed_files\":4,\"ahead\":2,\"behind\":0,\"remote_state\":\"verified\",\"remote_age_seconds\":0}'\n");
+    file.close(); QVERIFY(file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+    HgsClient client(program); QSignalSpy changed(&client, &HgsClient::gitStatusChanged);
+    client.requestGitStatus({}, "/repo"); client.requestGitStatus({}, "/repo");
+    client.requestGitStatus("peer", "/repo"); client.requestGitStatus("peer", "/repo");
+    QVERIFY(client.gitStatusSnapshot({}, "/repo").isEmpty());
+    QTRY_COMPARE(changed.size(), 2);
+    QCOMPARE(client.gitStatusSnapshot({}, "/repo")["changed_files"].toInt(), 4);
+    QCOMPARE(client.gitStatusSnapshot("peer", "/repo")["ahead"].toInt(), 2);
+    QVERIFY(client.gitStatusSnapshot("other", "/repo").isEmpty());
+    QVERIFY(client.gitStatusSnapshot({}, "/other").isEmpty());
+    client.requestGitStatus({}, "/repo"); QTest::qWait(150);
+    QFile calls(program + ".calls"); QVERIFY(calls.open(QIODevice::ReadOnly));
+    const auto lines = calls.readAll(); QCOMPARE(lines.count('\n'), 2);
+    QVERIFY(lines.contains("git-status --path /repo --json"));
+    QVERIFY(lines.contains("@peer git-status --path /repo --json"));
+}
 
 void TestHgsClient::questionReplyPreviews_data()
 {

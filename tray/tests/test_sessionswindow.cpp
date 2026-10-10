@@ -86,6 +86,7 @@ private slots:
     void updatesEntryOpensExactSettingsPage();
     void init() { QSettings().remove("workspace"); QSettings().remove("processes"); QVERIFY(QDir(ComposerDraftStore::directory()).removeRecursively()); }
     void workspaceRestoresDraftAcrossRestartAndSessionRemoval();
+    void gitPublicationChecksKeepDraftFocusAndSharedCards();
     void groupsPersistFilterAndRevealAttention();
     void emptyProjectsSettingPreservesArchiveAndProjects();
     void contentScaleLeavesWorkspaceChrome();
@@ -276,6 +277,34 @@ FleetState TestSessionsWindow::fleet() const
     BoxState mac; mac.host = "mac"; mac.ok = true; mac.sessions = {approval};
     FleetState result; result.setLocal(arch, QDateTime::currentMSecsSinceEpoch()); result.setPeer(mac, QDateTime::currentMSecsSinceEpoch());
     return result;
+}
+
+void TestSessionsWindow::gitPublicationChecksKeepDraftFocusAndSharedCards()
+{
+    QTemporaryDir fixture; QVERIFY(fixture.isValid());
+    const auto program = fixture.filePath("hgs"); QFile file(program); QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("#!/bin/sh\ncase \"$1\" in\ngit-status) printf '%s\\n' \"$*\" >> \"$0.calls\"; sleep 0.4; echo '{\"state\":\"ok\",\"root\":\"/repo\",\"branch\":\"main\",\"upstream\":\"origin/main\",\"changed_files\":4,\"ahead\":2,\"behind\":0,\"remote_state\":\"verified\",\"remote_age_seconds\":0}';;\n*) exec '");
+    file.write(script().toUtf8()); file.write("' \"$@\";;\nesac\n"); file.close();
+    QVERIFY(file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+    auto state = fleet(); auto box = state.local();
+    for (int i = 0; i < 2; ++i) { box.sessions[i].cwd = "/repo"; box.sessions[i].gitRoot = "/repo"; box.sessions[i].gitBranch = "main"; box.sessions[i].gitMetadataState = "ok"; }
+    state.setLocal(box, QDateTime::currentMSecsSinceEpoch());
+    SessionsWindow window(program); window.resize(1120, 680); window.setFleet(state); window.show();
+    window.showSession({}, box.sessions[0].name);
+    auto *list = window.findChild<SessionList *>("sessionList"); auto *composer = window.findChild<MessageComposer *>("messageComposer");
+    QVERIFY(list); QVERIFY(composer); composer->editor()->setPlainText("Keep this unsent draft");
+    composer->editor()->setFocus(); window.activateWindow(); QTRY_VERIFY(composer->editor()->hasFocus());
+    const auto currentKey = list->currentItem()->data(SessionRoles::Key).toString();
+    auto count = [&] { int result = 0; for (int i = 0; i < list->count(); ++i)
+        if (list->item(i)->data(SessionRoles::GitStatus).toJsonObject().value("changed_files").toInt() == 4) ++result;
+        return result; };
+    QTRY_COMPARE(count(), 2);
+    QCOMPARE(composer->editor()->toPlainText(), QString("Keep this unsent draft")); QVERIFY(composer->editor()->hasFocus());
+    QCOMPARE(list->currentItem()->data(SessionRoles::Key).toString(), currentKey);
+    QFile calls(program + ".calls"); QVERIFY(calls.open(QIODevice::ReadOnly)); QCOMPARE(calls.readAll().count('\n'), 1);
+    QVERIFY(list->currentItem()->data(Qt::AccessibleDescriptionRole).toString().contains("4 changed or new files"));
+    const auto directory = qEnvironmentVariable("HGS_GIT_STATUS_PREVIEW");
+    if (!directory.isEmpty()) { QDir().mkpath(directory); QVERIFY(window.grab().save(directory + "/integrated.png")); }
 }
 
 void TestSessionsWindow::workspaceRestoresDraftAcrossRestartAndSessionRemoval()

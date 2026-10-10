@@ -9,6 +9,9 @@
 #include "SessionCardDelegate.h"
 #include "SessionElapsed.h"
 #include "IdentityBadge.h"
+#include "GitStatusBadge.h"
+#include "SessionPresentation.h"
+#include <QDir>
 
 class ListProbe : public SessionList { public: using SessionList::mimeData; using SessionList::initViewItemOption; };
 class TestWorkspace : public QObject {
@@ -26,7 +29,82 @@ private slots:
     void elapsedWorkTimeKeepsUpdatingWithoutAnimation();
     void shortIdentityLabelsFitWithoutElision();
     void draftStatusSitsBetweenWorkAndReplies();
+    void gitStatusSeparatesEvidenceAndExpires();
+    void gitStatusCardsKeepMetadataAndMachineReadable();
 };
+
+static QJsonObject verifiedGit() {
+    return {{"state", "ok"}, {"root", "/workspace/zerus"}, {"branch", "main"}, {"upstream", "origin/main"},
+        {"changed_files", 0}, {"ahead", 0}, {"behind", 0}, {"remote_state", "verified"}, {"remote_age_seconds", 0},
+        {"remote_checked_at", QDateTime::currentSecsSinceEpoch()}, {"received_at_ms", QDateTime::currentMSecsSinceEpoch()}};
+}
+
+void TestWorkspace::gitStatusSeparatesEvidenceAndExpires()
+{
+    auto data = verifiedGit();
+    QCOMPARE(GitStatusBadge::marks(data).first().icon, QString("git-synced"));
+    data["changed_files"] = 4; data["ahead"] = 2; data["behind"] = 3;
+    auto marks = GitStatusBadge::marks(data);
+    QCOMPARE(marks.size(), 3); QCOMPARE(marks[0].icon, QString("git-diff"));
+    QCOMPARE(marks[1].icon, QString("git-push")); QCOMPARE(marks[2].icon, QString("git-pull"));
+    QVERIFY(GitStatusBadge::tooltip(data).contains("4 changed or new files"));
+    data["remote_state"] = "changed";
+    marks = GitStatusBadge::marks(data); QCOMPARE(marks.size(), 4);
+    QCOMPARE(marks[0].tone, GitStatusBadge::Attention); QCOMPARE(marks[1].tone, GitStatusBadge::Muted);
+    QVERIFY(GitStatusBadge::tooltip(data).contains("Fetch to update"));
+    data = verifiedGit(); data["remote_age_seconds"] = 61;
+    QCOMPARE(GitStatusBadge::marks(data).first().icon, QString("git-unknown"));
+    data = verifiedGit(); data["received_at_ms"] = QDateTime::currentMSecsSinceEpoch() - 31000;
+    QCOMPARE(GitStatusBadge::marks(data).first().icon, QString("git-unknown"));
+    data = verifiedGit(); data["offline"] = true;
+    QCOMPARE(GitStatusBadge::marks(data).first().icon, QString("git-unknown"));
+    data = verifiedGit(); data.remove("changed_files");
+    QCOMPARE(GitStatusBadge::marks(data).first().icon, QString("git-unknown"));
+    SessionInfo session; session.cwd = "/workspace/zerus"; session.gitRoot = session.cwd; session.gitBranch = "feature/new";
+    QVERIFY(!GitStatusBadge::verified(SessionPresentation::gitStatus(session, verifiedGit(), true)));
+    session.state = "archived"; QVERIFY(SessionPresentation::gitStatusPath(session).isEmpty());
+    data["state"] = "not_repo"; QVERIFY(GitStatusBadge::marks(data).isEmpty());
+}
+
+void TestWorkspace::gitStatusCardsKeepMetadataAndMachineReadable()
+{
+    const QString destination = qEnvironmentVariable("HGS_GIT_STATUS_PREVIEW");
+    const QStringList titles{"Local changes", "Waiting for push", "All changes published", "Incoming commits", "Remote unavailable", "Merge conflicts"};
+    for (const bool dark : {true, false}) {
+        ListProbe list; list.setItemDelegate(new SessionDelegate(&list));
+        list.setProperty("hgsDark", dark); list.setProperty("compact", false);
+        list.setStyleSheet(dark ? "QListWidget { background:#171c22; border:0; }" : "QListWidget { background:#f3f6f8; border:0; }");
+        list.setFrameShape(QFrame::NoFrame); list.setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        for (int i = 0; i < titles.size(); ++i) {
+            auto *item = new QListWidgetItem(&list);
+            item->setData(SessionRoles::Title, titles[i]); item->setData(SessionRoles::Meta, "zerus / main");
+            item->setData(SessionRoles::Host, "arch"); item->setData(SessionRoles::MachineName, "arch");
+            item->setData(SessionRoles::Agent, "codex"); item->setData(SessionRoles::Status, "Ready");
+            item->setData(SessionRoles::Detail, "Git status follows this checkout and branch");
+            item->setData(SessionRoles::Model, "gpt-6.1-sol"); item->setData(SessionRoles::Effort, "high");
+            auto data = verifiedGit();
+            if (i == 0) { data["changed_files"] = 4; data["ahead"] = 2; }
+            if (i == 1) data["ahead"] = 2;
+            if (i == 3) data["behind"] = 3;
+            if (i == 4) { data["remote_state"] = "unavailable"; data["changed_files"] = 4; data["ahead"] = 2; }
+            if (i == 5) { data["changed_files"] = 4; data["conflicts"] = 1; data["ahead"] = 2; data["behind"] = 3; }
+            item->setData(SessionRoles::GitStatus, data);
+        }
+        for (const int width : {280, 360, 500}) {
+            list.resize(width, titles.size() * 104); list.show(); QTest::qWait(10);
+            for (int i = 0; i < list.count(); ++i) {
+                const auto index = list.model()->index(i, 0);
+                const auto rect = SessionDelegate::gitStatusRect(list.visualItemRect(list.item(i)), index, list.font(), false);
+                QVERIFY(!rect.isEmpty()); QVERIFY(rect.left() > 55);
+                QVERIFY(rect.right() < width - 50);
+            }
+            if (!destination.isEmpty()) {
+                QDir().mkpath(destination);
+                QVERIFY(list.grab().save(destination + QString("/cards-%1-%2.png").arg(dark ? "dark" : "light").arg(width)));
+            }
+        }
+    }
+}
 
 void TestWorkspace::shortIdentityLabelsFitWithoutElision()
 {

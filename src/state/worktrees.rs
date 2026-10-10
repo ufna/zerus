@@ -64,6 +64,13 @@ pub(super) fn git(cwd: &Path, args: &[&str], deadline: Instant) -> std::result::
     ] {
         command.env_remove(key);
     }
+    if args.contains(&"ls-remote") {
+        // Read-only publication checks must never open a credential prompt.
+        command.env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_ASKPASS", "/bin/false")
+            .env("SSH_ASKPASS", "/bin/false")
+            .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes -o ConnectTimeout=2");
+    }
     let mut child = command.spawn().map_err(|e| {
         error(
             if e.kind() == io::ErrorKind::NotFound {

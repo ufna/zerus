@@ -1,4 +1,5 @@
 #include "SessionList.h"
+#include "SessionCardDelegate.h"
 #include <QApplication>
 #include <QDrag>
 #include <QDragEnterEvent>
@@ -127,6 +128,18 @@ QRect SessionList::childrenControlRect(const QListWidgetItem *item) const
 
 bool SessionList::viewportEvent(QEvent *event)
 {
+    if (event->type() == QEvent::ToolTip && !narrow(this)) {
+        const auto *help = static_cast<QHelpEvent *>(event);
+        const auto *row = itemAt(help->pos());
+        if (row) {
+            const auto rect = SessionDelegate::gitStatusRect(visualItemRect(row), indexFromItem(row), font(), property("compact").toBool());
+            if (rect.contains(help->pos())) {
+                const auto text = GitStatusBadge::tooltip(row->data(SessionRoles::GitStatus).toJsonObject());
+                QToolTip::showText(help->globalPos(), Qt::convertFromPlainText(text), viewport(), rect);
+                return true;
+            }
+        }
+    }
     if (event->type() == QEvent::ToolTip && narrow(this)) {
         // The collapsed strip hides card text; its tooltip names the session and its state.
         const auto *help = static_cast<QHelpEvent *>(event);
@@ -142,6 +155,8 @@ bool SessionList::viewportEvent(QEvent *event)
             for (const int role : {int(SessionRoles::Meta), int(SessionRoles::Host)})
                 if (!row->data(role).toString().isEmpty()) place << row->data(role).toString().toHtmlEscaped();
             if (!place.isEmpty()) lines << place.join(QStringLiteral(" · "));
+            const auto git = GitStatusBadge::tooltip(row->data(SessionRoles::GitStatus).toJsonObject());
+            if (!git.isEmpty()) lines << Qt::convertFromPlainText(git);
             QToolTip::showText(help->globalPos(), lines.join(QStringLiteral("<br>")), viewport(), visualItemRect(row));
             return true;
         }

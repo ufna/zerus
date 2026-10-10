@@ -14,6 +14,7 @@
 struct SessionInfo {
     QJsonObject recovery;
     QJsonObject providerError;
+    QJsonObject gitStatus;
     QJsonObject goal;
     QString name;      // полное имя: cmd/project[/tag]
     QString cmd;
@@ -113,6 +114,8 @@ public:
     quint64 requestSwarm(const QStringList &arguments = {QStringLiteral("get")}, const QJsonObject &input = {});
     void setupMachine(const QString &alias, const QString &source = {});
     QJsonObject worktreeSnapshot(const QString &host, const QString &path) const;
+    QJsonObject gitStatusSnapshot(const QString &host, const QString &path) const;
+    void requestGitStatus(const QString &host, const QString &path);
     quint64 requestWorktrees(const QString &host, const QString &path, bool refresh = false);
     quint64 createWorktree(const QString &host, const QString &path, const QString &commonDir,
                            const QString &branch, const QString &base, const QString &destination);
@@ -218,6 +221,7 @@ signals:
     void projectsFailed(const QString &host, const QString &detail);
     void worktreesReady(quint64 request, const QString &host, const QString &path, const QJsonObject &data);
     void worktreesFailed(quint64 request, const QString &host, const QString &path, const QString &detail);
+    void gitStatusChanged(const QString &host, const QString &path);
     void worktreeCreated(quint64 request, bool ok, const QJsonObject &result, const QString &error);
     void worktreeReviewReady(quint64 request, const QString &host, const QString &path, const QJsonObject &data);
     void worktreeReviewFailed(quint64 request, const QString &host, const QString &path, const QString &detail);
@@ -232,6 +236,11 @@ signals:
     void writeDone(const QString &op, bool ok, const QString &detail);
 
 private:
+    void pumpGitStatus();
+    QHash<QString, QJsonObject> m_gitStatusCache;
+    QHash<QString, qint64> m_gitStatusRequestedAt;
+    QList<QPair<QString, QString>> m_gitStatusQueue;
+    QSet<QString> m_gitStatusInFlight;
     quint64 runSessionAction(const QString &host, const QString &name, const QString &operation, QJsonObject payload);
     // Общий каркас пишущего вызова: успех = выход 0, stderr отдаём как есть -- hgs
     // сам формулирует внятные ошибки ("'x' comes from Ansible ... shadow it with

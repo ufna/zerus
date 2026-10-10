@@ -860,6 +860,51 @@ QJsonObject HgsClient::worktreeSnapshot(const QString &host,const QString &path)
     if(bytes.size()>8*1024*1024)return {};
     return QJsonDocument::fromJson(bytes).object().value(worktreeCacheKey(m_hgs,host,path)).toObject();
 }
+QJsonObject HgsClient::gitStatusSnapshot(const QString &host, const QString &path) const
+{
+    return m_gitStatusCache.value(host + '\n' + path);
+}
+
+void HgsClient::requestGitStatus(const QString &host, const QString &path)
+{
+    if (path.isEmpty()) return;
+    const auto key = host + '\n' + path;
+    const auto age = QDateTime::currentMSecsSinceEpoch() - m_gitStatusRequestedAt.value(key);
+    if (m_gitStatusRequestedAt.contains(key) && age >= 0 && age < 15000) return;
+    if (m_gitStatusInFlight.contains(key) || m_gitStatusQueue.contains({host, path})) return;
+    // Bound both subprocess concurrency and old folder snapshots.
+    if (m_gitStatusQueue.size() >= 64) return;
+    m_gitStatusQueue.append({host, path}); pumpGitStatus();
+}
+
+void HgsClient::pumpGitStatus()
+{
+    while (m_gitStatusInFlight.size() < 2 && !m_gitStatusQueue.isEmpty()) {
+        const auto folder = m_gitStatusQueue.takeFirst();
+        const auto host = folder.first, path = folder.second, key = host + '\n' + path;
+        m_gitStatusInFlight.insert(key);
+        const auto finish = [this, host, path, key](QJsonObject data) {
+            const auto received = QDateTime::currentMSecsSinceEpoch();
+            if (!data.value("state").isString()) data = {{"state", "unavailable"}};
+            data["received_at_ms"] = received;
+            m_gitStatusCache.insert(key, data); m_gitStatusRequestedAt.insert(key, received);
+            m_gitStatusInFlight.remove(key);
+            while (m_gitStatusCache.size() > 128) {
+                QString oldest; qint64 at = std::numeric_limits<qint64>::max();
+                for (auto i = m_gitStatusRequestedAt.cbegin(); i != m_gitStatusRequestedAt.cend(); ++i)
+                    if (!m_gitStatusInFlight.contains(i.key()) && i.value() < at) { oldest = i.key(); at = i.value(); }
+                m_gitStatusCache.remove(oldest); m_gitStatusRequestedAt.remove(oldest);
+            }
+            emit gitStatusChanged(host, path); pumpGitStatus();
+        };
+        QStringList args{"git-status", "--path", path, "--json"};
+        if (!host.isEmpty()) args.prepend('@' + host);
+        runHgs(m_hgs, args, host.isEmpty() ? 5000 : 10000, this,
+            [finish](const QByteArray &out) { finish(out.size() <= 32768 ? QJsonDocument::fromJson(out).object() : QJsonObject()); },
+            [finish](const QString &, const QString &) { finish({}); });
+    }
+}
+
 quint64 HgsClient::requestWorktrees(const QString &host,const QString &path,bool refresh)
 {
     const quint64 request=++m_worktreeRequest;

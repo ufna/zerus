@@ -6,6 +6,19 @@
 #include <QDateTime>
 
 namespace SessionPresentation {
+inline QString gitStatusPath(const SessionInfo &s) {
+    if (s.state == "archived" || s.gitMetadataState == "not_repo") return {};
+    return s.gitRoot.isEmpty() ? (s.canonicalCwd.isEmpty() ? s.cwd : s.canonicalCwd) : s.gitRoot;
+}
+inline QJsonObject gitStatus(const SessionInfo &s, QJsonObject snapshot, bool online) {
+    if (gitStatusPath(s).isEmpty()) return {};
+    if (snapshot.isEmpty()) snapshot = {{"state", "checking"}, {"root", s.gitRoot}, {"branch", s.gitBranch}};
+    if (snapshot.value("state") == "ok" && ((!s.gitRoot.isEmpty() && snapshot.value("root") != s.gitRoot)
+        || snapshot.value("branch").toString() != s.gitBranch || snapshot.value("detached").toBool() != s.gitDetached))
+        snapshot["state"] = "scope_changed";
+    snapshot["offline"] = !online;
+    return snapshot;
+}
 inline SessionInfo inspected(SessionInfo s, const QJsonObject &details)
 {
     // A selected-session inspection can discover failure before the fleet poll.

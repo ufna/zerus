@@ -1167,11 +1167,34 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         showNotice(ok ? (renamed ? tr("Session renamed. Refreshing…") : tr("Session updated. Refreshing…")) : detail, !ok);
         emit refreshRequested(); rebuild(); inspect();
     });
+    connect(&m_client, &HgsClient::gitStatusChanged, this, [this](const QString &host, const QString &path) {
+        // Update only the Git role. Asynchronous repository reads must not run
+        // session selection/inspection or move composer focus.
+        for (int i = 0; i < m_sessions->count(); ++i) {
+            auto *item = m_sessions->item(i);
+            if (item->data(SessionRoles::GitPath).toString() != path || item->data(SessionRoles::GitHost).toString() != host) continue;
+            for (const auto &entry : m_entries) if (entry.key == item->data(KeyRole).toString()) {
+                const auto data = SessionPresentation::gitStatus(entry.session, m_client.gitStatusSnapshot(host, path), entry.online);
+                item->setData(SessionRoles::GitStatus, data);
+                item->setData(Qt::AccessibleDescriptionRole, GitStatusBadge::tooltip(data));
+                break;
+            }
+        }
+        updateDashboard();
+    });
     m_timer.setInterval(500); connect(&m_timer, &QTimer::timeout, this, [this]() {
         const bool background=m_detailTabs->currentWidget()==m_terminal || m_detailTabs->currentWidget()==m_nativeUi;
         const int interval=background?ProcessSettings::backgroundMs():m_detailTabs->currentWidget()==m_processes?ProcessSettings::activeMs():2500;
         if(!m_inspectionAge.isValid() || m_inspectionAge.elapsed()>=interval)inspect();
-        if (++m_tick % 10 == 0) emit refreshRequested();
+        if (++m_tick % 10 == 0) {
+            emit refreshRequested();
+            for (const auto &entry : m_entries) {
+                const auto path = SessionPresentation::gitStatusPath(entry.session);
+                if (entry.online && !path.isEmpty()) m_client.requestGitStatus(entry.host, path);
+            }
+            // Expire verification visually even if fleet polling has stalled.
+            m_sessions->viewport()->update(); updateDashboard();
+        }
     });
     m_readTimer.setInterval(400); connect(&m_readTimer, &QTimer::timeout, this, &SessionsWindow::checkViewedReply);
     applyTheme(); applyContentScale(); rebuild();
@@ -1665,6 +1688,24 @@ void SessionsWindow::setClipboardMode(bool clipboard) { m_clipboard = clipboard;
 void SessionsWindow::updateDashboard()
 {
     auto fleet = m_fleet;
+    auto enrichGit = [this](BoxState box, const QString &host, bool online) {
+        for (auto &session : box.sessions) {
+            const auto path = SessionPresentation::gitStatusPath(session);
+            session.gitStatus = SessionPresentation::gitStatus(session, m_client.gitStatusSnapshot(host, path), online);
+        }
+        return box;
+    };
+    const auto now = QDateTime::currentMSecsSinceEpoch();
+    fleet.setLocal(enrichGit(fleet.local(), {}, fleet.local().ok && m_connectionError.isEmpty()), now);
+    for (const auto &host : fleet.peerNames()) {
+        const auto box = *fleet.peer(host);
+        auto display = enrichGit(box, host, box.ok && now - fleet.peerPolledAt(host) < FleetState::kPeerStaleMs);
+        // FleetState keeps existing sessions on a failed poll. Enrich those
+        // retained rows in this display copy, then preserve the offline state.
+        display.ok = true;
+        fleet.setPeer(display, fleet.peerPolledAt(host));
+        if (!box.ok) fleet.setPeer(box, fleet.peerPolledAt(host));
+    }
     if (!m_connectionError.isEmpty()) { auto local = fleet.local(); local.ok = false; local.error = m_connectionError; fleet.setLocal(local, 0); }
     m_dashboard->setFleet(fleet);
 }
@@ -2108,6 +2149,9 @@ void SessionsWindow::rebuild()
         item->setData(SessionRoles::ParentKey, row.entry >= 0 ? visible[row.entry].key : QString());
         item->setData(SessionRoles::LaunchId, row.launch);
         item->setData(SessionRoles::WorkingSince, 0.0);
+        item->setData(SessionRoles::GitStatus, QJsonObject());
+        item->setData(SessionRoles::GitHost, QString()); item->setData(SessionRoles::GitPath, QString());
+        item->setData(Qt::AccessibleDescriptionRole, QString());
         item->setData(SessionRoles::Header, row.entry < 0 && row.launch.isEmpty()); item->setHidden(row.hidden);
         if (!row.launch.isEmpty()) {
             const auto launch = m_pendingLaunches.value(row.launch).toObject();
@@ -2175,6 +2219,12 @@ void SessionsWindow::rebuild()
         QString meta = projectContext(s);
         if (s.state == "archived" && s.archivedAt > 0) meta += QStringLiteral(" / ") + QDateTime::fromSecsSinceEpoch(qint64(s.archivedAt)).toLocalTime().toString("d MMM HH:mm");
         item->setData(MetaRole, meta); item->setData(StatusRole, rowStatus); item->setData(DetailRole, desc);
+        const auto gitPath = SessionPresentation::gitStatusPath(s);
+        const auto git = SessionPresentation::gitStatus(s, m_client.gitStatusSnapshot(e.host, gitPath), e.online);
+        item->setData(SessionRoles::GitHost, e.host); item->setData(SessionRoles::GitPath, gitPath);
+        item->setData(SessionRoles::GitStatus, git);
+        item->setData(Qt::AccessibleDescriptionRole, GitStatusBadge::tooltip(git));
+        if (e.online && !gitPath.isEmpty()) m_client.requestGitStatus(e.host, gitPath);
         item->setData(SessionRoles::Attention, !terminating && (s.reviewLater || (e.online && !s.attentionAcknowledged && (s.needsAction() || childNeedsAction(e)))));
         item->setData(SessionRoles::ReviewLater, s.reviewLater);
         item->setData(SessionRoles::Failure, s.phase=="error");

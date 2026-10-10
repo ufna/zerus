@@ -209,6 +209,26 @@ filter, sessions open Activity, and machine settings lead to Machines. Native
 account quotas are grouped by verified identity instead of adding machine usage.
 
 Session rows show provider, machine, current action, model, effort and Git context.
+The folder/branch line also shows native outline Git badges: a diff with the
+number of changed/new files, upload/download with outgoing/incoming commit counts,
+and a green cloud check for a clean checkout matching its verified upstream.
+Changes include staged, unstaged and untracked paths, counting each path once.
+Merge conflicts use a red diff badge. Local changes and outgoing commits can
+appear together; counts above 99 show `99+`, with exact values on hover.
+Hover over the badges for the checkout, branch, upstream, counts and remote check
+time. These describe the current checkout shared by sessions in the same folder,
+not ownership of an individual feature or an archived conversation.
+
+Git reads run separately from agent/fleet polling, with at most two concurrent
+requests. Local evidence refreshes about every 15 seconds and expires after 30;
+read-only remote verification is cached for at most 60 seconds. A changed tracking
+OID or remote endpoint invalidates that verification. Nothing fetches, commits or
+pushes automatically. A muted cloud question mark means verification is unavailable,
+expired, detached or lacks a remote upstream. Outgoing/incoming counts become muted
+when only the local tracking ref is known; a changed remote asks you to fetch.
+Ordinary non-Git folders show no badge. Offline and changed checkout evidence
+cannot show a green check.
+
 **Ready** means a reply ended, not that a long-running task is complete. Working
 and compacting timers use native start evidence and update locally without extra
 host requests. Theme, density, animation and machine/project label appearance are
@@ -1093,6 +1113,13 @@ journal limits; `tracked: false` identifies an unbound session. Folder/Git field
 include `cwd`, `cwd_source`, `cwd_canonical`, `git_root`, `git_common_dir`, branch,
 worktree, detached state and metadata status. Git metadata has a bounded read and
 15-second cache, independent of pause eligibility.
+
+`hgs [@host] git-status --path /absolute/checkout --json` provides independent
+read-only publication evidence for the GUI. It supports worktrees and subfolders,
+caps Git output at 1 MiB and the whole check at three seconds, and never prompts
+for credentials. Ahead/behind counts compare HEAD with its configured local
+tracking ref; `remote_state: verified` requires that ref's OID to match an exact
+read-only `ls-remote` result. `changed` and `missing` do not imply synchronization.
 
 Subagent count fields distinguish active, completed, total, completeness and
 source; unknown totals are null. Up to six active/unreviewed previews accompany

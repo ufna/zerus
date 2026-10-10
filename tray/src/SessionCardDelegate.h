@@ -7,6 +7,7 @@
 #include "SessionStatusBadge.h"
 #include "SessionElapsed.h"
 #include "WorkspaceIcons.h"
+#include "GitStatusBadge.h"
 #include <QPainter>
 #include <QStyledItemDelegate>
 #include <QtMath>
@@ -76,6 +77,17 @@ public:
         SessionStatusBadge::Kind kind;
         IdentityBadges::RowEmphasis emphasis;
     };
+    static QRect gitStatusRect(const QRect &row, const QModelIndex &index, QFont base, bool compact) {
+        if (index.data(SessionRoles::Header).toBool() || !index.data(SessionRoles::ChildId).toString().isEmpty()) return {};
+        const QRect card = sessionCardRect(row);
+        const int textX = card.x() + 20, right = card.right() - 11, width = right - textX;
+        QFont metaFont = base; metaFont.setPixelSize(11); metaFont.setWeight(QFont::Normal);
+        const int hostWidth = IdentityBadges::width(IdentityBadges::Machine, index.data(SessionRoles::Host).toString(), metaFont, width / 3 + 10);
+        const int end = right - hostWidth - 8;
+        const auto values = GitStatusBadge::fitted(GitStatusBadge::marks(index.data(SessionRoles::GitStatus).toJsonObject()), base, end - textX - 48);
+        const int w = GitStatusBadge::width(values, base);
+        return w ? QRect(end - w, card.y() + (compact ? 25 : 29), w, 18) : QRect();
+    }
     // Priority: attention or error, work, an unsent draft (not for the open session,
     // which shows it in place), a new reply (then an extra badge), a pause, Ready.
     static CardStatus statusOf(const QModelIndex &index, bool selected) {
@@ -222,7 +234,10 @@ private:
         const QRect machineBadge(right - hostWidth, metadataY, hostWidth, 18);
         IdentityBadges::paint(p, machineBadge, IdentityBadges::Machine, host, dark, index.data(SessionRoles::MachineColor).value<QColor>(), index.data(SessionRoles::MachineName).toString());
         p->setPen(muted);
-        const int metadataWidth = qMax(0, machineBadge.left() - textX - 8);
+        const QRect gitBadge = gitStatusRect(option.rect, index, option.font, compact);
+        if (!gitBadge.isEmpty()) GitStatusBadge::paint(p, gitBadge,
+            GitStatusBadge::fitted(GitStatusBadge::marks(index.data(SessionRoles::GitStatus).toJsonObject()), option.font, gitBadge.width()), option.font, dark);
+        const int metadataWidth = qMax(0, (gitBadge.isEmpty() ? machineBadge.left() : gitBadge.left()) - textX - 8);
         p->drawText(QRect(textX, metadataY, metadataWidth, 18), Qt::AlignVCenter,
                     QFontMetrics(font).elidedText(index.data(SessionRoles::Meta).toString(), Qt::ElideMiddle, metadataWidth));
 

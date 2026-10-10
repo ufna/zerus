@@ -54,6 +54,7 @@ mod terminal;
 mod conversation_history;
 mod usage;
 mod workspace;
+mod git_status;
 mod worktrees;
 mod worktree_cleanup;
 
@@ -381,6 +382,7 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
         return Err("missing state operation".into());
     };
     if command == "worktrees" { return worktrees::dispatch(args); }
+    if command == "git-status" { return git_status::dispatch(args); }
     if command == "dirs" {
         let hidden = args.first().map(String::as_str) == Some("--hidden");
         let paths = if hidden { &args[1..] } else { args };

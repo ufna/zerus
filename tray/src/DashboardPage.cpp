@@ -144,6 +144,7 @@ public:
         auto *item = m_model.item(0);
         item->setData(sessionLabel(session), SessionRoles::Title);
         item->setData(projectContext(session), SessionRoles::Meta);
+        item->setData(session.gitStatus, SessionRoles::GitStatus);
         item->setData(status(session), SessionRoles::Status);
         item->setData(session.phase=="error", SessionRoles::Failure);
         item->setData(currentAction(session).simplified(), SessionRoles::Detail);
@@ -165,7 +166,8 @@ public:
             projectContext(session), item->data(SessionRoles::Detail).toString(), session.model, session.effort,
             childCount(session, true)};
         setAccessibleName(description.join(" / "));
-        setToolTip(description.join("\n"));
+        setToolTip(description.join("\n") + (session.gitStatus.isEmpty() ? QString() : "\n\n" + GitStatusBadge::tooltip(session.gitStatus)));
+        setAccessibleDescription(GitStatusBadge::tooltip(session.gitStatus));
         QWidget::update();
     }
     void updateElapsed() { if (m_model.item(0)->data(SessionRoles::Working).toBool()) QWidget::update(); }

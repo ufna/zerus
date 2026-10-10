@@ -39,6 +39,27 @@ inline QIcon workspaceIcon(const QString &name, const QColor &color)
             QPainterPath path; path.moveTo(8, 3); path.lineTo(16, 3); path.lineTo(15, 9); path.lineTo(19, 13);
             path.lineTo(5, 13); path.lineTo(9, 9); path.closeSubpath(); p.drawPath(path); p.drawLine(12, 13, 12, 21);
             if (name == "pinned") p.drawLine(8, 19, 16, 19);
+        } else if (name == "git-diff") {
+            QPainterPath page; page.moveTo(13, 3); page.lineTo(5, 3); page.lineTo(5, 21);
+            page.lineTo(19, 21); page.lineTo(19, 9); page.closeSubpath(); p.drawPath(page);
+            p.drawLine(13, 3, 13, 9); p.drawLine(13, 9, 19, 9);
+            p.drawLine(8, 11, 12, 11); p.drawLine(10, 9, 10, 13); p.drawLine(8, 17, 14, 17);
+        } else if (name == "git-push" || name == "git-pull") {
+            QPainterPath tray; tray.moveTo(4, 15); tray.lineTo(4, 19);
+            tray.quadTo(4, 21, 6, 21); tray.lineTo(18, 21); tray.quadTo(20, 21, 20, 19); tray.lineTo(20, 15); p.drawPath(tray);
+            const bool push = name == "git-push";
+            p.drawLine(12, 3, 12, 16);
+            QPainterPath arrow; arrow.moveTo(7, push ? 8 : 11); arrow.lineTo(12, push ? 3 : 16); arrow.lineTo(17, push ? 8 : 11); p.drawPath(arrow);
+        } else if (name == "git-synced" || name == "git-unknown") {
+            QPainterPath cloud; cloud.moveTo(6, 19); cloud.cubicTo(0, 19, 0, 10, 6, 10);
+            cloud.cubicTo(5, 2, 17, 1, 19, 9); cloud.cubicTo(25, 9, 25, 19, 19, 19);
+            cloud.closeSubpath(); p.drawPath(cloud);
+            if (name == "git-synced") {
+                QPainterPath check; check.moveTo(8, 13); check.lineTo(11, 16); check.lineTo(16, 11); p.drawPath(check);
+            } else {
+                QPainterPath question; question.moveTo(10, 10); question.cubicTo(10, 7, 15, 7, 15, 10);
+                question.cubicTo(15, 12, 12, 11, 12, 14); p.drawPath(question); p.drawPoint(QPointF(12, 17));
+            }
         } else if (name == "accounts") {
             p.drawEllipse(QPointF(10, 7), 3.5, 3.5);
             QPainterPath path; path.moveTo(3, 20); path.cubicTo(3, 11, 17, 11, 17, 20); p.drawPath(path);
