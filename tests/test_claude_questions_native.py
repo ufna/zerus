@@ -2,7 +2,7 @@
 """Real Claude TUI against a localhost-only API fixture, never a user's account.
 Run with HGS_CLAUDE_TEST_BIN=/absolute/path/to/claude (otherwise skipped).
 """
-import hashlib,json,os,shlex,shutil,subprocess,sys,tempfile,threading,time,unittest,uuid
+import hashlib,json,os,re,shlex,shutil,subprocess,sys,tempfile,threading,time,unittest,uuid
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
 import test_input as fixtures
@@ -22,7 +22,10 @@ class NativeClaudeQuestions(unittest.TestCase):
  inspect=questions.Questions.inspect
  def answer(self,*args,**kwargs):
   try:return questions.Questions.answer(self,*args,**kwargs)
-  except AssertionError as error:raise AssertionError(str(error)+"\n"+self.screen()) from error
+  except AssertionError as error:
+   styled=self.tmux('capture-pane','-p','-e','-t',self.pane)
+   choices=[row for row in styled.splitlines() if re.match(r'^(?:❯\s*)?\d+\. ',re.sub(r'\x1b\[[0-9;:]*m','',row).strip())]
+   raise AssertionError(str(error)+"\n"+self.screen()+"\nFixture transport: "+json.dumps(self.events())+"\nFixture styled choices: "+json.dumps(choices)) from error
  hook=questions.Questions.hook
  def wait_for(self,callback):
   for _ in range(250):
@@ -35,7 +38,7 @@ class NativeClaudeQuestions(unittest.TestCase):
   self.root=Path(self.temp.name).resolve();self.bin=self.root/'.local/bin';self.bin.mkdir(parents=True);self.state=self.root/'state';self.state.mkdir()
   work=self.root/'work';work.mkdir();(self.root/'.claude').mkdir()
   self.tool_name=getattr(self,'tool_name','AskUserQuestion');self.tool_input=getattr(self,'tool_input',None);self.approval_fixture=self.tool_name!='AskUserQuestion'
-  self.items=ITEMS[:1] if self._testMethodName=='test_single_question_direct_submission' else ITEMS
+  self.items=ITEMS[:1] if self._testMethodName.startswith('test_single_') else ITEMS
   (self.root/'.claude.json').write_text(json.dumps(dict(hasCompletedOnboarding=True,bypassPermissionsModeAccepted=True,theme='dark',customApiKeyResponses=dict(approved=['fixture-key'],rejected=[]),projects={str(work):dict(hasTrustDialogAccepted=True)})))
   (self.root/'.claude/settings.json').write_text(json.dumps({'permissions':{'defaultMode':'default' if self.approval_fixture else 'bypassPermissions'}}))
   fixture=self
@@ -64,7 +67,10 @@ class NativeClaudeQuestions(unittest.TestCase):
   self.env=dict(os.environ,HOME=str(self.root),HGS_STATE_DIR=str(self.state),HGS_CONFIG_DIR=str(self.root/'config'),PATH=str(self.bin)+':'+os.environ['PATH'],HGS_SELF='test')
   for v in ('TMUX','TMUX_PANE','HGS_RUN_ID','HGS_SESSION','HGS_EXECUTABLE'):self.env.pop(v,None)
   self.name='claude/question-test';self.run_id=str(uuid.uuid4())
-  self.addCleanup(lambda:subprocess.run([fixtures.TMUX,'-S',str(self.socket),'kill-server'],capture_output=True))
+  # Reuse the transport fixture's bounded drain of this socket's pane PIDs.
+  # Claude can flush files after kill-server returns; remove HOME only after
+  # its owned process has exited. This also runs when native startup fails.
+  self.addCleanup(lambda:fixtures.InputTransport.tearDown(self))
   self.tmux('new-session','-d','-s',self.name,'-x','120','-y','45','-c',str(work),'env','-i','HOME='+str(self.root),'PATH='+os.environ['PATH'],'SHELL=/bin/bash','TERM=xterm-256color','LANG=C.UTF-8','CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1','ANTHROPIC_API_KEY=fixture-key','ANTHROPIC_BASE_URL=http://127.0.0.1:'+str(server.server_port),CLAUDE,*([] if self.approval_fixture else ['--dangerously-skip-permissions']),'--model','claude-sonnet-4-6','Ask questions with the tool now.')
   self.pane=self.tmux('display-message','-p','-t','='+self.name+':','#{pane_id}').strip()
   self.wait_for(lambda:(getattr(self,'panel_question','Do you want to proceed?') if self.approval_fixture else 'Which release should we prepare?') in self.screen())
@@ -87,24 +93,48 @@ class NativeClaudeQuestions(unittest.TestCase):
   self.card=inspection['pending_questions'][0]
  def screen(self):return self.tmux('capture-pane','-p','-t',self.pane,'-J')
  def key(self,key):self.tmux('send-keys','-t',self.pane,key);time.sleep(.15)
- def enable_gutter_capture(self):
+ def enable_gutter_capture(self,gutter=True):
   # Reproduce the dim gutter observed in the user's Claude terminal
   # on captures only; all input, transcript acknowledgements and UI state still
   # come from the real CLI against our isolated localhost API.
-  self.script('tmux','#!'+sys.executable+'\n'+f'TMUX={fixtures.TMUX!r}\nSOCKET={str(self.socket)!r}\nROOT={str(self.root)!r}\n'+r'''
-import json,pathlib,re,subprocess,sys
+  self.script('tmux-fixture.py','#!'+sys.executable+'\n'+f'TMUX={fixtures.TMUX!r}\nSOCKET={str(self.socket)!r}\nROOT={str(self.root)!r}\nGUTTER={gutter!r}\nRECORD={str(self.record_path)!r}\n'+r'''
+import json,pathlib,re,subprocess,sys,time
 args=sys.argv[1:]
+root=pathlib.Path(ROOT)
+if args and args[0] in ('send-keys','paste-buffer','load-buffer'):
+ with (root/'transport-events').open('a') as log:log.write(json.dumps(args)+'\n')
 if args and args[0]=='send-keys':
- with (pathlib.Path(ROOT)/'sent-keys').open('a') as log:log.write(json.dumps(args)+'\n')
-result=subprocess.run([TMUX,'-S',SOCKET,'-f','/dev/null',*args],stdout=subprocess.PIPE)
-if args and args[0]=='capture-pane' and result.returncode==0:
- rows=re.sub(r'\x1b\[[0-9;:]*m','',result.stdout.decode()).splitlines()
- starts=[i for i,r in enumerate(rows) if r.strip().startswith('←') and '✔ Submit' in r]
+ with (root/'sent-keys').open('a') as log:log.write(json.dumps(args)+'\n')
+staged=sys.stdin.buffer.read() if args and args[0]=='load-buffer' else None
+if staged is not None:
+ with (root/'staged-text').open('a') as log:log.write(json.dumps(staged.decode())+'\n')
+result=subprocess.run([TMUX,'-S',SOCKET,'-f','/dev/null',*args],input=staged,stdout=subprocess.PIPE)
+focus_fault=root/'change-focus-after-paste'
+if focus_fault.exists() and args and args[0]=='paste-buffer':
+ pane=args[args.index('-t')+1]
+ subprocess.run([TMUX,'-S',SOCKET,'send-keys','-t',pane,'Up'],check=True)
+ time.sleep(.15);focus_fault.unlink();(root/'focus-changed').touch()
+# Change only this fixture's durable record between preparation and the next
+# write, after the real native clear or buffer stage has happened.
+fault=root/'change-identity'
+if fault.exists():
+ config=json.loads(fault.read_text())
+ triggered=(config['stage']=='clear' and args and args[0]=='send-keys' and args[-1]=='C-u') or (config['stage']=='paste' and args and args[0]=='load-buffer')
+ if triggered:
+  record=pathlib.Path(RECORD); value=json.loads(record.read_text())
+  if config['field']=='question':value['pending_questions']={}
+  else:value['run_id']='00000000-0000-4000-8000-000000000000'
+  temporary=record.with_suffix('.changed');temporary.write_text(json.dumps(value));temporary.replace(record)
+  fault.unlink();(root/'identity-changed').touch()
+if GUTTER and args and args[0]=='capture-pane' and result.returncode==0:
+ rows=result.stdout.decode().splitlines()
+ plain=lambda row:re.sub(r'\x1b\[[0-9;:]*m','',row).strip()
+ starts=[i for i,r in enumerate(rows) if plain(r).startswith('←') and '✔ Submit' in plain(r)]
  if starts:
-  start=starts[-1]+1; reviewing=any(r.strip()=='Review your answers' for r in rows[start:])
+  start=starts[-1]+1; reviewing=any(plain(r)=='Review your answers' for r in rows[start:])
   question=False
   for i in range(start,len(rows)):
-   row=rows[i].strip()
+   row=plain(rows[i])
    if reviewing:
     if row=='Ready to submit your answers?':break
     if row.startswith('● '):question=True
@@ -120,9 +150,106 @@ if args and args[0]=='capture-pane' and result.returncode==0:
 else:sys.stdout.buffer.write(result.stdout)
 sys.exit(result.returncode)
 ''')
+  # Read-only guards need no Python logging or injection when the gutter is
+  # disabled. Exec native tmux directly so interpreter startup does not consume
+  # the answer deadline on macOS; mutations retain the exact fixture wrapper.
+  intercepted='send-keys|paste-buffer|load-buffer'+('|capture-pane' if gutter else '')
+  wrapper=shlex.quote(str(self.bin/'tmux-fixture.py'))
+  native=shlex.quote(fixtures.TMUX)+' -S '+shlex.quote(str(self.socket))+' -f /dev/null'
+  self.script('tmux','#!/bin/sh\ncase "$1" in\n '+intercepted+') exec '+wrapper+' "$@" ;;\n *) exec '+native+' "$@" ;;\nesac\n')
  def payload(self,**changes):
   answers=[dict(question_id='q_0',selected_option_ids=['opt_0_1'],text=''),dict(question_id='q_1',selected_option_ids=['opt_1_0','opt_1_2'],text=''),dict(question_id='q_2',selected_option_ids=[],text='Привет from Zerus'),dict(question_id='q_3',selected_option_ids=['opt_3_1'],text='Browser check')][:len(self.items)]
   value=dict(request_id=str(uuid.uuid4()),expected_run_id=self.run_id,expected_conversation_id=self.conversation_id,question_id=self.card['question_id'],expected_question_hash=self.card['question_hash'],answers=answers);value.update(changes);return value
+ def events(self):
+  path=self.root/'transport-events'
+  return [json.loads(row) for row in path.read_text().splitlines()] if path.exists() else []
+ def staged(self):
+  path=self.root/'staged-text'
+  return [json.loads(row) for row in path.read_text().splitlines()] if path.exists() else []
+ def reset_events(self):
+  for name in ('transport-events','staged-text','sent-keys'):(self.root/name).unlink(missing_ok=True)
+ def native_draft(self,value,cursor='end',choice='3'):
+  for key in ([choice] if isinstance(choice,str) else choice):self.key(key)
+  result=subprocess.run([fixtures.TMUX,'-S',str(self.socket),'load-buffer','-b','fixture-draft','-'],input=value,text=True,capture_output=True)
+  self.assertEqual(result.returncode,0,result.stderr)
+  self.tmux('paste-buffer','-p','-r','-d','-b','fixture-draft','-t',self.pane)
+  time.sleep(.15)
+  self.tmux('send-keys','-t',self.pane,'-N',str(len(value)+1),'Left')
+  if cursor!='start':self.tmux('send-keys','-t',self.pane,'-N',str(len(value)//2 if cursor=='middle' else len(value)+1),'Right')
+  time.sleep(.15)
+ def assert_native_answer(self,payload):
+  expected={}
+  for item,answer in zip(self.items,payload['answers']):
+   labels=[option['label'] for i,option in enumerate(item['options']) if 'opt_'+str(len(expected))+'_'+str(i) in answer['selected_option_ids']]
+   expected[item['question']]=', '.join(labels+([answer['text']] if answer['text'] else []))
+  def recorded():
+   for row in Path(self.record['transcript']).read_text().splitlines():
+    try:event=json.loads(row)
+    except json.JSONDecodeError:continue
+    if event.get('sessionId')!=self.conversation_id:continue
+    parts=event.get('message',{}).get('content',[])
+    if isinstance(parts,list) and any(p.get('type')=='tool_result' and p.get('tool_use_id')=='toolu_native_fixture' for p in parts):return event.get('toolUseResult')
+  result=self.wait_for(recorded)
+  self.assertEqual(result['questions'],[dict(item,multiSelect=item.get('multiSelect',False)) for item in self.items])
+  self.assertEqual(result['answers'],expected)
+ def assert_pastes(self,texts):
+  self.assertEqual(self.staged(),texts)
+  self.assertEqual(sum(event[0]=='paste-buffer' for event in self.events()),len(texts))
+ def replace_single_draft(self,draft,cursor):
+  self.enable_gutter_capture(False);self.native_draft(draft,cursor);self.reset_events()
+  before=self.screen();card=self.inspect()['pending_questions'][0]
+  self.assertTrue(card['can_answer'],card['answer_unavailable_reason'])
+  self.assertEqual(self.events(),[]);self.assertEqual(before.partition('☐')[2],self.screen().partition('☐')[2])
+  payload=self.payload();payload['answers'][0]=dict(question_id='q_0',selected_option_ids=[],text='GUI   authoritative answer | Привет')
+  receipt=self.answer(payload);self.assertEqual(receipt['status'],'answered');self.assert_native_answer(payload)
+  self.assert_pastes([payload['answers'][0]['text']])
+  before=self.events();self.assertEqual(self.answer(payload),receipt);self.assertEqual(self.events(),before)
+ def test_single_overwrites_draft_from_cursor_start(self):
+  self.replace_single_draft('Different native draft','start')
+ def test_single_overwrites_wrapped_draft_from_cursor_middle(self):
+  self.replace_single_draft('native   spaced words '+('wrapped content '*12),'middle')
+ def test_single_overwrites_draft_from_cursor_end(self):
+  self.replace_single_draft('Native one space remains different','end')
+ def test_single_overwrites_hard_newlines(self):
+  self.replace_single_draft('First native line\nSecond native line\nThird native line','middle')
+ def test_single_overwrites_all_blank_newlines(self):
+  self.replace_single_draft('\n\n','middle')
+ def test_single_overwrites_literal_placeholder_text(self):
+  self.replace_single_draft('Type something','start')
+ def test_single_overwrites_matching_gui_text_once(self):
+  self.replace_single_draft('GUI   authoritative answer | Привет','middle')
+ def interrupted_override(self,stage,field):
+  self.enable_gutter_capture(False);self.native_draft('Existing terminal answer','middle');self.reset_events()
+  original=self.record_path.read_bytes()
+  (self.root/'change-identity').write_text(json.dumps(dict(stage=stage,field=field)))
+  payload=self.payload();payload['answers'][0]=dict(question_id='q_0',selected_option_ids=[],text='GUI replacement')
+  self.assertIn('delivery uncertain',self.answer(payload,success=False))
+  self.assertTrue((self.root/'identity-changed').exists())
+  before=self.events();self.assertEqual(sum(event[0]=='paste-buffer' for event in before),0)
+  self.assertEqual(self.staged(),['GUI replacement'] if stage=='paste' else [])
+  # Restore only the synthetic identity so the durable same-request guard,
+  # rather than stale identity alone, must refuse replay after partial clearing.
+  temporary=self.record_path.with_suffix('.restored');temporary.write_bytes(original);temporary.replace(self.record_path)
+  self.assertIn('may already be in Terminal',self.answer(payload,success=False))
+  self.assertEqual(self.events(),before);self.assertNotIn('Fixture complete.',self.screen())
+ def test_single_question_change_during_clear_stops_before_paste(self):
+  self.interrupted_override('clear','question')
+ def test_single_run_change_during_clear_stops_before_paste(self):
+  self.interrupted_override('clear','run')
+ def test_single_question_change_during_paste_staging_sends_no_paste(self):
+  self.interrupted_override('paste','question')
+ def test_single_run_change_during_paste_staging_sends_no_paste(self):
+  self.interrupted_override('paste','run')
+ def test_single_focus_change_after_paste_stops_before_submission(self):
+  self.enable_gutter_capture(False);self.native_draft('Existing native answer');self.reset_events()
+  original=self.record_path.read_bytes();(self.root/'change-focus-after-paste').touch()
+  payload=self.payload();payload['answers'][0]=dict(question_id='q_0',selected_option_ids=[],text='GUI replacement')
+  self.assertIn('delivery uncertain',self.answer(payload,success=False))
+  self.assertTrue((self.root/'focus-changed').exists());self.assertEqual(self.record_path.read_bytes(),original)
+  self.assert_pastes(['GUI replacement']);before=self.events()
+  self.assertNotIn('Enter',[event[-1] for event in before if event[0]=='send-keys'])
+  self.assertEqual(len(self.inspect()['pending_questions']),1);self.assertNotIn('Fixture complete.',self.screen())
+  self.assertIn('may already be in Terminal',self.answer(payload,success=False));self.assertEqual(self.events(),before)
  def test_tabs_multi_other_and_exact_native_receipt(self):
   self.assertTrue(self.card['can_answer'],self.card['answer_unavailable_reason'])
   payload=self.payload();receipt=self.answer(payload);self.assertEqual(receipt['status'],'answered')
@@ -146,7 +273,10 @@ sys.exit(result.returncode)
   retry=dict(first,request_id=str(uuid.uuid4()))
   receipt=self.answer(retry);self.assertEqual(receipt['status'],'answered')
   keys=(self.root/'sent-keys').read_text().splitlines()[len(before):]
-  self.assertEqual([json.loads(row)[-1] for row in keys],['Enter'])
+  self.assertGreaterEqual([json.loads(row)[-1] for row in keys].count('C-u'),2)
+  self.assert_native_answer(retry)
+  custom=[answer['text'] for answer in first['answers'] if answer['text']]
+  self.assert_pastes(custom+custom)
   self.assertEqual(self.answer(retry),receipt)
   self.assertEqual(keys,(self.root/'sent-keys').read_text().splitlines()[len(before):])
  def test_gutter_review_can_change_preselected_single_choices(self):
@@ -162,19 +292,68 @@ sys.exit(result.returncode)
  def test_single_question_direct_submission(self):
   self.assertTrue(self.card['can_answer'],self.card['answer_unavailable_reason']);self.assertEqual(self.answer()['status'],'answered')
  def test_stale_request_sends_no_input(self):
-  before=self.screen();self.answer(self.payload(expected_question_hash='0'*64),success=False);self.assertEqual(before.partition("←")[2],self.screen().partition("←")[2])
+  self.enable_gutter_capture(False);before=self.screen()
+  for field,value in [('expected_question_hash','0'*64),('expected_run_id',str(uuid.uuid4())),('expected_conversation_id',str(uuid.uuid4())),('question_id','different-question')]:
+   with self.subTest(field=field):self.answer(self.payload(**{field:value}),success=False);self.assertEqual(self.events(),[])
+  self.assertEqual(before.partition('←')[2],self.screen().partition('←')[2])
  def test_preselected_options_are_reconciled_in_order(self):
   self.key('Tab');self.key('3');self.key('1');self.key('2');self.key('Left')
   self.assertEqual(self.answer()['status'],'answered')
- def test_foreign_other_draft_is_preserved(self):
-  self.key('3');self.key('x');before=self.screen();card=self.inspect()['pending_questions'][0]
-  self.assertFalse(card['can_answer']);self.answer(success=False);self.assertEqual(self.screen().partition("←")[2],before.partition("←")[2])
+ def test_foreign_other_draft_is_overridden_by_explicit_preset(self):
+  self.enable_gutter_capture(False);self.native_draft('Foreign native draft','middle');self.key('Enter');self.reset_events()
+  before=self.screen();card=self.inspect()['pending_questions'][0]
+  self.assertTrue(card['can_answer'],card['answer_unavailable_reason'])
+  self.assertEqual(self.events(),[]);self.assertEqual(self.screen().partition('←')[2],before.partition('←')[2])
+  payload=self.payload();self.assertEqual(self.answer(payload)['status'],'answered');self.assert_native_answer(payload)
+  self.assertIn('C-u',[event[-1] for event in self.events() if event[0]=='send-keys'])
+  self.assert_pastes([answer['text'] for answer in payload['answers'] if answer['text']])
+ def test_committed_matching_other_is_cleared_and_pasted_once(self):
+  payload=self.payload();payload['answers'][0]=dict(question_id='q_0',selected_option_ids=[],text='GUI   committed answer')
+  self.enable_gutter_capture(False);self.native_draft(payload['answers'][0]['text']);self.key('Enter');self.reset_events()
+  self.assertTrue(self.inspect()['pending_questions'][0]['can_answer']);self.assertEqual(self.events(),[])
+  self.assertEqual(self.answer(payload)['status'],'answered');self.assert_native_answer(payload)
+  self.assert_pastes([answer['text'] for answer in payload['answers'] if answer['text']])
+ def test_existing_multi_other_is_overridden_and_presets_reconciled(self):
+  self.key('Tab');self.enable_gutter_capture(False)
+  self.native_draft('Native multi   draft '+('wrapped detail '*12),'middle',('Down',)*3);self.reset_events()
+  payload=self.payload();payload['answers'][1]['text']='GUI multi   answer'
+  self.assertTrue(self.inspect()['pending_questions'][0]['can_answer'])
+  self.assertEqual(self.answer(payload)['status'],'answered');self.assert_native_answer(payload)
+  self.assert_pastes([answer['text'] for answer in payload['answers'] if answer['text']])
+ def test_existing_later_tab_other_is_overridden(self):
+  self.key('Tab');self.key('Tab');self.enable_gutter_capture(False)
+  self.native_draft('Old later-tab answer','start');self.reset_events()
+  payload=self.payload();self.assertTrue(self.inspect()['pending_questions'][0]['can_answer'])
+  self.assertEqual(self.answer(payload)['status'],'answered');self.assert_native_answer(payload)
+  self.assert_pastes([answer['text'] for answer in payload['answers'] if answer['text']])
+ def test_existing_review_custom_answers_can_be_changed(self):
+  self.key('2');self.key('1');self.key('3');self.key('Tab')
+  # Both existing answers normalize to the GUI form, but their literal bytes
+  # differ. Reusing a normalized Review would submit the wrong native receipt.
+  self.native_draft('Привет   from Zerus');self.key('Enter')
+  self.native_draft('  Browser check  ',choice=('Down',)*2);self.key('Up');self.key('Tab')
+  self.wait_for(lambda:'Review your answers' in self.screen());self.enable_gutter_capture(False);self.reset_events()
+  payload=self.payload();self.assertEqual(self.answer(payload)['status'],'answered');self.assert_native_answer(payload)
+  self.assert_pastes([answer['text'] for answer in payload['answers'] if answer['text']])
+ def test_review_custom_preset_label_is_cleared_for_exact_gui_preset(self):
+  self.native_draft('  Preview  ');self.key('Enter')
+  self.key('1');self.key('3');self.key('Tab');self.key('2');self.key('2');self.key('Tab')
+  self.wait_for(lambda:'Review your answers' in self.screen());self.enable_gutter_capture(False);self.reset_events()
+  payload=self.payload()
+  payload['answers'][2]=dict(question_id='q_2',selected_option_ids=['opt_2_1'],text='')
+  payload['answers'][3]=dict(question_id='q_3',selected_option_ids=['opt_3_1'],text='')
+  self.assertEqual(self.answer(payload)['status'],'answered');self.assert_native_answer(payload)
+  self.assert_pastes([])
+  self.assertIn('C-u',[event[-1] for event in self.events() if event[0]=='send-keys'])
  def test_missing_native_receipt_is_uncertain_and_never_retried(self):
+  self.enable_gutter_capture(False)
   other=self.root/'unconfirmed';other.mkdir();path=other/(self.conversation_id+'.jsonl');path.write_text('')
   self.record=json.loads(self.record_path.read_text())
   self.record['transcript']=str(path);self.write_record();payload=self.payload()
   self.assertIn('delivery uncertain',self.answer(payload,success=False))
+  before=self.events()
   self.assertIn('may already be in Terminal',self.answer(payload,success=False))
+  self.assertEqual(self.events(),before)
   self.assertNotIn('Review your answers',self.screen())
 
 if __name__=='__main__':unittest.main()

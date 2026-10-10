@@ -74,6 +74,7 @@ private slots:
     void enterRespectsSubmissionGuards();
     void enterCannotBypassQuestionNavigationOrApproval();
     void draftsSurviveRefreshAndSessionSwitch();
+    void claudeCapabilityRefreshPreservesCompletedOtherDraft();
     void replacementHashAndBackgroundReplyAreIsolated();
     void capabilityOfflineAndErrorStates();
     void freeformLimitsAndPlainText();
@@ -445,6 +446,51 @@ void TestQuestionCard::draftsSurviveRefreshAndSessionSwitch()
     QCOMPARE(card.findChild<QTabBar *>("questionTabs")->currentIndex(), 1);
     card.setQuestion({}, {}); QVERIFY(card.isHidden());
     card.setQuestion("arch/session", request()); QVERIFY(submit(card)->isEnabled());
+}
+
+void TestQuestionCard::claudeCapabilityRefreshPreservesCompletedOtherDraft()
+{
+    QWidget activity; activity.resize(700, 800);
+    auto *layout = new QVBoxLayout(&activity);
+    layout->addWidget(new QTextBrowser, 1);
+    auto *card = new QuestionCard; layout->addWidget(card);
+    auto data = request(); data["source"] = "hook"; data["can_answer"] = false;
+    data["answer_unavailable_reason"] = "Finish the existing Other draft in Terminal.";
+    auto questions = data["questions"].toArray(); auto last = questions[1].toObject();
+    last["question"] = QString("Which checks should run? Review the synthetic fixture details.\n").repeated(80);
+    questions[1] = last; data["questions"] = questions;
+    card->setQuestion("fixture/claude", data); activity.show();
+    option(*card, "opt_0_1")->click();
+    auto *tabs = card->findChild<QTabBar *>("questionTabs"); tabs->setCurrentIndex(1);
+    other(*card, "q_1")->click();
+    auto *editor = text(*card, "q_1");
+    const QString draft = "Keep this completed Other answer exactly, including Unicode: Привет.";
+    editor->setText(draft); editor->setFocus(); editor->setSelection(5, 14);
+    const int cursor = editor->cursorPosition();
+    const QString selection = editor->selectedText();
+    auto *pages = card->findChild<QStackedWidget *>("questionPages");
+    auto *page = pages->currentWidget();
+    auto *scroll = page->findChild<QScrollArea *>("questionContent")->verticalScrollBar();
+    QTRY_VERIFY(scroll->maximum() > 100);
+    scroll->setValue(50); QCOMPARE(scroll->value(), 50);
+    QVERIFY(submit(*card)->isVisible()); QVERIFY(!submit(*card)->isEnabled());
+    QCOMPARE(card->findChild<QLabel *>("questionProgress")->text(), QString("2 of 2 answered"));
+    QSignalSpy sent(card, &QuestionCard::answerRequested);
+
+    data["can_answer"] = true; data.remove("answer_unavailable_reason");
+    card->setQuestion("fixture/claude", data);
+    QTRY_VERIFY(submit(*card)->isEnabled());
+    QCOMPARE(text(*card, "q_1"), editor); QCOMPARE(editor->text(), draft);
+    QCOMPARE(editor->cursorPosition(), cursor); QCOMPARE(editor->selectedText(), selection);
+    QCOMPARE(tabs->currentIndex(), 1); QCOMPARE(pages->currentWidget(), page);
+    QCOMPARE(scroll->value(), 50); QVERIFY(other(*card, "q_1")->isChecked());
+    QVERIFY(option(*card, "opt_0_1")->isChecked()); QCOMPARE(sent.size(), 0);
+    // A later poll still cannot submit; only the user's explicit action does.
+    card->setQuestion("fixture/claude", data); QCOMPARE(sent.size(), 0);
+    submit(*card)->click(); QCOMPARE(sent.size(), 1);
+    QCOMPARE(sent.first()[2].toJsonArray(), QJsonArray({
+        QJsonObject{{"question_id", "q_0"}, {"selected_option_ids", QJsonArray{"opt_0_1"}}, {"text", ""}},
+        QJsonObject{{"question_id", "q_1"}, {"selected_option_ids", QJsonArray{}}, {"text", draft}}}));
 }
 
 void TestQuestionCard::replacementHashAndBackgroundReplyAreIsolated()

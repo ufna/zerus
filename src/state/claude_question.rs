@@ -17,6 +17,7 @@ enum Panel {
         focused: usize,
         checked: BTreeSet<usize>,
         other: String,
+        empty_other: bool,
     },
     Review {
         answers: Vec<String>,
@@ -35,11 +36,145 @@ fn numbered(row: &str) -> Option<(usize, bool, &str)> {
     let row = row.trim();
     let focused = row.starts_with('❯');
     let row = row.strip_prefix('❯').unwrap_or(row).trim_start();
-    let (number, text) = row.split_once(". ")?;
+    // A hard-newline draft can leave the first editor row empty. Keep the
+    // numbered Other row recognizable while later rows still contain text.
+    let (number, text) = row
+        .split_once(". ")
+        .or_else(|| row.strip_suffix('.').map(|number| (number, "")))?;
     Some((number.parse::<usize>().ok()?.checked_sub(1)?, focused, text))
 }
 fn divider(row: &str) -> bool {
     row.chars().count() > 10 && row.chars().all(|c| c == '─')
+}
+// Keep the native styling of Other: its empty hint looks identical to a
+// literal answer, and Claude decorates committed answers with a green check.
+// Unknown styling is retained as text, never treated as an empty input.
+#[derive(Clone, Copy, Default)]
+struct OtherStyle {
+    dim: bool,
+    inverse: bool,
+    color: Option<u16>,
+}
+fn styled_rows(screen: &str) -> Result<Vec<Vec<(char, OtherStyle)>>> {
+    let mut rows = vec![Vec::new()];
+    let mut style = OtherStyle::default();
+    let mut chars = screen.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            if chars.next() == Some('[') {
+                let codes: String = chars.by_ref().take_while(|ch| *ch != 'm').collect();
+                let codes: Vec<_> = codes
+                    .split(';')
+                    .map(|v| {
+                        if v.is_empty() {
+                            Ok(0)
+                        } else {
+                            v.parse::<u16>()
+                                .map_err(|_| "Unsupported Claude question styling".to_owned())
+                        }
+                    })
+                    .collect::<Result<_>>()?;
+                let mut i = 0;
+                while i < codes.len() {
+                    match codes[i] {
+                        0 => style = OtherStyle::default(),
+                        2 => style.dim = true,
+                        7 => style.inverse = true,
+                        22 => style.dim = false,
+                        27 => style.inverse = false,
+                        39 => style.color = None,
+                        30..=37 | 90..=97 => style.color = Some(codes[i]),
+                        38 | 48 | 58 => {
+                            let length = match codes.get(i + 1) {
+                                Some(5) => 2,
+                                Some(2) => 4,
+                                _ => return Err("Unsupported Claude question color".into()),
+                            };
+                            if codes.get(i + length).is_none()
+                                || codes[i + 2..=i + length].iter().any(|value| *value > 255)
+                            {
+                                return Err("Incomplete Claude question color".into());
+                            }
+                            if codes[i] == 38 {
+                                style.color = if length == 2 {
+                                    Some(codes[i + 2])
+                                } else {
+                                    None
+                                };
+                            }
+                            i += length;
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+            } else {
+                // plain() has already validated this bounded OSC 8 hyperlink.
+                while let Some(ch) = chars.next() {
+                    if ch == '\x07' || (ch == '\x1b' && chars.next() == Some('\\')) {
+                        break;
+                    }
+                }
+            }
+        } else if ch == '\n' {
+            rows.push(Vec::new());
+        } else {
+            rows.last_mut().unwrap().push((ch, style));
+        }
+    }
+    let first = rows
+        .iter()
+        .position(|row| row.iter().any(|(ch, _)| !ch.is_whitespace()))
+        .unwrap_or(rows.len());
+    let last = rows
+        .iter()
+        .rposition(|row| row.iter().any(|(ch, _)| !ch.is_whitespace()))
+        .map_or(first, |i| i + 1);
+    Ok(rows[first..last].to_vec())
+}
+fn committed_other(row: &[(char, OtherStyle)]) -> bool {
+    row.len() >= 2
+        && row[row.len() - 2].0 == ' '
+        && row
+            .last()
+            .is_some_and(|(ch, style)| *ch == '✔' && style.color == Some(114))
+}
+fn empty_hint(rows: &[Vec<(char, OtherStyle)>]) -> bool {
+    let [row] = rows else {
+        return false;
+    };
+    // Revisiting a committed single answer retains Claude's green check even
+    // after its editor is cleared. It is decoration only in this exact style.
+    let row = if committed_other(row) {
+        &row[..row.len() - 2]
+    } else {
+        row.as_slice()
+    };
+    ["Type something", "Type something."]
+        .contains(&row.iter().map(|(ch, _)| ch).collect::<String>().as_str())
+        && row.iter().enumerate().all(|(i, (_, style))| {
+            style.dim || style.color == Some(246) || (i == 0 && style.inverse)
+        })
+}
+// This checks only text we have just pasted into a proven empty editor. It
+// never authorizes reuse of a native draft: wrapping hides boundary spaces.
+fn pasted_projection(other: &str, expected: &str) -> bool {
+    let mut remaining = expected;
+    for (index, row) in other.split('\n').enumerate() {
+        if index > 0 {
+            remaining = remaining.trim_start();
+        }
+        let row = row.trim_start();
+        let Some(rest) = remaining.strip_prefix(row) else {
+            return false;
+        };
+        remaining = rest;
+    }
+    remaining.is_empty()
+}
+fn pasted_editor(panel: &Panel, index: usize, count: usize, text: &str) -> bool {
+    matches!(panel,Panel::Question{index:i,focused:f,other,empty_other:false,..}
+        if *i==index && *f==count && pasted_projection(other,text))
 }
 pub(super) fn same_panel(first: &str, second: &str, card: &Value) -> bool {
     matches!((parse(first,card),parse(second,card)),(Ok(a),Ok(b)) if a==b)
@@ -47,6 +182,10 @@ pub(super) fn same_panel(first: &str, second: &str, card: &Value) -> bool {
 fn parse(screen: &str, card: &Value) -> Result<Panel> {
     let plain = question_terminal::plain(screen)?;
     let rows: Vec<_> = plain.trim().lines().map(str::trim).collect();
+    let styled = styled_rows(screen)?;
+    if styled.len() != rows.len() {
+        return Err("Unrecognized Claude question styling".into());
+    }
     let items = card["questions"]
         .as_array()
         .ok_or("Missing Claude question schema")?;
@@ -71,6 +210,7 @@ fn parse(screen: &str, card: &Value) -> Result<Panel> {
         return Err("Unrecognized Claude question panel".into());
     }
     let rows = &rows[start + 1..];
+    let styled = &styled[start + 1..];
     let title = rows
         .iter()
         .position(|r| !r.is_empty())
@@ -85,7 +225,10 @@ fn parse(screen: &str, card: &Value) -> Result<Panel> {
         let gutter = rows[title + 1..end]
             .iter()
             .find(|row| !row.is_empty())
-            .is_some_and(|row| row.strip_prefix("│ ").is_some_and(|text| text.trim_start().starts_with("● ")));
+            .is_some_and(|row| {
+                row.strip_prefix("│ ")
+                    .is_some_and(|text| text.trim_start().starts_with("● "))
+            });
         for row in &rows[title + 1..end] {
             // The same gutter appears on review question headings and their
             // wrapped lines. Answer text is not decorated: a literal bar in a
@@ -179,9 +322,11 @@ fn parse(screen: &str, card: &Value) -> Result<Panel> {
         .map(|(i, _)| i)
         .ok_or("Claude choices are clipped")?;
     let mut labels: Vec<(String, String)> = Vec::new();
+    let mut other_rows = Vec::new();
+    let mut in_other = false;
     let mut focused = None;
     let mut checked = BTreeSet::new();
-    for row in &rows[first..end] {
+    for (row, styled) in rows[first..end].iter().zip(&styled[first..end]) {
         if let Some((number, selected, text)) = numbered(row) {
             if number != labels.len()
                 || number > options.len()
@@ -200,13 +345,34 @@ fn parse(screen: &str, card: &Value) -> Result<Panel> {
             } else {
                 text
             };
+            if number == options.len() {
+                in_other = true;
+                let margin = styled
+                    .iter()
+                    .position(|(ch, _)| !ch.is_whitespace())
+                    .unwrap_or(0);
+                let mut offset = margin + row[..row.len() - text.len()].chars().count();
+                if text.is_empty() && styled.get(offset).is_some_and(|(ch, _)| *ch == ' ') {
+                    offset += 1; // The exact numbered-row separator, not editor text.
+                }
+                other_rows.push(styled[offset..].to_vec());
+            }
             labels.push((text.into(), String::new()));
-        } else if !row.is_empty() && !["Next", "Submit", "❯ Next", "❯ Submit"].contains(row) {
+        } else if ["Next", "Submit", "❯ Next", "❯ Submit"].contains(row) {
+            in_other = false;
+        } else if !row.is_empty() {
             // Descriptions wrap below their labels. Reject missing/clipped labels
             // rather than applying an option index to a partial menu.
             let last = labels.last_mut().ok_or("Unexpected option description")?;
             last.1.push(' ');
             last.1.push_str(row);
+            if in_other {
+                other_rows.push(styled.clone());
+            }
+        } else if in_other {
+            // Blank editor rows are actual newline evidence, even when the
+            // cursor is elsewhere. Do not trim them into an empty hint.
+            other_rows.push(styled.clone());
         }
     }
     if labels.len() != options.len() + 1 {
@@ -215,27 +381,53 @@ fn parse(screen: &str, card: &Value) -> Result<Panel> {
     for (number, ((label, description), option)) in labels.iter().zip(options).enumerate() {
         let expected = norm(string(option, "label"));
         let committed = item["multi_select"] != true
-            && label.strip_suffix(" ✔").is_some_and(|text| norm(text) == expected);
+            && label
+                .strip_suffix(" ✔")
+                .is_some_and(|text| norm(text) == expected);
         if (norm(label) != expected && !committed)
-            || norm(description) != norm(string(option, "description")) {
+            || norm(description) != norm(string(option, "description"))
+        {
             return Err("Claude's visible options differ from this request".into());
         }
-        if committed { checked.insert(number); }
+        if committed {
+            checked.insert(number);
+        }
     }
     if item["multi_select"] != true && checked.len() > 1 {
         return Err("Claude shows multiple selected answers for a single choice".into());
     }
-    let other = &labels[options.len()].0;
-    let other = if ["Type something", "Type something."].contains(&other.as_str()) {
-        String::new()
-    } else {
-        norm(other)
-    };
+    let empty_other = empty_hint(&other_rows);
+    // Strip only the styled native commit marker before locating the cursor.
+    // Its state still participates in panel identity through checked.
+    if let Some(last) = other_rows.last_mut() {
+        if committed_other(last) {
+            last.truncate(last.len() - 2);
+            checked.insert(options.len());
+        }
+    }
+    if item["multi_select"] != true && checked.len() > 1 {
+        return Err("Claude shows multiple selected answers for a single choice".into());
+    }
+    // Remove exactly the inverse trailing cursor cell, never real spaces.
+    if let Some(last) = other_rows.last_mut() {
+        if last
+            .last()
+            .is_some_and(|(ch, style)| *ch == ' ' && style.inverse)
+        {
+            last.pop();
+        }
+    }
+    let other = other_rows
+        .iter()
+        .map(|row| row.iter().map(|(ch, _)| ch).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
     Ok(Panel::Question {
         index,
         focused: focused.ok_or("Select an answer option in Terminal first")?,
         checked,
         other,
+        empty_other,
     })
 }
 fn wait<T: Transport>(
@@ -263,18 +455,13 @@ fn goto<T: Transport>(io: &mut T, card: &Value, index: usize) -> Result<Panel> {
         if current == index {
             return Ok(panel);
         }
-        if let Panel::Question { focused, other, .. } = &panel {
+        if let Panel::Question { focused, .. } = &panel {
             if *focused == items[current]["options"].as_array().unwrap().len() {
-                if !other.is_empty() {
-                    return Err(
-                        "Finish the existing Other draft in Terminal before answering".into(),
-                    );
-                }
                 io.key("Up")?;
                 wait(
                     io,
                     card,
-                    |p| matches!(p,Panel::Question{focused:f,..} if *f<*focused),
+                    |p| matches!(p,Panel::Question{index:i,focused:f,..} if *i==current && *f==*focused-1),
                 )?;
             }
         }
@@ -289,41 +476,159 @@ fn goto<T: Transport>(io: &mut T, card: &Value, index: usize) -> Result<Panel> {
     }
     Err("Could not reach the requested Claude question".into())
 }
+fn focus_other<T: Transport>(io: &mut T, card: &Value, index: usize) -> Result<()> {
+    let item = &card["questions"][index];
+    let count = item["options"].as_array().unwrap().len();
+    let Panel::Question {
+        index: current,
+        focused,
+        ..
+    } = parse(&io.screen()?, card)?
+    else {
+        return Err("Claude left the current question".into());
+    };
+    if current != index {
+        return Err("Claude changed question during selection".into());
+    }
+    // Numeric single-choice keys activate a committed Other immediately.
+    // Arrow navigation enters its editor without submitting the old answer.
+    for next in focused + 1..=count {
+        io.key("Down")?;
+        wait(io, card, |p| {
+            matches!(p,Panel::Question{index:i,focused:f,..}
+            if *i==index && *f==next)
+        })?;
+    }
+    Ok(())
+}
+fn clear_other<T: Transport>(io: &mut T, card: &Value, index: usize) -> Result<()> {
+    focus_other(io, card, index)?;
+    let count = card["questions"][index]["options"]
+        .as_array()
+        .unwrap()
+        .len();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut right_without_progress = false;
+    for _ in 0..128 {
+        let panel = parse(&io.screen()?, card)?;
+        if matches!(&panel,Panel::Question{index:i,focused:f,empty_other:true,..} if *i==index && *f==count)
+        {
+            return Ok(());
+        }
+        if !matches!(&panel,Panel::Question{index:i,focused:f,..} if *i==index && *f==count) {
+            return Err("Claude left the Other editor".into());
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        // Native clearing operates on a visual line. Repeat only after a
+        // verified reduction, with one shared deadline for the whole clear.
+        io.key("C-e")?;
+        let Panel::Question {
+            index: current,
+            focused,
+            other: before,
+            ..
+        } = parse(&io.screen()?, card)?
+        else {
+            return Err("Claude left the Other editor".into());
+        };
+        if current != index || focused != count {
+            return Err("Claude left the Other editor".into());
+        }
+        io.key("C-u")?;
+        let progress_deadline = deadline.min(Instant::now() + Duration::from_millis(750));
+        loop {
+            let panel = parse(&io.screen()?, card)?;
+            let Panel::Question {
+                index: current,
+                focused,
+                other,
+                empty_other,
+                ..
+            } = panel
+            else {
+                return Err("Claude left the Other editor".into());
+            };
+            if current != index || focused != count {
+                return Err("Claude left the Other editor".into());
+            }
+            if empty_other {
+                return Ok(());
+            }
+            if other.chars().count() < before.chars().count() {
+                right_without_progress = false;
+                break;
+            }
+            if Instant::now() >= progress_deadline {
+                // C-u can reach the beginning of a hard line while another
+                // newline remains ahead. Traverse one proven blank boundary,
+                // then require the normal clear to make progress again.
+                if !right_without_progress
+                    && Instant::now() < deadline
+                    && other
+                        .split_once('\n')
+                        .is_some_and(|(first, _)| first.trim().is_empty())
+                {
+                    io.key("Right")?;
+                    if !matches!(parse(&io.screen()?,card)?,Panel::Question{index:i,focused:f,empty_other:false,..}
+                        if i==index && f==count)
+                    {
+                        return Err("Claude left the Other editor during newline traversal".into());
+                    }
+                    right_without_progress = true;
+                    break;
+                }
+                return Err("Claude did not confirm clearing Other; inspect Terminal".into());
+            }
+            io.pause();
+        }
+    }
+    Err("Claude Other clearing exceeded its bounded limit; inspect Terminal".into())
+}
 fn selected_options(item: &Value, answer: &Value) -> BTreeSet<usize> {
-    item["options"].as_array().unwrap().iter().enumerate()
-        .filter(|(_, option)| answer["selected_option_ids"].as_array().unwrap().contains(&option["id"]))
-        .map(|(index, _)| index).collect()
+    item["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+        .filter(|(_, option)| {
+            answer["selected_option_ids"]
+                .as_array()
+                .unwrap()
+                .contains(&option["id"])
+        })
+        .map(|(index, _)| index)
+        .collect()
 }
 fn drive<T: Transport>(io: &mut T, card: &Value, answers: &Value) -> Result<()> {
     let items = card["questions"].as_array().ok_or("Missing questions")?;
     let answers = answers.as_array().ok_or("Missing answers")?;
-    let wanted: Vec<_> = items.iter().zip(answers).map(|(item, answer)| {
-        let mut labels: Vec<_> = selected_options(item, answer).iter()
-            .map(|index| string(&item["options"][*index], "label").to_owned()).collect();
-        if !string(answer, "text").is_empty() { labels.push(string(answer, "text").into()); }
-        norm(&labels.join(", "))
-    }).collect();
-    // A failed pre-submit attempt may already have populated the exact review.
-    // Confirm that state directly instead of revisiting every committed choice.
-    if matches!(parse(&io.screen()?, card)?, Panel::Review { answers, .. } if answers == wanted) {
-        return submit_review(io, card, &wanted);
-    }
-    for (index, (item, answer)) in items
+    let wanted: Vec<_> = items
         .iter()
         .zip(answers)
-        .enumerate()
-    {
+        .map(|(item, answer)| {
+            let mut labels: Vec<_> = selected_options(item, answer)
+                .iter()
+                .map(|index| string(&item["options"][*index], "label").to_owned())
+                .collect();
+            if !string(answer, "text").is_empty() {
+                labels.push(string(answer, "text").into());
+            }
+            norm(&labels.join(", "))
+        })
+        .collect();
+    // Even a review that looks identical can contain a native custom answer
+    // equal to a preset label. Explicit Submit always reconciles every editor.
+    for (index, (item, answer)) in items.iter().zip(answers).enumerate() {
         let options = item["options"].as_array().unwrap();
         let count = options.len();
         let selected = selected_options(item, answer);
         let text = string(answer, "text");
         let multi = item["multi_select"] == true;
-        let panel = goto(io, card, index)?;
-        if let Panel::Question { other, .. } = &panel {
-            if !other.is_empty() && norm(other) != norm(text) {
-                return Err("Another Other draft exists in Terminal; it was preserved".into());
-            }
-        }
+        goto(io, card, index)?;
+        // Explicit Submit makes the GUI form authoritative, including presets.
+        clear_other(io, card, index)?;
         if multi {
             for pass in 0..2 {
                 for option in 0..=count {
@@ -346,7 +651,7 @@ fn drive<T: Transport>(io: &mut T, card: &Value, answers: &Value) -> Result<()> 
                         wait(
                             io,
                             card,
-                            |p| matches!(p,Panel::Question{focused:f,..} if *f<count),
+                            |p| matches!(p,Panel::Question{index:i,focused:f,empty_other:true,..} if *i==index && *f==count-1),
                         )?;
                     }
                     let desired = pass == 1 && option < count && selected.contains(&option);
@@ -362,65 +667,59 @@ fn drive<T: Transport>(io: &mut T, card: &Value, answers: &Value) -> Result<()> 
             }
         }
         if !text.is_empty() {
+            focus_other(io, card, index)?;
             let panel = parse(&io.screen()?, card)?;
-            let Panel::Question { focused, other, .. } = panel else {
-                return Err("Claude left the current question".into());
-            };
-            if focused != count {
-                // Numeric input chooses Other for a single-select; on a multi-
-                // select it toggles, so focus Other with verified Down presses.
-                if multi {
-                    for next in focused + 1..=count {
-                        io.key("Down")?;
-                        wait(
-                            io,
-                            card,
-                            |p| matches!(p,Panel::Question{focused:f,..} if *f==next),
-                        )?;
-                    }
-                } else {
-                    io.key(&(count + 1).to_string())?;
-                    wait(
-                        io,
-                        card,
-                        |p| matches!(p,Panel::Question{focused:f,..} if *f==count),
-                    )?;
-                }
+            if !matches!(panel,Panel::Question{index:i,focused:f,empty_other:true,..} if i==index && f==count)
+            {
+                return Err("Claude Other is no longer empty; inspect Terminal".into());
             }
-            if other.is_empty() {
-                io.paste(text)?;
-                wait(
-                    io,
-                    card,
-                    |p| matches!(p,Panel::Question{other,..} if norm(other)==norm(text)),
-                )?;
+            io.paste(text)?;
+            wait(io, card, |p| pasted_editor(p, index, count, text))?;
+            // A concurrent navigation cannot turn a verified paste into a
+            // commit of the highlighted preset on another panel.
+            if !pasted_editor(&parse(&io.screen()?, card)?, index, count, text) {
+                return Err("Claude changed the pasted Other editor".into());
             }
             if multi {
                 // Typing selects Other automatically; Enter in this text
                 // field is a no-op. Preserve its checked state when leaving.
                 io.key("Up")?;
-                wait(
-                    io,
-                    card,
-                    |p| matches!(p,Panel::Question{focused:f,..} if *f<count),
-                )?;
+                wait(io, card, |p| {
+                    matches!(p,Panel::Question{index:i,focused:f,other,empty_other:false,..}
+                    if *i==index && *f==count-1 && pasted_projection(other,text))
+                })?;
                 let p = parse(&io.screen()?, card)?;
-                if matches!(&p,Panel::Question{checked,..} if !checked.contains(&count)) {
-                    io.key(&(count + 1).to_string())?;
-                    wait(
-                        io,
-                        card,
-                        |p| matches!(p,Panel::Question{other,checked,..} if norm(other)==norm(text) && checked.contains(&count)),
-                    )?;
+                let Panel::Question {
+                    index: current,
+                    focused,
+                    other,
+                    checked,
+                    empty_other,
+                    ..
+                } = p
+                else {
+                    return Err("Claude left the pasted question".into());
+                };
+                if current != index
+                    || focused != count - 1
+                    || empty_other
+                    || !pasted_projection(&other, text)
+                {
+                    return Err("Claude changed the pasted question".into());
                 }
-                let p = parse(&io.screen()?, card)?;
-                if matches!(p,Panel::Question{focused:f,..} if f==count) {
-                    io.key("Up")?;
-                    wait(
-                        io,
-                        card,
-                        |p| matches!(p,Panel::Question{focused:f,..} if *f<count),
-                    )?;
+                let mut desired = selected.clone();
+                desired.insert(count);
+                if !checked.contains(&count) {
+                    io.key(&(count + 1).to_string())?;
+                    wait(io, card, |p| {
+                        matches!(p,Panel::Question{index:i,focused:f,other,checked,empty_other:false,..}
+                        if *i==index && *f==count-1 && pasted_projection(other,text) && *checked==desired)
+                    })?;
+                }
+                if !matches!(parse(&io.screen()?,card)?,Panel::Question{index:i,focused:f,other,checked,empty_other:false,..}
+                    if i==index && f==count-1 && pasted_projection(&other,text) && checked==desired)
+                {
+                    return Err("Claude changed the selected Other answer".into());
                 }
                 io.key("Tab")?;
             } else {
@@ -430,6 +729,11 @@ fn drive<T: Transport>(io: &mut T, card: &Value, answers: &Value) -> Result<()> 
                 }
             }
         } else if multi {
+            if !matches!(parse(&io.screen()?,card)?,Panel::Question{index:i,focused:f,checked,empty_other:true,..}
+                if i==index && f<count && checked==selected)
+            {
+                return Err("Claude changed the selected preset answers".into());
+            }
             io.key("Tab")?;
         } else {
             let panel = parse(&io.screen()?, card)?;
@@ -438,8 +742,13 @@ fn drive<T: Transport>(io: &mut T, card: &Value, answers: &Value) -> Result<()> 
                 wait(
                     io,
                     card,
-                    |p| matches!(p,Panel::Question{focused:f,..} if *f<count),
+                    |p| matches!(p,Panel::Question{index:i,focused:f,empty_other:true,..} if *i==index && *f==count-1),
                 )?;
+            }
+            if !matches!(parse(&io.screen()?,card)?,Panel::Question{index:i,focused:f,empty_other:true,..}
+                if i==index && f<count)
+            {
+                return Err("Claude changed the cleared question".into());
             }
             io.key(&(selected.iter().next().ok_or("Missing selected answer")? + 1).to_string())?;
             if items.len() == 1 {
@@ -473,7 +782,8 @@ fn submit_review<T: Transport>(io: &mut T, card: &Value, wanted: &[String]) -> R
             |p| matches!(p,Panel::Review{answers,focused:0} if answers.as_slice()==wanted),
         )?;
     }
-    if !matches!(parse(&io.screen()?,card)?,Panel::Review{answers,focused:0} if answers.as_slice()==wanted) {
+    if !matches!(parse(&io.screen()?,card)?,Panel::Review{answers,focused:0} if answers.as_slice()==wanted)
+    {
         return Err("Claude's final review changed".into());
     }
     io.key("Enter")
@@ -488,10 +798,9 @@ pub(super) fn available(record: &Value, card: &Value) -> Result<()> {
     if response(&current, card)?.is_some() {
         return Err("This Claude question was already answered; refresh Activity".into());
     }
-    let panel = parse(&Native::capture(&current)?, card)?;
-    if matches!(panel,Panel::Question{other,..} if !other.is_empty()) {
-        return Err("Finish the existing Other draft in Terminal before answering".into());
-    }
+    // Inspection never edits Terminal. Explicit Submit clears/replaces native
+    // Other from the authoritative GUI form after per-write identity checks.
+    parse(&Native::capture(&current)?, card)?;
     Ok(())
 }
 pub(super) fn answer(record: &Value, card: &Value, answers: &Value) -> Result<()> {
@@ -598,7 +907,7 @@ mod tests {
             matches!(parse(include_str!("../../tests/fixtures/claude-question-multi-selected.txt"),&card).unwrap(),Panel::Question{index:1,checked,..} if checked==BTreeSet::from([0,2]))
         );
         assert!(
-            matches!(parse(include_str!("../../tests/fixtures/claude-question-other.txt"),&card).unwrap(),Panel::Question{index:2,focused:2,other,..} if other.is_empty())
+            matches!(parse(include_str!("../../tests/fixtures/claude-question-other.txt"),&card).unwrap(),Panel::Question{index:2,focused:2,other,..} if other=="Type something.")
         );
         assert!(
             matches!(parse(include_str!("../../tests/fixtures/claude-question-other-filled.txt"),&card).unwrap(),Panel::Question{index:2,focused:2,other,..} if other=="Привет from Zerus")
@@ -632,7 +941,10 @@ mod tests {
             "│ Which release should\n  we prepare?",
         ] {
             let decorated = screen.replace("Which release should we prepare?", prompt);
-            assert_eq!(parse(&decorated, &card).unwrap(), parse(screen, &card).unwrap());
+            assert_eq!(
+                parse(&decorated, &card).unwrap(),
+                parse(screen, &card).unwrap()
+            );
             assert!(same_panel(screen, &decorated, &card));
             for changed in [
                 decorated.replace("should", "must"),
@@ -646,7 +958,10 @@ mod tests {
         // A literal leading bar in the request remains valid too.
         let mut literal = card.clone();
         literal["questions"][0]["question"] = json!("│ Which release should we prepare?");
-        let screen = screen.replace("Which release should we prepare?", "│ Which release should we prepare?");
+        let screen = screen.replace(
+            "Which release should we prepare?",
+            "│ Which release should we prepare?",
+        );
         assert!(parse(&screen, &literal).is_ok());
     }
     #[test]
@@ -659,8 +974,10 @@ mod tests {
         let styled = screen.replace("│", "\x1b[2m│\x1b[0m");
         assert!(same_panel(&styled, screen, &card));
         let literal = screen.replace("Привет from Zerus", "Привет from\n       │ Zerus");
-        assert!(matches!(parse(&literal, &card).unwrap(), Panel::Review { answers, .. }
-            if answers[2] == "Привет from │ Zerus"));
+        assert!(
+            matches!(parse(&literal, &card).unwrap(), Panel::Review { answers, .. }
+            if answers[2] == "Привет from │ Zerus")
+        );
         assert!(!same_panel(screen, &literal, &card));
         for changed in [
             screen.replace("we prepare?", "we publish?"),
@@ -676,16 +993,234 @@ mod tests {
         let card = card();
         let screen = include_str!("../../tests/fixtures/claude-question-single.txt");
         let chosen = screen.replace("2. Preview", "2. Preview ✔");
-        assert!(matches!(parse(&chosen, &card).unwrap(), Panel::Question { checked, .. }
-            if checked == BTreeSet::from([1])));
+        assert!(
+            matches!(parse(&chosen, &card).unwrap(), Panel::Question { checked, .. }
+            if checked == BTreeSet::from([1]))
+        );
         assert!(!same_panel(screen, &chosen, &card));
         assert!(parse(&chosen.replace("1. Stable", "1. Stable ✔"), &card).is_err());
         assert!(parse(&chosen.replace("2. Preview", "2. Different"), &card).is_err());
         let mut literal = card.clone();
         literal["questions"][0]["options"][1]["label"] = json!("Preview ✔");
         assert!(parse(&chosen, &literal).is_ok());
-        assert!(matches!(parse(&chosen.replace("Preview ✔", "Preview ✔ ✔"), &literal).unwrap(),
-            Panel::Question { checked, .. } if checked == BTreeSet::from([1])));
+        assert!(
+            matches!(parse(&chosen.replace("Preview ✔", "Preview ✔ ✔"), &literal).unwrap(),
+            Panel::Question { checked, .. } if checked == BTreeSet::from([1]))
+        );
+    }
+    fn other_screen(text: &str) -> String {
+        include_str!("../../tests/fixtures/claude-question-other.txt")
+            .replace("Type something.", text)
+    }
+    fn styled_empty() -> String {
+        other_screen("\x1b[7mT\x1b[0;2mype something.\x1b[0m")
+    }
+    #[test]
+    fn empty_editor_requires_native_hint_styling() {
+        let card = card();
+        assert!(matches!(
+            parse(&styled_empty(), &card).unwrap(),
+            Panel::Question {
+                empty_other: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            parse(
+                &other_screen("\x1b[7mT\x1b[0;2mype something.\x1b[0m \x1b[38;5;114m✔\x1b[39m"),
+                &card
+            )
+            .unwrap(),
+            Panel::Question {
+                empty_other: true,
+                ..
+            }
+        ));
+        for text in [
+            "Type something. \x1b[38;5;114m✔\x1b[39m",
+            "Type something.",
+            "Type something.\x1b[7m \x1b[0m",
+            "\x1b[7mT\x1b[0mype something.",
+            "literal \x1b[7m \x1b[0m",
+        ] {
+            assert!(
+                matches!(
+                    parse(&other_screen(text), &card).unwrap(),
+                    Panel::Question {
+                        empty_other: false,
+                        ..
+                    }
+                ),
+                "{text:?}"
+            );
+        }
+        for escape in [
+            "\x1b[38:5:246m",
+            "\x1b[38;5m",
+            "\x1b[38;2;1;2m",
+            "\x1b[48;5;256m",
+            "\x1b[58;2;1m",
+        ] {
+            assert!(parse(
+                &other_screen(&format!("{escape}Type something.\x1b[0m")),
+                &card
+            )
+            .is_err());
+        }
+    }
+    #[test]
+    fn other_identity_preserves_visible_spaces_and_wrapped_rows() {
+        let card = card();
+        let screen = other_screen("draft  text  \x1b[7m \x1b[0m");
+        assert!(matches!(parse(&screen, &card).unwrap(),
+            Panel::Question { other, .. } if other == "draft  text  "));
+        assert!(!same_panel(
+            &screen,
+            &screen.replace("draft  text", "draft text"),
+            &card
+        ));
+        assert!(!same_panel(
+            &screen,
+            &screen.replace("text  ", "text "),
+            &card
+        ));
+        let wrapped = other_screen("first\n     second\x1b[7m \x1b[0m");
+        assert!(matches!(parse(&wrapped, &card).unwrap(),
+            Panel::Question { other, .. } if other == "first\n     second"));
+        assert!(!same_panel(
+            &wrapped,
+            &wrapped.replace("second", "different"),
+            &card
+        ));
+    }
+    #[test]
+    fn blank_first_other_row_keeps_hard_newline_tail_visible() {
+        let card = card();
+        let raw = other_screen("\x1b[7m \x1b[0m\n     Third native line");
+        assert!(
+            matches!(parse(&raw, &card).unwrap(), Panel::Question { focused:2, other, empty_other:false, .. }
+            if other.ends_with("\n     Third native line"))
+        );
+        assert!(parse(&raw.replace("1. Nothing", "1."), &card).is_err());
+        let blank = other_screen("\x1b[7m \x1b[0m\n     ");
+        assert!(
+            matches!(parse(&blank, &card).unwrap(), Panel::Question { other, empty_other:false, .. }
+            if other.contains('\n'))
+        );
+    }
+    #[test]
+    fn committed_other_decoration_preserves_literal_text_and_native_selection() {
+        let card = card();
+        let raw = other_screen("answer  ✔\x1b[7m \x1b[0m \x1b[38;5;114m✔\x1b[39m");
+        assert!(
+            matches!(parse(&raw, &card).unwrap(), Panel::Question { other, checked, empty_other:false, .. }
+            if other == "answer  ✔" && checked == BTreeSet::from([2]))
+        );
+        let literal = other_screen("answer  ✔\x1b[7m \x1b[0m");
+        assert!(
+            matches!(parse(&literal, &card).unwrap(), Panel::Question { other, checked, .. }
+            if other == "answer  ✔" && checked.is_empty())
+        );
+        assert!(!same_panel(&raw, &literal, &card));
+    }
+    #[test]
+    fn freshly_pasted_projection_requires_complete_text_and_editor_focus() {
+        for (visible, text) in [
+            ("first\n     second", "first   second"),
+            ("longtoken\n     continuation", "longtokencontinuation"),
+            ("Привет\n     из Zerus", "Привет из Zerus"),
+            ("Type something.", "Type something."),
+        ] {
+            assert!(pasted_projection(visible, text));
+            let panel = Panel::Question {
+                index: 2,
+                focused: 2,
+                checked: BTreeSet::new(),
+                other: visible.into(),
+                empty_other: false,
+            };
+            assert!(pasted_editor(&panel, 2, 2, text));
+            assert!(!pasted_editor(&panel, 1, 2, text));
+            assert!(!pasted_editor(&panel, 2, 1, text));
+        }
+        for (visible, text) in [
+            ("draft  text", "draft text"),
+            ("draft", "draft suffix"),
+            ("prefix draft", "draft"),
+            ("Type something.", "Type something"),
+        ] {
+            assert!(!pasted_projection(visible, text));
+        }
+    }
+    struct ClearingFixture {
+        screen: String,
+        after_key: Option<(&'static str, String)>,
+        keys: Vec<String>,
+        pastes: Vec<String>,
+    }
+    impl Transport for ClearingFixture {
+        fn screen(&mut self) -> Result<String> {
+            Ok(self.screen.clone())
+        }
+        fn key(&mut self, key: &str) -> Result<()> {
+            self.keys.push(key.into());
+            if self
+                .after_key
+                .as_ref()
+                .is_some_and(|(expected, _)| *expected == key)
+            {
+                self.screen = self.after_key.take().unwrap().1;
+            }
+            Ok(())
+        }
+        fn paste(&mut self, text: &str) -> Result<()> {
+            self.pastes.push(text.into());
+            Ok(())
+        }
+        fn resolved(&mut self) -> Result<Option<Value>> {
+            Ok(None)
+        }
+    }
+    #[test]
+    fn clearing_requires_proven_empty_and_stops_after_no_progress_or_navigation() {
+        let card = card();
+        for (after_key, expected_keys, succeeds) in [
+            (None, vec!["C-e", "C-u"], false),
+            (Some(("C-u", styled_empty())), vec!["C-e", "C-u"], true),
+            (
+                Some((
+                    "C-e",
+                    other_screen("draft")
+                        .replace("❯ 3.", "  3.")
+                        .replace("  2. Later", "❯ 2. Later"),
+                )),
+                vec!["C-e"],
+                false,
+            ),
+        ] {
+            let mut io = ClearingFixture {
+                screen: other_screen("draft\x1b[7m \x1b[0m"),
+                after_key,
+                keys: Vec::new(),
+                pastes: Vec::new(),
+            };
+            assert_eq!(clear_other(&mut io, &card, 2).is_ok(), succeeds);
+            assert_eq!(io.keys, expected_keys);
+            assert!(io.pastes.is_empty());
+            assert!(!io.keys.iter().any(|key| key == "Enter"));
+        }
+    }
+    #[test]
+    fn newline_traversal_without_clear_progress_never_repeats_or_pastes() {
+        let mut io = ClearingFixture {
+            screen: other_screen("\x1b[7m \x1b[0m\n     remaining"),
+            after_key: None,
+            keys: Vec::new(),
+            pastes: Vec::new(),
+        };
+        assert!(clear_other(&mut io, &card(), 2).is_err());
+        assert_eq!(io.keys, ["C-e", "C-u", "Right", "C-e", "C-u"]);
+        assert!(io.pastes.is_empty());
     }
     #[test]
     fn acknowledgement_requires_exact_tool_conversation_and_schema() {

@@ -415,6 +415,11 @@ Unsent freeform answers, choices and the current question page are also saved
 locally. They restore only for the same machine/session, run, conversation and
 question hash. Interrupted submissions remain locked until reviewed; confirmed
 queued answers keep their submitted state after a GUI restart.
+Explicit **Submit** on a supported Claude question replaces its native Other
+draft with the form answer, including clearing it for a preset-only answer.
+Polling and inspection never edit native drafts. The exact form payload and
+matching native acknowledgement determine delivery; uncertain attempts are
+never replayed automatically.
 Unsupported or truncated native prompts remain in Terminal.
 
 Claude tool approvals keep the session at **Needs approval** and appear in
