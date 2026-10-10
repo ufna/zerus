@@ -5,8 +5,12 @@
 #include <QThread>
 
 #include <atomic>
+#include <cerrno>
 #include <csignal>
+#include <fcntl.h>
 #include <memory>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "ProcessRunner.h"
 
@@ -25,6 +29,13 @@ private slots:
     void missingProgramFailsToStart();
     void crashReportsProcessError();
     void destroyedOwnerGetsNoResultAndKillsChild();
+    void launchBackendMatchesPlatform();
+    void childInheritsOnlyStandardDescriptors();
+    void environmentIsInheritedOrReplaced();
+    void bareProgramNamesSearchPath();
+    void largeInputAndOutputFlowTogether();
+    void earlyExitWithPendingInputDoesNotRaiseSigpipe();
+    void childSignalsMatchQProcess();
 };
 
 namespace {
@@ -34,6 +45,15 @@ ProcessRunner::Request shell(const QString &script, int timeoutMs = 10000)
     request.arguments = {QStringLiteral("-c"), script}; request.timeoutMs = timeoutMs; return request;
 }
 bool alive(qint64 pid) { return pid > 0 && ::kill(pid_t(pid), 0) == 0; }
+// Reaped children are gone for waitpid; a zombie would still be returned here.
+bool reaped(qint64 pid) { int status = 0; return ::waitpid(pid_t(pid), &status, WNOHANG) < 0 && errno == ECHILD; }
+ProcessRunner::Result runAndWait(const ProcessRunner::Request &request)
+{
+    QObject owner; int results = 0; ProcessRunner::Result result;
+    ProcessRunner::run(request, &owner, [&](const ProcessRunner::Result &value) { ++results; result = value; });
+    if (!QTest::qWaitFor([&] { return results == 1; }, 15000)) qWarning("no result");
+    return result;
+}
 qint64 readPid(const QString &path)
 {
     QFile file(path); if (!file.open(QIODevice::ReadOnly)) return 0;
@@ -99,6 +119,7 @@ void TestProcessRunner::timeoutKillsChildAndReportsOnce()
     QTRY_COMPARE_WITH_TIMEOUT(results, 1, 3000);
     QCOMPARE(result.outcome, ProcessRunner::Result::TimedOut);
     QTRY_VERIFY(!alive(pid));
+    QTRY_VERIFY(reaped(pid));
     // The killed child's later exit is reaped without a second report.
     QTest::qWait(200);
     QCOMPARE(results, 1);
@@ -124,6 +145,7 @@ void TestProcessRunner::crashReportsProcessError()
     QTRY_COMPARE(results, 1);
     QCOMPARE(result.outcome, ProcessRunner::Result::Finished);
     QCOMPARE(result.exitStatus, QProcess::CrashExit);
+    QCOMPARE(result.exitCode, SIGKILL);   // the signal number, as QProcess reports it
     QCOMPARE(result.error, QProcess::Crashed);
     QVERIFY(!result.errorString.isEmpty());
 }
@@ -140,8 +162,95 @@ void TestProcessRunner::destroyedOwnerGetsNoResultAndKillsChild()
     // Destroying the owner kills its child before returning, like the old
     // HgsClient destructor, so temporary fixtures are not used afterwards.
     QVERIFY(!alive(pid));
+    QVERIFY(reaped(pid));
     QTest::qWait(200);
     QCOMPARE(results, 0);
+}
+
+void TestProcessRunner::launchBackendMatchesPlatform()
+{
+#ifdef Q_OS_MACOS
+    // QProcess forks the whole GUI address space on macOS; posix_spawn does not.
+    QCOMPARE(QByteArray(ProcessRunner::launchBackend()), QByteArray("posix_spawn"));
+#else
+    QCOMPARE(QByteArray(ProcessRunner::launchBackend()), QByteArray("QProcess"));
+#endif
+}
+
+void TestProcessRunner::childInheritsOnlyStandardDescriptors()
+{
+#ifndef Q_OS_MACOS
+    QSKIP("Only the macOS posix_spawn backend closes inherited descriptors");
+#else
+    // A descriptor opened without O_CLOEXEC elsewhere in the GUI must not leak.
+    const int leaked = ::open("/dev/null", O_RDONLY); QVERIFY(leaked > 2);
+    const auto result = runAndWait(shell(QStringLiteral("for fd in 0 1 2 %1; do [ -e /dev/fd/$fd ] && printf '%s ' $fd; done; :").arg(leaked)));
+    ::close(leaked);
+    QCOMPARE(result.outcome, ProcessRunner::Result::Finished);
+    QCOMPARE(result.standardOutput, QByteArray("0 1 2 "));
+#endif
+}
+
+void TestProcessRunner::environmentIsInheritedOrReplaced()
+{
+    qputenv("ZERUS_RUNNER_INHERITED", "inherited");
+    const auto script = QStringLiteral("printf '%s|%s' \"$ZERUS_RUNNER_INHERITED\" \"$ZERUS_RUNNER_SET\"");
+    QCOMPARE(runAndWait(shell(script)).standardOutput, QByteArray("inherited|"));
+    auto request = shell(script);
+    QProcessEnvironment environment; environment.insert("ZERUS_RUNNER_SET", QString::fromUtf8("значение"));
+    request.environment = environment;
+    // A given environment replaces the inherited one; values keep their UTF-8 bytes.
+    QCOMPARE(runAndWait(request).standardOutput, QString::fromUtf8("|значение").toUtf8());
+    qunsetenv("ZERUS_RUNNER_INHERITED");
+}
+
+void TestProcessRunner::bareProgramNamesSearchPath()
+{
+    ProcessRunner::Request request; request.program = QStringLiteral("sh");
+    request.arguments = {QStringLiteral("-c"), QStringLiteral("printf found")}; request.timeoutMs = 10000;
+    const auto found = runAndWait(request);
+    QCOMPARE(found.outcome, ProcessRunner::Result::Finished);
+    QCOMPARE(found.standardOutput, QByteArray("found"));
+    request.program = QStringLiteral("no-such-program-for-zerus");
+    QCOMPARE(runAndWait(request).outcome, ProcessRunner::Result::FailedToStart);
+}
+
+void TestProcessRunner::largeInputAndOutputFlowTogether()
+{
+    // cat echoes while it reads: neither side may block on a full pipe.
+    QByteArray payload(1 << 20, '\0');
+    for (int i = 0; i < payload.size(); ++i) payload[i] = char('a' + i % 26);
+    auto request = shell(QStringLiteral("cat; head -c 300000 /dev/zero | tr '\\0' e >&2"), 20000); request.input = payload;
+    const auto result = runAndWait(request);
+    QCOMPARE(result.outcome, ProcessRunner::Result::Finished);
+    QCOMPARE(result.exitCode, 0);
+    QCOMPARE(result.standardOutput.size(), payload.size());
+    QVERIFY(result.standardOutput == payload);
+    QCOMPARE(result.standardError, QByteArray(300000, 'e'));
+}
+
+void TestProcessRunner::earlyExitWithPendingInputDoesNotRaiseSigpipe()
+{
+    // The child exits without reading: writing the rest hits a closed pipe,
+    // which must fail quietly instead of killing this process with SIGPIPE.
+    auto request = shell(QStringLiteral("exit 4")); request.input = QByteArray(8 << 20, 'x');
+    const auto result = runAndWait(request);
+    QCOMPARE(result.outcome, ProcessRunner::Result::Finished);
+    QCOMPARE(result.exitCode, 4);
+}
+
+void TestProcessRunner::childSignalsMatchQProcess()
+{
+    // QProcess restores SIGPIPE's default action in the child and leaves other
+    // ignored signals ignored; both backends must start children the same way.
+    const auto pipe = ::signal(SIGPIPE, SIG_IGN), user = ::signal(SIGUSR1, SIG_IGN);
+    const auto piped = runAndWait(shell(QStringLiteral("kill -PIPE $$; printf survived")));
+    const auto ignored = runAndWait(shell(QStringLiteral("kill -USR1 $$; printf survived")));
+    ::signal(SIGPIPE, pipe); ::signal(SIGUSR1, user);
+    QCOMPARE(piped.exitStatus, QProcess::CrashExit);
+    QCOMPARE(piped.exitCode, SIGPIPE);
+    QCOMPARE(ignored.exitStatus, QProcess::NormalExit);
+    QCOMPARE(ignored.standardOutput, QByteArray("survived"));
 }
 
 QTEST_GUILESS_MAIN(TestProcessRunner)

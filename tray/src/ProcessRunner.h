@@ -46,6 +46,8 @@ void run(Request request, QObject *owner, std::function<void(const Result &)> do
 
 // Tests: the worker thread, and a hook run there right before each start.
 QThread *workerThread();
+// Tests: how children start, "posix_spawn" on macOS and "QProcess" elsewhere.
+const char *launchBackend();
 void setLaunchObserver(std::function<void()> observer);
 
 }
