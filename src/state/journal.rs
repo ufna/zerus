@@ -4,6 +4,10 @@ use std::fs::OpenOptions;
 use std::os::unix::fs::OpenOptionsExt;
 use std::sync::OnceLock;
 
+/// Final replies are the conversation itself, not an excerpt: Activity reads
+/// them from the journal once the provider transcript window has moved on.
+pub(super) const REPLY_LIMIT: usize = 32_000;
+
 pub(super) fn clipped(value: &Value, limit: usize) -> String {
     let Some(value) = value.as_str() else {
         return String::new();
@@ -148,21 +152,21 @@ fn detail(event: &Value) -> String {
     }
     let tool = &event["tool_input"];
     [
-        &event["prompt"],
-        &event["error_message"],
-        &event["error"],
-        &tool["command"],
-        &tool["file_path"],
-        &tool["path"],
-        &tool["description"],
-        &event["last_assistant_message"],
-        &event["response"],
-        &event["body"],
-        &event["description"],
+        (&event["prompt"], 1200),
+        (&event["error_message"], 1200),
+        (&event["error"], 1200),
+        (&tool["command"], 1200),
+        (&tool["file_path"], 1200),
+        (&tool["path"], 1200),
+        (&tool["description"], 1200),
+        (&event["last_assistant_message"], REPLY_LIMIT),
+        (&event["response"], REPLY_LIMIT),
+        (&event["body"], 1200),
+        (&event["description"], 1200),
     ]
     .into_iter()
-    .find(|value| value.as_str().map(|s| !s.is_empty()).unwrap_or(false))
-    .map(|value| clipped(value, 1200))
+    .find(|(value, _)| value.as_str().map(|s| !s.is_empty()).unwrap_or(false))
+    .map(|(value, limit)| clipped(value, limit))
     .unwrap_or_default()
 }
 
@@ -999,6 +1003,16 @@ mod attention_regressions {
     fn insert_message(db: &Connection, name: &str, conversation: Option<&str>, event: Value) -> i64 {
         db.execute("INSERT INTO events(name,conversation,payload) VALUES(?,?,?)", params![name, conversation, event.to_string()]).unwrap();
         db.last_insert_rowid()
+    }
+    #[test]
+    fn replies_keep_their_full_text_and_other_details_stay_excerpts() {
+        let reply = "Ж".repeat(5000);
+        assert_eq!(detail(&json!({"hook_event_name":"Stop","last_assistant_message":reply})), reply);
+        assert_eq!(detail(&json!({"hook_event_name":"SubagentStop","last_assistant_message":reply})), reply);
+        let long = "a".repeat(REPLY_LIMIT + 10);
+        assert_eq!(detail(&json!({"hook_event_name":"Stop","last_assistant_message":long})), format!("{}…", &long[..REPLY_LIMIT]));
+        let command = detail(&json!({"hook_event_name":"PreToolUse","tool_input":{"command":"x".repeat(5000)}}));
+        assert_eq!(command, format!("{}…", "x".repeat(1200)));
     }
     #[test]
     fn message_window_keeps_latest_user_prompt_after_tools_and_isolates_conversations() {

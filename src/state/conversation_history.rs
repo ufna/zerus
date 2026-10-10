@@ -841,8 +841,9 @@ fn merge_row(db: &Connection, first: &str, second: &str, body: &str, kind: &str)
         .map_err(|e| e.to_string())?;
     Ok(())
 }
-/// Hook detail() uses journal::clipped(...,1200): Unicode scalars, plus
-/// exactly one synthetic U+2026 when more text exists. Other ellipses are literal.
+/// Hook detail() uses journal::clipped(...,journal::REPLY_LIMIT), and 1200 in
+/// older journals: Unicode scalars, plus exactly one synthetic U+2026 when more
+/// text exists. Other ellipses are literal.
 fn stop_excerpt_matches(provider: &str, hook: &str) -> bool {
     let trimmed = hook.trim();
     if trimmed.is_empty() || trimmed.chars().all(|c| c == '…') {
@@ -850,7 +851,7 @@ fn stop_excerpt_matches(provider: &str, hook: &str) -> bool {
     }
     let excerpt = hook
         .strip_suffix('…')
-        .filter(|prefix| prefix.chars().take(1201).count() == 1200)
+        .filter(|prefix| [1200, journal::REPLY_LIMIT].contains(&prefix.chars().take(journal::REPLY_LIMIT + 1).count()))
         .unwrap_or(hook);
     !excerpt.trim().is_empty() && provider.contains(excerpt)
 }
@@ -1461,7 +1462,7 @@ mod tests {
     }
     #[test]
     fn hook_clipping_recognizes_unicode_scalar_limit_only() {
-        for prefix in ["x".repeat(1200), "🧭Ж🙂α".repeat(300)] {
+        for prefix in ["x".repeat(1200), "🧭Ж🙂α".repeat(300), "Ж".repeat(journal::REPLY_LIMIT)] {
             let full = format!("{prefix} continued public reply");
             let hook = format!("{prefix}…");
             assert!(stop_excerpt_matches(&full, &hook));
