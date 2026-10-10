@@ -730,6 +730,15 @@ void HgsClient::resumeSession(const QString &host, const QString &name)
     runWrite(QStringLiteral("resume %1").arg(name), args, 30000, true, host);
 }
 
+void HgsClient::startFreshSession(const QString &host, const QString &name, const QString &run)
+{
+    QStringList args{QStringLiteral("resume"), name, QStringLiteral("--fresh")};
+    if (!run.isEmpty()) args << QStringLiteral("--expected-run-id") << run;
+    args << QStringLiteral("-d");
+    if (!host.isEmpty()) args.prepend(QLatin1Char('@') + host);
+    runWrite(QStringLiteral("fresh %1").arg(name), args, 30000, true, host);
+}
+
 void HgsClient::archiveSession(const QString &host, const QString &name)
 {
     QStringList args{QStringLiteral("archive"), name};

@@ -10,7 +10,17 @@ struct Request { request_id: String, expected_run_id: String, expected_conversat
 pub(super) fn observe_start(record: &mut Value, event: &Value) {
     let previous = string(record, "conversation_id").to_owned();
     let next = string(event, "session_id");
-    if previous.is_empty() || previous == next { return; }
+    if previous.is_empty() {
+        // A fresh start's first conversation draws the same boundary as /clear.
+        let earlier = string(&record["fresh_from"], "conversation_id").to_owned();
+        if !earlier.is_empty() && earlier != next {
+            record["session_clear"] = json!({"at":record["fresh_from"]["at"],"run_id":record["run_id"],
+                "conversation_id":next,"previous_conversation_id":earlier,"source":"fresh_start"});
+        }
+        record.as_object_mut().unwrap().remove("fresh_from");
+        return;
+    }
+    if previous == next { return; }
     let requested = record["clear_context_request"]["conversation_id"] == previous;
     if string(event, "source") == "clear" || requested {
         // The agent starts over, but the local Activity timeline continues:
@@ -31,6 +41,20 @@ pub(super) fn observe_start(record: &mut Value, event: &Value) {
 }
 
 const CLEARED_CONVERSATIONS: usize = 32;
+
+/// `resume --fresh` replaces a stopped binding; its Activity continues like a
+/// clear. The new conversation is unknown until the agent's SessionStart.
+pub(super) fn carry_fresh_start(previous: &Value, record: &mut Value) {
+    let mut earlier = earlier_conversations(previous).as_array().cloned().unwrap_or_default();
+    let id = string(previous, "conversation_id");
+    if !id.is_empty() {
+        earlier.push(json!(id));
+        record["fresh_from"] = json!({"conversation_id":id,"at":now()});
+    }
+    if earlier.len() > CLEARED_CONVERSATIONS { earlier.drain(..earlier.len() - CLEARED_CONVERSATIONS); }
+    if !earlier.is_empty() { record["cleared_conversations"] = json!(earlier); }
+    if let Some(anchor) = previous.get("journal_name") { record["journal_name"] = anchor.clone(); }
+}
 
 // Earlier conversations of this session's Activity, oldest first. Only
 // confirmed clears add to it; another conversation starts a new timeline.
@@ -223,6 +247,23 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         record["conversation_id"]=json!("new");
         assert_eq!(event(&record).unwrap()["at"],123.0);
         assert!(!awaiting_start(&record));
+    }
+    #[test] fn fresh_starts_continue_the_activity_timeline_like_a_clear() {
+        let previous=json!({"run_id":"old-run","conversation_id":"second","cleared_conversations":["first"],"journal_name":"anchor"});
+        let mut record=json!({"run_id":"run","conversation_id":null});
+        carry_fresh_start(&previous,&mut record);
+        assert_eq!(earlier_conversations(&record),json!(["first","second"]));
+        assert_eq!(record["journal_name"],"anchor");
+        observe_start(&mut record,&json!({"session_id":"third","source":"startup"}));
+        record["conversation_id"]=json!("third");
+        assert!(record["fresh_from"].is_null());
+        assert_eq!(record["session_clear"]["previous_conversation_id"],"second");
+        assert!(event(&record).is_some());
+        assert_eq!(earlier_conversations(&record),json!(["first","second"]));
+        // An unconfirmed binding has no conversation of its own to carry.
+        let mut unconfirmed=json!({"run_id":"run"});
+        carry_fresh_start(&json!({"run_id":"old","conversation_id":null}),&mut unconfirmed);
+        assert!(unconfirmed["fresh_from"].is_null());assert!(unconfirmed["cleared_conversations"].is_null());
     }
     #[test] fn confirmed_clears_keep_the_earlier_activity_timeline() {
         let mut record=json!({"run_id":"run","conversation_id":"first"});

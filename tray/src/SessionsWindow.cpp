@@ -495,6 +495,9 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     m_clearAction = moreMenu->addAction(tr("Clear session…")); m_clearAction->setObjectName("clearSessionAction");
     m_clearAction->setToolTip(tr("Start this agent's conversation from scratch, like /clear in Terminal. Your unsent draft is kept."));
     connect(m_clearAction, &QAction::triggered, this, &SessionsWindow::clearContext);
+    m_freshAction = moreMenu->addAction(tr("Start fresh…")); m_freshAction->setObjectName("freshSessionAction");
+    m_freshAction->setToolTip(tr("Start this stopped session with a new conversation and the same folder, account and model."));
+    connect(m_freshAction, &QAction::triggered, this, &SessionsWindow::startFresh);
     m_archiveAction = moreMenu->addAction(tr("Move to archive")); m_archiveAction->setObjectName("archiveSessionAction");
     connect(m_archiveAction, &QAction::triggered, this, &SessionsWindow::archiveSession);
     m_forgetAction = moreMenu->addAction(tr("Terminate / forget session…")); m_forgetAction->setObjectName("forgetSessionAction");
@@ -648,12 +651,13 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
     });
     auto *toolbar=m_composer->toolbar();
     m_compactCancel = new QPushButton(tr("Cancel send")); m_compactCancel->setObjectName("cancelCompactSend");
-    m_compactCancel->setToolTip(tr("Keep the draft without sending it after compaction. Use Stop to interrupt the agent."));
+    m_compactCancel->setToolTip(tr("Keep the draft without sending it automatically. Use Stop to interrupt the agent."));
     m_compactCancel->setAutoDefault(false); m_compactCancel->setFixedHeight(20);
     m_compactCancel->setStyleSheet(QStringLiteral("QPushButton { min-height: 20px; max-height: 20px; padding: 0 6px; margin: 0; border: none; background: transparent; } QPushButton:hover { text-decoration: underline; }"));
     m_compactCancel->hide();
     connect(m_compactCancel,&QPushButton::clicked,this,[this] {
-        cancelCompactContinuation(tr("Pending send cancelled. Your draft is unchanged.")); renderDetails();
+        cancelCompactContinuation(tr("Pending send cancelled. Your draft is unchanged."));
+        cancelStartContinuation(tr("Pending send cancelled. Your draft is unchanged.")); renderDetails();
     });
     connect(&m_client,&HgsClient::sessionActionFinished,this,[this](quint64 id,bool ok,const QJsonObject &receipt,const QString &error) {
         if (!m_compact.request || id != m_compact.request) return;
@@ -1123,6 +1127,8 @@ SessionsWindow::SessionsWindow(const QString &hgsPath, QWidget *parent)
         if (m_archivedWorktree.size() == 4 && operation == QStringLiteral("archive %1").arg(m_archivedWorktree[1])) {
             if (ok) offerWorktreeCleanup(); else m_archivedWorktree.clear();
         }
+        if (!ok && (operation == QStringLiteral("resume %1").arg(m_startSend.name) || operation == QStringLiteral("fresh %1").arg(m_startSend.name)))
+            cancelStartContinuation(detail);
         if (!m_terminationCommand.isEmpty() && (operation == QStringLiteral("kill %1").arg(m_terminating.value(m_terminationCommand).session.name) || operation == QStringLiteral("terminate %1").arg(m_terminating.value(m_terminationCommand).session.name))) {
             if(ok)m_terminationFinished.insert(m_terminationCommand);
             else m_terminating.remove(m_terminationCommand);
@@ -2393,7 +2399,7 @@ void SessionsWindow::acceptInspection(const QString &host, const QString &name, 
         // The conversation changed under this terminal. Fetch its initial window;
         // a cursor from the previous conversation must never skip the new history.
         m_events = data.value("events").toArray(); m_cursor = 0; m_details = data; m_processPollAge.invalidate();
-        reconcileMessages(); continueAfterCompact(); renderDetails(); inspect(); return;
+        reconcileMessages(); continueAfterCompact(); continueAfterStart(); renderDetails(); inspect(); return;
     }
     const auto previousRoster = childRoster(*entry);
     const auto inspected=SessionPresentation::inspected(entry->session,data);
@@ -2408,7 +2414,7 @@ void SessionsWindow::acceptInspection(const QString &host, const QString &name, 
     if (data.value("replace_events").toBool()) m_events = data.value("events").toArray();
     else for (const auto &event : data.value("events").toArray()) if (event.toObject().value("seq").toInteger() > m_cursor) m_events.append(event);
     while (m_events.size() > 500) m_events.removeFirst();
-    m_cursor = data.value("cursor").toInteger(); reconcileMessages(); continueAfterCompact(); renderDetails(); applyPendingModelSettings();
+    m_cursor = data.value("cursor").toInteger(); reconcileMessages(); continueAfterCompact(); continueAfterStart(); renderDetails(); applyPendingModelSettings();
     if (statusChanged || previousRoster != childRoster(*entry)) rebuild();
 }
 
@@ -2416,7 +2422,9 @@ void SessionsWindow::renderDetails()
 {
     if (!m_compact.key.isEmpty() && m_compact.key != m_selectedKey)
         cancelCompactContinuation(tr("Session changed. Your draft was kept without sending."));
-    m_compactCancel->setVisible(!m_compact.key.isEmpty());
+    if (!m_startSend.key.isEmpty() && m_startSend.key != m_selectedKey)
+        cancelStartContinuation(tr("Session changed. Your draft was kept without sending."));
+    m_compactCancel->setVisible(!m_compact.key.isEmpty() || !m_startSend.key.isEmpty());
     const auto *entry = selected(); m_detailStack->setCurrentIndex(entry ? 1 : 0);
     const auto recoveryDetails=entry && entry->session.state != "archived"
         && m_details.value("provider_status_at").toDouble() >= entry->session.providerStatusAt ? m_details : QJsonObject();
@@ -2450,8 +2458,11 @@ void SessionsWindow::renderDetails()
         && m_details.value("clear_context_supported").toBool();
     m_detailsClear->setEnabled(canClear);
     m_detailsClear->setText(m_clearRequest?tr("Clearing…"):tr("Clear session"));
-    m_clearAction->setVisible(mainContext);m_clearAction->setEnabled(canClear);
+    // A live agent clears natively; a stopped one starts fresh instead.
+    const bool stopped=entry && (entry->session.state=="paused" || entry->session.state=="stopped");
+    m_clearAction->setVisible(mainContext && !stopped);m_clearAction->setEnabled(canClear);
     m_clearAction->setText(m_clearRequest?tr("Clearing…"):tr("Clear session…"));
+    m_freshAction->setVisible(mainContext && stopped);m_freshAction->setEnabled(entry && canStartStopped(*entry));
     m_detailsContext->setText(tr("Context: %1").arg(m_contextUsage->text().isEmpty()?tr("Not reported"):m_contextUsage->text()));m_detailsContext->setToolTip(m_contextUsage->toolTip());
     m_subagentContextUsage->setData(entry?m_subagentDetails.value("session_usage").toObject():QJsonObject(),recorded);
     if (!m_subagentId.isEmpty() && (!entry || (m_subagentConversation != m_details.value("conversation_id").toString(entry->session.conversationId))
@@ -2580,7 +2591,9 @@ void SessionsWindow::renderDetails()
     if (!entry->online || !m_inspectError.isEmpty()) { auto queue=activityDetails["input_queue"].toObject(); queue["can_send_now"]=false; activityDetails["input_queue"]=queue; }
     m_activityView->setTimeline(activityDetails, m_events, m_localMessages.value(m_selectedKey), s.prompt, s.tracked);
     const QString messageProblem = messageBlockReason(*entry);
-    m_composer->setAvailability(messageProblem.isEmpty(), messageProblem);
+    if (!messageProblem.isEmpty() && canStartStopped(*entry))
+        m_composer->setAvailability(true, tr("Session stopped. Send asks whether to resume it or start fresh."));
+    else m_composer->setAvailability(messageProblem.isEmpty(), messageProblem);
     const auto phase=m_details.value("phase").toString(entry->session.phase);
     const bool working=QStringList{"working","tool","compacting"}.contains(phase)&&entry->session.state=="running";
     restoreInterruptedPrompt();
@@ -2835,6 +2848,7 @@ void SessionsWindow::applyQueuedModelSettings()
 
 QString SessionsWindow::messageBlockReason(const Entry &entry) const
 {
+    if (entry.key == m_startSend.key) return tr("Starting the session. Your message is sent when the agent is ready; editing it cancels the send.");
     if (entry.key == m_compact.key) return tr("Compacting context before sending. Your draft stays here; you can cancel the pending send.");
     if (entry.key == m_clearKey && m_clearRequest) return tr("Wait for the context reset to finish. Your draft stays here.");
     if (isTerminating(entry)) return tr("The session is terminating. Your draft stays here.");
@@ -2969,15 +2983,112 @@ void SessionsWindow::clearContext()
     renderDetails();
 }
 
-void SessionsWindow::sendMessage(const QString &key, const QString &text, const QList<MessageAttachment> &attachments, const QString &retryId, const QString &compactionId)
+bool SessionsWindow::canStartStopped(const Entry &entry) const
+{
+    const auto &s = entry.session;
+    return entry.online && (s.state == "paused" || s.state == "stopped") && s.tracked
+        && QStringList{"codex", "claude", "kimi"}.contains(s.cmd) && !isTerminating(entry)
+        && !m_pending && !m_settingsRequest && m_renameKey.isEmpty() && m_startSend.key.isEmpty()
+        && m_compact.key.isEmpty() && !m_composer->isSending(entry.key);
+}
+
+void SessionsWindow::startFresh()
+{
+    const auto *entry = selected();
+    if (!entry || !canStartStopped(*entry) || findChild<QMessageBox *>("startFreshConfirm")) return;
+    const Entry original = *entry;
+    QMessageBox dialog(QMessageBox::Warning, tr("Start fresh?"),
+        tr("Start %1 on %2 with a new conversation?\n\nThe agent starts in the same folder with the same account and model, without the current conversation context. Earlier messages stay readable in Activity and in the agent’s native history, but Resume will no longer continue them.")
+            .arg(original.session.name, original.machine), QMessageBox::NoButton, this);
+    dialog.setObjectName("startFreshConfirm"); dialog.setTextFormat(Qt::PlainText);
+    auto *confirm = dialog.addButton(tr("Start fresh"), QMessageBox::DestructiveRole);
+    auto *cancel = dialog.addButton(QMessageBox::Cancel); dialog.setDefaultButton(cancel); dialog.setEscapeButton(cancel);
+    dialog.exec();
+    if (dialog.clickedButton() != confirm) return;
+    entry = selected();
+    if (!entry || entry->key != original.key || entry->session.runId != original.session.runId
+        || entry->session.conversationId != original.session.conversationId || !canStartStopped(*entry)) {
+        showNotice(tr("The session changed. Open its actions again."), true); return;
+    }
+    m_pending = true; m_restoreKey.clear();
+    m_client.startFreshSession(entry->host, entry->session.name, entry->session.runId);
+    showNotice(tr("Starting %1 with a new conversation…").arg(entry->session.name)); renderDetails();
+}
+
+void SessionsWindow::startToSend(const QString &key, const QString &text, const QList<MessageAttachment> &attachments)
+{
+    const auto *entry = selected();
+    if (!entry || entry->key != key || !canStartStopped(*entry) || findChild<QMessageBox *>("startToSendConfirm")) return;
+    const Entry original = *entry;
+    const QString context = m_contextUsage->text();
+    QMessageBox dialog(QMessageBox::Question, tr("Start the session to send?"),
+        tr("%1 is stopped. How should it start before your message is sent?").arg(original.session.name), QMessageBox::NoButton, this);
+    dialog.setObjectName("startToSendConfirm"); dialog.setTextFormat(Qt::PlainText);
+    dialog.setInformativeText(tr("Resume continues the saved conversation, and the message is sent with its full context%1.\n\n"
+        "Start fresh begins a new conversation with the same folder, account and model. Earlier messages stay readable in Activity.")
+        .arg(context.isEmpty() ? QString() : tr(" (%1)").arg(context)));
+    auto *resume = dialog.addButton(tr("Resume and send"), QMessageBox::AcceptRole);
+    resume->setObjectName("resumeAndSend"); resume->setEnabled(original.session.resumable);
+    auto *fresh = dialog.addButton(tr("Start fresh and send"), QMessageBox::ActionRole); fresh->setObjectName("startFreshAndSend");
+    auto *cancel = dialog.addButton(QMessageBox::Cancel); dialog.setDefaultButton(cancel); dialog.setEscapeButton(cancel);
+    dialog.exec();
+    const bool startFresh = dialog.clickedButton() == fresh;
+    if (!startFresh && dialog.clickedButton() != resume) return;
+    entry = selected();
+    if (!entry || entry->key != key || entry->session.runId != original.session.runId
+        || entry->session.conversationId != original.session.conversationId || !canStartStopped(*entry)) {
+        showNotice(tr("The session changed. Your draft was kept without sending."), true); return;
+    }
+    if (!m_composer->draftMatches(key, text, attachments)) { showNotice(tr("Draft changed. Send it when you are ready.")); return; }
+    m_startSend = {key, entry->host, entry->session.name, entry->session.runId, entry->session.conversationId,
+        text, attachments, startFresh, QDateTime::currentMSecsSinceEpoch()};
+    m_pending = true; m_restoreKey.clear();
+    if (startFresh) m_client.startFreshSession(entry->host, entry->session.name, entry->session.runId);
+    else m_client.resumeSession(entry->host, entry->session.name);
+    renderDetails();
+}
+
+void SessionsWindow::cancelStartContinuation(const QString &reason)
+{
+    if (m_startSend.key.isEmpty()) return;
+    const auto key = m_startSend.key; m_startSend = {};
+    m_composer->deliveryFinished(key, false, reason);
+}
+
+// Send the waiting draft once the new run accepts input. A resume must keep
+// its conversation; a fresh start must never reopen the replaced one.
+void SessionsWindow::continueAfterStart()
+{
+    if (m_startSend.key.isEmpty() || m_startSend.key != m_selectedKey) return;
+    if (!m_composer->draftMatches(m_startSend.key, m_startSend.text, m_startSend.attachments)) {
+        cancelStartContinuation(tr("Draft changed. Send it when you are ready.")); return;
+    }
+    if (QDateTime::currentMSecsSinceEpoch() - m_startSend.started > 180000) {
+        cancelStartContinuation(tr("The agent did not become ready. Check Terminal; your draft was kept without sending.")); return;
+    }
+    const auto *entry = selected();
+    const auto run = m_details.value("run_id").toString(), conversation = m_details.value("conversation_id").toString();
+    if (!entry || entry->session.state != "running" || m_pending || run.isEmpty() || run == m_startSend.run) return;
+    const bool sameConversation = conversation == m_startSend.conversation;
+    if (m_startSend.fresh ? sameConversation : !conversation.isEmpty() && !sameConversation) {
+        cancelStartContinuation(tr("The agent opened an unexpected conversation. Your draft was kept without sending.")); return;
+    }
+    const auto pending = m_startSend; m_startSend = {};
+    if (!messageBlockReason(*entry).isEmpty()) { m_startSend = pending; return; }
+    sendMessage(pending.key, pending.text, pending.attachments, {}, {}, true);
+}
+
+void SessionsWindow::sendMessage(const QString &key, const QString &text, const QList<MessageAttachment> &attachments, const QString &retryId, const QString &compactionId, bool contextChosen)
 {
     const auto *entry = selected();
     if (!entry || key != m_selectedKey || m_composer->isSending(key)) return;
+    if (retryId.isEmpty() && compactionId.isEmpty() && !contextChosen && canStartStopped(*entry)) { startToSend(key, text, attachments); return; }
     const auto reason = messageBlockReason(*entry);
     if (!reason.isEmpty()) { m_composer->deliveryFinished(key, false, reason); return; }
     const QString runId = m_details.value("run_id").toString();
     const QString conversationId = m_details.value("conversation_id").toString();
-    if(compactionId.isEmpty() && CacheStatus::expired(m_details)) {
+    // Resume and send already chose the full saved context.
+    if(compactionId.isEmpty() && !contextChosen && CacheStatus::expired(m_details)) {
         const auto host=entry->host,name=entry->session.name;
         QMessageBox dialog(QMessageBox::Warning,tr("Continue with a cold cache?"),CacheStatus::warning(m_details)+"\n\n"+
             tr("The next message may process the entire conversation again, increasing token usage, cost or subscription usage. Send with the full history, compact it into a summary before sending, or clear it and keep your draft. Compaction also uses tokens and may omit details."),QMessageBox::NoButton,this);
@@ -3288,6 +3399,9 @@ void SessionsWindow::showSessionMenu(const QString &key, const QPoint &position)
     m_sessionMenu->addSeparator();
     add(archived ? tr("Restore session") : original.session.state == "running" ? tr("Pause session") : tr("Resume session"),
         "contextChangeSession", SessionMenuAction::ChangeState, selectedTarget ? m_pause->isEnabled() : canChange);
+    if (target.state == "paused" || target.state == "stopped")
+        add(tr("Start fresh…"), "contextStartFresh", SessionMenuAction::StartFresh, canStartStopped(original),
+            tr("Start with a new conversation and the same folder, account and model"));
     add(tr("Rename…"), "contextRenameSession", SessionMenuAction::Rename, available && !target.name.section('/', 1, 1).isEmpty() && (!archived || !target.archiveId.isEmpty()));
     auto *fork = add(tr("Fork session…"), "contextForkSession", SessionMenuAction::Fork, selectedTarget && m_forkAction->isEnabled(), m_forkAction->toolTip());
     if (!selectedTarget && available) {
@@ -3384,6 +3498,7 @@ void SessionsWindow::runSessionMenuAction(const Entry &original, SessionMenuActi
         if (action == SessionMenuAction::ChangeState) changeSession(); else terminateSession();
         return;
     case SessionMenuAction::Rename: renameSession(); return;
+    case SessionMenuAction::StartFresh: startFresh(); return;
     case SessionMenuAction::Fork: forkSession(); return;
     case SessionMenuAction::Archive: archiveSession(); return;
     default: return;

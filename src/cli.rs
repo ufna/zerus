@@ -88,6 +88,7 @@ const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [-n tag] [-d
        hgs [@host] archive <session>          move a stopped conversation to Archive
        hgs [@host] pause <session>|--all       save and gracefully close idle agents
        hgs [@host] resume <session>|--all [-d] [--archive <id>]   restore exact conversations
+       hgs [@host] resume <session> --fresh [-d] [--expected-run-id ID]   same settings, new conversation
        hgs notify [--bell] <session> [text]   event for the tray (no tray = no-op)
        hgs project ls [--json] | add <name> <dir> | set <name> <dir> | rm <name>
        hgs clip                       PNG from this box's clipboard to stdout (rc 1: no image)
@@ -980,7 +981,7 @@ fn pause_resume(
     let session = require(
         args,
         0,
-        &format!("usage: hgs {command} <session>|--all [-d] [--archive <id>]"),
+        &format!("usage: hgs {command} <session>|--all [-d] [--archive <id> | --fresh]"),
     )?;
     let mut detached = session == "--all";
     if session.starts_with('-') && session != "--all" {
@@ -990,6 +991,8 @@ fn pause_resume(
         ));
     }
     let mut archive = None;
+    let mut fresh = false;
+    let mut expected_run = None;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
@@ -1000,9 +1003,20 @@ fn pause_resume(
                 archive = Some(require(args, index + 1, "--archive needs an archive ID")?);
                 index += 1;
             }
+            "--fresh" if command == "resume" && session != "--all" => fresh = true,
+            "--expected-run-id" if command == "resume" && expected_run.is_none() => {
+                expected_run = Some(require(args, index + 1, "--expected-run-id needs a run ID")?);
+                index += 1;
+            }
             option => return Err(Error::new(1, format!("unknown {command} option: {option}"))),
         }
         index += 1;
+    }
+    if fresh && archive.is_some() {
+        return Err(Error::new(1, "--fresh cannot restore an archive"));
+    }
+    if expected_run.is_some() && !fresh {
+        return Err(Error::new(1, "--expected-run-id is only valid with --fresh"));
     }
     if command == "resume" && !detached && !dry && env::var("TMUX").is_ok_and(|s| !s.is_empty()) {
         return Err(Error::new(
@@ -1014,11 +1028,14 @@ fn pause_resume(
     if let Some(id) = archive {
         state_args.extend(["--archive".into(), id.into()]);
     }
+    if let Some(run) = expected_run {
+        state_args.extend(["--expected-run-id".into(), run.into()]);
+    }
     if dry {
         state_args.push("--dry-run".into());
     }
     env::set_var("HGS_CLIENT", client);
-    let rc = state_command(command, &state_args)?;
+    let rc = state_command(if fresh { "fresh" } else { command }, &state_args)?;
     if rc != 0 || dry || command != "resume" || detached || state::dsh::exists(session) {
         return Ok(rc);
     }
@@ -1708,6 +1725,7 @@ fn launch(
             "HGS_RUN_ID=".into(),
             "HGS_EXPECTED_ID=".into(),
             "HGS_ARCHIVE_ID=".into(),
+            "HGS_FRESH_REPLACES=".into(),
             format!("HGS_FRESH={}", if options.fresh { "1" } else { "0" }),
             format!(
                 "HGS_REQUESTED_ID={}",

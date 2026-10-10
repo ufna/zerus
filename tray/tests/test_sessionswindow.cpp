@@ -125,6 +125,7 @@ private slots:
     void sharedRecoverySyncCatchesUpOfflinePeer();
     void coldCacheConfirmationPreservesDraftAndPinsConversation();
     void coldCacheClearKeepsDraftAndPinsIdentity();
+    void stoppedSessionStartsFreshOrSendsAfterStart();
     void clearInspectionUpdatesActivityAndCountersImmediately();
     void coldCacheCompactWaitsForSuccess_data();
     void coldCacheCompactWaitsForSuccess();
@@ -1472,6 +1473,79 @@ else:print('{}')
     window.hide();QTest::qWait(200);const auto hidden=log().size();QTest::qWait(2800);QCOMPARE(log().size(),hidden);
 }
 
+void TestSessionsWindow::stoppedSessionStartsFreshOrSendsAfterStart()
+{
+    QTemporaryDir temp;const auto program=temp.filePath("hgs");QFile fixture(program);QVERIFY(fixture.open(QIODevice::WriteOnly));
+    fixture.write(R"PY(#!/usr/bin/env python3
+import sys,json,pathlib
+root=pathlib.Path(__file__).parent
+a=sys.argv[1:]
+if a[0].startswith('@'):a=a[1:]
+if a[0]=='resume':
+ with open(root/'resume.log','a') as log:log.write(json.dumps(a)+'\n')
+elif a[0]=='send':
+ p=json.load(sys.stdin);(root/'send.json').write_text(json.dumps(p))
+ print(json.dumps(dict(request_id=p['request_id'],name=a[1],run_id=p['expected_run_id'],conversation_id=p['expected_conversation_id'],status='submitted')))
+elif a[0]=='inspect':print((root/'details.json').read_text() if (root/'details.json').exists() else '{}')
+else:print('{}')
+)PY");fixture.close();fixture.setPermissions(QFile::ReadOwner|QFile::WriteOwner|QFile::ExeOwner);
+    const QString name="codex/website/navigation";
+    auto state=fleet();auto box=state.local();
+    const auto setState=[&](const QString &value,const QString &run,const QString &conversation){
+        for(auto &session:box.sessions)if(session.name==name){session.state=value;session.runId=run;session.conversationId=conversation;
+            session.processState=value=="running"?"running":"exited";session.activity="idle";session.phase="idle";}
+        state.setLocal(box,QDateTime::currentMSecsSinceEpoch());};
+    setState("stopped","run-old","conversation-old");
+    QJsonObject details{{"tracked",true},{"run_id","run-old"},{"conversation_id","conversation-old"},{"runtime_state","saved"},{"process_state","exited"}};
+    {QFile initial(temp.filePath("details.json"));QVERIFY(initial.open(QIODevice::WriteOnly));initial.write(QJsonDocument(details).toJson());}
+    SessionsWindow window(program);window.setFleet(state);window.show();window.showSession({},name);QTest::qWait(100);
+    auto *client=window.findChild<HgsClient *>();QSignalSpy writes(client,&HgsClient::writeDone);
+    const auto apply=[&]{QFile data(temp.filePath("details.json"));QVERIFY(data.open(QIODevice::WriteOnly));data.write(QJsonDocument(details).toJson());data.close();client->inspectionReady({},name,details);};apply();
+    const auto resumes=[&]{QFile log(temp.filePath("resume.log"));return log.open(QIODevice::ReadOnly)?QString::fromUtf8(log.readAll()).split('\n',Qt::SkipEmptyParts):QStringList();};
+    const QString freshArgs=R"(["resume", "codex/website/navigation", "--fresh", "--expected-run-id", "run-old", "-d"])";
+    // A stopped agent cannot clear natively; the header offers a confirmed fresh start.
+    auto *fresh=window.findChild<QAction *>("freshSessionAction");QVERIFY(fresh);QVERIFY(fresh->isVisible());QVERIFY(fresh->isEnabled());
+    QVERIFY(!window.findChild<QAction *>("clearSessionAction")->isVisible());
+    QTimer::singleShot(0,&window,[&]{auto *dialog=window.findChild<QMessageBox *>("startFreshConfirm");QVERIFY(dialog);
+        QCOMPARE(dialog->defaultButton(),dialog->button(QMessageBox::Cancel));QVERIFY(dialog->text().contains(name));
+        dialog->button(QMessageBox::Cancel)->click();});
+    fresh->trigger();QTest::qWait(100);QVERIFY(resumes().isEmpty());
+    QTimer::singleShot(0,&window,[&]{auto *dialog=window.findChild<QMessageBox *>("startFreshConfirm");QVERIFY(dialog);
+        for(auto *button:dialog->buttons())if(dialog->buttonRole(button)==QMessageBox::DestructiveRole){button->click();return;}QFAIL("Missing fresh confirmation");});
+    fresh->trigger();QTRY_COMPARE(writes.size(),1);QVERIFY(writes[0][1].toBool());QCOMPARE(resumes(),QStringList{freshArgs});
+    // Send stays available and asks how to start; cancelling keeps the draft.
+    auto *composer=window.findChild<MessageComposer *>("messageComposer");auto *send=composer->findChild<QPushButton *>("sendMessage");
+    auto *status=composer->findChild<QLabel *>("messageStatus");
+    composer->editor()->setPlainText("Continue after start");QTRY_VERIFY(send->isEnabled());
+    QCOMPARE(send->text(),QString("Send"));QVERIFY(!send->icon().isNull());QVERIFY(status->text().contains("resume it or start fresh"));
+    const auto choose=[&](const char *button){QTimer::singleShot(0,&window,[&,button]{auto *dialog=window.findChild<QMessageBox *>("startToSendConfirm");QVERIFY(dialog);
+        QCOMPARE(dialog->defaultButton(),dialog->button(QMessageBox::Cancel));
+        if(qstrcmp(button,"cancel")==0)dialog->button(QMessageBox::Cancel)->click();else dialog->findChild<QPushButton *>(button)->click();});};
+    choose("cancel");send->click();QTest::qWait(100);QCOMPARE(resumes().size(),1);
+    QCOMPARE(composer->editor()->toPlainText(),QString("Continue after start"));
+    // A resume that reports another conversation never receives the draft.
+    choose("resumeAndSend");send->click();QTRY_COMPARE(writes.size(),2);
+    QCOMPARE(resumes().last(),QString(R"(["resume", "codex/website/navigation", "-d"])"));
+    QVERIFY(!send->isEnabled());QVERIFY(status->text().contains("Starting the session"));
+    QVERIFY(window.findChild<QPushButton *>("cancelCompactSend")->isVisible());
+    setState("running","run-resumed","conversation-other");window.setFleet(state);
+    details=QJsonObject{{"tracked",true},{"run_id","run-resumed"},{"conversation_id","conversation-other"},{"runtime_state","live"},
+        {"process_state","running"},{"activity","idle"},{"phase","idle"}};apply();
+    QTRY_VERIFY(status->text().contains("unexpected conversation"));QVERIFY(!QFileInfo::exists(temp.filePath("send.json")));
+    QCOMPARE(composer->editor()->toPlainText(),QString("Continue after start"));
+    // A fresh start delivers the unchanged draft once the new run accepts input.
+    setState("stopped","run-old","conversation-old");window.setFleet(state);
+    details=QJsonObject{{"tracked",true},{"run_id","run-old"},{"conversation_id","conversation-old"},{"runtime_state","saved"},{"process_state","exited"}};apply();
+    QTRY_VERIFY(send->isEnabled());choose("startFreshAndSend");send->click();QTRY_COMPARE(writes.size(),3);QCOMPARE(resumes().last(),freshArgs);
+    setState("running","run-new",{});window.setFleet(state);
+    details=QJsonObject{{"tracked",true},{"run_id","run-new"},{"runtime_state","live"},{"process_state","running"},
+        {"activity","idle"},{"phase","idle"},{"first_message_can_send",true}};apply();
+    QTRY_VERIFY(QFileInfo::exists(temp.filePath("send.json")));
+    QFile sent(temp.filePath("send.json"));QVERIFY(sent.open(QIODevice::ReadOnly));const auto payload=QJsonDocument::fromJson(sent.readAll()).object();
+    QCOMPARE(payload["expected_run_id"].toString(),QString("run-new"));QVERIFY(QJsonDocument(payload).toJson().contains("Continue after start"));
+    QVERIFY(!window.findChild<QMessageBox *>("coldCacheConfirm"));
+}
+
 void TestSessionsWindow::coldCacheCompactWaitsForSuccess_data()
 {
     QTest::addColumn<QString>("outcome");
@@ -1906,7 +1980,9 @@ elif args[0]=='send':
     QCOMPARE(activity->toPlainText().count("Review this screenshot."), 1);
     window.showSession({}, "codex/website/navigation");
     composer->editor()->setPlainText("Draft for a saved session");
-    QVERIFY(!send->isEnabled());
+    // Send stays available; it asks how to start the saved session first.
+    QVERIFY(send->isEnabled());
+    QVERIFY(composer->findChild<QLabel *>("messageStatus")->text().contains("resume it or start fresh"));
     window.showSession({}, "kimi/docs/research");
     QCOMPARE(composer->editor()->toPlainText(), QString("Separate Kimi draft"));
 }

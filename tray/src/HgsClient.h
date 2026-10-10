@@ -165,6 +165,8 @@ public:
     void openNativeUi(const QString &host, const QString &name);
     quint64 requestNativeUi(const QString &host, const QString &name);
     void resumeSession(const QString &host, const QString &name);
+    // A new conversation from the stopped run's own launch settings.
+    void startFreshSession(const QString &host, const QString &name, const QString &run);
     void archiveSession(const QString &host, const QString &name);
     void renameSession(const QString &host, const QString &name, const QString &newName, const QString &archiveId = {});
     void restoreArchive(const QString &host, const QString &name, const QString &archiveId);
