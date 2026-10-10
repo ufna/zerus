@@ -353,7 +353,8 @@ fn schedule(job: &mut Value, s: &Value, time: f64) {
     // Stable per-episode jitter survives restarts and avoids synchronized fleets.
     let jitter = string(job, "id").bytes().map(u64::from).sum::<u64>() % 101;
     job["not_before"] = json!(minimum);
-    job["due_at"] = json!((time + delay * (1.0 + jitter as f64 / 1000.0)).max(minimum));
+    // Add the jitter separately: delay * 1.1 is not exact in binary floating point.
+    job["due_at"] = json!((time + delay + delay * jitter as f64 / 1000.0).max(minimum));
     stop(job, "waiting", "");
 }
 
