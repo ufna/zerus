@@ -58,6 +58,20 @@ class NativeCodexClear(unittest.TestCase):
     received = test_input.InputTransport.received
     tearDown = test_input.InputTransport.tearDown
 
+    def fail(self, msg=None):
+        # Only this credential-free fixture owns the captured terminal. Retain
+        # its actual panel and cursor when a hosted contract fails, before the
+        # private tmux server and home are cleaned up.
+        try:
+            screen = self.tmux('capture-pane', '-ep', '-t', self.pane, check=False)
+            cursor = self.tmux('display-message', '-p', '-t', self.pane, '#{cursor_x}:#{cursor_y}', check=False).strip()
+            record = json.loads(self.record_path.read_text())
+            state = {key: record.get(key) for key in ('activity', 'phase', 'session_clear')}
+            msg = f'{msg}\nNative fixture cursor: {cursor}; state: {state}\nNative fixture panel: {screen!r}'
+        except (AttributeError, OSError, ValueError, subprocess.SubprocessError):
+            pass
+        super().fail(msg)
+
     def setUp(self):
         import test_clear_context
         test_input.InputTransport.setUp(self)

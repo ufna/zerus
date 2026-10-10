@@ -122,7 +122,7 @@ class MobilePeers(unittest.TestCase):
         if proc.exists():
             try:
                 return proc.read_text().split(') ', 1)[1][0] != 'Z'
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):
                 return False
         status = subprocess.run(['ps', '-p', str(pid), '-o', 'stat='], capture_output=True, text=True)
         return status.returncode == 0 and not status.stdout.strip().startswith('Z')
