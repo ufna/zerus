@@ -183,12 +183,18 @@ inline QString currentAction(const SessionInfo &s, bool online = true)
     return s.tracked ? status(s) : QObject::tr("Open terminal to view activity");
 }
 
-inline QString childCount(const SessionInfo &s, bool expanded = false, bool online = true)
+inline QString childCount(const SessionInfo &s, bool expanded = false, bool online = true, bool includeCompleted = true)
 {
     if (!currentActivity(s, online) || s.subagentSource == "unavailable") return {};
     const int active = qMax(s.subagentActiveCount, s.subagentCount);
     if (s.subagentSource == "hook_profiles" && !s.subagentCountsComplete)
         return expanded ? QObject::tr("Observed runs: incomplete counts") : QStringLiteral("?");
+    if (!includeCompleted) {
+        if (s.subagentSource == "hooks" && !s.subagentCountsComplete && s.subagentTotalCount > 0)
+            return expanded ? QObject::tr("%1 confirmed active; some states unknown").arg(active) : QString("%1+").arg(active);
+        if (active > 0) return expanded ? QObject::tr("%1 active").arg(active) : QString::number(active);
+        return {};
+    }
     if (s.subagentSource == "hooks" && !s.subagentCountsComplete && s.subagentTotalCount > 0)
         return expanded ? QObject::tr("%1 confirmed active / %2 observed; some states unknown").arg(active).arg(s.subagentTotalCount)
                         : QString("%1+/%2").arg(active).arg(s.subagentTotalCount);

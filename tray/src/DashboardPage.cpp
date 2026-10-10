@@ -17,6 +17,7 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QScrollArea>
+#include <QSettings>
 #include <QStyle>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -158,7 +159,7 @@ public:
         m_model.appendRow(new QStandardItem);
     }
     void setTheme(bool dark) { if (property("hgsDark") != QVariant(dark)) { setProperty("hgsDark", dark); QWidget::update(); } }
-    void update(const SessionInfo &session, const QString &alias)
+    void update(const SessionInfo &session, const QString &alias, bool includeCompleted)
     {
         using namespace SessionPresentation;
         auto *item = m_model.item(0); bool changed = false;
@@ -181,12 +182,12 @@ public:
         set(SessionRoles::Unread, session.unreadReply);
         set(SessionRoles::Working, working(session));
         set(SessionRoles::WorkingSince, session.phase == "compacting" ? session.compactionStarted : session.turnStarted);
-        set(SessionRoles::Children, childCount(session));
+        set(SessionRoles::Children, childCount(session, false, true, includeCompleted));
         // Overview cards navigate to a session; the roster opens in its list.
         set(SessionRoles::HasChildren, false);
         const QStringList description{displayTitle(session), alias, session.cmd, status(session),
             projectContext(session), item->data(SessionRoles::Detail).toString(), session.model, session.effort,
-            childCount(session, true)};
+            childCount(session, true, true, includeCompleted)};
         const auto git = GitStatusBadge::tooltip(session.gitStatus);
         const auto name = description.join(" / "), tip = description.join("\n") + (session.gitStatus.isEmpty() ? QString() : "\n\n" + git);
         if (accessibleName() != name) setAccessibleName(name);
@@ -372,6 +373,7 @@ void DashboardPage::arrangeMachines()
 void DashboardPage::render()
 {
     const auto now = QDateTime::currentMSecsSinceEpoch();
+    const bool includeCompleted = QSettings().value("workspace/showCompletedSubagents", false).toBool();
     struct Machine { QString key, alias, host; BoxState box; bool fresh; };
     QList<Machine> machines;
     const auto local = m_fleet.local();
@@ -429,7 +431,7 @@ void DashboardPage::render()
             row = new DashboardSessionRow(this); m_rows.insert(item.key, row);
             connect(row, &QPushButton::clicked, this, [this, host = item.host, name = item.session.name] { emit sessionRequested(host, name); });
         }
-        row->setTheme(m_dark); row->update(item.session, item.alias);
+        row->setTheme(m_dark); row->update(item.session, item.alias, includeCompleted);
     }
     for (auto it = m_rows.begin(); it != m_rows.end();) {
         if (!rowKeys.contains(it.key())) { delete it.value(); it = m_rows.erase(it); } else ++it;

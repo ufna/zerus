@@ -525,9 +525,12 @@ unknown counts remain unknown. Ordinary child results/errors stay out of the
 attention count, while explicit input/approval requests remain visible. DeepSeek
 continuable children can receive messages through the native API with parent
 verification; other adapters and one-shot children may expose history only.
-The expanded session tree and inspector hide children whose latest reported turn
-is finished by default. **Settings → Sessions → Show completed subagents** restores
-them; this local preference does not delete history or change active/total counts.
+The expanded session tree hides children whose latest reported turn is finished
+by default. Session and Overview cards then show only the active count, omitting
+an empty indicator when no active or uncertain children remain.
+**Settings → Sessions → Show completed subagents** restores completed rows and
+active/total card counts. The **Tasks & agents** inspector always shows the full
+reported roster and its active/total counts, including completed turns.
 Unknown states, errors, paused agents and input/approval requests remain visible.
 An open child's Activity and draft stay in place when its turn finishes. A child's
 draft keeps its row visible after returning to main Activity. Finished turns are
