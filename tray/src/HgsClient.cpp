@@ -13,6 +13,7 @@
 #include <QProcessEnvironment>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QDateTime>
 #include <QCryptographicHash>
@@ -310,6 +311,19 @@ void runHgs(const QString &hgs, const QStringList &args, int timeoutMs, QObject 
 }
 
 } // namespace
+
+void HgsClient::requestVersion()
+{
+    if (m_versionInFlight) return;
+    m_versionInFlight=true;
+    runHgs(m_hgs,{QStringLiteral("--version")},3000,this,
+        [this](const QByteArray &out){
+            m_versionInFlight=false;
+            static const QRegularExpression format(QStringLiteral("^hgs ([0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?)$"));
+            const auto match=format.match(QString::fromUtf8(out).trimmed());
+            emit versionReady(out.size()<=128 && match.hasMatch()?match.captured(1):QString{});
+        },[this](const QString &,const QString &){m_versionInFlight=false;emit versionReady({});});
+}
 
 quint64 HgsClient::requestAccounts(const QString &host, const QStringList &arguments, const QByteArray &input)
 {

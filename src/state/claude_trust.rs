@@ -19,12 +19,15 @@ fn parse(screen: &str) -> Option<Panel> {
     let all: Vec<_> = screen.trim().lines().map(str::trim).collect();
     let divider = all.iter().position(|row| row.chars().count() >= 40 && row.chars().all(|c| c == '─'))?;
     if divider > 0 {
-        // Older HGS versions printed this before starting Claude. Keep already
-        // running sessions answerable after upgrading, without accepting an
-        // arbitrary quoted dialog or unrelated terminal output.
+        // Already-running launchers can leave these exact notices above the
+        // native panel. Never skip arbitrary output to find a quoted dialog.
         let prelude = all[..divider].join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
-        let prompt = prelude.strip_prefix("hgs: Claude token is in the locked login keychain (ssh context); unlocking it password to unlock ")?;
-        if !prompt.starts_with('/') || !prompt.ends_with("/Library/Keychains/login.keychain-db:") { return None; }
+        let bitwarden = prelude == "Bitwarden master password: unlock: SOPS_AGE_KEY loaded for this session. run_claude: secrets unlocked → launching claude"
+            || prelude == "run_claude: SOPS_AGE_KEY already set — reusing it. run_claude: secrets unlocked → launching claude";
+        if !bitwarden {
+            let prompt = prelude.strip_prefix("hgs: Claude token is in the locked login keychain (ssh context); unlocking it password to unlock ")?;
+            if !prompt.starts_with('/') || !prompt.ends_with("/Library/Keychains/login.keychain-db:") { return None; }
+        }
     }
     let rows = &all[divider..];
     if rows.len() < 15
@@ -158,6 +161,28 @@ mod tests {
         assert_eq!(original["question_hash"], prefixed["question_hash"]);
         assert!(parse(&format!("{prefix}unrelated command output\n{SCREEN}")).is_none());
         assert!(parse(&format!("{prefix}{SCREEN}\nAnother question")).is_none());
+    }
+    #[test]
+    fn bitwarden_launch_notices_preserve_the_exact_native_question() {
+        let original = card(&record(), &parse(SCREEN).unwrap()).unwrap();
+        for prefix in [
+            "Bitwarden master password:\nunlock: SOPS_AGE_KEY loaded for this session.\nrun_claude: secrets unlocked → launching claude\n\n",
+            "run_claude: SOPS_AGE_KEY already set — reusing it.\nrun_claude: secrets unlocked → launching claude\n\n",
+        ] {
+            let screen = format!("{prefix}{SCREEN}");
+            let question = card(&record(), &parse(&screen).unwrap()).unwrap();
+            assert_eq!(original, question);
+            for invalid in [
+                format!("Previous agent said:\n{screen}"),
+                format!("{prefix}unrelated command output\n{SCREEN}"),
+                format!("{screen}\nAnother question"),
+                screen.replace("launching claude", "launching codex"),
+                screen.replace("secrets unlocked", "secrets unavailable"),
+                screen.replace(HINT, "Enter to confirm"),
+            ] {
+                assert!(parse(&invalid).is_none());
+            }
+        }
     }
     #[test]
     fn binds_folder_run_and_disclosure_independently_of_highlight() {

@@ -16,6 +16,7 @@ class TestHgsClient : public QObject {
     Q_OBJECT
 private slots:
     void parsesBox();
+    void cliVersionUsesConfiguredExecutableAndRefreshes();
     void parsesSavedSessions();
     void parsesActivityMetadata();
     void providerFailuresRequireAttentionAndPreserveSpecificStatus();
@@ -60,6 +61,25 @@ private slots:
     void pollsLaunchOffTheGuiThreadAndReportOnIt();
     void destroyedClientKillsItsPolls();
 };
+
+void TestHgsClient::cliVersionUsesConfiguredExecutableAndRefreshes()
+{
+    QTemporaryDir fixture;QVERIFY(fixture.isValid());
+    const auto program=fixture.filePath("custom-hgs");
+    HgsClient client(program);QSignalSpy ready(&client,&HgsClient::versionReady);
+    client.requestVersion();QTRY_COMPARE(ready.size(),1);QVERIFY(ready[0][0].toString().isEmpty());
+    QFile script(program);QVERIFY(script.open(QIODevice::WriteOnly));
+    script.write("#!/bin/sh\n[ \"$#\" = 1 ] && [ \"$1\" = --version ] || exit 7\necho call >> \"$0.calls\"\ncat \"$0.version\"\n");script.close();
+    QVERIFY(script.setPermissions(QFileDevice::ReadOwner|QFileDevice::WriteOwner|QFileDevice::ExeOwner));
+    auto reported=[&](const QByteArray &value){QFile file(program+".version");QVERIFY(file.open(QIODevice::WriteOnly));file.write(value);};
+    reported("hgs 9.8.7\n");client.requestVersion();client.requestVersion();QTRY_COMPARE(ready.size(),2);
+    QCOMPARE(ready[1][0].toString(),QString("9.8.7"));
+    QFile calls(program+".calls");QVERIFY(calls.open(QIODevice::ReadOnly));QCOMPARE(calls.readAll(),QByteArray("call\n"));calls.close();
+    reported("hgs 9.8.8-preview.1+fixture\n");client.requestVersion();QTRY_COMPARE(ready.size(),3);
+    QCOMPARE(ready[2][0].toString(),QString("9.8.8-preview.1+fixture"));
+    reported("An unrelated tool version 9.8.8\n");client.requestVersion();QTRY_COMPARE(ready.size(),4);
+    QVERIFY(ready[3][0].toString().isEmpty());
+}
 
 void TestHgsClient::pollsLaunchOffTheGuiThreadAndReportOnIt()
 {

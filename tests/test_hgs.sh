@@ -351,7 +351,7 @@ json_ok() {   # json_ok <имя> <python-проверка> [аргументы h
 import json,sys
 d = json.load(sys.stdin)
 $check
-" 2>&1)"; prc=$?
+" "$HGS" 2>&1)"; prc=$?
   if [ "$rc" = 0 ] && [ "$prc" = 0 ]; then
     pass=$((pass+1)); echo "ok   $name"
   else
@@ -363,6 +363,7 @@ $check
 json_ok "json: --local отдаёт объект этого бокса" "
 assert d['host'] == 'testhost', d['host']
 assert d['ok'] is True
+assert d['hgs_version'] == __import__('subprocess').check_output([sys.argv[1], '--version'], text=True).strip().removeprefix('hgs ')
 assert d['sessions'] == [], d['sessions']
 " ls --json --local
 json_ok "json: карта проектов внутри" "

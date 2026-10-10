@@ -629,7 +629,7 @@ fn local_json(config: &Config) -> Result<Value> {
         let ttys: Vec<&str> = clients.lines().filter_map(|line| line.split_once('\t')).filter_map(|(session, tty)| if session == name { Some(tty) } else { None }).collect();
         json!({"name":name,"cmd":cmd,"project":project,"tag":tag,"attached":attached,"clients":ttys,"created":created,"launch_id":launch_id})
     }).collect();
-    let raw = json!({"host":config.host(),"ok":true,"projects":projects,"sessions":sessions,"peers":config.peers,"metrics":crate::metrics::snapshot(&config.state)});
+    let raw = json!({"host":config.host(),"ok":true,"hgs_version":env!("CARGO_PKG_VERSION"),"projects":projects,"sessions":sessions,"peers":config.peers,"metrics":crate::metrics::snapshot(&config.state)});
     state::merge_snapshot(raw).map_err(|e| Error::new(1, e))
 }
 fn local_list(config: &Config) -> Result<()> {

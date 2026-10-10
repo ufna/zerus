@@ -93,18 +93,23 @@ public:
         auto *updates=makePage(tr("Updates"));updates->addWidget(new UpdatesWidget);updates->addStretch();
         auto *mobile=new RelaySettings::Panel;mobile->setMaximumWidth(850);addPage(mobile);
         auto *about=makePage(tr("About"));about->addWidget(new QLabel(tr("hgs zerus %1").arg(QCoreApplication::applicationVersion())));
+        cliVersion=new QLabel(tr("hgs CLI version unavailable"));cliVersion->setObjectName("aboutHgsVersion");
+        cliVersion->setTextInteractionFlags(Qt::TextSelectableByMouse|Qt::TextSelectableByKeyboard);about->addWidget(cliVersion);
+        versionClient=new HgsClient(executable,this);
+        connect(versionClient,&HgsClient::versionReady,this,[this](const QString &version){cliVersion->setText(version.isEmpty()?tr("hgs CLI version unavailable"):tr("hgs CLI %1").arg(version));});
         auto *repository=new QPushButton(QStringLiteral("ufna/zerus"));repository->setObjectName("aboutRepository");repository->setProperty("glyph","github");
         repository->setIcon(workspaceIcon("github",palette().color(QPalette::WindowText)));repository->setIconSize(QSize(20,20));repository->setAutoDefault(false);
         repository->setCursor(Qt::PointingHandCursor);repository->setToolTip(QStringLiteral("https://github.com/ufna/zerus"));repository->setAccessibleName(tr("Open Zerus repository on GitHub"));
         connect(repository,&QPushButton::clicked,this,[]{QDesktopServices::openUrl(QUrl(QStringLiteral("https://github.com/ufna/zerus")));});
         about->addWidget(repository,0,Qt::AlignLeft);about->addStretch();
         connect(nav,&QListWidget::currentRowChanged,pages,&QStackedWidget::setCurrentIndex);nav->setCurrentRow(0);
+        connect(nav,&QListWidget::currentRowChanged,this,[this](int row){if(row==6)refreshCliVersion();});
     }
     void setPeers(const QStringList &peers){sync->setPeers(peers);}
     void openUpdates(){nav->setCurrentRow(4);}
     void openRecovery(){nav->setCurrentRow(2);sync->refresh();}
     void setWindowLayerState(bool on,bool enabled,const QString &hint){const QSignalBlocker block(onTop);onTop->setChecked(on);onTop->setEnabled(enabled);onTopHint->setText(hint);}
-    void refresh(){sync->refresh();}
+    void refresh(){sync->refresh();if(nav->currentRow()==6)refreshCliVersion();}
     // Activity's column edges and menu change the same preference.
     void syncActivityWidth(){
         const QSignalBlocker width(activityWidth),full(activityFullWidth);
@@ -113,6 +118,8 @@ public:
         updateResets();
     }
 private:
+    void refreshCliVersion(){cliVersion->setText(tr("hgs CLI: checking…"));versionClient->requestVersion();}
+    HgsClient *versionClient;QLabel *cliVersion;
     // An icon button restoring a slider's default, shown only after a change.
     // It keeps its space while hidden, so the rows below do not move. Focus
     // moves to the slider first: a focused button that hides itself would

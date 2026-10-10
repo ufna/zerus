@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -64,6 +65,17 @@ import androidx.lifecycle.viewmodel.compose.viewModel
                     HorizontalDivider()
                     Text("About Zerus", style = MaterialTheme.typography.titleLarge)
                     Text("Version ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+                    val connectedMachines = model.machines.filter { machine -> model.connections.any { it.id == machine.connectionId } }
+                    if (connectedMachines.isEmpty()) Text("Connect a computer to see its hgs CLI version.", style = MaterialTheme.typography.bodySmall)
+                    else model.connections.forEach { connection ->
+                        val computers = connectedMachines.filter { it.connectionId == connection.id }
+                        if (computers.isNotEmpty() && model.connections.size > 1) Text(connection.displayName, style = MaterialTheme.typography.labelLarge)
+                        computers.forEach { machine ->
+                            val version = if (machine.hgsVersion.isBlank()) "hgs CLI version unavailable" else "hgs CLI ${machine.hgsVersion}"
+                            val suffix = if (machine.hgsVersion.isNotBlank() && (!machine.online || machine.lastKnown)) " (last known)" else ""
+                            SelectionContainer { Text("${machine.name}: $version$suffix", style = MaterialTheme.typography.bodySmall) }
+                        }
+                    }
                     TextButton(onClick = {
                         try {
                             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/ufna/zerus")))

@@ -127,7 +127,17 @@ fn navigate(
                     }
                     return Err("Agent exited before confirming the answer".into());
                 }
-                input::checked_terminal(&active, false)?;
+                if let Err(error) = input::checked_terminal(&active, false) {
+                    // Native startup can briefly leave input mode after Enter
+                    // while replacing the trust dialog with its main screen.
+                    // Wait without sending more keys; acknowledge only after
+                    // the pinned process owns a verified input terminal again.
+                    if key == "Enter" && string(question, "source") == "claude_folder_trust"
+                        && Instant::now() < deadline {
+                        continue;
+                    }
+                    return Err(error);
+                }
                 let screen = capture(&active)?;
                 let next = parse(&active, &screen);
                 if key == "Enter" {

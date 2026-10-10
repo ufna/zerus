@@ -189,6 +189,15 @@ class MobilePeers(unittest.TestCase):
         local['target_machine_id'] = self.ids['b']
         self.call('a', '__mobile-peer-local', '--json', data=local, ok=False)
 
+    def test_cli_version_travels_with_the_exact_local_and_peer_snapshot(self):
+        version = self.call('a', '--version').stdout.strip().removeprefix('hgs ')
+        local = self.call('a', 'ls', '--json', '--local').json()
+        peer = self.call('a', 'mobile-peer', '--json', data=self.request(['ls', '--json', '--local'])).json()
+        self.assertEqual(local['host'], 'a')
+        self.assertEqual(peer['host'], 'b')
+        self.assertEqual(local['hgs_version'], version)
+        self.assertEqual(peer['hgs_version'], version)
+
     def test_replaced_persistent_identity_cannot_execute_old_bound_request(self):
         path = self.root / 'b/swarm/catalog.json'
         data = json.loads(path.read_text())

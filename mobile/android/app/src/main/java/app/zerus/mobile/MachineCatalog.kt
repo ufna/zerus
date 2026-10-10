@@ -16,10 +16,13 @@ data class MachineTreeGroup(val root: MachineTreeRow, val children: List<Machine
 /** Selected relay routes describe one hop, not every enrollment of a computer. */
 object MachineCatalog {
     private const val maxAliases = 4096
+    private val versionFormat = Regex("[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?")
 
     fun parse(connectionId: String, raw: JSONObject) = Machine(
         connectionId, raw.getString("id"), raw.string("name", "id"), raw.optBoolean("online"),
-        serverAliases = aliases(raw.opt("aliases")), route = route(raw))
+        serverAliases = aliases(raw.opt("aliases")), route = route(raw),
+        hgsVersion = (raw.optJSONObject("snapshot")?.opt("hgs_version") as? String)
+            ?.takeIf { it.length <= 128 && versionFormat.matches(it) }.orEmpty())
 
     fun gateway(machine: Machine, catalog: List<Machine>): Machine? {
         return GatewayIndex(catalog.filter { it.connectionId == machine.connectionId }).resolve(machine)

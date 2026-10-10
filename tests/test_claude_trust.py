@@ -11,7 +11,7 @@ import test_input as fixtures
 import test_questions as question_fixtures
 
 FAKE = r'''
-import os,pathlib,signal,sys,termios,tty
+import os,pathlib,signal,sys,termios,time,tty
 root=pathlib.Path(os.environ['INPUT_FIXTURE']);fd=sys.stdin.fileno();original=termios.tcgetattr(fd);tty.setraw(fd)
 os.write(1,b'\x1b[?2004h');selected=0;buf=b''
 labels=['No, exit','Yes, I trust this folder']
@@ -38,6 +38,9 @@ try:
     buf=buf[1:];(root/'submitted').write_text(labels[selected])
     if not (root/'hold-dialog').exists():
      if selected==0:sys.exit(0)
+     if (root/'transition-input').exists():
+      os.write(1,b'\x1b[?2004l\x1b[2J\x1b[HStarting the native input screen');time.sleep(.2)
+      if not (root/'hold-input-mode').exists():os.write(1,b'\x1b[?2004h')
      os.write(1,b'\x1b[2J\x1b[HReady for your first message')
    elif buf[0]==27 and len(buf)<3:break
    else:buf=buf[1:]
@@ -114,6 +117,51 @@ class FolderTrust(unittest.TestCase):
         self.assertEqual((self.root/'submitted').read_text(),'Yes, I trust this folder')
         before=self.received();self.assertEqual(self.answer(p),receipt);self.assertEqual(self.received(),before)
         self.assertEqual(self.inspect()['pending_questions'],[])
+
+    def test_bitwarden_prelude_preserves_disclosure_and_explicit_answer(self):
+        prefixes=[
+            'Bitwarden master password:\nunlock: SOPS_AGE_KEY loaded for this session.\nrun_claude: secrets unlocked → launching claude\n\n',
+            'run_claude: SOPS_AGE_KEY already set — reusing it.\nrun_claude: secrets unlocked → launching claude\n\n',
+        ]
+        for width,height in [(95,47),(110,35)]:
+            self.tmux('resize-window','-t','='+self.name+':','-x',str(width),'-y',str(height))
+            for prefix in prefixes:
+                self.redraw('prelude',prefix,'launching claude')
+                state=self.inspect();card=state['pending_questions'][0]
+                self.assertEqual(state['phase'],'approval')
+                self.assertEqual(card['question_hash'],self.card['question_hash'])
+                self.assertIn('17 tool permissions',card['questions'][0]['body'])
+                self.assertIn('and 9 more',card['questions'][0]['body'])
+                self.assertNotIn('SOPS_AGE_KEY',card['questions'][0]['body'])
+                self.assertEqual(self.received(),b'')
+        payload=self.payload();receipt=self.answer(payload)
+        self.assertEqual(receipt['status'],'answered')
+        self.assertEqual((self.root/'submitted').read_text(),'Yes, I trust this folder')
+        before=self.received();self.assertEqual(self.answer(payload),receipt)
+        self.assertEqual(self.received(),before)
+
+    def test_unknown_output_after_bitwarden_is_not_answerable(self):
+        self.tmux('resize-window','-t','='+self.name+':','-x','120','-y','50')
+        prefix='Bitwarden master password:\nunlock: SOPS_AGE_KEY loaded for this session.\nrun_claude: secrets unlocked → launching claude\nUnrelated command output\n'
+        self.redraw('prelude',prefix,'Unrelated command output')
+        self.assertEqual(self.inspect()['pending_questions'],[])
+        self.answer(self.payload(),success=False)
+        self.assertEqual(self.received(),b'')
+
+    def test_trust_waits_for_verified_input_after_native_startup_transition(self):
+        (self.root/'transition-input').touch()
+        payload=self.payload();receipt=self.answer(payload)
+        self.assertEqual(receipt['status'],'answered')
+        before=self.received();self.assertEqual(self.answer(payload),receipt)
+        self.assertEqual(self.received(),before)
+
+    def test_unverified_input_after_trust_is_uncertain_and_never_retried(self):
+        (self.root/'transition-input').touch();(self.root/'hold-input-mode').touch()
+        payload=self.payload()
+        self.assertIn('delivery uncertain',self.answer(payload,success=False))
+        before=self.received()
+        self.assertIn('delivery uncertain',self.answer(payload,success=False))
+        self.assertEqual(self.received(),before)
 
     def test_explicit_decline_can_exit_the_exact_process(self):
         p=self.payload(0);receipt=self.answer(p)

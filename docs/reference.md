@@ -433,6 +433,11 @@ folder/MCP trust. These can appear before a conversation exists, but only with
 verified startup identity.
 Claude workspace trust preserves its full permissions warning; Kimi includes the
 visible MCP commands. Trust persistence belongs to the native agent.
+Already-running Claude sessions can retain the exact Keychain or Bitwarden
+launcher notices above the complete workspace-trust panel. These notices do not
+change the request identity or appear in its disclosure; unrelated terminal
+output remains unsupported.
+
 Claude's auto-mode prompt accepts absolute workspace paths and native `~/…`
 abbreviations that match the verified launch directory. It remains answerable
 after the initial conversation is bound, until a turn starts.
@@ -1090,9 +1095,12 @@ No reverse connection is created by default. Explicit peer setup uses
 | `--sessions` | Open the workspace |
 
 A single-instance socket forwards repeated launches to the running GUI.
-The version appears in the rail and Settings. Closing a workspace never owns
-agent process lifetime. Local machine settings, credentials, runtime journals and
-personal connection values belong outside the repository.
+The desktop version appears in the rail and Settings. **Settings → About** also
+shows the configured `hgs` CLI version, read when About opens; an unavailable or
+unrecognized response remains explicit instead of using a compiled-in value.
+Closing a workspace never owns agent process lifetime. Local machine settings,
+credentials, runtime journals and personal connection values belong outside the
+repository.
 
 ## JSON and external clients
 

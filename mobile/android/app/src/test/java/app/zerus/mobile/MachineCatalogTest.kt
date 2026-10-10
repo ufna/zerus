@@ -19,6 +19,19 @@ class MachineCatalogTest {
     private fun direct(id: String = gatewayId, name: String = "Gateway") = parse(raw(id, name).put("via", JSONObject.NULL))
     private fun peer() = parse(raw().put("via", via()))
 
+    @Test fun cliVersionsRemainScopedToTheirComputerAndLegacyReportsStayUnknown() {
+        val desktop = parse(raw(gatewayId, "Desktop").put("snapshot", JSONObject().put("hgs_version", "1.2.3")))
+        val laptop = parse(raw(peerId, "Laptop").put("snapshot", JSONObject().put("hgs_version", "1.2.4-preview.1+fixture")))
+        assertEquals("1.2.3", desktop.hgsVersion)
+        assertEquals("1.2.4-preview.1+fixture", laptop.hgsVersion)
+        assertEquals("", parse(raw()).hgsVersion)
+        assertEquals("1.2.3", desktop.copy(online = false, lastKnown = true).hgsVersion)
+        assertEquals("1.2.3", MachineNames.apply(desktop, listOf(MachineAlias(MachineKey("workspace", gatewayId), "My computer"))).hgsVersion)
+        listOf(JSONObject.NULL, 7, JSONObject(), "hgs 1.2.3", "null", "1.2.3\nforeign output", "1.2.3-" + "x".repeat(129)).forEach {
+            assertEquals("", parse(raw().put("snapshot", JSONObject().put("hgs_version", it))).hgsVersion)
+        }
+    }
+
     @Test fun onlyExplicitNullIsDirectAndLegacyConstructorsRemainUnknown() {
         assertEquals(MachineRoute.Unknown, parse(raw()).route)
         assertEquals(MachineRoute.Unknown, Machine("workspace", peerId, "Cached", false).route)

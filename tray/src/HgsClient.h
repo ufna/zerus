@@ -98,6 +98,8 @@ public:
     explicit HgsClient(QString hgsPath, QObject *parent = nullptr);
     ~HgsClient() override;
     QString executable() const { return m_hgs; }
+    // Read the configured executable, including older CLIs without snapshot metadata.
+    void requestVersion();
     quint64 requestRecovery(const QString &host, const QString &operation, const QJsonObject &payload = {});
 
     // Асинхронно: `hgs ls --json --local`. Один exec, единицы миллисекунд.
@@ -180,6 +182,7 @@ public:
     void projectRemove(const QString &name, const QString &host = {});
 
 signals:
+    void versionReady(const QString &version); // Empty when unavailable or unrecognized.
     void sessionActionFinished(quint64 request, bool ok, const QJsonObject &result, const QString &error);
     void recoveryFinished(quint64 request, bool ok, const QJsonObject &result, const QString &error);
     void attachmentReady(quint64 request, const QJsonObject &file, const QByteArray &bytes);
@@ -258,6 +261,7 @@ private:
     // добавлял бы ещё один параллельный ssh-процесс поверх уже висящих.
     QSet<QString> m_peerInFlight;
     bool m_localInFlight = false;
+    bool m_versionInFlight = false;
     QSet<QString> m_inspectionsInFlight;
     quint64 m_directoryRequest = 0, m_worktreeRequest = 0;
     QHash<QString, QList<QPair<quint64, QString>>> m_worktreesInFlight;

@@ -42,7 +42,7 @@ if mode == 'bad-json':
     print('private-native-secret')
     sys.exit(0)
 if sys.argv[1] == 'ls':
-    print(json.dumps({'host': 'synthetic', 'sessions': [{'name': 'codex/example'},
+    print(json.dumps({'host': 'synthetic', 'hgs_version': '9.8.7', 'sessions': [{'name': 'codex/example'},
                                                      {'name': 'codex/a;echo pwned'}]}))
 else:
     print(json.dumps({'native': True, 'argv': sys.argv[1:],
@@ -65,6 +65,14 @@ class ConnectorTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         self.connector.journal.close()
         self.temp.cleanup()
+
+    async def test_cli_version_survives_enrichment_and_legacy_snapshots_remain_supported(self):
+        snapshot = await self.connector.snapshot()
+        self.assertEqual(snapshot['hgs_version'], '9.8.7')
+        self.hgs.write_text(FAKE_HGS.replace("'hgs_version': '9.8.7', ", ""))
+        snapshot = await self.connector.snapshot()
+        self.assertNotIn('hgs_version', snapshot)
+        self.assertEqual(len(snapshot['sessions']), 2)
 
     def request(self, operation="send", session="codex/example", **payload):
         request_id = str(uuid.uuid4())

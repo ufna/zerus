@@ -1,5 +1,10 @@
 # Zerus Android
 
+Settings → About shows the Android app version and each connected computer's
+reported `hgs` CLI version. Offline reports are marked `last known`; older CLIs
+without version metadata show `version unavailable`. The optional `hgs_version`
+field travels with the existing computer snapshot and keeps API v1 compatible.
+
 Native Kotlin and Jetpack Compose companion for the Zerus gateway protocol in
 [the mobile architecture](../../docs/mobile-architecture.md). Android 8.0 or later
 is supported. The app works without Google services.
