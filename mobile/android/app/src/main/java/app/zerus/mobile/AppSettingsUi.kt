@@ -48,7 +48,7 @@ import kotlinx.coroutines.withContext
                 Text("Opting out discards retained reports. After re-enabling, diagnostics resume once a startup confirms the earlier reports have been removed.", style = MaterialTheme.typography.bodySmall)
                 Text("These switches do not change push notifications.", style = MaterialTheme.typography.bodySmall)
             } else Text("This build does not include Firebase analytics or crash reporting.")
-            if (error) Text("The change is not saved for the next restart. Try again.", color = MaterialTheme.colorScheme.error)
+            if (error) Text("Could not fully apply this setting. Check the switch and try again.", color = MaterialTheme.colorScheme.error)
         }
     }, confirmButton = { TextButton(onClick = onDismiss, enabled = !saving) { Text("Close") } })
 }

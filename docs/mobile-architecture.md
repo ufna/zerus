@@ -740,6 +740,10 @@ settings expose separate Usage analytics and Crash reports switches, initially
 on. A saved choice applies across process restarts and background-only starts.
 Collection is gated during initialization until the saved preferences have been
 applied; the app must not briefly enable analytics for a phone that opted out.
+Analytics is initialized lazily after a saved opt-in. Its eager Firebase
+connector registration is removed, and its three Android measurement entrypoints
+are disabled before saving an opt-out. This also prevents old SDK jobs from
+starting collection while the app is closed; Crashlytics and FCM stay available.
 
 Crash reports upload on a subsequent application start when reporting is on.
 The SDK's automatic upload stays disabled; the app uses the documented manual

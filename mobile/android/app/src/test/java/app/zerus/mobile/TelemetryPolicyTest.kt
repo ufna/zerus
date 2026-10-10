@@ -52,6 +52,27 @@ class TelemetryPolicyTest {
         assertEquals("RelayApi.kt", safe.stackTrace[1].fileName)
         DiagnosticFailure.entries.forEach { assertNull(SafeDiagnostics.failure(it).cause) }
     }
+    @Test fun backgroundGateFailureDoesNotCommitOffOrExposePartiallyEnabledOn() {
+        val store = Store()
+        val backend = object : TelemetryBackend {
+            var fail = false
+            override fun analytics(enabled: Boolean) {
+                if (enabled) assertTrue(store.value.analytics)
+                check(!fail)
+            }
+            override fun crashes(enabled: Boolean) {}
+            override fun opened() {}
+            override fun screen(value: TelemetryScreen) {}
+            override fun failure(value: DiagnosticFailure) {}
+        }
+        val controller = TelemetryController(store, backend)
+        backend.fail = true
+        try { controller.analytics(false); fail() } catch (_: IllegalStateException) {}
+        assertTrue(store.value.analytics); assertFalse(controller.effective.analytics)
+        store.value = store.value.copy(analytics = false)
+        try { controller.analytics(true); fail() } catch (_: IllegalStateException) {}
+        assertTrue(store.value.analytics); assertFalse(controller.effective.analytics)
+    }
     @Test fun fatalDelegateRunsExactlyOnceWithSafeThrowableAndOriginalThread() {
         var count = 0
         val current = Thread.currentThread()

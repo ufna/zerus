@@ -16,9 +16,9 @@ interface TelemetryBackend {
     fun failure(value: DiagnosticFailure)
 }
 
-/** Disable the SDK (which persists its own override) before recording OFF locally.
- * Enable only after local durable intent. SDK persistence is verified separately
- * with immediate process termination and cold-start tests. */
+/** Suppress SDK collection and durably gate background components before owner OFF.
+ * Enable components and lazily create Analytics only after durable owner ON.
+ * SDK collection setters persist asynchronously; they are not the OFF boundary. */
 class TelemetryController(private val store: TelemetryPreferenceStore, private val backend: TelemetryBackend) {
     var effective = store.read(); private set
     @Synchronized fun initialize() {

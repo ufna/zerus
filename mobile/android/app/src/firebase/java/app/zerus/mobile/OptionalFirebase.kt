@@ -30,19 +30,16 @@ object OptionalFirebase {
         }
     }
     @JvmStatic fun create(context: Context, preferences: TelemetryPreferences): TelemetryBackend {
-        // Manifest FALSE covers first install. SDK-persisted FALSE covers later OFF launches;
-        // our controller writes OFF only after the documented SDK disable call.
-        val analytics = FirebaseAnalytics.getInstance(context)
-        analytics.setConsent(mapOf(FirebaseAnalytics.ConsentType.AD_STORAGE to FirebaseAnalytics.ConsentStatus.DENIED,
-            FirebaseAnalytics.ConsentType.AD_USER_DATA to FirebaseAnalytics.ConsentStatus.DENIED,
-            FirebaseAnalytics.ConsentType.AD_PERSONALIZATION to FirebaseAnalytics.ConsentStatus.DENIED))
-        analytics.setAnalyticsCollectionEnabled(preferences.analytics)
+        // Owner OFF is authoritative even if a previous asynchronous SDK disable
+        // did not reach disk: never create Analytics during an OFF cold start.
+        val analyticsGate = AnalyticsComponentGate(context)
+        analyticsGate.reconcile(preferences.analytics, durable = false)
         checkNotNull(FirebaseApp.initializeApp(context))
         val crash = FirebaseCrashlytics.getInstance()
         val previous = checkNotNull(Thread.getDefaultUncaughtExceptionHandler())
         // Let Crashlytics and Android terminate normally; serialize only a sanitized error.
         Thread.setDefaultUncaughtExceptionHandler(SanitizedCrashHandler(previous))
-        return FirebaseBackend(context, analytics, crash, preferences.crashes)
+        return FirebaseBackend(context, analyticsGate, crash, preferences.crashes)
     }
     @JvmStatic fun start(context: Context) {
         FirebaseMessaging.getInstance().isAutoInitEnabled = true
@@ -74,8 +71,10 @@ object OptionalFirebase {
         }
     }
 }
-private class FirebaseBackend(context: Context, private val analytics: FirebaseAnalytics,
+private class FirebaseBackend(private val context: Context,
+    private val analyticsGate: AnalyticsComponentGate,
     private val crash: FirebaseCrashlytics, initialCrashes: Boolean) : TelemetryBackend {
+    @Volatile private var analytics: FirebaseAnalytics? = null
     private val reportPreferences = context.getSharedPreferences("zerus_telemetry", Context.MODE_PRIVATE)
     private val reportLock = Any()
     @Volatile private var analyticsEnabled = false
@@ -97,7 +96,23 @@ private class FirebaseBackend(context: Context, private val analytics: FirebaseA
             if (saved && plan.action == PendingCrashAction.Send && currentEnabled) crash.sendUnsentReports()
         } }
     }
-    override fun analytics(enabled: Boolean) { analyticsEnabled = enabled; analytics.setAnalyticsCollectionEnabled(enabled) }
+    override fun analytics(enabled: Boolean) {
+        if (enabled) {
+            analyticsGate.reconcile(true, durable = true)
+            val sdk = analytics ?: FirebaseAnalytics.getInstance(context).also { created ->
+                created.setConsent(mapOf(FirebaseAnalytics.ConsentType.AD_STORAGE to FirebaseAnalytics.ConsentStatus.DENIED,
+                    FirebaseAnalytics.ConsentType.AD_USER_DATA to FirebaseAnalytics.ConsentStatus.DENIED,
+                    FirebaseAnalytics.ConsentType.AD_PERSONALIZATION to FirebaseAnalytics.ConsentStatus.DENIED))
+                analytics = created
+            }
+            sdk.setAnalyticsCollectionEnabled(true)
+            analyticsEnabled = true
+        } else {
+            analyticsEnabled = false
+            analytics?.setAnalyticsCollectionEnabled(false)
+            analyticsGate.reconcile(false, durable = true)
+        }
+    }
     override fun crashes(enabled: Boolean) = synchronized(reportLock) {
         if (!enabled) {
             crashesEnabled = false; captureEnabled = false
@@ -106,8 +121,8 @@ private class FirebaseBackend(context: Context, private val analytics: FirebaseA
             crash.deleteUnsentReports()
         } else crashesEnabled = true // Upload/capture boundary changes after restart.
     }
-    override fun opened() { if (analyticsEnabled) analytics.logEvent("app_open", null) }
-    override fun screen(value: TelemetryScreen) { if (analyticsEnabled) analytics.logEvent("screen_open", Bundle().apply { putString("screen", value.name.lowercase()) }) }
+    override fun opened() { if (analyticsEnabled) analytics?.logEvent("app_open", null) }
+    override fun screen(value: TelemetryScreen) { if (analyticsEnabled) analytics?.logEvent("screen_open", Bundle().apply { putString("screen", value.name.lowercase()) }) }
     override fun failure(value: DiagnosticFailure) { if (crashesEnabled && captureEnabled) crash.recordException(SafeDiagnostics.failure(value)) }
 }
 
