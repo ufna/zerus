@@ -42,6 +42,7 @@ mod codex_update;
 mod recipes;
 mod rename;
 mod resume_input;
+mod scan_cache;
 mod search;
 mod storage;
 mod subagents;

@@ -225,6 +225,8 @@ fn codex_logs(record: &Value) -> Result<Vec<Value>> {
 
 fn codex_transcript(record: &Value) -> Result<(Vec<Value>, f64)> {
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
+    #[cfg(test)]
+    TRANSCRIPT_SCANS.with(|count| count.set(count.get() + 1));
     let id = string(record, "conversation_id");
     let path = PathBuf::from(string(record, "transcript"));
     if uuid::Uuid::parse_str(id).is_err()
@@ -323,9 +325,30 @@ fn codex_transcript(record: &Value) -> Result<(Vec<Value>, f64)> {
     Ok((errors, progress))
 }
 
+#[cfg(test)]
+thread_local! { static TRANSCRIPT_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+/// codex_transcript() reads up to 8 MiB of each transcript; stopped and
+/// archived sessions reuse their last scan (one host re-read 129 MB per listing).
+fn codex_transcript_cached(record: &Value) -> Result<(Vec<Value>, f64)> {
+    let path = PathBuf::from(string(record, "transcript"));
+    let mut failure = None;
+    let value = scan_cache::cached("codex-provider-errors", &path, string(record, "conversation_id"), || {
+        codex_transcript(record)
+            .map(|(errors, progress)| json!({"errors": errors, "progress": progress}))
+            .map_err(|error| failure = Some(error))
+            .ok()
+    });
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    let mut value = value.ok_or("Conversation transcript unavailable")?;
+    Ok((value["errors"].as_array_mut().map(std::mem::take).unwrap_or_default(), value["progress"].as_f64().unwrap_or(0.0)))
+}
+
 fn codex(record: &Value) -> (Vec<Value>, f64) {
     let mut errors = codex_logs(record).unwrap_or_default();
-    let (native_errors, native_progress) = codex_transcript(record).unwrap_or_default();
+    let (native_errors, native_progress) = codex_transcript_cached(record).unwrap_or_default();
     errors.extend(native_errors);
     errors.sort_by(|a, b| {
         a["at"]
@@ -546,5 +569,52 @@ mod tests {
         )
         .unwrap();
         assert!(codex_transcript(&record).is_err());
+    }
+    #[test]
+    fn unchanged_transcripts_reuse_their_cached_scan() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = temp.path().join("cache");
+        scan_cache::DIR.with(|dir| *dir.borrow_mut() = Some(cache.clone()));
+        let id = uuid::Uuid::new_v4().to_string();
+        let path = temp.path().join(format!("rollout-{id}.jsonl"));
+        let failed = |turn: &str, second: u32| json!({"type":"event_msg","timestamp":format!("2026-10-09T08:00:{second:02}Z"),
+            "payload":{"type":"task_complete","turn_id":turn,"error":{"message":format!("Provider failed {turn}")}}}).to_string() + "\n";
+        let meta = json!({"type":"session_meta","payload":{"id":id}}).to_string() + "\n";
+        std::fs::write(&path, meta.clone() + &failed("first", 1)).unwrap();
+        let record = json!({"agent":"codex","agent_home":temp.path(),"conversation_id":id,"transcript":path});
+        let scans = || TRANSCRIPT_SCANS.with(|count| count.get());
+        let before = scans();
+        let first = codex(&record);
+        assert_eq!(first.0.len(), 1);
+        // Archived and stopped sessions keep their transcripts: later listings reuse the scan.
+        for _ in 0..3 {
+            assert_eq!(codex(&record), first);
+        }
+        assert_eq!(scans() - before, 1);
+        // An appended failure changes the file and is scanned again.
+        let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        std::io::Write::write_all(&mut file, failed("second", 2).as_bytes()).unwrap();
+        drop(file);
+        let second = codex(&record);
+        assert_eq!(second.0.len(), 2);
+        assert_eq!(scans() - before, 2);
+        assert_eq!(codex(&record), second);
+        assert_eq!(scans() - before, 2);
+        // A replaced file is a different file, whatever its timestamps.
+        let replacement = temp.path().join("replacement");
+        std::fs::write(&replacement, meta.clone() + &failed("third", 3) + &failed("forth", 4)).unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+        assert_eq!(codex(&record).0[1]["detail"], "Provider failed forth");
+        assert_eq!(scans() - before, 3);
+        // An unreadable cache entry only costs a scan.
+        for entry in std::fs::read_dir(&cache).unwrap() {
+            std::fs::write(entry.unwrap().path(), "{not json").unwrap();
+        }
+        assert_eq!(codex(&record).0.len(), 2);
+        assert_eq!(scans() - before, 4);
+        // Another conversation's identity is never served from the cache.
+        let other = json!({"agent":"codex","agent_home":temp.path(),"conversation_id":uuid::Uuid::new_v4().to_string(),"transcript":path});
+        assert!(codex(&other).0.is_empty());
+        scan_cache::DIR.with(|dir| *dir.borrow_mut() = None);
     }
 }

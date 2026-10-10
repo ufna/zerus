@@ -119,74 +119,89 @@ fn history(record: &Value) -> Settings {
             }
         }
     }
-    if agent == "codex" {
-        let mut header = Vec::new();
-        if BufReader::new((&mut file).take(256 * 1024))
-            .read_until(b'\n', &mut header)
-            .is_err()
-            || !header.ends_with(b"\n")
-        {
-            return Settings::default();
-        }
-        let Ok(event) = serde_json::from_slice::<Value>(&header) else {
-            return Settings::default();
-        };
-        if string(&event, "type") != "session_meta"
-            || string(&event["payload"], "id") != string(record, "conversation_id")
-        {
-            return Settings::default();
-        }
-    }
-    let mut window = 64 * 1024u64;
-    let output = loop {
-        let start = meta.len().saturating_sub(window);
-        if file.seek(SeekFrom::Start(start)).is_err() {
-            return Settings::default();
-        }
-        let mut bytes = Vec::new();
-        if (&mut file).take(window).read_to_end(&mut bytes).is_err() {
-            return Settings::default();
-        }
-        let mut offset = start + bytes.len() as u64;
-        let mut found = None;
-        // Most providers repeat settings per turn; start with 64 KiB and stop
-        // at the newest metadata record instead of parsing every event in 8 MiB.
-        for line in bytes.split_inclusive(|byte| *byte == b'\n').rev() {
-            let end = offset;
-            offset -= line.len() as u64;
-            if (start > 0 && offset == start) || line.len() > 1024 * 1024 || !line.ends_with(b"\n")
+    // Stopped and archived sessions keep their transcripts: reuse the scan across
+    // listings instead of reading up to 8 MiB of each on every poll.
+    let scanned = scan_cache::cached("effort-settings", &path, &key, || {
+        if agent == "codex" {
+            let mut header = Vec::new();
+            if BufReader::new((&mut file).take(256 * 1024))
+                .read_until(b'\n', &mut header)
+                .is_err()
+                || !header.ends_with(b"\n")
             {
-                continue;
+                return None;
             }
-            let marker: &[u8] = if agent == "kimi" {
-                b"thinkingEffort"
-            } else {
-                b"turn_context"
+            let Ok(event) = serde_json::from_slice::<Value>(&header) else {
+                return None;
             };
-            if !line.windows(marker.len()).any(|part| part == marker) {
-                continue;
-            }
-            let Ok(event) = serde_json::from_slice::<Value>(line) else {
-                continue;
-            };
-            if let Some((model, effort)) = event_settings(agent, &event) {
-                found = Some(Settings {
-                    model,
-                    effort,
-                    path: path.to_string_lossy().into_owned(),
-                    offset: end,
-                });
-                break;
+            if string(&event, "type") != "session_meta"
+                || string(&event["payload"], "id") != string(record, "conversation_id")
+            {
+                return None;
             }
         }
-        if let Some(value) = found {
-            break value;
-        }
-        if start == 0 || window == MAX_TAIL {
-            break Settings::default();
-        }
-        window = (window * 4).min(MAX_TAIL);
-    };
+        let mut window = 64 * 1024u64;
+        let found = loop {
+            let start = meta.len().saturating_sub(window);
+            if file.seek(SeekFrom::Start(start)).is_err() {
+                return None;
+            }
+            let mut bytes = Vec::new();
+            if (&mut file).take(window).read_to_end(&mut bytes).is_err() {
+                return None;
+            }
+            let mut offset = start + bytes.len() as u64;
+            let mut found = None;
+            // Most providers repeat settings per turn; start with 64 KiB and stop
+            // at the newest metadata record instead of parsing every event in 8 MiB.
+            for line in bytes.split_inclusive(|byte| *byte == b'\n').rev() {
+                let end = offset;
+                offset -= line.len() as u64;
+                if (start > 0 && offset == start) || line.len() > 1024 * 1024 || !line.ends_with(b"\n")
+                {
+                    continue;
+                }
+                let marker: &[u8] = if agent == "kimi" {
+                    b"thinkingEffort"
+                } else {
+                    b"turn_context"
+                };
+                if !line.windows(marker.len()).any(|part| part == marker) {
+                    continue;
+                }
+                let Ok(event) = serde_json::from_slice::<Value>(line) else {
+                    continue;
+                };
+                if let Some((model, effort)) = event_settings(agent, &event) {
+                    found = Some(Settings {
+                        model,
+                        effort,
+                        path: path.to_string_lossy().into_owned(),
+                        offset: end,
+                    });
+                    break;
+                }
+            }
+            if let Some(value) = found {
+                break Some(value);
+            }
+            if start == 0 || window == MAX_TAIL {
+                // Searched to the limit without settings: keep that answer too,
+                // it is the most expensive one to repeat.
+                break Some(Settings::default());
+            }
+            window = (window * 4).min(MAX_TAIL);
+        };
+        found.map(|value| json!({"model": value.model, "effort": value.effort, "path": value.path, "offset": value.offset}))
+    });
+    let output = scanned
+        .map(|value| Settings {
+            model: string(&value, "model").into(),
+            effort: string(&value, "effort").into(),
+            path: string(&value, "path").into(),
+            offset: value["offset"].as_u64().unwrap_or(0),
+        })
+        .unwrap_or_default();
     if let Ok(mut cached) = cache.lock() {
         cached.insert(key, (meta.len(), modified, output.clone()));
     }
@@ -236,17 +251,42 @@ fn footer(agent: &str, model: &str, screen: &str) -> Option<String> {
     None
 }
 
+#[cfg(test)]
+thread_local! { static MODEL_CACHE_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+/// Codex's models_cache.json (hundreds of KiB) for this record's account. Every
+/// listed Codex session reads its options and catalog from it, so one listing
+/// parsed it twice per session. Reuse the parse while the file is unchanged.
+fn codex_models(record: &Value) -> Option<std::sync::Arc<Value>> {
+    type Cached = (u64, Option<SystemTime>, std::sync::Arc<Value>);
+    static CACHE: OnceLock<Mutex<BTreeMap<PathBuf, Cached>>> = OnceLock::new();
+    let path = agent_home(record).join("models_cache.json");
+    let file = File::open(&path).ok()?;
+    let meta = file.metadata().ok()?;
+    let modified = meta.modified().ok();
+    let cache = CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
+    if let Some((size, stamp, value)) = cache.lock().ok()?.get(&path) {
+        if *size == meta.len() && *stamp == modified {
+            return Some(value.clone());
+        }
+    }
+    #[cfg(test)]
+    MODEL_CACHE_PARSES.with(|count| count.set(count.get() + 1));
+    // serde_json's reader requests individual bytes. Buffer the bounded
+    // file so every session does not issue hundreds of thousands of reads.
+    let value = std::sync::Arc::new(
+        serde_json::from_reader::<_, Value>(BufReader::new(file.take(MAX_TAIL))).ok()?,
+    );
+    if let Ok(mut cached) = cache.lock() {
+        cached.insert(path, (meta.len(), modified, value.clone()));
+    }
+    Some(value)
+}
+
 fn options(record: &Value, model: &str) -> Vec<String> {
     match string(record, "agent") {
         "codex" => {
-            let Ok(file) = File::open(agent_home(record).join("models_cache.json")) else {
-                return vec![];
-            };
-            // serde_json's reader requests individual bytes. Buffer the bounded
-            // file so every session does not issue hundreds of thousands of reads.
-            let Ok(cache) =
-                serde_json::from_reader::<_, Value>(BufReader::new(file.take(MAX_TAIL)))
-            else {
+            let Some(cache) = codex_models(record) else {
                 return vec![];
             };
             cache["models"]
@@ -337,11 +377,7 @@ fn safe_model(value: &str) -> bool {
 fn catalog(record: &Value) -> Vec<ModelOption> {
     let mut result = Vec::new();
     if string(record, "agent") == "codex" {
-        let parsed = File::open(agent_home(record).join("models_cache.json"))
-            .ok()
-            .and_then(|file| {
-                serde_json::from_reader::<_, Value>(BufReader::new(file.take(MAX_TAIL))).ok()
-            });
+        let parsed = codex_models(record);
         if let Some(models) = parsed.as_ref().and_then(|v| v["models"].as_array()) {
             for entry in models.iter().take(256) {
                 let id = string(entry, "slug");
@@ -1678,6 +1714,51 @@ mod tests {
             "Ask When Needed  Pro K3 thinking: high  /tmp\n context: 2%"
         )
         .is_none());
+    }
+
+    #[test]
+    fn settings_searches_without_a_result_are_kept_across_listings() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = temp.path().join("cache");
+        scan_cache::DIR.with(|dir| *dir.borrow_mut() = Some(cache.clone()));
+        let id = uuid::Uuid::new_v4().to_string();
+        let path = temp.path().join(format!("rollout-{id}.jsonl"));
+        // A long conversation whose tail has no settings record searches up to 8 MiB.
+        let filler = json!({"type":"event_msg","payload":{"type":"agent_message","message":"x".repeat(1000)}}).to_string() + "\n";
+        fs::write(&path, json!({"type":"session_meta","payload":{"id":id}}).to_string() + "\n" + &filler.repeat(200)).unwrap();
+        let record = json!({"agent":"codex","conversation_id":id,"transcript":path});
+        assert!(history(&record).model.is_empty());
+        let entries: Vec<_> = fs::read_dir(&cache).unwrap().collect();
+        assert_eq!(entries.len(), 1);
+        let stored: Value = serde_json::from_str(&fs::read_to_string(entries[0].as_ref().unwrap().path()).unwrap()).unwrap();
+        assert_eq!(stored["value"]["model"], "");
+        scan_cache::DIR.with(|dir| *dir.borrow_mut() = None);
+    }
+
+    #[test]
+    fn model_cache_is_parsed_once_per_file_version() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("models_cache.json");
+        let models = |levels: &[&str]| json!({"models":[{"slug":"m","supported_reasoning_levels":
+            levels.iter().map(|level| json!({"effort":level})).collect::<Vec<_>>()}]}).to_string();
+        fs::write(&path, models(&["low"])).unwrap();
+        let record = json!({"agent":"codex","agent_home":root.path()});
+        let parses = || MODEL_CACHE_PARSES.with(|count| count.get());
+        let before = parses();
+        // Each listed session asks for its options and catalog: one parse serves them all.
+        for _ in 0..5 {
+            assert_eq!(options(&record, "m"), vec!["low"]);
+            assert_eq!(catalog(&record)[0].efforts, vec!["low"]);
+        }
+        assert_eq!(parses() - before, 1);
+        // A rewritten file is parsed again, even within the same second.
+        fs::write(&path, models(&["low", "high"])).unwrap();
+        assert_eq!(options(&record, "m"), vec!["low", "high"]);
+        assert_eq!(catalog(&record)[0].efforts, vec!["low", "high"]);
+        assert_eq!(parses() - before, 2);
+        fs::remove_file(&path).unwrap();
+        assert!(options(&record, "m").is_empty());
+        assert!(catalog(&record).is_empty());
     }
 
     #[test]
