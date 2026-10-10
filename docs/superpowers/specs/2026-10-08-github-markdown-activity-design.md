@@ -101,7 +101,10 @@ emitted as a span with a sentinel background colour and, right after `setHtml()`
 each such run is replaced by one `QTextObjectInterface` object that paints the
 rounded rectangle and the code text itself (monospace, 85 % of the base size).
 The object uses `AlignMiddle`; its format font is chosen so that Qt's centring
-(`xHeight / 4` above the baseline) places the chip where GitHub does.
+(`xHeight / 4` above the baseline) places the chip where GitHub does. Blocks
+that can hold chips declare `-qt-line-height-type: fixed`: Qt reads a plain px
+`line-height` as a minimum and aligns each line to the bottom of its box, so a
+chip reaching below the text would lift or grow its line.
 
 Conversion happens before `ActivityView` restores bookmarks and the selection, so
 offsets are computed in converted documents on both sides of a refresh.

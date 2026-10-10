@@ -110,8 +110,8 @@ void TestMarkdownHtml::themeUsesGitHubTokens()
 void TestMarkdownHtml::paragraphsUseGitHubMetrics()
 {
     const auto output = html("One\n\nTwo");
-    QVERIFY(output.contains("<p style=\"margin:0px 0 0 0;line-height:21px;\">"));
-    QVERIFY(output.contains("<p style=\"margin:16px 0 0 0;line-height:21px;\">"));
+    QVERIFY(output.contains("<p style=\"margin:0px 0 0 0;line-height:21px;-qt-line-height-type:fixed;\">"));
+    QVERIFY(output.contains("<p style=\"margin:16px 0 0 0;line-height:21px;-qt-line-height-type:fixed;\">"));
     const auto doc = document("One\n\nTwo");
     const auto format = formatOf(*doc, "One");
     QCOMPARE(format.font().pixelSize(), 14);
@@ -253,7 +253,7 @@ void TestMarkdownHtml::bulletListsUseDrawnMarkers()
     QVERIFY(output.contains("<table cellspacing=\"0\" cellpadding=\"0\" style=\"margin-top:0px;\">"));
     QVERIFY(output.contains("<td style=\"padding:0px 0 0 28px;\">"));
     QVERIFY(output.contains("<td style=\"padding:3px 0 0 28px;\">"));
-    QVERIFY(output.contains("<p style=\"margin:0px 0 0 0;line-height:21px;text-indent:-28px;\">"));
+    QVERIFY(output.contains("<p style=\"margin:0px 0 0 0;line-height:21px;-qt-line-height-type:fixed;text-indent:-28px;\">"));
     QVERIFY(document("- a\n- b")->toPlainText().contains("a"));
 }
 
@@ -268,7 +268,7 @@ void TestMarkdownHtml::orderedListsHonourStartAndNesting()
 void TestMarkdownHtml::looseListItemsAreSpaced()
 {
     QVERIFY(html("- a\n\n- b").contains("padding:16px 0 0 28px;"));
-    QVERIFY(html("- a\n\n- b").contains("<p style=\"margin:0px 0 0 0;line-height:21px;text-indent:-28px;\">"));
+    QVERIFY(html("- a\n\n- b").contains("<p style=\"margin:0px 0 0 0;line-height:21px;-qt-line-height-type:fixed;text-indent:-28px;\">"));
     QVERIFY(html("- `code` item").contains("line-height:23px;"));
 }
 
@@ -338,7 +338,7 @@ void TestMarkdownHtml::rulesUseGitHubGaps()
     const auto output = html("a\n\n---\n\nb");
     QVERIFY(output.contains("bgcolor=\"#d1d9e0\" style=\"margin-top:24px;\""));
     QVERIFY(output.contains("height=\"4\""));
-    QVERIFY(output.contains("<p style=\"margin:24px 0 0 0;line-height:21px;\">"));
+    QVERIFY(output.contains("<p style=\"margin:24px 0 0 0;line-height:21px;-qt-line-height-type:fixed;\">"));
 }
 
 void TestMarkdownHtml::markerSharesTheLineWithItsText()

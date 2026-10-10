@@ -1,13 +1,16 @@
+#include "ContentScale.h"
 #include "MarkdownHtml.h"
 #include "MarkdownObjects.h"
 
 #include <QAbstractTextDocumentLayout>
 #include <QElapsedTimer>
+#include <QFontMetricsF>
 #include <QTest>
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextFragment>
+#include <QTextLayout>
 
 namespace {
 const MarkdownTheme &light()
@@ -49,6 +52,8 @@ private slots:
     void chipsFollowTheirTextSizeAndColour();
     void longJournalsConvertQuickly();
     void narrowPanesKeepWideCodeAsText();
+    void chipsShareTheTextBaseline();
+    void chipLinesKeepTheParagraphPitch();
 };
 
 void TestMarkdownObjects::resourcesAreDrawnAtScaleAndPixelRatio()
@@ -169,6 +174,46 @@ void TestMarkdownObjects::narrowPanesKeepWideCodeAsText()
     auto wide = document("Run `cargo test --workspace` now");
     MarkdownObjects::convertChips(wide.get(), light(), true, 600);
     QCOMPARE(chips(wide.get()).size(), 1);
+}
+
+void TestMarkdownObjects::chipsShareTheTextBaseline()
+{
+    // GitHub pads code symmetrically around text on the line's baseline: below
+    // it a lone chip reaches the code descent plus the .2em padding.
+    auto doc = document("`code`");
+    MarkdownObjects::convertChips(doc.get(), light(), true);
+    doc->documentLayout()->documentSize();
+    QFont code(light().monoFamily); code.setPixelSize(12);
+    const qreal below = QFontMetricsF(code).descent() + 0.2 * 12;
+    const QTextLine line = doc->begin().layout()->lineAt(0);
+    QVERIFY2(qAbs(line.descent() - below) <= 0.5, qPrintable(QString("%1 px instead of %2 px").arg(line.descent()).arg(below)));
+}
+
+void TestMarkdownObjects::chipLinesKeepTheParagraphPitch()
+{
+    // A chip reaching further below the baseline than text must neither grow its
+    // line nor lift its baseline: every line of a paragraph keeps the same pitch.
+    const QString markdown = "Only the round hash decides. `setWinner` / `#updateWinner` and the old bot are gone. "
+        "Every round on the stand matched its hash, which plain lines like this one and the next one show without "
+        "any code at all, until `roll` comes back at the very end.";
+    for (const double scale : {1.0, 1.25}) {
+        const auto theme = MarkdownTheme::github(false, QColor("#ffffff"), scale);
+        QTextDocument doc; doc.setTextWidth(qRound(260 * scale));
+        doc.setHtml(ContentScale::html(MarkdownHtml::render(markdown, theme, {}), scale));
+        QCOMPARE(MarkdownObjects::convertChips(&doc, theme, true), 3);
+        doc.documentLayout()->documentSize();
+        const QTextBlock block = doc.begin();
+        const QTextLayout *layout = block.layout();
+        int withChips = 0;
+        for (int i = 0; i < layout->lineCount(); ++i) {
+            const QTextLine line = layout->lineAt(i);
+            withChips += block.text().mid(line.textStart(), line.textLength()).contains(QChar::ObjectReplacementCharacter);
+            if (i == 0) continue;
+            const QTextLine previous = layout->lineAt(i - 1);
+            QCOMPARE(line.y() + line.ascent() - previous.y() - previous.ascent(), block.blockFormat().lineHeight());
+        }
+        QVERIFY2(withChips > 0 && withChips < layout->lineCount(), "the paragraph needs lines with and without chips");
+    }
 }
 
 QTEST_MAIN(TestMarkdownObjects)

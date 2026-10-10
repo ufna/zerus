@@ -18,6 +18,10 @@ namespace {
 constexpr int BaseSize = 14, CodeSize = 12;
 constexpr int BlockGap = 16, HeadingGap = 24, RuleGap = 24;
 constexpr int LineHeight = 21, CodeLineHeight = 23;
+// Line heights are fixed (-qt-line-height-type): Qt takes a plain px value as a
+// minimum and aligns each line to the bottom of its box, so an inline-code chip
+// reaching below the text would lift or grow its line. Fixed lines keep one pitch
+// and let the chip padding overflow, like GitHub's line boxes.
 constexpr int Gutter = 28;   // list padding-left: 2em
 
 QColor over(const QColor &top, double alpha, const QColor &bottom)
@@ -162,7 +166,7 @@ public:
         const Frame frame = m_frames.takeLast();
         switch (type) {
         case MD_BLOCK_P:
-            append(QString("<p style=\"margin:%1px 0 0 0;line-height:%2px;\">").arg(gap(BlockGap)).arg(frame.code ? CodeLineHeight : LineHeight)
+            append(QString("<p style=\"margin:%1px 0 0 0;line-height:%2px;-qt-line-height-type:fixed;\">").arg(gap(BlockGap)).arg(frame.code ? CodeLineHeight : LineHeight)
                    + frame.html + "</p>");
             break;
         case MD_BLOCK_H: {
@@ -170,10 +174,10 @@ public:
             const int size = headingSize(frame.level), lineHeight = qRound(size * 1.25), top = gap(HeadingGap);
             if (frame.level <= 2)
                 append(QString("<table width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"margin-top:%1px;border-collapse:collapse;\">"
-                               "<tr><td style=\"padding-bottom:%2px;border-bottom:1px solid %3;line-height:%4px;\">")
+                               "<tr><td style=\"padding-bottom:%2px;border-bottom:1px solid %3;line-height:%4px;-qt-line-height-type:fixed;\">")
                            .arg(top).arg(qRound(size * 0.3)).arg(m_theme.borderMuted.name()).arg(lineHeight)
                        + frame.html + "</td></tr></table>");
-            else append(QString("<p style=\"margin:%1px 0 0 0;line-height:%2px;\">").arg(top).arg(lineHeight) + frame.html + "</p>");
+            else append(QString("<p style=\"margin:%1px 0 0 0;line-height:%2px;-qt-line-height-type:fixed;\">").arg(top).arg(lineHeight) + frame.html + "</p>");
             break;
         }
         case MD_BLOCK_UL: case MD_BLOCK_OL: {
@@ -205,7 +209,7 @@ public:
             } else {
                 // Tight items hold inline runs, then any blocks (nested lists, code).
                 const auto block = content.indexOf(QLatin1String("<table"));
-                content = QString("<p style=\"margin:0px 0 0 0;line-height:%1px;%2\">").arg(lineHeight).arg(indent)
+                content = QString("<p style=\"margin:0px 0 0 0;line-height:%1px;-qt-line-height-type:fixed;%2\">").arg(lineHeight).arg(indent)
                     + marker + (block < 0 ? content : content.left(block)) + "</p>" + (block < 0 ? QString() : content.mid(block));
             }
             // No valign: Qt would hand it to the marker image (AlignTop) and lift it off the baseline.
@@ -249,7 +253,7 @@ public:
             const QString align = frame.align == MD_ALIGN_LEFT ? "left" : frame.align == MD_ALIGN_CENTER ? "center"
                 : frame.align == MD_ALIGN_RIGHT ? "right" : header ? "center" : "";
             m_frames.last().html += "<" + tag + (align.isEmpty() ? QString() : " align=\"" + align + "\"")
-                + QString(" style=\"padding:6px 13px;border:1px solid %1;line-height:%2px;\">").arg(m_theme.border.name())
+                + QString(" style=\"padding:6px 13px;border:1px solid %1;line-height:%2px;-qt-line-height-type:fixed;\">").arg(m_theme.border.name())
                       .arg(frame.code ? CodeLineHeight : LineHeight)
                 + frame.html + "</" + tag + ">";
             break;

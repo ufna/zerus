@@ -76,7 +76,7 @@ QFont alignmentFont(const QFont &code)
 {
     static QHash<int, QFont> cache;
     const QFontMetricsF metrics(code);
-    const int key = qRound((metrics.ascent() - metrics.descent()) * 50);   // 4 × centre, in 1/100 px
+    const int key = qRound((metrics.ascent() - metrics.descent()) * 200);   // 4 × centre, in 1/100 px
     if (const auto found = cache.constFind(key); found != cache.cend()) return *found;
     QFont font = QGuiApplication::font();
     for (int pixels = 1; pixels < 400; ++pixels) {
