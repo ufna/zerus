@@ -93,7 +93,7 @@ inline void paint(QPainter *p, const QRect &rect, const QList<Mark> &values, QFo
         QColor fill = ink; fill.setAlpha(dark ? 24 : 18);
         const QRect badge(x, rect.y(), w, 18);
         p->setPen(Qt::NoPen); p->setBrush(fill); p->drawRoundedRect(badge, 4, 4);
-        cachedWorkspaceIcon(mark.icon, ink).paint(p, QRect(x + 4, rect.y() + 1, 16, 16));
+        workspaceIcon(mark.icon, ink).paint(p, QRect(x + 4, rect.y() + 1, 16, 16));
         if (!mark.count.isEmpty()) { p->setPen(ink); CachedText::draw(p, QRect(x + 23, rect.y(), w - 27, 18), Qt::AlignVCenter, mark.count); }
         x += w + 4;
     }

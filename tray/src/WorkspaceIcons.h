@@ -9,10 +9,11 @@
 // One small stroke family, drawn at native DPR instead of platform-dependent glyphs.
 inline QIcon workspaceIcon(const QString &name, const QColor &color)
 {
-    // List rebuilds, details and polls request the same few icons. Paint each
-    // name and color once; the process-lifetime cache is never destroyed.
-    static auto *cache = new QHash<QString, QIcon>;
-    const QString key = name + QLatin1Char('\n') + color.name(QColor::HexArgb);
+    // List rebuilds, details, polls and card delegates on every frame request the
+    // same few icons, and building one renders six pixmaps. Paint each name and
+    // color once. Never destroyed: pixmaps must not outlive QGuiApplication at exit.
+    static auto *cache = new QHash<std::pair<QString, QRgb>, QIcon>;
+    const std::pair<QString, QRgb> key{name, color.rgba()};
     if (const auto found = cache->constFind(key); found != cache->cend()) return *found;
     QIcon icon;
     const QIcon github = name == "github" ? QIcon(":/hgs/icons/github-mark.svg") : QIcon();
@@ -162,16 +163,6 @@ inline QIcon workspaceIcon(const QString &name, const QColor &color)
     }
     cache->insert(key, icon);
     return icon;
-}
-// Delegates paint the same few icons on every frame; building one renders six
-// pixmaps. Never destroyed: pixmaps must not outlive QGuiApplication at exit.
-inline const QIcon &cachedWorkspaceIcon(const QString &name, const QColor &color)
-{
-    static auto *icons = new QHash<std::pair<QString, QRgb>, QIcon>;
-    const std::pair<QString, QRgb> key{name, color.rgba()};
-    auto it = icons->constFind(key);
-    if (it == icons->cend()) it = icons->insert(key, workspaceIcon(name, color));
-    return *it;
 }
 
 inline void configureWorkspaceIconButton(QPushButton *button, const QString &name, const QString &caption, bool dark)

@@ -129,7 +129,7 @@ private:
         if (index.data(SessionRoles::Collapsed).toBool()) arrow << c + QPoint(-2,-4) << c + QPoint(2,0) << c + QPoint(-2,4);
         else arrow << c + QPoint(-4,-2) << c + QPoint(0,2) << c + QPoint(4,-2);
         p->drawPolyline(arrow);
-        cachedWorkspaceIcon("projects", fg).paint(p, QRect(r.x() + 15, r.center().y() - 8, 16, 16));
+        workspaceIcon("projects", fg).paint(p, QRect(r.x() + 15, r.center().y() - 8, 16, 16));
         QFont font = option.font; font.setPixelSize(11); font.setWeight(QFont::Medium); p->setFont(font);
         int right = r.right();
         const auto counter = [&](const QString &text, const QColor &color, const QColor &background) {
@@ -240,7 +240,7 @@ private:
             GitStatusBadge::fitted(GitStatusBadge::marks(index.data(SessionRoles::GitStatus).toJsonObject()), option.font, gitBadge.width()), option.font, dark);
         const int metadataWidth = qMax(0, (gitBadge.isEmpty() ? machineBadge.left() : gitBadge.left()) - textX - 8);
         const int branchInset = index.data(SessionRoles::BranchIcon).toBool() && metadataWidth >= 32 ? 18 : 0;
-        if (branchInset) cachedWorkspaceIcon("git-branch", muted).paint(p, QRect(textX, metadataY + 2, 14, 14));
+        if (branchInset) workspaceIcon("git-branch", muted).paint(p, QRect(textX, metadataY + 2, 14, 14));
         CachedText::draw(p, QRect(textX + branchInset, metadataY, qMax(0, metadataWidth - branchInset), 18), Qt::AlignVCenter,
                     CachedText::elided(font, index.data(SessionRoles::Meta).toString(), Qt::ElideMiddle, qMax(0, metadataWidth - branchInset)));
 
@@ -255,7 +255,7 @@ private:
         else if (detail.isEmpty() && paused) detail = tr("Resume to continue");
         const bool reviewLater = index.data(SessionRoles::ReviewLater).toBool();
         const int detailX = textX + (reviewLater ? 18 : 0);
-        if (reviewLater) cachedWorkspaceIcon("attention", QColor(dark ? "#f0c77b" : "#885400")).paint(p, QRect(textX, detailY + 2, 14, 14));
+        if (reviewLater) workspaceIcon("attention", QColor(dark ? "#f0c77b" : "#885400")).paint(p, QRect(textX, detailY + 2, 14, 14));
         const int detailWidth = width - (detailX - textX);
         font.setPixelSize(12); p->setFont(font); p->setPen(state == "Offline" ? muted : foreground);
         CachedText::draw(p, QRect(detailX, detailY, detailWidth, 18), Qt::AlignVCenter, CachedText::elided(font, detail, Qt::ElideRight, detailWidth));
