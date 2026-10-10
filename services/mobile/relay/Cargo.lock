@@ -2624,7 +2624,7 @@ dependencies = [
  "hyper-util",
  "ipnet",
  "libc",
- "rand 0.8.8",
+ "rand 0.10.3",
  "reqwest",
  "ring",
  "rustls-pemfile",
