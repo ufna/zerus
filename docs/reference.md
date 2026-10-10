@@ -65,6 +65,11 @@ and project wrapper. There is no fallback to the latest conversation or a new
 conversation when exact restore fails. `resume -d` and `resume --all` run in the
 background; use `hgs a ...` when native startup needs input. A normal launch with a
 saved name restores it; `--fresh` explicitly replaces its binding.
+`hgs resume SESSION --fresh [-d] [--expected-run-id RUN]` starts a stopped Claude,
+Codex or Kimi session with a new conversation from its own folder, account, safe
+launch options and model, like `/clear` in a live agent. The replaced conversation
+stays in native history and readable in Activity above a **Session cleared**
+boundary; a running agent uses **Clear session** instead.
 
 You can also resume native history created outside `hgs`:
 
@@ -83,6 +88,7 @@ Before the agent confirms its conversation and creates native history, pause is
 unavailable. Codex and Kimi may defer creation until the first message. Codex can
 also defer `SessionStart` after resume; Activity may send the first resumed message
 only after verifying the exact process, matching history and empty native input.
+Clear is unavailable until that confirmation; start the stopped session fresh instead.
 Unknown flags or noninteractive modes such as `codex exec` are not guessed.
 The original positional prompt is never replayed during resume.
 
@@ -454,6 +460,12 @@ native reset panel also confirms the clear, including `/clear` in Terminal. Old
 context and prompt-cache values are hidden until the new conversation reports
 native usage. The saved native identity changes only on the real hook, and an
 unconfirmed command does not reset counters.
+A stopped session offers **Start fresh…** instead, with the same confirmation, and
+keeps **Send** available: it asks whether to **Resume and send** with the full saved
+context or **Start fresh and send**, then delivers the unchanged draft once the new
+run accepts input. Editing the draft, switching sessions, a failed start, an
+unexpected conversation or three minutes without readiness cancel that send and
+keep the draft.
 **Compact and continue** sends only after confirmed successful compaction with the same
 unedited draft; errors, cancellation or identity/draft changes cancel submission.
 Context metrics use native telemetry, without guessing a capacity from a model name.

@@ -58,23 +58,39 @@ QImage attachmentImage(const QByteArray &data, const QSize &bounds)
     return reader.read();
 }
 
-// The model may be long, but the effort and disclosure arrow must remain
+// Theme glyphs keep their own disabled color instead of Qt's generated gray.
+static QIcon composerIcon(const QString &glyph, const QColor &normal, const QColor &disabled)
+{
+    QIcon icon = workspaceIcon(glyph, normal);
+    const QIcon muted = workspaceIcon(glyph, disabled);
+    for (const auto &size : muted.availableSizes()) icon.addPixmap(muted.pixmap(size), QIcon::Disabled);
+    return icon;
+}
+
+// The model may be long, but the effort and disclosure chevron must remain
 // readable when the inspector leaves only a narrow composer column.
 class SettingsButton : public QPushButton {
 public:
+    static constexpr int Chevron = 12, ChevronGap = 4;
     explicit SettingsButton(QWidget *parent) : QPushButton(parent) {
         setMinimumWidth(78); setMaximumWidth(330);
         setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     }
     QSize minimumSizeHint() const override { return QSize(78, 34); }
+    QSize sizeHint() const override { return QPushButton::sizeHint() + QSize(Chevron + ChevronGap, 0); }
 protected:
     void paintEvent(QPaintEvent *) override {
         QStylePainter painter(this); QStyleOptionButton option; initStyleOption(&option);
         const QString suffix = property("suffix").toString();
-        const int available = qMax(0, width() - 22);
+        const int available = qMax(0, width() - 22 - Chevron - ChevronGap);
         option.text = fontMetrics().elidedText(property("modelLabel").toString(), Qt::ElideRight,
             qMax(0, available - fontMetrics().horizontalAdvance(suffix))) + suffix;
-        painter.drawControl(QStyle::CE_PushButton, option);
+        painter.drawControl(QStyle::CE_PushButtonBevel, option);
+        const QRect contents = style()->subElementRect(QStyle::SE_PushButtonContents, &option, this);
+        QStyleOptionButton label = option; label.rect = contents.adjusted(0, 0, -(Chevron + ChevronGap), 0);
+        painter.drawControl(QStyle::CE_PushButtonLabel, label);
+        const QRect chevron(contents.right() - Chevron + 1, contents.center().y() - Chevron / 2, Chevron, Chevron);
+        property("chevron").value<QIcon>().paint(&painter, chevron, Qt::AlignCenter, isEnabled() ? QIcon::Normal : QIcon::Disabled);
     }
 };
 
@@ -189,7 +205,8 @@ MessageComposer::MessageComposer(QWidget *parent) : QWidget(parent)
     m_status->setTextFormat(Qt::PlainText); m_status->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_retry = new QPushButton(tr("Allow retry")); m_retry->setObjectName("allowMessageRetry"); m_retry->hide();
     m_retry->setToolTip(tr("Check the terminal before sending again to avoid a duplicate message"));
-    m_send = new QPushButton(tr("Send ↑")); m_send->setObjectName("sendMessage");
+    m_send = new QPushButton(tr("Send")); m_send->setObjectName("sendMessage");
+    m_send->setIconSize(QSize(14, 14)); m_send->setLayoutDirection(Qt::RightToLeft); // Arrow after the label.
     m_send->setToolTip(tr("Send: Enter; new line: Shift+Enter"));
     m_stop = new QPushButton(tr("Stop")); m_stop->setObjectName("interruptAgent"); m_stop->hide();
     connect(m_stop,&QPushButton::clicked,this,[this]{emit interruptRequested(m_key);});
@@ -657,12 +674,13 @@ void MessageComposer::updateControls()
     m_attach->setEnabled(!m_key.isEmpty() && !draft.sending);
     for (auto *button : m_attachmentList->findChildren<QPushButton *>("removeAttachment")) button->setEnabled(!draft.sending);
     m_send->setEnabled(!m_key.isEmpty() && m_available && hasContent && !tooLong && !draft.sending && !draft.uncertain);
-    m_send->setText(draft.sending ? tr("Sending…") : tr("Send ↑"));
+    m_send->setText(draft.sending ? tr("Sending…") : tr("Send"));
     m_retry->setVisible(draft.uncertain && !draft.sending);
     m_settings->setEnabled(!m_key.isEmpty() && !draft.sending);
     if (m_settingsPopup->isVisible()) updateSettingsApply();
     QString status = draft.storageError.isEmpty() ? draft.notice : draft.storageError;
-    if (status.isEmpty()) status = tooLong ? tr("Message exceeds 64 KiB.") : !m_available ? m_unavailableReason
+    // An available composer may still explain what Send will do first.
+    if (status.isEmpty()) status = tooLong ? tr("Message exceeds 64 KiB.") : !m_available || !m_unavailableReason.isEmpty() ? m_unavailableReason
         : hasContent ? tr("Draft saved locally. Enter to send; Shift+Enter for a new line") : tr("Enter to send; Shift+Enter for a new line");
     m_status->setText(status); m_status->setToolTip(status);
     setWorkspaceStyle(m_status, QString("font-size:11px;color:%1;").arg(draft.error || tooLong || !draft.storageError.isEmpty() ? (m_dark ? "#f4ab9b" : "#a13224") : (m_dark ? "#a2adbc" : "#627082")));
@@ -743,7 +761,7 @@ void MessageComposer::updateSettingsButton()
 {
     const bool pending = !m_pendingModel.isEmpty() || !m_pendingEffort.isEmpty();
     const QString model = m_model.isEmpty() ? tr("Model") : m_model;
-    const QString suffix = (m_effort.isEmpty() ? QString() : "  " + m_effort) + (pending ? "  ◷" : QString()) + "  ⌄";
+    const QString suffix = (m_effort.isEmpty() ? QString() : "  " + m_effort) + (pending ? "  ◷" : QString());
     m_settings->setProperty("modelLabel", model); m_settings->setProperty("suffix", suffix);
     m_settings->setText(model + suffix); m_settings->setAccessibleName(tr("Model and reasoning effort: %1").arg(model + suffix));
     QString hint = tr("Current: %1%2").arg(model, m_effort.isEmpty() ? QString() : "  " + m_effort);
@@ -834,6 +852,10 @@ void MessageComposer::setTheme(bool dark)
     m_toolbar->setTheme(dark);
     m_attach->setIcon(workspaceIcon("attachment", dark ? QColor("#c5cfdb") : QColor("#536477")));
     m_stop->setIcon(workspaceIcon("stop",dark ? QColor("#ff9ca8") : QColor("#b52d48")));
+    // Match the stylesheet's enabled and disabled Send text colors below.
+    m_send->setIcon(composerIcon("send", QColor(dark ? "#10231b" : "#ffffff"), QColor(dark ? "#85909e" : "#6d7784")));
+    const QColor chevron(dark ? "#a2adbc" : "#627082");
+    m_settings->setProperty("chevron", QVariant::fromValue(composerIcon("chevron-down", chevron, chevron))); m_settings->update();
     setStyleSheet(QString(R"(
         QPlainTextEdit#messageInput { background:%1; color:%2; border:1px solid %3; border-radius:9px; padding:%8px; font-size:%9px; selection-background-color:%4; }
         QPlainTextEdit#messageInput:focus { border-color:%5; }

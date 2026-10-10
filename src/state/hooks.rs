@@ -307,6 +307,14 @@ pub(super) fn hook() -> Result<i32> {
             write(&mut record)?;
             return Ok(0);
         }
+        if sid == string(&record["fresh_from"], "conversation_id") && !sid.is_empty() {
+            record["error"] =
+                json!("provider opened the previous conversation instead of a fresh one");
+            record["activity"] = json!("unknown");
+            record["phase"] = json!("unknown");
+            write(&mut record)?;
+            return Ok(0);
+        }
         if !string(&record, "expected_id").is_empty() && sid != string(&record, "expected_id") {
             record["error"] = json!("agent resumed a different conversation");
             record["activity"] = json!("unknown");

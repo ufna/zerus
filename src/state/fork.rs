@@ -259,6 +259,7 @@ pub(super) fn start_scoped(
         ("HGS_REQUESTED_ID", new_id.clone().unwrap_or_default()),
         ("HGS_ARCHIVE_ID", String::new()),
         ("HGS_FRESH", "1".into()),
+        ("HGS_FRESH_REPLACES", String::new()),
         (
             "HGS_FORK_PARENT_ID",
             string(&record, "conversation_id").into(),

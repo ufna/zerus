@@ -70,10 +70,16 @@ pub(super) fn run(args: &[String]) -> Result<i32> {
     let requested = nonempty_env("HGS_REQUESTED_ID");
     let expected = nonempty_env("HGS_EXPECTED_ID");
     let fresh = nonempty_env("HGS_FRESH").as_deref() == Some("1");
+    // `resume --fresh` names the exact stopped run it replaces.
+    let replaces = nonempty_env("HGS_FRESH_REPLACES");
     std::env::remove_var("HGS_REQUESTED_ID");
     std::env::remove_var("HGS_FRESH");
+    std::env::remove_var("HGS_FRESH_REPLACES");
     if requested.is_some() && expected.is_some() {
         return Err("requested and saved resume identities cannot be combined".into());
+    }
+    if replaces.is_some() && (!fresh || requested.is_some() || expected.is_some()) {
+        return Err("a fresh start cannot resume a conversation".into());
     }
     if requested
         .as_ref()
@@ -108,9 +114,16 @@ pub(super) fn run(args: &[String]) -> Result<i32> {
         if name != actual_name {
             name = actual_name;
         }
+        let mut replaced = None;
         if expected.is_none() && record_path(&name).exists() {
             let previous = read(&name)?;
+            if replaces.as_deref().is_some_and(|run| run != string(&previous, "run_id")) {
+                return Err(format!("{name}: saved binding changed before a fresh start"));
+            }
             attempts::prepare_replacement(&previous, &pane, &token, fresh, requested.as_deref())?;
+            replaced = Some(previous);
+        } else if replaces.is_some() {
+            return Err(format!("{name}: saved binding disappeared before a fresh start"));
         }
         let startup_kind = if expected.is_some() || requested.is_some() || !first.is_empty() {
             "resume"
@@ -188,6 +201,8 @@ pub(super) fn run(args: &[String]) -> Result<i32> {
             // opened it. Only a matching SessionStart confirms the binding.
             record["expected_id"] = json!(requested);
             record["requested_id"] = json!(requested);
+        } else if let Some(previous) = replaced.as_ref().filter(|_| replaces.is_some()) {
+            clear_context::carry_fresh_start(previous, &mut record);
         }
         tmux(
             &[
@@ -497,6 +512,23 @@ pub(super) fn pause_scoped(names: &[String], dry: bool, scope: Option<&session_a
 }
 
 fn resume_arguments(record: &Value, run_id: &str, archive_id: Option<&str>) -> Result<Vec<String>> {
+    let argv = recipes::resume_argv(
+        string(record, "agent"),
+        &recipes::argv(record)?,
+        string(record, "conversation_id"),
+    )?;
+    session_arguments(record, effort::resume_argv(record, argv), run_id, archive_id, None)
+}
+
+/// The saved recipe relaunched in its own tmux slot. `replaces` starts a new
+/// conversation in place of that exact stopped run instead of resuming it.
+fn session_arguments(
+    record: &Value,
+    argv: Vec<String>,
+    run_id: &str,
+    archive_id: Option<&str>,
+    replaces: Option<&str>,
+) -> Result<Vec<String>> {
     let name = string(record, "name");
     if !Path::new(string(record, "launch_dir")).is_dir() {
         return Err(format!(
@@ -504,12 +536,6 @@ fn resume_arguments(record: &Value, run_id: &str, archive_id: Option<&str>) -> R
             string(record, "launch_dir")
         ));
     }
-    let argv = recipes::resume_argv(
-        string(record, "agent"),
-        &recipes::argv(record)?,
-        string(record, "conversation_id"),
-    )?;
-    let argv = effort::resume_argv(record, argv);
     let executable = runner_executable()?;
     let shell = if string(record, "shell").is_empty() {
         "/bin/bash"
@@ -538,12 +564,13 @@ fn resume_arguments(record: &Value, run_id: &str, archive_id: Option<&str>) -> R
         ("HGS_EXECUTABLE", executable),
         (
             "HGS_EXPECTED_ID",
-            string(record, "conversation_id").to_owned(),
+            if replaces.is_some() { "" } else { string(record, "conversation_id") }.to_owned(),
         ),
         ("HGS_RUN_ID", run_id.into()),
         ("HGS_ARCHIVE_ID", archive_id.unwrap_or("").into()),
         ("HGS_REQUESTED_ID", "".into()),
-        ("HGS_FRESH", "0".into()),
+        ("HGS_FRESH", if replaces.is_some() { "1" } else { "0" }.into()),
+        ("HGS_FRESH_REPLACES", replaces.unwrap_or("").into()),
         ("HGS_TRACKING", "1".into()),
         (
             "HGS_CLIENT",
@@ -713,6 +740,55 @@ pub(super) fn resume_scoped(names: &[String], dry: bool, scope: Option<&session_
             if let Some(scope)=scope {scope.result(&name,&new_run,string(&current,"conversation_id"),None);} else {println!("hgs: resuming {name}");}
         }
     }
+    Ok(0)
+}
+
+/// `hgs resume <session> --fresh`: the stopped session's own launch recipe,
+/// account and model with a new conversation, like /clear in a live agent.
+/// The earlier conversation stays in native history and above the boundary.
+pub(super) fn fresh(args: &[String], dry: bool) -> Result<i32> {
+    let (name, expected_run) = match args {
+        [name] => (name, None),
+        [name, flag, run] if flag == "--expected-run-id" && !run.is_empty() => (name, Some(run)),
+        _ => return Err("usage: hgs resume <session> --fresh [--expected-run-id ID] [-d]".into()),
+    };
+    archive::reconcile()?;
+    let record = read(name)?;
+    if !AGENTS.contains(&string(&record, "agent")) {
+        return Err(format!("{name}: only Claude, Codex and Kimi sessions can start fresh"));
+    }
+    let argv = recipes::fresh_argv(string(&record, "agent"), &recipes::argv(&record)?)?;
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let arguments = session_arguments(
+        &record,
+        effort::resume_argv(&record, argv),
+        &run_id,
+        None,
+        Some(string(&record, "run_id")),
+    )?;
+    let _guard = lock(None)?;
+    let current = read(name)?;
+    if live()?.contains_key(name) {
+        return Err(format!("{name}: the session is running; clear its context instead"));
+    }
+    if expected_run.is_some_and(|run| run != string(&current, "run_id"))
+        || current["run_id"] != record["run_id"]
+        || current["conversation_id"] != record["conversation_id"]
+    {
+        return Err(format!("{name}: saved binding changed; refresh before starting fresh"));
+    }
+    if archive::equivalent(&current, &archive::records()?) {
+        return Err(format!("{name}: this session is archived; restore it using --archive ID"));
+    }
+    if pause_active(&current) || current["resume_pending"] == true {
+        return Err(format!("{name}: wait for the current pause or restore to finish"));
+    }
+    if dry {
+        print_resume(&arguments);
+        return Ok(0);
+    }
+    tmux(&arguments, true)?;
+    println!("hgs: starting {name} with a fresh conversation");
     Ok(0)
 }
 

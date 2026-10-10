@@ -486,6 +486,7 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
         }
         "pause" => return lifecycle::pause(&args, dry),
         "resume" => return lifecycle::resume(&args, dry),
+        "fresh" => return lifecycle::fresh(&args, dry),
         "rename" => return rename::dispatch(&args, dry),
         "merge" => println!("{}", merge_snapshot(stdin_json()?)?),
         "list" => {

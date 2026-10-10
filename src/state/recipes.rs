@@ -186,6 +186,14 @@ pub(super) fn resume_argv(agent: &str, argv: &[String], sid: &str) -> Result<Vec
     Ok(result)
 }
 
+/// The resume recipe keeps only safe launch options and never replays the
+/// original prompt; without its selector it starts a new conversation.
+pub(super) fn fresh_argv(agent: &str, argv: &[String]) -> Result<Vec<String>> {
+    let mut argv = resume_argv(agent, argv, "-")?;
+    argv.drain(1..3);
+    Ok(argv)
+}
+
 pub(super) fn output_timeout(command: &mut Command, duration: Duration) -> Result<Output> {
     // Regular files avoid a blocked pipe when an agent writes substantial
     // diagnostics before it exits, without an unbounded reader-thread join.
@@ -271,4 +279,28 @@ pub(super) fn verify_history(record: &Value, allow_error: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn strings(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+    #[test]
+    fn fresh_launches_keep_options_without_conversation_or_prompt() {
+        assert_eq!(
+            fresh_argv("codex", &strings(&["codex", "resume", "old", "-m", "gpt-6-astra", "prompt"])).unwrap(),
+            strings(&["codex", "-m", "gpt-6-astra"])
+        );
+        assert_eq!(
+            fresh_argv("claude", &strings(&["claude", "--resume", "old", "--effort", "high", "--fork-session"])).unwrap(),
+            strings(&["claude", "--effort", "high"])
+        );
+        assert_eq!(
+            fresh_argv("kimi", &strings(&["kimi", "--session", "old", "--plan"])).unwrap(),
+            strings(&["kimi", "--plan"])
+        );
+        assert!(fresh_argv("codex", &strings(&["codex", "--unknown"])).is_err());
+    }
 }

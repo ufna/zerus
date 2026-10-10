@@ -663,6 +663,40 @@ class Lifecycle(Harness):
         self.hgs("claude", "p", "-n", "one", "-d", "--fresh")
         self.wait(lambda: self.binding(name).get("conversation_id") not in (None, sid))
 
+    def test_resume_fresh_keeps_launch_settings_and_earlier_activity(self):
+        name = self.start("claude", "one", "--", "--effort", "high", "initial prompt")
+        sid = self.binding(name)["conversation_id"]
+        self.send_event(name, "UserPromptSubmit", prompt="Earlier request")
+        self.send_event(name, "Stop", last_assistant_message="Earlier answer")
+        self.hgs("resume", name, "--fresh", "-d", rc=1)  # A live agent uses Clear.
+        self.hgs("pause", name)
+        run = self.binding(name)["run_id"]
+        self.hgs("resume", name, "--fresh", "--expected-run-id", "another-run", "-d", rc=1)
+        self.hgs("resume", name, "--fresh", "--archive", "saved", "-d", rc=1)
+        self.hgs("resume", name, "--expected-run-id", run, "-d", rc=1)
+        self.hgs("resume", "--all", "--fresh", rc=1)
+        dry = self.hgs("resume", name, "--fresh", "-d", "--dry-run")
+        self.assertIn("HGS_FRESH_REPLACES=" + run, dry)
+        self.assertNotIn("--resume", dry)
+        self.hgs("resume", name, "--fresh", "--expected-run-id", run, "-d")
+        self.wait(lambda: self.binding(name).get("conversation_id") not in (None, sid))
+        last = json.loads((self.root / "argv.jsonl").read_text().splitlines()[-1])["argv"]
+        self.assertEqual(last[:2], ["--effort", "high"])
+        self.assertFalse({"--resume", sid, "initial prompt"} & set(last))
+        record = self.binding(name)
+        self.assertEqual(record["session_clear"]["previous_conversation_id"], sid)
+        self.assertNotIn("fresh_from", record)
+        inspection = json.loads(self.hgs("inspect", name))
+        self.assertEqual(inspection["cleared_conversations"], [sid])
+        timeline = [e["detail"] or e["type"] for e in inspection["events"]
+                    if e["type"] in ("UserPromptSubmit", "Stop", "SessionCleared")]
+        self.assertEqual(timeline, ["Earlier request", "Earlier answer", "SessionCleared"])
+        # The new conversation resumes exactly; the replaced one stays native history.
+        fresh = record["conversation_id"]
+        self.hgs("pause", name)
+        self.resume(name)
+        self.assertEqual(self.binding(name)["conversation_id"], fresh)
+
     def test_no_hook_and_subagent_do_not_confirm_binding(self):
         self.hgs("claude", "p", "-n", "one", "-d", "--", "--no-hook")
         name = "claude/p/one"

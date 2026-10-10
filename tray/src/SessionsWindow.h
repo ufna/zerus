@@ -173,9 +173,21 @@ private:
     QStringList m_selectionErrors;
     int m_selectionTotal = 0, m_selectionDone = 0, m_selectionFailed = 0;
     bool m_selectionRunning = false;
-    enum class SessionMenuAction { OpenTerminal, OpenFolder, FolderShell, CopyCommand, ChangeState, Rename, Fork, Archive, CopyName, CopyFolder, Terminate, MarkRead, ReviewLater };
+    enum class SessionMenuAction { OpenTerminal, OpenFolder, FolderShell, CopyCommand, ChangeState, Rename, Fork, Archive, CopyName, CopyFolder, Terminate, MarkRead, ReviewLater, StartFresh };
     void showSessionMenu(const QString &key, const QPoint &position);
     void clearContext();
+    // A stopped session's draft waits for an explicit resume or fresh start.
+    bool canStartStopped(const Entry &entry) const;
+    void startFresh();
+    void startToSend(const QString &key, const QString &text, const QList<MessageAttachment> &attachments);
+    struct StartContinuation {
+        QString key, host, name, run, conversation, text;
+        QList<MessageAttachment> attachments;
+        bool fresh = false;
+        qint64 started = 0;
+    } m_startSend;
+    void cancelStartContinuation(const QString &reason);
+    void continueAfterStart();
     struct CompactContinuation {
         quint64 request = 0;
         QString key, run, conversation, text, retryId, commandId;
@@ -206,7 +218,7 @@ private:
     void changeModelSettings(const QString &key, const QString &model, const QString &effort);
     void applyPendingModelSettings();
     void applyQueuedModelSettings();
-    void sendMessage(const QString &key, const QString &text, const QList<MessageAttachment> &attachments, const QString &retryId = {}, const QString &compactionId = {});
+    void sendMessage(const QString &key, const QString &text, const QList<MessageAttachment> &attachments, const QString &retryId = {}, const QString &compactionId = {}, bool contextChosen = false);
     void messageAction(const QString &id, const QString &action);
     void finishMessage(quint64 request, bool ok, const QJsonObject &receipt, const QString &error = {}, bool uncertain = false);
     void reconcileMessages();
@@ -296,7 +308,7 @@ private:
     void renderAccountUsage();
     void updateDashboardAccounts(bool request = false, bool force = false);
     QPushButton *m_open, *m_shell, *m_fileManager, *m_pause, *m_more;
-    QAction *m_renameAction, *m_forkAction, *m_clearAction, *m_archiveAction, *m_forgetAction;
+    QAction *m_renameAction, *m_forkAction, *m_clearAction, *m_freshAction, *m_archiveAction, *m_forgetAction;
     QAction *m_markAllReadAction = nullptr;
     QMenu *m_sessionMenu;
     QTextBrowser *m_children = nullptr, *m_info = nullptr;
