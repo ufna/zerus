@@ -2,7 +2,7 @@
 # their complete dependency closure, hash-locked to the exact CPython 3.13
 # win_amd64 wheels. The job installs it into a dedicated virtual environment:
 #   python -m pip install --require-hashes --only-binary :all: -r scripts/ci/aqt-requirements.txt
-# Regenerated on 2026-10-11 by resolving `aqtinstall==3.3.0` and `py7zr==1.1.0`
+# Regenerated on 2026-10-11 by resolving `aqtinstall==3.3.0` and `py7zr==1.1.3`
 # with uv 0.12.24 for x86_64-pc-windows-msvc and Python 3.13, wheels only and no
 # release newer than 2026-09-27, then keeping the hash of each wheel that
 # `pip download --platform win_amd64 --python-version 3.13 --only-binary :all:`
@@ -49,7 +49,7 @@ patch-ng==1.19.1 \
 psutil==7.2.2 \
     --hash=sha256:eb7e81434c8d223ec4a219b5fc1c47d0417b12be7ea866e24fb5ad6e84b3d988
     # psutil-7.2.2-cp37-abi3-win_amd64.whl
-py7zr==1.1.0 \
+py7zr==1.1.3 \
     --hash=sha256:5921bc30fb72b5453aafe3b2183664c08ef508cde2655988d5e9bd6078353ef7
     # py7zr-1.1.0-py3-none-any.whl
 pybcj==1.0.8 \
