@@ -10,7 +10,7 @@ WebKitGTK meanwhile, as does the WebKitGTK patch work (`zerus-5wmh.28`).
 |---|---|
 | `app/` | the smallest Tauri 3 app on the CEF runtime: loads `ZERUS_SPIKE_URL` (the pacing harness) or the client `dist` through the asset protocol, with DevTools on 127.0.0.1 |
 | `patches/zerus-client-cef-port.diff` | our `client/src-tauri` ported to the CEF runtime (applies to main at `1f388605`) |
-| `patches/tauri-16189-idle-spin.diff` | local fix for tauri-apps/tauri#16189 (the runtime's main thread spins at 100% while idle on Linux), against `crates/tauri-runtime-cef` |
+| `patches/tauri-16189-idle-spin.diff` | the fix its reporter proposed in tauri-apps/tauri#16189 (the runtime's main thread spins at 100% while idle on Linux), copied from the issue, against `crates/tauri-runtime-cef` |
 | `../run-chromium.mjs`, `../run-chromium.sh` | the client pacing scenarios and idle windows in Chrome, `cefsimple` or this app, over the DevTools protocol |
 | `../run-webkitgtk-idle.py` | the same idle windows of the client frontend in WebKitGTK |
 | `../results/arch-kde-cef-2026-10-28/` | the real-display results on arch |
@@ -44,8 +44,8 @@ CEF no longer updates M154. `cef-rs` already publishes 156.2.0.
   handler on the main thread. Raw `tauri::ipc::Response` bodies arrive as `ArrayBuffer`,
   and every response header passes, so COOP and COEP give `crossOriginIsolated` (timer
   step 5 µs) on `http://tauri.localhost/`.
-- Open Linux issues that matter to the client: #16189 (idle main thread at 100%; fixed
-  locally by the patch here), #16251 and #16351 (keyboard input lost at start or after a
+- Open Linux issues that matter to the client: #16189 (idle main thread at 100%; the
+  reporter's patch, copied here, fixes it), #16251 and #16351 (keyboard input lost at start or after a
   focus change), #16249 (browser accelerators swallow keys), #16205 (`visible(false)`
   ignored), #16131 (drag and drop). Fractional scales are rounded to integers.
 - A Chrome-style profile picks up system-wide Chromium external extensions: on KDE it
@@ -129,6 +129,14 @@ and one run lost all input even after clicks. With the focus inside the page, Ct
 Ctrl+-, Ctrl+0 and Ctrl+digit reach the client, so #16249 did not affect it here.
 Limits: no KWin, no real Alt+Tab, Xvfb instead of XWayland; the owner's desktop needs a
 short manual check once a fix lands.
+
+## Upstream
+
+Posted from the owner's account on 2026-10-28: the key-check data on PR #16352, #16251
+and #16351, and a confirmation of the reporter's patch on #16189 asking them to open a PR.
+Tauri's AI Tool Policy (CONTRIBUTING) requires the submitter to review and test any
+LLM-generated PR content personally and not to answer review comments with AI, and asks
+for signed commits; a PR from this spike needs the owner, not an agent.
 
 ## Building
 
