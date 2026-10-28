@@ -1,0 +1,108 @@
+{
+  "engine": "cef-pr16352",
+  "results": [
+    {
+      "step": "1 startup Ctrl+2, Ctrl+1",
+      "sent": [
+        "C-2",
+        "C-1"
+      ],
+      "ok": false,
+      "detail": "keys [], page after Ctrl+2 'Sessions (Ctrl+2)', now 'Sessions (Ctrl+2)'"
+    },
+    {
+      "step": "2 Ctrl+, then Ctrl+2",
+      "sent": [
+        "C-,",
+        "C-2"
+      ],
+      "ok": false,
+      "detail": "keys [], pages 'Sessions (Ctrl+2)' then 'Sessions (Ctrl+2)'"
+    },
+    {
+      "step": "3 Ctrl+= x2, Ctrl+-, Ctrl+0",
+      "sent": [
+        "C-=",
+        "C-=",
+        "C--",
+        "C-0"
+      ],
+      "ok": false,
+      "detail": "keys [], toasts [None, None, None, None]"
+    },
+    {
+      "step": "4 click search, type 'test 123', ru layout f d l, Escape",
+      "sent": [
+        "click",
+        "test 123",
+        "f d l (ru)",
+        "Escape"
+      ],
+      "ok": false,
+      "detail": "pointerdown [(210, 59)] (search rect [60, 43, 301, 32]), search before Escape '', after '', keys []"
+    },
+    {
+      "step": "5 away and back, type 'xyz', Ctrl+3",
+      "sent": [
+        "focus away",
+        "focus back",
+        "xyz",
+        "C-3"
+      ],
+      "ok": false,
+      "detail": "keys [], search '', page 'Sessions (Ctrl+2)', focus events []"
+    },
+    {
+      "step": "6 click away, click back, type 'qwe', Ctrl+2",
+      "sent": [
+        "click away",
+        "click back",
+        "qwe",
+        "C-2"
+      ],
+      "ok": false,
+      "detail": "keys [], page 'Sessions (Ctrl+2)'"
+    },
+    {
+      "step": "7 click list, Down x3, Up x2",
+      "sent": [
+        "click",
+        "Down x3",
+        "Up x2"
+      ],
+      "ok": false,
+      "detail": "keys [], active 'Agent sessions; Ctrl-click to se'"
+    }
+  ],
+  "layout": {
+    "n": 24,
+    "kind": "layout",
+    "inner": [
+      1440,
+      900
+    ],
+    "dpr": 1,
+    "screen": [
+      0,
+      0
+    ],
+    "searchRect": [
+      60,
+      43,
+      301,
+      32
+    ],
+    "listRect": [
+      60,
+      112,
+      301,
+      723
+    ],
+    "active": "Agent sessions; Ctrl-click to se",
+    "hasFocus": true,
+    "visibility": "visible",
+    "page": "Sessions (Ctrl+2)",
+    "search": "",
+    "toast": null
+  }
+}

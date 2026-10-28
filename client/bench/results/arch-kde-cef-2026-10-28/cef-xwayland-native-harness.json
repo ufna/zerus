@@ -1,0 +1,968 @@
+{
+  "schema": "zerus-perf-v1",
+  "client": "tauri",
+  "created_at": "2026-10-28T07:48:34.965Z",
+  "platform": {
+    "os": "linux",
+    "label": "arch-kde-xwayland-cefsimple-harness",
+    "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+    "hz": 144,
+    "hz_source": "manual",
+    "T_ms": 6.944444444444445,
+    "dpr": 1,
+    "cross_origin_isolated": true,
+    "timer_resolution_ms": 0.004999876022338867,
+    "reduced_motion": false,
+    "representative": true,
+    "engine": "Chrome/156.0.8078.48 (cefsimple)",
+    "chromium": {
+      "engine": "cefsimple",
+      "display": "xwayland",
+      "ozone": "x11",
+      "protocol": "1.3",
+      "gpu": {
+        "devices": [
+          {
+            "vendor": 4318,
+            "device": 8707,
+            "driver": "615.78.08"
+          },
+          {
+            "vendor": 4098,
+            "device": 5710,
+            "driver": "615.78.08"
+          }
+        ],
+        "feature_status": {
+          "2d_canvas": "enabled",
+          "direct_rendering_display_compositor": "disabled_off_ok",
+          "gpu_compositing": "enabled",
+          "multiple_raster_threads": "enabled_on",
+          "opengl": "enabled_on",
+          "rasterization": "enabled",
+          "raw_draw": "disabled_off_ok",
+          "skia_graphite": "disabled_off",
+          "trees_in_viz": "disabled_off",
+          "video_decode": "enabled",
+          "video_encode": "disabled_software",
+          "vulkan": "disabled_off",
+          "webgl": "enabled",
+          "webgpu": "enabled",
+          "webgpu_on_vk_via_gl_interop": "enabled",
+          "webnn": "disabled_off"
+        },
+        "gl_renderer": "ANGLE (NVIDIA Corporation, NVIDIA GeForce RTX 3090 Ti/PCIe/SSE2, OpenGL 4.5.0 NVIDIA 615.78.08)",
+        "gl_version": "OpenGL ES 3.0 (ANGLE 2.1.28973 git hash: 3b89d84e9d59)",
+        "gl_implementation": "(gl=egl-angle,angle=opengl)",
+        "display_type": "ANGLE_OPENGL",
+        "ozone_platform": null
+      },
+      "extra_args": [
+        "--use-native"
+      ],
+      "env": {
+        "DISPLAY": ":1",
+        "WAYLAND_DISPLAY": "wayland-0"
+      }
+    },
+    "displays": {
+      "source": "kscreen-doctor --json",
+      "outputs": [
+        {
+          "name": "DP-2",
+          "priority": 1,
+          "mode": "2560x1440",
+          "refresh_hz": 144,
+          "scale": 1,
+          "rotation": 1,
+          "vrr_policy": null
+        },
+        {
+          "name": "DP-3",
+          "priority": 2,
+          "mode": "3440x1440",
+          "refresh_hz": 144,
+          "scale": 1,
+          "rotation": 1,
+          "vrr_policy": null
+        }
+      ],
+      "locked": false,
+      "dpms": {
+        "DP-2": "on",
+        "DP-3": "on"
+      }
+    }
+  },
+  "settings": {
+    "warmupMs": 2000,
+    "runMs": 10000,
+    "runs": 3,
+    "stepPx": 16,
+    "opens": 20,
+    "openIndices": [
+      0,
+      1
+    ],
+    "syntheticInput": true
+  },
+  "scenarios": [
+    {
+      "id": "raf-light",
+      "label": "rAF on a light page",
+      "kind": "pacing",
+      "metric": "interval_ms",
+      "runs": [
+        {
+          "frames": 1440,
+          "interval_ms": {
+            "count": 1440,
+            "mean": 6.9480173610978655,
+            "median": 6.879999876022339,
+            "p95": 7.809999942779541,
+            "p99": 8.569999933242798,
+            "over1_5T": 0,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 9.255000114440918
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          }
+        },
+        {
+          "frames": 1440,
+          "interval_ms": {
+            "count": 1440,
+            "mean": 6.948093750079473,
+            "median": 7.204999923706055,
+            "p95": 7.634999990463257,
+            "p99": 7.8999998569488525,
+            "over1_5T": 0,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 8.269999980926514
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          }
+        },
+        {
+          "frames": 1440,
+          "interval_ms": {
+            "count": 1440,
+            "mean": 6.9481006943517265,
+            "median": 7.195000171661377,
+            "p95": 7.6549999713897705,
+            "p99": 7.914999961853027,
+            "over1_5T": 0.0006944444444444445,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 14.629999876022339
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          }
+        }
+      ],
+      "worst_index": 2,
+      "worst": {
+        "frames": 1440,
+        "interval_ms": {
+          "count": 1440,
+          "mean": 6.9481006943517265,
+          "median": 7.195000171661377,
+          "p95": 7.6549999713897705,
+          "p99": 7.914999961853027,
+          "over1_5T": 0.0006944444444444445,
+          "over2_5T": 0,
+          "band60": 0,
+          "max": 14.629999876022339
+        },
+        "verdict": {
+          "mean": true,
+          "median": true,
+          "within1_5T": true,
+          "over2_5T": true,
+          "band60": true,
+          "all": true
+        }
+      },
+      "verdict": {
+        "mean": true,
+        "median": true,
+        "within1_5T": true,
+        "over2_5T": true,
+        "band60": true,
+        "all": true
+      }
+    },
+    {
+      "id": "transform-animation",
+      "label": "rAF during a CSS transform animation",
+      "kind": "pacing",
+      "metric": "interval_ms",
+      "runs": [
+        {
+          "frames": 1438,
+          "interval_ms": {
+            "count": 1438,
+            "mean": 6.957423504768393,
+            "median": 6.985000133514404,
+            "p95": 7.745000123977661,
+            "p99": 8.089999914169312,
+            "over1_5T": 0,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 10.335000038146973
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          }
+        },
+        {
+          "frames": 1440,
+          "interval_ms": {
+            "count": 1440,
+            "mean": 6.947993055482706,
+            "median": 6.9649999141693115,
+            "p95": 7.659999847412109,
+            "p99": 8.014999866485596,
+            "over1_5T": 0,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 8.795000076293945
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          }
+        },
+        {
+          "frames": 1440,
+          "interval_ms": {
+            "count": 1440,
+            "mean": 6.948034722275204,
+            "median": 6.954999923706055,
+            "p95": 7.585000038146973,
+            "p99": 7.929999828338623,
+            "over1_5T": 0,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 8.464999914169312
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          }
+        }
+      ],
+      "worst_index": 0,
+      "worst": {
+        "frames": 1438,
+        "interval_ms": {
+          "count": 1438,
+          "mean": 6.957423504768393,
+          "median": 6.985000133514404,
+          "p95": 7.745000123977661,
+          "p99": 8.089999914169312,
+          "over1_5T": 0,
+          "over2_5T": 0,
+          "band60": 0,
+          "max": 10.335000038146973
+        },
+        "verdict": {
+          "mean": true,
+          "median": true,
+          "within1_5T": true,
+          "over2_5T": true,
+          "band60": true,
+          "all": true
+        }
+      },
+      "verdict": {
+        "mean": true,
+        "median": true,
+        "within1_5T": true,
+        "over2_5T": true,
+        "band60": true,
+        "all": true
+      }
+    },
+    {
+      "id": "left-animation",
+      "label": "rAF during a non-accelerated animation (left)",
+      "kind": "pacing",
+      "metric": "interval_ms",
+      "runs": [
+        {
+          "frames": 1440,
+          "interval_ms": {
+            "count": 1440,
+            "mean": 6.948072916766008,
+            "median": 6.887500166893005,
+            "p95": 8.180000066757202,
+            "p99": 8.65499997138977,
+            "over1_5T": 0,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 9.134999990463257
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          }
+        },
+        {
+          "frames": 1440,
+          "interval_ms": {
+            "count": 1440,
+            "mean": 6.947583333320088,
+            "median": 6.9075000286102295,
+            "p95": 8.230000019073486,
+            "p99": 8.890000104904175,
+            "over1_5T": 0.0006944444444444445,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 10.914999961853027
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          }
+        },
+        {
+          "frames": 1438,
+          "interval_ms": {
+            "count": 1438,
+            "mean": 6.957489568931834,
+            "median": 6.9100000858306885,
+            "p95": 8.424999952316284,
+            "p99": 8.975000143051147,
+            "over1_5T": 0.0006954102920723226,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 11.190000057220459
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          }
+        }
+      ],
+      "worst_index": 2,
+      "worst": {
+        "frames": 1438,
+        "interval_ms": {
+          "count": 1438,
+          "mean": 6.957489568931834,
+          "median": 6.9100000858306885,
+          "p95": 8.424999952316284,
+          "p99": 8.975000143051147,
+          "over1_5T": 0.0006954102920723226,
+          "over2_5T": 0,
+          "band60": 0,
+          "max": 11.190000057220459
+        },
+        "verdict": {
+          "mean": true,
+          "median": true,
+          "within1_5T": true,
+          "over2_5T": true,
+          "band60": true,
+          "all": true
+        }
+      },
+      "verdict": {
+        "mean": true,
+        "median": true,
+        "within1_5T": true,
+        "over2_5T": true,
+        "band60": true,
+        "all": true
+      }
+    },
+    {
+      "id": "list-scroll",
+      "label": "Session list scroll",
+      "kind": "pacing",
+      "metric": "interval_ms",
+      "runs": [
+        {
+          "frames": 1440,
+          "interval_ms": {
+            "count": 1440,
+            "mean": 6.9479340276784365,
+            "median": 6.9375,
+            "p95": 8.259999990463257,
+            "p99": 8.84500002861023,
+            "over1_5T": 0,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 9.454999923706055
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          },
+          "scroll_event_ms": {
+            "count": 1440,
+            "mean": 6.9479340276784365,
+            "median": 6.930000066757202,
+            "p95": 8.255000114440918,
+            "p99": 8.839999914169312,
+            "max": 9.449999809265137
+          }
+        },
+        {
+          "frames": 1440,
+          "interval_ms": {
+            "count": 1440,
+            "mean": 6.947347222268581,
+            "median": 6.9649999141693115,
+            "p95": 8.204999923706055,
+            "p99": 8.734999895095825,
+            "over1_5T": 0,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 9.075000047683716
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          },
+          "scroll_event_ms": {
+            "count": 1440,
+            "mean": 6.947347222268581,
+            "median": 6.965000152587891,
+            "p95": 8.194999933242798,
+            "p99": 8.72000002861023,
+            "max": 9.065000057220459
+          }
+        },
+        {
+          "frames": 1438,
+          "interval_ms": {
+            "count": 1438,
+            "mean": 6.958539638300433,
+            "median": 6.944999933242798,
+            "p95": 8.240000009536743,
+            "p99": 8.71500015258789,
+            "over1_5T": 0.0006954102920723226,
+            "over2_5T": 0.0006954102920723226,
+            "band60": 0,
+            "max": 22.335000038146973
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          },
+          "scroll_event_ms": {
+            "count": 1438,
+            "mean": 6.958529207238899,
+            "median": 6.944999933242798,
+            "p95": 8.230000019073486,
+            "p99": 8.684999942779541,
+            "max": 22.330000162124634
+          }
+        }
+      ],
+      "worst_index": 2,
+      "worst": {
+        "frames": 1438,
+        "interval_ms": {
+          "count": 1438,
+          "mean": 6.958539638300433,
+          "median": 6.944999933242798,
+          "p95": 8.240000009536743,
+          "p99": 8.71500015258789,
+          "over1_5T": 0.0006954102920723226,
+          "over2_5T": 0.0006954102920723226,
+          "band60": 0,
+          "max": 22.335000038146973
+        },
+        "verdict": {
+          "mean": true,
+          "median": true,
+          "within1_5T": true,
+          "over2_5T": true,
+          "band60": true,
+          "all": true
+        },
+        "scroll_event_ms": {
+          "count": 1438,
+          "mean": 6.958529207238899,
+          "median": 6.944999933242798,
+          "p95": 8.230000019073486,
+          "p99": 8.684999942779541,
+          "max": 22.330000162124634
+        }
+      },
+      "verdict": {
+        "mean": true,
+        "median": true,
+        "within1_5T": true,
+        "over2_5T": true,
+        "band60": true,
+        "all": true
+      }
+    },
+    {
+      "id": "activity-scroll",
+      "label": "Activity scroll",
+      "kind": "pacing",
+      "metric": "interval_ms",
+      "runs": [
+        {
+          "frames": 1440,
+          "interval_ms": {
+            "count": 1440,
+            "mean": 6.948010416660044,
+            "median": 6.984999895095825,
+            "p95": 8.059999942779541,
+            "p99": 8.440000057220459,
+            "over1_5T": 0,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 9.555000066757202
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          },
+          "scroll_event_ms": {
+            "count": 1440,
+            "mean": 6.948006944358349,
+            "median": 6.984999895095825,
+            "p95": 8.049999952316284,
+            "p99": 8.429999828338623,
+            "max": 9.545000076293945
+          }
+        },
+        {
+          "frames": 1434,
+          "interval_ms": {
+            "count": 1434,
+            "mean": 6.976896792109874,
+            "median": 6.954999923706055,
+            "p95": 8.015000104904175,
+            "p99": 8.480000019073486,
+            "over1_5T": 0.000697350069735007,
+            "over2_5T": 0.000697350069735007,
+            "band60": 0,
+            "max": 49.99499988555908
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          },
+          "scroll_event_ms": {
+            "count": 1434,
+            "mean": 6.976896792276135,
+            "median": 6.954999923706055,
+            "p95": 7.995000123977661,
+            "p99": 8.46500015258789,
+            "max": 49.94000005722046
+          }
+        },
+        {
+          "frames": 1440,
+          "interval_ms": {
+            "count": 1440,
+            "mean": 6.948013888961739,
+            "median": 6.944999933242798,
+            "p95": 7.730000019073486,
+            "p99": 8.054999828338623,
+            "over1_5T": 0,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 8.839999914169312
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          },
+          "scroll_event_ms": {
+            "count": 1440,
+            "mean": 6.9480173610978655,
+            "median": 6.944999933242798,
+            "p95": 7.7250001430511475,
+            "p99": 8.039999961853027,
+            "max": 8.835000038146973
+          }
+        }
+      ],
+      "worst_index": 1,
+      "worst": {
+        "frames": 1434,
+        "interval_ms": {
+          "count": 1434,
+          "mean": 6.976896792109874,
+          "median": 6.954999923706055,
+          "p95": 8.015000104904175,
+          "p99": 8.480000019073486,
+          "over1_5T": 0.000697350069735007,
+          "over2_5T": 0.000697350069735007,
+          "band60": 0,
+          "max": 49.99499988555908
+        },
+        "verdict": {
+          "mean": true,
+          "median": true,
+          "within1_5T": true,
+          "over2_5T": true,
+          "band60": true,
+          "all": true
+        },
+        "scroll_event_ms": {
+          "count": 1434,
+          "mean": 6.976896792276135,
+          "median": 6.954999923706055,
+          "p95": 7.995000123977661,
+          "p99": 8.46500015258789,
+          "max": 49.94000005722046
+        }
+      },
+      "verdict": {
+        "mean": true,
+        "median": true,
+        "within1_5T": true,
+        "over2_5T": true,
+        "band60": true,
+        "all": true
+      }
+    },
+    {
+      "id": "session-open",
+      "label": "Session open to first Activity paint",
+      "kind": "timing",
+      "metric": "wall_ms",
+      "runs": [
+        {
+          "count": 20,
+          "wall_ms": {
+            "count": 20,
+            "mean": 59.54724999666214,
+            "median": 58.824999928474426,
+            "p95": 73.19000005722046,
+            "p99": 75.74500012397766,
+            "max": 75.74500012397766
+          }
+        },
+        {
+          "count": 20,
+          "wall_ms": {
+            "count": 20,
+            "mean": 58.45950001478195,
+            "median": 57.17750000953674,
+            "p95": 68.39000010490417,
+            "p99": 69.70499992370605,
+            "max": 69.70499992370605
+          }
+        },
+        {
+          "count": 20,
+          "wall_ms": {
+            "count": 20,
+            "mean": 60.454499983787535,
+            "median": 58.14750003814697,
+            "p95": 72.33999991416931,
+            "p99": 74.30999994277954,
+            "max": 74.30999994277954
+          }
+        }
+      ],
+      "worst_index": 0,
+      "worst": {
+        "count": 20,
+        "wall_ms": {
+          "count": 20,
+          "mean": 59.54724999666214,
+          "median": 58.824999928474426,
+          "p95": 73.19000005722046,
+          "p99": 75.74500012397766,
+          "max": 75.74500012397766
+        }
+      }
+    },
+    {
+      "id": "input-latency",
+      "label": "Input to frame latency",
+      "kind": "latency",
+      "metric": "latency_ms",
+      "runs": [
+        {
+          "count": 139,
+          "latency_ms": {
+            "count": 139,
+            "mean": 3.2448561277320915,
+            "median": 2.5799999237060547,
+            "p95": 5.234999895095825,
+            "p99": 7.990000009536743,
+            "max": 8.34500002861023
+          },
+          "to_paint_ms": {
+            "count": 139,
+            "mean": 4.50971225011263,
+            "median": 3.705000162124634,
+            "p95": 6.950000047683716,
+            "p99": 10.184999942779541,
+            "max": 10.194999933242798
+          }
+        },
+        {
+          "count": 136,
+          "latency_ms": {
+            "count": 136,
+            "mean": 3.308455894975101,
+            "median": 2.7575000524520874,
+            "p95": 5.2850000858306885,
+            "p99": 6.21999979019165,
+            "max": 6.414999961853027
+          },
+          "to_paint_ms": {
+            "count": 136,
+            "mean": 4.667977962423773,
+            "median": 3.955000162124634,
+            "p95": 7.609999895095825,
+            "p99": 9.02999997138977,
+            "max": 9.09499979019165
+          }
+        },
+        {
+          "count": 140,
+          "latency_ms": {
+            "count": 140,
+            "mean": 3.6748928615025114,
+            "median": 3.440000057220459,
+            "p95": 6.234999895095825,
+            "p99": 8.164999961853027,
+            "max": 9.995000123977661
+          },
+          "to_paint_ms": {
+            "count": 140,
+            "mean": 5.236071431636811,
+            "median": 4.945000052452087,
+            "p95": 8.744999885559082,
+            "p99": 10.275000095367432,
+            "max": 12.259999990463257
+          }
+        }
+      ],
+      "worst_index": 2,
+      "worst": {
+        "count": 140,
+        "latency_ms": {
+          "count": 140,
+          "mean": 3.6748928615025114,
+          "median": 3.440000057220459,
+          "p95": 6.234999895095825,
+          "p99": 8.164999961853027,
+          "max": 9.995000123977661
+        },
+        "to_paint_ms": {
+          "count": 140,
+          "mean": 5.236071431636811,
+          "median": 4.945000052452087,
+          "p95": 8.744999885559082,
+          "p99": 10.275000095367432,
+          "max": 12.259999990463257
+        }
+      }
+    }
+  ],
+  "resources": {
+    "idle": {
+      "window_ms": 10019,
+      "total": {
+        "processes": 11,
+        "cpu_percent": 0.299,
+        "rss_bytes": 1283936256,
+        "pss_bytes": 575315968
+      },
+      "by_role": {
+        "browser": {
+          "processes": 1,
+          "cpu_percent": 0,
+          "rss_bytes": 235790336,
+          "pss_bytes": 131292160
+        },
+        "utility": {
+          "processes": 2,
+          "cpu_percent": 0,
+          "rss_bytes": 152293376,
+          "pss_bytes": 44911616
+        },
+        "zygote": {
+          "processes": 3,
+          "cpu_percent": 0,
+          "rss_bytes": 164950016,
+          "pss_bytes": 30367744
+        },
+        "renderer": {
+          "processes": 3,
+          "cpu_percent": 0,
+          "rss_bytes": 404197376,
+          "pss_bytes": 177634304
+        },
+        "gpu-process": {
+          "processes": 1,
+          "cpu_percent": 0.299,
+          "rss_bytes": 280170496,
+          "pss_bytes": 172339200
+        },
+        "broker": {
+          "processes": 1,
+          "cpu_percent": 0,
+          "rss_bytes": 46534656,
+          "pss_bytes": 18770944
+        }
+      },
+      "processes": [
+        {
+          "role": "browser",
+          "name": "cefsimple",
+          "cpu_percent": 0,
+          "rss_bytes": 235790336,
+          "pss_bytes": 131292160
+        },
+        {
+          "role": "utility",
+          "name": "cefsimple",
+          "cpu_percent": 0,
+          "rss_bytes": 106049536,
+          "pss_bytes": 37486592
+        },
+        {
+          "role": "zygote",
+          "name": "cefsimple",
+          "cpu_percent": 0,
+          "rss_bytes": 72847360,
+          "pss_bytes": 12178432
+        },
+        {
+          "role": "zygote",
+          "name": "cefsimple",
+          "cpu_percent": 0,
+          "rss_bytes": 19095552,
+          "pss_bytes": 3228672
+        },
+        {
+          "role": "renderer",
+          "name": "cefsimple",
+          "cpu_percent": 0,
+          "rss_bytes": 74489856,
+          "pss_bytes": 18067456
+        },
+        {
+          "role": "renderer",
+          "name": "cefsimple",
+          "cpu_percent": 0,
+          "rss_bytes": 177823744,
+          "pss_bytes": 90027008
+        },
+        {
+          "role": "renderer",
+          "name": "cefsimple",
+          "cpu_percent": 0,
+          "rss_bytes": 151883776,
+          "pss_bytes": 69539840
+        },
+        {
+          "role": "utility",
+          "name": "cefsimple",
+          "cpu_percent": 0,
+          "rss_bytes": 46243840,
+          "pss_bytes": 7425024
+        },
+        {
+          "role": "zygote",
+          "name": "cefsimple",
+          "cpu_percent": 0,
+          "rss_bytes": 73007104,
+          "pss_bytes": 14960640
+        },
+        {
+          "role": "gpu-process",
+          "name": "cefsimple",
+          "cpu_percent": 0.299,
+          "rss_bytes": 280170496,
+          "pss_bytes": 172339200
+        },
+        {
+          "role": "broker",
+          "name": "cefsimple",
+          "cpu_percent": 0,
+          "rss_bytes": 46534656,
+          "pss_bytes": 18770944
+        }
+      ]
+    }
+  },
+  "harness": "client/bench/harness (synthetic screen) in client/bench/run-chromium.mjs",
+  "console": []
+}

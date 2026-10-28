@@ -82,10 +82,11 @@ Keeping macOS on WKWebView means one of:
 
 ## Keyboard and focus (automated, Xvfb)
 
-`keycheck/keycheck.py` replays seven steps through XTEST in a private Xvfb with no window
+`keycheck/keycheck.py` replays eight steps through XTEST in a private Xvfb with no window
 manager: Ctrl+2 and Ctrl+1 right after start, Ctrl+, and Ctrl+2, the zoom keys, a click
 into the session search with typing and a layout switch (`setxkbmap ru`), switching to
-another window and back without a click, clicking away and back, and the list arrows.
+another window and back without a click, clicking away and back, the list arrows, and the
+zoom keys and Ctrl+1 with the focus inside the page.
 Window activation is emulated the way an ICCCM window manager does it (`XSetInputFocus`,
 `WM_TAKE_FOCUS`, `_NET_ACTIVE_WINDOW`); a decoy window holds the focus before the client
 starts. `keycheck/keylog.js`, added to a copy of `client/dist`, reports keys, focus and the
@@ -93,17 +94,19 @@ visible page through the client's `perf_log`, so both builds are observed the sa
 
 Results on 2026-10-28 (replay data):
 
-| Build | Steps passed per run |
+| Build | Steps passed: four runs of seven steps, then one of eight |
 |---|---|
-| Tauri 2, WebKitGTK 2.54.1 | 7, 7, 7, 7 |
-| Tauri v3, CEF 154 (alpha.6 with the #16189 fix) | 2, 2, 2 |
-| the same plus tauri PR #16352 (`patches/tauri-pr-16352-focus.diff`) | 4, 3, 0, 4, 4 |
+| Tauri 2, WebKitGTK 2.54.1 | 7, 7, 7, 7, then 8 of 8 |
+| Tauri v3, CEF 154 (alpha.6 with the #16189 fix) | 2, 2, 2, then 3 of 8 |
+| the same plus tauri PR #16352 (`patches/tauri-pr-16352-focus.diff`) | 4, 3, 0, 4, 4, then 5 of 8 |
 
 On CEF, keys reach the page only after a click inside it; after any activation of the
 window (at start and when switching back) every key is lost (tauri#16251, #16351). PR
 #16352 brings back input after switching windows in most runs, but not right after start,
-and one run lost all input even after clicks. Limits: no KWin, no real Alt+Tab, Xvfb
-instead of XWayland; the owner's desktop needs a short manual check once a fix lands.
+and one run lost all input even after clicks. With the focus inside the page, Ctrl+=,
+Ctrl+-, Ctrl+0 and Ctrl+digit reach the client, so #16249 did not affect it here.
+Limits: no KWin, no real Alt+Tab, Xvfb instead of XWayland; the owner's desktop needs a
+short manual check once a fix lands.
 
 ## Building
 

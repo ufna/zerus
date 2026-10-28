@@ -9,7 +9,7 @@ client/dist with keylog.js added before the app's script, through TAURI_CONFIG
 '{"build":{"frontendDist":"COPY"}}'; keylog.js reports keydown, focus and
 page state through perf_log on stderr), emulates what a window manager does (no WM runs:
 XSetInputFocus plus WM_TAKE_FOCUS and _NET_ACTIVE_WINDOW on activation, a second X window
-to switch to) and types through XTEST. It replays the owner's eight steps and checks what
+to switch to) and types through XTEST. It replays eight steps and checks what
 reached the page. Never run against the desktop: it refuses unless DISPLAY is a private
 X server and WAYLAND_DISPLAY is the nonexistent socket.
 """
@@ -319,6 +319,18 @@ try:
     step("7 click list, Down x3, Up x2", ["click", "Down x3", "Up x2"],
          lambda: (keys_seen(since(mark)) == ["ArrowDown"] * 3 + ["ArrowUp"] * 2,
                   f"keys {keys_seen(since(mark))}, active {state().get('active')!r}"))
+
+    # Step 8: browser accelerators with the focus inside the page (Chrome binds Ctrl+= and Ctrl+digits).
+    mark = last_n()
+    click(ox + lx + lw / 2, oy + ly + min(lh / 2, 200))
+    toasts8 = []
+    for k in ("equal", "minus", "0"):
+        key(k, ctrl=True); wait(0.3)
+        toasts8.append(state().get("toast"))
+    key("1", ctrl=True)
+    step("8 focus inside, Ctrl+=, Ctrl+-, Ctrl+0, Ctrl+1", ["click", "C-=", "C--", "C-0", "C-1"],
+         lambda: (keys_seen(since(mark)) == ["C-=", "C--", "C-0", "C-1"] and (state().get("page") or "").startswith("Home"),
+                  f"keys {keys_seen(since(mark))}, toasts {toasts8}, page {state().get('page')!r}"))
 finally:
     wait(0.5)
     if app is not None:
