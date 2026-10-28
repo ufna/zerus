@@ -1,0 +1,111 @@
+diff -ruN a/src/external_message_pump/linux.rs b/src/external_message_pump/linux.rs
+--- a/src/external_message_pump/linux.rs
++++ b/src/external_message_pump/linux.rs
+@@ -292,3 +292,68 @@
+   closure_callback: None,
+   closure_marshal: None,
+ };
++
++/// Destroys the work source Chromium's `base::MessagePumpGlib` attached to the default
++/// GLib context, returning how many sources were destroyed.
++///
++/// With `external_message_pump` CEF runs the UI thread on `MessagePumpExternal`, a
++/// `MessagePumpForUI` (`MessagePumpGlib` on Linux) whose `Run` never enters the GLib
++/// loop. The base-class constructor still attaches its work source to
++/// `g_main_context_default()`, and `MessagePumpGlib::HandlePrepare` returns a timeout of 0
++/// while `state_` is null, which it is outside that `Run`. Every blocking
++/// `g_main_context_iteration` the host makes therefore returns at once and the main
++/// thread spins at 100% of a core. Scheduling reaches this pump through
++/// `OnScheduleMessagePumpWork` instead, so the source has nothing left to do.
++/// `MessagePumpGlib`'s destructor destroys it again, which GLib treats as a no-op.
++///
++/// The source is recognised as the one whose `prepare` lives in libcef, at
++/// `G_PRIORITY_DEFAULT_IDLE` (`kPriorityWork`), polling a single pipe (its wakeup pipe;
++/// Chromium's X11 event source polls the X socket). Must run on the thread that owns
++/// the default context, after `cef::initialize`.
++pub(crate) fn destroy_chromium_work_source() -> usize {
++  let Some(cef_base) = module_base(cef::sys::cef_initialize as *const libc::c_void) else {
++    return 0;
++  };
++
++  let mut destroyed = 0;
++  unsafe {
++    let context = ffi::g_main_context_default();
++    // Source ids are allocated sequentially; a fresh attach yields the next one.
++    let probe = ffi::g_idle_source_new();
++    let upper = ffi::g_source_attach(probe, context);
++    ffi::g_source_destroy(probe);
++    ffi::g_source_unref(probe);
++
++    for id in 1..upper {
++      let source = ffi::g_main_context_find_source_by_id(context, id);
++      if source.is_null() || (*source).source_funcs.is_null() {
++        continue;
++      }
++      let Some(prepare) = (*(*source).source_funcs).prepare else {
++        continue;
++      };
++      if module_base(prepare as *const libc::c_void) != Some(cef_base)
++        || ffi::g_source_get_priority(source) != ffi::G_PRIORITY_DEFAULT_IDLE
++      {
++        continue;
++      }
++      let poll_fds = (*source).poll_fds;
++      if poll_fds.is_null() || !(*poll_fds).next.is_null() {
++        continue;
++      }
++      let fd = (*((*poll_fds).data as *const ffi::GPollFD)).fd;
++      let mut stat: libc::stat = mem::zeroed();
++      if libc::fstat(fd, &mut stat) != 0 || (stat.st_mode & libc::S_IFMT) != libc::S_IFIFO {
++        continue;
++      }
++      ffi::g_source_destroy(source);
++      destroyed += 1;
++    }
++  }
++  destroyed
++}
++
++fn module_base(address: *const libc::c_void) -> Option<*mut libc::c_void> {
++  let mut info: libc::Dl_info = unsafe { mem::zeroed() };
++  (unsafe { libc::dladdr(address, &mut info) } != 0).then_some(info.dli_fbase)
++}
+diff -ruN a/src/external_message_pump/mod.rs b/src/external_message_pump/mod.rs
+--- a/src/external_message_pump/mod.rs
++++ b/src/external_message_pump/mod.rs
+@@ -41,6 +41,14 @@
+   target_os = "openbsd"
+ ))]
+ mod linux;
++#[cfg(any(
++  target_os = "linux",
++  target_os = "dragonfly",
++  target_os = "freebsd",
++  target_os = "netbsd",
++  target_os = "openbsd"
++))]
++pub(crate) use linux::destroy_chromium_work_source;
+ #[cfg(target_os = "macos")]
+ mod macos;
+ #[cfg(windows)]
+diff -ruN a/src/runtime.rs b/src/runtime.rs
+--- a/src/runtime.rs
++++ b/src/runtime.rs
+@@ -3356,6 +3356,17 @@
+     ))]
+     pre_cef_signals.restore();
+ 
++    #[cfg(any(
++      target_os = "linux",
++      target_os = "dragonfly",
++      target_os = "freebsd",
++      target_os = "openbsd",
++      target_os = "netbsd"
++    ))]
++    if crate::external_message_pump::destroy_chromium_work_source() == 0 {
++      log::warn!("Chromium's GLib work source was not found; the event loop may not block");
++    }
++
+     #[cfg(target_os = "macos")]
+     let app_delegate = if !is_helper {
+       use crate::platform::macos::AppDelegateEvent;

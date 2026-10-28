@@ -1,0 +1,135 @@
+diff -ru a/client/src-tauri/Cargo.toml b/client/src-tauri/Cargo.toml
+--- a/client/src-tauri/Cargo.toml	2026-10-28 10:31:18.393889293 +0300
++++ b/client/src-tauri/Cargo.toml	2026-10-28 10:31:18.411077931 +0300
+@@ -21,7 +21,10 @@
+ live = ["dep:zerus-client-core"]
+ 
+ [dependencies]
+-tauri = { version = "2", features = [] }
++# CEF spike: Tauri 3 (branch v3 at 78f49ba) on the CEF runtime; the idle-spin fix
++# (client/bench/cef-spike/patches/tauri-16189-idle-spin.diff) goes in through [patch].
++tauri = { git = "https://github.com/tauri-apps/tauri", rev = "78f49ba3993fed5a1b921235c547731006ad2a74" }
++tauri-runtime-cef = { git = "https://github.com/tauri-apps/tauri", rev = "78f49ba3993fed5a1b921235c547731006ad2a74", features = ["devtools"] }
+ serde = { version = "1", features = ["derive"] }
+ serde_json = "1"
+ zerus-watch-protocol = { path = "../../crates/watch-protocol" }
+@@ -29,9 +32,9 @@
+ # The pure-Rust core (watch streams, catalog state, per-frame batches).
+ zerus-client-core = { path = "../core", optional = true }
+ 
+-# Linux: the refresh rate of the window's monitor (display.rs); the same gtk as tauri's.
++# Linux: the refresh rate of the window's monitor (display.rs); the same GTK 4 as the CEF runtime's.
+ [target.'cfg(target_os = "linux")'.dependencies]
+-gtk = "0.18"
++gtk = { package = "gtk4", version = "0.11.4" }
+ 
+ # macOS: process metrics through libproc, and the WebKit preference that lets
+ # page rendering follow the display rate (platform/macos.rs).
+@@ -42,7 +45,7 @@
+ objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "WKPreferences", "WKWebViewConfiguration"] }
+ 
+ [build-dependencies]
+-tauri-build = { version = "2", features = [] }
++tauri-build = { git = "https://github.com/tauri-apps/tauri", rev = "78f49ba3993fed5a1b921235c547731006ad2a74" }
+ 
+ # Dependencies optimised once keep the debug app responsive.
+ [profile.dev.package."*"]
+diff -ru a/client/src-tauri/src/display.rs b/client/src-tauri/src/display.rs
+--- a/client/src-tauri/src/display.rs	2026-10-28 10:31:18.395595372 +0300
++++ b/client/src-tauri/src/display.rs	2026-10-28 10:31:18.402127467 +0300
+@@ -36,10 +36,11 @@
+ 
+ #[cfg(target_os = "linux")]
+ fn native(window: &WebviewWindow) -> Option<f64> {
++    // GTK 4 (CEF runtime): monitors are looked up by surface, not by GdkWindow.
+     use gtk::prelude::*;
+     let gtk_window = window.gtk_window().ok()?;
+-    let gdk_window = gtk_window.window()?;
+-    let monitor = gdk_window.display().monitor_at_window(&gdk_window)?;
++    let surface = gtk_window.surface()?;
++    let monitor = surface.display().monitor_at_surface(&surface)?;
+     from_millihertz(monitor.refresh_rate())
+ }
+ 
+@@ -53,6 +54,7 @@
+ /// so unsetting it does not keep a window off a desktop; GDK_BACKEND=x11 does.
+ #[cfg(target_os = "linux")]
+ pub fn display_name() -> Option<String> {
++    use gtk::prelude::*;
+     gtk::gdk::Display::default().map(|display| display.name().to_string())
+ }
+ 
+diff -ru a/client/src-tauri/src/lib.rs b/client/src-tauri/src/lib.rs
+--- a/client/src-tauri/src/lib.rs	2026-10-28 10:31:18.395394368 +0300
++++ b/client/src-tauri/src/lib.rs	2026-10-28 10:31:18.402082884 +0300
+@@ -23,6 +23,7 @@
+ /// Builds the app and runs its event loop until the last window closes.
+ pub fn run() {
+     tauri::Builder::default()
++        .runtime(cef_runtime())
+         .manage(commands::AppState::default())
+         .invoke_handler(handler())
+         .setup(|app| {
+@@ -54,6 +55,20 @@
+         .expect("Zerus Next failed to start");
+ }
+ 
++/// CEF spike: the Chromium runtime. `ZERUS_SPIKE_DEBUG_PORT` starts the DevTools
++/// protocol server on 127.0.0.1, `ZERUS_SPIKE_CACHE_DIR` names the Chromium profile.
++fn cef_runtime() -> tauri_runtime_cef::Cef {
++    use tauri_runtime_cef::{Cef, RemoteDebugging};
++    let mut cef = Cef::default().allow_chromium_command_line_args(true);
++    if let Some(dir) = std::env::var_os("ZERUS_SPIKE_CACHE_DIR").filter(|d| !d.is_empty()) {
++        cef = cef.root_cache_path(std::path::PathBuf::from(dir));
++    }
++    if let Some(port) = std::env::var("ZERUS_SPIKE_DEBUG_PORT").ok().and_then(|p| p.parse().ok()) {
++        cef = cef.remote_debugging(RemoteDebugging::Port { port, allowed_origins: Vec::new() });
++    }
++    cef
++}
++
+ /// The commands the frontend may call. The session actions need the core's
+ /// `hgs` runner, so they exist only with the `live` feature.
+ #[cfg(feature = "live")]
+@@ -113,8 +128,13 @@
+         true => "index.html".to_owned(),
+         false => format!("index.html?{}", query.join("&")),
+     };
++    // CEF spike: ZERUS_SPIKE_URL loads an http page (the pacing harness) instead.
++    let url = match std::env::var("ZERUS_SPIKE_URL").ok().filter(|u| !u.is_empty()) {
++        Some(url) => WebviewUrl::External(url.parse().map_err(|_| tauri::Error::InvalidWebviewUrl("ZERUS_SPIKE_URL"))?),
++        None => WebviewUrl::App(page.into()),
++    };
+     #[allow(unused_mut)]
+-    let mut builder = WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App(page.into()))
++    let mut builder = WebviewWindowBuilder::new(app, MAIN_WINDOW, url)
+         .title("Zerus Next")
+         .inner_size(1440.0, 900.0)
+         .min_inner_size(900.0, 560.0);
+diff -ru a/client/src-tauri/src/main.rs b/client/src-tauri/src/main.rs
+--- a/client/src-tauri/src/main.rs	2026-10-28 10:31:18.395360354 +0300
++++ b/client/src-tauri/src/main.rs	2026-10-28 10:31:18.402026129 +0300
+@@ -1,6 +1,9 @@
+ // No console window next to the app in Windows release builds.
+ #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+ 
++// CEF spike: the same executable is also Chromium's renderer, GPU, network and
++// utility process; the attribute runs those and returns before the app is built.
++#[tauri_runtime_cef::cef_entry_point]
+ fn main() {
+     zerus_client_lib::run();
+ }
+diff -ru a/client/src-tauri/tauri.conf.json b/client/src-tauri/tauri.conf.json
+--- a/client/src-tauri/tauri.conf.json	2026-10-28 10:31:18.393923065 +0300
++++ b/client/src-tauri/tauri.conf.json	2026-10-28 10:31:18.402164416 +0300
+@@ -1,8 +1,8 @@
+ {
+   "$schema": "https://schema.tauri.app/config/2",
+-  "productName": "Zerus Next (dev)",
++  "productName": "Zerus Next (CEF spike)",
+   "version": "0.1.0",
+-  "identifier": "dev.zerus.next",
++  "identifier": "dev.zerus.next.cefspike",
+   "build": {
+     "beforeDevCommand": "npm run dev",
+     "devUrl": "http://127.0.0.1:1420",

@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "The spike window; app commands need no entry.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

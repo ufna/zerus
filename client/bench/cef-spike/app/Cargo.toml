@@ -1,0 +1,25 @@
+[package]
+name = "zerus-cef-spike"
+version = "0.1.0"
+description = "Spike: a minimal Tauri 3 app on the CEF runtime (Linux) for the Zerus CEF evaluation"
+edition = "2024"
+publish = false
+
+# Standalone, outside the client's package. The tauri crates come from the
+# tauri-apps/tauri branch v3 at the commit the evaluation used (2026-10-21,
+# tauri 3.0.0-alpha.5, tauri-runtime-cef 3.0.0-alpha.6, cef =154.5.0). The
+# idle-spin fix (patches/tauri-16189-idle-spin.diff) needs a local clone with the
+# patch applied and a [patch] section; see ../README.md.
+[workspace]
+
+[dependencies]
+tauri = { git = "https://github.com/tauri-apps/tauri", rev = "78f49ba3993fed5a1b921235c547731006ad2a74" }
+tauri-runtime-cef = { git = "https://github.com/tauri-apps/tauri", rev = "78f49ba3993fed5a1b921235c547731006ad2a74", features = ["devtools"] }
+serde_json = "1"
+
+[build-dependencies]
+tauri-build = { git = "https://github.com/tauri-apps/tauri", rev = "78f49ba3993fed5a1b921235c547731006ad2a74" }
+
+[profile.release]
+debug = false
+strip = "debuginfo"
