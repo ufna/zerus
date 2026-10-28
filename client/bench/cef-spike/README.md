@@ -80,6 +80,28 @@ Keeping macOS on WKWebView means one of:
 - two Tauri majors in one crate behind `cfg`, which Cargo allows only through renamed
   dependencies and duplicated glue.
 
+## Results on the arch display (2026-10-28)
+
+`../results/arch-kde-cef-2026-10-28/`, two 144 Hz outputs at scale 1, RTX 3090 Ti with
+nvidia 615.78.08 (`vblank=N`), T = 6.94 ms, worst of three 10 s runs:
+
+| Engine and path | Pacing scenarios passing criterion 1 | Means |
+|---|---|---|
+| WebKitGTK 2.54.1, Wayland (reference, `arch-kde-webkitgtk-harness-2026-10-28.json`) | 0 of 5 | 12.7-16.1 ms |
+| Tauri v3 + CEF 154 spike, XWayland | 5 of 5 | 6.95-6.96 ms |
+| cefsimple CEF 156, native X11 parent, XWayland | 5 of 5 | 6.95-6.98 ms |
+| cefsimple CEF 156, Views, native Wayland | 4 of 4 run | 6.94-6.95 ms |
+| Chrome 155, native Wayland | 4 of 5 | 6.94-7.05 ms |
+| our client on CEF, live data | 3 of 5 (two slow-frame tails) | 6.95-7.39 ms |
+| our client on WebKitGTK, live data | 0 of 5 | 16.07-17.73 ms |
+
+Idle of the two clients with live data, back to back (`*-client-perf.json`, CPU of the
+process tree, one core = 100%): as displayed WebKitGTK 50.4% (13 endless animations) and
+CEF 22.2% (15); Animate working sessions off 7.9% and 10.7%; Reduce motion 10.2% and
+11.5%. `hgs` takes 6-7% of each. On CEF hiding the window left the page visible
+(tauri#16205). The Chrome XWayland pacing run and the CEF and Chrome replay-page idle runs
+were cut off when the session locked.
+
 ## Keyboard and focus (automated, Xvfb)
 
 `keycheck/keycheck.py` replays eight steps through XTEST in a private Xvfb with no window

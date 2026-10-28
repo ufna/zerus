@@ -1,0 +1,2101 @@
+{
+  "schema": "zerus-perf-v1",
+  "client": "tauri",
+  "created_at": "2026-10-28T08:25:02.196Z",
+  "platform": {
+    "os": "linux",
+    "label": "arch-kde-xwayland-cef-client-live",
+    "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+    "hz": 144,
+    "hz_source": "native",
+    "T_ms": 6.944444444444445,
+    "dpr": 1,
+    "cross_origin_isolated": true,
+    "timer_resolution_ms": 0.004999876022338867,
+    "reduced_motion": false,
+    "representative": true,
+    "displays": {
+      "source": "kscreen-doctor --json",
+      "outputs": [
+        {
+          "name": "DP-2",
+          "priority": 1,
+          "mode": "2560x1440",
+          "refresh_hz": 144,
+          "scale": 1,
+          "rotation": 1,
+          "vrr_policy": null
+        },
+        {
+          "name": "DP-3",
+          "priority": 2,
+          "mode": "3440x1440",
+          "refresh_hz": 144,
+          "scale": 1,
+          "rotation": 1,
+          "vrr_policy": null
+        }
+      ],
+      "locked": false,
+      "dpms": {
+        "DP-2": "on",
+        "DP-3": "on"
+      }
+    }
+  },
+  "settings": {
+    "warmupMs": 2000,
+    "runMs": 10000,
+    "runs": 3,
+    "stepPx": 16,
+    "opens": 20,
+    "openIndices": [
+      0,
+      1
+    ],
+    "syntheticInput": true
+  },
+  "scenarios": [
+    {
+      "id": "raf-light",
+      "label": "rAF on a light page",
+      "kind": "pacing",
+      "metric": "interval_ms",
+      "runs": [
+        {
+          "frames": 1439,
+          "interval_ms": {
+            "count": 1439,
+            "mean": 6.952727588702607,
+            "median": 6.940000057220459,
+            "p95": 7.895000219345093,
+            "p99": 8.555000066757202,
+            "over1_5T": 0.0020847810979847115,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 12.674999952316284
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          }
+        },
+        {
+          "frames": 1438,
+          "interval_ms": {
+            "count": 1438,
+            "mean": 6.957211404582887,
+            "median": 6.940000057220459,
+            "p95": 7.775000095367432,
+            "p99": 8.289999961853027,
+            "over1_5T": 0.0013908205841446453,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 12.309999942779541
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          }
+        },
+        {
+          "frames": 1440,
+          "interval_ms": {
+            "count": 1440,
+            "mean": 6.9476527778638735,
+            "median": 6.954999923706055,
+            "p95": 7.800000190734863,
+            "p99": 8.230000019073486,
+            "over1_5T": 0.0006944444444444445,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 10.519999980926514
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          }
+        }
+      ],
+      "worst_index": 0,
+      "worst": {
+        "frames": 1439,
+        "interval_ms": {
+          "count": 1439,
+          "mean": 6.952727588702607,
+          "median": 6.940000057220459,
+          "p95": 7.895000219345093,
+          "p99": 8.555000066757202,
+          "over1_5T": 0.0020847810979847115,
+          "over2_5T": 0,
+          "band60": 0,
+          "max": 12.674999952316284
+        },
+        "verdict": {
+          "mean": true,
+          "median": true,
+          "within1_5T": true,
+          "over2_5T": true,
+          "band60": true,
+          "all": true
+        }
+      },
+      "verdict": {
+        "mean": true,
+        "median": true,
+        "within1_5T": true,
+        "over2_5T": true,
+        "band60": true,
+        "all": true
+      }
+    },
+    {
+      "id": "transform-animation",
+      "label": "rAF during a CSS transform animation",
+      "kind": "pacing",
+      "metric": "interval_ms",
+      "runs": [
+        {
+          "frames": 1436,
+          "interval_ms": {
+            "count": 1436,
+            "mean": 6.967743732637017,
+            "median": 6.952499985694885,
+            "p95": 8,
+            "p99": 9.200000047683716,
+            "over1_5T": 0.005571030640668524,
+            "over2_5T": 0,
+            "band60": 0.0006963788300835655,
+            "max": 16.02999997138977
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          }
+        },
+        {
+          "frames": 1429,
+          "interval_ms": {
+            "count": 1429,
+            "mean": 7.00094471668513,
+            "median": 6.934999942779541,
+            "p95": 8.325000047683716,
+            "p99": 10.515000104904175,
+            "over1_5T": 0.010496850944716585,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 14.68500018119812
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": false,
+            "over2_5T": true,
+            "band60": true,
+            "all": false
+          }
+        },
+        {
+          "frames": 1439,
+          "interval_ms": {
+            "count": 1439,
+            "mean": 6.953818624097494,
+            "median": 6.950000047683716,
+            "p95": 7.789999961853027,
+            "p99": 8.40499997138977,
+            "over1_5T": 0.001389854065323141,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 12.47000002861023
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          }
+        }
+      ],
+      "worst_index": 1,
+      "worst": {
+        "frames": 1429,
+        "interval_ms": {
+          "count": 1429,
+          "mean": 7.00094471668513,
+          "median": 6.934999942779541,
+          "p95": 8.325000047683716,
+          "p99": 10.515000104904175,
+          "over1_5T": 0.010496850944716585,
+          "over2_5T": 0,
+          "band60": 0,
+          "max": 14.68500018119812
+        },
+        "verdict": {
+          "mean": true,
+          "median": true,
+          "within1_5T": false,
+          "over2_5T": true,
+          "band60": true,
+          "all": false
+        }
+      },
+      "verdict": {
+        "mean": true,
+        "median": true,
+        "within1_5T": false,
+        "over2_5T": true,
+        "band60": true,
+        "all": false
+      }
+    },
+    {
+      "id": "left-animation",
+      "label": "rAF during a non-accelerated animation (left)",
+      "kind": "pacing",
+      "metric": "interval_ms",
+      "runs": [
+        {
+          "frames": 1354,
+          "interval_ms": {
+            "count": 1354,
+            "mean": 7.389468242181809,
+            "median": 7.044999957084656,
+            "p95": 11.775000095367432,
+            "p99": 14.369999885559082,
+            "over1_5T": 0.06646971935007386,
+            "over2_5T": 0.0007385524372230429,
+            "band60": 0.003692762186115214,
+            "max": 20.069999933242798
+          },
+          "verdict": {
+            "mean": false,
+            "median": true,
+            "within1_5T": false,
+            "over2_5T": true,
+            "band60": true,
+            "all": false
+          }
+        },
+        {
+          "frames": 1428,
+          "interval_ms": {
+            "count": 1428,
+            "mean": 7.006796218600928,
+            "median": 6.9700000286102295,
+            "p95": 8.184999942779541,
+            "p99": 10.305000066757202,
+            "over1_5T": 0.00980392156862745,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 13.77999997138977
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          }
+        },
+        {
+          "frames": 1439,
+          "interval_ms": {
+            "count": 1439,
+            "mean": 6.953238359998712,
+            "median": 6.950000047683716,
+            "p95": 7.965000152587891,
+            "p99": 8.880000114440918,
+            "over1_5T": 0.001389854065323141,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 13.545000076293945
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          }
+        }
+      ],
+      "worst_index": 0,
+      "worst": {
+        "frames": 1354,
+        "interval_ms": {
+          "count": 1354,
+          "mean": 7.389468242181809,
+          "median": 7.044999957084656,
+          "p95": 11.775000095367432,
+          "p99": 14.369999885559082,
+          "over1_5T": 0.06646971935007386,
+          "over2_5T": 0.0007385524372230429,
+          "band60": 0.003692762186115214,
+          "max": 20.069999933242798
+        },
+        "verdict": {
+          "mean": false,
+          "median": true,
+          "within1_5T": false,
+          "over2_5T": true,
+          "band60": true,
+          "all": false
+        }
+      },
+      "verdict": {
+        "mean": false,
+        "median": true,
+        "within1_5T": false,
+        "over2_5T": true,
+        "band60": true,
+        "all": false
+      }
+    },
+    {
+      "id": "list-scroll",
+      "label": "Session list scroll",
+      "kind": "pacing",
+      "metric": "interval_ms",
+      "runs": [
+        {
+          "frames": 1437,
+          "interval_ms": {
+            "count": 1437,
+            "mean": 6.962526095933854,
+            "median": 6.954999923706055,
+            "p95": 8.600000143051147,
+            "p99": 9.289999961853027,
+            "over1_5T": 0.0027835768963117608,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 13.945000171661377
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          },
+          "scroll_event_ms": {
+            "count": 1437,
+            "mean": 6.962522616549009,
+            "median": 6.954999923706055,
+            "p95": 8.59500002861023,
+            "p99": 9.264999866485596,
+            "max": 13.960000038146973
+          }
+        },
+        {
+          "frames": 1438,
+          "interval_ms": {
+            "count": 1438,
+            "mean": 6.956296940174819,
+            "median": 6.940000057220459,
+            "p95": 8.180000066757202,
+            "p99": 9.115000009536743,
+            "over1_5T": 0.0034770514603616135,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 14.25
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          },
+          "scroll_event_ms": {
+            "count": 1438,
+            "mean": 6.956324756725773,
+            "median": 6.940000057220459,
+            "p95": 8.179999828338623,
+            "p99": 9.089999914169312,
+            "max": 14.245000123977661
+          }
+        },
+        {
+          "frames": 1440,
+          "interval_ms": {
+            "count": 1440,
+            "mean": 6.948513888816039,
+            "median": 6.930000066757202,
+            "p95": 8.225000143051147,
+            "p99": 8.990000009536743,
+            "over1_5T": 0.0006944444444444445,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 10.514999866485596
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          },
+          "scroll_event_ms": {
+            "count": 1440,
+            "mean": 6.948493055502573,
+            "median": 6.934999942779541,
+            "p95": 8.230000019073486,
+            "p99": 8.930000066757202,
+            "max": 10.5
+          }
+        }
+      ],
+      "worst_index": 1,
+      "worst": {
+        "frames": 1438,
+        "interval_ms": {
+          "count": 1438,
+          "mean": 6.956296940174819,
+          "median": 6.940000057220459,
+          "p95": 8.180000066757202,
+          "p99": 9.115000009536743,
+          "over1_5T": 0.0034770514603616135,
+          "over2_5T": 0,
+          "band60": 0,
+          "max": 14.25
+        },
+        "verdict": {
+          "mean": true,
+          "median": true,
+          "within1_5T": true,
+          "over2_5T": true,
+          "band60": true,
+          "all": true
+        },
+        "scroll_event_ms": {
+          "count": 1438,
+          "mean": 6.956324756725773,
+          "median": 6.940000057220459,
+          "p95": 8.179999828338623,
+          "p99": 9.089999914169312,
+          "max": 14.245000123977661
+        }
+      },
+      "verdict": {
+        "mean": true,
+        "median": true,
+        "within1_5T": true,
+        "over2_5T": true,
+        "band60": true,
+        "all": true
+      }
+    },
+    {
+      "id": "activity-scroll",
+      "label": "Activity scroll",
+      "kind": "pacing",
+      "metric": "interval_ms",
+      "runs": [
+        {
+          "frames": 1440,
+          "interval_ms": {
+            "count": 1440,
+            "mean": 6.948152777718173,
+            "median": 6.890000104904175,
+            "p95": 7.800000190734863,
+            "p99": 8.579999923706055,
+            "over1_5T": 0.001388888888888889,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 11.665000200271606
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          },
+          "scroll_event_ms": {
+            "count": 720,
+            "mean": 13.896298611164093,
+            "median": 13.884999990463257,
+            "p95": 14.765000104904175,
+            "p99": 15.84500002861023,
+            "max": 17.990000009536743
+          }
+        },
+        {
+          "frames": 1433,
+          "interval_ms": {
+            "count": 1433,
+            "mean": 6.982376134071163,
+            "median": 6.93500018119812,
+            "p95": 8.400000095367432,
+            "p99": 9.584999799728394,
+            "over1_5T": 0.005582693649685973,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 14.305000066757202
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          },
+          "scroll_event_ms": {
+            "count": 716,
+            "mean": 13.963393855028313,
+            "median": 13.93500006198883,
+            "p95": 15.460000038146973,
+            "p99": 17.115000009536743,
+            "max": 22.274999856948853
+          }
+        },
+        {
+          "frames": 1440,
+          "interval_ms": {
+            "count": 1440,
+            "mean": 6.947701388928626,
+            "median": 6.940000057220459,
+            "p95": 8.004999876022339,
+            "p99": 8.52999997138977,
+            "over1_5T": 0,
+            "over2_5T": 0,
+            "band60": 0,
+            "max": 9.705000162124634
+          },
+          "verdict": {
+            "mean": true,
+            "median": true,
+            "within1_5T": true,
+            "over2_5T": true,
+            "band60": true,
+            "all": true
+          },
+          "scroll_event_ms": {
+            "count": 719,
+            "mean": 13.895556328193866,
+            "median": 13.890000104904175,
+            "p95": 15.075000047683716,
+            "p99": 15.525000095367432,
+            "max": 18.77500009536743
+          }
+        }
+      ],
+      "worst_index": 1,
+      "worst": {
+        "frames": 1433,
+        "interval_ms": {
+          "count": 1433,
+          "mean": 6.982376134071163,
+          "median": 6.93500018119812,
+          "p95": 8.400000095367432,
+          "p99": 9.584999799728394,
+          "over1_5T": 0.005582693649685973,
+          "over2_5T": 0,
+          "band60": 0,
+          "max": 14.305000066757202
+        },
+        "verdict": {
+          "mean": true,
+          "median": true,
+          "within1_5T": true,
+          "over2_5T": true,
+          "band60": true,
+          "all": true
+        },
+        "scroll_event_ms": {
+          "count": 716,
+          "mean": 13.963393855028313,
+          "median": 13.93500006198883,
+          "p95": 15.460000038146973,
+          "p99": 17.115000009536743,
+          "max": 22.274999856948853
+        }
+      },
+      "verdict": {
+        "mean": true,
+        "median": true,
+        "within1_5T": true,
+        "over2_5T": true,
+        "band60": true,
+        "all": true
+      }
+    },
+    {
+      "id": "session-open",
+      "label": "Session open to first Activity paint",
+      "kind": "timing",
+      "metric": "wall_ms",
+      "runs": [
+        {
+          "count": 20,
+          "wall_ms": {
+            "count": 20,
+            "mean": 77.09575003385544,
+            "median": 72.17250001430511,
+            "p95": 90.2350001335144,
+            "p99": 118.03499984741211,
+            "max": 118.03499984741211
+          }
+        },
+        {
+          "count": 20,
+          "wall_ms": {
+            "count": 20,
+            "mean": 99.32925003767014,
+            "median": 72.18500006198883,
+            "p95": 185.67000007629395,
+            "p99": 442.7650001049042,
+            "max": 442.7650001049042
+          }
+        },
+        {
+          "count": 20,
+          "wall_ms": {
+            "count": 20,
+            "mean": 75.79024999141693,
+            "median": 71.95749986171722,
+            "p95": 88.10999989509583,
+            "p99": 89.88000011444092,
+            "max": 89.88000011444092
+          }
+        }
+      ],
+      "worst_index": 1,
+      "worst": {
+        "count": 20,
+        "wall_ms": {
+          "count": 20,
+          "mean": 99.32925003767014,
+          "median": 72.18500006198883,
+          "p95": 185.67000007629395,
+          "p99": 442.7650001049042,
+          "max": 442.7650001049042
+        }
+      }
+    },
+    {
+      "id": "input-latency",
+      "label": "Input to frame latency",
+      "kind": "latency",
+      "metric": "latency_ms",
+      "runs": [
+        {
+          "count": 129,
+          "latency_ms": {
+            "count": 129,
+            "mean": 3.7212790611178375,
+            "median": 3.6449999809265137,
+            "p95": 6.809999942779541,
+            "p99": 7.375,
+            "max": 7.6000001430511475
+          },
+          "to_paint_ms": {
+            "count": 129,
+            "mean": 5.335155028705449,
+            "median": 4.84499979019165,
+            "p95": 8.984999895095825,
+            "p99": 10.06499981880188,
+            "max": 11.380000114440918
+          }
+        },
+        {
+          "count": 132,
+          "latency_ms": {
+            "count": 132,
+            "mean": 3.6885227235880764,
+            "median": 3.7450000047683716,
+            "p95": 7.045000076293945,
+            "p99": 7.734999895095825,
+            "max": 7.9049999713897705
+          },
+          "to_paint_ms": {
+            "count": 132,
+            "mean": 5.3396212115432276,
+            "median": 5.1524999141693115,
+            "p95": 9.25,
+            "p99": 10.164999961853027,
+            "max": 10.380000114440918
+          }
+        },
+        {
+          "count": 128,
+          "latency_ms": {
+            "count": 128,
+            "mean": 3.9829687494784594,
+            "median": 4.100000023841858,
+            "p95": 7.1000001430511475,
+            "p99": 8.22000002861023,
+            "max": 9.775000095367432
+          },
+          "to_paint_ms": {
+            "count": 128,
+            "mean": 6.027031242847443,
+            "median": 6.3125,
+            "p95": 10.275000095367432,
+            "p99": 10.725000143051147,
+            "max": 12.914999961853027
+          }
+        }
+      ],
+      "worst_index": 2,
+      "worst": {
+        "count": 128,
+        "latency_ms": {
+          "count": 128,
+          "mean": 3.9829687494784594,
+          "median": 4.100000023841858,
+          "p95": 7.1000001430511475,
+          "p99": 8.22000002861023,
+          "max": 9.775000095367432
+        },
+        "to_paint_ms": {
+          "count": 128,
+          "mean": 6.027031242847443,
+          "median": 6.3125,
+          "p95": 10.275000095367432,
+          "p99": 10.725000143051147,
+          "max": 12.914999961853027
+        }
+      }
+    }
+  ],
+  "resources": {
+    "idle": {
+      "pid": 963447,
+      "processes": [
+        {
+          "cpu_percent": 1.094,
+          "cpu_seconds": 6.21,
+          "name": "zerus-client",
+          "pid": 963447,
+          "ppid": 963445,
+          "pss_bytes": 275894272,
+          "role": "app",
+          "rss_bytes": 433811456
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.05,
+          "name": "zerus-client",
+          "pid": 963473,
+          "ppid": 963447,
+          "pss_bytes": 17255424,
+          "role": "child",
+          "rss_bytes": 88207360
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.05,
+          "name": "zerus-client",
+          "pid": 963474,
+          "ppid": 963447,
+          "pss_bytes": 13723648,
+          "role": "child",
+          "rss_bytes": 88477696
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.1,
+          "name": "zerus-client",
+          "pid": 963488,
+          "ppid": 963474,
+          "pss_bytes": 3168256,
+          "role": "child",
+          "rss_bytes": 21532672
+        },
+        {
+          "cpu_percent": 8.652,
+          "cpu_seconds": 40.07,
+          "name": "zerus-client",
+          "pid": 963536,
+          "ppid": 963473,
+          "pss_bytes": 196612096,
+          "role": "child",
+          "rss_bytes": 311152640
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.6,
+          "name": "zerus-client",
+          "pid": 963539,
+          "ppid": 963447,
+          "pss_bytes": 41356288,
+          "role": "child",
+          "rss_bytes": 122888192
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0,
+          "name": "zerus-client",
+          "pid": 963568,
+          "ppid": 963536,
+          "pss_bytes": 20725760,
+          "role": "child",
+          "rss_bytes": 50126848
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0,
+          "name": "zerus-client",
+          "pid": 963576,
+          "ppid": 963488,
+          "pss_bytes": 7046144,
+          "role": "child",
+          "rss_bytes": 51326976
+        },
+        {
+          "cpu_percent": 6.564,
+          "cpu_seconds": 70.22,
+          "name": "zerus-client",
+          "pid": 963779,
+          "ppid": 963488,
+          "pss_bytes": 108896256,
+          "role": "child",
+          "rss_bytes": 200204288
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0,
+          "name": "zerus-client",
+          "pid": 963780,
+          "ppid": 963488,
+          "pss_bytes": 17675264,
+          "role": "child",
+          "rss_bytes": 83865600
+        },
+        {
+          "cpu_percent": 5.868,
+          "cpu_seconds": 26.81,
+          "name": "hgs",
+          "pid": 963861,
+          "ppid": 963447,
+          "pss_bytes": 52923392,
+          "role": "child",
+          "rss_bytes": 67588096
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0,
+          "name": "hgs",
+          "pid": 964057,
+          "ppid": 963447,
+          "pss_bytes": 2187264,
+          "role": "child",
+          "rss_bytes": 8568832
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.01,
+          "name": "ssh",
+          "pid": 964060,
+          "ppid": 964057,
+          "pss_bytes": 2262016,
+          "role": "child",
+          "rss_bytes": 14110720
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.05,
+          "name": "zerus-client",
+          "pid": 964778,
+          "ppid": 963488,
+          "pss_bytes": 26996736,
+          "role": "child",
+          "rss_bytes": 104484864
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.03,
+          "name": "zerus-client",
+          "pid": 964784,
+          "ppid": 963488,
+          "pss_bytes": 26966016,
+          "role": "child",
+          "rss_bytes": 104476672
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.12,
+          "name": "plasma-browser-",
+          "pid": 964832,
+          "ppid": 963447,
+          "pss_bytes": 18926592,
+          "role": "child",
+          "rss_bytes": 80162816
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.1,
+          "name": "plasma-browser-",
+          "pid": 964843,
+          "ppid": 963447,
+          "pss_bytes": 18960384,
+          "role": "child",
+          "rss_bytes": 80232448
+        }
+      ],
+      "sampled_at_ms": 1793175922320,
+      "source": "procfs",
+      "total": {
+        "cpu_percent": 22.178,
+        "cpu_seconds": 144.42,
+        "processes": 17,
+        "pss_bytes": 851575808,
+        "rss_bytes": 1911218176
+      },
+      "window_ms": 10055
+    },
+    "idle_still_working": {
+      "pid": 963447,
+      "processes": [
+        {
+          "cpu_percent": 1.59,
+          "cpu_seconds": 6.44,
+          "name": "zerus-client",
+          "pid": 963447,
+          "ppid": 963445,
+          "pss_bytes": 275953664,
+          "role": "app",
+          "rss_bytes": 433852416
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.05,
+          "name": "zerus-client",
+          "pid": 963473,
+          "ppid": 963447,
+          "pss_bytes": 17252352,
+          "role": "child",
+          "rss_bytes": 88190976
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.05,
+          "name": "zerus-client",
+          "pid": 963474,
+          "ppid": 963447,
+          "pss_bytes": 13719552,
+          "role": "child",
+          "rss_bytes": 88461312
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.1,
+          "name": "zerus-client",
+          "pid": 963488,
+          "ppid": 963474,
+          "pss_bytes": 3168256,
+          "role": "child",
+          "rss_bytes": 21532672
+        },
+        {
+          "cpu_percent": 0.596,
+          "cpu_seconds": 40.14,
+          "name": "zerus-client",
+          "pid": 963536,
+          "ppid": 963473,
+          "pss_bytes": 196613120,
+          "role": "child",
+          "rss_bytes": 311140352
+        },
+        {
+          "cpu_percent": 0.099,
+          "cpu_seconds": 0.61,
+          "name": "zerus-client",
+          "pid": 963539,
+          "ppid": 963447,
+          "pss_bytes": 41349120,
+          "role": "child",
+          "rss_bytes": 122855424
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0,
+          "name": "zerus-client",
+          "pid": 963568,
+          "ppid": 963536,
+          "pss_bytes": 20725760,
+          "role": "child",
+          "rss_bytes": 50126848
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0,
+          "name": "zerus-client",
+          "pid": 963576,
+          "ppid": 963488,
+          "pss_bytes": 7046144,
+          "role": "child",
+          "rss_bytes": 51326976
+        },
+        {
+          "cpu_percent": 1.292,
+          "cpu_seconds": 70.38,
+          "name": "zerus-client",
+          "pid": 963779,
+          "ppid": 963488,
+          "pss_bytes": 110129152,
+          "role": "child",
+          "rss_bytes": 201437184
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0,
+          "name": "zerus-client",
+          "pid": 963780,
+          "ppid": 963488,
+          "pss_bytes": 17675264,
+          "role": "child",
+          "rss_bytes": 83865600
+        },
+        {
+          "cpu_percent": 7.156,
+          "cpu_seconds": 27.73,
+          "name": "hgs",
+          "pid": 963861,
+          "ppid": 963447,
+          "pss_bytes": 52923392,
+          "role": "child",
+          "rss_bytes": 67588096
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0,
+          "name": "hgs",
+          "pid": 964057,
+          "ppid": 963447,
+          "pss_bytes": 2187264,
+          "role": "child",
+          "rss_bytes": 8568832
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.01,
+          "name": "ssh",
+          "pid": 964060,
+          "ppid": 964057,
+          "pss_bytes": 2361344,
+          "role": "child",
+          "rss_bytes": 14110720
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.05,
+          "name": "zerus-client",
+          "pid": 964778,
+          "ppid": 963488,
+          "pss_bytes": 26993664,
+          "role": "child",
+          "rss_bytes": 104468480
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.03,
+          "name": "zerus-client",
+          "pid": 964784,
+          "ppid": 963488,
+          "pss_bytes": 26962944,
+          "role": "child",
+          "rss_bytes": 104460288
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.12,
+          "name": "plasma-browser-",
+          "pid": 964832,
+          "ppid": 963447,
+          "pss_bytes": 18930688,
+          "role": "child",
+          "rss_bytes": 80162816
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.1,
+          "name": "plasma-browser-",
+          "pid": 964843,
+          "ppid": 963447,
+          "pss_bytes": 18965504,
+          "role": "child",
+          "rss_bytes": 80232448
+        }
+      ],
+      "sampled_at_ms": 1793175933445,
+      "source": "procfs",
+      "total": {
+        "cpu_percent": 10.734,
+        "cpu_seconds": 145.81,
+        "processes": 17,
+        "pss_bytes": 852957184,
+        "rss_bytes": 1912381440
+      },
+      "window_ms": 10062
+    },
+    "idle_reduced_motion": {
+      "pid": 963447,
+      "processes": [
+        {
+          "cpu_percent": 1.79,
+          "cpu_seconds": 6.68,
+          "name": "zerus-client",
+          "pid": 963447,
+          "ppid": 963445,
+          "pss_bytes": 275859456,
+          "role": "app",
+          "rss_bytes": 433676288
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.05,
+          "name": "zerus-client",
+          "pid": 963473,
+          "ppid": 963447,
+          "pss_bytes": 17225728,
+          "role": "child",
+          "rss_bytes": 88092672
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.05,
+          "name": "zerus-client",
+          "pid": 963474,
+          "ppid": 963447,
+          "pss_bytes": 13692928,
+          "role": "child",
+          "rss_bytes": 88363008
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.1,
+          "name": "zerus-client",
+          "pid": 963488,
+          "ppid": 963474,
+          "pss_bytes": 3168256,
+          "role": "child",
+          "rss_bytes": 21532672
+        },
+        {
+          "cpu_percent": 0.696,
+          "cpu_seconds": 40.22,
+          "name": "zerus-client",
+          "pid": 963536,
+          "ppid": 963473,
+          "pss_bytes": 196609024,
+          "role": "child",
+          "rss_bytes": 311128064
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.61,
+          "name": "zerus-client",
+          "pid": 963539,
+          "ppid": 963447,
+          "pss_bytes": 41322496,
+          "role": "child",
+          "rss_bytes": 122757120
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0,
+          "name": "zerus-client",
+          "pid": 963568,
+          "ppid": 963536,
+          "pss_bytes": 20725760,
+          "role": "child",
+          "rss_bytes": 50126848
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0,
+          "name": "zerus-client",
+          "pid": 963576,
+          "ppid": 963488,
+          "pss_bytes": 7046144,
+          "role": "child",
+          "rss_bytes": 51326976
+        },
+        {
+          "cpu_percent": 1.094,
+          "cpu_seconds": 70.5,
+          "name": "zerus-client",
+          "pid": 963779,
+          "ppid": 963488,
+          "pss_bytes": 110623744,
+          "role": "child",
+          "rss_bytes": 201920512
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0,
+          "name": "zerus-client",
+          "pid": 963780,
+          "ppid": 963488,
+          "pss_bytes": 17675264,
+          "role": "child",
+          "rss_bytes": 83865600
+        },
+        {
+          "cpu_percent": 7.954,
+          "cpu_seconds": 28.54,
+          "name": "hgs",
+          "pid": 963861,
+          "ppid": 963447,
+          "pss_bytes": 52934656,
+          "role": "child",
+          "rss_bytes": 67600384
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0,
+          "name": "hgs",
+          "pid": 964057,
+          "ppid": 963447,
+          "pss_bytes": 2186240,
+          "role": "child",
+          "rss_bytes": 8568832
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.01,
+          "name": "ssh",
+          "pid": 964060,
+          "ppid": 964057,
+          "pss_bytes": 2260992,
+          "role": "child",
+          "rss_bytes": 14110720
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.05,
+          "name": "zerus-client",
+          "pid": 964778,
+          "ppid": 963488,
+          "pss_bytes": 26992640,
+          "role": "child",
+          "rss_bytes": 104468480
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.03,
+          "name": "zerus-client",
+          "pid": 964784,
+          "ppid": 963488,
+          "pss_bytes": 26962944,
+          "role": "child",
+          "rss_bytes": 104460288
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.12,
+          "name": "plasma-browser-",
+          "pid": 964832,
+          "ppid": 963447,
+          "pss_bytes": 18915328,
+          "role": "child",
+          "rss_bytes": 80146432
+        },
+        {
+          "cpu_percent": 0,
+          "cpu_seconds": 0.1,
+          "name": "plasma-browser-",
+          "pid": 964843,
+          "ppid": 963447,
+          "pss_bytes": 18949120,
+          "role": "child",
+          "rss_bytes": 80216064
+        }
+      ],
+      "sampled_at_ms": 1793175944558,
+      "source": "procfs",
+      "total": {
+        "cpu_percent": 11.533,
+        "cpu_seconds": 147.06,
+        "processes": 17,
+        "pss_bytes": 853150720,
+        "rss_bytes": 1912360960
+      },
+      "window_ms": 10058
+    },
+    "idle_away": {
+      "hide": {
+        "how": "hide",
+        "minimized": false,
+        "sample": {
+          "pid": 963447,
+          "processes": [
+            {
+              "cpu_percent": 1.391,
+              "cpu_seconds": 6.91,
+              "name": "zerus-client",
+              "pid": 963447,
+              "ppid": 963445,
+              "pss_bytes": 275225600,
+              "role": "app",
+              "rss_bytes": 431071232
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.05,
+              "name": "zerus-client",
+              "pid": 963473,
+              "ppid": 963447,
+              "pss_bytes": 16667648,
+              "role": "child",
+              "rss_bytes": 85766144
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.05,
+              "name": "zerus-client",
+              "pid": 963474,
+              "ppid": 963447,
+              "pss_bytes": 13135872,
+              "role": "child",
+              "rss_bytes": 86036480
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.1,
+              "name": "zerus-client",
+              "pid": 963488,
+              "ppid": 963474,
+              "pss_bytes": 3168256,
+              "role": "child",
+              "rss_bytes": 21532672
+            },
+            {
+              "cpu_percent": 7.65,
+              "cpu_seconds": 41.18,
+              "name": "zerus-client",
+              "pid": 963536,
+              "ppid": 963473,
+              "pss_bytes": 196562944,
+              "role": "child",
+              "rss_bytes": 310865920
+            },
+            {
+              "cpu_percent": 0.099,
+              "cpu_seconds": 0.62,
+              "name": "zerus-client",
+              "pid": 963539,
+              "ppid": 963447,
+              "pss_bytes": 40753152,
+              "role": "child",
+              "rss_bytes": 120348672
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0,
+              "name": "zerus-client",
+              "pid": 963568,
+              "ppid": 963536,
+              "pss_bytes": 20725760,
+              "role": "child",
+              "rss_bytes": 50126848
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0,
+              "name": "zerus-client",
+              "pid": 963576,
+              "ppid": 963488,
+              "pss_bytes": 7014400,
+              "role": "child",
+              "rss_bytes": 51195904
+            },
+            {
+              "cpu_percent": 7.053,
+              "cpu_seconds": 71.38,
+              "name": "zerus-client",
+              "pid": 963779,
+              "ppid": 963488,
+              "pss_bytes": 111549440,
+              "role": "child",
+              "rss_bytes": 202625024
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0,
+              "name": "zerus-client",
+              "pid": 963780,
+              "ppid": 963488,
+              "pss_bytes": 17647616,
+              "role": "child",
+              "rss_bytes": 83668992
+            },
+            {
+              "cpu_percent": 7.948,
+              "cpu_seconds": 29.39,
+              "name": "hgs",
+              "pid": 963861,
+              "ppid": 963447,
+              "pss_bytes": 53009408,
+              "role": "child",
+              "rss_bytes": 67547136
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0,
+              "name": "hgs",
+              "pid": 964057,
+              "ppid": 963447,
+              "pss_bytes": 2166784,
+              "role": "child",
+              "rss_bytes": 8241152
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.01,
+              "name": "ssh",
+              "pid": 964060,
+              "ppid": 964057,
+              "pss_bytes": 2259968,
+              "role": "child",
+              "rss_bytes": 14045184
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.05,
+              "name": "zerus-client",
+              "pid": 964778,
+              "ppid": 963488,
+              "pss_bytes": 26961920,
+              "role": "child",
+              "rss_bytes": 104255488
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.03,
+              "name": "zerus-client",
+              "pid": 964784,
+              "ppid": 963488,
+              "pss_bytes": 26932224,
+              "role": "child",
+              "rss_bytes": 104247296
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.12,
+              "name": "plasma-browser-",
+              "pid": 964832,
+              "ppid": 963447,
+              "pss_bytes": 18906112,
+              "role": "child",
+              "rss_bytes": 80064512
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.1,
+              "name": "plasma-browser-",
+              "pid": 964843,
+              "ppid": 963447,
+              "pss_bytes": 18939904,
+              "role": "child",
+              "rss_bytes": 80134144
+            }
+          ],
+          "sampled_at_ms": 1793175957176,
+          "source": "procfs",
+          "total": {
+            "cpu_percent": 24.141,
+            "cpu_seconds": 149.99,
+            "processes": 17,
+            "pss_bytes": 851627008,
+            "rss_bytes": 1901772800
+          },
+          "window_ms": 10066
+        },
+        "page": {
+          "visibility": "visible"
+        },
+        "returned": {
+          "pid": 963447,
+          "processes": [
+            {
+              "cpu_percent": 2.679,
+              "cpu_seconds": 7.27,
+              "name": "zerus-client",
+              "pid": 963447,
+              "ppid": 963445,
+              "pss_bytes": 277317632,
+              "role": "app",
+              "rss_bytes": 433328128
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.05,
+              "name": "zerus-client",
+              "pid": 963473,
+              "ppid": 963447,
+              "pss_bytes": 16661504,
+              "role": "child",
+              "rss_bytes": 85766144
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.05,
+              "name": "zerus-client",
+              "pid": 963474,
+              "ppid": 963447,
+              "pss_bytes": 13129728,
+              "role": "child",
+              "rss_bytes": 86036480
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.1,
+              "name": "zerus-client",
+              "pid": 963488,
+              "ppid": 963474,
+              "pss_bytes": 3168256,
+              "role": "child",
+              "rss_bytes": 21532672
+            },
+            {
+              "cpu_percent": 10.122,
+              "cpu_seconds": 42.3,
+              "name": "zerus-client",
+              "pid": 963536,
+              "ppid": 963473,
+              "pss_bytes": 196587520,
+              "role": "child",
+              "rss_bytes": 311042048
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.62,
+              "name": "zerus-client",
+              "pid": 963539,
+              "ppid": 963447,
+              "pss_bytes": 40849408,
+              "role": "child",
+              "rss_bytes": 120684544
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0,
+              "name": "zerus-client",
+              "pid": 963568,
+              "ppid": 963536,
+              "pss_bytes": 20727808,
+              "role": "child",
+              "rss_bytes": 50126848
+            },
+            {
+              "cpu_percent": 0.099,
+              "cpu_seconds": 0.01,
+              "name": "zerus-client",
+              "pid": 963576,
+              "ppid": 963488,
+              "pss_bytes": 7260160,
+              "role": "child",
+              "rss_bytes": 52162560
+            },
+            {
+              "cpu_percent": 8.832,
+              "cpu_seconds": 72.38,
+              "name": "zerus-client",
+              "pid": 963779,
+              "ppid": 963488,
+              "pss_bytes": 113103872,
+              "role": "child",
+              "rss_bytes": 204234752
+            },
+            {
+              "cpu_percent": 0.099,
+              "cpu_seconds": 0.01,
+              "name": "zerus-client",
+              "pid": 963780,
+              "ppid": 963488,
+              "pss_bytes": 17754112,
+              "role": "child",
+              "rss_bytes": 84070400
+            },
+            {
+              "cpu_percent": 9.03,
+              "cpu_seconds": 30.32,
+              "name": "hgs",
+              "pid": 963861,
+              "ppid": 963447,
+              "pss_bytes": 52852736,
+              "role": "child",
+              "rss_bytes": 67547136
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0,
+              "name": "hgs",
+              "pid": 964057,
+              "ppid": 963447,
+              "pss_bytes": 2092032,
+              "role": "child",
+              "rss_bytes": 8241152
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.01,
+              "name": "ssh",
+              "pid": 964060,
+              "ppid": 964057,
+              "pss_bytes": 2351104,
+              "role": "child",
+              "rss_bytes": 14045184
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.05,
+              "name": "zerus-client",
+              "pid": 964778,
+              "ppid": 963488,
+              "pss_bytes": 27026432,
+              "role": "child",
+              "rss_bytes": 104460288
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.03,
+              "name": "zerus-client",
+              "pid": 964784,
+              "ppid": 963488,
+              "pss_bytes": 26999808,
+              "role": "child",
+              "rss_bytes": 104456192
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.12,
+              "name": "plasma-browser-",
+              "pid": 964832,
+              "ppid": 963447,
+              "pss_bytes": 18851840,
+              "role": "child",
+              "rss_bytes": 80068608
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.1,
+              "name": "plasma-browser-",
+              "pid": 964843,
+              "ppid": 963447,
+              "pss_bytes": 18900992,
+              "role": "child",
+              "rss_bytes": 80138240
+            }
+          ],
+          "sampled_at_ms": 1793175968315,
+          "source": "procfs",
+          "total": {
+            "cpu_percent": 30.861,
+            "cpu_seconds": 153.42,
+            "processes": 17,
+            "pss_bytes": 855634944,
+            "rss_bytes": 1907941376
+          },
+          "window_ms": 10078
+        }
+      },
+      "minimize": {
+        "how": "minimize",
+        "minimized": true,
+        "sample": {
+          "pid": 963447,
+          "processes": [
+            {
+              "cpu_percent": 1.888,
+              "cpu_seconds": 7.57,
+              "name": "zerus-client",
+              "pid": 963447,
+              "ppid": 963445,
+              "pss_bytes": 277478400,
+              "role": "app",
+              "rss_bytes": 433483776
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.05,
+              "name": "zerus-client",
+              "pid": 963473,
+              "ppid": 963447,
+              "pss_bytes": 16666624,
+              "role": "child",
+              "rss_bytes": 85766144
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.05,
+              "name": "zerus-client",
+              "pid": 963474,
+              "ppid": 963447,
+              "pss_bytes": 13134848,
+              "role": "child",
+              "rss_bytes": 86036480
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.1,
+              "name": "zerus-client",
+              "pid": 963488,
+              "ppid": 963474,
+              "pss_bytes": 3168256,
+              "role": "child",
+              "rss_bytes": 21532672
+            },
+            {
+              "cpu_percent": 7.255,
+              "cpu_seconds": 43.17,
+              "name": "zerus-client",
+              "pid": 963536,
+              "ppid": 963473,
+              "pss_bytes": 196590592,
+              "role": "child",
+              "rss_bytes": 311042048
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.63,
+              "name": "zerus-client",
+              "pid": 963539,
+              "ppid": 963447,
+              "pss_bytes": 40853504,
+              "role": "child",
+              "rss_bytes": 120684544
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0,
+              "name": "zerus-client",
+              "pid": 963568,
+              "ppid": 963536,
+              "pss_bytes": 20727808,
+              "role": "child",
+              "rss_bytes": 50126848
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.01,
+              "name": "zerus-client",
+              "pid": 963576,
+              "ppid": 963488,
+              "pss_bytes": 7261184,
+              "role": "child",
+              "rss_bytes": 52162560
+            },
+            {
+              "cpu_percent": 6.659,
+              "cpu_seconds": 73.18,
+              "name": "zerus-client",
+              "pid": 963779,
+              "ppid": 963488,
+              "pss_bytes": 114567168,
+              "role": "child",
+              "rss_bytes": 205697024
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.01,
+              "name": "zerus-client",
+              "pid": 963780,
+              "ppid": 963488,
+              "pss_bytes": 17755136,
+              "role": "child",
+              "rss_bytes": 84070400
+            },
+            {
+              "cpu_percent": 7.752,
+              "cpu_seconds": 31.32,
+              "name": "hgs",
+              "pid": 963861,
+              "ppid": 963447,
+              "pss_bytes": 53009408,
+              "role": "child",
+              "rss_bytes": 67547136
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0,
+              "name": "hgs",
+              "pid": 964057,
+              "ppid": 963447,
+              "pss_bytes": 2165760,
+              "role": "child",
+              "rss_bytes": 8241152
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.01,
+              "name": "ssh",
+              "pid": 964060,
+              "ppid": 964057,
+              "pss_bytes": 2357248,
+              "role": "child",
+              "rss_bytes": 14045184
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.05,
+              "name": "zerus-client",
+              "pid": 964778,
+              "ppid": 963488,
+              "pss_bytes": 27027456,
+              "role": "child",
+              "rss_bytes": 104460288
+            },
+            {
+              "cpu_percent": 0.099,
+              "cpu_seconds": 0.04,
+              "name": "zerus-client",
+              "pid": 964784,
+              "ppid": 963488,
+              "pss_bytes": 27001856,
+              "role": "child",
+              "rss_bytes": 104456192
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.12,
+              "name": "plasma-browser-",
+              "pid": 964832,
+              "ppid": 963447,
+              "pss_bytes": 18915328,
+              "role": "child",
+              "rss_bytes": 80068608
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.1,
+              "name": "plasma-browser-",
+              "pid": 964843,
+              "ppid": 963447,
+              "pss_bytes": 18949120,
+              "role": "child",
+              "rss_bytes": 80138240
+            }
+          ],
+          "sampled_at_ms": 1793175979938,
+          "source": "procfs",
+          "total": {
+            "cpu_percent": 23.653,
+            "cpu_seconds": 156.41,
+            "processes": 17,
+            "pss_bytes": 857629696,
+            "rss_bytes": 1909559296
+          },
+          "window_ms": 10062
+        },
+        "page": {
+          "visibility": "visible"
+        },
+        "returned": {
+          "pid": 963447,
+          "processes": [
+            {
+              "cpu_percent": 1.69,
+              "cpu_seconds": 7.81,
+              "name": "zerus-client",
+              "pid": 963447,
+              "ppid": 963445,
+              "pss_bytes": 277535744,
+              "role": "app",
+              "rss_bytes": 433532928
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.05,
+              "name": "zerus-client",
+              "pid": 963473,
+              "ppid": 963447,
+              "pss_bytes": 16668672,
+              "role": "child",
+              "rss_bytes": 85766144
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.05,
+              "name": "zerus-client",
+              "pid": 963474,
+              "ppid": 963447,
+              "pss_bytes": 13136896,
+              "role": "child",
+              "rss_bytes": 86036480
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.1,
+              "name": "zerus-client",
+              "pid": 963488,
+              "ppid": 963474,
+              "pss_bytes": 3168256,
+              "role": "child",
+              "rss_bytes": 21532672
+            },
+            {
+              "cpu_percent": 10.44,
+              "cpu_seconds": 44.33,
+              "name": "zerus-client",
+              "pid": 963536,
+              "ppid": 963473,
+              "pss_bytes": 196590592,
+              "role": "child",
+              "rss_bytes": 311042048
+            },
+            {
+              "cpu_percent": 0.099,
+              "cpu_seconds": 0.64,
+              "name": "zerus-client",
+              "pid": 963539,
+              "ppid": 963447,
+              "pss_bytes": 40856576,
+              "role": "child",
+              "rss_bytes": 120684544
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0,
+              "name": "zerus-client",
+              "pid": 963568,
+              "ppid": 963536,
+              "pss_bytes": 20727808,
+              "role": "child",
+              "rss_bytes": 50126848
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.01,
+              "name": "zerus-client",
+              "pid": 963576,
+              "ppid": 963488,
+              "pss_bytes": 7261184,
+              "role": "child",
+              "rss_bytes": 52162560
+            },
+            {
+              "cpu_percent": 8.849,
+              "cpu_seconds": 74.15,
+              "name": "zerus-client",
+              "pid": 963779,
+              "ppid": 963488,
+              "pss_bytes": 115059712,
+              "role": "child",
+              "rss_bytes": 206184448
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.01,
+              "name": "zerus-client",
+              "pid": 963780,
+              "ppid": 963488,
+              "pss_bytes": 17756160,
+              "role": "child",
+              "rss_bytes": 84070400
+            },
+            {
+              "cpu_percent": 8.65,
+              "cpu_seconds": 32.24,
+              "name": "hgs",
+              "pid": 963861,
+              "ppid": 963447,
+              "pss_bytes": 52668416,
+              "role": "child",
+              "rss_bytes": 67547136
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0,
+              "name": "hgs",
+              "pid": 964057,
+              "ppid": 963447,
+              "pss_bytes": 2092032,
+              "role": "child",
+              "rss_bytes": 8241152
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.01,
+              "name": "ssh",
+              "pid": 964060,
+              "ppid": 964057,
+              "pss_bytes": 2358272,
+              "role": "child",
+              "rss_bytes": 14045184
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.05,
+              "name": "zerus-client",
+              "pid": 964778,
+              "ppid": 963488,
+              "pss_bytes": 27027456,
+              "role": "child",
+              "rss_bytes": 104460288
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.04,
+              "name": "zerus-client",
+              "pid": 964784,
+              "ppid": 963488,
+              "pss_bytes": 27001856,
+              "role": "child",
+              "rss_bytes": 104456192
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.12,
+              "name": "plasma-browser-",
+              "pid": 964832,
+              "ppid": 963447,
+              "pss_bytes": 18918400,
+              "role": "child",
+              "rss_bytes": 80068608
+            },
+            {
+              "cpu_percent": 0,
+              "cpu_seconds": 0.1,
+              "name": "plasma-browser-",
+              "pid": 964843,
+              "ppid": 963447,
+              "pss_bytes": 18952192,
+              "role": "child",
+              "rss_bytes": 80138240
+            }
+          ],
+          "sampled_at_ms": 1793175991068,
+          "source": "procfs",
+          "total": {
+            "cpu_percent": 29.729,
+            "cpu_seconds": 159.71,
+            "processes": 17,
+            "pss_bytes": 857780224,
+            "rss_bytes": 1910095872
+          },
+          "window_ms": 10058
+        }
+      }
+    }
+  },
+  "preference": "display-rate"
+}

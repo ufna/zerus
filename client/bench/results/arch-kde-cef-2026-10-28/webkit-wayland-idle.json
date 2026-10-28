@@ -1,0 +1,341 @@
+{
+  "schema": "zerus-idle-v1",
+  "created_at": "2026-10-28T08:33:05Z",
+  "platform": {
+    "label": "arch-kde-wayland-webkitgtk-client-idle",
+    "representative": true,
+    "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/60.5 Safari/605.1.15",
+    "cross_origin_isolated": true,
+    "dpr": 1,
+    "window": [
+      1440,
+      900
+    ],
+    "engine": "WebKitGTK 2.54.1",
+    "webkit": {
+      "display": "wayland",
+      "gdk_backend": "wayland",
+      "features_disabled": []
+    },
+    "displays": {
+      "source": "kscreen-doctor --json",
+      "outputs": [
+        {
+          "name": "DP-2",
+          "priority": 1,
+          "mode": "2560x1440",
+          "refresh_hz": 144,
+          "scale": 1,
+          "rotation": 1,
+          "vrr_policy": null
+        },
+        {
+          "name": "DP-3",
+          "priority": 2,
+          "mode": "3440x1440",
+          "refresh_hz": 144,
+          "scale": 1,
+          "rotation": 1,
+          "vrr_policy": null
+        }
+      ],
+      "locked": false,
+      "dpms": {
+        "DP-2": "on",
+        "DP-3": "on"
+      }
+    }
+  },
+  "harness": "client frontend (built-in replay) in client/bench/run-webkitgtk-idle.py",
+  "windows": [
+    {
+      "what": "as displayed",
+      "settings": {},
+      "running_animations": {
+        "count-pulse": 2,
+        "zl-spin": 1,
+        "zl-clock": 1,
+        "halo": 5
+      },
+      "raf_frames_2s": 124,
+      "sample": {
+        "window_ms": 10025,
+        "total": {
+          "processes": 3,
+          "cpu_percent": 35.709,
+          "rss_bytes": 473878528,
+          "pss_bytes": 265942016
+        },
+        "by_role": {
+          "host": {
+            "processes": 1,
+            "cpu_percent": 24.438,
+            "rss_bytes": 222789632,
+            "pss_bytes": 116385792
+          },
+          "network": {
+            "processes": 1,
+            "cpu_percent": 0.0,
+            "rss_bytes": 63414272,
+            "pss_bytes": 24968192
+          },
+          "web": {
+            "processes": 1,
+            "cpu_percent": 11.271,
+            "rss_bytes": 187674624,
+            "pss_bytes": 124588032
+          }
+        },
+        "processes": [
+          {
+            "role": "host",
+            "name": "python3",
+            "cpu_percent": 24.438,
+            "rss_bytes": 222789632,
+            "pss_bytes": 116385792
+          },
+          {
+            "role": "network",
+            "name": "WebKitNetworkPr",
+            "cpu_percent": 0.0,
+            "rss_bytes": 63414272,
+            "pss_bytes": 24968192
+          },
+          {
+            "role": "web",
+            "name": "WebKitWebProces",
+            "cpu_percent": 11.271,
+            "rss_bytes": 187674624,
+            "pss_bytes": 124588032
+          }
+        ]
+      },
+      "page": {
+        "dpr": 1,
+        "window": [
+          1440,
+          900
+        ],
+        "visibility": "visible",
+        "coi": true,
+        "focus": true
+      }
+    },
+    {
+      "what": "Animate working sessions off",
+      "settings": {
+        "workspace/animateActivity": false
+      },
+      "running_animations": {
+        "zl-clock": 1,
+        "zl-spin": 1
+      },
+      "raf_frames_2s": 124,
+      "sample": {
+        "window_ms": 10024,
+        "total": {
+          "processes": 3,
+          "cpu_percent": 19.454,
+          "rss_bytes": 480034816,
+          "pss_bytes": 272055296
+        },
+        "by_role": {
+          "host": {
+            "processes": 1,
+            "cpu_percent": 14.765,
+            "rss_bytes": 223145984,
+            "pss_bytes": 116754432
+          },
+          "network": {
+            "processes": 1,
+            "cpu_percent": 0.0,
+            "rss_bytes": 63500288,
+            "pss_bytes": 25010176
+          },
+          "web": {
+            "processes": 1,
+            "cpu_percent": 4.689,
+            "rss_bytes": 193388544,
+            "pss_bytes": 130290688
+          }
+        },
+        "processes": [
+          {
+            "role": "host",
+            "name": "python3",
+            "cpu_percent": 14.765,
+            "rss_bytes": 223145984,
+            "pss_bytes": 116754432
+          },
+          {
+            "role": "network",
+            "name": "WebKitNetworkPr",
+            "cpu_percent": 0.0,
+            "rss_bytes": 63500288,
+            "pss_bytes": 25010176
+          },
+          {
+            "role": "web",
+            "name": "WebKitWebProces",
+            "cpu_percent": 4.689,
+            "rss_bytes": 193388544,
+            "pss_bytes": 130290688
+          }
+        ]
+      },
+      "page": {
+        "coi": true,
+        "dpr": 1,
+        "window": [
+          1440,
+          900
+        ],
+        "visibility": "visible",
+        "focus": true
+      }
+    },
+    {
+      "what": "Reduce motion",
+      "settings": {
+        "workspace/reduceMotion": true
+      },
+      "running_animations": {},
+      "raf_frames_2s": 124,
+      "sample": {
+        "window_ms": 10027,
+        "total": {
+          "processes": 3,
+          "cpu_percent": 2.494,
+          "rss_bytes": 478044160,
+          "pss_bytes": 270017536
+        },
+        "by_role": {
+          "host": {
+            "processes": 1,
+            "cpu_percent": 0.898,
+            "rss_bytes": 223522816,
+            "pss_bytes": 117098496
+          },
+          "network": {
+            "processes": 1,
+            "cpu_percent": 0.0,
+            "rss_bytes": 63467520,
+            "pss_bytes": 24971264
+          },
+          "web": {
+            "processes": 1,
+            "cpu_percent": 1.596,
+            "rss_bytes": 191053824,
+            "pss_bytes": 127947776
+          }
+        },
+        "processes": [
+          {
+            "role": "host",
+            "name": "python3",
+            "cpu_percent": 0.898,
+            "rss_bytes": 223522816,
+            "pss_bytes": 117098496
+          },
+          {
+            "role": "network",
+            "name": "WebKitNetworkPr",
+            "cpu_percent": 0.0,
+            "rss_bytes": 63467520,
+            "pss_bytes": 24971264
+          },
+          {
+            "role": "web",
+            "name": "WebKitWebProces",
+            "cpu_percent": 1.596,
+            "rss_bytes": 191053824,
+            "pss_bytes": 127947776
+          }
+        ]
+      },
+      "page": {
+        "window": [
+          1440,
+          900
+        ],
+        "visibility": "visible",
+        "focus": true,
+        "coi": true,
+        "dpr": 1
+      }
+    },
+    {
+      "what": "as displayed again",
+      "settings": {},
+      "running_animations": {
+        "zl-clock": 1,
+        "count-pulse": 2,
+        "zl-spin": 1,
+        "halo": 5
+      },
+      "raf_frames_2s": 125,
+      "sample": {
+        "window_ms": 10027,
+        "total": {
+          "processes": 3,
+          "cpu_percent": 42.285,
+          "rss_bytes": 482000896,
+          "pss_bytes": 271920128
+        },
+        "by_role": {
+          "host": {
+            "processes": 1,
+            "cpu_percent": 27.326,
+            "rss_bytes": 225468416,
+            "pss_bytes": 116940800
+          },
+          "network": {
+            "processes": 1,
+            "cpu_percent": 0.0,
+            "rss_bytes": 63488000,
+            "pss_bytes": 25051136
+          },
+          "web": {
+            "processes": 1,
+            "cpu_percent": 14.959,
+            "rss_bytes": 193044480,
+            "pss_bytes": 129928192
+          }
+        },
+        "processes": [
+          {
+            "role": "host",
+            "name": "python3",
+            "cpu_percent": 27.326,
+            "rss_bytes": 225468416,
+            "pss_bytes": 116940800
+          },
+          {
+            "role": "network",
+            "name": "WebKitNetworkPr",
+            "cpu_percent": 0.0,
+            "rss_bytes": 63488000,
+            "pss_bytes": 25051136
+          },
+          {
+            "role": "web",
+            "name": "WebKitWebProces",
+            "cpu_percent": 14.959,
+            "rss_bytes": 193044480,
+            "pss_bytes": 129928192
+          }
+        ]
+      },
+      "page": {
+        "window": [
+          1440,
+          900
+        ],
+        "dpr": 1,
+        "focus": true,
+        "visibility": "visible",
+        "coi": true
+      }
+    }
+  ]
+}
