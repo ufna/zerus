@@ -18,6 +18,7 @@ import { snapshotOf } from "./actions-ui";
 import { markEntry } from "./mark-entries";
 import { Composer } from "./Composer";
 import { ComposerDialogs } from "./ComposerDialogs";
+import { QuestionCard } from "./QuestionCard";
 import { composer } from "../../store/composer";
 
 // The session header and its Activity with the composer under it, after
@@ -194,7 +195,7 @@ export function SessionDetail() {
                   <div class="activity-wrap" style={columnStyle()}>
                     <ActivityView source={activitySourceFor(selected()!.key)} />
                     {/* The subagent view stays read only; an archived row's recorded Activity has no composer. */}
-                    <Show when={!subagentOpen() && !activityReadOnly(selected()!.key)}><div class="cmp-col"><Composer /></div></Show>
+                    <Show when={!subagentOpen() && !activityReadOnly(selected()!.key)}><div class="cmp-col"><QuestionCard /><Composer /></div></Show>
                   </div>
                 </Match>
                 <Match when={detailTab() === "terminal"}><TerminalTab /></Match>
