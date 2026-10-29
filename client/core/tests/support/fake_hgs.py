@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """A fake `hgs` for the zerus-client-core tests; never the real CLI.
 
-Tests copy this file as `hgs` into a scratch folder next to a `config.json`:
+Tests link or copy this file as `hgs` into a scratch folder next to a `config.json`.
+On Windows, the copied `hgs.exe` launcher invokes it with Python:
 
     {"fixtures": "/abs/tests/fixtures",
      "hosts": {"": {"marker": true, "probe_exit": 0,
@@ -155,6 +156,9 @@ def main():
         return watch(host, spec, config)
     reply = os.path.join(HERE, "%s-" + (host or "local") + ".json")
     if args == ["ls", "--json"]:
+        if spec.get("listing_wait_file"):
+            while not os.path.exists(os.path.join(HERE, spec["listing_wait_file"])):
+                time.sleep(0.01)
         if not os.path.exists(reply % "ls"):
             return 2
         with open(reply % "ls", encoding="utf-8") as handle:
