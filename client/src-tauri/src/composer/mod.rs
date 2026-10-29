@@ -1649,8 +1649,14 @@ pub fn composer_allow_retry(state: State<'_, Composers>, handle: u64) {
 
 /// Refresh in the composer's status line (Qt's `sessionRefreshRequested`).
 #[tauri::command]
-pub fn composer_refresh(state: State<'_, Composers>, handle: u64) {
-    state.refresh(handle);
+pub fn composer_refresh(
+    state: State<'_, Composers>,
+    app: State<'_, crate::commands::AppState>,
+    handle: u64,
+) {
+    if let Some(computer) = state.refresh(handle) {
+        app.reconnect(&computer);
+    }
 }
 
 /// The detail tab that shows. Terminal and Native UI retry a failed read at

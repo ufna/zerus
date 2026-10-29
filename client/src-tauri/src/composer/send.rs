@@ -402,17 +402,24 @@ impl Composers {
 
     /// Refresh in the composer's status line: one read of the open session
     /// while `handle` is still its composer (Qt's `sessionRefreshRequested`,
-    /// `SessionsWindow.cpp:1031-1034`, which calls `inspect()`).
-    pub fn refresh(&self, handle: u64) {
+    /// `SessionsWindow.cpp:1031-1034`, which calls `inspect()`). Returns the
+    /// open computer so the caller can nudge its fleet reconnect as Qt's
+    /// listing refresh does.
+    pub fn refresh(&self, handle: u64) -> Option<String> {
         let open = {
             let hub = self.lock();
             hub.open_key
                 .as_ref()
                 .and_then(|key| hub.composers.get(key))
                 .is_some_and(|composer| composer.handle == handle)
+                .then(|| hub.open.as_ref().map(|session| session.computer.clone()))
+                .flatten()
         };
-        if open {
+        if let Some(computer) = open {
             self.refresh_details();
+            Some(computer)
+        } else {
+            None
         }
     }
 
@@ -3474,10 +3481,10 @@ pub(crate) mod tests {
         let (c, fake) = send_hub(&root);
         c.open(Some(session()));
         let view = until(&c, |v| v.loaded);
-        c.refresh(view.handle + 1);
+        assert_eq!(c.refresh(view.handle + 1), None);
         std::thread::sleep(Duration::from_millis(50));
         assert_eq!(fake.inspects.load(Ordering::SeqCst), 0, "another handle");
-        c.refresh(view.handle);
+        assert_eq!(c.refresh(view.handle), Some("studio".to_owned()));
         eventually(|| {
             fake.inspects.load(Ordering::SeqCst) == 1 && c.lock().followed.inspecting.is_none()
         });
@@ -3489,6 +3496,15 @@ pub(crate) mod tests {
         let view = until(&c, |v| v.block_reason.is_none() && !v.session_status_error);
         assert!(!view.inspect_error);
         assert_eq!(fake.inspects.load(Ordering::SeqCst), 2);
+        *lock(&fake.online) = false;
+        assert_eq!(c.refresh(view.handle), Some("studio".to_owned()));
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            fake.inspects.load(Ordering::SeqCst),
+            2,
+            "offline only nudges"
+        );
+        *lock(&fake.online) = true;
         // Nothing is read while the stream keeps the details.
         c.observe(&state(ready()));
         c.refresh(view.handle);

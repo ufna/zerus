@@ -284,6 +284,13 @@ impl Fleet {
             .is_some_and(|handle| handle.send(control))
     }
 
+    /// Nudges one computer's existing supervisor to reconnect at once.
+    pub fn reconnect(&self, computer: &ComputerId) -> bool {
+        guard(&self.shared.streams)
+            .get(computer)
+            .is_some_and(StreamHandle::reconnect)
+    }
+
     /// The peers this computer's listing names (valid aliases only), whether
     /// or not they get streams; None until a listing with a `peers` array has
     /// arrived. An older host's listing without one keeps the previous peers.

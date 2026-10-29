@@ -322,3 +322,55 @@ fn a_reconnect_subscribes_again_after_the_last_cursor() {
     assert_eq!(fleet.followed(&local), vec!["run:r1".to_owned()]);
     fleet.stop();
 }
+
+#[test]
+fn a_refresh_reconnects_immediately_and_keeps_subscriptions() {
+    let fake = FakeHgs::new(
+        "fleet_refresh_reconnect",
+        json!({"": {"runs": [
+            [{"lines": [hello("workstation"), catalog(&[("r1", "claude/sample-project/r1")])]},
+                {"serve": true, "until_file": "drop"}],
+            [{"lines": [hello("workstation"), catalog(&[("r1", "claude/sample-project/r1")])]}, {"serve": true}],
+            [{"lines": [hello("workstation"), catalog(&[("r1", "claude/sample-project/r1")])]}, {"serve": true}]
+        ]}}),
+    );
+    let (tx, rx) = channel();
+    let mut seen = Seen::new(rx);
+    let timing = Timing {
+        restart: [Duration::from_secs(60); 4],
+        ..quick()
+    };
+    let fleet = Fleet::start_with(fake.path(), tx, timing);
+    let local = ComputerId::local();
+    seen.until("live", |c| is_status(c, "", ComputerStatus::Live));
+    fleet
+        .follow(&local, "run:r1", session("r1"), None, 100)
+        .unwrap();
+    seen.until("events", |change| matches!(change, Change::Activity { .. }));
+
+    fake.touch("drop");
+    let failed = seen.until("the 60-second backoff", |c| {
+        is_status(c, "", ComputerStatus::Reconnecting { attempt: 1 })
+    });
+    assert!(fleet.reconnect(&local));
+    let second = seen.until_from(failed, "live after the refresh", |c| {
+        is_status(c, "", ComputerStatus::Live)
+    });
+
+    assert!(fleet.reconnect(&local));
+    let active = seen.until_from(second, "the active stream reconnects", |c| {
+        is_status(c, "", ComputerStatus::Reconnecting { attempt: 2 })
+    });
+    seen.until_from(active, "live after the active refresh", |c| {
+        is_status(c, "", ComputerStatus::Live)
+    });
+    eventually("all three subscriptions", || fake.stdin("").len() >= 3);
+    let controls = fake.stdin("");
+    assert_eq!(controls[1]["after"], 1);
+    assert_eq!(controls[2]["after"], 1);
+    assert!(controls[1].get("tail").is_none());
+    assert!(controls[2].get("tail").is_none());
+    assert_eq!(fleet.followed(&local), vec!["run:r1".to_owned()]);
+    assert!(!fleet.reconnect(&ComputerId::from("missing")));
+    fleet.stop();
+}

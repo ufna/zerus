@@ -357,6 +357,7 @@ enum Input {
         read: crate::legacy::Read,
         result: Result<Value, String>,
     },
+    Reconnect,
     Control(Control),
     /// Preferences the host confirmed for a Mute or Unmute.
     Notifications {
@@ -431,6 +432,11 @@ impl StreamHandle {
     /// once the supervisor stopped. Activity goes through [`Self::follow`].
     pub fn send(&self, control: Control) -> bool {
         !self.stopped() && self.tx.send(Input::Control(control)).is_ok()
+    }
+
+    /// Asks this supervisor to reconnect now, preserving its follows.
+    pub fn reconnect(&self) -> bool {
+        !self.stopped() && self.tx.send(Input::Reconnect).is_ok()
     }
 
     /// Applies the preferences the host confirmed for a Mute or Unmute to the
@@ -756,6 +762,7 @@ pub fn spawn(
 #[derive(PartialEq)]
 enum Outcome {
     Ended,
+    Reconnect,
     Stopped,
 }
 
@@ -834,8 +841,18 @@ impl Supervisor {
             }
             let outcome = self.pump();
             self.close();
-            if outcome == Outcome::Stopped || !self.fail() {
-                break;
+            match outcome {
+                Outcome::Stopped => break,
+                Outcome::Reconnect => {
+                    for change in self.state.end(&self.computer, Instant::now()) {
+                        self.emit(change);
+                    }
+                }
+                Outcome::Ended => {
+                    if !self.fail() {
+                        break;
+                    }
+                }
             }
         }
         self.close();
@@ -893,6 +910,7 @@ impl Supervisor {
                 return true;
             }
             match self.rx.recv_timeout(left) {
+                Ok(Input::Reconnect) => return true,
                 Ok(Input::Stop) | Err(RecvTimeoutError::Disconnected) => return false,
                 Ok(Input::Subscribe { key }) => self.state.follow(&key),
                 Ok(Input::Unsubscribe { key, .. }) => self.state.unfollow(&key),
@@ -962,6 +980,7 @@ impl Supervisor {
                 .saturating_duration_since(Instant::now())
                 .max(Duration::from_millis(1));
             match self.rx.recv_timeout(left) {
+                Ok(Input::Reconnect) => return true,
                 Ok(Input::Stop) | Err(RecvTimeoutError::Disconnected) => return false,
                 Ok(Input::Subscribe { key }) => self.state.follow(&key),
                 Ok(Input::Unsubscribe { key, .. }) => {
@@ -1190,6 +1209,7 @@ impl Supervisor {
                     target,
                     preferences,
                 }) => self.notifications(&target, &preferences),
+                Ok(Input::Reconnect) => return Outcome::Reconnect,
                 Ok(Input::Stop) | Err(RecvTimeoutError::Disconnected) => return Outcome::Stopped,
                 Err(RecvTimeoutError::Timeout) => {}
             }

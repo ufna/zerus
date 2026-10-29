@@ -40,6 +40,11 @@ impl AppState {
         self.live.peers()
     }
 
+    /// Nudges a computer's existing stream supervisor to reconnect.
+    pub fn reconnect(&self, computer: &str) {
+        self.live.reconnect(computer);
+    }
+
     /// The organization hub: `start` gives it the snapshot source and the
     /// organization updates. Set once, before the webview starts the source.
     pub fn set_organization(&self, organization: crate::organization::Organization) {
@@ -202,6 +207,17 @@ mod live {
             {
                 Some(Source::Fleet(fleet)) => fleet.peers(),
                 _ => None,
+            }
+        }
+
+        pub fn reconnect(&self, computer: &str) {
+            if let Some(Source::Fleet(fleet)) = self
+                .source
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+            {
+                fleet.reconnect(&ComputerId(computer.to_owned()));
             }
         }
 
