@@ -33,6 +33,8 @@ mod notifier;
 mod organization;
 mod platform;
 #[cfg(feature = "live")]
+mod processes;
+#[cfg(feature = "live")]
 mod pump;
 #[cfg(feature = "live")]
 mod readsync;
@@ -210,6 +212,12 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
+        // Rust opens attachments; the webview's links stay its own (no injected click handler).
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        )
         .manage(commands::AppState::default())
         .manage(window_visibility::Visibility::default())
         .manage(lifecycle::Lifecycle { menu_bar });
@@ -417,6 +425,48 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                 // The composer's session part once a second (the cache chip)
                 // and the inspect fallback; it sleeps while no composer is open.
                 composers.start_ticker();
+                app.manage(processes_hub(app.handle(), allowed));
+                // Activity attachments share the composers' cache: one root,
+                // one set of pins and one prune lane, which keeps Retry's files.
+                let retry = std::sync::Arc::downgrade(&composers.0);
+                composers.cache().set_extra(std::sync::Arc::new(move || {
+                    retry
+                        .upgrade()
+                        .map(|shared| composer::Composers(shared).retry_files())
+                        .unwrap_or_default()
+                }));
+                app.manage(composer::fetch::Fetcher::new(
+                    composers.cache(),
+                    {
+                        // A replay without an explicit ZERUS_CLIENT_HGS never reaches the real CLI.
+                        let allowed = actions::actions_allowed(
+                            std::env::var("ZERUS_CLIENT_REPLAY").ok().as_deref(),
+                            std::env::var("ZERUS_CLIENT_HGS").ok().as_deref(),
+                        );
+                        let hgs = zerus_client_core::default_hgs();
+                        std::sync::Arc::new(move |computer: &zerus_client_core::ComputerId, file: &zerus_client_core::reads::AttachmentRef, root: &std::path::Path| {
+                            if !allowed {
+                                return Err(actions::REPLAY_NEEDS_HGS.to_owned());
+                            }
+                            zerus_client_core::reads::fetch_attachment(&hgs, computer, file, root)
+                        })
+                    },
+                    std::sync::Arc::new(|job: composer::Job| {
+                        tauri::async_runtime::spawn_blocking(job);
+                    }),
+                ));
+                app.manage({
+                    use tauri_plugin_opener::OpenerExt;
+                    let (open, reveal) = (app.handle().clone(), app.handle().clone());
+                    composer::fetch::Opener {
+                        open: std::sync::Arc::new(move |path: &std::path::Path| {
+                            open.opener().open_path(path.to_string_lossy(), None::<&str>).is_ok()
+                        }),
+                        reveal: std::sync::Arc::new(move |path: &std::path::Path| {
+                            reveal.opener().reveal_item_in_dir(path).is_ok()
+                        }),
+                    }
+                });
                 // The menu-bar item, before the fleet starts so its first catalog reaches it.
                 #[cfg(target_os = "macos")]
                 {
@@ -508,6 +558,99 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
     });
 }
 
+/// The Processes tab's hub (`processes.rs`): the topic through the data
+/// source, output reads through the CLI, stops through the guarded
+/// dispatcher, and the five settings from the app's one settings store, now
+/// and after each change. Its ticker runs while the tab shows a session.
+#[cfg(feature = "live")]
+fn processes_hub(app: &AppHandle, allowed: bool) -> processes::ProcessHub {
+    use std::sync::Arc;
+    use tauri::Manager;
+    let pump = app.state::<commands::AppState>().pump();
+    let start = std::time::Instant::now();
+    let follows = app.clone();
+    let unfollows = app.clone();
+    let intervals = app.clone();
+    let refreshes = app.clone();
+    let actions = app.state::<actions::Actions>().inner().clone();
+    let hgs = zerus_client_core::default_hgs();
+    let hub = processes::ProcessHub::new(
+        processes::ProcessDeps {
+            spawn: Arc::new(|job: processes::Job| {
+                tauri::async_runtime::spawn_blocking(job);
+            }),
+            notify: Arc::new(move || pump.poke()),
+            clock_ms: Arc::new(move || start.elapsed().as_millis() as u64),
+            epoch: Arc::new(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0.0, |d| d.as_secs_f64())
+            }),
+            follow: Arc::new(move |target: &processes::ProcessTarget| {
+                follows
+                    .state::<commands::AppState>()
+                    .follow_processes(target)
+            }),
+            unfollow: Arc::new(move |target: &processes::ProcessTarget| {
+                unfollows
+                    .state::<commands::AppState>()
+                    .unfollow_processes(target)
+            }),
+            set_interval: Arc::new(move |target, ms| {
+                let _ = intervals
+                    .state::<commands::AppState>()
+                    .set_processes_interval(target, ms);
+            }),
+            refresh: Arc::new(move |target| {
+                let _ = refreshes
+                    .state::<commands::AppState>()
+                    .refresh_processes(target);
+            }),
+            read: Arc::new(
+                move |computer: &zerus_client_core::ComputerId, read: &zerus_client_core::Read| {
+                    zerus_client_core::reads::read(&hgs, computer, read)
+                        .map_err(|error| error.to_string())
+                },
+            ),
+            // One request id per stop: a stop is never sent twice.
+            stop: Arc::new(
+                move |target: zerus_client_core::Target, action: zerus_client_core::Action| {
+                    tauri::async_runtime::block_on(actions::dispatch_as(
+                        &actions,
+                        target,
+                        action,
+                        uuid::Uuid::new_v4().to_string(),
+                    ))
+                },
+            ),
+        },
+        allowed,
+    );
+    // Every change of a `processes/*` setting reads the five again; the
+    // first read waits for the store to load, off the setup thread.
+    let changed = hub.clone();
+    let store = app.clone();
+    app.state::<settings::Store>()
+        .0
+        .subscribe(Box::new(move |key, _, _| {
+            if key.starts_with("processes/") {
+                if let Some(store) = store.try_state::<settings::Store>() {
+                    changed.settings_from(&store.0);
+                }
+            }
+        }));
+    let first = hub.clone();
+    let store = app.state::<settings::Store>().0.clone();
+    let started = std::thread::Builder::new()
+        .name("zerus-processes-settings".into())
+        .spawn(move || first.settings_from(&store));
+    if let Err(error) = started {
+        eprintln!("zerus-client: the Processes settings were not read: {error}");
+    }
+    hub.start_ticker();
+    hub
+}
+
 /// A `sessions` line from a later start opens and raises the window; `show`
 /// changes nothing visible (`main.cpp:424-433`).
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -563,8 +706,9 @@ fn start_watchdog() -> std::io::Result<watchdog::Watchdog> {
 /// Before the app quits (`lifecycle::exit`, before the socket goes): the
 /// last settings change gets a bounded wait, pending project edits and the
 /// layout reach the disk, recordings under way are cancelled, the hubs take
-/// no more changes, every draft save already queued reaches the disk, and
-/// the unsent read marks and the attention marks are saved (a bounded wait).
+/// no more changes (unsent process stops are dropped), every draft save
+/// already queued reaches the disk, and the unsent read marks and the
+/// attention marks are saved (a bounded wait).
 #[cfg(feature = "live")]
 pub(crate) fn exit_work(app: &AppHandle) {
     use tauri::Manager;
@@ -573,6 +717,9 @@ pub(crate) fn exit_work(app: &AppHandle) {
     }
     if let Some(organization) = app.try_state::<organization::Organization>() {
         organization.flush();
+    }
+    if let Some(processes) = app.try_state::<processes::ProcessHub>() {
+        processes.close();
     }
     #[cfg(feature = "media")]
     if let Some(voices) = app.try_state::<voice::Voices>() {
@@ -735,6 +882,8 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         terminal::terminal_disconnect,
         terminal::terminal_retarget,
         terminal::terminal_status,
+        terminal::terminal_drop,
+        terminal::terminal_shown,
         composer::composer_open,
         composer::composer_edit,
         composer::composer_pick,
@@ -743,6 +892,13 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         composer::composer_remove,
         composer::composer_undo_remove,
         composer::composer_allow_retry,
+        composer::composer_refresh,
+        composer::composer_tab,
+        composer::fetch::attachment_fetch,
+        composer::fetch::attachment_pin,
+        composer::fetch::attachment_unpin,
+        composer::fetch::attachment_open,
+        composer::fetch::attachment_open_draft,
         composer::send::send_message,
         composer::send::send_answer,
         composer::send::local_retry,
@@ -759,6 +915,10 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         composer::questions::question_decide,
         composer::questions::question_skip,
         composer::questions::question_cold,
+        processes::processes_follow,
+        processes::processes_shown,
+        processes::processes_select,
+        processes::processes_stop,
         #[cfg(feature = "media")]
         voice::voice_open,
         #[cfg(feature = "media")]
