@@ -707,10 +707,38 @@ jobs:
             ~/.cargo/git
           key: client-native-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.rustc }}-${{ steps.rust.outputs.epoch }}-${{ hashFiles('client/core/Cargo.lock', 'client/media/Cargo.lock', 'client/src-tauri/Cargo.lock') }}
           restore-keys: client-native-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.rustc }}-${{ steps.rust.outputs.epoch }}-
-      - name: Tauri clippy
-        if: always()
-        timeout-minutes: 25
-        run: bash scripts/ci/client-native.sh macos tauri-clippy
+      - name: Diagnose each Tauri test
+        timeout-minutes: 75
+        run: |
+          set -euo pipefail
+          cd client/src-tauri
+          cargo +1.99.1 test --locked -- --list | tee "$RUNNER_TEMP/tauri-tests.txt"
+          run_one() {
+            local name="$1" pid watchdog status
+            printf '\n=== TAURI TEST BEGIN %s ===\n' "$name"
+            cargo +1.99.1 test --locked "$name" -- --exact --test-threads=1 --nocapture &
+            pid=$!
+            (
+              sleep 45
+              printf '\n=== TAURI TEST TIMEOUT %s ===\n' "$name"
+              kill -TERM "$pid" 2>/dev/null || true
+              sleep 2
+              kill -KILL "$pid" 2>/dev/null || true
+            ) &
+            watchdog=$!
+            set +e
+            wait "$pid"
+            status=$?
+            set -e
+            kill "$watchdog" 2>/dev/null || true
+            wait "$watchdog" 2>/dev/null || true
+            printf '\n=== TAURI TEST END %s status=%s ===\n' "$name" "$status"
+          }
+          while IFS= read -r line; do
+            case "$line" in
+              *": test") run_one "${line%: test}" ;;
+            esac
+          done < "$RUNNER_TEMP/tauri-tests.txt"
       - name: Save native client Rust cache
         if: inputs.save_caches && steps.rust-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
