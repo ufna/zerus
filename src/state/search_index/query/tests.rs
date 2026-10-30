@@ -40,16 +40,27 @@ fn source_fixture(archive: bool) -> (tempfile::TempDir, PathBuf, PathBuf, PathBu
     )
     .unwrap();
     let mut store = Store::open(&state.join("content-search-v1")).unwrap();
-    store
-        .discover(
-            &state,
-            &DiscoveryBudget::interactive(),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-    store
-        .consume(&state, &budget(), &AtomicBool::new(false))
-        .unwrap();
+    // Page tests start with a warm source. A slow disk may need more than one
+    // bounded catch-up; this does not grant a larger per-call work budget.
+    for _ in 0..8 {
+        store
+            .discover(
+                &state,
+                &DiscoveryBudget::interactive(),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        store
+            .consume(&state, &budget(), &AtomicBool::new(false))
+            .unwrap();
+        let coverage = store.index.status().unwrap();
+        if coverage.messages == 6 && coverage.pending_sources == 0 {
+            break;
+        }
+    }
+    let coverage = store.index.status().unwrap();
+    assert_eq!(coverage.messages, 6);
+    assert_eq!(coverage.pending_sources, 0);
     (temp, state, path, transcript, store)
 }
 fn budget() -> Budget {
@@ -101,8 +112,14 @@ fn publication_uses_fresh_recorded_account_binding_not_an_indexed_copy() {
     record["agent_home"] = json!("/srv/example/recorded-home");
     fs::write(&path, record.to_string()).unwrap();
     let first = page(&mut store, &state, None, &budget());
-    assert_eq!(first["results"][0]["session"]["account_id"], "changed-profile");
-    assert_eq!(first["results"][0]["session"]["account_home"], "/srv/example/recorded-home");
+    assert_eq!(
+        first["results"][0]["session"]["account_id"],
+        "changed-profile"
+    );
+    assert_eq!(
+        first["results"][0]["session"]["account_home"],
+        "/srv/example/recorded-home"
+    );
 }
 
 #[test]

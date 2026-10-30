@@ -110,11 +110,22 @@ class SearchIndex(unittest.TestCase):
         binding.unlink()
         return identity, archived, transcript
 
+    def warm_source(self, messages=1):
+        # Warm-query contracts require a caught-up source. Each subprocess keeps
+        # the production budgets; slow disks resume the persisted cursor.
+        for _ in range(12):
+            reply = self.invoke("--index-catchup")
+            coverage = reply["status"]["coverage"]
+            if coverage["messages"] == messages and coverage["pending_sources"] == 0:
+                return
+        self.fail("source did not catch up within 12 bounded passes: " + json.dumps(reply))
+
     def test_indexed_archive_pages_use_exact_targets_and_reject_mismatched_cursors(self):
         identity, archived, transcript = self.archive_fixture()
         events = [dict(type="event_msg", timestamp=i, payload=dict(type="agent_message",
                   id="message-" + str(i), message="needle response " + str(i))) for i in range(1, 5)]
         transcript.write_text("".join(json.dumps(event) + "\n" for event in events))
+        self.warm_source(messages=4)
         reply = self.indexed()
         self.assertEqual(reply["abi"], "content-search-query-v1")
         self.assertEqual(reply["index_coverage"]["state"], "ready")
@@ -134,6 +145,7 @@ class SearchIndex(unittest.TestCase):
 
     def test_indexed_live_queries_keep_the_current_bounded_scan_and_new_messages(self):
         _, _, transcript = self.fixture()
+        self.warm_source()
         first = self.indexed()
         self.assertEqual(first["results"][0]["message_id"], "public-one")
         self.assertIsNotNone(first["fallback"])
@@ -144,6 +156,7 @@ class SearchIndex(unittest.TestCase):
         second = self.indexed()
         self.assertEqual(second["fallback"]["results"][0]["message_id"], "new-turn")
         self.assertEqual(second["results"], [])
+        self.warm_source(messages=2)
         third = self.indexed()
         self.assertEqual(third["results"][0]["message_id"], "new-turn")
         self.assertEqual(third["fallback"]["results"][0]["message_id"], "new-turn")
@@ -165,6 +178,7 @@ class SearchIndex(unittest.TestCase):
         binding = self.state / (hashlib.sha256(identity["name"].encode()).hexdigest() + ".json")
         binding.write_text(json.dumps({**identity, "version": 1, "agent": "kimi", "agent_home": str(profile), "cwd": "/work/example"}))
         before = wire.read_bytes()
+        self.warm_source()
         reply = self.indexed()
         self.assertEqual(reply["results"][0]["message_id"], "kimi-public")
         self.assertEqual(reply["fallback"]["results"][0]["message_id"], "kimi-public")
