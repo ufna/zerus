@@ -14,7 +14,19 @@ export interface Notice {
   sticky: boolean;
   /** Notices with one key replace each other, as one status line does. */
   key?: string;
+  actions?: NoticeAction[];
+  dismissible?: boolean;
 }
+
+export interface NoticeAction {
+  label: string | (() => string);
+  style: "ghost" | "primary";
+  icon?: "play";
+  disabled?: () => boolean;
+  run(): void | Promise<void>;
+}
+export type NoticeOptions = Pick<Notice, "actions" | "dismissible">;
+export const sessionNoticeKey = (computer: string, name: string) => `session-end:${computer}\n${name}`;
 
 /** At most this many show; the oldest non-sticky one goes first. */
 export const MAX_NOTICES = 5;
@@ -23,7 +35,7 @@ export const NOTICE_MS = 4200;
 
 export interface NoticeBus {
   notices: () => Notice[];
-  notify(tone: Notice["tone"], text: string, sticky?: boolean, key?: string, title?: string): number;
+  notify(tone: Notice["tone"], text: string, sticky?: boolean, key?: string, title?: string, options?: NoticeOptions): number;
   dismiss(id: number): void;
   /** Dismisses the notice with this key, if one shows. */
   clearNotice(key: string): void;
@@ -43,13 +55,13 @@ export function createNoticeBus(): NoticeBus {
    * (several sessions updated together). Over the cap, the oldest other
    * non-sticky one goes first, then the oldest other; the new one stays.
    */
-  function notify(tone: Notice["tone"], text: string, sticky = false, key?: string, title?: string): number {
+  function notify(tone: Notice["tone"], text: string, sticky = false, key?: string, title?: string, options?: NoticeOptions): number {
     const id = nextId++;
     const replaced = (n: Notice) => key === undefined
       ? !sticky && n.key === undefined && !n.sticky && n.tone === tone && n.title === title && n.text === text
       : n.key === key;
     setList((all) => {
-      const next = [...all.filter((n) => !replaced(n)), { id, tone, title, text, sticky, key }];
+      const next = [...all.filter((n) => !replaced(n)), { id, tone, title, text, sticky, key, ...options }];
       while (next.length > MAX_NOTICES) {
         // Never the notice being added: it is the last entry.
         const others = next.slice(0, -1);

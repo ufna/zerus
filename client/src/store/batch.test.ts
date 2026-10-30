@@ -190,7 +190,7 @@ describe("the queue", () => {
       await a.run("archive", a.listed("a", "b"));
       expect(mocked.runAction.mock.calls.map((c) => c[1])).toEqual([{ kind: "archive" }, { kind: "archive" }]);
       expect(a.texts()).toEqual([
-        "Worktree kept for review: uncommitted changes",
+        "Working folder kept for review.",
         "Worktree removed automatically. The branch and archived conversation are kept.",
         "Move to archive: 2 of 2 completed.",
       ]);

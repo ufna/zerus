@@ -277,7 +277,7 @@ export type Action =
 export interface WorktreeCleanup { status: string; path: string; common_dir: string; reason?: string | null }
 
 export type Outcome =
-  | { outcome: "done"; receipt: unknown; cleanup: WorktreeCleanup | null }
+  | { outcome: "done"; receipt: unknown; cleanup: WorktreeCleanup | null; cleanup_capture?: import("./store/terminationCleanup").RetainedCapture | null }
   | { outcome: "failed"; detail: string }
   | { outcome: "uncertain"; detail: string };
 

@@ -232,6 +232,8 @@
   .toast.warn { border-color: var(--z-color-border); }
   .toast .dismiss { float: right; margin: -4px -6px 0 8px; pointer-events: auto; }
   .toast .note { white-space: pre-line; }
+  .toast-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+  .toast-actions button { pointer-events: auto; }
   .dlg-input { width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--z-color-border); border-radius: var(--z-radius-sm); background: var(--z-color-pane); }
   .dlg-error { margin-top: 6px; color: var(--z-color-danger); font-size: var(--fs-sm); }
   .dlg-detail { margin-top: 8px; color: var(--z-color-dim); font-size: var(--fs-sm); }

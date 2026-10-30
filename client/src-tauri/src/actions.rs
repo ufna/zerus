@@ -834,13 +834,95 @@ fn refused_before_claim(target: &Target, action: &Action) -> Option<String> {
 }
 
 /// Runs one action on a session. `Err("busy")` while another runs for it.
+#[derive(serde::Serialize)]
+pub struct ActionReply {
+    #[serde(flatten)]
+    outcome: Outcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cleanup_capture: Option<crate::termination_cleanup::RetainedCapture>,
+}
 #[tauri::command]
 pub async fn run_action(
+    app: tauri::AppHandle,
+    source: State<'_, crate::commands::AppState>,
+    cleanup: State<'_, crate::termination_cleanup::TerminationCleanup>,
     state: State<'_, Actions>,
     target: Target,
     action: Action,
+) -> Result<ActionReply, String> {
+    let ending = matches!(action, Action::Archive | Action::Terminate);
+    let machine = if ending {
+        crate::worktree_cleanup::machine(&source, &target.computer).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let outcome = if ending && !machine.is_empty() {
+        dispatch_guarded_end(&state, target.clone(), action, machine.clone()).await?
+    } else {
+        dispatch(&state, target.clone(), action).await?
+    };
+    let cleanup_capture = ending
+        .then(|| cleanup.observe(&app, &target, &machine, &outcome))
+        .flatten();
+    Ok(ActionReply {
+        outcome,
+        cleanup_capture,
+    })
+}
+
+async fn dispatch_guarded_end(
+    state: &Actions,
+    target: Target,
+    action: Action,
+    machine: String,
 ) -> Result<Outcome, String> {
-    dispatch(&state, target, action).await
+    if blocked() {
+        return Ok(failed(REPLAY_NEEDS_HGS));
+    }
+    dispatch_with_plan(
+        state,
+        target,
+        action,
+        uuid::Uuid::new_v4().to_string(),
+        move |hgs, inv, _| {
+            let mut guarded = inv.clone();
+            zerus_client_core::worktrees::guard(&mut guarded.args, &machine);
+            zerus_client_core::worktrees::run_guarded(hgs, &guarded, run)
+                .unwrap_or_else(zerus_client_core::Exit::StartFailed)
+        },
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn restore_captured(
+    state: &Actions,
+    source: crate::termination_cleanup::RestoreSource,
+) -> Result<Outcome, String> {
+    if blocked() {
+        return Ok(failed(REPLAY_NEEDS_HGS));
+    }
+    let target = source.target.clone();
+    let action = Action::Restore {
+        archive_id: source.archive_id.clone(),
+    };
+    dispatch_with_plan(
+        state,
+        target,
+        action,
+        uuid::Uuid::new_v4().to_string(),
+        move |hgs, inv, _| {
+            if let Err(error) = crate::termination_cleanup::restore_preflight(&source, hgs) {
+                return zerus_client_core::Exit::StartFailed(error);
+            }
+            let mut guarded = inv.clone();
+            zerus_client_core::worktrees::guard(&mut guarded.args, &source.machine);
+            zerus_client_core::worktrees::run_guarded(hgs, &guarded, run)
+                .unwrap_or_else(zerus_client_core::Exit::StartFailed)
+        },
+        None,
+    )
+    .await
 }
 
 /// The one dispatcher of session actions, for `run_action` and for commands
@@ -2826,12 +2908,14 @@ mod tests {
             attention_signature: signature.map(Into::into),
         };
         assert!(!actions.wake.wait(std::time::Duration::ZERO));
-        let pending = actions.queue_marks(vec![
-            mark("claude/sample-project/review", Some("r1"), None),
-            mark("claude/sample-project/review", None, Some("s1")),
-            // Nothing to mark: not stored (`ReadMarkStore::add`).
-            mark("claude/sample-project/other", None, None),
-        ]).unwrap();
+        let pending = actions
+            .queue_marks(vec![
+                mark("claude/sample-project/review", Some("r1"), None),
+                mark("claude/sample-project/review", None, Some("s1")),
+                // Nothing to mark: not stored (`ReadMarkStore::add`).
+                mark("claude/sample-project/other", None, None),
+            ])
+            .unwrap();
         let expected = vec![mark("claude/sample-project/review", Some("r1"), Some("s1"))];
         assert_eq!(pending, expected);
         assert_eq!(actions.pending_marks(), expected);
@@ -2857,7 +2941,9 @@ mod tests {
             reply_id: Some("r1".into()),
             attention_signature: None,
         };
-        actions.queue_marks(vec![on(""), on("laptop"), on("removed")]).unwrap();
+        actions
+            .queue_marks(vec![on(""), on("laptop"), on("removed")])
+            .unwrap();
         // Peers not known yet (no listing named them): nothing is dropped.
         actions.drop_orphans(|| None);
         assert_eq!(actions.pending_marks().len(), 3);
@@ -3368,10 +3454,12 @@ mod tests {
             reply_id: Some("r1".into()),
             attention_signature: None,
         };
-        actions.queue_marks(vec![
-            mark("mac", "claude/sample-project/a"),
-            mark("gone", "claude/sample-project/b"),
-        ]).unwrap();
+        actions
+            .queue_marks(vec![
+                mark("mac", "claude/sample-project/a"),
+                mark("gone", "claude/sample-project/b"),
+            ])
+            .unwrap();
         assert_eq!(heard(), 1, "queued marks: one call for the call");
         let mut empty = mark("mac", "claude/sample-project/a");
         empty.reply_id = None;
@@ -3402,7 +3490,9 @@ mod tests {
         actions.observe(&upsert(Some("r1")));
         assert_eq!(heard(), 1, "the mark settled");
         assert!(actions.pending_marks().is_empty());
-        actions.queue_marks(vec![mark("mac", "claude/sample-project/c")]).unwrap();
+        actions
+            .queue_marks(vec![mark("mac", "claude/sample-project/c")])
+            .unwrap();
         heard();
         actions.observe(&Batch {
             replaces: vec![ReplaceOut {
