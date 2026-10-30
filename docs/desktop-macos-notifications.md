@@ -77,13 +77,20 @@ after Quit must exit cleanly without a fresh permit. Explicit desktop-service
 revocation prevents admission. No plist/CLI behavior changes ship with this
 document; the startup mode needs its own reviewed implementation.
 
-The coordinator's approved setting is **Notify when Zerus is closed**, in
-Settings > Notifications, default on. Its durable G1 policy gates post-Quit
+The approved setting is **Notify when Zerus is closed**, default on. Webui-ac
+placed it in **Settings > Sessions**, in the existing Group immediately after
+**Notify about optional questions**; no new Settings section. Use the existing
+ToggleRow hint: **On by default. After you quit Zerus, new replies and questions
+still show system notifications. Clicking one opens Zerus at that session.**
+It is macOS-only; hide it entirely on Linux/Windows. Persist it through the
+existing settings writer and synchronize the durable G1 policy. While the
+service is unavailable, keep it visible but disabled with **Needs the Zerus
+background service, which is not running.** Never change the stored value due
+to an outage. Its durable G1 policy gates post-Quit
 wake/posting; it grants no lease or retry. With it off, Quit stops this native
 notification flow until the next manual launch. Restart/reconnect does not
 count as that launch, and manual reopening never reposts suppressed old edges.
-It does not stop unrelated hgs services or agents. The UI placement must receive
-webui-ac's mockup ruling before implementation; this document adds no UI.
+It does not stop unrelated hgs services or agents. This document adds no UI.
 
 macOS can [launch the registered app for a response](https://developer.apple.com/documentation/usernotifications/handling-notifications-and-notification-related-actions).
 Install and retain the notification delegate **before application launch
@@ -116,6 +123,19 @@ input or a target-selection authority. Full native envelope is at most 64 KiB;
 title/body are each at most 16 KiB, token at most the existing 8192 bytes.
 Receipts/control are at most 16 KiB, with allowlisted metadata and no private
 notification body or system error text. G1 owns the eventual schema/API.
+
+The independent pure component is `client/core/src/macos_notify.rs`.
+`Envelope::new` retains the exact Qt-compatible token and a canonical non-nil
+correlation UUID; `request_id` and `user_info` produce the request ID and the
+two-string dictionary (`hgsAttentionToken`, `hgsAttentionCorrelationV1`).
+`response` bounds that dictionary's JSON representation before parsing and
+returns ignored legacy/non-default data or a candidate envelope. Null,
+duplicate/unknown fields and mismatched request IDs refuse. A candidate proves
+no signed origin, delivered mapping, current revision or target availability.
+`post_outcome` classifies supplied observations; `WithdrawalObservation`
+retains which void calls were issued and always remains Unknown. These are
+data helpers, not a new transport, receipt validator or ledger. No GUI or root
+runtime uses them; the current poster and all dependency/features stay unchanged.
 
 Authenticate the native peer using kernel-bound live-process identity
 (audit-token-equivalent, with PID-reuse protection) and live code verification
@@ -179,6 +199,12 @@ does not manufacture a delivered mapping or current signed-peer authority.
    selection and acknowledge the same activation. Missing/offline/replaced
    identity stays pending/reviewable; display aliases never substitute identity.
    An acknowledgement never sends agent input or independently marks a reply read.
+
+Webui-ac's presentation ruling uses the existing notice bus, with no pending
+list: **That session is no longer available.** for missing/replaced identity,
+or **<computer> is offline. The session opens when it reconnects.** for offline.
+These presentation states still require the exact claim/revalidation rules;
+the wording does not authorize a second presentation or an alias fallback.
 
 Proposed bounds: one native method in flight, one queued job, at most eight
 callback envelopes and 64 KiB total queued callback bytes; a full queue refuses
