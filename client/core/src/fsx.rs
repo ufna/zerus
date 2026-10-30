@@ -1,6 +1,8 @@
 //! The core's whole-file writes: the read marks ([`crate::readmarks`]), the
 //! attention marks ([`crate::marks`]), the organization's pending edits
 //! ([`crate::swarm::draft`]) and the files the app saves for its owner.
+pub(crate) mod checkpoint;
+
 use std::fs::{File, OpenOptions};
 use std::hash::{BuildHasher, Hasher};
 use std::io::{self, Write};

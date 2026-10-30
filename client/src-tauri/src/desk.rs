@@ -363,14 +363,16 @@ pub fn set_focused(app: &AppHandle, focused: bool) {
 pub struct Attention {
     pub tracker: Tracker,
     pub path: PathBuf,
+    checkpoint: zerus_client_core::attention_store::Observation,
 }
 
 impl Attention {
     /// The tracker with its saved state: the client's own file; only when
     /// there is none, Qt's `attention/observed` from `qt` (Decision 11).
     pub fn load(path: PathBuf, qt: impl FnOnce() -> Option<Vec<u8>>) -> Self {
-        let saved = match std::fs::read(&path) {
-            Ok(bytes) => attention::seed(Some(&bytes), None),
+        let bytes = std::fs::read(&path);
+        let saved = match &bytes {
+            Ok(bytes) => attention::seed(Some(bytes), None),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 attention::seed(None, qt().as_deref())
             }
@@ -379,22 +381,42 @@ impl Attention {
                 Map::new()
             }
         };
+        let checkpoint = zerus_client_core::attention_store::Observation::loaded(&bytes, &saved);
         Self {
             tracker: Tracker::new(saved),
             path,
+            checkpoint,
         }
     }
 
-    fn save(&self) {
-        let written = serde_json::to_vec(self.tracker.state())
+    fn save(&mut self) {
+        let serialized = serde_json::to_vec(self.tracker.state())
             .map_err(std::io::Error::other)
-            .and_then(|bytes| write_private(&self.path, &bytes));
-        if let Err(error) = written {
+            .and_then(|bytes| {
+                write_private(&self.path, &bytes)?;
+                Ok(bytes)
+            });
+        if let Ok(bytes) = &serialized {
+            self.checkpoint.saved(bytes);
+        } else {
+            self.checkpoint.failed();
+        }
+        if let Err(error) = serialized {
             eprintln!(
                 "zerus-client: could not save {}: {error}",
                 self.path.display()
             );
         }
+    }
+
+    /// Dormant until the Desk/native callback barrier is qualified. Retain the
+    /// actual worker through sync, even after an outer timeout or disconnect.
+    #[allow(dead_code)]
+    pub(crate) fn checkpoint(
+        &mut self,
+    ) -> std::io::Result<zerus_client_core::attention_store::Checkpoint> {
+        self.checkpoint
+            .checkpoint(&self.path, self.tracker.state(), write_private)
     }
 }
 
@@ -1715,6 +1737,48 @@ mod tests {
         );
         assert!(outcome.changes.raised.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attention_checkpoint_observes_the_existing_round_writer_without_rewriting_it() {
+        let dir = scratch("checkpoint-round");
+        let mut thread = Thread::new(&dir);
+        thread.round(0.0, live("", vec![asking("claude/p/a")]));
+        let path = dir.join(ATTENTION_FILE);
+        let bytes = std::fs::read(&path).unwrap();
+        let checkpoint = thread
+            .state
+            .attention
+            .as_mut()
+            .unwrap()
+            .checkpoint()
+            .unwrap();
+        use sha2::{Digest, Sha256};
+        assert_eq!(checkpoint.sha256, format!("{:x}", Sha256::digest(&bytes)));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attention_checkpoint_keeps_actual_load_and_save_failures_sticky() {
+        let dir = scratch("checkpoint-failure");
+        let path = dir.join(ATTENTION_FILE);
+        std::fs::write(&path, b"broken").unwrap();
+        let mut malformed = Attention::load(path.clone(), || panic!("own source exists"));
+        malformed.save(); // Old GUI behavior still writes its empty map.
+        assert_eq!(std::fs::read(&path).unwrap(), b"{}");
+        assert!(malformed.checkpoint().is_err());
+        std::fs::remove_file(&path).unwrap();
+        let mut failed = Attention::load(path.clone(), || None);
+        std::fs::remove_dir(&dir).unwrap();
+        failed.save(); // Existing writer cannot create its absent parent.
+        std::fs::create_dir(&dir).unwrap();
+        failed.save();
+        assert_eq!(std::fs::read(&path).unwrap(), b"{}");
+        assert!(failed.checkpoint().is_err());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -1,12 +1,9 @@
 //! Explicit durability barrier for the existing file. This is not admission
 //! closure, a complete ReadDelivery drain, source discovery or role authority.
 use super::ReadMarks;
+use crate::fsx::checkpoint::{current, sync_parent, Bounded, Disk};
 use serde::ser::{SerializeSeq, Serializer};
-use std::{
-    fs::{File, OpenOptions},
-    io::{self, Read, Write},
-    path::Path,
-};
+use std::{io, path::Path};
 use zerus_desktop_migration::sha256;
 
 pub const CHECKPOINT_BYTES: usize = 16 << 20;
@@ -60,71 +57,10 @@ fn refused(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-struct Disk {
-    file: File,
-    hash: String,
-    bytes: usize,
-}
-fn current(path: &Path) -> io::Result<Option<Disk>> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-    let mut file = match options.open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    let meta = file.metadata()?;
-    if !meta.is_file() || meta.len() > CHECKPOINT_BYTES as u64 {
-        return Err(refused("pending read checkpoint file exceeds its bounds"));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        // SAFETY: geteuid has no preconditions. Never follow or sync a shared,
-        // public or foreign leaf when proving this private source barrier.
-        if meta.uid() != unsafe { libc::geteuid() } || meta.nlink() != 1 || meta.mode() & 0o077 != 0
-        {
-            return Err(refused("pending read checkpoint source is not private"));
-        }
-    }
-    let mut bytes = Vec::new();
-    (&mut file)
-        .take((CHECKPOINT_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > CHECKPOINT_BYTES {
-        return Err(refused("pending read checkpoint byte limit"));
-    }
-    Ok(Some(Disk {
-        file,
-        hash: sha256(&bytes),
-        bytes: bytes.len(),
-    }))
-}
 fn source(disk: &Option<Disk>) -> Source {
     disk.as_ref()
         .map(|d| Source::Hash(d.hash.clone()))
         .unwrap_or(Source::Missing)
-}
-struct Bounded {
-    bytes: Vec<u8>,
-    limit: usize,
-}
-impl Write for Bounded {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
-            return Err(refused("pending read checkpoint serialization limit"));
-        }
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
 }
 fn serialized(marks: &ReadMarks, limit: usize) -> io::Result<Vec<u8>> {
     let mut writer = Bounded {
@@ -138,22 +74,6 @@ fn serialized(marks: &ReadMarks, limit: usize) -> io::Result<Vec<u8>> {
     }
     list.end()?;
     Ok(writer.bytes)
-}
-fn sync_parent(path: &Path) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        File::open(
-            path.parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .unwrap_or(Path::new(".")),
-        )?
-        .sync_all()
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        Err(io::ErrorKind::Unsupported.into())
-    }
 }
 impl ReadMarks {
     /// Call off-thread, under the old owner's store mutex, AFTER closing and
@@ -182,7 +102,7 @@ impl ReadMarks {
         if self.checkpoint.source == Source::Unavailable {
             return Err(refused("pending read checkpoint source is unavailable"));
         }
-        let mut disk = current(&self.path)?;
+        let mut disk = current(&self.path, CHECKPOINT_BYTES)?;
         if source(&disk) != self.checkpoint.source {
             return Err(refused("pending read checkpoint source changed"));
         }
@@ -191,7 +111,7 @@ impl ReadMarks {
             super::write_private_atomic(&self.path, &bytes, true)?;
             self.checkpoint.saved(&bytes);
             self.unsaved = false;
-            disk = current(&self.path)?;
+            disk = current(&self.path, CHECKPOINT_BYTES)?;
             if source(&disk) != self.checkpoint.source {
                 return Err(refused(
                     "pending read checkpoint source changed after write",
