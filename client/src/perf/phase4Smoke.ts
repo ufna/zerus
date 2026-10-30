@@ -457,6 +457,29 @@ async function subagentStep() {
   await until(() => !subagentOpen(), 5000, "the child view did not close");
 }
 
+async function hideLaunchStatusStep() {
+  const admission = await bridge.creationSubmit({
+    host: "", machine: "workstation", cmd: "claude", account: "", tag: "hide-launch-smoke", group: "ungrouped", group_name: "Inbox",
+    implicit_inbox: true, swarm: "", target: "/home/example/src/sample-project", source: "fixture", auto: false, branch: "main", catalog: null,
+    add_folder: false, model: "", effort: "", terminal: false, repository: false, clone_done: true, acquisition_confirmed: true,
+  });
+  if (!("admitted" in admission)) throw new Error(`the synthetic launch was not admitted: ${JSON.stringify(admission)}`);
+  const id = admission.admitted;
+  document.querySelector<HTMLButtonElement>('button[data-tip="Session creation status"]')!.click();
+  const choice = [...document.querySelectorAll<HTMLButtonElement>("button")].find((candidate) => candidate.textContent?.trim().startsWith("hide-launch-smoke:"));
+  if (!choice) throw new Error("the launch is missing from the creation status menu");
+  choice.click();
+  await until(() => [...document.querySelectorAll<HTMLElement>(".rowhit")].some((row) => row.textContent?.includes("hide-launch-smoke")), 10_000, "the launch card is missing");
+  const row = [...document.querySelectorAll<HTMLElement>(".rowhit")].find((candidate) => candidate.textContent?.includes("hide-launch-smoke"))!;
+  row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 400, clientY: 300 }));
+  button("Hide launch status").click();
+  await untilAsync(async () => (await bridge.creationsView()).find((card) => card.id === id)?.show_pending === false, 5000, "the launch status was not hidden");
+  if (await bridge.creationDetails(id) === null) throw new Error("hiding the launch discarded its operation");
+  if ([...document.querySelectorAll<HTMLElement>(".rowhit")].some((candidate) => candidate.textContent?.includes("hide-launch-smoke"))) {
+    throw new Error("the hidden launch row is still visible");
+  }
+}
+
 export async function phase4Smoke(allowed: boolean, smokeFile?: string) {
   const exit = (code: number) => invoke("exit_app", { code }).catch(() => {});
   if (!allowed) {
@@ -481,6 +504,7 @@ export async function phase4Smoke(allowed: boolean, smokeFile?: string) {
     ["clear-close-order", clearCloseOrderStep],
     ["send-follow", sendFollowStep],
     ["subagent", subagentStep],
+    ["hide-launch-status", hideLaunchStatusStep],
   ];
   let current = "start";
   try {
