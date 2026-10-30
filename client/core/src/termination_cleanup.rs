@@ -794,6 +794,7 @@ mod tests {
             reason: Some("policy".into()),
             archive: None,
             review: None,
+            details_omitted: false,
         };
         let removed = Entry::terminated(
             "",

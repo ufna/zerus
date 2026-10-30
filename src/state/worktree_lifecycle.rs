@@ -302,13 +302,46 @@ pub(super) fn after_archive(record: &Value, archive_id: &str) {
                 "name":record["name"],"run_id":record["run_id"],"conversation_id":record["conversation_id"],
                 "owner_id":record["worktree_owner"]["id"].as_str().unwrap_or(""),
                 "launch_owned":launch_owned});
-            // The existing runner caps stderr at 64 KiB. Leave framing space;
-            // an oversized row is absent, never partially trusted or truncated.
-            let remaining = (60 * 1024usize).saturating_sub(serde_json::to_vec(&value).map_or(usize::MAX, |b| b.len()));
-            if let Some(row) = observed.filter(|r| serde_json::to_vec(r).is_ok_and(|b| b.len() + 16 <= remaining)) {
-                value["review"] = row;
-            }
+            retain_bounded_review(&mut value, observed);
             eprintln!("ZERUS_WORKTREE_CLEANUP {value}");
         }
+    }
+}
+
+fn retain_bounded_review(value: &mut Value, observed: Option<Value>) {
+    const LIMIT: usize = 60 * 1024;
+    let size = |v: &Value| serde_json::to_vec(v).map_or(usize::MAX, |b| b.len());
+    // Keep the outcome and exact identity readable even when the old error
+    // contains a wall of private paths. Never pretend an omitted detail is full.
+    if size(value) > LIMIT {
+        value.as_object_mut().unwrap().remove("reason");
+        value["details_omitted"] = json!(true);
+    }
+    // The existing runner caps stderr at 64 KiB. Leave framing space; an
+    // oversized row is absent, never partially trusted or truncated.
+    let remaining = LIMIT.saturating_sub(size(value));
+    if let Some(row) = observed.filter(|row| size(row).saturating_add(16) <= remaining) {
+        value["review"] = row;
+    }
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+    #[test]
+    fn oversized_details_do_not_hide_the_archive_outcome_or_truncate_a_row() {
+        let mut value = json!({"status":"kept","path":"/srv/example/work","common_dir":"/srv/example/main/.git",
+            "archive":{"archive_id":"11111111-1111-4111-8111-111111111111"},"reason":"x".repeat(65536)});
+        let row = json!({"path":"/srv/example/work","kind":"linked","changes":1});
+        retain_bounded_review(&mut value, Some(row.clone()));
+        assert_eq!(value["review"], row);
+        assert_eq!(value["details_omitted"], true);
+        assert_eq!(value["status"], "kept");
+        assert!(value.get("archive").is_some());
+        assert!(value.get("reason").is_none());
+        let mut small = json!({"status":"kept"});
+        retain_bounded_review(&mut small, Some(json!({"private":"x".repeat(65536)})));
+        assert!(small.get("review").is_none());
+        assert!(serde_json::to_vec(&value).unwrap().len() < 60 * 1024);
     }
 }

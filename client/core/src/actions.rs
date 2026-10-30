@@ -221,6 +221,8 @@ pub struct WorktreeCleanup {
     pub archive: Option<Box<crate::termination_cleanup::ArchiveIdentity>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review: Option<Value>,
+    #[serde(default)]
+    pub details_omitted: bool,
 }
 
 impl WorktreeCleanup {

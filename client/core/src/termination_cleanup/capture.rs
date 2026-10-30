@@ -316,6 +316,7 @@ mod tests {
                 reason: Some("synthetic".into()),
                 archive: None,
                 review: None,
+                details_omitted: false,
             };
             assert_eq!(
                 capture.entry(Some(&report)).unwrap().status,
