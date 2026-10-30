@@ -481,6 +481,32 @@ fn without_a_seed_source_nothing_is_seeded() {
 }
 
 #[test]
+fn machine_appearance_editing_is_local_and_color_reset_preserves_style() {
+    let scratch = Scratch::new("machine-appearance-edit");
+    let path = scratch.0.join("settings.json");
+    let settings = Settings::open(path.clone(), None);
+    assert_eq!(
+        settings.set("machines/colors/peer", json!("#abcdef")),
+        Ok(json!("#abcdef"))
+    );
+    assert_eq!(
+        settings.set("machines/vivid/peer", json!(true)),
+        Ok(json!(true))
+    );
+    assert_eq!(
+        settings.set("machines/colors/peer", Value::Null),
+        Ok(Value::Null)
+    );
+    assert!(!settings.all().contains_key("machines/colors/peer"));
+    assert!(settings.flag("machines/vivid/peer"));
+    assert!(settings.flush_within(FLUSH));
+    drop(settings);
+    let reopened = Settings::open(path, None);
+    assert!(!reopened.all().contains_key("machines/colors/peer"));
+    assert!(reopened.flag("machines/vivid/peer"));
+}
+
+#[test]
 fn set_normalizes_persists_and_tells_listeners() {
     let scratch = Scratch::new("set");
     let path = scratch.0.join("data/settings.json");

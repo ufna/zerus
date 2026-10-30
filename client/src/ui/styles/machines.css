@@ -53,6 +53,13 @@
   .mach-log { margin: 0; padding: 10px 12px; max-height: 200px; overflow: auto; border-radius: var(--z-radius-md); background: var(--z-color-terminal-bg); color: var(--z-color-terminal-fg); font-family: var(--z-font-mono); font-size: var(--fs-xs); white-space: pre-wrap; }
   .mach-foot { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 12px; border-top: 1px solid var(--z-color-divider); }
   .mach-phones { margin-top: 14px; padding-top: 6px; border-top: 1px solid var(--z-color-divider); }
+  .cd-preview { padding: 6px 0 12px; }
+  .cd-swatches { display: grid; grid-template-columns: repeat(6, 34px); gap: 8px; margin-bottom: 10px; }
+  .cd-swatch { aspect-ratio: 1; border-radius: var(--z-radius-md); background: var(--sw); border: 2px solid transparent; transition: scale var(--z-motion-fast) var(--ease); }
+  .cd-swatch:hover { scale: 1.06; }
+  .cd-swatch.on { border-color: var(--z-color-text); }
+  .cd-more { position: relative; overflow: hidden; align-self: flex-start; }
+  .cd-more input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 
   .acct-filter { gap: 10px; }
   .acct-filter select { width: 260px; }

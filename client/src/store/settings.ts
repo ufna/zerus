@@ -41,7 +41,7 @@ export interface SettingsStorage {
   removeItem(key: string): void;
 }
 
-/** A store answer: the value in effect (null for a removed shortcut override) and the revision. */
+/** A store answer: the value in effect (null for a removed override) and the revision. */
 export interface Saved { value: SettingValue | null; revision: number }
 
 /** Where settings live: the core store in the app, local storage outside it. */
@@ -331,7 +331,7 @@ const store = inTauri()
 
 /** The client's settings by QSettings name, reactive. */
 export const settings = store.settings;
-/** Changes one setting and stores it (unless `persist: false`); `null` removes a shortcut override; whether it was stored. */
+/** Changes one setting and stores it (unless `persist: false`); `null` removes a supported override; whether it was stored. */
 export const setSetting = store.set;
 /** Undoes values tried with `persist: false`. */
 export const restoreSettings = store.restore;
