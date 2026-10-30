@@ -148,8 +148,11 @@ Full-token consistency and repeated live checks are point-in-time observations,
 not exec fences. The host must own the actual check/connection lifetime beyond
 an outer timeout, off its actor/UI thread. The helper starts no worker or
 transport. `client/scripts/macos-peer-fixtures.py` qualifies private synthetic
-signed peers under the Mac heavy lock; it uses disposable PEM fixtures and
-never selects an installed signing identity or calls Notification Center.
+signed peers under the Mac heavy lock. Ad-hoc C peers cover mechanisms and
+exec/exit; digest-pinned private Node/Deno copies run synthetic socket scripts
+for distinct-team checks. The fixture operator derives the expected requirement
+from pinned input-file metadata before launch, never from a peer message.
+No installed signing identity or Notification Center is used.
 
 Authenticate the native peer using kernel-bound live-process identity
 (audit-token-equivalent, with PID-reuse protection) and live code verification

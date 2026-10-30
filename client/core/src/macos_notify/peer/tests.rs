@@ -1,6 +1,6 @@
 use super::*;
 use std::{
-    fs::{self, DirBuilder},
+    fs::{self, DirBuilder, File},
     io::{Read, Write},
     os::{fd::FromRawFd, unix::fs::DirBuilderExt},
     path::PathBuf,
@@ -67,12 +67,14 @@ impl Peer {
         DirBuilder::new().mode(0o700).create(&folder).unwrap();
         let path = folder.join("s");
         assert!(path.as_os_str().as_encoded_bytes().len() < 104);
+        let log_path = folder.join("peer.log");
+        let log = File::create(&log_path).unwrap();
         let child = Command::new(root.join(name))
             .arg(&path)
             .env("ZERUS_MAC_PEER_EXECUTABLE", root.join("peer-b"))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::from(log))
             .spawn()
             .unwrap();
         let mut pending = PendingChild(Some(child));
@@ -81,10 +83,14 @@ impl Peer {
             if let Ok(connection) = UnixStream::connect(&path) {
                 break connection;
             }
-            assert!(
-                pending.0.as_mut().unwrap().try_wait().unwrap().is_none(),
-                "synthetic peer exited before connect"
-            );
+            if let Some(status) = pending.0.as_mut().unwrap().try_wait().unwrap() {
+                let mut message = String::new();
+                let _ = File::open(&log_path)
+                    .unwrap()
+                    .take(16384)
+                    .read_to_string(&mut message);
+                panic!("synthetic peer exited before connect: {status}; {message}");
+            }
             assert!(Instant::now() < deadline, "synthetic peer did not listen");
             std::thread::sleep(Duration::from_millis(10));
         };
@@ -124,12 +130,17 @@ impl Drop for Peer {
         }
         let _ = self.child.wait();
         let _ = fs::remove_file(self.folder.join("s"));
+        let _ = fs::remove_file(self.folder.join("peer.log"));
         let _ = fs::remove_dir(&self.folder);
     }
 }
 
-const IDENTIFIER: &str = "identifier \"com.example.zerus-peer\"";
-const TEAM_A: &str = "certificate leaf[subject.OU] = \"FIXTEAM001\"";
+const IDENTIFIER: &str = "identifier \"com.example.zerus-peer-a\"";
+const IDENTIFIER_B: &str = "identifier \"com.example.zerus-peer-b\"";
+
+fn team_requirement() -> String {
+    std::env::var("ZERUS_MAC_PEER_TEAM_REQUIREMENT").expect("pinned fixture team requirement")
+}
 
 #[test]
 #[ignore = "private signed peers and headless Mac heavy lock required"]
@@ -152,12 +163,13 @@ fn signed_connection_is_observed_without_consuming_payload_or_ownership() {
 #[ignore = "private signed peers and headless Mac heavy lock required"]
 fn team_requirement_rejects_another_team_and_adhoc_peer() {
     let _serial = serial();
-    let accepted = Peer::new("peer-a");
-    assert!(observe(&accepted.connection, TEAM_A).is_ok());
-    for name in ["peer-b", "peer-adhoc"] {
+    let requirement = team_requirement();
+    let accepted = Peer::new("peer-node");
+    assert!(observe(&accepted.connection, &requirement).is_ok());
+    for name in ["peer-deno", "peer-adhoc"] {
         let mut peer = Peer::new(name);
         assert_eq!(
-            observe(&peer.connection, TEAM_A).unwrap_err(),
+            observe(&peer.connection, &requirement).unwrap_err(),
             Refusal::LiveCodeRejected
         );
         assert_eq!(RESOURCES.load(Ordering::SeqCst), 0);
@@ -171,7 +183,7 @@ fn arbitrary_caller_requirement_is_not_authenticated_installation_trust() {
     let _serial = serial();
     let peer = Peer::new("peer-b");
     assert_eq!(
-        observe(&peer.connection, TEAM_A).unwrap_err(),
+        observe(&peer.connection, &team_requirement()).unwrap_err(),
         Refusal::LiveCodeRejected
     );
     let supplied = "always";
@@ -307,14 +319,23 @@ fn exited_peer_and_exit_between_token_reads_never_use_pid_fallback() {
     let _serial = serial();
     let mut peer = Peer::new("peer-a");
     peer.exit();
+    let after_exit = observe(&peer.connection, IDENTIFIER);
+    eprintln!(
+        "exited synthetic peer observation: {:?}",
+        after_exit.as_ref().err()
+    );
     assert!(matches!(
-        observe(&peer.connection, IDENTIFIER),
+        after_exit,
         Err(Refusal::LiveCodeUnavailable | Refusal::LiveCodeRejected | Refusal::AuditUnavailable)
     ));
     assert_eq!(RESOURCES.load(Ordering::SeqCst), 0);
     let mut peer = Peer::new("peer-a");
     let connection = peer.connection.try_clone().unwrap();
     let result = observe_inner(&connection, IDENTIFIER, || peer.exit(), audit);
+    eprintln!(
+        "peer exited between token reads: {:?}",
+        result.as_ref().err()
+    );
     assert!(matches!(
         result,
         Err(Refusal::LiveCodeUnavailable | Refusal::LiveCodeRejected | Refusal::AuditUnavailable)
@@ -327,20 +348,21 @@ fn exited_peer_and_exit_between_token_reads_never_use_pid_fallback() {
 fn exec_and_reconnect_require_fresh_observation_not_a_cached_permit() {
     let _serial = serial();
     let mut peer = Peer::new("peer-a");
-    assert!(observe(&peer.connection, TEAM_A).is_ok());
+    assert!(observe(&peer.connection, IDENTIFIER).is_ok());
     peer.exec();
-    assert!(observe(&peer.connection, TEAM_A).is_err());
+    let after_exec = observe(&peer.connection, IDENTIFIER);
+    eprintln!(
+        "exec on retained connection observation: {:?}",
+        after_exec.as_ref().err()
+    );
+    assert!(after_exec.is_err());
     assert_eq!(RESOURCES.load(Ordering::SeqCst), 0);
     let peer = Peer::new("peer-b");
     assert_eq!(
-        observe(&peer.connection, TEAM_A).unwrap_err(),
+        observe(&peer.connection, IDENTIFIER).unwrap_err(),
         Refusal::LiveCodeRejected
     );
-    assert!(observe(
-        &peer.connection,
-        "certificate leaf[subject.OU] = \"FIXTEAM002\""
-    )
-    .is_ok());
+    assert!(observe(&peer.connection, IDENTIFIER_B).is_ok());
     assert_eq!(RESOURCES.load(Ordering::SeqCst), 0);
 }
 
