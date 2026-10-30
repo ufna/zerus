@@ -35,7 +35,7 @@ fn source_fixture(archive: bool) -> (tempfile::TempDir, PathBuf, PathBuf, PathBu
         &path,
         json!({"version":1,"name":"codex/example/archive","agent":"codex",
         "run_id":"fixture-run","conversation_id":conversation,"archive_id":archive,
-        "archived_at":42,"transcript":transcript,"cwd":"/work/example"})
+        "archived_at":42,"transcript":transcript,"cwd":state})
         .to_string(),
     )
     .unwrap();

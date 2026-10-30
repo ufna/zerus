@@ -45,7 +45,7 @@ class SearchIndex(unittest.TestCase):
         transcript.write_text(json.dumps(event) + "\n")
         binding = self.state / (hashlib.sha256(identity["name"].encode()).hexdigest() + ".json")
         binding.write_text(json.dumps({**identity, "version": 1, "agent": "codex",
-                                       "transcript": str(transcript), "cwd": "/work/example"}))
+                                       "transcript": str(transcript), "cwd": str(self.state)}))
         return identity, binding, transcript
 
     def test_cold_status_does_not_create_an_index(self):
@@ -176,7 +176,7 @@ class SearchIndex(unittest.TestCase):
                                            dict(type="text", text="needle kimi public message")])))
         wire.write_text(json.dumps(event) + "\n")
         binding = self.state / (hashlib.sha256(identity["name"].encode()).hexdigest() + ".json")
-        binding.write_text(json.dumps({**identity, "version": 1, "agent": "kimi", "agent_home": str(profile), "cwd": "/work/example"}))
+        binding.write_text(json.dumps({**identity, "version": 1, "agent": "kimi", "agent_home": str(profile), "cwd": str(self.state)}))
         before = wire.read_bytes()
         self.warm_source()
         reply = self.indexed()
