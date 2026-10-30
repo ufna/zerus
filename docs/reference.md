@@ -4113,6 +4113,11 @@ needs manual inspection before another request. `agent_id` is supported only for
 verified DeepSeek continuable children. Questions carry request identity/hash
 through `pending_questions`; answers use the exact unchanged request.
 
+Messages may begin with an absolute file path, including a directory named like
+a command (`/help/capture.png`). A first token of `/name` without another slash,
+or leading `!` shell mode, still requires Terminal. An argument containing a path
+does not turn `/command` into an ordinary message.
+
 ### Desktop background service
 
 ```sh

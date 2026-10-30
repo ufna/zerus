@@ -1049,7 +1049,7 @@ os.execv('/bin/sh',['sh','-c',sys.argv[-1]])
         self.assertEqual(self.received(), b"\x1b[200~" + "когда это завершится, то что потом?".encode() + b"\x1b[201~\r")
 
     def test_control_sequences_slash_commands_and_invalid_attachment_are_refused(self):
-        for text in ("\x1b[201~bad", "test\rnext", "\x00", " /exit", "!ls"):
+        for text in ("\x1b[201~bad", "test\rnext", "\x00", " /exit", "/help args", "/clear\n/tmp/file", "!ls"):
             self.send(self.payload(text=text), success=False)
         self.send(self.payload(attachments=[dict(name="img.png", mime="image/png", data_base64="bad===")]), success=False)
         self.assertEqual(self.received(), b"")
