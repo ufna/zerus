@@ -247,7 +247,17 @@ pub(crate) fn install(
                     decision.ignore();
                     return true;
                 }
-                if response.is_mime_type_supported() {
+                let attachment = response
+                    .response()
+                    .and_then(|reply| reply.http_headers())
+                    .and_then(|headers| headers.one("Content-Disposition"))
+                    .is_some_and(|value| {
+                        value
+                            .split(';')
+                            .next()
+                            .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("attachment"))
+                    });
+                if response.is_mime_type_supported() && !attachment {
                     decision.use_();
                 } else {
                     // WebKit's download request still has to pass our

@@ -1010,6 +1010,7 @@ reloading or restarting a DeepSeek bridge.
 The native child has no app or plugin IPC. Linux checks the actual WebKit
 navigation action before handing a clicked external link to the guarded
 opener, keeps same-origin popups in place, and refuses new native windows.
+User-initiated `window.open` uses the same guarded browser handoff.
 Downloads require the exact foreground session and a native Save dialog.
 Its GTK overlay follows the measured frame and hides before menus or dialogs.
 The GLib FFI block replaces Wry's single earlier navigation-policy

@@ -11,7 +11,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 CLIENT = ROOT / 'client'
 BINARY = pathlib.Path(os.environ.get('ZERUS_NATIVE_SMOKE_APP', str(CLIENT / 'src-tauri/target/debug/zerus-client')))
 OUTPUT = pathlib.Path(os.environ.get('ZERUS_NATIVE_SMOKE_OUTPUT', '/nonexistent-native-smoke-output'))
-PAGE = r'''<!doctype html><meta charset="utf-8"><title>Private native fixture</title><style>html,body{margin:0;background:#1a604e;color:white;font:16px sans-serif;height:100%}h1{margin:20px}a{display:block;margin:20px;color:white}</style><h1>Private DeepSeek workspace</h1><a id="same" href="/second">Same-origin page</a><a id="external" href="https://example.invalid/native-docs">External link</a><a id="popup" target="_blank" href="/popup">Same-origin popup</a><a id="download" href="/download">Download fixture</a><a id="blank" target="_blank" href="https://example.invalid/native-blank">External new window link</a><button id="window-open" onclick="window.open('https://example.invalid/window-open')">User window.open</button><a id="redirect" href="/redirect">External redirect (deny)</a><button id="script" onclick="location.href='https://example.invalid/script'">Script during a real gesture (deny)</button><script>
+PAGE = r'''<!doctype html><meta charset="utf-8"><title>Private native fixture</title><style>html,body{margin:0;background:#1a604e;color:white;font:16px sans-serif;height:100%}h1{margin:20px}a{display:block;margin:20px;color:white}</style><h1>Private DeepSeek workspace</h1><a id="same" href="/second">Same-origin page</a><a id="external" href="https://example.invalid/native-docs">External link</a><a id="popup" target="_blank" href="/popup">Same-origin popup</a><a id="download" href="/download">Download binary fixture</a><a id="download-text" href="/download-text">Download text attachment</a><a id="download-html" href="/download-html">Download HTML attachment</a><a id="blank" target="_blank" href="https://example.invalid/native-blank">External new window link</a><button id="window-open" onclick="window.open('https://example.invalid/window-open')">User window.open</button><a id="redirect" href="/redirect">External redirect (deny)</a><button id="script" onclick="location.href='https://example.invalid/script'">Script during a real gesture (deny)</button><script>
 const bounded = p => Promise.race([p, new Promise((_,reject)=>setTimeout(()=>reject(Error('TIMEOUT')),3000))]);
 const checks=[];const scriptPopupBlocked=window.open('https://example.invalid/unprompted')===null;
 for(const type of ['pointerdown','click']) document.addEventListener(type,e=>fetch('/interaction',{method:'POST',body:JSON.stringify({type,id:e.target.id,trusted:e.isTrusted,x:e.clientX,y:e.clientY,width:innerWidth,height:innerHeight})}));
@@ -51,11 +51,11 @@ class NativeSmoke(unittest.TestCase):
                     self.send_header('Location', 'https://example.invalid/redirect')
                     self.end_headers()
                     return
-                if path == '/download':
-                    body = b'private synthetic download\n'
+                if path in ('/download', '/download-text', '/download-html'):
+                    body = b'<script>fetch("/unexpected-html-execution")</script><p>download only</p>' if path == '/download-html' else b'private synthetic download'+bytes([10])
                     self.send_response(200)
                     self.send_header('Content-Disposition', 'attachment; filename="fixture.txt"')
-                    self.send_header('Content-Type', 'application/octet-stream')
+                    self.send_header('Content-Type', {'/download-text': 'text/plain', '/download-html': 'text/html'}.get(path, 'application/octet-stream'))
                 else:
                     body = PAGE.encode()
                     self.send_response(200)
@@ -274,9 +274,9 @@ class NativeSmoke(unittest.TestCase):
                         screen('download-cancel')
                         press('Escape')
                         wait_for(lambda: not save_dialog(), 'download cancel left a dialog')
-                        self.assertFalse(list(pathlib.Path(env['HOME']).rglob('fixture.txt')), 'cancelled download wrote a default file')
-                        click('download')
-                        wait_for(save_dialog, 'second download did not open guarded Save')
+                        self.assertFalse(list(base.rglob('fixture.txt')), 'cancelled download wrote a default file')
+                        click('download-text')
+                        wait_for(save_dialog, 'text attachment did not open guarded Save')
                         focus(save_dialog())
                         key_event('Control_L')
                         press('l')
@@ -301,6 +301,15 @@ class NativeSmoke(unittest.TestCase):
                         self.assertEqual(destination.read_bytes(), b'private synthetic download' + bytes([10]))
                         self.assertFalse(save_dialog())
                         print('PASS guarded download: Cancel writes nothing; explicit Save writes exact bytes in private scratch', flush=True)
+                        click('download-html')
+                        wait_for(save_dialog, 'HTML attachment rendered instead of asking for Save')
+                        self.assertNotIn('/unexpected-html-execution', requests, 'HTML attachment executed in the child')
+                        focus(save_dialog()); press('Escape')
+                        wait_for(lambda: not save_dialog(), 'HTML attachment cancel left a dialog')
+                        self.assertFalse(list(base.rglob('fixture.txt')), 'cancelled HTML attachment wrote a file')
+                        self.assertNotIn('/unexpected-html-execution', requests, 'cancelled HTML attachment executed in the child')
+                        print('PASS attachment disposition before MIME: binary Cancel, text Save exact bytes, HTML Cancel without rendering or script execution', flush=True)
+
                         for flags in [[], ['--sessions']]:
                             second = subprocess.run([str(BINARY), *flags], env=env, capture_output=True, text=True, timeout=8)
                             self.assertEqual(second.returncode, 0, second.stderr)
