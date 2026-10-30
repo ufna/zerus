@@ -50,6 +50,7 @@ import { composerClearControl } from "../../bridge";
 import { bulkSelect, clearMulti, multiCount, setAnchor, dragItem, setDragItem, drop, setDrop, endDrag, placement, applyDrop, SESSION_MIME, type DragItem } from "./organize";
 
 import { SearchResults } from "./SearchResults";
+import { nativeEntry } from "./native-entry";
 import "../styles/content-search.css";
 
 const SavedDraftsDialog = lazy(() => import("./SavedDrafts").then((m) => ({ default: m.SavedDraftsDialog })));
@@ -195,7 +196,7 @@ export function sessionMenu(s: Session, folderStatus?: { request: ReturnType<typ
     { label: "Expand all collapsed", icon: "expand-row", disabled: !hasCompactRows(), action: expandCompactRows },
     { separator: true },
     // An archived row has no terminal, and no Mute or Mark group (Qt's `if (!archived)`).
-    ...(archived ? [] : [s.agent === "deepseek" ? { label: "Open native DeepSeek UI", icon: "external-link", disabled: LATER } : { label: "Open terminal", icon: "square-terminal", disabled: LATER }]),
+    ...(archived ? [] : [nativeEntry(s) ?? { label: "Open terminal", icon: "square-terminal", disabled: LATER }]),
     ...(commands ? [commands] : []),
     folders.folder,
     { ...folders.shell, icon: "terminal" },

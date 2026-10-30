@@ -319,10 +319,12 @@ async function previewStep() {
     return !!message && !message.textContent?.includes("Inspect the attached image")
       && !!image && image.src.startsWith("zerus-file:") && image.complete && image.naturalWidth === 1;
   }, 10_000, "the native image echo did not become a decoded attachment card");
-  const missing = [...document.querySelectorAll<HTMLElement>(".act-msg")].find((row) => row.textContent?.includes("Unreadable image stays raw"));
-  if (!missing?.textContent?.includes("Inspect the attached image") || missing.querySelector(".att-card")) {
-    throw new Error("an unreadable native image echo did not keep its raw text");
-  }
+  // This read can finish after the successful image's independent read.
+  // Keep the same raw-text/no-card assertion, after its result settles.
+  await until(() => {
+    const missing = [...document.querySelectorAll<HTMLElement>(".act-msg")].find((row) => row.textContent?.includes("Unreadable image stays raw"));
+    return !!missing?.textContent?.includes("Inspect the attached image") && !missing.querySelector(".att-card");
+  }, 10_000, "an unreadable native image echo did not keep its raw text");
   const reads = await calls("attachment");
   for (const request of ["req-fixture-echo-image", "req-fixture-missing-image"]) {
     if (!reads.some((entry) => entry.argv.includes(request))) throw new Error(`the echo did not use its guarded read: ${request}`);

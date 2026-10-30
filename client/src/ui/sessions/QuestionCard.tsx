@@ -3,6 +3,8 @@ import { Icon } from "../lib/icons";
 import { questions } from "../../store/questions";
 import { terminal } from "../../store/terminal";
 import { setDetailTab } from "../../store/ui";
+import { selected } from "../../store/ui";
+import { nativeBinding, nativeRoute } from "./native-entry";
 import { Body } from "./Activity";
 import type { FormView, OptionView } from "../../types";
 
@@ -40,6 +42,7 @@ function guardKeys(e: KeyboardEvent) {
 }
 
 function Card() {
+  const openNative = nativeRoute(selected());
   const q = () => questions.view()!;
   const c = () => q().view;
   // Tabs stay browsable while the card is locked; the draft keeps its page (QuestionCard.cpp:249-255).
@@ -67,7 +70,7 @@ function Card() {
     });
   });
   const native = () => q().terminal_label === "Open native UI";
-  const terminalTip = () => (native() ? "Arrives with Native UI." : terminal.texts()?.available ? undefined : terminal.texts()?.reason);
+  const terminalTip = () => (native() ? undefined : terminal.texts()?.available ? undefined : terminal.texts()?.reason);
   const onKey = (e: KeyboardEvent) => {
     if (e.isComposing || e.keyCode === 229) return;
     if (e.key !== "Enter" || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
@@ -104,8 +107,8 @@ function Card() {
       <Show when={formId()} keyed>{(id) => <Form id={id} onKey={onKey} />}</Show>
       <p class="qcard-status" classList={{ error: c().status_error }} title={c().status} role="status" aria-live="polite">{c().status}</p>
       <div class="qcard-actions">
-        <button type="button" class="btn ghost" disabled={native() || !terminal.texts()?.available} title={terminalTip()}
-          onClick={() => { terminal.opened(); setDetailTab("terminal"); }}>{q().terminal_label}</button>
+        <button type="button" class="btn ghost" disabled={native() ? !nativeBinding(selected()) : !terminal.texts()?.available} title={terminalTip()}
+          onClick={() => { if (native()) openNative(); else { terminal.opened(); setDetailTab("terminal"); } }}>{q().terminal_label}</button>
         <span class="grow" />
         <Show when={c().skip.visible}><button type="button" class="btn ghost" title={c().skip_tip} disabled={!questions.enabled(c().skip)} onClick={() => void questions.skip()}>{c().skip.label}</button></Show>
         <Show when={c().retry}><button type="button" class="btn ghost" title={c().retry_tip} onClick={() => void questions.allowRetry()}>Allow retry</button></Show>

@@ -23,6 +23,13 @@ let source: Source | undefined;
 
 export const inTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+export const nativeUiOpen = (request: import("./store/native-ui-model").NativeRequest, reload: boolean, embedded: boolean) => desktop<import("./store/native-ui-model").NativeStatus>("native_ui_open", { request, reload, embedded });
+export const nativeUiRetire = () => inTauri() ? invoke<void>("native_ui_retire") : Promise.resolve();
+export const nativeUiVisible = (nonce: string, visible: boolean) => inTauri() ? invoke<void>("native_ui_visible", { nonce, visible }) : Promise.resolve();
+export const nativeUiBounds = (bounds: import("./store/native-ui-model").NativeBounds) => inTauri() ? invoke<void>("native_ui_bounds", { bounds }) : Promise.resolve();
+export const nativeUiBrowser = (request: import("./store/native-ui-model").NativeRequest) => desktop<void>("native_ui_browser", { request });
+export const onNativeUi = (listener: (status: import("./store/native-ui-model").NativeStatus) => void) => onEvent("native-ui", listener);
+
 export async function followTasks(project: string | null): Promise<void> {
   if (!inTauri()) { if (project) throw new Error("Tasks need a live hgs event stream."); return; }
   await invoke("tasks_follow", { project });

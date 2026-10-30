@@ -999,6 +999,42 @@ its guarded Remove action arrive with A2-6.
 
 ## Phase 4 smoke run
 
+DeepSeek's Native UI follows the mockup's session detail tab and existing
+question, local-message, recovery, sign-in and session-menu routes. Linux
+embeds a bounded cache of four incognito launch profiles in the main window;
+macOS, Windows and unsupported web engines use the existing browser route
+from the session menu. Opening the tab never opens a browser automatically.
+Reload reconnects the view through `hgs native-ui NAME --json`, without
+reloading or restarting a DeepSeek bridge.
+
+The native child has no app or plugin IPC. Linux checks the actual WebKit
+navigation action before handing a clicked external link to the guarded
+opener, keeps same-origin popups in place, and refuses new native windows.
+Downloads require the exact foreground session and a native Save dialog.
+Its GTK overlay follows the measured frame and hides before menus or dialogs.
+The GLib FFI block replaces Wry's single earlier navigation-policy
+handler on that owned child before its first URL load; an unexpected handler
+graph uses browser fallback. The primary view's policy is unchanged.
+
+Run the Native UI proof from the repository root with a switch-identity build:
+
+```sh
+TAURI_CONFIG='{"identifier":"com.hgdev.hgs-tray"}' cargo build --locked \
+  --manifest-path client/src-tauri/Cargo.toml --features media,tauri/custom-protocol
+python3 client/scripts/native-ui-smoke.py \
+  --app client/src-tauri/target/debug/zerus-client \
+  --output artifacts/validation/native-ui-proof
+```
+
+The script always creates a private D-Bus, Xvfb and HOME/XDG/TMPDIR/TMUX_TMPDIR
+from a fresh environment, and uses only a local HTTP fixture and fake CLI.
+It records IPC and private-protocol refusals, native pointer gestures,
+download cancellation and exact saved bytes, profile eviction, explicit
+browser fallback, resize and activation, then the complete Phase 4 smoke.
+The ignored `native_ui::linux::tests` case separately qualifies the expected
+handler graph, primary-handler preservation and reload on that same private
+bus/display; run it explicitly with `--ignored --test-threads=1`.
+
 `scripts/make-fixture.py` deterministically generates the replay, including the
 warm and cold cache states, a paused resumable session, JSON and one-pixel PNG
 attachments, a question, an approval and a native queue. The six driven
@@ -1452,7 +1488,7 @@ A blank window is not detected. Known gap: on the GL path a minimised window kee
 
 ## Rules
 
-- Part B adds voice and round video, DeepSeek's Native UI and the external
+- Part B adds voice and round video and the external
   terminal, shell and folder entries; their current disabled slots stay in Qt's
   places until then.
 - The UI never separates values with dots (U+00B7, U+2022, U+2219, U+22C5,
