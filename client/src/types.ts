@@ -639,7 +639,8 @@ export interface ArchivedActivity {
 // The composer (src-tauri/src/composer): the mirrors of its serde shapes.
 
 /** One attachment of the open draft; `path` is its `zerus-file` path. */
-export interface AttachmentView { name: string; mime: string; reference: string; bytes: number; path: string; excerpt: string | null }
+export interface ImageSize { width: number; height: number }
+export interface AttachmentView { name: string; mime: string; reference: string; bytes: number; path: string; excerpt: string | null; image_size?: ImageSize | null }
 export type ChipTone = "quiet" | "danger" | "warning" | "success";
 /** The cache chip (core `cache::Chip`); hidden when not `visible`. */
 export interface Chip { visible: boolean; tone: ChipTone; label: string; short_label: string }
@@ -751,6 +752,7 @@ export interface Fetched {
   path: string; name: string; mime: string; bytes: number;
   /** An image whose header gives its size, at most Qt's 64M pixels: a card may show its thumbnail. */
   thumbnail: boolean;
+  image_size?: ImageSize | null;
 }
 
 // Saved drafts (src-tauri `composer/saved.rs`).

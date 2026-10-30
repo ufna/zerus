@@ -18,7 +18,6 @@ import "../styles/tasks.css";
 
 const TaskCreate = lazy(() => import("./TaskCreate"));
 
-export function TaskTabBadge() { return <Show when={project() && tasks.loaded()}><span class="tk-tabbadge"><Show when={rows().filter((t) => t.stage === "review").length}>{(n) => <span class="tk-tb review">{n()}</span>}</Show><Show when={rows().filter((t) => t.stage === "todo").length}>{(n) => <span class="tk-tb todo">{n()}</span>}</Show></span></Show>; }
 const FILTERS = ["current", ...STAGES] as const;
 type Filter = typeof FILTERS[number];
 const LABEL = { current: "Active", ...STAGE_LABEL }, ICON = { current: "activity", ...STAGE_ICON };
