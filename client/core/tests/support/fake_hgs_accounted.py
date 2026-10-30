@@ -11,8 +11,11 @@ ROOT = Path(os.path.abspath(sys.argv[0])).parent
 CONFIG = json.loads((ROOT / "accounted.json").read_text())
 RELEASE = ROOT / "release"
 args = sys.argv[1:]
+host = ""
 if args and args[0].startswith("@"):
+    host = args[0][1:]
     args = args[1:]
+CONFIG = CONFIG.get("hosts", {}).get(host, CONFIG)
 with (ROOT / "calls.jsonl").open("a") as out:
     out.write(json.dumps(args) + "\n")
 
@@ -46,6 +49,12 @@ elif args == ["watch", "--json"]:
     if phase == "watch":
         holder()
         (ROOT / "ready").touch()
+    if CONFIG.get("remove_peers"):
+        end = time.monotonic() + 20
+        while not (ROOT / "remove-peers").exists() and time.monotonic() < end:
+            time.sleep(.01)
+        print(json.dumps(dict(CONFIG["remove_peers"], v=1,
+                              seq=len(CONFIG["frames"]) + 1)), flush=True)
     if CONFIG["pipe"] == "stdin":
         import array
         import fcntl

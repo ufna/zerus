@@ -819,11 +819,22 @@ impl StreamHandle {
         self.stop.load(Ordering::Relaxed)
     }
 
-    fn shutdown(&mut self) {
+    /// Close native admissions and wake the owned supervisor without joining.
+    /// This is cancellation only; resource completion needs the host's barrier.
+    pub fn request_stop(&self) {
+        self.close_admissions();
+        let _ = self.tx.try_send(Input::Stop);
+    }
+
+    fn close_admissions(&self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(resources) = &self.resources {
             resources.close();
         }
+    }
+
+    fn shutdown(&mut self) {
+        self.close_admissions();
         if self.raw_source || self.resources.is_some() {
             let _ = self.tx.try_send(Input::Stop);
             if let Some(thread) = self.thread.take() {

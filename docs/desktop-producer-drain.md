@@ -256,11 +256,42 @@ owned-child exit, both real pipe completions and a successful decoder before
 returning data. Existing native recovery, voice and swarm services retain their
 own authority; this tracks the existing CLI helper reads, never those services.
 
-This is the supervisor prerequisite, not full Fleet drain. The next integration
-must close Fleet/GUI admissions and retain removed-peer stop threads, the router,
-queued changes and the actual pump/consumer callbacks until completion. An external
-sink with queued changes is not drained by `spawn_accounted` or a returned stop.
-No positive producer command, profile handoff or capture API is implemented here.
+### Fleet and GUI consumer barrier
+
+`Fleet::start_accounted` now passes the same host resource group through the
+existing router and supervisors. It admits at most 64 live or retired source
+groups in total. Removing a peer releases neither its slot nor its host group
+until the detached stop callback and actual supervisor/helper/pipe resources
+end. Pressure reports the existing reconnecting state; explicit Retry now may
+admit a still-listed missing source after capacity becomes available. It never
+stacks another poller. The old unaccounted constructors retain their shutdown
+behavior.
+
+A weak `FleetControl` closes source admissions and requests cancellation without
+charging a finished graph. Accounted Fleet shutdown bounds joins to one shared
+one-second wait; unfinished threads keep their guards after the handle returns.
+The GUI's existing source pump retains the same group through channel EOF,
+already queued changes, organization observation, mirror/tap processing and the
+creation observer callback. An external sink is not drained by a returned
+`StreamHandle::stop` or Fleet stop. Work scheduled by another role's observer
+remains that role's responsibility; this does not transfer G2 ownership.
+
+The dormant internal `freeze_fleet` barrier closes a fixed 64-group GUI control
+gate before stopping sources, so already admitted starts cannot recreate a
+source after close. It waits off-thread for those controls, takes the source
+without blocking or poison recovery, stops its accounted Fleet and waits for
+actual source/pump resources against the same absolute deadline. A returned
+stop or late completion never supplies successful drain. Busy/poisoned state,
+replay, pending I/O and expired deadlines refuse, leaving admissions closed.
+The one-use barrier charge remains held by its worker while stop is executing;
+dropping a controller receiver is not completion. Windows refuses before
+closing admissions because the native integration is unqualified there.
+
+The Unix GUI now uses this accounting for its existing single Fleet and pump;
+argv, source selection, subscription/callback ordering and ordinary rendering
+remain the same. No production caller freezes it yet. This supplies only the
+Fleet role prerequisite: no positive producer command, profile handoff, fresh
+capture, writer delegation or cross-role quiescence is implemented here.
 
 ## Fresh capture and publication boundary
 
