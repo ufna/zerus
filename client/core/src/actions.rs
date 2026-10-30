@@ -217,6 +217,25 @@ pub struct WorktreeCleanup {
     pub common_dir: String,
     #[serde(default)]
     pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive: Option<Box<crate::termination_cleanup::ArchiveIdentity>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<Value>,
+    #[serde(default)]
+    pub details_omitted: bool,
+}
+
+impl WorktreeCleanup {
+    /// A complete bounded row for this exact reported folder. It describes
+    /// the earlier check; it never establishes current removal authority.
+    pub fn review_row(&self) -> Option<&Value> {
+        self.review.as_ref().filter(|row| {
+            row.is_object()
+                && row["path"].as_str() == Some(self.path.as_str())
+                && row["kind"] == "linked"
+                && serde_json::to_vec(row).is_ok_and(|bytes| bytes.len() <= 60 * 1024)
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
