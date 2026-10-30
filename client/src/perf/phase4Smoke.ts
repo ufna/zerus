@@ -1,13 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import * as bridge from "../bridge";
 import { orderedRows } from "../store/catalog";
-import { activity } from "../store/session";
+import { activity, subagentActivity } from "../store/session";
 import { notices } from "../store/actions";
 import { composer } from "../store/composer";
 import { terminal } from "../store/terminal";
 import { processes } from "../store/processes";
 import { questions } from "../store/questions";
-import { selectedKey, setDetailTab, setSelectedKey } from "../store/ui";
+import { selectedKey, setDetailTab, setSelectedKey, subagentOpen } from "../store/ui";
 import { flag, setSetting } from "../store/settings";
 import type { Session } from "../ui/sessions/types";
 
@@ -413,6 +413,50 @@ async function clearCloseOrderStep() {
   await until(() => composer.view()?.clear.running === false, 5000, "the clear did not finish");
 }
 
+async function openChild(agentId: string, label: string) {
+  const expand = [...document.querySelectorAll<HTMLButtonElement>("button")].find((candidate) => candidate.title === "Show subagents");
+  expand?.click();
+  await until(() => [...document.querySelectorAll<HTMLElement>(".rowhit")].some((row) => row.textContent?.includes(label)), 10_000, `${label} is not in the roster`);
+  const row = [...document.querySelectorAll<HTMLElement>(".rowhit")].find((candidate) => candidate.textContent?.includes(label))!;
+  row.click();
+  await until(() => subagentOpen() === agentId && subagentActivity.target()?.agentId === agentId && subagentActivity.loaded()
+    && composer.view()?.subagent?.agent_id === agentId && composer.view()?.loaded === true,
+    15_000, `${label} did not open its own Activity and composer`);
+}
+
+async function subagentStep() {
+  const parent = await select(API);
+  await openChild("agent-writable", "Writable child");
+  await until(() => composer.view()?.subagent?.send_supported === true && composer.view()?.input_visible === true, 10_000, "the writable child composer did not open");
+  type("child smoke");
+  await until(() => composer.text() === "child smoke", 1000, "the child editor did not take the text");
+  button("Main activity").click();
+  await until(() => !subagentOpen() && composer.view()?.key === `${parent.computer}\n${parent.name}`, 5000, "the parent composer did not return");
+  await openChild("agent-writable", "Writable child");
+  if (composer.text() !== "child smoke") throw new Error("the child draft did not survive navigation");
+  await until(() => composer.sendEnabled(), 10_000, "the reopened child did not restore Send");
+  const before = (await calls("send")).length;
+  await composer.send();
+  await until(() => composer.view()?.local.some((row) => row.status === "sent" && row.text === "child smoke") === true, 10_000, "the child send did not settle");
+  const sent = await waitCall("send", before + 1);
+  const request = JSON.parse(sent[before].stdin) as { expected_run_id: string; expected_conversation_id: string; agent_id?: string; text: string };
+  if (request.expected_run_id !== parent.runId || request.expected_conversation_id !== parent.conversationId
+    || request.agent_id !== "agent-writable" || request.text !== "child smoke") {
+    throw new Error(`the child send has the wrong identity: ${sent[before].stdin}`);
+  }
+  await openChild("agent-readonly", "Read-only child");
+  await until(() => document.querySelector(".subagent-bar")?.textContent?.includes("Read only. This agent is managed by the parent conversation.") === true,
+    10_000, "the read-only child hint did not arrive");
+  if (composer.view()?.input_visible !== false || document.querySelector<HTMLElement>(".cmp-actions")?.hidden !== true) {
+    throw new Error("the read-only child composer is not hidden");
+  }
+  await composer.send();
+  await sleep(50);
+  if ((await calls("send")).length !== before + 1) throw new Error("the read-only child sent a message");
+  button("Main activity").click();
+  await until(() => !subagentOpen(), 5000, "the child view did not close");
+}
+
 export async function phase4Smoke(allowed: boolean, smokeFile?: string) {
   const exit = (code: number) => invoke("exit_app", { code }).catch(() => {});
   if (!allowed) {
@@ -436,6 +480,7 @@ export async function phase4Smoke(allowed: boolean, smokeFile?: string) {
     ["image-paste", imagePasteStep],
     ["clear-close-order", clearCloseOrderStep],
     ["send-follow", sendFollowStep],
+    ["subagent", subagentStep],
   ];
   let current = "start";
   try {

@@ -50,10 +50,25 @@ def fixture_config():
     resumed = copy.deepcopy(inspect["claude/sample-project/review"])
     resumed.update(run_id=resumed["run_id"] + "-resumed", state="running", runtime_state="live", process_state="running",
                    phase="idle", activity="idle")
+    api = catalog[next(key for key, row in catalog.items() if row["name"] == "claude/sample-project/api-refactor")]
+    children = {}
+    for agent, supported, scope, seq in (
+        ("agent-writable", True, "Native subagent history", 900001),
+        ("agent-readonly", False, "Recorded subagent activity", 900002),
+    ):
+        children[api["name"] + "\n" + agent] = {
+            "name": api["name"], "agent_id": agent, "parent_conversation_id": api["conversation_id"],
+            "conversation_id": api["conversation_id"] + "/" + agent, "run_id": api["run_id"],
+            "state": "running", "runtime_state": "live", "process_state": "running", "phase": "idle", "activity": "idle",
+            "tracked": True, "send_supported": supported, "history_scope": scope, "history_truncated": False,
+            "attachments_supported": True, "events": [{"seq": seq, "type": "Stop", "source": "subagent_summary", "detail": scope, "at": 1793000000}],
+            "cursor": seq,
+        }
     orders = base64.b64encode(b'{"orders":[1,2,3]}\n').decode("ascii")
     return {
         "attach": str(CLIENT / "core/tests/support/fake_attach.py"),
         "inspect": inspect,
+        "subagent_inspect": children,
         "resume_ready": {"claude/sample-project/review": resumed},
         "delays": {"clear-context": 0.5, "resume": 0.3},
         "attachments": {
@@ -77,6 +92,8 @@ def main():
     (scratch / "home").mkdir()
     (scratch / "data").mkdir()
     (scratch / "cache").mkdir()
+    (scratch / "runtime").mkdir(mode=0o700)
+    (scratch / "tmp").mkdir(mode=0o700)
     hgs = scratch / "hgs"
     shutil.copy2(CLIENT / "src-tauri/tests/support/fake_hgs_phase4.py", hgs)
     hgs.chmod(0o755)
@@ -84,14 +101,16 @@ def main():
     smoke_file = scratch / "smoke-notes.txt"
     smoke_file.write_text('{"orders":[1,2,3]}\n', encoding="utf-8")
 
-    env = os.environ.copy()
-    env.pop("DISPLAY", None)
-    env.update(HOME=str(scratch / "home"), XDG_DATA_HOME=str(scratch / "data"), XDG_CACHE_HOME=str(scratch / "cache"),
-               WAYLAND_DISPLAY="zerus-none", GDK_BACKEND="x11", WEBKIT_DISABLE_DMABUF_RENDERER="1", ZERUS_CLIENT_HEADLESS="1",
-               ZERUS_CLIENT_REPLAY=str(CLIENT / "fixtures/replay.ndjson"), ZERUS_CLIENT_HGS=str(hgs),
-               ZERUS_CLIENT_QUERY="phase4-smoke=1", ZERUS_CLIENT_PERF="smoke", ZERUS_CLIENT_SMOKE_FILE=str(smoke_file),
-               ZERUS_CLIENT_SMOKE_NOW="1793000100")
-    command = ["xvfb-run", "-a", "-s", "-screen 0 1440x900x24", str(app)]
+    env = {
+        "PATH": os.environ["PATH"], "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "HOME": str(scratch / "home"), "XDG_DATA_HOME": str(scratch / "data"), "XDG_CACHE_HOME": str(scratch / "cache"),
+        "XDG_RUNTIME_DIR": str(scratch / "runtime"), "TMPDIR": str(scratch / "tmp"),
+        "WAYLAND_DISPLAY": "zerus-none", "GDK_BACKEND": "x11", "WEBKIT_DISABLE_DMABUF_RENDERER": "1", "ZERUS_CLIENT_HEADLESS": "1",
+        "ZERUS_CLIENT_REPLAY": str(CLIENT / "fixtures/replay.ndjson"), "ZERUS_CLIENT_HGS": str(hgs),
+        "ZERUS_CLIENT_QUERY": "phase4-smoke=1", "ZERUS_CLIENT_PERF": "smoke", "ZERUS_CLIENT_SMOKE_FILE": str(smoke_file),
+        "ZERUS_CLIENT_SMOKE_NOW": "1793000100",
+    }
+    command = ["dbus-run-session", "--", "xvfb-run", "-a", "-s", "-screen 0 1440x900x24", str(app)]
     app_log = scratch / "app.log"
     print("GDK_BACKEND=x11 WAYLAND_DISPLAY=zerus-none DISPLAY=<unset>", flush=True)
     with app_log.open("w", encoding="utf-8") as output:

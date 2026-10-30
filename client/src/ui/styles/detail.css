@@ -253,8 +253,8 @@
   .att-row { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 4px 4px 4px 6px; border-radius: 6px; cursor: pointer; outline: none; }
   .att-row:hover, .att-row:focus-visible { background: var(--z-color-hover); }
   .att-row:focus-visible { box-shadow: inset 0 0 0 1px var(--z-color-accent); }
-  .att-thumb { flex: none; width: 30px; height: 22px; border-radius: 3px; overflow: hidden; display: grid; place-items: center; background: var(--z-color-tile); color: var(--z-color-muted); }
-  .att-thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .att-pop .att-thumb { flex: none; width: 30px; height: 22px; border-radius: 3px; overflow: hidden; display: grid; place-items: center; background: var(--z-color-tile); color: var(--z-color-muted); }
+  .att-pop .att-thumb img { width: 100%; height: 100%; object-fit: cover; }
   .att-text { flex: 1; min-width: 0; display: flex; flex-direction: column; font-size: 11px; line-height: 1.35; color: var(--z-color-text); }
   .att-ref { color: var(--z-color-muted); }
   .att-remove { flex: none; width: 24px; height: 24px; color: var(--z-color-muted); }

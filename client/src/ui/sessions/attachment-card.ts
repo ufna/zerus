@@ -12,7 +12,7 @@ export function cardTarget(file: Pick<ItemAttachment, "request_id" | "index">, s
     computer: scope.computer,
     ref: {
       name: scope.name, request_id: file.request_id, index: file.index,
-      conversation_id: scope.conversation_id, archive_id: scope.archive_id, agent_id: null,
+      conversation_id: scope.conversation_id, archive_id: scope.archive_id, agent_id: scope.agent_id ?? null,
     },
   };
 }

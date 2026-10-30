@@ -64,7 +64,7 @@ use zerus_client_core::session_usage;
 use zerus_client_core::terminal::{self, TerminalFacts};
 use zerus_client_core::{Action, Exit, Outcome, Target, TooLarge, ViewRow};
 
-use super::{Composer, Composers, Hub, SessionRef, EVENTS};
+use super::{Composer, Composers, Hub, SessionRef, SubagentView, EVENTS};
 use crate::actions::WriteKind;
 
 /// No Activity state this long after opening: inspect.
@@ -84,6 +84,7 @@ const STOPPED: &str = "Session stopped. Send asks whether to resume it or start 
 /// The session's state for the composer view.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct SessionView {
+    pub(crate) subagent: Option<SubagentView>,
     pub(crate) available: bool,
     pub(crate) unavailable_reason: String,
     pub(crate) block_reason: Option<String>,
@@ -254,8 +255,28 @@ pub(crate) struct Context {
 }
 
 impl Context {
+    /// Only the open child's own inspection, never its parent's state or another child's.
+    pub(crate) fn child_details(&self) -> Option<&Value> {
+        let child = self.session.subagent.as_ref().filter(|child| child.valid())?;
+        let details = self.details.as_deref()?;
+        (text(details, "agent_id") == child.agent_id
+            && text(details, "parent_conversation_id") == child.parent_conversation_id)
+            .then_some(details)
+    }
+
     pub(crate) fn reason(&self) -> Option<String> {
-        block_reason(&self.facts, self.details.as_deref())
+        if let Some(reason) = block_reason(&self.facts, self.details.as_deref()) {
+            return Some(reason);
+        }
+        self.session.subagent.as_ref()?;
+        let details = self.child_details();
+        if details.is_some_and(|details| flag(details, "send_supported")) {
+            None
+        } else if details.is_some() {
+            Some("Read only. This agent is managed by the parent conversation.".into())
+        } else {
+            Some("Loading subagent activity…".into())
+        }
     }
 
     /// Qt's `recorded`: session data that is not live (`SessionsWindow.cpp:3783`).
@@ -357,10 +378,20 @@ impl Composers {
             run_id: ctx.row.run_id.clone().unwrap_or_default(),
             conversation_id: ctx.row.conversation_id.clone().unwrap_or_default(),
         };
+        let parent_run = target.run_id.clone();
+        let parent = target.conversation_id.clone();
+        let agent = ctx.session.subagent.as_ref().map(|child| child.agent_id.clone());
         let archive = ctx.session.archive_id;
         let me = self.clone();
         (self.0.deps.spawn)(Box::new(move || {
-            let read = (me.0.deps.inspect)(&target, archive.as_deref()).map(|mut value| {
+            let read = (me.0.deps.inspect)(&target, archive.as_deref(), agent.as_deref()).and_then(|mut value| {
+                if agent.as_ref().is_some_and(|agent| {
+                    text(&value, "run_id") != parent_run
+                        || text(&value, "agent_id") != *agent
+                        || text(&value, "parent_conversation_id") != parent
+                }) {
+                    return Err("The subagent changed or is unavailable".into());
+                }
                 // The details keep no events: they join the followed window
                 // apart, as Qt's inspection reply joins `m_events`.
                 let replace = value["replace_events"].as_bool() == Some(true);
@@ -368,7 +399,7 @@ impl Composers {
                     .as_object_mut()
                     .and_then(|fields| fields.remove("events"));
                 let expiry = expiry(&value);
-                (Arc::new(value), expiry, (replace, events))
+                Ok((Arc::new(value), expiry, (replace, events)))
             });
             let mut hub = me.lock();
             // Another session was opened, or the follow ended, meanwhile:
@@ -542,9 +573,26 @@ pub(crate) fn session_view(composers: &Composers, hub: &Hub, composer: &Composer
     let details = ctx.details.as_deref().unwrap_or(&Value::Null);
     let now = composers.now();
     let reason = ctx.reason();
-    // A stopped session that Send can start stays available
-    // (`SessionsWindow.cpp:3987-3989`); its block reason still stands.
-    let can_start = reason.is_some()
+    let subagent = ctx.session.subagent.as_ref().map(|child| {
+        let inspected = ctx.child_details();
+        let send_supported = inspected.is_some_and(|details| flag(details, "send_supported"));
+        let hint = inspected.map_or_else(|| "Loading subagent activity…".into(), |details| {
+            format!(
+                "{}{}{}",
+                text(details, "history_scope"),
+                if flag(details, "history_truncated") { ". Showing recent activity." } else { "" },
+                if send_supported { " Messages go directly to this agent." } else { " Read only. This agent is managed by the parent conversation." }
+            )
+        });
+        SubagentView {
+            agent_id: child.agent_id.clone(),
+            send_supported,
+            hint,
+        }
+    });
+    // A stopped main session that Send can start stays available; a child never starts its parent.
+    let can_start = subagent.is_none()
+        && reason.is_some()
         && rules::can_start_stopped(
             &Composers::rules_session(&ctx),
             Composers::start_busy(hub, &ctx),
@@ -594,6 +642,7 @@ pub(crate) fn session_view(composers: &Composers, hub: &Hub, composer: &Composer
         _ => local_time(seconds),
     };
     SessionView {
+        subagent,
         available,
         unavailable_reason,
         clear: clear_control(hub, &ctx, details),
@@ -829,10 +878,14 @@ impl Context {
     }
 
     pub(crate) fn conversation(&self) -> String {
-        self.details
-            .as_deref()
-            .map(|d| text(d, "conversation_id").to_owned())
-            .unwrap_or_default()
+        self.details.as_deref().map(|details| {
+            if self.session.subagent.is_some() {
+                // hgs send names the parent conversation and routes with agent_id.
+                text(details, "parent_conversation_id").to_owned()
+            } else {
+                text(details, "conversation_id").to_owned()
+            }
+        }).unwrap_or_default()
     }
 }
 
@@ -939,7 +992,7 @@ impl Composers {
         // (`sendMessage` 4809, `startToSend` 4707), while Qt's Send is
         // enabled (`updateControls`, `MessageComposer.cpp:1185`).
         let session = Self::rules_session(&ctx);
-        if rules::can_start_stopped(&session, Self::start_busy(hub, &ctx)) {
+        if ctx.session.subagent.is_none() && rules::can_start_stopped(&session, Self::start_busy(hub, &ctx)) {
             if !self
                 .view_of(hub, &ctx.key)
                 .is_some_and(|view| view.can_send)
@@ -985,7 +1038,7 @@ impl Composers {
     ) -> SendReply {
         let details = ctx.details.as_deref().unwrap_or(&Value::Null);
         let now = self.now();
-        if cache::expired(details, now) {
+        if ctx.session.subagent.is_none() && cache::expired(details, now) {
             // Qt's dialog offers Clear context while no reset runs anywhere
             // (`m_clearRequest`, 4825).
             let prompt = cache::cold_prompt(
@@ -1306,7 +1359,7 @@ impl Composers {
         let action = Action::Send {
             text: delivery.text.clone(),
             attachments: delivery.attachments.clone(),
-            agent_id: None,
+            agent_id: delivery.session.subagent.as_ref().map(|child| child.agent_id.clone()),
             expected_compaction_id: delivery.compaction.clone(),
         };
         let dispatch = &self.0.deps.dispatch;
@@ -1338,9 +1391,8 @@ impl Composers {
     pub(crate) fn still_valid(&self, delivery: &Delivery) -> bool {
         let now = self.now();
         let expired = |details: Option<&Value>| details.is_some_and(|d| cache::expired(d, now));
-        // Without consent, a cache that has expired since Send was pressed
-        // asks first.
-        if !delivery.consent && expired(delivery.evidence.as_deref()) {
+        // Only a main session's expired cache asks for consent.
+        if delivery.session.subagent.is_none() && !delivery.consent && expired(delivery.evidence.as_deref()) {
             return false;
         }
         let hub = self.lock();
@@ -1393,11 +1445,19 @@ impl Composers {
             None => delivery.evidence.clone(),
         };
         if let Some(details) = evidence.as_deref() {
+            let identity = delivery.session.subagent.as_ref().map_or_else(
+                || text(details, "conversation_id") == delivery.conversation,
+                |child| {
+                    text(details, "parent_conversation_id") == delivery.conversation
+                        && text(details, "agent_id") == child.agent_id
+                        && flag(details, "send_supported")
+                },
+            );
             if text(details, "run_id") != delivery.run
-                || text(details, "conversation_id") != delivery.conversation
+                || !identity
                 || text(details, "runtime_state") != "live"
                 || text(details, "process_state") != "running"
-                || (!delivery.consent && expired(Some(details)))
+                || (delivery.session.subagent.is_none() && !delivery.consent && expired(Some(details)))
             {
                 return false;
             }
@@ -1517,7 +1577,15 @@ impl Composers {
                 return false;
             }
             let hub = &mut *guard;
-            let details = hub.followed.details.clone();
+            let child = hub.open.as_ref().and_then(|open| open.subagent.clone());
+            let details = hub.followed.details.clone().map(|details| {
+                if child.is_none() {
+                    return details;
+                }
+                let mut adjusted = (*details).clone();
+                adjusted["conversation_id"] = adjusted["parent_conversation_id"].clone();
+                Arc::new(adjusted)
+            });
             let reconciled = hub.local.reconcile(
                 &key,
                 details.as_deref().unwrap_or(&Value::Null),
@@ -1880,6 +1948,13 @@ fn take_pending(hub: &mut Hub, key: &str, start: bool, revision: u64) -> Option<
 /// Clear session and the cache popover's Clear context for the open
 /// session (`renderDetails` 3790-3804, `clearContext` 4638-4655).
 fn clear_control(hub: &Hub, ctx: &Context, details: &Value) -> ClearControl {
+    if ctx.session.subagent.is_some() {
+        return ClearControl {
+            run: ctx.run(),
+            conversation: ctx.conversation(),
+            ..ClearControl::default()
+        };
+    }
     // A Claude chooser hides the native composer: clearing first dismisses it.
     let supported = flag(details, "clear_context_supported");
     let dismiss = !supported;
@@ -1939,7 +2014,7 @@ impl Composers {
             run_id: row.run_id.clone().unwrap_or_default(),
             conversation_id: row.conversation_id.clone().unwrap_or_default(),
         };
-        let details = (self.0.deps.inspect)(&target, session.archive_id.as_deref()).ok()?;
+        let details = (self.0.deps.inspect)(&target, session.archive_id.as_deref(), None).ok()?;
         if details["run_id"].as_str() != Some(target.run_id.as_str())
             || details["conversation_id"].as_str() != Some(target.conversation_id.as_str())
         {
@@ -2612,7 +2687,7 @@ impl Composers {
         let me = self.clone();
         let owned = key.to_owned();
         (self.0.deps.spawn)(Box::new(move || {
-            let read = (me.0.deps.inspect)(&target, None);
+            let read = (me.0.deps.inspect)(&target, None, None);
             if let Some(pending) = pending_mut(&mut me.lock(), &owned, start, revision) {
                 pending.polling = false;
             }
@@ -2681,6 +2756,7 @@ impl Composers {
                 return SendReply::Busy;
             };
             if hub.closed
+                || ctx.session.subagent.is_some()
                 || !hub
                     .composers
                     .get(&ctx.key)
@@ -2837,7 +2913,7 @@ pub async fn clear_context(
 pub(crate) mod tests {
     use super::*;
     use crate::composer::tests::{dir, drafts, hold, session, until, Scratch, KEY};
-    use crate::composer::{lock, ComposerView, Composers, Config, Deps, Job, Spawn};
+    use crate::composer::{lock, ComposerView, Composers, Config, Deps, Job, Spawn, SubagentRef};
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
@@ -2940,7 +3016,7 @@ pub(crate) mod tests {
                         lock(&f6.reconnects).push(computer.to_owned());
                     })
                 }),
-                inspect: Arc::new(move |_, _| {
+                inspect: Arc::new(move |_, _, _| {
                     f3.inspects.fetch_add(1, Ordering::SeqCst);
                     lock(&f3.inspected)
                         .clone()
@@ -2966,6 +3042,26 @@ pub(crate) mod tests {
     pub(crate) fn ready() -> Value {
         json!({"tracked": true, "run_id": "run-1", "conversation_id": "conv-1", "runtime_state": "live", "process_state": "running",
                "phase": "idle", "activity": "idle", "compact_context_supported": true, "clear_context_supported": true})
+    }
+
+    fn child_session() -> SessionRef {
+        SessionRef {
+            subagent: Some(SubagentRef {
+                agent_id: "agent-7".into(),
+                parent_conversation_id: "conv-1".into(),
+            }),
+            ..session()
+        }
+    }
+
+    fn child_ready() -> Value {
+        let mut details = ready();
+        details["agent_id"] = json!("agent-7");
+        details["parent_conversation_id"] = json!("conv-1");
+        details["conversation_id"] = json!("conv-1/agent-7");
+        details["send_supported"] = json!(true);
+        details["history_scope"] = json!("Native subagent history");
+        details
     }
 
     pub(crate) fn state(details: Value) -> Batch {
@@ -3146,7 +3242,7 @@ pub(crate) mod tests {
                 }),
                 facts: Arc::new(|_, _| None),
                 reconnect: Arc::new(|_| {}),
-                inspect: Arc::new(|_, _| panic!("archived composer must not inspect")),
+                inspect: Arc::new(|_, _, _| panic!("archived composer must not inspect")),
                 dispatch: Arc::new(|_, _, _| panic!("archived composer must not dispatch")),
             },
         );
@@ -3335,7 +3431,7 @@ pub(crate) mod tests {
                 rows: Arc::new(|_, _, _| Some((row("claude/sample-project/review"), true))),
                 facts: Arc::new(|_, _| None),
                 reconnect: Arc::new(|_| {}),
-                inspect: Arc::new(|_, _| panic!("nothing is open to inspect")),
+                inspect: Arc::new(|_, _, _| panic!("nothing is open to inspect")),
                 dispatch: Arc::new(|_, _, _| Err("no call in these tests".into())),
             },
         );
@@ -3374,7 +3470,7 @@ pub(crate) mod tests {
                 rows: Arc::new(|_, _, _| None),
                 facts: Arc::new(|_, _| None),
                 reconnect: Arc::new(|_| {}),
-                inspect: Arc::new(|_, _| Err("timed out".into())),
+                inspect: Arc::new(|_, _, _| Err("timed out".into())),
                 dispatch: Arc::new(|_, _, _| Err("no call in these tests".into())),
             },
         );
@@ -3776,7 +3872,7 @@ pub(crate) mod tests {
                 rows: Arc::new(|_, _, name| Some((row(name), true))),
                 facts: Arc::new(|_, _| None),
                 reconnect: Arc::new(|_| {}),
-                inspect: Arc::new(move |_, _| {
+                inspect: Arc::new(move |_, _, _| {
                     let _ = lock(&gate).recv_timeout(Duration::from_secs(5));
                     Ok(answer(counted.fetch_add(1, Ordering::SeqCst) + 1))
                 }),
@@ -3873,7 +3969,7 @@ pub(crate) mod tests {
                 }),
                 facts: Arc::new(|_, _| None),
                 reconnect: Arc::new(|_| {}),
-                inspect: Arc::new(move |target, _| {
+                inspect: Arc::new(move |target, _, _| {
                     // The first inspect waits until the test lets it answer.
                     if counted.fetch_add(1, Ordering::SeqCst) == 0 {
                         let _ = lock(&gate).recv_timeout(Duration::from_secs(5));
@@ -4290,7 +4386,7 @@ pub(crate) mod tests {
                     facts.session_write(computer, name, || (None, true))
                 }),
                 reconnect: Arc::new(|_| {}),
-                inspect: Arc::new(|_, _| Err("timed out".into())),
+                inspect: Arc::new(|_, _, _| Err("timed out".into())),
                 dispatch: Arc::new(|_, _, _| Err("no call in these tests".into())),
             },
         );
@@ -4396,6 +4492,72 @@ pub(crate) mod tests {
             view.local[0].status,
             zerus_client_core::local_messages::Status::Sent
         );
+    }
+
+    #[test]
+    fn a_child_send_uses_the_parent_run_and_conversation_with_the_agent_id() {
+        let root = dir("child-send");
+        let (c, fake) = send_hub(&root);
+        c.open(Some(child_session()));
+        c.observe(&state(child_ready()));
+        let view = until(&c, |v| v.loaded && v.available);
+        assert!(view.input_visible);
+        assert_eq!(view.key, "studio\nclaude/sample-project/review\nconv-1\nagent-7");
+        assert_eq!(view.subagent.unwrap().hint, "Native subagent history Messages go directly to this agent.");
+        c.edit(view.handle, 1, view.text_epoch, "for the child".into(), 13, 13);
+        let view = c.current().unwrap();
+        assert_eq!(c.send_message(view.handle, 2, view.text_epoch, "for the child".into(), 13, 13), SendReply::Sending);
+        let view = until(&c, |v| !v.sending && v.text.is_empty());
+        assert_eq!(view.local.len(), 1);
+        let calls = sent(&fake);
+        assert_eq!(calls.len(), 1);
+        let (target, action, _) = &calls[0];
+        assert_eq!((target.run_id.as_str(), target.conversation_id.as_str()), ("run-1", "conv-1"));
+        let Action::Send { text, agent_id, .. } = action else { panic!("not a send") };
+        assert_eq!(text, "for the child");
+        assert_eq!(agent_id.as_deref(), Some("agent-7"));
+    }
+
+    #[test]
+    fn a_read_only_child_never_borrows_parent_send_queue_or_clear() {
+        let root = dir("child-read-only");
+        let (c, fake) = send_hub(&root);
+        c.open(Some(child_session()));
+        let mut unsupported = child_ready();
+        unsupported["send_supported"] = json!(false);
+        c.observe(&state(unsupported));
+        let view = until(&c, |v| v.loaded);
+        assert!(!view.available && !view.input_visible);
+        c.edit(view.handle, 1, view.text_epoch, "must stay".into(), 10, 10);
+        let view = c.current().unwrap();
+        assert!(matches!(c.send_message(view.handle, 2, view.text_epoch, "must stay".into(), 10, 10), SendReply::Blocked { .. }));
+        assert_eq!(c.send_push(view.handle, 3, view.text_epoch, "must stay".into(), 10, 10), SendReply::Busy);
+        assert!(!c.send_queue_now(None));
+        assert_eq!(c.clear_context(view.handle, "run-1", "conv-1", false), SendReply::Busy);
+        c.observe(&state(ready()));
+        let view = c.current().unwrap();
+        assert!(!view.available && !view.subagent.unwrap().send_supported);
+        assert!(sent(&fake).is_empty());
+    }
+
+    #[test]
+    fn parent_and_child_drafts_survive_navigation_separately() {
+        let root = dir("child-drafts");
+        let (c, _) = send_hub(&root);
+        let parent = opened(&c, ready());
+        c.edit(parent.handle, 1, parent.text_epoch, "parent draft".into(), 12, 12);
+        c.open(Some(child_session()));
+        c.observe(&state(child_ready()));
+        let child = until(&c, |v| v.loaded && v.available);
+        c.edit(child.handle, 1, child.text_epoch, "child draft".into(), 11, 11);
+        c.open(Some(session()));
+        let parent = until(&c, |v| v.loaded);
+        assert_eq!(parent.text, "parent draft");
+        c.open(Some(child_session()));
+        c.observe(&state(child_ready()));
+        let child = until(&c, |v| v.loaded && v.available);
+        assert_eq!(child.text, "child draft");
+        assert_ne!(parent.key, child.key);
     }
 
     #[test]
@@ -5009,7 +5171,7 @@ pub(crate) mod tests {
                 rows: Arc::new(|_, _, name| Some((row(name), true))),
                 facts: Arc::new(|_, _| None),
                 reconnect: Arc::new(|_| {}),
-                inspect: Arc::new(|_, _| Err("timed out".into())),
+                inspect: Arc::new(|_, _, _| Err("timed out".into())),
                 dispatch,
             },
         )

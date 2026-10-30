@@ -94,8 +94,10 @@ const realTimers: Timers = { now: () => performance.now(), later: (fn, ms) => { 
 const appNotices: Notices = (tone, text, sticky) => { notify(tone, text, sticky); };
 const utf8 = new TextEncoder();
 
-/** Qt's draft key: `machine\nsession[\narchive]` (src-tauri `draft_key`). */
-export const draftKey = (s: SessionRef) => (s.archive_id ? `${s.computer}\n${s.name}\n${s.archive_id}` : `${s.computer}\n${s.name}`);
+/** Qt's main/archive and four-part child draft keys (src-tauri `session_draft_key`). */
+export const draftKey = (s: SessionRef) => s.subagent
+  ? `${s.computer}\n${s.name}\n${s.subagent.parent_conversation_id}\n${s.subagent.agent_id}`
+  : s.archive_id ? `${s.computer}\n${s.name}\n${s.archive_id}` : `${s.computer}\n${s.name}`;
 
 export type Dialog =
   | { kind: "cold"; token: number; prompt: ColdPrompt }
@@ -206,7 +208,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
     return !(v.attachments.length > 0 && !v.attachments_available);
   };
   /** Qt adds the push action to this message field only (MessageComposer.cpp:841-853). */
-  const pushEnabled = () => !closing() && opening() === 0 && !!view() && view()?.input_visible !== false;
+  const pushEnabled = () => !closing() && opening() === 0 && !!view() && !view()?.subagent && view()?.input_visible !== false;
   /** The old session's queue must not remain actionable while its successor opens. */
   const queue = () => opening() > 0 ? null : view()?.queue ?? null;
 
@@ -356,7 +358,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
 
   /** Panel and window shortcut use this hub command; a push keeps its own handle. */
   async function sendNow(queueId?: string): Promise<boolean> {
-    if (closing()) return false;
+    if (closing() || view()?.subagent) return false;
     if (opening() > 0) {
       notices("info", "Nothing queued can be sent now", false);
       return false;

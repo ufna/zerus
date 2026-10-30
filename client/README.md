@@ -854,8 +854,8 @@ File drops follow `SessionFileDrop` and `SessionsWindow.cpp:2618-2659`. A local
 session gets quoted paths pasted without an automatic Enter. A peer's files are
 staged first with `Action::StageFiles`; the paste still names the attach
 generation and is refused if that attach changed or the Terminal is hidden.
-Other tabs attach dropped files to the main composer, except a subagent's
-Activity. The drop must stay over the detail panel, retain its entering target
+Other tabs attach dropped files to the current main or child composer. The
+drop must stay over the detail panel, retain its entering target
 and contain only regular files. Windows keeps the T1b refusal text until native
 Terminal support lands.
 
@@ -906,6 +906,25 @@ in replay mode, shared with voice. The previous Qt store is read but never
 written, including recovery. The one exit hook closes voice and the composers,
 then flushes this store on quit and termination signals. A send whose durable
 save has not started cannot dispatch during shutdown.
+
+### Subagents
+
+The catalog retains at most 256 native children per session, never the
+hook-profile fallback. The list follows Qt's completed-child rule, retaining
+the selected child and nongroup children with drafts. A child Activity is one
+bounded replacement page of at most 200 events from `inspect --subagent`, read
+only while that exact child is visible and online; it never inherits the
+parent's live state or grows a history. Child attachments carry the same exact
+agent identity.
+
+A child with a matching inspection and `send_supported` gets the ordinary
+composer layout and durable draft under
+`computer\nsession\nparent-conversation\nagent-id`. Send names the parent run
+and conversation plus `agent_id`, rechecks that identity and support before
+dispatch, and keeps its local delivery row under the same parent identity.
+Read-only children hide the editor and actions. Parent lifecycle, model, Stop,
+cache/account, question, queue and push controls never cross into a child.
+Navigation preserves parent and child drafts independently.
 
 ## Account usage and automatic recovery
 

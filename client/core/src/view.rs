@@ -116,6 +116,12 @@ pub struct ViewRow {
     /// `process_work.count`, -1 when unknown.
     pub background: i64,
     pub archive_id: Option<String>,
+    /// Native children in the listing, capped and keyed by their exact agent ID.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub subagents: BTreeMap<String, Value>,
+    /// Whether grouped child counts are complete (`SessionRows::inactiveChild`).
+    #[serde(skip_serializing_if = "is_false")]
+    pub subagent_counts_complete: bool,
     /// The latest reply and the attention it raised, for marking them read.
     pub reply_id: Option<String>,
     pub attention_signature: Option<String>,
@@ -1132,6 +1138,29 @@ fn notify_facts(value: &Value, session: &Session) -> NotifyFacts {
     }
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn child_roster(value: &Value) -> BTreeMap<String, Value> {
+    if text(value, "subagent_source") == "hook_profiles" {
+        return BTreeMap::new();
+    }
+    object(value, "subagents")
+        .into_iter()
+        .flatten()
+        .filter(|(id, child)| {
+            child.is_object()
+                && !id.is_empty()
+                && id.len() <= 160
+                && !id.contains(['/', '\\'])
+                && !id.chars().any(char::is_control)
+        })
+        .take(256)
+        .map(|(id, child)| (id.clone(), child.clone()))
+        .collect()
+}
+
 /// The view row of one catalog row.
 pub fn row(value: &Value) -> ViewRow {
     let session = Session::new(value);
@@ -1218,6 +1247,8 @@ pub fn row(value: &Value) -> ViewRow {
         process_state: session.process_state.to_owned(),
         background: session.background,
         archive_id: some(text(value, "archive_id")),
+        subagents: child_roster(value),
+        subagent_counts_complete: flag("subagent_counts_complete").unwrap_or(false),
         reply_id: some(text(value, "reply_id")),
         attention_signature: some(text(value, "attention_signature")),
         shared_read: session.shared_read(),
@@ -1311,6 +1342,26 @@ mod tests {
         assert_eq!(view.conversation_id.as_deref(), Some("conv-1"));
         assert!(!view.unread);
         assert_eq!(view.machine, "");
+    }
+
+    #[test]
+    fn native_child_roster_is_bounded_and_never_uses_hook_profiles() {
+        let view = row(&json!({"subagent_counts_complete":true,"subagents":{
+            "child-b":{"label":"Reviewer","state":"working"},
+            "child-a":{"name":"Explorer","state":"ready"},
+            "../bad":{"state":"working"},
+            "not-an-object":true
+        }}));
+        assert_eq!(view.subagents.len(), 2);
+        assert!(view.subagent_counts_complete);
+        assert!(view.subagents.contains_key("child-a"));
+        assert!(view.subagents.contains_key("child-b"));
+        let profiles = row(&json!({"subagent_source":"hook_profiles","subagents":{"child":{}}}));
+        assert!(profiles.subagents.is_empty());
+        let many: serde_json::Map<String, Value> = (0..300)
+            .map(|n| (format!("child-{n:03}"), json!({"state":"ready"})))
+            .collect();
+        assert_eq!(row(&json!({"subagents":many})).subagents.len(), 256);
     }
 
     #[test]

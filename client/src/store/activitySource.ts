@@ -43,6 +43,7 @@ export interface AttachmentScope {
   name: string;
   conversation_id: string;
   archive_id: string | null;
+  agent_id?: string | null;
 }
 
 type Holds<T extends true> = T;
