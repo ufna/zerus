@@ -889,7 +889,8 @@ class NativeKimi(lifecycle.Harness):
             self.assertEqual(sum(row['event'] == event and row['command'] == command for row in registered), 1)
         conversation = None
         native_turns = set()
-        for text in ('Continue the fixture\\', 'Literal paths:\nfixture\\\\', 'Проверка ввода'):
+        for text in ('Continue the fixture\\', 'Literal paths:\nfixture\\\\', 'Проверка ввода',
+                     '/help/fixture/capture.png\nWhat is shown in this screenshot?'):
             payload = self.payload(name, text)
             receipt = self.send(name, payload)
             self.assertEqual(receipt['status'], 'submitted')
