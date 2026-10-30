@@ -289,7 +289,7 @@ pub(super) fn manual_scoped(name: &str, dry: bool, scope: Option<&session_action
     if let Some(scope)=scope {scope.changing();}
     let id = save(&record)?;
     drop(_guard);
-    super::worktree_lifecycle::after_archive(&record);
+    super::worktree_lifecycle::after_archive(&record, &id);
     if let Some(scope)=scope {scope.result(name,string(&record,"run_id"),string(&record,"conversation_id"),Some(&id));}
     else {println!("hgs: archived {name} ({id})");}
     Ok(0)

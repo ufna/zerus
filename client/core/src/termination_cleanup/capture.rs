@@ -314,6 +314,8 @@ mod tests {
                 path: "/srv/example/another-checkout".into(),
                 common_dir: capture.common_dir.clone(),
                 reason: Some("synthetic".into()),
+                archive: None,
+                review: None,
             };
             assert_eq!(
                 capture.entry(Some(&report)).unwrap().status,

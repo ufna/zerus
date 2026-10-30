@@ -233,7 +233,7 @@ pub(super) fn restore(record: &Value) -> Result<()> {
 
 /// Archive success must never become a failed termination because cleanup was
 /// skipped or could not be confirmed. Emit a separate, machine-readable outcome.
-pub(super) fn after_archive(record: &Value) {
+pub(super) fn after_archive(record: &Value, archive_id: &str) {
     if !super::worktree_maintenance::policy().is_ok_and(|p| p.enabled && p.after_session) {
         return;
     }
@@ -241,6 +241,9 @@ pub(super) fn after_archive(record: &Value) {
     if !folder.is_absolute() || !folder.is_dir() {
         return;
     }
+    let mut observed = None;
+    let mut attempted = false;
+    let mut launch_owned = false;
     let result = (|| -> Result<Value> {
         let deadline = Instant::now() + Duration::from_secs(5);
         let info = git(
@@ -269,6 +272,7 @@ pub(super) fn after_archive(record: &Value) {
             if expected.is_empty() || original["path"]!=json!(path) || original["common_dir"]!=json!(common) {
                 return Err("Not a verified Zerus-created checkout at session launch; review the folder manually".into());
             }
+            launch_owned = true;
             let args = vec![
                 "--path".into(),
                 path.to_string_lossy().into_owned(),
@@ -279,18 +283,31 @@ pub(super) fn after_archive(record: &Value) {
                 "--automatic".into(),
                 "--owner-id".into(),expected.into(),
             ];
-            super::worktree_cleanup::remove_command(&args)
+            let (result, issued, review) = super::worktree_cleanup::remove_with_review(&args);
+            attempted = issued;
+            observed = review;
+            result
         })();
         Ok(match outcome {
             Ok(value) if value.is_null() => Value::Null,
             Ok(value) => value,
             Err(error) => {
-                json!({"status":if error.starts_with("Removal could not be confirmed") {"unconfirmed"} else {"kept"},"path":path,"common_dir":common,"reason":error})
+                json!({"status":if attempted {"unconfirmed"} else {"kept"},"path":path,"common_dir":common,"reason":error})
             }
         })
     })();
-    if let Ok(value) = result {
+    if let Ok(mut value) = result {
         if !value.is_null() {
+            value["archive"] = json!({"version":1,"archive_id":archive_id,
+                "name":record["name"],"run_id":record["run_id"],"conversation_id":record["conversation_id"],
+                "owner_id":record["worktree_owner"]["id"].as_str().unwrap_or(""),
+                "launch_owned":launch_owned});
+            // The existing runner caps stderr at 64 KiB. Leave framing space;
+            // an oversized row is absent, never partially trusted or truncated.
+            let remaining = (60 * 1024usize).saturating_sub(serde_json::to_vec(&value).map_or(usize::MAX, |b| b.len()));
+            if let Some(row) = observed.filter(|r| serde_json::to_vec(r).is_ok_and(|b| b.len() + 16 <= remaining)) {
+                value["review"] = row;
+            }
             eprintln!("ZERUS_WORKTREE_CLEANUP {value}");
         }
     }
