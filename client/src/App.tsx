@@ -1,5 +1,4 @@
-import WorktreeCleanup, { CleanupChip } from "./ui/screens/WorktreeCleanup";
-import WorktreeReviewDialog from "./ui/screens/WorktreeReviewDialog";
+import { CleanupChip } from "./ui/screens/CleanupChip";
 import { worktreeReviewDialog } from "./store/worktreeCleanup";
 import { cleanupDialog } from "./store/terminationCleanup";
 import { taskAssignmentPopover } from "./store/taskAssignment";
@@ -34,6 +33,8 @@ import { fleetRefresh, type BridgeMode } from "./bridge";
 import { installUiLanguage, tr, uiLanguage } from "./i18n";
 
 // The client shell: the rail, the pages and the status bar.
+const WorktreeCleanup = lazy(() => import("./ui/screens/WorktreeCleanup"));
+const WorktreeReviewDialog = lazy(() => import("./ui/screens/WorktreeReviewDialog"));
 
 // Accounts keeps its data and refresh cadence in store/accounts; only its
 // screen loads on first navigation.

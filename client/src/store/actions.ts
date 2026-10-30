@@ -4,7 +4,7 @@ import * as bridge from "../bridge";
 import { catalog as appCatalog, computerOffline, type CatalogState } from "./catalog";
 import { marks as appMarks, type Marks } from "./marks";
 import { activityReadOnly } from "./activitySource";
-import { bus as appBus, createNoticeBus, type NoticeBus } from "./notices";
+import { bus as appBus, createNoticeBus, sessionNoticeKey, type NoticeBus } from "./notices";
 import { copyState, sessionIdentity, detailsFromInspection, MUTE_PENDING, STATE_CHANGED, forgetsBindingOnly, notificationsStillAllowed, snapshotOf, terminates, type ActionRow, type ChildIdentity, type ForgetScope, type PendingNotifications } from "../ui/sessions/actions-ui";
 import type { Action, Details, Outcome, Target } from "../types";
 import type { Session } from "../ui/sessions/types";
@@ -56,6 +56,7 @@ export function createActions(
   notificationMarks: Pick<Marks, "currentNotificationRow" | "applyNotifications" | "notificationRevisionOf"> = appMarks,
   /** Where notices show: the window's bus for the app, a private one in tests. */
   bus: NoticeBus = createNoticeBus(),
+  cleanupReport?: (out: Extract<Outcome, { outcome: "done" }>, row: ActionRow) => void,
 ) {
   /** The write in flight per session (its kind), and whether an interrupt is. */
   const [writes, setWrites] = createStore<Record<string, Action["kind"] | undefined>>({});
@@ -76,18 +77,22 @@ export function createActions(
     }
     if (out.outcome === "failed") { notify("error", out.detail, true); return; }
     if (action.kind === "forget_binding") { notify("info", `Zerus forgot ${row.name}. The conversation stays in OpenCode.`); return; }
+    if (!cleanupHandled && out.outcome === "done" && out.cleanup && ["kept", "unconfirmed"].includes(out.cleanup.status)) {
+      reportCleanup(out, row); return;
+    }
     if (action.kind === "rename") notify("info", "Session renamed. Refreshing…");
     else notify("info", "Session updated. Refreshing…");
-    if (!cleanupHandled) reportCleanup(out);
+    if (!cleanupHandled) reportCleanup(out, row);
   }
 
   /** The worktree lines of an Archive or Terminate (Qt's worktreeCleanupFinished), shown also during a selection batch. */
-  function reportCleanup(out: Outcome) {
-    const cleanup = out.outcome === "done" ? out.cleanup : null;
-    if (!cleanup) return;
+  function reportCleanup(out: Outcome, row: ActionRow) {
+    if (out.outcome !== "done" || !out.cleanup) return;
+    const cleanup = out.cleanup;
     if (cleanup.status === "removed") notify("info", "Worktree removed automatically. The branch and archived conversation are kept.");
     else if (cleanup.status === "kept" || cleanup.status === "unconfirmed") {
-      notify("warn", `Worktree kept for review: ${cleanup.reason ?? ""}`, true);
+      if (cleanupReport) cleanupReport(out, row);
+      else notify("warn", "Working folder kept for review.", true, sessionNoticeKey(row.computer, row.name), "Session archived");
     }
   }
 
@@ -122,7 +127,7 @@ export function createActions(
       return failed(CHANGED);
     }
     const { out, busy } = await call(target, action, options.cleanupId);
-    if (!busy) { if (options.quiet) reportCleanup(out); else report(action, out, row, !!options.cleanupId); }
+    if (!busy) { if (options.quiet) reportCleanup(out, row); else report(action, out, row, !!options.cleanupId); }
     return out;
   }
 
@@ -428,5 +433,8 @@ export function bindSearchActionRow(lookup: (key: string) => Session | undefined
 /** Hands the store the loaded archived rows (store/archive.ts), which this module cannot import: archive.ts reads ui.ts. */
 export function bindArchivedRows(lookup: (key: string) => Session | undefined) { archivedRow = lookup; }
 
-const app = createActions(withArchived(appCatalog, (key) => archivedRow(key) ?? searchRow(key)), (computer) => !computerOffline(computer), () => selection(), appMarks, appBus);
+const app = createActions(withArchived(appCatalog, (key) => archivedRow(key) ?? searchRow(key)), (computer) => !computerOffline(computer), () => selection(), appMarks, appBus,
+  (out, row) => { void import("./cleanupNotices").then((m) => m.reportCleanup(out, row)).catch(() => {
+    appBus.notify("warn", "Working folder kept for review.", true, sessionNoticeKey(row.computer, row.name), "Session archived");
+  }); });
 export const { perform, performComputer, end, forget, toggleMute, stillListed, pendingNotifications, copy, copyName, copyIdentity, copyFolder, lastCopied, copyCommand, copyReference, change, updating, interrupting, detailsFor, notices, dismiss, notify, clearNotice } = app;

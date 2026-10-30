@@ -999,6 +999,10 @@ export function PerfHost() {
       const { terminationCleanupSmoke } = await import("../perf/terminationCleanupSmoke");
       void terminationCleanupSmoke(!!config().replay && !!config().actions_smoke);
     }
+    if (new URLSearchParams(location.search).has("archive-cleanup-smoke") && inTauri()) {
+      const { archiveCleanupSmoke } = await import("../perf/archiveCleanupSmoke");
+      void archiveCleanupSmoke(!!config().replay && !!config().actions_smoke);
+    }
     if (new URLSearchParams(location.search).has("file-ssh-smoke") && inTauri()) {
       void import("../perf/fileSshSmoke").then(({ fileSshSmoke }) => fileSshSmoke(!!config().replay && !!config().actions_smoke));
     }

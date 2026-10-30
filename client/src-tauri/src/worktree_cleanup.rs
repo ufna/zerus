@@ -412,7 +412,7 @@ fn apply_unknown(model: &mut Model) {
         }
     }
 }
-fn machine(app: &crate::commands::AppState, computer: &str) -> Result<String, String> {
+pub(crate) fn machine(app: &crate::commands::AppState, computer: &str) -> Result<String, String> {
     if crate::actions::blocked() || !app.pump().online(computer) {
         return Err("Reconnect this computer before reviewing worktrees.".into());
     }

@@ -77,10 +77,15 @@ export function Toasts() {
     <div class="toasts" aria-live="polite">
       <For each={notices()}>
         {(n) => (
-          <div class={`toast ${n.tone}`} classList={{ sticky: n.sticky }}>
-            <Show when={n.sticky}><button class="icon-btn dismiss" aria-label="Dismiss" onClick={() => dismissNotice(n.id)}><Icon name="x" size={14} /></button></Show>
+          <div class={`toast ${n.tone}`} data-notice-id={n.id} classList={{ sticky: n.sticky }}>
+            <Show when={n.sticky && n.dismissible !== false}><button class="icon-btn dismiss" aria-label="Dismiss" onClick={() => dismissNotice(n.id)}><Icon name="x" size={14} /></button></Show>
             <Show when={n.title}><b>{n.title}</b></Show>
             <span class="note" classList={{ muted: !!n.title }}>{n.text}</span>
+            <Show when={n.actions?.length}><div class="toast-actions"><For each={n.actions}>{(action) =>
+              <button type="button" class={`btn small ${action.style}`} disabled={action.disabled?.()} onClick={() => { if (!action.disabled?.()) void action.run(); }}>
+                <Show when={action.icon}><Icon name={action.icon!} size={13} /></Show>{typeof action.label === "function" ? action.label() : action.label}
+              </button>
+            }</For></div></Show>
           </div>
         )}
       </For>

@@ -1534,3 +1534,17 @@ built app using a private D-Bus/Xvfb, private state and fake hgs. It covers reco
 outcomes, explicit discard, unknown non-replay, source-change refusal, inspection,
 Escape and Keep, with captures of the approved chip/dialog states. The fixture
 never deletes even its own synthetic worktree files.
+
+An archived session whose folder stays for review has a sticky **Session
+archived** notice with structured counts, **Review…** and **Restore session**.
+Restore rechecks the exact archive and physical computer, then uses the existing
+archive writer. It never retries cleanup. Admitted rows stay bounded at 64;
+overflow contributes to the chip counts and uses the existing Worktrees review
+route. Its exact archive restore identity remains available independently of the
+cleanup row. A refused restore leaves the warning and recorded outcome in place.
+
+For the recovery walk, first run `npm run build` in `client`, then build the
+Tauri app with `--features media,tauri/custom-protocol` so it embeds those assets.
+Add `--recovery` to the command above. It covers both Restore surfaces, changed
+archive identity, refusal, unknown outcomes, overflow, and Escape focus return,
+using a private D-Bus, Xvfb, HOME/XDG/TMPDIR/TMUX_TMPDIR and a fake hgs.
