@@ -69,6 +69,9 @@ export interface ViewRow {
   /** `process_work.count`, -1 when unknown. */
   background?: number;
   archive_id?: string | null;
+  /** Native children by exact agent ID; never the hook-profile fallback. */
+  subagents?: Record<string, Record<string, unknown>>;
+  subagent_counts_complete?: boolean;
   /** The latest reply and the attention it raised, for marking them read. */
   reply_id?: string | null;
   attention_signature?: string | null;
@@ -663,7 +666,7 @@ export interface LocalMessage {
 /** The native queue (core input_queue::QueueView), kept separate from local messages. */
 export interface QueueView { id: string; text: string; hint: string; can_send_now: boolean; enabled: boolean; label: string }
 export interface ComposerView {
-  handle: number; key: string; loaded: boolean; rev: number; text_epoch: number; text: string; position: number; anchor: number;
+  handle: number; key: string; subagent?: { agent_id: string; send_supported: boolean; hint: string } | null; loaded: boolean; rev: number; text_epoch: number; text: string; position: number; anchor: number;
   attachments: AttachmentView[]; removed: string | null; attaching: boolean; sending: boolean; recording?: boolean; waiting: string | null; uncertain: boolean;
   status: string; status_error: boolean; can_send: boolean; send_label: string; available: boolean; unavailable_reason: string; block_reason: string | null;
   attachments_available: boolean; attachments_reason: string; session_status: string; session_status_error: boolean; session_blocks_input: boolean;
@@ -714,8 +717,10 @@ export type SendReply =
 export type Answer = { kind: "cold"; action: ColdAction } | { kind: "start"; choice: StartChoice } | { kind: "cancel" };
 /** Where Inspect on a failed local row leads. */
 export type Inspect = { kind: "native_ui" } | { kind: "terminal" } | { kind: "refresh"; notice: string };
-/** The session a composer belongs to (src-tauri `SessionRef`): `key` is the catalog key. */
-export interface SessionRef { computer: ComputerId; key: string; name: string; archive_id: string | null }
+/** One exact native child; sends still name the parent run and conversation. */
+export interface SubagentRef { agent_id: string; parent_conversation_id: string }
+/** The session or child a composer belongs to (src-tauri `SessionRef`): `key` is the parent catalog key. */
+export interface SessionRef { computer: ComputerId; key: string; name: string; archive_id: string | null; subagent?: SubagentRef }
 /** The detail tab that shows, for the composer's inspect retry (Qt's poll interval). */
 export type ComposerTab = "activity" | "terminal" | "native" | "processes";
 /** A file of an Activity message, as the journal lists it. */

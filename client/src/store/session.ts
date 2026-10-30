@@ -1,5 +1,5 @@
 import { batch, createEffect, createRoot, createSignal, on, untrack } from "solid-js";
-import { activityPort, composerTab, processesFollow, processesShown, windowVisibility } from "../bridge";
+import { activityPort, composerTab, inspectSubagentActivity, processesFollow, processesShown, windowVisibility } from "../bridge";
 import { applyBatch, catalog, computerFresh, computerOffline, onReplaced, orderedRows, setDraftKeys } from "./catalog";
 import { composer } from "./composer";
 import { sessionModels, bindModelNotice } from "./sessionModels";
@@ -10,6 +10,7 @@ import { flag, num } from "./settings";
 import { bindActivity, bindSelection, followedFor, notify, updating } from "./actions";
 import { observeMarks } from "./marks";
 import { createActivity } from "./activity";
+import { createSubagentActivity } from "./subagentActivity";
 import { archive } from "./archive";
 import { applyGrouping } from "./organization";
 import { activityReadOnly } from "./activitySource";
@@ -34,6 +35,28 @@ bindSelection(() => ({ key: selectedKey(), subagent: subagentOpen() }));
 bindForkSession({
   busy: (row) => sessionModels.changing() || (composer.view()?.key === `${row.computer}\n${row.name}` && (!!composer.view()?.sending || !!composer.view()?.waiting)),
   terminal: () => { terminal.opened(); setDetailTab("terminal"); },
+});
+
+/** The selected child's own bounded, read-only inspection page. */
+export const subagentActivity = createRoot(() => {
+  const store = createSubagentActivity({
+    read: (target) => inspectSubagentActivity(
+      { computer: target.computer, name: target.name, run_id: target.runId, conversation_id: target.conversationId },
+      target.archiveId,
+      target.agentId,
+    ),
+    showing: () => page() === "sessions" && !documentVisibility.hidden(),
+    online: (computer) => !computerOffline(computer),
+  });
+  createEffect(() => {
+    const row = selected(), agentId = subagentOpen();
+    const target = row && agentId && row.runId && row.conversationId ? {
+      id: row.key, computer: row.computer, name: row.name, runId: row.runId, conversationId: row.conversationId,
+      archiveId: row.archiveId ?? null, agentId,
+    } : undefined;
+    untrack(() => store.follow(target));
+  });
+  return store;
 });
 
 /** Applies one batch from the bridge: its rows and their grouping are one reactive update. */
@@ -73,10 +96,13 @@ createRoot(() => {
   // draft too; only its recorded Activity stays read-only (Qt selectSession).
   createEffect(on(() => {
     const s = selected();
-    return s ? `${s.computer}\n${s.catalogKey}\n${s.name}\n${s.state === "archived" ? s.archiveId ?? "" : ""}` : undefined;
+    return s ? JSON.stringify([s.computer, s.catalogKey, s.name, s.state === "archived" ? s.archiveId ?? "" : "", subagentOpen(), s.conversationId ?? ""]) : undefined;
   }, (identity) => {
-    const s = selected();
-    void composer.open(identity && s ? { computer: s.computer, key: s.catalogKey, name: s.name, archive_id: s.state === "archived" ? s.archiveId ?? null : null } : undefined);
+    const s = selected(), child = subagentOpen();
+    void composer.open(identity && s ? {
+      computer: s.computer, key: s.catalogKey, name: s.name, archive_id: s.state === "archived" ? s.archiveId ?? null : null,
+      subagent: child ? { agent_id: child, parent_conversation_id: s.conversationId ?? "" } : undefined,
+    } : undefined);
   }));
   // The detail tab that shows: behind Terminal a failed read waits Qt's
   // background interval (Settings > Processes), which Rust reads when told.

@@ -22,8 +22,11 @@ export type Status =
 export interface Subagent {
   id: string;
   name: string;
-  state: "working" | "ready" | "attention";
+  state: "working" | "ready" | "attention" | "error" | "paused";
   summary: string;
+  /** Qt's inactiveChild: hidden unless completed children, this child or its draft is retained. */
+  inactive?: boolean;
+  group?: boolean;
 }
 
 export interface Session {
@@ -66,6 +69,7 @@ export interface Session {
   scheduleNext?: string;
   backgroundJobs?: number;
   subagents?: Subagent[];
+  subagentCountsComplete?: boolean;
   reviewLater?: boolean;
   /**
    * Qt's SessionInfo::needsAttention with this device's marks: a request not

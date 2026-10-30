@@ -4,7 +4,7 @@ import { computerFresh } from "./catalog";
 import { composer } from "./composer";
 import { notify } from "./actions";
 import { terminal, VIEW } from "./terminal";
-import { detailTab, selected, selectedKey, setDetailTab, setSubagentOpen, subagentOpen, type DetailTab } from "./ui";
+import { detailTab, selected, selectedKey, setDetailTab, subagentOpen, type DetailTab } from "./ui";
 
 // Files dropped on the session's panel (Qt's SessionFileDrop,
 // SessionFileDrop.h, wired at SessionsWindow.cpp:1595-1601): a Terminal that
@@ -24,7 +24,7 @@ export interface DropState {
   /** Its computer is online (Qt's entry->online). */
   online: boolean;
   tab: DetailTab;
-  /** A subagent's Activity shows: it has no composer here. */
+  /** A subagent's Activity shows: its own composer is the drop target. */
   subagent: boolean;
   terminal: { connected: boolean; generation: number };
   composer: { key: string | undefined; canAttach: boolean };
@@ -36,9 +36,8 @@ export const COMPOSER_HINT = "Drop files to attach to this message";
 /**
  * Qt's targets: the Terminal while it is the current tab, its session online
  * and its attach connected (terminalDropTarget, 2618-2622); on any other tab
- * the composer, when it can attach files (canAttachFiles), except a
- * subagent's Activity; nothing otherwise. Each target has a key: the drop
- * must go to the target the drag entered with.
+ * the current main or child composer when it can attach files. Each target has
+ * a key: the drop must go to the target the drag entered with.
  */
 export function routeDrop(s: DropState): DropRoute {
   if (!s.selected || s.tab === "taskview") return { kind: "none" };
@@ -46,7 +45,6 @@ export function routeDrop(s: DropState): DropRoute {
     return s.online && s.terminal.connected && s.terminal.generation !== 0
       ? { kind: "terminal", key: `${s.selected}\n${s.terminal.generation}` } : { kind: "none" };
   }
-  if (s.tab === "activity" && s.subagent) return { kind: "none" };
   return s.composer.key !== undefined && s.composer.canAttach ? { kind: "composer", key: s.composer.key } : { kind: "none" };
 }
 
@@ -137,7 +135,7 @@ export const drops = createDrops({
     return !!panel && x >= panel.left && x <= panel.right && y >= panel.top && y <= panel.bottom;
   },
   files: (paths) => bridge.droppedFiles(paths),
-  reveal: () => { setSubagentOpen(undefined); setDetailTab("activity"); },
+  reveal: () => { setDetailTab("activity"); },
   attach: (paths) => composer.attachDropped(paths),
   peer: () => { const s = selected(); return s && s.computer !== "" ? s.machine : undefined; },
   terminalDrop: (generation, paths) => {

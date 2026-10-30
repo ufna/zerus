@@ -1121,6 +1121,26 @@ pub async fn inspect_subagent_identity(
     parse_subagent_identity(&target, &agent_id, exit)
 }
 
+/// One bounded read-only Activity page of the requested child.
+#[tauri::command]
+pub async fn inspect_subagent_activity(
+    target: Target,
+    archive_id: Option<String>,
+    agent_id: String,
+) -> Option<serde_json::Value> {
+    if blocked() {
+        return None;
+    }
+    let inv = subagent_identity_invocation(&target, archive_id.as_deref(), &agent_id)?;
+    let hgs = default_hgs();
+    let exit = tauri::async_runtime::spawn_blocking(move || {
+        zerus_client_core::run_limited(&hgs, &inv, &[], 4 * 1024 * 1024).ok()
+    })
+    .await
+    .ok()??;
+    zerus_client_core::details::parse_subagent_activity(&target, &agent_id, exit)
+}
+
 /// `hgs reference` for the session: its `zerus://session?...` URI, or why it
 /// could not be read. A read, so it needs no in-flight guard.
 #[tauri::command]
