@@ -40,19 +40,40 @@ Use a windowless mode of the existing app executable, not a second notification
 daemon or a CLI pretending to be the bundle. A production no-argument login
 start may enter this mode only after current G1 ownership is authenticated.
 It has an AppKit event loop and notification delegate, but no webview, Dock icon,
-legacy fleet or attention writer. `--sessions` promotes that same canonical
-instance to the frontend. `show` keeps its existing no-visible-effect semantics.
+menu-bar takeover, focus steal, legacy fleet or attention writer. It remains
+windowless after posting. A validated click or `--sessions` promotes that same
+canonical instance to the frontend. `show` keeps its existing no-visible-effect semantics.
 A missing/incompatible service after handoff leaves the migrated roles paused;
 it never restarts the old GUI producers.
 
-When a fresh intent needs a missing adapter, G1 requests a non-killing start of
-the already installed `com.hgdev.hgs-tray` LaunchAgent, then awaits a checked
-hello. A wake creates no notification authority. No `kickstart -k`, `open -n`,
+After an explicit Quit, only a **fresh attention edge recorded by hgs after
+that Quit** may request a missing host. Startup, reconnect, re-read, old intent
+and imported/legacy evidence never wake it. G1 requests a non-killing start of
+the installed `com.hgdev.hgs-tray` LaunchAgent, then awaits a checked hello.
+A wake creates no notification authority. No `kickstart -k`, `open -n`,
 alternate bundle copy, unconditional KeepAlive, installer call or process kill
-is part of delivery. Deliberate frontend Quit remains a clean exit; a later
-admitted intent can start only the windowless host. Explicit desktop-service
-revocation prevents that admission. No plist/CLI behavior changes ship with
+is part of delivery. G1 admits at most one host launch per attention burst and
+at least 30 seconds between attempts, retaining the attempt/cutoff across its
+own restart. Edges arriving while a launch is pending coalesce into that burst.
+A failed, exited or crashed bootstrap never loops or retries that burst;
+rate-limit expiry alone is not a new edge. The unchanged crash-only launchd
+policy is not authority for another notification; the host bootstrap must
+consume an actor-owned, one-use launch permit and exit cleanly on refused
+setup. A crash during bootstrap leaves that permit spent, so launchd's next
+crash restart refuses the same bootstrap and exits cleanly. Qualify that exact
+crash/clean-exit sequence before admission; changing KeepAlive is not the fix.
+Deliberate frontend or promoted-host Quit remains a clean exit; a second
+explicit Quit also advances the wake cutoff and cannot resurrect that burst.
+Explicit desktop-service revocation prevents admission. No plist/CLI behavior changes ship with
 this document; the startup mode needs its own reviewed implementation.
+
+The coordinator's approved setting is **Notify when Zerus is closed**, in
+Settings > Notifications, default on. Its durable G1 policy gates post-Quit
+wake/posting; it grants no lease or retry. With it off, Quit stops this native
+notification flow until the next manual launch. Restart/reconnect does not
+count as that launch, and manual reopening never reposts suppressed old edges.
+It does not stop unrelated hgs services or agents. The UI placement must receive
+webui-ac's mockup ruling before implementation; this document adds no UI.
 
 macOS can launch the registered bundle to deliver a notification response.
 Install and retain the notification delegate **before application launch
@@ -108,11 +129,11 @@ Permission and OS presentation policy still apply. Existing grants are reused;
 an undetermined authorization must take the existing explicit app authorization
 path, not a background surprise prompt. No owner permission store is reset.
 
-Proposed migration rule: legacy token-only banners lack a G1 post binding.
+Coordinator-approved migration rule: legacy token-only banners lack a G1 post binding.
 Retain historical suppression until that original attention edge withdraws;
 do not repost, activate from their clicks or remove an unbound OS request.
-This is an explicit parity
-tradeoff requiring coordinator agreement, not an already shipped Mac policy.
+This is an accepted parity
+tradeoff, not an already shipped Mac policy.
 The current GUI compatibility path stays unchanged until handoff. G3 evidence
 does not manufacture a delivered mapping or current signed-peer authority.
 
