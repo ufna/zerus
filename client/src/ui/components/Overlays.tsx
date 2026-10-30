@@ -3,7 +3,7 @@ import { Icon } from "../lib/icons";
 import { ProviderGlyph } from "../sessions/SessionCard";
 import { agentKind } from "../../store/catalog";
 import { menuItemActivates } from "../sessions/actions-ui";
-import { menu, setMenu } from "../../store/ui";
+import { visibleMenu as menu, setMenu } from "../../store/ui";
 import { dismissNotice, notices } from "../../store/notices";
 
 /** Context and dropdown menus share one positioned popover. */

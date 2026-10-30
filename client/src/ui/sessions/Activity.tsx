@@ -1,3 +1,4 @@
+import { nativeRoute } from "./native-entry";
 import { createActivityScroll } from "./activity-scroll";
 import { activityReadingRows, createActivityAnchor } from "./activity-anchor";
 import { searchPreview, clearSearchPreview } from "../../store/searchSelection";
@@ -479,10 +480,14 @@ function LocalActions(props: { local: LocalItem }) {
     if (reason(action)) return;
     if (action === "retry") void composer.localRetry(id);
     else if (action === "delete") setDeleting({ id, from });
-    else void composer.localInspect(id).then((routed) => routeInspect(routed, {
-      showTerminal: () => { terminal.opened(); setDetailTab("terminal"); },
-      notify: (tone, text) => { notify(tone, text); },
-    }));
+    else {
+      const showNativeUi = nativeRoute(selected());
+      void composer.localInspect(id).then((routed) => routeInspect(routed, {
+        showNativeUi,
+        showTerminal: () => { terminal.opened(); setDetailTab("terminal"); },
+        notify: (tone, text) => { notify(tone, text); },
+      }));
+    }
   };
   const label = (action: LocalItem["actions"][number]) => (action === "retry" ? "Retry" : action === "delete" ? "Delete" : props.local.inspectLabel);
   return (

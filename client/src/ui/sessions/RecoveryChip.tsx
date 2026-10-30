@@ -10,7 +10,7 @@ import { composer } from "../../store/composer";
 import { setDetailTab } from "../../store/ui";
 import { terminal } from "../../store/terminal";
 import { recoveryInspection, recoveryUsageNotice, recoveryView } from "./recovery-ui";
-import { NATIVE_UI_LATER } from "./local-actions";
+import { nativeRoute } from "./native-entry";
 import type { Session } from "./types";
 
 /** RecoveryUi::Panel and its composer chip. */
@@ -39,7 +39,7 @@ export function RecoveryChip(props: { session: Session; compact: boolean }) {
   const openTerminal = () => {
     setOpen(false);
     if (!online()) return;
-    if (props.session.cmd === "dsh") { notify("info", NATIVE_UI_LATER); return; }
+    if (props.session.cmd === "dsh") { nativeRoute(props.session)(); return; }
     if (!terminal.texts()?.supported) { notify("error", terminal.texts()?.reason || "Terminal is unavailable for this session.", true); return; }
     terminal.opened();
     setDetailTab("terminal");
