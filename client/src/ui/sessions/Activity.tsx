@@ -2,7 +2,8 @@ import { createActivityScroll } from "./activity-scroll";
 import { activityReadingRows, createActivityAnchor } from "./activity-anchor";
 import { searchPreview, clearSearchPreview } from "../../store/searchSelection";
 import { SearchHighlight } from "./SearchHighlight";
-import { For, Show, batch, createContext, createEffect, createMemo, createSignal, on, onCleanup, onMount, useContext } from "solid-js";
+import { For, Show, batch, createContext, createEffect, createMemo, createSignal, on, onCleanup, onMount, useContext, type JSX } from "solid-js";
+import { Dynamic } from "solid-js/web";
 import { attachmentFetch, attachmentMedia, attachmentOpen, copyVerbatim } from "../../bridge";
 import { notify } from "../../store/actions";
 import { previews } from "../../store/attachments";
@@ -23,7 +24,7 @@ import type { LocalMessage } from "../../types";
 import { animationFrames, createActivityEnd, newLocalSends } from "./activity-end";
 import { buildTranscript, createTranscriptProjection, VOICE_STATE_LABEL, voiceStateDetail, voiceStateIssue } from "./transcript";
 import { DELETE_TEXT, DELETE_TITLE, retryReason, routeInspect } from "./local-actions";
-import { inlineParts, markdownBlocks } from "./markdown";
+import { markdownReady, markdownTree, type Inline, type MarkdownBlock } from "./markdown";
 import { openExternal, openSessionFile } from "./sessionFiles";
 import { SessionFileDialog } from "./SessionFileDialog";
 import { statusOf } from "./SessionCard";
@@ -168,43 +169,68 @@ function layoutDisclosure() {
   return [open, () => setWanted((value) => !value)] as const;
 }
 
-function inline(text: string, session?: () => Session | undefined) {
-  return inlineParts(text).map((part) => {
-    if (part.kind === "code") return <code>{part.text}</code>;
-    if (part.kind === "bold") return <b>{part.text}</b>;
-    if (part.kind === "external" || part.kind === "file") {
-      return <a href={part.href} title={part.href} draggable={false} onAuxClick={(event) => event.preventDefault()} onDragStart={(event) => event.preventDefault()} onClick={(event) => {
-        event.preventDefault();
-        if (part.kind === "external") openExternal(part.href);
-        else {
-          const current = session?.();
-          if (current) openSessionFile(current, part.href);
-        }
-      }}>{part.text}</a>;
+function inlines(parts: Inline[], session?: () => Session | undefined): JSX.Element[] {
+  return parts.map((part): JSX.Element => {
+    switch (part.kind) {
+      case "text": return part.text;
+      case "code": return <code>{part.text}</code>;
+      case "br": return <br />;
+      case "bold": return <b>{inlines(part.children, session)}</b>;
+      case "em": return <em>{inlines(part.children, session)}</em>;
+      case "del": return <del>{inlines(part.children, session)}</del>;
+      default: {
+        const link = part;
+        return <a href={link.href} title={link.href} draggable={false} onAuxClick={(event) => event.preventDefault()} onDragStart={(event) => event.preventDefault()} onClick={(event) => {
+          event.preventDefault();
+          if (link.kind === "external") openExternal(link.href);
+          else {
+            const current = session?.();
+            if (current) openSessionFile(current, link.href);
+          }
+        }}>{inlines(link.children, session)}</a>;
+      }
     }
-    return part.text;
+  });
+}
+
+const HEADINGS = ["h1", "h2", "h3", "h4", "h5", "h6"] as const;
+
+function blocks(list: MarkdownBlock[], session?: () => Session | undefined): JSX.Element[] {
+  return list.map((b): JSX.Element => {
+    switch (b.kind) {
+      case "code": return <pre class="act-code mono">{b.text}</pre>;
+      case "text": return <>{inlines(b.inline, session)}</>;
+      case "heading": return <Dynamic component={HEADINGS[b.level - 1]} class="md-heading">{inlines(b.inline, session)}</Dynamic>;
+      case "hr": return <hr class="md-rule" />;
+      case "quote": return <blockquote class="md-quote">{blocks(b.blocks, session)}</blockquote>;
+      case "list": {
+        const items = b.items.map((item) => (
+          <li classList={{ "md-task": item.task }}>
+            <Show when={item.task}><input type="checkbox" class="md-check" checked={item.checked} disabled aria-label={item.checked ? "Done" : "Not done"} /></Show>
+            {blocks(item.blocks, session)}
+          </li>
+        ));
+        return b.ordered ? <ol class="md-list" start={b.start}>{items}</ol> : <ul class="md-list">{items}</ul>;
+      }
+      case "table": return (
+        <div class="act-table-wrap" role="region" aria-label="Message table" tabindex="0">
+          <table class="act-table" style={{ "--table-columns": b.header.length }}>
+            <thead><tr>{b.header.map((cell, column) => <th scope="col" style={{ "text-align": b.align[column] }}>{inlines(cell, session)}</th>)}</tr></thead>
+            <Show when={b.rows.length}><tbody>{b.rows.map((row) => <tr>{row.map((cell, column) => <td style={{ "text-align": b.align[column] }}>{inlines(cell, session)}</td>)}</tr>)}</tbody></Show>
+          </table>
+        </div>
+      );
+      default: return <p>{inlines(b.inline, session)}</p>;
+    }
   });
 }
 
 export function Body(props: { text: string }) {
   const session = useContext(ActivitySession);
-  return (
-    <For each={markdownBlocks(props.text)}>
-      {(b) => {
-        if (b.kind === "code") return <pre class="act-code mono">{b.text}</pre>;
-        if (b.kind === "table") return (
-          <div class="act-table-wrap" role="region" aria-label="Message table" tabindex="0">
-            <table class="act-table" style={{ "--table-columns": b.header.length }}>
-              <thead><tr><For each={b.header}>{(cell, column) => <th scope="col" style={{ "text-align": b.align[column()] }}>{inline(cell, session)}</th>}</For></tr></thead>
-              <Show when={b.rows.length}><tbody><For each={b.rows}>{(row) => <tr><For each={row}>{(cell, column) => <td style={{ "text-align": b.align[column()] }}>{inline(cell, session)}</td>}</For></tr>}</For></tbody></Show>
-            </table>
-          </div>
-        );
-        if (b.kind === "ul") return <ul class="md-list"><For each={b.text.split("\n")}>{(li) => <li>{inline(li.replace(/^- /, ""), session)}</li>}</For></ul>;
-        return <p>{inline(b.text, session)}</p>;
-      }}
-    </For>
-  );
+  // Rerenders once when the lazily loaded parser arrives; Activity places its
+  // rows only after that, so placed rows keep their height.
+  const tree = createMemo(() => { markdownReady(); return markdownTree(props.text); });
+  return <>{blocks(tree(), session)}</>;
 }
 
 // ---------------------------------------------------------------------------
@@ -723,8 +749,10 @@ export function ActivityView(props: { source?: ActivitySource }) {
     () => scroller.scrollTo({ top: scroller.scrollHeight, behavior: "instant" }),
     animationFrames,
     () => !motion.active() && !selectionInside(),
-    () => { if (view.loaded || view.items.length) setPlaced(true); },
+    // Messages render with the final Markdown before placement (see markdown.ts).
+    () => { if ((view.loaded || view.items.length) && markdownReady()) setPlaced(true); },
   );
+  createEffect(on(markdownReady, (ready) => { if (ready) end.changed(); }, { defer: true }));
   let latestAfterScroll = false;
   const motion = createActivityScroll(() => scroller.scrollTop, (flush) => {
     const atEnd = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 1;
