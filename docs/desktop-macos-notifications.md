@@ -135,7 +135,24 @@ no signed origin, delivered mapping, current revision or target availability.
 `post_outcome` classifies supplied observations; `WithdrawalObservation`
 retains which void calls were issued and always remains Unknown. These are
 data helpers, not a new transport, receipt validator or ledger. No GUI or root
-runtime uses them; the current poster and all dependency/features stay unchanged.
+runtime uses them; the current poster and default builds stay unchanged.
+
+The separate default-off `macos-native-peer` feature exposes `macos_notify::peer`
+only on macOS. It enables the existing Foundation NSData binding, with no new
+package or lockfile change. `observe(&UnixStream, &str)` synchronously checks
+kernel audit data and live Security code against G1's pinned installed
+requirement, bounded to 16 KiB and no NUL. Opaque borrow-bound observations
+contain only the supplied requirement's digest and have redacted diagnostics;
+they authenticate neither that requirement's source nor a current lease.
+Full-token consistency and repeated live checks are point-in-time observations,
+not exec fences. The host must own the actual check/connection lifetime beyond
+an outer timeout, off its actor/UI thread. The helper starts no worker or
+transport. `client/scripts/macos-peer-fixtures.py` qualifies private synthetic
+signed peers under the Mac heavy lock. Ad-hoc C peers cover mechanisms and
+exec/exit; digest-pinned private Node/Deno copies run synthetic socket scripts
+for distinct-team checks. The fixture operator derives the expected requirement
+from pinned input-file metadata before launch, never from a peer message.
+No installed signing identity or Notification Center is used.
 
 Authenticate the native peer using kernel-bound live-process identity
 (audit-token-equivalent, with PID-reuse protection) and live code verification
