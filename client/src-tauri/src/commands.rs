@@ -41,6 +41,10 @@ pub fn fleet_refresh() -> usize {
 
 #[cfg(feature = "live")]
 impl AppState {
+    #[allow(dead_code)] // No authenticated producer invokes role freeze yet.
+    pub(crate) fn freeze_fleet(&self) -> Result<live::FrozenFleet, live::barrier::Refused> {
+        self.live.freeze()
+    }
     /// A manual offline Refresh nudges only its existing source; never starts
     /// another fleet or changes an online source.
     pub fn reconnect(&self, computer: &str) -> bool {
@@ -138,14 +142,43 @@ mod live {
         Replay(Replay),
     }
 
-    #[derive(Default)]
     pub struct Live {
         pub pump: Pump,
         source: Mutex<Option<Source>>,
         pub organization: OnceLock<Organization>,
         pub creations: OnceLock<crate::creations::CreationHost>,
         tasks_project: Mutex<Option<String>>,
+        controls: zerus_client_core::desktop::drain::Gate,
+        resources: zerus_client_core::desktop::drain::Gate,
+        #[cfg_attr(not(unix), allow(dead_code))]
+        barrier: zerus_client_core::desktop::drain::Gate,
+        core_control: OnceLock<zerus_client_core::fleet::FleetControl>,
     }
+    impl Default for Live {
+        fn default() -> Self {
+            use zerus_client_core::desktop::drain::Gate;
+            Self {
+                pump: Pump::default(),
+                source: Mutex::new(None),
+                organization: OnceLock::new(),
+                creations: OnceLock::new(),
+                tasks_project: Mutex::new(None),
+                controls: Gate::new(64).unwrap(),
+                resources: Gate::new(1).unwrap(),
+                barrier: Gate::new(1).unwrap(),
+                core_control: OnceLock::new(),
+            }
+        }
+    }
+    impl Live {
+        fn admit(&self) -> Result<zerus_client_core::desktop::drain::Charge, String> {
+            self.controls
+                .admit(zerus_client_core::desktop::drain::Role::Fleet)
+                .map_err(|_| "Background source is not accepting changes.".into())
+        }
+    }
+    pub(crate) use barrier::FrozenFleet;
+    pub(crate) mod barrier;
 
     /// Follows this computer's organization: the catalog is shared, so its
     /// copy is the one the hub edits. A Fleet starts once, so this logs at
@@ -167,6 +200,7 @@ mod live {
     impl Live {
         /// The board follows one local replica project, including across reconnects.
         pub fn follow_tasks(&self, project: Option<String>) -> Result<(), String> {
+            let _admission = self.admit()?;
             if project
                 .as_deref()
                 .is_some_and(|p| !zerus_client_core::tasks::valid_project(p))
@@ -193,6 +227,9 @@ mod live {
             Ok(())
         }
         pub fn reconnect(&self, computer: &str) -> bool {
+            let Ok(_admission) = self.admit() else {
+                return false;
+            };
             match self
                 .source
                 .lock()
@@ -211,6 +248,19 @@ mod live {
         /// The hub asks without its own lock held, and its source is set
         /// here before `source` is taken, so the two locks never nest.
         pub fn start(self: &Arc<Self>) -> Result<String, String> {
+            self.start_from(
+                default_hgs,
+                std::env::var_os("ZERUS_CLIENT_REPLAY")
+                    .filter(|list| !list.is_empty())
+                    .map(std::path::PathBuf::from),
+            )
+        }
+        fn start_from(
+            self: &Arc<Self>,
+            hgs: impl FnOnce() -> std::path::PathBuf,
+            replay: Option<std::path::PathBuf>,
+        ) -> Result<String, String> {
+            let _admission = self.admit()?;
             let organization = self.organization.get().cloned();
             let creations = self.creations.get().cloned();
             if let Some(organization) = &organization {
@@ -226,24 +276,42 @@ mod live {
                 }
                 .into());
             }
+            let resources: Arc<dyn Send + Sync> = Arc::new(
+                self.resources
+                    .admit(zerus_client_core::desktop::drain::Role::Fleet)
+                    .map_err(|_| "Background source is not accepting changes.")?,
+            );
             let (sink, changes) = mpsc::channel();
-            let (started, mode) =
-                match std::env::var_os("ZERUS_CLIENT_REPLAY").filter(|list| !list.is_empty()) {
-                    Some(list) => {
-                        let replay = Replay::start(&list, replay_interval(), sink)
-                            .map_err(|error| format!("replay: {error}"))?;
-                        (Source::Replay(replay), "replay")
+            let (started, mode) = match replay {
+                Some(list) => {
+                    let replay = Replay::start(list.as_os_str(), replay_interval(), sink)
+                        .map_err(|error| format!("replay: {error}"))?;
+                    (Source::Replay(replay), "replay")
+                }
+                None => {
+                    let hgs = hgs();
+                    #[cfg(unix)]
+                    let fleet = Fleet::start_accounted(
+                        hgs,
+                        sink,
+                        zerus_client_core::Timing::default(),
+                        resources.clone(),
+                    );
+                    #[cfg(not(unix))]
+                    let fleet = Fleet::start(hgs, sink);
+                    let _ = self.core_control.set(fleet.control());
+                    // An already admitted start can register after freeze.
+                    // It must see the sticky close before following anything.
+                    if self.controls.snapshot().map_or(true, |state| state.closed) {
+                        fleet.control().request_stop();
+                    } else if organization.is_some() {
+                        follow_organization(&fleet);
                     }
-                    None => {
-                        let fleet = Fleet::start(default_hgs(), sink);
-                        if organization.is_some() {
-                            follow_organization(&fleet);
-                        }
-                        (Source::Fleet(fleet), "live")
-                    }
-                };
+                    (Source::Fleet(fleet), "live")
+                }
+            };
             let after = creations.clone();
-            self.pump.drain_with_after(
+            self.pump.drain_accounted(
                 changes,
                 move |change| {
                     if let Some(organization) = &organization {
@@ -256,6 +324,7 @@ mod live {
                         creations.catalog_changed();
                     }
                 },
+                resources,
             );
             *source = Some(started);
             Ok(mode.into())
@@ -289,6 +358,7 @@ mod live {
         }
 
         pub fn smoke_resume(&self, key: &str, ready: Value) -> Result<(), String> {
+            let _admission = self.admit()?;
             match self
                 .source
                 .lock()
@@ -308,6 +378,7 @@ mod live {
             after: Option<i64>,
             tail: u32,
         ) -> Result<(), String> {
+            let _admission = self.admit()?;
             match self
                 .source
                 .lock()
@@ -336,6 +407,7 @@ mod live {
             target: &zerus_client_core::actions::Target,
             preferences: &serde_json::Value,
         ) {
+            let Ok(_admission) = self.admit() else { return };
             if let Some(Source::Fleet(fleet)) = self
                 .source
                 .lock()
@@ -350,6 +422,7 @@ mod live {
         /// session's catalog key must be the target's. A replay serves the
         /// fixture's processes state.
         pub fn follow_processes(&self, target: &ProcessTarget) -> Result<(), String> {
+            let _admission = self.admit()?;
             match self
                 .source
                 .lock()
@@ -386,6 +459,7 @@ mod live {
             target: &ProcessTarget,
             ms: u64,
         ) -> Result<(), String> {
+            let _admission = self.admit()?;
             match self
                 .source
                 .lock()
@@ -401,6 +475,7 @@ mod live {
         }
 
         pub fn refresh_processes(&self, target: &ProcessTarget) -> Result<(), String> {
+            let _admission = self.admit()?;
             match self
                 .source
                 .lock()
@@ -417,6 +492,7 @@ mod live {
 
         /// Not followed (it ended meanwhile) is not an error.
         pub fn unfollow_processes(&self, target: &ProcessTarget) {
+            let Ok(_admission) = self.admit() else { return };
             match self
                 .source
                 .lock()
@@ -434,6 +510,7 @@ mod live {
         }
 
         pub fn unfollow(&self, computer: String, key: String) -> Result<(), String> {
+            let _admission = self.admit()?;
             match self
                 .source
                 .lock()
