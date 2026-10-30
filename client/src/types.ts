@@ -329,6 +329,8 @@ export type Screen = "overview" | "projects" | "machines" | "accounts";
 export interface ProjectedWindow { id: string; label: string; used: number; minutes: number | null; resets_at: number | null }
 export interface Identity { email: string; name: string; plan: string; organization: string; account_id: string; auth_method: string }
 export interface Usage {
+  /** The account profile id, when the source reports one. */
+  id?: string;
   status: string;
   provider: string;
   label: string;
@@ -344,6 +346,12 @@ export interface Usage {
   refresh_error: boolean;
   offline: boolean;
 }
+export interface SessionUsageRef { host: ComputerId; name: string; run_id: string }
+export const emptyUsage = (provider = ""): Usage => ({
+  status: "loading", provider, label: "", auth_status: "", checked_at: null, seeded: false,
+  identity: { email: "", name: "", plan: "", organization: "", account_id: "", auth_method: "" },
+  windows: [], balances: [], credits: null, refreshing: false, refresh_error: false, offline: false,
+});
 export type MemberState = "ready" | "offline" | "not-installed" | "apikey" | "signed-out" | "keychain" | "desktop" | "unavailable" | "expired" | "checking" | "unknown";
 export interface OpenCodeInfo { providers: { label: string; connection: string; models: string }[]; truncated: boolean; stale_catalog_at: number | null; stopped: boolean }
 export interface Profile {

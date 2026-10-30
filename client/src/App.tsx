@@ -20,6 +20,7 @@ import { installShortcutRouter, onCommand } from "./store/shortcuts";
 import { updateCommands, updates } from "./store/updates";
 import { openUpdates } from "./store/desk";
 import { ZerusLogo } from "./ui/components/ZerusLogo";
+import { StatusUsage } from "./ui/StatusUsage";
 import type { BridgeMode } from "./bridge";
 
 // The client shell: the rail, the pages and the status bar.
@@ -59,6 +60,7 @@ function StatusBar(props: { mode: () => BridgeMode | "starting" }) {
         <span class="chip-accent" title="Synthetic data from the replay fixture; no hgs is running">Replay</span>
       </Show>
       <span class="grow" />
+      <StatusUsage />
       <Show when={!updates().quiet && updates().available}>
         <button type="button" class="btn ghost small status-update" title={`Zerus ${updates().version} is available. Open Updates.`}
           aria-label={`Zerus ${updates().version} is available. Open Updates.`} onClick={openUpdates}>

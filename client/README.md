@@ -793,6 +793,18 @@ written, including recovery. The one exit hook closes voice and the composers,
 then flushes this store on quit and termination signals. A send whose durable
 save has not started cannot dispatch during shutdown.
 
+## Status bar account usage
+
+The right end of the window status bar shows the selected live session's bound
+account, with its limit windows and a Refresh button. Clicking the account opens
+its exact profile on the Accounts page. The strip appears only on the Sessions
+page for a tracked, non-archived session with no subagent open.
+
+The screens worker reads `hgs [@host] account inspect --session NAME --refresh`
+on the same five-minute schedule and two-slot queue as profile usage, retaining
+at most 64 run-scoped snapshots. No additional background poller runs for this
+strip. Failed or offline snapshots without windows read `limits n/a`.
+
 ## Attachments
 
 A message can have up to eight nonempty attachments, at most 10 MiB each and
