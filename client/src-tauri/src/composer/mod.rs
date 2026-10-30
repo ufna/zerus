@@ -201,6 +201,7 @@ pub struct AttachmentView {
     pub path: String,
     /// The first lines of a text file, for the preview.
     pub excerpt: Option<String>,
+    pub image_size: Option<attachments::image::Size>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -1489,6 +1490,7 @@ impl Composers {
                             composer.handle, composer.attachments_rev
                         ),
                         excerpt: excerpt(a),
+                        image_size: attachments::image::dimensions(&a.bytes),
                     })
                     .collect()
             },

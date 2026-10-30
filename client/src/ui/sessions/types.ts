@@ -176,6 +176,10 @@ export interface ItemAttachment {
   index: number;
   /** An image the card shows a thumbnail of: any image but SVG. */
   image: boolean;
+  /** Private presentation from this client's exact local send, never a journal path. */
+  preview_path?: string;
+  image_size?: import("../../types").ImageSize;
+  own?: boolean;
 }
 
 /** A local message row's state (ActivityView.cpp:1053-1068). */
