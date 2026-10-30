@@ -1,4 +1,4 @@
-import { For, Show, Switch, Match, createEffect, createMemo, createSignal, onCleanup, on, type JSX } from "solid-js";
+import { For, Show, Switch, Match, Suspense, lazy, createEffect, createMemo, createSignal, onCleanup, on, type JSX } from "solid-js";
 import { Icon } from "../lib/icons";
 import { selected, setSubagentOpen, setDetailTab, setSelectedKey, subagentOpen, setMenu } from "../../store/ui";
 import { inspectorOpen, inspectorTab, inspectorWidth, inspectorClosed, setInspectorOpen, setInspectorTab, setInspectorWidth, toggleInspectorCard, panelGeometry, inspectorHint, INSPECTOR_TABS, type InspectorTab } from "../../store/inspector";
@@ -9,7 +9,9 @@ import { openWorktreeReview, worktreeReviewDialog } from "../../store/worktreeCl
 import { computerOffline, orderedRows } from "../../store/catalog";
 import { groupOf, grouping, INBOX } from "../../store/organization";
 import { sessionIdentity, snapshotOf } from "./actions-ui";
-import { TasksPanel, TaskTabBadge } from "../screens/Tasks";
+import { tasks } from "../../store/tasks";
+import { taskProject, projectTasks } from "../../store/taskContext";
+import "../styles/tasks.css";
 import { object, text } from "../screens/tasks-ui";
 import { sessionGoal, sessionPlan, usageRows } from "./inspector-data";
 import { machineCards } from "../../store/machines";
@@ -22,6 +24,10 @@ import { sessionUsageView } from "./session-usage-ui";
 import { composer } from "../../store/composer";
 import * as bridge from "../../bridge";
 import "../styles/inspector.css";
+
+// Keep the always-visible badge eager; load the board only when its tab opens.
+const TasksPanel = lazy(() => import("../screens/Tasks").then((module) => ({ default: module.TasksPanel })));
+function TaskTabBadge() { return <Show when={taskProject() && tasks.loaded()}><span class="tk-tabbadge"><Show when={projectTasks().filter((t) => t.stage === "review").length}>{(n) => <span class="tk-tb review">{n()}</span>}</Show><Show when={projectTasks().filter((t) => t.stage === "todo").length}>{(n) => <span class="tk-tb todo">{n()}</span>}</Show></span></Show>; }
 
 const LABEL: Record<InspectorTab, string> = { plan: "Plan & agents", details: "Details", worktrees: "Worktrees", tasks: "Tasks" };
 const raw = () => selected() ? followedFor(selected()!.key).value : undefined;
@@ -149,6 +155,6 @@ export function Inspector(props: { available: number }) {
   return <Show when={inspectorOpen()}><aside ref={panel} class="inspector" classList={{ floating: geometry().floating }} style={{ width: `${geometry().width}px` }} aria-label="Side panel">
     <div class="insp-resize" tabindex="0" role="separator" aria-orientation="vertical" aria-label="Side panel width" aria-valuemin={240} aria-valuemax={900} aria-valuenow={inspectorWidth()} onPointerDown={resize} onDblClick={() => setInspectorWidth(400)} onKeyDown={(e) => { if (["ArrowLeft", "ArrowRight", "Home"].includes(e.key)) { e.preventDefault(); setInspectorWidth(e.key === "Home" ? 400 : inspectorWidth() + (e.key === "ArrowLeft" ? 20 : -20)); } }}><i /></div>
     <div class="insp-tabs tabs" role="tablist" aria-label="Side panel tabs"><For each={INSPECTOR_TABS}>{(tab) => <button class="tab" role="tab" classList={{ on: inspectorTab() === tab }} aria-selected={inspectorTab() === tab} tabindex={inspectorTab() === tab ? 0 : -1} onClick={() => setInspectorTab(tab)} onKeyDown={(e) => { const i = INSPECTOR_TABS.indexOf(tab), next = e.key === "ArrowRight" ? (i + 1) % 4 : e.key === "ArrowLeft" ? (i + 3) % 4 : e.key === "Home" ? 0 : e.key === "End" ? 3 : -1; if (next >= 0) { e.preventDefault(); setInspectorTab(INSPECTOR_TABS[next]); panel.querySelectorAll<HTMLButtonElement>(".insp-tabs .tab")[next]?.focus(); } }}>{LABEL[tab]}{tab === "tasks" ? <TaskTabBadge /> : null}</button>}</For><span class="grow" /><button class="icon-btn small" aria-label="Collapse side panel" data-tip={inspectorHint("Collapse side panel")} data-tip-pos="left" onClick={close}><Icon name="panel-right-close" size={14} /></button></div>
-    <div class="insp-scroll" classList={{ tasks: inspectorTab() === "tasks" }}><Switch><Match when={inspectorTab() === "plan"}><PlanAgents /></Match><Match when={inspectorTab() === "details" && selected()}><Details /></Match><Match when={inspectorTab() === "worktrees"}><Worktrees /></Match><Match when={inspectorTab() === "tasks"}><TasksPanel /></Match></Switch></div>
+    <div class="insp-scroll" classList={{ tasks: inspectorTab() === "tasks" }}><Switch><Match when={inspectorTab() === "plan"}><PlanAgents /></Match><Match when={inspectorTab() === "details" && selected()}><Details /></Match><Match when={inspectorTab() === "worktrees"}><Worktrees /></Match><Match when={inspectorTab() === "tasks"}><Suspense><TasksPanel /></Suspense></Match></Switch></div>
   </aside></Show>;
 }

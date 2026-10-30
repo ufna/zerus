@@ -225,7 +225,7 @@
   ],
   "geometry_note": "Row and image sizes, relative paragraph positions and node identities are constant from the first sample. The ordinary initial end-pin placement may scroll a newly appended row into view; it is not a receipt/decode correction. Every later receipt and decode retains geometry. Content-addressed peer copies resolve to the same source URL in this campaign; distinct-source delayed, failed, stale and unmounted decodes are covered by unit tests.",
   "checks": {
-    "frontend": "Type check; 2083 Vitest tests passed, 1 skipped; normal production build; bundle budget 497960 / 500000 bytes",
+    "frontend": "Type check; 2094 Vitest tests passed, 1 skipped after final integration rebase; normal production build; bundle budget 493158 / 500000 bytes",
     "core": "All-target Clippy; 7 attachments integration tests; 3 image header and 6 local-message units passed",
     "tauri": "All-target Clippy default/media/video/no-default-features; 19 fetch tests; Windows MSVC media cross-Clippy",
     "phase4": "16/16 normal built-app steps passed; exit 0",
@@ -244,5 +244,6 @@
     "activity-image-before-peer-race.png",
     "activity-image-after-two.png",
     "activity-image-after-three.png"
-  ]
+  ],
+  "bundle": "Final integration rebase exceeded the 500k entry gate at 504661 bytes. Loading the existing Tasks board on demand while retaining its eager badge and CSS reduces the entry to 493158 bytes; panel appearance and data path are unchanged."
 }
