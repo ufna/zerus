@@ -256,6 +256,18 @@ owned-child exit, both real pipe completions and a successful decoder before
 returning data. Existing native recovery, voice and swarm services retain their
 own authority; this tracks the existing CLI helper reads, never those services.
 
+Unix probe/watch helpers start in their own process group. Before signalling
+that group, `waitid(WNOWAIT)` verifies the still-unreaped owned child; only then
+can the supervisor signal its exact group and reap the leader. This also cleans
+up an ssh/ProxyCommand child when its hgs parent exits first, without signalling
+a reused PID/PGID. Unavailable child ownership never permits a group signal.
+Detached children (including a detached ControlPersist master) are not chased;
+any inherited pipe they retain stays charged. Group signalling is limited to
+these read helpers, never agents, terminals or caller-selected/shared groups.
+Actual reader/helper completion still releases admission, not signal delivery.
+Primary pressure stays an ordinary reconnecting state with one bounded static
+role/operation log line, never internal resource text in the computer status.
+
 ### Fleet and GUI consumer barrier
 
 `Fleet::start_accounted` now passes the same host resource group through the

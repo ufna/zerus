@@ -38,6 +38,7 @@ const QUEUE_LINES: usize = 1024;
 const PROBE_BYTES: u64 = 1 << 20;
 const SOURCE_JOIN: Duration = Duration::from_secs(1);
 
+mod helper;
 #[path = "stream_legacy_source.rs"]
 mod legacy_source;
 mod resources;
@@ -199,7 +200,10 @@ fn probe_until(
     let primary = match resources {
         Some(scope) => match scope.primary() {
             Some(held) => Some(held),
-            None => return Probe::Failed("previous helper resources are still open".into()),
+            None => {
+                eprintln!("zerus-client: role=fleet operation=probe resources=pending");
+                return Probe::Failed("hgs -h is not ready".into());
+            }
         },
         None => None,
     };
@@ -213,6 +217,7 @@ fn probe_until(
     };
     let child_charge = primary.clone().map(crate::run::ChildCharge::new);
     let mut command = hgs_command(hgs, computer, &["-h"]);
+    helper::prepare(&mut command);
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -246,7 +251,7 @@ fn probe_until(
     }
     let deadline = Instant::now() + timeout;
     let status = loop {
-        match child.try_wait() {
+        match helper::try_wait(&mut child) {
             Ok(Some(status)) => {
                 if let Some(charge) = &child_charge {
                     charge.confirmed();
@@ -257,8 +262,7 @@ fn probe_until(
                 thread::sleep(Duration::from_millis(10));
             }
             _ => {
-                let _ = child.kill();
-                if child.wait().is_ok() {
+                if helper::terminate(&mut child).is_ok() {
                     if let Some(charge) = &child_charge {
                         charge.confirmed();
                     }
@@ -1467,10 +1471,8 @@ impl Supervisor {
             .as_ref()
             .map(|scope| {
                 scope.primary().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::WouldBlock,
-                        "previous helper resources are still open",
-                    )
+                    eprintln!("zerus-client: role=fleet operation=watch resources=pending");
+                    io::Error::new(io::ErrorKind::WouldBlock, "hgs watch is not ready")
                 })
             })
             .transpose()?;
@@ -1488,6 +1490,7 @@ impl Supervisor {
 
         let child_charge = primary.clone().map(crate::run::ChildCharge::new);
         let mut command = hgs_command(&self.hgs, &self.computer, &["watch", "--json"]);
+        helper::prepare(&mut command);
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -2059,7 +2062,7 @@ impl Supervisor {
         if let Some(mut child) = self.child.take() {
             let deadline = Instant::now() + self.timing.stop_grace;
             loop {
-                match child.try_wait() {
+                match helper::try_wait(&mut child) {
                     Ok(Some(_)) => {
                         if let Some(charge) = &self.child_charge {
                             charge.confirmed();
@@ -2070,8 +2073,7 @@ impl Supervisor {
                         thread::sleep(Duration::from_millis(5))
                     }
                     _ => {
-                        let _ = child.kill();
-                        if child.wait().is_ok() {
+                        if helper::terminate(&mut child).is_ok() {
                             if let Some(charge) = &self.child_charge {
                                 charge.confirmed();
                             }

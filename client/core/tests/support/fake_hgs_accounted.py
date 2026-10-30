@@ -27,10 +27,12 @@ def wait_release():
 
 
 def holder():
-    # No process/session lookup or kill. Only this fixture's pipe is retained.
+    # Intentionally escape the helper group: cancellation must not chase a
+    # detached session. Its pipe remains charged until the explicit release.
     code = "import os,time;end=time.monotonic()+20\nwhile not os.path.exists(%r) and time.monotonic()<end: time.sleep(.01)" % str(RELEASE)
     pipe = CONFIG["pipe"]
     subprocess.Popen([sys.executable, "-c", code],
+                     start_new_session=True,
                      stdin=sys.stdin if pipe == "stdin" else subprocess.DEVNULL,
                      stdout=sys.stdout if pipe == "stdout" else subprocess.DEVNULL,
                      stderr=sys.stderr if pipe == "stderr" else subprocess.DEVNULL)
