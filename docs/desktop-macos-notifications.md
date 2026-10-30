@@ -63,6 +63,11 @@ consume an actor-owned, one-use launch permit and exit cleanly on refused
 setup. A crash during bootstrap leaves that permit spent, so launchd's next
 crash restart refuses the same bootstrap and exits cleanly. Qualify that exact
 crash/clean-exit sequence before admission; changing KeepAlive is not the fix.
+Reserve/spend the durable permit **before** the launch side effect, binding
+configuration, trusted installed host, current ownership, cutoff and burst.
+Unknown launch outcome is status-only, with no replacement for that burst.
+Bootstrap state is separate from the Post reservation and callback lease:
+launching never authorizes a post or consumes a notification identity.
 Deliberate frontend or promoted-host Quit remains a clean exit; a second
 explicit Quit also advances the wake cutoff and cannot resurrect that burst.
 G1 owns the durable close cutoff, manual-launch state and launch permit;
@@ -101,8 +106,9 @@ verified **before-call** Refused outcome permits an explicit `retry_of`.
 Timeout, disconnect, cancellation or error after possible issue is Unknown;
 Unknown never becomes permission to post again, including after restart.
 
-The proposed private mapping binds configuration, original intent/revision,
-attention token, native request ID, reservation/adapter/lease epochs, a random
+The proposed private mapping binds configuration, original intent/revision and
+exact target identity, attention token, native request ID, original Post ticket
+and adapter/lease epochs, a random
 per-post correlation UUID, and verified installed signing identity. New
 `userInfo` keeps `hgsAttentionToken` and adds a versioned correlation value.
 The OS request ID stays `zerus.attention.<token>`. Neither value is executable
@@ -111,13 +117,18 @@ title/body are each at most 16 KiB, token at most the existing 8192 bytes.
 Receipts/control are at most 16 KiB, with allowlisted metadata and no private
 notification body or system error text. G1 owns the eventual schema/API.
 
-Authenticate the native peer using OS-bound process identity and the installed
-bundle's verified designated requirement, plus the current configuration,
-instance, service challenge and lease. A claimed bundle ID, PID/path string,
-same UID or token is insufficient on its own. The present Unix transport's
+Authenticate the native peer using kernel-bound live-process identity
+(audit-token-equivalent, with PID-reuse protection) and live code verification
+against the maintained trusted installed bundle's designated requirement,
+plus the current configuration, canonical instance, service challenge and
+ingress lease. Capture trusted installation identity separately; a peer-supplied
+requirement, bundle ID, PID/path string, same UID or token is insufficient.
+The present Unix transport's
 same-user check is not that signed-peer proof; the concrete macOS transport
-extension must be agreed with G1 before implementation. Do not invent another
-service or reuse the native ledger for G2 jobs.
+and upgrade-continuity extension must be agreed with G1 before implementation.
+Unavailable audit-token binding refuses; it never falls back to PID lookup.
+Keep private signing identifiers out of source. Do not invent another service
+or reuse the native ledger for G2 jobs.
 
 The [Linux lineage lesson](desktop-linux-notifications.md) applies without
 inventing a Mac bus ID: keep the original durable post binding separate from
@@ -161,7 +172,8 @@ does not manufacture a delivered mapping or current signed-peer authority.
    activation identity; the old two lines do not convey a token. This specializes
    the service design's proposed instance-channel extension, which is not yet
    implemented. No free-form path, executable or latest-session route is accepted.
-5. Once ready, the existing desk resolves the original stable computer, run and
+5. Persist the current canonical consumer's exact claim **before presentation**.
+   Once ready, the existing desk resolves the original stable computer, run and
    conversation against G1's current catalog, including rename, and presents
    exactly that target. Recheck the tombstone/revision immediately before
    selection and acknowledge the same activation. Missing/offline/replaced
@@ -174,8 +186,9 @@ new ingress without evicting accepted work. Each native/control attempt has a
 positive absolute budget of at most five seconds; window readiness has the
 existing 30-second total startup bound. Pending activations use indexed pages
 of at most 128 and the desktop storage-pressure rules, not per-session caches.
-Lost acknowledgement uses the same activation's status/claim, never a fresh
-target or notification. Restart does not blindly present old pending clicks;
+Lost acknowledgement reconciles the same persisted claim, never a blind second
+presentation, fresh target or notification. Accepted pending identities are not
+evicted under pressure. Restart does not blindly present old pending clicks;
 it revalidates their current intent and exact identities first. Durable admission
 and consumer deduplication must be qualified before claiming restart delivery.
 
@@ -193,9 +206,8 @@ exact bound request ID from both
 [pending](https://developer.apple.com/documentation/usernotifications/unusernotificationcenter/removependingnotificationrequests(withidentifiers:))
 and [delivered](https://developer.apple.com/documentation/usernotifications/unusernotificationcenter/removedeliverednotifications(withidentifiers:))
 notifications. Both APIs are asynchronous and return no completion receipt.
-Record that both methods were issued; do not describe that as confirmed visual
-removal. Conservatively retain an unconfirmed withdrawal as Unknown under the
-native outcome contract. G1 must agree this outcome encoding before integration.
+Record both methods as issued metadata and finish the native attempt Unknown,
+never Delivered or visually removed. This is the agreed native outcome contract.
 Do not enumerate all Notification Center items to invent a confirmation.
 
 Serialize calls per exact post; an already-issued Post retains its callback
