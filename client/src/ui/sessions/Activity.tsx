@@ -3,7 +3,8 @@ import { activityReadingRows, createActivityAnchor } from "./activity-anchor";
 import { searchPreview, clearSearchPreview } from "../../store/searchSelection";
 import { SearchHighlight } from "./SearchHighlight";
 import { For, Show, batch, createContext, createEffect, createMemo, createSignal, on, onCleanup, onMount, useContext } from "solid-js";
-import { attachmentFetch, attachmentMedia, attachmentOpen, copyVerbatim } from "../../bridge";
+import { attachmentFetch, attachmentMedia, attachmentOpen, copyVerbatim, inTauri } from "../../bridge";
+import { posterUrl, visiblePoster } from "./video-poster";
 import { notify } from "../../store/actions";
 import { previews } from "../../store/attachments";
 import { mediaPlayback } from "../../store/mediaPlayback";
@@ -258,7 +259,7 @@ function Waveform(props: { values: number[] }) {
   return <>{layer("rest")}{layer("played")}</>;
 }
 
-function MediaCard(props: { item: MediaMessage; scope?: AttachmentScope }) {
+function MediaCard(props: { item: MediaMessage; scope?: AttachmentScope; sourceId?: string; postersEnabled?: boolean }) {
   const it = props.item;
   const video = it.media === "video";
   const [transcript, toggleTranscript] = layoutDisclosure();
@@ -268,6 +269,17 @@ function MediaCard(props: { item: MediaMessage; scope?: AttachmentScope }) {
   const [isPlaying, setPlaying] = createSignal(false);
   const [loading, setLoading] = createSignal(false);
   const [url, setUrl] = createSignal("");
+  const [poster, setPoster] = createSignal("");
+  let posterCard: HTMLButtonElement | undefined;
+  let posterGate: ReturnType<typeof visiblePoster> | undefined;
+  onMount(() => {
+    const source = props.sourceId;
+    if (!video || !source || !it.posterMessageId || !posterCard || !inTauri()) return;
+    const url = posterUrl(source, it.posterMessageId);
+    if (url) { posterGate = visiblePoster(posterCard, url, setPoster); posterGate.setEnabled(!!props.postersEnabled); }
+  });
+  createEffect(() => { const enabled = !!props.postersEnabled; posterGate?.setEnabled(enabled); });
+  onCleanup(() => posterGate?.dispose());
   const [error, setError] = createSignal("");
   const visibleError = createMemo((previous: string) => held() ? previous : error() || it.error || "", "");
   const target = createMemo(() => it.file ? cardTarget(it.file, props.scope) : undefined,
@@ -357,11 +369,12 @@ function MediaCard(props: { item: MediaMessage; scope?: AttachmentScope }) {
       }>
         {/* The round video plays in place: click plays or pauses; a ring shows progress. */}
         <div class="vm-row video">
-          <button class="vm-poster" classList={{ playing: isPlaying(), started: position() > 0 && position() < duration() }}
+          <button ref={posterCard} class="vm-poster" classList={{ playing: isPlaying(), started: position() > 0 && position() < duration() }}
             style={{ "--p": String(ratio()) }} aria-pressed={isPlaying()}
             aria-label={`${isPlaying() ? "Pause" : "Play"} video message (${mediaTime(duration())})`} disabled={!target() || loading()} title={!target() ? "Recording is unavailable." : undefined} aria-busy={loading()} onClick={() => { if (isPlaying()) pause(); else void play(); }}>
-            <span class="vm-frames" classList={{ real: !!url() }} aria-hidden="true">
-              <Show when={url()}><video ref={(el) => { player = el; }} src={url()} playsinline preload="metadata"
+            <span class="vm-frames" classList={{ real: !!poster() || isPlaying() }} aria-hidden="true">
+              <Show when={poster() && !isPlaying()}><img src={poster()} alt="" /></Show>
+              <Show when={url()}><video ref={(el) => { player = el; }} src={url()} playsinline preload="metadata" style={{ position: "absolute", inset: "0", opacity: isPlaying() ? 1 : 0 }}
                 onLoadedMetadata={loaded} onTimeUpdate={moved} onPlaying={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} onError={failed} /></Show>
             </span>
             <svg class="vm-ring" viewBox="0 0 200 200" aria-hidden="true">
@@ -554,10 +567,10 @@ function EchoBody(props: { item: ActivityItem; scope?: AttachmentScope }) {
   </>;
 }
 
-function Item(props: { item: TranscriptItem; scope?: AttachmentScope }) {
+function Item(props: { item: TranscriptItem; scope?: AttachmentScope; sourceId?: string; postersEnabled?: boolean }) {
   const [open, toggleOpen] = layoutDisclosure();
   const it = props.item;
-  if (it.kind === "media") return <MediaCard item={it} scope={props.scope} />;
+  if (it.kind === "media") return <MediaCard item={it} scope={props.scope} sourceId={props.sourceId} postersEnabled={props.postersEnabled} />;
   if (it.kind === "context") return <div class="act-label eyebrow" id={`item-${it.id}`}>{it.body}</div>;
   if (it.kind === "thinking") return <div class="act-thinking" id={`item-${it.id}`}><span class="eyebrow">Thinking</span><p>{it.body}</p></div>;
   if (it.kind === "report")
@@ -890,7 +903,7 @@ export function ActivityView(props: { source?: ActivitySource }) {
           <Show when={!states().archived} fallback={<div class="notice"><Icon name="archive" size={14} /><div>This conversation is archived.</div></div>}>
             <Show when={view.loaded || view.items.length} fallback={<div class="act-older hint">Reading activity…</div>}>
               <Show when={view.items.length} fallback={<div class="act-older hint">No recorded activity yet.</div>}>
-                <For each={view.items}>{(it) => <Item item={it} scope={scope()} />}</For>
+                <For each={view.items}>{(it) => <Item item={it} scope={scope()} sourceId={source().target()?.id} postersEnabled={placed() && !pageHidden()} />}</For>
               </Show>
             </Show>
             <Show when={states().working && liveTool()}>

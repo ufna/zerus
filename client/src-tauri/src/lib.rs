@@ -328,7 +328,9 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                 let app = ctx.app_handle().clone();
                 tauri::async_runtime::spawn_blocking(move || {
                     let response = match app.try_state::<composer::Composers>() {
-                        Some(composers) => composer::files::respond(&composers, &webview, &request),
+                        Some(composers) => composer::files::respond(&composers, &webview, &request, |computer, key, message| {
+                            app.try_state::<commands::AppState>()?.pump().poster(computer, key, message)
+                        }),
                         None => tauri::http::Response::builder().status(404).body(Vec::new()).expect("a bare 404"),
                     };
                     responder.respond(response);

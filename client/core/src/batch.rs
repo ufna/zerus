@@ -185,6 +185,7 @@ type SessionKey = (ComputerId, String);
 /// [`PENDING_EVENTS`] per followed session.
 #[derive(Debug, Default)]
 pub struct Coalescer {
+    posters: crate::video_posters::Posters,
     computers: BTreeMap<ComputerId, ComputerStatus>,
     machines: BTreeMap<ComputerId, MachineMeta>,
     replaces: BTreeMap<ComputerId, BTreeMap<String, ViewRow>>,
@@ -198,6 +199,19 @@ pub struct Coalescer {
 }
 
 impl Coalescer {
+    /// A retained JPEG only; no hgs call, file read or JSON encoding.
+    pub fn poster(
+        &self,
+        computer: &ComputerId,
+        key: &str,
+        message: &str,
+    ) -> Option<std::sync::Arc<[u8]>> {
+        self.posters.get(computer, key, message)
+    }
+
+    pub fn strip_posters(&mut self, computer: &ComputerId, key: &str, value: &mut Value) {
+        self.posters.strip(computer, key, value);
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -239,6 +253,7 @@ impl Coalescer {
             Change::Computer { computer, status } => {
                 if status == ComputerStatus::Ended {
                     self.machines.remove(&computer);
+                    self.posters.forget(&computer, None);
                 }
                 self.computers.insert(computer, status);
             }
@@ -335,7 +350,18 @@ impl Coalescer {
             let Some(updates) = activity.remove(&id) else {
                 continue;
             };
-            for update in updates {
+            for mut update in updates {
+                match &mut update {
+                    ActivityUpdate::Events { events, .. }
+                    | ActivityUpdate::Replace { events, .. } => {
+                        for event in events {
+                            self.posters.strip(&id.0, &id.1, event);
+                        }
+                    }
+                    ActivityUpdate::Event { event, .. } => self.posters.strip(&id.0, &id.1, event),
+                    ActivityUpdate::State { value, .. } => self.posters.strip(&id.0, &id.1, value),
+                    ActivityUpdate::Ended => self.posters.forget(&id.0, Some(&id.1)),
+                }
                 let (kind, payload) = out(update);
                 batch.activity.push(ActivityOut {
                     computer: id.0.clone(),

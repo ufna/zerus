@@ -233,6 +233,7 @@ export interface MediaMessage {
   waveform: number[];
   /** Public receipt identity, never a path on the recording's host. */
   file?: { request_id: string; index: number };
+  posterMessageId?: string;
   transcript?: string;
   error?: string;
 }
