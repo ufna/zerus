@@ -317,7 +317,7 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
     });
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut app = builder
-        .invoke_handler(handler())
+        .invoke_handler(main_commands(handler()))
         // Draft attachments and cached files as raw bytes (`composer/files.rs`),
         // read off the main thread.
         .register_asynchronous_uri_scheme_protocol("zerus-file", |ctx, request, responder| {
@@ -399,6 +399,7 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                 app.manage(actions);
                 app.manage(actions::ArchiveReads::default());
                 app.manage(content_search::Searches::default());
+                app.manage(native_ui::runtime::NativeUi::default());
                 app.manage(task_details::TaskReads::default());
                 app.manage(task_details::TaskWrites::default());
                 app.manage(task_editor::TaskEditor::default());
@@ -978,6 +979,18 @@ fn flush_drafts(app: &AppHandle) {
 
 /// The commands the frontend may call. The session actions need the core's
 /// `hgs` runner, so they exist only with the `live` feature.
+fn main_commands(
+    handler: impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static,
+) -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
+    move |invoke| {
+        if !native_ui::app_commands_allowed(invoke.message.webview().label()) {
+            invoke.resolver.reject("not allowed");
+            return true;
+        }
+        handler(invoke)
+    }
+}
+
 #[cfg(feature = "live")]
 fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
@@ -1001,6 +1014,11 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         renderer::renderer_frame,
         content_search::content_search,
         content_search::cancel_content_search,
+        native_ui::runtime::native_ui_open,
+        native_ui::runtime::native_ui_browser,
+        native_ui::runtime::native_ui_retire,
+        native_ui::runtime::native_ui_visible,
+        native_ui::runtime::native_ui_bounds,
         settings::settings_get,
         settings::settings_set,
         desk::desk_take_pending,

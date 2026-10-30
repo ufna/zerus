@@ -13,6 +13,9 @@ vi.hoisted(() => {
 });
 vi.mock("../../bridge", () => ({
   inTauri: () => false,
+  // The native workspace store, loaded by the session entry points.
+  nativeUiOpen: vi.fn(), nativeUiRetire: vi.fn(async () => {}), nativeUiVisible: vi.fn(async () => {}),
+  nativeUiBounds: vi.fn(async () => {}), nativeUiBrowser: vi.fn(async () => {}), onNativeUi: vi.fn(async () => () => {}),
   ARCHIVED_ACTIVITY_BUSY: "busy",
   archivedActivity: vi.fn(() => new Promise(() => {})),
   activityPort: { follow: vi.fn(async () => {}), unfollow: vi.fn(async () => {}) },

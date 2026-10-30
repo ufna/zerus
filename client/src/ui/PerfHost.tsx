@@ -1014,6 +1014,10 @@ export function PerfHost() {
       const { markdownSmoke } = await import("../perf/markdownSmoke");
       void markdownSmoke(!!config().replay && !!config().actions_smoke);
     }
+    if (new URLSearchParams(location.search).has("native-ui-smoke") && inTauri()) {
+      const { nativeUiSmoke } = await import("../perf/nativeUiSmoke");
+      void nativeUiSmoke(!!config().replay && !!config().actions_smoke, config().smoke_file ?? undefined);
+    }
     if (new URLSearchParams(location.search).has("scope-filter-smoke") && inTauri()) {
       const { scopeFilterSmoke } = await import("../perf/scopeFilterSmoke");
       void scopeFilterSmoke(!!config().replay && !!config().actions_smoke);

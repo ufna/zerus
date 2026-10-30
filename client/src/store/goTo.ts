@@ -1,4 +1,5 @@
 import { createSignal } from "solid-js";
+import { nativeOverlayBarrier } from "./ui";
 import { COMMANDS, chord, handlerFor, popupOpen } from "./shortcuts";
 import { openSession } from "./desk";
 import { accountsPage, setAccountMachine, setRequestedProfile } from "./accounts";
@@ -64,23 +65,31 @@ export const [shortcutHelpOrigin, setShortcutHelpOrigin] = createSignal<HTMLElem
 
 export function openGoTo() {
   if (popupOpen()) return;
-  setGoToOrigin(document.activeElement as HTMLElement | null);
+  const origin = document.activeElement as HTMLElement | null;
+  const wait = nativeOverlayBarrier("goTo", true);
+  if (wait) { void wait.then(() => setGoToOrigin(origin)).catch(() => {}); }
+  else setGoToOrigin(origin);
 }
 
 export function closeGoTo(restore = true) {
   const origin = goToOrigin();
   setGoToOrigin(null);
+  void nativeOverlayBarrier("goTo", false);
   if (restore && origin?.isConnected) origin.focus();
 }
 
 export function openShortcutHelp() {
   if (popupOpen()) return;
-  setShortcutHelpOrigin(document.activeElement as HTMLElement | null);
+  const origin = document.activeElement as HTMLElement | null;
+  const wait = nativeOverlayBarrier("shortcutHelp", true);
+  if (wait) { void wait.then(() => setShortcutHelpOrigin(origin)).catch(() => {}); }
+  else setShortcutHelpOrigin(origin);
 }
 
 export function closeShortcutHelp(restore = true) {
   const origin = shortcutHelpOrigin();
   setShortcutHelpOrigin(null);
+  void nativeOverlayBarrier("shortcutHelp", false);
   if (restore && origin?.isConnected) origin.focus();
 }
 

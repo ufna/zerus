@@ -45,6 +45,16 @@ stdin = sys.stdin.read()
 log(stdin)
 time.sleep(config.get("delays", {}).get(args[0] if args else "", 0))
 
+if args[:1] == ["native-ui"] and len(args) >= 2:
+    address = config.get("native_ui", {}).get(args[1])
+    if not address:
+        raise SystemExit(2)
+    if args[2:] == ["--json"]:
+        emit({"url": address})
+    elif args[2:]:
+        raise SystemExit(2)
+    raise SystemExit(0)
+
 if args[:1] == ["inspect"] and len(args) >= 2:
     if args[1] in config.get("inspect", {}):
         emit(config["inspect"][args[1]])
