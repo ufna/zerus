@@ -193,11 +193,21 @@ struct Pipes {
     child_exited: Option<Arc<AtomicBool>>,
 }
 
-struct ChildCharge {
+pub(crate) struct ChildCharge {
     resources: Option<Arc<dyn Send + Sync>>,
     exited: Arc<AtomicBool>,
 }
 impl ChildCharge {
+    pub(crate) fn new(resources: Arc<dyn Send + Sync>) -> Self {
+        Self {
+            resources: Some(resources),
+            exited: Arc::new(AtomicBool::new(false)),
+        }
+    }
+    pub(crate) fn confirmed(&self) {
+        self.exited.store(true, Ordering::Release);
+    }
+
     fn unverified(&mut self) -> Option<Arc<dyn Send + Sync>> {
         if self.exited.load(Ordering::Acquire) {
             None
@@ -348,6 +358,8 @@ pub enum DecodeError<E> {
 /// second reader group for the same source while an old group remains alive.
 /// A descendant retaining a pipe keeps the guard after cancellation/deadline;
 /// only the owned child is killed. No callback or unrelated process is killed.
+/// Unverified owned-child exit also retains the supplied group until host exit;
+/// a returned error and EOF alone cannot release that admission.
 pub fn run_decoded<T: Send + 'static, E: Send + 'static>(
     hgs: &Path,
     inv: &Invocation,
@@ -362,6 +374,7 @@ pub fn run_decoded<T: Send + 'static, E: Send + 'static>(
     if cancel.load(Ordering::Relaxed) {
         return Err(DecodeError::Cancelled);
     }
+    let child = ChildCharge::new(readers.clone());
     let stop = Arc::new(AtomicBool::new(false));
     let decoder_stop = stop.clone();
     let deadline = Instant::now() + inv.timeout;
@@ -374,10 +387,14 @@ pub fn run_decoded<T: Send + 'static, E: Send + 'static>(
         })),
         spawn: Some(Box::new(spawn)),
         readers: Some(readers),
+        child_exited: Some(child.exited.clone()),
         stop: Some(stop),
         ..Pipes::default()
     };
     let exit = run_inner(hgs, inv, parent_env, &[], STDERR_CAP, Some(cancel), pipes);
+    if matches!(exit, Ok(Exit::StartFailed(_))) {
+        child.confirmed();
+    }
     if cancel.load(Ordering::Relaxed) {
         return Err(DecodeError::Cancelled);
     }

@@ -228,6 +228,40 @@ profile transition, G3 capture context or service read writer. The local
 checkpoint result is source metadata only. Every other role in the selected
 profile still requires its own qualified current drain and store barriers.
 
+
+## Fleet supervisor resource accounting
+
+Core's additive `stream::spawn_accounted` starts the same existing supervisor
+with one already-admitted host resource group. Ordinary GUI `stream::spawn`
+keeps its existing path, output, controls, arguments and deadlines. There is
+no GUI caller of the accounted constructor yet. Raw source mode reuses its
+existing admitted worker group; no new reader or event producer is created.
+The caller must bound source groups and keep its router and consumer callback
+lifetimes separately. Neither constructor nor a resource count grants authority.
+
+One primary slot covers a help probe or watch child and all of its pipe holders.
+A prior probe/watch holder refuses another primary attempt until actual release.
+The existing bounded legacy subscriptions, organization poller and one-shot
+worker-refresh read share 35 callback slots per source; a retained callback or
+pipe cannot be evicted to admit another. There is no per-session projection cache
+or new polling loop. Closing the scope is sticky. Control handles hold only a
+weak reference; an idle retained handle does not charge a completed worker.
+
+Callbacks retain their original group through result delivery and decoding.
+Child/stdin/stdout/stderr retain actual resources after a bounded stop or returned
+runner outcome. Only verified owned-child exit releases its child guard; unknown
+exit pins that admission until host exit. The decoded runner now also retains
+its admitted reader group on unavailable child exit. It still requires successful
+owned-child exit, both real pipe completions and a successful decoder before
+returning data. Existing native recovery, voice and swarm services retain their
+own authority; this tracks the existing CLI helper reads, never those services.
+
+This is the supervisor prerequisite, not full Fleet drain. The next integration
+must close Fleet/GUI admissions and retain removed-peer stop threads, the router,
+queued changes and the actual pump/consumer callbacks until completion. An external
+sink with queued changes is not drained by `spawn_accounted` or a returned stop.
+No positive producer command, profile handoff or capture API is implemented here.
+
 ## Fresh capture and publication boundary
 
 G1 supplies G3 an opaque, non-serializing capture context only after the exact
