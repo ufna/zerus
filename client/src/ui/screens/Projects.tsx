@@ -1,9 +1,11 @@
 import { ProjectLabel } from "../components/ProjectLabel";
 import ProjectColorDialog from "./ProjectColorDialog";
-import { For, Show, createMemo, createResource, createSignal, onCleanup, untrack } from "solid-js";
+import ProjectCatalogDialog from "./ProjectCatalogDialog";
+import { For, Show, createEffect, createMemo, createResource, createSignal, on, onCleanup, untrack } from "solid-js";
 import { Icon } from "../lib/icons";
 import { MachineLabel } from "../components/MachineLabel";
-import type { Folder, Project } from "../../types";
+import type { EditOutcome, Folder, Project } from "../../types";
+import * as organization from "../../store/organization";
 import { projectToShow, setProjectToShow } from "../../store/organization";
 import { projectsPage } from "../../store/projects";
 import { flag, setSetting, settingsLoaded } from "../../store/settings";
@@ -12,16 +14,15 @@ import { PROJECT_EDITING, WORKTREE_FLOWS } from "./reasons";
 import { machineCards } from "../../store/machines";
 import { folderButton, folderExists, folderLaunch, folderMenuEntry, newSessionInFolder } from "../sessions/newsession-view";
 import { copy } from "../../store/actions";
-import { openTasks } from "../../store/taskNavigation";
 import { nextSort, showAskedProject, shownProjects, sortFolders, type Sort, type SortColumn } from "./projects-ui";
+import { catalogName, createCatalogEdits } from "./project-catalog";
 
 // Projects (ProjectsDialog.cpp), ported from design/webui/src/screens/Projects.tsx:
 // the shared project catalog the Sessions list groups by (the organization
 // topic, with this device's default project and the project sync status), its
 // folders on each computer. The color popup uses the shared catalog writer and
-// local presentation settings. Editing (names, defaults, folders, order,
-// deleting, the swarm connection) arrives with project editing (3c), New
-// session with phase 5, and the Worktrees panel with phase 5.
+// local presentation settings. Catalog edits share the Sessions list's
+// organization writer. Folder/default and Swarm controls have separate work.
 
 const [selectedProject, setSelectedProject] = createSignal<string | undefined>();
 const [selectedFolder, setSelectedFolder] = createSignal(0);
@@ -31,6 +32,29 @@ const setAllSwarm = (value: boolean) => { void setSetting("workspace/allSwarmPro
 const disabled = (label: string, icon: string, hint: string): MenuEntry => ({ label, icon, disabled: true, hint });
 /** No folder selected: Qt's selectedFolder() is an empty folder. */
 const NO_FOLDER: Folder = { id: "", key: "", name: "", path: "", computer: "", machine: "" };
+
+/** InlineProjectName in the mockup: commit on Enter/blur, Escape reverts. */
+function ProjectName(props: { project: Project; enabled: boolean; rename(id: string, value: string): Promise<EditOutcome | undefined> | undefined }) {
+  const [value, setValue] = createSignal(props.project.name);
+  let editing: { id: string; name: string } | undefined;
+  createEffect(() => { const p = props.project; if (!editing || p.id !== editing.id) { editing = undefined; setValue(p.name); } });
+  const commit = () => {
+    const started = editing;
+    editing = undefined;
+    if (!started) return;
+    const name = catalogName(value());
+    if (!name || started.id !== props.project.id) { setValue(props.project.name); return; }
+    setValue(name);
+    void props.rename(started.id, name)?.then((result) => { if (!result || result.outcome === "refused") setValue(props.project.name); });
+  };
+  return <input id="proj-name" class="field proj-name" maxLength={80} value={value()} readOnly={!props.enabled}
+    onFocus={() => { editing = { id: props.project.id, name: props.project.name }; }}
+    onInput={(event) => setValue(event.currentTarget.value)} onBlur={commit}
+    onKeyDown={(event) => {
+      if (event.key === "Enter") { event.preventDefault(); commit(); event.currentTarget.blur(); }
+      else if (event.key === "Escape") { event.preventDefault(); editing = undefined; setValue(props.project.name); event.currentTarget.blur(); }
+    }} />;
+}
 
 export function ProjectsScreen() {
   const view = projectsPage;
@@ -42,6 +66,42 @@ export function ProjectsScreen() {
   let left = false;
   onCleanup(() => { left = true; setMenu(undefined); });
   const choose = (p: Project) => { setSelectedProject(p.id); setSelectedFolder(0); };
+  const edits = createCatalogEdits({ ...organization, projects: () => view().projects,
+    select: (id) => { setSelectedProject(id); setSelectedFolder(0); } });
+  // Moving a keyed DOM node can blur it in WebKit. Preserve the keyboard
+  // origin through our reorder only; another user input cancels the handoff.
+  let moveFocus: { element: HTMLElement; order: string } | undefined;
+  const order = createMemo(() => projects().map((p) => p.id).join("\n"));
+  const clearMoveFocus = () => { moveFocus = undefined; };
+  addEventListener("pointerdown", clearMoveFocus, true);
+  addEventListener("keydown", clearMoveFocus, true);
+  onCleanup(() => { removeEventListener("pointerdown", clearMoveFocus, true); removeEventListener("keydown", clearMoveFocus, true); });
+  createEffect(on(order, (next) => {
+    const saved = moveFocus;
+    if (!saved || next === saved.order) return;
+    queueMicrotask(() => {
+      if (moveFocus !== saved) return;
+      moveFocus = undefined;
+      if (!left && saved.element.isConnected && (document.activeElement === document.body || document.activeElement === saved.element)) saved.element.focus();
+    });
+  }, { defer: true }));
+  const move = (id: string, by: -1 | 1) => {
+    const element = document.activeElement, before = order();
+    const pending = edits.move(id, by);
+    if (pending && element instanceof HTMLElement && element.dataset.id === id) {
+      const saved = moveFocus = { element, order: before };
+      void pending.then((result) => { if (result?.outcome === "refused" && moveFocus === saved) moveFocus = undefined; });
+    }
+  };
+  const editHint = () => organization.grouping().reason ?? undefined;
+  const [dragging, setDragging] = createSignal<string>();
+  const [dropBefore, setDropBefore] = createSignal<string>();
+  const endDrag = () => { setDragging(undefined); setDropBefore(undefined); };
+  const drop = (event: DragEvent, before?: string) => {
+    if (!dragging()) return;
+    event.preventDefault(); event.stopPropagation();
+    void edits.drop(dragging()!, before); endDrag();
+  };
   // ProjectsDialog.cpp:520-522: the Folders button's New session… follows the selected folder.
   const launchFolder = () => project()?.folders[selectedFolder()] ?? NO_FOLDER;
   // Read again only for another folder or once this computer's identity arrives; the last answer shows meanwhile.
@@ -85,17 +145,22 @@ export function ProjectsScreen() {
 
   const listMenu = (e: MouseEvent, id?: string) => {
     e.preventDefault();
+    const origin = e.currentTarget as HTMLElement;
     const p = projects().find((x) => x.id === id);
     if (p) choose(p);
     setMenu({ x: e.clientX, y: e.clientY, items: [
-      disabled("New project…", "plus", PROJECT_EDITING),
-      ...(p ? [{ separator: true } as const, disabled("Move project up", "arrow-up", PROJECT_EDITING), disabled("Move project down", "arrow-down", PROJECT_EDITING)] : []),
+      { label: "New project…", icon: "plus", disabled: !edits.enabled(), hint: editHint(), action: () => edits.openNew(origin) },
+      ...(p ? [{ separator: true } as const,
+        { label: "Move project up", icon: "arrow-up", kbd: "Alt+↑", disabled: !edits.canEdit(p.id) || projects().findIndex((x) => x.id === p.id) <= 0, hint: editHint(), action: () => move(p.id, -1) },
+        { label: "Move project down", icon: "arrow-down", kbd: "Alt+↓", disabled: !edits.canEdit(p.id) || projects().findIndex((x) => x.id === p.id) >= projects().length - 1, hint: editHint(), action: () => move(p.id, 1) },
+      ] : []),
     ] });
   };
 
   const onListKey = (e: KeyboardEvent) => {
-    if (e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
     e.preventDefault();
+    if (e.altKey) { const id = project()?.id; if (id) move(id, e.key === "ArrowUp" ? -1 : 1); return; }
     const list = projects().filter((p) => p.accessible);
     const i = list.findIndex((p) => p.id === project()?.id);
     const next = list[Math.min(list.length - 1, Math.max(0, i + (e.key === "ArrowUp" ? -1 : 1)))];
@@ -141,20 +206,25 @@ export function ProjectsScreen() {
         <div class="proj-split">
           <aside class="proj-left">
             <ul class="proj-list" role="listbox" aria-label="Projects" tabindex="-1" onKeyDown={onListKey}
+              onDragOver={(event) => { if (dragging()) { event.preventDefault(); setDropBefore(undefined); } }} onDrop={(event) => drop(event)}
               onContextMenu={(e) => { if (e.target === e.currentTarget) listMenu(e); }}>
-              <For each={projects()}>{(p) => (
-                <li role="option" aria-selected={p.id === project()?.id}>
-                  <Show when={p.accessible} fallback={<div class="proj-item remote" title={p.name}><ProjectLabel project={p} /></div>}>
-                    <button class="proj-item" classList={{ on: p.id === project()?.id }} data-id={p.id} tabindex={p.id === project()?.id ? 0 : -1}
-                      title={p.is_default ? `${p.name}, default project for sessions started outside Zerus` : p.name}
-                      onClick={() => choose(p)} onContextMenu={(e) => listMenu(e, p.id)}>
-                      <ProjectLabel project={p} />
+              <For each={projects().map((p) => p.id)}>{(id) => {
+                const p = createMemo<Project>((last) => projects().find((p) => p.id === id) ?? last, untrack(() => projects().find((p) => p.id === id)!));
+                return (
+                <li role="option" aria-selected={p().id === project()?.id} classList={{ "drop-before": dropBefore() === p().id }}
+                  onDragOver={(event) => { if (dragging() && edits.canEdit(p().id)) { event.preventDefault(); event.stopPropagation(); setDropBefore(p().id); } }} onDrop={(event) => drop(event, p().id)}>
+                  <Show when={p().accessible} fallback={<div class="proj-item remote" title={p().name}><ProjectLabel project={p()} /></div>}>
+                    <button class="proj-item" classList={{ on: p().id === project()?.id, dragging: dragging() === p().id }} data-id={p().id} tabindex={p().id === project()?.id ? 0 : -1}
+                      draggable={edits.canEdit(p().id)} onDragStart={(event) => { if (!edits.canEdit(p().id)) { event.preventDefault(); return; } setDragging(p().id); event.dataTransfer?.setData("application/x-zerus-project", p().id); if (event.dataTransfer) event.dataTransfer.effectAllowed = "move"; }} onDragEnd={endDrag}
+                      title={`${p().is_default ? `${p().name}, default project for sessions started outside Zerus` : p().name}\nDrag to reorder, or use Alt+Up / Alt+Down.`}
+                      onClick={() => choose(p())} onContextMenu={(e) => listMenu(e, p().id)}>
+                      <ProjectLabel project={p()} />
                     </button>
                   </Show>
                 </li>
-              )}</For>
+              ); }}</For>
             </ul>
-            <button class="btn" disabled title={PROJECT_EDITING}><Icon name="plus" size={14} />New project…</button>
+            <button class="btn" disabled={!edits.enabled()} title={editHint()} onClick={(event) => edits.openNew(event.currentTarget)}><Icon name="plus" size={14} />New project…</button>
           </aside>
 
           <Show when={project()}>{(p) => (
@@ -162,7 +232,7 @@ export function ProjectsScreen() {
               <div class="form-row">
                 <label for="proj-name">Name</label>
                 <div class="row">
-                  <input id="proj-name" class="field proj-name" value={p().name} readOnly title={PROJECT_EDITING} />
+                  <ProjectName project={p()} enabled={edits.canEdit(p().id)} rename={edits.rename} />
                   <span class="dim proj-id">ID</span>
                   <span class="mono proj-id-val" title="Project ID">{p().id}</span>
                 </div>
@@ -209,14 +279,16 @@ export function ProjectsScreen() {
                 </div>
               </div>
               <div class="row proj-foot">
-                <button class="btn" disabled={!p().accessible} onClick={() => openTasks(p().id)}><Icon name="list-todo" size={14} />Tasks</button>
-                <button class="btn danger" disabled title={PROJECT_EDITING}><Icon name="trash" size={14} />Delete project…</button>
+                <button class="btn danger" disabled={!edits.canEdit(p().id) || view().projects.filter((p) => p.accessible).length < 2} title={editHint()}
+                  onClick={(event) => edits.openDelete(p().id, event.currentTarget)}><Icon name="trash" size={14} />Delete project…</button>
               </div>
             </section>
           )}</Show>
         </div>
       </div>
       <Show when={colorProject()}>{(p) => <ProjectColorDialog project={p().project} origin={p().origin} close={() => setColorProject(undefined)} />}</Show>
+      <Show when={edits.prompt()} keyed>{(prompt) => <ProjectCatalogDialog prompt={prompt} enabled={edits.enabled()}
+        close={edits.close} create={(name) => { void edits.submitNew(name); }} remove={(destination) => { void edits.confirmDelete(destination); }} />}</Show>
     </div>
   );
 }
