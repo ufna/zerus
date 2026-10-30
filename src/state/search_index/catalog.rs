@@ -132,6 +132,14 @@ impl Store {
     }
 
     fn catalog_schema(&self) -> Result<()> {
+        // Schema/migrations are one atomic disk commit. A sequence of implicit
+        // DDL commits can spend the whole discovery deadline on Windows before
+        // visiting even the first directory entry.
+        let tx = self
+            .index
+            .connection()
+            .unchecked_transaction()
+            .map_err(|e| e.to_string())?;
         self.index.connection().execute_batch("CREATE TABLE IF NOT EXISTS catalog_queue(
             id INTEGER PRIMARY KEY AUTOINCREMENT,path TEXT NOT NULL UNIQUE,
             kind TEXT NOT NULL,stamp TEXT NOT NULL,seen TEXT NOT NULL,
@@ -184,17 +192,11 @@ impl Store {
             .iter()
             .any(|column| column == "fallback");
         if !counter {
-            let tx = self
-                .index
-                .connection()
-                .unchecked_transaction()
-                .map_err(|e| e.to_string())?;
             tx.execute_batch(
                 "ALTER TABLE catalog_totals ADD COLUMN fallback INTEGER NOT NULL DEFAULT 0;
                 UPDATE catalog_totals SET fallback=paths WHERE id=1",
             )
             .map_err(|e| e.to_string())?;
-            tx.commit().map_err(|e| e.to_string())?;
         }
         self.index.connection().execute_batch("CREATE INDEX IF NOT EXISTS catalog_known ON catalog_queue(identity,id);
             CREATE INDEX IF NOT EXISTS catalog_source ON catalog_queue(source,id);
@@ -206,7 +208,8 @@ impl Store {
             CREATE TRIGGER IF NOT EXISTS fallback_update AFTER UPDATE OF fallback ON catalog_queue BEGIN
                 UPDATE catalog_totals SET fallback=fallback+NEW.fallback-OLD.fallback WHERE id=1; END;
             CREATE TRIGGER IF NOT EXISTS fallback_delete AFTER DELETE ON catalog_queue BEGIN
-                UPDATE catalog_totals SET fallback=fallback-OLD.fallback WHERE id=1; END;").map_err(|e|e.to_string())
+                UPDATE catalog_totals SET fallback=fallback-OLD.fallback WHERE id=1; END;").map_err(|e|e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())
     }
 
     /// Called only for explicit search demand. Handles live within this call,
