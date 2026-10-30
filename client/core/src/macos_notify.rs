@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{attention, creation::canonical_uuid};
 
+#[cfg(all(target_os = "macos", feature = "macos-native-peer"))]
+pub mod peer;
+
 pub const USER_INFO_BYTES: usize = 16 * 1024;
 pub const TOKEN_BYTES: usize = 8192;
 pub const TOKEN_KEY: &str = "hgsAttentionToken";
