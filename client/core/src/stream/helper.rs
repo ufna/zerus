@@ -21,7 +21,7 @@ pub(super) fn try_wait(child: &mut Child) -> io::Result<Option<ExitStatus>> {
         if exited_unreaped(child)? {
             // The leader's still-reserved PID prevents PGID reuse, including
             // when it exits before its pipe-holding ssh/ProxyCommand child.
-            signal_and_reap(child).map(Some)
+            signal_and_reap(child, true).map(Some)
         } else {
             Ok(None)
         }
@@ -35,8 +35,8 @@ pub(super) fn terminate(child: &mut Child) -> io::Result<ExitStatus> {
     {
         // Also establishes exclusive wait ownership when the child is live.
         // ECHILD/unsupported inspection never signals an unverified PID/group.
-        exited_unreaped(child)?;
-        signal_and_reap(child)
+        let exited = exited_unreaped(child)?;
+        signal_and_reap(child, exited)
     }
     #[cfg(not(unix))]
     {
@@ -83,7 +83,9 @@ fn exited_unreaped(child: &Child) -> io::Result<bool> {
 }
 
 #[cfg(unix)]
-fn signal_and_reap(child: &mut Child) -> io::Result<ExitStatus> {
+fn signal_and_reap(child: &mut Child, exited: bool) -> io::Result<ExitStatus> {
+    #[cfg(not(target_os = "macos"))]
+    let _ = exited;
     let pid =
         libc::pid_t::try_from(child.id()).map_err(|_| io::Error::other("invalid helper PID"))?;
     // prepare() made precisely this child the group leader. An unreaped child
@@ -92,11 +94,32 @@ fn signal_and_reap(child: &mut Child) -> io::Result<ExitStatus> {
     // this group intentionally and their open pipes remain accounted.
     if unsafe { libc::killpg(pid, libc::SIGKILL) } != 0 {
         let error = io::Error::last_os_error();
-        if error.raw_os_error() != Some(libc::ESRCH) {
+        // XNU excludes zombies from signal recipients and reports EPERM when
+        // the group contains only our unreaped leader. Do not ignore arbitrary
+        // EPERM: a fixed two-PID kernel query must prove that exact sole member.
+        // https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_sig.c
+        #[cfg(target_os = "macos")]
+        let zombie_only = exited && error.raw_os_error() == Some(libc::EPERM) && sole_member(pid);
+        #[cfg(not(target_os = "macos"))]
+        let zombie_only = false;
+        if error.raw_os_error() != Some(libc::ESRCH) && !zombie_only {
             return Err(error);
         }
     }
     child.wait()
+}
+
+#[cfg(target_os = "macos")]
+fn sole_member(pid: libc::pid_t) -> bool {
+    let mut members = [0 as libc::pid_t; 2];
+    let found = unsafe {
+        libc::proc_listpgrppids(
+            pid,
+            members.as_mut_ptr().cast(),
+            std::mem::size_of_val(&members) as libc::c_int,
+        )
+    };
+    found == 1 && members[0] == pid
 }
 
 #[cfg(all(test, unix))]
