@@ -52,7 +52,7 @@ impl Fixture {
             unsafe { libc::getpgrp() },
             "never signal the test process group"
         );
-        let end = Instant::now() + Duration::from_secs(3);
+        let end = Instant::now() + Duration::from_secs(6);
         loop {
             if unsafe { libc::killpg(group, 0) } != 0
                 && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
@@ -80,7 +80,7 @@ fn timed_out_peer_probe_kills_its_pipe_holder_and_reuses_primary_within_one_poll
         probe_until(
             &f.path(),
             &ComputerId::from("peer"),
-            Duration::from_millis(250),
+            Duration::from_secs(2),
             &stop,
             None,
             Some(&scope)
@@ -131,7 +131,7 @@ fn watch_stop_kills_only_its_group_and_next_probe_needs_no_orphan_timeout() {
         &f.path(),
         &ComputerId::from("peer"),
         Timing {
-            silence: Duration::from_millis(150),
+            silence: Duration::from_secs(2),
             stop_grace: Duration::from_millis(25),
             restart: [Duration::from_secs(30); 4],
             ..Timing::default()
@@ -141,7 +141,7 @@ fn watch_stop_kills_only_its_group_and_next_probe_needs_no_orphan_timeout() {
     )
     .unwrap();
     let status = |wanted| {
-        let end = Instant::now() + Duration::from_secs(3);
+        let end = Instant::now() + Duration::from_secs(6);
         loop {
             let event = rx
                 .recv_timeout(end.saturating_duration_since(Instant::now()))

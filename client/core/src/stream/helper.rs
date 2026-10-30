@@ -50,6 +50,13 @@ fn exited_unreaped(child: &Child) -> io::Result<bool> {
     // Only this supervisor observes/reaps this helper; do not call Child's
     // try_wait first. WNOWAIT retains a terminated leader until group cleanup.
     // https://man7.org/linux/man-pages/man2/waitid.2.html
+    let mut policy: libc::sigaction = unsafe { std::mem::zeroed() };
+    if unsafe { libc::sigaction(libc::SIGCHLD, std::ptr::null(), &mut policy) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if policy.sa_sigaction == libc::SIG_IGN || policy.sa_flags & libc::SA_NOCLDWAIT != 0 {
+        return Err(io::Error::other("helper wait ownership is unavailable"));
+    }
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
     for _ in 0..3 {
         let result = unsafe {
