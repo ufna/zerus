@@ -237,7 +237,15 @@ impl Store {
         {
             return Ok(progress);
         }
+        #[cfg(test)]
+        let started = Instant::now();
         self.catalog_schema()?;
+        #[cfg(test)]
+        eprintln!(
+            "discovery schema: {:?}, remaining {:?}",
+            started.elapsed(),
+            budget.deadline.saturating_duration_since(Instant::now())
+        );
         let roots = roots(state);
         let before = directory_stamp(&roots)?;
         let saved: Option<String> = self
@@ -327,6 +335,14 @@ impl Store {
             self.stage(&batch, &generation)?;
             progress.staged += batch.len();
         }
+        #[cfg(test)]
+        eprintln!(
+            "discovery walk: {:?}, entries {}, staged {}, remaining {:?}",
+            started.elapsed(),
+            progress.entries,
+            progress.staged,
+            budget.deadline.saturating_duration_since(Instant::now())
+        );
         let after = directory_stamp(&roots)?;
         progress.changed = before != after;
         progress.complete = exhausted && !progress.changed;
@@ -420,5 +436,5 @@ fn directory_stamp(roots: &[(&str, PathBuf)]) -> Result<String> {
 }
 
 mod queue;
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests;

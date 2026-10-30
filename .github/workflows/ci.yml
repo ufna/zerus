@@ -1,223 +1,62 @@
 name: CI
-run-name: CI ${{ inputs.ref || github.ref_name }} (${{ github.event_name }})
-
+run-name: Windows search index diagnostic ${{ github.sha }}
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
-    inputs:
-      ref:
-        description: Commit, branch or refs/pull/NUMBER/head to test (blank uses selected workflow branch)
-        type: string
-        default: ''
-      run_linux:
-        description: Run full Linux CLI integration tests and release build
-        type: boolean
-        default: true
-      run_arch:
-        description: Build/test Arch desktop and pacman package
-        type: boolean
-        default: true
-      run_macos:
-        description: Run macOS CLI and desktop builds/tests
-        type: boolean
-        default: true
-      run_ios:
-        description: Run iOS core tests and simulator build
-        type: boolean
-        default: true
-      run_windows:
-        description: Run Windows client and desktop tests and build the portable zip
-        type: boolean
-        default: true
-  workflow_call:
-    inputs:
-      ref:
-        description: Commit or ref to test
-        type: string
-        default: ''
-      run_linux:
-        type: boolean
-        default: false
-      run_arch:
-        type: boolean
-        default: false
-      run_macos:
-        type: boolean
-        default: false
-      run_windows:
-        type: boolean
-        default: false
-      run_ios:
-        type: boolean
-        default: false
-
 permissions:
   contents: read
-
-# Fixed modes are enforced by scoped cache tokens, including checked-out code.
 cache-mode: read
-
-concurrency:
-  group: ${{ (github.repository == 'ufna/zerus' && github.ref == 'refs/heads/main' && github.event_name == 'push' && github.event.repository.private == false && vars.DEV_UPDATES_ENABLED == 'true') && format('ci-dev-run-{0}', github.run_id) || format('ci-{0}-{1}', github.workflow, inputs.ref || github.ref) }}
-  # Dev main uses independent build and signing/sealing job locks.
-  # Keep PR/manual and pre-rollout whole-run cancellation unchanged.
-  cancel-in-progress: ${{ !(github.repository == 'ufna/zerus' && github.ref == 'refs/heads/main' && github.event_name == 'push' && github.event.repository.private == false && vars.DEV_UPDATES_ENABLED == 'true') }}
-
 jobs:
-  automatic:
-    name: Trusted main checks
-    if: >-
-      github.repository == 'ufna/zerus' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule') && (!inputs.ref || inputs.ref == github.sha) &&
-      !(github.repository == 'ufna/zerus' && github.ref == 'refs/heads/main' && github.event_name == 'push' && github.event.repository.private == false && vars.DEV_UPDATES_ENABLED == 'true')
-    cache-mode: write
-    uses: ./.github/workflows/checks.yml
-    with:
-      ref: ${{ inputs.ref || github.sha }}
-      run_linux: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || inputs.run_linux }}
-      run_arch: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || inputs.run_arch }}
-      run_macos: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || inputs.run_macos }}
-      run_windows: false
-      run_ios: false
-      save_caches: true
-  review:
-    name: PR and manual checks
-    if: >-
-      !(github.repository == 'ufna/zerus' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule') && (!inputs.ref || inputs.ref == github.sha))
-    cache-mode: read
-    uses: ./.github/workflows/checks.yml
-    with:
-      ref: ${{ inputs.ref || github.sha }}
-      run_linux: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || inputs.run_linux }}
-      run_arch: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || inputs.run_arch }}
-      run_macos: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || inputs.run_macos }}
-      run_windows: ${{ inputs.run_windows || false }}
-      run_ios: ${{ inputs.run_ios || false }}
-      filter_pr_platforms: ${{ github.event_name == 'pull_request' }}
-  qualification:
-    name: Credential-free Dev builds
-    if: >-
-      !cancelled() && github.repository == 'ufna/zerus' && github.ref == 'refs/heads/main' && github.event_name == 'push' && github.event.repository.private == false && vars.DEV_UPDATES_ENABLED == 'true' &&
-      (!inputs.ref || inputs.ref == github.sha)
-    cache-mode: write
-    concurrency:
-      # Build-only work does not wait for an older full regression campaign.
-      group: ci-main-dev-builds
-      cancel-in-progress: false
-    uses: ./.github/workflows/ci-dev-qualification.yml
-  gate:
-    name: CI gate
-    if: always() && (github.event.repository.private == false || github.event_name == 'workflow_dispatch')
-    needs: [automatic, review, qualification]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    cache-mode: none
+  search-index-windows:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
     env:
-      RESULTS: ${{ toJSON(needs) }}
+      CARGO_BUILD_JOBS: 4
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_INCREMENTAL: 0
+      CARGO_TERM_COLOR: never
+      RUSTUP_TOOLCHAIN: 1.99.1
     steps:
-      - run: |
-          python3 - <<'PY'
-          import json, os
-          results = json.loads(os.environ['RESULTS'])
-          conclusions = sorted(job['result'] for job in results.values())
-          if conclusions != ['skipped', 'skipped', 'success']:
-              raise SystemExit(f'Exactly one selected check workflow must succeed: {conclusions}')
-          PY
-  dev-tail:
-    name: CI Dev signing and sealing
-    needs: [gate, qualification]
-    if: >-
-      !cancelled() && needs.gate.result == 'success' && needs.qualification.result == 'success' &&
-      github.repository == 'ufna/zerus' && github.ref == 'refs/heads/main' && github.event_name == 'push' && github.event.repository.private == false && vars.DEV_UPDATES_ENABLED == 'true'
-    permissions:
-      contents: write
-    cache-mode: none
-    concurrency:
-      group: ci-main-dev-signing-sealing
-      cancel-in-progress: false
-    uses: ./.github/workflows/ci-dev-tail.yml
-    with:
-      unsigned_release: ${{ needs.qualification.outputs.unsigned_release }}
-    secrets:
-      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-      ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
-      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-      ANDROID_GOOGLE_SERVICES_JSON: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}
-      MACOS_DEVELOPER_ID_P12: ${{ secrets.MACOS_DEVELOPER_ID_P12 }}
-      MACOS_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
-      APPLE_NOTARY_API_KEY_P8: ${{ secrets.APPLE_NOTARY_API_KEY_P8 }}
-      APPLE_NOTARY_API_KEY_ID: ${{ secrets.APPLE_NOTARY_API_KEY_ID }}
-      APPLE_NOTARY_API_ISSUER_ID: ${{ secrets.APPLE_NOTARY_API_ISSUER_ID }}
-  cache-trim:
-    name: Trim superseded caches
-    needs: [automatic, qualification]
-    # Housekeeping only: a failure never fails the run or holds back Dev.
-    if: >-
-      always() && github.repository == 'ufna/zerus' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule') && (!inputs.ref || inputs.ref == github.sha)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    continue-on-error: true
-    cache-mode: none
-    permissions:
-      actions: write
-    steps:
-      - name: Keep the two newest main entries per key family and drop day-old PR entries
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Preserve fixture bytes
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13.15'
+      - run: rustup toolchain install 1.99.1 --profile minimal --component clippy
+      - name: Cache identity
+        id: rust
         run: |
-          python3 - <<'PY'
-          import datetime, json, subprocess
-
-          def when(value):
-              return datetime.datetime.fromisoformat(value[:19]).replace(tzinfo=datetime.timezone.utc)
-
-          def stale(caches, now):
-              """Main entries beyond the newest two of each key family, and PR entries older than a day."""
-              families, doomed = {}, []
-              for cache in caches:
-                  if cache['ref'] == 'refs/heads/main':
-                      # The last key segment is a run ID or a content hash.
-                      families.setdefault(cache['key'].rsplit('-', 1)[0], []).append(cache)
-                  elif cache['ref'].startswith('refs/pull/') and now - when(cache['created_at']) > datetime.timedelta(days=1):
-                      doomed.append(cache)
-              for entries in families.values():
-                  entries.sort(key=lambda cache: (when(cache['created_at']), cache['id']), reverse=True)
-                  doomed += entries[2:]
-              return doomed
-
-          def api(path, *args):
-              result = subprocess.run(['gh', 'api', 'repos/ufna/zerus/actions/caches' + path, *args],
-                                      capture_output=True, text=True)
-              return result.returncode, result.stdout, (result.stderr.strip().splitlines() or [''])[-1][:200]
-
-          if __name__ == '__main__':
-              caches = []
-              for page in range(1, 21):
-                  status, output, error = api(f'?per_page=100&page={page}')
-                  if status:
-                      raise SystemExit(f'Cache listing failed: {error}')
-                  data = json.loads(output)
-                  caches += data['actions_caches']
-                  if not data['actions_caches'] or len(caches) >= data['total_count']:
-                      break
-              doomed = stale(caches, datetime.datetime.now(datetime.timezone.utc))
-              deleted = freed = failed = 0
-              for cache in doomed:
-                  status, _, error = api(f'/{cache["id"]}', '--method', 'DELETE')
-                  label = f'{cache["ref"]} {cache["key"]} ({cache["size_in_bytes"] / 2**20:.1f} MiB)'
-                  if not status:
-                      deleted, freed = deleted + 1, freed + cache['size_in_bytes']
-                      print('Deleted ' + label)
-                  elif 'HTTP 404' in error:
-                      print('Already deleted ' + label)
-                  else:
-                      failed += 1
-                      print(f'Not deleted {label}: {error}')
-              total = sum(cache['size_in_bytes'] for cache in caches)
-              print(f'Deleted {deleted} of {len(caches)} entries, {freed / 2**30:.2f} of {total / 2**30:.2f} GiB.')
-              if failed:
-                  raise SystemExit(f'{failed} cache deletions failed.')
-          PY
+          echo "rustc=$(rustc -Vv | git hash-object --stdin | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          echo "epoch=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-cli-${{ runner.arch }}-${{ steps.rust.outputs.rustc }}-${{ steps.rust.outputs.epoch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: windows-cli-${{ runner.arch }}-${{ steps.rust.outputs.rustc }}-${{ steps.rust.outputs.epoch }}-
+      - name: Search unit contracts on native Windows
+        run: |
+          mkdir -p artifacts/test-results
+          cargo test --locked --bin hgs state::search -- --nocapture --test-threads=2 </dev/null 2>&1 | tee artifacts/test-results/search-rust.log
+          cargo test --locked --manifest-path crates/content-search/Cargo.toml --lib </dev/null 2>&1 | tee artifacts/test-results/index-core.log
+          cargo clippy --locked --all-targets -- -D warnings 2>&1 | tee artifacts/test-results/clippy.log
+      - name: CLI contracts on native Windows
+        run: |
+          cargo build --locked --bin hgs
+          HGS_TEST_BIN=$(cygpath -w "$PWD/target/debug/hgs.exe")
+          export HGS_TEST_BIN
+          python -m unittest -v tests.test_search tests.test_search_index </dev/null 2>&1 | tee artifacts/test-results/search-cli.log
+      - name: Retain raw diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-search-index-${{ github.sha }}
+          path: artifacts/test-results
+          retention-days: 3
