@@ -142,11 +142,11 @@ export interface GroupingOut {
   /** The saved layout is retained and layout changes cannot persist this startup. */
   layout_save_paused?: boolean;
 }
-/** How a project edit ended (client/core `swarm::sync::EditOutcome`). */
-export type EditOutcome =
+/** How a project edit ended (client/core `swarm::sync::EditOutcome`), plus the reserved ID for Create. */
+export type EditOutcome = (
   | { outcome: "done"; conflicts: number }
   | { outcome: "kept"; detail: string }
-  | { outcome: "refused"; detail: string };
+  | { outcome: "refused"; detail: string }) & { project?: string };
 
 export interface Batch {
   upserts: RowOut[];
