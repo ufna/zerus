@@ -144,8 +144,8 @@ There is no producer-control caller yet. Each callback and its actual child,
 stdin writer and output readers retain the same admitted group. A returned
 outcome releases neither a blocked pipe nor its capacity. The selected read
 argv, payload, local/peer deadlines, settlement and backoff stay unchanged;
-stdout is now bounded to 1 MiB. The separate pending-mark store can still accept
-writes, so delivery Idle is not a complete Read role or handoff proof.
+stdout is now bounded to 1 MiB. Native delivery Idle alone is not the pending-store durability barrier or a
+handoff proof.
 
 Four fixed resource slots now retain that same child/input/output/callback
 charge. If any copy survives the callback, one bounded log line names only
@@ -166,8 +166,9 @@ resource visibility and always has `authority:false`; it is not the service's
 read queue, a complete role drain or a takeover permit. An orphan remains
 charged until its actual holders exit, or until that GUI process is restarted.
 
-The existing `ReadMarks` store now has an explicit `checkpoint()` prerequisite,
-without a production caller. Call it off-thread under the store mutex, only
+The existing `ReadMarks` store has an explicit `checkpoint()` prerequisite.
+Its first internal Tauri caller is the dormant ordered barrier described below;
+no producer command invokes it. Call it off-thread under the store mutex, only
 after all mark-writer admissions and their callbacks have actually drained.
 Its caller must retain the role charge across blocked filesystem I/O; a timed
 out wait cannot turn it into a successful barrier. Normal GUI APIs retain their
@@ -184,9 +185,48 @@ directory-sync error can follow a completed rename and still returns failure;
 neither the file's presence nor a successful legacy flush proves durability.
 The returned hash/length/count is source metadata only, never a complete role
 drain or capture context. Native Windows checkpoint durability is unqualified
-and refuses before checkpoint I/O. Full ReadDelivery still needs every Actions
-mark writer, direct MarkRead call, ordered callbacks and its admission closure;
-the new method does not close or activate anything itself.
+and refuses before checkpoint I/O. The store method does not close or activate
+anything itself.
+
+
+## Ordered ReadDelivery store barrier
+
+Actions now owns the same fixed four native resource slots as the existing
+read-sync worker. A direct `run_action` MarkRead reserves one of those slots
+before saving its intent, and runs the unchanged read invocation through
+`run_accounted`. Its local/peer timeout, input, empty parent environment,
+settlement and retry semantics are unchanged. The direct path shares the
+worker's 1 MiB stdout cap. A direct result callback, cancelled future, child or
+pipe cannot release another resource's admission. No second loop is added.
+Worker startup is one-use; a failed native-worker startup still leaves the
+pending-store queue admitted, preserving intents for a later application run.
+
+A separate fixed 64-group admission gate covers every Actions pending-store
+mutation: queue/merge, worker and exit flush, snapshot settlement, orphan removal
+and direct MarkRead persistence. Charges span their synchronous change listeners
+as well as file writes. Queue refusal is an error, not accepted intent; the
+existing frontend error path reloads the actual Rust pending list. Snapshot or
+orphan work refused after closure cannot mutate the frozen store. Read-only
+pending-list snapshots remain readable. Pressure refuses new admission without
+evicting pending intent. Test-only store helpers are not production entry points.
+
+The internal `Actions::freeze_reads` handle is single-use and non-serializing.
+It closes pending-store admissions first, then the native gate and cancellation
+flag, and wakes the existing loop. The handle's background caller waits for
+both gates with one absolute deadline before taking the store mutex and calling
+its checked checkpoint. Poisoned or busy store access, unreliable source state,
+failed sync and expired deadlines refuse. A timeout never reopens admissions or
+reclaims resources. A separately charged, one-use checkpoint group remains held
+through actual filesystem I/O, even if the controller abandons its wait; a sync
+completing after the deadline still cannot return success. The future controller
+must own the handle inside that background task, not detach its charge at timeout.
+Windows refuses freeze before closing any admission because native checkpoint
+durability remains unqualified.
+
+There is still no production caller of freeze, positive producer command,
+profile transition, G3 capture context or service read writer. The local
+checkpoint result is source metadata only. Every other role in the selected
+profile still requires its own qualified current drain and store barriers.
 
 ## Fresh capture and publication boundary
 
