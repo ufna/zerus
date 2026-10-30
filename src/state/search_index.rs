@@ -957,3 +957,27 @@ fn lower_own_priority() {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn indexed_search_opens_and_discovers_a_windows_fixture() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp.path().join("state");
+        fs::create_dir(&state).unwrap();
+        fs::write(state.join(format!("{:064x}.json", 1)), "{}").unwrap();
+        let store = Store::open(&state.join("content-search-v1")).unwrap();
+        let progress = store
+            .discover(
+                &state,
+                &DiscoveryBudget::interactive(),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        assert!(progress.complete);
+        assert_eq!(progress.staged, 1);
+        assert_eq!(store.status().unwrap()["catalog"]["queued_paths"], 1);
+    }
+}

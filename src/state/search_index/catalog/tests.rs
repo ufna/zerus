@@ -185,6 +185,36 @@ fn failed_schema_migration_rolls_back_and_can_be_retried() {
 }
 
 #[test]
+fn cancellation_during_schema_commit_keeps_setup_for_the_next_pass() {
+    let fixture = Fixture::new(1);
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let on_commit = cancel.clone();
+    fixture.store.index.connection().commit_hook(Some(move || {
+        on_commit.store(true, Ordering::Relaxed);
+        false
+    }));
+    let stopped = fixture
+        .store
+        .discover(&fixture.state, &Fixture::budget(100), &cancel)
+        .unwrap();
+    assert!(!stopped.complete);
+    assert_eq!(stopped.entries, 0);
+    assert_eq!(fixture.totals(), (0, 0));
+    fixture
+        .store
+        .index
+        .connection()
+        .commit_hook(None::<fn() -> bool>);
+    cancel.store(false, Ordering::Relaxed);
+    let retry = fixture
+        .store
+        .discover(&fixture.state, &Fixture::budget(100), &cancel)
+        .unwrap();
+    assert!(retry.complete);
+    assert_eq!(fixture.totals(), (1, 1));
+}
+
+#[test]
 fn routed_bindings_archives_and_native_bindings_share_one_bounded_queue() {
     let fixture = Fixture::new(2);
     for folder in ["bindings", "archives", "dsh/bindings"] {
