@@ -838,8 +838,8 @@ impl Settings {
     }
 
     /// Stores a value, normalized as Qt reads it, and returns what is now in
-    /// effect. Removing a shortcut override (`Null`) restores its defaults and
-    /// returns `Null`.
+    /// effect. Removing an override (`Null`) restores its defaults and returns
+    /// `Null` where that setting supports removal.
     pub fn set(&self, name: &str, value: Value) -> Result<Value, String> {
         self.set_tracked(name, value).map(|(value, _)| value)
     }
@@ -852,6 +852,7 @@ impl Settings {
         }
         let stored = match (&key.kind, &value) {
             (Kind::Chords, Value::Null) => None,
+            (Kind::Text(""), Value::Null) if name.starts_with("machines/colors/") => None,
             (Kind::AutoFlag, Value::String(s)) if s == "auto" => Some(Value::from("auto")),
             (Kind::AutoFlag | Kind::Flag(_), Value::Bool(_))
             | (Kind::Choice(_) | Kind::Text(_) | Kind::Bytes, Value::String(_))
