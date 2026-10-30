@@ -67,6 +67,15 @@ impl WeakPump {
 }
 
 impl Pump {
+    pub fn poster(&self, computer: &str, key: &str, message: &str) -> Option<Arc<[u8]>> {
+        self.lock()
+            .coalescer
+            .poster(&ComputerId::from(computer), key, message)
+    }
+
+    pub fn strip_posters(&self, computer: &ComputerId, key: &str, value: &mut Value) {
+        self.lock().coalescer.strip_posters(computer, key, value);
+    }
     pub(crate) fn downgrade(&self) -> WeakPump {
         WeakPump(
             Arc::downgrade(&self.0),

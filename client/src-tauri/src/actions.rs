@@ -1382,6 +1382,7 @@ pub const BUSY: &str = "busy";
 #[tauri::command]
 pub async fn archived_activity(
     state: State<'_, ActivityReads>,
+    app: State<'_, crate::commands::AppState>,
     computer: String,
     name: String,
     archive_id: String,
@@ -1395,9 +1396,19 @@ pub async fn archived_activity(
     };
     let hgs = default_hgs();
     let id = ComputerId::from(computer.as_str());
+    let pump = app.pump();
     tauri::async_runtime::spawn_blocking(move || {
         reads::archived_activity(&hgs, &id, &name, &archive_id, after).map(|mut activity| {
             annotate_events(&mut activity.events);
+            let key = format!("archive:{archive_id}");
+            let mut value = serde_json::json!({"events": std::mem::take(&mut activity.events)});
+            pump.strip_posters(&id, &key, &mut value);
+            if let Some(serde_json::Value::Array(events)) =
+                value.get_mut("events").map(serde_json::Value::take)
+            {
+                activity.events = events;
+            }
+            pump.strip_posters(&id, &key, &mut activity.summary);
             activity
         })
     })

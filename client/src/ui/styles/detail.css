@@ -522,4 +522,4 @@
 
 /* The mockup round player keeps its geometry while real frames decode. */
 .vm-poster .vm-frames.real { inset: 0; animation: none; will-change: auto; background: none; }
-.vm-frames > video { display: block; width: 100%; height: 100%; object-fit: cover; }
+.vm-frames > video, .vm-frames > img { display: block; width: 100%; height: 100%; object-fit: cover; }
