@@ -42,7 +42,8 @@ start may enter this mode only after current G1 ownership is authenticated.
 It has an AppKit event loop and notification delegate, but no webview, Dock icon,
 menu-bar takeover, focus steal, legacy fleet or attention writer. It remains
 windowless after posting. A validated click or `--sessions` promotes that same
-canonical instance to the frontend. `show` keeps its existing no-visible-effect semantics.
+canonical instance to the frontend. `show` keeps its existing no-visible-effect
+semantics.
 A missing/incompatible service after handoff leaves the migrated roles paused;
 it never restarts the old GUI producers.
 
@@ -64,8 +65,12 @@ crash restart refuses the same bootstrap and exits cleanly. Qualify that exact
 crash/clean-exit sequence before admission; changing KeepAlive is not the fix.
 Deliberate frontend or promoted-host Quit remains a clean exit; a second
 explicit Quit also advances the wake cutoff and cannot resurrect that burst.
-Explicit desktop-service revocation prevents admission. No plist/CLI behavior changes ship with
-this document; the startup mode needs its own reviewed implementation.
+G1 owns the durable close cutoff, manual-launch state and launch permit;
+uncertain exit, startup or elapsed time never manufactures a fresh edge.
+An unverified cutoff refuses wake admission. An automatic login/crash bootstrap
+after Quit must exit cleanly without a fresh permit. Explicit desktop-service
+revocation prevents admission. No plist/CLI behavior changes ship with this
+document; the startup mode needs its own reviewed implementation.
 
 The coordinator's approved setting is **Notify when Zerus is closed**, in
 Settings > Notifications, default on. Its durable G1 policy gates post-Quit
@@ -75,7 +80,7 @@ count as that launch, and manual reopening never reposts suppressed old edges.
 It does not stop unrelated hgs services or agents. The UI placement must receive
 webui-ac's mockup ruling before implementation; this document adds no UI.
 
-macOS can launch the registered bundle to deliver a notification response.
+macOS can [launch the registered app for a response](https://developer.apple.com/documentation/usernotifications/handling-notifications-and-notification-related-actions).
 Install and retain the notification delegate **before application launch
 finishes**, including transient starts, before a forwarding-only instance can
 exit. Apple's [delegate contract](https://developer.apple.com/documentation/usernotifications/unusernotificationcenterdelegate)
