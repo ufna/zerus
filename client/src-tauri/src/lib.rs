@@ -541,11 +541,15 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                             );
                             let hgs = zerus_client_core::default_hgs();
                             std::sync::Arc::new(
-                                move |target: &zerus_client_core::Target, archive: Option<&str>| {
+                                move |target: &zerus_client_core::Target, archive: Option<&str>, agent: Option<&str>| {
                                     if !allowed {
                                         return Err(actions::REPLAY_NEEDS_HGS.to_owned());
                                     }
-                                    let inv = zerus_client_core::details::details_invocation(target, archive);
+                                    let inv = match agent {
+                                        Some(id) => zerus_client_core::details::subagent_identity_invocation(target, archive, id)
+                                            .ok_or_else(|| "Invalid subagent identity".to_owned())?,
+                                        None => zerus_client_core::details::details_invocation(target, archive),
+                                    };
                                     composer::send::inspection(
                                         &hgs,
                                         zerus_client_core::run_limited(&hgs, &inv, &[], 8 << 20),
@@ -1062,6 +1066,7 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         actions::inspect_subagent_identity,
         session_folders::session_folder_status,
         session_folders::session_folder_open,
+        actions::inspect_subagent_activity,
         commands::tasks_follow,
         task_details::task_details,
         task_details::task_assign,
@@ -1438,7 +1443,7 @@ mod tests {
                 rows: Arc::new(|_, _, _| None),
                 facts: Arc::new(|_, _| None),
                 reconnect: std::sync::Arc::new(|_| {}),
-                inspect: Arc::new(|_, _| Err("timed out".into())),
+                inspect: Arc::new(|_, _, _| Err("timed out".into())),
                 dispatch: Arc::new(|_, _, _| Err("no call in these tests".into())),
             },
         );

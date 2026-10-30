@@ -688,12 +688,17 @@ export function jumpToLatest() {
 export const transcriptOf = (source: ActivitySource, local: readonly LocalMessage[] = []) => buildTranscript(source.events(), source.summary(), local);
 
 /**
- * The local rows of the selected session's composer: none for a read-only
- * source, a subagent, or while the composer of another session still shows.
+ * Only the matching main or child composer's local rows reach the transcript.
  */
 export function localRows(source: ActivitySource, s: Session | undefined): readonly LocalMessage[] {
-  const v = composer.view();
-  if (!v || !s || source.readOnly || subagentOpen()) return [];
+  const v = composer.view(), child = subagentOpen();
+  if (!v || !s) return [];
+  if (child) {
+    const key = draftKey({ computer: s.computer, key: s.catalogKey, name: s.name, archive_id: null,
+      subagent: { agent_id: child, parent_conversation_id: s.conversationId ?? "" } });
+    return v.subagent?.agent_id === child && v.key === key ? v.local : [];
+  }
+  if (source.readOnly) return [];
   const key = draftKey({ computer: s.computer, key: s.catalogKey, name: s.name, archive_id: s.state === "archived" ? s.archiveId ?? null : null });
   return v.key === key ? v.local : [];
 }
@@ -708,7 +713,7 @@ export const readsOlder = (source: ActivitySource) => !source.loadingOlder() && 
  * nothing for it.
  */
 export function paneStates(source: ActivitySource, s: Session | undefined) {
-  const live = source.readOnly || !s ? undefined : statusOf(s);
+  const live = source.readOnly || !s || subagentOpen() ? undefined : statusOf(s);
   return {
     /** "This conversation is archived." in place of the transcript. */
     archived: live === "ended",
@@ -923,7 +928,7 @@ export function ActivityView(props: { source?: ActivitySource }) {
             <div class="subagent-bar">
               <button class="btn small" onClick={() => setSubagentOpen(undefined)}><Icon name="arrow-right" size={12} style={{ rotate: "180deg" }} />Main activity</button>
               <b>{s()?.subagents?.find((k) => k.id === subagentOpen())?.name}</b>
-              <span class="hint">Showing recent activity. Read only: this agent is managed by the parent conversation.</span>
+              <span class="hint">{composer.view()?.subagent?.hint ?? "Loading subagent activity…"}</span>
             </div>
           </Show>
           <Show when={preview()}>{(p) => <section class="search-preview" aria-label="Search result">

@@ -520,6 +520,9 @@ impl Composers {
         let Some(ctx) = self.context(hub) else {
             return (None, true);
         };
+        if ctx.session.subagent.is_some() {
+            return (None, true);
+        }
         let Some(details) = ctx.details.as_deref() else {
             return (None, true);
         };
