@@ -50,8 +50,8 @@ pub mod processes;
 #[cfg(unix)]
 mod pty;
 pub mod qt_lock;
-pub mod quit_journal;
 pub mod questions;
+pub mod quit_journal;
 pub mod readmarks;
 pub mod reads;
 pub mod readsync;
