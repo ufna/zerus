@@ -1,6 +1,7 @@
-import { createComputed, createRoot, createSignal, on, untrack, type Accessor } from "solid-js";
-import { machineChange } from "../bridge";
-import type { MachineChangeRequest, MachineConnection, MachinesView } from "../types";
+import { createComputed, createMemo, createRoot, createSignal, on, untrack, type Accessor } from "solid-js";
+import { machineChange, machinePickKey, machineSsh } from "../bridge";
+import { toast } from "./notices";
+import type { MachineChangeRequest, MachineConnection, MachineReference, MachinesView } from "../types";
 import { loadMachines, machinesPage } from "./machines";
 import { fleetRefresh } from "../bridge";
 
@@ -9,16 +10,18 @@ export const LOCAL_MACHINE = "@local";
 export interface MachineDraft extends Omit<MachineConnection, "port"> { alias: string; port: string; revision: string; dirty: boolean }
 export type MachinePrompt = { kind: "discard"; next: string; refresh: boolean } | { kind: "remove"; alias: string; revision: string };
 const blank = (): MachineDraft => ({ alias: "", hostname: "", user: "", port: "", identity_file: "", enabled: true, revision: "", dirty: false });
+export interface MachineTools { pickKey: () => Promise<string | null>; ssh: (reference: MachineReference) => Promise<string | null> }
 const aliasValid = (alias: string) => /^[A-Za-z0-9_.][A-Za-z0-9_.-]{0,79}$/.test(alias);
 
 /** One page draft, one explicit write. Reads never replace unsaved fields. */
-export function createMachineEditor(view: Accessor<MachinesView>, write: (request: MachineChangeRequest) => Promise<void>, reload: (force?: boolean) => Promise<unknown>, changed: () => Promise<unknown>) {
+export function createMachineEditor(view: Accessor<MachinesView>, write: (request: MachineChangeRequest) => Promise<void>, reload: (force?: boolean) => Promise<unknown>, changed: () => Promise<unknown>, tools?: MachineTools) {
   const [selected, setSelected] = createSignal(new URLSearchParams(location.search).get("machine") ?? LOCAL_MACHINE);
   const [draft, setDraft] = createSignal<MachineDraft>(blank());
   const [writing, setWriting] = createSignal(false);
+  const [tool, setTool] = createSignal<"key" | "ssh">();
   const [notice, setNotice] = createSignal<{ text: string; error: boolean }>();
   const [prompt, setPrompt] = createSignal<MachinePrompt>();
-  const busy = () => writing() || view().busy;
+  const busy = () => writing() || !!tool() || view().busy;
   const isNew = () => selected() === NEW_MACHINE;
   const duplicate = () => isNew() && (draft().alias.trim() === view().local || view().machines.some((m) => m.alias === draft().alias.trim()));
   const valid = () => aliasValid(draft().alias.trim()) && /^\d{0,5}$/.test(draft().port) && Number(draft().port) <= 65535;
@@ -74,12 +77,42 @@ export function createMachineEditor(view: Accessor<MachinesView>, write: (reques
     }
     void mutation({ alias: p.alias, revision: p.revision, change: { kind: "remove" } });
   };
-  createComputed(on(() => [view().loaded, view().connection_revision] as const, () => {
-    if (!view().loaded || writing() || draft().dirty || prompt()) return;
+  const pickKey = async () => {
+    if (!tools || busy() || selected() === LOCAL_MACHINE) return false;
+    const original = untrack(draft), selection = selected();
+    setTool("key");
+    try {
+      const path = await tools.pickKey();
+      if (path === null) return false;
+      if (selected() !== selection || draft() !== original || view().connection_revision !== original.revision) {
+        setNotice({ text: "Machine settings changed elsewhere. Reload the page before saving.", error: true });return false;
+      }
+      setDraft({ ...original, identity_file: path, dirty: true });return true;
+    } catch (error) { setNotice({ text: String(error), error: true });return false; }
+    finally { setTool(undefined); }
+  };
+  const openSsh = async () => {
+    if (!tools || busy() || draft().dirty || isNew() || selected() === LOCAL_MACHINE || !draft().revision) return false;
+    const reference = { alias: selected(), revision: draft().revision };
+    setTool("ssh");setNotice(undefined);
+    try { await tools.ssh(reference);return true; }
+    catch (error) { setNotice({ text: String(error), error: true });return false; }
+    finally { setTool(undefined); }
+  };
+  const connectionVersion = createMemo(() => `${view().loaded}\n${view().connection_revision ?? ""}`);
+  createComputed(on(connectionVersion, () => {
+    if (!view().loaded || writing() || tool() || draft().dirty || prompt()) return;
     if (selected() !== LOCAL_MACHINE && !isNew() && !view().machines.some((m) => m.alias === selected())) apply(LOCAL_MACHINE);
     else seed(selected());
   }));
-  return { selected, draft, notice, prompt, busy, isNew, valid, duplicate, edit, choose, save, reset, remove, confirm, cancel };
+  return { selected, draft, notice, prompt, busy, isNew, valid, duplicate, edit, choose, save, reset, remove, confirm, cancel, pickKey, openSsh };
 }
 
-export const machineEditor = createRoot(() => createMachineEditor(machinesPage, machineChange, loadMachines, fleetRefresh));
+export const machineEditor = createRoot(() => createMachineEditor(machinesPage, machineChange, loadMachines, fleetRefresh, {
+  pickKey: machinePickKey,
+  ssh: async (reference) => {
+    const advisory = await machineSsh(reference);
+    toast("SSH terminal", advisory ?? `Opened a terminal: ssh ${reference.alias}`, advisory ? "warn" : "info");
+    return advisory;
+  },
+}));

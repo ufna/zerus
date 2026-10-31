@@ -6,14 +6,15 @@ from pathlib import Path
 import sys
 
 root = Path(__file__).resolve().parent
-if not json.loads((root / "config.json").read_text()).get("machines_fixture"):
+config = json.loads((root / "config.json").read_text())
+if not config.get("machines_fixture"):
     raise SystemExit("private Machines fixture config required")
 args = sys.argv[1:]
 with (root / "log.ndjson").open("a") as stream:
     stream.write(json.dumps({"argv": args, "stdin": sys.stdin.read()}) + "\n")
 store = root / "machine-profiles.json"
 if not store.exists():
-    store.write_text(json.dumps({"fixture-peer": {"hostname": "peer.invalid", "user": "fixture", "port": None, "identity_file": "", "enabled": True}}))
+    store.write_text(json.dumps({"fixture-peer": {"hostname": "peer.invalid", "user": "fixture", "port": None, "identity_file": "", "enabled": not config.get("disabled_peer", False)}}))
 raw = store.read_bytes()
 profiles = json.loads(raw)
 revision = hashlib.sha256(raw).hexdigest()

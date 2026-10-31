@@ -23,8 +23,8 @@ import { LOCAL, localState, peerState, placeholders, summary, testEnabled, type 
 // Machines (MachinesPage.cpp), ported from design/webui/src/screens/Machines.tsx:
 // this computer and the saved peers of `hgs machine ls`, each with its stream
 // state, and an editor with the Zerus overrides and the effective SSH
-// connection. Connection writes keep the CLI revision guard; terminal and
-// setup actions retain their disabled positions until their separate slices.
+// connection. Connection writes and terminal launches keep the CLI revision
+// guard; setup retains its disabled position until its separate slice.
 
 const selected = editor.selected;
 const setSelected = editor.choose;
@@ -133,7 +133,7 @@ function Editor(props: { local: LocalState; peers: { row: MachineRow; state: Pee
           <Field label="Private key path" id="mach-key">
             <div class="row">
               <input id="mach-key" class="field mono grow" placeholder={hint().key} value={draft().identity_file} disabled={fieldsDisabled()} onInput={(e) => editor.edit("identity_file", e.currentTarget.value)} />
-              <button class="btn" disabled title={MACHINE_EDITING}>Browse…</button>
+              <button class="btn" disabled={fieldsDisabled()} title="Choose SSH private key" onClick={() => void editor.pickKey()}>Browse…</button>
             </div>
           </Field>
           <div class="form-row mach-form-row">
@@ -146,7 +146,7 @@ function Editor(props: { local: LocalState; peers: { row: MachineRow; state: Pee
             <button class="btn primary" disabled={fieldsDisabled() || !view().loaded || !draft().revision || !editor.valid() || editor.duplicate() || !(draft().dirty || editor.isNew())} onClick={() => void editor.save()}>Save connection</button>
             <Show when={editor.isNew()}><button class="btn" disabled={editor.busy()} onClick={() => editor.choose(LOCAL)}>Discard draft</button></Show>
             <button class="btn" disabled={editor.busy() || draft().dirty || editor.isNew() || !testEnabled(selected(), view())} onClick={() => void testConnection(selected())}><Icon name="plug" size={13} />Test connection</button>
-            <button class="btn" disabled title={MACHINE_EDITING}><Icon name="square-terminal" size={13} />Open SSH terminal</button>
+            <button class="btn" disabled={fieldsDisabled() || editor.isNew() || draft().dirty || !draft().revision} onClick={() => void editor.openSsh()}><Icon name="square-terminal" size={13} />Open SSH terminal</button>
           </Actions>
         </section>
       </Show>
@@ -205,7 +205,8 @@ export function MachinesScreen() {
   });
   // Selection or a newly saved list revision refreshes inherited SSH values.
   // The primitive key stays stable while resolve replies update the view.
-  createEffect(on(() => `${selected()}\n${view().connection_revision ?? ""}\n${view().loaded}`, () => {
+  const connectionSelection = createMemo(() => `${selected()}\n${view().connection_revision ?? ""}\n${view().loaded}`);
+  createEffect(on(connectionSelection, () => {
     const key = selected();
     if (view().loaded && key !== LOCAL && key !== NEW_MACHINE) void resolveMachine(key);
   }));

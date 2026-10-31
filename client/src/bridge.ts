@@ -499,6 +499,17 @@ export async function machineChange(request: import("./types").MachineChangeRequ
   return invoke<void>("machine_change", { request });
 }
 
+/** Uses the configured terminal and existing hgs machine ssh route. */
+export async function machineSsh(reference: import("./types").MachineReference): Promise<string | null> {
+  if (!inTauri()) throw new Error(DESKTOP_ONLY);
+  return invoke<string | null>("machine_ssh", { reference });
+}
+
+export async function machinePickKey(): Promise<string | null> {
+  if (!inTauri()) throw new Error(DESKTOP_ONLY);
+  return invoke<string | null>("machine_pick_key");
+}
+
 /** "Test connection": `machine check`, up to 25 s. */
 export async function machineCheck(alias: string): Promise<MachinesView> {
   if (!inTauri()) return emptyMachines(DESKTOP_ONLY);

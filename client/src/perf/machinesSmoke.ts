@@ -70,3 +70,45 @@ export async function machinesSmoke(allowed: boolean) {
     await invoke("exit_app", { code: 0 });
   } catch (error) { await log(`FAIL ${String(error)}`); await invoke("exit_app", { code: 1 }); }
 }
+
+/** Native picker and configured terminal, still fake/private only. */
+export async function machinesToolsSmoke(allowed: boolean) {
+  if (!allowed) return;
+  const log = (text: string) => invoke("perf_log", { line: `machine-tools-smoke: ${text}` });
+  let assertions = 0;
+  const check = (ok: boolean, reason: string) => { require(ok, reason); assertions++; };
+  const calls = () => invoke<{argv: string[]}[]>("smoke_log");
+  try {
+    setPage("machines");
+    await until(() => machinesPage().loaded && !machineEditor.busy() && !!document.querySelector(".mach-editor"), "Machines did not load");
+    const peer = buttons().find((b) => b.classList.contains("mach-card") && b.textContent?.includes("fixture-peer"))!;
+    peer.click();
+    await until(() => (document.getElementById("mach-host") as HTMLInputElement)?.value === "peer.invalid", "saved fields missing");
+    check(machineEditor.draft().enabled === false, "disabled peer fixture missing");
+    click("Open SSH terminal");
+    await until(() => !machineEditor.busy(), "terminal request did not settle");
+    let recorded = await calls();
+    for (let i = 0; i < 40 && !recorded.some((c) => c.argv[0] === "private-terminal"); i++) { await sleep(25); recorded = await calls(); }
+    check(recorded.filter((c) => c.argv[0] === "private-terminal").length === 1, "terminal did not open exactly once");
+    check(recorded.some((c) => c.argv[0] === "private-terminal" && c.argv.at(-1)?.endsWith(" machine ssh fixture-peer") === true), "terminal command lost exact saved alias");
+    check(!recorded.some((c) => c.argv[0] === "machine" && c.argv[1] === "check"), "SSH login repair ran a remote probe");
+    check(document.body.textContent?.includes("Opened a terminal: ssh fixture-peer") === true, "mockup SSH notice missing");
+    await log("SSH_OPENED");
+    const original = machineEditor.draft();
+    click("Browse…");
+    await until(() => machineEditor.busy(), "key chooser did not start");
+    await log("KEY_CANCEL_WAIT");
+    await until(() => !machineEditor.busy(), "key chooser Cancel did not finish");
+    check(machineEditor.draft() === original && !machineEditor.draft().dirty, "Cancel changed the key draft");
+    click("Browse…");
+    await until(() => machineEditor.busy(), "second chooser did not start");
+    await log("KEY_PICK_WAIT");
+    await until(() => !machineEditor.busy(), "key chooser selection did not finish");
+    check(machineEditor.draft().identity_file.endsWith("/id_fixture") && machineEditor.draft().dirty, "accepted local key path missing");
+    recorded = await calls();
+    check(recorded.filter((c) => c.argv[0] === "machine" && c.argv[1] === "resolve").length === 1, "effective-connection reply started a resolve loop");
+    check(!recorded.some((c) => c.argv[0] === "machine" && ["set", "remove", "reset"].includes(c.argv[1])), "key selection wrote a connection without Save");
+    await log(`PICKED ${JSON.stringify({ key: machineEditor.draft().identity_file })}`);await sleep(400);
+    await log(`PASS ${assertions}`);await invoke("exit_app", { code: 0 });
+  } catch (error) { await log(`FAIL ${String(error)}`);await invoke("exit_app", { code: 1 }); }
+}

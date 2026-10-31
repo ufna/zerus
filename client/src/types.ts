@@ -408,6 +408,7 @@ export interface AccountsView {
 export interface MachineRow { alias: string; enabled: boolean; source: string; inherited: boolean; hostname: string; user: string; port: number | null; identity_file: string; origin: string }
 export interface MachineConnection { hostname: string; user: string; port: number | null; identity_file: string; enabled: boolean }
 export type MachineChange = { kind: "set"; connection: MachineConnection; create: boolean } | { kind: "reset" | "remove" };
+export interface MachineReference { alias: string; revision: string }
 export interface MachineChangeRequest { alias: string; revision: string; change: MachineChange }
 export interface Effective { alias: string; pending: boolean; error: boolean; text: string; hostname: string; user: string; port: string; key: string }
 export interface CheckResult { alias: string; pending: boolean; error: boolean; text: string }

@@ -1,5 +1,5 @@
-//! Existing local machine-profile writes, bound to the exact displayed list.
-//! No SSH, installation, terminal, source discovery or retry policy lives here.
+//! Local machine-profile writes and saved SSH arguments, bound to the exact list.
+//! No SSH execution, installation, terminal launch, discovery or retry lives here.
 use crate::actions::{Exit, Invocation};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -70,34 +70,57 @@ fn validate(connection: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-/// Prepare only from this hub's original snapshot. hgs repeats the revision
-/// comparison under its existing file lock; no write follows a stale snapshot.
-pub fn prepare(list: &Value, request: &Request) -> Result<Invocation, String> {
-    if request.alias.is_empty() || !ascii_field(&request.alias, 80, b"_.-") {
+/// Original saved connection selected by an explicit page action.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Reference {
+    pub alias: String,
+    pub revision: String,
+}
+
+fn selected_row<'a>(
+    list: &'a Value,
+    alias: &str,
+    revision: &str,
+) -> Result<Option<&'a Value>, String> {
+    if alias.is_empty() || !ascii_field(alias, 80, b"_.-") {
         return Err(
             "Machine alias: use letters, digits, dots, underscores and hyphens; no leading hyphen."
                 .into(),
         );
     }
-    if request.revision.len() != 64
-        || !request
-            .revision
+    if revision.len() != 64
+        || !revision
             .bytes()
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
-        || list.get("revision").and_then(Value::as_str) != Some(request.revision.as_str())
+        || list.get("revision").and_then(Value::as_str) != Some(revision)
     {
         return Err(CHANGED.into());
     }
-    if list.get("local").and_then(Value::as_str) == Some(request.alias.as_str()) {
+    if list.get("local").and_then(Value::as_str) == Some(alias) {
         return Err("This is the local machine; SSH profiles are for remote machines.".into());
     }
     let rows = list
         .get("machines")
         .and_then(Value::as_array)
         .ok_or(CHANGED)?;
-    let row = rows
+    Ok(rows
         .iter()
-        .find(|r| r.get("alias").and_then(Value::as_str) == Some(&request.alias));
+        .find(|r| r.get("alias").and_then(Value::as_str) == Some(alias)))
+}
+
+/// Saved, disabled and offline aliases remain usable for host-key/login repair.
+/// This returns arguments only; the host rechecks a fresh local list before it
+/// opens the maintained terminal. It never runs ssh or selects a display alias.
+pub fn ssh_arguments(list: &Value, reference: &Reference) -> Result<Vec<String>, String> {
+    selected_row(list, &reference.alias, &reference.revision)?.ok_or(CHANGED)?;
+    Ok(crate::terminal_launch::ssh_arguments(&reference.alias))
+}
+
+/// Prepare only from this hub's original snapshot. hgs repeats the revision
+/// comparison under its existing file lock; no write follows a stale snapshot.
+pub fn prepare(list: &Value, request: &Request) -> Result<Invocation, String> {
+    let row = selected_row(list, &request.alias, &request.revision)?;
     let (verb, connection, create) = match &request.change {
         Change::Set { connection, create } => {
             validate(connection)?;
@@ -228,6 +251,27 @@ mod tests {
             "--create"
         );
     }
+    #[test]
+    fn ssh_uses_the_saved_alias_and_revision_including_disabled_peers() {
+        let mut snapshot = list();
+        snapshot["machines"][0]["enabled"] = json!(false);
+        let mut reference = Reference {
+            alias: "fixture-peer".into(),
+            revision: "a".repeat(64),
+        };
+        assert_eq!(
+            ssh_arguments(&snapshot, &reference).unwrap(),
+            ["machine", "ssh", "fixture-peer"]
+        );
+        reference.revision = "b".repeat(64);
+        assert_eq!(ssh_arguments(&snapshot, &reference), Err(CHANGED.into()));
+        reference.revision = "a".repeat(64);
+        for alias in ["fixture-local", "absent", "@peer", "-oProxyCommand=x"] {
+            reference.alias = alias.into();
+            assert!(ssh_arguments(&snapshot, &reference).is_err());
+        }
+    }
+
     #[test]
     fn stale_local_missing_and_unresettable_rows_cannot_write() {
         let mut req = request(Change::Remove);
