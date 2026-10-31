@@ -164,6 +164,22 @@ data, never placement, project/worktree mutation, launch, release or settlement.
 This pure module has no source factory, current routing proof, actor, I/O or
 production caller; G2 `.4.3`, `.4.2` and G1 current Operations admission stay open.
 
+The separate pure `creation_worktree` policy proposes one original 15-second
+`worktrees status` lookup. Its binding keeps the original source target distinct
+from the expected prepared destination, common directory and branch. Pending
+worktree or original unknown records require receipt support and settled clone
+evidence; ambiguous ownership and later-stage contradictions remain review-only.
+The same private byte, duplicate-key and one-shot rules apply. Created evidence
+requires exact observed destination/common/branch and `effects_started=true`;
+its closed receipt has nine fields. Failed evidence requires an explicit Boolean
+`effects_started` and has only six fields, with the complete expected binding
+returned separately. Optional failed path/branch identities must still match;
+they are discarded rather than manufactured when absent. A nonempty or malformed
+`resource_error` refuses. Neither variant calls the reducer or grants ID rotation,
+retry, launch, settlement or release, including a failed no-effect observation.
+The encoded receipt cap remains 16 KiB; original/reply caps remain 1 MiB/64 KiB.
+There is no G1 operation kind, actor, caller, I/O or current production admission.
+
 The first pure policy is `operation_recovery::task_start::Original`. G1 and G2
 agreed its contract on 2026-10-30. It has no actor integration, process runner,
 SQL, positive job IPC or executing permission. The dedicated operation
