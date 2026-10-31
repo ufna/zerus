@@ -55,6 +55,7 @@ class PairedControls(unittest.TestCase):
         self.output = self.root / "hgs-tray.app"
         self.installed = self.root / "previous.app"
         self.calls = []
+        self.real_installed_identity = sign.installed_identity
         stack = contextlib.ExitStack()
         self.addCleanup(stack.close)
         self.enter = stack.enter_context
@@ -230,6 +231,65 @@ class PairedControls(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "replaced output"): self.prepare()
         self.assertEqual((self.output / "foreign").read_text(), "retain")
         self.assertTrue(retained.is_dir())
+
+    def test_actual_source_and_previous_plist_fifos_refuse_in_bounded_children(self):
+        child = """import importlib.util, pathlib, sys
+spec=importlib.util.spec_from_file_location('signer',sys.argv[1])
+sign=importlib.util.module_from_spec(spec);spec.loader.exec_module(sign)
+def forbidden(*args): raise AssertionError('no signing tool may run')
+sign.run=forbidden
+try:
+    getattr(sign,sys.argv[2])(pathlib.Path(sys.argv[3]))
+except ValueError:
+    print('ordinary-file refusal before tools')
+else:
+    raise AssertionError('FIFO unexpectedly accepted')
+"""
+        for action in ("source_layout", "installed_identity"):
+            with self.subTest(action=action):
+                app = raw_app(self.root, action)
+                info = app / "Contents/Info.plist"; info.unlink(); os.mkfifo(info)
+                private = self.root / (action + "-private")
+                for name in ("home", "config", "data", "state", "cache", "runtime", "tmp", "tmux"):
+                    (private / name).mkdir(parents=True)
+                env = {"PATH": "/usr/bin:/bin", "HOME": str(private / "home"),
+                       "XDG_CONFIG_HOME": str(private / "config"), "XDG_DATA_HOME": str(private / "data"),
+                       "XDG_STATE_HOME": str(private / "state"), "XDG_CACHE_HOME": str(private / "cache"),
+                       "XDG_RUNTIME_DIR": str(private / "runtime"), "TMPDIR": str(private / "tmp"),
+                       "TMUX_TMPDIR": str(private / "tmux"), "PYTHONDONTWRITEBYTECODE": "1"}
+                result = subprocess.run([sys.executable, "-c", child, str(ROOT / "tray/sign-local-macos.py"),
+                                         action, str(app)], env=env, text=True, capture_output=True, timeout=2)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("ordinary-file refusal before tools", result.stdout)
+                self.assertTrue(info.is_fifo())
+
+    def test_source_and_previous_symlink_plists_are_never_read(self):
+        foreign = self.root / "foreign.plist"; foreign.write_bytes(b"foreign target must stay unread")
+        for action in ("source_layout", "installed_identity"):
+            with self.subTest(action=action):
+                app = raw_app(self.root, action)
+                info = app / "Contents/Info.plist"; info.unlink(); info.symlink_to(foreign)
+                with mock.patch.object(sign, "regular_stream") as reads:
+                    operation = self.real_installed_identity if action == "installed_identity" else sign.source_layout
+                    with self.assertRaises(ValueError): operation(app)
+                    reads.assert_not_called()
+                self.assertTrue(info.is_symlink())
+        self.run.assert_not_called()
+
+    def test_source_other_link_refuses_before_even_valid_plist_is_read(self):
+        (self.app / "Contents/foreign-link").symlink_to(self.hgs)
+        with mock.patch.object(sign, "regular_stream") as reads:
+            with self.assertRaises(ValueError): sign.source_layout(self.app)
+            reads.assert_not_called()
+        self.run.assert_not_called()
+
+    def test_regular_reader_refuses_link_and_fifo_without_opening_them(self):
+        link = self.root / "linked"; link.symlink_to(self.hgs)
+        fifo = self.root / "fifo"; os.mkfifo(fifo)
+        for path in (link, fifo):
+            with self.subTest(path=path.name), mock.patch.object(sign.os, "open") as opens:
+                with self.assertRaises(ValueError): sign.regular_bytes(path, 4)
+                opens.assert_not_called()
 
 
 @unittest.skipUnless(sys.platform == "darwin" and os.environ.get("ZERUS_TEST_LOCAL_MACOS_SIGNING") == "1",

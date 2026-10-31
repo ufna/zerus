@@ -45,9 +45,8 @@ def prepare(app, hgs, output, installed, requested=""):
         raise ValueError("The source app already contains a CLI; use a fresh single-code build.")
     if not hgs.is_file() or not os.access(hgs, os.X_OK):
         raise ValueError("The built CLI must be a regular executable file.")
-    with hgs.open("rb") as stream:
-        if stream.read(4) not in signer.MACH_O:
-            raise ValueError("The built CLI is not Mach-O.")
+    if signer.regular_bytes(hgs, 4) not in signer.MACH_O:
+        raise ValueError("The built CLI is not Mach-O.")
     output.mkdir(mode=0o700)
     owned = output.stat()
     try:
