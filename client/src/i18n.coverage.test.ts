@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import catalog from "./i18n.ru.json";
 import english from "./i18n.english.json";
+import supplement from "./i18n.next-ru.json";
 
-// Every static tr()/trNoop() source is a reviewed Qt catalog entry or an
-// explicit Next-only English string (i18n.english.json, read by this test only).
+// Every static tr()/trNoop() source is a reviewed Qt catalog entry, a reviewed
+// Next-only entry (i18n.next-ru.json, merged by the generator) or an explicit
+// English-only string (i18n.english.json, read by this test only).
 // tr() of a value stays in the files below: their values come from their own
 // trNoop() tables or from literal component props, never from session text,
 // agent output, identities or file names.
@@ -73,6 +75,10 @@ describe("interface string coverage", () => {
     expect([...englishOnly].filter((source) => source in translated)).toEqual([]);
     expect([...englishOnly].filter((source) => !sources.has(source))).toEqual([]);
     expect(english as string[]).toEqual([...english as string[]].sort());
+  });
+
+  it("keeps only used sources in the Next-only supplement", () => {
+    expect(Object.keys(supplement).filter((source) => !sources.has(source))).toEqual([]);
   });
 
   it("translates computed values only in reviewed files", () => {

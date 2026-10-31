@@ -5,7 +5,7 @@
     <message>
       <location filename="../src/AccountFilter.cpp" line="17" />
       <source>Filter sessions by accounts</source>
-      <translation type="unfinished" />
+      <translation>Фильтровать сессии по учётным записям</translation>
     </message>
     <message>
       <location filename="../src/AccountFilter.cpp" line="33" />
@@ -25,12 +25,12 @@
     <message>
       <location filename="../src/AccountFilter.cpp" line="83" />
       <source>%1 accounts selected; click to change</source>
-      <translation type="unfinished" />
+      <translation>Выбрано учётных записей: %1; нажмите, чтобы изменить</translation>
     </message>
     <message>
       <location filename="../src/AccountFilter.cpp" line="83" />
       <source>All accounts: choose one or more</source>
-      <translation type="unfinished" />
+      <translation>Все учётные записи: выберите одну или несколько</translation>
     </message>
     <message>
       <location filename="../src/AccountFilter.cpp" line="93" />
@@ -40,7 +40,7 @@
     <message>
       <location filename="../src/AccountFilter.cpp" line="102" />
       <source>Choose accounts</source>
-      <translation type="unfinished" />
+      <translation>Выбрать учётные записи</translation>
     </message>
     <message>
       <location filename="../src/AccountFilter.cpp" line="109" />
@@ -198,7 +198,7 @@
     <message>
       <location filename="../src/AccountsPage.cpp" line="249" />
       <source>OpenCode providers</source>
-      <translation type="unfinished" />
+      <translation>Провайдеры OpenCode</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="259" />
@@ -208,7 +208,7 @@
     <message>
       <location filename="../src/AccountsPage.cpp" line="264" />
       <source>Model and effort…</source>
-      <translation type="unfinished" />
+      <translation>Модель и глубина рассуждений…</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="274" />
@@ -305,23 +305,23 @@
     <message>
       <location filename="../src/AccountsPage.cpp" line="446" />
       <source>1 account</source>
-      <translation type="unfinished" />
+      <translation>1 учётная запись</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="446" />
       <location filename="../src/AccountsPage.cpp" line="672" />
       <source>%1 accounts</source>
-      <translation type="unfinished" />
+      <translation>Учётных записей: %1</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="447" />
       <source>1 machine loaded</source>
-      <translation type="unfinished" />
+      <translation>загружен 1 компьютер</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="447" />
       <source>%1 machines loaded</source>
-      <translation type="unfinished" />
+      <translation>загружено компьютеров: %1</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="448" />
@@ -485,7 +485,7 @@
       <location filename="../src/AccountsPage.cpp" line="656" />
       <location filename="../src/AccountsPage.cpp" line="858" />
       <source>Configure providers, models and permissions with OpenCode on %1. Zerus uses that native configuration.</source>
-      <translation type="unfinished" />
+      <translation>Настройте провайдеров, модели и разрешения в OpenCode на %1. Zerus использует эту конфигурацию OpenCode.</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="665" />
@@ -606,47 +606,47 @@
     <message>
       <location filename="../src/AccountsPage.cpp" line="837" />
       <source>New account</source>
-      <translation type="unfinished" />
+      <translation>Новая учётная запись</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="852" />
       <source>Saved API key or a new one</source>
-      <translation type="unfinished" />
+      <translation>Сохранённый API-ключ или новый</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="852" />
       <source>DeepSeek API key</source>
-      <translation type="unfinished" />
+      <translation>API-ключ DeepSeek</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="853" />
       <source>Saved account or a new profile</source>
-      <translation type="unfinished" />
+      <translation>Сохранённая учётная запись или новый профиль</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="853" />
       <source>New profile with its own sign-in</source>
-      <translation type="unfinished" />
+      <translation>Новый профиль со своим входом</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="855" />
       <source>Add the native configuration again</source>
-      <translation type="unfinished" />
+      <translation>Добавить собственную конфигурацию снова</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="855" />
       <source>Native configuration, already added</source>
-      <translation type="unfinished" />
+      <translation>Собственная конфигурация уже добавлена</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="855" />
       <source>Not installed on %1</source>
-      <translation type="unfinished" />
+      <translation>Не установлено на %1</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="859" />
       <source>Install OpenCode on %1, then refresh Accounts.</source>
-      <translation type="unfinished" />
+      <translation>Установите OpenCode на %1, затем обновите «Учётные записи».</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="894" />
@@ -730,7 +730,11 @@
 Its native configuration, provider credentials and existing sessions on %1 are kept.
 
 To use it here again, choose Add account.</source>
-      <translation type="unfinished" />
+      <translation>OpenCode исчезнет из разделов «Учётные записи» и «Новая сессия» для %1 во всех Zerus, подключённых к %1, включая Zerus, работающий на %1.
+
+Его собственная конфигурация, учётные данные провайдеров и существующие сессии на %1 сохранятся.
+
+Чтобы снова использовать его здесь, выберите «Добавить учётную запись».</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="1009" />
@@ -799,12 +803,12 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/AccountsPage.cpp" line="1069" />
       <source>Default model and effort</source>
-      <translation type="unfinished" />
+      <translation>Модель и глубина рассуждений по умолчанию</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="1074" />
       <source>Provider settings</source>
-      <translation type="unfinished" />
+      <translation>Настройки провайдера</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="1079" />
@@ -829,12 +833,12 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/AccountsPage.cpp" line="1085" />
       <source>Provider model</source>
-      <translation type="unfinished" />
+      <translation>Модель провайдера</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="1089" />
       <source>New conversations with this account on this machine. Existing conversations keep their model and effort. Explicit launch choices take precedence.</source>
-      <translation type="unfinished" />
+      <translation>Для новых разговоров с этой учётной записью на этом компьютере. Существующие разговоры сохраняют свои модель и глубину рассуждений. Явный выбор при запуске имеет приоритет.</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="1094" />
@@ -927,7 +931,7 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/ActivityView.cpp" line="926" />
       <source>Edit description</source>
-      <translation type="unfinished" />
+      <translation>Изменить описание</translation>
     </message>
     <message>
       <location filename="../src/ActivityView.cpp" line="936" />
@@ -1013,7 +1017,7 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/ActivityView.cpp" line="987" />
       <source>Cancelled</source>
-      <translation type="unfinished" />
+      <translation>Отменено</translation>
     </message>
     <message>
       <location filename="../src/ActivityView.cpp" line="987" />
@@ -1025,7 +1029,7 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/ActivityView.cpp" line="996" />
       <source>Play or pause voice message (%1)</source>
-      <translation type="unfinished" />
+      <translation>Воспроизвести или приостановить голосовое сообщение (%1)</translation>
     </message>
     <message>
       <location filename="../src/ActivityView.cpp" line="1002" />
@@ -1035,12 +1039,12 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/ActivityView.cpp" line="1009" />
       <source>Hide transcript</source>
-      <translation type="unfinished" />
+      <translation>Скрыть расшифровку</translation>
     </message>
     <message>
       <location filename="../src/ActivityView.cpp" line="1009" />
       <source>Show transcript</source>
-      <translation type="unfinished" />
+      <translation>Показать расшифровку</translation>
     </message>
     <message>
       <location filename="../src/ActivityView.cpp" line="1016" />
@@ -1050,12 +1054,12 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/ActivityView.cpp" line="1026" />
       <source>You (voice)</source>
-      <translation type="unfinished" />
+      <translation>Вы (голос)</translation>
     </message>
     <message>
       <location filename="../src/ActivityView.cpp" line="1026" />
       <source>You (video)</source>
-      <translation type="unfinished" />
+      <translation>Вы (видео)</translation>
     </message>
     <message>
       <location filename="../src/ActivityView.cpp" line="1030" />
@@ -1146,7 +1150,7 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
       <location filename="../src/ActivityView.cpp" line="1081" />
       <location filename="../src/ActivityView.cpp" line="1086" />
       <source>Remove</source>
-      <translation type="unfinished" />
+      <translation>Удалить</translation>
     </message>
     <message>
       <location filename="../src/ActivityView.cpp" line="1110" />
@@ -1230,12 +1234,12 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/ActivityView.cpp" line="1253" />
       <source>Full-width Activity</source>
-      <translation type="unfinished" />
+      <translation>Активность во всю ширину</translation>
     </message>
     <message>
       <location filename="../src/ActivityView.cpp" line="1255" />
       <source>Reset Activity width</source>
-      <translation type="unfinished" />
+      <translation>Сбросить ширину активности</translation>
     </message>
     <message>
       <location filename="../src/ActivityView.cpp" line="1274" />
@@ -1271,7 +1275,7 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/ActivityView.cpp" line="1632" />
       <source>Jump to latest activity (%1 new)</source>
-      <translation type="unfinished" />
+      <translation>Перейти к последней активности (новых: %1)</translation>
     </message>
     <message>
       <location filename="../src/ActivityView.cpp" line="1635" />
@@ -1321,12 +1325,12 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/ActivityView.cpp" line="2157" />
       <source>Recording is unavailable.</source>
-      <translation type="unfinished" />
+      <translation>Запись недоступна.</translation>
     </message>
     <message>
       <location filename="../src/ActivityView.cpp" line="2167" />
       <source>Could not play recording: %1</source>
-      <translation type="unfinished" />
+      <translation>Не удалось воспроизвести запись: %1</translation>
     </message>
     <message>
       <location filename="../src/ActivityView.cpp" line="2171" />
@@ -1420,12 +1424,12 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="72" />
       <source>From</source>
-      <translation type="unfinished" />
+      <translation>С</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="72" />
       <source>Through</source>
-      <translation type="unfinished" />
+      <translation>По</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="74" />
@@ -1486,12 +1490,12 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="85" />
       <source>Previous</source>
-      <translation type="unfinished" />
+      <translation>Назад</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="85" />
       <source>Next</source>
-      <translation type="unfinished" />
+      <translation>Далее</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="87" />
@@ -1818,17 +1822,17 @@ Coverage below applies to every total and recorded sample.</source>
       <location filename="../src/ArchiveBrowser.cpp" line="18" />
       <location filename="../src/ArchiveBrowser.cpp" line="18" />
       <source>Refresh archive</source>
-      <translation type="unfinished" />
+      <translation>Обновить архив</translation>
     </message>
     <message>
       <location filename="../src/ArchiveBrowser.cpp" line="25" />
       <source>Older sessions</source>
-      <translation type="unfinished" />
+      <translation>Более старые сессии</translation>
     </message>
     <message>
       <location filename="../src/ArchiveBrowser.cpp" line="25" />
       <source>Newer sessions</source>
-      <translation type="unfinished" />
+      <translation>Более новые сессии</translation>
     </message>
     <message>
       <location filename="../src/ArchiveBrowser.cpp" line="37" />
@@ -1868,12 +1872,12 @@ Coverage below applies to every total and recorded sample.</source>
     <message>
       <location filename="../src/ArchiveBrowser.cpp" line="80" />
       <source>Older</source>
-      <translation type="unfinished" />
+      <translation>Старее</translation>
     </message>
     <message>
       <location filename="../src/ArchiveBrowser.cpp" line="80" />
       <source>Newer</source>
-      <translation type="unfinished" />
+      <translation>Новее</translation>
     </message>
   </context>
   <context>
@@ -1881,32 +1885,32 @@ Coverage below applies to every total and recorded sample.</source>
     <message>
       <location filename="../src/ArchiveDatePicker.cpp" line="43" />
       <source>Archived date</source>
-      <translation type="unfinished" />
+      <translation>Дата архивации</translation>
     </message>
     <message>
       <location filename="../src/ArchiveDatePicker.cpp" line="53" />
       <source>Archived from, inclusive</source>
-      <translation type="unfinished" />
+      <translation>Архивировано с (включительно)</translation>
     </message>
     <message>
       <location filename="../src/ArchiveDatePicker.cpp" line="53" />
       <source>Archived through, inclusive</source>
-      <translation type="unfinished" />
+      <translation>Архивировано по (включительно)</translation>
     </message>
     <message>
       <location filename="../src/ArchiveDatePicker.cpp" line="54" />
       <source>From</source>
-      <translation type="unfinished" />
+      <translation>С</translation>
     </message>
     <message>
       <location filename="../src/ArchiveDatePicker.cpp" line="54" />
       <source>Through</source>
-      <translation type="unfinished" />
+      <translation>По</translation>
     </message>
     <message>
       <location filename="../src/ArchiveDatePicker.cpp" line="65" />
       <source>Apply range</source>
-      <translation type="unfinished" />
+      <translation>Применить диапазон</translation>
     </message>
     <message>
       <location filename="../src/ArchiveDatePicker.cpp" line="66" />
@@ -1916,31 +1920,31 @@ Coverage below applies to every total and recorded sample.</source>
     <message>
       <location filename="../src/ArchiveDatePicker.cpp" line="74" />
       <source>Quick ranges</source>
-      <translation type="unfinished" />
+      <translation>Быстрый выбор</translation>
     </message>
     <message>
       <location filename="../src/ArchiveDatePicker.cpp" line="76" />
       <location filename="../src/ArchiveDatePicker.cpp" line="167" />
       <source>All dates</source>
-      <translation type="unfinished" />
+      <translation>Все даты</translation>
     </message>
     <message>
       <location filename="../src/ArchiveDatePicker.cpp" line="76" />
       <location filename="../src/ArchiveDatePicker.cpp" line="167" />
       <source>Today</source>
-      <translation type="unfinished" />
+      <translation>Сегодня</translation>
     </message>
     <message>
       <location filename="../src/ArchiveDatePicker.cpp" line="76" />
       <location filename="../src/ArchiveDatePicker.cpp" line="167" />
       <source>Last 7 days</source>
-      <translation type="unfinished" />
+      <translation>Последние 7 дней</translation>
     </message>
     <message>
       <location filename="../src/ArchiveDatePicker.cpp" line="76" />
       <location filename="../src/ArchiveDatePicker.cpp" line="167" />
       <source>Last 30 days</source>
-      <translation type="unfinished" />
+      <translation>Последние 30 дней</translation>
     </message>
     <message>
       <location filename="../src/ArchiveDatePicker.cpp" line="114" />
@@ -1950,17 +1954,17 @@ Coverage below applies to every total and recorded sample.</source>
     <message>
       <location filename="../src/ArchiveDatePicker.cpp" line="150" />
       <source>All archived dates (no date limits)</source>
-      <translation type="unfinished" />
+      <translation>Все даты архивации (без ограничений)</translation>
     </message>
     <message>
       <location filename="../src/ArchiveDatePicker.cpp" line="150" />
       <source>Both dates included (local time)</source>
-      <translation type="unfinished" />
+      <translation>Обе даты включительно (местное время)</translation>
     </message>
     <message>
       <location filename="../src/ArchiveDatePicker.cpp" line="150" />
       <source>End date must be on or after the start date.</source>
-      <translation type="unfinished" />
+      <translation>Дата окончания не может быть раньше даты начала.</translation>
     </message>
     <message>
       <location filename="../src/ArchiveDatePicker.cpp" line="169" />
@@ -1970,7 +1974,7 @@ Coverage below applies to every total and recorded sample.</source>
     <message>
       <location filename="../src/ArchiveDatePicker.cpp" line="170" />
       <source>Archived date: %1. Choose period</source>
-      <translation type="unfinished" />
+      <translation>Дата архивации: %1. Выберите период</translation>
     </message>
   </context>
   <context>
@@ -2061,7 +2065,7 @@ Coverage below applies to every total and recorded sample.</source>
     <message>
       <location filename="../src/AutomaticApprovalSettings.cpp" line="56" />
       <source>Session</source>
-      <translation type="unfinished" />
+      <translation>Сессия</translation>
     </message>
     <message>
       <location filename="../src/AutomaticApprovalSettings.cpp" line="56" />
@@ -2071,17 +2075,17 @@ Coverage below applies to every total and recorded sample.</source>
     <message>
       <location filename="../src/AutomaticApprovalSettings.cpp" line="56" />
       <source>Result</source>
-      <translation type="unfinished" />
+      <translation>Результат</translation>
     </message>
     <message>
       <location filename="../src/AutomaticApprovalSettings.cpp" line="63" />
       <source>Newer</source>
-      <translation type="unfinished" />
+      <translation>Новее</translation>
     </message>
     <message>
       <location filename="../src/AutomaticApprovalSettings.cpp" line="64" />
       <source>Older</source>
-      <translation type="unfinished" />
+      <translation>Старее</translation>
     </message>
     <message>
       <location filename="../src/AutomaticApprovalSettings.cpp" line="66" />
@@ -2154,7 +2158,7 @@ Coverage below applies to every total and recorded sample.</source>
       <location filename="../src/CloneRepositoryDialog.cpp" line="47" />
       <location filename="../src/CloneRepositoryDialog.cpp" line="78" />
       <source>Clone repository</source>
-      <translation type="unfinished" />
+      <translation>Клонировать репозиторий</translation>
     </message>
     <message>
       <location filename="../src/CloneRepositoryDialog.cpp" line="29" />
@@ -2174,17 +2178,17 @@ Coverage below applies to every total and recorded sample.</source>
     <message>
       <location filename="../src/CloneRepositoryDialog.cpp" line="34" />
       <source>Parent folder</source>
-      <translation type="unfinished" />
+      <translation>Родительская папка</translation>
     </message>
     <message>
       <location filename="../src/CloneRepositoryDialog.cpp" line="35" />
       <source>Folder name</source>
-      <translation type="unfinished" />
+      <translation>Имя папки</translation>
     </message>
     <message>
       <location filename="../src/CloneRepositoryDialog.cpp" line="36" />
       <source>Destination</source>
-      <translation type="unfinished" />
+      <translation>Место назначения</translation>
     </message>
     <message>
       <location filename="../src/CloneRepositoryDialog.cpp" line="39" />
@@ -2199,12 +2203,12 @@ Coverage below applies to every total and recorded sample.</source>
     <message>
       <location filename="../src/CloneRepositoryDialog.cpp" line="42" />
       <source>New project name</source>
-      <translation type="unfinished" />
+      <translation>Имя нового проекта</translation>
     </message>
     <message>
       <location filename="../src/CloneRepositoryDialog.cpp" line="43" />
       <source>Uses Git access configured on this computer. The checkout remains available if the session cannot start.</source>
-      <translation type="unfinished" />
+      <translation>Использует доступ к Git, настроенный на этом компьютере. Если сессия не запустится, рабочая копия останется доступной.</translation>
     </message>
     <message>
       <location filename="../src/CloneRepositoryDialog.cpp" line="47" />
@@ -2215,12 +2219,12 @@ Coverage below applies to every total and recorded sample.</source>
     <message>
       <location filename="../src/CloneRepositoryDialog.cpp" line="48" />
       <source>Check result</source>
-      <translation type="unfinished" />
+      <translation>Проверить результат</translation>
     </message>
     <message>
       <location filename="../src/CloneRepositoryDialog.cpp" line="48" />
       <source>Choose another destination…</source>
-      <translation type="unfinished" />
+      <translation>Выбрать другое место…</translation>
     </message>
     <message>
       <location filename="../src/CloneRepositoryDialog.cpp" line="78" />
@@ -2230,7 +2234,7 @@ Coverage below applies to every total and recorded sample.</source>
     <message>
       <location filename="../src/CloneRepositoryDialog.cpp" line="78" />
       <source>Use checkout</source>
-      <translation type="unfinished" />
+      <translation>Использовать рабочую копию</translation>
     </message>
   </context>
   <context>
@@ -2238,7 +2242,7 @@ Coverage below applies to every total and recorded sample.</source>
     <message>
       <location filename="../src/MessageComposer.cpp" line="79" />
       <source>Message field height</source>
-      <translation type="unfinished" />
+      <translation>Высота поля сообщения</translation>
     </message>
     <message>
       <location filename="../src/MessageComposer.cpp" line="80" />
@@ -2473,7 +2477,7 @@ Coverage below applies to every total and recorded sample.</source>
     <message>
       <location filename="../src/DashboardPage.cpp" line="319" />
       <source>No sessions are working, need attention or have drafts.</source>
-      <translation type="unfinished" />
+      <translation>Нет сессий, которые работают, требуют внимания или содержат черновики.</translation>
     </message>
     <message>
       <location filename="../src/DashboardPage.cpp" line="364" />
@@ -2624,14 +2628,14 @@ Sessions</source>
     <message>
       <location filename="../src/DirectoryDialog.cpp" line="73" />
       <source>Dialog…</source>
-      <translation type="unfinished" />
+      <translation>Диалог…</translation>
     </message>
     <message>
       <location filename="../src/DirectoryDialog.cpp" line="74" />
       <location filename="../src/DirectoryDialog.cpp" line="75" />
       <location filename="../src/DirectoryDialog.cpp" line="76" />
       <source>New folder dialog…</source>
-      <translation type="unfinished" />
+      <translation>Создать папку в отдельном окне…</translation>
     </message>
     <message>
       <location filename="../src/DirectoryDialog.cpp" line="84" />
@@ -2685,18 +2689,18 @@ Sessions</source>
       <location filename="../src/DirectoryDialog.cpp" line="222" />
       <location filename="../src/DirectoryDialog.cpp" line="304" />
       <source>Folder name</source>
-      <translation type="unfinished" />
+      <translation>Имя папки</translation>
     </message>
     <message>
       <location filename="../src/DirectoryDialog.cpp" line="222" />
       <location filename="../src/DirectoryDialog.cpp" line="303" />
       <source>New folder name</source>
-      <translation type="unfinished" />
+      <translation>Имя новой папки</translation>
     </message>
     <message>
       <location filename="../src/DirectoryDialog.cpp" line="224" />
       <source>Create</source>
-      <translation type="unfinished" />
+      <translation>Создать</translation>
     </message>
     <message>
       <location filename="../src/DirectoryDialog.cpp" line="226" />
@@ -2707,7 +2711,7 @@ Sessions</source>
       <location filename="../src/DirectoryDialog.cpp" line="227" />
       <location filename="../src/DirectoryDialog.cpp" line="228" />
       <source>Cancel new folder</source>
-      <translation type="unfinished" />
+      <translation>Отменить создание папки</translation>
     </message>
     <message>
       <location filename="../src/DirectoryDialog.cpp" line="297" />
@@ -2723,12 +2727,12 @@ Sessions</source>
       <location filename="../src/DirectoryDialog.cpp" line="301" />
       <location filename="../src/DirectoryDialog.cpp" line="324" />
       <source>this computer</source>
-      <translation type="unfinished" />
+      <translation>этот компьютер</translation>
     </message>
     <message>
       <location filename="../src/DirectoryDialog.cpp" line="306" />
       <source>Create folder</source>
-      <translation type="unfinished" />
+      <translation>Создать папку</translation>
     </message>
     <message>
       <location filename="../src/DirectoryDialog.cpp" line="324" />
@@ -2889,7 +2893,7 @@ Sessions</source>
       <location filename="../src/HgsClient.cpp" line="1848" />
       <location filename="../src/HgsClient.cpp" line="2514" />
       <source>this computer</source>
-      <translation type="unfinished" />
+      <translation>этот компьютер</translation>
     </message>
     <message>
       <location filename="../src/HgsClient.cpp" line="687" />
@@ -4193,7 +4197,7 @@ Unsaved connection</source>
       <location filename="../src/MessageComposer.cpp" line="299" />
       <location filename="../src/MessageComposer.cpp" line="903" />
       <source>Reference an existing file</source>
-      <translation type="unfinished" />
+      <translation>Сослаться на существующий файл</translation>
     </message>
     <message>
       <location filename="../src/MessageComposer.cpp" line="301" />
@@ -4221,14 +4225,14 @@ Unsaved connection</source>
       <location filename="../src/MessageComposer.cpp" line="309" />
       <location filename="../src/MessageComposer.cpp" line="1210" />
       <source>Refresh this session</source>
-      <translation type="unfinished" />
+      <translation>Обновить эту сессию</translation>
     </message>
     <message>
       <location filename="../src/MessageComposer.cpp" line="312" />
       <location filename="../src/MessageComposer.cpp" line="1187" />
       <location filename="../src/MessageComposer.cpp" line="1190" />
       <source>Send</source>
-      <translation type="unfinished" />
+      <translation>Отправить</translation>
     </message>
     <message>
       <location filename="../src/MessageComposer.cpp" line="314" />
@@ -4351,7 +4355,7 @@ Unsaved connection</source>
       <location filename="../src/MessageComposer.cpp" line="1267" />
       <location filename="../src/MessageComposer.cpp" line="1284" />
       <source>this computer</source>
-      <translation type="unfinished" />
+      <translation>этот компьютер</translation>
     </message>
     <message>
       <location filename="../src/MessageComposer.cpp" line="890" />
@@ -4482,7 +4486,7 @@ Unsaved connection</source>
     <message>
       <location filename="../src/MessageComposer.cpp" line="1170" />
       <source>Stop current turn</source>
-      <translation type="unfinished" />
+      <translation>Остановить текущий ход</translation>
     </message>
     <message>
       <location filename="../src/MessageComposer.cpp" line="1174" />
@@ -4597,7 +4601,7 @@ Unsaved connection</source>
     <message>
       <location filename="../src/MessageComposer.cpp" line="1309" />
       <source>Go to session</source>
-      <translation type="unfinished" />
+      <translation>Перейти к сессии</translation>
     </message>
     <message>
       <location filename="../src/MessageComposer.cpp" line="1310" />
@@ -4617,12 +4621,12 @@ Unsaved connection</source>
     <message>
       <location filename="../src/MessageComposer.cpp" line="1339" />
       <source>This session is not in the session list now.</source>
-      <translation type="unfinished" />
+      <translation>Этой сессии сейчас нет в списке сессий.</translation>
     </message>
     <message>
       <location filename="../src/MessageComposer.cpp" line="1344" />
       <source>Loading draft…</source>
-      <translation type="unfinished" />
+      <translation>Загрузка черновика…</translation>
     </message>
     <message>
       <location filename="../src/MessageComposer.cpp" line="1370" />
@@ -4637,7 +4641,7 @@ Unsaved connection</source>
     <message>
       <location filename="../src/MessageComposer.cpp" line="1374" />
       <source>Replace draft</source>
-      <translation type="unfinished" />
+      <translation>Заменить черновик</translation>
     </message>
     <message>
       <location filename="../src/MessageComposer.cpp" line="1383" />
@@ -4964,12 +4968,12 @@ Current: %3%4
     <message>
       <location filename="../src/NewSessionDialog.cpp" line="196" />
       <source>Check result</source>
-      <translation type="unfinished" />
+      <translation>Проверить результат</translation>
     </message>
     <message>
       <location filename="../src/NewSessionDialog.cpp" line="196" />
       <source>Choose another destination…</source>
-      <translation type="unfinished" />
+      <translation>Выбрать другое место…</translation>
     </message>
     <message>
       <location filename="../src/NewSessionDialog.cpp" line="200" />
@@ -5533,7 +5537,7 @@ Repository: %2</source>
     <message>
       <location filename="../src/PhonePairing.cpp" line="37" />
       <source>this computer</source>
-      <translation type="unfinished" />
+      <translation>этот компьютер</translation>
     </message>
   </context>
   <context>
@@ -6072,7 +6076,7 @@ Only observed commands are shown; older history may be unavailable.</source>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="79" />
       <source>Profile ID</source>
-      <translation type="unfinished" />
+      <translation>ID профиля</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="80" />
@@ -6211,7 +6215,7 @@ CPU uses the processor. CUDA requires a supported NVIDIA GPU and CUDA-enabled Py
     <message>
       <location filename="../src/ProjectFilter.cpp" line="20" />
       <source>Filter sessions by projects</source>
-      <translation type="unfinished" />
+      <translation>Фильтровать сессии по проектам</translation>
     </message>
     <message>
       <location filename="../src/ProjectFilter.cpp" line="28" />
@@ -6221,12 +6225,12 @@ CPU uses the processor. CUDA requires a supported NVIDIA GPU and CUDA-enabled Py
     <message>
       <location filename="../src/ProjectFilter.cpp" line="60" />
       <source>All projects: choose one or more</source>
-      <translation type="unfinished" />
+      <translation>Все проекты: выберите один или несколько</translation>
     </message>
     <message>
       <location filename="../src/ProjectFilter.cpp" line="60" />
       <source>%1 projects selected; click to change</source>
-      <translation type="unfinished" />
+      <translation>Выбрано проектов: %1; нажмите, чтобы изменить</translation>
     </message>
     <message>
       <location filename="../src/ProjectFilter.cpp" line="70" />
@@ -6236,7 +6240,7 @@ CPU uses the processor. CUDA requires a supported NVIDIA GPU and CUDA-enabled Py
     <message>
       <location filename="../src/ProjectFilter.cpp" line="80" />
       <source>Choose projects</source>
-      <translation type="unfinished" />
+      <translation>Выбрать проекты</translation>
     </message>
     <message>
       <location filename="../src/ProjectFilter.cpp" line="99" />
@@ -6293,7 +6297,7 @@ CPU uses the processor. CUDA requires a supported NVIDIA GPU and CUDA-enabled Py
     <message>
       <location filename="../src/ProjectsDialog.cpp" line="102" />
       <source>Worktrees…</source>
-      <translation type="unfinished" />
+      <translation>Рабочие деревья…</translation>
     </message>
     <message>
       <location filename="../src/ProjectsDialog.cpp" line="103" />
@@ -6313,7 +6317,7 @@ CPU uses the processor. CUDA requires a supported NVIDIA GPU and CUDA-enabled Py
     <message>
       <location filename="../src/ProjectsDialog.cpp" line="120" />
       <source>Connect project catalogs…</source>
-      <translation type="unfinished" />
+      <translation>Подключить каталоги проектов…</translation>
     </message>
     <message>
       <location filename="../src/ProjectsDialog.cpp" line="127" />
@@ -6401,7 +6405,7 @@ CPU uses the processor. CUDA requires a supported NVIDIA GPU and CUDA-enabled Py
     <message>
       <location filename="../src/ProjectsDialog.cpp" line="185" />
       <source>Click a column heading to sort folders.</source>
-      <translation type="unfinished" />
+      <translation>Нажмите на заголовок столбца, чтобы отсортировать папки.</translation>
     </message>
     <message>
       <location filename="../src/ProjectsDialog.cpp" line="195" />
@@ -6434,12 +6438,12 @@ CPU uses the processor. CUDA requires a supported NVIDIA GPU and CUDA-enabled Py
     <message>
       <location filename="../src/ProjectsDialog.cpp" line="200" />
       <source>Clone repository…</source>
-      <translation type="unfinished" />
+      <translation>Клонировать репозиторий…</translation>
     </message>
     <message>
       <location filename="../src/ProjectsDialog.cpp" line="208" />
       <source>Drag to resize folders and worktrees.</source>
-      <translation type="unfinished" />
+      <translation>Перетащите, чтобы изменить размер папок и рабочих деревьев.</translation>
     </message>
     <message>
       <location filename="../src/ProjectsDialog.cpp" line="215" />
@@ -6498,17 +6502,17 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/ProjectsDialog.cpp" line="385" />
       <source>Clone repository</source>
-      <translation type="unfinished" />
+      <translation>Клонировать репозиторий</translation>
     </message>
     <message>
       <location filename="../src/ProjectsDialog.cpp" line="386" />
       <source>Clone on computer</source>
-      <translation type="unfinished" />
+      <translation>Клонировать на компьютере</translation>
     </message>
     <message>
       <location filename="../src/ProjectsDialog.cpp" line="394" />
       <source>Continue</source>
-      <translation type="unfinished" />
+      <translation>Продолжить</translation>
     </message>
     <message>
       <location filename="../src/ProjectsDialog.cpp" line="401" />
@@ -6653,12 +6657,12 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/ProjectsDialog.cpp" line="569" />
       <source>Copy to</source>
-      <translation type="unfinished" />
+      <translation>Копировать в</translation>
     </message>
     <message>
       <location filename="../src/ProjectsDialog.cpp" line="569" />
       <source>Move to</source>
-      <translation type="unfinished" />
+      <translation>Переместить в</translation>
     </message>
     <message>
       <location filename="../src/ProjectsDialog.cpp" line="578" />
@@ -7183,7 +7187,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/AutomaticApprovalSettings.cpp" line="21" />
       <source>Cancelled</source>
-      <translation type="unfinished" />
+      <translation>Отменено</translation>
     </message>
     <message>
       <location filename="../src/AutomaticApprovalSettings.cpp" line="22" />
@@ -7289,17 +7293,17 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/GitStatusBadge.h" line="43" />
       <source>Git status (current checkout)</source>
-      <translation type="unfinished" />
+      <translation>Состояние Git (текущая рабочая копия)</translation>
     </message>
     <message>
       <location filename="../src/GitStatusBadge.h" line="45" />
       <source>Branch: %1</source>
-      <translation type="unfinished" />
+      <translation>Ветка: %1</translation>
     </message>
     <message>
       <location filename="../src/GitStatusBadge.h" line="46" />
       <source>Upstream: %1</source>
-      <translation type="unfinished" />
+      <translation>Вышестоящая ветка: %1</translation>
     </message>
     <message>
       <location filename="../src/GitStatusBadge.h" line="48" />
@@ -7314,32 +7318,32 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/GitStatusBadge.h" line="50" />
       <source>%1 changed or new files (including staged and untracked files)</source>
-      <translation type="unfinished" />
+      <translation>Изменённых или новых файлов: %1 (включая проиндексированные и неотслеживаемые)</translation>
     </message>
     <message>
       <location filename="../src/GitStatusBadge.h" line="51" />
       <source>%1 files with merge conflicts</source>
-      <translation type="unfinished" />
+      <translation>Файлов с конфликтами слияния: %1</translation>
     </message>
     <message>
       <location filename="../src/GitStatusBadge.h" line="52" />
       <source>verified upstream</source>
-      <translation type="unfinished" />
+      <translation>проверенная вышестоящая ветка</translation>
     </message>
     <message>
       <location filename="../src/GitStatusBadge.h" line="52" />
       <source>last known upstream; remote unverified</source>
-      <translation type="unfinished" />
+      <translation>последняя известная вышестоящая ветка; удалённая не проверена</translation>
     </message>
     <message>
       <location filename="../src/GitStatusBadge.h" line="53" />
       <source>%1 outgoing commits (%2)</source>
-      <translation type="unfinished" />
+      <translation>Исходящих коммитов: %1 (%2)</translation>
     </message>
     <message>
       <location filename="../src/GitStatusBadge.h" line="54" />
       <source>%1 incoming commits (%2)</source>
-      <translation type="unfinished" />
+      <translation>Входящих коммитов: %1 (%2)</translation>
     </message>
     <message>
       <location filename="../src/GitStatusBadge.h" line="55" />
@@ -7379,12 +7383,12 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/GitStatusBadge.h" line="62" />
       <source>Remote publication has not been verified recently.</source>
-      <translation type="unfinished" />
+      <translation>Публикация на удалённом сервере давно не проверялась.</translation>
     </message>
     <message>
       <location filename="../src/GitStatusBadge.h" line="63" />
       <source>Clean checkout. Branch matches the verified remote.</source>
-      <translation type="unfinished" />
+      <translation>Рабочая копия без изменений. Ветка совпадает с проверенной удалённой.</translation>
     </message>
     <message>
       <location filename="../src/GitStatusBadge.h" line="64" />
@@ -7420,7 +7424,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/NativeSessionCapabilities.h" line="32" />
       <source>This native adapter does not support this action in the current session state.</source>
-      <translation type="unfinished" />
+      <translation>Этот адаптер агента не поддерживает это действие в текущем состоянии сессии.</translation>
     </message>
     <message>
       <location filename="../src/NativeSessionCapabilities.h" line="49" />
@@ -7517,7 +7521,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/RecoveryWidgets.h" line="39" />
       <source>Agent resumed after recovery</source>
-      <translation type="unfinished" />
+      <translation>Агент возобновил работу после восстановления</translation>
     </message>
     <message>
       <location filename="../src/RecoveryWidgets.h" line="39" />
@@ -7730,13 +7734,13 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
       <location filename="../src/SessionPresentation.h" line="134" />
       <location filename="../src/SessionPresentation.h" line="148" />
       <source>Waiting for result</source>
-      <translation type="unfinished" />
+      <translation>Ожидает результата</translation>
     </message>
     <message>
       <location filename="../src/SessionPresentation.h" line="134" />
       <location filename="../src/SessionPresentation.h" line="148" />
       <source>Waiting for acceptance</source>
-      <translation type="unfinished" />
+      <translation>Ожидает принятия</translation>
     </message>
     <message>
       <location filename="../src/SessionPresentation.h" line="137" />
@@ -7826,12 +7830,12 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/SessionPresentation.h" line="184" />
       <source>Background</source>
-      <translation type="unfinished" />
+      <translation>В фоне</translation>
     </message>
     <message>
       <location filename="../src/SessionPresentation.h" line="188" />
       <source>Scheduled</source>
-      <translation type="unfinished" />
+      <translation>Запланировано</translation>
     </message>
     <message>
       <location filename="../src/SessionPresentation.h" line="188" />
@@ -8062,7 +8066,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/speech/VoicePlayerImage.h" line="102" />
       <source>Loading…</source>
-      <translation type="unfinished" />
+      <translation>Загрузка…</translation>
     </message>
     <message>
       <location filename="../src/SwarmConflictReview.cpp" line="41" />
@@ -8107,7 +8111,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/SwarmConflictReview.cpp" line="92" />
       <source>this computer</source>
-      <translation type="unfinished" />
+      <translation>этот компьютер</translation>
     </message>
     <message>
       <location filename="../src/SwarmDialog.cpp" line="42" />
@@ -8354,12 +8358,12 @@ Connect directly to synchronize through this computer.</source>
     <message>
       <location filename="../src/TaskBoard.cpp" line="98" />
       <source>Active</source>
-      <translation type="unfinished" />
+      <translation>Активные</translation>
     </message>
     <message>
       <location filename="../src/TaskBoard.cpp" line="99" />
       <source>In review</source>
-      <translation type="unfinished" />
+      <translation>На проверке</translation>
     </message>
     <message>
       <location filename="../src/TaskBoard.cpp" line="100" />
@@ -8369,12 +8373,12 @@ Connect directly to synchronize through this computer.</source>
     <message>
       <location filename="../src/TaskBoard.cpp" line="101" />
       <source>To do</source>
-      <translation type="unfinished" />
+      <translation>К выполнению</translation>
     </message>
     <message>
       <location filename="../src/TaskBoard.cpp" line="102" />
       <source>Backlog</source>
-      <translation type="unfinished" />
+      <translation>Бэклог</translation>
     </message>
     <message>
       <location filename="../src/TaskBoard.cpp" line="103" />
@@ -8384,7 +8388,7 @@ Connect directly to synchronize through this computer.</source>
     <message>
       <location filename="../src/TaskBoard.cpp" line="135" />
       <source>Task details</source>
-      <translation type="unfinished" />
+      <translation>Подробности задачи</translation>
     </message>
     <message>
       <location filename="../src/TaskBoard.cpp" line="136" />
@@ -8394,42 +8398,42 @@ Connect directly to synchronize through this computer.</source>
     <message>
       <location filename="../src/TaskBoard.cpp" line="137" />
       <source>Move to Backlog</source>
-      <translation type="unfinished" />
+      <translation>Переместить в «Бэклог»</translation>
     </message>
     <message>
       <location filename="../src/TaskBoard.cpp" line="138" />
       <source>Move to the top of To do</source>
-      <translation type="unfinished" />
+      <translation>Переместить в начало «К выполнению»</translation>
     </message>
     <message>
       <location filename="../src/TaskBoard.cpp" line="139" />
       <source>Start task</source>
-      <translation type="unfinished" />
+      <translation>Начать задачу</translation>
     </message>
     <message>
       <location filename="../src/TaskBoard.cpp" line="140" />
       <source>Move to To do</source>
-      <translation type="unfinished" />
+      <translation>Переместить в «К выполнению»</translation>
     </message>
     <message>
       <location filename="../src/TaskBoard.cpp" line="141" />
       <source>Cancel task…</source>
-      <translation type="unfinished" />
+      <translation>Отменить задачу…</translation>
     </message>
     <message>
       <location filename="../src/TaskBoard.cpp" line="142" />
       <source>Back to To do</source>
-      <translation type="unfinished" />
+      <translation>Вернуть в «К выполнению»</translation>
     </message>
     <message>
       <location filename="../src/TaskBoard.cpp" line="143" />
       <source>Accept</source>
-      <translation type="unfinished" />
+      <translation>Принять</translation>
     </message>
     <message>
       <location filename="../src/TaskBoard.cpp" line="144" />
       <source>Pause task</source>
-      <translation type="unfinished" />
+      <translation>Приостановить задачу</translation>
     </message>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="88" />
@@ -9939,7 +9943,7 @@ Any remaining checkout files are kept. Choose another destination or use the exi
     <message>
       <location filename="../src/SessionCreationController.cpp" line="431" />
       <source>Folder: %1</source>
-      <translation type="unfinished" />
+      <translation>Папка: %1</translation>
     </message>
     <message>
       <location filename="../src/SessionCreationController.cpp" line="432" />
@@ -9984,7 +9988,7 @@ Branch: %2</source>
     <message>
       <location filename="../src/SessionCardDelegate.h" line="192" />
       <source>Background</source>
-      <translation type="unfinished" />
+      <translation>В фоне</translation>
     </message>
     <message>
       <location filename="../src/SessionCardDelegate.h" line="192" />
@@ -10094,12 +10098,12 @@ Branch: %2</source>
     <message>
       <location filename="../src/SessionSearch.cpp" line="239" />
       <source>Session ID</source>
-      <translation type="unfinished" />
+      <translation>ID сессии</translation>
     </message>
     <message>
       <location filename="../src/SessionSearch.cpp" line="239" />
       <source>Run ID</source>
-      <translation type="unfinished" />
+      <translation>ID запуска</translation>
     </message>
     <message>
       <location filename="../src/SessionSearch.cpp" line="239" />
@@ -10109,7 +10113,7 @@ Branch: %2</source>
     <message>
       <location filename="../src/SessionSearch.cpp" line="241" />
       <source>Agent ID</source>
-      <translation type="unfinished" />
+      <translation>ID агента</translation>
     </message>
     <message>
       <location filename="../src/SessionSearch.cpp" line="241" />
@@ -10680,7 +10684,7 @@ Open About</source>
       <location filename="../src/SessionsWindow.cpp" line="382" />
       <location filename="../src/SessionsWindowRows.cpp" line="576" />
       <source>Search sessions, IDs and messages…</source>
-      <translation type="unfinished" />
+      <translation>Поиск сессий, ID и сообщений…</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="383" />
@@ -10701,7 +10705,7 @@ Open About</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="401" />
       <source>Active</source>
-      <translation type="unfinished" />
+      <translation>Активные</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="401" />
@@ -10727,7 +10731,7 @@ Open About</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="464" />
       <source>Session creation status</source>
-      <translation type="unfinished" />
+      <translation>Статус создания сессии</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="471" />
@@ -10807,7 +10811,7 @@ New sessions appear here automatically.</source>
       <location filename="../src/SessionsWindow.cpp" line="4167" />
       <location filename="../src/SessionsWindow.cpp" line="4172" />
       <source>Copy session ID</source>
-      <translation type="unfinished" />
+      <translation>Копировать ID сессии</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="606" />
@@ -10874,7 +10878,7 @@ Start this agent's conversation from scratch, like /clear in Terminal. Your unse
       <location filename="../src/SessionsWindow.cpp" line="646" />
       <location filename="../src/SessionsWindow.cpp" line="5339" />
       <source>Clear session…</source>
-      <translation type="unfinished" />
+      <translation>Очистить сессию…</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="646" />
@@ -10887,12 +10891,12 @@ Start this agent's conversation from scratch, like /clear in Terminal. Your unse
       <location filename="../src/SessionsWindow.cpp" line="648" />
       <location filename="../src/SessionsWindow.cpp" line="5336" />
       <source>Start fresh…</source>
-      <translation type="unfinished" />
+      <translation>Начать заново…</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="649" />
       <source>Start this stopped session with a new conversation and the same folder, account and model.</source>
-      <translation type="unfinished" />
+      <translation>Запустить эту остановленную сессию с новым разговором в той же папке, с той же учётной записью и моделью.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="653" />
@@ -10970,17 +10974,17 @@ Send this voice message with the full conversation context?</source>
       <location filename="../src/SessionsWindow.cpp" line="761" />
       <location filename="../src/SessionsWindow.cpp" line="798" />
       <source>Downloading file from %1</source>
-      <translation type="unfinished" />
+      <translation>Скачивание файла с %1</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="763" />
       <source>Download…</source>
-      <translation type="unfinished" />
+      <translation>Скачать…</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="764" />
       <source>Download and open</source>
-      <translation type="unfinished" />
+      <translation>Скачать и открыть</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="765" />
@@ -11106,7 +11110,7 @@ The download continues if you close this dialog.</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="959" />
       <source>Cancel the pending send and unlock the message for editing. Compaction or startup continues; use Stop to interrupt the agent.</source>
-      <translation type="unfinished" />
+      <translation>Отменить ожидающую отправку и снова разрешить редактировать сообщение. Сжатие контекста или запуск продолжатся; чтобы прервать агента, используйте «Остановить».</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="964" />
@@ -11249,7 +11253,7 @@ Open Terminal to check the agent before trying again.</source>
       <location filename="../src/SessionsWindow.cpp" line="4166" />
       <location filename="../src/SessionsWindow.cpp" line="4171" />
       <source>Session ID</source>
-      <translation type="unfinished" />
+      <translation>ID сессии</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1356" />
@@ -11343,7 +11347,7 @@ Check the task history and this executor before allowing another launch. Releasi
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1445" />
       <source>Task View</source>
-      <translation type="unfinished" />
+      <translation>Задача</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1457" />
@@ -11364,7 +11368,7 @@ Check the task history and this executor before allowing another launch. Releasi
       <location filename="../src/SessionsWindow.cpp" line="1485" />
       <location filename="../src/SessionsWindow.cpp" line="2423" />
       <source>Show tasks, plan, agents, details and worktrees</source>
-      <translation type="unfinished" />
+      <translation>Показать задачи, план, агентов, подробности и рабочие деревья</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1514" />
@@ -11379,7 +11383,7 @@ Check the task history and this executor before allowing another launch. Releasi
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1517" />
       <source>Check result</source>
-      <translation type="unfinished" />
+      <translation>Проверить результат</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1518" />
@@ -11436,22 +11440,22 @@ Check the task history and this executor before allowing another launch. Releasi
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1747" />
       <source>New version</source>
-      <translation type="unfinished" />
+      <translation>Новая версия</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1756" />
       <source>Zerus %1 is available. Open Updates.</source>
-      <translation type="unfinished" />
+      <translation>Доступен Zerus %1. Откройте «Обновления».</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1763" />
       <source>Restart to finish update</source>
-      <translation type="unfinished" />
+      <translation>Перезапустить для обновления</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1768" />
       <source>Zerus was updated on disk. Drafts are kept; sessions keep running.</source>
-      <translation type="unfinished" />
+      <translation>Zerus обновлён на диске. Черновики сохранены; сессии продолжают работать.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1777" />
@@ -11890,7 +11894,7 @@ Update and Restart applies it now: Zerus quits and opens again. Saved drafts, se
       <location filename="../src/SessionsWindow.cpp" line="3706" />
       <location filename="../src/SessionsWindowRows.cpp" line="448" />
       <source>Background</source>
-      <translation type="unfinished" />
+      <translation>В фоне</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3707" />
@@ -12389,27 +12393,27 @@ Update and Restart applies it now: Zerus quits and opens again. Saved drafts, se
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4166" />
       <source>Run ID</source>
-      <translation type="unfinished" />
+      <translation>ID запуска</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4167" />
       <source>Copy run ID</source>
-      <translation type="unfinished" />
+      <translation>Копировать ID запуска</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4171" />
       <source>Agent ID</source>
-      <translation type="unfinished" />
+      <translation>ID агента</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4172" />
       <source>Copy agent ID</source>
-      <translation type="unfinished" />
+      <translation>Копировать ID агента</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4185" />
       <source>Session</source>
-      <translation type="unfinished" />
+      <translation>Сессия</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4185" />
@@ -12605,7 +12609,7 @@ Update and Restart applies it now: Zerus quits and opens again. Saved drafts, se
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4455" />
       <source>Remove</source>
-      <translation type="unfinished" />
+      <translation>Удалить</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4462" />
@@ -12686,30 +12690,32 @@ This runs the agent’s native clear command. Future messages will start without
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4686" />
       <source>Start fresh?</source>
-      <translation type="unfinished" />
+      <translation>Начать заново?</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4687" />
       <source>Start %1 on %2 with a new conversation?
 
 The agent starts in the same folder with the same account and model, without the current conversation context. Earlier messages stay readable in Activity and in the agent’s native history, but Resume will no longer continue them.</source>
-      <translation type="unfinished" />
+      <translation>Запустить %1 на %2 с новым разговором?
+
+Агент запустится в той же папке с той же учётной записью и моделью, но без контекста текущего разговора. Прежние сообщения останутся доступны для чтения в активности и в собственной истории агента, но «Возобновить» их больше не продолжит.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4690" />
       <source>Start fresh</source>
-      <translation type="unfinished" />
+      <translation>Начать заново</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4697" />
       <location filename="../src/SessionsWindow.cpp" line="5539" />
       <source>The session changed. Open its actions again.</source>
-      <translation type="unfinished" />
+      <translation>Сессия изменилась. Откройте её действия снова.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4701" />
       <source>Starting %1 with a new conversation…</source>
-      <translation type="unfinished" />
+      <translation>Запуск %1 с новым разговором…</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4710" />
@@ -13005,7 +13011,7 @@ Resume, compact and send summarizes the saved history first. Compaction uses tok
     <message>
       <location filename="../src/SessionsWindow.cpp" line="5337" />
       <source>Start with a new conversation and the same folder, account and model</source>
-      <translation type="unfinished" />
+      <translation>Начать новый разговор в той же папке, с той же учётной записью и моделью</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="5344" />
@@ -13015,7 +13021,7 @@ Resume, compact and send summarizes the saved history first. Compaction uses tok
     <message>
       <location filename="../src/SessionsWindow.cpp" line="5345" />
       <source>Checking whether this session can be cleared…</source>
-      <translation type="unfinished" />
+      <translation>Проверка, можно ли очистить эту сессию…</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="5374" />
@@ -13025,7 +13031,7 @@ Resume, compact and send summarizes the saved history first. Compaction uses tok
     <message>
       <location filename="../src/SessionsWindow.cpp" line="5375" />
       <source>Copy session reference</source>
-      <translation type="unfinished" />
+      <translation>Копировать ссылку на сессию</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="5376" />
@@ -13199,7 +13205,7 @@ Working folder: %1</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="5774" />
       <source>Forget %1 in Zerus? The conversation stays in OpenCode; only Zerus forgets it.</source>
-      <translation type="unfinished" />
+      <translation>Забыть %1 в Zerus? Разговор останется в OpenCode; забудет его только Zerus.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="5775" />
@@ -13214,7 +13220,7 @@ Working folder: %1</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="5783" />
       <source>Remove the working folder after stopping</source>
-      <translation type="unfinished" />
+      <translation>Удалить рабочую папку после остановки</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="5786" />
@@ -13231,27 +13237,27 @@ The conversation and branch are kept. Folders that need review stay on disk.</so
       <location filename="../src/SessionsWindow.cpp" line="5790" />
       <location filename="../src/SessionsWindow.cpp" line="5793" />
       <source>Stop and archive</source>
-      <translation type="unfinished" />
+      <translation>Остановить и архивировать</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="5790" />
       <source>Terminate session</source>
-      <translation type="unfinished" />
+      <translation>Завершить сессию</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="5791" />
       <source>Forget archived session</source>
-      <translation type="unfinished" />
+      <translation>Забыть заархивированную сессию</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="5791" />
       <source>Forget saved session</source>
-      <translation type="unfinished" />
+      <translation>Забыть сохранённую сессию</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="5793" />
       <source>Stop and remove folder</source>
-      <translation type="unfinished" />
+      <translation>Остановить и удалить папку</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="5823" />
@@ -13438,7 +13444,7 @@ The conversation and branch are kept. Folders that need review stay on disk.</so
     <message>
       <location filename="../src/SessionsWindowRows.cpp" line="576" />
       <source>Search archive names and IDs…</source>
-      <translation type="unfinished" />
+      <translation>Поиск по именам и ID в архиве…</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindowRows.cpp" line="577" />
@@ -13694,7 +13700,7 @@ Clear folder filter</source>
     <message>
       <location filename="../src/SettingsPage.h" line="79" />
       <source>Activity width</source>
-      <translation type="unfinished" />
+      <translation>Ширина активности</translation>
     </message>
     <message>
       <location filename="../src/SettingsPage.h" line="82" />
@@ -13709,7 +13715,7 @@ Clear folder filter</source>
     <message>
       <location filename="../src/SettingsPage.h" line="87" />
       <source>Full-width Activity</source>
-      <translation type="unfinished" />
+      <translation>Активность во всю ширину</translation>
     </message>
     <message>
       <location filename="../src/SettingsPage.h" line="88" />
@@ -14156,7 +14162,7 @@ Clear folder filter</source>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="60" />
       <source>Cancel recording</source>
-      <translation type="unfinished" />
+      <translation>Отменить запись</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="60" />
@@ -14179,7 +14185,7 @@ Clear folder filter</source>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="71" />
       <source>Refresh available voice providers without recording again</source>
-      <translation type="unfinished" />
+      <translation>Обновить список голосовых провайдеров без повторной записи</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="72" />
@@ -14323,17 +14329,17 @@ Clear folder filter</source>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="426" />
       <source>Discard voice recording?</source>
-      <translation type="unfinished" />
+      <translation>Удалить голосовую запись?</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="427" />
       <source>Delete the saved, unsent voice recording for %1?</source>
-      <translation type="unfinished" />
+      <translation>Удалить сохранённую неотправленную голосовую запись для %1?</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="429" />
       <source>Discard recording</source>
-      <translation type="unfinished" />
+      <translation>Удалить запись</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="440" />
@@ -14343,7 +14349,7 @@ Clear folder filter</source>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="454" />
       <source>Could not play recording: %1</source>
-      <translation type="unfinished" />
+      <translation>Не удалось воспроизвести запись: %1</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="467" />
@@ -14378,12 +14384,12 @@ Clear folder filter</source>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="473" />
       <source>Video</source>
-      <translation type="unfinished" />
+      <translation>Видео</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="473" />
       <source>Voice</source>
-      <translation type="unfinished" />
+      <translation>Голос</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="475" />
@@ -14398,22 +14404,22 @@ Clear folder filter</source>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="476" />
       <source>Click to start a video recording.</source>
-      <translation type="unfinished" />
+      <translation>Нажмите, чтобы начать запись видео.</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="476" />
       <source>Click to start a voice recording.</source>
-      <translation type="unfinished" />
+      <translation>Нажмите, чтобы начать запись голоса.</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="479" />
       <source>Switch to voice recording</source>
-      <translation type="unfinished" />
+      <translation>Переключиться на запись голоса</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="479" />
       <source>Switch to video recording</source>
-      <translation type="unfinished" />
+      <translation>Переключиться на запись видео</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="482" />
@@ -14444,7 +14450,7 @@ Clear folder filter</source>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="487" />
       <source>Cancel message</source>
-      <translation type="unfinished" />
+      <translation>Отменить сообщение</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="488" />
@@ -14480,12 +14486,12 @@ Clear folder filter</source>
       <location filename="../src/speech/SpeechComposer.cpp" line="492" />
       <location filename="../src/speech/SpeechComposer.cpp" line="513" />
       <source>Microphone access</source>
-      <translation type="unfinished" />
+      <translation>Доступ к микрофону</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="492" />
       <source>Voice notice</source>
-      <translation type="unfinished" />
+      <translation>Голосовой ввод</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="496" />
@@ -14516,7 +14522,7 @@ Clear folder filter</source>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="526" />
       <source>Open microphone settings</source>
-      <translation type="unfinished" />
+      <translation>Открыть настройки микрофона</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="529" />
@@ -14648,7 +14654,7 @@ Clear folder filter</source>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="202" />
       <source>Remove</source>
-      <translation type="unfinished" />
+      <translation>Удалить</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="203" />
@@ -15225,7 +15231,7 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="136" />
       <source>Save description</source>
-      <translation type="unfinished" />
+      <translation>Сохранить описание</translation>
     </message>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="136" />
@@ -15268,7 +15274,7 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="183" />
       <source>Description</source>
-      <translation type="unfinished" />
+      <translation>Описание</translation>
     </message>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="185" />
@@ -15283,7 +15289,7 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="192" />
       <source>Task description</source>
-      <translation type="unfinished" />
+      <translation>Описание задачи</translation>
     </message>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="197" />
@@ -15308,7 +15314,7 @@ Updating the hgs command line for local sessions</source>
       <location filename="../src/TaskDialogs.cpp" line="533" />
       <location filename="../src/TaskDialogs.cpp" line="536" />
       <source>Any session</source>
-      <translation type="unfinished" />
+      <translation>Любая сессия</translation>
     </message>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="256" />
@@ -15409,12 +15415,12 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="460" />
       <source>Remove</source>
-      <translation type="unfinished" />
+      <translation>Удалить</translation>
     </message>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="489" />
       <source>Report</source>
-      <translation type="unfinished" />
+      <translation>Отчёт</translation>
     </message>
   </context>
   <context>
@@ -15442,19 +15448,19 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/TaskInspector.cpp" line="147" />
       <source>Task actions</source>
-      <translation type="unfinished" />
+      <translation>Действия с задачей</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="150" />
       <source>Task</source>
-      <translation type="unfinished" />
+      <translation>Задача</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="150" />
       <location filename="../src/TaskInspector.cpp" line="160" />
       <location filename="../src/TaskInspector.cpp" line="716" />
       <source>Result</source>
-      <translation type="unfinished" />
+      <translation>Результат</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="150" />
@@ -15465,33 +15471,33 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/TaskInspector.cpp" line="158" />
       <source>Rename task</source>
-      <translation type="unfinished" />
+      <translation>Переименовать задачу</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="159" />
       <source>Task and discussion</source>
-      <translation type="unfinished" />
+      <translation>Задача и обсуждение</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="169" />
       <source>Task executor</source>
-      <translation type="unfinished" />
+      <translation>Исполнитель задачи</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="174" />
       <source>Open executor Activity</source>
-      <translation type="unfinished" />
+      <translation>Открыть активность исполнителя</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="175" />
       <location filename="../src/TaskInspector.cpp" line="687" />
       <source>Edit description</source>
-      <translation type="unfinished" />
+      <translation>Изменить описание</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="194" />
       <source>Latest</source>
-      <translation type="unfinished" />
+      <translation>К последним</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="208" />
@@ -15516,22 +15522,22 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/TaskInspector.cpp" line="238" />
       <source>Recover saved comment</source>
-      <translation type="unfinished" />
+      <translation>Восстановить сохранённый комментарий</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="240" />
       <source>Keep the previous comment in the task and check its delivery. It will not be sent again.</source>
-      <translation type="unfinished" />
+      <translation>Оставить предыдущий комментарий в задаче и проверить его доставку. Повторно он не отправится.</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="243" />
       <source>Check delivery receipt</source>
-      <translation type="unfinished" />
+      <translation>Проверить подтверждение доставки</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="245" />
       <source>Release local recovery record…</source>
-      <translation type="unfinished" />
+      <translation>Удалить локальную запись восстановления…</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="248" />
@@ -15572,7 +15578,7 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/TaskInspector.cpp" line="276" />
       <source>Save note only</source>
-      <translation type="unfinished" />
+      <translation>Только сохранить заметку</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="297" />
@@ -15587,7 +15593,7 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/TaskInspector.cpp" line="330" />
       <source>Review executor launch</source>
-      <translation type="unfinished" />
+      <translation>Проверить запуск исполнителя</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="338" />
@@ -15597,12 +15603,12 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/TaskInspector.cpp" line="338" />
       <source>To do</source>
-      <translation type="unfinished" />
+      <translation>К выполнению</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="338" />
       <source>Backlog</source>
-      <translation type="unfinished" />
+      <translation>Бэклог</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="372" />
@@ -15622,7 +15628,7 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/TaskInspector.cpp" line="489" />
       <source>Open a project session to see tasks</source>
-      <translation type="unfinished" />
+      <translation>Откройте сессию проекта, чтобы увидеть задачи</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="490" />
@@ -15637,17 +15643,17 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/TaskInspector.cpp" line="491" />
       <source>%1 tasks</source>
-      <translation type="unfinished" />
+      <translation>Задачи: %1</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="492" />
       <source>Hide older</source>
-      <translation type="unfinished" />
+      <translation>Скрыть старые</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="492" />
       <source>Show older (%1)</source>
-      <translation type="unfinished" />
+      <translation>Показать старые (%1)</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="646" />
@@ -15723,7 +15729,7 @@ Open executor Activity</source>
     <message>
       <location filename="../src/TaskInspector.cpp" line="674" />
       <source>Update Zerus to comment on this task</source>
-      <translation type="unfinished" />
+      <translation>Обновите Zerus, чтобы комментировать эту задачу</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="678" />
@@ -15764,7 +15770,7 @@ Open executor Activity</source>
       <location filename="../src/TaskInspector.cpp" line="681" />
       <location filename="../src/TaskInspector.cpp" line="685" />
       <source>Send feedback</source>
-      <translation type="unfinished" />
+      <translation>Отправить исполнителю</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="681" />
@@ -15774,33 +15780,33 @@ Open executor Activity</source>
     <message>
       <location filename="../src/TaskInspector.cpp" line="682" />
       <source>Editing description</source>
-      <translation type="unfinished" />
+      <translation>Редактирование описания</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="682" />
       <location filename="../src/TaskInspector.cpp" line="719" />
       <source>Description</source>
-      <translation type="unfinished" />
+      <translation>Описание</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="683" />
       <source>Save updates the canonical task document. Comments remain separate.</source>
-      <translation type="unfinished" />
+      <translation>«Сохранить» обновляет основной документ задачи. Комментарии хранятся отдельно.</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="685" />
       <source>Save description</source>
-      <translation type="unfinished" />
+      <translation>Сохранить описание</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="685" />
       <source>Add to task</source>
-      <translation type="unfinished" />
+      <translation>Добавить в задачу</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="686" />
       <source>Describe the task…</source>
-      <translation type="unfinished" />
+      <translation>Опишите задачу…</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="686" />
@@ -15825,7 +15831,7 @@ Open executor Activity</source>
     <message>
       <location filename="../src/TaskInspector.cpp" line="693" />
       <source>Task details</source>
-      <translation type="unfinished" />
+      <translation>Подробности задачи</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="694" />
@@ -15835,7 +15841,7 @@ Open executor Activity</source>
     <message>
       <location filename="../src/TaskInspector.cpp" line="694" />
       <source>Loading task…</source>
-      <translation type="unfinished" />
+      <translation>Загрузка задачи…</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="701" />
@@ -15850,7 +15856,7 @@ Open executor Activity</source>
     <message>
       <location filename="../src/TaskInspector.cpp" line="703" />
       <source>Any session</source>
-      <translation type="unfinished" />
+      <translation>Любая сессия</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="704" />
@@ -15870,12 +15876,12 @@ Open executor Activity</source>
     <message>
       <location filename="../src/TaskInspector.cpp" line="720" />
       <source>No description yet.</source>
-      <translation type="unfinished" />
+      <translation>Описания пока нет.</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="723" />
       <source>Discussion</source>
-      <translation type="unfinished" />
+      <translation>Обсуждение</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="729" />
@@ -15915,12 +15921,12 @@ Open executor Activity</source>
     <message>
       <location filename="../src/TaskInspector.cpp" line="733" />
       <source>Note</source>
-      <translation type="unfinished" />
+      <translation>Заметка</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="733" />
       <source>Message</source>
-      <translation type="unfinished" />
+      <translation>Сообщение</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="739" />
@@ -15930,48 +15936,48 @@ Open executor Activity</source>
     <message>
       <location filename="../src/TaskInspector.cpp" line="745" />
       <source>Messages and notes appear here.</source>
-      <translation type="unfinished" />
+      <translation>Здесь появятся сообщения и заметки.</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="747" />
       <source>Showing recent discussion. Earlier records are available in History.</source>
-      <translation type="unfinished" />
+      <translation>Показано недавнее обсуждение. Более ранние записи доступны на вкладке «История».</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="752" />
       <source>No result reported yet.</source>
-      <translation type="unfinished" />
+      <translation>Результат пока не сообщён.</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="761" />
       <source>Cancelled</source>
-      <translation type="unfinished" />
+      <translation>Отменено</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="761" />
       <location filename="../src/TaskInspector.cpp" line="773" />
       <source>Report</source>
-      <translation type="unfinished" />
+      <translation>Отчёт</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="767" />
       <source>Earlier events (%1)</source>
-      <translation type="unfinished" />
+      <translation>Более ранние события (%1)</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="768" />
       <source>Earlier events…</source>
-      <translation type="unfinished" />
+      <translation>Более ранние события…</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="773" />
       <source>Comment</source>
-      <translation type="unfinished" />
+      <translation>Комментарий</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="777" />
       <source>No history yet.</source>
-      <translation type="unfinished" />
+      <translation>Истории пока нет.</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="839" />
@@ -15996,22 +16002,22 @@ Open executor Activity</source>
     <message>
       <location filename="../src/TaskInspector.cpp" line="846" />
       <source>Specific session</source>
-      <translation type="unfinished" />
+      <translation>Конкретная сессия</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="848" />
       <source>Find a session…</source>
-      <translation type="unfinished" />
+      <translation>Найти сессию…</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="856" />
       <source>Previous</source>
-      <translation type="unfinished" />
+      <translation>Назад</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="856" />
       <source>Next</source>
-      <translation type="unfinished" />
+      <translation>Далее</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="903" />
@@ -16062,7 +16068,7 @@ Press Enter to retry with the same card identity.</source>
       <location filename="../src/TaskRow.cpp" line="142" />
       <location filename="../src/TaskRow.cpp" line="142" />
       <source>Task actions</source>
-      <translation type="unfinished" />
+      <translation>Действия с задачей</translation>
     </message>
     <message>
       <location filename="../src/TaskRow.cpp" line="202" />
@@ -16095,17 +16101,17 @@ Press Enter to retry with the same card identity.</source>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="611" />
       <source>Service prompts</source>
-      <translation type="unfinished" />
+      <translation>Служебные промпты</translation>
     </message>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="614" />
       <source>Task (Send now)</source>
-      <translation type="unfinished" />
+      <translation>Задача («Отправить сейчас»)</translation>
     </message>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="617" />
       <source>Cancel message</source>
-      <translation type="unfinished" />
+      <translation>Сообщение об отмене</translation>
     </message>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="620" />
@@ -16120,7 +16126,7 @@ Press Enter to retry with the same card identity.</source>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="623" />
       <source>Agents may start and cancel tasks in other sessions</source>
-      <translation type="unfinished" />
+      <translation>Агенты могут запускать и отменять задачи в других сессиях</translation>
     </message>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="626" />
@@ -16130,7 +16136,7 @@ Press Enter to retry with the same card identity.</source>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="628" />
       <source>Limit tasks started by agents</source>
-      <translation type="unfinished" />
+      <translation>Лимит задач, запускаемых агентами</translation>
     </message>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="628" />
@@ -16145,7 +16151,7 @@ Press Enter to retry with the same card identity.</source>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="633" />
       <source>Save</source>
-      <translation type="unfinished" />
+      <translation>Сохранить</translation>
     </message>
   </context>
   <context>
@@ -16181,7 +16187,7 @@ Press Enter to retry with the same card identity.</source>
     <message>
       <location filename="../src/TasksView.cpp" line="267" />
       <source>Open the session to send this task to</source>
-      <translation type="unfinished" />
+      <translation>Откройте сессию, которой нужно отправить эту задачу</translation>
     </message>
     <message>
       <location filename="../src/TasksView.cpp" line="269" />
@@ -16221,12 +16227,12 @@ Press Enter to retry with the same card identity.</source>
     <message>
       <location filename="../src/TasksView.cpp" line="321" />
       <source>Nothing to review</source>
-      <translation type="unfinished" />
+      <translation>Нечего проверять</translation>
     </message>
     <message>
       <location filename="../src/TasksView.cpp" line="321" />
       <source>No session is running a task</source>
-      <translation type="unfinished" />
+      <translation>Ни одна сессия не выполняет задачу</translation>
     </message>
     <message>
       <location filename="../src/TasksView.cpp" line="322" />
@@ -16236,27 +16242,27 @@ Press Enter to retry with the same card identity.</source>
     <message>
       <location filename="../src/TasksView.cpp" line="322" />
       <source>Empty</source>
-      <translation type="unfinished" />
+      <translation>Пусто</translation>
     </message>
     <message>
       <location filename="../src/TasksView.cpp" line="323" />
       <source>Nothing yet</source>
-      <translation type="unfinished" />
+      <translation>Пока ничего</translation>
     </message>
     <message>
       <location filename="../src/TasksView.cpp" line="324" />
       <source>Tasks belong to a project. Move this session into one to keep tasks for it.</source>
-      <translation type="unfinished" />
+      <translation>Задачи принадлежат проекту. Переместите эту сессию в проект, чтобы вести для неё задачи.</translation>
     </message>
     <message>
       <location filename="../src/TasksView.cpp" line="326" />
       <source>Hide older</source>
-      <translation type="unfinished" />
+      <translation>Скрыть старые</translation>
     </message>
     <message>
       <location filename="../src/TasksView.cpp" line="326" />
       <source>Show older (%1)</source>
-      <translation type="unfinished" />
+      <translation>Показать старые (%1)</translation>
     </message>
     <message>
       <location filename="../src/TasksView.cpp" line="327" />
@@ -16271,7 +16277,7 @@ Press Enter to retry with the same card identity.</source>
     <message>
       <location filename="../src/TasksView.cpp" line="330" />
       <source>Task settings for %1</source>
-      <translation type="unfinished" />
+      <translation>Настройки задач для %1</translation>
     </message>
     <message>
       <location filename="../src/TasksView.cpp" line="344" />
@@ -16286,7 +16292,7 @@ Press Enter to retry with the same card identity.</source>
     <message>
       <location filename="../src/TasksView.cpp" line="363" />
       <source>Pausing an individual task is not available yet</source>
-      <translation type="unfinished" />
+      <translation>Приостановка отдельной задачи пока недоступна</translation>
     </message>
     <message>
       <location filename="../src/TasksView.cpp" line="365" />
@@ -16296,12 +16302,12 @@ Press Enter to retry with the same card identity.</source>
     <message>
       <location filename="../src/TasksView.cpp" line="370" />
       <source>Backlog</source>
-      <translation type="unfinished" />
+      <translation>Бэклог</translation>
     </message>
     <message>
       <location filename="../src/TasksView.cpp" line="370" />
       <source>To do</source>
-      <translation type="unfinished" />
+      <translation>К выполнению</translation>
     </message>
     <message>
       <location filename="../src/TasksView.cpp" line="373" />
@@ -16580,7 +16586,7 @@ Press Enter to retry with the same card identity.</source>
     <message>
       <location filename="../src/TrayMenu.cpp" line="165" />
       <source>Restart to finish update</source>
-      <translation type="unfinished" />
+      <translation>Перезапустить для обновления</translation>
     </message>
     <message>
       <location filename="../src/TrayMenu.cpp" line="203" />
@@ -17505,7 +17511,7 @@ Private session content is encrypted.</source>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="26" />
       <source>Remove working folders</source>
-      <translation type="unfinished" />
+      <translation>Удалить рабочие папки</translation>
     </message>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="29" />
@@ -17515,17 +17521,17 @@ Private session content is encrypted.</source>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="31" />
       <source>Conversations and branches are kept. Removing a working folder permanently deletes its local files.</source>
-      <translation type="unfinished" />
+      <translation>Разговоры и ветки сохраняются. Удаление рабочей папки безвозвратно удаляет её локальные файлы.</translation>
     </message>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="31" />
       <source>Conversations are kept. Branches stay unless you choose to delete them. Local files in removed folders are permanently deleted.</source>
-      <translation type="unfinished" />
+      <translation>Разговоры сохраняются. Ветки остаются, если вы не решите их удалить. Локальные файлы в удаляемых папках удаляются безвозвратно.</translation>
     </message>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="34" />
       <source>Folder / branch</source>
-      <translation type="unfinished" />
+      <translation>Папка / ветка</translation>
     </message>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="34" />
@@ -17535,22 +17541,22 @@ Private session content is encrypted.</source>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="34" />
       <source>Size</source>
-      <translation type="unfinished" />
+      <translation>Размер</translation>
     </message>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="34" />
       <source>Result</source>
-      <translation type="unfinished" />
+      <translation>Результат</translation>
     </message>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="37" />
       <source>Check again</source>
-      <translation type="unfinished" />
+      <translation>Проверить снова</translation>
     </message>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="38" />
       <source>View files and commits…</source>
-      <translation type="unfinished" />
+      <translation>Просмотреть файлы и коммиты…</translation>
     </message>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="39" />
@@ -17565,42 +17571,42 @@ Private session content is encrypted.</source>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="50" />
       <source>Delete the local files outside Git too</source>
-      <translation type="unfinished" />
+      <translation>Удалить и локальные файлы вне Git</translation>
     </message>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="51" />
       <source>Permanently discard uncommitted and untracked files</source>
-      <translation type="unfinished" />
+      <translation>Безвозвратно удалить незакоммиченные и неотслеживаемые файлы</translation>
     </message>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="52" />
       <source>Remove even if some running programs cannot be checked</source>
-      <translation type="unfinished" />
+      <translation>Удалить, даже если некоторые запущенные программы невозможно проверить</translation>
     </message>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="53" />
       <source>Accept this uncertainty for this folder for five minutes. Known programs and sessions using the folder still prevent removal.</source>
-      <translation type="unfinished" />
+      <translation>Принять эту неопределённость для этой папки на пять минут. Известные программы и сессии, использующие папку, по-прежнему не дадут её удалить.</translation>
     </message>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="55" />
       <source>Also delete branches proven merged by Git</source>
-      <translation type="unfinished" />
+      <translation>Также удалить ветки, слияние которых подтверждено Git</translation>
     </message>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="59" />
       <source>Keep folders</source>
-      <translation type="unfinished" />
+      <translation>Сохранить папки</translation>
     </message>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="60" />
       <source>Remove folders</source>
-      <translation type="unfinished" />
+      <translation>Удалить папки</translation>
     </message>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="64" />
       <source>Finishing the current folder; remaining folders will be kept.</source>
-      <translation type="unfinished" />
+      <translation>Завершается обработка текущей папки; остальные папки сохранятся.</translation>
     </message>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="86" />
@@ -17615,7 +17621,7 @@ Private session content is encrypted.</source>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="105" />
       <source>%1 removed  %2 kept  %3 unknown</source>
-      <translation type="unfinished" />
+      <translation>Удалено: %1  Сохранено: %2  Неизвестно: %3</translation>
     </message>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="111" />
@@ -17650,7 +17656,7 @@ Private session content is encrypted.</source>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="133" />
       <source>Inspect working folder</source>
-      <translation type="unfinished" />
+      <translation>Просмотр рабочей папки</translation>
     </message>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="158" />
@@ -17695,22 +17701,22 @@ Private session content is encrypted.</source>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="186" />
       <source>Record forgotten</source>
-      <translation type="unfinished" />
+      <translation>Запись забыта</translation>
     </message>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="186" />
       <source>Folder removed</source>
-      <translation type="unfinished" />
+      <translation>Папка удалена</translation>
     </message>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="186" />
       <source>Result unknown</source>
-      <translation type="unfinished" />
+      <translation>Результат неизвестен</translation>
     </message>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="186" />
       <source>Folder kept</source>
-      <translation type="unfinished" />
+      <translation>Папка сохранена</translation>
     </message>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="186" />
@@ -17770,7 +17776,7 @@ Private session content is encrypted.</source>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="203" />
       <source>Stop after this folder</source>
-      <translation type="unfinished" />
+      <translation>Остановиться после этой папки</translation>
     </message>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="210" />
@@ -17793,18 +17799,18 @@ Private session content is encrypted.</source>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="27" />
       <source>Clean up worktrees</source>
-      <translation type="unfinished" />
+      <translation>Очистить рабочие деревья</translation>
     </message>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="27" />
       <location filename="../src/WorktreeCleanupDialog.h" line="176" />
       <source>Remove worktree</source>
-      <translation type="unfinished" />
+      <translation>Удалить рабочее дерево</translation>
     </message>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="32" />
       <source>Removal uses git worktree remove without force. Ignored files in a removed folder, such as build output, are deleted with it. Blocked worktrees explain what to finish first.</source>
-      <translation type="unfinished" />
+      <translation>Удаление выполняется командой git worktree remove без принудительного режима. Игнорируемые файлы в удаляемой папке, например результаты сборки, удаляются вместе с ней. Для заблокированных рабочих деревьев указано, что нужно сначала завершить.</translation>
     </message>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="34" />
@@ -17824,23 +17830,23 @@ Private session content is encrypted.</source>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="39" />
       <source>Also delete merged branches</source>
-      <translation type="unfinished" />
+      <translation>Также удалить слитые ветки</translation>
     </message>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="40" />
       <source>Uses git branch -d after the worktree is removed. Branches with commits that are not merged are always kept.</source>
-      <translation type="unfinished" />
+      <translation>После удаления рабочего дерева выполняется git branch -d. Ветки с неслитыми коммитами всегда сохраняются.</translation>
     </message>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="43" />
       <source>Review again</source>
-      <translation type="unfinished" />
+      <translation>Проверить снова</translation>
     </message>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="44" />
       <location filename="../src/WorktreeCleanupDialog.h" line="156" />
       <source>Remove selected…</source>
-      <translation type="unfinished" />
+      <translation>Удалить выбранные…</translation>
     </message>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="71" />
@@ -17958,12 +17964,12 @@ Worktree: %2</source>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="110" />
       <source>Reviewing worktrees on %1…</source>
-      <translation type="unfinished" />
+      <translation>Проверка рабочих деревьев на %1…</translation>
     </message>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="122" />
       <source>detached %1</source>
-      <translation type="unfinished" />
+      <translation>отделённый HEAD %1</translation>
     </message>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="125" />
@@ -17993,7 +17999,7 @@ Worktree: %2</source>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="136" />
       <source>This repository has no linked worktrees.</source>
-      <translation type="unfinished" />
+      <translation>В этом репозитории нет связанных рабочих деревьев.</translation>
     </message>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="136" />
@@ -18028,7 +18034,7 @@ Worktree: %2</source>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="156" />
       <source>Remove %1 worktrees…</source>
-      <translation type="unfinished" />
+      <translation>Удалить рабочие деревья (%1)…</translation>
     </message>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="169" />
@@ -18038,17 +18044,17 @@ Worktree: %2</source>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="170" />
       <source>Missing folders: only Git's record is removed.</source>
-      <translation type="unfinished" />
+      <translation>Отсутствующие папки: удаляется только запись Git.</translation>
     </message>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="171" />
       <source>All branches are kept.</source>
-      <translation type="unfinished" />
+      <translation>Все ветки сохраняются.</translation>
     </message>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="171" />
       <source>Merged branches deleted: %1.</source>
-      <translation type="unfinished" />
+      <translation>Удалено слитых веток: %1.</translation>
     </message>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="172" />
@@ -18058,7 +18064,7 @@ Worktree: %2</source>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="173" />
       <source>Each worktree is checked again before removal. This cannot be undone.</source>
-      <translation type="unfinished" />
+      <translation>Перед удалением каждое рабочее дерево проверяется снова. Это действие нельзя отменить.</translation>
     </message>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="174" />
@@ -18141,7 +18147,7 @@ Worktree: %2</source>
     <message>
       <location filename="../src/WorktreeCleanupStatus.h" line="18" />
       <source>Check again</source>
-      <translation type="unfinished" />
+      <translation>Проверить снова</translation>
     </message>
     <message>
       <location filename="../src/WorktreeCleanupStatus.h" line="19" />
@@ -18182,7 +18188,7 @@ Worktree: %2</source>
     <message>
       <location filename="../src/WorktreeCleanupStatus.h" line="77" />
       <source>An unknown result will not be retried.</source>
-      <translation type="unfinished" />
+      <translation>При неизвестном результате повторной попытки не будет.</translation>
     </message>
     <message>
       <location filename="../src/WorktreeCleanupStatus.h" line="78" />
@@ -18201,7 +18207,7 @@ Worktree: %2</source>
       <location filename="../src/WorktreeInspectionPanel.h" line="27" />
       <location filename="../src/WorktreeInspectionPanel.h" line="122" />
       <source>Select a worktree</source>
-      <translation type="unfinished" />
+      <translation>Выберите рабочее дерево</translation>
     </message>
     <message>
       <location filename="../src/WorktreeInspectionPanel.h" line="29" />
@@ -18211,17 +18217,17 @@ Worktree: %2</source>
     <message>
       <location filename="../src/WorktreeInspectionPanel.h" line="30" />
       <source>Read files and commits</source>
-      <translation type="unfinished" />
+      <translation>Прочитать файлы и коммиты</translation>
     </message>
     <message>
       <location filename="../src/WorktreeInspectionPanel.h" line="39" />
       <source>Uncommitted changes</source>
-      <translation type="unfinished" />
+      <translation>Незакоммиченные изменения</translation>
     </message>
     <message>
       <location filename="../src/WorktreeInspectionPanel.h" line="39" />
       <source>Compare files with base</source>
-      <translation type="unfinished" />
+      <translation>Сравнение файлов с базовой веткой</translation>
     </message>
     <message>
       <location filename="../src/WorktreeInspectionPanel.h" line="40" />
@@ -18231,7 +18237,7 @@ Worktree: %2</source>
     <message>
       <location filename="../src/WorktreeInspectionPanel.h" line="41" />
       <source>Changed file</source>
-      <translation type="unfinished" />
+      <translation>Изменённый файл</translation>
     </message>
     <message>
       <location filename="../src/WorktreeInspectionPanel.h" line="41" />
@@ -18251,17 +18257,17 @@ Worktree: %2</source>
     <message>
       <location filename="../src/WorktreeInspectionPanel.h" line="47" />
       <source>Outside Git. Removing this folder deletes these files too.</source>
-      <translation type="unfinished" />
+      <translation>Вне Git. Удаление этой папки удалит и эти файлы.</translation>
     </message>
     <message>
       <location filename="../src/WorktreeInspectionPanel.h" line="50" />
       <source>Browse all files</source>
-      <translation type="unfinished" />
+      <translation>Просмотреть все файлы</translation>
     </message>
     <message>
       <location filename="../src/WorktreeInspectionPanel.h" line="52" />
       <source>Next</source>
-      <translation type="unfinished" />
+      <translation>Далее</translation>
     </message>
     <message>
       <location filename="../src/WorktreeInspectionPanel.h" line="52" />
@@ -18276,12 +18282,12 @@ Worktree: %2</source>
     <message>
       <location filename="../src/WorktreeInspectionPanel.h" line="56" />
       <source>Local file / folder</source>
-      <translation type="unfinished" />
+      <translation>Локальный файл / папка</translation>
     </message>
     <message>
       <location filename="../src/WorktreeInspectionPanel.h" line="56" />
       <source>Size</source>
-      <translation type="unfinished" />
+      <translation>Размер</translation>
     </message>
     <message>
       <location filename="../src/WorktreeInspectionPanel.h" line="59" />
@@ -18296,7 +18302,7 @@ Worktree: %2</source>
     <message>
       <location filename="../src/WorktreeInspectionPanel.h" line="61" />
       <source>No related sessions.</source>
-      <translation type="unfinished" />
+      <translation>Связанных сессий нет.</translation>
     </message>
     <message>
       <location filename="../src/WorktreeInspectionPanel.h" line="63" />
@@ -18351,7 +18357,7 @@ Worktree: %2</source>
     <message>
       <location filename="../src/WorktreeInspectionPanel.h" line="95" />
       <source>No changed files.</source>
-      <translation type="unfinished" />
+      <translation>Изменённых файлов нет.</translation>
     </message>
     <message>
       <location filename="../src/WorktreeInspectionPanel.h" line="96" />
@@ -18368,7 +18374,7 @@ Worktree: %2</source>
     <message>
       <location filename="../src/WorktreeInspectionPanel.h" line="96" />
       <source>No additional commits.</source>
-      <translation type="unfinished" />
+      <translation>Дополнительных коммитов нет.</translation>
     </message>
     <message>
       <location filename="../src/WorktreeInspectionPanel.h" line="97" />
@@ -18433,7 +18439,7 @@ Worktree: %2</source>
     <message>
       <location filename="../src/WorktreeInspectionPanel.h" line="108" />
       <source>Binary file; text preview is unavailable.</source>
-      <translation type="unfinished" />
+      <translation>Двоичный файл; предпросмотр текста недоступен.</translation>
     </message>
     <message>
       <location filename="../src/WorktreeInspectionPanel.h" line="108" />
@@ -18601,7 +18607,7 @@ Worktree: %2</source>
       <location filename="../src/WorktreePanel.h" line="34" />
       <location filename="../src/WorktreePanel.h" line="105" />
       <source>Clean up…</source>
-      <translation type="unfinished" />
+      <translation>Очистить…</translation>
     </message>
     <message>
       <location filename="../src/WorktreePanel.h" line="37" />
@@ -18611,17 +18617,17 @@ Worktree: %2</source>
     <message>
       <location filename="../src/WorktreePanel.h" line="92" />
       <source>Remove worktree…</source>
-      <translation type="unfinished" />
+      <translation>Удалить рабочее дерево…</translation>
     </message>
     <message>
       <location filename="../src/WorktreePanel.h" line="92" />
       <source>Forget missing worktree…</source>
-      <translation type="unfinished" />
+      <translation>Забыть отсутствующее рабочее дерево…</translation>
     </message>
     <message>
       <location filename="../src/WorktreePanel.h" line="93" />
       <source>Review this worktree on its computer before anything is removed.</source>
-      <translation type="unfinished" />
+      <translation>Проверьте это рабочее дерево на его компьютере, прежде чем что-либо удалять.</translation>
     </message>
     <message>
       <location filename="../src/WorktreePanel.h" line="96" />
@@ -18636,32 +18642,32 @@ Worktree: %2</source>
     <message>
       <location filename="../src/WorktreePanel.h" line="106" />
       <source>Cleanup is available for Git repositories with linked worktrees.</source>
-      <translation type="unfinished" />
+      <translation>Очистка доступна для Git-репозиториев со связанными рабочими деревьями.</translation>
     </message>
     <message>
       <location filename="../src/WorktreePanel.h" line="106" />
       <source>Waiting for a current worktree catalog.</source>
-      <translation type="unfinished" />
+      <translation>Ожидание актуального каталога рабочих деревьев.</translation>
     </message>
     <message>
       <location filename="../src/WorktreePanel.h" line="106" />
       <source>This repository has no linked worktrees.</source>
-      <translation type="unfinished" />
+      <translation>В этом репозитории нет связанных рабочих деревьев.</translation>
     </message>
     <message>
       <location filename="../src/WorktreePanel.h" line="107" />
       <source>1 worktree can be removed without losing work. Review it first.</source>
-      <translation type="unfinished" />
+      <translation>Одно рабочее дерево можно удалить без потери работы. Сначала проверьте его.</translation>
     </message>
     <message>
       <location filename="../src/WorktreePanel.h" line="107" />
       <source>%1 worktrees can be removed without losing work. Review them first.</source>
-      <translation type="unfinished" />
+      <translation>Рабочих деревьев, которые можно удалить без потери работы: %1. Сначала проверьте их.</translation>
     </message>
     <message>
       <location filename="../src/WorktreePanel.h" line="107" />
       <source>Review linked worktrees and remove the ones you no longer need.</source>
-      <translation type="unfinished" />
+      <translation>Проверьте связанные рабочие деревья и удалите те, что больше не нужны.</translation>
     </message>
     <message>
       <location filename="../src/WorktreePanel.h" line="122" />
@@ -18899,18 +18905,18 @@ Snapshot: %1%2</source>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="91" />
       <source>Search worktrees…</source>
-      <translation type="unfinished" />
+      <translation>Поиск рабочих деревьев…</translation>
     </message>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="91" />
       <source>Search folder, branch, project or session</source>
-      <translation type="unfinished" />
+      <translation>Поиск по папке, ветке, проекту или сессии</translation>
     </message>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="92" />
       <location filename="../src/WorktreesDialog.cpp" line="404" />
       <source>Filters</source>
-      <translation type="unfinished" />
+      <translation>Фильтры</translation>
     </message>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="96" />
@@ -18928,12 +18934,12 @@ Snapshot: %1%2</source>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="100" />
       <source>All states</source>
-      <translation type="unfinished" />
+      <translation>Все состояния</translation>
     </message>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="102" />
       <source>Worktree state</source>
-      <translation type="unfinished" />
+      <translation>Состояние рабочего дерева</translation>
     </message>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="102" />
@@ -18943,27 +18949,27 @@ Snapshot: %1%2</source>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="103" />
       <source>Show main checkouts and ordinary folders</source>
-      <translation type="unfinished" />
+      <translation>Показывать основные рабочие копии и обычные папки</translation>
     </message>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="106" />
       <source>Sort worktrees</source>
-      <translation type="unfinished" />
+      <translation>Сортировать рабочие деревья</translation>
     </message>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="107" />
       <source>Largest first</source>
-      <translation type="unfinished" />
+      <translation>Сначала крупные</translation>
     </message>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="107" />
       <source>Oldest activity first</source>
-      <translation type="unfinished" />
+      <translation>Сначала давно неактивные</translation>
     </message>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="107" />
       <source>Folder name</source>
-      <translation type="unfinished" />
+      <translation>Имя папки</translation>
     </message>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="109" />
@@ -18974,17 +18980,17 @@ Snapshot: %1%2</source>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="118" />
       <source>Worktree / branch</source>
-      <translation type="unfinished" />
+      <translation>Рабочее дерево / ветка</translation>
     </message>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="118" />
       <source>What remains</source>
-      <translation type="unfinished" />
+      <translation>Что осталось</translation>
     </message>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="118" />
       <source>Size</source>
-      <translation type="unfinished" />
+      <translation>Размер</translation>
     </message>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="127" />
@@ -18994,12 +19000,12 @@ Snapshot: %1%2</source>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="128" />
       <source>Select candidates</source>
-      <translation type="unfinished" />
+      <translation>Выбрать кандидатов</translation>
     </message>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="129" />
       <source>Review cleanup…</source>
-      <translation type="unfinished" />
+      <translation>Проверить очистку…</translation>
     </message>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="224" />
@@ -19009,17 +19015,17 @@ Snapshot: %1%2</source>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="284" />
       <source>All projects</source>
-      <translation type="unfinished" />
+      <translation>Все проекты</translation>
     </message>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="287" />
       <source>All computers</source>
-      <translation type="unfinished" />
+      <translation>Все компьютеры</translation>
     </message>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="363" />
       <source>Offline snapshot</source>
-      <translation type="unfinished" />
+      <translation>Снимок (не в сети)</translation>
     </message>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="364" />
@@ -19030,7 +19036,7 @@ Snapshot: %1%2</source>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="365" />
       <source>Loading…</source>
-      <translation type="unfinished" />
+      <translation>Загрузка…</translation>
     </message>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="367" />
@@ -19118,7 +19124,7 @@ Snapshot: %1%2</source>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="501" />
       <source>Add a project folder to see its worktrees.</source>
-      <translation type="unfinished" />
+      <translation>Добавьте папку проекта, чтобы увидеть её рабочие деревья.</translation>
     </message>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="502" />
@@ -19168,7 +19174,7 @@ Snapshot: %1%2</source>
     <message>
       <location filename="../src/WorktreesDialog.cpp" line="551" />
       <source>Review cleanup (%1)…</source>
-      <translation type="unfinished" />
+      <translation>Проверить очистку (%1)…</translation>
     </message>
   </context>
 </TS>
