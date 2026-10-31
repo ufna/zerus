@@ -458,7 +458,10 @@ impl Organization {
                         hub.notice = None;
                     }
                 }
-                Self::queue_recovery(&mut hub, value);
+                // A held pre-operation observation is not a new recovery source.
+                if let Some(current) = hub.sync.observed_value() {
+                    Self::queue_recovery(&mut hub, &current);
+                }
                 hub
             }
             OrganizationUpdate::Failed { message, .. } => {

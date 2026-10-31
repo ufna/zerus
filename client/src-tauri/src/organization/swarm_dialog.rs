@@ -144,6 +144,8 @@ impl Context {
             && !hub.sync.busy()
             && !hub.sync.pending()
             && hub.sync.next_due().is_none()
+            && !hub.presentation_due
+            && hub.recovery_due.is_none()
             && !self.active()
             && snapshot
                 .as_deref()
@@ -219,6 +221,11 @@ impl Context {
             self.status = "Reading the project catalog…".into();
             self.mode = "reconcile";
             return Ok(());
+        }
+        if matches!(action, Action::Join { .. } | Action::Sync)
+            && (hub.presentation_due || hub.recovery_due.is_some())
+        {
+            return Err(swarm::sync::EXTERNAL_BUSY.into());
         }
         self.error = false;
         match action {

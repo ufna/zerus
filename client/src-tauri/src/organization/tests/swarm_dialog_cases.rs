@@ -279,3 +279,46 @@ fn closing_a_read_cannot_admit_late_actions_and_replay_without_fake_cli_dispatch
     assert!(calls(&fake, "ls").is_empty());
     fake.finish(org);
 }
+
+#[test]
+fn a_held_source_cannot_schedule_qt_recovery_during_a_join() {
+    let mut settings = config();
+    settings["join"] =
+        json!([{"gate":"join-release","stdout":{"joined":true,"snapshot":joined()}}]);
+    let (fake, org, cache) = fixture(settings, true);
+    let id = open(&org);
+    preview(&org, &id);
+    join(&org, &id);
+    wait_until("the held Join", || calls(&fake, "join").len() == 1);
+    {
+        let mut hub = org.lock();
+        hub.qt_recovery = Some(QtRecovery {
+            source: zerus_client_core::settings::QtStore::Ini(fake.dir.join("unread-qt.conf")),
+            settings: zerus_client_core::settings::Settings::open(
+                fake.dir.join("settings.json"),
+                None,
+            ),
+        });
+        hub.recovery_seen = Some(("node-1".into(), true));
+    }
+    let mut stale = local();
+    stale["initialized"] = json!(false);
+    advance(&org, &cache, stale);
+    {
+        let mut hub = org.lock();
+        assert!(hub.sync.busy());
+        assert!(
+            hub.recovery_due.is_none(),
+            "held data must not authorize recovery"
+        );
+        hub.qt_recovery = None;
+    }
+    assert!(calls(&fake, "initialize").is_empty());
+    std::fs::write(fake.dir.join("join-release"), b"release").unwrap();
+    wait_until("post-Join source wait", || {
+        calls(&fake, "get").len() == 2 && !view(&org, &id)["busy"].as_bool().unwrap()
+    });
+    advance(&org, &cache, joined());
+    wait_until("Join settlement", || org.lock().sync.ready());
+    fake.finish(org);
+}
