@@ -31,6 +31,8 @@
 //! the I/O lock. Startup reads and all token checkpoints run off main. The exit
 //! path waits at most 500 ms before independently flushing draft and layout.
 
+pub mod folders;
+
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read as _};
 use std::panic::AssertUnwindSafe;
@@ -670,6 +672,10 @@ impl Organization {
     /// read their members from the organization the edit applies to, never
     /// from one a state replaced in between.
     fn submit_with(&self, intent: impl FnOnce(&Pump) -> Intent) -> EditOutcome {
+        self.submit_checked(move |pump| Ok(intent(pump)))
+    }
+
+    fn submit_checked(&self, intent: impl FnOnce(&Pump) -> Result<Intent, String>) -> EditOutcome {
         if !self.0.allowed {
             return EditOutcome::Refused {
                 detail: REPLAY_NEEDS_HGS.into(),
@@ -682,7 +688,10 @@ impl Organization {
                     detail: STOPPED.into(),
                 };
             }
-            let intent = intent(&self.0.pump);
+            let intent = match intent(&self.0.pump) {
+                Ok(intent) => intent,
+                Err(detail) => return EditOutcome::Refused { detail },
+            };
             let ticket = match hub.sync.edit(&intent, self.now()) {
                 Ok(ticket) => ticket,
                 Err(detail) => return EditOutcome::Refused { detail },

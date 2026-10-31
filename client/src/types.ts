@@ -149,7 +149,7 @@ export interface GroupingOut {
 export type EditOutcome = (
   | { outcome: "done"; conflicts: number }
   | { outcome: "kept"; detail: string }
-  | { outcome: "refused"; detail: string }) & { project?: string };
+  | { outcome: "refused"; detail: string }) & { project?: string; folder?: string };
 
 export interface Batch {
   upserts: RowOut[];

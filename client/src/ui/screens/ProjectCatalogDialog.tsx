@@ -5,7 +5,7 @@ import { projectColor } from "./projects-ui";
 
 // The mockup's RichSelect enhancement; WebKit's native fallback keeps the
 // same readable text and keyboard behavior.
-function enhance(select: HTMLSelectElement) {
+export function enhance(select: HTMLSelectElement) {
   if (!CSS.supports("appearance", "base-select")) return;
   const button = document.createElement("button");
   button.type = "button";

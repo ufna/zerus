@@ -773,7 +773,8 @@ impl Grouping {
             | Intent::Rename { .. }
             | Intent::Reorder { .. }
             | Intent::Renamed { .. }
-            | Intent::AddFolder { .. } => {}
+            | Intent::AddFolder { .. }
+            | Intent::Folder { .. } => {}
         }
         self.revision = None;
         self.headers_dirty = true;
