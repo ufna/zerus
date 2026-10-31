@@ -16,7 +16,7 @@ const ATTEMPTS: u32 = 16;
 /// hgs's `NamedTempFile` names one in the target's folder. The digits come
 /// from the standard library's randomly keyed hasher over a counter, the
 /// process and the time.
-fn temporary(path: &Path) -> PathBuf {
+pub(crate) fn temporary(path: &Path) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
     hasher.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));

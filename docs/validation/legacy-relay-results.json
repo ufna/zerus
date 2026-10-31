@@ -1,0 +1,68 @@
+{
+  "bead": "zerus-5wmh.24.8",
+  "reference": "design/webui/src/screens/settings/Mobile.tsx LegacyRelay and WindowsMobile; Qt RelayConfiguration, RelaySettings, WindowsMobileSettings",
+  "environment": "built embedded Linux app; private D-Bus/Xvfb/HOME/XDG/TMPDIR/TMUX_TMPDIR; child env from scratch; fake hgs, connector and systemctl only",
+  "checks": {
+    "core_lib_passed": 1054,
+    "core_lib_existing_ignored": 4,
+    "legacy_unix_and_service": 9,
+    "windows_manager_protocol": 4,
+    "native_mobile": 23,
+    "frontend_passed": 2248,
+    "frontend_existing_skip": 1,
+    "phase4_steps": 18,
+    "entry_bytes": 459442,
+    "limit_bytes": 500000,
+    "clippy": "core, Tauri default/media/video/no-live, Windows MSVC all-targets",
+    "source_privacy_findings": 0
+  },
+  "walk": {
+    "save_and_reload": true,
+    "stale_save_refused": true,
+    "credential_field_cleared_after_submit": true,
+    "new_binding_private_directory": true,
+    "old_receipt_preserved": true,
+    "unknown_config_fields_preserved": true,
+    "service_reads": 5,
+    "service_effects": 0,
+    "restart_hidden_for_unsafe_kill_mode": true,
+    "protection_copy_toast": true,
+    "encrypted_config_refused_and_disclosure_closed": true,
+    "credential_inputs": 2,
+    "credential_leak_findings_outside_intended_private_configuration": 0
+  },
+  "limitations": [
+    "Windows management protocol was exercised with a fake manager on Linux and cross-compiled; no native Windows runtime claim.",
+    "No live connector, unit, configuration or relay was modified or deployed."
+  ],
+  "captures": [
+    {
+      "file": "legacy-relay-open.png",
+      "sha256": "040f7f86955372d752825c5c7f6a603450d33689cc24308242624c4f1b184ff9"
+    },
+    {
+      "file": "legacy-relay-saved.png",
+      "sha256": "3de67af45660a77f3c3c493f2187dc999a2a90b5c2b73d4c7898cbfe48a66823"
+    },
+    {
+      "file": "legacy-relay-stale.png",
+      "sha256": "754ae8f051ab4dbff18cb5225369acd54a6bd6baad7b0790fdff66142f310f69"
+    },
+    {
+      "file": "legacy-relay-new-binding.png",
+      "sha256": "acc40a6ec5249ab49932e37f4bcb0c3f07c5a92d33a52be78d5a880f73ed3f21"
+    },
+    {
+      "file": "legacy-relay-protection.png",
+      "sha256": "18b486730c76e5be0bdb7c0c63533f7b001bf848093cf2a496b56ce35c5e09cb"
+    },
+    {
+      "file": "legacy-relay-copy.png",
+      "sha256": "93082f6152bbbfe1d678fd36e58d7179fa42e51f12f146fe245a987c7141d213"
+    },
+    {
+      "file": "legacy-relay-encrypted.png",
+      "sha256": "b5194635e219ba4b4db5934a11ba3077c0fcffe35786c421614824b448ddeb5f"
+    }
+  ]
+}
