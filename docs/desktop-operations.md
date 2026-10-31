@@ -142,6 +142,28 @@ never claims complete source discovery, drain or G2 coverage.
 
 ## Executing kinds and the exit boundary
 
+The separate dormant `creation_clone` policy covers only an explicit STATUS
+lookup for an original creation clone in `cloning` or `unknown`. Its expected
+binding keeps the configuration digest, distinct creation/clone UUIDs, physical
+machine, exact original host, target and parent, integer source revision and
+raw source digest. It has
+no creation UI-snapshot fingerprint or G1 ledger kind. Original bytes (up to
+1 MiB) stay unchanged; duplicate known raw keys refuse before Value projection.
+Completed-worktree, bound-session or acquisition-confirmed contradictions stay
+review-only, and a prospective launch UUID is retained without being used.
+
+One retained instance yields at most one private proposal using the existing
+`repository status` invocation, without stdin or a new clone identity. A lost
+proposal, cancellation, pressure or uncertain result cannot regenerate it.
+Replies are at most 64 KiB and must pass the existing repository decoder plus
+both original parent and target comparisons. Only `cloned` or `failed` produces
+a closed receipt of at most 16 KiB, retaining observed path text and discarding
+private diagnostics/extras. An original unknown state may be explicitly checked;
+an unknown result remains spent review. The returned binding and receipt are
+data, never placement, project/worktree mutation, launch, release or settlement.
+This pure module has no source factory, current routing proof, actor, I/O or
+production caller; G2 `.4.3`, `.4.2` and G1 current Operations admission stay open.
+
 The first pure policy is `operation_recovery::task_start::Original`. G1 and G2
 agreed its contract on 2026-10-30. It has no actor integration, process runner,
 SQL, positive job IPC or executing permission. The dedicated operation
