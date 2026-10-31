@@ -1,8 +1,9 @@
 # Preparation and replacement startup exclusion
 
 The internal `startup_exclusion::Startup` and `producer_prepared::Context` own
-one existing handoff boundary. Both are dormant: no command, controller or
-frontend installs them yet. They are not producer leases, current role proofs,
+one existing handoff boundary. The [startup consumer](desktop-startup-consumer.md) now holds Startup in one
+local helper; producer Context still has no production caller. They are not
+producer leases, current role proofs,
 permission consumers or positive startup receipts.
 
 For existing desktop state, `Startup::hold` reads the bounded existing writer
@@ -18,8 +19,10 @@ The future consumer must claim its canonical instance before this check and
 hold the existing boundary through actual writer admission. A snapshot followed
 by a later start is insufficient. An absent-state result also needs that actual
 canonical startup ordering; it must not become a general permit that survives
-concurrent service creation. The hgs stdio hold, frontend consumer, its actual
-child/pipe lifetime and no-writer-on-refusal behavior remain a dependent slice.
+concurrent service creation. With a supporting CLI, the consumer retains the actual helper/pipe lifetime
+and refuses before GUI writers when this check fails. Its old-CLI compatibility
+path retains the previous GUI startup and grants no held/current producer proof. Its canonical ordering is part of the consumer
+contract, not an independent property of this Startup value.
 
 `producer_prepared::Context` consumes the original authenticated `Session`,
 takes the existing presence fence and handoff lock, and probes the service's

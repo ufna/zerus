@@ -157,6 +157,8 @@ pub struct Startup {
     pub instance: Option<instance::Claimed>,
     #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
     pub desktop_responder: Option<std::sync::Arc<zerus_client_core::desktop::Responder>>,
+    #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
+    pub desktop_bootstrap: Option<zerus_client_core::desktop::startup::Bootstrap>,
 }
 
 /// Parses Qt's command line and answers `--help`, `--version` and
@@ -199,6 +201,8 @@ pub fn run() {
     let opens_sessions = options.opens_sessions(identity.is_switch());
     #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
     let mut desktop_responder = None;
+    #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
+    let mut desktop_bootstrap = None;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     let instance = match identity.instance_name(identity::flag("ZERUS_CLIENT_SINGLE_INSTANCE")) {
         None => None,
@@ -218,7 +222,13 @@ pub fn run() {
                 instance::Claim::Claimed(claimed) => {
                     #[cfg(feature = "live")]
                     {
-                        desktop_hello::configure(responder.clone(), identity.is_switch());
+                        desktop_bootstrap = match desktop_hello::hold(identity.is_switch(), &responder) {
+                            Ok(held) => held,
+                            Err(_) => {
+                                eprintln!("zerus-client: desktop startup refused before writers; use a compatible local hgs and reconcile unsettled desktop state");
+                                return;
+                            }
+                        };
                         desktop_responder = Some(responder);
                     }
                     Some(claimed)
@@ -245,6 +255,8 @@ pub fn run() {
             instance,
             #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
             desktop_responder,
+            #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
+            desktop_bootstrap,
         },
     );
 }
@@ -263,6 +275,10 @@ pub(crate) fn data_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
 fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
     let identity = startup.identity;
     let opens_sessions = startup.opens_sessions;
+    #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
+    let desktop_bootstrap = startup.desktop_bootstrap;
+    #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
+    let startup_responder = startup.desktop_responder.clone();
     // Linux and macOS keep the live fleet in the tray/menu bar. A build without the data source has
     // none and keeps its window as the way back.
     let menu_bar = cfg!(all(
@@ -750,6 +766,10 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             if app.state::<identity::Identity>().watchdog(identity::flag("ZERUS_CLIENT_WATCHDOG")) {
                 app.manage(start_watchdog()?);
+            }
+            #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
+            if let (Some(held), Some(responder)) = (desktop_bootstrap, startup_responder) {
+                desktop_hello::finish(held, responder);
             }
             Ok(())
         })

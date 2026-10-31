@@ -111,6 +111,149 @@ class Desktop(unittest.TestCase):
         self.addCleanup(close)
         return process, frames.get(timeout=5), frames
 
+    def startup(self):
+        process = subprocess.Popen([str(HGS), 'desktop', 'startup', '--json'], env=self.env,
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        def close():
+            if process.stdin is not None:
+                process.stdin.close()
+                process.stdin = None
+            if process.poll() is None:
+                process.terminate()
+            process.communicate(timeout=5)
+        self.addCleanup(close)
+        return process
+
+    def startup_frame(self, op, nonce, configuration=None):
+        return dict(abi='desktop-startup-v1', version=1, op=op, nonce=nonce, configuration=configuration)
+
+    def startup_send(self, process, frame):
+        process.stdin.write(json.dumps(frame) + '\n')
+        process.stdin.flush()
+
+    def startup_read(self, process):
+        import select
+        self.assertTrue(select.select([process.stdout], [], [], 3)[0], 'startup frame deadline')
+        return json.loads(process.stdout.readline())
+
+    def startup_end(self, process, success):
+        process.stdin.close()
+        process.stdin = None
+        out, error = process.communicate(timeout=3)
+        self.assertEqual(process.returncode == 0, success, out + error)
+        return out
+
+    @unittest.skipUnless(os.name == 'posix', 'Unix startup exclusion only')
+    def test_startup_absence_creates_nothing_and_requires_exact_release_then_exit(self):
+        configuration = self.cli('desktop', 'status', '--json')['configuration']
+        process = self.startup()
+        nonce = str(uuid.uuid4())
+        self.startup_send(process, self.startup_frame('hold', nonce))
+        self.assertEqual(self.startup_read(process), self.startup_frame('ready', nonce, configuration))
+        self.assertFalse(self.state.exists())
+        self.assertIsNone(process.poll())
+        self.startup_send(process, self.startup_frame('release', nonce, configuration))
+        self.assertEqual(self.startup_read(process), self.startup_frame('released', nonce, configuration))
+        self.assertEqual(self.startup_end(process, True), '')
+        self.assertFalse(self.state.exists())
+
+    @unittest.skipUnless(os.name == 'posix', 'Unix startup exclusion only')
+    def test_startup_holds_the_actual_existing_boundary_until_helper_exit(self):
+        import fcntl
+        service, status = self.serve()
+        self.stop(service)
+        process = self.startup()
+        nonce = str(uuid.uuid4())
+        self.startup_send(process, self.startup_frame('hold', nonce))
+        ready = self.startup_read(process)
+        self.assertEqual(ready['configuration'], status['configuration'])
+        with (self.desktop / 'handoff.lock').open('r+b') as lock:
+            with self.assertRaises(BlockingIOError):
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            other = self.startup()
+            self.startup_send(other, self.startup_frame('hold', str(uuid.uuid4())))
+            self.assertEqual(self.startup_end(other, False), '')
+            self.startup_send(process, self.startup_frame('release', nonce, status['configuration']))
+            self.assertEqual(self.startup_read(process)['op'], 'released')
+            self.startup_end(process, True)
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    @unittest.skipUnless(os.name == 'posix', 'Unix startup exclusion only')
+    def test_startup_retained_preparation_and_abort_intent_refuse_without_mutation(self):
+        service, status = self.serve()
+        self.stop(service)
+        configuration = status['configuration']
+        with sqlite3.connect(self.desktop / 'state.sqlite3') as db:
+            epoch = db.execute('SELECT epoch FROM service').fetchone()[0]
+            new_id = lambda: str(uuid.uuid4())
+            binding = dict(version=1, request_id=new_id(), configuration=configuration,
+                           service_epoch=epoch, producer_epoch=new_id(), writer_epoch=new_id(),
+                           drain_id=new_id(), import_id=new_id(), profile_id='g1-background-v1',
+                           profile_hash='84ff9e4901c3df222b879922c756dcd364ab04300d5d3c83916320dd250b72ff',
+                           frontend=dict(abi='desktop-delegation-v1', version=1, nonce=new_id(),
+                                         application='com.hgdev.hgs-tray', gui='tauri',
+                                         build=dict(version='1.2.3', source_commit='b' * 40, source_dirty=False),
+                                         instance_epoch=new_id(), writer_epoch=None, configuration=configuration,
+                                         live=True, replay=False))
+            body = json.dumps(binding)
+            digest = hashlib.sha256(b'hgs-desktop-prepared-v1\0' + body.encode()).hexdigest()
+            db.execute('INSERT INTO desktop_producer_prepared VALUES(1,?,?,?)', (body, digest, 'prepared'))
+            db.commit()
+            for phase in ('prepared', 'abort_requested'):
+                db.execute('UPDATE desktop_producer_prepared SET phase=?', (phase,))
+                db.commit()
+                before = db.execute('SELECT * FROM desktop_producer_prepared').fetchall()
+                process = self.startup()
+                self.startup_send(process, self.startup_frame('hold', new_id()))
+                self.assertEqual(self.startup_end(process, False), '')
+                self.assertEqual(db.execute('SELECT * FROM desktop_producer_prepared').fetchall(), before)
+
+    @unittest.skipUnless(os.name == 'posix', 'Unix startup exclusion only')
+    def test_startup_malformed_or_oversized_initial_frames_never_reply_or_create_state(self):
+        nonce = str(uuid.uuid4())
+        valid = self.startup_frame('hold', nonce)
+        for changed in (dict(valid, abi='unknown'), dict(valid, version=2),
+                        dict(valid, nonce='invalid'), dict(valid, op='release'),
+                        dict(valid, authority=True), dict(valid, configuration='a' * 64)):
+            process = self.startup()
+            self.startup_send(process, changed)
+            self.assertEqual(self.startup_end(process, False), '')
+        process = self.startup()
+        process.stdin.write('x' * 4097)
+        process.stdin.flush()
+        self.assertEqual(self.startup_end(process, False), '')
+        self.assertFalse(self.state.exists())
+
+    @unittest.skipUnless(os.name == 'posix', 'Unix startup exclusion only')
+    def test_startup_foreign_release_or_eof_cannot_mint_completion(self):
+        configuration = self.cli('desktop', 'status', '--json')['configuration']
+        for changed in ('nonce', 'configuration', 'eof'):
+            nonce = str(uuid.uuid4())
+            process = self.startup()
+            self.startup_send(process, self.startup_frame('hold', nonce))
+            self.startup_read(process)
+            if changed != 'eof':
+                self.startup_send(process, self.startup_frame('release',
+                    str(uuid.uuid4()) if changed == 'nonce' else nonce,
+                    'b' * 64 if changed == 'configuration' else configuration))
+            self.assertEqual(self.startup_end(process, False), '')
+        self.assertFalse(self.state.exists())
+
+    @unittest.skipUnless(os.name == 'posix', 'Unix startup exclusion only')
+    def test_startup_partial_progress_does_not_renew_its_fixed_deadline(self):
+        process = self.startup()
+        start = time.monotonic()
+        process.stdin.write('{')
+        process.stdin.flush()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            process.wait(timeout=0.05)
+        # Keep the input open. The helper itself must expire without EOF/release.
+        self.assertNotEqual(process.wait(timeout=11), 0)
+        self.assertLess(time.monotonic() - start, 11)
+        self.assertEqual(process.stdout.read(), '')
+        self.assertFalse(self.state.exists())
+
     def test_status_is_read_only_and_does_not_start_service(self):
         status = self.cli('desktop', 'status', '--json')
         self.assertFalse(status['running'])

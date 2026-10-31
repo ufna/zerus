@@ -24,6 +24,7 @@ mod registration;
 mod revoke;
 #[allow(dead_code)]
 mod startup_exclusion;
+mod startup_stdio;
 mod store;
 mod transport;
 
@@ -45,7 +46,7 @@ use std::{
 use store::{Location, Store};
 use transport::{Listener, Stream, TIMEOUT};
 
-const USAGE: &str = "usage: hgs desktop serve [--config-dir DIR --state-dir DIR] | status [--json] | owner-status --json | watch --json | feed --json | request --json | registration --json | revoke --json [--request-id UUID] [--reason rollback] | import-evidence --json | import-status --json --import-id UUID";
+const USAGE: &str = "usage: hgs desktop serve [--config-dir DIR --state-dir DIR] | status [--json] | startup --json | owner-status --json | watch --json | feed --json | request --json | registration --json | revoke --json [--request-id UUID] [--reason rollback] | import-evidence --json | import-status --json --import-id UUID";
 const HEARTBEAT: Duration = Duration::from_secs(10);
 pub const STARTUP_REFUSED: i32 = 78;
 
@@ -137,6 +138,7 @@ pub fn dispatch(config: &Config, target: &str, args: &[String], dry: bool) -> cl
                 println!("{}", import_evidence::status(&location, id)?);
                 Ok(())
             }
+            ["startup", "--json"] => startup_stdio::run(&location),
             ["owner-status", "--json"] => {
                 println!("{}", owner::status(&location));
                 Ok(())

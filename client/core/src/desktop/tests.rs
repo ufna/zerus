@@ -243,9 +243,16 @@ mod sockets {
         assert_eq!(fs::read(&path).unwrap(), b"existing");
         fs::remove_file(&path).unwrap();
         drop(UnixListener::bind(&path).unwrap());
-        assert_eq!(
-            probe_at(&path, NONCE, &"a".repeat(64)),
-            Observation::Unknown
+        // The closed endpoint can fail at connect or at the subsequent exchange
+        // (observed on XNU under the parallel harness). Both remain passive:
+        // neither absence nor an authenticated live Next identity is acceptable.
+        let observed = probe_at(&path, NONCE, &"a".repeat(64));
+        assert!(
+            matches!(
+                observed,
+                Observation::Unknown | Observation::LiveLegacyOrUnknown
+            ),
+            "{observed:?}"
         );
         assert!(path.exists());
     }
