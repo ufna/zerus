@@ -58,18 +58,20 @@ impl Build {
 pub struct UpdatesView {
     pub busy: bool,
     pub available: bool,
-    pub heading: String,
+    /// Interface prose; the webview translates it (`client/src/text.ts`).
+    pub heading: zerus_client_core::text::Text,
     pub installed: String,
-    pub latest: String,
-    pub comparison: String,
+    /// The published version as it is, or "Not checked".
+    pub latest: zerus_client_core::text::Text,
+    pub comparison: Option<zerus_client_core::text::Text>,
     pub last_checked: String,
     pub cached: bool,
-    pub error: String,
+    pub error: Option<zerus_client_core::text::Text>,
     pub channel: Channel,
     pub automatic: bool,
-    pub release_label: String,
+    pub release_label: zerus_client_core::text::Text,
     pub release_enabled: bool,
-    pub download_label: Option<String>,
+    pub download_label: Option<zerus_client_core::text::Text>,
     pub details: InstallationGuide,
     pub restart_required: bool,
     #[serde(default)]
@@ -87,10 +89,10 @@ struct UpdateState {
     automatic: bool,
     busy: bool,
     available: bool,
-    comparison: String,
+    comparison: Option<zerus_client_core::text::Text>,
     last_success: i64,
     cached: bool,
-    error: String,
+    error: Option<zerus_client_core::text::Text>,
     restart_required: bool,
     login_item_deprioritized: bool,
     fresh_for_notification: bool,
@@ -109,10 +111,10 @@ impl Default for UpdateState {
             automatic: true,
             busy: false,
             available: false,
-            comparison: String::new(),
+            comparison: None,
             last_success: 0,
             cached: false,
-            error: String::new(),
+            error: None,
             restart_required: false,
             login_item_deprioritized: false,
             fresh_for_notification: false,
@@ -188,14 +190,14 @@ impl UpdatesView {
         let download_label = (!url.is_empty()).then(|| {
             if platform == "macos" && !state.feed.macos_zip_url.is_empty() {
                 if state.feed.macos_dmg_url.is_empty() {
-                    "Download macOS ZIP".into()
+                    zerus_client_core::text!("Download macOS ZIP")
                 } else {
-                    "Download DMG".into()
+                    zerus_client_core::text!("Download DMG")
                 }
             } else if state.installation.arch {
-                "Download dev package".into()
+                zerus_client_core::text!("Download dev package")
             } else {
-                "Download dev source".into()
+                zerus_client_core::text!("Download dev source")
             }
         });
         let installed =
@@ -208,19 +210,19 @@ impl UpdatesView {
             busy: state.busy,
             available: state.available,
             heading: if state.busy {
-                "Checking for updates…".into()
+                zerus_client_core::text!("Checking for updates…")
             } else if state.available {
-                "Update available".into()
+                zerus_client_core::text!("Update available")
             } else if state.feed.valid {
-                "Release status".into()
+                zerus_client_core::text!("Release status")
             } else {
-                "Updates have not been checked".into()
+                zerus_client_core::text!("Updates have not been checked")
             },
             installed,
             latest: if state.feed.valid {
-                state.feed.version.clone()
+                zerus_client_core::text::Text::verbatim(state.feed.version.clone())
             } else {
-                "Not checked".into()
+                zerus_client_core::text!("Not checked")
             },
             comparison: state.comparison.clone(),
             last_checked: checked_text(state.last_success),
@@ -229,9 +231,9 @@ impl UpdatesView {
             channel: state.channel,
             automatic: state.automatic,
             release_label: if state.channel == Channel::Dev {
-                "View build".into()
+                zerus_client_core::text!("View build")
             } else {
-                "View release".into()
+                zerus_client_core::text!("View release")
             },
             release_enabled: state.feed.valid,
             download_label,
@@ -349,7 +351,7 @@ impl Updates {
                 state.last_success = 0;
                 state.cached = false;
                 state.available = false;
-                state.comparison.clear();
+                state.comparison = None;
             }
         }
         lock(&self.0.state).installation = installation;
@@ -396,8 +398,10 @@ impl Updates {
             state.busy = true;
             state.fresh_for_notification = false;
             state.automatic_in_flight = automatic;
-            state.error.clear();
-            state.comparison = "Checking the published release catalog…".into();
+            state.error = None;
+            state.comparison = Some(zerus_client_core::text!(
+                "Checking the published release catalog…"
+            ));
             (
                 self.0.generation.fetch_add(1, Ordering::SeqCst) + 1,
                 state.channel,
@@ -434,8 +438,8 @@ impl Updates {
                     state.available = false;
                     state.feed = feed;
                     state.last_success = now;
-                    state.error.clear();
-                    state.comparison.clear();
+                    state.error = None;
+                    state.comparison = None;
                     may_notify
                 };
                 let _ = may_notify;
@@ -467,9 +471,9 @@ impl Updates {
             state.busy = false;
             state.automatic_in_flight = false;
             state.fresh_for_notification = false;
-            state.error = "Check failed. Try again later.".into();
+            state.error = Some(zerus_client_core::text!("Check failed. Try again later."));
             state.cached = state.feed.valid;
-            state.comparison = if state.feed.valid {
+            state.comparison = state.feed.valid.then(|| {
                 comparison_message(
                     &state.installation,
                     &state.feed,
@@ -478,9 +482,7 @@ impl Updates {
                     false,
                     running_platform(),
                 )
-            } else {
-                String::new()
-            };
+            });
         }
         self.changed();
         self.compare();
@@ -541,14 +543,14 @@ impl Updates {
         let token = {
             let mut current = lock(&self.0.state);
             current.available = newer;
-            current.comparison = comparison_message(
+            current.comparison = Some(comparison_message(
                 &current.installation,
                 &current.feed,
                 &self.0.build.app_version,
                 comparison,
                 compared,
                 running_platform(),
-            );
+            ));
             current.fresh_for_notification = false;
             let fresh = state.fresh_for_notification;
             let quiet = quiet_prompts(self.0.dev_identity, &current.installation);
@@ -589,8 +591,10 @@ impl Updates {
             state.fresh_for_notification = false;
             state.automatic_in_flight = false;
             state.busy = false;
-            state.error.clear();
-            state.comparison = "Updates have not been checked for this channel.".into();
+            state.error = None;
+            state.comparison = Some(zerus_client_core::text!(
+                "Updates have not been checked for this channel."
+            ));
             state.last_success = 0;
             state.cached = false;
         }
@@ -1280,10 +1284,10 @@ mod tests {
         let view = until(&fixture, |view| {
             view.available && !view.busy && fixture.notices.lock().unwrap().len() == 1
         });
-        assert_eq!(view.latest, "0.47.0");
+        assert_eq!(view.latest.english(), "0.47.0");
         assert_eq!(view.last_checked, "1970-01-01T00:16:40Z");
-        assert_eq!(view.release_label, "View release");
-        assert!(!view.cached && view.error.is_empty());
+        assert_eq!(view.release_label.english(), "View release");
+        assert!(!view.cached && view.error.is_none());
         assert_eq!(fixture.notices.lock().unwrap().len(), 1);
         let notice = fixture.notices.lock().unwrap()[0].clone();
         assert_eq!(notice.token, "zerus-update:v1:stable:1234");
@@ -1311,7 +1315,7 @@ mod tests {
             .lock()
             .unwrap()
             .iter()
-            .any(|view| view.heading == "Checking for updates…"));
+            .any(|view| view.heading.english() == "Checking for updates…"));
     }
 
     #[test]
@@ -1335,7 +1339,10 @@ mod tests {
         fixture.service.check(false);
         let view = fixture.service.view();
         assert!(view.cached && view.available);
-        assert_eq!(view.error, "Check failed. Try again later.");
+        assert_eq!(
+            view.error.as_ref().map(|t| t.english()).as_deref(),
+            Some("Check failed. Try again later.")
+        );
         assert_eq!(view.last_checked, "1970-01-01T00:15:00Z");
         assert!(fixture.notices.lock().unwrap().is_empty());
     }
@@ -1380,8 +1387,11 @@ mod tests {
         let view = fixture.service.view();
         assert!(view.available);
         assert_eq!(view.version, "0.47.0-dev.50");
-        assert_eq!(view.release_label, "View build");
-        assert_eq!(view.download_label.as_deref(), Some("Download dev source"));
+        assert_eq!(view.release_label.english(), "View build");
+        assert_eq!(
+            view.download_label.as_ref().map(|t| t.english()).as_deref(),
+            Some("Download dev source")
+        );
         assert_eq!(
             fixture.notices.lock().unwrap()[0].token,
             "zerus-update:v2:dev:12345"

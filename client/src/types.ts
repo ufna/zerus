@@ -797,19 +797,21 @@ export type UpdateChannel = "stable" | "nightly" | "dev";
 export interface UpdatesView {
   busy: boolean;
   available: boolean;
-  heading: string;
+  /** Interface prose from the core and app (core Text); the webview translates it. */
+  heading: Text;
   installed: string;
-  latest: string;
-  comparison: string;
+  latest: Text;
+  comparison: Text | null;
+  /** RFC 3339 time, or "Never". */
   last_checked: string;
   cached: boolean;
-  error: string;
+  error: Text | null;
   channel: UpdateChannel;
   automatic: boolean;
-  release_label: string;
+  release_label: Text;
   release_enabled: boolean;
-  download_label: string | null;
-  details: { ownership: string; command: string; copy_name: string; instructions: string };
+  download_label: Text | null;
+  details: { ownership: Text; command: Text | null; copy_name: Text | null; instructions: Text | null };
   restart_required: boolean;
   login_item_deprioritized: boolean;
   version: string;
@@ -820,19 +822,19 @@ export interface UpdatesView {
 export const emptyUpdatesView = (): UpdatesView => ({
   busy: false,
   available: false,
-  heading: "Updates have not been checked",
+  heading: { source: "Updates have not been checked" },
   installed: "",
-  latest: "Not checked",
-  comparison: "",
+  latest: { source: "Not checked" },
+  comparison: null,
   last_checked: "Never",
   cached: false,
-  error: "",
+  error: null,
   channel: "stable",
   automatic: true,
-  release_label: "View release",
+  release_label: { source: "View release" },
   release_enabled: false,
   download_label: null,
-  details: { ownership: "", command: "", copy_name: "Copy command", instructions: "" },
+  details: { ownership: { source: "" }, command: null, copy_name: null, instructions: null },
   restart_required: false,
   login_item_deprioritized: false,
   version: "",

@@ -6,6 +6,7 @@ import { Icon } from "../../lib/icons";
 import { Actions, Group, Lines, Row, SectionHead, Select, Status, ToggleRow } from "./ui";
 import { lastCheckedText } from "./updates-time";
 import { tr, trNoop } from "../../../i18n";
+import { trText } from "../../../text";
 
 function failed(error: unknown) {
   toast("Updates", String(error), "error", true);
@@ -74,20 +75,20 @@ export function UpdatesSection() {
   return (
     <>
       <SectionHead title={trNoop("Updates")} />
-      <Group title={updates().heading}>
+      <Group title={trText(updates().heading)}>
         <div class="updates-card" data-available={updates().available ? "1" : "0"}>
           <Row label={trNoop("Installed")}><span class="selectable">{updates().installed}</span></Row>
-          <Row label={trNoop("Latest release")}><span class="selectable">{updates().latest}</span></Row>
-          <Show when={!updates().busy && updates().comparison}>
-            <p class="set-group-hint selectable updates-comparison">{updates().comparison}</p>
+          <Row label={trNoop("Latest release")}><span class="selectable">{trText(updates().latest)}</span></Row>
+          <Show when={!updates().busy && updates().comparison}>{(comparison) =>
+            <p class="set-group-hint selectable updates-comparison">{trText(comparison())}</p>}
           </Show>
           <p class="set-group-hint selectable">{tr("Last successful check: %1", lastCheckedText(updates().last_checked))}</p>
           <Show when={updates().cached}><p class="set-group-hint">{tr("Showing the last verified catalog.")}</p></Show>
-          <Show when={updates().error}><Status kind="error">{updates().error}</Status></Show>
+          <Show when={updates().error}>{(error) => <Status kind="error">{trText(error())}</Status>}</Show>
           <Actions>
-            <button type="button" class="btn" disabled={!updates().release_enabled} onClick={() => open("release")}>{updates().release_label}</button>
+            <button type="button" class="btn" disabled={!updates().release_enabled} onClick={() => open("release")}>{trText(updates().release_label)}</button>
             <Show when={updates().download_label}>
-              {(label) => <button type="button" class="btn" onClick={() => open("download")}>{label()}</button>}
+              {(label) => <button type="button" class="btn" onClick={() => open("download")}>{trText(label())}</button>}
             </Show>
           </Actions>
         </div>
@@ -114,16 +115,16 @@ export function UpdatesSection() {
         </Actions>
         <Show when={details()}>
           <div id="updates-installation-details" class="updates-details">
-            <Lines class="selectable" text={updates().details.ownership} />
-            <Show when={updates().details.command}>
-              <Lines class="selectable mono updates-command" text={updates().details.command} />
+            <Lines class="selectable" text={trText(updates().details.ownership)} />
+            <Show when={updates().details.command}>{(command) => <>
+              <Lines class="selectable mono updates-command" text={trText(command())} />
               <Actions>
-                <button type="button" class="btn" aria-label={updates().details.copy_name}
+                <button type="button" class="btn" aria-label={updates().details.copy_name ? trText(updates().details.copy_name!) : undefined}
                   onClick={() => { void updateCommands.copyCommand().catch(failed); }}>{tr("Copy command")}</button>
               </Actions>
-            </Show>
-            <Show when={updates().details.instructions}>
-              <Lines class="selectable" text={updates().details.instructions} />
+            </>}</Show>
+            <Show when={updates().details.instructions}>{(instructions) =>
+              <Lines class="selectable" text={trText(instructions())} />}
             </Show>
             <Actions>
               <button type="button" class="btn" onClick={() => open("instructions")}>{tr("Installation instructions")}</button>
