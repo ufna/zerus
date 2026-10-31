@@ -14770,12 +14770,12 @@ Language: %1</source>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="279" />
       <source>Loading this computer's voice statistics…</source>
-      <translation type="unfinished" />
+      <translation>Загрузка голосовой статистики этого компьютера…</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="282" />
       <source>Voice statistics unavailable.</source>
-      <translation type="unfinished" />
+      <translation>Голосовая статистика недоступна.</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="284" />
@@ -14783,7 +14783,10 @@ Language: %1</source>
 %2 recordings, %3 completed, %4 failed, %5 cancelled, %6 uncertain
 %7 minutes of audio, %8 seconds processing
 These counters stay on the speech computer and contain no audio or recognized text.</source>
-      <translation type="unfinished" />
+      <translation>Этот компьютер (последние дни: %1)
+Записей: %2, завершено: %3, с ошибкой: %4, отменено: %5, неопределённых: %6
+Аудио: %7 мин, обработка: %8 с
+Эти счётчики хранятся на компьютере распознавания и не содержат ни аудио, ни распознанного текста.</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="293" />
@@ -16614,7 +16617,7 @@ Press Enter to retry with the same card identity.</source>
     <message>
       <location filename="../src/UpdateController.cpp" line="141" />
       <source>%1 (local changes %2)</source>
-      <translation type="unfinished" />
+      <translation>%1 (локальные изменения %2)</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="237" />

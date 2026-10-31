@@ -413,7 +413,7 @@ describe("Settings texts", () => {
   it("About names the build as UpdateController::installedVersion does", () => {
     const updates = fs.readFileSync(new URL("tray/src/UpdateController.cpp", repo), "utf8");
     expect(updates).toContain('tr("%1 (local changes %2)")');
-    expect(source("about-version.ts")).toContain("`${version} (local changes ${source})`");
+    expect(source("about-version.ts")).toContain('tr("%1 (local changes %2)", version, source)');
     expect(updates).toContain('QString("%1 (%2)")');
     expect(source("about-version.ts")).toContain("`${version} (${source})`");
   });

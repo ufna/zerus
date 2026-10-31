@@ -77,7 +77,7 @@ export function UpdatesSection() {
       <SectionHead title={trNoop("Updates")} />
       <Group title={trText(updates().heading)}>
         <div class="updates-card" data-available={updates().available ? "1" : "0"}>
-          <Row label={trNoop("Installed")}><span class="selectable">{updates().installed}</span></Row>
+          <Row label={trNoop("Installed")}><span class="selectable">{trText(updates().installed)}</span></Row>
           <Row label={trNoop("Latest release")}><span class="selectable">{trText(updates().latest)}</span></Row>
           <Show when={!updates().busy && updates().comparison}>{(comparison) =>
             <p class="set-group-hint selectable updates-comparison">{trText(comparison())}</p>}

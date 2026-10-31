@@ -799,7 +799,7 @@ export interface UpdatesView {
   available: boolean;
   /** Interface prose from the core and app (core Text); the webview translates it. */
   heading: Text;
-  installed: string;
+  installed: Text;
   latest: Text;
   comparison: Text | null;
   /** RFC 3339 time, or "Never". */
@@ -823,7 +823,7 @@ export const emptyUpdatesView = (): UpdatesView => ({
   busy: false,
   available: false,
   heading: { source: "Updates have not been checked" },
-  installed: "",
+  installed: { source: "" },
   latest: { source: "Not checked" },
   comparison: null,
   last_checked: "Never",
