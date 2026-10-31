@@ -6,11 +6,11 @@ import { ProjectLabel } from "../components/ProjectLabel";
 import { inTauri } from "../../bridge";
 import { setPage } from "../../store/ui";
 import type { Project } from "../../types";
-import { createSwarm, syncText } from "./project-swarm";
+import { createSwarm, syncText, seedMappings, initialAlias } from "./project-swarm";
 import "../styles/project-swarm.css";
 
 /** setup-swarm Computers / Connect computer; the native worker owns every call. */
-export default function ProjectSwarmDialog(props: { projects: Project[]; connect?: boolean; origin: HTMLElement; close(): void }) {
+export default function ProjectSwarmDialog(props: { projects: Project[]; connect?: boolean; preferred?: string; origin: HTMLElement; close(): void }) {
   const state = createSwarm(), view = state.frame;
   const [tab, setTab] = createSignal<"computers" | "connect">(props.connect ? "connect" : "computers");
   const [filter, setFilter] = createSignal("");
@@ -18,7 +18,7 @@ export default function ProjectSwarmDialog(props: { projects: Project[]; connect
   const [alias, setAlias] = createSignal("");
   const [requested, setRequested] = createSignal<{ alias: string; previous: string | undefined }>();
   const [validPreview, setValidPreview] = createSignal<string>();
-  const [mapping, setMapping] = createSignal<Record<string, string>>({});
+  const [mapping, setMapping] = createSignal<Map<string, string>>(new Map());
   const [keep, setKeep] = createSignal(true);
   const busy = () => state.working() || !!view()?.busy;
   const changing = () => state.working() || !!view()?.changing;
@@ -34,28 +34,30 @@ export default function ProjectSwarmDialog(props: { projects: Project[]; connect
     return computers().filter((r) => !f || `${r.name} ${r.access} ${syncText(r)}`.toLowerCase().includes(f))
       .toSorted((a, b) => (key(a).localeCompare(key(b)) || a.id.localeCompare(b.id)) * (s.ascending ? 1 : -1));
   });
-  let dialog!: HTMLDialogElement, gone = false, off: (() => void) | undefined;
+  let dialog!: HTMLDialogElement, gone = false, aliasInitialized = false, off: (() => void) | undefined;
   const close = async () => { if (await state.close()) props.close(); };
   createEffect(() => {
     const aliases = view()?.aliases ?? [];
-    if (!aliases.includes(alias())) { setAlias(aliases[0] ?? ""); setRequested(undefined); setValidPreview(undefined); }
+    if (!aliasInitialized && aliases.length) {
+      aliasInitialized = true; setAlias(initialAlias(aliases, props.preferred));
+    } else if (!aliases.includes(alias())) { setAlias(aliases[0] ?? ""); setRequested(undefined); setValidPreview(undefined); }
   });
   createEffect(() => {
     const p = view()?.preview, req = requested();
     if (p && req && p.id !== req.previous && p.alias === req.alias && p.alias === alias() && p.id !== validPreview()) {
-      setValidPreview(p.id); setMapping({}); setKeep(true);
+      setValidPreview(p.id); setMapping(seedMappings(view()?.projects ?? [], p.projects)); setKeep(true);
     }
   });
-  const chooseAlias = (next: string) => { setAlias(next); setRequested(undefined); setValidPreview(undefined); setMapping({}); };
+  const chooseAlias = (next: string) => { setAlias(next); setRequested(undefined); setValidPreview(undefined); setMapping(new Map()); };
   const runPreview = async () => {
     if (busy() || !alias()) return;
-    setValidPreview(undefined); setMapping({});
+    setValidPreview(undefined); setMapping(new Map());
     setRequested({ alias: alias(), previous: view()?.preview?.id });
     await state.preview(alias());
   };
   const join = () => {
     if (!preview()?.initialized || !view()?.can_join || busy()) return;
-    const pairs: [string, string][] = differs() ? (view()?.projects ?? []).flatMap((p) => mapping()[p.id] ? [[p.id, mapping()[p.id]] as [string, string]] : []) : [];
+    const pairs: [string, string][] = differs() ? (view()?.projects ?? []).flatMap((p) => mapping().get(p.id) ? [[p.id, mapping().get(p.id)!] as [string, string]] : []) : [];
     void state.join(pairs, keep());
   };
   const manage = async () => { if (await state.close()) { props.close(); setPage("machines"); } };
@@ -97,7 +99,7 @@ export default function ProjectSwarmDialog(props: { projects: Project[]; connect
               <Match when={!busy() && !view()?.aliases.length}><p class="sw-msg">Add a computer in Manage connections first.</p></Match>
               <Match when={loading()}><div class="sw-msg"><p>Reading the other project catalog…</p><div class="su-progress su-indet" role="progressbar" aria-label="Reading the other project catalog"><i /></div></div></Match>
               <Match when={preview()?.initialized && preview()?.same_swarm}><p class="sw-msg su-pre">{`${alias()} already shares this project catalog.\nConnect directly to synchronize through this computer.`}</p></Match>
-              <Match when={differs()}><p class="muted">Choose which projects are the same. Projects stay separate unless you match them below.</p><div class="su-tablewrap"><table class="su-table sw-map"><thead><tr><th>Project on this computer</th><th>Project in the other catalog</th></tr></thead><tbody><For each={(view()?.projects ?? []).map((p) => p.id)}>{(id) => <tr><td><ProjectLabel project={label(id)} small /></td><td><select class="field" aria-label={`Match ${localById().get(id)?.name ?? id}`} disabled={busy()} value={mapping()[id] ?? ""} onChange={(e) => setMapping((m) => ({ ...m, [id]: e.currentTarget.value }))}><option value="">Keep as a separate project</option><For each={preview()?.projects ?? []}>{(p) => <option value={p.id}>{p.name} ({p.id.slice(0, 8)})</option>}</For></select></td></tr>}</For></tbody></table></div></Match>
+              <Match when={differs()}><p class="muted">Choose which projects are the same. Projects stay separate unless you match them below.</p><div class="su-tablewrap"><table class="su-table sw-map"><thead><tr><th>Project on this computer</th><th>Project in the other catalog</th></tr></thead><tbody><For each={(view()?.projects ?? []).map((p) => p.id)}>{(id) => <tr><td><ProjectLabel project={label(id)} small /></td><td><select class="field" aria-label={`Match ${localById().get(id)?.name ?? id}`} disabled={busy()} value={mapping().get(id) ?? ""} onChange={(e) => setMapping((m) => new Map(m).set(id, e.currentTarget.value))}><option value="">Keep as a separate project</option><For each={preview()?.projects ?? []}>{(p) => <option value={p.id}>{p.name} ({p.id.slice(0, 8)})</option>}</For></select></td></tr>}</For></tbody></table></div></Match>
               <Match when={view()?.status === `Connected to ${alias()}.`}><p class="sw-msg">Connected to {alias()}.</p></Match>
               <Match when={true}><p class="sw-msg">Choose a computer and preview its project catalog before connecting.</p></Match>
             </Switch></div>

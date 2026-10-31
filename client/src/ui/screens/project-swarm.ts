@@ -70,5 +70,12 @@ export function createSwarm(call: Call = invoke) {
 export const syncText = (computer: Computer) => {
   const state = computer.sync;
   const text = state.state === "local" ? "Local catalog" : state.state === "shared" ? "Shared through swarm" : state.state === "waiting" ? "Waiting to sync" : state.state === "error" ? state.text : `Synced ${new Date(state.at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })}`;
-  return text + (computer.tasks_outdated && state.state !== "error" ? ", Update Zerus there to share tasks" : "");
+  return text + (computer.tasks_outdated && state.state !== "error" ? ". Update Zerus there to share tasks" : "");
 };
+
+/** Qt preselects identical keys: the CLI merges them even without a mapping. */
+export const seedMappings = (local: Project[], peer: Project[]) => {
+  const ids = new Set(peer.map((p) => p.id));
+  return new Map(local.filter((p) => ids.has(p.id)).map((p) => [p.id, p.id]));
+};
+export const initialAlias = (aliases: string[], preferred?: string) => aliases.find((a) => a === preferred) ?? aliases[0] ?? "";

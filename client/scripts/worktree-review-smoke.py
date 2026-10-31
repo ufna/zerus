@@ -31,6 +31,7 @@ if '--worker' not in sys.argv:
         if options.swarm_ui:
             summary['machines'].append({'id':'33333333-3333-4333-8333-333333333333','name':'Other computer','local':False})
             summary['peers']['fixture-peer']['tasks_outdated']=True
+            frames[2]['value']['peers']=['fixture-uninitialized']
             (root/'swarm-ui').touch()
         state=copy.deepcopy(summary);state['organization']['projects']=[]
         for project in summary['organization']['projects']:
@@ -70,7 +71,7 @@ if (root/'swarm-native').exists():
   count=root/'peer-preview-count';n=int(count.read_text()) if count.exists() else 0
   if alias=='fixture-peer':n+=1;count.write_text(str(n))
   same=alias=='fixture-peer' and n>1
-  print(json.dumps({'node_id':peer,'swarm_id':state['swarm_id'] if same else 'another-catalog','same_swarm':same,'initialized':alias!='fixture-uninitialized','projects':[] if alias=='fixture-uninitialized' else [{'id':'remote-project','name':'Remote project'}]}));sys.exit(0)
+  print(json.dumps({'node_id':peer,'swarm_id':state['swarm_id'] if same else 'another-catalog','same_swarm':same,'initialized':alias!='fixture-uninitialized','projects':[] if alias=='fixture-uninitialized' else [{'id':'remote-project','name':'Remote project'},{'id':'ungrouped','name':'Inbox'}]}));sys.exit(0)
  if args==['swarm','get']:print(json.dumps(state));sys.exit(0)
  if args==['swarm','preview','fixture-peer']:print(json.dumps({'node_id':peer,'swarm_id':state['swarm_id'],'same_swarm':True,'initialized':True,'projects':[{'id':p['id'],'name':p['name']} for p in state['organization']['projects']]}));sys.exit(0)
  if args==['swarm','join','fixture-peer']:
@@ -137,7 +138,7 @@ with (root/'app.log').open('wb') as log:
     try:
         while time.monotonic()<deadline:
             output=(root/'app.log').read_text()
-            for stage in (('COMPUTERS','FILTERED','LOADING','MAP','UNINITIALIZED','FAILED','SAME','CONNECTED') if swarm_ui else ('PROJECTS','OPEN','PREVIEW','JOIN') if swarm_native else ('SHELL',) if shell_badge else ('PANEL','REVIEW','CONFIRMATION','REMOVING','OUTCOMES','UNKNOWN_REOPEN','OVERVIEW','PAGER','MANUAL_REVIEW','INSPECTION','MANUAL_OUTCOMES')):
+            for stage in (('PRESELECTED','COMPUTERS','FILTERED','LOADING','MAP','UNINITIALIZED','FAILED','SAME','CONNECTED') if swarm_ui else ('PROJECTS','OPEN','PREVIEW','JOIN') if swarm_native else ('SHELL',) if shell_badge else ('PANEL','REVIEW','CONFIRMATION','REMOVING','OUTCOMES','UNKNOWN_REOPEN','OVERVIEW','PAGER','MANUAL_REVIEW','INSPECTION','MANUAL_OUTCOMES')):
                 if prefix+stage in output and stage not in stages:
                     stages.add(stage);time.sleep(.35);subprocess.run(['/usr/bin/import','-window','root',str(root/(stage.lower()+'.png'))],check=True,env=env)
             for stage in ('ESCAPE_CONFIRM','ESCAPE_REVIEW','ESCAPE_SWARM'):
@@ -153,7 +154,7 @@ with (root/'app.log').open('wb') as log:
             assert not effects and not any('create' in a or 'start' in a or 'session-action' in a for a in calls)
             assert calls.count(['swarm','preview','fixture-peer'])==2 and calls.count(['swarm','preview','fixture-uninitialized'])==1 and calls.count(['swarm','preview','fixture-failed'])==1
             assert calls.count(['swarm','join','fixture-peer'])==1 and calls.count(['swarm','sync'])==1 and calls.count(['swarm','get'])==4,calls
-            assert {'COMPUTERS','FILTERED','LOADING','MAP','UNINITIALIZED','FAILED','SAME','CONNECTED','ESCAPE_SWARM'} <= stages,stages
+            assert {'PRESELECTED','COMPUTERS','FILTERED','LOADING','MAP','UNINITIALIZED','FAILED','SAME','CONNECTED','ESCAPE_SWARM'} <= stages,stages
             print('PASS private mockup Swarm UI: read-only opening/preview, exact one Join/Sync, failed/uninitialized refusal, four fresh reads, no replay/creation/removal, real Escape/focus and Manage connections')
             raise SystemExit(0)
         if swarm_native:

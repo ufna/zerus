@@ -16,6 +16,11 @@ export async function swarmUiSmoke(allowed: boolean) {
   const status = () => dialog()!.querySelector('[role="status"]')?.textContent ?? "";
   try {
     await until(() => projectsPage().loaded && button("Swarm…", document) && !button("Swarm…", document).disabled);
+    await until(() => !!button("Connect project catalogs…", document));
+    button("Connect project catalogs…", document).click();
+    await until(() => dialog()?.open && !button("Preview connection").disabled);
+    need(dialog()!.querySelector<HTMLSelectElement>('[aria-label="Computer to connect"]')?.value === "fixture-uninitialized", "notice did not preselect the unconnected computer");
+    await capture("PRESELECTED"); button("Close").click(); await until(() => !dialog());
     const origin = button("Swarm…", document); origin.focus(); origin.click();
     await until(() => dialog()?.open && !button("Sync now").disabled);
     need(dialog()!.querySelectorAll(".sw-table tbody tr").length === 3, "Computers rows missing");
@@ -29,7 +34,7 @@ export async function swarmUiSmoke(allowed: boolean) {
     choose("fixture-peer"); preview(); await until(() => dialog()!.querySelector('[role="progressbar"]')); await capture("LOADING");
     await until(() => !!dialog()!.querySelector(".sw-map") && !button("Join and merge projects").disabled);
     const choices = [...dialog()!.querySelectorAll<HTMLSelectElement>(".sw-map select")];
-    need(choices.length === projectsPage().projects.length && choices.every((s) => s.value === ""), "mapping did not default to separate projects");
+    need(choices.length === projectsPage().projects.length && choices.every((s) => s.getAttribute("aria-label") === "Match Inbox" ? s.value === "ungrouped" : s.value === ""), "identical Inbox ID must match; distinct IDs must stay separate");
     choices[0].value = "remote-project"; choices[0].dispatchEvent(new Event("change", { bubbles: true }));
     need(dialog()!.querySelector<HTMLInputElement>('.check input')?.checked, "keep-placement default missing"); await capture("MAP");
     choose("fixture-uninitialized"); need(button("Connect this member").disabled, "changing computer reused a Preview"); preview();

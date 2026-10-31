@@ -79,7 +79,7 @@ export function ProjectsScreen() {
     stopSplit = end; addEventListener("pointermove", move); addEventListener("pointerup", end); addEventListener("pointercancel", end);
   };
   onCleanup(() => stopSplit?.());
-  const [swarmOrigin, setSwarmOrigin] = createSignal<{ element: HTMLElement; connect: boolean }>();
+  const [swarmOrigin, setSwarmOrigin] = createSignal<{ element: HTMLElement; connect: boolean; preferred?: string }>();
   const [overviewOrigin, setOverviewOrigin] = createSignal<HTMLElement>();
   const [cloneOrigin, setCloneOrigin] = createSignal<HTMLElement>();
   const folderEdits = createProjectFolders(() => view().projects, setSelectedFolder);
@@ -215,7 +215,7 @@ export function ProjectsScreen() {
           <div class="notice proj-guide">
             <Icon name="link" size={14} />
             <span class="grow">{notice()}</span>
-            <button class="btn small" disabled={!view().loaded} onClick={(e) => setSwarmOrigin({ element: e.currentTarget, connect: true })}>Connect project catalogs…</button>
+            <button class="btn small" disabled={!view().loaded} onClick={(e) => setSwarmOrigin({ element: e.currentTarget, connect: true, preferred: view().unconnected[0] })}>Connect project catalogs…</button>
           </div>
         )}</Show>
 
@@ -312,7 +312,7 @@ export function ProjectsScreen() {
           )}</Show>
         </div>
       </div>
-      <Suspense><Show when={swarmOrigin()} keyed>{(origin) => <ProjectSwarmDialog projects={view().projects} connect={origin.connect} origin={origin.element} close={() => setSwarmOrigin(undefined)} />}</Show></Suspense>
+      <Suspense><Show when={swarmOrigin()} keyed>{(origin) => <ProjectSwarmDialog projects={view().projects} connect={origin.connect} preferred={origin.preferred} origin={origin.element} close={() => setSwarmOrigin(undefined)} />}</Show></Suspense>
       <Suspense><Show when={overviewOrigin()} keyed>{(origin) => <WorktreeOverviewDialog projects={view().projects} all={allSwarm()} origin={origin} close={() => setOverviewOrigin(undefined)} />}</Show></Suspense>
       <Suspense><Show when={cloneOrigin()} keyed>{(origin) => <ProjectCloneDialog project={project()?.id ?? "ungrouped"} preferred={selected()?.machine} projects={view().projects} origin={origin} close={() => setCloneOrigin(undefined)} placed={(project, folder) => {setSelectedProject(project); setSelectedFolder(folder);}} />}</Show></Suspense>
       <Suspense><Show when={folderEdits.prompt()} keyed>{(prompt) => <ProjectFolderDialog prompt={prompt} busy={folderEdits.busy()} folders={view().projects.find((p) => p.id === prompt.project)?.folders ?? []} close={folderEdits.close} save={(place, path, name) => { void folderEdits.save(place, path, name); }} />}</Show></Suspense>

@@ -81,9 +81,11 @@ The lazy `ProjectSwarmDialog` follows the mockup's Computers and Connect compute
 tabs. It keeps one native view, coalesces fixed-size change events and rejects
 status replies that predate an explicit action. It adds no polling timer.
 Computer filtering/sorting uses stable IDs, and project mappings are exact IDs
-with separate projects as the default. A failed/uninitialized preview cannot
+with identical IDs preselected (the CLI merges those keys) and distinct projects
+separate by default. A failed/uninitialized preview cannot
 join; changing the selected computer discards the displayed preview. Close and
 Escape restore focus, while an admitted changing call keeps the dialog open.
+The unconnected-catalog notice preselects its first saved unconnected computer.
 Manage connections uses the existing Machines page. The conflict count is shown;
 its review tab remains unavailable until the separate conflict adapter lands.
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createSwarm, syncText, type Call, type SwarmView } from "./project-swarm";
+import { createSwarm, syncText, seedMappings, initialAlias, type Call, type SwarmView } from "./project-swarm";
 const tick = async () => { for (let i = 0; i < 12; ++i) await Promise.resolve(); };
 const frame = (): SwarmView => ({ id: "opaque-dialog", catalog: { swarm_id: "catalog", conflicts: 0, computers: [] }, projects: [], aliases: ["fixture-peer"], preview: null, status: "", error: false, busy: false, changing: false, can_sync: true, can_join: false, can_preview: true, mode: "config" });
 const port = (read: (command: string, args?: Record<string, unknown>) => Promise<unknown>): Call => async <T,>(command: string, args?: Record<string, unknown>) => await read(command, args) as T;
@@ -81,6 +81,19 @@ describe("Project swarm event controller", () => {
   });
   it("retains the native error text without an outdated warning or dot separator", () => {
     expect(syncText({ id: "peer", name: "Peer", access: "fixture-peer", sync: { state: "error", text: "fixture connection refused" }, tasks_outdated: true })).toBe("fixture connection refused");
-    expect(syncText({ id: "peer", name: "Peer", access: "fixture-peer", sync: { state: "waiting" }, tasks_outdated: true })).toBe("Waiting to sync, Update Zerus there to share tasks");
+    expect(syncText({ id: "peer", name: "Peer", access: "fixture-peer", sync: { state: "waiting" }, tasks_outdated: true })).toBe("Waiting to sync. Update Zerus there to share tasks");
   });
+});
+
+it("preselects identical project IDs honestly, while distinct and prototype-shaped IDs stay separate", () => {
+  const local = [{ id: "ungrouped", name: "Inbox" }, { id: "local-only", name: "Same name" }, { id: "constructor", name: "Opaque ID" }];
+  const peer = [{ id: "ungrouped", name: "Inbox" }, { id: "remote-only", name: "Same name" }];
+  const mapping = seedMappings(local, peer);
+  expect([...mapping]).toEqual([["ungrouped", "ungrouped"]]);
+  expect(mapping.get("local-only")).toBeUndefined(); expect(mapping.get("constructor")).toBeUndefined();
+});
+it("selects the notice's exact unconnected alias after choices arrive, with a saved-choice fallback", () => {
+  expect(initialAlias(["already-connected", "new-peer"], "new-peer")).toBe("new-peer");
+  expect(initialAlias(["already-connected"], "not-configured")).toBe("already-connected");
+  expect(initialAlias([], "new-peer")).toBe("");
 });
