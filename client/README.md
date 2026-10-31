@@ -1542,9 +1542,15 @@ archive writer. It never retries cleanup. Admitted rows stay bounded at 64;
 overflow contributes to the chip counts and uses the existing Worktrees review
 route. Its exact archive restore identity remains available independently of the
 cleanup row. A refused restore leaves the warning and recorded outcome in place.
+On an older CLI whose successful help reply lacks the computer-guard capability,
+Archive and Terminate keep their original calls. Their notice offers Review only;
+an unguarded Restore is never offered. Failed or timed-out capability probes do
+not fall back to a weaker call.
 
 For the recovery walk, first run `npm run build` in `client`, then build the
 Tauri app with `--features media,tauri/custom-protocol` so it embeds those assets.
-Add `--recovery` to the command above. It covers both Restore surfaces, changed
+Add `--recovery` to the command above. Use `--legacy` for the older-CLI Archive,
+Review-only, singular-row copy and Escape walk. The normal recovery walk covers
+both Restore surfaces, changed
 archive identity, refusal, unknown outcomes, overflow, and Escape focus return,
 using a private D-Bus, Xvfb, HOME/XDG/TMPDIR/TMUX_TMPDIR and a fake hgs.

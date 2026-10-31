@@ -856,13 +856,13 @@ pub async fn run_action(
     } else {
         String::new()
     };
-    let outcome = if ending && !machine.is_empty() {
+    let (outcome, restore_supported) = if ending && !machine.is_empty() {
         dispatch_guarded_end(&state, target.clone(), action, machine.clone()).await?
     } else {
-        dispatch(&state, target.clone(), action).await?
+        (dispatch(&state, target.clone(), action).await?, false)
     };
     let cleanup_capture = ending
-        .then(|| cleanup.observe(&app, &target, &machine, &outcome))
+        .then(|| cleanup.observe(&app, &target, &machine, &outcome, restore_supported))
         .flatten();
     Ok(ActionReply {
         outcome,
@@ -875,11 +875,28 @@ async fn dispatch_guarded_end(
     target: Target,
     action: Action,
     machine: String,
-) -> Result<Outcome, String> {
+) -> Result<(Outcome, bool), String> {
+    dispatch_end_with(state, target, action, machine, run).await
+}
+
+/// Legacy peers retain their original end action. Only a successful probe
+/// explicitly lacking the marker permits that fallback; transport failures
+/// never authorize a second attempt or a weaker Restore.
+pub(crate) async fn dispatch_end_with(
+    state: &Actions,
+    target: Target,
+    action: Action,
+    machine: String,
+    runner: impl Fn(&std::path::Path, &zerus_client_core::Invocation) -> zerus_client_core::Exit
+        + Send
+        + 'static,
+) -> Result<(Outcome, bool), String> {
     if blocked() {
-        return Ok(failed(REPLAY_NEEDS_HGS));
+        return Ok((failed(REPLAY_NEEDS_HGS), false));
     }
-    dispatch_with_plan(
+    let supported = Arc::new(AtomicBool::new(false));
+    let observed = Arc::clone(&supported);
+    let outcome = dispatch_with_plan(
         state,
         target,
         action,
@@ -887,12 +904,22 @@ async fn dispatch_guarded_end(
         move |hgs, inv, _| {
             let mut guarded = inv.clone();
             zerus_client_core::worktrees::guard(&mut guarded.args, &machine);
-            zerus_client_core::worktrees::run_guarded(hgs, &guarded, run)
-                .unwrap_or_else(zerus_client_core::Exit::StartFailed)
+            let probe = zerus_client_core::worktrees::guard_probe(&guarded);
+            match zerus_client_core::worktrees::guard_supported(runner(hgs, &probe)) {
+                Ok(()) => {
+                    observed.store(true, Ordering::Relaxed);
+                    runner(hgs, &guarded)
+                }
+                Err(error) if error == zerus_client_core::worktrees::GUARDED_UNSUPPORTED => {
+                    runner(hgs, inv)
+                }
+                Err(error) => zerus_client_core::Exit::StartFailed(error),
+            }
         },
         None,
     )
-    .await
+    .await?;
+    Ok((outcome, supported.load(Ordering::Relaxed)))
 }
 
 pub(crate) async fn restore_captured(
