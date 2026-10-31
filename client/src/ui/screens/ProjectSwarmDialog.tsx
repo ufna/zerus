@@ -45,7 +45,7 @@ export default function ProjectSwarmDialog(props: { projects: Project[]; connect
   createEffect(() => {
     const p = view()?.preview, req = requested();
     if (p && req && p.id !== req.previous && p.alias === req.alias && p.alias === alias() && p.id !== validPreview()) {
-      setValidPreview(p.id); setMapping(seedMappings(view()?.projects ?? [], p.projects)); setKeep(true);
+      setMapping(seedMappings(view()?.projects ?? [], p.projects)); setKeep(true); setValidPreview(p.id);
     }
   });
   const chooseAlias = (next: string) => { setAlias(next); setRequested(undefined); setValidPreview(undefined); setMapping(new Map()); };
@@ -99,7 +99,7 @@ export default function ProjectSwarmDialog(props: { projects: Project[]; connect
               <Match when={!busy() && !view()?.aliases.length}><p class="sw-msg">Add a computer in Manage connections first.</p></Match>
               <Match when={loading()}><div class="sw-msg"><p>Reading the other project catalog…</p><div class="su-progress su-indet" role="progressbar" aria-label="Reading the other project catalog"><i /></div></div></Match>
               <Match when={preview()?.initialized && preview()?.same_swarm}><p class="sw-msg su-pre">{`${alias()} already shares this project catalog.\nConnect directly to synchronize through this computer.`}</p></Match>
-              <Match when={differs()}><p class="muted">Choose which projects are the same. Projects stay separate unless you match them below.</p><div class="su-tablewrap"><table class="su-table sw-map"><thead><tr><th>Project on this computer</th><th>Project in the other catalog</th></tr></thead><tbody><For each={(view()?.projects ?? []).map((p) => p.id)}>{(id) => <tr><td><ProjectLabel project={label(id)} small /></td><td><select class="field" aria-label={`Match ${localById().get(id)?.name ?? id}`} disabled={busy()} value={mapping().get(id) ?? ""} onChange={(e) => setMapping((m) => new Map(m).set(id, e.currentTarget.value))}><option value="">Keep as a separate project</option><For each={preview()?.projects ?? []}>{(p) => <option value={p.id}>{p.name} ({p.id.slice(0, 8)})</option>}</For></select></td></tr>}</For></tbody></table></div></Match>
+              <Match when={differs()}><p class="muted">Choose which projects are the same. Projects stay separate unless you match them below.</p><div class="su-tablewrap"><table class="su-table sw-map"><thead><tr><th>Project on this computer</th><th>Project in the other catalog</th></tr></thead><tbody><For each={(view()?.projects ?? []).map((p) => p.id)}>{(id) => <tr><td><ProjectLabel project={label(id)} small /></td><td><select class="field" aria-label={`Match ${localById().get(id)?.name ?? id}`} disabled={busy()} value={mapping().get(id) ?? ""} onChange={(e) => setMapping((m) => new Map(m).set(id, e.currentTarget.value))}><option value="" selected={!mapping().get(id)}>Keep as a separate project</option><For each={preview()?.projects ?? []}>{(p) => <option value={p.id} selected={mapping().get(id) === p.id}>{p.name} ({p.id.slice(0, 8)})</option>}</For></select></td></tr>}</For></tbody></table></div></Match>
               <Match when={view()?.status === `Connected to ${alias()}.`}><p class="sw-msg">Connected to {alias()}.</p></Match>
               <Match when={true}><p class="sw-msg">Choose a computer and preview its project catalog before connecting.</p></Match>
             </Switch></div>

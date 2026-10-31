@@ -34,6 +34,7 @@ export async function swarmUiSmoke(allowed: boolean) {
     choose("fixture-peer"); preview(); await until(() => dialog()!.querySelector('[role="progressbar"]')); await capture("LOADING");
     await until(() => !!dialog()!.querySelector(".sw-map") && !button("Join and merge projects").disabled);
     const choices = [...dialog()!.querySelectorAll<HTMLSelectElement>(".sw-map select")];
+    await log("MAP_VALUES " + JSON.stringify({ total: choices.length, inbox: choices.find((s) => s.getAttribute("aria-label") === "Match Inbox")?.value, separate: choices.filter((s) => !s.value).length }));
     need(choices.length === projectsPage().projects.length && choices.every((s) => s.getAttribute("aria-label") === "Match Inbox" ? s.value === "ungrouped" : s.value === ""), "identical Inbox ID must match; distinct IDs must stay separate");
     choices[0].value = "remote-project"; choices[0].dispatchEvent(new Event("change", { bubbles: true }));
     need(dialog()!.querySelector<HTMLInputElement>('.check input')?.checked, "keep-placement default missing"); await capture("MAP");
