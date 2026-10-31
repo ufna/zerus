@@ -629,9 +629,12 @@ must refuse this bound and obtain fresh G1/G3 agreement before qualification.
 Decoded header Value trees, Signature/QuickFields and diagnostic construction,
 allocator rounding, queue/Arc/HashMap bookkeeping, stacks, runtime/reactor,
 FD/ancillary/kernel buffers and external tracing sinks are class M, outside this
-numeric claim. H bounds their input; H is not a metadata heap bound. Counters
-record admission, prefix/auth limits and sticky refusal only. They neither
-measure opaque allocations nor prove destruction. This dormant wire/text slice
+numeric claim. H bounds the declared fields length. Malformed nested decoding
+can reach the remaining frame or body up to F before outer-array rejection;
+H is not a decoded-input or metadata heap bound. This source finding makes no
+numeric heap or exploit claim. Counters record admission, prefix/auth limits and
+sticky refusal only. They neither measure opaque allocations nor prove
+destruction. This dormant wire/text slice
 supplies no production activation, body routing, native method/callback adoption
 or whole-profile memory qualification.
 
