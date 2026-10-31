@@ -105,7 +105,7 @@ export function createMachineEditor(view: Accessor<MachinesView>, write: (reques
     if (selected() !== LOCAL_MACHINE && !isNew() && !view().machines.some((m) => m.alias === selected())) apply(LOCAL_MACHINE);
     else seed(selected());
   }));
-  return { selected, draft, notice, prompt, busy, isNew, valid, duplicate, edit, choose, save, reset, remove, confirm, cancel, pickKey, openSsh };
+  return { selected, draft, notice, prompt, busy, isNew, valid, duplicate, edit, choose, save, reset, remove, confirm, cancel, pickKey, openSsh, clearNotice: () => setNotice(undefined) };
 }
 
 export const machineEditor = createRoot(() => createMachineEditor(machinesPage, machineChange, loadMachines, fleetRefresh, {

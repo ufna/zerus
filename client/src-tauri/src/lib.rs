@@ -1139,6 +1139,8 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         screens::machine_check,
         screens::machine_change,
         screens::machine_ssh,
+            screens::machine_setup::machine_setup,
+            screens::machine_setup::machine_pick_source,
         screens::machine_pick_key,
         screens::projects_view,
         screens::launch_accounts,

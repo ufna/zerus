@@ -6,6 +6,7 @@ import { MachineLabel } from "../components/MachineLabel";
 import { Actions, Lines, Spinner, Status } from "../components/Status";
 import { paletteIndex } from "../sessions/SessionCard";
 const MachineColorDialog = lazy(() => import("./MachineColorDialog"));
+const MachineSetupDialog = lazy(() => import("./MachineSetupDialog"));
 const MachineConnectionDialog = lazy(() => import("./MachineConnectionDialog"));
 import { machineEditor as editor, NEW_MACHINE } from "../../store/machineEditor";
 import { tr } from "../../i18n";
@@ -17,17 +18,18 @@ import { connectionOf, osOf } from "../../store/overview";
 import { machineAppearance } from "../../store/machineAppearance";
 import { setSetting, settings, settingsLoaded } from "../../store/settings";
 import { setMachineFilter, setPage } from "../../store/ui";
-import { MACHINE_EDITING } from "./reasons";
+import { machineSetupEditor as setup } from "../../store/machineSetup";
 import { LOCAL, localState, peerState, placeholders, summary, testEnabled, type LocalState, type PeerState } from "./machines-ui";
 
 // Machines (MachinesPage.cpp), ported from design/webui/src/screens/Machines.tsx:
 // this computer and the saved peers of `hgs machine ls`, each with its stream
 // state, and an editor with the Zerus overrides and the effective SSH
 // connection. Connection writes and terminal launches keep the CLI revision
-// guard; setup retains its disabled position until its separate slice.
+// guard; setup and local enablement require their own explicit confirmation.
 
 const selected = editor.selected;
-const setSelected = editor.choose;
+const busy = () => editor.busy() || setup.busy();
+const setSelected: typeof editor.choose = (...args) => { if (!setup.busy()) editor.choose(...args); };
 
 function MetaLine(props: { meta: MachineMeta }) {
   return (
@@ -41,7 +43,7 @@ function MetaLine(props: { meta: MachineMeta }) {
 function MachineCard(props: { selection: string; alias: string; line: string; tile: MachineState; meta: MachineMeta | undefined; showMeta: boolean; offline: boolean }) {
   const on = () => selected() === props.selection;
   return (
-    <button class="mach-card" classList={{ on: on(), offline: props.offline }} aria-current={on()} disabled={editor.busy()} onClick={() => setSelected(props.selection)}>
+    <button class="mach-card" classList={{ on: on(), offline: props.offline }} aria-current={on()} disabled={busy()} onClick={() => setSelected(props.selection)}>
       <MachineTile os={osOf(props.meta?.platform)} state={props.tile} />
       <span class="mach-col">
         <span class="row"><MachineLabel alias={props.alias} /></span>
@@ -68,9 +70,11 @@ function Editor(props: { local: LocalState; peers: { row: MachineRow; state: Pee
   const row = () => peer()?.row;
   const name = () => (isLocal() ? props.local.name : editor.isNew() ? "New machine" : selected());
   const draft = editor.draft;
-  const fieldsDisabled = () => isLocal() || editor.busy();
+  const fieldsDisabled = () => isLocal() || busy();
   const effective = () => (view().effective?.alias === selected() ? view().effective : null);
   const check = () => (view().check?.alias === selected() ? view().check : null);
+  const setupResult = () => setup.result()?.target === selected() ? setup.result() : undefined;
+  const setupCheck = () => setupResult()?.followup ? check() : null;
   const hint = () => placeholders(draft().dirty ? null : effective(), selected());
   const formHidden = () => isLocal() && props.local.formHidden;
   const [colorEditor, setColorEditor] = createSignal<{ alias: string; origin: HTMLElement }>();
@@ -78,6 +82,7 @@ function Editor(props: { local: LocalState; peers: { row: MachineRow; state: Pee
   const appearanceAvailable = () => settingsLoaded() && !!name() && !editor.isNew();
   return (
     <div class="mach-editor">
+      <Show when={setup.prompt()} keyed>{(prompt) => <MachineSetupDialog prompt={prompt} />}</Show>
       <Show when={editor.prompt()}>{(prompt) => <MachineConnectionDialog prompt={prompt()} close={editor.cancel} confirm={editor.confirm} />}</Show>
       <div class="mach-title">
         <h2>{editor.isNew() ? tr("New machine") : name()}</h2>
@@ -144,8 +149,8 @@ function Editor(props: { local: LocalState; peers: { row: MachineRow; state: Pee
           </div>
           <Actions>
             <button class="btn primary" disabled={fieldsDisabled() || !view().loaded || !draft().revision || !editor.valid() || editor.duplicate() || !(draft().dirty || editor.isNew())} onClick={() => void editor.save()}>Save connection</button>
-            <Show when={editor.isNew()}><button class="btn" disabled={editor.busy()} onClick={() => editor.choose(LOCAL)}>Discard draft</button></Show>
-            <button class="btn" disabled={editor.busy() || draft().dirty || editor.isNew() || !testEnabled(selected(), view())} onClick={() => void testConnection(selected())}><Icon name="plug" size={13} />Test connection</button>
+            <Show when={editor.isNew()}><button class="btn" disabled={busy()} onClick={() => editor.choose(LOCAL)}>Discard draft</button></Show>
+            <button class="btn" disabled={busy() || draft().dirty || editor.isNew() || !testEnabled(selected(), view())} onClick={() => void testConnection(selected())}><Icon name="plug" size={13} />Test connection</button>
             <button class="btn" disabled={fieldsDisabled() || editor.isNew() || draft().dirty || !draft().revision} onClick={() => void editor.openSsh()}><Icon name="square-terminal" size={13} />Open SSH terminal</button>
           </Actions>
         </section>
@@ -155,22 +160,24 @@ function Editor(props: { local: LocalState; peers: { row: MachineRow; state: Pee
         <h3>Setup</h3>
         <Actions>
           <Show when={isLocal() && props.local.canEnable}>
-            <button class="btn primary" disabled title={MACHINE_EDITING}>Enable local sessions</button>
+            <button class="btn primary" disabled={busy() || !setup.canEnable()} title="Run agents on this computer too. Zerus stages the HGS CLI and a session host in your user profile." onClick={() => setup.open("enable")}>Enable local sessions</button>
           </Show>
           <Show when={!formHidden()}>
-            <button class="btn" disabled title={MACHINE_EDITING}><Icon name="download" size={13} />Install / update HGS…</button>
+            <button class="btn" disabled={busy() || isLocal() || editor.isNew() || draft().dirty} onClick={() => setup.open("install")}><Icon name="download" size={13} />Install / update HGS…</button>
           </Show>
           <Show when={!(isLocal() && props.local.console)}>
-            <button class="btn" disabled={editor.busy() || editor.isNew()} onClick={() => { setMachineFilter([name()]); setPage("sessions"); }}>
+            <button class="btn" disabled={busy() || editor.isNew()} onClick={() => { setMachineFilter([name()]); setPage("sessions"); }}>
               <Icon name="rows-3" size={13} />View sessions
             </button>
-            <button class="btn" disabled={editor.busy() || editor.isNew()} onClick={() => { setAccountMachine(isLocal() ? "" : selected()); setPage("accounts"); }}>
+            <button class="btn" disabled={busy() || editor.isNew()} onClick={() => { setAccountMachine(isLocal() ? "" : selected()); setPage("accounts"); }}>
               <Icon name="user-round-cog" size={13} />Agent accounts…
             </button>
           </Show>
         </Actions>
+        <Show when={!editor.notice() && setupResult()}>{(r) => <Status kind={(setupCheck()?.error ?? r().error) ? "error" : setup.busy() || setupCheck()?.pending ? "busy" : "muted"}><Lines text={setupCheck()?.text ?? r().text} /></Status>}</Show>
         <Show when={editor.notice()}>{(n) => <Status kind={n().error ? "error" : "muted"}><Lines text={n().text} /></Status>}</Show>
-        <Show when={!editor.notice() && check()}>{(c) => <Status kind={c().pending ? "busy" : c().error ? "error" : "muted"}><Lines text={c().text} /></Status>}</Show>
+        <Show when={!editor.notice() && !setupResult() && check()}>{(c) => <Status kind={c().pending ? "busy" : c().error ? "error" : "muted"}><Lines text={c().text} /></Status>}</Show>
+        <Show when={setupResult()?.output}><pre class="mach-log" aria-label="Setup output">{setupResult()!.output}</pre></Show>
       </section>
 
       <Show when={!formHidden()}>
@@ -215,11 +222,11 @@ export function MachinesScreen() {
       <div class="mach-shell">
         <header class="mach-head">
           <h1>{tr("Machines")}</h1>
-          <button class="icon-btn" title={tr("Refresh machines")} aria-label={tr("Refresh machines")} disabled={editor.busy()} onClick={() => editor.choose(selected(), true)}>
+          <button class="icon-btn" title={tr("Refresh machines")} aria-label={tr("Refresh machines")} disabled={busy()} onClick={() => editor.choose(selected(), true)}>
             <Show when={!view().refreshing} fallback={<Spinner />}><Icon name="refresh-cw" size={15} /></Show>
           </button>
           <span class="grow" />
-          <button class="btn primary" disabled={editor.busy()} onClick={() => { editor.choose(NEW_MACHINE); if (editor.isNew() && !editor.prompt()) queueMicrotask(() => document.getElementById("mach-alias")?.focus()); }}><Icon name="plus" size={14} />Add machine</button>
+          <button class="btn primary" disabled={busy()} onClick={() => { editor.choose(NEW_MACHINE); if (editor.isNew() && !editor.prompt()) queueMicrotask(() => document.getElementById("mach-alias")?.focus()); }}><Icon name="plus" size={14} />Add machine</button>
         </header>
         <p class="muted mach-summary">{summary({ console: local().console, live: ["live", "polled"].includes(catalog.computers[""]?.status ?? "") }, peers().map((p) => p.state))}</p>
         <Show when={view().error}>{(error) => <Status kind="error"><Lines text={error()} /></Status>}</Show>

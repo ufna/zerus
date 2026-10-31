@@ -524,6 +524,15 @@ export async function machinePickKey(): Promise<string | null> {
   return invoke<string | null>("machine_pick_key");
 }
 
+export async function machineSetup(request: import("./types").MachineSetupRequest): Promise<import("./types").MachineSetupOutcome> {
+  if (!inTauri()) throw new Error(DESKTOP_ONLY);
+  return invoke("machine_setup", { request });
+}
+export async function machinePickSource(): Promise<string | null> {
+  if (!inTauri()) throw new Error(DESKTOP_ONLY);
+  return invoke("machine_pick_source");
+}
+
 /** "Test connection": `machine check`, up to 25 s. */
 export async function machineCheck(alias: string): Promise<MachinesView> {
   if (!inTauri()) return emptyMachines(DESKTOP_ONLY);

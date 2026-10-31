@@ -1022,6 +1022,10 @@ export function PerfHost() {
       const { markdownSmoke } = await import("../perf/markdownSmoke");
       void markdownSmoke(!!config().replay && !!config().actions_smoke);
     }
+    if (new URLSearchParams(location.search).has("machines-setup-smoke") && inTauri()) {
+      const { machinesSetupSmoke } = await import("../perf/machinesSmoke");
+      void machinesSetupSmoke(!!config().replay && !!config().actions_smoke);
+    }
     if (new URLSearchParams(location.search).has("machines-tools-smoke") && inTauri()) {
       const { machinesToolsSmoke } = await import("../perf/machinesSmoke");
       void machinesToolsSmoke(!!config().replay && !!config().actions_smoke);

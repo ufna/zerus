@@ -112,3 +112,46 @@ export async function machinesToolsSmoke(allowed: boolean) {
     await log(`PASS ${assertions}`);await invoke("exit_app", { code: 0 });
   } catch (error) { await log(`FAIL ${String(error)}`);await invoke("exit_app", { code: 1 }); }
 }
+
+/** Confirmed installers use only the private fake CLI; never real SSH or staging. */
+export async function machinesSetupSmoke(allowed: boolean) {
+  if (!allowed) return;
+  const { machineSetupEditor: setup } = await import("../store/machineSetup");
+  const log = (text: string) => invoke("perf_log", { line: `machine-setup-smoke: ${text}` });
+  let assertions = 0;const check = (ok: boolean, reason: string) => { require(ok, reason);assertions++; };
+  const calls = () => invoke<{argv: string[]}[]>("smoke_log");
+  try {
+    setPage("machines");await until(() => machinesPage().loaded && !machineEditor.busy() && !!document.querySelector(".mach-editor"), "Machines did not load");
+    buttons().find((b) => b.classList.contains("mach-card") && b.textContent?.includes("fixture-peer"))!.click();
+    await until(() => machineEditor.selected() === "fixture-peer" && !machineEditor.busy(), "peer not selected");
+    click("Install / update HGS…");await until(() => !!document.querySelector("dialog[open]"), "setup confirmation missing");
+    check(document.body.textContent?.includes("Install HGS on fixture-peer") === true && !!document.querySelector('input[placeholder="Default: ~/.local/src/hgs on this device"]'), "mockup setup text missing");
+    await log("SETUP");await sleep(700);click("Cancel");
+    check(!(await calls()).some((c) => c.argv[0] === "machine" && c.argv[1] === "setup"), "Cancel executed setup");
+    click("Install / update HGS…");await until(() => !!document.querySelector("dialog[open]"), "second confirmation missing");
+    const input = document.querySelector('input[aria-label="HGS source folder"]') as HTMLInputElement;
+    input.value = "/synthetic/source with spaces";input.dispatchEvent(new Event("input", { bubbles: true }));click("Install HGS");
+    await until(() => !setup.busy() && !!setup.result()?.output, "setup did not settle");
+    let recorded = await calls();const installs = recorded.filter((c) => c.argv[0] === "machine" && c.argv[1] === "setup");
+    check(installs.length === 1, "setup did not execute once");
+    check(installs[0].argv.includes("--revision") && installs[0].argv.at(-1) === "/synthetic/source with spaces", "setup lost original revision/source");
+    check(document.querySelector('.mach-log')?.textContent?.includes("Setup complete: hgs fixture-installed") === true, "bounded setup output missing");
+    await log("INSTALLED");await sleep(700);
+    click("Install / update HGS…");await until(() => !!document.querySelector("dialog[open]"), "unknown confirmation missing");click("Install HGS");
+    await until(() => !setup.busy() && setup.result()?.error === true, "unknown result missing");await sleep(350);
+    recorded = await calls();check(recorded.filter((c) => c.argv[0] === "machine" && c.argv[1] === "setup").length === 2, "unknown setup replayed");
+    check(setup.result()!.text.includes("unknown") && setup.result()!.output.includes("Original setup output"), "unknown result/output lost");
+    await log("UNKNOWN");await sleep(700);
+    buttons().find((b) => b.classList.contains("mach-card") && b.textContent?.includes("workstation"))!.click();
+    await until(() => setup.canEnable(), "Windows console metadata missing");click("Enable local sessions");
+    await until(() => !!document.querySelector("dialog[open]"), "local enable confirmation missing");
+    check(document.body.textContent?.includes("To disable local sessions again, run hgs session-host uninstall.") === true, "mockup enable text missing");
+    await log("ENABLE");await sleep(700);click("Cancel");
+    check(!(await calls()).some((c) => c.argv[0] === "session-host"), "local Cancel called host");
+    click("Enable local sessions");await until(() => !!document.querySelector("dialog[open]"), "second enable confirmation missing");
+    const confirm = Array.from(document.querySelectorAll<HTMLButtonElement>('dialog[open] button')).find((b) => b.textContent === "Enable local sessions")!;confirm.click();
+    await until(() => !setup.busy() && setup.result()?.text.startsWith("Local sessions are enabled") === true, "local enable did not settle");
+    recorded = await calls();check(recorded.filter((c) => c.argv.join(" ") === "session-host install --json").length === 1, "local install did not execute once");
+    await log(`PASS ${assertions}`);await invoke("exit_app", { code: 0 });
+  } catch (error) { await log(`FAIL ${String(error)} result=${JSON.stringify(setup.result())} prompt=${JSON.stringify(setup.prompt())} busy=${setup.busy()} editorBusy=${machineEditor.busy()}`);await invoke("exit_app", { code: 1 }); }
+}

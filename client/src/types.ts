@@ -337,6 +337,7 @@ export interface MachineMetrics {
 /** This Windows computer's session host. */
 export interface LocalHost { state: string | null; pid: number | null; protocol: number | null; conpty: string | null; integrity: string | null; windows_session: number | null; error: string | null }
 export interface MachineMeta {
+  machine_id?: string;
   host: string | null;
   hgs_version: string | null;
   platform: string | null;
@@ -409,6 +410,8 @@ export interface MachineRow { alias: string; enabled: boolean; source: string; i
 export interface MachineConnection { hostname: string; user: string; port: number | null; identity_file: string; enabled: boolean }
 export type MachineChange = { kind: "set"; connection: MachineConnection; create: boolean } | { kind: "reset" | "remove" };
 export interface MachineReference { alias: string; revision: string }
+export type MachineSetupRequest = { kind: "install"; reference: MachineReference; source: string } | { kind: "enable"; machine_id: string };
+export interface MachineSetupOutcome { success: boolean; uncertain: boolean; text: string; output: string }
 export interface MachineChangeRequest { alias: string; revision: string; change: MachineChange }
 export interface Effective { alias: string; pending: boolean; error: boolean; text: string; hostname: string; user: string; port: string; key: string }
 export interface CheckResult { alias: string; pending: boolean; error: boolean; text: string }
