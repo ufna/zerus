@@ -44,6 +44,12 @@ if '--worker' not in sys.argv:
         first['row'].update({'name':'sh/example/probe','cmd':'sh','agent':'sh'})
         frames[1]['items'].append(comparison)
     (root/'replay.ndjson').write_text(''.join(json.dumps(f)+'\n' for f in frames))
+    if options.swarm_ui:
+        import copy
+        peer=copy.deepcopy(frames[:3]);peer[0].update(machine_id='44444444-4444-4444-8444-444444444444',host='fixture-uninitialized',topics=['catalog','catalog.meta']);peer[1]['items']=[];peer[2]['value'].update(host='fixture-uninitialized',peers=[])
+        peer.append({'v':1,'seq':4,'t':'heartbeat','at':1793000000.0})
+        (root/'peer-replay.ndjson').write_text(''.join(json.dumps(f)+'\n' for f in peer))
+
     if options.overview_ui:(root/'overview-ui').touch()
     fake=root/'bin/fake-hgs';fake.write_text('''#!/usr/bin/python3
 import json,sys,time
@@ -117,7 +123,9 @@ print('{}')
     if options.overview_native:env['ZERUS_CLIENT_QUERY']='page=projects&skin=zerus-light&worktree-review-smoke=overview-native'
     if options.overview_ui:env['ZERUS_CLIENT_QUERY']='page=projects&skin=zerus-light&worktree-review-smoke=overview-ui'
     if options.swarm_native:env['ZERUS_CLIENT_QUERY']='page=projects&skin=zerus-light&project-swarm-smoke=native'
-    if options.swarm_ui:env['ZERUS_CLIENT_QUERY']='page=projects&skin=zerus-light&project-swarm-ui-smoke=1'
+    if options.swarm_ui:
+        env['ZERUS_CLIENT_QUERY']='page=projects&skin=zerus-light&project-swarm-ui-smoke=1'
+        env['ZERUS_CLIENT_REPLAY']+=os.pathsep+'fixture-uninitialized='+str(root/'peer-replay.ndjson')
     if options.shell_badge:env['ZERUS_CLIENT_QUERY']='page=sessions&skin=zerus-light&shell-badge-smoke=1'
     print('Private Worktrees walk:',root,flush=True)
     child=subprocess.Popen(['/usr/bin/dbus-run-session','--config-file',str(root/'bus.conf'),'--','/usr/bin/xvfb-run','-a','-s','-screen 0 1440x900x24','/usr/bin/python3',str(Path(__file__).resolve()),'--worker',str(root),str(app),*(['--shell-badge'] if options.shell_badge else []),*(['--overview-native'] if options.overview_native else []),*(['--overview-ui'] if options.overview_ui else []),*(['--swarm-native'] if options.swarm_native else []),*(['--swarm-ui'] if options.swarm_ui else [])],env=env,start_new_session=True)
