@@ -6,6 +6,7 @@ import { Icon } from "../../lib/icons";
 import { Actions, Group, Lines, SectionHead, Select, Status } from "./ui";
 import {createPhoneActions,targetOf,phoneKey,targetKey,type PhoneActions} from "./phone-actions";
 import { createMobile, type MobileState, type View } from "./mobile-page";
+import ComputerInvitations from "./ComputerInvitations";
 
 // Settings > Mobile connection (WorkspaceSettings.h, PhonePairing.cpp,
 // MobileDeliverySettings.h, SettingsPage.h:124-139) in the approved
@@ -60,16 +61,12 @@ function WorkspacePanel(props: { view?: View; refresh: () => void }) {
       </Actions>
       <Show when={controls()?.check}>{(text) => <Actions><button type="button" class="btn" disabled>{text()}</button></Actions>}</Show>
       <Show when={controls()?.invitations}>
-        <Actions>
-          <button type="button" class="btn" disabled><Icon name="key-round" size={13} />Give computer code</button>
-          <button type="button" class="btn" disabled><Icon name="copy" size={13} />Copy computer code</button>
-          <button type="button" class="btn" disabled>Cancel code</button>
-        </Actions>
+        <ComputerInvitations workspace={read()!} busy={busy()} refresh={props.refresh}/>
       </Show>
       <Actions>
         <button type="button" class="btn ghost" disabled><Icon name="chevron-right" size={13} />Advanced: legacy connector configuration</button>
       </Actions>
-      <p class="set-group-hint">Changing the workspace, starting or stopping the connector, checking a saved connection, computer invitation codes and the legacy connector configuration are not available in this client yet.</p>
+      <p class="set-group-hint">Changing the workspace, starting or stopping the connector, checking a saved connection and the legacy connector configuration are not available in this client yet.</p>
     </Group>
   );
 }

@@ -23,6 +23,8 @@ use crate::organization::Organization;
 
 mod phones;
 pub use phones::*;
+mod computers;
+pub use computers::*;
 
 const REPLAY: &str = "The mobile connection is not read in a replay.";
 /// Computers whose phones are read at once.
@@ -45,11 +47,8 @@ pub struct Calls {
 fn hgs_calls() -> Calls {
     Calls {
         status: Box::new(|| {
-            let client_dir = std::env::current_exe()
-                .ok()
-                .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf));
-            let connector = mobile::connector_program(&default_hgs(), client_dir.as_deref());
-            mobile::read_status(&connector, &mobile::config_path())
+            let (connector, config) = workspace_runtime();
+            mobile::read_status(&connector, &config)
         }),
         hosts: Box::new(|| mobile::hosts(&default_hgs())),
         phones: Box::new(|host| mobile::phones(&default_hgs(), host)),
@@ -60,11 +59,22 @@ fn hgs_calls() -> Calls {
     }
 }
 
+fn workspace_runtime() -> (std::path::PathBuf, std::path::PathBuf) {
+    let client_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf));
+    (
+        mobile::connector_program(&default_hgs(), client_dir.as_deref()),
+        mobile::config_path(),
+    )
+}
+
 pub struct Mobile(Arc<Inner>);
 
 struct Inner {
     page: Mutex<Page>,
     phone_plans: Mutex<phones::Plans>,
+    computer_plans: Mutex<computers::Plans>,
     effects: std::sync::atomic::AtomicBool,
     /// The page's clock: monotonic, so a changed system time neither names
     /// nor hides the sync service early.
@@ -98,6 +108,7 @@ impl Inner {
         Inner {
             page: Mutex::new(Page::new()),
             phone_plans: Mutex::new(phones::Plans::default()),
+            computer_plans: Mutex::new(computers::Plans::default()),
             effects: std::sync::atomic::AtomicBool::new(false),
             started: Instant::now(),
             blocked,

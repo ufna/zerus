@@ -5,7 +5,7 @@
 export interface Controls { change: boolean; enrollment: boolean; start: boolean; stop: boolean; check: string | null; invitations: boolean }
 export interface Workspace {
   state: string; encrypted: boolean; summary: string; connection: string; pending: string | null; running: boolean;
-  config_revision: string; controls: Controls;
+  config_revision: string; server_url: string; controls: Controls;
 }
 export interface Phone { id: string; name: string; platform: string; paired_at: number | null; last_seen_at: number | null; added_from: string | null; revoke: string }
 export interface PhoneList { host: string; workspace_id: string; workspace_name: string; encrypted: boolean; server_url: string; invite: string; phones: Phone[] }
