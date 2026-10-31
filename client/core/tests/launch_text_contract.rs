@@ -109,7 +109,12 @@ fn samples() -> Vec<launch::Shown> {
 #[test]
 fn the_new_session_wire_fixture_is_current() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/new-session-shown-v1.json");
-    let current = serde_json::to_string_pretty(&samples()).unwrap() + "\n";
+    let mut current = serde_json::to_string_pretty(&samples()).unwrap() + "\n";
+    // Windows renders the sample paths with its own separator (`\srv\repo-…`);
+    // the fixture holds no other backslash, so the shape compares as on Unix.
+    if cfg!(windows) {
+        current = current.replace(r"\\", "/");
+    }
     if std::env::var_os("ZERUS_UPDATE_FIXTURES").is_some() {
         std::fs::write(&path, &current).unwrap();
     }
