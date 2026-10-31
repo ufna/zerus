@@ -646,3 +646,8 @@ GTK observation, clear/withdrawal/release, recurrence, rollback and replacement
 under load remain separate gates. The G1 prepared-startup exclusion/current
 profile/negative consumer and whole-profile qualification remain required before
 any production caller or ownership transition.
+
+The [Class M source audit and measurement contract](desktop-linux-notification-class-m.md)
+enumerates the remaining decoded metadata and allocator families and the separate
+review steps required before instrumentation. It establishes no numeric heap or
+whole-profile bound and changes no production admission or release rule.
