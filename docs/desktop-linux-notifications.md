@@ -212,3 +212,41 @@ a possible issued result without a durable ID, pre-issue barrier, cross-file
 ordering, sticky logical invalidation, negative fencing and actual resource proofs
 remain prerequisites for later mutable/runtime integration. No default, file,
 source adapter, SDK, feature, lock or native authority changes here.
+
+### Explicit owner envelope integration
+
+`decode_owned_for(bytes, expected_owner)` selects the provenance-aware mode of the
+same bounded raw-member decoder. `decode_owned` and schema1 quarantine retain
+their ordinary behavior: new metadata is still unknown to the ordinary mode and
+prevents its encoder from discarding it. The only dependency change is the pure
+`serde_json/raw_value` feature in client/core; all four locked package graphs and
+lockfiles stay unchanged. No native feature is enabled.
+
+The selected mode borrows `&RawValue` from the bounded input slice and measures
+each invalidation's original lexical value before decoding it (at most 16 KiB).
+Internal whitespace and escapes count; canonical output length is not a raw
+input limit. Outer and separator padding remain in the shared 16 MiB source cap.
+No borrowed raw value escapes parsing and no scanner or boxed raw-value store is
+added. Raw IDs, fields and original placements are checked before coalescing.
+The selected mode exposes retained `rows()`; its bounded explicit encoder keeps
+all recognized provenance, claim and invalidation fields and refuses unknowns.
+The caller-selected Agent mode refuses root invalidations, including an empty
+field. Only Update mode may carry complete exact Agent targets. Both selected
+owner envelopes refuse copied legacy quarantine.
+
+`inspection::inspect_selected` requires both supplied owner slices and counts
+both envelopes and the single raw legacy home through that same parser before
+row decoding or set projection. It bounds combined raw entries and original
+bytes, then prepared encoded bytes separately. Missing provenance, unknowns,
+possible/unknown posts without durable IDs, conflicting original identities and
+all cross-owner positive-ID collisions refuse. Collision keys use original bus
+ID, unique owner and server ID, including uncertain and withdrawal claims;
+envelope namespace changes never relabel original provenance. Until the separate
+verified release overlay exists, an unresolved exact invalidation conservatively
+refuses this optional inspection as well.
+
+Inspection hashes remain hashes of supplied bytes. Successful inspection is
+still not full current-source preparation, quiet, a current mapping, lease or
+numeric-ID permission. No mutable method, file access, source adapter, writer,
+default/runtime caller or G1 ticket is added. All later commit, negative-fencing,
+resource, crash, recurrence and rollback gates in the G1 contract remain open.
