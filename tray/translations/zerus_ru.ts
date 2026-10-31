@@ -7574,13 +7574,13 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/SessionAccounts.h" line="90" />
       <source>No account (shell)</source>
-      <translation type="unfinished" />
+      <translation>Без учётной записи (оболочка)</translation>
     </message>
     <message>
       <location filename="../src/SessionAccounts.h" line="90" />
       <location filename="../src/SessionAccounts.h" line="112" />
       <source>Account not recorded</source>
-      <translation type="unfinished" />
+      <translation>Учётная запись не записана</translation>
     </message>
     <message>
       <location filename="../src/SessionElapsed.h" line="33" />
