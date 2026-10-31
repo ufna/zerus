@@ -202,9 +202,9 @@ export async function metrics(windowMs?: number): Promise<Record<string, unknown
 }
 
 /** One guarded session action; an Err (a rejected promise) is an unknown outcome. */
-export async function runAction(target: Target, action: Action): Promise<Outcome> {
+export async function runAction(target: Target, action: Action, delay?: import("./store/endActionBusy").EndReference): Promise<Outcome> {
   if (!inTauri()) return { outcome: "failed", detail: "Actions need the desktop app." };
-  return invoke<Outcome>("run_action", { target, action });
+  return invoke<Outcome>("run_action", { target, action, delay });
 }
 
 /**
@@ -827,8 +827,8 @@ export const sendAnswer = (token: number, answer: Answer) => desktop<SendReply>(
 export const sendCancel = (handle: number) => desktop<void>("send_cancel", { handle });
 export const sendInterrupted = (handle: number) => desktop<void>("send_interrupted", { handle });
 /** Answers once the clear ended (up to 45 s). */
-export const clearContext = (handle: number, run: string, conversation: string, dismiss: boolean) =>
-  desktop<SendReply>("clear_context", { handle, run, conversation, dismiss });
+export const clearContext = (handle: number, run: string, conversation: string, dismiss: boolean, delay?: import("./store/endActionBusy").EndReference) =>
+  desktop<SendReply>("clear_context", { handle, run, conversation, dismiss, delay });
 export const localRetry = (handle: number, id: string) => desktop<SendReply>("local_retry", { handle, id });
 export const localDelete = (handle: number, id: string) => desktop<void>("local_delete", { handle, id });
 export const localInspect = (handle: number, id: string) => desktop<Inspect | null>("local_inspect", { handle, id });
@@ -908,7 +908,7 @@ export const draftRestore = (handle: number, source: DraftSource, key: string) =
 export const sessionFolderStatus = (computer: string, directory: string) => desktop<import("./store/sessionFolders").FolderStatus>("session_folder_status", { computer, directory });
 export const sessionFolderOpen = (input: import("./store/sessionFolders").FolderRequest, kind: "folder" | "shell") => desktop<string | null>("session_folder_open", { input, kind });
 
-export const terminationCleanupConfirm = (id: string) => desktop<Outcome>("termination_cleanup_confirm", { id });
+export const terminationCleanupConfirm = (id: string, delay?: import("./store/endActionBusy").EndReference) => desktop<Outcome>("termination_cleanup_confirm", { id, delay });
 export const terminationCleanupOffer = (target: Target) => desktop<{ id: string; checked: boolean } | null>("termination_cleanup_offer", { target });
 export const terminationCleanupCancel = (id: string) => desktop<void>("termination_cleanup_cancel", { id });
 export const terminationCleanupView = () => desktop<import("./store/terminationCleanup").CleanupView>("termination_cleanup_view", {});
@@ -946,3 +946,8 @@ export async function attachmentMedia(computer: string, file: AttachmentRef, vid
   const reply = await desktop<ArrayBuffer | number[]>("attachment_media", { computer, file, video });
   return reply instanceof ArrayBuffer ? reply : Uint8Array.from(reply).buffer;
 }
+
+/** Timing/reservations only: every effect still uses its original native writer. */
+export const actionDelayBegin = (id: string, captures: import("./store/endActionBusy").EndCapture[]) => desktop<void>("action_delay_begin", { id, captures });
+export const actionDelayWait = (id: string) => desktop<boolean>("action_delay_wait", { id });
+export const actionDelayCancel = (id: string) => desktop<void>("action_delay_cancel", { id });

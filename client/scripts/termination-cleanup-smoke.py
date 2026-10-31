@@ -14,8 +14,9 @@ if '--worker' not in sys.argv:
     parser.add_argument('--recovery', action='store_true')
     parser.add_argument('--legacy', action='store_true', help='Recovery against help without guarded-create-v1')
     parser.add_argument('--undo-native', action='store_true', help='Native delay/cancel/hidden/source/quit seam')
+    parser.add_argument('--undo-ui', action='store_true', help='Visible Undo, five windows, exact batch and close-to-tray')
     args = parser.parse_args()
-    if args.legacy or args.undo_native: args.recovery = True
+    if args.legacy or args.undo_native or args.undo_ui: args.recovery = True
     app = args.app.resolve()
     assert app.is_file()
     root = Path(tempfile.mkdtemp(prefix='zerus-cleanup-walk-'))
@@ -25,7 +26,8 @@ if '--worker' not in sys.argv:
     tags = ('kept', 'unowned', 'unknown', 'restore-refused', 'changed', *(f'extra-{n}' for n in range(61))) if args.recovery else ('clean', 'kept', 'unknown', 'unknown-only', 'changed')
     if args.recovery: (root/'recovery').write_text(json.dumps(tags))
     if args.legacy: (root/'legacy').touch()
-    if args.undo_native: (root/'undo-native').touch()
+    if args.undo_native or args.undo_ui: (root/'undo-native').touch()
+    if args.undo_ui: (root/'undo-ui').touch()
     rows = []
     for tag in tags:
         folder = root/'repo'/tag
@@ -138,6 +140,7 @@ raise RuntimeError(args)
     if args.recovery:env['ZERUS_CLIENT_QUERY']='page=sessions&skin=zerus-light&archive-cleanup-smoke=1'
     if args.legacy:env['ZERUS_CLIENT_QUERY']='page=sessions&skin=zerus-light&archive-cleanup-smoke=legacy'
     if args.undo_native:env['ZERUS_CLIENT_QUERY']='page=sessions&skin=zerus-light&end-action-native-smoke=1'
+    if args.undo_ui:env['ZERUS_CLIENT_QUERY']='page=sessions&skin=zerus-light&end-action-ui-smoke=1'
     (root/'environment.json').write_text(json.dumps(env))
     print('Private Archive recovery walk:' if args.recovery else 'Private Terminate cleanup walk:', root, flush=True)
     child = subprocess.Popen(['/usr/bin/dbus-run-session','--config-file',str(root/'bus.conf'),'--','/usr/bin/xvfb-run','-a','-s','-screen 0 1440x900x24','/usr/bin/python3',str(Path(__file__).resolve()),'--worker',str(root),str(app),*(['recovery'] if args.recovery else [])],env=env,start_new_session=True)
@@ -148,6 +151,7 @@ raise RuntimeError(args)
 root, app = Path(sys.argv[2]), Path(sys.argv[3])
 recovery=sys.argv[4:]==['recovery']
 undo_native=(root/'undo-native').exists()
+undo_ui=(root/'undo-ui').exists()
 assert os.environ['HOME']==str(root/'home')
 # Private wrapper-generated X11 and D-Bus only; no owner environment inherited.
 env=json.loads((root/'environment.json').read_text())
@@ -168,10 +172,10 @@ with (root/'app.log').open('wb') as log:
     try:
         while time.monotonic()<deadline:
             output=(root/'app.log').read_text()
-            prefix='undo-native: ' if undo_native else 'archive-smoke: ' if recovery else 'cleanup-smoke: '
-            for stage in (('NATIVE','RESTORED','SOURCE_CHANGED') if undo_native else ('NOTICE','REVIEW','RESTORING','RESTORED','REFUSED','UNOWNED','UNKNOWN','OVERFLOW') if recovery else ('CLEANING','MIXED','REOPENED','UNKNOWN','INSPECTION')):
+            prefix='undo-ui: ' if undo_ui else 'undo-native: ' if undo_native else 'archive-smoke: ' if recovery else 'cleanup-smoke: '
+            for stage in (('UNDO','FIVE','CLOSE','RESTORED','BATCH') if undo_ui else ('NATIVE','RESTORED','SOURCE_CHANGED') if undo_native else ('NOTICE','REVIEW','RESTORING','RESTORED','REFUSED','UNOWNED','UNKNOWN','OVERFLOW') if recovery else ('CLEANING','MIXED','REOPENED','UNKNOWN','INSPECTION')):
                 if prefix+stage in output and stage not in stages:
-                    if undo_native and stage=='NATIVE':(root/'pending-observed').write_text(str(time.monotonic()))
+                    if (undo_ui and stage=='CLOSE') or (not undo_ui and undo_native and stage=='NATIVE'):(root/'pending-observed').write_text(str(time.monotonic()))
                     stages.add(stage);time.sleep(.15)
                     subprocess.run(['/usr/bin/import','-window','root',str(root/(stage.lower()+'.png'))],check=True,env=env)
             if ('archive-smoke: ESCAPE_REVIEW' if recovery else 'cleanup-smoke: ESCAPE_CLEANING') in output and 'escape' not in stages:
@@ -186,11 +190,22 @@ with (root/'app.log').open('wb') as log:
             if child.poll() is not None: break
             time.sleep(.03)
         else: raise RuntimeError('private built-app walk timed out')
-        print('\n'.join(l for l in output.splitlines() if ('undo-native:' if undo_native else 'archive-smoke:' if recovery else 'cleanup-smoke:') in l))
+        print('\n'.join(l for l in output.splitlines() if ('undo-ui:' if undo_ui else 'undo-native:' if undo_native else 'archive-smoke:' if recovery else 'cleanup-smoke:') in l))
         assert child.returncode==0, output
         calls=[json.loads(l) for l in (root/'calls.jsonl').read_text().splitlines()]
         effects=[c for c in calls if 'session-action' in c]
         removals=[c for c in calls if 'remove' in c]
+        if undo_ui:
+            assert len(effects)==4,effects
+            assert [c[-2] for c in effects]==['codex/example/kept',*[f'codex/example/extra-{n}' for n in (6,7,8)]],effects
+            assert not removals
+            issued=next(c for c in map(json.loads,(root/'calls-time.jsonl').read_text().splitlines()) if 'session-action' in c['args'])
+            assert issued['at']-float((root/'pending-observed').read_text())>=4.7,'effect before grace'
+            assert {'UNDO','FIVE','CLOSE','RESTORED','BATCH'}<=stages,stages
+            assert 'undo-ui: EXECUTED_CLOSED' in output and 'undo-ui: QUIT_PENDING' in output,output
+            assert 'dropped pending Archive for "codex/example/extra-9" on quit' in output,output
+            print('PASS visible Undo/focus/five/sixth/whole batch/exact dispatch/close-to-tray/changed/quit; four scoped fake archives only')
+            raise SystemExit(0)
         if undo_native:
             assert len(effects)==1 and effects[0][-2:]==['codex/example/kept','--json'],effects
             assert not removals and not any('codex/example/extra-0' in c for c in calls),'quit started a pending action'

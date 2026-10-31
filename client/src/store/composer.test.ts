@@ -1095,3 +1095,23 @@ describe("suggestion dismissal", () => {
     });
   });
 });
+
+describe("Clear session grace integration", () => {
+  it("closes confirmation, permits a send during grace and Undo calls no Clear writer", async () => {
+    const f = fakes(), gate = held<SendReply | undefined>();
+    let current!: () => boolean;
+    await createRoot(async (dispose) => {
+      const c = createComposer(f.port, f.timers, undefined, f.notify, undefined, async (session, control, _execute, unchanged) => {
+        expect(session?.name).toBe(SESSION.name); expect(control.run).toBe("run-1"); current = unchanged; return gate.call();
+      });
+      await c.open(SESSION); c.openClear(); const job = c.confirmClear();
+      expect(c.dialog()).toBeUndefined(); expect(c.locked()).toBe(false);
+      c.input("message during grace", 20, 20); await c.send();
+      expect(f.calls.some((line) => line.includes("message during grace"))).toBe(true);
+      c.apply(view({ text_epoch: 2 })); expect(current()).toBe(true);
+      gate.answer(undefined); await job;
+      expect(f.calls.some((line) => line.startsWith("clear "))).toBe(false);
+      dispose();
+    });
+  });
+});

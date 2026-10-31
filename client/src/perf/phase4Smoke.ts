@@ -407,7 +407,8 @@ async function clearCloseOrderStep() {
   await until(() => document.querySelector("#composer-dlg-title")?.textContent === "Clear session?", 3000, "the Clear dialog did not open");
   button("Clear session", document.querySelector("dialog[open]")!).click();
   await until(() => !document.querySelector("dialog.dlg[open]"), 1000, "the Clear dialog stayed open");
-  await until(() => composer.view()?.clear.running === true, 1000, "the clear did not start");
+  await until(() => document.querySelector(".toasts")?.textContent?.includes("Clearing session") === true, 1000, "the Clear Undo did not appear");
+  await until(() => composer.view()?.clear.running === true, 10_000, "the clear did not start after its grace period");
   if (document.querySelector("dialog.dlg[open]")) throw new Error("the Clear dialog reopened while the command ran");
   await waitCall("clear-context", 1);
   await until(() => composer.view()?.clear.running === false, 5000, "the clear did not finish");

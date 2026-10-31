@@ -299,6 +299,22 @@ impl Delays {
     pub(crate) fn cancel_all(&self, quitting: bool) {
         let mut model = lock(&self.0);
         model.closed |= quitting;
+        if quitting {
+            for group in model.groups.values() {
+                for member in group.members.iter().filter(|member| !member.used) {
+                    let action = match member.captured.action {
+                        Action::Archive => "Archive",
+                        Action::Terminate | Action::Kill => "Terminate",
+                        Action::ClearContext { .. } => "Clear",
+                        _ => "Forget",
+                    };
+                    eprintln!(
+                        "zerus-client: dropped pending {action} for {:?} on quit",
+                        member.captured.target.name
+                    );
+                }
+            }
+        }
         model.discard();
         self.0.changed.notify_all();
     }

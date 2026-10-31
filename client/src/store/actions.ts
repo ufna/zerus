@@ -1,3 +1,4 @@
+import { pendingEnd, isEndAction, captureEnd, sameEnd, type EndReference } from "./endActionBusy";
 import { createSignal, untrack } from "solid-js";
 import { createStore } from "solid-js/store";
 import * as bridge from "../bridge";
@@ -49,6 +50,9 @@ export function targetOf(s: Pick<ActionRow, "computer" | "name" | "runId" | "con
 /** The selected row and the open subagent, which decide whose details a copy reads. */
 export interface Selection { key?: string; subagent?: string }
 
+export interface PerformOptions { quiet?: boolean; cleanupId?: string; delay?: EndReference; skipDelay?: boolean; noticeKey?: string }
+export type EndDriver = (row: ActionRow, action: Action, execute: (reference: EndReference, key: string) => Promise<Outcome>, current: () => boolean, remove: boolean) => Promise<Outcome | undefined>;
+
 export function createActions(
   catalog: Pick<CatalogState, "rows">,
   online: (computer: string) => boolean = () => true,
@@ -57,16 +61,18 @@ export function createActions(
   /** Where notices show: the window's bus for the app, a private one in tests. */
   bus: NoticeBus = createNoticeBus(),
   cleanupReport?: (out: Extract<Outcome, { outcome: "done" }>, row: ActionRow) => void,
+  delayEnd?: EndDriver,
 ) {
   /** The write in flight per session (its kind), and whether an interrupt is. */
   const [writes, setWrites] = createStore<Record<string, Action["kind"] | undefined>>({});
   const [interrupts, setInterrupts] = createStore<Record<string, boolean>>({});
   const { notices: list, notify, dismiss, clearNotice } = bus;
 
-  const updating = (computer: string, name: string) => !!writes[sessionId(computer, name)];
+  const updating = (computer: string, name: string) => !!writes[sessionId(computer, name)] || (!!delayEnd && pendingEnd(computer, name));
   const interrupting = (computer: string, name: string) => !!interrupts[sessionId(computer, name)];
 
-  function report(action: Action, out: Outcome, row: ActionRow, cleanupHandled = false) {
+  function report(action: Action, out: Outcome, row: ActionRow, cleanupHandled = false, key?: string) {
+    const notify: NoticeBus["notify"] = (tone, text, sticky, _key, title, options) => bus.notify(tone, text, sticky, key ?? _key, title, options);
     if (action.kind === "interrupt") {
       // Qt's Stop notices (SessionsWindow.cpp 1206-1211).
       const target = `${row.name} (${row.machine})`;
@@ -74,6 +80,10 @@ export function createActions(
       else if (ALREADY_STOPPED.includes(out.detail.trim())) notify("info", `Stop ${target}: the turn already ended or is waiting for input. No action needed.`);
       else notify("error", `Stop ${target} failed: ${out.detail}\nOpen Terminal to check the agent before trying again.`, true);
       return;
+    }
+    if (key && out.outcome === "failed" && out.detail === STATE_CHANGED && isEndAction(action)) {
+      const verb = action.kind === "archive" ? "Archive" : ["terminate", "kill"].includes(action.kind) ? "Terminate" : "Forget";
+      notify("info", `${verb} cancelled: the session changed.`); return;
     }
     if (out.outcome === "failed") { notify("error", out.detail, true); return; }
     if (action.kind === "forget_binding") { notify("info", `Zerus forgot ${row.name}. The conversation stays in OpenCode.`); return; }
@@ -97,13 +107,13 @@ export function createActions(
   }
 
   /** One guarded call in its lane; a session with a call in that lane gets none. */
-  async function call(target: Target, action: Action, cleanupId?: string): Promise<{ out: Outcome; busy: boolean }> {
+  async function call(target: Target, action: Action, cleanupId?: string, delay?: EndReference): Promise<{ out: Outcome; busy: boolean }> {
     const id = sessionId(target.computer, target.name);
     const interrupt = action.kind === "interrupt";
     if (interrupt ? interrupts[id] : writes[id]) return { out: failed("busy"), busy: true };
     if (interrupt) setInterrupts(id, true); else setWrites(id, action.kind);
     try {
-      return { out: await (cleanupId ? bridge.terminationCleanupConfirm(cleanupId) : bridge.runAction(target, action)), busy: false };
+      return { out: await (cleanupId ? (delay ? bridge.terminationCleanupConfirm(cleanupId, delay) : bridge.terminationCleanupConfirm(cleanupId)) : (delay ? bridge.runAction(target, action, delay) : bridge.runAction(target, action))), busy: false };
     } catch (error) {
       const detail = typeof error === "string" ? error : error instanceof Error ? error.message : String(error);
       return { out: failed(detail), busy: detail === "busy" };
@@ -119,15 +129,21 @@ export function createActions(
    * silent no-op. `quiet` is a selection batch's item (Qt's finishSelectionAction):
    * the batch words the outcome, and only the worktree lines show.
    */
-  async function perform(row: ActionRow, action: Action, options: { quiet?: boolean; cleanupId?: string } = {}): Promise<Outcome> {
+  async function perform(row: ActionRow, action: Action, options: PerformOptions = {}): Promise<Outcome> {
     const live = catalog.rows[row.key];
     const target = targetOf(row, action.kind);
     if (!live || !target || (row.runId && live.runId !== row.runId)) {
       if (!options.quiet) notify("info", CHANGED);
       return failed(CHANGED);
     }
-    const { out, busy } = await call(target, action, options.cleanupId);
-    if (!busy) { if (options.quiet) reportCleanup(out, row); else report(action, out, row, !!options.cleanupId); }
+    if (delayEnd && isEndAction(action) && !options.delay && !options.skipDelay) {
+      const captured = snapshotOf(row);
+      const out = await delayEnd(captured, action, (delay, noticeKey) => perform(captured, action, { ...options, delay, noticeKey }), () => sameEnd(captured, catalog.rows[captured.key]), !!options.cleanupId);
+      return out ?? failed("Action cancelled.");
+    }
+    if (!options.delay && action.kind !== "interrupt" && updating(target.computer, target.name)) return failed("busy");
+    const { out, busy } = await call(target, action, options.cleanupId, options.delay);
+    if (!busy) { if (options.quiet) reportCleanup(out, row); else report(action, out, row, !!options.cleanupId, options.noticeKey); }
     return out;
   }
 
@@ -436,5 +452,8 @@ export function bindArchivedRows(lookup: (key: string) => Session | undefined) {
 const app = createActions(withArchived(appCatalog, (key) => archivedRow(key) ?? searchRow(key)), (computer) => !computerOffline(computer), () => selection(), appMarks, appBus,
   (out, row) => { void import("./cleanupNotices").then((m) => m.reportCleanup(out, row)).catch(() => {
     appBus.notify("warn", "Working folder kept for review.", true, sessionNoticeKey(row.computer, row.name), "Session archived");
-  }); });
+  }); }, async (row, action, execute, current, remove) => {
+    const { endActions } = await import("./endActions");
+    return endActions.schedule([captureEnd(row, action)], ([ref], key) => execute(ref, key), { current, remove });
+  });
 export const { perform, performComputer, end, forget, toggleMute, stillListed, pendingNotifications, copy, copyName, copyIdentity, copyFolder, lastCopied, copyCommand, copyReference, change, updating, interrupting, detailsFor, notices, dismiss, notify, clearNotice } = app;

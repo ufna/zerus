@@ -1003,6 +1003,10 @@ export function PerfHost() {
       const { archiveCleanupSmoke } = await import("../perf/archiveCleanupSmoke");
       void archiveCleanupSmoke(!!config().replay && !!config().actions_smoke);
     }
+    if (new URLSearchParams(location.search).has("end-action-ui-smoke") && inTauri()) {
+      const { endActionUiSmoke } = await import("../perf/endActionUiSmoke");
+      void endActionUiSmoke(!!config().replay && !!config().actions_smoke);
+    }
     if (new URLSearchParams(location.search).has("end-action-native-smoke") && inTauri()) {
       const { endActionNativeSmoke } = await import("../perf/endActionNativeSmoke");
       void endActionNativeSmoke(!!config().replay && !!config().actions_smoke);
