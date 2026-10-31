@@ -1,4 +1,4 @@
-import { For, Index, Show, createEffect, createMemo, createSignal, lazy, Suspense, onCleanup } from "solid-js";
+import { For, Index, Show, Switch, Match, createEffect, createMemo, createSignal, lazy, Suspense, onCleanup } from "solid-js";
 import { Icon } from "../lib/icons";
 import { MachineTile } from "../components/MachineTile";
 import { MachineLabel } from "../components/MachineLabel";
@@ -21,6 +21,7 @@ import { creditsText, loginLabel, memberStateText, memberOf, panelWindow, summar
 // tag selects that machine's profile. Catalog edits use native snapshots;
 // permissions, sign-in, install and add keep their places until their slices.
 
+const AccountDefaultsDialog = lazy(() => import("./AccountDefaultsDialog"));
 const AccountCatalogDialog = lazy(() => import("./AccountCatalogDialog"));
 
 const [selectedAccount, setSelectedAccount] = createSignal<string | undefined>();
@@ -29,7 +30,7 @@ const [selectedProfile, setSelectedProfile] = createSignal<string | undefined>()
 function AccountRow(props: { a: Account }) {
   const on = () => selectedAccount() === props.a.key;
   const pick = () => {
-    accountManagement.clearNotice();
+    accountManagement.close();accountManagement.clearNotice();
     setSelectedAccount(props.a.key);
     setSelectedProfile(memberOf(props.a, undefined, accountMachine())?.key);
   };
@@ -121,7 +122,7 @@ function Detail(props: { a: Account }) {
         <div class="acct-tags" role="radiogroup" aria-label="Machine profile">
           <For each={shown()}>{(x) => (
             <span class="acct-tag-wrap">
-              <button class="acct-tag" role="radio" aria-checked={x.key === m().key} classList={{ on: x.key === m().key, offline: !x.online }} onClick={() => { setSelectedProfile(x.key); accountManagement.clearNotice(); }}>
+              <button class="acct-tag" role="radio" aria-checked={x.key === m().key} classList={{ on: x.key === m().key, offline: !x.online }} onClick={() => { setSelectedProfile(x.key); accountManagement.close(); accountManagement.clearNotice(); }}>
                 <MachineLabel alias={x.machine} />{x.online ? "" : " (offline)"}
                 <Show when={x.is_default}>
                   <span class="acct-default" title={`Default for new ${providerName(props.a.provider)} sessions on ${x.machine} when no account is chosen`}>Default</span>
@@ -145,7 +146,7 @@ function Detail(props: { a: Account }) {
                   <div class="acct-more-list">
                     <For each={matches()} fallback={<div class="dim acct-more-empty">No machine matches.</div>}>
                       {(x) => (
-                        <button class="acct-more-row" classList={{ on: x.key === m().key }} onClick={() => { setSelectedProfile(x.key); setMoreOpen(false); accountManagement.clearNotice(); }}>
+                        <button class="acct-more-row" classList={{ on: x.key === m().key }} onClick={() => { setSelectedProfile(x.key); setMoreOpen(false); accountManagement.close(); accountManagement.clearNotice(); }}>
                           <MachineTile os={osOf(machineCards[x.host]?.platform)} state={x.online ? connectionOf(catalog.computers[x.host]?.status).tile : "offline"} size={22} />
                           <MachineLabel alias={x.machine} />
                           <span class="grow" />
@@ -189,14 +190,14 @@ function Detail(props: { a: Account }) {
         <div class="acct-setting">
           <span title={m().permission_hint}>
             Permissions on {m().machine}: <b classList={{ danger: m().permission === "bypass" }}>{m().permission_label}</b>
-            <span class="dim acct-src">{m().permission === "bypass" ? "set in Zerus" : "from provider settings"}</span>
+            <span class="dim acct-src">{m().permission_mode === "bypass" ? "set in Zerus" : "from provider settings"}</span>
           </span>
-          <button class="btn small" disabled title={ACCOUNT_MANAGEMENT}>Change…</button>
+          <button class="btn small" disabled={!m().online || nativeConfig() || accountManagement.busy()} title={`Change permission defaults on ${m().machine}`} onClick={event=>void accountManagement.open("permissions",props.a.key,m().key,event.currentTarget)}>Change…</button>
         </div>
         <Show when={m().model_supported}>
           <div class="acct-setting">
             <span>{m().model_text}</span>
-            <button class="btn small" disabled title={ACCOUNT_MANAGEMENT}>Model and effort…</button>
+            <button class="btn small" disabled={!m().online || accountManagement.busy()} onClick={event=>void accountManagement.open("model",props.a.key,m().key,event.currentTarget)}>Model and effort…</button>
           </div>
         </Show>
         <Actions>
@@ -221,6 +222,7 @@ export function AccountsScreen() {
     const key = requestedProfile();
     const account = key ? view().accounts.find((a) => a.members.some((m) => m.key === key)) : undefined;
     if (!account) return;
+    accountManagement.close();accountManagement.clearNotice();
     setSelectedAccount(account.key);
     setSelectedProfile(key);
     setRequestedProfile(undefined);
@@ -232,7 +234,7 @@ export function AccountsScreen() {
       <div class="mach-shell">
         <header class="mach-head">
           <h1>Agent accounts</h1>
-          <button class="icon-btn" aria-label="Refresh accounts" disabled={view().busy} onClick={() => void loadAccounts(true)}
+          <button class="icon-btn" aria-label="Refresh accounts" disabled={view().busy || accountManagement.busy()} onClick={() => void loadAccounts(true)}
             title={view().busy ? `Updating accounts… ${view().pending} remaining` : "Refresh account usage (automatically every 5 minutes)"}>
             <Show when={!view().busy} fallback={<Spinner />}><Icon name="refresh-cw" size={15} /></Show>
           </button>
@@ -247,7 +249,7 @@ export function AccountsScreen() {
             <button class="btn" onClick={() => setPage("machines")}>Open Machines</button></div>
         }>
           <div class="row acct-filter">
-            <select class="field" aria-label="Machine" value={accountMachine()} onChange={(e) => setAccountMachine(e.currentTarget.value)}>
+            <select class="field" aria-label="Machine" value={accountMachine()} onChange={(e) => {accountManagement.close();accountManagement.clearNotice();setAccountMachine(e.currentTarget.value);}}>
               <option value="*">All machines</option>
               <For each={view().hosts}>{(h) => <option value={h.computer}>{h.label}</option>}</For>
             </select>
@@ -273,7 +275,7 @@ export function AccountsScreen() {
           </Show>
         </Show>
       </div>
-      <Show when={accountManagement.prompt()}>{prompt=><Suspense><AccountCatalogDialog prompt={prompt()} close={accountManagement.close} confirm={label=>void accountManagement.confirm(label)}/></Suspense>}</Show>
+      <Show when={accountManagement.prompt()}>{prompt=><Suspense><Switch><Match when={prompt().kind==="permissions" || prompt().kind==="model"}><AccountDefaultsDialog prompt={prompt()} close={accountManagement.close} confirm={(values,handle)=>void accountManagement.confirm(values,handle)}/></Match><Match when={true}><AccountCatalogDialog prompt={prompt()} close={accountManagement.close} confirm={(label,handle)=>void accountManagement.confirm(label,handle)}/></Match></Switch></Suspense>}</Show>
     </div>
   );
 }

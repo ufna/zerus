@@ -157,6 +157,8 @@ pub struct Profile {
     pub signed_in: bool,
     /// `bypass`, `auto`, `plan`, `default` or `unknown`.
     pub permission: String,
+    /// Zerus override, separate from the provider's effective permission mode.
+    pub permission_mode: String,
     pub permission_label: String,
     pub permission_hint: String,
     pub model_supported: bool,
@@ -592,6 +594,12 @@ fn profile(entry: &FleetEntry, raw: &Value, state: &AccountsState) -> Profile {
         permission_label: permission_label(&permission).into(),
         permission_hint: permission_hint(raw),
         permission,
+        permission_mode: if text(raw, "permission_mode") == "bypass" {
+            "bypass"
+        } else {
+            "provider"
+        }
+        .into(),
         model_supported: flag(raw, "model_defaults_supported"),
         model_text: model_text(raw),
         usage,
@@ -1914,5 +1922,36 @@ mod tests {
         assert_eq!(view.accounts.len(), 1024);
         assert_eq!(view.truncated, 6 * 256 - 1024);
         assert_eq!(view.notices.len(), 16);
+    }
+}
+
+#[cfg(test)]
+mod permission_source_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn provider_bypass_is_distinct_from_a_zerus_override() {
+        let entry = FleetEntry {
+            computer: ComputerId::local(),
+            status: "live".into(),
+            attempt: 0,
+            local_sessions: true,
+            local_host: false,
+            host: Some("workstation".into()),
+            platform: Some("linux".into()),
+        };
+        let raw = json!({"id":"work","provider":"codex","home":"/accounts/example","installed":false,"permission_mode":"provider","effective_permission_mode":"bypass"});
+        let inherited = profile(&entry, &raw, &AccountsState::default());
+        assert_eq!(inherited.permission, "bypass");
+        assert_eq!(inherited.permission_mode, "provider");
+        assert!(inherited
+            .permission_hint
+            .starts_with("From provider settings"));
+        let mut explicit = raw;
+        explicit["permission_mode"] = json!("bypass");
+        assert_eq!(
+            profile(&entry, &explicit, &AccountsState::default()).permission_mode,
+            "bypass"
+        );
     }
 }

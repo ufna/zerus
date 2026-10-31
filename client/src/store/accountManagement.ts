@@ -1,11 +1,11 @@
 import { createSignal } from "solid-js";
-import { accountEditOpen, accountEditApply, accountEditClose, type AccountEditKind, type AccountEditView, type AccountEditResult } from "../bridge";
+import { accountEditOpen, accountEditApply, accountEditClose, type AccountEditKind, type AccountEditView, type AccountEditResult, type AccountEditValues } from "../bridge";
 import { notify } from "./actions";
 
 export interface AccountPrompt extends AccountEditView { origin: HTMLElement }
 interface Port {
   open(account: string, profile: string, kind: AccountEditKind): Promise<AccountEditView>;
-  apply(handle: string, label: string): Promise<AccountEditResult>;
+  apply(handle: string, values: AccountEditValues): Promise<AccountEditResult>;
   close(handle: string): Promise<void>;
   notice(error: boolean, text: string): void;
 }
@@ -14,15 +14,17 @@ export function createAccountManagement(port: Port) {
   const [busy, setBusy] = createSignal(false);
   const [notice, setNotice] = createSignal("");
   let generation = 0;
-  const close = () => {
+  const close = (expectedHandle?: string) => {
+    const current = prompt();
+    if (expectedHandle && current?.handle !== expectedHandle) return;
     generation++;
-    const current = prompt(); setPrompt(undefined);
+    setPrompt(undefined);
     if (current) void port.close(current.handle).catch(() => {});
   };
-  const apply = async (view: AccountEditView, label = "") => {
+  const apply = async (view: AccountEditView, values: AccountEditValues = {}) => {
     setPrompt(undefined); setBusy(true);
     try {
-      const answer = await port.apply(view.handle, label);
+      const answer = await port.apply(view.handle, values);
       answer.notices.forEach(text => { setNotice(text); port.notice(false, text); });
       answer.errors.forEach(text => port.notice(true, text));
     } catch (error) { port.notice(true, String(error)); }
@@ -42,11 +44,14 @@ export function createAccountManagement(port: Port) {
       } catch (error) { if (current === generation) port.notice(true, String(error)); }
       finally { setBusy(false); }
     },
-    async confirm(label = "") {
+    async confirm(input: string | AccountEditValues = "", expectedHandle?: string) {
       const view = prompt();
-      if (!view || busy()) return;
-      if (view.kind === "rename" && label.trim() === view.label) { close(); return; }
-      await apply(view, label);
+      if (!view || busy() || (expectedHandle && view.handle !== expectedHandle)) return;
+      const values=typeof input==="string" ? {label:input} : input;
+      if ((view.kind === "rename" && values.label?.trim() === view.label)
+        || (view.kind === "permissions" && values.mode === view.permission_mode)
+        || (view.kind === "model" && values.model === view.models?.defaults.model && values.effort === view.models?.defaults.effort)) { close(); return; }
+      await apply(view, values);
     },
   };
 }

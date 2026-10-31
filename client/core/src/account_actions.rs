@@ -9,6 +9,7 @@ use std::{path::Path, time::Duration};
 pub const CHANGED: &str = "Accounts changed on this machine. Refresh before saving.";
 pub const UPDATING: &str = "Accounts are updating. Wait for the update to finish.";
 pub const MAX_MEMBERS: usize = 256;
+pub mod models;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -16,6 +17,16 @@ pub enum Kind {
     Rename,
     Default,
     Remove,
+    Permissions,
+    Model,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Values {
+    pub label: String,
+    pub mode: String,
+    pub model: String,
+    pub effort: String,
 }
 
 /// Native-only evidence captured when the action opens, never read from a
@@ -109,17 +120,28 @@ impl Binding {
         }
     }
     pub fn edit(&self, kind: Kind, label: &str) -> Result<Invocation, String> {
+        self.edit_values(
+            kind,
+            &Values {
+                label: label.into(),
+                ..Default::default()
+            },
+        )
+    }
+    pub fn edit_values(&self, kind: Kind, values: &Values) -> Result<Invocation, String> {
         let op = match kind {
             Kind::Rename => "rename",
             Kind::Default => "default",
             Kind::Remove => "rm",
+            Kind::Permissions => "permissions",
+            Kind::Model => "model-defaults",
         };
         if kind == Kind::Default && matches!(self.provider.as_str(), "dsh" | "opencode") {
             return Err("This account has no default selection.".into());
         }
         let mut call = self.invocation(&[op, &self.id, "--revision", &self.revision]);
         if kind == Kind::Rename {
-            let label = label.trim();
+            let label = values.label.trim();
             if label.is_empty()
                 || label.chars().count() > 160
                 || label.chars().any(char::is_control)
@@ -128,14 +150,55 @@ impl Binding {
             }
             call.args.extend(["--label".into(), label.into()]);
         }
+        if kind == Kind::Permissions {
+            if self.provider == "opencode"
+                || !["provider", "bypass"].contains(&values.mode.as_str())
+            {
+                return Err("Choose provider or bypass permission mode.".into());
+            }
+            call.args.extend(["--mode".into(), values.mode.clone()]);
+        }
+        if kind == Kind::Model {
+            if !["codex", "claude", "kimi"].contains(&self.provider.as_str())
+                || values.model.chars().count() > 256
+                || values.effort.chars().count() > 40
+                || values
+                    .model
+                    .chars()
+                    .chain(values.effort.chars())
+                    .any(char::is_control)
+            {
+                return Err("Model defaults are unavailable for this account.".into());
+            }
+            call.args.extend([
+                "--model".into(),
+                values.model.clone(),
+                "--effort".into(),
+                values.effort.clone(),
+            ]);
+        }
         Ok(call)
     }
     /// Fresh read before the revision CAS. No uncertain exit is retried.
     pub fn execute(&self, hgs: &Path, kind: Kind, label: &str) -> Result<Value, String> {
-        let edit = self.edit(kind, label)?;
+        self.execute_values(
+            hgs,
+            kind,
+            &Values {
+                label: label.into(),
+                ..Default::default()
+            },
+        )
+    }
+    pub fn fresh(&self, hgs: &Path) -> Result<Value, String> {
         let read = self.invocation(&["ls"]);
         let current = run_catalog(hgs, &read)?;
         self.verify(&current)?;
+        Ok(current)
+    }
+    pub fn execute_values(&self, hgs: &Path, kind: Kind, values: &Values) -> Result<Value, String> {
+        let edit = self.edit_values(kind, values)?;
+        self.fresh(hgs)?;
         run_catalog(hgs, &edit)
     }
 }

@@ -384,7 +384,7 @@ export interface Profile {
   key: string; host: ComputerId; machine: string; id: string; label: string; provider: string;
   native: boolean; installed: boolean; is_default: boolean; home: string; auth_revision: string; online: boolean;
   state: MemberState; detail: string; signed_in: boolean;
-  permission: string; permission_label: string; permission_hint: string; model_supported: boolean; model_text: string;
+  permission: string; permission_mode?: string; permission_label: string; permission_hint: string; model_supported: boolean; model_text: string;
   usage: Usage; opencode: OpenCodeInfo | null;
 }
 export interface Account {

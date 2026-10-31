@@ -3,7 +3,9 @@
 use super::*;
 use serde::Deserialize;
 use std::collections::VecDeque;
-use zerus_client_core::account_actions::{self, Binding, Kind};
+use zerus_client_core::account_actions::{
+    self, models::Catalog as ModelCatalog, Binding, Kind, Values,
+};
 
 #[derive(Default)]
 pub(super) struct Edits(Mutex<EditState>);
@@ -15,6 +17,7 @@ struct EditState {
 struct Plan {
     kind: Kind,
     targets: Vec<Target>,
+    models: Option<ModelCatalog>,
 }
 struct Target {
     machine: String,
@@ -27,19 +30,38 @@ pub struct EditView {
     label: String,
     machine: String,
     provider: String,
+    permission_mode: String,
+    permission_detail: String,
+    models: Option<ModelCatalog>,
 }
 #[derive(Serialize)]
 pub struct EditResult {
     notices: Vec<String>,
     errors: Vec<String>,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 pub struct EditRequest {
     handle: String,
     #[serde(default)]
     label: String,
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    effort: String,
 }
 
+struct Busy<'a>(&'a Edits);
+impl Drop for Busy<'_> {
+    fn drop(&mut self) {
+        self.0
+             .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .busy = false;
+    }
+}
 impl Screens {
     fn edit_open(
         &self,
@@ -51,6 +73,19 @@ impl Screens {
         if !self.0.allowed {
             return Err(REPLAY_NEEDS_HGS.into());
         }
+        let _opening = {
+            let mut state = self
+                .0
+                .edits
+                .0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if state.busy {
+                return Err(account_actions::UPDATING.into());
+            }
+            state.busy = true;
+            Busy(&self.0.edits)
+        };
         let view = self.accounts(false);
         let group = view
             .accounts
@@ -70,6 +105,12 @@ impl Screens {
         {
             return Err(account_actions::CHANGED.into());
         }
+        if kind == Kind::Permissions && selected.provider == "opencode" {
+            return Err("OpenCode permissions are managed in its native configuration".into());
+        }
+        if kind == Kind::Model && !selected.model_supported {
+            return Err("This agent manages model defaults in its native settings.".into());
+        }
         let members: Vec<_> = if kind == Kind::Rename {
             group.members.iter().collect()
         } else {
@@ -88,7 +129,27 @@ impl Screens {
             })
             .collect();
         let hub = self.lock();
-        let targets = members
+        let raw = hub
+            .accounts
+            .catalogs
+            .get(&selected.host)
+            .and_then(|s| s.data.as_ref())
+            .and_then(|v| v["profiles"].as_array())
+            .and_then(|rows| rows.iter().find(|r| r["id"] == selected.id))
+            .ok_or(account_actions::CHANGED)?;
+        let permission_mode = if raw["permission_mode"] == "bypass" {
+            "bypass"
+        } else {
+            "provider"
+        }
+        .to_owned();
+        let permission_detail = raw["permission_detail"]
+            .as_str()
+            .unwrap_or("")
+            .chars()
+            .take(2000)
+            .collect();
+        let targets: Vec<Target> = members
             .into_iter()
             .map(|member| {
                 let binding = (|| {
@@ -106,7 +167,15 @@ impl Screens {
                         .get(&member.host)
                         .and_then(|s| s.data.as_ref())
                         .ok_or(account_actions::CHANGED)?;
-                    Binding::capture(member.host.clone(), machine, catalog, &member.id)
+                    let binding =
+                        Binding::capture(member.host.clone(), machine, catalog, &member.id)?;
+                    if binding.provider != member.provider
+                        || binding.home != member.home
+                        || binding.auth_revision != member.auth_revision
+                    {
+                        return Err(account_actions::CHANGED.into());
+                    }
+                    Ok(binding)
                 })();
                 Target {
                     machine: member.machine.clone(),
@@ -115,6 +184,12 @@ impl Screens {
             })
             .collect();
         drop(hub);
+        let models = if kind == Kind::Model {
+            let binding = targets[0].binding.as_ref().map_err(Clone::clone)?;
+            Some(binding.model_settings(&self.0.hgs)?)
+        } else {
+            None
+        };
         let handle = uuid::Uuid::new_v4().to_string();
         let shown = EditView {
             handle: handle.clone(),
@@ -122,6 +197,9 @@ impl Screens {
             label: group.label.clone(),
             machine: selected.machine.clone(),
             provider: group.provider.clone(),
+            permission_mode,
+            permission_detail,
+            models: models.clone(),
         };
         let mut edits = self
             .0
@@ -129,13 +207,17 @@ impl Screens {
             .0
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if edits.busy {
-            return Err(account_actions::UPDATING.into());
-        }
         while edits.plans.len() >= 8 {
             edits.plans.pop_front();
         }
-        edits.plans.push_back((handle, Plan { kind, targets }));
+        edits.plans.push_back((
+            handle,
+            Plan {
+                kind,
+                targets,
+                models,
+            },
+        ));
         Ok(shown)
     }
     fn edit_begin(&self, binding: &Binding) -> Result<(), String> {
@@ -201,17 +283,19 @@ impl Screens {
         };
         // The handle is consumed before any effect. No exit, retry or reopened
         // webview can dispatch this captured plan for a second time.
-        struct Busy<'a>(&'a Edits);
-        impl Drop for Busy<'_> {
-            fn drop(&mut self) {
-                self.0
-                     .0
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .busy = false;
-            }
-        }
         let _busy = Busy(&self.0.edits);
+        let values = Values {
+            label: request.label,
+            mode: request.mode,
+            model: request.model,
+            effort: request.effort,
+        };
+        if plan.kind == Kind::Model {
+            plan.models
+                .as_ref()
+                .ok_or(account_actions::CHANGED)?
+                .validate(&values)?;
+        }
         let mut reply = EditResult {
             notices: Vec::new(),
             errors: Vec::new(),
@@ -248,10 +332,10 @@ impl Screens {
                     return Err(account_actions::CHANGED.into());
                 }
                 // Reject invalid input before borrowing the catalog slot.
-                binding.edit(plan.kind, &request.label)?;
+                binding.edit_values(plan.kind, &values)?;
                 self.edit_begin(&binding)?;
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    binding.execute(&self.0.hgs, plan.kind, &request.label)
+                    binding.execute_values(&self.0.hgs, plan.kind, &values)
                 }))
                 .unwrap_or_else(|_| Err(READ_FAILED.into()));
                 self.edit_finish(&binding.computer, outcome.clone());
@@ -270,6 +354,14 @@ impl Screens {
                         Kind::Rename => continue,
                         Kind::Default => format!(
                             "Default account saved for new sessions on {}.",
+                            target.machine
+                        ),
+                        Kind::Permissions => format!(
+                            "Permission mode saved for new and resumed sessions on {}.",
+                            target.machine
+                        ),
+                        Kind::Model => format!(
+                            "Model defaults saved for new sessions on {}.",
                             target.machine
                         ),
                         Kind::Remove => format!(
@@ -413,6 +505,7 @@ mod tests {
                 EditRequest {
                     handle: opened.handle.clone(),
                     label: "Updated".into(),
+                    ..Default::default()
                 },
             )
             .unwrap();
@@ -423,7 +516,8 @@ mod tests {
                 &pump,
                 EditRequest {
                     handle: opened.handle,
-                    label: "Updated".into()
+                    label: "Updated".into(),
+                    ..Default::default()
                 }
             )
             .is_err());
@@ -450,6 +544,7 @@ mod tests {
                 EditRequest {
                     handle: opened.handle,
                     label: String::new(),
+                    ..Default::default()
                 },
             )
             .unwrap();
@@ -487,6 +582,74 @@ mod tests {
         assert_eq!(screens.0.edits.0.lock().unwrap().plans.len(), 8);
     }
     #[test]
+    fn a_model_open_shares_single_admission_and_cannot_clear_another_operation() {
+        let (screens, pump, _) = fixture();
+        let view = screens.accounts(false);
+        let account = &view.accounts[0];
+        screens.0.edits.0.lock().unwrap().busy = true;
+        assert!(screens
+            .edit_open(&pump, &account.key, &account.members[0].key, Kind::Model)
+            .is_err());
+        assert!(screens.0.edits.0.lock().unwrap().busy);
+    }
+    #[test]
+    fn permissions_capture_the_raw_override_and_models_reject_forged_choices() {
+        let (screens, pump, binding) = fixture();
+        screens
+            .lock()
+            .accounts
+            .catalogs
+            .get_mut(&binding.computer)
+            .unwrap()
+            .data
+            .as_mut()
+            .unwrap()["profiles"][0]["permission_mode"] = json!("bypass");
+        let view = screens.accounts(false);
+        let account = &view.accounts[0];
+        let opened = screens
+            .edit_open(
+                &pump,
+                &account.key,
+                &account.members[0].key,
+                Kind::Permissions,
+            )
+            .unwrap();
+        assert_eq!(opened.permission_mode, "bypass");
+        assert!(opened.models.is_none());
+        screens.0.edits.0.lock().unwrap().plans.push_back((
+            "model".into(),
+            Plan {
+                kind: Kind::Model,
+                targets: vec![Target {
+                    machine: "workstation".into(),
+                    binding: Ok(binding),
+                }],
+                models: Some(ModelCatalog {
+                    models: Vec::new(),
+                    defaults: Default::default(),
+                    provider_defaults: Default::default(),
+                    effort_supported: true,
+                }),
+            },
+        ));
+        let request = EditRequest {
+            handle: "model".into(),
+            model: "forged".into(),
+            ..Default::default()
+        };
+        assert!(screens.edit_apply(&pump, request).is_err());
+        assert!(!screens.0.edits.0.lock().unwrap().busy);
+        assert!(!screens
+            .0
+            .edits
+            .0
+            .lock()
+            .unwrap()
+            .plans
+            .iter()
+            .any(|(id, _)| id == "model"));
+    }
+    #[test]
     fn a_new_session_opened_during_a_write_receives_its_catalog_reply() {
         let (screens, _, binding) = fixture();
         screens.edit_begin(&binding).unwrap();
@@ -507,6 +670,7 @@ mod tests {
         screens.0.edits.0.lock().unwrap().plans.push_back((
             "captured".into(),
             Plan {
+                models: None,
                 kind: Kind::Rename,
                 targets: vec![
                     Target {
@@ -526,6 +690,7 @@ mod tests {
                 EditRequest {
                     handle: "captured".into(),
                     label: "Updated".into(),
+                    ..Default::default()
                 },
             )
             .unwrap();
@@ -586,6 +751,7 @@ mod tests {
         screens.0.edits.0.lock().unwrap().plans.push_back((
             "same-machine".into(),
             Plan {
+                models: None,
                 kind: Kind::Rename,
                 targets: vec![
                     Target {
@@ -605,6 +771,7 @@ mod tests {
                 EditRequest {
                     handle: "same-machine".into(),
                     label: "Updated".into(),
+                    ..Default::default()
                 },
             )
             .unwrap();
