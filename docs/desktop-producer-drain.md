@@ -843,3 +843,37 @@ banner or open a display. They qualify actual block mechanics with a fake
 Center, not real SDK request/callback origin or native effect admission. Full
 per-owner native resources, callback/delegate custody, current producer/profile
 and service gates remain separate prerequisites.
+
+### Dormant Cocoa owner request data
+
+The private, uncalled `macos_notify::owned_request` factory constructs SDK data
+only. It validates the explicit existing Owner, whole Notice and supplied
+original canonical non-nil correlation UUID before any Cocoa object construction.
+It generates no ID, clips nothing, and bounds UTF-8 bytes to 8192 for the token,
+4096 for the title and 16384 for the body. These caps apply only to this dormant
+factory; the current System, Delegate and ordinary GUI remain unchanged.
+
+A Draft contains an immutable UNNotificationRequest with the exact raw token,
+Qt-compatible request identifier, title, body and default sound. Its two string
+userInfo entries use the existing token and correlation keys. The distinct
+categories are `zerus.attention.agent.v1` and `zerus.attention.update.v1`. No
+category/action object, custom button or action identifier is introduced, and
+no category is registered with UNUserNotificationCenter. Later registration is
+global app state and needs separate agreement: it must retain today's implicit
+default/open actions and texts, with any future application action identifiers
+isolated per owner. There is no posting or response/withdrawal route here.
+
+Expected Owner is selected before validation; neither a category nor a valid
+token establishes the original native owner. A Draft is comparison data, never
+an accepted-post mapping, a delivered receipt or an execution permit. A valid
+historical token remains text; constructing a Draft does not adopt its old native
+post. Future upgrades must preserve existing legacy/unbound handling, and a new
+category must never claim a legacy notification. Actual original mappings,
+per-owner native resources, delegate/current-controller custody and all SDK
+origin/effect/profile/service gates remain separate prerequisites.
+
+Headless Mac controls construct and copy these actual request data objects,
+inspect metadata and exact raw identities, and refuse wrong-owner, unbound,
+invalid-correlation and oversized inputs. They call no Center method, request
+no permission, post no banner and use no display. Input byte caps are not an
+SDK allocator, decoded-memory, RSS or whole-profile heap bound.
