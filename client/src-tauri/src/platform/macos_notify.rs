@@ -134,6 +134,30 @@ fn take<T>(done: &Mutex<Option<Done<T>>>) -> Option<Done<T>> {
     done.lock().unwrap_or_else(PoisonError::into_inner).take()
 }
 
+/// Preserve the SDK's Fn block while consuming the original continuation once.
+/// Native copies share that same continuation; an uncalled final drop still
+/// drops its armed accounting guard. This factory grants no native permission.
+fn authorization_reply(done: Done<(bool, Option<String>)>) -> RcBlock<dyn Fn(Bool, *mut NSError)> {
+    let done = once(done);
+    RcBlock::new(move |granted: Bool, error: *mut NSError| {
+        if let Some(done) = take(&done) {
+            done((granted.as_bool(), describe(error)));
+        }
+    })
+}
+
+fn error_reply(done: Done<Option<String>>) -> RcBlock<dyn Fn(*mut NSError)> {
+    let done = once(done);
+    RcBlock::new(move |error: *mut NSError| {
+        if let Some(done) = take(&done) {
+            done(describe(error));
+        }
+    })
+}
+
+#[cfg(test)]
+mod completion_tests;
+
 /// `UNUserNotificationCenter.currentNotificationCenter`, asked at each use.
 struct System;
 
@@ -145,12 +169,7 @@ impl Center for System {
             // SAFETY: the system passes a valid settings object.
             let status = unsafe { settings.as_ref() }.authorizationStatus();
             if status == UNAuthorizationStatus::NotDetermined {
-                let done = once(done);
-                let reply = RcBlock::new(move |granted: Bool, error: *mut NSError| {
-                    if let Some(done) = take(&done) {
-                        done((granted.as_bool(), describe(error)));
-                    }
-                });
+                let reply = authorization_reply(done);
                 UNUserNotificationCenter::currentNotificationCenter()
                     .requestAuthorizationWithOptions_completionHandler(
                         UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound,
@@ -189,12 +208,7 @@ impl Center for System {
             &content,
             None,
         );
-        let done = once(done);
-        let reply = RcBlock::new(move |error: *mut NSError| {
-            if let Some(done) = take(&done) {
-                done(describe(error));
-            }
-        });
+        let reply = error_reply(done);
         UNUserNotificationCenter::currentNotificationCenter()
             .addNotificationRequest_withCompletionHandler(&request, Some(&reply));
     }

@@ -818,3 +818,28 @@ The existing reserved G3 agent source stays
 separately; software updates are outside `g1-background-v1` and stay Staged.
 The unchanged legacy schema1 source remains separate. No new source collector,
 frozen export, shared-file quiet claim, service API or ownership change is added.
+
+### Cocoa one-shot completion custody
+
+The existing authorization-result and add-error block construction has private
+`authorization_reply` and `error_reply` factories. `System` uses these same
+factories with unchanged notification-center calls, options, one-shot consumption
+and error descriptions. Current GUI installation still uses the ordinary
+unaccounted notifier. A block factory supplies neither a native permission nor
+an original resource admission.
+
+Headless Mac controls wrap real accounted Notifier continuations captured by a
+fake Center in these actual Cocoa blocks. Native block copies share the one
+continuation. A consumed copy has no remaining obligation; the original callback
+and its queued Hop retain the same fixed NativePosting group until actual return
+and work completion. Dropping an uncalled final block or an unexecuted Hop pins
+that original group. Duplicate calls cannot recover, replay or refund it. Strong
+close still refuses derived native calls and failure sinks while original
+callbacks drain. The controls also cover real Foundation error descriptions and
+a synchronous Hop that finishes before the calling block actually returns.
+
+These tests never call UNUserNotificationCenter, request permission, post a
+banner or open a display. They qualify actual block mechanics with a fake
+Center, not real SDK request/callback origin or native effect admission. Full
+per-owner native resources, callback/delegate custody, current producer/profile
+and service gates remain separate prerequisites.
