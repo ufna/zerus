@@ -111,6 +111,16 @@ fn projects_overlay_never_reaches_shared_source_launch_or_layout_edits() {
 }
 
 #[test]
+fn repeated_source_start_keeps_the_existing_live_observation() {
+    let (fake, _pump, org, value) = setup();
+    let generation = org.lock().source_generation;
+    org.set_initial_source(snapshot_of(&value));
+    assert_eq!(org.lock().source_generation, generation);
+    assert_eq!(folder_count(&org), 3);
+    fake.finish(org);
+}
+
+#[test]
 fn only_current_live_windows_hello_at_the_exact_node_qualifies() {
     let (fake, pump, org, value) = setup();
     let mut metrics = pump.machine(&ComputerId::local()).unwrap();
@@ -156,6 +166,39 @@ fn only_current_live_windows_hello_at_the_exact_node_qualifies() {
     );
     org.observe(&state_of(&value));
     assert_eq!(folder_count(&org), 3);
+    fake.finish(org);
+}
+
+#[test]
+fn the_existing_worker_rechecks_a_live_status_arriving_after_the_source() {
+    let fake = Fake::landing();
+    std::fs::write(fake.layout(), serde_json::to_vec(&layout()).unwrap()).unwrap();
+    let pump = Pump::default();
+    hello(&pump, NODE, Some("windows"), ComputerStatus::Probing);
+    let org = fake.organization(&pump, true);
+    let value = catalog();
+    org.set_source(snapshot_of(&value));
+    org.observe(&state_of(&value));
+    let latest = Arc::new(Mutex::new(None));
+    let copy = latest.clone();
+    org.set_presented(Arc::new(move |value, _, _| *copy.lock().unwrap() = value));
+    let live = Change::Computer {
+        computer: ComputerId::local(),
+        status: ComputerStatus::Live,
+    };
+    org.observe(&live); // observer runs before the mirror update
+    pump.push(live);
+    org.0.wake.notify_all();
+    wait_until("the existing idle pass to project after Live", || {
+        latest.lock().unwrap().as_deref().is_some_and(|v| {
+            v["organization"]["projects"][0]["folders"]
+                .as_array()
+                .unwrap()
+                .len()
+                == 3
+        })
+    });
+    assert!(fake.applies().is_empty());
     fake.finish(org);
 }
 

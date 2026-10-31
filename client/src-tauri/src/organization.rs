@@ -393,8 +393,22 @@ impl Organization {
         u64::try_from(self.0.clock.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
+    /// Repeated start_source calls keep the same Live source (webview reload).
+    /// Do not invalidate an accepted observation when that source did not change.
+    pub fn set_initial_source(&self, source: SnapshotSource) {
+        self.replace_source(source, true);
+    }
+
+    #[cfg(all(test, unix))]
     pub fn set_source(&self, source: SnapshotSource) {
+        self.replace_source(source, false);
+    }
+
+    fn replace_source(&self, source: SnapshotSource, only_absent: bool) {
         let mut hub = self.lock();
+        if only_absent && hub.source.is_some() {
+            return;
+        }
         if let Some(generation) = hub.source_generation.checked_add(1) {
             hub.source_generation = generation;
         } else {
@@ -976,6 +990,16 @@ impl Organization {
                 return;
             }
             Due::Nothing => {}
+        }
+        // The drain invokes observe before updating Pump. A Live status can
+        // therefore arrive just after the accepted organization. Recheck on
+        // this existing idle pass; no read, poller or cached-source adoption.
+        if hub
+            .shown
+            .as_ref()
+            .is_some_and(|shown| shown.3 != self.windows_read_node(&hub))
+        {
+            self.publish(&mut hub);
         }
         self.release(hub);
         if writer.saved.elapsed() >= SAVE_EVERY {

@@ -105,7 +105,9 @@ generation must match the source snapshot. A replaced source, new hello,
 disconnect, failed/ended read or held observation invalidates this read proof.
 The accepted revision must still be current, with a ready, settled controller,
 no external operation, pending edit or queued recovery, and a writable Layout.
-The Pump must simultaneously report a live local hello, explicit Windows
+Repeated startup calls retain the same source instead of invalidating its proof.
+The existing worker idle pass rechecks a later Live status without reading or
+adopting a cached source. The Pump must simultaneously report a live local hello, explicit Windows
 platform, successful listing and the exact same node. A cached or polled card
 cannot establish ownership. No default platform or host alias qualifies it.
 
