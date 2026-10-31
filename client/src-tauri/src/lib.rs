@@ -346,9 +346,7 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
         })
         .on_window_event(|window, event| {
             #[cfg(feature = "live")]
-            if window.label() == MAIN_WINDOW
-                && matches!(event, tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed)
-            {
+            if window.label() == MAIN_WINDOW && matches!(event, tauri::WindowEvent::Destroyed) {
                 use tauri::Manager;
                 if let Some(delays) = window.try_state::<action_delay::Delays>() {
                     delays.cancel_all(false);
