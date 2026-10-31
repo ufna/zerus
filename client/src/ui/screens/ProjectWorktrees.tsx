@@ -40,7 +40,7 @@ export default function ProjectWorktrees(props: { folder?: Folder; project: stri
   createEffect(on(() => context()?.key, () => {
     reader()?.dispose(); setMenu(undefined); const target = context();
     if (!target) {setReader(undefined); return;}
-    const panel = new WorktreePicker({snapshot: () => bridge.worktreeSnapshot(target.computer, target.path), catalog: (refresh) => lane.read(() => bridge.worktreeCatalog(target.computer, target.path, refresh))}, target.path, target.machine);
+    const panel = new WorktreePicker({snapshot: () => bridge.worktreeSnapshot(target.computer, target.path), catalog: (refresh) => lane.read(() => target.key === context()?.key && online() ? bridge.worktreeCatalog(target.computer, target.path, refresh) : Promise.reject("Folder changed."))}, target.path, target.machine);
     panel.onChange = () => setVersion((n) => n + 1); setReader(panel); panel.show(online());
   }));
   createEffect(on(online, (yes, old) => {if (yes && old === false) reader()?.show(true);}));
