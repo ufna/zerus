@@ -477,7 +477,9 @@
    the reading column. Questions and approvals read as needing attention, after
    the owner's prototype: warn border and tint, card-coloured option rows. */
 .qcard { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; background: var(--z-color-warn-bg);
-  border: 1px solid var(--z-color-warn); border-radius: 12px; max-height: 60vh; animation: rise var(--z-motion-slow) var(--ease) both; }
+  border: 1px solid var(--z-color-warn); border-radius: 12px; max-height: 60vh; }
+/* Only a question arriving in an open session rises in; opening one paints in place. */
+.qcard.arrived { animation: rise var(--z-motion-slow) var(--ease) both; }
 .qcard-head, .qcard-meta, .qcard-actions { display: flex; align-items: center; gap: 8px; }
 .qcard-head > svg { flex: none; }
 .qcard-title { font-weight: 600; }
@@ -521,11 +523,14 @@
 .qchoice > input:focus-visible { outline: 2px solid var(--z-color-focus); outline-offset: 2px; }
 .qcard-text { min-height: 30px; padding: 5px 9px; border: 1px solid var(--z-color-border); border-radius: var(--z-radius-md); background: var(--z-color-field); color: var(--z-color-text); }
 .qcard-text:focus { border-color: var(--z-color-accent); outline: none; }
-.qcard-actions { flex-wrap: wrap; }
+/* One footer line whose height never follows the buttons: a review countdown
+   ("Submit answer (3)") must not rewrap the hint and move the whole column.
+   The hint ellipsizes (its full text is the tooltip); an error may wrap. */
 .qcard-actions:has(> .qcard-status) { justify-content: flex-end; }
-.qcard-status { flex: 1 1 200px; min-width: 0; color: var(--z-color-muted); font-size: 11.5px; margin: 0; }
-.qcard-status:empty { flex-basis: 0; }
-.qcard-status.error { color: var(--z-color-danger); }
+.qcard-actions > .btn { flex: none; }
+.qcard-status { flex: 1 1 0; min-width: 0; color: var(--z-color-muted); font-size: 11.5px; margin: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qcard-status.error { color: var(--z-color-danger); white-space: normal; }
 .wrap-pre { white-space: pre-wrap; }
 .session-file-path { overflow-wrap: anywhere; }
 .session-file-hint { white-space: pre-wrap; overflow-wrap: anywhere; }
