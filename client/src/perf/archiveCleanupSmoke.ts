@@ -11,6 +11,7 @@ function require(ok: unknown, reason: string) { if (!ok) throw Error(reason); }
 async function until(test: () => unknown, reason: string) { const end = performance.now() + 20_000; while (!test()) { if (performance.now() > end) throw Error(reason); await sleep(20); } }
 export async function archiveCleanupSmoke(allowed: boolean) {
   if (!allowed) return;
+  const legacy = new URLSearchParams(location.search).get("archive-cleanup-smoke") === "legacy";
   const log = (line: string) => invoke("perf_log", { line: "archive-smoke: " + line });
   const session = (tag: string) => Object.values(catalog.rows).find((s) => s.name === `codex/example/${tag}`)!;
   const warning = (tag: string) => notices().find((n) => n.key === sessionNoticeKey(session(tag).computer, session(tag).name) && n.title === "Session archived");
@@ -23,7 +24,8 @@ export async function archiveCleanupSmoke(allowed: boolean) {
     require(out.cleanup_capture, "native archive capture missing");
     await until(() => warning(tag) && toast(tag), "archive recovery notice absent for " + tag);
     require(!toast(tag)!.textContent?.includes("/private/secret"), "CLI path list leaked into toast");
-    require(button(toast(tag)!, "Review…") && button(toast(tag)!, "Restore session"), "recovery actions absent");
+    require(button(toast(tag)!, "Review…"), "Review action absent");
+    require(!!button(toast(tag)!, "Restore session") === !legacy, "Restore availability disagrees with CLI capability");
     return out.cleanup_capture!;
   }
   async function close() { closeCleanup(); await until(() => !document.querySelector("dialog.worktree-cleanup[open]"), "review did not close"); }
@@ -34,9 +36,14 @@ export async function archiveCleanupSmoke(allowed: boolean) {
     await until(() => !!document.querySelector("dialog.worktree-cleanup[open]"), "recorded review did not open");
     require(document.querySelector(".bc-table tr.on")?.getAttribute("title")?.endsWith("/kept"), "Review did not select its recorded row");
     require(!document.querySelector(".worktree-cleanup .solid-danger"), "opening review offered removal without a check");
+    require(document.querySelector(".worktree-cleanup .section-title")?.textContent === "Review 1 selected worktree", "single-row review lost singular copy");
+    if (legacy) require(!button(document.querySelector("dialog.worktree-cleanup")!, "Restore session"), "legacy review offered guarded Restore");
     await log("REVIEW"); await sleep(500); await log("ESCAPE_REVIEW");
     await until(() => !cleanupDialog(), "Escape did not close recorded review");
     require(document.activeElement === origin, "Escape did not return focus to Review");
+    if (legacy) {
+      await log("LEGACY_PASS"); await invoke("exit_app", { code: 0 }); return;
+    }
     origin.click(); await until(() => !!document.querySelector("dialog.worktree-cleanup[open]"), "recorded review did not reopen");
     button(document.querySelector("dialog.worktree-cleanup")!, "Restore session").click();
     await until(() => cleanup().busy, "restore did not disable cleanup controls");

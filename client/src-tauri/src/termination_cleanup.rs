@@ -51,6 +51,7 @@ struct Job {
     manual_review: bool,
     source: Option<Target>,
     archive: Option<ArchiveIdentity>,
+    restore_supported: bool,
 }
 
 /// The same exact identifiers the Archive view restores. No local path or
@@ -191,6 +192,7 @@ impl Model {
         target: &Target,
         machine: &str,
         report: &zerus_client_core::WorktreeCleanup,
+        restore_supported: bool,
     ) -> Option<RetainedCapture> {
         self.offers.retain(|offer| offer.at.elapsed() < OFFER_AGE);
         if !matches!(report.status.as_str(), "kept" | "unconfirmed")
@@ -226,7 +228,7 @@ impl Model {
         );
         let mut restore = archive
             .as_ref()
-            .filter(|_| zerus_client_core::creation::canonical_uuid(machine))
+            .filter(|_| restore_supported && zerus_client_core::creation::canonical_uuid(machine))
             .map(|a| RestoreSource {
                 target: target.clone(),
                 machine: machine.into(),
@@ -305,6 +307,7 @@ impl Model {
             manual_review: false,
             source: Some(target.clone()),
             archive,
+            restore_supported,
         });
         Some(RetainedCapture {
             id: Some(id),
@@ -423,7 +426,8 @@ impl Model {
                         .as_ref()
                         .zip(job.source.as_ref())
                         .filter(|(a, t)| {
-                            a.matches(t)
+                            job.restore_supported
+                                && a.matches(t)
                                 && zerus_client_core::creation::canonical_uuid(&entry.machine)
                                 && entry.status != Some(Status::Removed)
                         })
@@ -508,6 +512,7 @@ impl TerminationCleanup {
         target: &Target,
         machine: &str,
         outcome: &Outcome,
+        restore_supported: bool,
     ) -> Option<RetainedCapture> {
         let Outcome::Done {
             cleanup: Some(report),
@@ -517,7 +522,7 @@ impl TerminationCleanup {
             return None;
         };
         let mut model = lock(&self.0.model);
-        let result = model.retain(target, machine, report);
+        let result = model.retain(target, machine, report, restore_supported);
         if result.is_some() {
             changed(app, &mut model);
         }
@@ -840,6 +845,7 @@ pub async fn termination_cleanup_confirm(
                 phase: "checking",
                 manual_review: false,
                 source: Some(capture.target.clone()),
+                restore_supported: true,
                 archive: Some(ArchiveIdentity {
                     version: 1,
                     archive_id: receipt["result_target"]["archive_id"]
@@ -1000,9 +1006,98 @@ mod tests {
             "review":{"path":"/srv/example/work","kind":"linked","sessions":["private/session"],"changes":2}})).unwrap()
     }
     #[test]
+    fn legacy_end_actions_complete_without_offering_guarded_restore() {
+        use zerus_client_core::{Action, Exit};
+        for action in [Action::Archive, Action::Terminate] {
+            for probe in ["supported", "legacy", "timeout", "failed"] {
+                let target = source();
+                let actions = crate::actions::Actions::new(
+                    std::env::temp_dir()
+                        .join(format!("zerus-legacy-end-{}.json", uuid::Uuid::new_v4())),
+                );
+                let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let seen = Arc::clone(&count);
+                let held = actions.clone();
+                let original = target.clone();
+                let expected = action.clone();
+                let (outcome, supported) =
+                    tauri::async_runtime::block_on(crate::actions::dispatch_end_with(
+                        &actions,
+                        target.clone(),
+                        action.clone(),
+                        MACHINE.into(),
+                        move |_, inv| {
+                            assert!(held
+                                .begin(crate::actions::Lane::key(&original, &expected), &expected)
+                                .is_none());
+                            if inv.args.last().is_some_and(|s| s == "--help") {
+                                return match probe {
+                                    "timeout" => Exit::TimedOut,
+                                    "failed" => Exit::Code {
+                                        code: 1,
+                                        stdout: Vec::new(),
+                                        stderr: "unavailable".into(),
+                                    },
+                                    _ => Exit::Code {
+                                        code: 0,
+                                        stdout: if probe == "supported" {
+                                            b"guarded-create-v1".to_vec()
+                                        } else {
+                                            b"hgs stable help".to_vec()
+                                        },
+                                        stderr: String::new(),
+                                    },
+                                };
+                            }
+                            assert_eq!(
+                                zerus_client_core::worktrees::guarded(inv),
+                                probe == "supported"
+                            );
+                            seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            Exit::Code {
+                                code: 0,
+                                stdout: Vec::new(),
+                                stderr: format!(
+                                    "ZERUS_WORKTREE_CLEANUP {}\n",
+                                    serde_json::to_string(&report("kept")).unwrap()
+                                ),
+                            }
+                        },
+                    ))
+                    .unwrap();
+                assert_eq!(
+                    count.load(std::sync::atomic::Ordering::Relaxed),
+                    usize::from(matches!(probe, "supported" | "legacy"))
+                );
+                assert_eq!(supported, probe == "supported");
+                if let Outcome::Done {
+                    cleanup: Some(report),
+                    ..
+                } = outcome
+                {
+                    let mut model = Model::default();
+                    let captured = model.retain(&target, MACHINE, &report, supported).unwrap();
+                    assert_eq!(captured.restore.is_some(), supported);
+                    assert_eq!(model.view().rows[0].restore.is_some(), supported);
+                    assert!(
+                        !model.jobs[0].cleanup.entries[0].offline,
+                        "physical identity remains available for review"
+                    );
+                } else {
+                    assert!(
+                        !matches!(probe, "supported" | "legacy"),
+                        "{probe}: {outcome:?}"
+                    );
+                }
+            }
+        }
+    }
+    #[test]
     fn observed_archive_is_passive_exact_and_has_only_counted_notice_text() {
         let mut model = Model::default();
-        let capture = model.retain(&source(), MACHINE, &report("kept")).unwrap();
+        let capture = model
+            .retain(&source(), MACHINE, &report("kept"), true)
+            .unwrap();
         assert!(capture.restore.is_some());
         assert!(!model.jobs[0].cleanup.busy());
         assert_eq!(
@@ -1018,7 +1113,7 @@ mod tests {
         assert!(!view.busy);
         assert_eq!(model.jobs[0].cleanup, before);
         let repeated = model
-            .retain(&source(), MACHINE, &report("unconfirmed"))
+            .retain(&source(), MACHINE, &report("unconfirmed"), true)
             .unwrap();
         assert_eq!(repeated.notice, capture.notice);
         assert_eq!(repeated.restore.unwrap().status, Status::Kept);
@@ -1027,7 +1122,7 @@ mod tests {
         let mut foreign = report("kept");
         foreign.archive.as_mut().unwrap().run_id = "another-run".into();
         assert!(Model::default()
-            .retain(&source(), MACHINE, &foreign)
+            .retain(&source(), MACHINE, &foreign, true)
             .unwrap()
             .restore
             .is_none());
@@ -1040,7 +1135,7 @@ mod tests {
         }
         let before = model.jobs[0].cleanup.clone();
         let capture = model
-            .retain(&source(), MACHINE, &report("unconfirmed"))
+            .retain(&source(), MACHINE, &report("unconfirmed"), true)
             .unwrap();
         assert!(capture.id.is_none());
         assert!(capture.restore.unwrap().overflow);
@@ -1059,7 +1154,7 @@ mod tests {
         let mut report = report("kept");
         report.archive.as_mut().unwrap().launch_owned = false;
         let mut model = Model::default();
-        model.retain(&source(), MACHINE, &report);
+        model.retain(&source(), MACHINE, &report, true);
         let view = model.view();
         assert_eq!(view.rows[0].status, "review");
         assert_eq!(
@@ -1101,7 +1196,7 @@ mod tests {
     #[test]
     fn restoring_disables_review_without_claiming_to_clean_the_folder() {
         let mut model = Model::default();
-        model.retain(&source(), MACHINE, &report("kept"));
+        model.retain(&source(), MACHINE, &report("kept"), true);
         model.jobs[0].busy = true;
         model
             .restoring
@@ -1117,7 +1212,7 @@ mod tests {
     fn a_host_label_never_substitutes_for_physical_computer_identity() {
         let mut model = Model::default();
         let captured = model
-            .retain(&source(), "example-peer", &report("kept"))
+            .retain(&source(), "example-peer", &report("kept"), true)
             .unwrap();
         assert!(captured.restore.is_none());
         assert!(model.jobs[0].cleanup.entries[0].offline);
@@ -1143,6 +1238,7 @@ mod tests {
             manual_review: false,
             source: None,
             archive: None,
+            restore_supported: false,
         }
     }
     #[test]

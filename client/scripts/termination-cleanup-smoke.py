@@ -12,7 +12,9 @@ if '--worker' not in sys.argv:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--app', type=Path, required=True)
     parser.add_argument('--recovery', action='store_true')
+    parser.add_argument('--legacy', action='store_true', help='Recovery against help without guarded-create-v1')
     args = parser.parse_args()
+    if args.legacy: args.recovery = True
     app = args.app.resolve()
     assert app.is_file()
     root = Path(tempfile.mkdtemp(prefix='zerus-cleanup-walk-'))
@@ -21,6 +23,7 @@ if '--worker' not in sys.argv:
     (root/'repo/.git').mkdir()
     tags = ('kept', 'unowned', 'unknown', 'restore-refused', 'changed', *(f'extra-{n}' for n in range(61))) if args.recovery else ('clean', 'kept', 'unknown', 'unknown-only', 'changed')
     if args.recovery: (root/'recovery').write_text(json.dumps(tags))
+    if args.legacy: (root/'legacy').touch()
     rows = []
     for tag in tags:
         folder = root/'repo'/tag
@@ -43,10 +46,11 @@ root=Path(__file__).resolve().parent.parent
 args=sys.argv[1:]
 with (root/'calls.jsonl').open('a') as f:f.write(json.dumps(args)+'\\n')
 if args==['--help']:
+ if (root/'legacy').exists():print('hgs stable help');sys.exit(0)
  print('guarded-create-v1\\n hgs [@host] session-action <session> --json scoped native lifecycle action');sys.exit(0)
 guarded=args[:2]==['--expect-machine','11111111-1111-4111-8111-111111111111']
 if guarded:args=args[2:]
-else:assert (root/'recovery').exists() and args[0]=='worktrees' and len(args)>1 and args[1].startswith('--'),args
+else:assert ((root/'legacy').exists() and args[0]=='archive') or ((root/'recovery').exists() and args[0]=='worktrees' and len(args)>1 and args[1].startswith('--')),args
 def arg(key):return args[args.index(key)+1]
 if (root/'recovery').exists():
  import uuid
@@ -117,6 +121,7 @@ raise RuntimeError(args)
     env = {'PATH':str(root/'bin')+':/usr/bin:/bin','LANG':'C.UTF-8','HOME':str(root/'home'),'XDG_CONFIG_HOME':str(root/'config'),'XDG_DATA_HOME':str(root/'data'),'XDG_CACHE_HOME':str(root/'cache'),'XDG_RUNTIME_HOME':str(root/'runtime'),'TMPDIR':str(root/'tmp'),'TMUX_TMPDIR':str(root/'tmux'),'HGS_CONFIG_DIR':str(root/'config'),'HGS_STATE_DIR':str(root/'state'),'GDK_BACKEND':'x11','WAYLAND_DISPLAY':'zerus-nonexistent','WEBKIT_DISABLE_DMABUF_RENDERER':'1','NO_AT_BRIDGE':'1','GSETTINGS_BACKEND':'memory','ZERUS_CLIENT_HEADLESS':'1','ZERUS_CLIENT_REPLAY':str(root/'replay.ndjson'),'ZERUS_CLIENT_HGS':str(fake),'ZERUS_CLIENT_QUERY':'page=sessions&skin=zerus-light&termination-cleanup-smoke=1','ZERUS_CLIENT_PERF':'smoke'}
     env['XDG_RUNTIME_DIR']=str(root/'runtime');env['XDG_STATE_HOME']=str(root/'state')
     if args.recovery:env['ZERUS_CLIENT_QUERY']='page=sessions&skin=zerus-light&archive-cleanup-smoke=1'
+    if args.legacy:env['ZERUS_CLIENT_QUERY']='page=sessions&skin=zerus-light&archive-cleanup-smoke=legacy'
     (root/'environment.json').write_text(json.dumps(env))
     print('Private Archive recovery walk:' if args.recovery else 'Private Terminate cleanup walk:', root, flush=True)
     child = subprocess.Popen(['/usr/bin/dbus-run-session','--config-file',str(root/'bus.conf'),'--','/usr/bin/xvfb-run','-a','-s','-screen 0 1440x900x24','/usr/bin/python3',str(Path(__file__).resolve()),'--worker',str(root),str(app),*(['recovery'] if args.recovery else [])],env=env,start_new_session=True)
@@ -169,6 +174,14 @@ with (root/'app.log').open('wb') as log:
         removals=[c for c in calls if 'remove' in c]
         if recovery:
             archives=[c for c in calls if 'archive' in c];restores=[c for c in calls if 'resume' in c]
+            if (root/'legacy').exists():
+                assert len(archives)==1 and '--expect-machine' not in archives[0],archives
+                assert not restores and not removals and not effects,'legacy recovery must not run Restore or cleanup'
+                assert {'NOTICE','REVIEW','escape'}<=stages,stages
+                assert 'archive-smoke: LEGACY_PASS' in output,output
+                assert all((root/'repo'/tag/'changes.txt').exists() for tag in json.loads((root/'recovery').read_text()))
+                print('PASS legacy Archive, retained Review only, singular copy and Escape focus; no Restore or cleanup')
+                raise SystemExit(0)
             assert len(archives)==66,len(archives)
             assert len(restores)==3,restores
             assert not removals and not effects,'recovery must not replay cleanup or terminate'

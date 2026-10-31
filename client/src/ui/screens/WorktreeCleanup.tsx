@@ -28,7 +28,7 @@ export default function WorktreeCleanup() {
     <dialog ref={dialog} class="dlg su-dlg worktree-cleanup" style={{ width: "780px" }} aria-labelledby="cleanup-title" onCancel={closeCleanup} onClose={closeCleanup}>
       <div class="dlg-head"><Icon name="trash" size={18} class="accent" /><h2 id="cleanup-title">Remove working folders</h2><span class="grow" /><button class="icon-btn" aria-label="Close" onClick={closeCleanup}><Icon name="x" size={16} /></button></div>
       <div class="dlg-body bc-body">
-        <h3 class="section-title">Review {cleanup().rows.length} selected worktrees</h3>
+        <h3 class="section-title">Review {cleanup().rows.length} selected {cleanup().rows.length === 1 ? "worktree" : "worktrees"}</h3>
         <p class="muted">Conversations and branches are kept. Removing a working folder permanently deletes its local files.</p>
         <table class="su-table bc-table"><thead><tr><th>Folder / branch</th><th>Computer</th><th>Size</th><th>Result</th></tr></thead><tbody><For each={cleanup().rows}>{(row) =>
           <tr classList={{ on: current()?.id === row.id }} onClick={() => setSelected(row.id)} title={row.path}>
