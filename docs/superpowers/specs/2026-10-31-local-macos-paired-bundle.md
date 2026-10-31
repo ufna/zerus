@@ -241,3 +241,56 @@ material. Retain failures and distinguish no-key/no-window blockers from test
 passes. Request a Mac scratch resource slot and any necessary owner window
 through the coordinator before native execution. No owner rollout is requested
 by this design agreement.
+
+## Headless mechanics qualification amendment
+
+Proposed 2026-11-01 following the coordinator's scratch-signing ruling; obtain
+fresh G1 and security agreement before implementing this test fixture.
+
+The first headless campaign reached no signing operation: the fresh HOME had
+no searchable signing identity. The coordinator verified that the real login
+keychain is unavailable for SSH interaction and forbids unlocking it. Genuine
+Apple-chain qualification therefore waits for the owner GUI session through
+the maintained installer rollout, with `zerus-5wmh.66.3.25.1.2`. Do not read the
+owner installation or retry its keychain from the headless campaign.
+
+For the isolated preparation slice only, allow a separately labelled native
+mechanics fixture with a throwaway self-signed code-signing identity. Keep
+production `genuine_signature`, genuine-team checks and the runtime selector
+unchanged. The fixture must first demonstrate that the production verifier
+rejects its real self-signed signature. Its later mechanics exercise explicitly
+models the Apple/team identity boundary in test code while retaining real
+codesign operations, a requirement pinned to its own certificate, fixed CLI
+identity, app/CLI continuity, resource sealing, hashes and tamper refusal.
+This is not genuine Apple evidence or a successful production preparation.
+The actual genuine test remains a separate opt-in case and unqualified gate.
+
+Create one keychain with a unique non-login name inside the private HOME using
+public Security APIs and explicit references only. A random password exists
+only in process memory: no password in subprocess argv, logs, environment or
+files. Generate the synthetic key/certificate in memory and import them only
+into that explicit keychain. Any private-key access setup applies solely to
+this throwaway key. Never add a certificate to real trust settings, use default
+keychain references, or change a real search list. Apple's
+[StorageManager implementation](https://github.com/apple-oss-distributions/Security/blob/main/OSX/libsecurity_keychain/lib/StorageManager.cpp)
+distinguishes private keychain creation from login/System search-list updates;
+verify the chosen API path and actual private preference effects before
+claiming isolation. Do not substitute the hosted-runner keychain shell script,
+which passes passwords in argv and changes search lists.
+
+Only test code supplies the synthetic identity SHA-1 through the existing
+identity-selection input, scopes identity discovery to the fixture, and adds
+`codesign --keychain` for the private keychain. Do not add a production switch
+that bypasses Apple verification, spoof a real team, or reinterpret a private
+test certificate as trusted installation policy. Keep private raw evidence
+separate from public counts/hashes. Mark every native result as mechanics with
+a modelled identity boundary; a green fixture cannot close the genuine gate.
+
+Require a fresh pinned fixture review before execution, fresh child
+environments and the shared Mac lock. Refuse any UI/key interaction and report
+it. Record the public certificate, private keychain and scratch artifact paths
+and hashes privately; remove only those owned artifacts and prove cleanup.
+The password and private key material never enter evidence. The final source
+and mechanics evidence require fresh G1/webui acceptance before merging the
+preparation slice. The installer slice, genuine identity qualification and all
+native currentness/role/effect gates remain open.
