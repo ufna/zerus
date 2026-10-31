@@ -295,7 +295,7 @@ describe("Settings texts", () => {
   });
   it("the Processes tab fills in Qt's counts", () => {
     expect(processView).toContain('tr("Terminate selected (%1)")');
-    expect(sessionsUi("Processes.tsx")).toContain("`Terminate selected (${ids.length})`");
+    expect(sessionsUi("Processes.tsx")).toContain(`tr("Terminate selected (%1)", ids.length)`);
     expect(sessionsWindow).toContain('tr("Processes (%1)")');
     expect(processStore).toContain("`Processes (${count})`");
   });

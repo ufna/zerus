@@ -4,10 +4,11 @@ import { notify } from "./actions";
 import { tasks } from "./tasks";
 import { setWritingTask, writingTask } from "./taskBoard";
 import type { Task } from "../ui/screens/tasks-ui";
+import { trNoop } from "../i18n";
 
 export interface Execution { dispatch_id: string; stage_at: number; machine: string; session_id: string }
 export interface Cancellation { project: string; task: Task; execution: Execution; origin?: HTMLElement }
-export const PAUSE_REASON = "Pausing an individual task is not available yet";
+export const PAUSE_REASON = trNoop("Pausing an individual task is not available yet");
 const CHANGED = "The task execution changed. Nothing was cancelled. Refresh the task.";
 export const [taskCancellation, setTaskCancellation] = createSignal<Cancellation>();
 export const canCancel = (task: Task) => task.writable && task.stage === "active" && !!task.dispatchId && task.stageAt > 0 && !!task.executor.machine && !!task.executor.id;
