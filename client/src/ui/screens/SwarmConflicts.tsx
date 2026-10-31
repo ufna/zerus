@@ -75,7 +75,7 @@ function Confirm(props: { text: string; origin: HTMLElement; busy(): boolean; cl
   let dialog!: HTMLDialogElement;
   onMount(() => { dialog.showModal(); queueMicrotask(() => dialog.querySelector<HTMLButtonElement>(".dlg-foot .btn")?.focus()); });
   onCleanup(() => { dialog.close(); queueMicrotask(() => { if (props.origin?.isConnected) props.origin.focus(); }); });
-  return <dialog ref={dialog} class="dlg" style={{ width: "480px" }} aria-labelledby="swarm-confirm-title" onCancel={(e) => { e.preventDefault(); props.close(); }}>
+  return <dialog ref={dialog} class="dlg" style={{ width: "480px" }} aria-labelledby="swarm-confirm-title" onCancel={(e) => { e.preventDefault(); e.stopPropagation(); props.close(); }}>
     <div class="dlg-head"><Icon name="triangle-alert" size={18} class="accent" /><h2 id="swarm-confirm-title">Confirm catalog change</h2><span class="grow" /><button class="icon-btn" aria-label="Close" onClick={props.close}><Icon name="x" size={16} /></button></div>
     <div class="dlg-body"><p class="confirm-body su-pre">{props.text}</p></div><div class="dlg-foot"><span class="grow" /><button class="btn" onClick={props.close}>Cancel</button><button class="btn solid-danger" disabled={props.busy()} onClick={props.apply}>Apply</button></div>
   </dialog>;

@@ -16,13 +16,13 @@ export async function swarmConflictsSmoke(allowed: boolean, large: boolean) {
   try {
     await until(() => projectsPage().loaded && button("Swarm…", document) && !button("Swarm…", document).disabled);
     const origin = button("Swarm…", document); origin.focus(); origin.click();
-    await until(() => dialog()?.open && !button("Sync now").disabled);
+    await until(() => dialog()?.open && button("Sync now")?.disabled === false);
     dialog()!.querySelector<HTMLButtonElement>("#swarm-conflicts-tab")!.click();
     await until(() => choices().length === (large ? 32 : 2) && dialog()!.querySelectorAll(".sw-clist li").length === (large ? 64 : 3));
     need(button("Choose a value above").disabled, "opening chose a value");
     need(!!dialog()!.querySelector(".sw-cpager") === large && !!dialog()!.querySelector(".sw-vpager") === large, "ordinary fixture acquired a pager or overflow omitted it");
     await capture("CONFLICTS");
-    choices()[0].click(); await until(() => !!dialog()!.querySelector(".sw-choices tr.on") && !button(large ? "Keep this value" : "Keep this project").disabled); await capture("CHOICE");
+    choices()[0].click(); await until(() => !!dialog()!.querySelector(".sw-choices tr.on") && button(large ? "Keep this value" : "Keep this project")?.disabled === false); await capture("CHOICE");
     if (large) {
       named("Next page of values").focus(); named("Next page of values").click();
       await until(() => dialog()!.querySelector(".sw-vpager")?.textContent?.includes("33–64 of 75") && document.activeElement === named("Next page of values"));
@@ -43,18 +43,18 @@ export async function swarmConflictsSmoke(allowed: boolean, large: boolean) {
       await capture("MINIMUM");
     } else {
       (dialog()!.querySelectorAll(".sw-clist li")[1] as HTMLElement).click(); await until(() => choices()[1]?.textContent?.includes("Remove folder link") && button("Choose a value above"));
-      choices()[1].click(); await until(() => button("Keep this folder link") && !button("Keep this folder link").disabled);
+      choices()[1].click(); await until(() => button("Keep this folder link") && button("Keep this folder link")?.disabled === false);
       const action = button("Keep this folder link"); action.focus(); action.click(); await until(() => confirmation()?.open && document.activeElement === button("Cancel", confirmation()!));
       need(confirmation()!.textContent?.includes("Files on disk stay intact."), "removal consequence missing"); await capture("CONFIRM");
       await log("ESCAPE_SWARM_CONFIRM"); await until(() => !confirmation() && document.activeElement === action); await capture("CANCEL");
-      (dialog()!.querySelector(".sw-clist li") as HTMLElement).click(); await until(() => choices()[0]?.textContent?.includes("Sample") && button("Choose a value above"));
+      (dialog()!.querySelector(".sw-clist li") as HTMLElement).click(); await until(() => choices()[0]?.textContent?.toLowerCase().includes("sample") && button("Choose a value above"));
     }
-    choices()[0].click(); await until(() => !button(large ? "Keep this value" : "Keep this project").disabled);
+    choices()[0].click(); await until(() => button(large ? "Keep this value" : "Keep this project")?.disabled === false);
     button(large ? "Keep this value" : "Keep this project").click();
-    await until(() => dialog()!.querySelector('[role="status"]')?.textContent === "Saving your choice to the shared catalog…" && !button("Close").disabled);
+    await until(() => dialog()!.querySelector('[role="status"]')?.textContent === "Saving your choice to the shared catalog…" && button("Close")?.disabled === false);
     need(button(large ? "Keep this value" : "Keep this project").disabled, "consumed review was enabled"); await capture("RESOLVE_HELD");
     button("Close").click(); await until(() => !dialog() && document.activeElement === origin);
     await log("PASS exact mockup Conflicts, native choices, paging/focus and confirmation, consumed Resolve with source barrier, Escape/focus and no replay");
     await invoke("exit_app", { code: 0 });
-  } catch (error) { await log("FAIL " + String(error) + (error instanceof Error ? "\n" + error.stack : "")); await invoke("exit_app", { code: 1 }); }
+  } catch (error) { await log("FAIL " + String(error) + " " + JSON.stringify({ dialogs: [...document.querySelectorAll("dialog")].map((d) => ({ label: d.getAttribute("aria-labelledby"), open: d.open })), active: document.activeElement?.outerHTML.slice(0, 180) }) + (error instanceof Error ? "\n" + error.stack : "")); await invoke("exit_app", { code: 1 }); }
 }
