@@ -651,3 +651,36 @@ The [Class M source audit and measurement contract](desktop-linux-notification-c
 enumerates the remaining decoded metadata and allocator families and the separate
 review steps required before instrumentation. It establishes no numeric heap or
 whole-profile bound and changes no production admission or release rule.
+
+### Dormant owner-store filesystem prerequisite
+
+The private Linux storage module adds no production caller, source export or
+currentness receipt. Its reviewed fixture supplies a freshly independently opened
+private directory descriptor. A held nonblocking flock coordinates independent
+opens only; duplicated descriptions can share or retain it. Drop closes the
+owned descriptor without explicitly unlocking an alias. Neither lock nor close
+proves current writer exclusion, quiet or resource completion.
+
+The adapter uses only the three fixed owner/legacy leaves through the held procfd
+anchor, repeatedly checks that same private local directory, and bounds safe
+regular-file reads across the whole pair and single legacy home. A new load runs
+the existing selected inspection and Model collision, invalidation and uncertain
+result checks. It never creates a pair, imports Qt, repairs a partial restart or
+returns numeric-ID authority. Sequential scans are not an atomic snapshot or CAS
+against noncooperating or transient writers.
+
+One original Model supplies each exact write plan and update-first ordering.
+Untouched raw owner and legacy lengths count against the next physical image
+before replacement, independently of the Model's canonical encoded budget.
+The existing core private atomic helper syncs the file before rename; the adapter
+then syncs the held directory and rechecks the exact raw pair. Only an exact
+Saved Model acknowledgement advances the selected snapshot. Live raw-image
+checks preserve the original chain through intended barrier/invalidation images;
+a new restart still refuses those images. Every post-plan failure stays Unknown
+and permanently refuses the adapter, preserving original custody without retry,
+late Saved or a pair-atomicity claim. Frozen agent and legacy bytes are not written.
+
+This synchronous dormant slice does not attach filesystem custody to startup B
+or qualify kernel completion, physical heap, power-loss durability, current G1
+source/writer scope, negative permission consumption, native effects or a role
+handoff. The ordinary schema1 writer, codecs and pure transitions remain unchanged.
