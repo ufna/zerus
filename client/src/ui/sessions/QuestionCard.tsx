@@ -77,25 +77,29 @@ function Card() {
     e.preventDefault();
     void questions.enter(e.repeat);
   };
+  // The owner's "needs attention" card: icon, heading and Asked on top; counters below when there are any.
   return (
-    <div class="qcard" ref={el} role="group" aria-label={c().heading} onKeyDown={guardKeys}>
+    <div class="cmp-col"><div class="qcard" ref={el} role="group" aria-label={c().heading} onKeyDown={guardKeys}>
       <div class="qcard-head">
+        <Icon name="circle-question-mark" size={16} class="warn" />
         <b class="qcard-title">{c().heading}</b><span class="grow" />
-        <Show when={c().progress}><span class="qcard-dim">{c().progress}</span></Show>
-      </div>
-      <div class="qcard-meta">
         <Show when={q().asked}><span class="qcard-dim" title={q().asked_tip}>{q().asked}</span></Show>
-        <span class="grow" />
-        <Show when={c().pending}><span class="qcard-dim" title={c().pending_tip}>{c().pending}</span></Show>
-        <Show when={c().nav}>{(nav) => (
-          <>
-            <button type="button" class="icon-btn small" aria-label="Previous queued question" title={nav().previous_tip} disabled={!nav().previous}
-              onClick={() => void questions.navigate(-1)}><Icon name="chevron-left" size={12} /></button>
-            <button type="button" class="icon-btn small" aria-label="Next queued question" title={nav().next_tip} disabled={!nav().next}
-              onClick={() => void questions.navigate(1)}><Icon name="chevron-right" size={12} /></button>
-          </>
-        )}</Show>
       </div>
+      <Show when={c().progress || c().pending || c().nav}>
+        <div class="qcard-meta">
+          <Show when={c().progress}><span class="qcard-dim">{c().progress}</span></Show>
+          <span class="grow" />
+          <Show when={c().pending}><span class="qcard-dim" title={c().pending_tip}>{c().pending}</span></Show>
+          <Show when={c().nav}>{(nav) => (
+            <>
+              <button type="button" class="icon-btn small" aria-label="Previous queued question" title={nav().previous_tip} disabled={!nav().previous}
+                onClick={() => void questions.navigate(-1)}><Icon name="chevron-left" size={12} /></button>
+              <button type="button" class="icon-btn small" aria-label="Next queued question" title={nav().next_tip} disabled={!nav().next}
+                onClick={() => void questions.navigate(1)}><Icon name="chevron-right" size={12} /></button>
+            </>
+          )}</Show>
+        </div>
+      </Show>
       <Show when={c().tabs_visible}>
         <div class="qcard-tabs tabs" role="tablist">
           <Index each={c().forms}>{(f, i) => (
@@ -105,20 +109,20 @@ function Card() {
         </div>
       </Show>
       <Show when={formId()} keyed>{(id) => <Form id={id} onKey={onKey} />}</Show>
-      <p class="qcard-status" classList={{ error: c().status_error }} title={c().status} role="status" aria-live="polite">{c().status}</p>
+      {/* The hint on the left, the actions on the right; they wrap under it when the column is narrow. */}
       <div class="qcard-actions">
-        <button type="button" class="btn ghost" disabled={native() ? !nativeBinding(selected()) : !terminal.texts()?.available} title={terminalTip()}
+        <p class="qcard-status" classList={{ error: c().status_error }} title={c().status} role="status" aria-live="polite">{c().status}</p>
+        <button type="button" class="btn small ghost" disabled={native() ? !nativeBinding(selected()) : !terminal.texts()?.available} title={terminalTip()}
           onClick={() => { if (native()) openNative(); else { terminal.opened(); setDetailTab("terminal"); } }}>{q().terminal_label}</button>
-        <span class="grow" />
-        <Show when={c().skip.visible}><button type="button" class="btn ghost" title={c().skip_tip} disabled={!questions.enabled(c().skip)} onClick={() => void questions.skip()}>{c().skip.label}</button></Show>
-        <Show when={c().retry}><button type="button" class="btn ghost" title={c().retry_tip} onClick={() => void questions.allowRetry()}>Allow retry</button></Show>
-        <Show when={c().previous.visible}><button type="button" class="btn ghost" disabled={!c().previous.enabled} onClick={() => void questions.page(c().page - 1)}>{c().previous.label}</button></Show>
-        <Show when={c().next.visible}><button type="button" class="btn ghost accent" disabled={!c().next.enabled} onClick={() => void questions.page(c().page + 1)}>{c().next.label}</button></Show>
-        <Show when={c().submit.visible}><button type="button" class="btn primary" disabled={!questions.enabled(c().submit)} onClick={() => void questions.submit()}>{questions.label(c().submit)}</button></Show>
-        <Show when={c().deny.visible}><button type="button" class="btn ghost" disabled={!questions.enabled(c().deny)} onClick={() => void questions.decide(false)}>{c().deny.label}</button></Show>
-        <Show when={c().approve.visible}><button type="button" class="btn primary" disabled={!questions.enabled(c().approve)} onClick={() => void questions.decide(true)}>{questions.label(c().approve)}</button></Show>
+        <Show when={c().skip.visible}><button type="button" class="btn small ghost" title={c().skip_tip} disabled={!questions.enabled(c().skip)} onClick={() => void questions.skip()}>{c().skip.label}</button></Show>
+        <Show when={c().retry}><button type="button" class="btn small ghost" title={c().retry_tip} onClick={() => void questions.allowRetry()}>Allow retry</button></Show>
+        <Show when={c().previous.visible}><button type="button" class="btn small ghost" disabled={!c().previous.enabled} onClick={() => void questions.page(c().page - 1)}>{c().previous.label}</button></Show>
+        <Show when={c().next.visible}><button type="button" class="btn small ghost accent" disabled={!c().next.enabled} onClick={() => void questions.page(c().page + 1)}>{c().next.label}</button></Show>
+        <Show when={c().submit.visible}><button type="button" class="btn small primary" disabled={!questions.enabled(c().submit)} onClick={() => void questions.submit()}>{questions.label(c().submit)}</button></Show>
+        <Show when={c().deny.visible}><button type="button" class="btn small ghost" disabled={!questions.enabled(c().deny)} onClick={() => void questions.decide(false)}>{c().deny.label}</button></Show>
+        <Show when={c().approve.visible}><button type="button" class="btn small primary" disabled={!questions.enabled(c().approve)} onClick={() => void questions.decide(true)}>{questions.label(c().approve)}</button></Show>
       </div>
-    </div>
+    </div></div>
   );
 }
 
@@ -134,10 +138,18 @@ function Form(props: { id: string; onKey: (e: KeyboardEvent) => void }) {
             <Show when={form().markdown} fallback={<p class="qcard-body wrap-pre" classList={{ mono: form().monospace_body }}>{form().body}</p>}><div class="qcard-body"><Body text={form().body} /></div></Show>
           </Show>
           <Show when={form().mode_visible}><p class="qcard-mode">{form().mode}</p></Show>
-          <Index each={form().options}>{(o) => <Choice form={form()} id={o().id} group={group} onKey={props.onKey} />}</Index>
-          <Show when={form().other}><Choice form={form()} group={group} other onKey={props.onKey} /></Show>
+          <div class="qcard-options">
+            <Index each={form().options}>{(o) => <Choice form={form()} id={o().id} group={group} onKey={props.onKey} />}</Index>
+            {/* Other keeps its own row, and the answer line opens inside it once Other is chosen. */}
+            <Show when={form().other}>
+              <div class="qother" classList={{ on: !!form().other?.checked, off: !form().other?.enabled }}>
+                <Choice form={form()} group={group} other onKey={props.onKey} />
+                <Show when={form().text?.visible}><AnswerLine id={props.id} onKey={props.onKey} /></Show>
+              </div>
+            </Show>
+          </div>
         </div>
-        <Show when={form().text?.visible}><AnswerLine id={props.id} onKey={props.onKey} /></Show>
+        <Show when={!form().other && form().text?.visible}><AnswerLine id={props.id} onKey={props.onKey} /></Show>
       </div>
     )}</Show>
   );
