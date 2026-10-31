@@ -34,9 +34,12 @@ profile as data, compare the environment lexically, then return Unavailable if:
 - HOME is set to a different path from `pw_dir`;
 - XDG_STATE_HOME, XDG_DATA_HOME or XDG_CONFIG_HOME is set away from the respective
   default under `pw_dir` (`.local/state`, `.local/share`, `.config`);
-- HGS_STATE_DIR is set, including an explicit spelling of its normal location;
+- HGS_STATE_DIR or HGS_CONFIG_DIR is explicitly set, including an empty,
+  non-UTF8 or exact-default spelling;
 - HGS_INSTALL_PREFIX is set (the maintained tray installer treats an explicit
-  prefix as scratch); or
+  prefix as scratch);
+- ZERUS_CLIENT_HGS or the original `--hgs` command-line option selects a CLI;
+- HGS_SELF, HGS_PEERS or HGS_SSH explicitly changes configuration/fleet routing; or
 - an explicit test/replay/headless fixture marker is present. The implementation
   inventory must include the private built-app and Phase4 smoke markers.
 
@@ -48,6 +51,76 @@ startup availability check cannot bypass it at a later Quit or recovery read.
 An isolated launch retains drop-on-Quit with one bounded reason plus the existing
 bounded pending counts/names. It starts no preparer, helper or status subprocess
 through this protocol.
+
+### Original environment and entry-point provenance
+
+Capture an immutable native `OriginalEnvironment` at the beginning of both GUI
+and hgs entry points, before config loading, option-induced environment writes,
+threads or any anchor I/O. Capture presence and raw OS strings, not `env::var`
+success: empty and non-UTF8 values are explicit overrides too. Also retain the
+original OS arguments, including `--hgs`. Missing or late origin evidence refuses.
+This opaque type has no Deserialize, JSON constructor or environment allow flag.
+
+Two existing mutations make a late snapshot unsafe: `src/config.rs::Config::load`
+unconditionally sets HGS_STATE_DIR after resolving its default, and the client's
+`lib.rs` sets ZERUS_CLIENT_HGS from `Options::hgs`. Record a known native default
+derivation separately from the original observations. Config loading may derive
+the default only from an originally default scope; it cannot overwrite the fact
+that a user supplied an explicit selector, even if its bytes equal the default.
+An original `--hgs` remains a refusal after its conversion to an environment key.
+
+Every startup, recovery and real-Quit entry revalidates the original classification
+against its actual current context and the exact recorded native derivations.
+An unexpected subsequent selector/change refuses before any production probe.
+Do not cache a permissive Boolean or recapture after stripping overrides. A later
+entry cannot borrow an earlier permissive check after its context has changed.
+
+Helper normalization is possible only from a genuinely admitted native parent
+whose original scope passed. It may construct a minimal child environment using
+that parent's verified default configuration derivation; it may never erase an
+original explicit override to obtain admission. The child independently captures
+its original environment before its own Config::load. That classification is
+necessary but insufficient: original-stdin nonce, actual parent-observed child
+birth, sealed registration and inherited exact custody must establish the parent/
+helper origin graph described below. A caller JSON field, environment flag or
+decoded classification cannot mint ProductionAnchor or live-worker authority.
+
+The initial slices deliberately use the strict selector refusal above. This also
+fences the **maintained macOS LaunchAgent**, which always passes `--hgs`, and any
+Linux launcher passing it. Do not describe those launches as production-admitted.
+Coordinator-approved child `zerus-5wmh.66.2.34.3.5` must qualify exact selected CLI
+and configuration origin before durable quit is enabled **anywhere**. It must
+bind the verified executable identity, configuration and fleet, rather than flag
+presence, and qualify both the Mac LaunchAgent and arch `tray/install.sh` launch
+shapes with private real launches. Fake, old, changed or mismatched executables/
+configuration refuse. This proposal supplies no exception or current caller for
+those shapes; that child requires its own concrete G3/native/security agreement.
+
+### Selector and marker inventory
+
+The implementation review must export a complete source-derived inventory of
+every HGS_* and ZERUS_CLIENT_* variable actually read by its GUI, loader, helper,
+transport and lifecycle call graph, with source location and classification.
+Audit both direct reads and wrapper/prefix reads, original arguments and loader
+writes. The current source inventory establishes these required classes:
+
+| Class | Current names / source boundary | Initial production rule |
+| --- | --- | --- |
+| State/config/install | HGS_STATE_DIR, HGS_CONFIG_DIR, HGS_INSTALL_PREFIX; config.rs, machines.rs, settings/skins.rs | Any original explicit presence refuses, including default-looking bytes |
+| CLI/fleet | ZERUS_CLIENT_HGS, `--hgs`, HGS_SELF, HGS_PEERS, HGS_SSH; client cli.rs/lib.rs/core lib.rs, config.rs, platform/mod.rs | Any original explicit presence refuses; no PATH/legacy substitution for a refused selection |
+| Test/native-host replacement | All HGS_TEST_*; HGS_HOST_ALLOW_UNSTAGED, HGS_HOST_IMAGE, HGS_EXECUTABLE, HGS_LINK_MARKER; host, swarm and platform modules | Any presence refuses; test hooks cannot select production authority |
+| Replay/smoke/fixture/performance | ZERUS_CLIENT_REPLAY, ZERUS_CLIENT_REPLAY_INTERVAL_MS, ZERUS_CLIENT_HEADLESS, ZERUS_CLIENT_SMOKE_FILE, ZERUS_CLIENT_SMOKE_NOW, ZERUS_CLIENT_UPDATES_FIXTURE, ZERUS_CLIENT_VOICE_CAPTURE, ZERUS_CLIENT_PERF and all ZERUS_CLIENT_PERF_*; client commands/display/lib/updates/voice modules | Any presence refuses, even an empty or false-looking value |
+| Process/session/lifecycle inputs | HGS_ACCOUNT_ID, HGS_AGENT, HGS_ARCHIVE_ID, HGS_CLIENT, HGS_EVENTS, HGS_EXPECTED_ID, HGS_FALLBACK_SECS, HGS_FORK_AGENT_HINT_REVISION, HGS_FORK_PARENT_ID, HGS_FORK_SOURCE_NAME, HGS_FRESH, HGS_FRESH_REPLACES, HGS_HOST_PANE, HGS_HOST_SESSION, HGS_LAUNCH_ID, HGS_REQUESTED_ID, HGS_RUN_ID, HGS_SESSION, HGS_TRACKING; cli.rs, host and state modules | Original presence refuses in these initial slices; none supplies native quit authority. Later native child inputs require explicit reviewed provenance |
+| Other behavioral controls | HGS_AGENT_HINT, HGS_AGENT_HINT_OFF, HGS_AGENT_HINT_OTHER, HGS_ANSWER_CHANNEL_SECONDS, HGS_CLAUDE_PROJECTS, HGS_MOBILE_ALLOW_INSECURE_LOCALHOST, HGS_MOBILE_CONNECTOR; config/accounts/phones/state modules | Original presence refuses pending specific call-graph qualification; no mobile startup is part of this protocol |
+| Presentation-only inputs | HGS_LANG, HGS_TAB, HGS_TAB_COLORS; ZERUS_CLIENT_NOTIFICATIONS, ZERUS_CLIENT_QUERY, ZERUS_CLIENT_RENDERER, ZERUS_CLIENT_SINGLE_INSTANCE, ZERUS_CLIENT_WATCHDOG | No selector exception or admission authority; retain exact original/current observations and prove no effect on the admitted CLI/configuration/resources. A test mode still refuses through its marker |
+| Unknown future prefixed key | Any unclassified HGS_* or ZERUS_CLIENT_* | Refuse before production I/O until explicitly inventoried/reviewed |
+
+HOME/XDG comparisons remain the lexical OS-profile rules above. The inventory is
+not permission to read an alternate folder. Qualification includes defaults both
+before and after Config::load, HGS_CONFIG_DIR alone, each explicit normal-looking/
+empty/non-UTF8 override, changed later context, `--hgs` conversion, helper handoff
+and refused-marker combinations. All refused cases count **zero attempted**
+production parent/bootstrap/anchor probes, not merely zero successful opens.
 
 A test-only typed `FixtureAnchor` exercises storage/kernel mechanisms in private
 folders and cannot construct `ProductionAnchor` or positive production admission.
@@ -98,14 +171,23 @@ for this private store:
   32768, with each setting read back. The VFS cap remains the hard journal bound;
   SQLite's journal_size_limit only bounds leftover files after a transaction or
   checkpoint and is not an active-write bound.
-- Serialize complete connection lifetimes with one private, non-inherited
-  storage mutex. All production connections go through that same guard. If VFS
+- Serialize raw header/hot-journal inspection and complete connection lifetimes
+  (open, every transaction, close and callback/context destruction) with one
+  exact private, non-inherited StorageMutex. Pin its cross-process file identity;
+  the first implementation review must specify native callback/context lifetimes.
+  All production connections go through that same guard. If VFS
   lock callbacks rely on this coarse lock, that assumption and exclusion of
   unguarded connections require explicit review and cross-process proof.
-- Keep VFS registration private to this connection/context; do not change the
+- Use a uniquely named VFS registration private to this connection/context; do not change the
   process default or affect another SQLite consumer. Callbacks cannot unwind over
   C, grant native authority or accept filenames from UI/JSON. Unsupported I/O or
   lock behavior refuses; there is no silent standard-VFS fallback.
+
+The VFS callbacks are that slice's only new unsafe code. Write an explicit safety
+invariant for each callback, keep its context alive through connection close and
+unregistration, and prevent unwinding across C. A cut/fault harness must exercise
+every I/O path, including failed/partial reads, writes, truncate, sync, delete,
+access, lock and close; ordinary SQL success is not callback-lifetime evidence.
 
 This is a proposed mechanism, not qualified code. A simpler standard-VFS solution
 may replace it only after proving the same descriptor identity, active file-size
@@ -345,6 +427,27 @@ bounded diagnostics; it does not start a new preparer while exiting. Updater
 restart events currently bypass the normal flush authorization and require an
 explicit native integration test/review of the new shared freeze gate.
 
+### Installer and updater survival
+
+The existing prohibition on killing native agents extends to every admitted
+quit helper and its children. `tray/update-installed.py`, `install.sh`,
+`tray/install.sh`, `mac-install.sh` and the cask/AUR flows must never signal them,
+including through a process group, executable-name sweep or service teardown.
+They must also finish or report a bounded refusal rather than wait indefinitely
+for a detached helper. Existing cask rules prohibiting GUI quits and LaunchAgent
+unloads remain in force. No packaging or install operation repairs, resets or
+reinitializes an unknown generation.
+
+An executable replacement or GUI relaunch while an old helper drains observes
+the same charged global generation and refuses a second helper. Binary/config
+changes cannot make a fresh admission namespace. Qualification must exercise
+the real-exit route **through `tray/update-installed.py` itself**, with pending
+actions and a draining admitted fixture helper, then start the replacement GUI
+and verify preserved charges, no second helper and actual eventual drain. An
+in-app restart alone does not cover the updater's exit bypass. Exercise maintained
+install/packaging launch shapes privately; never update the owner's installation
+to qualify this behavior.
+
 ## Native resource custody
 
 One charged generation spans old/new GUI and configuration identities. It owns
@@ -431,6 +534,16 @@ silently re-enable automatic cleanup on the restricted original owner. Test
 legacy binaries as well as the new central paths; don't substitute a new-reader
 unit test for the old resident behavior.
 
+For every version-2 receipt/marker pair and **each partial-mismatch cut**, run the
+actual old resident supervisor, maintenance binary and Qt cleanup paths against
+private fixtures. Record exact bytes/hashes before and after: unknown versions
+must remain byte-identical, with no repair, rewrite, re-stamp, deletion or
+registration refresh. Refusal to remove a checkout alone is insufficient proof.
+Qt's manual Remove worktree must route version 2 to the new fresh manual review;
+it cannot accept the old review or silently downgrade ownership. Include races
+with old readers, restore and explicit new confirmation. Preserve the original
+negative restriction throughout every partial outcome.
+
 ## Read-only recovery, notices and retention
 
 Next start uses bounded stable pages (at most 50 items and 512 KiB per page;
@@ -456,11 +569,29 @@ members remain explicit. Windows and isolated launches retain today's truthful
 drop wording; production Linux/macOS wording changes only when their actual
 qualified delivery caller lands.
 
+When that caller lands, show the bounded isolation/refused-selector reason in
+the existing Quit notice, including an inherited agent HGS_STATE_DIR; stderr
+alone is insufficient. Disk-full and storage-cap refusals use that same notice
+path. Reasons expose no private path, raw environment value or provider error.
+
 Retention is indexed and bounded. Only genuinely settled payloads/notices may be
 compacted into spent UUID tombstones; never prune unresolved evidence to admit
 another batch. Retained rows <= 500,000, summaries <= 16,384 and total charged
 bytes <= 64 MiB are checked from the real transaction. Physical VFS caps remain
 independent. No timer, expiry or age creates execution/cleanup permission.
+
+### Stored-payload privacy
+
+Registrations, captures, notices and tombstones contain session names, paths and
+targets. The quit store, bootstrap/custody files and capture spool are **never**
+included in any export or diagnostics bundle, including Private analytics'
+aggregate export, and are never uploaded. Diagnostic logging is restricted to
+bounded counts, closed reason codes and digests; it must not include payloads,
+session names, paths, targets, raw environment values or startup nonces. Operator
+recovery output obeys the same rule. Its audited repair evidence remains private
+under the same storage bounds, rather than becoming a public transcript or dump.
+Qualification must attempt every existing export/bundle path with recognizable
+synthetic payloads and prove their absence, including on error and recovery.
 
 ## Required qualification before implementation/enabling
 
@@ -468,8 +599,10 @@ Design agreement is not kernel or end-to-end evidence. Each mutable slice still
 needs exact pinned review and raw hashed logs with executed counts. Required
 private controls include:
 
-- namespace/isolation predicates individually, default-profile resolution and
-  actual private-app real Quit with pending actions against a decoy anchor;
+- namespace/isolation predicates individually, complete selector/marker inventory,
+  immutable original environment before/after loader mutations, helper origin,
+  default-profile resolution and actual private-app real Quit with pending actions
+  against a decoy anchor, unchanged inode/mtime and zero attempted production probes;
 - no-follow ancestor/leaf races, unsafe types/owners/modes, fixed bootstrap cuts,
   missing/tampered state, symlink/TTY refusal and no automatic reinitialization;
 - actual DB/journal/file/count caps, every transaction/fsync failure cut, disk full
@@ -478,11 +611,16 @@ private controls include:
   original order, same-session conflicts and blocked old generations/configs;
 - unknown spawn, parent/worker crash, slow startup/preparation, pipe saturation,
   child exit before drain, old worker alive, cutoff equality and boot mismatch;
-- old resident supervisor/maintenance reading negative ownership version 2,
-  partial marker updates and deletion races, followed by unchanged native Stop/
+- old resident supervisor/maintenance and Qt cleanup reading negative ownership
+  version 2, byte-identical files across every partial marker cut, deletion races,
+  Qt manual-review routing, followed by unchanged native Stop/
   Pause/Terminate/restore contracts for latest supported agents;
 - genuine bounded receipt/status recovery with no dispatch, stable concurrent
-  paging and existing notices; fresh GUI restart and updater real-exit paths;
+  paging and existing notices; fresh GUI restart, actual update-installed.py
+  real-exit/replacement while draining, bounded installer completion without signals;
+- every export/diagnostics/Private analytics and operator recovery privacy path;
+- exact CLI/configuration-origin child .34.3.5 qualifying BOTH maintained Mac
+  LaunchAgent and arch tray/install.sh private launch shapes before any enabling;
 - Linux and macOS kernel/private built-app proofs. Windows remains fenced.
 
 Open review decisions are the exact fd-relative VFS/locking mechanism, first-use
