@@ -202,14 +202,18 @@ impl Layout {
         Ok(())
     }
     /// Pure whole-ABSENT initializer. G3 owns source proof, exact current-node
-    /// admission and the atomic family+handled-record transaction. Validate
-    /// every row/project before admission; this API neither writes nor marks it.
+    /// admission, durable family checkpoint and handled/crash-retry evidence.
+    /// Presence wins before candidate/source decoding. These RAM outcomes
+    /// grant neither validity, durability nor a handled-record admission.
     pub fn initialize_local_windows_folders(
         &mut self,
         candidate: Value,
         current_node: &str,
         organization: &Value,
     ) -> Result<Initialized, &'static str> {
+        if self.has_local_windows_folders() {
+            return Ok(Initialized::AlreadyPresent);
+        }
         let candidate_view = family(&candidate)?;
         if !canonical_uuid(current_node) || candidate_view.node != current_node {
             return Err(OWNER);
@@ -222,9 +226,7 @@ impl Layout {
         {
             return Err(swarm::edit::GONE);
         }
-        if self.has_local_windows_folders() {
-            return Ok(Initialized::AlreadyPresent);
-        }
+
         overlay_family(Some(&candidate), organization, current_node)?;
         self.install_windows_folders(candidate)?;
         Ok(Initialized::Inserted)
@@ -245,6 +247,7 @@ impl Layout {
         organization: &Value,
         current_node: &str,
         project: &str,
+        place_machine_id: Option<&str>,
         change: &folder_edit::Change,
     ) -> Result<(), String> {
         if !canonical_uuid(current_node) {
@@ -271,13 +274,22 @@ impl Layout {
         let mut names: BTreeSet<String> = live.iter().map(|s| s.to_string()).collect();
         names.extend(parsed.projects.keys().cloned());
         let mut temporary = json!({"projects":names.iter().map(|id|json!({"id":id,"accessible":live.contains(id.as_str())&&swarm::projects(organization).iter().find(|p|swarm::project_id(p)==id).is_some_and(|p|p["accessible"]!=false),"folders":parsed.projects.get(id).cloned().unwrap_or_else(||json!([]))})).collect::<Vec<_>>()});
+        if let folder_edit::Change::Set { original, .. } = change {
+            if place_machine_id != Some(current_node)
+                || original
+                    .as_ref()
+                    .is_some_and(|f| f.machine_id != current_node)
+            {
+                return Err(OWNER.into());
+            }
+        }
         folder_edit::apply_windows(&mut temporary, project, change)?;
         if let folder_edit::Change::Set { original, id, .. } = change {
             let id = original.as_ref().map(|f| f.id.as_str()).unwrap_or(id);
             for p in temporary["projects"].as_array_mut().ok_or(INVALID)? {
                 for folder in p["folders"].as_array_mut().ok_or(INVALID)? {
                     if folder["id"] == id {
-                        folder["machine_id"] = json!(current_node);
+                        folder["machine_id"] = json!(place_machine_id.ok_or(OWNER)?);
                     }
                 }
             }

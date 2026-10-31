@@ -77,6 +77,48 @@ fn explicit_empty_null_and_unsupported_are_never_absence() {
     }
 }
 #[test]
+fn existing_presence_wins_before_any_irrelevant_candidate_owner_or_catalog_decode() {
+    for family in [
+        Value::Null,
+        json!({"version":1,"node_id":NODE,"projects":{}}),
+        json!({"version":77}),
+    ] {
+        let bytes = serde_json::to_vec(&json!({"version":1,KEY:family})).unwrap();
+        // Compatibility projection for a presence check only; strict file
+        // writers refuse null/unsupported and retain their original bytes.
+        let mut layout = Layout::from_json(&bytes);
+        let before = layout.to_json();
+        assert_eq!(
+            layout
+                .initialize_local_windows_folders(Value::Null, "", &Value::Null)
+                .unwrap(),
+            Initialized::AlreadyPresent
+        );
+        assert_eq!(layout.to_json(), before);
+    }
+}
+#[test]
+fn set_requires_the_explicit_current_place_owner_and_never_retags_foreign_inputs() {
+    let change = folder_edit::Change::Set {
+        original: None,
+        id: NEW.into(),
+        machine: "old-alias".into(),
+        path: "D:/Example".into(),
+        name: String::new(),
+    };
+    for owner in [None, Some(OTHER), Some("")] {
+        let mut layout = loaded(value());
+        let before = layout.to_json();
+        assert_eq!(
+            layout
+                .edit_local_windows_folder(&org(), NODE, "p", owner, &change)
+                .unwrap_err(),
+            OWNER
+        );
+        assert_eq!(layout.to_json(), before);
+    }
+}
+#[test]
 fn changed_or_unknown_node_is_dormant_and_cannot_rebind() {
     let mut layout = loaded(value());
     let before = layout.to_json();
@@ -194,6 +236,7 @@ fn edits_preserve_original_ids_and_extensions_and_use_windows_comparison() {
             &org(),
             NODE,
             "p",
+            Some(NODE),
             &folder_edit::Change::Set {
                 original: Some(old),
                 id: NEW.into(),
@@ -223,6 +266,7 @@ fn edits_preserve_original_ids_and_extensions_and_use_windows_comparison() {
             &org(),
             NODE,
             "p",
+            Some(NODE),
             &folder_edit::Change::Set {
                 original: None,
                 id: NEW.into(),
@@ -243,6 +287,7 @@ fn copy_move_remove_and_explicit_project_deletion_are_metadata_only() {
             &org(),
             NODE,
             "p",
+            Some(NODE),
             &folder_edit::Change::Transfer {
                 original: old.clone(),
                 destination: "q".into(),
@@ -258,6 +303,7 @@ fn copy_move_remove_and_explicit_project_deletion_are_metadata_only() {
             &org(),
             NODE,
             "p",
+            Some(NODE),
             &folder_edit::Change::Remove { original: old },
         )
         .unwrap();
@@ -282,6 +328,7 @@ fn stale_records_new_noncanonical_ids_and_shared_windows_edits_refuse() {
             &org(),
             NODE,
             "p",
+            Some(NODE),
             &folder_edit::Change::Remove { original: old }
         )
         .is_err());
@@ -294,7 +341,7 @@ fn stale_records_new_noncanonical_ids_and_shared_windows_edits_refuse() {
         name: "".into(),
     };
     assert!(layout
-        .edit_local_windows_folder(&org(), NODE, "p", &change)
+        .edit_local_windows_folder(&org(), NODE, "p", Some(NODE), &change)
         .is_err());
     let change = folder_edit::Change::Set {
         original: None,
@@ -365,6 +412,7 @@ fn combined_shared_bounds_collisions_and_inaccessible_edits_refuse_without_write
             &catalog,
             NODE,
             "p",
+            Some(NODE),
             &folder_edit::Change::Remove {
                 original: original(&layout)
             }

@@ -361,6 +361,16 @@ impl Grouping {
         self.runs.take_dirty()
     }
 
+    /// Projects-only copy. Never used by shared edits or session placement.
+    pub fn local_windows_projects(
+        &self,
+        organization: &Value,
+        node: &str,
+    ) -> Result<Value, &'static str> {
+        self.layout
+            .overlay_local_windows_folders(organization, node)
+    }
+
     /// A rename is recoverable (durable draft), or its old member was absent.
     pub fn acknowledge_rename(&mut self, from: &str, to: &str) {
         self.runs.acknowledge_rename(from, to);

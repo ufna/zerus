@@ -56,12 +56,15 @@ never an authority to replace a refused file.
 
 - `has_local_windows_folders`: presence independent of emptiness/support.
 - `local_windows_folders_state`: absent, active or dormant for an observed node.
-- `initialize_local_windows_folders`: validates the whole proposed family,
-  owner and live project mapping, then inserts only if the whole field is absent.
+- `initialize_local_windows_folders`: checks target presence first. Only when
+  absent does it validate the whole candidate, owner and live project mapping.
+  Inserted/AlreadyPresent are RAM results, not validity/durability/handled claims.
 - `overlay_local_windows_folders`: returns a presentation copy for the exact
   current node and live listed projects, without changing shared input.
 - `edit_local_windows_folder`: bounded metadata changes using the existing
-  folder-edit policy with explicit Windows path semantics.
+  folder-edit policy with explicit Windows path semantics. Set requires the
+  explicitly supplied Place machine ID to equal the proven current node; a
+  missing or foreign owner is refused before applying or assigning that ID.
 - `remove_local_windows_project`: explicit deletion metadata only; a transient
   missing observation never invokes it.
 
@@ -78,8 +81,11 @@ the **whole absent family only**, through its versioned handled record. Existing
 explicit empty, null, unsupported or nonempty target data wins. There is no
 per-record missing merge, deletion journal or automatic reseeding.
 
-Every candidate row, owner and project mapping must be validated before G3's
-atomic family/handled-record admission. An original explicit folder
+G3 checks target absence before reading Qt. Only an absent target admits a
+candidate. Every candidate row, owner and project mapping must then be validated.
+G3 must qualify a durable family checkpoint, then handled evidence and crash
+retry through existing stores (or one existing Layout commit if that record
+fits). This model implements no atomic two-file transaction or new marker. An original explicit folder
 `machine_id` matching the proven source and current local node can qualify.
 A missing ID or ambiguous ownership leaves the source unhandled and its private
 evidence unchanged. Backups and observed caches do not establish current-source
@@ -89,3 +95,23 @@ Synthetic tests and Windows cross-compilation qualify the data model only.
 Windows PC runtime checks belong to a later coordinated slice. This family
 grants no filesystem, chooser, agent or session-launch authority; those positive
 paths retain their existing qualification gates.
+
+
+## Native read projection
+
+The existing organization worker passes a copy to Projects only after a current
+local source observation was adopted. Its node, swarm, digest, base and source
+generation must match the source snapshot. A replaced source, new hello,
+disconnect, failed/ended read or held observation invalidates this read proof.
+The accepted revision must still be current, with a ready, settled controller,
+no external operation, pending edit or queued recovery, and a writable Layout.
+The Pump must simultaneously report a live local hello, explicit Windows
+platform, successful listing and the exact same node. A cached or polled card
+cannot establish ownership. No default platform or host alias qualifies it.
+
+Only the Projects callback gets the overlay. Controller base/desired, Swarm
+snapshots, shared apply, the grouping model and New session placement retain
+the original shared catalog. Reading never removes dormant metadata. All local
+Windows Add, Edit, Remove, Open, Browse, Clone and launch paths, including
+metadata-only UI writes, remain fenced pending separate Windows PC native
+adapter qualification. The pure metadata APIs expose no native writer command.

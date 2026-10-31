@@ -154,12 +154,12 @@ export function ProjectsScreen() {
       { label: "Copy folder path", icon: "copy", hint: folder.path, action: () => { void copy(folder.path); } },
       { separator: true },
       { heading: "Copy to" },
-      ...others.map((p) => ({ label: p.name, icon: "folder", disabled: !current || !folderEdits.enabled(current.id) || !folderEdits.enabled(p.id), action: () => { if (current) void folderEdits.transfer(current.id, folder, p.id, true); } })),
+      ...others.map((p) => ({ label: p.name, icon: "folder", disabled: !current || !folderEdits.enabled(current.id, folder) || !folderEdits.enabled(p.id), action: () => { if (current) void folderEdits.transfer(current.id, folder, p.id, true); } })),
       { heading: "Move to" },
-      ...others.map((p) => ({ label: p.name, icon: "arrow-right", disabled: !current || !folderEdits.enabled(current.id) || !folderEdits.enabled(p.id), action: () => { if (current) void folderEdits.transfer(current.id, folder, p.id, false); } })),
+      ...others.map((p) => ({ label: p.name, icon: "arrow-right", disabled: !current || !folderEdits.enabled(current.id, folder) || !folderEdits.enabled(p.id), action: () => { if (current) void folderEdits.transfer(current.id, folder, p.id, false); } })),
       { separator: true },
-      { label: "Edit folder…", icon: "pencil", disabled: !current || !folderEdits.enabled(current.id), action: () => { if (current) void folderEdits.open(current.id, folder, origin); } },
-      { label: "Remove folder from project", icon: "minus", disabled: !current || !folderEdits.enabled(current.id), action: () => { if (current) void folderEdits.remove(current.id, folder); } },
+      { label: "Edit folder…", icon: "pencil", disabled: !current || !folderEdits.enabled(current.id, folder), action: () => { if (current) void folderEdits.open(current.id, folder, origin); } },
+      { label: "Remove folder from project", icon: "minus", disabled: !current || !folderEdits.enabled(current.id, folder), action: () => { if (current) void folderEdits.remove(current.id, folder); } },
       { label: "Add folder…", icon: "plus", disabled: !current || !folderEdits.enabled(current.id), action: () => { if (current) void folderEdits.open(current.id, undefined, origin); } },
     ] });
   };
@@ -294,8 +294,8 @@ export function ProjectsScreen() {
                 </div>
                 <div class="row proj-factions">
                   <button class="btn small" disabled={!folderEdits.enabled(p().id)} onClick={(e) => void folderEdits.open(p().id, undefined, e.currentTarget)}>Add folder…</button>
-                  <button class="btn small" disabled={!folderEdits.enabled(p().id) || !selected()} onClick={(e) => { const f = selected(); if (f) void folderEdits.open(p().id, { ...f }, e.currentTarget); }}>Edit folder…</button>
-                  <button class="btn small" disabled={!folderEdits.enabled(p().id) || !selected()} title="Remove this folder from the project. Files stay in place." onClick={() => { const f = selected(); if (f) void folderEdits.remove(p().id, { ...f }); }}>Remove folder</button>
+                  <button class="btn small" disabled={!folderEdits.enabled(p().id, selected()) || !selected()} onClick={(e) => { const f = selected(); if (f) void folderEdits.open(p().id, { ...f }, e.currentTarget); }}>Edit folder…</button>
+                  <button class="btn small" disabled={!folderEdits.enabled(p().id, selected()) || !selected()} title="Remove this folder from the project. Files stay in place." onClick={() => { const f = selected(); if (f) void folderEdits.remove(p().id, { ...f }); }}>Remove folder</button>
                   <span class="grow" />
                   <button class="btn small" disabled={!selected() || selected()?.machine !== machineCards[""]?.host || launchButton().disabled} onClick={() => { const f = selected(); if (f) void folderEdits.openFolder(p().id, { ...f }); }}><Icon name="folder-open" size={12} />Open folder</button>
                 </div>

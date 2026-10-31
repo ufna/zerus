@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{self, Read};
 use std::path::Path;
 
-pub mod windows_folders;
 mod presentation;
+pub mod windows_folders;
 pub use presentation::{qt_presentation, PresentationSeed};
 
 /// The space between neighbouring ranks; an insert takes the middle.
@@ -187,7 +187,9 @@ impl Layout {
                 return Err("the project layout has an invalid run identity");
             }
         }
-        if let Some(family)=saved.extra.get(windows_folders::KEY){windows_folders::validate(family)?;}
+        if let Some(family) = saved.extra.get(windows_folders::KEY) {
+            windows_folders::validate(family)?;
+        }
         Ok(Self::from_saved(saved))
     }
 

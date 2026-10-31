@@ -121,7 +121,7 @@ struct Hub {
     waiting: HashMap<Ticket, SyncSender<EditOutcome>>,
     presented: Option<Presented>,
     /// The revision and status line Projects last received.
-    shown: Option<(u64, String, bool)>,
+    shown: Option<(u64, String, bool, Option<String>)>,
     /// Settled edits' answers, sent once the lock is released.
     answers: Vec<(SyncSender<EditOutcome>, EditOutcome)>,
     /// The Projects call, numbered, made once the lock is released.
@@ -140,6 +140,9 @@ struct Hub {
     presentation_due: bool,
     catalog: Option<swarm_dialog::Context>,
     source_generation: u64,
+    /// Only an adopted current source observation can qualify local metadata.
+    /// Kept out of Controller: it is never shared state or apply input.
+    windows_read: Option<(u64, u64, String)>,
 }
 
 #[derive(Clone)]
@@ -391,7 +394,16 @@ impl Organization {
     }
 
     pub fn set_source(&self, source: SnapshotSource) {
-        self.lock().source = Some(source);
+        let mut hub = self.lock();
+        if let Some(generation) = hub.source_generation.checked_add(1) {
+            hub.source_generation = generation;
+        } else {
+            hub.stopped = true;
+        }
+        hub.windows_read = None;
+        hub.source = Some(source);
+        self.publish(&mut hub);
+        self.release(hub);
     }
 
     /// The last `swarm get` observed (its `worker`, `peers` and
@@ -412,6 +424,28 @@ impl Organization {
 
     /// This computer's organization changes, from the drain thread.
     pub fn observe(&self, change: &Change) {
+        // This callback precedes Pump::push. Drop the proof before a new hello
+        // or a disconnect can leave the previous card cached in the pump.
+        let identity_changed = match change {
+            Change::Machine { computer, machine } if computer.is_local() => {
+                self.0.pump.machine(computer).is_none_or(|old| {
+                    old.machine_id != machine.machine_id
+                        || old.platform != machine.platform
+                        || old.ok != machine.ok
+                        || old.local_sessions != machine.local_sessions
+                })
+            }
+            _ => false,
+        };
+        if identity_changed
+            || matches!(change, Change::Computer { computer, status } if computer.is_local() && *status != zerus_client_core::ComputerStatus::Live)
+        {
+            let mut hub = self.lock();
+            hub.windows_read = None;
+            self.publish(&mut hub);
+            self.release(hub);
+            return;
+        }
         let Change::Organization { computer, update } = change else {
             return;
         };
@@ -430,13 +464,16 @@ impl Organization {
             } => {
                 // Asked without the hub's lock: the source takes its own.
                 let Some(snapshot) = source.and_then(|source| source()) else {
+                    self.invalidate_windows_read(generation);
                     return;
                 };
                 // Base and versions of one digest; a newer state is on its way otherwise.
                 if snapshot.digest != *digest
                     || value["node_id"].as_str().unwrap_or_default() != snapshot.node_id
                     || value["swarm_id"].as_str().unwrap_or_default() != snapshot.swarm_id
+                    || value["organization"] != snapshot.base
                 {
+                    self.invalidate_windows_read(generation);
                     return;
                 }
                 let mut hub = self.lock();
@@ -444,8 +481,12 @@ impl Organization {
                     return;
                 }
                 let now = self.now();
-                if !self.0.hub.is_poisoned() && swarm_dialog::settle(&mut hub, &snapshot, now) {
+                hub.windows_read = None;
+                let adopted = if !self.0.hub.is_poisoned()
+                    && swarm_dialog::settle(&mut hub, &snapshot, now)
+                {
                     hub.shown = None;
+                    true
                 } else {
                     let observation = Observation {
                         digest: digest.clone(),
@@ -453,10 +494,16 @@ impl Organization {
                         versions: snapshot.versions,
                         membership: Arc::clone(membership),
                     };
-                    if hub.sync.observe(observation, now) {
+                    let adopted = hub.sync.observe(observation, now);
+                    if adopted {
                         // The list shows a catalog now; the dropped draft's notice goes.
                         hub.notice = None;
                     }
+                    adopted
+                };
+                if adopted {
+                    hub.windows_read =
+                        Some((hub.source_generation, hub.sync.revision(), snapshot.node_id));
                 }
                 // A held pre-operation observation is not a new recovery source.
                 if let Some(current) = hub.sync.observed_value() {
@@ -470,6 +517,7 @@ impl Organization {
                     return;
                 }
                 hub.sync.source_failed(message);
+                hub.windows_read = None;
                 hub
             }
             OrganizationUpdate::Ended => {
@@ -478,6 +526,7 @@ impl Organization {
                     return;
                 }
                 hub.sync.source_ended();
+                hub.windows_read = None;
                 hub
             }
         };
@@ -510,7 +559,13 @@ impl Organization {
     /// source that fails before its first state still reaches Projects.
     fn publish(&self, hub: &mut Hub) {
         let view = self.view(hub);
-        let shown = (hub.sync.revision(), view.status.clone(), view.status_error);
+        let windows_node = self.windows_read_node(hub);
+        let shown = (
+            hub.sync.revision(),
+            view.status.clone(),
+            view.status_error,
+            windows_node.clone(),
+        );
         match hub.sync.presented() {
             Some((organization, membership)) => {
                 self.0
@@ -525,7 +580,23 @@ impl Organization {
         let Some(presented) = hub.presented.clone() else {
             return;
         };
-        let value = hub.sync.presented_value();
+        let value = hub.sync.presented_value().map(|value| {
+            windows_node
+                .as_deref()
+                .and_then(|node| {
+                    self.0
+                        .pump
+                        .local_windows_projects(&value["organization"], node)
+                })
+                .map_or_else(
+                    || Arc::clone(&value),
+                    |organization| {
+                        let mut shown = (*value).clone();
+                        shown["organization"] = organization;
+                        Arc::new(shown)
+                    },
+                )
+        });
         let status = (shown.1.clone(), shown.2);
         hub.announcements += 1;
         hub.announce = Some((
@@ -533,6 +604,36 @@ impl Organization {
             (presented, value, self.0.pump.default_project(), status),
         ));
         hub.shown = Some(shown);
+    }
+
+    fn windows_read_node(&self, hub: &Hub) -> Option<String> {
+        let (generation, revision, node) = hub.windows_read.as_ref()?;
+        if !self.0.allowed
+            || !self.0.layout_writable
+            || hub.stopped
+            || hub.presentation_due
+            || hub.recovery_due.is_some()
+            || !hub.sync.ready()
+            || hub.sync.busy()
+            || hub.sync.pending()
+            || *generation != hub.source_generation
+            || *revision != hub.sync.revision()
+        {
+            return None;
+        }
+        self.0
+            .pump
+            .local_windows_node()
+            .filter(|current| current == node)
+    }
+
+    fn invalidate_windows_read(&self, generation: u64) {
+        let mut hub = self.lock();
+        if generation == hub.source_generation {
+            hub.windows_read = None;
+            self.publish(&mut hub);
+        }
+        self.release(hub);
     }
 
     /// Drops the lock, then answers the settled edits and makes the queued
@@ -798,6 +899,7 @@ impl Organization {
             if let Err(detail) = self.recover_presentation(&recovery) {
                 let mut hub = self.lock();
                 hub.sync.source_failed(&detail);
+                hub.windows_read = None;
                 self.publish(&mut hub);
                 self.release(hub);
             }
@@ -811,7 +913,11 @@ impl Organization {
             if hub.stopped {
                 None
             } else {
-                hub.recovery_due.take().zip(hub.qt_recovery.clone())
+                let recovery = hub.recovery_due.take().zip(hub.qt_recovery.clone());
+                if recovery.is_some() {
+                    hub.windows_read = None;
+                }
+                recovery
             }
         };
         if let Some((node, recovery)) = recovery {
@@ -824,6 +930,7 @@ impl Organization {
             ) {
                 let mut hub = self.lock();
                 hub.sync.source_failed(&detail);
+                hub.windows_read = None;
                 self.publish(&mut hub);
                 self.release(hub);
             }
@@ -1532,6 +1639,7 @@ pub fn set_project_collapsed(state: State<'_, Organization>, project: String, co
 #[cfg(all(test, unix))]
 mod tests {
     mod swarm_dialog_cases;
+    mod windows_folders;
     use super::*;
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -3811,7 +3919,7 @@ mod tests {
         catalog["organization"]["projects"][0]["folders"] = json!(many);
         let fake = Fake::landing();
         let organization = fake.organization(&Pump::default(), true);
-        organization.set_source(snapshot("d1"));
+        organization.set_source(snapshot_of(&catalog));
         organization.observe(&state_of(&catalog));
         let folders = organization.project_folders("alpha");
         assert_eq!(folders.len(), swarm::FOLDERS);
