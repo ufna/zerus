@@ -385,13 +385,13 @@ export interface OpenCodeInfo { providers: { label: string; connection: string; 
 export interface Profile {
   key: string; host: ComputerId; machine: string; id: string; label: string; provider: string;
   native: boolean; installed: boolean; is_default: boolean; home: string; auth_revision: string; online: boolean;
-  state: MemberState; detail: string; signed_in: boolean;
-  permission: string; permission_mode?: string; permission_label: string; permission_hint: string; model_supported: boolean; model_text: string;
+  state: MemberState; detail: Text; signed_in: boolean;
+  permission: string; permission_mode?: string; permission_label: Text; permission_hint: Text; model_supported: boolean; model_text: Text;
   usage: Usage; opencode: OpenCodeInfo | null;
 }
 export interface Account {
   key: string; label: string; provider: string; installed: boolean; machines: string[]; members: Profile[];
-  usage: Usage; permission: string; identity_lines: string[]; identity_note: string;
+  usage: Usage; permission: Text; identity_lines: Text[]; identity_note: Text | null;
 }
 export interface AccountHost { computer: ComputerId; name: string; label: string; online: boolean }
 export interface BindingEvidence { host: ComputerId; provider: string; id: string; home: string; group: string }

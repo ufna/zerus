@@ -5,13 +5,13 @@ import { emptyAccounts, type Account, type Profile } from "../../types";
 
 const member = (extra: Partial<Profile> = {}): Profile => ({
   key: "\u001fcodex-f970ef234e", host: "", machine: "workstation", id: "codex-f970ef234e", label: "codex-f970ef234e", provider: "codex", native: false,
-  installed: true, is_default: false, home: "/home/user/.config/hgs/accounts/codex-f970ef234e", auth_revision: "", online: true, state: "ready", detail: "",
-  signed_in: true, permission: "auto", permission_label: "Auto", permission_hint: "", model_supported: true, model_text: "",
+  installed: true, is_default: false, home: "/home/user/.config/hgs/accounts/codex-f970ef234e", auth_revision: "", online: true, state: "ready", detail: { source: "" },
+  signed_in: true, permission: "auto", permission_label: { source: "Auto" }, permission_hint: { source: "" }, model_supported: true, model_text: { source: "" },
   usage: usageOf(), opencode: null, ...extra,
 });
 const account = (members: Profile[], key: string, label: string, plan = ""): Account => ({
   key, label, provider: members[0].provider, installed: true, machines: members.map((m) => m.machine), members,
-  usage: usageOf({ identity: { email: label, name: "", plan, organization: "", account_id: "", auth_method: "" } }), permission: "Auto", identity_lines: [], identity_note: "",
+  usage: usageOf({ identity: { email: label, name: "", plan, organization: "", account_id: "", auth_method: "" } }), permission: { source: "Auto" }, identity_lines: [], identity_note: null,
 });
 const row = (extra: { computer?: string; cmd?: string; accountId?: string; accountHome?: string } = {}) =>
   ({ computer: "", cmd: "codex", accountId: "codex-f970ef234e", accountHome: "", ...extra });

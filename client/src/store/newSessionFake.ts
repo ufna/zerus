@@ -38,8 +38,8 @@ export const window = (used: number, minutes: number, resets: number): Projected
 export function member(host: string, id: string, provider: string, label: string, extra: Partial<Profile> = {}): Profile {
   return {
     key: `${host}:${provider}:${id}`, host, machine: host || "pc", id, label, provider, native: id.startsWith("native-"), installed: true,
-    is_default: false, home: `/profiles/${id}`, auth_revision: "", online: true, state: "ready", detail: "", signed_in: true,
-    permission: "", permission_label: "", permission_hint: "", model_supported: false, model_text: "", usage: usageOf({ provider }), opencode: null, ...extra,
+    is_default: false, home: `/profiles/${id}`, auth_revision: "", online: true, state: "ready", detail: { source: "" }, signed_in: true,
+    permission: "", permission_label: { source: "" }, permission_hint: { source: "" }, model_supported: false, model_text: { source: "" }, usage: usageOf({ provider }), opencode: null, ...extra,
   };
 }
 
@@ -122,7 +122,7 @@ export class World {
     const grouped: Profile[][] = this.flags.has("machine-accounts") && host !== "mac" ? [members] : members.map((m) => [m]);
     const groups: Account[] = grouped.map((list) => ({
       key: `${list[0].provider}:${list[0].id}`, label: list[0].label, provider: list[0].provider, installed: true, machines: [host || "pc"], members: list,
-      usage: list[0].usage, permission: "", identity_lines: [], identity_note: "",
+      usage: list[0].usage, permission: { source: "" }, identity_lines: [], identity_note: null,
     }));
     return { loaded: true, error: this.flags.has("fail") ? "Could not load accounts: exit code 1" : null, profiles, groups };
   }
