@@ -66,6 +66,7 @@ fn duplicate(
     candidate: &Folder,
     except: Option<usize>,
     physical: bool,
+    style: Style,
 ) -> Option<usize> {
     values.iter().enumerate().find_map(|(at, value)| {
         let f = folder_value(value)?;
@@ -75,15 +76,17 @@ fn duplicate(
             } else {
                 candidate.machine == f.machine
             };
-        (Some(at) != except && same_machine && paths::same(&candidate.path, &f.path, Style::Posix))
+        (Some(at) != except && same_machine && paths::same(&candidate.path, &f.path, style))
             .then_some(at)
     })
 }
 fn set_folders(org: &mut Value, at: usize, values: Vec<Value>) {
     org["projects"][at]["folders"] = Value::Array(values);
 }
-fn supported(folder: &Folder) -> Result<(), String> {
-    if !paths::absolute(&folder.path, Style::Posix) || paths::windows_shaped(&folder.path) {
+fn supported(folder: &Folder, style: Style) -> Result<(), String> {
+    if !paths::absolute(&folder.path, style)
+        || (style == Style::Posix && paths::windows_shaped(&folder.path))
+    {
         return Err("Folder management is unavailable for this computer.".into());
     }
     Ok(())
@@ -94,6 +97,22 @@ pub fn original(org: &Value, project_id: &str, expected: &Folder) -> Result<Valu
     Ok(list[source(list, expected)?].clone())
 }
 pub fn apply(org: &mut Value, project_id: &str, change: &Change) -> Result<(), String> {
+    apply_style(org, project_id, change, Style::Posix)
+}
+/// Only the device-local Windows family uses this; the shared writer stays POSIX.
+pub(super) fn apply_windows(
+    org: &mut Value,
+    project_id: &str,
+    change: &Change,
+) -> Result<(), String> {
+    apply_style(org, project_id, change, Style::Windows)
+}
+fn apply_style(
+    org: &mut Value,
+    project_id: &str,
+    change: &Change,
+    style: Style,
+) -> Result<(), String> {
     let at = project(org, project_id)?;
     let mut list = folders(org, at)?.to_vec();
     match change {
@@ -109,15 +128,15 @@ pub fn apply(org: &mut Value, project_id: &str, change: &Change) -> Result<(), S
                 || machine.chars().any(char::is_control)
                 || path.len() > 32768
                 || path.chars().any(char::is_control)
-                || !paths::absolute(path, Style::Posix)
-                || paths::windows_shaped(path)
+                || !paths::absolute(path, style)
+                || (style == Style::Posix && paths::windows_shaped(path))
                 || name.chars().any(char::is_control)
             {
                 return Err("Choose an absolute folder path on this computer.".into());
             }
             let old = original.as_ref().map(|f| source(&list, f)).transpose()?;
             if let Some(f) = original {
-                supported(f)?;
+                supported(f, style)?;
             }
             let mut value = old
                 .map(|i| list[i].clone())
@@ -127,14 +146,14 @@ pub fn apply(org: &mut Value, project_id: &str, change: &Change) -> Result<(), S
                 value.as_object_mut().ok_or(CHANGED)?.remove("machine_name");
             }
             value["machine"] = json!(machine);
-            value["path"] = json!(paths::clean(path, Style::Posix));
+            value["path"] = json!(paths::clean(path, style));
             value["name"] = json!(name
                 .trim()
                 .chars()
                 .take(super::edit::NAME_CHARS)
                 .collect::<String>());
             let candidate = folder_value(&value).ok_or(CHANGED)?;
-            if duplicate(&list, &candidate, old, false).is_some() {
+            if duplicate(&list, &candidate, old, false, style).is_some() {
                 return Err(DUPLICATE.into());
             }
             if let Some(i) = old {
@@ -148,7 +167,7 @@ pub fn apply(org: &mut Value, project_id: &str, change: &Change) -> Result<(), S
             set_folders(org, at, list);
         }
         Change::Remove { original } => {
-            supported(original)?;
+            supported(original, style)?;
             let index = source(&list, original)?;
             list.remove(index);
             set_folders(org, at, list);
@@ -159,14 +178,14 @@ pub fn apply(org: &mut Value, project_id: &str, change: &Change) -> Result<(), S
             copy,
             id,
         } => {
-            supported(original)?;
+            supported(original, style)?;
             if destination == project_id {
                 return Err(super::edit::GONE.into());
             }
             let index = source(&list, original)?;
             let to = project(org, destination)?;
             let mut target = folders(org, to)?.to_vec();
-            if duplicate(&target, original, None, true).is_none() {
+            if duplicate(&target, original, None, true, style).is_none() {
                 if target.len() >= FOLDERS {
                     return Err("This project cannot hold another folder.".into());
                 }

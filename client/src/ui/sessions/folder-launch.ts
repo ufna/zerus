@@ -10,7 +10,11 @@ import { absolute, native, of } from "./path-forms";
 // openFolderSession checks the same state before it opens the dialog.
 
 /** A folder a Projects entry starts from: the screen's `Folder` or the organization's `FolderOut`. */
-export type LaunchFolder = Pick<Folder | FolderOut, "key" | "machine" | "path">;
+export type LaunchFolder = Pick<Folder | FolderOut, "key" | "machine" | "path" | "machine_id">;
+
+/** .66.2.31 admits a read model only; native Windows folder actions await PC qualification. */
+export const localWindowsFolder = (folder: LaunchFolder, local?: MachineMeta): boolean =>
+  local?.platform === "windows" && (!!local.machine_id && folder.machine_id === local.machine_id || !!local.host && folder.machine === local.host);
 
 export interface LaunchEnvironment {
   /** This computer's host name, "" before it reports one. */
@@ -68,7 +72,7 @@ export function createFolderLaunch(deps: FolderLaunchDeps) {
     const localHost = local?.host ?? "";
     const style = (machine: string) => of(local?.platform, !!machine && machine === localHost, buildStyle() ?? "posix");
     const env = { localHost, online: deps.online, style };
-    return { problem: folderLaunchProblem(folder, env, exists), shown: native(folder.path, style(folder.machine)), local: !!localHost && folder.machine === localHost };
+    return { problem: localWindowsFolder(folder, local) ? "Folder management is unavailable for this computer." : folderLaunchProblem(folder, env, exists), shown: native(folder.path, style(folder.machine)), local: !!localHost && folder.machine === localHost };
   }
 
   /**
@@ -78,6 +82,7 @@ export function createFolderLaunch(deps: FolderLaunchDeps) {
    */
   async function folderExists(folder: LaunchFolder): Promise<boolean | undefined> {
     await ensureBuildStyle();
+    if (localWindowsFolder(folder, deps.cards()[""])) return false;
     if (!folderLaunch(folder).local) return undefined;
     try { return await deps.bridge.localFolderExists(folder.path); } catch { return false; }
   }

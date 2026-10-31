@@ -4,6 +4,7 @@ import * as organization from "../../store/organization";
 import { machineCards } from "../../store/machines";
 import { bus } from "../../store/notices";
 import type { Folder, FolderOut, Project } from "../../types";
+import { localWindowsFolder } from "../sessions/folder-launch";
 
 export interface Place { computer: string; host: string; machine_id: string | null; label: string }
 export type FolderChange =
@@ -18,7 +19,7 @@ export function createProjectFolders(projects: () => Project[], select: (key: st
   const [prompt, setPrompt] = createSignal<FolderPrompt>();
   const [busy, setBusy] = createSignal(false);
   let left = false; onCleanup(() => { left = true; });
-  const enabled = (project: string) => !busy() && organization.grouping().ready && !!projects().find((p) => p.id === project && p.accessible);
+  const enabled = (project: string, folder?: Folder) => !busy() && organization.grouping().ready && (!folder || !localWindowsFolder(folder, machineCards[""])) && !!projects().find((p) => p.id === project && p.accessible);
   const places = (): Place[] => Object.entries(machineCards).filter(([computer, m]) => !!m.host && (computer !== "" || (m.local_sessions !== false && m.platform !== "windows"))).map(([computer, m]) => ({ computer, host: m.host!, machine_id: m.machine_id ?? null, label: computer || `${m.host} (this computer)` }));
   const read = async (project: string, folder: Folder) => {
     const current = projects().find((p) => p.id === project)?.folders.find((f) => f.key === folder.key);
@@ -29,7 +30,7 @@ export function createProjectFolders(projects: () => Project[], select: (key: st
   };
   const close = () => { if (!busy()) setPrompt(undefined); };
   async function open(project: string, folder: Folder | undefined, origin: HTMLElement) {
-    if (!enabled(project)) return;
+    if (!enabled(project, folder)) return;
     setBusy(true);
     try {
       const original = folder ? await read(project, folder) : undefined;
@@ -45,7 +46,7 @@ export function createProjectFolders(projects: () => Project[], select: (key: st
     } finally { if (!left) setBusy(false); }
   }
   async function change(project: string, folder: Folder, destination?: string, copy = false) {
-    if (!enabled(project) || (destination && !enabled(destination))) return;
+    if (!enabled(project, folder) || (destination && !enabled(destination))) return;
     setBusy(true);
     try {
       const original = await read(project, folder);
@@ -54,6 +55,7 @@ export function createProjectFolders(projects: () => Project[], select: (key: st
     } catch (error) { refuse(String(error)); } finally { if (!left) setBusy(false); }
   }
   async function openFolder(project: string, folder: Folder) {
+    if (!enabled(project, folder)) return;
     try { await bridge.projectFolderOpen(project, await read(project, folder)); }
     catch (error) { refuse(String(error)); }
   }
