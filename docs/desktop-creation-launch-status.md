@@ -38,6 +38,8 @@ M and ID are canonical non-nil UUIDs. ORIGIN is a bounded nonempty label <=80 by
 no controls/whitespace, validated but never identity/currentness evidence. It is
 only the actual existing remote guard ordering, not a routing instruction.
 No missing flags, duplicates, --dry-run, --read-only alias, stdin or trailing args.
+Recognize the command by exact command/flag positions only. A keyword inside an
+unrelated program or session argument must never select this entry.
 Bare command / malformed recognized reserved forms fail with fixed diagnostics,
 never fall through to default program launch. Direct `@host` forms for this command
 are recognized and refused before `Config::load`. No SSH/remote controller exists
@@ -72,8 +74,9 @@ this first read), HGS_CONFIG_DIR, HGS_STATE_DIR, XDG_STATE_HOME and current_dir
 through process environment/OS calls, using existing Config path formulas but
 without `Config::load` or mutation. Config assignments currently consume only
 HGS_SELF/HGS_PEERS/HGS_TAB/HGS_TAB_COLORS, none selects config/state roots, so
-omitting that file does not replace an existing path override. Reject missing,
-non-UTF8, empty or oversized selected variables rather than inventing a home.
+omitting that file does not replace an existing path override. Absent optional
+overrides use the existing defaults; HOME must exist. Reject non-UTF8, empty or
+oversized selected values rather than inventing a home.
 Each selected env/path <=4096 bytes; aggregate selected path input <=16 KiB; resolved
 absolute paths <=4096 bytes and <=32 normal components, no .. or symlink-following
 canonicalization. Relative configured roots resolve against bounded current_dir,
