@@ -990,3 +990,5 @@ export async function attachmentMedia(computer: string, file: AttachmentRef, vid
 export const actionDelayBegin = (id: string, captures: import("./store/endActionBusy").EndCapture[]) => desktop<void>("action_delay_begin", { id, captures });
 export const actionDelayWait = (id: string) => desktop<boolean>("action_delay_wait", { id });
 export const actionDelayCancel = (id: string) => desktop<void>("action_delay_cancel", { id });
+
+export const setDefaultProject = (project: string) => desktop<void>("set_default_project", { project });

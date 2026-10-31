@@ -601,6 +601,24 @@ impl Organization {
         self.submit_with(move |_| intent)
     }
 
+    fn choose_default(&self, project: &str) -> Result<(), String> {
+        if !self.0.allowed {
+            return Err(REPLAY_NEEDS_HGS.into());
+        }
+        let mut hub = self.lock();
+        if let Some(reason) = self.view(&hub).reason {
+            return Err(reason);
+        }
+        self.0.pump.set_default_project(project)?;
+        // The shared revision is unchanged. Projects still needs its new
+        // device-local default, through the existing presentation callback.
+        hub.shown = None;
+        self.publish(&mut hub);
+        self.release(hub);
+        self.0.wake.notify_all();
+        Ok(())
+    }
+
     /// The Controller's current refusal; after-bind edits only wait while
     /// its first state has not arrived, never on a later apply.
     pub(crate) fn creation_refusal(&self) -> Option<String> {
@@ -1458,6 +1476,12 @@ pub fn project_folders(state: State<'_, Organization>, project: String) -> Vec<F
     state.project_folders(&project)
 }
 
+/// The default is this computer's local presentation; never a shared edit.
+#[tauri::command(async)]
+pub fn set_default_project(state: State<'_, Organization>, project: String) -> Result<(), String> {
+    state.choose_default(&project)
+}
+
 /// Expand or collapse a project: this device's layout, no `hgs`. Off the
 /// main thread, as every command that takes a lock: the pump's lock may be
 /// held by a grouping pass over every row.
@@ -1471,6 +1495,37 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn local_default_publishes_projects_and_uses_only_the_layout_writer() {
+        let fake = Fake::landing();
+        let pump = Pump::default();
+        let org = fake.organization(&pump, true);
+        org.set_source(snapshot("d1"));
+        org.observe(&state("d1"));
+        assert!(org.choose_default("missing").is_err());
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let seen = calls.clone();
+        org.set_presented(Arc::new(move |_, default, _| {
+            seen.lock().unwrap().push(default);
+        }));
+        org.choose_default("alpha").unwrap();
+        assert_eq!(pump.default_project(), "alpha");
+        assert_eq!(
+            calls.lock().unwrap().last().map(String::as_str),
+            Some("alpha")
+        );
+        org.flush();
+        assert_eq!(
+            zerus_client_core::swarm::layout::Layout::from_json(
+                &std::fs::read(fake.layout()).unwrap()
+            )
+            .default_project(),
+            Some("alpha")
+        );
+        assert!(fake.applies().is_empty());
+        fake.finish(org);
+    }
 
     #[test]
     fn creation_keeps_the_edit_outcome_and_returns_its_exact_project() {

@@ -177,6 +177,13 @@ impl Pump {
         self.wake(inner);
     }
 
+    pub fn set_default_project(&self, project: &str) -> Result<(), String> {
+        let mut inner = self.lock();
+        inner.grouping.set_default_project(project)?;
+        self.wake(inner);
+        Ok(())
+    }
+
     pub fn set_collapsed(&self, project: &str, collapsed: bool) {
         let mut inner = self.lock();
         inner.grouping.set_collapsed(project, collapsed);

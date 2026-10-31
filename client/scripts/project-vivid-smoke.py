@@ -4,9 +4,10 @@ import argparse, ctypes, json, os, signal, subprocess, sys, tempfile, time
 from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 if '--worker' not in sys.argv:
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--app',type=Path,required=True);args=parser.parse_args();app=args.app.resolve();assert app.is_file()
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--app',type=Path,required=True);parser.add_argument('--default',action='store_true');args=parser.parse_args();app=args.app.resolve();assert app.is_file()
     root=Path(tempfile.mkdtemp(prefix='zerus-project-vivid-'))
     for name in ('home','config','data','cache','runtime','tmp','tmux','state','bin'):(root/name).mkdir(mode=0o700)
+    if args.default:(root/'default').touch()
     frames=[json.loads(line) for line in (REPO/'client/fixtures/replay.ndjson').read_text().splitlines()]
     parts={i['key']:i['row'] for f in frames if f.get('topic')=='organization' for i in f.get('items',[])}
     snapshot=parts['organization'];ids=snapshot['organization']['projects'];projects=[]
@@ -37,30 +38,38 @@ print('{}');sys.exit(1)
     try:result=child.wait(timeout=100)
     except subprocess.TimeoutExpired:os.killpg(child.pid,signal.SIGTERM);child.wait(timeout=5);raise
     raise SystemExit(result)
-root,app=Path(sys.argv[2]),Path(sys.argv[3]);assert os.environ['HOME']==str(root/'home')
+root,app=Path(sys.argv[2]),Path(sys.argv[3]);default_mode=(root/'default').exists();assert os.environ['HOME']==str(root/'home')
 env={k:v for k,v in os.environ.items() if k in {'PATH','LANG','HOME','XDG_CONFIG_HOME','XDG_DATA_HOME','XDG_CACHE_HOME','XDG_RUNTIME_HOME','TMPDIR','TMUX_TMPDIR','HGS_CONFIG_DIR','HGS_STATE_DIR','GDK_BACKEND','WAYLAND_DISPLAY','WEBKIT_DISABLE_DMABUF_RENDERER','NO_AT_BRIDGE','GSETTINGS_BACKEND','DISPLAY','DBUS_SESSION_BUS_ADDRESS','XAUTHORITY'} or k.startswith('ZERUS_CLIENT_')}
 x=ctypes.CDLL('libX11.so.6');t=ctypes.CDLL('libXtst.so.6');x.XOpenDisplay.argtypes=[ctypes.c_char_p];x.XOpenDisplay.restype=ctypes.c_void_p;x.XStringToKeysym.argtypes=[ctypes.c_char_p];x.XStringToKeysym.restype=ctypes.c_ulong;x.XKeysymToKeycode.argtypes=[ctypes.c_void_p,ctypes.c_ulong];x.XKeysymToKeycode.restype=ctypes.c_uint;x.XFlush.argtypes=[ctypes.c_void_p];t.XTestFakeKeyEvent.argtypes=[ctypes.c_void_p,ctypes.c_uint,ctypes.c_int,ctypes.c_ulong];display=x.XOpenDisplay(None);assert display
 for mode in ('first','restored'):
-    case_env=dict(env);case_env['ZERUS_CLIENT_QUERY']='page=projects&skin=zerus-light&project-vivid-smoke='+mode
+    case_env=dict(env);case_env['ZERUS_CLIENT_QUERY']='page=projects&skin=zerus-light&'+('project-default-smoke' if default_mode else 'project-vivid-smoke')+'='+mode
+    prefix='project-default-smoke: ' if default_mode else 'project-vivid-smoke: '
     path=root/(mode+'.log')
     with path.open('wb') as log:
         child=subprocess.Popen([str(app)],cwd=REPO/'client',env=case_env,stdout=log,stderr=log);stages=set();deadline=time.monotonic()+40
         try:
             while time.monotonic()<deadline:
                 output=path.read_text()
-                for stage in ('SOFT','BRIGHT','SAVED','RESTORED'):
-                    if 'project-vivid-smoke: '+stage in output and stage not in stages:
+                for stage in (('CHOSEN','RESTORED') if default_mode else ('SOFT','BRIGHT','SAVED','RESTORED')):
+                    if prefix+stage in output and stage not in stages:
                         stages.add(stage);time.sleep(.15);subprocess.run(['/usr/bin/import','-window','root',str(root/(stage.lower()+'.png'))],check=True,env=case_env)
                 if 'project-vivid-smoke: ESCAPE' in output and 'escape' not in stages:
                     key=x.XKeysymToKeycode(display,x.XStringToKeysym(b'Escape'));t.XTestFakeKeyEvent(display,key,1,0);t.XTestFakeKeyEvent(display,key,0,0);x.XFlush(display);stages.add('escape')
                 if child.poll() is not None:break
                 time.sleep(.03)
             else:raise RuntimeError('project vivid walk timed out')
-            print('\n'.join(l for l in output.splitlines() if 'project-vivid-smoke:' in l));assert child.returncode==0,output
+            print('\n'.join(l for l in output.splitlines() if prefix in l));assert child.returncode==0,output
         finally:
             if child.poll() is None:child.terminate();child.wait(timeout=5)
+    if default_mode:
+        saved=json.loads((root/'data/dev.zerus.next/organization-layout-replay.json').read_text());assert saved['default_project']=='p-sample-project'
+        continue
     saved=json.loads((root/'data/dev.zerus.next/settings-replay.json').read_text())
     assert saved['values']['projects/vivid/p-sample-project'] is False
+if default_mode:
+    assert not (root/'applies.jsonl').exists(),'local default must never send swarm apply'
+    print('PASS default checkbox/publication/unchecked reversion, exact refusal, layout restart; zero shared writes')
+    raise SystemExit(0)
 applies=[json.loads(line) for line in (root/'applies.jsonl').read_text().splitlines()];assert len(applies)==1,applies
 base,desired=applies[0]['base'],applies[0]['desired'];expected=json.loads(json.dumps(base))
 next(p for p in expected['projects'] if p['id']=='p-sample-project')['color']='#ffcf33'
