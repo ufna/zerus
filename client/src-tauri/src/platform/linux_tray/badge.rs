@@ -314,7 +314,15 @@ pub(super) struct ShellStream {
     work: Completion,
 }
 impl ShellStream {
+    #[cfg(test)]
     pub fn new(connection: &Connection, service: &str, scope: &Arc<Scope>) -> zbus::Result<Self> {
+        Ok(Self::prepare(connection, service, scope)?.activate(connection))
+    }
+    pub fn prepare(
+        connection: &Connection,
+        service: &str,
+        scope: &Arc<Scope>,
+    ) -> zbus::Result<Prepared> {
         let work = scope
             .resources
             .start()
@@ -329,11 +337,7 @@ impl ShellStream {
             .build()
             .to_owned();
         zbus::blocking::fdo::DBusProxy::new(connection)?.add_match_rule(rule.clone())?;
-        Ok(Self {
-            stream: zbus::MessageStream::from(connection.inner().clone()),
-            rule,
-            work,
-        })
+        Ok(Prepared { rule, work })
     }
     pub fn matches(&self, message: &zbus::Message) -> bool {
         message.header().sender().map(|name| name.as_str()) == Some("org.freedesktop.DBus")
@@ -351,6 +355,21 @@ impl ShellStream {
         let Self { stream, rule, work } = self;
         drop(stream);
         Removal { rule, work }
+    }
+}
+/// All blocking AddMatch acknowledgements must precede activation of the
+/// first bounded raw receiver. Startup cannot drain those receivers yet.
+pub(super) struct Prepared {
+    rule: zbus::MatchRule<'static>,
+    work: Completion,
+}
+impl Prepared {
+    pub fn activate(self, connection: &Connection) -> ShellStream {
+        ShellStream {
+            stream: zbus::MessageStream::from(connection.inner().clone()),
+            rule: self.rule,
+            work: self.work,
+        }
     }
 }
 pub(super) struct Removal {
