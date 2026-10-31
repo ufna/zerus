@@ -4,6 +4,8 @@ use super::*;
 use serde_json::json;
 
 mod integration;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod owned;
 
 const PRIVATE: &str = "PRIVATE TASK AND SQL DIAGNOSTIC";
 const OTHER: &str = "ffffffff-1111-4111-8111-111111111111";
