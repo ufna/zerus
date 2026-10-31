@@ -2,6 +2,7 @@
 //! approval authority, clock or frontend lives here. Read intent is in `reads`. The actor
 //! must verify current delegation and lease freshness before calling `reserve`.
 //! A returned existing reservation never authorizes another delivery.
+pub mod native;
 pub mod operations;
 pub mod reads;
 
