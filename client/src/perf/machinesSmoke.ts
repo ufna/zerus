@@ -93,7 +93,7 @@ export async function machinesToolsSmoke(allowed: boolean) {
     check(recorded.some((c) => c.argv[0] === "private-terminal" && c.argv.at(-1)?.endsWith(" machine ssh fixture-peer") === true), "terminal command lost exact saved alias");
     check(!recorded.some((c) => c.argv[0] === "machine" && c.argv[1] === "check"), "SSH login repair ran a remote probe");
     check(document.body.textContent?.includes("Opened a terminal: ssh fixture-peer") === true, "mockup SSH notice missing");
-    await log("SSH_OPENED");
+    await log("SSH_OPENED");await sleep(700);
     const original = machineEditor.draft();
     click("Browse…");
     await until(() => machineEditor.busy(), "key chooser did not start");
