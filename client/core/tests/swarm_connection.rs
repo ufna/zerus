@@ -140,3 +140,45 @@ fn project_limits_duplicate_identity_and_partial_names_preserve_whole_choices() 
     r["projects"] = json!([{"id":"original","name":"é".repeat(161)}]);
     assert!(Preview::checked("fixture-peer", &l, &r).is_err());
 }
+
+#[test]
+fn saved_alias_projection_keeps_disabled_choices_and_exact_configuration_revision() {
+    let mut list = json!({"local":"this-computer","revision":"a".repeat(64),"machines":[{"alias":"this-computer"},{"alias":"fixture-peer","enabled":false,"connection":{"identity_file":"/synthetic/private-key"}}]});
+    assert_eq!(
+        connection::configured_aliases(&list).unwrap(),
+        ["fixture-peer"]
+    );
+    assert_eq!(
+        connection::configuration_revision(&list, "fixture-peer").unwrap(),
+        "a".repeat(64)
+    );
+    assert!(connection::configuration_revision(&list, "missing").is_err());
+    assert!(connection::configuration_revision(&list, "this-computer").is_err());
+    list["revision"] = json!("A".repeat(64));
+    assert!(connection::configuration_revision(&list, "fixture-peer").is_err());
+}
+#[test]
+fn alias_overflow_duplicates_and_unsafe_targets_refuse_the_whole_saved_list() {
+    let mut list = json!({"local":"this-computer","machines":(0..513).map(|i|json!({"alias":format!("peer-{i}")})).collect::<Vec<_>>()});
+    assert!(connection::configured_aliases(&list).is_err());
+    list["machines"] = json!([{"alias":"same"},{"alias":"same"}]);
+    assert!(connection::configured_aliases(&list).is_err());
+    list["machines"] = json!([{"alias":"-o"}]);
+    assert!(connection::configured_aliases(&list).is_err());
+}
+
+#[test]
+fn observed_enrollment_needs_exact_local_node_target_swarm_and_saved_peer_binding() {
+    let l = local();
+    let preview = Preview::checked("fixture-peer", &l, &remote()).unwrap();
+    let mut state = l.clone();
+    assert!(!preview.joined_in(&state));
+    state["swarm_id"] = json!("remote-swarm");
+    state["peers"] = json!({"fixture-peer":{"node":"remote-node"}});
+    assert!(preview.joined_in(&state));
+    state["peers"]["fixture-peer"]["node"] = json!("other-node");
+    assert!(!preview.joined_in(&state));
+    state["peers"]["fixture-peer"]["node"] = json!("remote-node");
+    state["node_id"] = json!("other-local");
+    assert!(!preview.joined_in(&state));
+}

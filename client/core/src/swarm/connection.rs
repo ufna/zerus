@@ -93,6 +93,44 @@ pub fn sync_invocation() -> Invocation {
         request_id: None,
     }
 }
+
+/// Saved choices from the maintained `Read::Machines` response. No SSH data
+/// or paths are copied into the Swarm dialog and no prefix is selected.
+pub fn configured_aliases(list: &Value) -> Result<Vec<String>, String> {
+    let rows = list["machines"].as_array().ok_or(INVALID)?;
+    if rows.len() > super::dialog::COMPUTERS {
+        return Err(super::dialog::TOO_LARGE.into());
+    }
+    let mut seen = BTreeSet::new();
+    let mut result = Vec::new();
+    for row in rows {
+        let alias = row["alias"].as_str().ok_or(INVALID)?;
+        if !valid_alias(alias) || !seen.insert(alias) {
+            return Err(INVALID.into());
+        }
+        if list["local"].as_str() != Some(alias) {
+            result.push(alias.to_owned());
+        }
+    }
+    Ok(result)
+}
+
+/// Bind a Preview to the exact SSH configuration, and repeat this before Join.
+/// Peer node/swarm checks remain the existing root CLI's final guard.
+pub fn configuration_revision(list: &Value, alias: &str) -> Result<String, String> {
+    let revision = list["revision"].as_str().ok_or(INVALID)?;
+    if revision.len() != 64
+        || !revision
+            .bytes()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        || !configured_aliases(list)?
+            .iter()
+            .any(|listed| listed == alias)
+    {
+        return Err(crate::machine_connections::CHANGED.into());
+    }
+    Ok(revision.to_owned())
+}
 impl Preview {
     pub fn checked(alias: &str, local: &Value, reply: &Value) -> Result<Self, String> {
         preview_invocation(alias)?;
@@ -124,6 +162,17 @@ impl Preview {
     }
     pub fn projects(&self) -> &[Project] {
         &self.projects
+    }
+    pub fn matches_local(&self, local: &Value) -> bool {
+        identity(local).is_ok_and(|identity| identity == self.local)
+    }
+    /// Read-only settlement evidence after the owned call/resources finish.
+    /// Does not authorize retry or establish quiescence on its own.
+    pub fn joined_in(&self, current: &Value) -> bool {
+        current["initialized"] == true
+            && current["node_id"].as_str() == Some(self.local[0].as_str())
+            && current["swarm_id"].as_str() == Some(self.swarm.as_str())
+            && current["peers"][&self.alias]["node"].as_str() == Some(self.node.as_str())
     }
     /// Root join repeats exact peer node/swarm and live project-map checks.
     /// A new preview is required if the local catalog changed meanwhile.

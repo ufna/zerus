@@ -2283,6 +2283,7 @@ mod tests {
             digest: "fixture-digest".into(),
             base: catalog.clone(),
             versions: json!({}),
+            ..Default::default()
         };
         organization.set_source(Arc::new(move || Some(snapshot.clone())));
         let change = Change::Organization {

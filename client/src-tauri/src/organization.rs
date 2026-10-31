@@ -34,6 +34,7 @@
 pub mod clones;
 pub mod folders;
 pub mod overview;
+pub mod swarm_dialog;
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read as _};
@@ -137,6 +138,8 @@ struct Hub {
     recovery_seen: Option<(String, bool)>,
     recovery_due: Option<String>,
     presentation_due: bool,
+    catalog: Option<swarm_dialog::Context>,
+    source_generation: u64,
 }
 
 #[derive(Clone)]
@@ -415,6 +418,10 @@ impl Organization {
         if !computer.is_local() {
             return;
         }
+        let (generation, source) = {
+            let hub = self.lock();
+            (hub.source_generation, hub.source.clone())
+        };
         let mut hub = match update {
             OrganizationUpdate::State {
                 value,
@@ -422,36 +429,51 @@ impl Organization {
                 membership,
             } => {
                 // Asked without the hub's lock: the source takes its own.
-                let source = self.lock().source.clone();
                 let Some(snapshot) = source.and_then(|source| source()) else {
                     return;
                 };
                 // Base and versions of one digest; a newer state is on its way otherwise.
-                if snapshot.digest != *digest {
+                if snapshot.digest != *digest
+                    || value["node_id"].as_str().unwrap_or_default() != snapshot.node_id
+                    || value["swarm_id"].as_str().unwrap_or_default() != snapshot.swarm_id
+                {
                     return;
                 }
-                let observation = Observation {
-                    digest: digest.clone(),
-                    value: Arc::clone(value),
-                    versions: snapshot.versions,
-                    membership: Arc::clone(membership),
-                };
                 let mut hub = self.lock();
+                if generation != hub.source_generation {
+                    return;
+                }
                 let now = self.now();
-                if hub.sync.observe(observation, now) {
-                    // The list shows a catalog now; the dropped draft's notice goes.
-                    hub.notice = None;
+                if !self.0.hub.is_poisoned() && swarm_dialog::settle(&mut hub, &snapshot, now) {
+                    hub.shown = None;
+                } else {
+                    let observation = Observation {
+                        digest: digest.clone(),
+                        value: Arc::clone(value),
+                        versions: snapshot.versions,
+                        membership: Arc::clone(membership),
+                    };
+                    if hub.sync.observe(observation, now) {
+                        // The list shows a catalog now; the dropped draft's notice goes.
+                        hub.notice = None;
+                    }
                 }
                 Self::queue_recovery(&mut hub, value);
                 hub
             }
             OrganizationUpdate::Failed { message, .. } => {
                 let mut hub = self.lock();
+                if generation != hub.source_generation {
+                    return;
+                }
                 hub.sync.source_failed(message);
                 hub
             }
             OrganizationUpdate::Ended => {
                 let mut hub = self.lock();
+                if generation != hub.source_generation {
+                    return;
+                }
                 hub.sync.source_ended();
                 hub
             }
@@ -802,6 +824,9 @@ impl Organization {
                 self.publish(&mut hub);
                 self.release(hub);
             }
+            return;
+        }
+        if self.catalog_pass() {
             return;
         }
         self.runs_writer().request(false);
@@ -1503,6 +1528,7 @@ pub fn set_project_collapsed(state: State<'_, Organization>, project: String, co
 
 #[cfg(all(test, unix))]
 mod tests {
+    mod swarm_dialog_cases;
     use super::*;
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1821,10 +1847,10 @@ mod tests {
             Some(zerus_client_core::settings::QtStore::Ini(qt.clone())),
             settings.clone(),
         );
-        organization.set_source(snapshot("d1"));
         let mut observed = full("d1");
         observed["node_id"] = json!(node);
         observed["initialized"] = json!(false);
+        organization.set_source(snapshot_of(&observed));
         organization.observe(&state_of(&observed));
         wait_until("the held recovery status", || {
             std::fs::read_to_string(fake.dir.join("log.ndjson"))
@@ -2151,13 +2177,37 @@ mod tests {
     }
 
     fn snapshot(digest: &'static str) -> SnapshotSource {
-        Arc::new(move || {
-            Some(OrganizationSnapshot {
-                digest: digest.into(),
-                base: full(digest)["organization"].clone(),
-                versions: json!({}),
-            })
-        })
+        snapshot_of(&full(digest))
+    }
+
+    fn snapshot_of(value: &Value) -> SnapshotSource {
+        let snapshot = OrganizationSnapshot {
+            node_id: value["node_id"].as_str().unwrap_or_default().into(),
+            swarm_id: value["swarm_id"].as_str().unwrap_or_default().into(),
+            digest: value["digest"].as_str().unwrap_or_default().into(),
+            base: value["organization"].clone(),
+            versions: value["versions"].clone(),
+        };
+        Arc::new(move || Some(snapshot.clone()))
+    }
+
+    #[test]
+    fn source_and_state_need_the_same_node_and_catalog_even_when_digest_matches() {
+        let fake = Fake::landing();
+        let org = fake.organization(&Pump::default(), true);
+        org.set_source(snapshot("d1"));
+        let mut other = full("d1");
+        other["node_id"] = json!("other-node");
+        org.observe(&state_of(&other));
+        assert!(org.swarm_snapshot().is_none());
+        other["node_id"] = json!("node-1");
+        other["swarm_id"] = json!("other-catalog");
+        org.observe(&state_of(&other));
+        assert!(org.swarm_snapshot().is_none());
+        org.observe(&state("d1"));
+        assert!(org.swarm_snapshot().is_some());
+        assert!(fake.applies().is_empty());
+        fake.finish(org);
     }
 
     fn finished_archive(pump: &Pump) -> uuid::Uuid {
@@ -2220,6 +2270,8 @@ mod tests {
         let base = initial["organization"].clone();
         organization.set_source(Arc::new(move || {
             Some(OrganizationSnapshot {
+                node_id: "node-1".into(),
+                swarm_id: String::new(),
                 digest: "d1".into(),
                 base: base.clone(),
                 versions: json!({}),
@@ -3729,7 +3781,7 @@ mod tests {
                 "no state yet"
             );
             assert_eq!(organization.swarm_id(), "");
-            organization.set_source(snapshot("d1"));
+            organization.set_source(snapshot_of(&value));
             organization.observe(&state_of(&value));
             answers.push(organization.project_folders("alpha"));
             assert!(organization.project_folders("gone").is_empty());
