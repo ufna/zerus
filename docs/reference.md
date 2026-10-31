@@ -276,6 +276,20 @@ delivery of pending Undo actions when Zerus quits. The independently reviewable
 [pure shared journal model](desktop-quit-journal.md) also leaves current Quit
 behavior unchanged; the actual store and detached delivery remain separately gated.
 
+The proposed [native quit-store design](desktop-quit-store-design.md) uses a
+persistent per-OS-user location derived from the effective UID's passwd home,
+never from `$HOME`: `<pw_dir>/.local/state/hgs/quit-v1/` on Linux and
+`<pw_dir>/Library/Application Support/hgs/quit-v1/` on macOS. Before any production
+anchor open, create or stat, an isolated launch must refuse durable delivery:
+HOME differs from that OS home, XDG state/data/config points away from its default,
+HGS_STATE_DIR is set, an explicit install prefix is scratch, or a test/replay
+marker is present. Such launches keep drop-on-Quit with bounded diagnostics.
+Tests use typed fixture scopes and decoy anchors; they never probe the owner's
+real anchor. Missing or tampered existing state requires explicit operator
+recovery, with unresolved charges retained. These are design requirements; the
+current runtime has no durable quit-store caller. Windows stays fenced.
+
+
 `hgs hooks --account native-claude --json` inspects the account's hook
 registration without running the agent. Use another exact account ID for an
 isolated profile. The report contains provider/account identifiers, configuration
