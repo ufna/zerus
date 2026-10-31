@@ -203,6 +203,7 @@ impl Model {
             observed.filter(|id| {
                 let (bus, daemon) = namespace_key(original.namespace());
                 self.positives.contains(&(bus, daemon, id.get()))
+                    && self.slot_matches_namespace(original, *id)
             })
         } else {
             None

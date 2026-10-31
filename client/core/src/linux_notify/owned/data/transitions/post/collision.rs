@@ -63,6 +63,30 @@ fn unknown_result(value: &mut Value, original: &Original, id: NonZeroU32) -> Res
 }
 
 impl Model {
+    pub(super) fn slot_matches_namespace(&self, original: &Original, id: NonZeroU32) -> bool {
+        let Some(tokens) =
+            self.stores[index(original.scoped().owner())].value["tokens"].as_object()
+        else {
+            return false;
+        };
+        let Some(value) = tokens.get(&id.to_string()) else {
+            return true;
+        };
+        let Ok(bytes) = serde_json::to_vec(value) else {
+            return false;
+        };
+        let Ok(row) = wire::claim(
+            &bytes,
+            original.scoped().owner(),
+            Placement::Tokens(id.get()),
+        ) else {
+            return false;
+        };
+        !row.has_unknown()
+            && matches!(row.data(), ClaimData::Retained(c)
+                if same_namespace(c.original().namespace(), original.namespace()))
+    }
+
     pub(super) fn collision_affects_agent(
         &self,
         original: &Original,
@@ -99,6 +123,11 @@ impl Model {
             return Err(Rejection::NeedsReview);
         }
         let original = &native.payload.original;
+        // Another retained claim in this namespace cannot make the incoming
+        // owner's occupied foreign/ambiguous numeric slot eligible for repair.
+        if !self.slot_matches_namespace(original, result.id) {
+            return Err(Rejection::NeedsReview);
+        }
         let owner = match phase {
             WritePhase::CollisionInvalidations => Owner::SoftwareUpdate,
             WritePhase::CollisionResult => {

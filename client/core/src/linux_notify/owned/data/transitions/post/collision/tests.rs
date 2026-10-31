@@ -473,3 +473,59 @@ fn positive_uncertain_claims_are_full_collision_targets_without_token_map_member
         }
     }
 }
+
+#[test]
+fn mixed_pair_foreign_occupied_slot_remains_terminal_despite_another_namespace_collider() {
+    for owner in [Owner::AgentAttention, Owner::SoftwareUpdate] {
+        for unknown in [false, true] {
+            let a_bus = if owner == Owner::AgentAttention {
+                "ffffffffffffffffffffffffffffffff"
+            } else {
+                BUS
+            };
+            let u_bus = if owner == Owner::SoftwareUpdate {
+                "ffffffffffffffffffffffffffffffff"
+            } else {
+                BUS
+            };
+            let a = retained(Owner::AgentAttention, "delivered", a_bus, 42);
+            let mut u: Value =
+                serde_json::from_slice(&retained(Owner::SoftwareUpdate, "delivered", u_bus, 42))
+                    .unwrap();
+            // Distinct original identity; both envelope headers remain N while
+            // the incoming owner's occupied slot retains original namespace M.
+            u["tokens"]["42"]["original"]["poster_instance"] =
+                json!("bbbbbbbb-2222-4222-8222-222222222222");
+            let u = serde_json::to_vec(&u).unwrap();
+            let mut m = model_with(&a, &u, None); // selected inspection AND Model accept this raw pair
+            let key = ready(&mut m, owner, 9);
+            let before = [
+                raw(&m, Owner::AgentAttention),
+                raw(&m, Owner::SoftwareUpdate),
+            ];
+            let images = [m.stores[0].image.clone(), m.stores[1].image.clone()];
+            let capacity = (m.reserved_entries, m.reserved_bytes, m.queued_bytes);
+            finish(&mut m, unknown);
+            assert!(m.collision.is_none());
+            assert_eq!(m.next_write().unwrap_err(), Rejection::NeedsReview);
+            assert_eq!(
+                [
+                    raw(&m, Owner::AgentAttention),
+                    raw(&m, Owner::SoftwareUpdate)
+                ],
+                before
+            );
+            assert_eq!(
+                [m.stores[0].image.clone(), m.stores[1].image.clone()],
+                images
+            );
+            assert_eq!(
+                (m.reserved_entries, m.reserved_bytes, m.queued_bytes),
+                capacity
+            );
+            assert_eq!(m.batch_status(&key).unwrap(), BatchStatus::Review);
+            assert!(m.native.as_ref().unwrap().report.is_some());
+            negative(&mut m);
+        }
+    }
+}

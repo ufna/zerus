@@ -411,6 +411,9 @@ with a positive ID qualify; the latter retains its Unknown outcome. Existing
 Delivered, UnknownPost, WithdrawalPending and UnknownWithdrawal claims all
 participate. Update-only collisions, changed or malformed namespaces, no-ID
 results and post-fence overlaps remain terminal review without a continuation.
+An occupied numeric map slot in the incoming owner's envelope must retain valid
+original provenance in that same namespace. A foreign or ambiguous slot remains
+terminal even when another claim supplies a same-namespace collider.
 
 `finish_post` invalidates the context and advances its sticky negative generation
 before exposing a collision plan. No new batch, native proposal, ordinary write
