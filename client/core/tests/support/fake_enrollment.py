@@ -10,12 +10,18 @@ action=args[1];body=json.load(sys.stdin);state_path=root/'status.json';state=jso
 def reply(value):print(json.dumps(value));sys.exit()
 with (root/'calls.ndjson').open('a') as out:out.write(json.dumps({'action':action,'keys':sorted(body),'expected_revision':body.get('expected_revision'),'generation':body.get('generation')})+'\n')
 if action=='status':assert body=={};reply(state)
-assert action in ['stop','create','join','switch-create','switch-join','check'];assert body['expected_revision']==state['config_revision']
+assert action in ['start','stop','create','join','switch-create','switch-join','check'];assert body['expected_revision']==state['config_revision']
 with (root/'effects.ndjson').open('a') as out:out.write(json.dumps({'action':action})+'\n')
+if action=='start':
+ state.update(running=True,connector_state='running',generation='f'*32);state_path.write_text(json.dumps(state))
+ if mode=='unknown':sys.exit(7)
+ reply({'state':'running','running':True,'generation':state['generation']})
 if action=='stop':
  assert body['generation']==state['generation']
  if mode=='draining':state['connector_state']='stopping';state_path.write_text(json.dumps(state));reply({'state':'stopping','running':True,'generation':state['generation']})
- state.update(running=mode=='replacement',connector_state='running' if mode=='replacement' else 'stopped',generation='c'*32 if mode=='replacement' else None);state_path.write_text(json.dumps(state));reply({'state':'stopped','running':False,'generation':None})
+ state.update(running=mode=='replacement',connector_state='running' if mode=='replacement' else 'stopped',generation='c'*32 if mode=='replacement' else None);state_path.write_text(json.dumps(state))
+ if mode=='unknown':sys.exit(7)
+ reply({'state':'stopped','running':False,'generation':None})
 if action.endswith('join'):assert body['code'].startswith('ze1.') and len(body['code'])<=4096
 if mode=='unknown':sys.exit(7)
 if action=='check' and state.get('pending',{}).get('state')=='legacy-retirement-unconfirmed':

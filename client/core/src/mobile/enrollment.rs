@@ -76,7 +76,7 @@ impl Target {
             pending_action: w.pending_action.clone(),
         })
     }
-    fn fresh(&self, connector: &Path, config: &Path) -> Result<Workspace, String> {
+    pub(super) fn fresh(&self, connector: &Path, config: &Path) -> Result<Workspace, String> {
         let current = read_status(connector, config).map_err(|_| CHANGED)?;
         if Self::capture(&current)? != *self {
             return Err(CHANGED.into());
