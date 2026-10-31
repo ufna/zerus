@@ -50,6 +50,49 @@ pub(crate) struct Partitioned {
     pub updates: Owned,
 }
 impl Partitioned {
+    /// Separate staged path: admitted agent work can settle after input close,
+    /// while GUI updates keep their own unchanged delivery state and sink.
+    pub fn new_retiring(
+        center: Box<dyn Center>,
+        hop: Hop,
+        agent_failed: Failed,
+        update_failed: Failed,
+        charge: Charge,
+    ) -> Result<
+        (
+            super::retiring::Retiring,
+            Owned,
+            super::retiring::InputControl,
+        ),
+        AccountingRefused,
+    > {
+        let backend = Arc::new(Backend {
+            center,
+            authorization: Mutex::new(Authorization::default()),
+        });
+        let (agent, control) = super::retiring::Retiring::new_accounted(
+            Box::new(Proxy {
+                owner: Owner::AgentAttention,
+                backend: backend.clone(),
+            }),
+            hop.clone(),
+            agent_failed,
+            charge,
+        )?;
+        let updates = Owned {
+            owner: Owner::SoftwareUpdate,
+            notifier: Notifier::new(
+                Box::new(Proxy {
+                    owner: Owner::SoftwareUpdate,
+                    backend,
+                }),
+                hop,
+                update_failed,
+            ),
+        };
+        Ok((agent, updates, control))
+    }
+
     /// Only the agent side has a NativePosting scope. Update work stays GUI
     /// owned, sharing the backend and its current authorization query only.
     pub fn new_accounted(

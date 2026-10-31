@@ -486,3 +486,86 @@ fn retaining_local_owner_and_control_does_not_keep_the_mailbox_connected() {
     drop(owner);
     assert!(control.0.upgrade().is_none());
 }
+
+#[cfg(unix)]
+#[test]
+fn admitted_native_failure_finishes_and_saves_before_the_ordered_desk_checkpoint() {
+    use crate::notifier::{
+        retiring::{Batch as NativeBatch, Retiring},
+        Center, Done,
+    };
+    use zerus_client_core::desktop::drain::Gate as NativeGate;
+    #[derive(Default)]
+    struct Calls {
+        authorize: Option<Done<(bool, Option<String>)>>,
+        added: Option<Done<Option<String>>>,
+    }
+    #[derive(Clone, Default)]
+    struct Native(Arc<Mutex<Calls>>);
+    impl Center for Native {
+        fn authorize(&self, done: Done<(bool, Option<String>)>) {
+            self.0.lock().unwrap().authorize = Some(done);
+        }
+        fn add(&self, _: &str, _: &str, _: &str, done: Done<Option<String>>) {
+            self.0.lock().unwrap().added = Some(done);
+        }
+        fn remove(&self, _: &str) {}
+    }
+    let mut f = Fixture::new();
+    let original = round(&mut f.desk, live("example/one"), Instant::now())
+        .changes
+        .raised;
+    let before = std::fs::read(f.path()).unwrap();
+    let native = Native::default();
+    let gate = NativeGate::new(1).unwrap();
+    let sender = f.sender.clone();
+    let (posting, input) = Retiring::new_accounted(
+        Box::new(native.clone()),
+        Arc::new(|work| work()),
+        Box::new(move |token, detail| sender.send(DeskInput::Failed { token, detail }).unwrap()),
+        gate.admit(Role::NativePosting).unwrap(),
+    )
+    .unwrap();
+    posting
+        .prepare(NativeBatch {
+            cleared: vec![],
+            raised: original,
+        })
+        .unwrap()
+        .run();
+    let stopped = f.stopped();
+    let queued = input.close().unwrap();
+    let native_closed = gate.close();
+    assert_eq!(queued.wait_until(Instant::now()), Observation::Idle);
+    assert_eq!(
+        native_closed.wait_until(Instant::now()),
+        Observation::Pending
+    );
+    let authorized = native.0.lock().unwrap().authorize.take().unwrap();
+    authorized((true, None));
+    assert_eq!(
+        native_closed.wait_until(Instant::now()),
+        Observation::Pending,
+        "add completion still held"
+    );
+    assert_eq!(std::fs::read(f.path()).unwrap(), before);
+    let added = native.0.lock().unwrap().added.take().unwrap();
+    added(Some("native fixture failure".into()));
+    assert_eq!(native_closed.wait_until(Instant::now()), Observation::Idle);
+    // The failure send has returned, so the final barrier is ordered after it.
+    let host = thread::spawn(move || stopped.checkpoint_after_native_drain(deadline()));
+    let first = f.inputs.recv_timeout(Duration::from_secs(3)).unwrap();
+    let mut batch = super::Batch::new(Some(first), &f.inputs);
+    let outcome = round(&mut f.desk, &mut batch, Instant::now());
+    assert_eq!(outcome.window_notices.len(), 1);
+    let saved = std::fs::read(f.path()).unwrap();
+    assert_ne!(saved, before);
+    batch
+        .barrier
+        .take()
+        .unwrap_or_else(|| f.command())
+        .run(&mut f.desk);
+    assert_eq!(host.join().unwrap().unwrap().sha256, sha256(&saved));
+    assert!(f.desk.attention.is_none());
+    assert_eq!(f.owner.0.gate.snapshot().unwrap().admitted, 0);
+}

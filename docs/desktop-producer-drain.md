@@ -321,6 +321,41 @@ lifetime is not agent work after its actual calls and callbacks are drained.
 Platform/delegate/queued activation/badge lifetimes, authenticated producer,
 profile transition and G3 Drained publication remain unqualified here.
 
+## Admitted notifier input retirement prerequisite
+
+The separate internal `notifier::retiring::Retiring` constructor closes new
+agent inputs while allowing their already admitted continuations to finish.
+`Partitioned::new_retiring` composes it with the shared two-owner authorization
+fanout and the unchanged GUI-update partition. Existing `Notifier::new` and
+`new_accounted` keep their reviewed strong-close behavior; the SDK adapter still calls `new`. This mode has no production caller,
+new worker, runtime, source reader, persistent cache or public controller.
+
+`prepare` takes ownership of the original immutable batch before the host's
+existing main-thread dispatch. At most 64 preparations can be queued/running,
+with at most 128 combined notices/tokens and 64 KiB of original UTF-8 string
+bytes per batch. Validation reuses the expected AgentAttention token class.
+Refusal returns the complete unchanged private batch before any native effect;
+nothing is truncated, evicted or retried. Debug output omits its private data.
+The host must handle pressure before wiring this constructor into production.
+
+`InputControl::close` closes preparation admission before releasing the parent
+native scope charge. Prepared work and each derived authorization/add/remove,
+callback, Hop and failure sink retain forks of the same original Completion,
+without fresh admission. A queued original withdrawal can still cancel its
+pending original post. Unknown drops/panics pin the qualified fixed scope.
+Immediate callback execution cannot release a still-running native call or its
+queued payload reservation. Unsupported Windows close refuses before mutation.
+
+The returned Closed gate covers preparations only. The host must also close
+and wait its supplied NativePosting gate to the same absolute deadline, then
+enqueue the ordered Desk checkpoint after every failure send has returned.
+The composition test retains a native add callback, proves Pending, delivers its
+failure, verifies the original Desk save, then checkpoints the exact digest.
+Neither local Idle nor prepared work is a native lease, visual outcome, signed
+instance proof, role transfer or Drained publication permit. Native identity,
+category/action/correlation/legacy policy, activation, badges and the actual
+frontend/profile controller still need their separate qualified integration.
+
 ## Ordered ReadDelivery store barrier
 
 Actions now owns the same fixed four native resource slots as the existing
@@ -498,3 +533,48 @@ replacement, service/producer loss, stale epochs, capture expiry and partial
 publication. Socket/setup changes additionally need a built-app private D-Bus
 and Xvfb smoke preserving Show and --sessions, with no second instance. Native
 Windows custody and production acceptance remain separately unqualified.
+
+## Optional Linux GUI badge resource scope
+
+`platform::linux_tray::install_badge_accounted(app, conf, Charge)` is an
+internal, optional replacement for the ordinary tray installation. It requires
+`Role::Badges` and refuses a duplicate installation before native setup. There
+is no production caller, service control endpoint or takeover permission. The
+ordinary `install()` path keeps its existing SNI, menu and launcher behaviour.
+The returned weak `BadgeControl` exposes close and closed/pinned/ready diagnostics;
+none is a role-drain receipt or current ownership proof.
+
+The supplied charge covers startup before the detached installer runs, both
+shell-owner subscriptions, coalesced desired work (one), the one worker's actual
+badge sends, and at most sixteen admitted Query dispatch futures. A Query guard
+wraps zbus 5.19's generated `DispatchResult2` future, including serialization and
+`Connection::reply().await`; returning the Rust Query value is not completion.
+Pressure and closed requests return a static error without an old badge payload.
+Unissued coalesced work can be cancelled locally. A native error, discarded
+future, panic or unverified cleanup pins one fixed charge until process exit.
+
+Close fences badge offers, Query admission and periodic republishing first. The
+existing worker removes only the LauncherEntry interface, stops both bounded raw
+shell streams, acknowledges each exact RemoveMatch, waits for admitted Query
+futures, and issues at most one clear of the old nonzero badge. Both raw receivers
+are dropped before either RemoveMatch: otherwise their bounded queues could
+block the socket reader carrying the removal reply. Their charges survive until
+the acknowledgements. The clear guard survives its actual send; neither its
+return nor a successful RemoveMatch claims visual removal. Failed cleanup is
+unknown, never a retry. Calls have the existing five-second method deadline;
+an outer wait or stopped flag never releases retained native work.
+
+SNI/menu/primary activation, watcher registration and the shared GUI connection
+remain alive after badge-only closure. Those residual resources do not establish
+badge quiet by themselves: the badge subscriptions, generated replies, queued
+work and final send must each complete. A whole-window quit may still stop the
+UI worker using the existing exit path. There is no second worker, executor,
+reader thread, daemon, detector or ledger. Notification agent/update ownership
+and the GTK attention focus timer remain separate qualification work.
+
+Private-bus tests exercise the actual generated Query future and actual socket
+backpressure, explicit match-removal success/refusal, startup versus closure,
+pressure, dropped/panicking work, and one clear with no late badge republish.
+The backpressure fixture suspends only its own private D-Bus daemon and resumes
+it with a scope guard. Existing SNI/menu activation and the default badge path
+are tested separately. No owner display, session bus or desktop service is used.
