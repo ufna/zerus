@@ -86,7 +86,15 @@ pub(crate) fn snapshot(
         return Err(SnapshotError::TooLarge);
     }
     let contents = Contents::parse(bytes).ok_or(SnapshotError::Unsupported)?;
-    records(&contents).map_err(|_| SnapshotError::Unsupported)?;
+    let records = records(&contents).map_err(|_| SnapshotError::Unsupported)?;
+    if records.entries.values().any(|record| {
+        [&record.pending, &record.previous]
+            .into_iter()
+            .flatten()
+            .any(|pending| !crate::creation::safe_repository_url(&pending.url))
+    }) {
+        return Err(SnapshotError::Unsupported);
+    }
     #[derive(Deserialize)]
     struct Original {
         repository_clones: Option<Box<serde_json::value::RawValue>>,

@@ -378,6 +378,29 @@ fn next_future_malformed_duplicate_and_oversized_checkpoints_refuse_the_family()
 }
 
 #[test]
+fn next_credential_bearing_pending_and_previous_urls_remain_in_the_original_only() {
+    for field in ["pending", "previous"] {
+        for url in [
+            "https://fixture-user:fixture-secret@example.invalid/repo.git",
+            "https://example.invalid/repo.git?token=synthetic",
+            "https://example.invalid/repo.git#synthetic-fragment",
+        ] {
+            let mut pending = pending(false);
+            pending.as_object_mut().unwrap().remove("future_private");
+            pending["url"] = json!(url);
+            let raw = json!({"version":1,"entries":{"a".repeat(64):{field:pending}}}).to_string();
+            let bytes = next_bytes(&raw);
+            let before = bytes.clone();
+            assert!(matches!(
+                next_repository_clones(&bytes),
+                Err(SourceError::UnsupportedSource)
+            ));
+            assert_eq!(bytes, before);
+        }
+    }
+}
+
+#[test]
 fn next_large_original_extension_is_chunked_with_exact_offsets_and_utf8_bytes() {
     let entries: serde_json::Map<String, Value> = (0..20)
         .map(|n| {

@@ -279,6 +279,8 @@ later native-only `repository_clones` Settings extension as
 bounded Settings and version-1 checkpoint decoders (64 exact opaque scopes),
 without opening Settings or starting a writer. An absent extension is explicit;
 null, future, malformed, duplicate or oversized records refuse the family.
+Pending/previous credential-bearing URLs, including userinfo, queries or
+fragments, remain only in the original source without a final family record.
 The source hash covers the full original Settings bytes. Private snapshots
 include a `clone-header` with presence and extension byte length, followed by
 `clone-checkpoint-bytes` chunks with exact byte offsets and base64 bodies of at
