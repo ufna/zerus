@@ -406,6 +406,59 @@ read-only, and proves that an ad hoc replacement is rejected:
 ZERUS_TEST_LOCAL_MACOS_SIGNING=1 python3 -m unittest discover -s tests -p test_macos_local_signing.py -v
 ```
 
+### Headless paired source preparation
+
+The isolated preparation step for the local paired-bundle
+[design](superpowers/specs/2026-10-31-local-macos-paired-bundle.md) is available
+separately from installation. Live source installers still use their existing
+single-executable signer; this command does not change CLI discovery or enable
+native authority.
+
+Provide the matching built single-executable app and root Cargo CLI artifact,
+an explicit previous app for read-only continuity checks (or a nonexistent
+scratch path), and a fresh output prefix owned by the current user with mode
+0700:
+
+```sh
+python3 tray/prepare-local-macos.py --app "${BUILT_APP:?}" --hgs "${BUILT_CLI:?}" \
+  --installed "${PREVIOUS_APP:?}" --output "${PAIR_PREFIX:?}/hgs-tray.app"
+```
+
+Preparation copies both inputs, selects an existing compatible certificate
+through `sign-local-macos.py`, signs the fixed CLI leaf before the app, and
+verifies genuine same-team signatures, app/CLI continuity and the complete seal.
+`Contents/Resources/zerus-local-pair.json` records the untouched build artifact
+SHA-256 and the signed CLI SHA-256 before the outer app signature seals it.
+Every other nested Mach-O, link or special file is refused. Failed preparation
+removes only its owned output; a replaced output is retained for manual review.
+
+The command never calls the GUI, launchctl, LaunchServices, TCC or a service
+installer. It does not discover an owner app or change a keychain. Native tests
+use the same opt-in existing-key flow as the local signing regression, with a
+coordinated scratch Mac slot and an owner key-access window if needed. They
+qualify the signer only; genuine running-self selection remains a separate G1
+gate. Run the synthetic preparation controls without opting into signing:
+
+```sh
+python3 -m unittest discover -s tests -p test_macos_paired_preparation.py -v
+```
+
+A separate opt-in fixture exercises **mechanics (modelled identity boundary)**
+with a throwaway self-signed identity. It first proves production discovery or
+the unchanged Apple verifier refuses that identity. Its positive mechanics use
+an explicitly modelled identity boundary and actual strict own-certificate
+checks; they do not qualify an Apple-chain installation. Production verification
+and the real-identity opt-in case remain unchanged.
+
+The fixture requires a private HOME distinct from the account HOME, the shared
+Mac slot and a pinned security review before execution. Password and key bytes
+stay in memory. It compares the same UID's actual keychain reference metadata,
+never changes real search/default/trust state, restricts the synthetic key to
+codesign and its own fixture process, and proves explicit private-keychain and
+artifact deletion. See the qualification amendment in the linked design for
+the complete guards. Raw native evidence stays private; reports carry counts
+and hashes, labelled mechanics (modelled identity boundary).
+
 ### macOS privacy permissions after a signature change
 
 macOS attributes agent-launched Apple Events, Accessibility and screen capture

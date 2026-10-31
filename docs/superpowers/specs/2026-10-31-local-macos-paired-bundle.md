@@ -241,3 +241,155 @@ material. Retain failures and distinguish no-key/no-window blockers from test
 passes. Request a Mac scratch resource slot and any necessary owner window
 through the coordinator before native execution. No owner rollout is requested
 by this design agreement.
+
+## Headless mechanics qualification amendment
+
+Proposed 2026-11-01 following the coordinator's scratch-signing ruling; obtain
+fresh G1 and security agreement before implementing this test fixture.
+
+The first headless campaign reached no signing operation: the fresh HOME had
+no searchable signing identity. The coordinator verified that the real login
+keychain is unavailable for SSH interaction and forbids unlocking it. Genuine
+Apple-chain qualification therefore waits for the owner GUI session through
+the maintained installer rollout, with `zerus-5wmh.66.3.25.1.2`. Do not read the
+owner installation or retry its keychain from the headless campaign.
+
+For the isolated preparation slice only, allow a separately labelled native
+mechanics fixture with a throwaway self-signed code-signing identity. Keep
+production `genuine_signature`, genuine-team checks and the runtime selector
+unchanged. The fixture must first demonstrate that the production verifier
+rejects its real self-signed signature. Its later mechanics exercise explicitly
+models the Apple/team identity boundary in test code while retaining real
+codesign operations, a requirement pinned to its own certificate, fixed CLI
+identity, app/CLI continuity, resource sealing, hashes and tamper refusal.
+This is not genuine Apple evidence or a successful production preparation.
+The actual genuine test remains a separate opt-in case and unqualified gate.
+
+Create one keychain with a unique non-login name inside the private HOME using
+public Security APIs and explicit references only. A random password exists
+only in process memory: no password in subprocess argv, logs, environment or
+files. Generate the synthetic key/certificate in memory and import them only
+into that explicit keychain. Any private-key access setup applies solely to
+this throwaway key. Never add a certificate to real trust settings, use default
+keychain references, or change a real search list. Apple's
+[StorageManager implementation](https://github.com/apple-oss-distributions/Security/blob/main/OSX/libsecurity_keychain/lib/StorageManager.cpp)
+distinguishes private keychain creation from login/System search-list updates;
+verify the chosen API path and actual private preference effects before
+claiming isolation. Do not substitute the hosted-runner keychain shell script,
+which passes passwords in argv and changes search lists.
+
+Only test code supplies the synthetic identity SHA-1 through the existing
+identity-selection input, scopes identity discovery to the fixture, and adds
+`codesign --keychain` for the private keychain. Do not add a production switch
+that bypasses Apple verification, spoof a real team, or reinterpret a private
+test certificate as trusted installation policy. Keep private raw evidence
+separate from public counts/hashes. Mark every native result as mechanics with
+a modelled identity boundary; a green fixture cannot close the genuine gate.
+
+Require a fresh pinned fixture review before execution, fresh child
+environments and the shared Mac lock. Refuse any UI/key interaction and report
+it. Record the public certificate, private keychain and scratch artifact paths
+and hashes privately; remove only those owned artifacts and prove cleanup.
+The password and private key material never enter evidence. The final source
+and mechanics evidence require fresh G1/webui acceptance before merging the
+preparation slice. The installer slice, genuine identity qualification and all
+native currentness/role/effect gates remain open.
+
+The agreed fixture conditions also require these concrete guards:
+
+- Private HOME is not proof of per-user keychain isolation. Capture the same
+  UID's read-only `security list-keychains -d user|common|dynamic`,
+  `security default-keychain -d user` and `security login-keychain` references
+  before creation, after creation, after signing and after deletion. Compare
+  responses without repairing state; a change stops before further signing.
+  Record references with the real home prefix redacted to `~`. These metadata
+  reads authorize no owner item, identity or certificate queries.
+- Exclude `/login.keychain` anywhere in the whole absolute fixture path, and
+  exclude the System path. The import access object permits only codesign and
+  the fixture process. No allow-all ACL or password-bearing partition command.
+- Run scoped production `find-identity -v -p codesigning` first. If it filters
+  the self-signed identity, record that separate negative. Test-only discovery
+  may then expose exactly the helper-proven private identity after an actual
+  scoped unfiltered matching-identity check; fingerprint, CN or cardinality
+  mismatches stop. No fabricated tool result or owner-keychain fallback.
+- The next prepare keeps the real Apple/team verifier unchanged and must fail
+  specifically on its actual Apple-anchor command. Only afterwards may a
+  test-module validator replace that boundary with real strict all-architecture
+  verification against the fixture leaf certificate and exact expected ID,
+  non-ad-hoc signature, present CDHash and stable designated requirement.
+- Supply a synthetic team marker only when native self-signed metadata has no
+  team, and only after the actual own-certificate check. All other production
+  mechanics and the final whole-app check run unchanged. The codesign wrapper
+  only appends the private keychain argument; it asserts that the rest of argv
+  is identical. Restore test patches in finally and prove both tray scripts
+  remain byte-identical to the source-approved `88cf4efa`.
+- Delete through the explicit private reference. Source expectations about
+  private creation do not prove deletion isolation: compare actual list/default
+  references and private preference files afterwards too. Scope drift stops
+  signing, but still delete the known helper-created keychain when its exact
+  device/inode matches, then record the references again and report failure.
+  A replaced or unconfirmed path stays for review. Never use list/default/trust
+  setters to repair state. Exclude `/Library/Keychains/` anywhere in fixture
+  paths, use markers that cannot have an Apple team ID shape, and require an
+  actual non-GUI remote security session. An interaction/partition refusal
+  stops without a signing retry; this fixture adds no partition remedy.
+
+### Final private-fixture access amendment (2026-11-01)
+
+Superseded before implementation: the coordinator and G1 selected the
+[genuine rollout-agent qualification](2026-11-01-macos-genuine-pair-qualification.md).
+The private-unlock proposal below grants no execution or merge acceptance.
+
+The coordinator clarified the fixture boundary after the stopped `d15ebe33`
+attempt: keychain unlock and access restrictions protect the owner's keychains.
+A newly created throwaway keychain may be unlocked through its exact private
+reference using its own RAM-only password. This exception changes only the test
+fixture; the production signer and owner-keychain restrictions stay in force.
+
+The final headless attempt uses this sequence:
+
+1. Create the explicit private keychain and flush its device/inode receipt.
+   Keep the generated password in C memory until a single
+   `SecKeychainUnlock(private_ref, password_length, password, true)` call on that
+   same newly created reference has returned. Wipe the password before checking
+   the unlock result or performing the next operation. A creation or unlock
+   error stops; known-inode disposal still runs without replay.
+2. Apply the existing no-auto-lock settings to that private reference. Keep the
+   existing import access object limited to codesign and the fixture process.
+   This revision adds no partition mutation: import and signing have not yet
+   executed, so their access needs remain unqualified. Any later refusal ends
+   the final attempt rather than adding access or retrying the command.
+3. For the five A1 reference queries only, use a fresh environment with `HOME`
+   equal to the real passwd home, in the same remote SSH session and UID. These
+   commands are exactly `security list-keychains -d user|common|dynamic`,
+   `security default-keychain -d user` and `security login-keychain`. Run them
+   before creation, after creation, after codesign and after deletion. Redact
+   the real home to `~` in all output. No owner item, identity or certificate
+   query or keychain write is admitted. A metadata error or interaction request
+   stops before creation; a nonzero response records unknown availability and
+   cannot establish a successful baseline. Errors after creation stop work and
+   still trigger disposal of the known private keychain.
+4. Every other child keeps the private HOME and fresh environment. Retain the
+   private preference comparison, and additionally record bounded inventories
+   of the whole private HOME before the owned scratch root is created and after
+   its successful removal. Record relative names, types, modes and file hashes,
+   with at most 128 entries, 1 MiB per file and 4 MiB total. Refuse links, special
+   files, changing inputs and exceeded bounds. Report residue without deleting
+   or repairing it. Reference equality and private file inventories describe
+   these observations; they do not establish unchanged keychain bytes or a
+   blanket absence of securityd effects.
+
+The coordinator explicitly authorizes the real-HOME exception only for those
+five read-only commands. OpenSSL, the helper, compilation, discovery, codesign
+and deletion retain the private HOME. No owner keychain is unlocked, signed
+with or modified. D1-D4, M1-M5, the genuine Apple gate and known-inode cleanup
+remain unchanged.
+
+This amendment needs G1 and webui pre-code agreement, then both fresh exact
+source approvals before one final headless attempt. The native class runs
+alone first; the 27 non-native controls run only on success. A failure stops
+headless iteration. The next proposal must use the owner's existing Developer
+ID identity on a scratch pair inside an owner-given GUI window through the
+maintained rollout-agent path, with no keychain modification. The coordinator
+arranges that window and hook. Failed attempts and create/delete primitives
+cannot substitute for successful signer qualification or authorize this merge.
