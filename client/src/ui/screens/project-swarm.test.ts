@@ -83,6 +83,15 @@ describe("Project swarm event controller", () => {
     expect(syncText({ id: "peer", name: "Peer", access: "fixture-peer", sync: { state: "error", text: "fixture connection refused" }, tasks_outdated: true })).toBe("fixture connection refused");
     expect(syncText({ id: "peer", name: "Peer", access: "fixture-peer", sync: { state: "waiting" }, tasks_outdated: true })).toBe("Waiting to sync. Update Zerus there to share tasks");
   });
+  it("submits only the exact review once and never retries Resolve on an event", async () => {
+    let resolves = 0;
+    const state = createSwarm(port(async (command, args) => {
+      if (command === "project_swarm_open" || command === "project_swarm_view") return frame();
+      if (command === "project_swarm_resolve") { ++resolves; expect(args).toEqual({ id: "opaque-dialog", review: "captured-review", confirmed: true }); throw Error("reply lost"); }
+    }));
+    await state.open(); await tick(); expect(await state.resolve("captured-review", true)).toBe(false);
+    state.changed(); await tick(); expect(resolves).toBe(1); state.dispose();
+  });
 });
 
 it("preselects identical project IDs honestly, while distinct and prototype-shaped IDs stay separate", () => {

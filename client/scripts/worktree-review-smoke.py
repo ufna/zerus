@@ -5,7 +5,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 MACHINE = '11111111-1111-4111-8111-111111111111'
 if '--worker' not in sys.argv:
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--app',type=Path,required=True);parser.add_argument('--shell-badge',action='store_true');parser.add_argument('--projects',action='store_true');parser.add_argument('--overview-native',action='store_true');parser.add_argument('--overview-ui',action='store_true');parser.add_argument('--swarm-native',action='store_true');parser.add_argument('--swarm-ui',action='store_true');options=parser.parse_args();app=options.app.resolve();assert app.is_file()
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--app',type=Path,required=True);parser.add_argument('--shell-badge',action='store_true');parser.add_argument('--projects',action='store_true');parser.add_argument('--overview-native',action='store_true');parser.add_argument('--overview-ui',action='store_true');parser.add_argument('--swarm-native',action='store_true');parser.add_argument('--swarm-ui',action='store_true');parser.add_argument('--swarm-conflicts-ui',choices=['ordinary','large']);options=parser.parse_args();app=options.app.resolve();assert app.is_file()
     root=Path(tempfile.mkdtemp(prefix='zerus-worktree-review-'))
     for name in ('home','config','data','cache','runtime','tmp','tmux','state','bin','repo'):(root/name).mkdir(mode=0o700)
     (root/'repo/.git').mkdir()
@@ -17,17 +17,28 @@ if '--worker' not in sys.argv:
         {'v':1,'seq':3,'t':'snapshot','topic':'catalog.meta','value':{'host':'example-host','ok':True,'hgs_version':'1.56.0','projects':{},'peers':[]},'page':0,'last':True,'cursor':1},
         {'v':1,'seq':4,'t':'heartbeat','at':1793000000.0},
     ]
-    if options.projects or options.overview_native or options.overview_ui or options.swarm_native or options.swarm_ui:
+    if options.projects or options.overview_native or options.overview_ui or options.swarm_native or options.swarm_ui or options.swarm_conflicts_ui:
         organization=next(json.loads(line) for line in (REPO/'client/fixtures/replay.ndjson').read_text().splitlines() if json.loads(line).get('topic')=='organization')
         organization['seq']=4
         for item in organization['items']:
             if item['key']=='project:p-sample-project':
                 item['row']['folders']=[{'id':'fixture-folder','machine':'example-host','machine_id':MACHINE,'path':str(root/'repo'),'name':'Example folder'}]
         frames[0]['topics'].append('organization');frames[3]['seq']=5;frames.insert(3,organization)
-    if options.swarm_native or options.swarm_ui:
+    if options.swarm_native or options.swarm_ui or options.swarm_conflicts_ui:
         import copy
         rows={item['key']:item['row'] for item in organization['items']}
         summary=rows['organization'];summary.update(node_id=MACHINE,swarm_id='fixture-swarm',initialized=True,machines=[{'id':MACHINE,'name':'example-host','local':True},{'id':'22222222-2222-4222-8222-222222222222','name':'fixture-peer','connection':'fixture-peer','local':False}],peers={'fixture-peer':{'node':'22222222-2222-4222-8222-222222222222','last_sync':1793000000}})
+        if options.swarm_conflicts_ui:
+            ids=summary['organization']['projects'];primary=ids[0];secondary=ids[1]
+            peer='22222222-2222-4222-8222-222222222222'
+            def conflict(field,values):
+                return {'key':json.dumps(field,separators=(',',':')),'field':field,'selected':'v0','variants':[{'id':f'v{i}','actor':MACHINE if i%2==0 else peer,'value':v} for i,v in enumerate(values)]}
+            ordinary=[conflict({'kind':'session','machine':peer,'session':'checkout-ui'},[primary,secondary]),conflict({'kind':'folder','id':'fixture-folder'},[{'name':'Runners','project':primary,'machine':peer,'path':'/srv/example/runners'},None]),conflict({'kind':'project','id':primary,'field':'alive'},[True,False])]
+            if options.swarm_conflicts_ui=='large':
+                ordinary[0]=conflict({'kind':'project','id':primary,'field':'name'},[f'Value {i}' for i in range(75)])
+                ordinary += [conflict({'kind':'project','id':f'extra-{i}','field':'name'},['First name','Other name']) for i in range(3,130)]
+            summary['conflicts']=ordinary
+            (root/'swarm-conflicts-mode').write_text(options.swarm_conflicts_ui)
         if options.swarm_native:
             field={'kind':'project','id':'p-sample-project','field':'name'}
             summary['conflicts']=[{'key':json.dumps(field,separators=(',',':')),'field':field,'selected':'v0','variants':[{'id':'v0','actor':MACHINE,'value':'Sample project'},{'id':'v1','actor':MACHINE,'value':'Recovered project'}]}]
@@ -86,6 +97,11 @@ if (root/'swarm-native').exists():
  if args==['swarm','join','fixture-peer']:
   request=json.load(sys.stdin);assert request=={'node_id':peer,'swarm_id':state['swarm_id'],'project_map':{},'prefer_peer_memberships':(root/'swarm-ui').exists()};(root/'swarm-request.json').write_text(json.dumps(request));print(json.dumps({'joined':True,'snapshot':state}));sys.exit(0)
  if args==['swarm','sync']:print('{"schema":1}');sys.exit(0)
+ if args==['swarm','resolve'] and (root/'swarm-conflicts-mode').exists():
+  request=json.load(sys.stdin);original=next(c for c in state['conflicts'] if c['key']==request['key'])
+  assert request['versions']==[v['id'] for v in original['variants']] and any(v['value']==request['value'] for v in original['variants'])
+  (root/'resolve-request.json').write_text(json.dumps(request));state['conflicts']=[c for c in state['conflicts'] if c['key']!=request['key']];state['digest']='resolved-conflict-fixture';state['versions'][request['key']]=['resolved-op']
+  (root/'swarm-state.json').write_text(json.dumps(state));print(json.dumps(state));sys.exit(0)
  if args==['swarm','resolve']:
   request=json.load(sys.stdin);assert request=={'key':state['conflicts'][0]['key'],'versions':['v0','v1'],'value':'Recovered project'}
   (root/'resolve-request.json').write_text(json.dumps(request));state['conflicts']=[];state['digest']='resolved-fixture';state['versions']={request['key']:['resolved-op']}
@@ -135,9 +151,10 @@ print('{}')
     if options.swarm_ui:
         env['ZERUS_CLIENT_QUERY']='page=projects&skin=zerus-light&project-swarm-ui-smoke=1'
         env['ZERUS_CLIENT_REPLAY']+=os.pathsep+'fixture-uninitialized='+str(root/'peer-replay.ndjson')
+    if options.swarm_conflicts_ui:env['ZERUS_CLIENT_QUERY']='page=projects&skin=zerus-light&project-swarm-conflicts-smoke='+options.swarm_conflicts_ui
     if options.shell_badge:env['ZERUS_CLIENT_QUERY']='page=sessions&skin=zerus-light&shell-badge-smoke=1'
     print('Private Worktrees walk:',root,flush=True)
-    child=subprocess.Popen(['/usr/bin/dbus-run-session','--config-file',str(root/'bus.conf'),'--','/usr/bin/xvfb-run','-a','-s','-screen 0 1440x900x24','/usr/bin/python3',str(Path(__file__).resolve()),'--worker',str(root),str(app),*(['--shell-badge'] if options.shell_badge else []),*(['--overview-native'] if options.overview_native else []),*(['--overview-ui'] if options.overview_ui else []),*(['--swarm-native'] if options.swarm_native else []),*(['--swarm-ui'] if options.swarm_ui else [])],env=env,start_new_session=True)
+    child=subprocess.Popen(['/usr/bin/dbus-run-session','--config-file',str(root/'bus.conf'),'--','/usr/bin/xvfb-run','-a','-s','-screen 0 1440x900x24','/usr/bin/python3',str(Path(__file__).resolve()),'--worker',str(root),str(app),*(['--shell-badge'] if options.shell_badge else []),*(['--overview-native'] if options.overview_native else []),*(['--overview-ui'] if options.overview_ui else []),*(['--swarm-native'] if options.swarm_native else []),*(['--swarm-ui'] if options.swarm_ui else []),*(['--swarm-conflicts-ui',options.swarm_conflicts_ui] if options.swarm_conflicts_ui else [])],env=env,start_new_session=True)
     try:result=child.wait(timeout=110)
     except subprocess.TimeoutExpired:os.killpg(child.pid,signal.SIGTERM);child.wait(timeout=5);raise
     raise SystemExit(result)
@@ -147,7 +164,9 @@ native='--overview-native' in sys.argv
 overview_ui='--overview-ui' in sys.argv
 swarm_native='--swarm-native' in sys.argv
 swarm_ui='--swarm-ui' in sys.argv
-prefix='swarm-ui-smoke: ' if swarm_ui else 'swarm-smoke: ' if swarm_native else 'shell-badge-smoke: ' if shell_badge else 'worktree-review-smoke: '
+conflicts_mode=sys.argv[sys.argv.index('--swarm-conflicts-ui')+1] if '--swarm-conflicts-ui' in sys.argv else None
+resized=False
+prefix='swarm-conflicts-smoke: ' if conflicts_mode else 'swarm-ui-smoke: ' if swarm_ui else 'swarm-smoke: ' if swarm_native else 'shell-badge-smoke: ' if shell_badge else 'worktree-review-smoke: '
 env={k:v for k,v in os.environ.items() if k in {'PATH','LANG','HOME','XDG_CONFIG_HOME','XDG_DATA_HOME','XDG_CACHE_HOME','XDG_RUNTIME_HOME','TMPDIR','TMUX_TMPDIR','HGS_CONFIG_DIR','HGS_STATE_DIR','GDK_BACKEND','WAYLAND_DISPLAY','WEBKIT_DISABLE_DMABUF_RENDERER','NO_AT_BRIDGE','GSETTINGS_BACKEND','DISPLAY','DBUS_SESSION_BUS_ADDRESS','XAUTHORITY'} or k.startswith('ZERUS_CLIENT_')}
 x=ctypes.CDLL('libX11.so.6');t=ctypes.CDLL('libXtst.so.6');x.XOpenDisplay.argtypes=[ctypes.c_char_p];x.XOpenDisplay.restype=ctypes.c_void_p;x.XStringToKeysym.argtypes=[ctypes.c_char_p];x.XStringToKeysym.restype=ctypes.c_ulong;x.XKeysymToKeycode.argtypes=[ctypes.c_void_p,ctypes.c_ulong];x.XKeysymToKeycode.restype=ctypes.c_uint;x.XFlush.argtypes=[ctypes.c_void_p];t.XTestFakeKeyEvent.argtypes=[ctypes.c_void_p,ctypes.c_uint,ctypes.c_int,ctypes.c_ulong];display=x.XOpenDisplay(None);assert display
 with (root/'app.log').open('wb') as log:
@@ -155,11 +174,19 @@ with (root/'app.log').open('wb') as log:
     try:
         while time.monotonic()<deadline:
             output=(root/'app.log').read_text()
-            for stage in (('PRESELECTED','COMPUTERS','FILTERED','LOADING','MAP','UNINITIALIZED','FAILED','SAME','CONNECTED') if swarm_ui else ('PROJECTS','OPEN','PREVIEW','JOIN','CONFLICT_REVIEW','RESOLVE_HELD') if swarm_native else ('SHELL',) if shell_badge else ('PANEL','REVIEW','CONFIRMATION','REMOVING','OUTCOMES','UNKNOWN_REOPEN','OVERVIEW','PAGER','MANUAL_REVIEW','INSPECTION','MANUAL_OUTCOMES')):
+            for stage in (('CONFLICTS','CHOICE','CONFIRM','CANCEL','VALUES','PAGERS','MINIMUM','RESOLVE_HELD') if conflicts_mode else ('PRESELECTED','COMPUTERS','FILTERED','LOADING','MAP','UNINITIALIZED','FAILED','SAME','CONNECTED') if swarm_ui else ('PROJECTS','OPEN','PREVIEW','JOIN','CONFLICT_REVIEW','RESOLVE_HELD') if swarm_native else ('SHELL',) if shell_badge else ('PANEL','REVIEW','CONFIRMATION','REMOVING','OUTCOMES','UNKNOWN_REOPEN','OVERVIEW','PAGER','MANUAL_REVIEW','INSPECTION','MANUAL_OUTCOMES')):
                 if prefix+stage in output and stage not in stages:
                     stages.add(stage);time.sleep(.35);subprocess.run(['/usr/bin/import','-window','root',str(root/(stage.lower()+'.png'))],check=True,env=env)
-            for stage in ('ESCAPE_CONFIRM','ESCAPE_REVIEW','ESCAPE_SWARM'):
-                if (prefix if stage=='ESCAPE_SWARM' else 'worktree-review-smoke: ')+stage in output and stage not in stages:
+            if conflicts_mode and prefix+'RESIZE_MINIMUM' in output and not resized:
+                import re
+                tree=subprocess.check_output(['/usr/bin/xwininfo','-root','-tree'],env=env,text=True)
+                candidates=re.findall(r'(0x[0-9a-f]+) "[^"\n]*Zerus[^"\n]*"',tree)
+                owned=[w for w in candidates if str(child.pid) in subprocess.check_output(['/usr/bin/xprop','-id',w,'_NET_WM_PID'],env=env,text=True)]
+                assert owned,'owned private main window not found'
+                x.XResizeWindow.argtypes=[ctypes.c_void_p,ctypes.c_ulong,ctypes.c_uint,ctypes.c_uint]
+                x.XResizeWindow(display,int(owned[0],16),900,560);x.XFlush(display);resized=True
+            for stage in ('ESCAPE_CONFIRM','ESCAPE_REVIEW','ESCAPE_SWARM','ESCAPE_SWARM_CONFIRM'):
+                if (prefix if stage.startswith('ESCAPE_SWARM') else 'worktree-review-smoke: ')+stage+'\n' in output and stage not in stages:
                     stages.add(stage);key=x.XKeysymToKeycode(display,x.XStringToKeysym(b'Escape'));t.XTestFakeKeyEvent(display,key,1,0);t.XTestFakeKeyEvent(display,key,0,0);x.XFlush(display)
             if child.poll() is not None:break
             time.sleep(.03)
@@ -167,6 +194,13 @@ with (root/'app.log').open('wb') as log:
         output=(root/'app.log').read_text()
         print('\n'.join(line for line in output.splitlines() if prefix in line));assert child.returncode==0,output
         calls=[json.loads(line) for line in (root/'calls.jsonl').read_text().splitlines()];effects=[a for a in calls if 'remove' in a]
+        if conflicts_mode:
+            assert not effects and calls.count(['swarm','resolve'])==1 and calls.count(['swarm','get'])==2,calls
+            assert not any('create' in a or 'start' in a or 'session-action' in a for a in calls)
+            assert all(prefix+name in output for name in (['CONFLICTS','CHOICE','VALUES','PAGERS','MINIMUM','RESOLVE_HELD'] if conflicts_mode=='large' else ['CONFLICTS','CHOICE','CONFIRM','CANCEL','RESOLVE_HELD']))
+            assert (root/'resolve-request.json').is_file()
+            print('PASS private Conflicts '+conflicts_mode+': exact pages/selection/confirmation/focus, one guarded fake Resolve, held source barrier, no replay/create/remove')
+            raise SystemExit(0)
         if swarm_ui:
             assert not effects and not any('create' in a or 'start' in a or 'session-action' in a for a in calls)
             assert calls.count(['swarm','preview','fixture-peer'])==2 and calls.count(['swarm','preview','fixture-uninitialized'])==1 and calls.count(['swarm','preview','fixture-failed'])==1

@@ -1,4 +1,4 @@
-import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Match, Show, Suspense, Switch, createEffect, createMemo, createSignal, lazy, onCleanup, onMount } from "solid-js";
 import { listen } from "@tauri-apps/api/event";
 import { Icon } from "../lib/icons";
 import { MachineLabel } from "../components/MachineLabel";
@@ -8,11 +8,13 @@ import { setPage } from "../../store/ui";
 import type { Project } from "../../types";
 import { createSwarm, syncText, seedMappings, initialAlias } from "./project-swarm";
 import "../styles/project-swarm.css";
+const SwarmConflicts = lazy(() => import("./SwarmConflicts"));
 
 /** setup-swarm Computers / Connect computer; the native worker owns every call. */
 export default function ProjectSwarmDialog(props: { projects: Project[]; connect?: boolean; preferred?: string; origin: HTMLElement; close(): void }) {
   const state = createSwarm(), view = state.frame;
-  const [tab, setTab] = createSignal<"computers" | "connect">(props.connect ? "connect" : "computers");
+  const [tab, setTab] = createSignal<"computers" | "connect" | "conflicts">(props.connect ? "connect" : "computers");
+  const [reviewError, setReviewError] = createSignal("");
   const [filter, setFilter] = createSignal("");
   const [sort, setSort] = createSignal({ column: 0, ascending: true });
   const [alias, setAlias] = createSignal("");
@@ -80,9 +82,10 @@ export default function ProjectSwarmDialog(props: { projects: Project[]; connect
       <div class="tabs sw-tabs" role="tablist" aria-label="Project swarm">
         <button id="swarm-computers-tab" class="tab" role="tab" classList={{ on: tab() === "computers" }} aria-selected={tab() === "computers"} aria-controls="swarm-computers" onClick={() => setTab("computers")}>Computers</button>
         <button id="swarm-connect-tab" class="tab" role="tab" classList={{ on: tab() === "connect" }} aria-selected={tab() === "connect"} aria-controls="swarm-connect" onClick={() => setTab("connect")}>Connect computer</button>
-        <button class="tab" role="tab" disabled aria-selected="false">Conflicts ({view()?.catalog?.conflicts ?? 0})</button>
+        <button id="swarm-conflicts-tab" class="tab" role="tab" classList={{ on: tab() === "conflicts" }} aria-selected={tab() === "conflicts"} aria-controls="swarm-conflicts" onClick={() => setTab("conflicts")}>Conflicts ({view()?.catalog?.conflicts ?? 0})</button>
       </div>
       <div class="sw-tabbody">
+        <Show when={tab() === "conflicts"}><div id="swarm-conflicts" class="sw-page" role="tabpanel" aria-labelledby="swarm-conflicts-tab"><Suspense><SwarmConflicts view={view} working={state.working} changed={state.changed} resolve={state.resolve} report={setReviewError} /></Suspense></div></Show>
         <Show when={tab() === "computers"}>
           <div id="swarm-computers" class="sw-page" role="tabpanel" aria-labelledby="swarm-computers-tab">
             <div class="row"><input class="field grow" type="search" maxLength={4096} placeholder="Find a computer or connection…" value={filter()} onInput={(e) => setFilter(e.currentTarget.value)} /><span class="hint tabular">{filter() ? `${rows().length} of ${computers().length} computers` : `${computers().length} computers`}</span></div>
@@ -109,6 +112,6 @@ export default function ProjectSwarmDialog(props: { projects: Project[]; connect
         </Show>
       </div>
     </div>
-    <div class="dlg-foot"><span class="hint grow" classList={{ danger: !!state.error() || !!view()?.error }} title={state.error() || view()?.status} role="status">{state.error() || view()?.status}</span><button class="btn" disabled={changing()} onClick={() => void close()}>Close</button></div>
+    <div class="dlg-foot"><span class="hint grow" classList={{ danger: !!reviewError() || !!state.error() || !!view()?.error }} title={reviewError() || state.error() || view()?.status} role="status">{reviewError() || state.error() || view()?.status}</span><button class="btn" disabled={changing()} onClick={() => void close()}>Close</button></div>
   </dialog>;
 }
