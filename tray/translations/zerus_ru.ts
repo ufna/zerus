@@ -2214,7 +2214,7 @@ Coverage below applies to every total and recorded sample.</source>
       <location filename="../src/CloneRepositoryDialog.cpp" line="47" />
       <location filename="../src/CloneRepositoryDialog.cpp" line="78" />
       <source>Clone and start</source>
-      <translation type="unfinished" />
+      <translation>Клонировать и начать</translation>
     </message>
     <message>
       <location filename="../src/CloneRepositoryDialog.cpp" line="48" />
@@ -2229,7 +2229,7 @@ Coverage below applies to every total and recorded sample.</source>
     <message>
       <location filename="../src/CloneRepositoryDialog.cpp" line="78" />
       <source>Use checkout and start</source>
-      <translation type="unfinished" />
+      <translation>Использовать рабочую копию и начать</translation>
     </message>
     <message>
       <location filename="../src/CloneRepositoryDialog.cpp" line="78" />
@@ -5100,13 +5100,13 @@ Current: %3%4
       <location filename="../src/NewSessionDialog.cpp" line="268" />
       <location filename="../src/NewSessionDialog.cpp" line="697" />
       <source>Clone and start</source>
-      <translation type="unfinished" />
+      <translation>Клонировать и начать</translation>
     </message>
     <message>
       <location filename="../src/NewSessionDialog.cpp" line="268" />
       <location filename="../src/NewSessionDialog.cpp" line="697" />
       <source>Use checkout and start</source>
-      <translation type="unfinished" />
+      <translation>Использовать рабочую копию и начать</translation>
     </message>
     <message>
       <location filename="../src/NewSessionDialog.cpp" line="268" />
@@ -5126,7 +5126,7 @@ Current: %3%4
       <location filename="../src/NewSessionDialog.cpp" line="268" />
       <location filename="../src/NewSessionDialog.cpp" line="696" />
       <source>Cloning…</source>
-      <translation type="unfinished" />
+      <translation>Клонирование…</translation>
     </message>
     <message>
       <location filename="../src/NewSessionDialog.cpp" line="268" />
@@ -5211,7 +5211,7 @@ Current: %3%4
     <message>
       <location filename="../src/NewSessionDialog.cpp" line="680" />
       <source>Checking the session's main working folder…</source>
-      <translation type="unfinished" />
+      <translation>Проверка основной рабочей папки сессии…</translation>
     </message>
     <message>
       <location filename="../src/NewSessionDialog.cpp" line="681" />
@@ -5222,7 +5222,8 @@ Current: %3%4
       <location filename="../src/NewSessionDialog.cpp" line="682" />
       <source>A matching project is detected automatically.
 Otherwise this session stays in Inbox.</source>
-      <translation type="unfinished" />
+      <translation>Подходящий проект определяется автоматически.
+Иначе сессия останется в «Inbox».</translation>
     </message>
     <message>
       <location filename="../src/NewSessionDialog.cpp" line="683" />
@@ -5235,7 +5236,8 @@ Starting here will add it to this project.</source>
       <location filename="../src/NewSessionDialog.cpp" line="704" />
       <source>New branch: %1
 Start from: HEAD</source>
-      <translation type="unfinished" />
+      <translation>Новая ветка: %1
+Основа: HEAD</translation>
     </message>
     <message>
       <location filename="../src/NewSessionDialog.cpp" line="718" />
@@ -5245,7 +5247,7 @@ Start from: HEAD</source>
     <message>
       <location filename="../src/NewSessionDialog.cpp" line="718" />
       <source>OpenCode runs through its native server and opens in Activity.</source>
-      <translation type="unfinished" />
+      <translation>OpenCode работает через собственный сервер и открывается в активности.</translation>
     </message>
     <message>
       <location filename="../src/NewSessionDialog.cpp" line="718" />
@@ -5275,12 +5277,12 @@ Start from: HEAD</source>
     <message>
       <location filename="../src/NewSessionDialog.cpp" line="727" />
       <source>Add a remote machine in Machines to start sessions from this computer.</source>
-      <translation type="unfinished" />
+      <translation>Добавьте удалённый компьютер в разделе «Компьютеры», чтобы запускать сессии с этого компьютера.</translation>
     </message>
     <message>
       <location filename="../src/NewSessionDialog.cpp" line="728" />
       <source>Enable local sessions for this computer in Machines, or add a remote machine.</source>
-      <translation type="unfinished" />
+      <translation>Включите локальные сессии для этого компьютера в разделе «Компьютеры» или добавьте удалённый компьютер.</translation>
     </message>
     <message>
       <location filename="../src/NewSessionDialog.cpp" line="737" />
