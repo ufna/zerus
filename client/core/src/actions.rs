@@ -275,16 +275,18 @@ fn done(receipt: Value, cleanup: Option<WorktreeCleanup>) -> Outcome {
 /// accepted, None when it is. `hgs rename` enforces the same rule.
 pub fn tag_problem(tag: &str) -> Option<&'static str> {
     if tag.is_empty() {
-        return Some("Enter a session name.");
+        return Some(crate::source!("Enter a session name."));
     }
     if tag.trim() != tag {
-        return Some("Remove spaces at the beginning or end.");
+        return Some(crate::source!("Remove spaces at the beginning or end."));
     }
     if tag
         .chars()
         .any(|c| matches!(c, '/' | ':' | '.') || c.is_control())
     {
-        return Some("Names cannot contain /, : or . or control characters.");
+        return Some(crate::source!(
+            "Names cannot contain /, : or . or control characters."
+        ));
     }
     None
 }

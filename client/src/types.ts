@@ -1,3 +1,4 @@
+import type { Text } from "./text";
 // The batch the Rust side returns from `next_batch` (zerus-client-core
 // `Batch`, snake_case JSON). Rows arrive as compact view rows projected in
 // Rust; the webview never sees raw watch frames.
@@ -478,11 +479,11 @@ export interface LaunchForm {
 }
 /** What the form shows (core `launch::Shown`). */
 export interface LaunchShown {
-  start_enabled: boolean; start_text: string; preview: string; outside_project: boolean; name_problem: string | null;
-  notice: string | null; automatic: boolean; auto_enabled: boolean; none_enabled: boolean;
-  worktree_target: string; worktree_tooltip: string; choose_existing_enabled: boolean; create_manually_enabled: boolean;
+  start_enabled: boolean; start_text: Text; preview: Text | null; outside_project: boolean; name_problem: Text | null;
+  notice: Text | null; automatic: boolean; auto_enabled: boolean; none_enabled: boolean;
+  worktree_target: string; worktree_tooltip: Text | null; choose_existing_enabled: boolean; create_manually_enabled: boolean;
   worktree_options_enabled: boolean; fields_enabled: boolean; browse_enabled: boolean; cancel_enabled: boolean;
-  open_terminal_enabled: boolean; open_terminal_tooltip: string; clone_launch_due: boolean;
+  open_terminal_enabled: boolean; open_terminal_tooltip: Text; clone_launch_due: boolean;
 }
 /** A saved project with its folders on each computer ("" is this computer). */
 export interface LaunchProject { id: string; name?: string; folders: { machine: string; path: string }[] }

@@ -1,4 +1,5 @@
 import { createEffect, createMemo, createRoot, createSignal, on, untrack } from "solid-js";
+import { trText } from "../text";
 import * as bridge from "../bridge";
 import type {
   Account, ComputerId, CreationAdmission, Details, FolderOut, HeaderOut, LaunchAccounts, LaunchChoices, LaunchForm, LaunchPlan, LaunchProject, LaunchShown, MachineMeta,
@@ -997,7 +998,7 @@ function createDialog(deps: NewSessionDeps, context: NewSessionContext, init: { 
       agent: agent(), accountId: account(),
       ...oc.view(),
       name, branch, openTerminal, form: formView?.shown,
-      error: notice && !(error && errorAt >= formAt) ? notice : error,
+      error: notice && !(error && errorAt >= formAt) ? trText(notice) : error,
       starting, submitted,
     };
   }

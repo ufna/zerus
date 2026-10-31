@@ -82,6 +82,7 @@ pub mod tasks_write;
 pub mod terminal;
 pub mod terminal_launch;
 pub mod termination_cleanup;
+pub mod text;
 pub mod trayicon;
 pub mod updates;
 pub mod video_posters;
