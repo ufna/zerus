@@ -1,15 +1,15 @@
 use super::*;
 use crate::linux_notify::owned::inspection::{inspect, inspect_selected, Inputs};
 use serde_json::json;
-const HOST: &str = "aaaaaaaa-1111-4111-8111-111111111111";
-const BUS: &str = "00112233445566778899aabbccddeeff";
-fn namespace() -> Namespace {
+pub(super) const HOST: &str = "aaaaaaaa-1111-4111-8111-111111111111";
+pub(super) const BUS: &str = "00112233445566778899aabbccddeeff";
+pub(super) fn namespace() -> Namespace {
     Namespace {
         bus_id: BUS.into(),
         owner: ":1.0".into(),
     }
 }
-fn token(owner: Owner, n: u64) -> String {
+pub(super) fn token(owner: Owner, n: u64) -> String {
     match owner {
         Owner::AgentAttention => crate::attention::encode_token(
             json!({"host":"","name":"codex/example/one","notice":format!("edge-{n}")})
@@ -19,7 +19,7 @@ fn token(owner: Owner, n: u64) -> String {
         Owner::SoftwareUpdate => format!("zerus-update:v2:dev:{n}"),
     }
 }
-fn input(owner: Owner, n: u64) -> OriginalInput {
+pub(super) fn input(owner: Owner, n: u64) -> OriginalInput {
     OriginalInput {
         token: token(owner, n),
         request_id: format!("request-{n}"),
@@ -30,27 +30,27 @@ fn input(owner: Owner, n: u64) -> OriginalInput {
         actions: vec![Action::Default, Action::OpenSession],
     }
 }
-fn post(owner: Owner, n: u64) -> Post {
+pub(super) fn post(owner: Owner, n: u64) -> Post {
     Post {
         original: Original::new(owner, input(owner, n)).unwrap(),
         title: "Title".into(),
         body: "Private body".into(),
     }
 }
-fn batch(owner: Owner, n: u64) -> PostBatch {
+pub(super) fn batch(owner: Owner, n: u64) -> PostBatch {
     PostBatch {
         raised: vec![post(owner, n)],
     }
 }
-fn envelope() -> Vec<u8> {
+pub(super) fn envelope() -> Vec<u8> {
     serde_json::to_vec(&json!({"version":2,"bus_id":BUS,"owner":":1.0","tokens":{},"uncertain":[],"legacy_uncertain":[]})).unwrap()
 }
-fn update() -> Vec<u8> {
+pub(super) fn update() -> Vec<u8> {
     let mut v: Value = serde_json::from_slice(&envelope()).unwrap();
     v["invalidations"] = json!([]);
     serde_json::to_vec(&v).unwrap()
 }
-fn model_with(a: &[u8], u: &[u8], l: Option<&[u8]>) -> Model {
+pub(super) fn model_with(a: &[u8], u: &[u8], l: Option<&[u8]>) -> Model {
     Model::from_selected(
         inspect_selected(Inputs {
             agent: Some(a),
@@ -62,7 +62,7 @@ fn model_with(a: &[u8], u: &[u8], l: Option<&[u8]>) -> Model {
     )
     .unwrap()
 }
-fn model() -> Model {
+pub(super) fn model() -> Model {
     model_with(&envelope(), &update(), None)
 }
 fn outcome(plan: &WritePlan, disposition: Disposition) -> WriteOutcome {
@@ -72,7 +72,11 @@ fn outcome(plan: &WritePlan, disposition: Disposition) -> WriteOutcome {
     }
 }
 
-fn ack(m: &mut Model, plan: &mut WritePlan, disposition: Disposition) -> Result<(), Rejection> {
+pub(super) fn ack(
+    m: &mut Model,
+    plan: &mut WritePlan,
+    disposition: Disposition,
+) -> Result<(), Rejection> {
     let result = outcome(plan, disposition);
     m.ack_write(plan, result)
 }
