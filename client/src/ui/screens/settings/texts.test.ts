@@ -58,9 +58,9 @@ const KEYBOARD = [
   "Keyboard", "Command", "Shortcut", "Alternate", "Reset", "Reset all", "Restore the default chords of the selected command",
   "Chords marked ✓ work in Terminal.", "Double-click a shortcut, or press Enter on it, to change it.", "Works in Terminal",
   "Reset all shortcuts", "Restore the default chords of every command?", "Change shortcut", "Clear", "Shortcut in use",
+  "Press the new shortcut for %1.",
 ];
 const KEYBOARD_FILLED: [string, string][] = [
-  ["Press the new shortcut for %1.", "Press the new shortcut for {title}."],
   ["Already used by %1. Reassign?", "Already used by ${separatedList("],
 ];
 

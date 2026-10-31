@@ -7,7 +7,7 @@ import { flag, num, setSetting, settingsLoaded, text } from "../../../store/sett
 import { appearanceFor, chooseSkin, chooseTheme, chosenSkin, skin, skinList, skins, systemLight, theme, type Theme } from "../../../skin/runtime";
 import type { ResolvedSkin } from "../../../skin/skin";
 import { Group, Row, SectionHead, Select, Slider, Check, Actions } from "./ui";
-import { tr } from "../../../i18n";
+import { tr, trNoop } from "../../../i18n";
 
 // Settings > Appearance (tray/src/SettingsPage.h:46-95, UiLanguage.h,
 // ContentScale.h, ActivityWidth.h, WindowLayer.cpp), with the client's skins
@@ -91,8 +91,8 @@ function SkinCard(props: { skin: ResolvedSkin }) {
       <SkinPreview skin={s()} />
       <span class="skin-meta">
         <span class="skin-name ell">{s().name}</span>
-        <Show when={active()} fallback={<Show when={chosen()}><span class="chip">For {s().appearance} appearance</span></Show>}>
-          <span class="chip skin-inuse"><Icon name="check" size={11} />In use</span>
+        <Show when={active()} fallback={<Show when={chosen()}><span class="chip">{s().appearance === "dark" ? tr("For dark appearance") : tr("For light appearance")}</span></Show>}>
+          <span class="chip skin-inuse"><Icon name="check" size={11} />{tr("In use")}</span>
         </Show>
       </span>
       <span class="skin-swatches">
@@ -143,9 +143,9 @@ export function AppearanceSection() {
       : theme() === a ? "In use" : `Used with the ${a === "dark" ? "Dark" : "Light"} theme`;
   return (
     <>
-      <SectionHead title="Appearance" />
+      <SectionHead title={trNoop("Appearance")} />
       <Group>
-        <Row label="Theme" for="set-theme" hint="Each theme uses one skin. Follow system appearance switches between your dark and light skin.">
+        <Row label={trNoop("Theme")} for="set-theme" hint={trNoop("Each theme uses one skin. Follow system appearance switches between your dark and light skin.")}>
           <Select id="set-theme" value={theme()} onChange={(v) => chooseTheme(v as Theme)}
             options={[{ value: "system", label: "Follow system appearance" }, { value: "dark", label: "Dark" }, { value: "light", label: "Light" }]} />
         </Row>
@@ -164,47 +164,47 @@ export function AppearanceSection() {
               )}
             </For>
           </div>
-          <Actions><button class="btn" onClick={event=>setImportOrigin(event.currentTarget)}><Icon name="download" size={14}/>Import skin…</button><button class="btn" onClick={()=>void openFolder()}><Icon name="folder-open" size={14}/>Open skins folder</button></Actions>
+          <Actions><button class="btn" onClick={event=>setImportOrigin(event.currentTarget)}><Icon name="download" size={14}/>{tr("Import skin…")}</button><button class="btn" onClick={()=>void openFolder()}><Icon name="folder-open" size={14}/>{tr("Open skins folder")}</button></Actions>
         </div>
       </Group>
       <Show when={importOrigin()}>{origin=><Suspense><SkinImportDialog origin={origin()} close={()=>setImportOrigin(undefined)}/></Suspense>}</Show>
 
       <Group>
-        <Row label="Interface language" for="set-lang" hint={<>{tr("Restart Zerus to apply the interface language. Agent sessions keep running.")}<br />{tr("Russian is a preview. Untranslated text stays in English.")}</>}>
+        <Row label={trNoop("Interface language")} for="set-lang" hint={<>{tr("Restart Zerus to apply the interface language. Agent sessions keep running.")}<br />{tr("Russian is a preview. Untranslated text stays in English.")}</>}>
           <Select id="set-lang" value={text("workspace/language")} disabled={!settingsLoaded()} onChange={(v) => void setSetting("workspace/language", v)}
             options={[{ value: "en", label: "English" }, { value: "ru", label: "Russian (preview)" }]} />
         </Row>
-        <Row label="Usage limit indicator" for="set-usage" hint="Compares used quota with the elapsed part of each limit window. The bars show usage above elapsed time; the marker shows elapsed time on the usage bar. Colors warn when the current pace would use up the limit before it resets.">
+        <Row label={trNoop("Usage limit indicator")} for="set-usage" hint={trNoop("Compares used quota with the elapsed part of each limit window. The bars show usage above elapsed time; the marker shows elapsed time on the usage bar. Colors warn when the current pace would use up the limit before it resets.")}>
           <Select id="set-usage" value={text("workspace/usageIndicator")} onChange={(v) => void setSetting("workspace/usageIndicator", v)}
             options={[{ value: "rails", label: "Usage and elapsed time bars" }, { value: "marker", label: "Pace marker" }, { value: "marker-countdown", label: "Pace marker and reset countdown" }]} />
         </Row>
       </Group>
 
       <Group>
-        <Row label="Content scale" wide hint="Adjusts Activity, the message field and Terminal from 75% to 200%. The session list and the side panel keep their size.">
-          <Slider label="Content scale" resetLabel="Reset to 100%" value={Math.round(scale.value() * 100)} min={75} max={200} step={5} defaultValue={100} format={(v) => `${v}%`}
+        <Row label={trNoop("Content scale")} wide hint={trNoop("Adjusts Activity, the message field and Terminal from 75% to 200%. The session list and the side panel keep their size.")}>
+          <Slider label={trNoop("Content scale")} resetLabel={trNoop("Reset to 100%")} value={Math.round(scale.value() * 100)} min={75} max={200} step={5} defaultValue={100} format={(v) => `${v}%`}
             onInput={(v) => scale.input(v / 100)} onCommit={(v) => scale.commit(v / 100)} onEnd={scale.end} />
         </Row>
-        <Row label="Activity width" wide hint="In a wide window, Activity, questions and the message field stay centered at this width, which grows with content scale. Drag the column edges in Activity to adjust it, or double-click an edge to restore 900 px. Full-width Activity fills the whole pane.">
+        <Row label={trNoop("Activity width")} wide hint={trNoop("In a wide window, Activity, questions and the message field stay centered at this width, which grows with content scale. Drag the column edges in Activity to adjust it, or double-click an edge to restore 900 px. Full-width Activity fills the whole pane.")}>
           <div class="col" style={{ gap: "8px", "align-items": "stretch" }}>
-            <Slider label="Maximum Activity width" resetLabel="Reset to 900 px" value={activity.value()} min={480} max={2400} step={10} defaultValue={900} format={(v) => `${v} px`}
+            <Slider label={trNoop("Maximum Activity width")} resetLabel={trNoop("Reset to 900 px")} value={activity.value()} min={480} max={2400} step={10} defaultValue={900} format={(v) => `${v} px`}
               disabled={flag("workspace/activityFullWidth")} onInput={activity.input} onCommit={activity.commit} onEnd={activity.end} />
-            <Check label="Full-width Activity" checked={flag("workspace/activityFullWidth")} onChange={(v) => void setSetting("workspace/activityFullWidth", v)} />
+            <Check label={trNoop("Full-width Activity")} checked={flag("workspace/activityFullWidth")} onChange={(v) => void setSetting("workspace/activityFullWidth", v)} />
           </div>
         </Row>
-        <Row label="Overview width" wide hint="In a wide window, Overview stays centered at this width. Drag its edges to adjust it; double-click an edge to return to this width. Full-width Overview fills the whole page.">
+        <Row label={trNoop("Overview width")} wide hint={trNoop("In a wide window, Overview stays centered at this width. Drag its edges to adjust it; double-click an edge to return to this width. Full-width Overview fills the whole page.")}>
           <div class="col" style={{ gap: "8px", "align-items": "stretch" }}>
-            <Slider label="Default Overview width" resetLabel="Reset to 1200 px" value={overview.value()} min={720} max={2400} step={20} defaultValue={1200} format={(v) => `${v} px`}
+            <Slider label={trNoop("Default Overview width")} resetLabel={trNoop("Reset to 1200 px")} value={overview.value()} min={720} max={2400} step={20} defaultValue={1200} format={(v) => `${v} px`}
               disabled={flag("client/overviewFullWidth")} onInput={overview.input} onCommit={overview.commit} onEnd={overview.end} />
-            <Check label="Full-width Overview" checked={flag("client/overviewFullWidth")} onChange={(v) => void setSetting("client/overviewFullWidth", v)} />
+            <Check label={trNoop("Full-width Overview")} checked={flag("client/overviewFullWidth")} onChange={(v) => void setSetting("client/overviewFullWidth", v)} />
           </div>
         </Row>
-        <Row label="Window" hint={windowLayer().hint}>
-          <Check label="Keep Zerus above other windows" checked={windowLayer().on} disabled={!windowLayer().supported}
+        <Row label={trNoop("Window")} hint={windowLayer().hint}>
+          <Check label={trNoop("Keep Zerus above other windows")} checked={windowLayer().on} disabled={!windowLayer().supported}
             onChange={(v) => void setWindowLayer(v)} />
         </Row>
       </Group>
-      <p class="set-foot">Appearance and session list preferences apply to this Zerus.</p>
+      <p class="set-foot">{tr("Appearance and session list preferences apply to this Zerus.")}</p>
     </>
   );
 }

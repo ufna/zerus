@@ -6,6 +6,7 @@ import { inTauri } from "../../../bridge";
 import { setPage } from "../../../store/ui";
 import { Check, Group, Lines, SectionHead, Select, Status } from "./ui";
 import { saveOutcome } from "./recovery-wait";
+import { tr, trNoop } from "../../../i18n";
 
 // Settings > Automatic recovery (tray/src/RecoverySettings.h) as the
 // approved mockup lays it out (design/webui/src/screens/settings/Recovery.tsx).
@@ -116,11 +117,11 @@ export function RecoverySection() {
               <Select value={form.session_limit_mode} label={r.label} disabled={!on() || !form.rules[r.id]}
                 onChange={(v) => edit(() => setForm("session_limit_mode", v))}
                 options={[{ value: "reset", label: "Wait for reset" }, { value: "interval", label: "Retry on a schedule" }]} />
-              <p class="set-hint">Wait until the provider's reset time by default. If no reset time is available, recovery needs your attention. Choose a schedule to retry at your own intervals.</p>
+              <p class="set-hint">{tr("Wait until the provider's reset time by default. If no reset time is available, recovery needs your attention. Choose a schedule to retry at your own intervals.")}</p>
             </div>
           </Show>
           <label class="rec-delays" classList={{ disabled: !delaysOn() }}>
-            <span class="set-label">Retry after (seconds)</span>
+            <span class="set-label">{tr("Retry after (seconds)")}</span>
             <input class="field mono grow" placeholder="15, 30, 60, 300, -1" value={form.delays[r.id] ?? ""} disabled={!delaysOn()}
               onInput={(e) => { const text = e.currentTarget.value; edit(() => setForm("delays", r.id, text)); }} />
           </label>
@@ -130,20 +131,20 @@ export function RecoverySection() {
   };
   return (
     <>
-      <SectionHead title="Automatic recovery" intro="Shared by all connected machines. Agents finish their own retries first; recovery continues the same task." />
+      <SectionHead title={trNoop("Automatic recovery")} intro={tr("Shared by all connected machines. Agents finish their own retries first; recovery continues the same task.")} />
       <Group>
-        <Check label="Recover automatically after temporary failures" checked={form.enabled} disabled={!usable()} onChange={(v) => edit(() => setForm("enabled", v))} />
+        <Check label={trNoop("Recover automatically after temporary failures")} checked={form.enabled} disabled={!usable()} onChange={(v) => edit(() => setForm("enabled", v))} />
       </Group>
       <div class="rec-rules"><For each={RULES}>{rule}</For></div>
       <div class="set-note"><Lines text={HELP} /></div>
       <Show when={view()?.status}>{(status) => <Status kind={statusKind()}>{status()}</Status>}</Show>
       <Show when={view()?.known && !view()!.has_machines}>
-        <div class="set-actions"><button type="button" class="btn" onClick={() => setPage("machines")}>Open Machines</button></div>
+        <div class="set-actions"><button type="button" class="btn" onClick={() => setPage("machines")}>{tr("Open Machines")}</button></div>
       </Show>
       <Show when={message()}>{(text) => <Status kind={text() === "Saved." ? "ok" : "error"}>{text()}</Status>}</Show>
       <div class="set-actions">
-        <button type="button" class="btn primary" disabled={!usable() || !view()?.can_save || saving()} onClick={() => void save()}>Save recovery settings</button>
-        <button type="button" class="btn" onClick={() => void reload()}>Reload</button>
+        <button type="button" class="btn primary" disabled={!usable() || !view()?.can_save || saving()} onClick={() => void save()}>{tr("Save recovery settings")}</button>
+        <button type="button" class="btn" onClick={() => void reload()}>{tr("Reload")}</button>
       </div>
     </>
   );

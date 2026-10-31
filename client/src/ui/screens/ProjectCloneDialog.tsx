@@ -72,7 +72,7 @@ export default function ProjectCloneDialog(props: { project: string; preferred?:
         <div class="dlg-foot"><span class="grow" /><button class="btn" onClick={() => void close()}>{tr("Cancel")}</button><button class="btn primary" disabled={!places.length || busy()} onClick={() => void open()}>{tr("Continue")}</button></div>
       </>}>
         <div class="dlg-body">
-          <p class="muted">Computer: {place()?.host}</p>
+          <p class="muted">{tr("Computer: %1", place()?.host ?? "")}</p>
           <div class="form-row"><label for="cl-url">{tr("Repository")}</label><input id="cl-url" class="field mono" maxLength={4096} placeholder="git@example.org:team/project.git" disabled={locked()} value={url()} onInput={(e) => void changeUrl(e.currentTarget.value)} /></div>
           <div class="form-row"><label for="cl-parent">{tr("Parent folder")}</label><div class="row"><input id="cl-parent" class="field mono grow" maxLength={32768} disabled={locked()} value={parent()} onInput={(e) => setParent(e.currentTarget.value)} /><button class="btn" disabled={locked()} onClick={() => void browse()}>{tr("Browse…")}</button></div></div>
           <div class="form-row"><label for="cl-name">{tr("Folder name")}</label><input id="cl-name" class="field mono" maxLength={80} disabled={locked()} value={name()} onInput={(e) => {nameEdited = true; setName(e.currentTarget.value);}} /></div>

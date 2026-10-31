@@ -6,6 +6,7 @@ import { flag, setSetting, text } from "../../../store/settings";
 import { Icon } from "../../lib/icons";
 import { Check, Group, Lines, SectionHead, Select, Status, type Option } from "./ui";
 import { formValid, retype, type AdapterView, type EditorForm } from "./voice-form";
+import { tr, trNoop } from "../../../i18n";
 
 // Settings > Voice input (tray/src/speech/SpeechSettings.cpp) as the approved
 // mockup lays it out (design/webui/src/screens/settings/Voice.tsx). The
@@ -104,20 +105,20 @@ export function VoiceSection() {
   };
   return (
     <>
-      <SectionHead title="Voice input" />
+      <SectionHead title={trNoop("Voice input")} />
       <Group>
-        <Check label="Preview before sending" checked={flag("speech/preview_before_send")} onChange={(on) => void setSetting("speech/preview_before_send", on)} />
-        <p class="set-group-hint">Show Stop instead of Send while recording audio or video. Stop retains a preview for review and a separate Send. This preference applies on this device.</p>
+        <Check label={trNoop("Preview before sending")} checked={flag("speech/preview_before_send")} onChange={(on) => void setSetting("speech/preview_before_send", on)} />
+        <p class="set-group-hint">{tr("Show Stop instead of Send while recording audio or video. Stop retains a preview for review and a separate Send. This preference applies on this device.")}</p>
       </Group>
-      <Group title="Recognition providers">
-        <p class="set-group-hint">Manage recognition providers on a processing computer. Recording starts on this device; Send voice uses the provider selected beside your recording.</p>
+      <Group title={trNoop("Recognition providers")}>
+        <p class="set-group-hint">{tr("Manage recognition providers on a processing computer. Recording starts on this device; Send voice uses the provider selected beside your recording.")}</p>
         <div class="set-row">
-          <div class="set-row-text"><label class="set-label" for="voice-host">Configure providers on</label></div>
+          <div class="set-row-text"><label class="set-label" for="voice-host">{tr("Configure providers on")}</label></div>
           <div class="set-row-control">
             <Select id="voice-host" value={v()?.host ?? ""} options={v()?.hosts ?? []} onChange={(host) => void input("choose_host", { host })} />
           </div>
         </div>
-        <div class="voice-list" role="listbox" aria-label="Speech providers" aria-disabled={!v()?.loaded}>
+        <div class="voice-list" role="listbox" aria-label={tr("Speech providers")} aria-disabled={!v()?.loaded}>
           <For each={v()?.profiles ?? []}>
             {(p, index) => (
               <button type="button" role="option" class="voice-item" classList={{ on: v()?.selected === index() }} aria-selected={v()?.selected === index()}
@@ -136,41 +137,41 @@ export function VoiceSection() {
         </div>
         <Show when={v()?.details}>{(details) => <Lines class="muted" text={details()} />}</Show>
         <div class="set-actions">
-          <button type="button" class="btn" disabled={!v()?.can_add} onClick={() => void input("open_editor", { create: true })}><Icon name="plus" size={13} />Add</button>
-          <button type="button" class="btn" disabled={!v()?.can_edit} onClick={() => void input("open_editor", { create: false })}><Icon name="pencil" size={13} />Edit</button>
-          <button type="button" class="btn" disabled={!v()?.can_test} onClick={() => void input("test")}><Icon name="play" size={13} />Test</button>
-          <button type="button" class="btn danger" disabled={!v()?.can_remove} onClick={() => void input("ask_remove").then(setAsk)}><Icon name="trash" size={13} />Remove</button>
+          <button type="button" class="btn" disabled={!v()?.can_add} onClick={() => void input("open_editor", { create: true })}><Icon name="plus" size={13} />{tr("Add")}</button>
+          <button type="button" class="btn" disabled={!v()?.can_edit} onClick={() => void input("open_editor", { create: false })}><Icon name="pencil" size={13} />{tr("Edit")}</button>
+          <button type="button" class="btn" disabled={!v()?.can_test} onClick={() => void input("test")}><Icon name="play" size={13} />{tr("Test")}</button>
+          <button type="button" class="btn danger" disabled={!v()?.can_remove} onClick={() => void input("ask_remove").then(setAsk)}><Icon name="trash" size={13} />{tr("Remove")}</button>
           <span class="grow" />
-          <button type="button" class="btn" disabled={!v()?.can_use_default} onClick={() => void input("use_default")}><Icon name="star" size={13} />Use as default</button>
+          <button type="button" class="btn" disabled={!v()?.can_use_default} onClick={() => void input("use_default")}><Icon name="star" size={13} />{tr("Use as default")}</button>
         </div>
-        <p class="set-group-hint">Test sends a short synthetic recording from the selected computer. It may load a prepared model or use the remote API; it does not use your microphone or send anything to an agent.</p>
+        <p class="set-group-hint">{tr("Test sends a short synthetic recording from the selected computer. It may load a prepared model or use the remote API; it does not use your microphone or send anything to an agent.")}</p>
         <Show when={v()?.default_text}>{(text) => <Status>{text()}</Status>}</Show>
         <Show when={v()?.status}>{(text) => <Status kind={v()?.can_refresh ? "muted" : "busy"}>{text()}</Status>}</Show>
         <Show when={v()?.result}>{(text) => <Status kind={v()?.result_failed ? "error" : "ok"}>{text()}</Status>}</Show>
         <Show when={v()?.pending}>{(text) => <Status kind="warn">{text()}</Status>}</Show>
         <div class="set-actions">
           <button type="button" class="btn" title={DOCUMENTATION} onClick={() => void openDocumentation("").then(setDocumentationFailure)}>
-            Speech provider documentation<Icon name="external-link" size={12} />
+            {tr("Speech provider documentation")}<Icon name="external-link" size={12} />
           </button>
           <button type="button" class="btn" disabled={v() !== undefined && !v()!.can_refresh} onClick={refreshVoice}>
-            <Icon name="refresh-cw" size={13} />Refresh providers and microphones
+            <Icon name="refresh-cw" size={13} />{tr("Refresh providers and microphones")}
           </button>
           <Show when={v()?.pending}>
-            <button type="button" class="btn" disabled={!v()?.can_check} onClick={() => void input("check")}>Check operation status</button>
+            <button type="button" class="btn" disabled={!v()?.can_check} onClick={() => void input("check")}>{tr("Check operation status")}</button>
           </Show>
         </div>
         <Show when={documentationFailure()}>{(failure) => <Lines class="selectable dlg-error" text={failure()} />}</Show>
       </Group>
-      <Group title="This device">
+      <Group title={trNoop("This device")}>
         <Show when={media()}>
           <div class="set-row">
-            <div class="set-row-text"><label class="set-label" for="voice-mic">Microphone on this device</label></div>
+            <div class="set-row-text"><label class="set-label" for="voice-mic">{tr("Microphone on this device")}</label></div>
             <div class="set-row-control">
               <Select id="voice-mic" value={microphone()} options={microphoneOptions()} onChange={(id) => void setSetting("speech/microphone", id)} />
             </div>
           </div>
         </Show>
-        <p class="set-group-hint">Provider settings and credentials stay on their processing computer. Recordings are limited to two minutes. Original audio and recognized text remain in conversation history; your typed draft stays separate.</p>
+        <p class="set-group-hint">{tr("Provider settings and credentials stay on their processing computer. Recordings are limited to two minutes. Original audio and recognized text remain in conversation history; your typed draft stays separate.")}</p>
         <Show when={v()?.statistics}>{(text) => <Lines class="muted voice-stats" text={text()} />}</Show>
       </Group>
       <Show when={v()?.editor}>{(editor) => <ProviderEditor editor={editor()} />}</Show>
@@ -187,12 +188,12 @@ function RemoveQuestion(props: { text: string; answer: (confirmed: boolean) => v
   return (
     <dialog class="dlg" ref={(el) => { dialog = el; queueMicrotask(() => el.showModal()); }} aria-labelledby="voice-remove-title"
       onCancel={(e) => { e.preventDefault(); answer(false); }}>
-      <div class="dlg-head"><h2 id="voice-remove-title">Remove speech provider?</h2></div>
+      <div class="dlg-head"><h2 id="voice-remove-title">{tr("Remove speech provider?")}</h2></div>
       <div class="dlg-body">{props.text}</div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn danger" onClick={() => answer(true)}>Remove provider</button>
-        <button type="button" class="btn primary" autofocus onClick={() => answer(false)}>Cancel</button>
+        <button type="button" class="btn danger" onClick={() => answer(true)}>{tr("Remove provider")}</button>
+        <button type="button" class="btn primary" autofocus onClick={() => answer(false)}>{tr("Cancel")}</button>
       </div>
     </dialog>
   );
@@ -268,14 +269,14 @@ function ProviderEditor(props: { editor: EditorView }) {
       <div class="dlg-body">
         <p class="muted">{editor().computer}</p>
         <p class="muted">{editor().readiness}</p>
-        <div class="form-row"><label for="voice-name">Name</label>
+        <div class="form-row"><label for="voice-name">{tr("Name")}</label>
           <input id="voice-name" class="field" maxLength={128} disabled={busy()} value={name()} onInput={(e) => setName(e.currentTarget.value)}
             placeholder={remote() ? "e.g. Team transcription server" : "e.g. Russian speech"} /></div>
-        <div class="form-row"><label for="voice-id">Profile ID</label>
+        <div class="form-row"><label for="voice-id">{tr("Profile ID")}</label>
           <input id="voice-id" class="field mono" maxLength={64} readOnly={!editor().create} disabled={busy()} value={id()} onInput={(e) => setId(e.currentTarget.value)} /></div>
-        <div class="form-row"><label for="voice-type">Type</label>
+        <div class="form-row"><label for="voice-type">{tr("Type")}</label>
           <Select id="voice-type" value={adapter()} options={types()} disabled={busy()} onChange={(chosen) => { setRetyped(true); setAdapter(chosen); }} /></div>
-        <div class="form-row"><label for="voice-model">Model</label>
+        <div class="form-row"><label for="voice-model">{tr("Model")}</label>
           <Show when={remote()} fallback={
             <Select id="voice-model" value={model()} options={models().map((m) => ({ value: m, label: m }))} disabled={busy()} onChange={setModel} />
           }>
@@ -283,23 +284,23 @@ function ProviderEditor(props: { editor: EditorView }) {
             <datalist id="voice-models"><For each={models()}>{(m) => <option value={m} />}</For></datalist>
           </Show>
         </div>
-        <div class="form-row"><label for="voice-language">Language</label>
-          <input id="voice-language" class="field mono voice-lang" maxLength={2} placeholder="Auto-detect" disabled={busy()} value={language()} onInput={(e) => setLanguage(e.currentTarget.value)} /></div>
+        <div class="form-row"><label for="voice-language">{tr("Language")}</label>
+          <input id="voice-language" class="field mono voice-lang" maxLength={2} placeholder={tr("Auto-detect")} disabled={busy()} value={language()} onInput={(e) => setLanguage(e.currentTarget.value)} /></div>
         <Show when={remote()} fallback={
-          <div class="form-row"><label for="voice-device">Device</label>
+          <div class="form-row"><label for="voice-device">{tr("Device")}</label>
             <Select id="voice-device" value={device()} options={devices().map((d) => ({ value: d, label: d }))} disabled={busy()} onChange={setDevice} /></div>
         }>
-          <div class="form-row"><label for="voice-url">Base URL</label>
+          <div class="form-row"><label for="voice-url">{tr("Base URL")}</label>
             <input id="voice-url" class="field mono" maxLength={2048} placeholder="https://speech.example.net/v1" disabled={busy()} value={url()} onInput={(e) => setUrl(e.currentTarget.value)} /></div>
           <div class="form-row"><span />
-            <Check label="Allow unencrypted HTTP for a local or private server" checked={insecure()} disabled={busy()} onChange={setInsecure} /></div>
-          <div class="form-row"><label for="voice-credential">API key</label>
+            <Check label={trNoop("Allow unencrypted HTTP for a local or private server")} checked={insecure()} disabled={busy()} onChange={setInsecure} /></div>
+          <div class="form-row"><label for="voice-credential">{tr("API key")}</label>
             <Select id="voice-credential" value={credential()} disabled={busy()} onChange={(mode) => { setKey(""); setCredential(mode); }} options={[
               { value: "keep", label: editor().key_stored ? "Keep stored API key" : "No API key" },
               { value: "replace", label: "Replace API key" },
               { value: "remove", label: "Remove API key" },
             ]} /></div>
-          <div class="form-row"><label for="voice-key">New API key</label>
+          <div class="form-row"><label for="voice-key">{tr("New API key")}</label>
             <input id="voice-key" class="field" type="password" maxLength={8192} autocomplete="off" disabled={busy() || credential() !== "replace"}
               value={key()} onInput={(e) => setKey(e.currentTarget.value)} /></div>
         </Show>
@@ -312,13 +313,13 @@ function ProviderEditor(props: { editor: EditorView }) {
         <Show when={documentationFailure()}>{(failure) => <Lines class="selectable dlg-error" text={failure()} />}</Show>
         <Show when={editor().status}>{(status) => <p class="voice-editor-status">{status()}</p>}</Show>
         <Show when={editor().check_visible}>
-          <button type="button" class="btn" disabled={!editor().check_enabled} onClick={() => void input("check")}>Check operation status</button>
+          <button type="button" class="btn" disabled={!editor().check_enabled} onClick={() => void input("check")}>{tr("Check operation status")}</button>
         </Show>
       </div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn" onClick={close}>Cancel</button>
-        <button type="button" class="btn primary" disabled={!canSave()} onClick={save}>Save</button>
+        <button type="button" class="btn" onClick={close}>{tr("Cancel")}</button>
+        <button type="button" class="btn primary" disabled={!canSave()} onClick={save}>{tr("Save")}</button>
       </div>
     </dialog>
   );

@@ -7,6 +7,7 @@ import { Actions, Group, Lines, SectionHead, Select, Status } from "./ui";
 import {createPhoneActions,targetOf,phoneKey,targetKey,type PhoneActions} from "./phone-actions";
 import { createMobile, type MobileState, type View } from "./mobile-page";
 import WorkspacePanel from "./WorkspacePanel";
+import { tr, trNoop } from "../../../i18n";
 
 // Settings > Mobile connection (WorkspaceSettings.h, PhonePairing.cpp,
 // MobileDeliverySettings.h, SettingsPage.h:124-139) in the approved
@@ -39,11 +40,11 @@ function PhonesPanel(props: { view?: View; refresh: () => void; actions:PhoneAct
   const entries=createMemo(()=>phones()?.lists.flatMap(list=>list.phones.map(phone=>({list,phone,key:phoneKey(targetOf(list),phone.id)})))??[]);
   const chosen=()=>entries().find(e=>e.key===selected());
   const revoke=(origin:HTMLElement)=>{const entry=chosen();if(entry)void props.actions.openRevoke(targetOf(entry.list),entry.phone.id,origin);};
-  return <section class="set-group set-phones"><div class="set-group-head"><h3>Phones</h3></div><p class="set-group-hint">Phones paired with your computers. A phone can control every computer of its workspace; revoke one you no longer use.</p>
-   <div class="set-table-wrap"><table class="set-table" aria-label="Phones"><thead><tr><th scope="col">Phone</th><th scope="col">Platform</th><th scope="col">Paired</th><th scope="col">Last active</th><th scope="col">Added from</th></tr></thead><tbody>
+  return <section class="set-group set-phones"><div class="set-group-head"><h3>{tr("Phones")}</h3></div><p class="set-group-hint">{tr("Phones paired with your computers. A phone can control every computer of its workspace; revoke one you no longer use.")}</p>
+   <div class="set-table-wrap"><table class="set-table" aria-label={tr("Phones")}><thead><tr><th scope="col">{tr("Phone")}</th><th scope="col">{tr("Platform")}</th><th scope="col">{tr("Paired")}</th><th scope="col">{tr("Last active")}</th><th scope="col">{tr("Added from")}</th></tr></thead><tbody>
     <Show when={!reading()&&entries().length} fallback={<tr class="set-table-empty"><td colspan={5}>{reading()?"":"No phones"}</td></tr>}><For each={phones()?.lists??[]}>{list=><><tr class="set-table-group"><td colspan={5}>{listTitle(list)}</td></tr><For each={list.phones}>{phone=>{const key=phoneKey(targetOf(list),phone.id);return <tr classList={{on:selected()===key}} tabIndex={0} aria-selected={selected()===key} onClick={()=>setSelected(key)} onKeyDown={e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();setSelected(key);}if(e.key==="Delete"){setSelected(key);revoke(e.currentTarget);}}}><td><span class="row"><Icon name="smartphone" size={13} class="dim"/>{phone.name}</span></td><td>{phone.platform}</td><td class="tabular">{when(phone.paired_at)}</td><td class="tabular">{when(phone.last_seen_at)}</td><td title={list.encrypted?"Verified device membership. Private device names are not stored by the relay.":"Paired with an administrator invitation, or before Zerus recorded it"}>{phone.added_from??<span class="dim">—</span>}</td></tr>;}}</For></>}</For></Show>
    </tbody></table></div>
-   <Actions><button class="btn" disabled={busy()||!phones()?.lists.length} onClick={e=>{const targets=phones()!.lists.map(targetOf);const selected=chosen();const at=selected?targets.findIndex(t=>targetKey(t)===targetKey(targetOf(selected.list))):0;props.actions.pair(targets,at,e.currentTarget);}}><Icon name="plus" size={14}/>Pair a phone…</button><button class="btn danger" disabled={busy()||!chosen()} onClick={e=>revoke(e.currentTarget)}>Revoke…</button><button class="btn" disabled={busy()||!props.view} onClick={props.refresh}><Icon name="refresh-cw" size={13}/>Refresh</button><Status kind={reading()?"busy":"muted"}>{reading()?"Checking phones…":phones()?.lines.join("\n")}</Status></Actions>
+   <Actions><button class="btn" disabled={busy()||!phones()?.lists.length} onClick={e=>{const targets=phones()!.lists.map(targetOf);const selected=chosen();const at=selected?targets.findIndex(t=>targetKey(t)===targetKey(targetOf(selected.list))):0;props.actions.pair(targets,at,e.currentTarget);}}><Icon name="plus" size={14}/>{tr("Pair a phone…")}</button><button class="btn danger" disabled={busy()||!chosen()} onClick={e=>revoke(e.currentTarget)}>{tr("Revoke…")}</button><button class="btn" disabled={busy()||!props.view} onClick={props.refresh}><Icon name="refresh-cw" size={13}/>{tr("Refresh")}</button><Status kind={reading()?"busy":"muted"}>{reading()?"Checking phones…":phones()?.lines.join("\n")}</Status></Actions>
    <Show when={props.actions.notice()}><Status>{props.actions.notice()}</Status></Show>
   </section>;
 }
@@ -57,16 +58,16 @@ function DeliveryPanel(props: { view?: View; set: (value: string) => void }) {
   // saved never stays shown.
   const shown = () => `${value()}|${usable()}`;
   return (
-    <Group title="Phone notifications">
-      <label class="set-label" for="mobile-delivery">When I'm not at a computer, send notifications to my phone</label>
+    <Group title={trNoop("Phone notifications")}>
+      <label class="set-label" for="mobile-delivery">{tr("When I'm not at a computer, send notifications to my phone")}</label>
       <Show when={shown()} keyed>
-        <Select id="mobile-delivery" label="When I'm not at a computer, send notifications to my phone" value={value()}
+        <Select id="mobile-delivery" label={trNoop("When I'm not at a computer, send notifications to my phone")} value={value()}
           disabled={!usable()} onChange={props.set} options={DELIVERY} />
       </Show>
       <Show when={props.view?.delivery_status}>{(text) => <Status kind={busy() ? "busy" : "muted"}>{text()}</Status>}</Show>
       <Show when={props.view?.delivery_outdated}>{(text) => <Status kind="warn">{text()}</Status>}</Show>
       <Show when={props.view?.delivery_worker}>{(text) => <Status kind="warn">{text()}</Status>}</Show>
-      <p class="set-group-hint">You count as away after two minutes without keyboard or mouse input on every computer running Zerus, or while their screens are locked. Your computers and the phone share this choice.</p>
+      <p class="set-group-hint">{tr("You count as away after two minutes without keyboard or mouse input on every computer running Zerus, or while their screens are locked. Your computers and the phone share this choice.")}</p>
     </Group>
   );
 }
@@ -101,10 +102,10 @@ export function MobileSection() {
   const view = () => state().view;
   return (
     <>
-      <SectionHead title="Workspace" intro="Connect your computers and phones to one workspace. Session content is encrypted between your devices; the relay keeps routing and delivery metadata." />
+      <SectionHead title={trNoop("Workspace")} intro={tr("Connect your computers and phones to one workspace. Session content is encrypted between your devices; the relay keeps routing and delivery metadata.")} />
       <Show when={state().error}>{(text) => <Status kind="error">{text()}</Status>}</Show>
       <WorkspacePanel view={view()} refresh={(afterAction) => page.refreshWorkspace(afterAction)} />
-      <button class="btn ghost set-disclosure" disabled={!!view()?.workspace?.encrypted} aria-expanded={legacyOpen()&&!view()?.workspace?.encrypted} title={view()?.workspace?.encrypted?"Unavailable while this computer uses an encrypted workspace":undefined} onClick={()=>setLegacyOpen(!legacyOpen())}><Icon name={legacyOpen()&&!view()?.workspace?.encrypted?"chevron-down":"chevron-right"} size={14}/>Advanced: legacy connector configuration</button>
+      <button class="btn ghost set-disclosure" disabled={!!view()?.workspace?.encrypted} aria-expanded={legacyOpen()&&!view()?.workspace?.encrypted} title={view()?.workspace?.encrypted?"Unavailable while this computer uses an encrypted workspace":undefined} onClick={()=>setLegacyOpen(!legacyOpen())}><Icon name={legacyOpen()&&!view()?.workspace?.encrypted?"chevron-down":"chevron-right"} size={14}/>{tr("Advanced: legacy connector configuration")}</button>
       <Show when={legacyOpen()&&!view()?.workspace?.encrypted}><Suspense><LegacyRelay/></Suspense></Show>
       <PhonesPanel view={view()} refresh={() => page.refreshPhones()} actions={phoneActions}/>
       <Show when={phoneActions.prompt()}>{prompt=><Suspense><PhoneDialogs prompt={prompt()} actions={phoneActions}/></Suspense>}</Show>

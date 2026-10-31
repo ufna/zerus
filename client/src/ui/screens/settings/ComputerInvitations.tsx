@@ -6,6 +6,7 @@ import {Actions,Status} from "./ui";
 import {createComputerCodes} from "./computer-invitations";
 import {mobileInvitation} from "../../../store/mobileInvitation";
 import type {Workspace} from "./mobile-page";
+import { tr } from "../../../i18n";
 
 /** Mockup Mobile.ws-invite; codes never enter the shared Mobile page. */
 export default function ComputerInvitations(props:{workspace:Workspace;busy:boolean;refresh:()=>void}){
@@ -22,8 +23,8 @@ export default function ComputerInvitations(props:{workspace:Workspace;busy:bool
  onCleanup(()=>state.dispose());
  const busy=()=>props.busy||state.busy();
  return <div class="ws-invite"><Actions>
-  <button class="btn" disabled={busy()||!!state.pending()||!!props.workspace.pending} onClick={()=>void state.issue()}><Icon name="key-round" size={13}/>Give computer code</button>
-  <button class="btn" disabled={busy()||!state.code()} onClick={()=>void state.copy().then(copied=>{if(copied)toast("Copied","Computer code copied. It stays a credential until used or expired.");})}><Icon name="copy" size={13}/>Copy computer code</button>
-  <button class="btn" disabled={busy()||!state.pending()} onClick={()=>void state.cancel()}>Cancel code</button>
+  <button class="btn" disabled={busy()||!!state.pending()||!!props.workspace.pending} onClick={()=>void state.issue()}><Icon name="key-round" size={13}/>{tr("Give computer code")}</button>
+  <button class="btn" disabled={busy()||!state.code()} onClick={()=>void state.copy().then(copied=>{if(copied)toast("Copied","Computer code copied. It stays a credential until used or expired.");})}><Icon name="copy" size={13}/>{tr("Copy computer code")}</button>
+  <button class="btn" disabled={busy()||!state.pending()} onClick={()=>void state.cancel()}>{tr("Cancel code")}</button>
  </Actions><Status kind={state.pending()?"ok":"muted"}>{state.status()}</Status></div>;
 }

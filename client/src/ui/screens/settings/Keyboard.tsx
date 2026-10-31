@@ -4,6 +4,7 @@ import {
   resetAll, setKeys, terminalRule, terminalSafe, type Sequence,
 } from "../../../store/shortcuts";
 import { SectionHead } from "./ui";
+import { tr, trNoop } from "../../../i18n";
 
 // Settings > Keyboard (tray/src/KeyboardSettings.cpp): every command by group
 // with its two chords, Reset and Reset all, and the change dialog with Qt's
@@ -54,10 +55,10 @@ export function KeyboardSection() {
   };
   return (
     <>
-      <SectionHead title="Keyboard" />
+      <SectionHead title={trNoop("Keyboard")} />
       <div class="set-table-wrap kb-wrap">
-        <table class="set-table kb-table" role="grid" aria-label="Keyboard shortcuts">
-          <thead><tr><th>Command</th><th>Shortcut</th><th>Alternate</th></tr></thead>
+        <table class="set-table kb-table" role="grid" aria-label={tr("Keyboard shortcuts")}>
+          <thead><tr><th>{tr("Command")}</th><th>{tr("Shortcut")}</th><th>{tr("Alternate")}</th></tr></thead>
           <tbody>
             <For each={list()}>
               {(g) => (
@@ -81,14 +82,14 @@ export function KeyboardSection() {
         </table>
       </div>
       <div class="set-actions">
-        <button class="btn" disabled={!selected()} title="Restore the default chords of the selected command" onClick={() => { const id = selected(); if (id) reset(id); }}>Reset</button>
-        <button class="btn" onClick={() => setConfirmAll(true)}>Reset all</button>
+        <button class="btn" disabled={!selected()} title={tr("Restore the default chords of the selected command")} onClick={() => { const id = selected(); if (id) reset(id); }}>{tr("Reset")}</button>
+        <button class="btn" onClick={() => setConfirmAll(true)}>{tr("Reset all")}</button>
       </div>
-      <p class="set-foot">{terminalRule()} Chords marked ✓ work in Terminal.</p>
-      <p class="set-foot">Double-click a shortcut, or press Enter on it, to change it.</p>
+      <p class="set-foot">{terminalRule()} {tr("Chords marked ✓ work in Terminal.")}</p>
+      <p class="set-foot">{tr("Double-click a shortcut, or press Enter on it, to change it.")}</p>
       <Show when={editing()}>{(e) => <ChangeDialog id={e().id} slot={e().slot} close={() => setEditing(undefined)} />}</Show>
       <Show when={confirmAll()}>
-        <Question title="Reset all shortcuts" text="Restore the default chords of every command?"
+        <Question title={tr("Reset all shortcuts")} text="Restore the default chords of every command?"
           answer={(yes) => { setConfirmAll(false); if (yes) resetAll(); }} />
       </Show>
     </>
@@ -114,8 +115,8 @@ function Question(props: { title: string; text: string; answer: (yes: boolean) =
       <div class="dlg-body">{props.text}</div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn" onClick={() => answer(false)}>No</button>
-        <button type="button" class="btn primary" onClick={() => answer(true)}>Yes</button>
+        <button type="button" class="btn" onClick={() => answer(false)}>{tr("No")}</button>
+        <button type="button" class="btn primary" onClick={() => answer(true)}>{tr("Yes")}</button>
       </div>
     </dialog>
   );
@@ -199,29 +200,29 @@ function ChangeDialog(props: { id: string; slot: number; close: () => void }) {
     <>
       <dialog class="dlg kb-edit" ref={dialog.ref} aria-labelledby="kb-edit-title"
         onCancel={(e) => { e.preventDefault(); close(); }}>
-        <div class="dlg-head"><h2 id="kb-edit-title">Change shortcut</h2></div>
+        <div class="dlg-head"><h2 id="kb-edit-title">{tr("Change shortcut")}</h2></div>
         <div class="dlg-body">
-          <p>Press the new shortcut for {title}.</p>
+          <p>{tr("Press the new shortcut for %1.", title)}</p>
           <div class="kb-capture-row">
             <div ref={field} class="dlg-input kb-capture" tabindex="0" role="textbox" aria-label={`Shortcut for ${title}`}
               data-shortcut-context="capture" onKeyDown={record} onKeyUp={released} onBlur={finish}>
-              <Show when={recorded().length} fallback={<span class="kb-placeholder">Press shortcut</span>}>
+              <Show when={recorded().length} fallback={<span class="kb-placeholder">{tr("Press shortcut")}</span>}>
                 {nativeText(recorded())}{recording() ? ", …" : ""}
               </Show>
             </div>
-            <button type="button" class="btn" onClick={() => { finish(); setRecorded([]); setReason(""); field.focus(); }}>Clear</button>
+            <button type="button" class="btn" onClick={() => { finish(); setRecorded([]); setReason(""); field.focus(); }}>{tr("Clear")}</button>
           </div>
           <Show when={reason()}><div class="dlg-error">{reason()}</div></Show>
         </div>
         <div class="dlg-foot">
           <span class="spacer" />
-          <button type="button" class="btn" onClick={close}>Cancel</button>
+          <button type="button" class="btn" onClick={close}>{tr("Cancel")}</button>
           <button type="button" class="btn primary" onClick={accept}>OK</button>
         </div>
       </dialog>
       <Show when={asking()}>
         {(others) => (
-          <Question title="Shortcut in use" text={`Already used by ${separatedList(others().map((id) => command(id)?.title ?? id))}. Reassign?`} answer={reassign} />
+          <Question title={tr("Shortcut in use")} text={`Already used by ${separatedList(others().map((id) => command(id)?.title ?? id))}. Reassign?`} answer={reassign} />
         )}
       </Show>
     </>

@@ -5,6 +5,7 @@ import { agentKind } from "../../store/catalog";
 import { menuItemActivates } from "../sessions/actions-ui";
 import { visibleMenu as menu, setMenu } from "../../store/ui";
 import { dismissNotice, notices } from "../../store/notices";
+import { tr } from "../../i18n";
 
 /** Context and dropdown menus share one positioned popover. */
 export function MenuLayer() {
@@ -78,7 +79,7 @@ export function Toasts() {
       <For each={notices()}>
         {(n) => (
           <div class={`toast ${n.tone}`} data-notice-id={n.id} classList={{ sticky: n.sticky }}>
-            <Show when={n.sticky && n.dismissible !== false}><button class="icon-btn dismiss" aria-label="Dismiss" onClick={() => dismissNotice(n.id)}><Icon name="x" size={14} /></button></Show>
+            <Show when={n.sticky && n.dismissible !== false}><button class="icon-btn dismiss" aria-label={tr("Dismiss")} onClick={() => dismissNotice(n.id)}><Icon name="x" size={14} /></button></Show>
             <Show when={n.title}><b>{n.title}</b></Show>
             <span class="note" classList={{ muted: !!n.title }}>{n.text}</span>
             <Show when={n.note?.()}><div class="note muted">{n.note?.()}</div></Show>
