@@ -112,10 +112,11 @@ if held:
      try: os.close(int(fd))
      except OSError: pass
   (p/'descendant').write_text(str(os.getpid()))
-  end=time.monotonic()+10
+  end=time.monotonic()+30
   while not (p/'release').exists():
    if time.monotonic()>=end: os._exit(82)
    time.sleep(.002)
+  (p/'released').write_text('explicit descendant gate')
   os._exit(0)
  end=time.monotonic()+3
  while not (p/'descendant').exists():
@@ -127,6 +128,7 @@ if mode=='child':
  while not (p/'release').exists():
   if time.monotonic()>=end: os._exit(85)
   time.sleep(.002)
+ (p/'released').write_text('explicit owned-child gate')
  os._exit(0)
 if mode in ['timeout','cancel']:
  end=time.monotonic()+10
@@ -247,7 +249,9 @@ impl Host {
             timeout: Duration::from_millis(if matches!(mode, "normal" | "child") {
                 2500
             } else {
-                350
+                // This includes interpreter startup under a parallel native
+                // harness. Holds release by explicit gates, never this delay.
+                2000
             }),
             request_id: None,
         };
@@ -263,6 +267,9 @@ impl Host {
             None
         };
         let lock = self.lock.take().unwrap();
+        // Missing registration never becomes a positive empty-resource proof,
+        // including a refusal before the guarded hook returns any Child.
+        *self.pin.lock().unwrap() = Some(lock.clone());
         let inherited = lock.clone();
         let root = self.root.clone();
         let child_mode = mode.to_owned();
@@ -319,6 +326,18 @@ impl Host {
         if let Some(setter) = setter {
             setter.join().unwrap();
         }
+        if self.registered.load(Ordering::Acquire) {
+            self.pin.lock().unwrap().take();
+        }
+        let result_tag = result
+            .as_ref()
+            .map(|_| "complete".to_owned())
+            .unwrap_or_else(|error| format!("{error:?}"));
+        println!(
+            "OWNED EXCHANGE {mode}: launches={} registered={} result={result_tag}",
+            self.calls.load(Ordering::Acquire),
+            self.registered.load(Ordering::Acquire)
+        );
         let mut store = self.store.lock().unwrap();
         let settled = self.registered.load(Ordering::Acquire)
             && result.as_ref().is_ok_and(|bytes| {
@@ -387,6 +406,10 @@ impl Host {
                 Ok(platform::ProcessState::Exited)
             )
         });
+        assert_eq!(
+            fs::read_to_string(self.root.join("released")).unwrap(),
+            "explicit descendant gate"
+        );
         wait(|| self.weak.upgrade().is_none());
         assert!(matches!(
             custody::probe(&self.location, &self.record()),
@@ -492,6 +515,10 @@ fn child_exit_is_required_after_input_and_both_outputs_have_ended() {
     ));
     fs::write(root.join("release"), b"release this owned child").unwrap();
     let host = running.join().unwrap();
+    assert_eq!(
+        fs::read_to_string(root.join("released")).unwrap(),
+        "explicit owned-child gate"
+    );
     wait(|| host.weak.upgrade().is_none());
     assert_eq!(attempt(&host.store.lock().unwrap().db).0, "unknown"); // Empty output cannot settle.
     host.recover();
@@ -632,6 +659,10 @@ fn actual_host_exit_and_reopen_preserve_the_surviving_synthetic_custody() {
             Ok(platform::ProcessState::Exited)
         )
     });
+    assert_eq!(
+        fs::read_to_string(root.join("released")).unwrap(),
+        "explicit descendant gate"
+    );
     wait(|| {
         store.retry_operation_custody();
         store.recover_operation_custody(&location);
