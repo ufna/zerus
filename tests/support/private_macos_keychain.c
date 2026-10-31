@@ -20,6 +20,11 @@
 
 static const char *fixture_cn = "Developer ID Application: Zerus mechanics fixture (MECHANICS-NOT-A-TEAM)";
 
+static void wipe(void *memory, size_t bytes) {
+    volatile unsigned char *cursor = memory;
+    while (bytes--) *cursor++ = 0;
+}
+
 static void checked(OSStatus status, const char *operation) {
     if (status != errSecSuccess) {
         fprintf(stderr, "mechanics (modelled identity boundary): %s status %d\n", operation, (int)status);
@@ -126,15 +131,15 @@ int main(int argc, char **argv) {
     size_t bytes = fread(pem, 1, sizeof(pem), stdin);
     if (!bytes || bytes == sizeof(pem) || ferror(stdin)) refuse("invalid bounded fixture input");
     CFDataRef data = CFDataCreate(NULL, pem, (CFIndex)bytes);
-    explicit_bzero(pem, sizeof(pem));
+    wipe(pem, sizeof(pem));
     if (!data) refuse("cannot allocate fixture input");
     unsigned char random[32];
     char fixture_password[65];
     checked(SecRandomCopyBytes(kSecRandomDefault, sizeof(random), random), "generate private password");
     for (size_t i = 0; i < sizeof(random); ++i) snprintf(fixture_password + i * 2, 3, "%02x", random[i]);
-    explicit_bzero(random, sizeof(random));
+    wipe(random, sizeof(random));
     OSStatus created = SecKeychainCreate(argv[2], 64, fixture_password, false, NULL, &keychain);
-    explicit_bzero(fixture_password, sizeof(fixture_password));
+    wipe(fixture_password, sizeof(fixture_password));
     checked(created, "create explicit fixture keychain without UI");
     if (!keychain) refuse("no explicit import reference");
     ownership(argv[2], "owned_keychain_created");
