@@ -1001,7 +1001,7 @@ export function PerfHost() {
     }
     if (new URLSearchParams(location.search).has("worktree-review-smoke") && inTauri()) {
       const { worktreeReviewSmoke } = await import("../perf/worktreeReviewSmoke");
-      void worktreeReviewSmoke(!!config().replay && !!config().actions_smoke, ["projects", "overview-native"].includes(new URLSearchParams(location.search).get("worktree-review-smoke") ?? ""), new URLSearchParams(location.search).get("worktree-review-smoke") === "overview-native");
+      void worktreeReviewSmoke(!!config().replay && !!config().actions_smoke, ["projects", "overview-native", "overview-ui"].includes(new URLSearchParams(location.search).get("worktree-review-smoke") ?? ""), new URLSearchParams(location.search).get("worktree-review-smoke") === "overview-native", new URLSearchParams(location.search).get("worktree-review-smoke") === "overview-ui");
     }
     if (new URLSearchParams(location.search).has("shell-badge-smoke") && inTauri()) {
       const { shellBadgeSmoke } = await import("../perf/shellBadgeSmoke");

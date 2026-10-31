@@ -3,6 +3,7 @@ import { setPage, setSelectedKey, setDetailTab } from "../../store/ui";
 import { For, Show, createEffect, createMemo, createResource, createSignal, onCleanup, onMount } from "solid-js";
 import { MachineLabel } from "../components/MachineLabel";
 import { Icon } from "../lib/icons";
+import type { Inspection } from "../../store/terminationCleanup";
 import { terminationCleanupInspect } from "../../bridge";
 import { cleanup, cleanupDialog, closeCleanup, keepCleanup, checkCleanup, removeCleanup, emptyConsents, type CleanupRow } from "../../store/terminationCleanup";
 import { anyCleanupRestore, cleanupRestoring, restoreCleanupRow } from "../../store/cleanupNotices";
@@ -57,7 +58,8 @@ export default function WorktreeCleanup() {
 }
 
 /** The mockup's read-only setup-inspect surface; the CLI bounds every page. */
-function CleanupInspection(props: { row: CleanupRow; close: () => void }) {
+export type InspectionRow = Pick<CleanupRow, "id" | "path" | "label" | "computer" | "machine" | "branch" | "reason" | "details">;
+export function CleanupInspection(props: { row: InspectionRow; close: () => void; panel?: boolean; enabled?: boolean; read?: (id: string, file?: string, offset?: number) => Promise<Inspection> }) {
   let dialog!: HTMLDialogElement;
   const origin = document.activeElement;
   const [tab, setTab] = createSignal<"changes" | "commits" | "local" | "sessions">("changes");
@@ -68,24 +70,31 @@ function CleanupInspection(props: { row: CleanupRow; close: () => void }) {
   const session = () => Object.values(catalog.rows).find((r) => r.computer === props.row.computer && r.name === selectedSession());
   const openSession = () => { const row = session(); if (!row) return; props.close(); closeCleanup(); setSelectedKey(row.key); setDetailTab("activity"); setPage("sessions"); };
   const [local, setLocal] = createSignal({ file: ".", offset: 0 });
-  const [data, { refetch }] = createResource(() => terminationCleanupInspect(props.row.id));
-  const [file] = createResource(local, (page) => terminationCleanupInspect(props.row.id, page.file, page.offset));
+  const [readAt, setReadAt] = createSignal<string>();
+  const read = async (id: string, file = "", offset = 0) => {
+    const result = await (props.read ? props.read(id, file, offset) : terminationCleanupInspect(id, file, offset));
+    if (!file && props.row.id === id) setReadAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }));
+    return result;
+  };
+  const [data, { refetch }] = createResource(() => props.enabled === false ? undefined : props.row.id, (id) => read(id));
+  const [file] = createResource(() => tab() === "local" && !data.loading && !data.error ? { id: props.row.id, ...local() } : undefined, (page) => read(page.id, page.file, page.offset));
   const text = () => mode() === "base" ? data()?.comparison : data()?.changes;
-  onMount(() => { dialog.showModal(); queueMicrotask(() => dialog.querySelector<HTMLElement>("[autofocus], .dlg-body select")?.focus()); });
-  onCleanup(() => { dialog.close(); if (origin instanceof HTMLElement && origin.isConnected) origin.focus(); });
-  return <dialog ref={dialog} class="dlg su-dlg" style={{ width: "min(900px, calc(100vw - 48px))", height: "min(680px, calc(100vh - 48px))" }} aria-labelledby="cleanup-inspect-title" onCancel={props.close} onClose={props.close}>
-    <div class="dlg-head"><Icon name="eye" size={18} class="accent" /><h2 id="cleanup-inspect-title">Inspect working folder</h2><span class="grow" /><button class="icon-btn" aria-label="Close" onClick={props.close}><Icon name="x" size={16} /></button></div>
-    <div class="dlg-body"><section class="su-insp" aria-label="Worktree details">
+  onMount(() => { if (props.panel) return; dialog.showModal(); queueMicrotask(() => dialog.querySelector<HTMLElement>("[autofocus], .dlg-body select")?.focus()); });
+  onCleanup(() => { if (props.panel) return; dialog.close(); if (origin instanceof HTMLElement && origin.isConnected) origin.focus(); });
+  const body = <section class="su-insp" aria-label="Worktree details">
       <header class="ip-head"><h3 class="ell" title={props.row.path}>{props.row.label}</h3><button class="btn small" classList={{ on: details() }} aria-pressed={details()} onClick={() => setDetails(!details())}>Details</button><button class="icon-btn small" aria-label="Read files and commits" disabled={data.loading} onClick={() => void refetch()}><Icon name="refresh-cw" size={13} /></button></header>
       <p class="ip-brief parts"><span class="mono">{props.row.branch}</span><span>{props.row.reason}</span></p>
       <Show when={details()}><pre class="ip-summary mono">{props.row.details}</pre></Show>
       <div class="tabs ip-tabs" role="tablist"><For each={["changes", "commits", "local", "sessions"] as const}>{(name) => <button class="tab" role="tab" classList={{ on: tab() === name }} aria-selected={tab() === name} onClick={() => setTab(name)}>{name[0].toUpperCase() + name.slice(1)}</button>}</For></div>
-      <div class="ip-body"><Show when={!data.loading} fallback={<div class="ip-state">Loading…</div>}><Show when={!data.error} fallback={<div class="ip-state">{String(data.error)}</div>}>
+      <div class="ip-body"><Show when={props.enabled !== false && !data.loading} fallback={<div class="ip-state">Loading…</div>}><Show when={!data.error} fallback={<div class="ip-state">{String(data.error)}</div>}>
         <Show when={tab() === "changes"}><select class="field" aria-label="Changes mode" value={mode()} onChange={(e) => setMode(e.currentTarget.value)}><option value="uncommitted">Uncommitted changes</option><option value="base">Compare files with base</option></select><div class="ip-state">{data()?.files?.length ? `${data()?.files?.length} changed files${data()?.files_partial ? " (partial)" : ""}` : "No changed files."}</div><table class="su-table ip-files"><thead><tr><th>Changed file</th><th>State</th></tr></thead><tbody><For each={data()?.files}>{(f, index) => <tr classList={{ on: selectedFile() === index() }} onClick={() => setSelectedFile(index())} onDblClick={() => { setLocal({ file: f.path, offset: 0 }); setTab("local"); }}><td class="mono ell">{f.path}</td><td class="mono">{f.status}</td></tr>}</For></tbody></table><pre class="ip-diff mono">{text()?.text ?? text()?.error ?? ""}</pre></Show>
         <Show when={tab() === "commits"}><pre class="ip-diff mono grow">{data()?.commits?.text ?? data()?.commits?.error ?? "No additional commits."}</pre></Show>
         <Show when={tab() === "local"}><div class="notice warn"><Icon name="triangle-alert" size={14} /><span>Outside Git. Removing this folder deletes these files too.</span></div><div class="row"><button class="btn small" onClick={() => setLocal({ file: ".", offset: 0 })}>Browse all files</button><button class="btn small" disabled={file()?.file?.next_offset === undefined || file.loading} onClick={() => setLocal({ ...local(), offset: file()?.file?.next_offset ?? 0 })}>Next</button></div><Show when={!file.loading} fallback={<div class="ip-state">Loading…</div>}><Show when={!file.error} fallback={<div class="ip-state">{String(file.error)}</div>}><table class="su-table ip-files"><thead><tr><th>Local file / folder</th><th>Size</th></tr></thead><tbody><For each={file()?.file?.entries}>{(f) => <tr onDblClick={() => { if (!f.symlink) setLocal({ file: f.path, offset: 0 }); }}><td class="mono ell">{f.path}{f.directory ? "/" : ""}</td><td>—</td></tr>}</For></tbody></table><Show when={file()?.file?.text !== undefined || file()?.file?.binary}><pre class="ip-diff mono">{file()?.file?.binary ? "Binary file; text preview is unavailable." : file()?.file?.text}{file()?.file?.truncated ? "\nPreview is truncated." : ""}</pre></Show></Show></Show></Show>
         <Show when={tab() === "sessions"}><Show when={data()?.review?.sessions?.length} fallback={<div class="ip-state">No related sessions.</div>}><ul class="ip-sessions" role="listbox" aria-label="Related sessions"><For each={data()?.review?.sessions?.filter((s) => typeof s === "string")}>{(s) => <li role="option" aria-selected={selectedSession() === s} classList={{ on: selectedSession() === s }} onClick={() => setSelectedSession(s)} onDblClick={openSession}><Icon name="message-square" size={13} class="dim" />{s}</li>}</For></ul><button class="btn small" disabled={!session()} onClick={openSession}>Open session</button></Show></Show>
-      </Show></Show></div><div class="ip-status hint parts"><span>{props.row.machine}</span><span>Local Git refs</span></div>
-    </section></div>
+      </Show></Show></div><div class="ip-status hint parts"><Show when={readAt()}>{(time) => <span>Updated {time()}</span>}</Show><span>{props.row.machine}</span><span>Local Git refs</span></div>
+    </section>;
+  return props.panel ? body : <dialog ref={dialog} class="dlg su-dlg" style={{ width: "min(900px, calc(100vw - 48px))", height: "min(680px, calc(100vh - 48px))" }} aria-labelledby="cleanup-inspect-title" onCancel={props.close} onClose={props.close}>
+    <div class="dlg-head"><Icon name="eye" size={18} class="accent" /><h2 id="cleanup-inspect-title">Inspect working folder</h2><span class="grow" /><button class="icon-btn" aria-label="Close" onClick={props.close}><Icon name="x" size={16} /></button></div>
+    <div class="dlg-body">{body}</div>
   </dialog>;
 }

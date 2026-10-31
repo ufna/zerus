@@ -43,6 +43,7 @@ pub struct Row {
     details: String,
     ready: bool,
     can_check: bool,
+    forgotten: bool,
 }
 #[derive(Serialize)]
 pub struct View {
@@ -150,6 +151,7 @@ impl Dialog {
             status: state,
             reason,
             details: details.join("\n"),
+            forgotten: e.forgotten,
             ready: eligible(e),
             can_check: !self.busy && e.status == Some(Status::Kept),
         }

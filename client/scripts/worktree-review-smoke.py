@@ -5,7 +5,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 MACHINE = '11111111-1111-4111-8111-111111111111'
 if '--worker' not in sys.argv:
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--app',type=Path,required=True);parser.add_argument('--shell-badge',action='store_true');parser.add_argument('--projects',action='store_true');parser.add_argument('--overview-native',action='store_true');options=parser.parse_args();app=options.app.resolve();assert app.is_file()
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--app',type=Path,required=True);parser.add_argument('--shell-badge',action='store_true');parser.add_argument('--projects',action='store_true');parser.add_argument('--overview-native',action='store_true');parser.add_argument('--overview-ui',action='store_true');options=parser.parse_args();app=options.app.resolve();assert app.is_file()
     root=Path(tempfile.mkdtemp(prefix='zerus-worktree-review-'))
     for name in ('home','config','data','cache','runtime','tmp','tmux','state','bin','repo'):(root/name).mkdir(mode=0o700)
     (root/'repo/.git').mkdir()
@@ -17,7 +17,7 @@ if '--worker' not in sys.argv:
         {'v':1,'seq':3,'t':'snapshot','topic':'catalog.meta','value':{'host':'example-host','ok':True,'hgs_version':'1.56.0','projects':{},'peers':[]},'page':0,'last':True,'cursor':1},
         {'v':1,'seq':4,'t':'heartbeat','at':1793000000.0},
     ]
-    if options.projects or options.overview_native:
+    if options.projects or options.overview_native or options.overview_ui:
         organization=next(json.loads(line) for line in (REPO/'client/fixtures/replay.ndjson').read_text().splitlines() if json.loads(line).get('topic')=='organization')
         organization['seq']=4
         for item in organization['items']:
@@ -30,6 +30,7 @@ if '--worker' not in sys.argv:
         first['row'].update({'name':'sh/example/probe','cmd':'sh','agent':'sh'})
         frames[1]['items'].append(comparison)
     (root/'replay.ndjson').write_text(''.join(json.dumps(f)+'\n' for f in frames))
+    if options.overview_ui:(root/'overview-ui').touch()
     fake=root/'bin/fake-hgs';fake.write_text('''#!/usr/bin/python3
 import json,sys,time
 from pathlib import Path
@@ -39,6 +40,7 @@ if args==['--help']:print('guarded-create-v1');sys.exit(0)
 guarded=args[:2]==['--expect-machine','11111111-1111-4111-8111-111111111111']
 if guarded:args=args[2:]
 def arg(key):return args[args.index(key)+1]
+def extra():return [f'extra-{i:03d}' for i in range(300)] if (root/'overview-ui').exists() else []
 def row(tag):
  value={'path':str(root/'repo'/tag),'kind':'linked','available':tag!='missing','branch':tag,'head':'head-'+tag,'merged':tag in ('clean','ignored','changed'),'verdict':'missing' if tag=='missing' else 'ready','fingerprint':'fp-'+tag,'reasons':[],'ignored_count':0,'changes':0,'untracked':0,'integration':{'kind':'ancestor','base':'main'}}
  if tag=='ignored':value.update({'verdict':'review','ignored_count':1,'ignored_bytes':12288,'ignored_fingerprint':'ignored-proof','ignored':[{'path':'target/','bytes':12288,'complete':True}]})
@@ -46,14 +48,22 @@ def row(tag):
  return value
 if args and args[0]=='worktrees' and (len(args)<2 or args[1].startswith('--')):
  path=arg('--path');assert Path(path).is_relative_to(root)
- tags=[t for t in ('clean','ignored','missing','unknown') if not (root/('removed-'+t)).exists()]
+ tags=[t for t in ('clean','ignored','missing','unknown',*extra()) if not (root/('removed-'+t)).exists()]
  value={'state':'ok','path':path,'selected_root':str(root/'repo'),'common_dir':str(root/'repo/.git'),'sampled_at':time.time(),'worktrees':[{'path':str(root/'repo'),'kind':'main','available':True,'branch':'main'},*[row(t) for t in tags]]}
  print(json.dumps(value));sys.exit(0)
 if args[:2]==['worktrees','review']:
  assert guarded and arg('--path')==str(root/'repo/.git')
- tags=[t for t in ('clean','ignored','unknown','changed','missing','blocked') if not (root/('removed-'+t)).exists()]
+ tags=[t for t in ('clean','ignored','unknown','changed','missing','blocked',*extra()) if not (root/('removed-'+t)).exists()]
  if '--worktree' in args:tags=[t for t in tags if str(root/'repo'/t)==arg('--worktree')]
  print(json.dumps({'state':'ok','common_dir':str(root/'repo/.git'),'worktrees':[row(t) for t in tags]}));sys.exit(0)
+if args[:2]==['worktrees','inspect']:
+ assert guarded and arg('--common-dir')==str(root/'repo/.git')
+ path=arg('--path');assert Path(path).is_relative_to(root/'repo')
+ file=arg('--file') if '--file' in args else '';assert file in ('','.','fixture.txt')
+ value={'state':'ok','path':path,'common_dir':arg('--common-dir'),'files':[{'path':'fixture.txt','status':' M'}],'changes':{'text':'Synthetic file difference'},'comparison':{'text':'Synthetic base comparison'},'commits':{'text':'No additional commits.'},'review':{'sessions':['codex/example/probe']},'file':{'path':file,'offset':int(arg('--offset')) if '--offset' in args else 0}}
+ if file=='.':value['file']['entries']=[{'path':'fixture.txt','directory':False,'symlink':False}]
+ if file=='fixture.txt':value['file']['text']='Synthetic fixture preview'
+ print(json.dumps(value));sys.exit(0)
 if args[:2]==['worktrees','remove']:
  assert guarded and arg('--common-dir')==str(root/'repo/.git')
  path=Path(arg('--path'));assert path.is_relative_to(root);tag=path.name
@@ -74,15 +84,17 @@ print('{}')
     env={'PATH':str(root/'bin')+':/usr/bin:/bin','LANG':'C.UTF-8','HOME':str(root/'home'),'XDG_CONFIG_HOME':str(root/'config'),'XDG_DATA_HOME':str(root/'data'),'XDG_CACHE_HOME':str(root/'cache'),'XDG_RUNTIME_HOME':str(root/'runtime'),'TMPDIR':str(root/'tmp'),'TMUX_TMPDIR':str(root/'tmux'),'HGS_CONFIG_DIR':str(root/'config'),'HGS_STATE_DIR':str(root/'state'),'GDK_BACKEND':'x11','WAYLAND_DISPLAY':'zerus-nonexistent','WEBKIT_DISABLE_DMABUF_RENDERER':'1','NO_AT_BRIDGE':'1','GSETTINGS_BACKEND':'memory','ZERUS_CLIENT_HEADLESS':'1','ZERUS_CLIENT_REPLAY':str(root/'replay.ndjson'),'ZERUS_CLIENT_HGS':str(fake),'ZERUS_CLIENT_QUERY':'page=sessions&skin=zerus-light&worktree-review-smoke=1','ZERUS_CLIENT_PERF':'smoke'}
     if options.projects:env['ZERUS_CLIENT_QUERY']='page=projects&skin=zerus-light&worktree-review-smoke=projects'
     if options.overview_native:env['ZERUS_CLIENT_QUERY']='page=projects&skin=zerus-light&worktree-review-smoke=overview-native'
+    if options.overview_ui:env['ZERUS_CLIENT_QUERY']='page=projects&skin=zerus-light&worktree-review-smoke=overview-ui'
     if options.shell_badge:env['ZERUS_CLIENT_QUERY']='page=sessions&skin=zerus-light&shell-badge-smoke=1'
     print('Private Worktrees walk:',root,flush=True)
-    child=subprocess.Popen(['/usr/bin/dbus-run-session','--config-file',str(root/'bus.conf'),'--','/usr/bin/xvfb-run','-a','-s','-screen 0 1440x900x24','/usr/bin/python3',str(Path(__file__).resolve()),'--worker',str(root),str(app),*(['--shell-badge'] if options.shell_badge else []),*(['--overview-native'] if options.overview_native else [])],env=env,start_new_session=True)
+    child=subprocess.Popen(['/usr/bin/dbus-run-session','--config-file',str(root/'bus.conf'),'--','/usr/bin/xvfb-run','-a','-s','-screen 0 1440x900x24','/usr/bin/python3',str(Path(__file__).resolve()),'--worker',str(root),str(app),*(['--shell-badge'] if options.shell_badge else []),*(['--overview-native'] if options.overview_native else []),*(['--overview-ui'] if options.overview_ui else [])],env=env,start_new_session=True)
     try:result=child.wait(timeout=110)
     except subprocess.TimeoutExpired:os.killpg(child.pid,signal.SIGTERM);child.wait(timeout=5);raise
     raise SystemExit(result)
 root,app=Path(sys.argv[2]),Path(sys.argv[3]);assert os.environ['HOME']==str(root/'home')
 shell_badge='--shell-badge' in sys.argv
 native='--overview-native' in sys.argv
+overview_ui='--overview-ui' in sys.argv
 prefix='shell-badge-smoke: ' if shell_badge else 'worktree-review-smoke: '
 env={k:v for k,v in os.environ.items() if k in {'PATH','LANG','HOME','XDG_CONFIG_HOME','XDG_DATA_HOME','XDG_CACHE_HOME','XDG_RUNTIME_HOME','TMPDIR','TMUX_TMPDIR','HGS_CONFIG_DIR','HGS_STATE_DIR','GDK_BACKEND','WAYLAND_DISPLAY','WEBKIT_DISABLE_DMABUF_RENDERER','NO_AT_BRIDGE','GSETTINGS_BACKEND','DISPLAY','DBUS_SESSION_BUS_ADDRESS','XAUTHORITY'} or k.startswith('ZERUS_CLIENT_')}
 x=ctypes.CDLL('libX11.so.6');t=ctypes.CDLL('libXtst.so.6');x.XOpenDisplay.argtypes=[ctypes.c_char_p];x.XOpenDisplay.restype=ctypes.c_void_p;x.XStringToKeysym.argtypes=[ctypes.c_char_p];x.XStringToKeysym.restype=ctypes.c_ulong;x.XKeysymToKeycode.argtypes=[ctypes.c_void_p,ctypes.c_ulong];x.XKeysymToKeycode.restype=ctypes.c_uint;x.XFlush.argtypes=[ctypes.c_void_p];t.XTestFakeKeyEvent.argtypes=[ctypes.c_void_p,ctypes.c_uint,ctypes.c_int,ctypes.c_ulong];display=x.XOpenDisplay(None);assert display
@@ -91,7 +103,7 @@ with (root/'app.log').open('wb') as log:
     try:
         while time.monotonic()<deadline:
             output=(root/'app.log').read_text()
-            for stage in (('SHELL',) if shell_badge else ('PANEL','REVIEW','CONFIRMATION','REMOVING','OUTCOMES','UNKNOWN_REOPEN')):
+            for stage in (('SHELL',) if shell_badge else ('PANEL','REVIEW','CONFIRMATION','REMOVING','OUTCOMES','UNKNOWN_REOPEN','OVERVIEW','PAGER','MANUAL_REVIEW','INSPECTION','MANUAL_OUTCOMES')):
                 if prefix+stage in output and stage not in stages:
                     stages.add(stage);time.sleep(.1);subprocess.run(['/usr/bin/import','-window','root',str(root/(stage.lower()+'.png'))],check=True,env=env)
             for stage in ('ESCAPE_CONFIRM','ESCAPE_REVIEW'):
@@ -107,12 +119,12 @@ with (root/'app.log').open('wb') as log:
             assert 'SHELL' in stages
             print('PASS synthetic sh list/header Shell label, terminal glyph and existing default tint; Codex unchanged; no agent or operation started')
             raise SystemExit(0)
-        assert len(effects)==(2 if native else 5),effects
+        assert len(effects)==(2 if native or overview_ui else 5),effects
         assert all('--expect-machine' in a for a in effects)
         assert len([a for a in effects if a[a.index('--path')+1].endswith('/unknown')])==1,'unknown replayed'
         assert all((root/'repo'/tag/'fixture.txt').is_file() for tag in ('clean','ignored','unknown','changed','blocked'))
         assert not any('create' in a or 'start' in a or 'session-action' in a for a in calls),'opening/inspection created work'
-        if native:
+        if native or overview_ui:
             print('PASS native overview opaque selection, guarded manual review/removal, terminal unknown across refresh/reopen, unchanged synthetic files, no creation')
             raise SystemExit(0)
         print('PASS Worktrees menu/copy/New session without creation; focused missing review; explicit ignored/branch consent; exact guarded fake removal; kept and unknown outcomes; no replay; real Escape/focus; fixture files unchanged')

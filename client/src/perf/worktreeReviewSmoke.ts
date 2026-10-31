@@ -9,7 +9,7 @@ import { worktreeReview, worktreeReviewDialog, worktreeReviewLoading } from "../
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 function require(ok: unknown, why: string) { if (!ok) throw Error(why); }
 async function until(test: () => unknown, why: string) { const deadline = performance.now() + 20_000; while (!test()) { if (performance.now() > deadline) throw Error(why); await sleep(20); } }
-export async function worktreeReviewSmoke(allowed: boolean, projects = false, native = false) {
+export async function worktreeReviewSmoke(allowed: boolean, projects = false, native = false, overviewUI = false) {
   if (!allowed) return;
   const log = (line: string) => invoke("perf_log", { line: "worktree-review-smoke: " + line });
   const button = (root: string, label: string) => [...document.querySelectorAll<HTMLButtonElement>(root + " button")].find((b) => b.textContent?.trim() === label);
@@ -22,6 +22,50 @@ export async function worktreeReviewSmoke(allowed: boolean, projects = false, na
     setSelectedKey(s.key); if (projects) setPage("projects"); else openInspector("worktrees");
     await until(() => document.querySelectorAll(projects ? ".wtp-root" : ".icard.wt").length >= 4 && !button(scope, "Clean up…")?.disabled, "worktree panel did not load");
     await log("PANEL"); await sleep(500);
+    if (overviewUI) {
+      button(".projects .su-head", "Worktrees…")!.click();
+      const rows = () => [...document.querySelectorAll<HTMLElement>(".worktree-overview .wto-row[data-row]")];
+      const row = (name: string) => rows().find((r) => r.querySelector("b")?.textContent === name)!;
+      const next = () => document.querySelector<HTMLButtonElement>('[aria-label="Next page of worktrees"]')!;
+      const previous = () => document.querySelector<HTMLButtonElement>('[aria-label="Previous page of worktrees"]')!;
+      await until(() => rows().length === 256 && next() && !next().disabled, "overview did not page the bounded catalog");
+      require(document.querySelector(".wto-left > .wto-pager") && !document.querySelector(".dlg-foot .wto-pager"), "pager placement changed");
+      require(button(".worktree-overview", "Select candidates")!.disabled, "more than64 candidates selected a prefix");
+      await log("OVERVIEW"); await sleep(1500);
+      const clean = row("clean"); require(clean, "clean checkout missing"); clean.click();
+      await until(() => clean.getAttribute("aria-selected") === "true", "native selection missing");
+      require(row("clean") === clean, "selection recreated the worktree row");
+      next().click(); await until(() => previous() && !previous().disabled && next().disabled && rows().length === 48, "last page missing");
+      await until(() => document.activeElement === rows()[0], "last-page button did not hand focus to first row");
+      rows()[1].dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true }));
+      await until(() => button(".worktree-overview", "Review cleanup (2)…"), "cross-page selection lost");
+      previous().click(); await until(() => previous().disabled && rows().length === 256, "first page missing");
+      require(row("clean").getAttribute("aria-selected") === "true", "selection did not survive page navigation");
+      await log("PAGER"); await sleep(1500);
+      const search = document.querySelector<HTMLInputElement>('.worktree-overview input[type="search"]')!;
+      search.value = "clean"; search.dispatchEvent(new InputEvent("input", { bubbles: true }));
+      await until(() => rows().length === 1 && !document.querySelector(".wto-pager") && !button(".worktree-overview", "Select candidates")!.disabled, "filter did not reset/clamp paging");
+      button(".worktree-overview", "Select candidates")!.click(); await until(() => button(".worktree-overview", "Review cleanup (1)…"), "filtered candidate selection not atomic");
+      search.value = "unknown"; search.dispatchEvent(new InputEvent("input", { bubbles: true })); await until(() => row("unknown") && rows().length === 1, "unknown target not filtered");
+      row("unknown").dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true })); await until(() => button(".worktree-overview", "Review cleanup (2)…") && !button(".worktree-overview", "Review cleanup (2)…")!.disabled, "second selected target missing");
+      button(".worktree-overview", "Review cleanup (2)…")!.click(); await until(() => document.querySelector(".worktree-manual") && button(".worktree-manual", "Remove 2 folders") && !button(".worktree-manual", "Remove 2 folders")!.disabled, "explicit fresh batch review missing");
+      require(!document.querySelector<HTMLInputElement>(".worktree-manual .bc-consent input")!.checked, "branch consent remembered");
+      await log("MANUAL_REVIEW"); await sleep(1500);
+      button(".worktree-manual", "View files and commits…")!.click(); await until(() => document.querySelector("#cleanup-inspect-title") && !document.querySelector('.dlg:has(#cleanup-inspect-title) .ip-state')?.textContent?.includes("Loading"), "bounded inspector missing");
+      button(".dlg:has(#cleanup-inspect-title)", "Local")!.click(); await until(() => document.querySelector('.dlg:has(#cleanup-inspect-title) .ip-files tbody tr'), "local listing absent");
+      document.querySelector<HTMLElement>('.dlg:has(#cleanup-inspect-title) .ip-files tbody tr')!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      await until(() => document.querySelector('.dlg:has(#cleanup-inspect-title) .ip-diff')?.textContent?.includes("Synthetic fixture preview"), "local bounded preview absent");
+      await log("INSPECTION"); await sleep(1500); document.querySelector<HTMLButtonElement>('.dlg:has(#cleanup-inspect-title) button[aria-label="Close"]')!.click();
+      document.querySelector<HTMLInputElement>(".worktree-manual .bc-consent input")!.click();
+      button(".worktree-manual", "Remove 2 folders")!.click();
+      await until(() => document.querySelector(".worktree-manual .bc-summary")?.textContent?.includes("1 removed  0 kept  1 unknown"), "manual outcomes missing");
+      require(button(".worktree-manual", "Check again")!.disabled, "unknown offered a retry");
+      await log("MANUAL_OUTCOMES"); await sleep(1500); button(".worktree-manual", "Close")!.click();
+      await until(() => !document.querySelector(".worktree-manual") && row("unknown")?.textContent?.includes("Result unknown"), "unknown was not retained in overview");
+      button(".worktree-overview .dlg-foot", "Close")!.click(); await until(() => !document.querySelector(".worktree-overview"), "overview did not close");
+      await until(() => document.activeElement === button(".projects .su-head", "Worktrees…"), "overview focus did not return");
+      await log("PASS overview UI pages/selection/inspection/explicit consents/outcomes/focus"); await invoke("exit_app", { code: 0 }); return;
+    }
     if (native) {
       const filter = { search: "", project: "", computer: "", category: null, show_main: false, sort: "size" };
       const opened = await invoke<{ id: string }>("worktree_overview_open", { all: false });

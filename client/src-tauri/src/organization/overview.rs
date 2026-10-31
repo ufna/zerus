@@ -24,6 +24,7 @@ struct Binding {
 }
 struct Data {
     completed: Vec<bool>,
+    updated: Vec<Option<u64>>,
     failed: Vec<bool>,
     owners: std::collections::BTreeMap<String, String>,
     model: view::Model,
@@ -75,6 +76,7 @@ pub struct Header {
     incomplete: usize,
     pending: usize,
     repositories: usize,
+    updated: Option<u64>,
     partial: bool,
 }
 #[derive(Serialize)]
@@ -127,6 +129,7 @@ fn sources(org: &Organization, all: bool, refresh: bool) -> Result<Arc<Dataset>,
         bindings,
         data: Mutex::new(Data {
             completed: vec![false; common.len()],
+            updated: vec![None; common.len()],
             failed: vec![false; common.len()],
             owners: Default::default(),
             model,
@@ -387,6 +390,7 @@ impl Overview {
             }
             data.common[index] = common.into();
             data.completed[index] = true;
+            data.updated[index] = Some(now());
             data.failed[index] = failed;
             data.done += 1;
             data.revision += 1;
@@ -487,6 +491,7 @@ impl Overview {
             incomplete,
             pending: total.saturating_sub(processed),
             repositories,
+            updated: scoped.iter().filter_map(|i| data.updated[*i]).max(),
             partial: data.model.partial,
         })
     }
