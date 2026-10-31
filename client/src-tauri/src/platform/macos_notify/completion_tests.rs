@@ -225,6 +225,34 @@ fn real_error_description_and_denied_boolean_reach_the_original_sink_only_once()
 }
 
 #[test]
+fn uncalled_settings_query_copies_retain_then_pin_the_same_original_group() {
+    autoreleasepool(|_| {
+        let (f, gate, control) = Fixture::new(None);
+        let reply = settings_reply(f.center.authorization());
+        let first = reply.copy();
+        let last = first.copy();
+        control.close().unwrap();
+        let closed = gate.close();
+        drop(reply);
+        drop(first);
+        pending(&closed);
+        assert!(!control.snapshot().unwrap().pinned);
+        assert_eq!(f.queue.count(), 0);
+        assert_eq!(f.center.counts(), (1, 0, 0));
+        // Never call this block or manufacture a UNNotificationSettings object.
+        // This fixture proves only native capture custody before any result.
+        drop(last);
+        assert!(control.snapshot().unwrap().pinned);
+        assert_eq!(f.queue.count(), 0);
+        assert_eq!(f.center.counts(), (1, 0, 0));
+        assert_eq!(f.failures.load(Ordering::SeqCst), 0);
+        drop(f);
+        drop(control);
+        pending(&closed);
+    });
+}
+
+#[test]
 fn final_uncalled_authorization_block_destruction_pins_the_same_original_group() {
     autoreleasepool(|_| {
         let (f, gate, control) = Fixture::new(None);
