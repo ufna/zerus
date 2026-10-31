@@ -306,6 +306,22 @@ runtime hold or unlock is implemented. Hold installation and delivery must not
 ship before the reviewed release surface is available in the same or an earlier
 build.
 
+A private actual V1-hgs/native-Git race also showed that Git 2.56 can remove a
+checkout, its V2 marker and a newly installed native lock after its already-issued
+remover passed the absent-lock check. A Git lock therefore supplies no drain
+proof. The proposed hold now requires verified native quiescence **and exclusion
+through publication before any hold write**, across old configurations and paused
+callers. Kernel birth/cwd/open-file evidence must be complete; hidden/unreadable
+or omitted observations are UNVERIFIED. Existing process helpers and repeated
+empty snapshots do not provide atomic exclusion, and no qualifying mechanism is
+available yet. If that proof cannot be established, publish no hold or durable
+delivery for the worktree and keep today's drop-on-Quit with a bounded existing
+diagnostic. After any partial hold, retain denial/manual recovery instead of
+rolling it back. No signals, restarts, process-name assumptions, old consent or
+unlock/downgrade repairs close the race. See the design's exact negative evidence
+and still-unprotectable legacy windows; R3, the full matrix and the shipped
+release-surface gate remain unchanged. This is documentation only.
+
 The proposed store and capture spool are excluded from all exports, diagnostics
 bundles and Private analytics aggregate export and are never uploaded. Logging
 and operator recovery output contain bounded counts, reason codes and digests,

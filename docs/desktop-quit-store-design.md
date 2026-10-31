@@ -509,7 +509,8 @@ A per-Scope flag is insufficient: supervisor.rs independently calls after_archiv
 A marker understood only by a new executable is also insufficient: old resident
 supervisors and maintenance binaries cannot be restarted for this feature.
 Proposed compatibility barrier (`zerus-5wmh.66.2.34.3.4`), amended after
-private legacy interoperability controls:
+private legacy interoperability controls. Publication remains unavailable until
+the pre-hold quiescence and exclusion requirement below is actually qualified:
 
 1. Freshly verify the exact run/conversation, recorded launch owner nonce and both
    original ownership receipts, under the existing repository-then-state lock
@@ -517,8 +518,28 @@ private legacy interoperability controls:
    A positively verified main/non-Git folder needs no linked-checkout hold;
    inspection failure is not that proof. These locks live under the selected
    state root; they do **not** exclude an old caller using another configuration.
-2. **Install the native Git worktree lock first**, before either version-2 write
-   or any stop. Its existing `locked` leaf belongs to the exact pinned Git
+2. **Prove quiescence before installing any hold.** Use kernel-observed process
+   use and the existing termination-custody evidence principles: exact birth
+   identities, current directories, open files and executable identities, with
+   bounded complete coverage of every relevant caller/configuration. Cover both
+   the checkout and its exact common/per-checkout Git metadata. Hidden or
+   unreadable processes, omitted file observations, changed identities, incomplete
+   rosters and uncertain prior operations are UNVERIFIED, never absence of use.
+   Manual unreadable-process consent cannot establish this proof. Reuse neither
+   termination's signalling/freezing path nor its authority to stop an owned
+   agent: this check sends no signals and restarts nothing. The check must also
+   exclude an old mutator entering its decisive window between the observation
+   and durable publication; a point-in-time snapshot is not that exclusion.
+   If this cannot be proven before publication, publish **no hold** for that
+   worktree, reserve no durable delivery for it, and retain today's drop-on-Quit
+   behavior with a bounded reason in the existing diagnostic/notice surface.
+   Do not silently omit a member or repack an original group to permit partial
+   delivery; original group validity, ordering and refusal rules still apply.
+   Do not claim that its requested action will survive Quit. This is a proposed
+   denial/fallback boundary, not implemented behavior or a quiescence API.
+3. **Install the native Git worktree lock as the first durable hold record**,
+   after qualified quiescence/exclusion and before either version-2 write or any
+   stop. Its existing `locked` leaf belongs to the exact pinned Git
    per-checkout metadata directory. Create without replacement or following links,
    verify its private native identity, and durably sync both file and directory.
    Never overwrite, adopt or borrow an existing foreign/unknown lock. Use the
@@ -526,18 +547,21 @@ private legacy interoperability controls:
    public hold UUID; this is not the secret helper-start nonce. Bind its exact
    bytes, inode/native file identity and metadata directory to the original
    owner, request and registration. This is negative evidence only.
-3. Preserve the original owner nonce, path/common/metadata identity and branch/
+4. Preserve the original owner nonce, path/common/metadata identity and branch/
    archive restore information. Write and fsync the private negative-only
    ownership version 2 **before** writing and fsyncing the matching Git owner
    marker version 2. Include bounded KeepForReview and exact Git-barrier bindings.
    Repeated sources for one owner use indexed audit rows, not an unbounded list
    in the 16 KiB marker. Stop only after verifying all three durable records.
-4. Every partial cut remains denied/manual-reviewable, including a lock with
+5. Every partial cut remains denied/manual-reviewable, including a lock with
    version-1 records. Never roll back, downgrade, expire or repair away a hold.
    An unexpected replacement or missing barrier refuses stop and positive
    delivery; a successfully created but incomplete barrier remains held for
-   explicit recovery. Root/bootstrap, selected-CLI and resource gates still apply.
-5. New readers centrally refuse automatic cleanup for restricted ownership.
+   explicit recovery. The no-hold fallback applies only before the first hold
+   record: uncertainty after publication never authorizes deleting the barrier
+   or rolling records back to pretend no hold was installed. Root/bootstrap,
+   selected-CLI and resource gates still apply.
+6. New readers centrally refuse automatic cleanup for restricted ownership.
    Legacy `owned()` rejects version 2; the Git lock must additionally deny old
    manual Git removal and pruning. An existing lock alone is **not** proof that
    an already-issued old removal has drained. Before enabling delivery, qualify
@@ -564,6 +588,68 @@ registered checkout. These are **two actual legacy CLI cases plus two Git-only
 controls**, not old Qt, supervisor, maintenance, partial-cut, race or production
 qualification. The required matrix below remains open. No mutable hold, store
 or delivery caller is enabled by these controls or this proposal.
+
+### An already-issued native Git removal defeats a newly installed lock
+
+A further private control ran the actual source-pinned V1 `hgs` manual-removal
+caller (`ed80595e`) with unchanged installed Git 2.56.0, built from
+`a018953688f1b10bddf91bff8747068f5f4746a4`. The hgs SHA-256 was
+`aa3cdac5973566cb6e3d57798d7fbb82956c4bc6dec706f43e8b2e6abb974b7f`;
+the Git SHA-256 was
+`2912a2a32f408c9b8122e476251b32f4b35f4c3f0c15961686ae87ca456d384c`.
+The fixture used the existing exact unreadable-process consent, without force
+or unlock. It paused only its own native Git child with ptrace at syscall exit:
+`newfstatat(AT_FDCWD, worktrees/checkout/locked, ..., AT_SYMLINK_NOFOLLOW)` had
+already returned ENOENT, before Git userspace resumed. The child's cwd was the
+repository's common Git directory, not the checkout. No executable, register or
+syscall result was patched.
+
+While that child remained stopped, a separate real `git worktree lock` succeeded.
+The fixture synced the lock file and parent directory, then the private V2
+receipt and parent, then the matching Git V2 marker and parent. After resuming,
+native Git exited 0 and the actual old hgs returned `status: removed`, exit 0.
+The checkout, V2 Git marker and newly installed Git lock were deleted. The
+private V2 receipt, archive and maintenance SQLite retained exact bytes and
+inodes, and the branch remained. This is an R3 negative-evidence counterexample,
+not a production incident or permission to weaken R3.
+
+Raw packet `legacy-inflight-git-counterexample.zip` SHA-256
+`74553b771226abb2da584d645efb3b30a4c516ae3a56d6875ac83b8addd53308`
+contains 21 members: source exports, runner, 261 syscall pairs, file snapshots,
+build provenance and command outputs. Exactly **one actual negative race case**
+executed; an earlier tracer relative-cwd setup attempt is retained and excluded.
+Separately reviewed Qt packet `legacy-qt-lock-proof.zip` SHA-256
+`4959c70fad9bcb865d39c9eaa698e993a474bd3871cd1da1e3dba00d25f9e416`
+qualified only 11 fresh locked reviews and five stale Qt confirmations, with
+zero successful removals. Those 16 passing cases do not qualify this native race.
+
+The coordinator's proposed quiescence direction is a requirement to evaluate,
+not a proven mechanism. Existing process-use helpers are not an admission API:
+the Linux `worktree_processes` roster covers cwd/executable observations, while
+`open_files` currently filters individual fd-entry/read-link failures. An empty
+result from that helper cannot certify complete open-file coverage. Termination
+custody pins an owned ancestry and uses signals; its successful completion does
+not exclude independent legacy callers, especially another configuration.
+
+These legacy windows remain **unprotectable by the qualified mechanisms**:
+
+- a native Git child already past its absent-lock check, as demonstrated;
+- a paused old reader/remover that later spawns or resumes native Git, including
+  one with no checkout cwd or open file at the observation instant;
+- an independent old configuration/caller entering between a process sample and
+  lock publication. The selected state-root repository/writer locks do not cover
+  that domain, and repeated empty samples supply no atomic exclusion.
+
+No available proof closes those windows. Until a concrete no-signal mechanism
+excludes them through publication and receives fresh G3/native/security review
+and actual qualification, the affected worktree is ineligible for hold publication
+and durable delivery. Neither an idle/process-name heuristic nor a Git lock,
+post-publication recheck, manual consent, old approval or eventual process exit
+repairs already erased evidence. Keep no-hold/drop-on-Quit fallback before the
+first write; after any partial hold retain denial/manual recovery. The release
+gate must account for these unresolved windows, the complete legacy matrix and
+the separately required shipped release surface. Mutable hold/store/caller and
+release implementation remain unapproved.
 
 ### Release belongs to a new reviewed native operation
 
@@ -702,6 +788,10 @@ private controls include:
   version 2, byte-identical files across every partial marker cut, deletion races,
   Qt manual-review routing, followed by unchanged native Stop/
   Pause/Terminate/restore contracts for latest supported agents;
+- complete native pre-hold quiescence and exclusion across legacy configurations,
+  already-issued Git checks and paused readers, including hidden/unreadable
+  process and fd observations; absent proof gives no hold/no durable delivery
+  and existing drop-on-Quit diagnostics, never a positive snapshot inference;
 - genuine bounded receipt/status recovery with no dispatch, stable concurrent
   paging and existing notices; fresh GUI restart, actual update-installed.py
   real-exit/replacement while draining, bounded installer completion without signals;
