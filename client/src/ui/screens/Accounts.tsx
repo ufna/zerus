@@ -3,14 +3,15 @@ import { Icon } from "../lib/icons";
 import { MachineTile } from "../components/MachineTile";
 import { MachineLabel } from "../components/MachineLabel";
 import { Actions, Spinner, Status } from "../components/Status";
-import { AgentBadge } from "../sessions/SessionCard";
+import { AgentBadge, ProviderGlyph } from "../sessions/SessionCard";
+import { ResizeHandle } from "../sessions/SessionList";
 import type { Account } from "../../types";
 import { agentKind, catalog } from "../../store/catalog";
 import { machineCards } from "../../store/machines";
 import { accountMachine, accountsPage, loadAccounts, requestedProfile, setAccountMachine, setRequestedProfile } from "../../store/accounts";
 import { connectionOf, osOf } from "../../store/overview";
 import { useNow } from "../../store/latest";
-import { setPage } from "../../store/ui";
+import { sessionsWidth, setPage } from "../../store/ui";
 import { clock, providerName, stateText, windowsAt } from "../lib/usage";
 import { UsageMeters } from "../components/UsageMeter";
 import { accountManagement } from "../../store/accountManagement";
@@ -51,7 +52,9 @@ function AccountRow(props: { a: Account; now: number }) {
   };
   return (
     <button class="acct-row" classList={{ on: on() }} aria-current={on()} title={props.a.members.map((m) => `${m.machine}${tags().has(m.key) ? ` ${tags().get(m.key)}` : ""}: ${m.permission_label}`).join("\n")} onClick={pick}>
-      <span class="row">
+      {/* The session card's 34 px leading column, holding the provider tile. */}
+      <span class="acct-av"><span class="acct-ptile" style={{ "--agent": `var(--z-agent-${agentKind(props.a.provider)})` }}><ProviderGlyph agent={agentKind(props.a.provider)} size={18} /></span></span>
+      <span class="acct-l1">
         <b class="ell grow">{props.a.label}</b>
         <AgentBadge agent={agentKind(props.a.provider)} />
       </span>
@@ -265,52 +268,74 @@ export function AccountsScreen() {
   });
   const current = () => visible().find((a) => a.key === selectedAccount()) ?? visible()[0];
   const filterName = () => view().hosts.find((h) => h.computer === accountMachine())?.name ?? accountMachine();
+  // Selection stays in view as the list scrolls or the filter changes; arrow keys move it.
+  let list: HTMLDivElement | undefined;
+  createEffect(() => {
+    const key = current()?.key;
+    if (!key || !list) return;
+    queueMicrotask(() => list?.querySelector<HTMLElement>(".acct-row.on")?.scrollIntoView({ block: "nearest" }));
+  });
+  const step = (e: KeyboardEvent) => {
+    const rows = [...(list?.querySelectorAll<HTMLButtonElement>(".acct-row") ?? [])];
+    const at = rows.findIndex((r) => r === document.activeElement);
+    const next = e.key === "ArrowDown" ? at + 1 : e.key === "ArrowUp" ? at - 1 : e.key === "Home" ? 0 : e.key === "End" ? rows.length - 1 : undefined;
+    if (next === undefined || !rows.length) return;
+    e.preventDefault();
+    const row = rows[Math.max(0, Math.min(rows.length - 1, next))];
+    row.focus();
+    row.click();
+  };
   return (
-    <div class="mach-page acct-page">
-      <div class="mach-shell">
-        <header class="mach-head">
-          <h1>{tr("Agent accounts")}</h1>
-          <button class="icon-btn" aria-label={tr("Refresh accounts")} disabled={view().busy || managementBusy()} onClick={() => void loadAccounts(true)}
-            title={view().busy ? tr("Updating accounts… %1 remaining", view().pending) : tr("Refresh account usage (automatically every 5 minutes)")}>
-            <Show when={!view().busy} fallback={<Spinner />}><Icon name="refresh-cw" size={15} /></Show>
-          </button>
-          <span class="grow" />
-          <button class="btn primary" disabled={!!view().no_hosts||managementBusy()} title={view().no_hosts??undefined} onClick={event=>{accountManagement.close();accountManagement.clearNotice();void accountSetup.open("add",event.currentTarget,"","",accountMachine());}}><Icon name="plus" size={14} />{tr("Add account")}</button>
-        </header>
-        <p class="muted mach-summary">{tr("Your accounts across all machines. Choose an account to manage where it is available.")}</p>
-        <For each={view().notices}>{(notice) => <Status kind="warn">{notice}</Status>}</For>
-        <Show when={!view().no_hosts} fallback={
-          <div class="empty acct-empty"><Icon name="user-round-cog" size={28} /><h3>{tr("No machine keeps agent accounts")}</h3>
-            <p>{view().no_hosts}</p>
-            <button class="btn" onClick={() => setPage("machines")}>{tr("Open Machines")}</button></div>
-        }>
-          <div class="row acct-filter">
-            <select class="field" aria-label={tr("Machine")} value={accountMachine()} onChange={(e) => {closeManagement();clearManagementNotice();setAccountMachine(e.currentTarget.value);}}>
+    <div class="acct-page">
+      {/* The Sessions list's pane: its width, border and handle; only the list scrolls under a fixed header. */}
+      <section class="acct-pane" style={{ "--pane-w": `${sessionsWidth()}px` }} aria-label={tr("Agent accounts")}>
+        <div class="sp-panel acct-panel">
+          <header class="sp-head acct-head">
+            <h1>{tr("Agent accounts")}</h1>
+            <button class="icon-btn hd" aria-label={tr("Refresh accounts")} disabled={view().busy || managementBusy()} onClick={() => void loadAccounts(true)}
+              title={view().busy ? tr("Updating accounts… %1 remaining", view().pending) : tr("Refresh account usage (automatically every 5 minutes)")}>
+              <Show when={!view().busy} fallback={<Spinner />}><Icon name="refresh-cw" size={15} /></Show>
+            </button>
+            <span class="grow" />
+            <button class="btn small primary" disabled={!!view().no_hosts||managementBusy()} title={view().no_hosts??undefined} onClick={event=>{accountManagement.close();accountManagement.clearNotice();void accountSetup.open("add",event.currentTarget,"","",accountMachine());}}><Icon name="plus" size={13} />{tr("Add account")}</button>
+          </header>
+          <p class="muted acct-summary">{tr("Your accounts across all machines. Choose an account to manage where it is available.")}</p>
+          <For each={view().notices}>{(notice) => <Status kind="warn">{notice}</Status>}</For>
+          <Show when={!view().no_hosts}>
+            <select class="field acct-filter" aria-label={tr("Machine")} value={accountMachine()} onChange={(e) => {closeManagement();clearManagementNotice();setAccountMachine(e.currentTarget.value);}}>
               <option value="*">{tr("All machines")}</option>
               <For each={view().hosts}>{(h) => <option value={h.computer}>{h.label}</option>}</For>
             </select>
             <Show when={view().snapshot}>
-              <Show when={view().pending}><Spinner size={12} /></Show>
-              <span class="muted">{summaryLine(view(), visible().length)}</span>
+              <div class="row acct-count"><Show when={view().pending}><Spinner size={12} /></Show><span class="muted ell">{summaryLine(view(), visible().length)}</span></div>
             </Show>
-          </div>
-          <Show when={view().snapshot} fallback={
-            <div class="acct-loading"><div class="row"><Spinner /><span>{tr("Loading accounts…")}</span></div><p class="muted">{tr("Checking accounts across your machines.")}</p></div>
-          }>
-            <div class="mach-body acct-body">
-              <div class="mach-list acct-list" role="list" aria-label={tr("Agent accounts")}>
+          </Show>
+          <div class="acct-scroll" ref={list} role="list" aria-label={tr("Agent accounts")} onKeyDown={step}>
+            <Show when={!view().no_hosts}>
+              <Show when={view().snapshot} fallback={<div class="acct-loading"><div class="row"><Spinner /><span>{tr("Loading accounts…")}</span></div><p class="muted">{tr("Checking accounts across your machines.")}</p></div>}>
                 <Show when={visible().length} fallback={<p class="muted acct-none">{accountMachine() === "*" ? tr("No accounts.") : tr("No accounts on %1.", filterName())}</p>}>
                   <Index each={visible()}>{(a) => <AccountRow a={a()} now={now()} />}</Index>
                 </Show>
-                <Show when={view().truncated > 0}><p class="dim acct-none">{view().truncated} more accounts are not shown.</p></Show>
-              </div>
-              <Show when={current()} fallback={<div class="acct-detail"><h2 class="muted">{tr("Choose an account")}</h2></div>}>
-                {(a) => <Show when={a().key} keyed><Detail a={a()} /></Show>}
+                <Show when={view().truncated > 0}><p class="dim acct-none">{tr("%1 more accounts are not shown.", view().truncated)}</p></Show>
               </Show>
-            </div>
+            </Show>
+          </div>
+        </div>
+        <ResizeHandle />
+      </section>
+      <main class="acct-main">
+        <div class="acct-main-scroll">
+          <Show when={!view().no_hosts} fallback={
+            <div class="empty acct-empty"><Icon name="user-round-cog" size={28} /><h3>{tr("No machine keeps agent accounts")}</h3>
+              <p>{view().no_hosts}</p>
+              <button class="btn" onClick={() => setPage("machines")}>{tr("Open Machines")}</button></div>
+          }>
+            <Show when={view().snapshot && current()} fallback={<div class="acct-detail"><h2 class="muted">{tr("Choose an account")}</h2></div>}>
+              {(a) => <Show when={a().key} keyed><Detail a={a()} /></Show>}
+            </Show>
           </Show>
-        </Show>
-      </div>
+        </div>
+      </main>
       <Show when={accountDistribution.prompt()}>{prompt=><Suspense><AccountDistributionDialog prompt={prompt()}/></Suspense>}</Show>
       <Show when={accountSetup.prompt()}>{prompt=><Suspense><AccountSetupDialog prompt={prompt()} busy={accountSetup.busy()} close={accountSetup.close} confirm={(values,handle)=>void accountSetup.confirm(values,handle)}/></Suspense>}</Show>
       <Show when={accountManagement.prompt()}>{prompt=><Suspense><Switch><Match when={prompt().kind==="permissions" || prompt().kind==="model"}><AccountDefaultsDialog prompt={prompt()} close={accountManagement.close} confirm={(values,handle)=>void accountManagement.confirm(values,handle)}/></Match><Match when={true}><AccountCatalogDialog prompt={prompt()} close={accountManagement.close} confirm={(label,handle)=>void accountManagement.confirm(label,handle)}/></Match></Switch></Suspense>}</Show>
