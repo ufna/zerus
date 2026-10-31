@@ -336,6 +336,47 @@ pub(super) fn request_abort(
     inspect_db(&store.db, &location.configuration)?.context("prepared record missing")
 }
 
+/// Recover only negative abort intent from the exact persisted observation.
+/// Unlike Ticket's same-epoch path, the current service epoch is checked
+/// independently of the original epoch retained in the binding. No Ticket is
+/// reconstructed, and no original identity is rebound after a process restart.
+/// This has no caller or automatic follow-up: no clear, settlement, controller
+/// wake, notice or writer reopening follows either phase or the returned data.
+pub(super) fn request_abort_original(
+    location: &Location,
+    lock: &HandoffLock,
+    presence: &Guard,
+    store: &mut Store,
+    original: &Snapshot,
+    current_epoch: &str,
+) -> Result<Snapshot> {
+    ensure!(cfg!(unix), "producer preparation durability is unsupported");
+    lock.verify(location)?;
+    presence.verify(location)?;
+    location.check_existing()?;
+    original.binding.validate(&location.configuration)?;
+    let tx = store
+        .db
+        .transaction_with_behavior(TransactionBehavior::Immediate)?;
+    current(&tx, location, current_epoch)?;
+    let mut snapshot =
+        inspect_db(&tx, &location.configuration)?.context("prepared record missing")?;
+    ensure!(
+        snapshot.request_id() == original.request_id() && snapshot.digest == original.digest,
+        "prepared original changed"
+    );
+    if snapshot.phase == Phase::AbortRequested {
+        return Ok(snapshot);
+    }
+    ensure!(tx.execute("UPDATE desktop_producer_prepared SET phase='abort_requested' WHERE id=1 AND digest=?1 AND phase='prepared'", [&snapshot.digest])? == 1, "prepared original changed");
+    tx.commit()?;
+    // Failure after commit stays unknown and fenced; the same persisted
+    // original can be inspected again without creating another preparation.
+    crate::platform::sync_dir(&location.root)?;
+    snapshot.phase = Phase::AbortRequested;
+    Ok(snapshot)
+}
+
 macro_rules! redacted { ($($t:ty),+) => { $(impl std::fmt::Debug for $t {
     fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result { f.write_str(concat!(stringify!($t),"([prepared fence])")) }
 })+ }; }
