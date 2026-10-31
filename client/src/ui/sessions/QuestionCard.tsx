@@ -1,4 +1,4 @@
-import { Index, Show, createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from "solid-js";
+import { Index, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack } from "solid-js";
 import { Icon } from "../lib/icons";
 import { questions } from "../../store/questions";
 import { terminal } from "../../store/terminal";
@@ -12,9 +12,19 @@ import type { FormView, OptionView } from "../../types";
 export function QuestionCard() {
   // Rebuilt for a new card or a rebuilt one only: typing never remounts the fields.
   const ident = createMemo(() => { const q = questions.view(); return q ? `${q.card}\n${q.revision}` : undefined; });
+  // A card rises in only when a new question arrives in a session already open.
+  // Opening a session, or rebuilding the same card, paints it in place.
+  let openedAt = performance.now(), shownCard: string | undefined;
+  createEffect(on(() => selected()?.key, () => { openedAt = performance.now(); shownCard = undefined; }, { defer: true }));
+  const arrived = () => {
+    const card = untrack(() => questions.view()?.card);
+    const fresh = card !== shownCard && performance.now() - openedAt > 1500;
+    shownCard = card;
+    return fresh;
+  };
   return (
     <>
-      <Show when={ident()} keyed>{(_ident) => <Card />}</Show>
+      <Show when={ident()} keyed>{(_ident) => <Card arrived={arrived()} />}</Show>
       <ColdAnswerDialog />
     </>
   );
@@ -41,7 +51,7 @@ function guardKeys(e: KeyboardEvent) {
   if (e.repeat || (e.key === "Enter" && e.target instanceof HTMLButtonElement)) { e.preventDefault(); e.stopPropagation(); }
 }
 
-function Card() {
+function Card(props: { arrived: boolean }) {
   const openNative = nativeRoute(selected());
   const q = () => questions.view()!;
   const c = () => q().view;
@@ -79,7 +89,7 @@ function Card() {
   };
   // The owner's "needs attention" card: icon, heading and Asked on top; counters below when there are any.
   return (
-    <div class="cmp-col"><div class="qcard" ref={el} role="group" aria-label={c().heading} onKeyDown={guardKeys}>
+    <div class="cmp-col"><div class="qcard" classList={{ arrived: props.arrived }} ref={el} role="group" aria-label={c().heading} onKeyDown={guardKeys}>
       <div class="qcard-head">
         <Icon name="circle-question-mark" size={16} class="warn" />
         <b class="qcard-title">{c().heading}</b><span class="grow" />
