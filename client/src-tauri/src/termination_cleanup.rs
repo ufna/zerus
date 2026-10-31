@@ -38,6 +38,21 @@ struct Model {
     overflow_unknown: usize,
     restoring: BTreeSet<String>,
 }
+impl TerminationCleanup {
+    pub(crate) fn unknown_overflow(&self) -> bool {
+        lock(&self.0.model).overflow_unknown > 0
+    }
+    pub(crate) fn unknown(&self, machine: &str, common: &str, path: &str) -> bool {
+        let model = lock(&self.0.model);
+        model.jobs.iter().flat_map(|j| &j.cleanup.entries).any(|e| {
+            e.machine == machine
+                && e.common_dir == common
+                && e.row["path"] == path
+                && e.status == Some(Status::Unconfirmed)
+        })
+    }
+}
+
 struct Offer {
     id: String,
     capture: Capture,
@@ -1251,6 +1266,19 @@ mod tests {
             archive: None,
             restore_supported: false,
         }
+    }
+    #[test]
+    fn unknown_projection_is_exact_and_overflow_does_not_invent_per_folder_outcomes() {
+        let state = TerminationCleanup::default();
+        lock(&state.0.model)
+            .jobs
+            .push_back(job(Some(Status::Unconfirmed)));
+        assert!(state.unknown(MACHINE, "/srv/example/.git", "/srv/example/work"));
+        assert!(!state.unknown(MACHINE, "/srv/example/.git", "/srv/example/other"));
+        assert!(!state.unknown("other", "/srv/example/.git", "/srv/example/work"));
+        lock(&state.0.model).overflow_unknown = 1;
+        assert!(state.unknown_overflow());
+        assert!(!state.unknown(MACHINE, "/srv/example/.git", "/srv/example/other"));
     }
     #[test]
     fn retained_status_is_passive_and_unknown_never_becomes_a_ready_target() {

@@ -5,7 +5,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 MACHINE = '11111111-1111-4111-8111-111111111111'
 if '--worker' not in sys.argv:
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--app',type=Path,required=True);parser.add_argument('--shell-badge',action='store_true');parser.add_argument('--projects',action='store_true');options=parser.parse_args();app=options.app.resolve();assert app.is_file()
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--app',type=Path,required=True);parser.add_argument('--shell-badge',action='store_true');parser.add_argument('--projects',action='store_true');parser.add_argument('--overview-native',action='store_true');options=parser.parse_args();app=options.app.resolve();assert app.is_file()
     root=Path(tempfile.mkdtemp(prefix='zerus-worktree-review-'))
     for name in ('home','config','data','cache','runtime','tmp','tmux','state','bin','repo'):(root/name).mkdir(mode=0o700)
     (root/'repo/.git').mkdir()
@@ -17,7 +17,7 @@ if '--worker' not in sys.argv:
         {'v':1,'seq':3,'t':'snapshot','topic':'catalog.meta','value':{'host':'example-host','ok':True,'hgs_version':'1.56.0','projects':{},'peers':[]},'page':0,'last':True,'cursor':1},
         {'v':1,'seq':4,'t':'heartbeat','at':1793000000.0},
     ]
-    if options.projects:
+    if options.projects or options.overview_native:
         organization=next(json.loads(line) for line in (REPO/'client/fixtures/replay.ndjson').read_text().splitlines() if json.loads(line).get('topic')=='organization')
         organization['seq']=4
         for item in organization['items']:
@@ -73,14 +73,16 @@ print('{}')
     (root/'bus.conf').write_text('<busconfig><type>session</type><listen>unix:tmpdir='+str(root/'runtime')+'</listen><auth>EXTERNAL</auth><policy context="default"><allow send_destination="*"/><allow receive_sender="*"/><allow own="*"/></policy></busconfig>')
     env={'PATH':str(root/'bin')+':/usr/bin:/bin','LANG':'C.UTF-8','HOME':str(root/'home'),'XDG_CONFIG_HOME':str(root/'config'),'XDG_DATA_HOME':str(root/'data'),'XDG_CACHE_HOME':str(root/'cache'),'XDG_RUNTIME_HOME':str(root/'runtime'),'TMPDIR':str(root/'tmp'),'TMUX_TMPDIR':str(root/'tmux'),'HGS_CONFIG_DIR':str(root/'config'),'HGS_STATE_DIR':str(root/'state'),'GDK_BACKEND':'x11','WAYLAND_DISPLAY':'zerus-nonexistent','WEBKIT_DISABLE_DMABUF_RENDERER':'1','NO_AT_BRIDGE':'1','GSETTINGS_BACKEND':'memory','ZERUS_CLIENT_HEADLESS':'1','ZERUS_CLIENT_REPLAY':str(root/'replay.ndjson'),'ZERUS_CLIENT_HGS':str(fake),'ZERUS_CLIENT_QUERY':'page=sessions&skin=zerus-light&worktree-review-smoke=1','ZERUS_CLIENT_PERF':'smoke'}
     if options.projects:env['ZERUS_CLIENT_QUERY']='page=projects&skin=zerus-light&worktree-review-smoke=projects'
+    if options.overview_native:env['ZERUS_CLIENT_QUERY']='page=projects&skin=zerus-light&worktree-review-smoke=overview-native'
     if options.shell_badge:env['ZERUS_CLIENT_QUERY']='page=sessions&skin=zerus-light&shell-badge-smoke=1'
     print('Private Worktrees walk:',root,flush=True)
-    child=subprocess.Popen(['/usr/bin/dbus-run-session','--config-file',str(root/'bus.conf'),'--','/usr/bin/xvfb-run','-a','-s','-screen 0 1440x900x24','/usr/bin/python3',str(Path(__file__).resolve()),'--worker',str(root),str(app),*(['--shell-badge'] if options.shell_badge else [])],env=env,start_new_session=True)
+    child=subprocess.Popen(['/usr/bin/dbus-run-session','--config-file',str(root/'bus.conf'),'--','/usr/bin/xvfb-run','-a','-s','-screen 0 1440x900x24','/usr/bin/python3',str(Path(__file__).resolve()),'--worker',str(root),str(app),*(['--shell-badge'] if options.shell_badge else []),*(['--overview-native'] if options.overview_native else [])],env=env,start_new_session=True)
     try:result=child.wait(timeout=110)
     except subprocess.TimeoutExpired:os.killpg(child.pid,signal.SIGTERM);child.wait(timeout=5);raise
     raise SystemExit(result)
 root,app=Path(sys.argv[2]),Path(sys.argv[3]);assert os.environ['HOME']==str(root/'home')
 shell_badge='--shell-badge' in sys.argv
+native='--overview-native' in sys.argv
 prefix='shell-badge-smoke: ' if shell_badge else 'worktree-review-smoke: '
 env={k:v for k,v in os.environ.items() if k in {'PATH','LANG','HOME','XDG_CONFIG_HOME','XDG_DATA_HOME','XDG_CACHE_HOME','XDG_RUNTIME_HOME','TMPDIR','TMUX_TMPDIR','HGS_CONFIG_DIR','HGS_STATE_DIR','GDK_BACKEND','WAYLAND_DISPLAY','WEBKIT_DISABLE_DMABUF_RENDERER','NO_AT_BRIDGE','GSETTINGS_BACKEND','DISPLAY','DBUS_SESSION_BUS_ADDRESS','XAUTHORITY'} or k.startswith('ZERUS_CLIENT_')}
 x=ctypes.CDLL('libX11.so.6');t=ctypes.CDLL('libXtst.so.6');x.XOpenDisplay.argtypes=[ctypes.c_char_p];x.XOpenDisplay.restype=ctypes.c_void_p;x.XStringToKeysym.argtypes=[ctypes.c_char_p];x.XStringToKeysym.restype=ctypes.c_ulong;x.XKeysymToKeycode.argtypes=[ctypes.c_void_p,ctypes.c_ulong];x.XKeysymToKeycode.restype=ctypes.c_uint;x.XFlush.argtypes=[ctypes.c_void_p];t.XTestFakeKeyEvent.argtypes=[ctypes.c_void_p,ctypes.c_uint,ctypes.c_int,ctypes.c_ulong];display=x.XOpenDisplay(None);assert display
@@ -105,11 +107,14 @@ with (root/'app.log').open('wb') as log:
             assert 'SHELL' in stages
             print('PASS synthetic sh list/header Shell label, terminal glyph and existing default tint; Codex unchanged; no agent or operation started')
             raise SystemExit(0)
-        assert len(effects)==5,effects
+        assert len(effects)==(2 if native else 5),effects
         assert all('--expect-machine' in a for a in effects)
         assert len([a for a in effects if a[a.index('--path')+1].endswith('/unknown')])==1,'unknown replayed'
         assert all((root/'repo'/tag/'fixture.txt').is_file() for tag in ('clean','ignored','unknown','changed','blocked'))
         assert not any('create' in a or 'start' in a or 'session-action' in a for a in calls),'opening/inspection created work'
+        if native:
+            print('PASS native overview opaque selection, guarded manual review/removal, terminal unknown across refresh/reopen, unchanged synthetic files, no creation')
+            raise SystemExit(0)
         print('PASS Worktrees menu/copy/New session without creation; focused missing review; explicit ignored/branch consent; exact guarded fake removal; kept and unknown outcomes; no replay; real Escape/focus; fixture files unchanged')
     finally:
         if child.poll() is None:child.terminate();child.wait(timeout=5)

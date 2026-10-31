@@ -84,7 +84,7 @@ pub struct Page {
     page: view::Page,
 }
 
-fn main(window: &tauri::Webview) -> Result<(), String> {
+pub(crate) fn main(window: &tauri::Webview) -> Result<(), String> {
     if window.label() == crate::MAIN_WINDOW {
         Ok(())
     } else {
@@ -365,12 +365,6 @@ impl Overview {
                         row.state = "Result unknown".into();
                         row.remains = "An unknown result will not be retried.".into();
                     }
-                    if let Some(checked) = review {
-                        data.owners.insert(
-                            row.id.clone(),
-                            checked["ownership_id"].as_str().unwrap_or("").to_owned(),
-                        );
-                    }
                     if let Some(previous) = data.model.row(&row.id) {
                         row.source = previous.source;
                         row.projects.extend(previous.projects.iter().cloned());
@@ -381,7 +375,12 @@ impl Overview {
                         row.project_names.sort();
                         row.project_names.dedup();
                     }
-                    data.model.put(row);
+                    let id = row.id.clone();
+                    if data.model.put(row) {
+                        if let Some(checked) = review {
+                            data.owners.insert(id, owner(checked));
+                        }
+                    }
                 } else {
                     data.model.partial = true;
                 }
@@ -511,7 +510,47 @@ impl Overview {
                 .map_err(str::to_owned)?,
         })
     }
-    fn inspection(&self) -> Result<Inspection, String> {
+    pub(crate) fn targets(&self, id: &str) -> Result<Vec<Target>, String> {
+        let state = locked(&self.0)?;
+        let window = state
+            .window
+            .as_ref()
+            .filter(|w| w.id == id && w.pending.is_none())
+            .ok_or(CHANGED)?;
+        let data = locked(&window.current.data)?;
+        if data.done < window.current.bindings.len() {
+            return Err(CHANGED.into());
+        }
+        let ids = data.model.cleanup_selection().map_err(str::to_owned)?;
+        if ids.is_empty() {
+            return Err("Select worktrees to review.".into());
+        }
+        ids.into_iter()
+            .map(|id| {
+                let row = data.model.row(&id).ok_or(CHANGED)?;
+                let common = data
+                    .common
+                    .get(row.source)
+                    .filter(|s| !s.is_empty())
+                    .cloned()
+                    .ok_or(CHANGED)?;
+                Ok(Target {
+                    id,
+                    binding: window
+                        .current
+                        .bindings
+                        .get(row.source)
+                        .cloned()
+                        .ok_or(CHANGED)?,
+                    path: row.path.clone(),
+                    branch: row.branch.clone(),
+                    common,
+                    owner: data.owners.get(&row.id).cloned(),
+                })
+            })
+            .collect()
+    }
+    pub(crate) fn inspection(&self) -> Result<Inspection, String> {
         let mut state = locked(&self.0)?;
         if state.inspections >= 2 {
             return Err("A worktree inspection is still running.".into());
@@ -534,7 +573,59 @@ impl Overview {
     }
 }
 
-struct Inspection(Overview);
+/// Fixed-size evidence of the exact observed checkout nonce, including absence.
+pub(crate) fn owner(row: &Value) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&row["ownership_id"]).unwrap_or_default())
+    )
+}
+
+#[derive(Clone)]
+pub(crate) struct Target {
+    pub id: String,
+    binding: Binding,
+    pub path: String,
+    pub branch: String,
+    pub common: String,
+    pub owner: Option<String>,
+}
+impl Target {
+    #[cfg(test)]
+    pub(crate) fn fixture(index: usize) -> Self {
+        let path = format!("/srv/example/work-{index}");
+        Self {
+            id: format!("row-{index}"),
+            path,
+            branch: format!("branch-{index}"),
+            common: "/srv/example/.git".into(),
+            owner: None,
+            binding: Binding {
+                machine: "11111111-1111-4111-8111-111111111111".into(),
+                source: view::Source {
+                    computer: String::new(),
+                    machine: "example-host".into(),
+                    path: "/srv/example".into(),
+                    references: Vec::new(),
+                },
+            },
+        }
+    }
+    pub fn computer(&self) -> &str {
+        &self.binding.source.computer
+    }
+    pub fn machine(&self) -> &str {
+        &self.binding.machine
+    }
+    pub fn label(&self) -> &str {
+        &self.binding.source.machine
+    }
+    pub fn check(&self, org: &Organization) -> Result<(), String> {
+        current(org, &self.binding, true)
+    }
+}
+
+pub(crate) struct Inspection(Overview);
 impl Drop for Inspection {
     fn drop(&mut self) {
         if let Ok(mut state) = locked(&self.0 .0) {
@@ -549,8 +640,9 @@ fn calls(
     cleanup: WorktreeCleanup,
     app: tauri::AppHandle,
 ) -> Calls {
-    use tauri::Emitter;
+    use tauri::{Emitter, Manager};
     let snapshots = catalogs.clone();
+    let outcomes = app.clone();
     Calls {
         org,
         catalog: Arc::new(move |computer, path, refresh| {
@@ -562,7 +654,12 @@ fn calls(
         review: Arc::new(|computer, machine, common| {
             crate::worktree_cleanup::read(computer, machine, common, "")
         }),
-        unknown: Arc::new(move |machine, common, path| cleanup.unknown(machine, common, path)),
+        unknown: Arc::new(move |machine, common, path| {
+            cleanup.unknown(machine, common, path)
+                || outcomes
+                    .state::<crate::termination_cleanup::TerminationCleanup>()
+                    .unknown(machine, common, path)
+        }),
         changed: Arc::new(move |id| {
             let _ = app.emit("worktrees-overview-changed", serde_json::json!({"id":id}));
         }),
@@ -1014,6 +1111,33 @@ mod tests {
         settled(&own);
         assert!(own.header().unwrap().partial);
         assert!(linked(&own, &head.id).is_empty());
+    }
+    #[test]
+    fn ownership_index_only_keeps_admitted_rows_and_fixed_size_nonce_digests() {
+        let f = Fixture::new(17);
+        let own = Overview::default();
+        let mut calls = f.calls();
+        calls.catalog = Arc::new(|_, path, _| {
+            Ok(
+                json!({"state":"ok","common_dir":format!("{path}/.git"),"worktrees":(0..512).map(|i|json!({"path":format!("{path}/work-{i}"),"kind":"linked","available":true})).collect::<Vec<_>>()}),
+            )
+        });
+        calls.review = Arc::new(|_, _, common| {
+            Ok(
+                json!({"worktrees":(0..512).map(|i|json!({"path":format!("{}/work-{i}",common.trim_end_matches("/.git")),"kind":"linked","verdict":"ready","fingerprint":"proof","ownership_id":"owner"})).collect::<Vec<_>>()}),
+            )
+        });
+        own.start(&f.org, false, false, calls).unwrap();
+        settled(&own);
+        let state = locked(&own.0).unwrap();
+        let data = locked(&state.window.as_ref().unwrap().current.data).unwrap();
+        assert!(data.model.partial);
+        assert_eq!(data.owners.len(), view::ROWS);
+        assert!(data.owners.values().all(|v| v.len() == 64));
+        assert_eq!(
+            owner(&json!({"ownership_id":"x".repeat(64*1024)})).len(),
+            64
+        );
     }
     #[test]
     fn inspection_slots_remain_charged_after_the_window_closes() {
