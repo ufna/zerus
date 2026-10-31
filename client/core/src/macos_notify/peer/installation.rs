@@ -205,7 +205,7 @@ fn snapshot() -> Result<Snapshot, Refusal> {
         let anchor = super::requirement(APPLE).map_err(|_| Refusal::Signature)?;
         // A static path/DR is never used as a substitute for running validity.
         live_valid(&own, anchor.as_ptr())?;
-        let info = information(own.as_ptr())?;
+        let info = information(own.ptr())?;
         let executable = info_path(&info)?;
         let bundle = layout(&executable)?;
         let before = generation(&bundle)?;
@@ -221,7 +221,7 @@ fn snapshot() -> Result<Snapshot, Refusal> {
         };
         let exact = super::requirement(&selected.requirement).map_err(|_| Refusal::Signature)?;
         live_valid(&own, exact.as_ptr())?;
-        let after_info = information(own.as_ptr())?;
+        let after_info = information(own.ptr())?;
         if info_path(&after_info)? != executable || info_unique(&after_info)? != selected.unique {
             return Err(Refusal::SelfChanged);
         }
