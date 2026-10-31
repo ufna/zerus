@@ -1,5 +1,5 @@
-//! Pure post admission and barrier acknowledgements. No filesystem, native
-//! proposal, result/withdrawal/release method, runtime caller or effect ticket.
+//! Pure post admission, barrier/result acknowledgements and noncolliding result
+//! policy. No filesystem, native call, withdrawal/release, runtime or effect ticket.
 //! Host reports and policy fences never prove actual durability or drain.
 use super::*;
 use crate::linux_notify::owned::inspection::{Inspection, Slot};
@@ -63,6 +63,7 @@ pub struct Attempt {
     model: Weak<()>,
     owner: Owner,
     step: u64,
+    item: Option<usize>,
     before: Image,
     after: Image,
 }
@@ -80,6 +81,7 @@ impl Attempt {
         Weak::ptr_eq(&self.model, &other.model)
             && self.owner == other.owner
             && self.step == other.step
+            && self.item == other.item
             && self.before == other.before
             && self.after == other.after
     }
@@ -126,7 +128,10 @@ pub enum BatchStatus {
 struct Preparation {
     owner: Owner,
     sequence: u64,
-    posts: Vec<Post>,
+    posts: Vec<Arc<Post>>,
+    bytes: usize,
+    completed: usize,
+    barrier: Option<Attempt>,
     phase: BatchStatus,
 }
 struct Store {
@@ -162,9 +167,13 @@ pub struct Diagnostics {
     pub queued_utf8_bytes: usize,
     pub write_pending: bool,
     pub write_unknown: bool,
+    pub native_pending: bool,
+    pub result_pending: bool,
 }
 pub struct ImageReport<'a> {
     pub last_acknowledged: &'a Image,
+    /// Potentially changed as soon as a plan is handed out, including a lost
+    /// handle before any explicit outcome. Neither field proves actual disk state.
     pub attempted_unconfirmed: Option<&'a Image>,
 }
 pub struct Model {
@@ -177,6 +186,9 @@ pub struct Model {
     agent_namespaces: BTreeSet<(String, String)>,
     preparations: Vec<Preparation>,
     outstanding: Option<Outstanding>,
+    native: Option<post::Native>,
+    result: Option<post::PendingResult>,
+    positives: BTreeSet<(String, String, u32)>,
     next_sequence: u64,
     highest_nonce: u64,
     requests: BTreeSet<String>,
@@ -223,6 +235,7 @@ impl Model {
         let mut highest_nonce = 0;
         let mut requests = BTreeSet::new();
         let mut retained_unsettled = 0;
+        let mut positives = BTreeSet::new();
         let mut reserved_entries = inspection.raw_entries();
         let mut reserved_bytes = inspection.raw_len(Slot::Legacy).unwrap_or(0) + HEADERS_MARGIN;
         for (slot, expected) in [
@@ -251,6 +264,12 @@ impl Model {
                 if c.original().poster_instance() == host {
                     highest_nonce = highest_nonce.max(c.original().post_nonce().get());
                     requests.insert(c.original().request_id().to_owned());
+                }
+            }
+            for (o, id) in rows.positive_claims() {
+                let (bus, daemon) = namespace_key(o.namespace());
+                if !positives.insert((bus, daemon, id.get())) {
+                    return Err(Rejection::InvalidInput);
                 }
             }
             if expected == Owner::AgentAttention {
@@ -283,6 +302,9 @@ impl Model {
             agent_namespaces,
             preparations: Vec::new(),
             outstanding: None,
+            native: None,
+            result: None,
+            positives,
             next_sequence: 1,
             highest_nonce,
             requests,
@@ -389,7 +411,10 @@ impl Model {
         self.preparations.push(Preparation {
             owner: expected,
             sequence,
-            posts: batch.raised,
+            posts: batch.raised.into_iter().map(Arc::new).collect(),
+            bytes,
+            completed: 0,
+            barrier: None,
             phase: BatchStatus::Queued,
         });
         Ok(BatchKey {
@@ -398,14 +423,16 @@ impl Model {
             sequence,
         })
     }
-    /// One output buffer at a time; repeats do not reissue it. No native proposal
-    /// exists in this first slice, including after a successful acknowledgement.
+    /// One output buffer; required result plans precede unrelated barriers.
     pub fn next_write(&mut self) -> Result<Option<WritePlan>, Rejection> {
         if self.invalidated {
             return Err(Rejection::NeedsReview);
         }
-        if self.outstanding.is_some() {
+        if self.outstanding.is_some() || self.native.is_some() {
             return Ok(None);
+        }
+        if self.result.is_some() {
+            return self.next_result_write().map(Some);
         }
         let Some(i) = self
             .preparations
@@ -420,6 +447,7 @@ impl Model {
         }
         let store = &self.stores[index(p.owner)];
         let mut value = store.value.clone();
+        post::adopt_empty(&mut value, &p.posts);
         let uncertain = value["uncertain"]
             .as_array_mut()
             .ok_or(Rejection::InvalidInput)?;
@@ -434,6 +462,7 @@ impl Model {
             model: Arc::downgrade(&self.id),
             owner: p.owner,
             step: p.sequence,
+            item: None,
             before: store.image.clone(),
             after: Image {
                 sha256: Some(hash(&bytes)),
@@ -471,12 +500,18 @@ impl Model {
         if current.unknown || self.invalidated {
             return Err(Rejection::NeedsReview);
         }
-        if outcome.disposition == Disposition::Unknown {
+        if outcome.disposition == Disposition::Unknown
+            || (current.attempt.item.is_some()
+                && outcome.disposition == Disposition::RefusedBeforeWrite)
+        {
             // Sticky logical invalidation precedes any dependent release/status.
             self.invalidated = true;
             self.generation = self.generation.saturating_add(1);
             let current = self.outstanding.as_mut().unwrap();
-            current.unknown = true;
+            current.unknown = outcome.disposition == Disposition::Unknown;
+            if outcome.disposition == Disposition::RefusedBeforeWrite {
+                plan.bytes = None;
+            }
             self.preparations[current.preparation].phase = BatchStatus::Review;
             return Ok(());
         }
@@ -487,9 +522,14 @@ impl Model {
         if outcome.disposition == Disposition::Saved {
             self.stores[index(current.attempt.owner)] = Store {
                 value: current.value,
-                image: current.attempt.after,
+                image: current.attempt.after.clone(),
             };
-            self.preparations[current.preparation].phase = BatchStatus::BarrierAcknowledged;
+            if current.attempt.item.is_some() {
+                self.result_saved(current.preparation);
+            } else {
+                self.preparations[current.preparation].barrier = Some(current.attempt.clone());
+                self.preparations[current.preparation].phase = BatchStatus::BarrierAcknowledged;
+            }
         } else {
             self.preparations[current.preparation].phase = BatchStatus::Review;
         }
@@ -530,7 +570,9 @@ impl Model {
         if !self.frozen
             && (self.retained_unsettled != 0
                 || !self.preparations.is_empty()
-                || self.outstanding.is_some())
+                || self.outstanding.is_some()
+                || self.native.is_some()
+                || self.result.is_some())
         {
             return Err(Rejection::Unsettled);
         }
@@ -554,7 +596,7 @@ impl Model {
             attempted_unconfirmed: self
                 .outstanding
                 .as_ref()
-                .filter(|w| w.unknown && w.attempt.owner == owner)
+                .filter(|w| w.attempt.owner == owner)
                 .map(|w| &w.attempt.after),
         }
     }
@@ -572,6 +614,8 @@ impl Model {
             queued_utf8_bytes: self.queued_bytes,
             write_pending: self.outstanding.is_some(),
             write_unknown: self.outstanding.as_ref().is_some_and(|w| w.unknown),
+            native_pending: self.native.is_some(),
+            result_pending: self.result.is_some(),
         }
     }
 }
@@ -580,6 +624,8 @@ macro_rules! redacted {
         fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result { f.write_str(concat!(stringify!($t),"([policy data])")) }
     })+ };
 }
+mod post;
+pub use post::{PostOutcome, PostProposal, PostReport};
 redacted!(
     Post,
     PostBatch,

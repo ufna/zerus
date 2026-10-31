@@ -332,3 +332,72 @@ Withdrawal acknowledgement records issuance, not visual removal. Those result
 and clear paths are not implemented here. Actual persistence, child/reader/sink
 and callback destruction, negative fencing, exact release, recurrence and rollback
 need separate qualification before any typed default or profile ownership.
+
+### Pure noncolliding post-result continuation
+
+The next policy subset adds `take_next_native`, optional
+`PostProposal::{original,title,body}`, fallible `report(&self, namespace,
+PostOutcome)` and `finish_post(&mut PostProposal, PostReport)`. These are private-
+field, redacted, nonserializing data handles, not native jobs or receipts. There
+is no OS/file port, runtime/default caller or production identity factory.
+
+A proposal binds its Model allocation, owner, preparation sequence, item,
+complete original digest (including original namespace/generation and actions)
+and exact acknowledged pre-issue Attempt. Only a fresh admitted item with a
+Saved barrier is eligible. One proposal/result/write chain blocks every other
+proposal or write until its required result acknowledgement. The result image
+has priority over unrelated queued barriers. Lost handles retain their pending
+chain and capacity; taking again never reissues them.
+
+Before proposing and again on result handling, the selected envelope namespace
+must match the original. A truly empty namespace may be bound in its first
+barrier image only when no retained positive, uncertain, withdrawal or other
+potentially active claim exists; it never relabels an original. Selected Model
+construction refuses same-owner positive-ID ambiguity too. The source decoders
+continue retaining those rows as evidence.
+
+Report identity is checked before consumption. Foreign/stale/wrong-original or
+barrier reports preserve the valid handle and current work. Namespace validation
+precedes outcome classification: contradictory or malformed namespace cannot
+become RefusedBeforeCall. Bounded valid observations are retained exactly;
+malformed namespace input becomes a bounded unverifiable marker. An accepted
+terminal report clears only the public proposal payload. The Model still holds
+its exact original/payload/capacity through required acknowledgement or review.
+
+Only unchanged-namespace, noncolliding `Delivered(positive_id)` can stage a
+result image. Every retained positive claim from both owners participates,
+including unknown and withdrawal claims. An occupied numeric map key refuses
+even across different original namespaces. The result plan replaces exactly one
+complete possible-post row, preserving all other rows and original provenance.
+A reported ID is held in the collision set throughout the finish-to-result-ack
+gap; no activatable route is returned. The precise result image's Saved
+acknowledgement is required before another proposal can be handed out.
+
+Collision, rotation, incompatible slot, RefusedBeforeCall and Unknown (including
+an observed ID) instead invalidate the policy context first, retain the complete
+bounded report/original/payload as terminal review, and produce no result write,
+release, overwrite or synthetic pair commit. The durable no-ID pre-issue image
+continues to refuse selected restart. Full update-first invalidation persistence
+is still mandatory before any runtime/native port can use this restricted model.
+
+A failed or lost result write follows an already observed native outcome. Its
+original ID and payload remain held, with sticky invalidation on a reported
+refusal/unknown and no second finish/proposal or late success. Any outstanding
+plan is potentially changed disk, even before an outcome; `ImageReport` now
+shows that attempted image immediately. Diagnostics and host Saved reports still
+prove neither physical disk state nor durability/currentness.
+
+Payload, preparation-slot and queued-input accounting retire only after every
+item has noncolliding Delivered and its required result write is Saved. Retained
+rows, request/nonce anti-reuse and required result/invalidation headroom remain
+accounted, with no fictional FILE_LIMIT refund. Retired BatchKeys become stale,
+not new identities. Proposal admission rechecks combined headroom; full G1
+ownership preparation must also check it in the no-new-post case. Closed inputs
+preserve original continuations, and freeze refuses unresolved/cross-owner work.
+Post-fence uncertainty invalidates the earlier fence before dependent change and
+never writes the agent file. Retirement is not worker, callback, sink or FD drain.
+
+Tests here are fake-port policy vectors only. Actual resource/write-failure/kill
+qualification, full cross-file collision commits, the G1 negative permission
+consumer, exact original-edge release, recurrence and rollback remain required.
+No `.22/.23/.24/.25` positive admission or typed default follows.
