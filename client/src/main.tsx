@@ -42,6 +42,9 @@ void startBridge(receive).then(setMode, (error) => console.error("Zerus Next: th
 // Files dropped on the session's panel go to its composer or its Terminal.
 startDrops();
 
+// Load the bounded device-local skin library once; no directory poller.
+void import("./skin/user").then(m => m.loadUserSkins());
+
 // The second frame after load reached the page: a DMA-BUF start worked, so its crash marker goes.
 if (inTauri()) {
   const frame = () => requestAnimationFrame(() => requestAnimationFrame(() => { invoke("renderer_frame").catch(() => {}); }));
