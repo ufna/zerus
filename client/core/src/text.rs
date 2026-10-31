@@ -45,6 +45,15 @@ impl Text {
             args,
         }
     }
+    /// Text that is shown as it is: agent output, an identity, a stored or
+    /// remote message. The webview never translates it.
+    pub fn verbatim(value: impl Into<String>) -> Self {
+        Self::with("%1", vec![Arg::Verbatim(value.into())])
+    }
+    /// True for the empty default, which views use for "nothing to show".
+    pub fn is_empty(&self) -> bool {
+        self.source.is_empty() && self.args.is_empty()
+    }
     /// The English rendering, for logs, tests and non-webview fallbacks.
     pub fn english(&self) -> String {
         let args: Vec<String> = self.args.iter().map(Arg::english).collect();

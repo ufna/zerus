@@ -8933,17 +8933,17 @@ Connect directly to synchronize through this computer.</source>
     <message>
       <location filename="../src/QuestionCard.cpp" line="578" />
       <source>Select %1 to %2</source>
-      <translation type="unfinished" />
+      <translation>Выберите от %1 до %2</translation>
     </message>
     <message>
       <location filename="../src/QuestionCard.cpp" line="579" />
       <source>Select at least %1</source>
-      <translation type="unfinished" />
+      <translation>Выберите не менее %1</translation>
     </message>
     <message>
       <location filename="../src/QuestionCard.cpp" line="579" />
       <source>Select up to %1</source>
-      <translation type="unfinished" />
+      <translation>Выберите не более %1</translation>
     </message>
     <message>
       <location filename="../src/QuestionCard.cpp" line="579" />
@@ -9038,22 +9038,22 @@ Connect directly to synchronize through this computer.</source>
     <message>
       <location filename="../src/QuestionCard.cpp" line="839" />
       <source>Loading your saved answer…</source>
-      <translation type="unfinished" />
+      <translation>Загрузка сохранённого ответа…</translation>
     </message>
     <message>
       <location filename="../src/QuestionCard.cpp" line="847" />
       <source>“%1” changes the agent's permissions beyond this request. Select Confirm to send it.</source>
-      <translation type="unfinished" />
+      <translation>«%1» меняет права агента за пределами этого запроса. Нажмите «Подтвердить», чтобы отправить.</translation>
     </message>
     <message>
       <location filename="../src/QuestionCard.cpp" line="848" />
       <source>Review the request, then choose one of the agent's options.</source>
-      <translation type="unfinished" />
+      <translation>Проверьте запрос и выберите один из вариантов агента.</translation>
     </message>
     <message>
       <location filename="../src/QuestionCard.cpp" line="849" />
       <source>Review the plan, then choose how the agent continues.</source>
-      <translation type="unfinished" />
+      <translation>Проверьте план и выберите, как агенту продолжить.</translation>
     </message>
     <message>
       <location filename="../src/QuestionCard.cpp" line="850" />
