@@ -348,8 +348,8 @@ agreed transient refusal line to the newest one without reserving anything.
 Identity changes cancel a single window; a batch refuses only the changed
 member. Hiding, minimizing and close-to-tray preserve deadlines. Under the
 coordinator's budget ruling for this slice, real Quit/destruction drops pending
-windows without effects or durable state; Quit logs a bounded action/session
-line per dropped member. Durable quit delivery and next-start settlement remain
+windows without effects or durable state; Quit logs one bounded line per dropped group
+with at most five session names. Durable quit delivery and next-start settlement remain
 in zerus-5wmh.66.2.34.3.
 
 | Action | Arguments (`NAME` is the session name) | Standard input | Timeout here, peer |

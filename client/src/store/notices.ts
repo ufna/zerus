@@ -53,7 +53,7 @@ export function createNoticeBus(): NoticeBus {
   }
 
   function dismiss(id: number) { waiting = waiting.filter((n) => n.id !== id); setList((all) => drain(all.filter((n) => n.id !== id))); }
-  function clearNotice(key: string) { waiting = waiting.filter((n) => n.key !== key); setList((all) => drain(all.filter((n) => n.key !== key))); }
+  function clearNotice(key: string) { waiting = waiting.filter((n) => n.key !== key); setList((all) => drain(all.filter((n) => n.key !== key || n.dismissible === false))); }
 
   /**
    * Adds a notice and returns its id. A notice with a key first takes the

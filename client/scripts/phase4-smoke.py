@@ -33,6 +33,7 @@ def fixture_config():
         row = catalog[key]
         detail = copy.deepcopy(state)
         detail["tracked"] = True
+        detail["state"] = row["state"]
         detail["events"] = events.get(key, [])
         detail["cursor"] = detail["events"][-1]["seq"] if detail["events"] else 0
         inspect[row["name"]] = detail

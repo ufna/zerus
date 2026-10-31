@@ -6,7 +6,7 @@ import { markNeedsAttention as appMarkNeedsAttention, markRead as appMarkRead } 
 import { compactRows, needsAttention, setCompactRows } from "./ui";
 import { archiveNameOccupied, liveNameIndex, nameKey, snapshotOf, type ActionRow } from "../ui/sessions/actions-ui";
 import {
-  selectionText, changedText, confirmationCopy, markSummary, progressText, restoreLimitText, sameInstance, selectionApplies, selectionCall,
+  changedText, confirmationCopy, markSummary, progressText, restoreLimitText, sameInstance, selectionApplies, selectionCall,
   selectionSnapshot, summaryText, SHOWN_ERRORS, type BatchConfirmation, type SelectionAction, type SelectionRow, type WriteAction,
 } from "../ui/sessions/selection";
 import type { Session } from "../ui/sessions/types";
@@ -152,7 +152,7 @@ export function createBatch(deps: BatchDeps) {
       let failed = 0;
       let unknown = 0;
       const errors: string[] = [];
-      const fail = (line: string) => { failed++; if (errors.length < SHOWN_ERRORS) errors.push(line); };
+      const fail = (line: string, uncertain = false) => { if (uncertain) unknown++; else failed++; if (errors.length < SHOWN_ERRORS) errors.push(line); };
       let progress: number | undefined;
       try {
         for (const [at, original] of targets.entries()) {
@@ -163,12 +163,12 @@ export function createBatch(deps: BatchDeps) {
             if (!live || !sameInstance(live, original) || !appliesNow(live)) { fail(changedText(original)); continue; }
             // One progress line at a time, as Qt's single notice.
             if (progress !== undefined) deps.dismiss(progress);
-            progress = deps.notify("info", progressText(a, done + failed + 1, targets.length), false, noticeKey);
+            progress = deps.notify("info", progressText(a, done + failed + unknown + 1, targets.length), false, noticeKey);
             const row = snapshotOf(live);
             const out = await call(row, a, refs?.[at]);
             if (out === "limit") fail(restoreLimitText(row));
             else if (out.outcome === "done") done++;
-            else { if (out.outcome === "uncertain") unknown++; fail(`${selectionCall(row, a).operation}: ${out.detail}`); }
+            else fail(`${selectionCall(row, a).operation}: ${out.detail}`, out.outcome === "uncertain");
           } catch (error) {
             fail(`${selectionCall(original, a).operation}: ${errorText(error)}`);
           }
@@ -177,9 +177,8 @@ export function createBatch(deps: BatchDeps) {
         setRunning(false);
       }
       if (progress !== undefined) deps.dismiss(progress);
-      const summary = summaryText(a, done, targets.length, failed, errors);
-      const text = noticeKey && failed ? `${selectionText(a)}: ${done} completed, ${failed - unknown} refused, ${unknown} unknown.\n${errors.join("\n")}` : summary.text;
-      deps.notify(summary.failed ? "error" : "info", text, summary.failed, noticeKey);
+      const summary = summaryText(a, done, targets.length, failed, errors, unknown);
+      deps.notify(summary.failed ? "error" : "info", summary.text, summary.failed, noticeKey);
       // Qt refreshes the archive when the batch is over (SessionsWindow.cpp 1916).
       try { deps.archive()?.refresh(); } catch { /* the summary stands; a refresh is only a read */ }
     };

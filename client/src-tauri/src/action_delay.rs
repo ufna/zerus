@@ -301,23 +301,48 @@ impl Delays {
         model.closed |= quitting;
         if quitting {
             for group in model.groups.values() {
-                for member in group.members.iter().filter(|member| !member.used) {
-                    let action = match member.captured.action {
-                        Action::Archive => "Archive",
-                        Action::Terminate | Action::Kill => "Terminate",
-                        Action::ClearContext { .. } => "Clear",
-                        _ => "Forget",
-                    };
-                    eprintln!(
-                        "zerus-client: dropped pending {action} for {:?} on quit",
-                        member.captured.target.name
-                    );
+                if let Some(line) = quit_line(group) {
+                    eprintln!("{line}");
                 }
             }
         }
         model.discard();
         self.0.changed.notify_all();
     }
+}
+
+// At most five bounded names per group, even for a 50,000-member batch.
+fn quit_line(group: &Group) -> Option<String> {
+    let mut unused = group.members.iter().filter(|member| !member.used);
+    let first = unused.next()?;
+    let action = match first.captured.action {
+        Action::Archive => "Archive",
+        Action::Terminate | Action::Kill => "Terminate",
+        Action::ClearContext { .. } => "Clear",
+        _ => "Forget",
+    };
+    let name = &first.captured.target.name;
+    if group.remaining == 1 {
+        return Some(format!(
+            "zerus-client: dropped pending {action} for {name:?} on quit"
+        ));
+    }
+    let names = std::iter::once(first)
+        .chain(unused)
+        .take(5)
+        .map(|member| format!("{:?}", member.captured.target.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = group.remaining.saturating_sub(5);
+    Some(format!(
+        "zerus-client: dropped pending {action} of {} sessions on quit: {names}{}",
+        group.remaining,
+        if more > 0 {
+            format!(" and {more} more")
+        } else {
+            String::new()
+        }
+    ))
 }
 
 fn main_only(window: &Webview) -> Result<(), String> {

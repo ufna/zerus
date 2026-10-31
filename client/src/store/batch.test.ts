@@ -630,7 +630,7 @@ describe("one grace period per selection", () => {
       expect(mocked.runAction.mock.calls.map((c) => [c[0].name, c[2]])).toEqual([
         ["claude/p/a", { id: "batch-window", index: 0 }], ["claude/p/c", { id: "batch-window", index: 2 }],
       ]);
-      expect(a.texts().at(-1)).toContain("2 completed, 1 refused, 0 unknown."); dispose();
+      expect(a.texts().at(-1)).toContain("2 of 3 completed. 1 failed or changed;"); dispose();
     });
   });
   it("Clear archive bypasses Undo", async () => {
