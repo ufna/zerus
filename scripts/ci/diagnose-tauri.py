@@ -176,6 +176,26 @@ def run(batch):
         raise RuntimeError("Test failures; inspect exact per-test logs")
 
 
+def repeat_flood():
+    binary = verified()
+    inventory = json.loads((OUT / "tests.json").read_text())
+    name = "terminal::tests::a_flood_waits_for_acknowledgements_and_loses_nothing"
+    if inventory["source"] != source() or name not in inventory["tests"]:
+        raise RuntimeError("Flood test missing from exact source inventory")
+    results = []
+    for index in range(20):
+        results.append(execute(binary, ["--exact", name, "--test-threads=1", "--nocapture"],
+                               f"flood-repeat-{index:04d}"))
+    save("flood-repeat-summary.json", {
+        "source": source(), "invocations": len(results),
+        "passed_tests": sum((r["test_counts"] or [0, 0, 0])[0] for r in results),
+        "failed_tests": sum((r["test_counts"] or [0, 0, 0])[1] for r in results),
+        "ignored_tests": sum((r["test_counts"] or [0, 0, 0])[2] for r in results),
+        "failed_invocations": sum(r["exit_code"] != 0 for r in results)})
+    if any(r["exit_code"] != 0 or r["test_counts"] != [1, 0, 0] for r in results):
+        raise RuntimeError("Flood repeat failures; inspect exact per-test logs")
+
+
 if __name__ == "__main__":
     OUT.mkdir(parents=True, exist_ok=True)
     mode = sys.argv[1]
@@ -185,10 +205,12 @@ if __name__ == "__main__":
         listing()
     elif mode in {"prepare", "run"}:
         (plan if mode == "prepare" else run)(int(sys.argv[2]))
+    elif mode == "repeat":
+        repeat_flood()
     elif mode == "parallel":
         DEADLINE_SECONDS = 180
         result = execute(verified(), ["--nocapture"], "default-parallel")
         if result["exit_code"]:
             raise SystemExit(result["exit_code"])
     else:
-        raise SystemExit("usage: diagnose-tauri.py bundle|list|prepare BATCH|run BATCH|parallel")
+        raise SystemExit("usage: diagnose-tauri.py bundle|list|prepare BATCH|run BATCH|repeat|parallel")

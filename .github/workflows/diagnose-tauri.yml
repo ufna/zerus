@@ -108,9 +108,35 @@ jobs:
             artifacts/tauri-diagnostic/*.log
           retention-days: 7
 
-  parallel:
-    name: macos-15 ordinary parallel harness after serial batches
+
+  repeat:
+    name: macos-15 twenty exact real PTY flood repetitions
     needs: tests
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: tauri-test-inventory
+          path: artifacts/tauri-diagnostic/
+      - name: Twenty fresh private exact flood invocations with original deadlines
+        run: python3 scripts/ci/diagnose-tauri.py repeat
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: tauri-flood-repeat-results
+          path: |
+            artifacts/tauri-diagnostic/*.json
+            artifacts/tauri-diagnostic/*.log
+          retention-days: 7
+
+  parallel:
+    name: macos-15 ordinary parallel harness after serial batches and flood repetitions
+    needs: repeat
     runs-on: macos-15
     timeout-minutes: 5
     steps:

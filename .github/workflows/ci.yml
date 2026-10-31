@@ -228,7 +228,7 @@ jobs:
 
   diagnose-tauri:
     name: Disposable Tauri diagnosis
-    if: github.event_name == 'workflow_dispatch' && inputs.diagnose_tauri && github.ref == 'refs/heads/diagnose/macos-tauri-hosted'
+    if: github.event_name == 'workflow_dispatch' && inputs.diagnose_tauri && github.ref == 'refs/heads/diagnose/macos-tauri-ack-wake'
     permissions:
       contents: read
     cache-mode: read
