@@ -81,7 +81,8 @@ if (root/'recovery').exists():
   sys.exit(0)
  if args[0]=='inspect' and (root/'undo-native').exists():
   name=args[1];tag=name.rsplit('/',1)[-1];assert arg('--after')==str(2**63-1)
-  print(json.dumps({'name':name,'run_id':'replacement' if tag=='changed' else 'run-'+tag,'conversation_id':'conv-'+tag,'state':'paused'}));sys.exit(0)
+  print(json.dumps({'name':name,'run_id':'replacement' if tag=='changed' else 'run-'+tag,'conversation_id':'conv-'+tag,'state':'paused',
+   'current_provider_detail':'x'*(3*1024*1024 if tag=='restore-refused' else 256*1024)}));sys.exit(0)
  if args[0]=='inspect' and '--archive' in args:
   name=args[1];tag=name.rsplit('/',1)[-1];assert arg('--archive')==archive_id(tag)
   assert (root/('archived-'+tag)).exists() and not (root/('restored-'+tag)).exists()
@@ -194,9 +195,10 @@ with (root/'app.log').open('wb') as log:
             assert len(effects)==1 and effects[0][-2:]==['codex/example/kept','--json'],effects
             assert not removals and not any('codex/example/extra-0' in c for c in calls),'quit started a pending action'
             assert sum('codex/example/changed' in c and 'inspect' in c for c in calls)==1,calls
+            assert sum('codex/example/restore-refused' in c and 'inspect' in c for c in calls)==1,calls
             issued=next(c for c in map(json.loads,(root/'calls-time.jsonl').read_text().splitlines()) if 'session-action' in c['args'])
             assert issued['at']-float((root/'pending-observed').read_text())>=4.7,'effect issued before the native window'
-            assert 'undo-native: EXECUTED_HIDDEN' in output and 'undo-native: SOURCE_CHANGED' in output and 'undo-native: QUIT_PENDING' in output,output
+            assert all('undo-native: '+s in output for s in ('EXECUTED_HIDDEN','SOURCE_CHANGED','LIMIT_REFUSED','QUIT_PENDING')),output
             assert {'NATIVE','RESTORED'}<=stages,stages
             assert all((root/'repo'/tag/'changes.txt').exists() for tag in json.loads((root/'recovery').read_text()))
             print('PASS native five-second/cancel/hidden/exact source/quit seam; one scoped fake archive only')

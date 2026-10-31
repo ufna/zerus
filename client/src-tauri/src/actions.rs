@@ -900,7 +900,7 @@ pub async fn run_action(
             target.clone(),
             action,
             machine.clone(),
-            run,
+            run_delayed,
             Some(captured),
             None,
         )
@@ -995,6 +995,20 @@ async fn dispatch_end_reserved_with(
     )
     .await?;
     Ok((outcome, supported.load(Ordering::Relaxed)))
+}
+
+/// Bound collection before parsing or source checks. A post-read size check
+/// alone would still allow an arbitrary stdout allocation in the runner.
+fn run_delayed(
+    hgs: &std::path::Path,
+    inv: &zerus_client_core::Invocation,
+) -> zerus_client_core::Exit {
+    zerus_client_core::run_limited(hgs, inv, &[], zerus_client_core::end_action::METADATA_LIMIT)
+        .unwrap_or_else(|_| {
+            zerus_client_core::Exit::StartFailed(
+                "The reply is too large. Check the session before retrying.".into(),
+            )
+        })
 }
 
 pub(crate) async fn restore_captured(
@@ -1103,12 +1117,19 @@ pub(crate) async fn dispatch_cleanup_reserved(
     if blocked() {
         return Ok(failed(REPLAY_NEEDS_HGS));
     }
+    let bounded = delayed.is_some();
     dispatch_reserved_plan(
         state,
         capture.target.clone(),
         Action::Terminate,
         uuid::Uuid::new_v4().to_string(),
-        |hgs, inv, _| run(hgs, inv),
+        move |hgs, inv, _| {
+            if bounded {
+                run_delayed(hgs, inv)
+            } else {
+                run(hgs, inv)
+            }
+        },
         Some(capture),
         delayed,
     )
@@ -1129,7 +1150,7 @@ pub(crate) async fn dispatch_delayed(
         captured.target.clone(),
         captured.action.clone(),
         machine,
-        run,
+        run_delayed,
         Some((captured, claim)),
         Some(request_id),
     )

@@ -39,6 +39,10 @@ export async function endActionNativeSmoke(allowed: boolean) {
     require(await invoke<boolean>("action_delay_wait", { id }), "fresh-source wait did not finish");
     const refused = await run(id, changed); require(refused.outcome === "failed", "changed source was mutated");
     await log("SOURCE_CHANGED");
+    const oversized = source("restore-refused"); id = crypto.randomUUID(); await begin(id, oversized);
+    require(await invoke<boolean>("action_delay_wait", { id }), "oversize-source wait did not finish");
+    const tooLarge = await run(id, oversized); require(tooLarge.outcome === "failed", "oversize source was accepted");
+    await log("LIMIT_REFUSED");
     id = crypto.randomUUID(); await begin(id, source("extra-0"));
     void invoke<boolean>("action_delay_wait", { id }).catch(() => false);
     await log("QUIT_PENDING"); await invoke("exit_app", { code: 0 });
