@@ -14,7 +14,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use zerus_client_core::attention::{Delivery, DeliveryStep, Notice};
 
-mod accounting;
+pub(crate) mod accounting;
+pub(crate) mod owners;
 use accounting::{Completion, Resources};
 pub(crate) use accounting::{Control, Refused as AccountingRefused};
 
@@ -97,7 +98,11 @@ impl Notifier {
     /// Withdraws, then posts (`TrayAgent::observeAttention`,
     /// `TrayAgent.cpp:558-559`).
     pub fn deliver(&self, cleared: &[String], raised: &[Notice]) {
-        let Ok(work) = self.0.begin() else { return };
+        let _ = self.try_deliver(cleared, raised);
+    }
+
+    fn try_deliver(&self, cleared: &[String], raised: &[Notice]) -> Result<(), AccountingRefused> {
+        let work = self.0.begin()?;
         let steps = {
             let mut delivery = self.0.lock();
             let mut steps = Vec::new();
@@ -111,6 +116,7 @@ impl Notifier {
         };
         execute(&self.0, steps);
         complete(work);
+        Ok(())
     }
 }
 
@@ -184,6 +190,7 @@ fn later(
 
 #[cfg(test)]
 mod tests {
+    mod owners;
     use super::*;
     use std::time::Instant;
     use zerus_client_core::attention::DENIED;
