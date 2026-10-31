@@ -4,6 +4,7 @@
 // Days are local calendar days written YYYY-MM-DD (what <input type="date">
 // reads and writes); they compare as text.
 import { tr, trNoop } from "../../i18n";
+import { dayMonth } from "../lib/dates";
 
 /** All dates, Today, Last 7 days, Last 30 days, custom. */
 export type Period = 0 | 1 | 2 | 3 | 4;
@@ -21,7 +22,6 @@ export const ALL_UNTIL = 253402300800;
 export const MIN_DAY = "1970-01-02";
 export const MAX_DAY = "9999-12-30";
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const pad = (n: number, width = 2) => String(n).padStart(width, "0");
 const parts = (day: string) => day.split("-").map(Number) as [number, number, number];
 const dayOf = (d: Date) => `${pad(d.getFullYear(), 4)}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -60,7 +60,7 @@ export function rangeBounds(r: DateRange, now: Date): [number, number] {
 
 function formatDay(day: string, year: boolean): string {
   const [y, m, d] = parts(day);
-  return `${d} ${MONTHS[m - 1]}${year ? ` ${y}` : ""}`;
+  return dayMonth(new Date(y, m - 1, d), year);
 }
 
 /** The picker's caption (updateCaption): the preset, one day, or the two days with an en dash. */

@@ -5,6 +5,7 @@
 // minutes from `now` on each 15 s render, so nothing else runs on a timer.
 import type { ProjectedWindow, Usage } from "../../types";
 import { tr } from "../../i18n";
+import { clockOf, dayTimeOf } from "./dates";
 
 export interface UsageWindow {
   /** Window length in minutes (300 = 5 h, 10080 = 7 d); null when the provider reports none. */
@@ -156,21 +157,11 @@ export function stateText(u: Usage) {
   return tr("Usage is unavailable from this provider. Open its native account page or refresh after signing in.");
 }
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const two = (n: number) => String(n).padStart(2, "0");
-
-/** Qt's "d MMM HH:mm" in local time with English months; optionally include seconds. */
-export function dayTime(seconds: number, withSeconds = false) {
-  const d = new Date(seconds * 1000);
-  const text = `${d.getDate()} ${MONTHS[d.getMonth()]} ${two(d.getHours())}:${two(d.getMinutes())}`;
-  return withSeconds ? `${text}:${two(d.getSeconds())}` : text;
-}
+/** Qt's "d MMM HH:mm" in local time ("3 ноября 02:27" in Russian); optionally include seconds. */
+export const dayTime = (seconds: number, withSeconds = false) => dayTimeOf(new Date(seconds * 1000), withSeconds);
 
 /** Qt's "HH:mm" in local time. */
-export function clock(seconds: number) {
-  const d = new Date(seconds * 1000);
-  return `${two(d.getHours())}:${two(d.getMinutes())}`;
-}
+export const clock = (seconds: number) => clockOf(new Date(seconds * 1000));
 
 /** AccountUsage::tooltip (AccountUsage.h:197-219). */
 export function accountTooltip(u: Usage, now: number) {

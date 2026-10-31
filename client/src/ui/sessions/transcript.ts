@@ -2,6 +2,7 @@ import type { ActivityEvent, LocalMessage, Reply } from "../../types";
 import { eventKey } from "../../store/activity";
 import type { ActivityItem, LocalItem, MediaMessage, TranscriptItem, VoiceState } from "./types";
 import { imageSize } from "./attachment-image";
+import { messageTimeOf } from "../lib/dates";
 
 // A Symbol cannot arrive from a provider's JSON. Only our own local send
 // supplies these immutable-cache preview paths and oriented dimensions.
@@ -51,12 +52,10 @@ const EVENT_TITLE: Record<string, string> = {
 };
 export const eventTitle = (type: string | undefined) => (type ? EVENT_TITLE[type] ?? type : "Activity");
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-/** "Oct 27 09:12", local time, as the design shows message times. */
+/** "Oct 27 09:12" ("27 октября 09:12" in Russian), local time, as the design shows message times. */
 export function timeText(at: number | undefined): string {
   if (!at || at <= 0) return "";
-  const d = new Date(at * 1000);
-  return `${MONTHS[d.getMonth()]} ${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return messageTimeOf(new Date(at * 1000));
 }
 
 type Role = "user" | "assistant" | "notice" | "";
