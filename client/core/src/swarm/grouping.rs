@@ -775,6 +775,7 @@ impl Grouping {
             | Intent::Renamed { .. }
             | Intent::AddFolder { .. }
             | Intent::Folder { .. } => {}
+            Intent::CreateFolder { .. } => {}
         }
         self.revision = None;
         self.headers_dirty = true;

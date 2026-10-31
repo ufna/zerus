@@ -16,6 +16,7 @@ import { folderButton, folderExists, folderLaunch, folderMenuEntry, newSessionIn
 import { copy } from "../../store/actions";
 import { nextSort, showAskedProject, shownProjects, sortFolders, type Sort, type SortColumn } from "./projects-ui";
 import { createProjectFolders } from "./project-folders";
+const ProjectCloneDialog = lazy(() => import("./ProjectCloneDialog"));
 const ProjectFolderDialog = lazy(() => import("./ProjectFolderDialog"));
 import { catalogName, createCatalogEdits } from "./project-catalog";
 
@@ -66,6 +67,7 @@ export function ProjectsScreen() {
   const [sort, setSort] = createSignal<Sort>({ column: "name", ascending: true });
   const projects = createMemo(() => shownProjects(view(), allSwarm()));
   const project = () => projects().find((p) => p.id === selectedProject()) ?? projects().find((p) => p.accessible);
+  const [cloneOrigin, setCloneOrigin] = createSignal<HTMLElement>();
   const folderEdits = createProjectFolders(() => view().projects, setSelectedFolder);
   const selected = () => project()?.folders.find((f) => f.key === selectedFolder()) ?? project()?.folders[0];
   const folders = createMemo(() => sortFolders(project()?.folders ?? [], sort()));
@@ -260,7 +262,7 @@ export function ProjectsScreen() {
                 <div class="row proj-fhead">
                   <h2 class="section-title">Folders</h2>
                   <span class="grow" />
-                  <button class="btn small" disabled title={PROJECT_EDITING}><Icon name="download" size={12} />Clone repository…</button>
+                  <button class="btn small" disabled={!organization.grouping().ready} onClick={(e) => setCloneOrigin(e.currentTarget)}><Icon name="download" size={12} />Clone repository…</button>
                   <button class="btn small" disabled={launchButton().disabled} title={launchButton().tip} onClick={launchSelected}><Icon name="plus" size={12} />New session…</button>
                 </div>
                 <div class="su-tablewrap">
@@ -281,7 +283,7 @@ export function ProjectsScreen() {
                 <div class="row proj-factions">
                   <button class="btn small" disabled={!folderEdits.enabled(p().id)} onClick={(e) => void folderEdits.open(p().id, undefined, e.currentTarget)}>Add folder…</button>
                   <button class="btn small" disabled={!folderEdits.enabled(p().id) || !selected()} onClick={(e) => { const f = selected(); if (f) void folderEdits.open(p().id, { ...f }, e.currentTarget); }}>Edit folder…</button>
-                  <button class="btn small" disabled={!folderEdits.enabled(p().id) || !selected()} title="Files stay in place." onClick={() => { const f = selected(); if (f) void folderEdits.remove(p().id, { ...f }); }}>Remove folder</button>
+                  <button class="btn small" disabled={!folderEdits.enabled(p().id) || !selected()} title="Remove this folder from the project. Files stay in place." onClick={() => { const f = selected(); if (f) void folderEdits.remove(p().id, { ...f }); }}>Remove folder</button>
                   <span class="grow" />
                   <button class="btn small" disabled={!selected() || selected()?.machine !== machineCards[""]?.host || launchButton().disabled} onClick={() => { const f = selected(); if (f) void folderEdits.openFolder(p().id, { ...f }); }}><Icon name="folder-open" size={12} />Open folder</button>
                 </div>
@@ -294,6 +296,7 @@ export function ProjectsScreen() {
           )}</Show>
         </div>
       </div>
+      <Suspense><Show when={cloneOrigin()} keyed>{(origin) => <ProjectCloneDialog project={project()?.id ?? "ungrouped"} preferred={selected()?.machine} projects={view().projects} origin={origin} close={() => setCloneOrigin(undefined)} placed={(project, folder) => {setSelectedProject(project); setSelectedFolder(folder);}} />}</Show></Suspense>
       <Suspense><Show when={folderEdits.prompt()} keyed>{(prompt) => <ProjectFolderDialog prompt={prompt} busy={folderEdits.busy()} folders={view().projects.find((p) => p.id === prompt.project)?.folders ?? []} close={folderEdits.close} save={(place, path, name) => { void folderEdits.save(place, path, name); }} />}</Show></Suspense>
       <Show when={colorProject()}>{(p) => <ProjectColorDialog project={p().project} origin={p().origin} close={() => setColorProject(undefined)} />}</Show>
       <Show when={edits.prompt()} keyed>{(prompt) => <ProjectCatalogDialog prompt={prompt} enabled={edits.enabled()}

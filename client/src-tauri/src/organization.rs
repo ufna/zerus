@@ -31,6 +31,7 @@
 //! the I/O lock. Startup reads and all token checkpoints run off main. The exit
 //! path waits at most 500 ms before independently flushing draft and layout.
 
+pub mod clones;
 pub mod folders;
 
 use std::collections::{HashMap, VecDeque};
