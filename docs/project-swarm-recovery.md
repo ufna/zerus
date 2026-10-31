@@ -35,6 +35,10 @@ serialize the external operation with this worker, invalidate pre-command source
 reads and obtain this snapshot **after** that operation finishes, even when its
 outcome is unknown. Neither a command error nor a cached topic snapshot proves
 that completion. A failed fresh read keeps the reservation closed for review.
+If an unknown delivery could still complete later, a single snapshot is also
+insufficient: operation-specific settlement is required before release. The
+future native integration must qualify that behavior rather than infer it from
+the decoder, an exited wrapper or a timeout.
 
 Completion discards observations held during the operation. The ordinary
 10-second causal-head guard protects the result's versions, and the source must

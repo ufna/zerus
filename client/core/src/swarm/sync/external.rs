@@ -65,6 +65,8 @@ impl Controller {
     /// command has finished, on the same native operation lane. A pre-command
     /// cached/topic state is insufficient. Even a failed/unknown command needs
     /// that fresh read: failure alone never releases the fence or retries it.
+    /// If late completion is possible, an unknown result must first be settled
+    /// by the operation's existing guards; a single read cannot prove that.
     ///
     /// Discard observations held during the call; they can predate its write.
     /// The existing ten-second causal-head guard protects its versions. The
