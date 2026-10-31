@@ -40,6 +40,7 @@ export async function swarmConflictsSmoke(allowed: boolean, large: boolean) {
       const side = dialog()!.querySelector<HTMLElement>(".sw-cside")!, pager = dialog()!.querySelector<HTMLElement>(".sw-cpager")!;
       need(Math.abs(side.getBoundingClientRect().width - 210) < 1 && pager.scrollWidth <= side.clientWidth, "210px pager does not fit");
       await log("GEOMETRY " + JSON.stringify({ width: innerWidth, height: innerHeight, side: side.getBoundingClientRect().width, pager: pager.scrollWidth }));
+      const pane = dialog()!.querySelector<HTMLElement>(".sw-review")!; pane.scrollTop = pane.scrollHeight;
       await capture("MINIMUM");
     } else {
       (dialog()!.querySelectorAll(".sw-clist li")[1] as HTMLElement).click(); await until(() => choices()[1]?.textContent?.includes("Remove folder link") && button("Choose a value above"));
