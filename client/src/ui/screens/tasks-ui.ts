@@ -1,8 +1,11 @@
 import type { Session } from "../sessions/types";
+import { tr, trNoop } from "../../i18n";
 
 export const STAGES = ["review", "active", "todo", "backlog", "done"] as const;
 export type Stage = typeof STAGES[number];
-export const STAGE_LABEL: Record<Stage, string> = { review: "In review", active: "In progress", todo: "To do", backlog: "Backlog", done: "Done" };
+export const STAGE_LABEL: Record<Stage, string> = { review: trNoop("In review"), active: trNoop("In progress"), todo: trNoop("To do"), backlog: trNoop("Backlog"), done: trNoop("Done") };
+/** A stage as shown; an unknown stage stays as reported. */
+export const stageLabel = (stage: string): string => (stage in STAGE_LABEL ? tr(STAGE_LABEL[stage as Stage]) : stage);
 export const STAGE_ICON: Record<Stage, string> = { review: "inbox", active: "play", todo: "list-todo", backlog: "clock", done: "check" };
 export const RECENT_DONE = 7 * 24 * 60 * 60 * 1000;
 export const TASK_LIMIT = 10_000, TASK_PAGE = 50;
