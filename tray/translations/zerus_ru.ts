@@ -1542,7 +1542,7 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/DashboardPage.cpp" line="122" />
       <source>%1 cores, load %2</source>
-      <translation>%1 ядер, нагрузка %2</translation>
+      <translation>Ядер: %1, нагрузка %2</translation>
     </message>
     <message>
       <location filename="../src/DashboardPage.cpp" line="123" />
@@ -1597,12 +1597,12 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/DashboardPage.cpp" line="134" />
       <source>%1 sessions</source>
-      <translation>%1 сессий</translation>
+      <translation>Сессий: %1</translation>
     </message>
     <message>
       <location filename="../src/DashboardPage.cpp" line="135" />
       <source>, %1 need attention</source>
-      <translation>, %1 требует внимания</translation>
+      <translation>, требуют внимания: %1</translation>
     </message>
     <message>
       <location filename="../src/DashboardPage.cpp" line="136" />
@@ -1767,7 +1767,7 @@ Sessions</source>
     <message>
       <location filename="../src/DashboardPage.cpp" line="448" />
       <source>%1 sessions</source>
-      <translation>%1 сессий</translation>
+      <translation>Сессий: %1</translation>
     </message>
     <message>
       <location filename="../src/DashboardPage.cpp" line="449" />
