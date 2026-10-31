@@ -325,5 +325,11 @@ The agreed fixture conditions also require these concrete guards:
   remain byte-identical to the source-approved `88cf4efa`.
 - Delete through the explicit private reference. Source expectations about
   private creation do not prove deletion isolation: compare actual list/default
-  references and private preference files afterwards too. Unknown scope or
-  cleanup retains evidence and reports failure, without owner-state repair.
+  references and private preference files afterwards too. Scope drift stops
+  signing, but still delete the known helper-created keychain when its exact
+  device/inode matches, then record the references again and report failure.
+  A replaced or unconfirmed path stays for review. Never use list/default/trust
+  setters to repair state. Exclude `/Library/Keychains/` anywhere in fixture
+  paths, use markers that cannot have an Apple team ID shape, and require an
+  actual non-GUI remote security session. An interaction/partition refusal
+  stops without a signing retry; this fixture adds no partition remedy.

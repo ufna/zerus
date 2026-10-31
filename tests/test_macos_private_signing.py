@@ -24,6 +24,47 @@ def load(name, path):
     return module
 
 
+@unittest.skipIf(os.name == "nt" or getattr(os, "getuid", lambda: 0)() == 0,
+                 "filesystem controls require an ordinary Unix user")
+class PrivateCleanupControls(unittest.TestCase):
+    """Filesystem controls only; the explicit Security deletion is modelled."""
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="zerus-keychain-cleanup-control-")
+        self.addCleanup(self.temporary.cleanup)
+        root = Path(self.temporary.name).resolve()
+        home = root / "home"; home.mkdir(mode=0o700)
+        prefix = home / "fixture"; prefix.mkdir(mode=0o700)
+        helper = load("cleanup_control", ROOT / "tests/support/private_macos_signing.py")
+        self.fixture = helper.PrivateIdentity(prefix, home, ROOT / "tests/support/private_macos_keychain.c")
+        self.fixture.keychain.write_bytes(b"synthetic control, not a real keychain")
+        info = self.fixture.keychain.lstat()
+        self.fixture.keychain_owner = (info.st_dev, info.st_ino)
+
+    def test_modelled_delete_still_runs_after_reference_drift(self):
+        fixture = self.fixture
+        fixture.baseline = [(0, b"before", b"")]
+        fixture.preferences_before = {}
+        def delete(argv, **kwargs):
+            self.assertEqual(list(map(str, argv)), [str(fixture.host), "delete", str(fixture.keychain),
+                                                   *map(str, fixture.keychain_owner)])
+            fixture.keychain.unlink()  # Models only the explicit private-ref deletion.
+            return b""
+        with mock.patch.object(fixture, "references", return_value=[(0, b"changed", b"")]), \
+                mock.patch.object(fixture, "public_command", side_effect=delete) as calls:
+            with self.assertRaises(RuntimeError): fixture.cleanup()
+            calls.assert_called_once()
+        self.assertFalse(fixture.keychain.exists(), "known owned keychain cannot be abandoned")
+
+    def test_modelled_delete_never_runs_for_a_replaced_inode(self):
+        fixture = self.fixture
+        fixture.keychain.rename(fixture.root / "original-owned-file")
+        fixture.keychain.write_bytes(b"replacement must stay untouched")
+        with mock.patch.object(fixture, "public_command") as calls:
+            with self.assertRaises(RuntimeError): fixture.cleanup()
+            calls.assert_not_called()
+        self.assertEqual(fixture.keychain.read_bytes(), b"replacement must stay untouched")
+
+
 @unittest.skipUnless(sys.platform == "darwin" and os.environ.get("ZERUS_TEST_PRIVATE_MACOS_SIGNING") == "1",
                      "mechanics (modelled identity boundary): reviewed private-keychain opt-in only")
 class PrivateSigningMechanics(unittest.TestCase):

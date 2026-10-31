@@ -10,10 +10,11 @@ from pathlib import Path
 import pwd
 import resource
 import shutil
+import stat
 import subprocess
 
 QUALIFICATION = "mechanics (modelled identity boundary)"
-CN = "Developer ID Application: Zerus mechanics fixture (FAKETEST01)"  # Synthetic, never an Apple identity.
+CN = "Developer ID Application: Zerus mechanics fixture (MECHANICS-NOT-A-TEAM)"
 SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 
 
@@ -42,7 +43,9 @@ def sha256(path):
 def require_private_home(home):
     if (os.getuid() == 0 or os.getuid() != os.geteuid()
             or home == Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
-            or home.stat().st_uid != os.geteuid() or home.stat().st_mode & 0o077):
+            or home.stat().st_uid != os.geteuid() or home.stat().st_mode & 0o077
+            or "/library/keychains/" in (str(home) + "/").casefold()
+            or "/login.keychain" in str(home).casefold()):
         raise RuntimeError("an owned private HOME distinct from the account HOME is required")
 
 
@@ -51,7 +54,8 @@ class PrivateIdentity:
         self.root, self.home = root.resolve(), home.resolve()
         require_private_home(self.home)
         if (not self.root.is_relative_to(self.home) or self.root.stat().st_uid != os.geteuid()
-                or self.root.stat().st_mode & 0o077 or "/login.keychain" in str(self.root)):
+                or self.root.stat().st_mode & 0o077 or "/login.keychain" in str(self.root).casefold()
+                or "/library/keychains/" in (str(self.root) + "/").casefold()):
             raise RuntimeError("a fresh private child prefix without login-keychain aliases is required")
         self.keychain, self.certificate = self.root / "fixture.keychain-db", self.root / "fixture.der"
         self.host = self.root / "fixture-host"
@@ -63,17 +67,46 @@ class PrivateIdentity:
         self.uncertain = False
         self.sha1 = None
         self.calls = []
+        self.keychain_owner = None
+        self.certificate_owner = None
+
+    def capture_ownership(self, data):
+        for line in (data or b"").decode("utf-8", "replace").splitlines():
+            try:
+                item = json.loads(line)
+            except ValueError:
+                continue
+            if item.get("event") in ("owned_keychain_created", "owned_keychain_updated"):
+                self.keychain_owner = (item["device"], item["inode"])
+            elif item.get("event") == "owned_certificate_created":
+                self.certificate_owner = (item["device"], item["inode"])
+
+    def same_owned_file(self, path, expected):
+        if expected is None:
+            return False
+        info = path.lstat()
+        return (stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid() and info.st_nlink == 1
+                and (info.st_dev, info.st_ino) == expected)
 
     def public_command(self, argv, *, input_data=None):
         # All callers supply explicit public argv. The only secret input here is
         # a one-time PEM import pipe; the C host never echoes its input.
+        creates_identity = str(argv[0]) == str(self.host) and len(argv) > 1 and argv[1] == "create"
         try:
             result = subprocess.run(list(map(str, argv)), input=input_data, env=self.env,
                                     capture_output=True, timeout=60)
+        except subprocess.TimeoutExpired as error:
+            if creates_identity:
+                self.capture_ownership(error.stdout)
+            self.uncertain = True
+            event("owned_tool_unknown", argv=[str(x) for x in argv], retained=str(self.root))
+            raise
         except (OSError, subprocess.SubprocessError):
             self.uncertain = True
             event("owned_tool_unknown", argv=[str(x) for x in argv], retained=str(self.root))
             raise
+        if creates_identity:
+            self.capture_ownership(result.stdout)
         self.calls.append([str(x) for x in argv])
         event("tool", argv=[str(x) for x in argv], exit=result.returncode,
               stdout=result.stdout.decode("utf-8", "replace"), stderr=result.stderr.decode("utf-8", "replace"))
@@ -144,7 +177,7 @@ class PrivateIdentity:
         # OpenSSL emits the private key only to this process's captured RAM. No
         # stdout/stderr from this command enters evidence, including on failure.
         configuration = ("[req]\nprompt=no\ndistinguished_name=dn\nx509_extensions=code\n"
-                         "[dn]\nCN=" + CN + "\nOU=FAKETEST01\nO=Zerus synthetic fixture\n"
+                         "[dn]\nCN=" + CN + "\nOU=MECHANICS-NOT-A-TEAM\nO=Zerus synthetic fixture\n"
                          "[code]\nbasicConstraints=critical,CA:FALSE\n"
                          "keyUsage=critical,digitalSignature\nextendedKeyUsage=critical,codeSigning\n").encode()
         generated = subprocess.run(["/usr/bin/openssl", "req", "-new", "-x509", "-newkey", "rsa:2048",
@@ -161,10 +194,13 @@ class PrivateIdentity:
         finally:
             generated = None  # Only RAM held the plaintext key; never log it.
             self.unchanged_references("after_creation")
-        proof = json.loads(output)
+        rows = [json.loads(line) for line in output.decode().splitlines()]
+        proof = next(item for item in rows if item.get("private_identity_proved"))
         if not proof.get("private_identity_proved"):
             raise RuntimeError("private identity key/certificate proof missing")
         self.sha1 = proof["sha1"]
+        if not self.same_owned_file(self.certificate, self.certificate_owner):
+            raise RuntimeError("public fixture certificate ownership changed")
         if hashlib.sha1(self.certificate.read_bytes()).hexdigest().upper() != self.sha1:
             raise RuntimeError("private certificate proof mismatch")
         self.created = True
@@ -177,28 +213,51 @@ class PrivateIdentity:
         self.signing_checked = True
 
     def cleanup(self):
-        if self.uncertain:
-            event("cleanup_uncertain_retained", root=str(self.root))
-            raise RuntimeError("uncertain scope retained; no owner-state repair")
+        failures = []
         if self.baseline is not None:
-            if self.created and not self.signing_checked:
-                self.unchanged_references("after_codesign_abort")
-            self.unchanged_references("before_deletion")
-        if self.keychain.exists():
-            event("owned_keychain_before_delete", keychain=str(self.keychain), sha256=sha256(self.keychain))
-            self.public_command([self.host, "delete", self.keychain])
-        if self.keychain.exists():
-            raise RuntimeError("private keychain deletion unconfirmed")
+            try:
+                if self.created and not self.signing_checked:
+                    self.unchanged_references("after_codesign_abort")
+                self.unchanged_references("before_deletion")
+            except (OSError, subprocess.SubprocessError, RuntimeError) as error:
+                failures.append(type(error).__name__)
+        # Scope drift stops signing but never abandons a known owned keychain
+        # with an erased password. This is explicit A6 disposal, not list repair.
+        if self.keychain.exists() or self.keychain.is_symlink():
+            if not self.same_owned_file(self.keychain, self.keychain_owner):
+                event("foreign_keychain_path_kept", path=str(self.keychain))
+                failures.append("keychain ownership changed")
+            else:
+                event("owned_keychain_before_delete", keychain=str(self.keychain), sha256=sha256(self.keychain))
+                try:
+                    self.public_command([self.host, "delete", self.keychain, *map(str, self.keychain_owner)])
+                except (OSError, subprocess.SubprocessError, RuntimeError) as error:
+                    failures.append(type(error).__name__)
+        if self.keychain.exists() or self.keychain.is_symlink():
+            failures.append("private keychain deletion unconfirmed")
         if self.baseline is not None:
-            self.unchanged_references("after_deletion")
-            if self.preference_files() != self.preferences_before:
+            try:
+                self.unchanged_references("after_deletion")
+            except (OSError, subprocess.SubprocessError, RuntimeError) as error:
+                failures.append(type(error).__name__)
+            try:
+                if self.preference_files() != self.preferences_before:
+                    self.uncertain = True
+                    failures.append("private preference effects changed")
+            except (OSError, RuntimeError) as error:
                 self.uncertain = True
-                raise RuntimeError("private preference effects changed; retained for review")
-        if self.certificate.exists():
-            event("owned_certificate_before_delete", certificate=str(self.certificate), sha256=sha256(self.certificate))
-            self.certificate.unlink()
+                failures.append(type(error).__name__)
+        if self.certificate.exists() or self.certificate.is_symlink():
+            if self.same_owned_file(self.certificate, self.certificate_owner):
+                event("owned_certificate_before_delete", certificate=str(self.certificate), sha256=sha256(self.certificate))
+                self.certificate.unlink()
+            else:
+                failures.append("certificate ownership unconfirmed")
         event("private_identity_deleted", keychain_exists=self.keychain.exists(),
               certificate_exists=self.certificate.exists(),
-              private_preferences_unchanged=True if self.baseline is not None else None)
+              private_preferences_unchanged=not failures if self.baseline is not None else None)
+        if failures or self.uncertain:
+            event("cleanup_failure_evidence_retained", root=str(self.root), failures=failures)
+            raise RuntimeError("scope or cleanup failed; owned keychain disposal attempted without state setters")
         shutil.rmtree(self.root)
         event("scratch_cleanup", exists=self.root.exists())
