@@ -88,9 +88,28 @@ struct Until<'a> {
 #[cfg(unix)]
 impl Until<'_> {
     fn prepare(&self) -> io::Result<()> {
-        self.reader
-            .get_ref()
-            .set_read_timeout(Some(remaining(self.until)?))
+        let timeout = remaining(self.until)?;
+        receive_timeout_result(
+            self.reader.get_ref().set_read_timeout(Some(timeout)),
+            cfg!(target_vendor = "apple"),
+        )
+    }
+}
+
+#[cfg(unix)]
+fn receive_timeout_result(result: io::Result<()>, apple: bool) -> io::Result<()> {
+    // The supplied timeout is already valid, nonzero and <=15s. XNU's
+    // sosetoptlock rejects options with EINVAL after both socket directions
+    // shut down. Reading can then drain queued bytes/EOF without blocking.
+    // Keep the read itself and both absolute deadline checks authoritative.
+    if apple
+        && result
+            .as_ref()
+            .is_err_and(|e| e.raw_os_error() == Some(libc::EINVAL))
+    {
+        Ok(())
+    } else {
+        result
     }
 }
 #[cfg(unix)]

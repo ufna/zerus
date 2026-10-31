@@ -61,3 +61,16 @@ transition follows from constructing this wrapper. Windows refuses construction
 before transport I/O. The five added private-socket tests qualify ownership,
 buffer retention and terminal reuse refusal only; selected exact merged Mac
 checks remain deferred under the standing internal-helper exception.
+
+On Apple targets only, a valid read-timeout setup that returns `EINVAL` is
+allowed to proceed to the read. XNU's
+[sosetoptlock shutdown check](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/uipc_socket.c#L4491-L4496)
+rejects socket options after both directions shut down; the receive path can
+still drain queued bytes and report EOF without blocking. The original absolute
+deadline checks remain before and after the operation. Other setup errors and
+all write-timeout errors still refuse. This preserves clean EOF versus a
+truncated frame, including through `Channel`, rather than treating the timeout
+setup error as a frame result. The macOS socket test explicitly checks the raw
+shutdown `EINVAL`; Linux tests exercise the narrow mapping and final-frame drain.
+The local Mac is unreachable, so the new macOS behavior awaits the recut CI gate;
+Linux checks are not native macOS qualification.
