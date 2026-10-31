@@ -18,7 +18,7 @@ pub use approvals::approval_policies;
 mod launches;
 pub use launches::{qt_executor_launches, qt_pending_launches};
 mod clones;
-pub use clones::qt_repository_clones;
+pub use clones::{next_repository_clones, qt_repository_clones};
 mod downloads;
 pub use downloads::download_index;
 mod organization;
