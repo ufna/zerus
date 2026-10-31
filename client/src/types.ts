@@ -693,15 +693,15 @@ export interface ComposerView {
 }
 
 // The question card (src-tauri composer/questions.rs, core questions.rs).
-export interface ButtonView { visible: boolean; enabled: boolean; label: string; review_label: string | null }
-export interface OptionView { id: string; label: string; description: string; markdown: boolean; checked: boolean; enabled: boolean; visible: boolean }
-export interface TextView { visible: boolean; enabled: boolean; value: string; placeholder: string; accessible_name: string; max_units: number; max_chars: number }
-export interface FormView { id: string; tab: string; prompt: string; body: string; markdown: boolean; monospace_body: boolean; multi: boolean;
-  mode: string; mode_visible: boolean; options: OptionView[]; other: OptionView | null; text: TextView | null }
-export interface QueueNav { previous: boolean; next: boolean; previous_tip: string; next_tip: string }
-export interface CardView { heading: string; progress: string; pending: string; pending_tip: string; nav: QueueNav | null; tabs_visible: boolean;
-  page: number; forms: FormView[]; status: string; status_error: boolean; available: boolean; locked: boolean; review: boolean; created_at: number;
-  submit: ButtonView; approve: ButtonView; deny: ButtonView; skip: ButtonView; previous: ButtonView; next: ButtonView; retry: boolean; skip_tip: string; retry_tip: string }
+export interface ButtonView { visible: boolean; enabled: boolean; label: Text; review_label: Text | null }
+export interface OptionView { id: string; label: Text; description: Text; markdown: boolean; checked: boolean; enabled: boolean; visible: boolean }
+export interface TextView { visible: boolean; enabled: boolean; value: string; placeholder: Text; accessible_name: Text; max_units: number; max_chars: number }
+export interface FormView { id: string; tab: Text; prompt: string; body: string; markdown: boolean; monospace_body: boolean; multi: boolean;
+  mode: Text; mode_visible: boolean; options: OptionView[]; other: OptionView | null; text: TextView | null }
+export interface QueueNav { previous: boolean; next: boolean; previous_tip: Text; next_tip: Text }
+export interface CardView { heading: Text; progress: Text | null; pending: Text | null; pending_tip: Text; nav: QueueNav | null; tabs_visible: boolean;
+  page: number; forms: FormView[]; status: Text; status_error: boolean; available: boolean; locked: boolean; review: boolean; created_at: number;
+  submit: ButtonView; approve: ButtonView; deny: ButtonView; skip: ButtonView; previous: ButtonView; next: ButtonView; retry: boolean; skip_tip: Text; retry_tip: Text }
 /**
  * `revision` grows when the card is built again (a new card, a changed form,
  * a restored answer): the review starts again and the fields reset. `epoch`

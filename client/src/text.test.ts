@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import shownFixture from "../fixtures/new-session-shown-v1.json";
-import type { LaunchShown } from "./types";
+import cardFixture from "../fixtures/question-card-v1.json";
+import type { CardView, LaunchShown } from "./types";
 import { renderText, type Text } from "./text";
 import catalog from "./i18n.ru.json";
 import { translateWithCatalog } from "./i18n";
@@ -61,6 +62,37 @@ describe("core Text", () => {
       expect(russian, text.source).not.toBe(english);
       expect(russian, text.source).not.toMatch(/%\d|%n/);
       for (const arg of text.args ?? []) if (arg.kind === "verbatim") expect(russian).toContain(arg.value);
+    }
+  });
+
+  // The question card (core tests/question_card_text_contract.rs). CARD must
+  // list exactly CardView's keys; every Text inside renders in Russian.
+  const CARD = {
+    heading: "text", progress: "text?", pending: "text?", pending_tip: "text", nav: "object?", tabs_visible: "boolean", page: "number",
+    forms: "array", status: "text", status_error: "boolean", available: "boolean", locked: "boolean", review: "boolean", created_at: "number",
+    submit: "object", approve: "object", deny: "object", skip: "object", previous: "object", next: "object", retry: "boolean", skip_tip: "text", retry_tip: "text",
+  } as const satisfies Record<keyof CardView, string>;
+  function allTexts(value: unknown, out: Text[] = []): Text[] {
+    if (isText(value)) out.push(value);
+    else if (Array.isArray(value)) value.forEach((v) => allTexts(v, out));
+    else if (value && typeof value === "object") Object.values(value).forEach((v) => allTexts(v, out));
+    return out;
+  }
+  it("the question card wire fixture matches CardView and its prose has Russian", () => {
+    const cards = cardFixture as unknown as Record<string, unknown>[];
+    expect(cards.length).toBeGreaterThan(5);
+    for (const view of cards) {
+      expect(Object.keys(view).sort()).toEqual(Object.keys(CARD).sort());
+      for (const [key, kind] of Object.entries(CARD)) if (kind === "text" || (kind === "text?" && view[key] !== null)) expect(isText(view[key]), key).toBe(true);
+    }
+    const texts = cards.flatMap((view) => allTexts(view));
+    expect(texts.length).toBeGreaterThan(100);
+    for (const text of texts) {
+      const english = textIn("en", text), russian = textIn("ru", text);
+      expect(russian, text.source).not.toMatch(/%\d|%n/);
+      for (const arg of text.args ?? []) if (arg.kind === "verbatim") expect(russian).toContain(arg.value);
+      // Own prose translates; joins of verbatim values and empty texts stay as they are.
+      if (/[A-Za-z]{2}/.test(text.source.replace(/%\d/g, ""))) expect(russian, text.source).not.toBe(english);
     }
   });
 });
