@@ -43,7 +43,10 @@ fn partial_read_timeout_is_terminal_and_never_resumes_a_frame() {
     assert!(channel.closed);
     assert!(channel.line(until()).is_err());
     assert!(channel.write_line(b"retry\n", until()).is_err());
-    assert!(peer.write_all(b"tail\nnew\n").is_err());
+    // Linux refuses the peer's write after our full shutdown; XNU accepts and
+    // discards it. The fence is the refused reads above and the EOF below.
+    let late_write_refused = peer.write_all(b"tail\nnew\n").is_err();
+    assert!(late_write_refused || cfg!(target_vendor = "apple"));
     assert_eq!(peer.read(&mut [0]).unwrap(), 0);
 }
 
