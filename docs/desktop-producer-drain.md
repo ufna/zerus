@@ -285,6 +285,42 @@ native outcome or infer completion from a timeout. There is no production
 accounted constructor or freeze caller yet, and no service/native ledger job is
 admitted by these local resource helpers.
 
+## Optional agent/update notifier partition
+
+The internal `notifier::owners::Partitioned` constructor reuses the existing
+Notifier and completion guards, with separate agent-attention and GUI-update
+Delivery state and failure sinks. Only the agent side takes the host-supplied
+NativePosting charge. The current SDK adapter still uses `Notifier::new` and
+has no partition/control caller; no native permission or GUI behavior changes
+in this prerequisite. Ordinary `deliver` keeps its former void semantics.
+
+The shared pure `native_notice::Owner::{AgentAttention,SoftwareUpdate}` has no
+serde or wire authority; its validator checks an explicitly supplied expected
+class, never the owner of a legacy/native ID. Each partition validates the
+complete batch before any effect: agent tokens
+use the existing bounded attention decoder; update tokens use the existing
+exact versioned update validator. Cross-owner posts/withdrawals and malformed
+legacy identifiers refuse in both directions. Tokens and Qt-compatible request
+IDs are never normalized or re-encoded. A shared native authorization request
+may fan out permission data to at most two fixed owner callbacks, one per
+Delivery; it is never a post receipt or authority to touch the other owner's
+state. No native call or sink runs under the fanout lock. An abandoned check
+retains the original callbacks and their charges; it cannot create a false Idle
+or authorize another native retry. Agent close leaves update posts, withdrawals
+and outcomes live, even when they share the same backend.
+
+A successful local delivery return means only that routing/admission ran, not
+that the framework accepted, displayed or withdrew anything. This helper does
+not verify an original Delivered mapping, create categories/actions, process a
+click, adopt a native ID, enumerate banners, or infer binding from a valid token.
+Valid historical/unbound tokens still require the agreed suppression policy at
+the future admitted adapter. That caller must separately bind owner, original
+request ID, category/action and immutable post/correlation evidence before any
+native effect or activation; it needs its own pinned review. Shared backend
+lifetime is not agent work after its actual calls and callbacks are drained.
+Platform/delegate/queued activation/badge lifetimes, authenticated producer,
+profile transition and G3 Drained publication remain unqualified here.
+
 ## Ordered ReadDelivery store barrier
 
 Actions now owns the same fixed four native resource slots as the existing
