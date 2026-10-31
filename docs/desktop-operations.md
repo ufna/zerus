@@ -17,6 +17,24 @@ revoke, while terminal Unknown, changed originals and forged tickets refuse.
 No production actor, task call, callback, timer, custody or current Operations
 admission is qualified; G1 `.22`, G2 `.4.2` and later kinds remain unfinished.
 
+The additional test-only `operations::tests::owned` slice sends the unchanged
+proposed argv and input to fixed private synthetic executables through the
+existing `run_owned`. File-backed fixture admission and exact custody reservation
+precede the fake port; these fixtures establish no current producer authority.
+The spawn hook registers the actual child birth before input starts. A failed
+post-spawn registration still returns that actual Child to its owner and pins
+the private fixture; it never reports StartFailed or accepts its reply.
+
+Real gated child and stdin/stdout/stderr lifetimes, exact descendant exits and
+an isolated host exit/reopen exercise the existing custody probe and recovery
+commit. Pipe controls strip the descendant's inherited lock, so a blocked
+writer/reader itself must retain custody beyond the bounded runner return.
+Only the crash survivor retains inherited custody. No direct Boolean drain
+proof is supplied. Unknown outcomes remain terminal after genuine resource
+release, and repeated calls never create another child. This qualifies synthetic
+process and storage mechanisms on Linux/macOS, not actual task delivery,
+production admission, native agents, Windows custody or whole-profile handoff.
+
 G2 (`zerus-5wmh.66.4`) moves window-independent operation lifecycles into
 `hgs`, preserving original identities and reviewable uncertain outcomes.
 The ownership split agreed with G1, G3 and the task executor owner on
