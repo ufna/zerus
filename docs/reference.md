@@ -297,6 +297,12 @@ Tests use typed fixture scopes and decoy anchors; they never probe the owner's
 real anchor. Missing or tampered existing state requires explicit operator
 recovery, with unresolved charges retained. These are design requirements; the
 current runtime has no durable quit-store caller. Windows stays fenced.
+The proposed cleanup restriction also needs a native Git worktree lock before
+either version-2 ownership write: private legacy CLI controls showed that
+version-2 refusal alone does not fence fresh old manual removal. Worktrees retains
+the existing Blocked/locked reason. Exact new review/release semantics and the full
+legacy caller, partial-cut and crash/restart matrix remain separate gates; no
+runtime hold or unlock is implemented.
 
 The proposed store and capture spool are excluded from all exports, diagnostics
 bundles and Private analytics aggregate export and are never uploaded. Logging
