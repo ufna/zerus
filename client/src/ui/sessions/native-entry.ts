@@ -4,6 +4,7 @@ import { nativeUi } from "../../store/native-ui";
 import { setDetailTab, setPage, setSelectedKey, setSubagentOpen, type MenuEntry } from "../../store/ui";
 import type { Session } from "./types";
 import type { NativeBinding } from "../../store/native-ui-model";
+import { tr } from "../../i18n";
 
 export function nativeBinding(s: Session | undefined): NativeBinding | undefined {
   return s?.agent === "deepseek" && s.runId && s.conversationId ? {
@@ -26,7 +27,7 @@ export function nativeRoute(s: Session | undefined, browserFallback = false): ()
 
 export function nativeEntry(s: Session): MenuEntry | undefined {
   if (s.agent !== "deepseek" || s.state === "archived") return undefined;
-  return { label: "Open native DeepSeek UI", icon: "external-link", disabled: computerOffline(s.computer) || !nativeBinding(s),
+  return { label: tr("Open native DeepSeek UI"), icon: "external-link", disabled: computerOffline(s.computer) || !nativeBinding(s),
     hint: computerOffline(s.computer) ? "Native UI is unavailable while this machine is offline." : undefined,
     action: nativeRoute(s, true) };
 }

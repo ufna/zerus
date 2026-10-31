@@ -53,10 +53,10 @@ export function actionEntries(s: Session, details?: Details, options: { context?
     // Qt's archiveNameOccupied: one scan of the live rows, for an archived row only.
     occupied: archived && archiveNameOccupied(row, catalog.rows),
   });
-  const hint = (enabled: boolean, reason?: string) => (enabled ? undefined : reason);
+  const hint = (enabled: boolean, reason?: string) => (enabled || !reason ? undefined : tr(reason));
   return {
     change: {
-      label: m.change.label, icon: archived || row.state !== "running" ? "play" : "pause", disabled: !m.change.enabled, hint: hint(m.change.enabled, m.change.reason),
+      label: tr(m.change.label), icon: archived || row.state !== "running" ? "play" : "pause", disabled: !m.change.enabled, hint: hint(m.change.enabled, m.change.reason),
       action: () => { void (archived ? restoreSession(row) : change(row)); },
     },
     stop: {
@@ -69,16 +69,16 @@ export function actionEntries(s: Session, details?: Details, options: { context?
       ? { label: tr("Move to archive"), icon: "archive", disabled: !m.archive.enabled, hint: hint(m.archive.enabled, m.archive.reason), action: () => { void perform(row, { kind: "archive" }).then(refreshArchiveWhenDone); } }
       : undefined,
     end: {
-      label: m.end.label, icon: m.end.label === "Terminate session…" ? "circle-stop" : "trash", danger: true, disabled: !m.end.enabled, hint: hint(m.end.enabled, m.end.reason),
+      label: tr(m.end.label), icon: m.end.label === "Terminate session…" ? "circle-stop" : "trash", danger: true, disabled: !m.end.enabled, hint: hint(m.end.enabled, m.end.reason),
       action: () => {
         // Qt's click-time GONE pre-check first; a forget names the run and conversation in view.
         if (terminates(row, details)) { send({ type: "open", kind: "terminate", row }); return; }
         const live = stillListed(row);
         if (!live) return;
         // An archived row is keyed by its archive id; Qt's key also holds the name.
-        if (archived && live.name !== row.name) { notify("info", GONE, true); return; }
+        if (archived && live.name !== row.name) { notify("info", tr(GONE), true); return; }
         const opening = forgetOpening(row, live, details);
-        if (opening === "changed") { notify("error", STATE_CHANGED, true); return; }
+        if (opening === "changed") { notify("error", tr(STATE_CHANGED), true); return; }
         send({ type: "open", kind: "forget", ...opening });
       },
     },
@@ -89,7 +89,7 @@ export function actionEntries(s: Session, details?: Details, options: { context?
 export function forkEntry(s: Session, details?: Details): Item {
   const row = snapshotOf(s);
   return { label: tr("Fork session…"), icon: "git-fork", disabled: !sessionForks.available(row, details),
-    hint: details ? details.fork_reason || FORK_HINT : FORK_CHECKING,
+    hint: details ? details.fork_reason || tr(FORK_HINT) : tr(FORK_CHECKING),
     action: () => { if (details && sessionForks.available(row, details)) send({ type: "open", kind: "fork", row, details: { ...details } }); },
   };
 }
@@ -103,7 +103,7 @@ export function copyEntries(s: Session, details?: Details): { command: Item; nam
   const row = snapshotOf(s);
   const c = copyState(row, !computerOffline(s.computer), details);
   return {
-    command: { label: c.command.label, icon: "link", disabled: !c.command.enabled, action: () => { void copyCommand(row); } },
+    command: { label: tr(c.command.label), icon: "link", disabled: !c.command.enabled, action: () => { void copyCommand(row); } },
     name: { label: tr("Copy session name"), icon: "copy", action: () => { void copyName(row); } },
     reference: { label: tr("Copy session reference"), icon: "link", disabled: !c.reference, action: () => { void copyReference(row, details); } },
     folder: { label: tr("Copy folder path"), icon: "copy", disabled: !c.folder.enabled, action: () => { void copyFolder(row, details); } },
@@ -119,7 +119,7 @@ export function muteEntry(s: Session): Item | undefined {
   const row = snapshotOf(s);
   const m = notificationsState(row, !computerOffline(s.computer), pendingNotifications(s.computer, s.conversationId));
   if (!m) return undefined;
-  return { label: m.label, icon: row.muted ? "bell" : "bell-off", disabled: !m.enabled, hint: m.hint, action: () => { void toggleMute(row); } };
+  return { label: tr(m.label), icon: row.muted ? "bell" : "bell-off", disabled: !m.enabled, hint: tr(m.hint), action: () => { void toggleMute(row); } };
 }
 
 /**
@@ -132,7 +132,7 @@ export function freshActionEntry(s: Session, header = false): Item | undefined {
   const m = freshEntry(row, !computerOffline(s.computer), updating(s.computer, s.name), running());
   if (!m) return undefined;
   return {
-    label: tr("Start fresh…"), icon: "clear", disabled: !m.enabled, hint: header ? FRESH_TIP : m.hint,
+    label: tr("Start fresh…"), icon: "clear", disabled: !m.enabled, hint: header ? tr(FRESH_TIP) : m.hint && tr(m.hint),
     action: () => {
       const live = stillListed(row);
       // Qt returns silently when the session can no longer start fresh.
@@ -264,7 +264,7 @@ function FreshDialog(props: { row: ActionRow; close: () => void }) {
     props.close();
     const live = catalog.rows[props.row.key];
     if (!live || !freshStillValid(snapshotOf(live), props.row, !computerOffline(live.computer), updating(live.computer, live.name), running())) {
-      notify("error", FRESH_CHANGED, true);
+      notify("error", tr(FRESH_CHANGED), true);
       return;
     }
     notify("info", tr("Starting %1 with a new conversation…", props.row.name));

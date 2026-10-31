@@ -63,7 +63,13 @@ impl Composers {
     /// Qt's `sendQueuedNow` (248-260), while the selection and details are
     /// held. The native action is built only here, never from webview JSON.
     fn begin_queue(&self, hub: &mut Hub, queue_id: Option<String>) -> Option<Delivery> {
-        if hub.closed || hub.queue.sending.is_some() || hub.open.as_ref().is_some_and(|open| open.subagent.is_some()) {
+        if hub.closed
+            || hub.queue.sending.is_some()
+            || hub
+                .open
+                .as_ref()
+                .is_some_and(|open| open.subagent.is_some())
+        {
             return None;
         }
         let ctx = self.context(hub);
@@ -193,7 +199,11 @@ impl Composers {
             self.hand_back(hub, handle);
             return SendReply::Busy;
         };
-        if hub.open.as_ref().is_some_and(|open| open.subagent.is_some()) {
+        if hub
+            .open
+            .as_ref()
+            .is_some_and(|open| open.subagent.is_some())
+        {
             self.hand_back(hub, handle);
             return SendReply::Busy;
         }

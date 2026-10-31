@@ -538,7 +538,7 @@ pub(super) fn notification_summary(record: &Value, live_pane: bool) -> Result<Va
 /// panel wins. Dispatch refuses each of them (`input::checked_input`).
 pub(super) fn terminal_chooser(record: &Value) -> Option<(Value, &'static str, &'static str)> {
     type Current = fn(&Value) -> Option<Value>;
-    let choosers: [(Current, &str, &str); 11] = [
+    let choosers: [(Current, &str, &str); 12] = [
         (claude_approval::current, "approval", "Claude is waiting for your tool or safety approval"),
         (claude_resume::current, "approval", "Claude is waiting for your conversation resume choice"),
         (claude_usage_limit::current, "input", "Claude is waiting for your usage-limit choice"),
@@ -547,6 +547,7 @@ pub(super) fn terminal_chooser(record: &Value) -> Option<(Value, &'static str, &
         (codex_trust::current, "approval", "Codex is waiting for folder trust approval"),
         (codex_hooks_trust::current, "approval", "Codex is waiting for hook trust review"),
         (codex_update::current, "input", "Codex is waiting for an update choice"),
+        (codex_rate_limit::current, "input", "Codex is waiting for your rate-limit model choice; open Activity or Terminal"),
         (codex_goal_resume::current, "input", "Codex is waiting for your paused goal choice"),
         (kimi_trust::current, "approval", "Kimi is waiting for folder trust approval"),
         (kimi_cache_hint::current, "input", "Kimi is waiting for your context choice"),

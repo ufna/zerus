@@ -56,6 +56,14 @@ impl Cache {
         self.running = true;
         Ok(None)
     }
+    // A verified removal changes this exact repository before the frontend
+    // closes its review. Re-arm only its advisory read; the actual reader
+    // still owns its slot until Drop, including any invalidated late reply.
+    pub(super) fn removed(&mut self, computer: &str, machine: &str, common: &str) {
+        self.entries
+            .remove(&(computer.into(), machine.into(), common.into()));
+        self.generation = self.generation.saturating_add(1);
+    }
     pub(super) fn invalidate(&mut self) {
         self.generation = self.generation.saturating_add(1);
         for entry in self.entries.values_mut() {
@@ -241,6 +249,38 @@ mod tests {
             .unwrap()
             .count
             .is_none());
+    }
+    #[test]
+    fn verified_removal_rearms_only_its_repository_without_releasing_a_live_reader() {
+        let state = WorktreeCleanup::default();
+        let now = Instant::now();
+        {
+            let mut model = lock(&state.0);
+            model.reminders.begin(&key(1), now).unwrap();
+            model.reminders.running = false;
+            model.reminders.begin(&key(0), now).unwrap();
+        }
+        let reader = Reader {
+            state: state.clone(),
+            key: key(0),
+            generation: 0,
+        };
+        let (computer, machine, common) = key(0);
+        {
+            let mut model = lock(&state.0);
+            model.reminders.removed(&computer, &machine, &common);
+            assert!(model.reminders.begin(&key(0), now).is_err());
+            assert!(model.reminders.begin(&key(1), now).unwrap().is_some());
+        }
+        assert!(reader.finish(Some(99)).count.is_none());
+        assert!(!lock(&state.0).reminders.entries.contains_key(&key(0)));
+        drop(reader);
+        let mut model = lock(&state.0);
+        assert!(model.reminders.begin(&key(0), now).unwrap().is_none());
+        model.reminders.running = false;
+        // Closing or refreshing again without another removal keeps the TTL.
+        assert!(model.reminders.begin(&key(0), now).unwrap().is_some());
+        assert!(model.reminders.begin(&key(1), now).unwrap().is_some());
     }
     #[test]
     fn count_follows_qt_local_data_rules_and_excludes_main_and_unknown_outcomes() {

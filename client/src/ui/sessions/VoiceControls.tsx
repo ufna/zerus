@@ -6,7 +6,7 @@ import { toast } from "../../store/notices";
 import type { SessionVoice } from "../../store/voice";
 import { recordingBlob } from "./voice-playback";
 import { mediaPlayback } from "../../store/mediaPlayback";
-import { tr } from "../../i18n";
+import { tr, trc } from "../../i18n";
 
 const icon = (name: string) => ({ microphone: "mic", stop: "square" }[name] ?? name);
 
@@ -109,7 +109,7 @@ export function VoicePreview(props: { voice: SessionVoice }) {
     <Show when={shown()?.preview}>
       <div class="cmp-voice-preview">
         <span class="muted">{shown()?.preview}</span>
-        <button type="button" class="btn small" disabled={!shown()?.play_enabled || (shown()?.state !== "preview" && shown()?.state !== "uncertain")} onClick={() => { void play(); }}>{playing() ? "Pause" : "Play"}</button>
+        <button type="button" class="btn small" disabled={!shown()?.play_enabled || (shown()?.state !== "preview" && shown()?.state !== "uncertain")} onClick={() => { void play(); }}>{playing() ? trc("media playback", "Pause") : trc("media playback", "Play")}</button>
         <select class="field" aria-label={tr("Voice provider")} title={shown()?.provider_tooltip} value={shown()?.provider ?? -1} disabled={!shown()?.provider_enabled}
           onChange={(event) => { void voice.input({ kind: "choose_provider", index: Number(event.currentTarget.value) }); }}>
           <Show when={shown()?.provider == null}><option value={-1}>{shown()?.provider_placeholder}</option></Show>

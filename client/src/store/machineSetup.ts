@@ -3,6 +3,7 @@ import { machinePickSource, machineSetup, fleetRefresh } from "../bridge";
 import { machineEditor, LOCAL_MACHINE, type createMachineEditor } from "./machineEditor";
 import { machineCards, machinesPage, loadMachines, testConnection } from "./machines";
 import type { MachineMeta, MachinesView, MachineReference, MachineSetupOutcome, MachineSetupRequest } from "../types";
+import { tr } from "../i18n";
 
 export type SetupPrompt = { kind: "install"; reference: MachineReference } | { kind: "enable"; machine_id: string };
 type Editor = ReturnType<typeof createMachineEditor>;
@@ -40,11 +41,11 @@ export function createMachineSetup(editor: Editor, view: Accessor<MachinesView>,
     if (editor.selected() !== target || (original.kind === "install"
       ? editor.draft().dirty || view().connection_revision !== original.reference.revision
       : !canEnable() || local()?.machine_id !== original.machine_id)) {
-      setResult({ target: editor.selected(), error: true, text: "Machine settings changed elsewhere. Reload the page before setup.", output: "" });close(original);return false;
+      setResult({ target: editor.selected(), error: true, text: tr("Machine settings changed elsewhere. Reload the page before setup."), output: "" });close(original);return false;
     }
     const request: MachineSetupRequest = original.kind === "install" ? { ...original, source: source().trim() } : original;
     setBusy(true);close(original);
-    setResult({ target, error: false, text: original.kind === "install" ? `Installing on ${target}… Keep Zerus running until setup finishes.` : "Enabling local sessions on this computer…", output: "" });
+    setResult({ target, error: false, text: original.kind === "install" ? tr("Installing on %1… Keep Zerus running until setup finishes.", target) : tr("Enabling local sessions on this computer…"), output: "" });
     try {
       const outcome = await tools.setup(request);
       setResult({ target, error: !outcome.success, text: outcome.text, output: outcome.output });

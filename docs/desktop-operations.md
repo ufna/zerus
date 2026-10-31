@@ -1,5 +1,40 @@
 # Desktop operation ownership and recovery evidence
 
+The test-only root `desktop::operations::tests::integration` harness connects
+G2's unchanged conformance oracle to the merged frozen-original bridge and
+existing receipt finish with real SQLite fixtures. Its 27 vector executions are
+MODEL CONFORMANCE, counted separately from Rust test entries and eligible
+G2/SQLite proposal/receipt segments. Fixture admission, reservation and Unknown
+seeding happen before the bounded fake driver starts; that driver has no
+admit/reserve/worker/current-guard or resource-release capability.
+
+The legacy oracle's child/stdout/stderr/stop/drain/release flags omit stdin and
+never free the actual SQL undrained slot. A held-input observation here is
+symbolic, not physical worker evidence. Follow-up examples use explicitly
+independent fixture databases, without claiming continuous release or retry of
+an uncertain attempt. Exact old-epoch still-reserved results may settle after
+revoke, while terminal Unknown, changed originals and forged tickets refuse.
+No production actor, task call, callback, timer, custody or current Operations
+admission is qualified; G1 `.22`, G2 `.4.2` and later kinds remain unfinished.
+
+The additional test-only `operations::tests::owned` slice sends the unchanged
+proposed argv and input to fixed private synthetic executables through the
+existing `run_owned`. File-backed fixture admission and exact custody reservation
+precede the fake port; these fixtures establish no current producer authority.
+The spawn hook registers the actual child birth before input starts. A failed
+post-spawn registration still returns that actual Child to its owner and pins
+the private fixture; it never reports StartFailed or accepts its reply.
+
+Real gated child and stdin/stdout/stderr lifetimes, exact descendant exits and
+an isolated host exit/reopen exercise the existing custody probe and recovery
+commit. Pipe controls strip the descendant's inherited lock, so a blocked
+writer/reader itself must retain custody beyond the bounded runner return.
+Only the crash survivor retains inherited custody. No direct Boolean drain
+proof is supplied. Unknown outcomes remain terminal after genuine resource
+release, and repeated calls never create another child. This qualifies synthetic
+process and storage mechanisms on Linux/macOS, not actual task delivery,
+production admission, native agents, Windows custody or whole-profile handoff.
+
 G2 (`zerus-5wmh.66.4`) moves window-independent operation lifecycles into
 `hgs`, preserving original identities and reviewable uncertain outcomes.
 The ownership split agreed with G1, G3 and the task executor owner on
@@ -106,6 +141,28 @@ understand. `ManifestEnd` means only the end of this immutable manifest; it
 never claims complete source discovery, drain or G2 coverage.
 
 ## Executing kinds and the exit boundary
+
+The separate dormant `creation_clone` policy covers only an explicit STATUS
+lookup for an original creation clone in `cloning` or `unknown`. Its expected
+binding keeps the configuration digest, distinct creation/clone UUIDs, physical
+machine, exact original host, target and parent, integer source revision and
+raw source digest. It has
+no creation UI-snapshot fingerprint or G1 ledger kind. Original bytes (up to
+1 MiB) stay unchanged; duplicate known raw keys refuse before Value projection.
+Completed-worktree, bound-session or acquisition-confirmed contradictions stay
+review-only, and a prospective launch UUID is retained without being used.
+
+One retained instance yields at most one private proposal using the existing
+`repository status` invocation, without stdin or a new clone identity. A lost
+proposal, cancellation, pressure or uncertain result cannot regenerate it.
+Replies are at most 64 KiB and must pass the existing repository decoder plus
+both original parent and target comparisons. Only `cloned` or `failed` produces
+a closed receipt of at most 16 KiB, retaining observed path text and discarding
+private diagnostics/extras. An original unknown state may be explicitly checked;
+an unknown result remains spent review. The returned binding and receipt are
+data, never placement, project/worktree mutation, launch, release or settlement.
+This pure module has no source factory, current routing proof, actor, I/O or
+production caller; G2 `.4.3`, `.4.2` and G1 current Operations admission stay open.
 
 The first pure policy is `operation_recovery::task_start::Original`. G1 and G2
 agreed its contract on 2026-10-30. It has no actor integration, process runner,

@@ -22,6 +22,7 @@ import { moveFocusOff } from "./composer-ui";
 import { focusTranscript, following, jumpToLatest, unseen } from "./Activity";
 import type { ChipTone } from "../../types";
 import { tr } from "../../i18n";
+import { trText } from "../../text";
 
 // The message composer (Qt MessageComposer, 300-366), after the mockup's
 // structure: an edge grip, the 34 px toolbar, the editor (76-720 px) and the
@@ -335,7 +336,7 @@ export function Composer() {
             onClick={() => { stopTurn(); }}><Icon name="square" size={12} />{tr("Stop")}</button>
         </Show>
         <button type="button" class="btn primary" aria-label={tr("Send")} disabled={!composer.sendEnabled()} title={v()?.waiting ?? undefined}
-          onClick={() => { void composer.send(); }}>{v()?.send_label ?? tr("Send")}<Icon name="arrow-up" size={13} /></button>
+          onClick={() => { void composer.send(); }}>{v() ? trText(v()!.send_label) : tr("Send")}<Icon name="arrow-up" size={13} /></button>
       </div>
     </div>
   );

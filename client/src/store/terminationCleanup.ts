@@ -2,6 +2,7 @@ import { createSignal } from "solid-js";
 import * as bridge from "../bridge";
 import { toast } from "./notices";
 import type { Target } from "../types";
+import { tr } from "../i18n";
 export interface Consents { local_files: boolean; discard_changes: boolean; unchecked_processes: boolean; merged_branches: false }
 export interface RestoreSource { target: Target; machine: string; archive_id: string; status: "kept" | "unconfirmed"; overflow: boolean }
 export interface RetainedCapture { id: string | null; restore: RestoreSource | null; notice: string }
@@ -27,16 +28,16 @@ export async function refreshCleanup() {
   if (reading) { again = true; return; }
   reading = true;
   try { do { again = false; applyCleanup(await bridge.terminationCleanupView()); } while (again); }
-  catch (error) { toast("Working folders", String(error), "warn", true); }
+  catch (error) { toast(tr("Working folders"), String(error), "warn", true); }
   finally { reading = false; }
 }
 if (bridge.inTauri()) {
   void bridge.onTerminationCleanupChanged(() => { void refreshCleanup(); }).then(() => refreshCleanup());
-  void bridge.onTerminationFolderRemoved((label) => toast("Folder removed", label));
+  void bridge.onTerminationFolderRemoved((label) => toast(tr("Folder removed"), label));
 }
 export const openCleanup = (selected?: string) => { setCleanupDialog({ selected, origin: document.activeElement instanceof HTMLElement ? document.activeElement : undefined }); };
 export const closeCleanup = () => setCleanupDialog(undefined);
-async function update(call: Promise<CleanupView>) { try { applyCleanup(await call); } catch (error) { toast("Working folders", String(error), "warn", true); } }
+async function update(call: Promise<CleanupView>) { try { applyCleanup(await call); } catch (error) { toast(tr("Working folders"), String(error), "warn", true); } }
 export const checkCleanup = (id: string) => update(bridge.terminationCleanupCheck(id));
 export const removeCleanup = (consents: Consents) => update(bridge.terminationCleanupRemove(cleanup().revision, consents));
-export async function keepCleanup() { try { applyCleanup(await bridge.terminationCleanupKeep(cleanup().revision)); (await import("./cleanupNotices")).clearCleanupNotices(); closeCleanup(); } catch (error) { toast("Working folders", String(error), "warn", true); } }
+export async function keepCleanup() { try { applyCleanup(await bridge.terminationCleanupKeep(cleanup().revision)); (await import("./cleanupNotices")).clearCleanupNotices(); closeCleanup(); } catch (error) { toast(tr("Working folders"), String(error), "warn", true); } }

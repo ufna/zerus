@@ -272,7 +272,39 @@ session-action-status SESSION --json`. The selected executable must advertise
 forwarded. Its existing private Swarm catalog supplies the machine identity
 without initialization, locking or saving. An unguarded remote receipt read is
 refused. This reader is a recovery prerequisite; it does not enable durable
-delivery of pending Undo actions when Zerus quits.
+delivery of pending Undo actions when Zerus quits. The independently reviewable
+[pure shared journal model](desktop-quit-journal.md) also leaves current Quit
+behavior unchanged; the actual store and detached delivery remain separately gated.
+
+The proposed [native quit-store design](desktop-quit-store-design.md) uses a
+persistent per-OS-user location derived from the effective UID's passwd home,
+never from `$HOME`: `<pw_dir>/.local/state/hgs/quit-v1/` on Linux and
+`<pw_dir>/Library/Application Support/hgs/quit-v1/` on macOS. Before any production
+anchor open, create or stat, an isolated launch must refuse durable delivery:
+HOME differs from that OS home, XDG state/data/config points away from its default,
+HGS_STATE_DIR or HGS_CONFIG_DIR was explicitly set, an install prefix is explicit,
+CLI selection (`ZERUS_CLIENT_HGS` or `--hgs`) or fleet routing (`HGS_SELF`,
+`HGS_PEERS`, `HGS_SSH`) is explicit, or a test/replay/headless marker is present.
+Empty, non-UTF8 and default-looking explicit selectors also refuse. Native origin
+evidence must precede Config::load's default HGS_STATE_DIR injection and the GUI's
+`--hgs` conversion; later mutations cannot erase an original override. Such
+launches keep drop-on-Quit with a bounded reason in the existing notice.
+The initial strict fence also excludes the maintained Mac LaunchAgent's `--hgs`
+launch and Linux launches passing it. Exact selected executable/configuration
+origin must be qualified on both maintained launch paths before delivery is
+enabled anywhere; this is tracked separately as `zerus-5wmh.66.2.34.3.5`.
+Tests use typed fixture scopes and decoy anchors; they never probe the owner's
+real anchor. Missing or tampered existing state requires explicit operator
+recovery, with unresolved charges retained. These are design requirements; the
+current runtime has no durable quit-store caller. Windows stays fenced.
+
+The proposed store and capture spool are excluded from all exports, diagnostics
+bundles and Private analytics aggregate export and are never uploaded. Logging
+and operator recovery output contain bounded counts, reason codes and digests,
+never stored session names, paths or targets. Installers and updater flows must
+preserve admitted helpers/children without signals or indefinite waits, and a
+replacement GUI must respect their still-charged global generation.
+
 
 `hgs hooks --account native-claude --json` inspects the account's hook
 registration without running the agent. Use another exact account ID for an
@@ -1607,6 +1639,15 @@ After **Update now**, the desktop shows a notice for that state: Codex is still
 installing its update, or it has exited and the session needs a resume. An
 older host's receipt has no `codex_update`; the desktop then only switches to
 Terminal.
+
+Codex's **Approaching rate limits** chooser also appears in Activity and on the
+phone after a turn. Its reviewed **Switch to gpt-6-luna**, **Keep current model**
+and **Keep current model (never show again)** choices use the exact guarded native
+answer path. Zerus never selects one automatically. A changed or incomplete
+chooser stays **Needs input** with an **Open Terminal** hint; it never authorizes
+a model change or an ordinary message. Each answer pins the process, run,
+conversation and complete panel before every key, and uncertain delivery is never
+replayed.
 
 After a resume, Codex asks **Resume paused goal?** when the conversation's goal
 is paused, stalled or limited by usage. Activity shows the goal from Codex's goal

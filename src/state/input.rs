@@ -302,6 +302,9 @@ fn checked_input(
     if codex_update::current(&record).is_some() {
         return Err("Codex is waiting for an update choice. Choose an option in Activity or Terminal before sending a message.".into());
     }
+    if codex_rate_limit::current(&record).is_some() {
+        return Err(codex_rate_limit::WAIT.into());
+    }
     if codex_goal_resume::current(&record).is_some() {
         return Err(codex_goal_resume::WAIT.into());
     }

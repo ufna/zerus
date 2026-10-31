@@ -9,7 +9,7 @@ import { skin } from "../../skin/runtime";
 import { newSessionFromRail } from "../sessions/newsession-view";
 import { shortcutTooltip } from "../../store/shortcuts";
 import { openAbout } from "../../store/desk";
-import { tr } from "../../i18n";
+import { trNoop, tr } from "../../i18n";
 
 // The side screen switcher stays on the side (owner decision 2026-10-27).
 // Order follows SessionsWindow: brand -> Overview, New session, Sessions,
@@ -20,8 +20,8 @@ import { tr } from "../../i18n";
 const ITEMS: { id: Page; icon: string; label: string; tip: string; command: string }[] = [
   { id: "sessions", icon: "sessions", label: "Sessions", tip: "Sessions", command: "go.sessions" },
   { id: "projects", icon: "projects", label: "Projects", tip: "Projects", command: "go.projects" },
-  { id: "machines", icon: "machines", label: "Machines", tip: "Machines and connection status", command: "go.machines" },
-  { id: "accounts", icon: "accounts", label: "Accounts", tip: "Agent accounts", command: "go.accounts" },
+  { id: "machines", icon: "machines", label: "Machines", tip: trNoop("Machines and connection status"), command: "go.machines" },
+  { id: "accounts", icon: "accounts", label: "Accounts", tip: trNoop("Agent accounts"), command: "go.accounts" },
 ];
 
 /** "0.1.0" -> "0.1 Dev": the rail shows major.minor and the channel. */
@@ -63,7 +63,7 @@ export function Rail() {
         <Icon name="settings" size={24} />
         <Show when={labeled()}><span>{tr("Settings")}</span></Show>
       </button>
-      <button class="rail-version" data-tip={`Zerus Next ${__APP_VERSION__} (development build). Open About`} data-tip-pos="right" onClick={openAbout}>{short} Dev</button>
+      <button class="rail-version" data-tip={tr("Zerus Next %1 (development build). Open About", __APP_VERSION__)} data-tip-pos="right" onClick={openAbout}>{short} Dev</button>
     </nav>
   );
 }

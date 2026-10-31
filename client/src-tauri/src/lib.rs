@@ -157,6 +157,8 @@ pub struct Startup {
     pub instance: Option<instance::Claimed>,
     #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
     pub desktop_responder: Option<std::sync::Arc<zerus_client_core::desktop::Responder>>,
+    #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
+    pub desktop_bootstrap: Option<zerus_client_core::desktop::startup::Bootstrap>,
 }
 
 /// Parses Qt's command line and answers `--help`, `--version` and
@@ -199,6 +201,8 @@ pub fn run() {
     let opens_sessions = options.opens_sessions(identity.is_switch());
     #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
     let mut desktop_responder = None;
+    #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
+    let mut desktop_bootstrap = None;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     let instance = match identity.instance_name(identity::flag("ZERUS_CLIENT_SINGLE_INSTANCE")) {
         None => None,
@@ -218,7 +222,16 @@ pub fn run() {
                 instance::Claim::Claimed(claimed) => {
                     #[cfg(feature = "live")]
                     {
-                        desktop_hello::configure(responder.clone(), identity.is_switch());
+                        desktop_bootstrap = match desktop_hello::hold(
+                            identity.is_switch(),
+                            &responder,
+                        ) {
+                            Ok(held) => held,
+                            Err(_) => {
+                                eprintln!("zerus-client: desktop startup refused before writers; use a compatible local hgs and reconcile unsettled desktop state");
+                                return;
+                            }
+                        };
                         desktop_responder = Some(responder);
                     }
                     Some(claimed)
@@ -245,6 +258,8 @@ pub fn run() {
             instance,
             #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
             desktop_responder,
+            #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
+            desktop_bootstrap,
         },
     );
 }
@@ -263,6 +278,10 @@ pub(crate) fn data_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
 fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
     let identity = startup.identity;
     let opens_sessions = startup.opens_sessions;
+    #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
+    let desktop_bootstrap = startup.desktop_bootstrap;
+    #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
+    let startup_responder = startup.desktop_responder.clone();
     // Linux and macOS keep the live fleet in the tray/menu bar. A build without the data source has
     // none and keeps its window as the way back.
     let menu_bar = cfg!(all(
@@ -751,6 +770,10 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
             if app.state::<identity::Identity>().watchdog(identity::flag("ZERUS_CLIENT_WATCHDOG")) {
                 app.manage(start_watchdog()?);
             }
+            #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
+            if let (Some(held), Some(responder)) = (desktop_bootstrap, startup_responder) {
+                desktop_hello::finish(held, responder);
+            }
             Ok(())
         })
         .build(context)
@@ -1203,8 +1226,8 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         screens::machine_check,
         screens::machine_change,
         screens::machine_ssh,
-            screens::machine_setup::machine_setup,
-            screens::machine_setup::machine_pick_source,
+        screens::machine_setup::machine_setup,
+        screens::machine_setup::machine_pick_source,
         screens::machine_pick_key,
         screens::projects_view,
         screens::launch_accounts,
@@ -1691,5 +1714,43 @@ mod tests {
                 "Qt's store is only read"
             );
         }
+    }
+
+    /// Every `text!`/`source!` literal in the app is a catalog source, so the
+    /// webview can translate it (as the core's own coverage test checks).
+    #[test]
+    fn every_marked_app_source_is_in_the_generated_catalog() {
+        fn collect(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    collect(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let catalog: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
+            &std::fs::read_to_string(root.join("../src/i18n.ru.json")).unwrap(),
+        )
+        .unwrap();
+        let mut files = Vec::new();
+        collect(&root.join("src"), &mut files);
+        let sources: Vec<String> = files
+            .iter()
+            .flat_map(|file| {
+                zerus_client_core::text::marked_sources(&std::fs::read_to_string(file).unwrap())
+            })
+            .collect();
+        assert!(sources.iter().any(|s| s == "Waiting to send…"));
+        let missing: Vec<_> = sources
+            .iter()
+            .filter(|s| !catalog.contains_key(s.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "app sources missing from client/src/i18n.ru.json: {missing:#?}"
+        );
     }
 }

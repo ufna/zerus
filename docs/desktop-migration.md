@@ -398,6 +398,25 @@ create no live notifier/lock/source reader and seed or rewrite no file. G4
 retains its secure reads and native effects; G1 retains the runtime admission
 and drain. This evidence remains Staged and cannot authorize historical effects.
 
+`next_linux_owned_notifications(bytes)` separately retains the optional
+AgentAttention sibling `linux-notifications-owned.json` as
+`next-linux-owned-notification-identities`, schema 2, format
+`linux-notifications-owned-json-v2`. It reuses G4's explicit
+`decode_owned_for(..., AgentAttention)`, including raw entry/file budgets and
+each row's owner/identity and empty-legacy-home checks. SoftwareUpdate rows or invalidations in
+this file refuse; no Update sibling family is invented here. Schema-one
+sources and their original suppression home remain unchanged.
+
+Private `linux-owned-notification-header` records byte length, raw entry count,
+unknown-field presence and byte encoding. Subsequent
+`linux-owned-notification-bytes` chunks contain exact offsets and base64 of at
+most 512 KiB of original bytes. Order, whitespace, original IDs, pending/unknown
+states and private unknown fields survive without calling policy `encode` or
+constructing a Model. Attach the same fresh source recheck before publication.
+This single-file adapter proves no combined owner-pair inventory, valid restart,
+commit, source discovery, current profile, permission consumer, lease or drain.
+It opens no file and has no production caller or historical effect path.
+
 `recovery_policy_caches(&QtSnapshot, next_settings_bytes)` decodes both former
 `recovery/sharedPolicy` values before returning either source stream. Families
 `qt-recovery-policy-cache` and `next-recovery-policy-cache` use schema 1 and

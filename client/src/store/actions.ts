@@ -9,6 +9,7 @@ import { bus as appBus, createNoticeBus, sessionNoticeKey, type NoticeBus } from
 import { copyState, sessionIdentity, detailsFromInspection, MUTE_PENDING, STATE_CHANGED, forgetsBindingOnly, notificationsStillAllowed, snapshotOf, terminates, type ActionRow, type ChildIdentity, type ForgetScope, type PendingNotifications } from "../ui/sessions/actions-ui";
 import type { Action, Details, Outcome, Target } from "../types";
 import type { Session } from "../ui/sessions/types";
+import { tr, trNoop } from "../i18n";
 
 // Guarded session actions. Every action is one call to the Rust side; a call
 // is never repeated. A rejected call is an unknown outcome and is shown as a
@@ -26,10 +27,10 @@ export type { Notice } from "./notices";
 /** The followed session's Activity `state` value, and whether its subscription has answered. */
 export interface Followed { value: Record<string, unknown> | undefined; settled: boolean }
 
-const CHANGED = "This session changed. Open its actions again.";
-const MUTE_CHANGED = "The shared notification setting changed while this request was pending. Refresh the session.";
-export const GONE = "This session is no longer available. Open its actions again.";
-const ALREADY_STOPPED = ["hgs: This turn is no longer working", "This turn is no longer working"];
+const CHANGED = trNoop("This session changed. Open its actions again.");
+const MUTE_CHANGED = trNoop("The shared notification setting changed while this request was pending. Refresh the session.");
+export const GONE = trNoop("This session is no longer available. Open its actions again.");
+const ALREADY_STOPPED = ["hgs: This turn is no longer working", trNoop("This turn is no longer working")];
 
 const sessionId = (computer: string, name: string) => `${computer}\n${name}`;
 const failed = (detail: string): Outcome => ({ outcome: "failed", detail });
@@ -76,9 +77,9 @@ export function createActions(
     if (action.kind === "interrupt") {
       // Qt's Stop notices (SessionsWindow.cpp 1206-1211).
       const target = `${row.name} (${row.machine})`;
-      if (out.outcome === "done") notify("info", `Interrupt sent to ${target}. Waiting for the agent to stop…`);
-      else if (ALREADY_STOPPED.includes(out.detail.trim())) notify("info", `Stop ${target}: the turn already ended or is waiting for input. No action needed.`);
-      else notify("error", `Stop ${target} failed: ${out.detail}\nOpen Terminal to check the agent before trying again.`, true);
+      if (out.outcome === "done") notify("info", tr("Interrupt sent to %1. Waiting for the agent to stop…", target));
+      else if (ALREADY_STOPPED.includes(out.detail.trim())) notify("info", tr("Stop %1: the turn already ended or is waiting for input. No action needed.", target));
+      else notify("error", tr("Stop %1 failed: %2\nOpen Terminal to check the agent before trying again.", target, out.detail), true);
       return;
     }
     if (key && out.outcome === "failed" && out.detail === STATE_CHANGED && isEndAction(action)) {
@@ -86,12 +87,12 @@ export function createActions(
       notify("info", `${verb} cancelled: the session changed.`); return;
     }
     if (out.outcome === "failed") { notify("error", out.detail, true); return; }
-    if (action.kind === "forget_binding") { notify("info", `Zerus forgot ${row.name}. The conversation stays in OpenCode.`); return; }
+    if (action.kind === "forget_binding") { notify("info", tr("Zerus forgot %1. The conversation stays in OpenCode.", row.name)); return; }
     if (!cleanupHandled && out.outcome === "done" && out.cleanup && ["kept", "unconfirmed"].includes(out.cleanup.status)) {
       reportCleanup(out, row); return;
     }
-    if (action.kind === "rename") notify("info", "Session renamed. Refreshing…");
-    else notify("info", "Session updated. Refreshing…");
+    if (action.kind === "rename") notify("info", tr("Session renamed. Refreshing…"));
+    else notify("info", tr("Session updated. Refreshing…"));
     if (!cleanupHandled) reportCleanup(out, row);
   }
 
@@ -99,10 +100,10 @@ export function createActions(
   function reportCleanup(out: Outcome, row: ActionRow) {
     if (out.outcome !== "done" || !out.cleanup) return;
     const cleanup = out.cleanup;
-    if (cleanup.status === "removed") notify("info", "Worktree removed automatically. The branch and archived conversation are kept.");
+    if (cleanup.status === "removed") notify("info", tr("Worktree removed automatically. The branch and archived conversation are kept."));
     else if (cleanup.status === "kept" || cleanup.status === "unconfirmed") {
       if (cleanupReport) cleanupReport(out, row);
-      else notify("warn", "Working folder kept for review.", true, sessionNoticeKey(row.computer, row.name), "Session archived");
+      else notify("warn", tr("Working folder kept for review."), true, sessionNoticeKey(row.computer, row.name), tr("Session archived"));
     }
   }
 
@@ -133,13 +134,13 @@ export function createActions(
     const live = catalog.rows[row.key];
     const target = targetOf(row, action.kind);
     if (!live || !target || (row.runId && live.runId !== row.runId)) {
-      if (!options.quiet) notify("info", CHANGED);
-      return failed(CHANGED);
+      if (!options.quiet) notify("info", tr(CHANGED));
+      return failed(tr(CHANGED));
     }
     if (delayEnd && isEndAction(action) && !options.delay && !options.skipDelay) {
       const captured = snapshotOf(row);
       const out = await delayEnd(captured, action, (delay, noticeKey) => perform(captured, action, { ...options, delay, noticeKey }), () => sameEnd(captured, catalog.rows[captured.key]), !!options.cleanupId);
-      return out ?? failed("Action cancelled.");
+      return out ?? failed(tr("Action cancelled."));
     }
     if (!options.delay && action.kind !== "interrupt" && updating(target.computer, target.name)) return failed("busy");
     const { out, busy } = await call(target, action, options.cleanupId, options.delay);
@@ -155,7 +156,7 @@ export function createActions(
     const { out, busy } = await call({ computer, name: "", run_id: "", conversation_id: "" }, action);
     if (busy) return out;
     if (out.outcome === "failed") notify("error", out.detail, true);
-    else notify("info", "Session updated. Refreshing…");
+    else notify("info", tr("Session updated. Refreshing…"));
     return out;
   }
 
@@ -169,7 +170,7 @@ export function createActions(
     if (!online(row.computer)) return failed("offline");
     const live = catalog.rows[row.key];
     if (live && terminates(live) !== terminates(row)) {
-      notify("error", STATE_CHANGED, true);
+      notify("error", tr(STATE_CHANGED), true);
       return failed(STATE_CHANGED);
     }
     return perform(row, { kind: action }, { cleanupId: action === "terminate" ? cleanupId : undefined });
@@ -189,20 +190,20 @@ export function createActions(
     const live = catalog.rows[row.key];
     if (!live) {
       // Rows are keyed by run, so a vanished row may be the same session on a new run; Qt refuses a scoped forget then.
-      notify("error", STATE_CHANGED, true);
+      notify("error", tr(STATE_CHANGED), true);
       return failed(STATE_CHANGED);
     }
     const now = selectedDetails(live);
     const binding = forgetsBindingOnly(live, now);
     if ((live.state === "running" && !binding) || binding !== opened.binding) {
-      notify("error", STATE_CHANGED, true);
+      notify("error", tr(STATE_CHANGED), true);
       return failed(STATE_CHANGED);
     }
     if (opened.binding && opened.run) {
       const run = now ? now.run_id : live.runId ?? "";
       const conversation = now ? now.conversation_id : live.conversationId ?? "";
       if (run !== opened.run || conversation !== opened.conversation) {
-        notify("error", STATE_CHANGED, true);
+        notify("error", tr(STATE_CHANGED), true);
         return failed(STATE_CHANGED);
       }
       return perform({ ...row, runId: run, conversationId: conversation }, { kind: "forget_binding" });
@@ -217,7 +218,7 @@ export function createActions(
   async function change(row: ActionRow): Promise<Outcome> {
     const live = catalog.rows[row.key];
     if (live && (live.state === "running") !== (row.state === "running")) {
-      notify("error", STATE_CHANGED, true);
+      notify("error", tr(STATE_CHANGED), true);
       return failed(STATE_CHANGED);
     }
     return perform(row, { kind: row.state === "running" ? "pause" : "resume" });
@@ -244,7 +245,7 @@ export function createActions(
   function stillListed(row: ActionRow): ActionRow | undefined {
     const live = catalog.rows[row.key];
     if (!live || ((row.created ?? 0) > 0 && live.created !== row.created) || (live.conversationId ?? "") !== (row.conversationId ?? "")) {
-      notify("info", GONE, true);
+      notify("info", tr(GONE), true);
       return undefined;
     }
     return live;
@@ -275,7 +276,7 @@ export function createActions(
     }
     if (!notificationMarks.currentNotificationRow(original)) return;
     if (!preferences) { notify("error", detail, true); return; }
-    if (!notificationMarks.applyNotifications(original, preferences)) notify("error", MUTE_CHANGED, true);
+    if (!notificationMarks.applyNotifications(original, preferences)) notify("error", tr(MUTE_CHANGED), true);
   }
 
   // Details: the followed session's Activity state value when it names the
@@ -334,7 +335,7 @@ export function createActions(
   /** Copies text; a failure is a sticky notice, a success shows nothing. */
   async function copy(text: string): Promise<Outcome> {
     try { await bridge.copyText(text); copied = text; return { outcome: "done", receipt: null, cleanup: null }; } catch (error) {
-      notify("error", errorText(error), true, undefined, "Not copied");
+      notify("error", errorText(error), true, undefined, tr("Not copied"));
       return failed(errorText(error));
     }
   }
@@ -355,26 +356,26 @@ export function createActions(
   /** Copy session name: the live row's name. */
   async function copyName(row: ActionRow): Promise<Outcome> {
     const live = current(row);
-    return live ? copy(live.name) : failed(GONE);
+    return live ? copy(live.name) : failed(tr(GONE));
   }
 
   /** The header copies the selected conversation, run or child ID and names it. */
   async function copyIdentity(row: ActionRow, details?: Details, child?: ChildIdentity): Promise<Outcome> {
     const live = current(row);
-    if (!live) return failed(GONE);
+    if (!live) return failed(tr(GONE));
     const sel = selection();
-    if (live.runId !== row.runId || (sel.key && sel.key !== live.key) || sel.subagent !== child?.id) return failed(CHANGED);
+    if (live.runId !== row.runId || (sel.key && sel.key !== live.key) || sel.subagent !== child?.id) return failed(tr(CHANGED));
     const identity = sessionIdentity(live, details ?? selectedDetails(live), child);
     if (!identity.value) return failed("nothing to copy");
     const out = await copy(identity.value);
-    if (out.outcome === "done") notify("info", `The ${identity.title.charAt(0).toLowerCase()}${identity.title.slice(1)} is on the clipboard`, false, undefined, "Copied");
+    if (out.outcome === "done") notify("info", identity.title === "Session ID" ? tr("The session ID is on the clipboard") : identity.title === "Agent ID" ? tr("The agent ID is on the clipboard") : tr("The run ID is on the clipboard"), false, undefined, tr("Copied"));
     return out;
   }
 
   /** Copy folder path: the selected row's current details folder, else the live row's; nothing when empty. */
   async function copyFolder(row: ActionRow, details?: Details): Promise<Outcome> {
     const live = current(row);
-    if (!live) return failed(GONE);
+    if (!live) return failed(tr(GONE));
     const folder = copyState(live, online(live.computer), details ?? selectedDetails(live)).folder;
     return folder.enabled ? copy(folder.path) : failed("nothing to copy");
   }
@@ -382,7 +383,7 @@ export function createActions(
   /** Copy connect command or Copy restore command (the archive id only for an archived row, which needs one). */
   async function copyCommand(row: ActionRow): Promise<Outcome> {
     const live = current(row);
-    if (!live) return failed(GONE);
+    if (!live) return failed(tr(GONE));
     const archived = live.state === "archived";
     if (archived && !live.archiveId) return failed("nothing to copy");
     let command: string;
@@ -396,7 +397,7 @@ export function createActions(
   /** Copy session reference: the selected row's details name the run and conversation when present. */
   async function copyReference(row: ActionRow, details?: Details): Promise<Outcome> {
     const live = current(row);
-    if (!live) return failed(GONE);
+    if (!live) return failed(tr(GONE));
     const d = details ?? selectedDetails(live);
     const target: Target = {
       computer: live.computer, name: live.name,
@@ -408,7 +409,7 @@ export function createActions(
       return failed(errorText(error));
     }
     const out = await copy(uri);
-    if (out.outcome === "done") notify("info", "The session reference is on the clipboard", false, undefined, "Copied");
+    if (out.outcome === "done") notify("info", tr("The session reference is on the clipboard"), false, undefined, "Copied");
     return out;
   }
 
@@ -451,7 +452,7 @@ export function bindArchivedRows(lookup: (key: string) => Session | undefined) {
 
 const app = createActions(withArchived(appCatalog, (key) => archivedRow(key) ?? searchRow(key)), (computer) => !computerOffline(computer), () => selection(), appMarks, appBus,
   (out, row) => { void import("./cleanupNotices").then((m) => m.reportCleanup(out, row)).catch(() => {
-    appBus.notify("warn", "Working folder kept for review.", true, sessionNoticeKey(row.computer, row.name), "Session archived");
+    appBus.notify("warn", tr("Working folder kept for review."), true, sessionNoticeKey(row.computer, row.name), tr("Session archived"));
   }); }, async (row, action, execute, current, remove) => {
     const { endActions } = await import("./endActions");
     return endActions.schedule([captureEnd(row, action)], ([ref], key) => execute(ref, key), { current, remove });

@@ -5,6 +5,7 @@ import { composer } from "./composer";
 import { notify } from "./actions";
 import { terminal, VIEW } from "./terminal";
 import { detailTab, selected, selectedKey, setDetailTab, subagentOpen, type DetailTab } from "./ui";
+import { trNoop, tr } from "../i18n";
 
 // Files dropped on the session's panel (Qt's SessionFileDrop,
 // SessionFileDrop.h, wired at SessionsWindow.cpp:1595-1601): a Terminal that
@@ -30,8 +31,8 @@ export interface DropState {
   composer: { key: string | undefined; canAttach: boolean };
 }
 
-export const TERMINAL_HINT = "Drop files to insert their paths in Terminal";
-export const COMPOSER_HINT = "Drop files to attach to this message";
+export const TERMINAL_HINT = trNoop("Drop files to insert their paths in Terminal");
+export const COMPOSER_HINT = trNoop("Drop files to attach to this message");
 
 /**
  * Qt's targets: the Terminal while it is the current tab, its session online
@@ -76,7 +77,7 @@ export function createDrops(deps: DropDeps) {
     const d = drag;
     if (!d || !d.at || d.ok !== true || !deps.overPanel(d.at.x, d.at.y)) { setHint(undefined); return; }
     const r = routeDrop(deps.state());
-    setHint(r.kind !== "none" && r.key === d.key ? (r.kind === "terminal" ? TERMINAL_HINT : COMPOSER_HINT) : undefined);
+    setHint(r.kind !== "none" && r.key === d.key ? tr(r.kind === "terminal" ? TERMINAL_HINT : COMPOSER_HINT) : undefined);
   }
 
   return {
@@ -108,7 +109,7 @@ export function createDrops(deps: DropDeps) {
       }
       const generation = Number(r.key.slice(r.key.lastIndexOf("\n") + 1));
       const peer = deps.peer();
-      if (peer !== undefined) deps.notify("info", `Transferring files to ${peer}…`, false);
+      if (peer !== undefined) deps.notify("info", tr("Transferring files to %1…", peer), false);
       try {
         const notice = await deps.terminalDrop(generation, paths);
         if (notice) deps.notify("info", notice, false);

@@ -4,6 +4,7 @@ import { toast } from "./notices";
 import type { MachineChangeRequest, MachineConnection, MachineReference, MachinesView } from "../types";
 import { loadMachines, machinesPage } from "./machines";
 import { fleetRefresh } from "../bridge";
+import { tr } from "../i18n";
 
 export const NEW_MACHINE = "@new";
 export const LOCAL_MACHINE = "@local";
@@ -51,7 +52,7 @@ export function createMachineEditor(view: Accessor<MachinesView>, write: (reques
       apply(request.change.kind === "remove" ? LOCAL_MACHINE : request.alias);
       setNotice({ error: false, text: request.change.kind === "remove"
         ? `${request.alias} was removed from this Zerus. Its agents keep running and its files stay unchanged.`
-        : request.change.kind === "reset" ? `SSH overrides of ${request.alias} were reset to the shared configuration.` : `Connection saved for ${request.alias}.` });
+        : request.change.kind === "reset" ? `SSH overrides of ${request.alias} were reset to the shared configuration.` : tr("Connection saved for %1.", request.alias) });
       // Reconnect the existing supervisor so its local peer catalog picks up
       // the saved configuration; never restart agents or create a reader.
       void changed().catch(() => {});
@@ -73,7 +74,7 @@ export function createMachineEditor(view: Accessor<MachinesView>, write: (reques
     setPrompt(undefined);
     if (p.kind === "discard") { apply(p.next); if (p.refresh) void reload(true); return; }
     if (selected() !== p.alias || view().connection_revision !== p.revision || draft().dirty) {
-      setNotice({ text: "The connection changed. Review it before removing.", error: true }); return;
+      setNotice({ text: tr("The connection changed. Review it before removing."), error: true }); return;
     }
     void mutation({ alias: p.alias, revision: p.revision, change: { kind: "remove" } });
   };
@@ -85,7 +86,7 @@ export function createMachineEditor(view: Accessor<MachinesView>, write: (reques
       const path = await tools.pickKey();
       if (path === null) return false;
       if (selected() !== selection || draft() !== original || view().connection_revision !== original.revision) {
-        setNotice({ text: "Machine settings changed elsewhere. Reload the page before saving.", error: true });return false;
+        setNotice({ text: tr("Machine settings changed elsewhere. Reload the page before saving."), error: true });return false;
       }
       setDraft({ ...original, identity_file: path, dirty: true });return true;
     } catch (error) { setNotice({ text: String(error), error: true });return false; }
@@ -112,7 +113,7 @@ export const machineEditor = createRoot(() => createMachineEditor(machinesPage, 
   pickKey: machinePickKey,
   ssh: async (reference) => {
     const advisory = await machineSsh(reference);
-    toast("SSH terminal", advisory ?? `Opened a terminal: ssh ${reference.alias}`, advisory ? "warn" : "info");
+    toast("SSH terminal", advisory ?? tr("Opened a terminal: ssh %1", reference.alias), advisory ? "warn" : "info");
     return advisory;
   },
 }));

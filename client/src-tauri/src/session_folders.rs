@@ -23,7 +23,9 @@ pub struct SessionFolders {
 }
 
 impl SessionFolders {
-    pub(crate) fn opener(&self) -> Opener { self.opener.clone() }
+    pub(crate) fn opener(&self) -> Opener {
+        self.opener.clone()
+    }
 
     pub fn new(dir: PathBuf, opener: Opener) -> Self {
         Self {

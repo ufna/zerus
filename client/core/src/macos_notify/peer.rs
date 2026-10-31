@@ -17,6 +17,8 @@ use objc2::rc::{autoreleasepool, Retained};
 use objc2_foundation::{NSData, NSDictionary, NSString};
 use sha2::{Digest, Sha256};
 
+pub mod installation;
+
 pub const REQUIREMENT_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

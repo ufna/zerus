@@ -6,6 +6,7 @@ import { suggestions } from "./suggestions";
 import { documentVisibility, type PageVisibility } from "./visibility";
 import type { Timers } from "./terminal";
 import type { Answer, ClearControl, ColdPrompt, ComposerView, Inspect, SendReply, SessionRef, StartQuestion } from "../types";
+import { trNoop, tr } from "../i18n";
 
 // The open composer (Qt MessageComposer) over the Rust hub. The webview owns
 // the text while the user types: edits go to Rust 250 ms after the last key,
@@ -34,9 +35,9 @@ export const EDIT_MS = 250;
 export const MAX_TEXT_BYTES = 64 * 1024;
 /** Qt refuses a pasted image above this many pixels (MessageComposer.cpp:394; core `MAX_IMAGE_PIXELS`). */
 export const MAX_PIXELS = 32_000_000;
-export const TOO_LONG = "Message exceeds 64 KiB.";
-const TOO_LARGE = "Image is too large. Use an image below 32 megapixels.";
-const UNREADABLE = "Could not read the pasted image.";
+export const TOO_LONG = trNoop("Message exceeds 64 KiB.");
+const TOO_LARGE = trNoop("Image is too large. Use an image below 32 megapixels.");
+const UNREADABLE = trNoop("Could not read the pasted image.");
 /** How long the disabled Send's hint shows (Qt's QToolTip, MessageComposer.cpp:817). */
 const HINT_MS = 5000;
 
@@ -118,10 +119,10 @@ export interface StatusLine { text: string; error: boolean }
 export function statusLine(v: ComposerView | undefined, own: string | undefined, tooLong: boolean): StatusLine {
   if (v?.waiting) return { text: v.status, error: v.status_error };
   if (own) return { text: own, error: true };
-  if (!v) return tooLong ? { text: TOO_LONG, error: true } : { text: "", error: false };
+  if (!v) return tooLong ? { text: tr(TOO_LONG), error: true } : { text: "", error: false };
   const below = v.status === "" || v.status === TOO_LONG || v.status === v.session_status || v.status === v.unavailable_reason;
   if (!below) return { text: v.status, error: v.status_error };
-  if (tooLong) return { text: TOO_LONG, error: true };
+  if (tooLong) return { text: tr(TOO_LONG), error: true };
   // Rust's length check may still see older text: the next item then.
   const text = v.status === TOO_LONG ? v.session_status || v.unavailable_reason : v.status;
   return { text, error: text !== "" && text === v.session_status && v.session_status_error };
@@ -363,7 +364,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
   async function sendNow(queueId?: string): Promise<boolean> {
     if (closing() || view()?.subagent) return false;
     if (opening() > 0) {
-      notices("info", "Nothing queued can be sent now", false);
+      notices("info", tr("Nothing queued can be sent now"), false);
       return false;
     }
     try { return await port.sendNow(queueId ?? null); }
@@ -467,10 +468,10 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
           if (blob.type === "image/png") png = new Uint8Array(await blob.arrayBuffer());
           else {
             const { width, height } = await images.size(blob);
-            if (width * height > MAX_PIXELS) { setError(TOO_LARGE); return; }
+            if (width * height > MAX_PIXELS) { setError(tr(TOO_LARGE)); return; }
             png = await images.png(blob);
           }
-        } catch { setError(UNREADABLE); return; }
+        } catch { setError(tr(UNREADABLE)); return; }
         const s = ordered();
         await port.pasteImage(h, png, s.start, s.end);
       });
@@ -600,7 +601,7 @@ export const composer = createRoot(() => createComposer({
     const reply = await execute(ref, key);
     if (reply.kind !== "notice") return reply;
     const changed = reply.error && reply.text === "The session state changed. Open its actions again.";
-    noticeBus.notify(changed || !reply.error ? "info" : "error", changed ? "Clear cancelled: the session changed." : reply.text, !changed && reply.error, key);
+    noticeBus.notify(changed || !reply.error ? "info" : "error", changed ? tr("Clear cancelled: the session changed.") : reply.text, !changed && reply.error, key);
   }, { current: () => current() && sameEnd(captured, catalog.rows[captured.key]) });
 }));
 

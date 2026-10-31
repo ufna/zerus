@@ -5,11 +5,67 @@ use super::{
     producer_session::Session,
     store::{HandoffLock, Location, Store},
 };
-use anyhow::{ensure, Context, Result};
+use anyhow::{ensure, Context as _, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zerus_client_core::desktop::{profile::BACKGROUND_V1, Hello};
+
+/// Own the original connection before both locks, including refusal/panic. No
+/// guarded field or checked result can be extracted, cloned or deserialized.
+pub(super) struct Context {
+    session: Session,
+    presence: Option<Guard>,
+    lock: Option<HandoffLock>,
+}
+impl Context {
+    /// Off-actor only. Reuse the service's existing canonical resolver, never a
+    /// client-supplied path. Same-user identity is not signed native-host trust.
+    pub fn new(location: &Location, session: Session) -> Result<Self> {
+        #[cfg(unix)]
+        {
+            Self::at(location, session, &super::owner::instance_path())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (location, session);
+            anyhow::bail!("producer preparation exclusion is unsupported")
+        }
+    }
+
+    #[cfg(unix)]
+    fn at(location: &Location, session: Session, path: &std::path::Path) -> Result<Self> {
+        use zerus_client_core::desktop::{self, Observation};
+        let mut context = Self {
+            session,
+            presence: None,
+            lock: None,
+        };
+        location.check_existing()?;
+        ensure!(
+            std::fs::symlink_metadata(&location.root)?.is_dir(),
+            "desktop state unavailable"
+        );
+        ensure!(
+            context.session.identity().configuration() == location.configuration,
+            "producer configuration changed"
+        );
+        context.presence = Some(super::presence_admission::fence(location)?);
+        context.lock = Some(location.handoff_lock()?);
+        let nonce = uuid::Uuid::new_v4().to_string();
+        let observed = desktop::probe_at(path, &nonce, &location.configuration);
+        let Observation::LiveNext { hello } = observed else {
+            anyhow::bail!("current canonical producer unavailable");
+        };
+        let mut expected = context.session.identity().hello().clone();
+        expected.nonce = nonce;
+        ensure!(
+            *hello == expected && hello.writer_epoch.is_none(),
+            "canonical producer changed"
+        );
+        Ok(context)
+    }
+}
 
 const BYTES: usize = 8192;
 const DOMAIN: &[u8] = b"hgs-desktop-prepared-v1\0";
@@ -155,8 +211,8 @@ pub(super) fn inspect_db(db: &Connection, configuration: &str) -> Result<Option<
         phase,
     }))
 }
-fn current(store: &Store, location: &Location, epoch: &str) -> Result<()> {
-    let (configuration, current): (String, String) = store.db.query_row(
+fn current(db: &Connection, location: &Location, epoch: &str) -> Result<()> {
+    let (configuration, current): (String, String) = db.query_row(
         "SELECT substr(configuration,1,65),substr(epoch,1,37) FROM service WHERE id=1",
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
@@ -170,13 +226,11 @@ fn current(store: &Store, location: &Location, epoch: &str) -> Result<()> {
 
 pub(super) fn prepare(
     location: &Location,
-    lock: &HandoffLock,
-    presence: &Guard,
     store: &mut Store,
-    session: &Session,
+    context: &Context,
     request_id: &str,
 ) -> Result<Saved> {
-    let identity = session.identity();
+    let identity = context.session.identity();
     let binding = Binding {
         version: 1,
         request_id: request_id.into(),
@@ -190,7 +244,16 @@ pub(super) fn prepare(
         profile_id: BACKGROUND_V1.id().into(),
         profile_hash: BACKGROUND_V1.hash(),
     };
-    save(location, lock, presence, store, binding)
+    save(
+        location,
+        context.lock.as_ref().context("preparation lock missing")?,
+        context
+            .presence
+            .as_ref()
+            .context("presence fence missing")?,
+        store,
+        binding,
+    )
 }
 
 fn save(
@@ -205,10 +268,10 @@ fn save(
     presence.verify(location)?;
     location.check_existing()?;
     binding.validate(&location.configuration)?;
-    current(store, location, &binding.service_epoch)?;
     let tx = store
         .db
         .transaction_with_behavior(TransactionBehavior::Immediate)?;
+    current(&tx, location, &binding.service_epoch)?;
     if let Some(existing) = inspect_db(&tx, &location.configuration)? {
         ensure!(
             existing.request_id() == binding.request_id,
@@ -255,29 +318,69 @@ pub(super) fn request_abort(
     lock.verify(location)?;
     presence.verify(location)?;
     location.check_existing()?;
-    let snapshot =
-        inspect_db(&store.db, &location.configuration)?.context("prepared record missing")?;
+    let tx = store
+        .db
+        .transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let snapshot = inspect_db(&tx, &location.configuration)?.context("prepared record missing")?;
     ensure!(
         snapshot.request_id() == ticket.request_id && snapshot.digest == ticket.digest,
         "prepared original changed"
     );
-    current(store, location, &snapshot.binding.service_epoch)?;
+    current(&tx, location, &snapshot.binding.service_epoch)?;
     if snapshot.phase == Phase::AbortRequested {
         return Ok(snapshot);
     }
-    let tx = store
-        .db
-        .transaction_with_behavior(TransactionBehavior::Immediate)?;
     ensure!(tx.execute("UPDATE desktop_producer_prepared SET phase='abort_requested' WHERE id=1 AND digest=?1 AND phase='prepared'", [&ticket.digest])? == 1, "prepared original changed");
     tx.commit()?;
     crate::platform::sync_dir(&location.root)?;
     inspect_db(&store.db, &location.configuration)?.context("prepared record missing")
 }
 
+/// Recover only negative abort intent from the exact persisted observation.
+/// Unlike Ticket's same-epoch path, the current service epoch is checked
+/// independently of the original epoch retained in the binding. No Ticket is
+/// reconstructed, and no original identity is rebound after a process restart.
+/// This has no caller or automatic follow-up: no clear, settlement, controller
+/// wake, notice or writer reopening follows either phase or the returned data.
+pub(super) fn request_abort_original(
+    location: &Location,
+    lock: &HandoffLock,
+    presence: &Guard,
+    store: &mut Store,
+    original: &Snapshot,
+    current_epoch: &str,
+) -> Result<Snapshot> {
+    ensure!(cfg!(unix), "producer preparation durability is unsupported");
+    lock.verify(location)?;
+    presence.verify(location)?;
+    location.check_existing()?;
+    original.binding.validate(&location.configuration)?;
+    let tx = store
+        .db
+        .transaction_with_behavior(TransactionBehavior::Immediate)?;
+    current(&tx, location, current_epoch)?;
+    let mut snapshot =
+        inspect_db(&tx, &location.configuration)?.context("prepared record missing")?;
+    ensure!(
+        snapshot.request_id() == original.request_id() && snapshot.digest == original.digest,
+        "prepared original changed"
+    );
+    if snapshot.phase == Phase::AbortRequested {
+        return Ok(snapshot);
+    }
+    ensure!(tx.execute("UPDATE desktop_producer_prepared SET phase='abort_requested' WHERE id=1 AND digest=?1 AND phase='prepared'", [&snapshot.digest])? == 1, "prepared original changed");
+    tx.commit()?;
+    // Failure after commit stays unknown and fenced; the same persisted
+    // original can be inspected again without creating another preparation.
+    crate::platform::sync_dir(&location.root)?;
+    snapshot.phase = Phase::AbortRequested;
+    Ok(snapshot)
+}
+
 macro_rules! redacted { ($($t:ty),+) => { $(impl std::fmt::Debug for $t {
     fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result { f.write_str(concat!(stringify!($t),"([prepared fence])")) }
 })+ }; }
-redacted!(Snapshot, Ticket, Saved);
+redacted!(Snapshot, Ticket, Saved, Context);
 
 #[cfg(all(test, unix))]
 mod tests;

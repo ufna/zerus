@@ -6,8 +6,8 @@ use std::collections::VecDeque;
 use zerus_client_core::account_actions::{
     self, models::Catalog as ModelCatalog, Binding, Kind, Values,
 };
-pub mod setup;
 pub mod distribution;
+pub mod setup;
 
 #[derive(Default)]
 pub(super) struct Edits(Mutex<EditState>);
@@ -227,7 +227,11 @@ impl Screens {
     fn edit_begin(&self, binding: &Binding) -> Result<(), String> {
         self.catalog_begin(&binding.computer, |catalog| binding.verify(catalog))
     }
-    fn catalog_begin(&self, computer: &ComputerId, verify: impl FnOnce(&Value) -> Result<(), String>) -> Result<(), String> {
+    fn catalog_begin(
+        &self,
+        computer: &ComputerId,
+        verify: impl FnOnce(&Value) -> Result<(), String>,
+    ) -> Result<(), String> {
         let mut hub = self.current();
         if !hub
             .fleet

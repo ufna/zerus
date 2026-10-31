@@ -5,6 +5,7 @@ import type { Outcome } from "../types";
 import type { ActionRow } from "../ui/sessions/actions-ui";
 import { bus, sessionNoticeKey, type NoticeAction } from "./notices";
 import { cleanup, closeCleanup, openCleanup, refreshCleanup, type CleanupRow, type RestoreSource } from "./terminationCleanup";
+import { tr } from "../i18n";
 
 interface Warning {
   key: string;
@@ -25,12 +26,12 @@ const errorText = (error: unknown) => typeof error === "string" ? error : error 
 
 function publish(warning: Warning) {
   const disabled = () => restoring().has(warning.key) || !!warning.id && !cleanup().rows.some((r) => r.id === warning.id && !r.busy);
-  const actions: NoticeAction[] = [{ label: "Review…", style: "ghost", disabled, run: async () => {
+  const actions: NoticeAction[] = [{ label: tr("Review…"), style: "ghost", disabled, run: async () => {
     try { await warning.review(); }
     catch (error) { bus.notify("error", errorText(error), true); publish(warning); }
   } }];
-  if (warning.restore) actions.push({ label: "Restore session", style: "primary", icon: "play", disabled, run: () => restoreCleanup(warning.restore!) });
-  bus.notify("warn", warning.text, true, warning.key, "Session archived", { actions });
+  if (warning.restore) actions.push({ label: tr("Restore session"), style: "primary", icon: "play", disabled, run: () => restoreCleanup(warning.restore!) });
+  bus.notify("warn", warning.text, true, warning.key, tr("Session archived"), { actions });
   warnings.set(warning.key, warning);
   const showing = new Set(bus.notices().map((n) => n.key));
   for (const key of warnings.keys()) if (!showing.has(key)) warnings.delete(key);
@@ -64,7 +65,7 @@ export async function restoreCleanup(source: RestoreSource): Promise<void> {
     const outcome = await bridge.terminationCleanupRestore(source);
     if (outcome.outcome !== "done") throw new Error(outcome.detail);
     owned.delete(key); warnings.delete(key);
-    bus.notify("info", "", false, key, "Session restored");
+    bus.notify("info", "", false, key, tr("Session restored"));
     await refreshCleanup();
     if (!cleanup().rows.length) closeCleanup();
   } catch (error) {
@@ -85,7 +86,7 @@ export async function reportCleanup(outcome: Extract<Outcome, { outcome: "done" 
   const captured = outcome.cleanup_capture;
   if (captured?.id && cleanup().rows.some((r) => r.id === captured.id)) return;
   const key = sessionNoticeKey(row.computer, row.name);
-  publish({ key, text: captured?.notice ?? "Working folder kept for review.", restore: captured?.restore,
+  publish({ key, text: captured?.notice ?? tr("Working folder kept for review."), restore: captured?.restore,
     review: async () => {
       const { openWorktreeReview } = await import("./worktreeCleanup");
       await openWorktreeReview(row.computer, report.common_dir, report.path, document.activeElement instanceof HTMLElement ? document.activeElement : undefined);
