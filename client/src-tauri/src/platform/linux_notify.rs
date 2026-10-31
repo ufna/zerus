@@ -17,6 +17,9 @@ use zerus_client_core::linux_notify::{
     decode_saved, escape_body, Namespace, Saved, FILE_LIMIT, LIMIT,
 };
 
+// Dormant resource prerequisite; the installed schema1 constructor is unchanged.
+pub(crate) mod startup;
+
 const SERVICE: &str = "org.freedesktop.Notifications";
 const PATH: &str = "/org/freedesktop/Notifications";
 pub const FILE: &str = "linux-notifications.json";

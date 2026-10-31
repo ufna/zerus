@@ -449,3 +449,58 @@ controls, not filesystem failure/kill, actual durability, permission-consumer,
 native resource, current-source, lease, release, recurrence or rollback proof.
 The G1 negative permission consumer remains a separate prerequisite. No runtime
 caller, source API, default, native wire behavior or ownership changes here.
+
+### Dormant startup resource prerequisite
+
+The crate-private `platform::linux_notify::startup` path has no production
+caller. Its explicit local Unix address and NativePosting charge construct one
+startup worker, one connection with the internal zbus executor disabled, and
+two logical readers over a shared raw queue of 16. Both AddMatch acknowledgements
+precede either raw reader's activation. The installed schema1 Poster keeps its
+existing constructor and behavior. Future installation must atomically select
+one constructor and preserve unresolved owners; this helper supplies no global
+installation exclusivity.
+
+`OwnedControl` is weak and close-only. Close clears readiness and fences inputs
+before cancellation/wake, performs no native I/O or join, and never renews the
+original cleanup deadline. The setup deadline starts before worker handoff;
+setup and cleanup each have one total budget of at most five seconds. Native
+construction and polling run outside Tokio on the worker. No mutex poison
+recovery, stopped flag, timed wait or empty Tokio executor establishes completion.
+
+`OwnedStartup` retains the original worker JoinHandle and armed accounting
+completion. Both raw readers and borrowed messages drop before any RemoveMatch.
+Exact removal acknowledgements, connection close/drop, executor task completion
+and disappearance of the worker's registered wake captures precede its private
+CleanExit. Only off-GUI `try_finish` joining that exact successful worker can
+complete the accounting guard. Finished is terminal for this resource slice;
+failure, lost handles, late completion, panic, poison and uncertain cleanup pin
+the original fixed group. A positively known no-native-work path still requires
+the actual worker join. Weak controls cannot manufacture a finished owner.
+
+The locked async-io reactor and driver are once-only shared process infrastructure
+outside per-startup accounting. They remain alive; Finished claims no process or
+whole-role quiet. Each startup still owns its registrations, sockets, futures,
+wakers, timers, messages, captures and executor tasks. Private qualification
+combines exact peer/capture destruction and worker joins with warmed socket/thread
+baselines and repeated starts. Counts alone do not establish resource custody.
+Both whole-process baseline controls run in separate exact test-binary children
+with private buses, no display address and fresh HOME/XDG/TMPDIR/TMUX_TMPDIR.
+Other cases keep the test harness's default parallel execution; concurrent tests
+cannot change either child's process-wide socket or thread observations.
+
+Queue 16 is an item bound. The locked SDK can receive frames up to 128 MiB before
+body allocation and has no smaller Builder receive-size knob. Startup code does
+not decode, copy or route bodies, or retain them beyond the SDK queues and current
+borrowed read. It installs no app sink and supplies no production bounded-byte
+ingress or memory qualification. That gate remains before native method/callback
+adoption.
+
+There are no Notice, PostBatch, cleared-token, native-ID, Original, Model, path,
+QtSeed, source/store, writer/ack or Desk/main-thread sink inputs. No Notify or
+CloseNotification is sent. G3 Staged bytes cannot activate this constructor.
+Agent-only completion while updates stay live, posted/results/write/sink work,
+GTK observation, clear/withdrawal/release, recurrence, rollback and replacement
+under load remain separate gates. The G1 prepared-startup exclusion/current
+profile/negative consumer and whole-profile qualification remain required before
+any production caller or ownership transition.
