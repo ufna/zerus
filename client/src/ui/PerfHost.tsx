@@ -999,6 +999,10 @@ export function PerfHost() {
       const { projectVividSmoke } = await import("../perf/projectVividSmoke");
       void projectVividSmoke(!!config().replay && !!config().actions_smoke, new URLSearchParams(location.search).get("project-vivid-smoke") === "restored");
     }
+    if (new URLSearchParams(location.search).has("project-swarm-ui-smoke") && inTauri()) {
+      const { swarmUiSmoke } = await import("../perf/swarmUiSmoke");
+      void swarmUiSmoke(!!config().replay && !!config().actions_smoke);
+    }
     if (new URLSearchParams(location.search).has("project-swarm-smoke") && inTauri()) {
       const { swarmSmoke } = await import("../perf/swarmSmoke");
       void swarmSmoke(!!config().replay && !!config().actions_smoke);

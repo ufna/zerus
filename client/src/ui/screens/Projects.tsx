@@ -16,6 +16,7 @@ import { folderButton, folderExists, folderLaunch, folderMenuEntry, newSessionIn
 import { copy } from "../../store/actions";
 import { nextSort, showAskedProject, shownProjects, sortFolders, type Sort, type SortColumn } from "./projects-ui";
 import { createProjectFolders } from "./project-folders";
+const ProjectSwarmDialog = lazy(() => import("./ProjectSwarmDialog"));
 const WorktreeOverviewDialog = lazy(() => import("./WorktreeOverviewDialog"));
 const ProjectWorktrees = lazy(() => import("./ProjectWorktrees"));
 const ProjectCloneDialog = lazy(() => import("./ProjectCloneDialog"));
@@ -78,6 +79,7 @@ export function ProjectsScreen() {
     stopSplit = end; addEventListener("pointermove", move); addEventListener("pointerup", end); addEventListener("pointercancel", end);
   };
   onCleanup(() => stopSplit?.());
+  const [swarmOrigin, setSwarmOrigin] = createSignal<{ element: HTMLElement; connect: boolean }>();
   const [overviewOrigin, setOverviewOrigin] = createSignal<HTMLElement>();
   const [cloneOrigin, setCloneOrigin] = createSignal<HTMLElement>();
   const folderEdits = createProjectFolders(() => view().projects, setSelectedFolder);
@@ -205,7 +207,7 @@ export function ProjectsScreen() {
           <h1>Projects</h1>
           <span class="grow" />
           <button class="btn" disabled={!organization.grouping().ready} onClick={(e) => setOverviewOrigin(e.currentTarget)}><Icon name="folder-git-2" size={14} />Worktrees…</button>
-          <button class="btn" disabled title={PROJECT_EDITING}><Icon name="network" size={14} />Swarm…</button>
+          <button class="btn" disabled={!view().loaded} onClick={(e) => setSwarmOrigin({ element: e.currentTarget, connect: false })}><Icon name="network" size={14} />Swarm…</button>
         </header>
         <p class="muted proj-hint">Organize sessions and folders across your computers. A folder can be used by several projects.</p>
 
@@ -213,7 +215,7 @@ export function ProjectsScreen() {
           <div class="notice proj-guide">
             <Icon name="link" size={14} />
             <span class="grow">{notice()}</span>
-            <button class="btn small" disabled title={PROJECT_EDITING}>Connect project catalogs…</button>
+            <button class="btn small" disabled={!view().loaded} onClick={(e) => setSwarmOrigin({ element: e.currentTarget, connect: true })}>Connect project catalogs…</button>
           </div>
         )}</Show>
 
@@ -310,6 +312,7 @@ export function ProjectsScreen() {
           )}</Show>
         </div>
       </div>
+      <Suspense><Show when={swarmOrigin()} keyed>{(origin) => <ProjectSwarmDialog projects={view().projects} connect={origin.connect} origin={origin.element} close={() => setSwarmOrigin(undefined)} />}</Show></Suspense>
       <Suspense><Show when={overviewOrigin()} keyed>{(origin) => <WorktreeOverviewDialog projects={view().projects} all={allSwarm()} origin={origin} close={() => setOverviewOrigin(undefined)} />}</Show></Suspense>
       <Suspense><Show when={cloneOrigin()} keyed>{(origin) => <ProjectCloneDialog project={project()?.id ?? "ungrouped"} preferred={selected()?.machine} projects={view().projects} origin={origin} close={() => setCloneOrigin(undefined)} placed={(project, folder) => {setSelectedProject(project); setSelectedFolder(folder);}} />}</Show></Suspense>
       <Suspense><Show when={folderEdits.prompt()} keyed>{(prompt) => <ProjectFolderDialog prompt={prompt} busy={folderEdits.busy()} folders={view().projects.find((p) => p.id === prompt.project)?.folders ?? []} close={folderEdits.close} save={(place, path, name) => { void folderEdits.save(place, path, name); }} />}</Show></Suspense>
