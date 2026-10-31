@@ -6,6 +6,9 @@ GUI still owns its poster. G1's producer drain and native adapter admission
 remain prerequisites; no import, marker, parsed receipt or document grants them.
 The completed Mac switch is not reopened.
 
+The proposed [Mac host admission boundary](desktop-macos-native-admission.md)
+specifies the next G1/G4 agreement. It is not an executable API.
+
 ## Current boundary and ownership
 
 Today, `client/src-tauri/src/platform/macos_notify.rs` posts through
