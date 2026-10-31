@@ -5,6 +5,7 @@ import { needsAttention, type MenuEntry } from "../../store/ui";
 import type { AttentionFacts } from "../../store/attention";
 import { snapshotOf, type ActionRow } from "./actions-ui";
 import type { Session } from "./types";
+import { tr } from "../../i18n";
 
 // The mark entries of Qt's Sessions menu (SessionsWindow.cpp 5324-5328, 5416-5433,
 // 362-365, 3389-3402), run against the local-first marks store.
@@ -33,7 +34,7 @@ export function runMarkRead(row: ActionRow): boolean {
 export function runMarkNeedsAttention(row: ActionRow): boolean {
   if (!stillListed(row)) return false;
   const ok = markNeedsAttention(row);
-  if (!ok) notify("error", GONE, true);
+  if (!ok) notify("error", tr(GONE), true);
   return ok;
 }
 

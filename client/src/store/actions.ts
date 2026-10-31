@@ -9,6 +9,7 @@ import { bus as appBus, createNoticeBus, sessionNoticeKey, type NoticeBus } from
 import { copyState, sessionIdentity, detailsFromInspection, MUTE_PENDING, STATE_CHANGED, forgetsBindingOnly, notificationsStillAllowed, snapshotOf, terminates, type ActionRow, type ChildIdentity, type ForgetScope, type PendingNotifications } from "../ui/sessions/actions-ui";
 import type { Action, Details, Outcome, Target } from "../types";
 import type { Session } from "../ui/sessions/types";
+import { tr, trNoop } from "../i18n";
 
 // Guarded session actions. Every action is one call to the Rust side; a call
 // is never repeated. A rejected call is an unknown outcome and is shown as a
@@ -27,8 +28,8 @@ export type { Notice } from "./notices";
 export interface Followed { value: Record<string, unknown> | undefined; settled: boolean }
 
 const CHANGED = "This session changed. Open its actions again.";
-const MUTE_CHANGED = "The shared notification setting changed while this request was pending. Refresh the session.";
-export const GONE = "This session is no longer available. Open its actions again.";
+const MUTE_CHANGED = trNoop("The shared notification setting changed while this request was pending. Refresh the session.");
+export const GONE = trNoop("This session is no longer available. Open its actions again.");
 const ALREADY_STOPPED = ["hgs: This turn is no longer working", "This turn is no longer working"];
 
 const sessionId = (computer: string, name: string) => `${computer}\n${name}`;
@@ -169,7 +170,7 @@ export function createActions(
     if (!online(row.computer)) return failed("offline");
     const live = catalog.rows[row.key];
     if (live && terminates(live) !== terminates(row)) {
-      notify("error", STATE_CHANGED, true);
+      notify("error", tr(STATE_CHANGED), true);
       return failed(STATE_CHANGED);
     }
     return perform(row, { kind: action }, { cleanupId: action === "terminate" ? cleanupId : undefined });
@@ -189,20 +190,20 @@ export function createActions(
     const live = catalog.rows[row.key];
     if (!live) {
       // Rows are keyed by run, so a vanished row may be the same session on a new run; Qt refuses a scoped forget then.
-      notify("error", STATE_CHANGED, true);
+      notify("error", tr(STATE_CHANGED), true);
       return failed(STATE_CHANGED);
     }
     const now = selectedDetails(live);
     const binding = forgetsBindingOnly(live, now);
     if ((live.state === "running" && !binding) || binding !== opened.binding) {
-      notify("error", STATE_CHANGED, true);
+      notify("error", tr(STATE_CHANGED), true);
       return failed(STATE_CHANGED);
     }
     if (opened.binding && opened.run) {
       const run = now ? now.run_id : live.runId ?? "";
       const conversation = now ? now.conversation_id : live.conversationId ?? "";
       if (run !== opened.run || conversation !== opened.conversation) {
-        notify("error", STATE_CHANGED, true);
+        notify("error", tr(STATE_CHANGED), true);
         return failed(STATE_CHANGED);
       }
       return perform({ ...row, runId: run, conversationId: conversation }, { kind: "forget_binding" });
@@ -217,7 +218,7 @@ export function createActions(
   async function change(row: ActionRow): Promise<Outcome> {
     const live = catalog.rows[row.key];
     if (live && (live.state === "running") !== (row.state === "running")) {
-      notify("error", STATE_CHANGED, true);
+      notify("error", tr(STATE_CHANGED), true);
       return failed(STATE_CHANGED);
     }
     return perform(row, { kind: row.state === "running" ? "pause" : "resume" });
@@ -244,7 +245,7 @@ export function createActions(
   function stillListed(row: ActionRow): ActionRow | undefined {
     const live = catalog.rows[row.key];
     if (!live || ((row.created ?? 0) > 0 && live.created !== row.created) || (live.conversationId ?? "") !== (row.conversationId ?? "")) {
-      notify("info", GONE, true);
+      notify("info", tr(GONE), true);
       return undefined;
     }
     return live;
@@ -275,7 +276,7 @@ export function createActions(
     }
     if (!notificationMarks.currentNotificationRow(original)) return;
     if (!preferences) { notify("error", detail, true); return; }
-    if (!notificationMarks.applyNotifications(original, preferences)) notify("error", MUTE_CHANGED, true);
+    if (!notificationMarks.applyNotifications(original, preferences)) notify("error", tr(MUTE_CHANGED), true);
   }
 
   // Details: the followed session's Activity state value when it names the

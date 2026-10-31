@@ -7,6 +7,7 @@ import { search, selectedKey, setSelectedKey, setStateFilter, stateFilter, type 
 import { archiveNameOccupied, menuState, nameKey, snapshotOf, STATE_CHANGED, type ActionRow } from "../ui/sessions/actions-ui";
 import type { Session } from "../ui/sessions/types";
 import type { Action, Outcome } from "../types";
+import { tr } from "../i18n";
 
 // Restore session and Forget archived session, after Qt's changeSession
 // (SessionsWindow.cpp 5542-5560), terminateSession (5758-5826), writeDone
@@ -165,8 +166,8 @@ export function createRestores(deps: RestoreDeps) {
     const kept = untrack(pending).find((p) => p.sourceKey === row.key)?.source;
     const live = kept && !deps.archived(row.key) ? snapshotOf(kept) : deps.stillListed(row);
     if (!live) return;
-    if (live.name !== row.name) { deps.notify("info", GONE, true); return; }
-    if ((live.state === "running") !== (row.state === "running")) { deps.notify("error", STATE_CHANGED, true); return; }
+    if (live.name !== row.name) { deps.notify("info", tr(GONE), true); return; }
+    if ((live.state === "running") !== (row.state === "running")) { deps.notify("error", tr(STATE_CHANGED), true); return; }
     if (live.state !== "archived" || !restorable(live)) return;
     const id = nameKey(live);
     if (writing !== undefined || full(id)) { deps.notify("error", RESTORES_PENDING, true); return; }
@@ -213,7 +214,7 @@ export function createRestores(deps: RestoreDeps) {
       return;
     }
     if (!deps.online(live.computer) || deps.batchRunning() || deps.updating(live.computer, live.name)) return;
-    if (live.state === "running") { deps.notify("error", STATE_CHANGED, true); return; }
+    if (live.state === "running") { deps.notify("error", tr(STATE_CHANGED), true); return; }
     cancelFollow();
     const out = await deps.perform(row, { kind: "forget_archive", archive_id: row.archiveId ?? "" });
     if (out.outcome === "done") deps.refreshArchive();

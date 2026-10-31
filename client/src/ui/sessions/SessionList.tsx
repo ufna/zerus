@@ -166,7 +166,7 @@ function clearEntry(s: Session): MenuEntry {
     disabled: selected ? !control?.enabled : read?.checking || !control?.enabled,
     hint: selected ? control?.reason || undefined : read?.checking ? tr("Checking whether this session can be cleared…") : control?.reason || undefined,
     action: () => {
-      if (catalog.rows[s.key]?.state !== s.state) { notify("error", STATE_CHANGED, true); return; }
+      if (catalog.rows[s.key]?.state !== s.state) { notify("error", tr(STATE_CHANGED), true); return; }
       if (selected) { composer.openClear(); return; }
       if (!read?.control?.enabled || clearRead?.id !== read.id) return;
       const session: SessionRef = { computer: s.computer, key: s.catalogKey, name: s.name, archive_id: s.archiveId ?? null };
