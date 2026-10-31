@@ -71,3 +71,65 @@ queued results before releasing admission. Those resources, service revoke and
 restart/reboot custody, durable native receipts and positive IPC are not supplied
 by this method-only slice. The existing single-instance/SNI/menu routes and
 Exit/`exit_work` versus updater `quit_with_flush` boundary stay unchanged.
+
+## Passive owned-identity codec
+
+`linux_notify::owned` adds data validation and bounded encoding only. It has no
+caller, I/O, mutating transition, collector or native effect. Schema1 `Saved`,
+`decode_saved` and the current GUI's authority remain unchanged. The future
+optional typed store is the sibling `linux-notifications-owned.json`; it must
+never rewrite `linux-notifications.json`, so a GUI rollback can still read the
+original schema1 bytes.
+
+The version2 shape has `version`, `bus_id`, `owner`, `tokens`, `uncertain` and
+`legacy_uncertain`. Each positive canonical decimal u32 token-map key names an
+explicit `{owner, token}` record; uncertain entries use the same record shape.
+The only private owner tags are `agent_attention` and `software_update`.
+`native_notice::Owner` itself stays without serde. `ScopedToken::new` checks a
+caller-supplied expected owner against the existing token validator; it never
+classifies an ownerless token. Exact token spelling, including accepted padding,
+is retained. Namespace strings are retained data, never a current bus/lease
+proof. Both namespace strings empty is an explicit absence and permits only
+suppression. A nonempty namespace requires a 32-hex bus ID and a valid colon-led
+unique daemon name, and can retain positive IDs without authorizing their use.
+
+`decode_owned(bytes)` checks the 16 MiB input bound, canonical IDs, duplicate
+native-ID members, duplicate known identity fields, explicit tags and the raw
+combined 8192-entry bound before map/set coalescing. `quarantine_legacy(bytes)`
+reads raw schema1 members without a coalescing ID map: distinct tokens under
+repeated raw IDs all become unbound suppression. All legacy numeric bindings
+lose action/removal authority even when their old lineage matches. The raw
+legacy import is capped at 4096 inside 8192, reserving headroom; refusal must
+happen before any ownership change and preserve the existing whole GUI profile.
+An implicit role fallback after service handoff is forbidden.
+
+`OwnedSaved::from_legacy(Saved)` is a validated typed-data convenience, not the
+raw quarantine path: `Saved` has already coalesced raw members. The raw decoder
+cannot be replaced by that convenience, and neither output is original-source
+evidence. Original bytes, hashes, order, opaque fields and source counts remain
+G3's evidence. G3 owns a future distinct sibling-file source family; no Qt-v2
+store or source reader is invented here.
+
+Inspection exposes bounded binding, scoped-uncertain and legacy iterators,
+namespace data, the pre-coalescing input count and `has_unknown`. Unknown fields
+are skipped without retaining a second private-body tree; the caller retains
+the original bytes. `OwnedSaved` is not serde-Serialize. Its explicit `encode()`
+refuses `has_unknown` and caps serialized output while writing, including JSON
+escape expansion. A future writer must check the existing sibling record and
+refuse opaque extensions instead of overwriting them with a fresh projection.
+
+No release or reservation/result/withdrawal transition exists in this slice.
+A later pure transition must bind its exact original instance/reservation,
+expected owner/token and namespace generation, invalidate both sides of a native
+ID collision (including pending withdrawals), retain unresolved evidence and
+refuse pressure before admission. These data tokens are not G1 effect tickets.
+The typed path cannot become a default until G1 qualifies exact original-edge
+or original-ID release, recurring-token notification liveness, headroom and
+rollback. An owner-scoped clear must never release unbound suppression.
+
+Before a runtime two-owner Poster, the coordinator's owner/category/action
+isolation contract still needs a pinned agreement. Current schema1 category
+`im.received`, IDs, texts and default actions stay unchanged. Shared software
+update writes do not establish whole-file quiet; any profile capture still needs
+its applicable writer proofs and exact fresh-byte checks. No imported phase or
+this codec admits native posting, withdrawal, activation or positive service IPC.
