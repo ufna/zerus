@@ -180,6 +180,24 @@ retry, launch, settlement or release, including a failed no-effect observation.
 The encoded receipt cap remains 16 KiB; original/reply caps remain 1 MiB/64 KiB.
 There is no G1 operation kind, actor, caller, I/O or current production admission.
 
+The pure `task_message` policy names `TaskMessageRecovery`: the existing
+`--recover-only` command can reserve an uncertain canonical comment or reconcile
+task metadata, so a future caller needs executing-kind admission. This slice
+only proposes the original queue/note call once, with the existing 90-second
+timeout, exact original marker and frozen stdin. It never reconstructs missing
+input. Send/reopen and deferred native input remain review-only.
+
+Configuration/project/task are independently retained expected data, not fields
+observed in an outbox record. Raw record and input each stay at most 1 MiB;
+known duplicate fields are refused at every inspected level before projection.
+Queue/note evidence must carry the exact original task/request/mode/dispatch and
+expected state, without any message executor or nonempty native delivery fields.
+The closed eight-field receipt explicitly carries `executor: null`, with the
+complete binding returned separately; it is capped at 16 KiB and contains no
+body, files, prompt or errors. A missing reservation is never no-effect proof.
+No receipt delivers, consumes, settles, releases or rotates anything, and this
+module supplies no runner, I/O, store, current G1 kind/profile or caller.
+
 The first pure policy is `operation_recovery::task_start::Original`. G1 and G2
 agreed its contract on 2026-10-30. It has no actor integration, process runner,
 SQL, positive job IPC or executing permission. The dedicated operation
