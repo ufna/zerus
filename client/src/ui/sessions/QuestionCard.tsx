@@ -1,4 +1,5 @@
 import { Index, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack } from "solid-js";
+import { tr } from "../../i18n";
 import { Icon } from "../lib/icons";
 import { questions } from "../../store/questions";
 import { terminal } from "../../store/terminal";
@@ -102,9 +103,9 @@ function Card(props: { arrived: boolean }) {
           <Show when={c().pending}><span class="qcard-dim" title={c().pending_tip}>{c().pending}</span></Show>
           <Show when={c().nav}>{(nav) => (
             <>
-              <button type="button" class="icon-btn small" aria-label="Previous queued question" title={nav().previous_tip} disabled={!nav().previous}
+              <button type="button" class="icon-btn small" aria-label={tr("Previous queued question")} title={nav().previous_tip} disabled={!nav().previous}
                 onClick={() => void questions.navigate(-1)}><Icon name="chevron-left" size={12} /></button>
-              <button type="button" class="icon-btn small" aria-label="Next queued question" title={nav().next_tip} disabled={!nav().next}
+              <button type="button" class="icon-btn small" aria-label={tr("Next queued question")} title={nav().next_tip} disabled={!nav().next}
                 onClick={() => void questions.navigate(1)}><Icon name="chevron-right" size={12} /></button>
             </>
           )}</Show>
@@ -125,7 +126,7 @@ function Card(props: { arrived: boolean }) {
         <button type="button" class="btn small ghost" disabled={native() ? !nativeBinding(selected()) : !terminal.texts()?.available} title={terminalTip()}
           onClick={() => { if (native()) openNative(); else { terminal.opened(); setDetailTab("terminal"); } }}>{q().terminal_label}</button>
         <Show when={c().skip.visible}><button type="button" class="btn small ghost" title={c().skip_tip} disabled={!questions.enabled(c().skip)} onClick={() => void questions.skip()}>{c().skip.label}</button></Show>
-        <Show when={c().retry}><button type="button" class="btn small ghost" title={c().retry_tip} onClick={() => void questions.allowRetry()}>Allow retry</button></Show>
+        <Show when={c().retry}><button type="button" class="btn small ghost" title={c().retry_tip} onClick={() => void questions.allowRetry()}>{tr("Allow retry")}</button></Show>
         <Show when={c().previous.visible}><button type="button" class="btn small ghost" disabled={!c().previous.enabled} onClick={() => void questions.page(c().page - 1)}>{c().previous.label}</button></Show>
         <Show when={c().next.visible}><button type="button" class="btn small ghost accent" disabled={!c().next.enabled} onClick={() => void questions.page(c().page + 1)}>{c().next.label}</button></Show>
         <Show when={c().submit.visible}><button type="button" class="btn small primary" disabled={!questions.enabled(c().submit)} onClick={() => void questions.submit()}>{questions.label(c().submit)}</button></Show>
@@ -231,7 +232,7 @@ function ColdAnswerDialog() {
           <div class="dlg-body"><div class="confirm-body wrap-pre" id="qcard-cold-text">{d().prompt.text}</div></div>
           <div class="dlg-foot">
             <span class="spacer" />
-            <button type="button" class="btn primary" data-initial autofocus onClick={() => void questions.answerCold(false)}>Cancel</button>
+            <button type="button" class="btn primary" data-initial autofocus onClick={() => void questions.answerCold(false)}>{tr("Cancel")}</button>
             <button type="button" class="btn" onClick={() => void questions.answerCold(true)}>{d().prompt.proceed}</button>
           </div>
         </>

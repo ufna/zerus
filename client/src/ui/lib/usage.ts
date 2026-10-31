@@ -87,9 +87,10 @@ export function countdown(minutes: number) {
   return m < 60 ? `${m}m` : m < 2880 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`;
 }
 
-export function windowText(w: UsageWindow, withReset = true) {
+/** "5h 34%", with the time to reset once usage reaches `resetFrom` percent. */
+export function windowText(w: UsageWindow, withReset = true, resetFrom = 100) {
   if (!current(w)) return `${period(w)} refresh`;
-  return `${period(w)} ${Math.round(w.used)}%${withReset && w.used >= 100 ? ` (${remaining(w.resetsIn)})` : ""}`;
+  return `${period(w)} ${Math.round(w.used)}%${withReset && w.used >= resetFrom ? ` (${remaining(w.resetsIn)})` : ""}`;
 }
 
 export function approximately(minutes: number) {

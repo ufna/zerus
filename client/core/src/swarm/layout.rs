@@ -10,7 +10,9 @@ use std::path::Path;
 
 mod presentation;
 pub mod windows_folders;
+mod windows_import;
 pub use presentation::{qt_presentation, PresentationSeed};
+pub use windows_import::{qt_windows_folders, WindowsFoldersContext, WindowsFoldersSeed};
 
 /// The space between neighbouring ranks; an insert takes the middle.
 pub const GAP: u64 = 1 << 20;

@@ -251,6 +251,29 @@ paused: launch the intended conversation with its explicit native ID to bind it.
 
 ### Tracking and durable state
 
+`hgs session-action-status SESSION --json` reads one original lifecycle receipt.
+Supply the original `session-action` JSON unchanged, including its `request_id`,
+`action`, `expected_run_id`, `expected_conversation_id` and any original action
+arguments. The request is limited to 8 KiB; the existing private receipt is
+limited to 64 KiB. Its request digest, identities and result target must match.
+The reader opens no writer or lock, initializes no missing state, and leaves the
+receipt unchanged. It omits private native diagnostics.
+
+A stored `claimed` receipt is reported as `uncertain`; a later fresh read can
+observe the original writer's completed receipt. Missing evidence reports
+`unavailable`. Neither result proves that nothing ran or authorizes a retry.
+Malformed, unsupported or unsafe receipts are refused. This API covers only
+`session-action`, including Archive, Terminate and Forget; `clear-context` has
+separate receipts and is not accepted here.
+
+For a peer, use `hgs @example-peer --expect-machine MACHINE_UUID
+session-action-status SESSION --json`. The selected executable must advertise
+`lifecycle-receipt-status-v1` and the existing machine guard before JSON is
+forwarded. Its existing private Swarm catalog supplies the machine identity
+without initialization, locking or saving. An unguarded remote receipt read is
+refused. This reader is a recovery prerequisite; it does not enable durable
+delivery of pending Undo actions when Zerus quits.
+
 `hgs hooks --account native-claude --json` inspects the account's hook
 registration without running the agent. Use another exact account ID for an
 isolated profile. The report contains provider/account identifiers, configuration

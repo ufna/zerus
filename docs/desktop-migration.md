@@ -270,9 +270,25 @@ each source item is bounded at 1 MiB before JSON allocation, and scope JSON at
 destinations, unsafe credential-bearing repository URLs and oversized records
 remain in the unchanged source without a final family record. Attach the fresh
 source recheck before publication. No live Clone, status, retirement, clone,
-checkout or launch call runs. Next keeps no separate pending-clone store: its
-actual clone operations are already in the covered creation journal. These
-adapters add no discovery, startup publication, consumer or execution authority.
+checkout or launch call runs. These adapters add no discovery, startup
+publication, consumer or execution authority.
+
+`next_repository_clones(settings_bytes)` additionally covers Projects Clone's
+later native-only `repository_clones` Settings extension as
+`next-repository-clones`, schema 1, format `settings-json-v1`. It reuses the
+bounded Settings and version-1 checkpoint decoders (64 exact opaque scopes),
+without opening Settings or starting a writer. An absent extension is explicit;
+null, future, malformed, duplicate or oversized records refuse the family.
+Pending/previous credential-bearing URLs, including userinfo, queries or
+fragments, remain only in the original source without a final family record.
+The source hash covers the full original Settings bytes. Private snapshots
+include a `clone-header` with presence and extension byte length, followed by
+`clone-checkpoint-bytes` chunks with exact byte offsets and base64 bodies of at
+most 512 KiB before encoding. Concatenating them retains the extension JSON's
+original bytes, order and whitespace, including pending/previous request IDs;
+unrelated settings are excluded. The original scope hashes are never resolved
+to a current CLI/computer/project. Attach the same fresh source recheck before
+publication. No status, settlement, retirement, clone or replay is authorized.
 
 `download_index(folder, bytes)` reuses the pure bounded decoder extracted from
 the existing `download_cache::Ledger::open`. The index `.zerus-files.json` is

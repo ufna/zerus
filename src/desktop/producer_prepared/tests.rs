@@ -1,0 +1,465 @@
+use super::*;
+use zerus_client_core::desktop::{Build, ABI};
+use zerus_desktop_migration::canonical;
+
+const REQUEST: &str = "11111111-1111-4111-8111-111111111111";
+const PRODUCER: &str = "22222222-2222-4222-8222-222222222222";
+fn fixture() -> (tempfile::TempDir, Location, Store, String) {
+    let temp = tempfile::tempdir().unwrap();
+    let location = Location {
+        root: canonical(&temp.path().join("state/desktop")).unwrap(),
+        configuration: "a".repeat(64),
+    };
+    location.prepare().unwrap();
+    let epoch = uuid::Uuid::new_v4().to_string();
+    let store = Store::open(&location, &epoch).unwrap();
+    (temp, location, store, epoch)
+}
+fn binding(epoch: &str) -> Binding {
+    Binding {
+        version: 1,
+        request_id: REQUEST.into(),
+        configuration: "a".repeat(64),
+        service_epoch: epoch.into(),
+        producer_epoch: PRODUCER.into(),
+        frontend: Hello {
+            abi: ABI.into(),
+            version: 1,
+            nonce: "33333333-3333-4333-8333-333333333333".into(),
+            application: "com.hgdev.hgs-tray".into(),
+            gui: "tauri".into(),
+            build: Build {
+                version: "1.2.3".into(),
+                source_commit: "b".repeat(40),
+                source_dirty: Some(false),
+            },
+            instance_epoch: "44444444-4444-4444-8444-444444444444".into(),
+            writer_epoch: None,
+            configuration: Some("a".repeat(64)),
+            live: true,
+            replay: false,
+        },
+        writer_epoch: uuid::Uuid::new_v4().to_string(),
+        drain_id: uuid::Uuid::new_v4().to_string(),
+        import_id: uuid::Uuid::new_v4().to_string(),
+        profile_id: BACKGROUND_V1.id().into(),
+        profile_hash: BACKGROUND_V1.hash(),
+    }
+}
+fn ticket(saved: Saved) -> Ticket {
+    match saved {
+        Saved::Created(ticket) => ticket,
+        _ => panic!("expected original commit"),
+    }
+}
+fn bytes(store: &Store) -> String {
+    store
+        .db
+        .query_row(
+            "SELECT binding FROM desktop_producer_prepared WHERE id=1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn preparation_is_immutable_and_duplicate_delivery_never_mints_another_mutation_key() {
+    let (_temp, location, mut store, epoch) = fixture();
+    let presence = super::super::presence_admission::fence(&location).unwrap();
+    let lock = location.handoff_lock().unwrap();
+    assert!(inspect_db(&store.db, &location.configuration)
+        .unwrap()
+        .is_none());
+    let original = ticket(save(&location, &lock, &presence, &mut store, binding(&epoch)).unwrap());
+    let before = bytes(&store);
+    // A fresh random candidate cannot replace the original writer/drain/import IDs.
+    let Saved::Existing(snapshot) =
+        save(&location, &lock, &presence, &mut store, binding(&epoch)).unwrap()
+    else {
+        panic!("duplicate granted mutation key")
+    };
+    assert_eq!(snapshot.request_id(), original.request_id);
+    assert_eq!(snapshot.digest, original.digest);
+    assert_eq!(snapshot.phase(), Phase::Prepared);
+    assert_eq!(bytes(&store), before);
+    for changed in 0..3 {
+        let mut candidate = binding(&epoch);
+        match changed {
+            0 => candidate.request_id = uuid::Uuid::new_v4().to_string(),
+            1 => candidate.producer_epoch = uuid::Uuid::new_v4().to_string(),
+            _ => candidate.frontend.build.source_commit = "c".repeat(40),
+        }
+        assert!(save(&location, &lock, &presence, &mut store, candidate).is_err());
+        assert_eq!(bytes(&store), before);
+    }
+}
+
+#[test]
+fn dropped_result_and_service_restart_retain_the_original_fence_and_legacy_refusal() {
+    let (_temp, location, mut store, epoch) = fixture();
+    let presence = super::super::presence_admission::fence(&location).unwrap();
+    let lock = location.handoff_lock().unwrap();
+    drop(save(&location, &lock, &presence, &mut store, binding(&epoch)).unwrap());
+    let before = bytes(&store);
+    assert!(super::super::store::writer_active(&location).is_err());
+    // Ordinary writer revocation cannot erase an unsettled preparation.
+    zerus_desktop_ledger::revoke(&store.db, "manual_revoke").unwrap();
+    assert!(super::super::store::writer_active(&location).is_err());
+    drop(store);
+    let new_epoch = uuid::Uuid::new_v4().to_string();
+    let mut store = Store::open(&location, &new_epoch).unwrap();
+    let snapshot = inspect_db(&store.db, &location.configuration)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.binding.service_epoch, epoch);
+    assert_eq!(snapshot.phase(), Phase::Prepared);
+    assert_eq!(bytes(&store), before);
+    assert!(save(&location, &lock, &presence, &mut store, binding(&new_epoch)).is_err());
+    assert_eq!(bytes(&store), before);
+}
+
+#[test]
+fn abort_is_only_negative_reconciliation_intent_and_never_reopens_writers() {
+    let (_temp, location, mut store, epoch) = fixture();
+    let presence = super::super::presence_admission::fence(&location).unwrap();
+    let lock = location.handoff_lock().unwrap();
+    let original = ticket(save(&location, &lock, &presence, &mut store, binding(&epoch)).unwrap());
+    let before = bytes(&store);
+    let bad = Ticket {
+        request_id: original.request_id.clone(),
+        digest: "f".repeat(64),
+    };
+    assert!(request_abort(&location, &lock, &presence, &mut store, &bad).is_err());
+    for _ in 0..2 {
+        let snapshot = request_abort(&location, &lock, &presence, &mut store, &original).unwrap();
+        assert_eq!(snapshot.phase(), Phase::AbortRequested);
+        assert_eq!(snapshot.digest, original.digest);
+        assert_eq!(bytes(&store), before);
+        assert!(super::super::store::writer_active(&location).is_err());
+    }
+    drop(store);
+    let mut store = Store::open(&location, &uuid::Uuid::new_v4().to_string()).unwrap();
+    assert_eq!(
+        inspect_db(&store.db, &location.configuration)
+            .unwrap()
+            .unwrap()
+            .phase(),
+        Phase::AbortRequested
+    );
+    assert!(request_abort(&location, &lock, &presence, &mut store, &original).is_err());
+    assert!(super::super::store::writer_active(&location).is_err());
+}
+
+#[test]
+fn wrong_lock_presence_configuration_and_epoch_refuse_before_commit() {
+    let (_temp, location, mut store, epoch) = fixture();
+    let (_other_temp, other, _other_store, _) = fixture();
+    let presence = super::super::presence_admission::fence(&location).unwrap();
+    let other_presence = super::super::presence_admission::fence(&other).unwrap();
+    let lock = location.handoff_lock().unwrap();
+    let other_lock = other.handoff_lock().unwrap();
+    assert!(save(
+        &location,
+        &other_lock,
+        &presence,
+        &mut store,
+        binding(&epoch)
+    )
+    .is_err());
+    assert!(save(
+        &location,
+        &lock,
+        &other_presence,
+        &mut store,
+        binding(&epoch)
+    )
+    .is_err());
+    assert!(save(
+        &location,
+        &lock,
+        &presence,
+        &mut store,
+        binding(&uuid::Uuid::new_v4().to_string())
+    )
+    .is_err());
+    let mut candidate = binding(&epoch);
+    candidate.configuration = "c".repeat(64);
+    assert!(save(&location, &lock, &presence, &mut store, candidate).is_err());
+    assert!(inspect_db(&store.db, &location.configuration)
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn corrupt_changed_oversized_unknown_or_extra_rows_never_look_absent() {
+    for changed in 0..9 {
+        let (_temp, location, mut store, epoch) = fixture();
+        let presence = super::super::presence_admission::fence(&location).unwrap();
+        let lock = location.handoff_lock().unwrap();
+        save(&location, &lock, &presence, &mut store, binding(&epoch)).unwrap();
+        let original = bytes(&store);
+        match changed {
+            0 => {
+                store
+                    .db
+                    .execute(
+                        "UPDATE desktop_producer_prepared SET digest=?1",
+                        ["f".repeat(64)],
+                    )
+                    .unwrap();
+            }
+            1 => {
+                store
+                    .db
+                    .execute(
+                        "UPDATE desktop_producer_prepared SET binding=?1",
+                        ["x".repeat(BYTES + 1)],
+                    )
+                    .unwrap();
+            }
+            2..=4 => {
+                let mut value: serde_json::Value = serde_json::from_str(&original).unwrap();
+                match changed {
+                    2 => value["version"] = 2.into(),
+                    3 => value["configuration"] = "c".repeat(64).into(),
+                    _ => value["authority"] = true.into(),
+                }
+                let body = serde_json::to_string(&value).unwrap();
+                store
+                    .db
+                    .execute(
+                        "UPDATE desktop_producer_prepared SET binding=?1,digest=?2",
+                        params![body, digest(body.as_bytes())],
+                    )
+                    .unwrap();
+            }
+            5 => {
+                store.db.execute_batch("PRAGMA ignore_check_constraints=ON; UPDATE desktop_producer_prepared SET phase='complete';").unwrap();
+            }
+            6 => {
+                store.db.execute_batch("PRAGMA ignore_check_constraints=ON; INSERT INTO desktop_producer_prepared SELECT 2,binding,digest,phase FROM desktop_producer_prepared;").unwrap();
+            }
+            7 => {
+                store.db.execute_batch("ALTER TABLE desktop_producer_prepared RENAME TO old_prepared; CREATE VIEW desktop_producer_prepared AS SELECT * FROM old_prepared WHERE 0;").unwrap();
+            }
+            _ => {
+                store
+                    .db
+                    .execute_batch("DROP TABLE desktop_producer_prepared")
+                    .unwrap();
+            }
+        }
+        assert!(inspect_db(&store.db, &location.configuration).is_err());
+        assert!(super::super::store::writer_active(&location).is_err());
+    }
+}
+
+#[test]
+fn a_downgraded_schema_marker_never_hides_a_retained_preparation() {
+    let (_temp, location, mut store, epoch) = fixture();
+    let presence = super::super::presence_admission::fence(&location).unwrap();
+    let lock = location.handoff_lock().unwrap();
+    save(&location, &lock, &presence, &mut store, binding(&epoch)).unwrap();
+    for version in [1, 8, 999] {
+        store
+            .db
+            .execute_batch(&format!("PRAGMA user_version={version}"))
+            .unwrap();
+        assert!(super::super::store::writer_active(&location).is_err());
+    }
+}
+
+#[test]
+fn invalid_current_frontend_or_profile_cannot_create_a_preparation() {
+    for changed in 0..7 {
+        let (_temp, location, mut store, epoch) = fixture();
+        let presence = super::super::presence_admission::fence(&location).unwrap();
+        let lock = location.handoff_lock().unwrap();
+        let mut candidate = binding(&epoch);
+        match changed {
+            0 => candidate.frontend.build.source_dirty = Some(true),
+            1 => candidate.frontend.replay = true,
+            2 => candidate.frontend.writer_epoch = Some(epoch),
+            3 => candidate.profile_hash = "f".repeat(64),
+            4 => candidate.request_id = "00000000-0000-0000-0000-000000000000".into(),
+            5 => candidate.import_id = "invalid".into(),
+            _ => candidate.frontend.instance_epoch = "00000000-0000-0000-0000-000000000000".into(),
+        }
+        assert!(save(&location, &lock, &presence, &mut store, candidate).is_err());
+        assert!(inspect_db(&store.db, &location.configuration)
+            .unwrap()
+            .is_none());
+    }
+}
+
+#[test]
+fn child_fixture_commits_without_running_destructors() {
+    let Some(path) = std::env::var_os("ZERUS_PREPARED_CRASH_FIXTURE") else {
+        return;
+    };
+    let location = Location {
+        root: path.into(),
+        configuration: "a".repeat(64),
+    };
+    let epoch = uuid::Uuid::new_v4().to_string();
+    let mut store = Store::open(&location, &epoch).unwrap();
+    let _owner = location.lock().unwrap();
+    let presence = super::super::presence_admission::fence(&location).unwrap();
+    let lock = location.handoff_lock().unwrap();
+    save(&location, &lock, &presence, &mut store, binding(&epoch)).unwrap();
+    use std::io::Write;
+    println!("PREPARED_FIXTURE_COMMITTED {REQUEST}");
+    std::io::stdout().flush().unwrap();
+    std::process::exit(86);
+}
+
+#[test]
+fn committed_preparation_survives_an_actual_process_exit_without_reply_or_drop() {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    let (temp, location, store, _) = fixture();
+    drop(store);
+    let private = temp.path().join("child");
+    for name in [
+        "home", "tmp", "tmux", "config", "state", "data", "cache", "runtime",
+    ] {
+        crate::platform::private_dir(&private.join(name)).unwrap();
+    }
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "desktop::producer_prepared::tests::child_fixture_commits_without_running_destructors",
+            "--nocapture",
+        ])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", private.join("home"))
+        .env("TMPDIR", private.join("tmp"))
+        .env("TMUX_TMPDIR", private.join("tmux"))
+        .env("HGS_CONFIG_DIR", private.join("config"))
+        .env("HGS_STATE_DIR", private.join("state"))
+        .env("XDG_CONFIG_HOME", private.join("config"))
+        .env("XDG_STATE_HOME", private.join("state"))
+        .env("XDG_DATA_HOME", private.join("data"))
+        .env("XDG_CACHE_HOME", private.join("cache"))
+        .env("XDG_RUNTIME_DIR", private.join("runtime"))
+        .env("ZERUS_PREPARED_CRASH_FIXTURE", &location.root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = crate::platform::spawn_in_turn(&mut command).unwrap();
+    let end = Instant::now() + Duration::from_secs(10);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= end {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("private crash fixture exceeded its deadline");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(86),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout)
+        .contains(&format!("PREPARED_FIXTURE_COMMITTED {REQUEST}")));
+    assert!(super::super::store::writer_active(&location).is_err());
+    let store = Store::open(&location, &uuid::Uuid::new_v4().to_string()).unwrap();
+    let snapshot = inspect_db(&store.db, &location.configuration)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.request_id(), REQUEST);
+    assert_eq!(snapshot.phase(), Phase::Prepared);
+}
+
+#[test]
+fn original_session_is_retained_while_its_exact_binding_is_durably_prepared() {
+    use super::super::producer_session::Registry;
+    use std::{
+        io::{BufRead, BufReader, Write},
+        os::unix::net::{UnixListener, UnixStream},
+        sync::Arc,
+        thread,
+        time::{Duration, Instant},
+    };
+    use zerus_client_core::desktop::{self, producer::Challenge, Responder};
+    let (temp, location, mut store, epoch) = fixture();
+    let source = binding(&epoch);
+    let responder = Arc::new(Responder::new(
+        source.frontend.application.clone(),
+        source.frontend.build.clone(),
+        source.frontend.instance_epoch.clone(),
+        true,
+        false,
+    ));
+    assert!(responder.configure_once(location.configuration.clone()));
+    let query = desktop::query(&source.frontend.nonce).unwrap();
+    let expected =
+        serde_json::from_slice(&responder.reply(&query[..query.len() - 1]).unwrap()).unwrap();
+    let path = temp.path().join("canonical");
+    let listener = UnixListener::bind(&path).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let registry = Registry::new(location.configuration.clone(), epoch).unwrap();
+    let (stream, mut peer) = UnixStream::pair().unwrap();
+    peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    peer.set_write_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let pending = registry.begin(BufReader::new(stream), expected).unwrap();
+    let frontend = thread::spawn(move || {
+        let mut offer = String::new();
+        BufReader::new(&mut peer).read_line(&mut offer).unwrap();
+        let offer: serde_json::Value = serde_json::from_str(&offer).unwrap();
+        let challenge: Challenge = serde_json::from_value(offer["challenge"].clone()).unwrap();
+        assert!(responder.install_challenge(challenge, Instant::now()));
+        let ready = serde_json::json!({"abi":offer["abi"],"version":1,"op":"ready","sequence":1,"configuration":offer["configuration"],"instance_epoch":offer["expected"]["instance_epoch"],"challenge":offer["challenge"]});
+        writeln!(peer, "{ready}").unwrap();
+        let end = Instant::now() + Duration::from_secs(3);
+        let mut canonical = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < end => {
+                    thread::sleep(Duration::from_millis(2))
+                }
+                result => panic!("private canonical accept {result:?}"),
+            }
+        };
+        canonical
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        canonical
+            .set_write_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut query = Vec::new();
+        BufReader::new(&mut canonical)
+            .read_until(b'\n', &mut query)
+            .unwrap();
+        canonical
+            .write_all(&responder.reply(query.strip_suffix(b"\n").unwrap()).unwrap())
+            .unwrap();
+        peer
+    });
+    let session = pending.bind(&path).unwrap();
+    let _peer = frontend.join().unwrap();
+    let presence = super::super::presence_admission::fence(&location).unwrap();
+    let lock = location.handoff_lock().unwrap();
+    let _ticket =
+        ticket(prepare(&location, &lock, &presence, &mut store, &session, REQUEST).unwrap());
+    let snapshot = inspect_db(&store.db, &location.configuration)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.binding.frontend, *session.identity().hello());
+    assert_eq!(
+        snapshot.binding.producer_epoch,
+        session.identity().challenge().producer_epoch
+    );
+    let (stream, _other_peer) = UnixStream::pair().unwrap();
+    assert!(registry
+        .begin(BufReader::new(stream), source.frontend)
+        .is_err());
+    drop(session);
+    assert!(super::super::store::writer_active(&location).is_err());
+}

@@ -1,6 +1,8 @@
-//! Restricted noncolliding post results. These handles are policy data, never
+//! Restricted post results. These handles are policy data, never
 //! native jobs, receipts, physical-save evidence or current permissions.
 use super::*;
+mod collision;
+pub(super) use collision::Collision;
 
 #[derive(Clone)]
 struct Key {
@@ -184,6 +186,34 @@ impl Model {
                     .get(id.get().to_string())
                     .is_none()
         });
+        let observed = match &report.outcome {
+            PostOutcome::Delivered(id)
+            | PostOutcome::Unknown {
+                native_id: Some(id),
+            } => Some(*id),
+            _ => None,
+        };
+        let collision = if valid_namespace
+            && envelope_matches(
+                &self.stores[index(current.key.owner)].value,
+                original.namespace(),
+            )
+            && !self.frozen
+        {
+            observed.filter(|id| {
+                let (bus, daemon) = namespace_key(original.namespace());
+                self.positives.contains(&(bus, daemon, id.get()))
+                    && self.slot_matches_namespace(original, *id)
+            })
+        } else {
+            None
+        };
+        let continuation = collision.and_then(|id| {
+            self.collision_affects_agent(original, id)
+                .ok()
+                .filter(|affected| *affected)
+                .map(|_| Collision::new(current.key.clone(), id))
+        });
         if !valid_namespace
             || !representable
             || !envelope_matches(
@@ -201,6 +231,7 @@ impl Model {
             p.phase = BatchStatus::Review;
             current.report = Some(report);
             proposal.payload = None;
+            self.collision = continuation;
             return Ok(());
         }
         let id = id.unwrap();
@@ -267,6 +298,9 @@ impl Model {
             owner: p.owner,
             step: p.sequence,
             item: Some(result.key.item),
+            phase: WritePhase::PostResult,
+            original_sha256: Some(result.key.original_sha256.clone()),
+            predecessor: None,
             before: store.image.clone(),
             after: Image {
                 sha256: Some(hash(&bytes)),
@@ -279,6 +313,7 @@ impl Model {
             value,
             preparation: i,
             unknown: false,
+            blocked: false,
         });
         Ok(WritePlan {
             key: WriteKey { attempt },

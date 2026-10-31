@@ -1,5 +1,5 @@
-//! Pure post admission, barrier/result acknowledgements and noncolliding result
-//! policy. No filesystem, native call, withdrawal/release, runtime or effect ticket.
+//! Pure post admission, result acknowledgements and restricted collision policy.
+//! No filesystem, native call, withdrawal/release, runtime or effect ticket.
 //! Host reports and policy fences never prove actual durability or drain.
 use super::*;
 use crate::linux_notify::owned::inspection::{Inspection, Slot};
@@ -58,16 +58,34 @@ impl Image {
         self.sha256.is_some()
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WritePhase {
+    PreIssue,
+    PostResult,
+    CollisionInvalidations,
+    CollisionResult,
+}
+impl WritePhase {
+    fn collision(self) -> bool {
+        matches!(self, Self::CollisionInvalidations | Self::CollisionResult)
+    }
+}
 #[derive(Clone)]
 pub struct Attempt {
     model: Weak<()>,
     owner: Owner,
     step: u64,
     item: Option<usize>,
+    phase: WritePhase,
+    original_sha256: Option<String>,
+    predecessor: Option<Box<Attempt>>,
     before: Image,
     after: Image,
 }
 impl Attempt {
+    pub fn phase(&self) -> WritePhase {
+        self.phase
+    }
     pub fn owner(&self) -> Owner {
         self.owner
     }
@@ -82,6 +100,13 @@ impl Attempt {
             && self.owner == other.owner
             && self.step == other.step
             && self.item == other.item
+            && self.phase == other.phase
+            && self.original_sha256 == other.original_sha256
+            && match (&self.predecessor, &other.predecessor) {
+                (Some(a), Some(b)) => a.matches(b),
+                (None, None) => true,
+                _ => false,
+            }
             && self.before == other.before
             && self.after == other.after
     }
@@ -145,6 +170,7 @@ struct Outstanding {
     value: Value,
     preparation: usize,
     unknown: bool,
+    blocked: bool,
 }
 pub struct FenceData {
     model: Weak<()>,
@@ -188,6 +214,7 @@ pub struct Model {
     outstanding: Option<Outstanding>,
     native: Option<post::Native>,
     result: Option<post::PendingResult>,
+    collision: Option<post::Collision>,
     positives: BTreeSet<(String, String, u32)>,
     next_sequence: u64,
     highest_nonce: u64,
@@ -273,11 +300,13 @@ impl Model {
                 }
             }
             if expected == Owner::AgentAttention {
-                for (o, id) in rows.positive_claims() {
+                for (o, _) in rows.positive_claims() {
                     agent_namespaces.insert(namespace_key(o.namespace()));
                     // Conservative headroom for every static invalidation reason.
                     reserved_entries += 4;
-                    reserved_bytes += wire::invalidation_budget(o, id);
+                    reserved_bytes +=
+                        wire::invalidation_budget(o, NonZeroU32::new(u32::MAX).unwrap())
+                            .map_err(|_| Rejection::Pressure)?;
                 }
             }
             let bytes = saved.encode().map_err(|_| Rejection::InvalidInput)?;
@@ -304,6 +333,7 @@ impl Model {
             outstanding: None,
             native: None,
             result: None,
+            collision: None,
             positives,
             next_sequence: 1,
             highest_nonce,
@@ -388,7 +418,8 @@ impl Model {
                 + RESULT_MARGIN;
             if expected == Owner::AgentAttention {
                 entries += 4;
-                reserve += wire::invalidation_budget(o, NonZeroU32::new(u32::MAX).unwrap());
+                reserve += wire::invalidation_budget(o, NonZeroU32::new(u32::MAX).unwrap())
+                    .map_err(|_| Rejection::Pressure)?;
             }
         }
         if self.preparations.len() >= PREPARATIONS
@@ -426,6 +457,9 @@ impl Model {
     /// One output buffer; required result plans precede unrelated barriers.
     pub fn next_write(&mut self) -> Result<Option<WritePlan>, Rejection> {
         if self.invalidated {
+            if self.collision.is_some() {
+                return self.next_collision_write();
+            }
             return Err(Rejection::NeedsReview);
         }
         if self.outstanding.is_some() || self.native.is_some() {
@@ -463,6 +497,9 @@ impl Model {
             owner: p.owner,
             step: p.sequence,
             item: None,
+            phase: WritePhase::PreIssue,
+            original_sha256: None,
+            predecessor: None,
             before: store.image.clone(),
             after: Image {
                 sha256: Some(hash(&bytes)),
@@ -475,6 +512,7 @@ impl Model {
             value,
             preparation: i,
             unknown: false,
+            blocked: false,
         });
         Ok(Some(WritePlan {
             key: WriteKey { attempt },
@@ -497,7 +535,7 @@ impl Model {
         if !current.attempt.matches(&outcome.attempt) {
             return Err(Rejection::WrongAttempt);
         }
-        if current.unknown || self.invalidated {
+        if current.blocked || (self.invalidated && !current.attempt.phase.collision()) {
             return Err(Rejection::NeedsReview);
         }
         if outcome.disposition == Disposition::Unknown
@@ -509,6 +547,7 @@ impl Model {
             self.generation = self.generation.saturating_add(1);
             let current = self.outstanding.as_mut().unwrap();
             current.unknown = outcome.disposition == Disposition::Unknown;
+            current.blocked = true;
             if outcome.disposition == Disposition::RefusedBeforeWrite {
                 plan.bytes = None;
             }
@@ -524,7 +563,9 @@ impl Model {
                 value: current.value,
                 image: current.attempt.after.clone(),
             };
-            if current.attempt.item.is_some() {
+            if current.attempt.phase.collision() {
+                self.collision_saved(current.attempt);
+            } else if current.attempt.item.is_some() {
                 self.result_saved(current.preparation);
             } else {
                 self.preparations[current.preparation].barrier = Some(current.attempt.clone());

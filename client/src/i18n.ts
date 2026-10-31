@@ -57,4 +57,6 @@ export function installUiLanguage() {
 }
 
 export const uiLanguage = language;
+/** Qt's QT_TR_NOOP: marks a source for the coverage test; translate it with tr() where shown. */
+export const trNoop = <T extends string>(source: T): T => source;
 export const tr = (source: string, ...args: TranslationArgument[]) => translate(language(), source, ...args);

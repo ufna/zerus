@@ -171,6 +171,10 @@ pub fn verify_private(path: &Path, kind: Private) -> io::Result<bool> {
 pub fn verify_private_file(file: &fs::File) -> io::Result<bool> {
     Ok(private_metadata(&file.metadata()?, Private::File))
 }
+/// Owner-only existing directory, checked through its pinned handle.
+pub fn verify_private_directory(file: &fs::File) -> io::Result<bool> {
+    Ok(private_metadata(&file.metadata()?, Private::Directory))
+}
 fn private_metadata(metadata: &fs::Metadata, kind: Private) -> bool {
     (match kind {
         Private::Directory => metadata.is_dir(),

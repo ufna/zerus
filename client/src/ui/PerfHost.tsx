@@ -1003,6 +1003,10 @@ export function PerfHost() {
       const { swarmUiSmoke } = await import("../perf/swarmUiSmoke");
       void swarmUiSmoke(!!config().replay && !!config().actions_smoke);
     }
+    if (new URLSearchParams(location.search).has("project-swarm-conflicts-smoke") && inTauri()) {
+      const { swarmConflictsSmoke } = await import("../perf/swarmConflictsSmoke");
+      void swarmConflictsSmoke(!!config().replay && !!config().actions_smoke, new URLSearchParams(location.search).get("project-swarm-conflicts-smoke") === "large");
+    }
     if (new URLSearchParams(location.search).has("project-swarm-smoke") && inTauri()) {
       const { swarmSmoke } = await import("../perf/swarmSmoke");
       void swarmSmoke(!!config().replay && !!config().actions_smoke);

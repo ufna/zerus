@@ -139,5 +139,19 @@ malformed/unchanged success reply nor an unknown result confirms the choice.
 The review is never restored for retry, including after close/reopen. A fresh
 read and matching source are required before ordinary catalog edits resume.
 
-The lazy visible conflict tab remains a separate slice and stays disabled.
+The Conflicts tab loads its panel and styles on demand. It follows the mockup's
+list, review table, consequences and action row, with the 480 px **Confirm
+catalog change** dialog for removal and identity choices. Cancel has initial
+focus; Escape closes only that confirmation and returns focus to its action.
+Changed native review identity or choice closes an old confirmation.
+
+Only overflow adds navigation: 64 conflict summaries under the 210 px list
+column, and 32 unique values below the choices table. Summary paging keeps the
+review, value paging clears the choice, and resolving selects the first item of
+the current page (clamped backwards when it empties). At a pager bound, focus
+moves to the other button of that pager, never into a list row. A whole-view
+refusal uses the existing footer and shows no partial list. The client retains
+one summary page and one review page and coalesces source changes without a
+poller; no event or lost response can repeat Resolve.
+
 No filesystem, second writer, CRDT, poller or migration authority is added.

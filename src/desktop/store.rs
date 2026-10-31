@@ -9,7 +9,7 @@ use std::{
 };
 use zerus_desktop_migration::{canonical, configuration, HANDOFF_LOCK};
 
-pub const SCHEMA: i64 = 8;
+pub const SCHEMA: i64 = 9;
 pub struct HandoffLock {
     _lock: platform::FileLock,
     root: PathBuf,
@@ -168,6 +168,17 @@ pub(super) fn writer_active(location: &Location) -> Result<Option<bool>> {
         configuration == location.configuration,
         "desktop configuration mismatch"
     );
+    if version < 9 {
+        let unexpected: i64 = db.query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE name='desktop_producer_prepared'",
+            [],
+            |row| row.get(0),
+        )?;
+        ensure!(
+            unexpected == 0,
+            "prepared journal has an older schema marker"
+        );
+    }
     if version == 1 {
         return Ok(Some(false));
     }
@@ -175,6 +186,12 @@ pub(super) fn writer_active(location: &Location) -> Result<Option<bool>> {
         r.get(0)
     })?;
     ensure!(matches!(revoked, 0 | 1), "invalid desktop writer policy");
+    if version >= 9 {
+        ensure!(
+            super::producer_prepared::inspect_db(&db, &location.configuration)?.is_none(),
+            "unsettled producer preparation requires reconciliation before legacy presence"
+        );
+    }
     Ok(Some(revoked == 0))
 }
 
@@ -277,6 +294,12 @@ impl Store {
             let tx = db.transaction()?;
             zerus_desktop_ledger::operations::custody::migrate(&tx)?;
             tx.execute_batch("CREATE INDEX desktop_commands_pending ON desktop_commands(state,at,request_id); PRAGMA user_version=8;")?;
+            tx.commit()?;
+        }
+        if version < 9 {
+            let tx = db.transaction()?;
+            super::producer_prepared::migrate(&tx)?;
+            tx.execute_batch("PRAGMA user_version=9;")?;
             tx.commit()?;
         }
         zerus_desktop_catalog::begin_service(&mut db, epoch)?;

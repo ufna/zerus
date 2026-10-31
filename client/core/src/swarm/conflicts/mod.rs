@@ -66,6 +66,7 @@ pub struct Choice {
     pub project: Option<Project>,
     pub origins: Vec<Origin>,
     pub shown: bool,
+    pub removal: bool,
 }
 #[derive(Debug, Serialize)]
 pub struct Selection {
@@ -111,6 +112,11 @@ fn uuid(s: &str) -> bool {
     crate::creation::uuid(s)
 }
 impl Field {
+    fn removal(&self, value: &Value) -> bool {
+        matches!(self, Self::Project { field, .. } if field == "alive" && value == false)
+            || matches!(self, Self::Folder { .. }) && value.is_null()
+            || matches!(self, Self::Machine { field, .. } if field == "redirect")
+    }
     fn checked(raw: &Value) -> Result<Self, String> {
         let field: Self = serde_json::from_value(raw.clone()).map_err(|_| INVALID)?;
         let valid = match &field {
@@ -427,9 +433,7 @@ impl Review {
                 _ => "Keep this value",
             }
             .into(),
-            confirmation: matches!(&self.field, Field::Project { field, .. } if field == "alive" && value == false)
-                || matches!(self.field, Field::Folder { .. }) && value.is_null()
-                || matches!(&self.field, Field::Machine { field, .. } if field == "redirect"),
+            confirmation: self.field.removal(value),
         })
     }
     /// Build the existing CLI payload only; native must reserve its single writer,

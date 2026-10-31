@@ -14,13 +14,18 @@ export async function worktreeReviewSmoke(allowed: boolean, projects = false, na
   const log = (line: string) => invoke("perf_log", { line: "worktree-review-smoke: " + line });
   const button = (root: string, label: string) => [...document.querySelectorAll<HTMLButtonElement>(root + " button")].find((b) => b.textContent?.trim() === label);
   const scope = projects ? ".wtp" : ".inspector";
+  const cleanupButton = () => [...document.querySelectorAll<HTMLButtonElement>(scope + " button")].find((b) => /^Clean up(?: \(\d+\))?…$/u.test(b.textContent?.trim() ?? ""));
   const menu = async (path: string) => { const card = [...document.querySelectorAll<HTMLElement>(projects ? ".wtp-root" : ".icard.wt")].find((c) => c.querySelector(projects ? ".wtp-path" : ".wt-path")?.textContent?.includes(path))!; require(card, "missing checkout card " + path); const r = card.getBoundingClientRect(); (projects ? card.querySelector<HTMLElement>(".wtp-row")! : card).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: r.left + 50, clientY: r.top + 30 })); await until(() => document.querySelector(".menu[role=menu]"), "context menu missing"); };
   const choose = (names: string[]) => { for (const row of document.querySelectorAll<HTMLTableRowElement>(".wc-table tbody tr")) { const input = row.querySelector<HTMLInputElement>("input")!; const wanted = names.some((n) => row.title.endsWith("/" + n)); if (!input.disabled && input.checked !== wanted) input.click(); } };
   try {
     await until(() => Object.values(catalog.rows).some((s) => s.name === "codex/example/probe"), "synthetic session missing");
     const s = Object.values(catalog.rows).find((s) => s.name === "codex/example/probe")!;
     setSelectedKey(s.key); if (projects) setPage("projects"); else openInspector("worktrees");
-    await until(() => document.querySelectorAll(projects ? ".wtp-root" : ".icard.wt").length >= 4 && !button(scope, "Clean up…")?.disabled, "worktree panel did not load");
+    await until(() => document.querySelectorAll(projects ? ".wtp-root" : ".icard.wt").length >= 4 && !cleanupButton()?.disabled, "worktree panel did not load");
+    if (projects) {
+      await until(() => cleanupButton()?.textContent?.trim() === `Clean up (${overviewUI ? 304 : 4})…`, "read-only cleanup reminder count missing");
+      require(cleanupButton()!.title.includes("Review them first."), "reminder lost its review-first tooltip");
+    }
     await log("PANEL"); await sleep(500);
     if (overviewUI) {
       button(".projects .su-head", "Worktrees…")!.click();
@@ -109,8 +114,8 @@ export async function worktreeReviewSmoke(allowed: boolean, projects = false, na
     await menu("/missing"); button(".menu", "Forget missing worktree…")!.click();
     await until(() => worktreeReview()?.focus.endsWith("/missing"), "missing worktree focus lost"); require(worktreeReview()?.rows.length === 1, "focused review escaped its checkout");
     button(".worktree-review", "Close")!.click(); await until(() => !worktreeReviewDialog(), "review did not close");
-    await until(() => !button(scope, "Clean up…")!.disabled, "catalog did not refresh after review");
-    button(scope, "Clean up…")!.click(); await until(() => worktreeReview()?.rows.length === 6, "full review missing");
+    await until(() => !cleanupButton()!.disabled, "catalog did not refresh after review");
+    cleanupButton()!.click(); await until(() => worktreeReview()?.rows.length === 6, "full review missing");
     require(!document.querySelector<HTMLInputElement>(".worktree-review .check input")!.checked, "branch opt-in must default off");
     const blocked = [...document.querySelectorAll<HTMLTableRowElement>(".wc-table tbody tr")].find((r) => r.title.endsWith("/blocked"))!; require(blocked.querySelector<HTMLInputElement>("input")!.disabled, "known use offered removal");
     await log("REVIEW"); await sleep(500); choose(["ignored"]);
@@ -134,8 +139,8 @@ export async function worktreeReviewSmoke(allowed: boolean, projects = false, na
     require(worktreeReview()!.rows.some((r) => r.path.endsWith("/unknown") && !r.selectable && r.state === "Unknown"), "unknown was rearmed by refresh");
     require(!document.querySelector<HTMLInputElement>(".worktree-review .check input")!.checked, "branch consent was remembered");
     await log("ESCAPE_REVIEW"); await until(() => !worktreeReviewDialog(), "Escape did not close the review");
-    await until(() => document.activeElement?.textContent?.trim() === "Clean up…", "review focus did not return");
-    await until(() => !button(scope, "Clean up…")!.disabled, "catalog not refreshed"); await menu("/unknown"); button(".menu", "Remove worktree…")!.click();
+    await until(() => document.activeElement === cleanupButton(), "review focus did not return");
+    await until(() => !cleanupButton()!.disabled, "catalog not refreshed"); await menu("/unknown"); button(".menu", "Remove worktree…")!.click();
     await until(() => worktreeReview()?.rows.length === 1 && worktreeReview()?.unknown, "unknown outcome not retained after reopening");
     require(button(".worktree-review", "Remove selected…")!.disabled && button(".worktree-review", "Review again")!.disabled, "unknown offered a retry");
     await log("UNKNOWN_REOPEN"); await sleep(500); button(".worktree-review", "Close")!.click();
