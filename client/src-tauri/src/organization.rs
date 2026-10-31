@@ -1662,6 +1662,7 @@ pub fn set_project_collapsed(state: State<'_, Organization>, project: String, co
 
 #[cfg(all(test, unix))]
 mod tests {
+    mod swarm_conflicts;
     mod swarm_dialog_cases;
     mod windows_folders;
     use super::*;

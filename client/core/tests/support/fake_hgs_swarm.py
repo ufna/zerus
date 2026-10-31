@@ -24,7 +24,7 @@ elif args == ["machine", "ls"]:
     action = "machines"
 elif len(args) == 3 and args[0] == "swarm" and args[1] in ("preview", "join"):
     action = args[1]
-elif len(args) == 2 and args[0] == "swarm" and args[1] in ("get", "apply", "sync"):
+elif len(args) == 2 and args[0] == "swarm" and args[1] in ("get", "apply", "sync", "resolve"):
     action = args[1]
 else:
     sys.stderr.write("fake hgs: unexpected call\n")

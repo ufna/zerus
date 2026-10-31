@@ -28,6 +28,9 @@ if '--worker' not in sys.argv:
         import copy
         rows={item['key']:item['row'] for item in organization['items']}
         summary=rows['organization'];summary.update(node_id=MACHINE,swarm_id='fixture-swarm',initialized=True,machines=[{'id':MACHINE,'name':'example-host','local':True},{'id':'22222222-2222-4222-8222-222222222222','name':'fixture-peer','connection':'fixture-peer','local':False}],peers={'fixture-peer':{'node':'22222222-2222-4222-8222-222222222222','last_sync':1793000000}})
+        if options.swarm_native:
+            field={'kind':'project','id':'p-sample-project','field':'name'}
+            summary['conflicts']=[{'key':json.dumps(field,separators=(',',':')),'field':field,'selected':'v0','variants':[{'id':'v0','actor':MACHINE,'value':'Sample project'},{'id':'v1','actor':MACHINE,'value':'Recovered project'}]}]
         if options.swarm_ui:
             summary['machines'].append({'id':'33333333-3333-4333-8333-333333333333','name':'Other computer','local':False})
             summary['peers']['fixture-peer']['tasks_outdated']=True
@@ -83,6 +86,12 @@ if (root/'swarm-native').exists():
  if args==['swarm','join','fixture-peer']:
   request=json.load(sys.stdin);assert request=={'node_id':peer,'swarm_id':state['swarm_id'],'project_map':{},'prefer_peer_memberships':(root/'swarm-ui').exists()};(root/'swarm-request.json').write_text(json.dumps(request));print(json.dumps({'joined':True,'snapshot':state}));sys.exit(0)
  if args==['swarm','sync']:print('{"schema":1}');sys.exit(0)
+ if args==['swarm','resolve']:
+  request=json.load(sys.stdin);assert request=={'key':state['conflicts'][0]['key'],'versions':['v0','v1'],'value':'Recovered project'}
+  (root/'resolve-request.json').write_text(json.dumps(request));state['conflicts']=[];state['digest']='resolved-fixture';state['versions']={request['key']:['resolved-op']}
+  for project in state['organization']['projects']:
+   if project['id']=='p-sample-project':project['name']=request['value']
+  (root/'swarm-state.json').write_text(json.dumps(state));print(json.dumps(state));sys.exit(0)
 if args and args[0]=='worktrees' and (len(args)<2 or args[1].startswith('--')):
  path=arg('--path');assert Path(path).is_relative_to(root)
  tags=[t for t in ('clean','ignored','missing','unknown',*extra()) if not (root/('removed-'+t)).exists()]
@@ -146,7 +155,7 @@ with (root/'app.log').open('wb') as log:
     try:
         while time.monotonic()<deadline:
             output=(root/'app.log').read_text()
-            for stage in (('PRESELECTED','COMPUTERS','FILTERED','LOADING','MAP','UNINITIALIZED','FAILED','SAME','CONNECTED') if swarm_ui else ('PROJECTS','OPEN','PREVIEW','JOIN') if swarm_native else ('SHELL',) if shell_badge else ('PANEL','REVIEW','CONFIRMATION','REMOVING','OUTCOMES','UNKNOWN_REOPEN','OVERVIEW','PAGER','MANUAL_REVIEW','INSPECTION','MANUAL_OUTCOMES')):
+            for stage in (('PRESELECTED','COMPUTERS','FILTERED','LOADING','MAP','UNINITIALIZED','FAILED','SAME','CONNECTED') if swarm_ui else ('PROJECTS','OPEN','PREVIEW','JOIN','CONFLICT_REVIEW','RESOLVE_HELD') if swarm_native else ('SHELL',) if shell_badge else ('PANEL','REVIEW','CONFIRMATION','REMOVING','OUTCOMES','UNKNOWN_REOPEN','OVERVIEW','PAGER','MANUAL_REVIEW','INSPECTION','MANUAL_OUTCOMES')):
                 if prefix+stage in output and stage not in stages:
                     stages.add(stage);time.sleep(.35);subprocess.run(['/usr/bin/import','-window','root',str(root/(stage.lower()+'.png'))],check=True,env=env)
             for stage in ('ESCAPE_CONFIRM','ESCAPE_REVIEW','ESCAPE_SWARM'):
@@ -168,9 +177,9 @@ with (root/'app.log').open('wb') as log:
         if swarm_native:
             assert not effects and not any('create' in a or 'start' in a or 'session-action' in a for a in calls)
             assert calls.count(['swarm','preview','fixture-peer'])==1 and calls.count(['swarm','join','fixture-peer'])==1 and calls.count(['swarm','sync'])==1
-            assert calls.count(['swarm','get'])==4,calls
-            assert (root/'swarm-request.json').is_file() and 'PROJECTS' in stages
-            print('PASS main-window native Swarm API: one saved preview/Join/Sync, four fresh reads, no replay/creation/removal and private rendered Projects')
+            assert calls.count(['swarm','get'])==6 and calls.count(['swarm','resolve'])==1,calls
+            assert (root/'swarm-request.json').is_file() and (root/'resolve-request.json').is_file() and {'PROJECTS','CONFLICT_REVIEW','RESOLVE_HELD'} <= stages
+            print('PASS main-window native Swarm API: one saved preview/Join/Sync/Resolve, six fresh reads, exact native review choice, source barrier held, no replay/creation/removal and private rendered Projects')
             raise SystemExit(0)
         if shell_badge:
             assert not effects and not any('create' in a or 'start' in a or 'session-action' in a for a in calls)
