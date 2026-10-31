@@ -321,6 +321,41 @@ lifetime is not agent work after its actual calls and callbacks are drained.
 Platform/delegate/queued activation/badge lifetimes, authenticated producer,
 profile transition and G3 Drained publication remain unqualified here.
 
+## Admitted notifier input retirement prerequisite
+
+The separate internal `notifier::retiring::Retiring` constructor closes new
+agent inputs while allowing their already admitted continuations to finish.
+`Partitioned::new_retiring` composes it with the shared two-owner authorization
+fanout and the unchanged GUI-update partition. Existing `Notifier::new` and
+`new_accounted` keep their reviewed strong-close behavior; the SDK adapter still calls `new`. This mode has no production caller,
+new worker, runtime, source reader, persistent cache or public controller.
+
+`prepare` takes ownership of the original immutable batch before the host's
+existing main-thread dispatch. At most 64 preparations can be queued/running,
+with at most 128 combined notices/tokens and 64 KiB of original UTF-8 string
+bytes per batch. Validation reuses the expected AgentAttention token class.
+Refusal returns the complete unchanged private batch before any native effect;
+nothing is truncated, evicted or retried. Debug output omits its private data.
+The host must handle pressure before wiring this constructor into production.
+
+`InputControl::close` closes preparation admission before releasing the parent
+native scope charge. Prepared work and each derived authorization/add/remove,
+callback, Hop and failure sink retain forks of the same original Completion,
+without fresh admission. A queued original withdrawal can still cancel its
+pending original post. Unknown drops/panics pin the qualified fixed scope.
+Immediate callback execution cannot release a still-running native call or its
+queued payload reservation. Unsupported Windows close refuses before mutation.
+
+The returned Closed gate covers preparations only. The host must also close
+and wait its supplied NativePosting gate to the same absolute deadline, then
+enqueue the ordered Desk checkpoint after every failure send has returned.
+The composition test retains a native add callback, proves Pending, delivers its
+failure, verifies the original Desk save, then checkpoints the exact digest.
+Neither local Idle nor prepared work is a native lease, visual outcome, signed
+instance proof, role transfer or Drained publication permit. Native identity,
+category/action/correlation/legacy policy, activation, badges and the actual
+frontend/profile controller still need their separate qualified integration.
+
 ## Ordered ReadDelivery store barrier
 
 Actions now owns the same fixed four native resource slots as the existing
