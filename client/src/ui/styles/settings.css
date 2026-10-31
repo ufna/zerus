@@ -62,7 +62,10 @@
   .ws-title > div + div {color: var(--z-color-muted); }
   .ws-enroll {border-top: 1px solid var(--z-color-divider); margin-top: 4px; }
   .ws-enroll .set-row {padding: 8px 0; }
-  .ws-enroll .set-wide-field {width: 380px; max-width: 100%; }
+  .ws-enroll .set-wide-field, .set-legacy .set-wide-field {width: 380px; max-width: 100%; }
+  .set-disclosure {align-self: flex-start; padding-left: 4px; }
+  .set-legacy p {font-size: var(--fs-sm); }
+  .set-legacy .small-path {font-size: var(--fs-xs); }
   .ws-invite {border-top: 1px solid var(--z-color-divider); margin-top: 4px; padding-top: 4px; }
   .skin-swatches {display: flex; align-items: center; gap: 4px; }
   .skin-swatches i {width: 11px; height: 11px; border-radius: 50%; border: 1px solid var(--z-color-divider); }

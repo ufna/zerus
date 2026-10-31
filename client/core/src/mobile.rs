@@ -23,7 +23,9 @@ use serde_json::{Map, Value};
 use crate::actions::{Exit, Invocation};
 
 pub mod computer_codes;
+pub mod connector_actions;
 pub mod enrollment;
+pub mod legacy;
 pub mod page;
 pub mod phone_actions;
 
@@ -256,6 +258,7 @@ pub struct Workspace {
     /// A saved connection waiting for its result.
     pub pending: Option<String>,
     pub running: bool,
+    pub connector_state: String,
     /// Fresh help capability; never inferred from workspace encryption.
     pub stop_supported: bool,
     /// The connection's revision; a change refreshes the phones.
@@ -376,6 +379,7 @@ pub fn workspace(value: &Map<String, Value>) -> Workspace {
         connection,
         pending,
         running,
+        connector_state: text(value, "connector_state").to_owned(),
         stop_supported: false,
         config_revision: text(value, "config_revision").to_owned(),
         server_url: text(value, "server_url").to_owned(),
