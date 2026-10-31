@@ -1,7 +1,7 @@
 //! Settings > Mobile connection: one status read, one bounded phones sweep
 //! and one notification-timing call at a time, with "mobile-changed" answers.
 //! The child modules share one effects gate for bounded one-use phone,
-//! computer-invitation and workspace plans. Existing CLI commands retain
+//! computer-invitation, workspace and connector lifecycle plans. Existing CLI commands retain
 //! connector/service ownership and saved enrollment recovery. A replay never
 //! drives the CLI.
 
@@ -23,6 +23,8 @@ mod computers;
 pub use computers::*;
 mod enrollment;
 pub use enrollment::*;
+mod connector_actions;
+pub use connector_actions::*;
 
 const REPLAY: &str = "The mobile connection is not read in a replay.";
 /// Computers whose phones are read at once.
@@ -74,6 +76,7 @@ struct Inner {
     phone_plans: Mutex<phones::Plans>,
     computer_plans: Mutex<computers::Plans>,
     enrollment_plans: Mutex<enrollment::Plans>,
+    connector_plans: Mutex<connector_actions::Plans>,
     effects: std::sync::atomic::AtomicBool,
     /// The page's clock: monotonic, so a changed system time neither names
     /// nor hides the sync service early.
@@ -109,6 +112,7 @@ impl Inner {
             phone_plans: Mutex::new(phones::Plans::default()),
             computer_plans: Mutex::new(computers::Plans::default()),
             enrollment_plans: Mutex::new(enrollment::Plans::default()),
+            connector_plans: Mutex::new(connector_actions::Plans::default()),
             effects: std::sync::atomic::AtomicBool::new(false),
             started: Instant::now(),
             blocked,

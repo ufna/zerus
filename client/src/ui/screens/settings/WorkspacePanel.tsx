@@ -1,19 +1,24 @@
-import {Show,createEffect,onMount,onCleanup,lazy,Suspense} from "solid-js";
+import {Show,createSignal,createEffect,onMount,onCleanup,lazy,Suspense} from "solid-js";
 import {invoke} from "@tauri-apps/api/core";
 import {Icon} from "../../lib/icons";
 import {toast} from "../../../store/ui";
 import {Group,Row,Select,Actions,Status,Lines} from "./ui";
 import type {View} from "./mobile-page";
 import {createWorkspaceEnrollment,enrollmentLabel,STOP_UNAVAILABLE,relayError,codeError,type WorkspaceMode} from "./workspace-enrollment";
+import {createConnectorActions,canStartConnector,canStopConnector} from "./connector-actions";
 import ComputerInvitations from "./ComputerInvitations";
 const WorkspaceConfirm=lazy(()=>import("./WorkspaceConfirm"));
+const ConnectorConfirm=lazy(()=>import("./ConnectorConfirm"));
 export default function WorkspacePanel(props:{view?:View;refresh:(afterAction?:boolean)=>void}){
  let submit!:HTMLButtonElement;
  const read=()=>props.view?.workspace,reading=()=>!!props.view?.workspace_busy;
  const actions=createWorkspaceEnrollment({open:(target,request)=>invoke("mobile_workspace_open",{target,request}),check:(target,allowLocal)=>invoke("mobile_workspace_check_open",{target,allowLocal}),apply:handle=>invoke("mobile_workspace_apply",{handle}),advance:handle=>invoke("mobile_workspace_continue",{handle}),close:handle=>invoke("mobile_workspace_close",{handle}),refresh:()=>props.refresh(true),connected:text=>toast("Workspace",text)});
- createEffect(()=>actions.observe(read()));
+ const connector=createConnectorActions({open:(target,kind)=>invoke("mobile_connector_open",{target,kind}),apply:handle=>invoke("mobile_connector_apply",{handle}),close:handle=>invoke("mobile_connector_close",{handle}),refresh:()=>props.refresh(true)});
+ const [notice,setNotice]=createSignal("");
+ createEffect(()=>{actions.busy();setNotice(actions.notice());});createEffect(()=>{connector.busy();setNotice(connector.notice());});
+ createEffect(()=>{actions.observe(read());connector.observe(read());});onCleanup(()=>connector.dispose());
  onMount(()=>{const timer=setInterval(()=>void actions.advance(),1000);onCleanup(()=>clearInterval(timer));});onCleanup(()=>actions.dispose());
- const busy=()=>reading()||actions.busy(),changing=()=>!!read()&&["active","legacy","retired"].includes(read()!.state),legacyPending=()=>read()?.pending_state==="legacy-retirement-unconfirmed";
+ const busy=()=>reading()||actions.busy()||connector.busy(),changing=()=>!!read()&&["active","legacy","retired"].includes(read()!.state),legacyPending=()=>read()?.pending_state==="legacy-retirement-unconfirmed";
  const stopUnavailable=()=>!!read()?.running&&!read()?.stop_supported;
  const writable=()=>!stopUnavailable()&&!!read()&&!busy()&&!read()?.pending&&read()?.state!=="pending-activation"&&!actions.stale();
  return <>
@@ -24,7 +29,7 @@ export default function WorkspacePanel(props:{view?:View;refresh:(afterAction?:b
   <Show when={props.view?.workspace_error}>{text=><Status kind="error">{text()}</Status>}</Show>
   <Show when={stopUnavailable()}><Status kind="warn">{STOP_UNAVAILABLE}</Status></Show>
   <Actions><Show when={read()?.controls.change&&!actions.open()}><button class="btn" disabled={!writable()} onClick={()=>actions.begin()}>Change workspace…</button></Show>
-   <button class="btn" disabled><Icon name="play" size={13}/>Start connector</button><button class="btn" disabled><Icon name="square" size={12}/>Stop connector</button>
+   <button class="btn" disabled={busy()||!canStartConnector(read())} onClick={e=>void connector.request("start",e.currentTarget)}><Icon name="play" size={13}/>Start connector</button><button class="btn" disabled={busy()||!canStopConnector(read())} onClick={e=>void connector.request("stop",e.currentTarget)}><Icon name="square" size={12}/>Stop connector</button>
    <button class="btn" disabled={busy()||!props.view} onClick={()=>props.refresh()}><Icon name="refresh-cw" size={13}/>Refresh status</button>
   </Actions>
   <Show when={actions.open()&&!read()?.pending}>
@@ -38,8 +43,9 @@ export default function WorkspacePanel(props:{view?:View;refresh:(afterAction?:b
    <div class="notice warn"><Icon name="triangle-alert" size={14}/><div class="col" style={{gap:"8px"}}><span>The new encrypted workspace is ready. The old relay has not confirmed retirement. You can explicitly disconnect its local configuration before switching.</span><Actions><button class="btn small" disabled={busy()} onClick={e=>void actions.check(e.currentTarget)}>Continue connecting</button><button class="btn small danger" disabled={busy()} onClick={e=>void actions.check(e.currentTarget,true)}>Disconnect legacy locally and switch…</button></Actions></div></div>
   </Show></Show>
   <Show when={read()?.controls.invitations}><ComputerInvitations workspace={read()!} busy={busy()} refresh={props.refresh}/></Show>
-  <Show when={actions.notice()}><Status>{actions.notice()}</Status></Show>
+  <Show when={notice()}><Status>{notice()}</Status></Show>
   </Group>
   <Show when={actions.prompt()}>{prompt=><Suspense><WorkspaceConfirm prompt={prompt()} actions={actions}/></Suspense>}</Show>
+  <Show when={connector.prompt()}>{prompt=><Suspense><ConnectorConfirm prompt={prompt()} actions={connector}/></Suspense>}</Show>
  </>;
 }
