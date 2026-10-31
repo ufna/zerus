@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -58,7 +59,6 @@ def verified():
 def child_limits():
     # Only the freshly forked diagnostic test process. No process-group signals.
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-    resource.setrlimit(resource.RLIMIT_FSIZE, (16 * 1024 * 1024, 16 * 1024 * 1024))
 
 
 def execute(binary, args, label):
@@ -79,21 +79,44 @@ def execute(binary, args, label):
             private[key] = str(folder)
         env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8",
                "LC_ALL": "en_US.UTF-8", "TZ": "UTC", **private}
-        with log.open("wb") as output:
-            child = subprocess.Popen([str(binary), *args], cwd=ROOT, env=env,
-                                     stdin=subprocess.DEVNULL, stdout=output,
-                                     stderr=subprocess.STDOUT, preexec_fn=child_limits)
-            timed_out = False
+        child = subprocess.Popen([str(binary), *args], cwd=ROOT, env=env,
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, preexec_fn=child_limits)
+        capture = {"total": 0, "retained": 0, "error": False}
+
+        def drain():
             try:
-                status = child.wait(timeout=DEADLINE_SECONDS)
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                # This unreaped Child is the test we just spawned; never a PID lookup.
-                child.kill()
-                status = child.wait(timeout=2)
+                with child.stdout, log.open("wb") as output:
+                    while chunk := child.stdout.read(65536):
+                        capture["total"] += len(chunk)
+                        keep = chunk[:max(0, 16 * 1024 * 1024 - capture["retained"])]
+                        output.write(keep)
+                        capture["retained"] += len(keep)
+            except OSError:
+                capture["error"] = True
+
+        reader = threading.Thread(target=drain, daemon=True)
+        reader.start()
+        timed_out = False
+        try:
+            status = child.wait(timeout=DEADLINE_SECONDS)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            # This unreaped Child is the test we just spawned; never a PID lookup.
+            child.kill()
+            status = child.wait(timeout=2)
+        reader.join(timeout=2)
+        drained = not reader.is_alive() and not capture["error"]
+    if not log.exists():
+        log.touch()
     result = {"label": label, "args": args, "exit_code": status,
+              "process_exit_code": status, "output_drained": drained,
+              "output_bytes": capture["total"],
+              "discarded_output_bytes": capture["total"] - capture["retained"],
               "timed_out": timed_out, "seconds": round(time.monotonic() - started, 3),
               "sha256": digest(log), "bytes": log.stat().st_size}
+    if not drained or result["discarded_output_bytes"]:
+        result["exit_code"] = 125  # truncated/incomplete evidence grants no pass
     if "--list" not in args:
         with log.open("rb") as stream:
             stream.seek(max(0, result["bytes"] - 8192))
@@ -105,8 +128,8 @@ def execute(binary, args, label):
             result["exit_code"] = 125  # a successful empty harness is not test execution
     save(f"{label}.json", result)
     print("END " + json.dumps(result), flush=True)
-    if timed_out:
-        raise RuntimeError(f"Owned test timed out: {label}; no further test starts")
+    if timed_out or not drained:
+        raise RuntimeError(f"Owned test timeout or incomplete drain: {label}; no further test starts")
     return result
 
 
