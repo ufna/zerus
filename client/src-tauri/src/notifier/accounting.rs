@@ -61,8 +61,11 @@ impl Resources {
             // even if its caller drops every control/notifier handle. Further
             // unknown drops add no retained allocation. Nothing is retried.
             std::mem::forget(charge);
-            eprintln!(
-                "zerus-client: role=native_posting slot=0 completion unverified; resources pinned"
+            // This can run during unwinding. A broken diagnostic pipe must
+            // not panic a second time from Drop.
+            let _ = std::io::Write::write_all(
+                &mut std::io::stderr().lock(),
+                b"zerus-client: role=native_posting slot=0 completion unverified; resources pinned\n",
             );
         }
     }
