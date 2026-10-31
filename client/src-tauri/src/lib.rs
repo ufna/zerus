@@ -451,8 +451,10 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                 // call only takes the screens hub's lock and emits, so it never
                 // waits for the main thread (organization::Presented).
                 let projects = screens.clone();
+                let swarm_app = app.handle().clone();
                 organization.set_presented(std::sync::Arc::new(move |value, default, status| {
-                    projects.organization(value, default, status)
+                    projects.organization(value, default, status);
+                    let _ = tauri::Emitter::emit(&swarm_app, "project-swarm-changed", ());
                 }));
                 app.manage(organization);
                 app.manage(organization::clones::Clones::default());
@@ -1157,6 +1159,12 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         worktree_cleanup::manual::worktree_manual_stop,
         worktree_cleanup::manual::worktree_manual_inspect,
         organization::overview::worktree_overview_open,
+        organization::swarm_dialog::project_swarm_open,
+        organization::swarm_dialog::project_swarm_view,
+        organization::swarm_dialog::project_swarm_preview,
+        organization::swarm_dialog::project_swarm_join,
+        organization::swarm_dialog::project_swarm_sync,
+        organization::swarm_dialog::project_swarm_close,
         organization::overview::worktree_overview_refresh,
         organization::overview::worktree_overview_page,
         organization::overview::worktree_overview_select,

@@ -50,3 +50,35 @@ or perform that native source barrier itself.
 There is no native dispatcher/caller in this first slice. These are GUI catalog
 coordination primitives, separate from G1 production migration: no service lease,
 role drain, source export, marker phase or effect permission is granted.
+
+## Native Preview, Join and Sync
+
+The main webview's `project_swarm_*` commands keep one opaque context and job
+on the existing organization worker. Opening reads saved computer choices only.
+Preview binds a saved alias and the configuration revision to the observed local
+node, swarm and digest, and the peer's returned node, swarm and exact project IDs.
+Join repeats the saved-configuration and local-catalog reads before issuing the
+existing guarded CLI invocation once. Sync uses the same reservation and worker.
+The root CLI remains responsible for its peer node/swarm and project-map guards.
+
+The worker uses the maintained accounted runner. A returned result does not
+release its reservation while the actual child, input or output readers remain.
+After they finish, a fresh local read must agree with the existing topic source's
+node, swarm, digest, organization and causal versions before the controller can
+adopt it. A generation check discards callbacks already in flight. Settlement
+uses existing source notifications, not another poller. Watch `machine_id` and
+the local swarm `node_id` are the same persisted identity; both source headers
+still have to match.
+
+A failed or lost Join reply can follow enrollment. Its error remains visible,
+its preview is consumed and nothing resends it. A failed post-call read holds
+the reservation; a later explicit Preview or Sync first performs read-only
+reconciliation. It cannot join again from unresolved evidence. Closing a read
+cancels queued work; an admitted changing call cannot be closed until the runner
+returns, and late actual resources keep their charge. Reopening never replays.
+Replay without a selected fake CLI dispatches nothing.
+
+This slice registers the bounded native commands and a private fake-only test
+walk, with no product dialog caller yet. The lazy mockup dialog follows. No G1
+producer lease, migration capture, role drain or service effect authority follows
+from this GUI catalog coordination.
