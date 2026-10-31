@@ -61,7 +61,8 @@ pub type Rows = Arc<dyn Fn(&str, &str, &str) -> Option<(ViewRow, bool)> + Send +
 pub type Facts = Arc<dyn Fn(&str, &str) -> Option<WriteKind> + Send + Sync>;
 /// One `hgs inspect` of the parent or exact child (archive id, then agent id); blocking.
 /// The error is Qt's detail for "Could not refresh activity: %1" (`send::inspection`).
-pub type Inspect = Arc<dyn Fn(&Target, Option<&str>, Option<&str>) -> Result<Value, String> + Send + Sync>;
+pub type Inspect =
+    Arc<dyn Fn(&Target, Option<&str>, Option<&str>) -> Result<Value, String> + Send + Sync>;
 /// Nudges the existing source's offline retry for one computer; nonblocking.
 pub type Reconnect = Arc<dyn Fn(&str) + Send + Sync>;
 /// One guarded call (`actions::dispatch_as`); blocking. The String is the
@@ -214,7 +215,13 @@ pub fn draft_key(computer: &str, name: &str, archive: Option<&str>) -> String {
 /// Qt's child key is `machine\nsession\nparent conversation\nagent ID`.
 pub fn session_draft_key(session: &SessionRef) -> String {
     session.subagent.as_ref().map_or_else(
-        || draft_key(&session.computer, &session.name, session.archive_id.as_deref()),
+        || {
+            draft_key(
+                &session.computer,
+                &session.name,
+                session.archive_id.as_deref(),
+            )
+        },
         |child| {
             format!(
                 "{}\n{}\n{}\n{}",
@@ -687,9 +694,12 @@ impl Composers {
                     && old.subagent == session.subagent
             })
             .and_then(|_| hub.open_key.clone());
-        let child_changed = hub.open.as_ref().and_then(|old| old.subagent.as_ref())
-            != session.subagent.as_ref();
-        if hub.followed.computer != session.computer || hub.followed.key != session.key || child_changed {
+        let child_changed =
+            hub.open.as_ref().and_then(|old| old.subagent.as_ref()) != session.subagent.as_ref();
+        if hub.followed.computer != session.computer
+            || hub.followed.key != session.key
+            || child_changed
+        {
             hub.followed = Followed {
                 computer: session.computer.clone(),
                 key: session.key.clone(),
@@ -1358,10 +1368,13 @@ impl Composers {
         }
         let followed = hub.followed.computer == computer && hub.followed.key == key;
         let child = hub.open.as_ref().and_then(|open| open.subagent.clone());
-        let allowed = |details: &Value| child.as_ref().is_none_or(|child| {
-            details["agent_id"].as_str() == Some(child.agent_id.as_str())
-                && details["parent_conversation_id"].as_str() == Some(child.parent_conversation_id.as_str())
-        });
+        let allowed = |details: &Value| {
+            child.as_ref().is_none_or(|child| {
+                details["agent_id"].as_str() == Some(child.agent_id.as_str())
+                    && details["parent_conversation_id"].as_str()
+                        == Some(child.parent_conversation_id.as_str())
+            })
+        };
         if followed && child.is_none() && new_events {
             let kept = &mut hub.followed.events;
             if replaced {
@@ -1372,7 +1385,8 @@ impl Composers {
                 kept.pop_front();
             }
         }
-        let accepted_details = followed && matches!(update, Some(Some((ref details, _))) if allowed(details));
+        let accepted_details =
+            followed && matches!(update, Some(Some((ref details, _))) if allowed(details));
         let state_changed = match update.filter(|_| followed) {
             Some(Some((details, expiry))) if allowed(&details) => {
                 hub.followed.details = Some(details);
@@ -1475,7 +1489,10 @@ impl Composers {
         let session = send::session_view(self, hub, composer);
         let (question, question_input) = self.question_part(hub);
         let input_visible = question_input
-            && session.subagent.as_ref().is_none_or(|child| child.send_supported);
+            && session
+                .subagent
+                .as_ref()
+                .is_none_or(|child| child.send_supported);
         let attachments_blocked =
             !composer.draft.attachments.is_empty() && !session.attachments_available;
         let too_long = composer.draft.text.len() > MAX_TEXT_BYTES;

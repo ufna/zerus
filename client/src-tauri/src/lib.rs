@@ -222,7 +222,10 @@ pub fn run() {
                 instance::Claim::Claimed(claimed) => {
                     #[cfg(feature = "live")]
                     {
-                        desktop_bootstrap = match desktop_hello::hold(identity.is_switch(), &responder) {
+                        desktop_bootstrap = match desktop_hello::hold(
+                            identity.is_switch(),
+                            &responder,
+                        ) {
                             Ok(held) => held,
                             Err(_) => {
                                 eprintln!("zerus-client: desktop startup refused before writers; use a compatible local hgs and reconcile unsettled desktop state");
@@ -1223,8 +1226,8 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         screens::machine_check,
         screens::machine_change,
         screens::machine_ssh,
-            screens::machine_setup::machine_setup,
-            screens::machine_setup::machine_pick_source,
+        screens::machine_setup::machine_setup,
+        screens::machine_setup::machine_pick_source,
         screens::machine_pick_key,
         screens::projects_view,
         screens::launch_accounts,
