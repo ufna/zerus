@@ -717,7 +717,7 @@ pub fn invocation(
             if target.conversation_id.is_empty() {
                 return Err("the session has no run or conversation to forget".into());
             }
-            return scoped_lifecycle_invocation(target, "forget", request_id, 15, 45)
+            return scoped_lifecycle_invocation(target, "forget", request_id, 15, 45);
         }
     };
     let peer_call = prepend_alias(&mut args, &target.computer);
