@@ -110,7 +110,7 @@ def main():
         "ZERUS_CLIENT_QUERY": "phase4-smoke=1", "ZERUS_CLIENT_PERF": "smoke", "ZERUS_CLIENT_SMOKE_FILE": str(smoke_file),
         "ZERUS_CLIENT_SMOKE_NOW": "1793000100",
     }
-    command = ["dbus-run-session", "--", "xvfb-run", "-a", "-s", "-screen 0 1440x900x24", str(app)]
+    command = ["dbus-run-session", "--", "xvfb-run", "-a", "-s", "-screen 0 1440x900x24", str(app), "--sessions"]
     app_log = scratch / "app.log"
     print("GDK_BACKEND=x11 WAYLAND_DISPLAY=zerus-none DISPLAY=<unset>", flush=True)
     with app_log.open("w", encoding="utf-8") as output:

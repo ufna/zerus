@@ -406,12 +406,17 @@ export interface AccountsView {
   truncated: number;
 }
 export interface MachineRow { alias: string; enabled: boolean; source: string; inherited: boolean; hostname: string; user: string; port: number | null; identity_file: string; origin: string }
+export interface MachineConnection { hostname: string; user: string; port: number | null; identity_file: string; enabled: boolean }
+export type MachineChange = { kind: "set"; connection: MachineConnection; create: boolean } | { kind: "reset" | "remove" };
+export interface MachineChangeRequest { alias: string; revision: string; change: MachineChange }
 export interface Effective { alias: string; pending: boolean; error: boolean; text: string; hostname: string; user: string; port: string; key: string }
 export interface CheckResult { alias: string; pending: boolean; error: boolean; text: string }
 export interface MachinesView {
   /** Computation order from the screens hub; absent on older snapshots. */
   revision?: number;
   loaded: boolean; refreshing: boolean; error: string | null; local: string; environment_override: boolean;
+  /** Exact configuration revision, separate from the hub computation order. */
+  connection_revision?: string;
   machines: MachineRow[]; effective: Effective | null; check: CheckResult | null; busy: boolean;
 }
 export interface Folder {
