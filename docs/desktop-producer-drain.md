@@ -595,3 +595,32 @@ preparation, so a second blocking AddMatch must never follow raw activation. A
 private-bus regression queues three addressed messages between preparations and
 uses a sender-side bus barrier before the second AddMatch; both acknowledgements
 complete before receiver activation and the original charges survive cleanup.
+
+## Optional Attention observer capture lifetimes
+
+`desk::observers` is an internal, platform-neutral prerequisite with no SDK,
+producer or controller caller. It requires one host `Attention` charge and
+admits at most two synchronous observer captures. The existing fixed completion
+scope also accepts that exact expected role; ordinary native constructors still
+require `NativePosting`. Existing native and badge paths keep their semantics.
+
+A future adapter must move the entire `Observed` into the actual native block
+capture. SDK block copies must retain that same Rust capture. Closing admissions
+or returning from `removeObserver` does not prove those copies are destroyed.
+After close, a late callback refuses before its action. Each already admitted
+callback remains charged through its actual synchronous return. The action may
+not queue or spawn unaccounted work. Callback data drops before its capture guard
+and slot, so its destructors remain covered. Only actual final capture destruction
+after closure releases its lifetime charge. Abandonment while open, a panic or
+poisoned/unknown accounting pins the existing one fixed scope until process exit;
+no timeout, retry or cancellation manufactures completion.
+
+The weak control closes capture admission before callback admission, and never
+reopens either. Hosts must wait on both that capture gate and their own closed
+Attention gate under the same absolute deadline, off the GUI thread. Unsupported
+platforms refuse close before changing admissions. An idle gate is only local
+accounting, never native removal, instrumentation coverage or authority. No
+current Mac/GTK observer, activity sampler, timer, thread, queue, notification
+adapter or GUI behavior changes here. Real SDK capture/destruction, connection
+and worker ownership still require separate pinned review and native tests before
+any production use or profile handoff.

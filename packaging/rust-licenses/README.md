@@ -41,6 +41,7 @@ URL and the checksum.
 | `objc2-web-kit` | https://github.com/madsmtm/objc2/blob/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md | `7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54` |
 | `objc2-user-notifications` | MIT.txt (see below) | `b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `objc2-user-notifications` | https://github.com/madsmtm/objc2/blob/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md | `7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54` |
+| `qrcodegen` | https://github.com/nayuki/QR-Code-generator/blob/720f62bddb7226106071d4728c292cb1df519ceb/Readme.markdown#license | `5268a84dde283b89e0b810f958a6cc7a04adc6f5a435905d45a9d808685b5db3` |
 | `selectors` | https://github.com/spdx/license-list-data/blob/v3.29.0/text/MPL-2.0.txt (see below) | `66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172` |
 | `serde_columnar` | https://github.com/loro-dev/columnar/blob/06663cfc569c6c770b28688f015f8a87fc04e156/LICENSE | `a9af0e3a3ded007f9914a1125b736ec526d469105c6577e367e2a9ca4de39d6b` |
 | `serde_columnar_derive` | https://github.com/loro-dev/columnar/blob/06663cfc569c6c770b28688f015f8a87fc04e156/LICENSE | `a9af0e3a3ded007f9914a1125b736ec526d469105c6577e367e2a9ca4de39d6b` |
@@ -93,3 +94,9 @@ three).
 - `tauri-plugin` and `libappindicator-sys` are offered under "Apache-2.0 OR
   MIT"; both texts their repositories carry are kept.
 - The commits are those in each crate's `.cargo_vcs_info.json`.
+
+`qrcodegen` 1.8.0 ships its MIT notice only in source and documentation.
+The copy is the upstream root Readme's complete License section, unchanged,
+including its Markdown line-break spaces. The pinned commit is also the
+crate's `.cargo_vcs_info.json` revision and the `v1.8.0` tag target. Its MIT
+permission and warranty text matches Qt's `tray/vendor/qrcodegen/LICENSE`.

@@ -1,5 +1,5 @@
 //! Optional lifetime accounting, not a native lease or full role barrier.
-//! The host supplies one NativePosting charge and retains the real platform
+//! The host supplies one qualified role charge and retains the real platform
 //! connection/delegate resources separately. No worker or OS call lives here.
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -36,9 +36,13 @@ impl Resources {
         Self::new_for(charge, Role::NativePosting)
     }
 
-    /// Reuse the same fixed completion scope for the two qualified native roles.
+    /// Reuse the same fixed completion scope for the qualified native and Attention observer roles.
     pub fn new_for(charge: Charge, expected: Role) -> Result<(Arc<Self>, Control), Refused> {
-        if !matches!(expected, Role::NativePosting | Role::Badges) || charge.role() != expected {
+        if !matches!(
+            expected,
+            Role::NativePosting | Role::Badges | Role::Attention
+        ) || charge.role() != expected
+        {
             return Err(Refused::WrongRole);
         }
         let resources = Arc::new(Self {
@@ -72,6 +76,7 @@ impl Resources {
             // not panic a second time from Drop.
             let diagnostic: &[u8] = match self.role {
                 Role::Badges => b"zerus-client: role=badges slot=0 completion unverified; resources pinned\n",
+                Role::Attention => b"zerus-client: role=attention slot=0 completion unverified; resources pinned\n",
                 _ => b"zerus-client: role=native_posting slot=0 completion unverified; resources pinned\n",
             };
             let _ = std::io::Write::write_all(&mut std::io::stderr().lock(), diagnostic);
@@ -156,12 +161,47 @@ mod tests {
                 let result = Resources::new_for(gate.admit(supplied).unwrap(), expected);
                 assert_eq!(
                     result.is_ok(),
-                    expected == supplied && matches!(expected, Role::NativePosting | Role::Badges)
+                    expected == supplied
+                        && matches!(
+                            expected,
+                            Role::NativePosting | Role::Badges | Role::Attention
+                        )
                 );
                 drop(result);
                 assert_eq!(gate.snapshot().unwrap().admitted, 0);
             }
         }
+    }
+    #[test]
+    fn ordinary_native_constructor_still_refuses_attention() {
+        let gate = Gate::new(1).unwrap();
+        assert!(matches!(
+            Resources::new(gate.admit(Role::Attention).unwrap()),
+            Err(Refused::WrongRole)
+        ));
+        assert_eq!(gate.snapshot().unwrap().admitted, 0);
+    }
+    #[test]
+    fn poisoned_attention_scope_cannot_certify_completion() {
+        let gate = Gate::new(1).unwrap();
+        let (resources, control) =
+            Resources::new_for(gate.admit(Role::Attention).unwrap(), Role::Attention).unwrap();
+        let capture = resources.start().unwrap();
+        let broken = resources.clone();
+        assert!(std::thread::spawn(move || {
+            let _held = broken.parent.lock().unwrap();
+            panic!("synthetic observer accounting failure");
+        })
+        .join()
+        .is_err());
+        assert!(matches!(resources.start(), Err(Refused::Unavailable)));
+        assert_eq!(control.close(), Err(Refused::Unavailable));
+        drop(capture);
+        drop(resources);
+        assert_eq!(
+            gate.close().wait_until(Instant::now()),
+            Observation::Pending
+        );
     }
     #[test]
     fn badge_close_keeps_actual_work_but_not_an_idle_control_charged() {
