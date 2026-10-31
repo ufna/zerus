@@ -322,3 +322,18 @@ fn a_held_source_cannot_schedule_qt_recovery_during_a_join() {
     wait_until("Join settlement", || org.lock().sync.ready());
     fake.finish(org);
 }
+
+#[test]
+fn repeated_views_are_read_only_and_do_not_announce_themselves() {
+    let (fake, org, _) = fixture(config(), true);
+    org.set_presented(Arc::new(|_, _, _| {}));
+    let id = open(&org);
+    let before = org.lock().announcements;
+    let reads = calls(&fake, "ls").len();
+    for _ in 0..100 {
+        assert_eq!(view(&org, &id)["id"], id);
+    }
+    assert_eq!(org.lock().announcements, before);
+    assert_eq!(calls(&fake, "ls").len(), reads);
+    fake.finish(org);
+}

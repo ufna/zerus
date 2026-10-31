@@ -422,6 +422,11 @@ impl Organization {
         if id.is_some_and(|id| id != current.id) {
             return Err(EXPIRED.into());
         }
+        // A status pull must not announce itself: the event subscriber would
+        // otherwise turn this read into an unbounded view/event feedback loop.
+        if id.is_some() && action.is_none() && !close {
+            return current.view(&hub);
+        }
         let mut context = hub.catalog.take().ok_or(EXPIRED)?;
         let result = (|| {
             if close {
