@@ -58,6 +58,7 @@ mod codex_trust;
 mod codex_hooks_trust;
 mod codex_update;
 mod codex_goal_resume;
+mod codex_rate_limit;
 mod read_marks;
 mod notifications;
 mod recipes;
