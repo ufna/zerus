@@ -38,6 +38,19 @@ def generate() -> str:
         if source in catalog and catalog[source] != value:
             raise ValueError(f"Conflicting shared translation: {source!r}")
         catalog[source] = value
+    # Qt's tr(source, disambiguation) reaches Next as trc(disambiguation, source),
+    # keyed "disambiguation\u0004source" as in gettext's message contexts.
+    for message in root.findall(".//message"):
+        source, comment = message.findtext("source", ""), message.findtext("comment", "")
+        translation = message.find("translation")
+        if not source or not comment or translation is None or translation.get("type"):
+            continue
+        forms = translation.findall("numerusform")
+        value = [form.text or "" for form in forms] if forms else translation.text or ""
+        key = f"{comment}\u0004{source}"
+        if key in catalog and catalog[key] != value:
+            raise ValueError(f"Conflicting disambiguated translation: {source!r} ({comment!r})")
+        catalog[key] = value
     return json.dumps(catalog, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 

@@ -136,7 +136,7 @@
       <location filename="../src/AccountsPage.cpp" line="255" />
       <location filename="../src/AccountsPage.cpp" line="560" />
       <source>Remove…</source>
-      <translation>Удалять…</translation>
+      <translation>Удалить…</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="256" />
@@ -146,7 +146,7 @@
     <message>
       <location filename="../src/AccountsPage.cpp" line="285" />
       <source>Complete %1 sign-in in the terminal on %2, this page updates automatically.</source>
-      <translation>Завершите вход %1 в терминал на %2, эта страница обновится автоматически.</translation>
+      <translation>Завершите вход %1 в терминале на %2, эта страница обновится автоматически.</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="293" />
@@ -171,7 +171,7 @@
     <message>
       <location filename="../src/AccountsPage.cpp" line="299" />
       <source>Account added on %1 using its saved sign-in.</source>
-      <translation>Аккаунт добавлен %1 с использованием сохраненного входа в систему.</translation>
+      <translation>Аккаунт добавлен на %1 с использованием сохраненного входа в систему.</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="299" />
@@ -181,7 +181,7 @@
     <message>
       <location filename="../src/AccountsPage.cpp" line="299" />
       <source>Account copied into a new profile. It is available in New session on that machine.</source>
-      <translation>Аккаунт скопирован в новый профиль. Он доступен в новом сессии на этом компьютере.</translation>
+      <translation>Аккаунт скопирован в новый профиль. Он доступен в окне «Новая сессия» на этом компьютере.</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="299" />
@@ -247,12 +247,12 @@
     <message>
       <location filename="../src/AccountsPage.cpp" line="546" />
       <source>Default on %1</source>
-      <translation>По умолчанию %1</translation>
+      <translation>По умолчанию на %1</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="546" />
       <source>Make default on %1</source>
-      <translation>Установить по умолчанию %1</translation>
+      <translation>Установить по умолчанию на %1</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="547" />
@@ -292,7 +292,7 @@
     <message>
       <location filename="../src/AccountsPage.cpp" line="574" />
       <source>Account identity is unavailable.</source>
-      <translation>Идентификация учетной записи недоступна.</translation>
+      <translation>Сведения об учетной записи недоступны.</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="579" />
@@ -302,17 +302,17 @@
     <message>
       <location filename="../src/AccountsPage.cpp" line="579" />
       <source>Set API key on %1…</source>
-      <translation>Установите ключ API на %1…</translation>
+      <translation>Установить ключ API на %1…</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="580" />
       <source>Sign in again on %1…</source>
-      <translation>Войдите еще раз на %1…</translation>
+      <translation>Войти еще раз на %1…</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="580" />
       <source>Sign in on %1…</source>
-      <translation>Войдите в систему %1…</translation>
+      <translation>Войти на %1…</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="581" />
@@ -350,12 +350,12 @@
     <message>
       <location filename="../src/AccountsPage.cpp" line="587" />
       <source>Sign in on %1 to use this account.</source>
-      <translation>Войдите в систему %1, чтобы использовать эту учетную запись.</translation>
+      <translation>Войдите в систему на %1, чтобы использовать эту учетную запись.</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="588" />
       <source>The login Keychain on %1 is locked. Unlock it in Keychain Access, then refresh.</source>
-      <translation>Связка ключей для входа на %1 заблокирована. Разблокируйте его в Keychain Access, затем обновите.</translation>
+      <translation>Связка ключей для входа на %1 заблокирована. Разблокируйте её в Keychain Access, затем обновите.</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="589" />
@@ -365,22 +365,22 @@
     <message>
       <location filename="../src/AccountsPage.cpp" line="590" />
       <source>The saved sign-in on %1 could not be used. Check Keychain access or sign in again.</source>
-      <translation>Невозможно использовать сохраненный вход в систему %1. Проверьте доступ к связке ключей или войдите в систему еще раз.</translation>
+      <translation>Невозможно использовать сохраненный вход в систему на %1. Проверьте доступ к связке ключей или войдите в систему еще раз.</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="591" />
       <source>Sign-in expired on %1.</source>
-      <translation>Срок действия входа истек %1.</translation>
+      <translation>Срок действия входа на %1 истек.</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="592" />
       <source>Checking sign-in on %1…</source>
-      <translation>Проверка входа в систему %1…</translation>
+      <translation>Проверка входа в систему на %1…</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="593" />
       <source>Ready on %1.</source>
-      <translation>Готово %1.</translation>
+      <translation>Готово на %1.</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="593" />
@@ -443,7 +443,7 @@
     <message>
       <location filename="../src/AccountsPage.cpp" line="722" />
       <source>Work, Personal, Team…</source>
-      <translation>Работа, Личность, Команда…</translation>
+      <translation>Работа, Личное, Команда…</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="723" />
@@ -477,7 +477,7 @@
     <message>
       <location filename="../src/AccountsPage.cpp" line="740" />
       <source>Use the saved sign-in on %1. The account will be available for new sessions again.</source>
-      <translation>Используйте сохраненный вход в систему %1. Учетная запись снова будет доступна для новых сессий.</translation>
+      <translation>Используйте сохраненный вход в систему на %1. Учетная запись снова будет доступна для новых сессий.</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="741" />
@@ -557,7 +557,7 @@
     <message>
       <location filename="../src/AccountsPage.cpp" line="835" />
       <source>Copy existing sign-in over SSH</source>
-      <translation>Скопируйте существующий вход через SSH</translation>
+      <translation>Скопировать существующий вход через SSH</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="836" />
@@ -592,12 +592,12 @@
     <message>
       <location filename="../src/AccountsPage.cpp" line="891" />
       <source>Save on %1</source>
-      <translation>Сэкономьте на %1</translation>
+      <translation>Сохранить на %1</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="897" />
       <source>Saving on %1…</source>
-      <translation>Экономия на %1…</translation>
+      <translation>Сохранение на %1…</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="920" />
@@ -625,11 +625,11 @@ To use it here again, choose Add account.</source>
 Sign-in credentials and existing sessions on %1 are kept. The account stays available on its other machines.
 
 To use it here again, choose Add account or Add to %1. Zerus can reuse the saved sign-in.</source>
-      <translation>Эта учетная запись исчезнет из раздела «Учетные записи» и «Новый сессия» для %1 во всех Zerus, подключенных к %1, включая Zerus, работающий на %1.
+      <translation>Эта учетная запись исчезнет из раздела «Учетные записи» и «Новая сессия» для %1 во всех Zerus, подключенных к %1, включая Zerus, работающий на %1.
 
 Учетные данные для входа и существующие сессии на %1 сохраняются. Учетная запись остается доступной на других компьютерах.
 
-Чтобы использовать его здесь снова, выберите «Добавить учетную запись» или «Добавить в %1». Zerus может повторно использовать сохраненный вход.</translation>
+Чтобы использовать её здесь снова, выберите «Добавить учетную запись» или «Добавить в %1». Zerus может повторно использовать сохраненный вход.</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="926" />
@@ -664,7 +664,7 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/AccountsPage.cpp" line="957" />
       <source>Run tools and answer questions automatically (Never Ask).</source>
-      <translation>Запускайте инструменты и отвечайте на вопросы автоматически (никогда не спрашивать).</translation>
+      <translation>Запускать инструменты и отвечать на вопросы автоматически (никогда не спрашивать).</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="958" />
@@ -674,7 +674,7 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/AccountsPage.cpp" line="959" />
       <source>Run tools without permission prompts.</source>
-      <translation>Запускайте инструменты без запросов на разрешение.</translation>
+      <translation>Запускать инструменты без запросов на разрешение.</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="962" />
@@ -702,7 +702,7 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/ActivityView.cpp" line="694" />
       <source>Excerpt around the match. This message is too long to display in full.</source>
-      <translation>Отрывок вокруг матча. Это сообщение слишком длинное, чтобы его можно было отобразить полностью.</translation>
+      <translation>Отрывок вокруг совпадения. Это сообщение слишком длинное, чтобы его можно было отобразить полностью.</translation>
     </message>
     <message>
       <location filename="../src/ActivityView.cpp" line="706" />
@@ -727,7 +727,7 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/ActivityView.cpp" line="842" />
       <source>RECORDED CONTEXT — Outside the available timeline</source>
-      <translation>ЗАПИСАННЫЙ КОНТЕКСТ — за пределами доступной временной шкалы.</translation>
+      <translation>ЗАПИСАННЫЙ КОНТЕКСТ — за пределами доступной временной шкалы</translation>
     </message>
     <message>
       <location filename="../src/ActivityView.cpp" line="845" />
@@ -758,7 +758,7 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
       <location filename="../src/ActivityView.cpp" line="865" />
       <location filename="../src/ActivityView.cpp" line="1017" />
       <source>Thinking</source>
-      <translation>мышление</translation>
+      <translation>Размышления</translation>
     </message>
     <message>
       <location filename="../src/ActivityView.cpp" line="883" />
@@ -880,12 +880,12 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/ActivityView.cpp" line="942" />
       <source>You (answer)</source>
-      <translation>Ты (ответ)</translation>
+      <translation>Вы (ответ)</translation>
     </message>
     <message>
       <location filename="../src/ActivityView.cpp" line="942" />
       <source>You</source>
-      <translation>Ты</translation>
+      <translation>Вы</translation>
     </message>
     <message>
       <location filename="../src/ActivityView.cpp" line="942" />
@@ -905,12 +905,12 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/ActivityView.cpp" line="955" />
       <source>Sent</source>
-      <translation>Отправил</translation>
+      <translation>Отправлено</translation>
     </message>
     <message>
       <location filename="../src/ActivityView.cpp" line="955" />
       <source>Queued at this time</source>
-      <translation>В настоящее время в очереди</translation>
+      <translation>Поставлено в очередь в это время</translation>
     </message>
     <message>
       <location filename="../src/ActivityView.cpp" line="960" />
@@ -971,7 +971,7 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/ActivityView.cpp" line="1016" />
       <source>%1 tool calls</source>
-      <translation>%1 вызовы инструментов</translation>
+      <translation>Вызовов инструментов: %1</translation>
     </message>
     <message>
       <location filename="../src/ActivityView.cpp" line="1018" />
@@ -1011,7 +1011,7 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/ActivityView.cpp" line="1054" />
       <source>After signing in, send a message below to start this session.</source>
-      <translation>После входа в систему отправьте сообщение ниже, чтобы начать этот сессия.</translation>
+      <translation>После входа в систему отправьте сообщение ниже, чтобы начать эту сессию.</translation>
     </message>
     <message>
       <location filename="../src/ActivityView.cpp" line="1055" />
@@ -1026,7 +1026,7 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/ActivityView.cpp" line="1056" />
       <source>This session has no recorded activity. Open its terminal to see the agent.</source>
-      <translation>В этом сессии нет зарегистрированных действий. Откройте его терминал, чтобы увидеть агента.</translation>
+      <translation>В этой сессии нет зарегистрированных действий. Откройте её терминал, чтобы увидеть агента.</translation>
     </message>
   </context>
   <context>
@@ -1091,12 +1091,12 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/ActivityView.cpp" line="1506" />
       <source>↓  %1 new — Jump to latest</source>
-      <translation>↓ %1 новое — Перейти к последней версии</translation>
+      <translation>↓  Новых: %1 — Перейти к последней активности</translation>
     </message>
     <message>
       <location filename="../src/ActivityView.cpp" line="1506" />
       <source>↓  Jump to latest</source>
-      <translation>↓ Перейти к последней версии</translation>
+      <translation>↓  Перейти к последней активности</translation>
     </message>
     <message>
       <location filename="../src/ActivityView.cpp" line="1553" />
@@ -1527,7 +1527,7 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/DashboardPage.cpp" line="114" />
       <source>Stale</source>
-      <translation>Несвежий</translation>
+      <translation>Устарело</translation>
     </message>
     <message>
       <location filename="../src/DashboardPage.cpp" line="114" />
@@ -1557,7 +1557,7 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/DashboardPage.cpp" line="123" />
       <source>Waiting for second sample</source>
-      <translation>Ждем второй образец</translation>
+      <translation>Ожидание второго измерения</translation>
     </message>
     <message>
       <location filename="../src/DashboardPage.cpp" line="124" />
@@ -1567,7 +1567,7 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/DashboardPage.cpp" line="124" />
       <source>CPU use needs two samples. Refresh again after a moment.</source>
-      <translation>Для использования ЦП необходимы две выборки. Обновите снова через некоторое время.</translation>
+      <translation>Для расчета загрузки ЦП нужны два измерения. Обновите снова через некоторое время.</translation>
     </message>
     <message>
       <location filename="../src/DashboardPage.cpp" line="127" />
@@ -1582,12 +1582,12 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/DashboardPage.cpp" line="129" />
       <source>App, wired and compressed memory. Reclaimable file cache is excluded.</source>
-      <translation>Приложение, проводная и сжатая память. Восстанавливаемый файловый кэш исключен.</translation>
+      <translation>Память приложений, зарезервированная и сжатая память. Освобождаемый файловый кэш исключен.</translation>
     </message>
     <message>
       <location filename="../src/DashboardPage.cpp" line="130" />
       <source>Total memory minus available memory, including reclaimable cache.</source>
-      <translation>Общий объем памяти минус доступная память, включая восстанавливаемый кэш.</translation>
+      <translation>Общий объем памяти минус доступная память, включая освобождаемый кэш.</translation>
     </message>
     <message>
       <location filename="../src/DashboardPage.cpp" line="134" />
@@ -1617,12 +1617,12 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/DashboardPage.cpp" line="138" />
       <source>Metrics update with the normal machine poll. Use Refresh for a new sample.</source>
-      <translation>Метрики обновляются при обычном машинном опросе. Используйте «Обновить» для нового образца.</translation>
+      <translation>Метрики обновляются при обычном машинном опросе. Используйте «Обновить» для нового измерения.</translation>
     </message>
     <message>
       <location filename="../src/DashboardPage.cpp" line="138" />
       <source>Last known values. This machine is unavailable or has not replied recently.</source>
-      <translation>Последние известные значения. Эта машина недоступна или недавно не отвечала.</translation>
+      <translation>Последние известные значения. Эта машина недоступна или давно не отвечала.</translation>
     </message>
   </context>
   <context>
@@ -1635,7 +1635,7 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/DashboardPage.cpp" line="39" />
       <source>Sampled just now</source>
-      <translation>Сделано только что</translation>
+      <translation>Собрано только что</translation>
     </message>
     <message>
       <location filename="../src/DashboardPage.cpp" line="40" />
@@ -1645,7 +1645,7 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/DashboardPage.cpp" line="41" />
       <source>Sampled %1m ago</source>
-      <translation>Собрано %1 м назад</translation>
+      <translation>Собрано %1 мин назад</translation>
     </message>
     <message>
       <location filename="../src/DashboardPage.cpp" line="42" />
@@ -1660,7 +1660,7 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/DashboardPage.cpp" line="69" />
       <source>Last known value; waiting for a fresh sample.</source>
-      <translation>Последнее известное значение; ждем свежего образца.</translation>
+      <translation>Последнее известное значение; ждем свежего измерения.</translation>
     </message>
     <message>
       <location filename="../src/DashboardPage.cpp" line="70" />
@@ -1737,7 +1737,7 @@ Needs attention</source>
     <message>
       <location filename="../src/DashboardPage.cpp" line="444" />
       <source>%1 sessions need attention</source>
-      <translation>Сессии %1 требуют внимания</translation>
+      <translation>Сессий, требующих внимания: %1</translation>
     </message>
     <message>
       <location filename="../src/DashboardPage.cpp" line="446" />
@@ -1772,7 +1772,7 @@ Sessions</source>
     <message>
       <location filename="../src/DashboardPage.cpp" line="449" />
       <source>%1 sessions are on offline or stale machines. Their last known status is shown on the machine cards.</source>
-      <translation>Сессии %1 находятся в автономном режиме или на устаревших компьютерах. Их последний известный статус отображается на карточках машин.</translation>
+      <translation>Сессий на компьютерах, которые не в сети или давно не отвечали: %1. Их последний известный статус отображается на карточках машин.</translation>
     </message>
     <message>
       <location filename="../src/DashboardPage.cpp" line="501" />
@@ -1810,7 +1810,7 @@ Sessions</source>
     <message>
       <location filename="../src/DirectoryDialog.cpp" line="54" />
       <source>Folders on %1</source>
-      <translation>Папки на %1</translation>
+      <translation>Папки: %1</translation>
     </message>
     <message>
       <location filename="../src/DirectoryDialog.cpp" line="54" />
@@ -1825,7 +1825,7 @@ Sessions</source>
     <message>
       <location filename="../src/DirectoryDialog.cpp" line="58" />
       <source>Home</source>
-      <translation>Дом</translation>
+      <translation>Домой</translation>
     </message>
     <message>
       <location filename="../src/DirectoryDialog.cpp" line="59" />
@@ -1875,7 +1875,7 @@ Sessions</source>
       <location filename="../src/DirectoryDialog.cpp" line="134" />
       <location filename="../src/DirectoryDialog.cpp" line="242" />
       <source>Use this folder</source>
-      <translation>Используйте эту папку</translation>
+      <translation>Использовать эту папку</translation>
     </message>
     <message>
       <location filename="../src/DirectoryDialog.cpp" line="102" />
@@ -2075,7 +2075,7 @@ Sessions</source>
     <message>
       <location filename="../src/HgsClient.cpp" line="265" />
       <source>Could not update recovery. Reload its state.</source>
-      <translation>Не удалось обновить рекавери. Перезагрузите его состояние.</translation>
+      <translation>Не удалось обновить восстановление. Перезагрузите его состояние.</translation>
     </message>
     <message>
       <location filename="../src/HgsClient.cpp" line="268" />
@@ -2141,12 +2141,12 @@ Sessions</source>
     <message>
       <location filename="../src/HgsClient.cpp" line="561" />
       <source>Setup was interrupted. See the log above.</source>
-      <translation>Установка была прервана. Смотри лог выше.</translation>
+      <translation>Установка была прервана. Смотрите лог выше.</translation>
     </message>
     <message>
       <location filename="../src/HgsClient.cpp" line="561" />
       <source>Setup exited with code %1. See the log above.</source>
-      <translation>Программа установки завершилась с кодом %1. Смотри лог выше.</translation>
+      <translation>Программа установки завершилась с кодом %1. Смотрите лог выше.</translation>
     </message>
     <message>
       <location filename="../src/HgsClient.cpp" line="649" />
@@ -2206,7 +2206,7 @@ Sessions</source>
     <message>
       <location filename="../src/HgsClient.cpp" line="903" />
       <source>fork %1</source>
-      <translation>вилка %1</translation>
+      <translation>разветвление %1</translation>
     </message>
     <message>
       <location filename="../src/HgsClient.cpp" line="932" />
@@ -2228,7 +2228,7 @@ Sessions</source>
       <location filename="../src/HgsClient.cpp" line="1020" />
       <location filename="../src/HgsClient.cpp" line="1029" />
       <source>this box</source>
-      <translation>эта коробка</translation>
+      <translation>этот компьютер</translation>
     </message>
     <message>
       <location filename="../src/HgsClient.cpp" line="1159" />
@@ -2251,7 +2251,7 @@ Sessions</source>
       <source>
 Check %1 before retrying. Any created worktree is kept.</source>
       <translation>
-Прежде чем повторить попытку, проверьте %1. Любое созданное рабочую копию Git сохраняется.</translation>
+Прежде чем повторить попытку, проверьте %1. Любая созданная рабочая копия Git сохраняется.</translation>
     </message>
     <message>
       <location filename="../src/HgsClient.cpp" line="1219" />
@@ -2328,13 +2328,13 @@ Open the path to check whether the folder exists before trying again.</source>
     <message>
       <location filename="../src/HgsClient.cpp" line="1486" />
       <source>This request is not ready to answer. Wait for an updated request or open Terminal.</source>
-      <translation>Этот запрос не готов ответить. Дождитесь обновленного запроса или откройте Терминал.</translation>
+      <translation>На этот запрос пока нельзя ответить. Дождитесь обновленного запроса или откройте Терминал.</translation>
     </message>
     <message>
       <location filename="../src/HgsClient.cpp" line="1491" />
       <location filename="../src/HgsClient.cpp" line="1560" />
       <source>Cannot start hgs: executable not found or not executable: %1</source>
-      <translation>Невозможно запустить hgs: исполняемый файл не найден или не исполняемый файл: %1</translation>
+      <translation>Невозможно запустить hgs: исполняемый файл не найден или не является исполняемым: %1</translation>
     </message>
     <message>
       <location filename="../src/HgsClient.cpp" line="1494" />
@@ -2375,12 +2375,12 @@ Open the path to check whether the folder exists before trying again.</source>
     <message>
       <location filename="../src/HgsClient.cpp" line="1546" />
       <source>A message to this session is already being sent.</source>
-      <translation>Сообщение этому сессии уже отправляется.</translation>
+      <translation>Сообщение этой сессии уже отправляется.</translation>
     </message>
     <message>
       <location filename="../src/HgsClient.cpp" line="1550" />
       <source>Refresh the session before sending a message.</source>
-      <translation>Обновите сессия перед отправкой сообщения.</translation>
+      <translation>Обновите сессию перед отправкой сообщения.</translation>
     </message>
     <message>
       <location filename="../src/HgsClient.cpp" line="1564" />
@@ -2425,7 +2425,7 @@ Open the path to check whether the folder exists before trying again.</source>
     <message>
       <location filename="../src/HgsClient.cpp" line="1673" />
       <source>Drop between 1 and 8 files.</source>
-      <translation>Удалите от 1 до 8 файлов.</translation>
+      <translation>Перетащите от 1 до 8 файлов.</translation>
     </message>
     <message>
       <location filename="../src/HgsClient.cpp" line="1679" />
@@ -2525,22 +2525,22 @@ Open the path to check whether the folder exists before trying again.</source>
     <message>
       <location filename="../src/HgsClient.cpp" line="1847" />
       <source>Effort transfer failed. Check Terminal before retrying.</source>
-      <translation>Передача усилий не удалась. Проверьте терминал перед повторной попыткой.</translation>
+      <translation>Не удалось передать глубину рассуждений. Проверьте терминал перед повторной попыткой.</translation>
     </message>
     <message>
       <location filename="../src/HgsClient.cpp" line="1851" />
       <source>Effort change timed out. Check Terminal before retrying.</source>
-      <translation>Время изменения усилия истекло. Проверьте терминал перед повторной попыткой.</translation>
+      <translation>Время изменения глубины рассуждений истекло. Проверьте терминал перед повторной попыткой.</translation>
     </message>
     <message>
       <location filename="../src/HgsClient.cpp" line="1861" />
       <source>Could not confirm effort. Check Terminal before retrying.</source>
-      <translation>Не удалось подтвердить попытку. Проверьте терминал перед повторной попыткой.</translation>
+      <translation>Не удалось подтвердить глубину рассуждений. Проверьте терминал перед повторной попыткой.</translation>
     </message>
     <message>
       <location filename="../src/HgsClient.cpp" line="1866" />
       <source>Invalid effort acknowledgement. Check Terminal before retrying.</source>
-      <translation>Неверное подтверждение усилий. Проверьте терминал перед повторной попыткой.</translation>
+      <translation>Неверное подтверждение глубины рассуждений. Проверьте терминал перед повторной попыткой.</translation>
     </message>
     <message>
       <location filename="../src/HgsClient.cpp" line="1878" />
@@ -2715,7 +2715,7 @@ Open the path to check whether the folder exists before trying again.</source>
     <message>
       <location filename="../src/MachineFilter.cpp" line="63" />
       <source>Remove %1 from machine filter</source>
-      <translation>Удалите %1 из фильтра машины.</translation>
+      <translation>Удалите %1 из фильтра машин.</translation>
     </message>
     <message>
       <location filename="../src/MachineFilter.cpp" line="73" />
@@ -2835,7 +2835,7 @@ Open the path to check whether the folder exists before trying again.</source>
     <message>
       <location filename="../src/MachinesPage.cpp" line="84" />
       <source>e.g. studio-mac</source>
-      <translation>например студия-mac</translation>
+      <translation>например, studio-mac</translation>
     </message>
     <message>
       <location filename="../src/MachinesPage.cpp" line="84" />
@@ -2909,7 +2909,7 @@ Open the path to check whether the folder exists before trying again.</source>
     <message>
       <location filename="../src/MachinesPage.cpp" line="94" />
       <source>Test connection</source>
-      <translation>Тестовое соединение</translation>
+      <translation>Проверить соединение</translation>
     </message>
     <message>
       <location filename="../src/MachinesPage.cpp" line="95" />
@@ -2990,7 +2990,7 @@ Open the path to check whether the folder exists before trying again.</source>
     <message>
       <location filename="../src/MachinesPage.cpp" line="205" />
       <source>HGS</source>
-      <translation>ХГС</translation>
+      <translation>HGS</translation>
     </message>
     <message>
       <location filename="../src/MachinesPage.cpp" line="206" />
@@ -3000,7 +3000,7 @@ Open the path to check whether the folder exists before trying again.</source>
     <message>
       <location filename="../src/MachinesPage.cpp" line="207" />
       <source>Rust</source>
-      <translation>Ржавчина</translation>
+      <translation>Rust</translation>
     </message>
     <message>
       <location filename="../src/MachinesPage.cpp" line="209" />
@@ -3023,7 +3023,7 @@ Open SSH terminal to check credentials or approve the host key, then test again.
       <location filename="../src/MachinesPage.cpp" line="218" />
       <source>Could not read effective SSH settings: %1
 Your connection overrides are shown below.</source>
-      <translation>Не удалось прочитать действующие настройки SSH: %1.
+      <translation>Не удалось прочитать действующие настройки SSH: %1
 Переопределения вашего подключения показаны ниже.</translation>
     </message>
     <message>
@@ -3039,7 +3039,7 @@ Your connection overrides are shown below.</source>
     <message>
       <location filename="../src/MachinesPage.cpp" line="239" />
       <source>HGS installed. Checking connection…</source>
-      <translation>ХГС установлен. Проверка соединения…</translation>
+      <translation>HGS установлен. Проверка соединения…</translation>
     </message>
     <message>
       <location filename="../src/MachinesPage.cpp" line="260" />
@@ -3072,7 +3072,7 @@ This computer: control console</source>
     <message>
       <location filename="../src/MachinesPage.cpp" line="306" />
       <source>Disabled</source>
-      <translation>Неполноценный</translation>
+      <translation>Отключено</translation>
     </message>
     <message>
       <location filename="../src/MachinesPage.cpp" line="306" />
@@ -3109,7 +3109,7 @@ Unsaved connection</source>
     <message>
       <location filename="../src/MachinesPage.cpp" line="314" />
       <source>%1 connected, %2 machines</source>
-      <translation>%1 подключено, %2 машин</translation>
+      <translation>Подключено: %1, машин: %2</translation>
     </message>
     <message>
       <location filename="../src/MachinesPage.cpp" line="322" />
@@ -3154,7 +3154,7 @@ Unsaved connection</source>
     <message>
       <location filename="../src/MachinesPage.cpp" line="353" />
       <source>Reading effective SSH connection…</source>
-      <translation>Чтение эффективного SSH-соединения…</translation>
+      <translation>Чтение фактического SSH-соединения…</translation>
     </message>
     <message>
       <location filename="../src/MachinesPage.cpp" line="358" />
@@ -3169,17 +3169,17 @@ Unsaved connection</source>
     <message>
       <location filename="../src/MachinesPage.cpp" line="358" />
       <source>Effective connection</source>
-      <translation>Эффективное соединение</translation>
+      <translation>Фактическое соединение</translation>
     </message>
     <message>
       <location filename="../src/MachinesPage.cpp" line="359" />
       <source>Key paths: %1</source>
-      <translation>Ключевые пути: %1</translation>
+      <translation>Пути к ключам: %1</translation>
     </message>
     <message>
       <location filename="../src/MachinesPage.cpp" line="360" />
       <source>Jump host: %1</source>
-      <translation>Хост перехода: %1</translation>
+      <translation>Промежуточный хост: %1</translation>
     </message>
     <message>
       <location filename="../src/MachinesPage.cpp" line="361" />
@@ -3292,12 +3292,12 @@ Unsaved connection</source>
     <message>
       <location filename="../src/MachinesPage.cpp" line="440" />
       <source>Choose HGS source folder…</source>
-      <translation>Выберите исходную папку HGS…</translation>
+      <translation>Выбрать папку с исходным кодом HGS…</translation>
     </message>
     <message>
       <location filename="../src/MachinesPage.cpp" line="441" />
       <source>HGS source folder</source>
-      <translation>Исходная папка HGS</translation>
+      <translation>Папка с исходным кодом HGS</translation>
     </message>
     <message>
       <location filename="../src/MachinesPage.cpp" line="442" />
@@ -3327,7 +3327,7 @@ Unsaved connection</source>
       <location filename="../src/MessageComposer.cpp" line="217" />
       <location filename="../src/MessageComposer.cpp" line="870" />
       <source>Attach files, paste an image, or drop files onto this session</source>
-      <translation>Прикрепите файлы, вставьте изображение или перетащите файлы в этот сессия.</translation>
+      <translation>Прикрепите файлы, вставьте изображение или перетащите файлы в эту сессию.</translation>
     </message>
     <message>
       <location filename="../src/MessageComposer.cpp" line="218" />
@@ -3362,7 +3362,7 @@ Unsaved connection</source>
       <location filename="../src/MessageComposer.cpp" line="229" />
       <location filename="../src/MessageComposer.cpp" line="874" />
       <source>Send: Enter; new line: Shift+Enter</source>
-      <translation>Отправить: Войти; новая строка: Shift+Enter</translation>
+      <translation>Отправить: Enter; новая строка: Shift+Enter</translation>
     </message>
     <message>
       <location filename="../src/MessageComposer.cpp" line="230" />
@@ -3372,7 +3372,7 @@ Unsaved connection</source>
     <message>
       <location filename="../src/MessageComposer.cpp" line="233" />
       <source>Model and reasoning effort for this session</source>
-      <translation>Модель и аргументация для этого занятия</translation>
+      <translation>Модель и глубина рассуждений для этой сессии</translation>
     </message>
     <message>
       <location filename="../src/MessageComposer.cpp" line="236" />
@@ -3421,7 +3421,7 @@ Unsaved connection</source>
     <message>
       <location filename="../src/MessageComposer.cpp" line="399" />
       <source>Interrupt the current turn, like Escape in Terminal. The session stays open; queued messages follow the agent's native behavior.</source>
-      <translation>Прервите текущий ход, например Escape в Терминале. Сессия остается открытой; сообщения в очереди соответствуют собственному поведению агента.</translation>
+      <translation>Прервите текущий ход, как Escape в Терминале. Сессия остается открытой; сообщения в очереди обрабатываются согласно собственному поведению агента.</translation>
     </message>
     <message>
       <location filename="../src/MessageComposer.cpp" line="539" />
@@ -3442,7 +3442,7 @@ Unsaved connection</source>
     <message>
       <location filename="../src/MessageComposer.cpp" line="589" />
       <source>Another draft already exists here. Recover the previous one from Saved drafts.</source>
-      <translation>Другой проект уже существует здесь. Восстановить предыдущую версию из сохраненных черновиков.</translation>
+      <translation>Другой черновик уже существует здесь. Восстановите предыдущий из сохраненных черновиков.</translation>
     </message>
     <message>
       <location filename="../src/MessageComposer.cpp" line="665" />
@@ -3497,7 +3497,7 @@ Unsaved connection</source>
     <message>
       <location filename="../src/MessageComposer.cpp" line="748" />
       <source>%1 attached</source>
-      <translation>%1 подключено</translation>
+      <translation>%1 прикреплено</translation>
     </message>
     <message>
       <location filename="../src/MessageComposer.cpp" line="784" />
@@ -3532,7 +3532,7 @@ Unsaved connection</source>
     <message>
       <location filename="../src/MessageComposer.cpp" line="914" />
       <source>Drafts stay on this desktop, including those from ended or unavailable sessions. Restoring never sends a message.</source>
-      <translation>Черновики остаются на этом рабочем столе, в том числе из завершенных или недоступных сессий. Восстановление никогда не отправляет сообщение.</translation>
+      <translation>Черновики остаются на этом компьютере, в том числе из завершенных или недоступных сессий. Восстановление никогда не отправляет сообщение.</translation>
     </message>
     <message>
       <location filename="../src/MessageComposer.cpp" line="945" />
@@ -3603,7 +3603,7 @@ Unsaved connection</source>
     <message>
       <location filename="../src/MessageComposer.cpp" line="984" />
       <source>Restore in current session</source>
-      <translation>Восстановить в текущем сессии</translation>
+      <translation>Восстановить в текущей сессии</translation>
     </message>
     <message>
       <location filename="../src/MessageComposer.cpp" line="985" />
@@ -3653,7 +3653,7 @@ Unsaved connection</source>
     <message>
       <location filename="../src/MessageComposer.cpp" line="1059" />
       <source>No saved drafts on this desktop.</source>
-      <translation>На этом рабочем столе нет сохраненных черновиков.</translation>
+      <translation>На этом компьютере нет сохраненных черновиков.</translation>
     </message>
     <message>
       <location filename="../src/MessageComposer.cpp" line="1081" />
@@ -3683,7 +3683,7 @@ Unsaved connection</source>
     <message>
       <location filename="../src/MessageComposer.cpp" line="1174" />
       <source>Save for resume</source>
-      <translation>Сохранить для резюме</translation>
+      <translation>Сохранить для возобновления</translation>
     </message>
     <message>
       <location filename="../src/MessageComposer.cpp" line="1174" />
@@ -3693,12 +3693,12 @@ Unsaved connection</source>
     <message>
       <location filename="../src/MessageComposer.cpp" line="1176" />
       <source>Model settings are not available for this session.</source>
-      <translation>Настройки модели недоступны для этого сессии.</translation>
+      <translation>Настройки модели недоступны для этой сессии.</translation>
     </message>
     <message>
       <location filename="../src/MessageComposer.cpp" line="1177" />
       <source>Saved for the next resume. The session stays stopped.</source>
-      <translation>Сохранено для следующего резюме. Сессия остается остановленным.</translation>
+      <translation>Сохранено до следующего возобновления. Сессия остается остановленной.</translation>
     </message>
     <message>
       <location filename="../src/MessageComposer.cpp" line="1178" />
@@ -3708,7 +3708,7 @@ Unsaved connection</source>
     <message>
       <location filename="../src/MessageComposer.cpp" line="1179" />
       <source>Applies to this session only.</source>
-      <translation>Применяется только к этому сессии.</translation>
+      <translation>Применяется только к этой сессии.</translation>
     </message>
     <message>
       <location filename="../src/MessageComposer.cpp" line="1182" />
@@ -3829,7 +3829,7 @@ Current: %3%4
     <message>
       <location filename="../src/NativeUiView.cpp" line="29" />
       <source>This session has a question or approval waiting in Activity.</source>
-      <translation>В этом сессии есть вопрос или одобрение, ожидающие в разделе «Активность».</translation>
+      <translation>В этой сессии есть вопрос или одобрение, ожидающие в разделе «Активность».</translation>
     </message>
     <message>
       <location filename="../src/NativeUiView.cpp" line="34" />
@@ -4034,7 +4034,7 @@ Current: %3%4
       <location filename="../src/NewSessionDialog.cpp" line="138" />
       <location filename="../src/NewSessionDialog.cpp" line="354" />
       <source>Start session</source>
-      <translation>Начать сессия</translation>
+      <translation>Начать сессию</translation>
     </message>
     <message>
       <location filename="../src/NewSessionDialog.cpp" line="141" />
@@ -4087,7 +4087,7 @@ Current: %3%4
       <source>This folder is outside the project.
 Starting here will add it to this project.</source>
       <translation>Эта папка находится за пределами проекта.
-Начиная отсюда, мы добавим его в этот проект.</translation>
+Если начать здесь, папка будет добавлена в этот проект.</translation>
     </message>
     <message>
       <location filename="../src/NewSessionDialog.cpp" line="354" />
@@ -4114,12 +4114,12 @@ Start from: HEAD</source>
     <message>
       <location filename="../src/NewSessionDialog.cpp" line="367" />
       <source>Also open an external terminal for this session.</source>
-      <translation>Также откройте внешний терминал для этого сессии.</translation>
+      <translation>Также откройте внешний терминал для этой сессии.</translation>
     </message>
     <message>
       <location filename="../src/NewSessionDialog.cpp" line="368" />
       <source>This computer is unavailable. Choose another folder or reconnect it.</source>
-      <translation>Этот компьютер недоступен. Выберите другую папку или переподключите ее.</translation>
+      <translation>Этот компьютер недоступен. Выберите другую папку или переподключите его.</translation>
     </message>
     <message>
       <location filename="../src/NewSessionDialog.cpp" line="371" />
@@ -4129,12 +4129,12 @@ Start from: HEAD</source>
     <message>
       <location filename="../src/NewSessionDialog.cpp" line="373" />
       <source>Loading this session's account…</source>
-      <translation>Загрузка аккаунта этого сессии…</translation>
+      <translation>Загрузка аккаунта этой сессии…</translation>
     </message>
     <message>
       <location filename="../src/NewSessionDialog.cpp" line="373" />
       <source>This session's account is unavailable. Choose another account.</source>
-      <translation>Аккаунт этого сессии недоступен. Выберите другую учетную запись.</translation>
+      <translation>Аккаунт этой сессии недоступен. Выберите другую учетную запись.</translation>
     </message>
     <message>
       <location filename="../src/NewSessionDialog.cpp" line="376" />
@@ -4179,7 +4179,7 @@ Start from: HEAD</source>
     <message>
       <location filename="../src/NewSessionDialog.cpp" line="701" />
       <source>Worktree created at %1 on %2. Select that folder to start a session.</source>
-      <translation>Рабочее дерево создано в %1 %2. Выберите эту папку, чтобы начать сессия.</translation>
+      <translation>Рабочее дерево создано в %1 на %2. Выберите эту папку, чтобы начать сессию.</translation>
     </message>
     <message>
       <location filename="../src/NewSessionDialog.cpp" line="741" />
@@ -4245,7 +4245,7 @@ Repository: %2</source>
     <message>
       <location filename="../src/NewWorktreeDialog.h" line="38" />
       <source>Creates a new branch and working folder. It remains on this computer if you cancel or cannot start the session.</source>
-      <translation>Создает новую ветку и рабочую папку. Он останется на этом компьютере, если вы отмените или не сможете начать сессия.</translation>
+      <translation>Создает новую ветку и рабочую папку. Они останутся на этом компьютере, если вы отмените или не сможете начать сессию.</translation>
     </message>
     <message>
       <location filename="../src/NewWorktreeDialog.h" line="41" />
@@ -4523,7 +4523,7 @@ Repository: %2</source>
     <message>
       <location filename="../src/ProcessView.cpp" line="52" />
       <source>Finished</source>
-      <translation>Законченный</translation>
+      <translation>Завершенные</translation>
     </message>
     <message>
       <location filename="../src/ProcessView.cpp" line="53" />
@@ -4543,7 +4543,7 @@ Repository: %2</source>
     <message>
       <location filename="../src/ProcessView.cpp" line="71" />
       <source>Terminate</source>
-      <translation>Прекратить</translation>
+      <translation>Завершить</translation>
     </message>
     <message>
       <location filename="../src/ProcessView.cpp" line="71" />
@@ -4558,7 +4558,7 @@ Repository: %2</source>
     <message>
       <location filename="../src/ProcessView.cpp" line="83" />
       <source>Stop was not confirmed</source>
-      <translation>Стоп не подтвержден</translation>
+      <translation>Остановка не подтверждена</translation>
     </message>
     <message>
       <location filename="../src/ProcessView.cpp" line="93" />
@@ -4603,7 +4603,7 @@ Repository: %2</source>
     <message>
       <location filename="../src/ProcessView.cpp" line="136" />
       <source>%1 active    %2 unconfirmed    %3 recorded</source>
-      <translation>%1 активен %2 не подтвержден %3 записан</translation>
+      <translation>%1 активно    %2 не подтверждено    %3 записано</translation>
     </message>
     <message>
       <location filename="../src/ProcessView.cpp" line="139" />
@@ -4625,7 +4625,7 @@ Only observed commands are shown; older history may be unavailable.</source>
     <message>
       <location filename="../src/ProcessView.cpp" line="163" />
       <source>Stop selected (%1)</source>
-      <translation>Остановить выбрано (%1)</translation>
+      <translation>Остановить выбранное (%1)</translation>
     </message>
     <message>
       <location filename="../src/ProcessView.cpp" line="165" />
@@ -4661,7 +4661,7 @@ Only observed commands are shown; older history may be unavailable.</source>
     <message>
       <location filename="../src/ProcessView.cpp" line="173" />
       <source>Targeted stop is unavailable for this recorded command. Select its running process in Live shells / processes, or a supported native job.</source>
-      <translation>Целенаправленный останов недоступен для этой записанной команды. Выберите запущенный процесс в Live-оболочках/процессах или поддерживаемое собственное задание.</translation>
+      <translation>Целенаправленный останов недоступен для этой записанной команды. Выберите запущенный процесс в разделе «Терминалы и процессы» или поддерживаемое собственное задание.</translation>
     </message>
     <message>
       <location filename="../src/ProcessView.cpp" line="176" />
@@ -4691,7 +4691,7 @@ Only observed commands are shown; older history may be unavailable.</source>
     <message>
       <location filename="../src/ProcessView.cpp" line="210" />
       <source>Stop requested for %1 process(es).</source>
-      <translation>Запрошена остановка процесса(ов) %1.</translation>
+      <translation>Запрошена остановка процессов: %1.</translation>
     </message>
     <message>
       <location filename="../src/ProcessView.cpp" line="211" />
@@ -4701,7 +4701,7 @@ Only observed commands are shown; older history may be unavailable.</source>
     <message>
       <location filename="../src/ProcessView.cpp" line="212" />
       <source> %1 already finished or left the list.</source>
-      <translation> %1 уже закончил или покинул список.</translation>
+      <translation> %1 уже завершено или покинуло список.</translation>
     </message>
     <message>
       <location filename="../src/ProcessView.cpp" line="213" />
@@ -4990,7 +4990,7 @@ CPU uses the processor. CUDA requires a supported NVIDIA GPU and CUDA-enabled Py
     <message>
       <location filename="../src/ProjectsDialog.cpp" line="110" />
       <source>Swarm…</source>
-      <translation>Рой…</translation>
+      <translation>Общее пространство…</translation>
     </message>
     <message>
       <location filename="../src/ProjectsDialog.cpp" line="112" />
@@ -5031,7 +5031,7 @@ CPU uses the processor. CUDA requires a supported NVIDIA GPU and CUDA-enabled Py
     <message>
       <location filename="../src/ProjectsDialog.cpp" line="153" />
       <source>ID</source>
-      <translation>ИДЕНТИФИКАТОР</translation>
+      <translation>ID</translation>
     </message>
     <message>
       <location filename="../src/ProjectsDialog.cpp" line="156" />
@@ -5216,7 +5216,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
       <location filename="../src/ProjectsDialog.cpp" line="404" />
       <location filename="../src/ProjectsDialog.cpp" line="480" />
       <source>This project folder changed. Select it again.</source>
-      <translation>Папка проекта изменилась. Выберите его еще раз.</translation>
+      <translation>Папка проекта изменилась. Выберите ее еще раз.</translation>
     </message>
     <message>
       <location filename="../src/ProjectsDialog.cpp" line="407" />
@@ -5275,17 +5275,17 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/ProjectsDialog.cpp" line="463" />
       <source>New session in %1 on %2</source>
-      <translation>Новый сессия в %1 %2.</translation>
+      <translation>Новая сессия в %1 на %2</translation>
     </message>
     <message>
       <location filename="../src/ProjectsDialog.cpp" line="467" />
       <source>Select a folder for the new session.</source>
-      <translation>Выберите папку для нового сессии.</translation>
+      <translation>Выберите папку для новой сессии.</translation>
     </message>
     <message>
       <location filename="../src/ProjectsDialog.cpp" line="471" />
       <source>Reconnect %1 to start a session in this folder.</source>
-      <translation>Переподключите %1, чтобы начать сессия в этой папке.</translation>
+      <translation>Переподключите %1, чтобы начать сессию в этой папке.</translation>
     </message>
     <message>
       <location filename="../src/ProjectsDialog.cpp" line="488" />
@@ -5364,7 +5364,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
       <location filename="../src/PtyProcess.cpp" line="49" />
       <location filename="../src/PtyProcess_win.cpp" line="161" />
       <source>Attach executable is unavailable: %1</source>
-      <translation>Прикрепить исполняемый файл недоступен: %1</translation>
+      <translation>Исполняемый файл для подключения недоступен: %1</translation>
     </message>
     <message>
       <location filename="../src/PtyProcess.cpp" line="86" />
@@ -5419,7 +5419,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/AccountsPage.cpp" line="86" />
       <source>Set in Zerus</source>
-      <translation>Действие происходит в Zerusе.</translation>
+      <translation>Задано в Zerus</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="86" />
@@ -5434,7 +5434,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/AccountsPage.cpp" line="88" />
       <source>Applies to new and resumed sessions; a running session may use a different mode.</source>
-      <translation>Применяется к новым и возобновленным сессиим; запущенный сессия может использовать другой режим.</translation>
+      <translation>Применяется к новым и возобновленным сессиям; запущенная сессия может использовать другой режим.</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="172" />
@@ -5459,7 +5459,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/AccountUsage.h" line="39" />
       <source>reset unknown</source>
-      <translation>сброс неизвестного</translation>
+      <translation>время сброса неизвестно</translation>
     </message>
     <message>
       <location filename="../src/AccountUsage.h" line="41" />
@@ -5603,7 +5603,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/AccountUsage.h" line="191" />
       <source>No native subscription sign-in found. API-key sessions may still work.</source>
-      <translation>Вход в встроенную подписку не найден. Сессии с API-ключами все еще могут работать.</translation>
+      <translation>Вход во встроенную подписку не найден. Сессии с API-ключами все еще могут работать.</translation>
     </message>
     <message>
       <location filename="../src/AccountUsage.h" line="192" />
@@ -5634,7 +5634,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
       <location filename="../src/AccountUsage.h" line="208" />
       <location filename="../src/AccountUsage.h" line="376" />
       <source>Resets %1</source>
-      <translation>Сбрасывает %1</translation>
+      <translation>Сброс %1</translation>
     </message>
     <message>
       <location filename="../src/AccountUsage.h" line="208" />
@@ -5650,7 +5650,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/AccountUsage.h" line="213" />
       <source>Updating… Previous values remain visible.</source>
-      <translation>Обновление... Предыдущие значения остаются видимыми.</translation>
+      <translation>Обновление… Предыдущие значения остаются видимыми.</translation>
     </message>
     <message>
       <location filename="../src/AccountUsage.h" line="214" />
@@ -5676,7 +5676,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/AccountUsage.h" line="371" />
       <source>Shared by sessions using this account.</source>
-      <translation>Доступно для сессий, использующих эту учетную запись.</translation>
+      <translation>Общее для сессий, использующих эту учетную запись.</translation>
     </message>
     <message>
       <location filename="../src/AccountUsage.h" line="374" />
@@ -5686,7 +5686,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/AccountUsage.h" line="374" />
       <source>Window ended; refresh for current usage</source>
-      <translation>Окно закончилось; обновить для текущего использования</translation>
+      <translation>Окно закончилось; обновите, чтобы увидеть текущее использование</translation>
     </message>
     <message>
       <location filename="../src/AccountUsage.h" line="380" />
@@ -5820,7 +5820,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/CacheStatus.h" line="21" />
       <source>The agent suggests starting a new task with /clear to save %1 context tokens. The current cache may still be warm.</source>
-      <translation>Агент предлагает запустить новую задачу с помощью /clear, чтобы сохранить токены контекста %1. Текущий кэш может быть еще теплым.</translation>
+      <translation>Агент предлагает запустить новую задачу с помощью /clear, чтобы сэкономить токены контекста (%1). Текущий кэш может быть еще теплым.</translation>
     </message>
     <message>
       <location filename="../src/CacheStatus.h" line="28" />
@@ -5840,7 +5840,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/CacheStatus.h" line="32" />
       <source>Cache ~%1m</source>
-      <translation>Кэш ~%1m</translation>
+      <translation>Кэш ~%1 мин</translation>
     </message>
     <message>
       <location filename="../src/CacheStatus.h" line="32" />
@@ -5850,7 +5850,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/CacheStatus.h" line="39" />
       <source>Estimated expiry from the TTL reported in native usage: %1.</source>
-      <translation>Предполагаемый срок действия TTL, указанный при собственном использовании: %1.</translation>
+      <translation>Расчетное время истечения по TTL из собственных данных агента об использовании: %1.</translation>
     </message>
     <message>
       <location filename="../src/CacheStatus.h" line="40" />
@@ -5860,17 +5860,17 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/CacheStatus.h" line="41" />
       <source>Last request read %1 tokens from cache.</source>
-      <translation>Последний запрос прочитал %1 токенов из кэша.</translation>
+      <translation>Последний запрос прочитал из кэша токенов: %1.</translation>
     </message>
     <message>
       <location filename="../src/CacheStatus.h" line="42" />
       <source>Prompt, model or tool changes can invalidate the cache earlier. Starting a new conversation is always your choice.</source>
-      <translation>Подсказка, изменение модели или инструмента может привести к тому, что кэш станет недействительным раньше. Начать новый разговор всегда за вами.</translation>
+      <translation>Изменение промпта, модели или инструмента может привести к тому, что кэш станет недействительным раньше. Начать новый разговор всегда за вами.</translation>
     </message>
     <message>
       <location filename="../src/CacheStatus.h" line="43" />
       <source>Last recorded session data.</source>
-      <translation>Данные последней записанной сессии.</translation>
+      <translation>Последние записанные данные сессии.</translation>
     </message>
     <message>
       <location filename="../src/ComposerDraftStore.cpp" line="28" />
@@ -5895,7 +5895,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/ComposerDraftStore.cpp" line="308" />
       <source>Another draft already exists here. Recover the previous one from Saved drafts.</source>
-      <translation>Другой проект уже существует здесь. Восстановить предыдущую версию из сохраненных черновиков.</translation>
+      <translation>Другой черновик уже существует здесь. Восстановите предыдущий из сохраненных черновиков.</translation>
     </message>
     <message>
       <location filename="../src/GitStatusBadge.h" line="43" />
@@ -6179,12 +6179,12 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/SessionGoal.h" line="15" />
       <source>Goal usage limit reached</source>
-      <translation>Достигнут целевой лимит использования</translation>
+      <translation>Цель: достигнут лимит использования</translation>
     </message>
     <message>
       <location filename="../src/SessionGoal.h" line="16" />
       <source>Goal token budget reached</source>
-      <translation>Бюджет целевых токенов достигнут.</translation>
+      <translation>Цель: исчерпан бюджет токенов</translation>
     </message>
     <message>
       <location filename="../src/SessionGoal.h" line="17" />
@@ -6209,7 +6209,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/SessionGoal.h" line="35" />
       <source>%1 tokens used</source>
-      <translation>Использовано %1 токенов</translation>
+      <translation>Использовано токенов: %1</translation>
     </message>
     <message>
       <location filename="../src/SessionGoal.h" line="40" />
@@ -6219,12 +6219,12 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/SessionGoal.h" line="46" />
       <source>Goal rounds: %1</source>
-      <translation>Гол раундов: %1</translation>
+      <translation>Раунды цели: %1</translation>
     </message>
     <message>
       <location filename="../src/SessionGoal.h" line="46" />
       <source>Continuation turns: %1</source>
-      <translation>Продолжение хода: %1</translation>
+      <translation>Ходы продолжения: %1</translation>
     </message>
     <message>
       <location filename="../src/SessionGoal.h" line="48" />
@@ -6400,7 +6400,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/SessionPresentation.h" line="166" />
       <source>Starting</source>
-      <translation>Начало</translation>
+      <translation>Запуск</translation>
     </message>
     <message>
       <location filename="../src/SessionPresentation.h" line="167" />
@@ -6435,7 +6435,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/SessionPresentation.h" line="198" />
       <source>detached HEAD</source>
-      <translation>отдельная голова</translation>
+      <translation>отделенный HEAD</translation>
     </message>
     <message>
       <location filename="../src/SessionPresentation.h" line="244" />
@@ -6495,12 +6495,12 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/SessionPresentation.h" line="359" />
       <source>%1 confirmed active / %2 observed; some states unknown</source>
-      <translation>%1 подтверждено активно / %2 наблюдается; некоторые штаты неизвестны</translation>
+      <translation>%1 подтверждено активно / %2 наблюдается; некоторые состояния неизвестны</translation>
     </message>
     <message>
       <location filename="../src/SessionPresentation.h" line="362" />
       <source>%1 active / %2 observed runs</source>
-      <translation>%1 активен / %2 наблюдаемых запусков</translation>
+      <translation>%1 активно / %2 наблюдаемых запусков</translation>
     </message>
     <message>
       <location filename="../src/SessionPresentation.h" line="362" />
@@ -6510,12 +6510,12 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/SessionPresentation.h" line="364" />
       <source>Observed runs: count unavailable</source>
-      <translation>Наблюдаемые пробеги: количество недоступно</translation>
+      <translation>Наблюдаемые прогоны: количество недоступно</translation>
     </message>
     <message>
       <location filename="../src/SessionPresentation.h" line="366" />
       <source>%1 active / total unknown</source>
-      <translation>%1 активен/всего неизвестно</translation>
+      <translation>%1 активно/всего неизвестно</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="230" />
@@ -6651,7 +6651,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/SwarmConflictReview.cpp" line="41" />
       <source>Session project</source>
-      <translation>Сессионный проект</translation>
+      <translation>Проект сессии</translation>
     </message>
     <message>
       <location filename="../src/SwarmConflictReview.cpp" line="42" />
@@ -6721,7 +6721,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/SwarmDialog.cpp" line="55" />
       <source>Sync connection</source>
-      <translation>Синхронизация соединения</translation>
+      <translation>Подключение для синхронизации</translation>
     </message>
     <message>
       <location filename="../src/SwarmDialog.cpp" line="64" />
@@ -6796,7 +6796,7 @@ Changes from connected computers are merged automatically.</source>
     <message>
       <location filename="../src/SwarmDialog.cpp" line="89" />
       <source>These changes need your decision. Review one item at a time; each choice is shared with the swarm.</source>
-      <translation>Эти изменения требуют вашего решения. Просматривайте один элемент за раз; каждый выбор разделяется со стаей.</translation>
+      <translation>Эти изменения требуют вашего решения. Просматривайте один элемент за раз; каждый выбор передается всем участникам общего пространства.</translation>
     </message>
     <message>
       <location filename="../src/SwarmDialog.cpp" line="95" />
@@ -6816,7 +6816,7 @@ Changes from connected computers are merged automatically.</source>
     <message>
       <location filename="../src/SwarmDialog.cpp" line="109" />
       <source>%1 computers</source>
-      <translation>%1 компьютеров</translation>
+      <translation>Компьютеров: %1</translation>
     </message>
     <message>
       <location filename="../src/SwarmDialog.cpp" line="109" />
@@ -6841,7 +6841,7 @@ Changes from connected computers are merged automatically.</source>
     <message>
       <location filename="../src/SwarmDialog.cpp" line="129" />
       <source>Shared through swarm</source>
-      <translation>Распространено через Swarm</translation>
+      <translation>Доступен через общее пространство</translation>
     </message>
     <message>
       <location filename="../src/SwarmDialog.cpp" line="130" />
@@ -6892,7 +6892,7 @@ Changes from connected computers are merged automatically.</source>
       <location filename="../src/SwarmDialog.cpp" line="178" />
       <source>%1 already shares this project catalog.
 Connect directly to synchronize through this computer.</source>
-      <translation>%1 уже предоставил доступ к этому каталогу проектов.
+      <translation>%1 уже использует этот каталог проектов.
 Подключитесь напрямую для синхронизации через этот компьютер.</translation>
     </message>
     <message>
@@ -6903,12 +6903,12 @@ Connect directly to synchronize through this computer.</source>
     <message>
       <location filename="../src/SwarmDialog.cpp" line="180" />
       <source>Review the project mapping, then connect to %1.</source>
-      <translation>Просмотрите сопоставление проекта, затем подключитесь к %1.</translation>
+      <translation>Просмотрите сопоставление проектов, затем подключитесь к %1.</translation>
     </message>
     <message>
       <location filename="../src/SwarmDialog.cpp" line="182" />
       <source>Open Projects in Zerus on %1 first to import its catalog.</source>
-      <translation>Сначала откройте проекты в Zerus на %1, чтобы импортировать его каталог.</translation>
+      <translation>Сначала откройте «Проекты» в Zerus на %1, чтобы импортировать его каталог.</translation>
     </message>
     <message>
       <location filename="../src/SwarmDialog.cpp" line="185" />
@@ -7157,7 +7157,7 @@ Connect directly to synchronize through this computer.</source>
     <message>
       <location filename="../src/QuestionCard.cpp" line="192" />
       <source>Skip</source>
-      <translation>Пропускать</translation>
+      <translation>Пропустить</translation>
     </message>
     <message>
       <location filename="../src/QuestionCard.cpp" line="193" />
@@ -7167,13 +7167,13 @@ Connect directly to synchronize through this computer.</source>
     <message>
       <location filename="../src/QuestionCard.cpp" line="257" />
       <source>%1 (question answer)</source>
-      <translation>%1 (вопрос-ответ)</translation>
+      <translation>%1 (ответ на вопрос)</translation>
     </message>
     <message>
       <location filename="../src/QuestionCard.cpp" line="306" />
       <location filename="../src/QuestionCard.cpp" line="447" />
       <source>Answer submitted. Waiting for Codex to record it. You can check the queue above or open Terminal.</source>
-      <translation>Ответ отправлен. Ждем, пока Кодекс запишет это. Вы можете проверить очередь выше или открыть Терминал.</translation>
+      <translation>Ответ отправлен. Ждем, пока Codex запишет его. Вы можете проверить очередь выше или открыть Терминал.</translation>
     </message>
     <message>
       <location filename="../src/QuestionCard.cpp" line="354" />
@@ -7188,7 +7188,7 @@ Connect directly to synchronize through this computer.</source>
     <message>
       <location filename="../src/QuestionCard.cpp" line="374" />
       <source>Request %1 of %2, newest first. Draft answers are kept when switching.</source>
-      <translation>Запросите %1 из %2, сначала самые новые. Черновики ответов сохраняются при переключении.</translation>
+      <translation>Запрос %1 из %2, сначала самые новые. Черновики ответов сохраняются при переключении.</translation>
     </message>
     <message>
       <location filename="../src/QuestionCard.cpp" line="375" />
@@ -7279,12 +7279,12 @@ Connect directly to synchronize through this computer.</source>
     <message>
       <location filename="../src/QuestionCard.cpp" line="666" />
       <source>Answer submitted. Waiting for the agent to record it. Check Activity or Terminal.</source>
-      <translation>Ответ отправлен. Жду, пока агент запишет это. Проверьте активность или терминал.</translation>
+      <translation>Ответ отправлен. Ждем, пока агент запишет его. Проверьте активность или терминал.</translation>
     </message>
     <message>
       <location filename="../src/QuestionCard.cpp" line="763" />
       <source>Submitted</source>
-      <translation>Поданный</translation>
+      <translation>Отправлено</translation>
     </message>
     <message>
       <location filename="../src/QuestionCard.cpp" line="773" />
@@ -7294,7 +7294,7 @@ Connect directly to synchronize through this computer.</source>
     <message>
       <location filename="../src/QuestionCard.cpp" line="773" />
       <source>Optional question</source>
-      <translation>Дополнительный вопрос</translation>
+      <translation>Необязательный вопрос</translation>
     </message>
     <message>
       <location filename="../src/QuestionCard.cpp" line="775" />
@@ -7319,7 +7319,7 @@ Connect directly to synchronize through this computer.</source>
     <message>
       <location filename="../src/QuestionCard.cpp" line="796" />
       <source>%1 of %2 answered</source>
-      <translation>%1 из %2 ответил</translation>
+      <translation>Отвечено: %1 из %2</translation>
     </message>
     <message>
       <location filename="../src/QuestionCard.cpp" line="806" />
@@ -7334,12 +7334,12 @@ Connect directly to synchronize through this computer.</source>
     <message>
       <location filename="../src/QuestionCard.cpp" line="815" />
       <source>“%1” changes Claude's permissions beyond this request. Select Confirm to send it.</source>
-      <translation>«%1» изменяет разрешения Клода помимо этого запроса. Выберите «Подтвердить», чтобы отправить его.</translation>
+      <translation>«%1» изменяет разрешения Claude помимо этого запроса. Выберите «Подтвердить», чтобы отправить его.</translation>
     </message>
     <message>
       <location filename="../src/QuestionCard.cpp" line="816" />
       <source>Review the request, then choose one of Claude's options.</source>
-      <translation>Просмотрите запрос, затем выберите один из вариантов Клода.</translation>
+      <translation>Просмотрите запрос, затем выберите один из вариантов Claude.</translation>
     </message>
     <message>
       <location filename="../src/QuestionCard.cpp" line="817" />
@@ -7349,7 +7349,7 @@ Connect directly to synchronize through this computer.</source>
     <message>
       <location filename="../src/QuestionCard.cpp" line="818" />
       <source>Approval applies only to this command. Review it before continuing.</source>
-      <translation>Одобрение применимо только к этой команде. Просмотрите его, прежде чем продолжить.</translation>
+      <translation>Одобрение применимо только к этой команде. Просмотрите её, прежде чем продолжить.</translation>
     </message>
     <message>
       <location filename="../src/QuestionCard.cpp" line="819" />
@@ -7450,7 +7450,7 @@ New messages and Stop cancel recovery. Sign-in, balance, other quota and context
     <message>
       <location filename="../src/RecoverySettings.h" line="123" />
       <source>Use 1–16 values: delays from 1 to 86400 seconds; −1 or 0 may only be last, and 0 needs a preceding delay.</source>
-      <translation>Используйте значения 1–16: задержки от 1 до 86400 секунд; −1 или 0 могут быть только последними, а 0 требует предшествующей задержки.</translation>
+      <translation>Укажите от 1 до 16 значений: задержки от 1 до 86400 секунд; −1 или 0 могут быть только последними, а 0 требует предшествующей задержки.</translation>
     </message>
     <message>
       <location filename="../src/RecoverySettings.h" line="130" />
@@ -7488,7 +7488,7 @@ New messages and Stop cancel recovery. Sign-in, balance, other quota and context
     <message>
       <location filename="../src/RecoverySettings.h" line="64" />
       <source>Synchronized across %1 machines. Changes from any Zerus are shared.</source>
-      <translation>Синхронизировано на компьютерах %1. Изменения любого Zerus являются общими.</translation>
+      <translation>Синхронизировано на компьютерах: %1. Изменения любого Zerus являются общими.</translation>
     </message>
     <message>
       <location filename="../src/RecoverySettings.h" line="70" />
@@ -7498,7 +7498,7 @@ New messages and Stop cancel recovery. Sign-in, balance, other quota and context
     <message>
       <location filename="../src/RecoverySettings.h" line="71" />
       <source>Settings changed in another Zerus. Reload before saving.</source>
-      <translation>Настройки менялись в другом Zerusе. Перезагрузите перед сохранением.</translation>
+      <translation>Настройки менялись в другом экземпляре Zerus. Перезагрузите перед сохранением.</translation>
     </message>
     <message>
       <location filename="../src/RecoverySettings.h" line="74" />
@@ -7556,7 +7556,7 @@ New messages and Stop cancel recovery. Sign-in, balance, other quota and context
     <message>
       <location filename="../src/RecoveryWidgets.h" line="76" />
       <source>%1  %2 (%3 attempts)</source>
-      <translation>%1 %2 (%3 попыток)</translation>
+      <translation>%1  %2 (попыток: %3)</translation>
     </message>
     <message>
       <location filename="../src/RecoveryWidgets.h" line="100" />
@@ -7592,12 +7592,12 @@ New messages and Stop cancel recovery. Sign-in, balance, other quota and context
     <message>
       <location filename="../src/RecoveryWidgets.h" line="125" />
       <source>The provider stopped this turn. Wait for the limit to reset or restore account access, then refresh usage and send a message to continue. Your draft is kept; Zerus will not retry automatically.</source>
-      <translation>Провайдер остановил этот поворот. Подождите, пока лимит сбросится или восстановится доступ к учетной записи, затем обновите использование и отправьте сообщение для продолжения. Ваш черновик сохраняется; Zerus не будет повторять попытку автоматически.</translation>
+      <translation>Провайдер остановил этот ход. Подождите, пока лимит сбросится или восстановится доступ к учетной записи, затем обновите использование и отправьте сообщение для продолжения. Ваш черновик сохраняется; Zerus не будет повторять попытку автоматически.</translation>
     </message>
     <message>
       <location filename="../src/RecoveryWidgets.h" line="126" />
       <source>The provider stopped this turn. Check Terminal and resolve the error, then send a message to continue. Your draft is kept.</source>
-      <translation>Провайдер остановил этот поворот. Проверьте терминал и устраните ошибку, затем отправьте сообщение для продолжения. Ваш черновик сохранен.</translation>
+      <translation>Провайдер остановил этот ход. Проверьте терминал и устраните ошибку, затем отправьте сообщение для продолжения. Ваш черновик сохранен.</translation>
     </message>
     <message>
       <location filename="../src/RecoveryWidgets.h" line="135" />
@@ -7607,7 +7607,7 @@ New messages and Stop cancel recovery. Sign-in, balance, other quota and context
     <message>
       <location filename="../src/RecoveryWidgets.h" line="135" />
       <source> (%1 attempts, repeats until stopped)</source>
-      <translation> (Попытка %1, повторяется до остановки)</translation>
+      <translation> (попытка %1, повторяется до остановки)</translation>
     </message>
     <message>
       <location filename="../src/RecoveryWidgets.h" line="135" />
@@ -8026,7 +8026,7 @@ New messages and Stop cancel recovery. Sign-in, balance, other quota and context
     <message>
       <location filename="../src/SessionSearch.cpp" line="77" />
       <source>Matching sessions and messages</source>
-      <translation>Сопоставление сессий и сообщений</translation>
+      <translation>Найденные сессии и сообщения</translation>
     </message>
     <message>
       <location filename="../src/SessionSearch.cpp" line="197" />
@@ -8066,7 +8066,7 @@ New messages and Stop cancel recovery. Sign-in, balance, other quota and context
     <message>
       <location filename="../src/SessionSearch.cpp" line="242" />
       <source>You</source>
-      <translation>Ты</translation>
+      <translation>Вы</translation>
     </message>
     <message>
       <location filename="../src/SessionSearch.cpp" line="242" />
@@ -8101,17 +8101,17 @@ New messages and Stop cancel recovery. Sign-in, balance, other quota and context
     <message>
       <location filename="../src/SessionSearch.cpp" line="282" />
       <source>Type 2+ characters to search message contents</source>
-      <translation>Введите более 2 символов для поиска содержимого сообщения.</translation>
+      <translation>Введите не менее 2 символов для поиска по содержимому сообщений.</translation>
     </message>
     <message>
       <location filename="../src/SessionSearch.cpp" line="283" />
       <source> — Searching…</source>
-      <translation> - Идет поиск…</translation>
+      <translation> — Идет поиск…</translation>
     </message>
     <message>
       <location filename="../src/SessionSearch.cpp" line="284" />
       <source> — Limited history searched</source>
-      <translation> — Ограниченная история поиска</translation>
+      <translation> — Поиск выполнен по ограниченной истории</translation>
     </message>
     <message>
       <location filename="../src/SessionSearch.cpp" line="285" />
@@ -8129,7 +8129,7 @@ New messages and Stop cancel recovery. Sign-in, balance, other quota and context
     <message>
       <location filename="../src/SessionUsage.h" line="66" />
       <source>No native usage reported for this conversation yet.</source>
-      <translation>Для этого разговора пока не сообщалось о собственном использовании.</translation>
+      <translation>Агент пока не сообщил данные об использовании для этого разговора.</translation>
     </message>
     <message>
       <location filename="../src/SessionUsage.h" line="74" />
@@ -8169,7 +8169,7 @@ New messages and Stop cancel recovery. Sign-in, balance, other quota and context
     <message>
       <location filename="../src/SessionUsage.h" line="89" />
       <source>Last saved native cost snapshot. Newer requests are not included yet.</source>
-      <translation>Последний сохраненный снимок собственных затрат. Более новые запросы пока не включены.</translation>
+      <translation>Последний сохраненный снимок стоимости по данным агента. Более новые запросы пока не включены.</translation>
     </message>
     <message>
       <location filename="../src/SessionUsage.h" line="89" />
@@ -8189,12 +8189,12 @@ New messages and Stop cancel recovery. Sign-in, balance, other quota and context
     <message>
       <location filename="../src/SessionUsage.h" line="97" />
       <source>Reading session history. Totals are incomplete.</source>
-      <translation>Чтение истории сессий. Итоговые суммы неполные.</translation>
+      <translation>Чтение истории сессии. Итоговые суммы неполные.</translation>
     </message>
     <message>
       <location filename="../src/SessionUsage.h" line="97" />
       <source>This conversation only. Subagent usage is separate. Cache is included in input; reasoning is included in output.</source>
-      <translation>Только этот разговор. Использование субагента осуществляется отдельно. Кэш включен во входные данные; рассуждения включены в вывод.</translation>
+      <translation>Только этот разговор. Использование субагентов учитывается отдельно. Кэш включен во входные данные; рассуждения включены в вывод.</translation>
     </message>
   </context>
   <context>
@@ -8202,7 +8202,7 @@ New messages and Stop cancel recovery. Sign-in, balance, other quota and context
     <message>
       <location filename="../src/SessionUsage.h" line="44" />
       <source>Latest reported context: %1 tokens</source>
-      <translation>Последний сообщенный контекст: токены %1.</translation>
+      <translation>Последний сообщенный контекст: токенов %1</translation>
     </message>
     <message>
       <location filename="../src/SessionUsage.h" line="45" />
@@ -8242,7 +8242,7 @@ New messages and Stop cancel recovery. Sign-in, balance, other quota and context
     <message>
       <location filename="../src/SessionUsage.h" line="53" />
       <source>Open session usage in Details.</source>
-      <translation>Откройте использование сессии в деталях.</translation>
+      <translation>Откройте использование сессии в разделе «Подробности».</translation>
     </message>
     <message>
       <location filename="../src/SessionUsage.h" line="53" />
@@ -8338,12 +8338,12 @@ New messages and Stop cancel recovery. Sign-in, balance, other quota and context
     <message>
       <location filename="../src/SessionSelection.cpp" line="50" />
       <source>Forget</source>
-      <translation>Забывать</translation>
+      <translation>Забыть</translation>
     </message>
     <message>
       <location filename="../src/SessionSelection.cpp" line="51" />
       <source>Terminate</source>
-      <translation>Прекратить</translation>
+      <translation>Завершить</translation>
     </message>
     <message>
       <location filename="../src/SessionSelection.cpp" line="52" />
@@ -8393,12 +8393,12 @@ New messages and Stop cancel recovery. Sign-in, balance, other quota and context
     <message>
       <location filename="../src/SessionSelection.cpp" line="176" />
       <source>%1 sessions moved to project.</source>
-      <translation>Сессии %1 перенесены в проект.</translation>
+      <translation>В проект перенесено сессий: %1.</translation>
     </message>
     <message>
       <location filename="../src/SessionSelection.cpp" line="183" />
       <source>%1 selected sessions</source>
-      <translation>%1 выбранных сессий</translation>
+      <translation>Выбрано сессий: %1</translation>
     </message>
     <message>
       <location filename="../src/SessionSelection.cpp" line="196" />
@@ -8413,12 +8413,12 @@ New messages and Stop cancel recovery. Sign-in, balance, other quota and context
     <message>
       <location filename="../src/SessionSelection.cpp" line="223" />
       <source>Remove %1 archived sessions from HGS on the selected machines?</source>
-      <translation>Удалить заархивированные сессии %1 из HGS на выбранных компьютерах?</translation>
+      <translation>Удалить заархивированные сессии (%1) из HGS на выбранных компьютерах?</translation>
     </message>
     <message>
       <location filename="../src/SessionSelection.cpp" line="224" />
       <source>%1 %2 selected sessions?</source>
-      <translation>%1 %2 выбранных сессий?</translation>
+      <translation>%1 выбранные сессии (%2)?</translation>
     </message>
     <message>
       <location filename="../src/SessionSelection.cpp" line="226" />
@@ -8427,7 +8427,7 @@ New messages and Stop cancel recovery. Sign-in, balance, other quota and context
 Running processes will stop. Tracked Codex, Claude and Kimi conversations are kept in Archive; native conversation history is kept.</source>
       <translation>
 
-Запущенные процессы остановятся. Отслеживаемые разговоры Кодекса, Клода и Кими сохраняются в Архиве; Собственная история разговоров сохраняется.</translation>
+Запущенные процессы остановятся. Отслеживаемые разговоры Codex, Claude и Kimi сохраняются в Архиве; история разговоров агента сохраняется.</translation>
     </message>
     <message>
       <location filename="../src/SessionSelection.cpp" line="227" />
@@ -8445,7 +8445,7 @@ Only these saved or archived entries are removed. Live sessions and native conve
 %1 unavailable or inapplicable sessions will be left as they are.</source>
       <translation>
 
-%1 недоступные или неприменимые сессии останутся без изменений.</translation>
+Недоступные или неприменимые сессии (%1) останутся без изменений.</translation>
     </message>
     <message>
       <location filename="../src/SessionSelection.cpp" line="229" />
@@ -8456,7 +8456,7 @@ Only these saved or archived entries are removed. Live sessions and native conve
     <message>
       <location filename="../src/SessionSelection.cpp" line="231" />
       <source>%1 %2 sessions</source>
-      <translation>%1 %2 сессий</translation>
+      <translation>%1 сессии (%2)</translation>
     </message>
     <message>
       <location filename="../src/SessionSelection.cpp" line="251" />
@@ -8466,7 +8466,7 @@ Only these saved or archived entries are removed. Live sessions and native conve
     <message>
       <location filename="../src/SessionSelection.cpp" line="264" />
       <source>%1 / %2: session changed or is unavailable</source>
-      <translation>%1 / %2: сессия изменен или недоступен.</translation>
+      <translation>%1 / %2: сессия изменена или недоступна</translation>
     </message>
     <message>
       <location filename="../src/SessionSelection.cpp" line="271" />
@@ -8481,7 +8481,7 @@ Only these saved or archived entries are removed. Live sessions and native conve
     <message>
       <location filename="../src/SessionSelection.cpp" line="293" />
       <source> %1 failed or changed; refresh before retrying.</source>
-      <translation> %1 не выполнен или изменен; обновите перед повторной попыткой.</translation>
+      <translation> Не выполнено или изменено: %1; обновите перед повторной попыткой.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="305" />
@@ -8632,7 +8632,7 @@ Open About</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="429" />
       <source>Agent sessions; Ctrl-click to select several; drag to organize, left/right to collapse or expand a group</source>
-      <translation>Агентские сессии; Удерживая клавишу Ctrl, выберите несколько; перетащите, чтобы упорядочить, влево/вправо, чтобы свернуть или развернуть группу</translation>
+      <translation>Агентские сессии; удерживая клавишу Ctrl, выберите несколько; перетащите, чтобы упорядочить, влево/вправо, чтобы свернуть или развернуть группу</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="439" />
@@ -8663,7 +8663,7 @@ Open About</source>
       <location filename="../src/SessionsWindow.cpp" line="515" />
       <source>Select a session to see what your agent is doing.
 New sessions appear here automatically.</source>
-      <translation>Выберите сессия, чтобы увидеть, что делает ваш агент.
+      <translation>Выберите сессию, чтобы увидеть, что делает ваш агент.
 Новые сессии появляются здесь автоматически.</translation>
     </message>
     <message>
@@ -8713,7 +8713,7 @@ New sessions appear here automatically.</source>
       <location filename="../src/SessionsWindow.cpp" line="3377" />
       <location filename="../src/SessionsWindow.cpp" line="4717" />
       <source>Restore session</source>
-      <translation>Восстановить сессия</translation>
+      <translation>Восстановить сессию</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="555" />
@@ -8743,7 +8743,7 @@ Start this agent's conversation from scratch, like /clear in Terminal. Your unse
       <location filename="../src/SessionsWindow.cpp" line="575" />
       <location filename="../src/SessionsWindow.cpp" line="4728" />
       <source>Fork session…</source>
-      <translation>Форк-сессия…</translation>
+      <translation>Разветвить сессию…</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="578" />
@@ -8757,7 +8757,7 @@ Start this agent's conversation from scratch, like /clear in Terminal. Your unse
       <location filename="../src/SessionsWindow.cpp" line="3377" />
       <location filename="../src/SessionsWindow.cpp" line="4717" />
       <source>Pause session</source>
-      <translation>Приостановить сессия</translation>
+      <translation>Приостановить сессию</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="584" />
@@ -8787,7 +8787,7 @@ Start this agent's conversation from scratch, like /clear in Terminal. Your unse
     <message>
       <location filename="../src/SessionsWindow.cpp" line="596" />
       <source>Terminate / forget session…</source>
-      <translation>Завершить/забыть сессия…</translation>
+      <translation>Завершить/забыть сессию…</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="639" />
@@ -8824,7 +8824,7 @@ Send this voice message with the full conversation context?</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="676" />
       <source>Source position: %1</source>
-      <translation>Исходная позиция: %1</translation>
+      <translation>Позиция в файле: %1</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="679" />
@@ -8834,7 +8834,7 @@ Send this voice message with the full conversation context?</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="680" />
       <source>Open with your default application, or copy the path.</source>
-      <translation>Откройте приложение по умолчанию или скопируйте путь.</translation>
+      <translation>Откройте в приложении по умолчанию или скопируйте путь.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="681" />
@@ -8953,12 +8953,12 @@ Open the downloaded copy, or download again to get an updated file.</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="786" />
       <source>Sign in to DeepSeek to start using this session. Complete sign-in in the official DeepSeek UI, then return here.</source>
-      <translation>Войдите в DeepSeek, чтобы начать использовать этот сессия. Завершите вход в официальный интерфейс DeepSeek, а затем вернитесь сюда.</translation>
+      <translation>Войдите в DeepSeek, чтобы начать использовать эту сессию. Завершите вход в официальном интерфейсе DeepSeek, а затем вернитесь сюда.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="788" />
       <source>Sign in to DeepSeek…</source>
-      <translation>Войдите в DeepSeek…</translation>
+      <translation>Войти в DeepSeek…</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="806" />
@@ -8994,7 +8994,7 @@ Open the downloaded copy, or download again to get an updated file.</source>
       <location filename="../src/SessionsWindow.cpp" line="868" />
       <location filename="../src/SessionsWindow.cpp" line="869" />
       <source>Pending send cancelled. Your draft is unchanged.</source>
-      <translation>Ожидание отправки отменено. Ваш проект не изменился.</translation>
+      <translation>Ожидание отправки отменено. Ваш черновик не изменился.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="897" />
@@ -9010,7 +9010,7 @@ Open the downloaded copy, or download again to get an updated file.</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="899" />
       <source>Clear this agent’s conversation, like /clear in Terminal. Your unsent message stays here.</source>
-      <translation>Очистите разговор этого агента, например /clear в Терминале. Ваше неотправленное сообщение останется здесь.</translation>
+      <translation>Очистите разговор этого агента, как /clear в Терминале. Ваше неотправленное сообщение останется здесь.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="910" />
@@ -9040,7 +9040,7 @@ Open the downloaded copy, or download again to get an updated file.</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="946" />
       <source>← Main activity</source>
-      <translation>← Основная деятельность</translation>
+      <translation>← Основная активность</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="984" />
@@ -9143,12 +9143,12 @@ Open Terminal to check the agent before trying again.</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1256" />
       <source>Start this agent's conversation from scratch, like /clear in Terminal. Your unsent draft is kept.</source>
-      <translation>Начните разговор этого агента с нуля, например /clear в Терминале. Неотправленный черновик сохраняется.</translation>
+      <translation>Начните разговор этого агента с нуля, как /clear в Терминале. Неотправленный черновик сохраняется.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1259" />
       <source>Tasks &amp;&amp; agents</source>
-      <translation>Задачи и&amp; агенты</translation>
+      <translation>Задачи и агенты</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1259" />
@@ -9174,7 +9174,7 @@ Open Terminal to check the agent before trying again.</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1301" />
       <source>Terminal changed during file transfer. Drop the files again in the intended session.</source>
-      <translation>Терминал изменился во время передачи файлов. Снова удалите файлы в предполагаемом сессии.</translation>
+      <translation>Терминал изменился во время передачи файлов. Снова перетащите файлы в нужную сессию.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1305" />
@@ -9224,7 +9224,7 @@ Open Terminal to check the agent before trying again.</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1483" />
       <source>Send now requested. Waiting for the agent to accept the queue.</source>
-      <translation>Отправить запрос сейчас. Ожидание, пока агент примет очередь.</translation>
+      <translation>Запрошена немедленная отправка. Ожидание, пока агент примет очередь.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1496" />
@@ -9244,7 +9244,7 @@ Open Terminal to check the agent before trying again.</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1512" />
       <source>Could not refresh activity: %1</source>
-      <translation>Не удалось обновить активность: %1.</translation>
+      <translation>Не удалось обновить активность: %1</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1552" />
@@ -9410,7 +9410,7 @@ Folder: %3
     <message>
       <location filename="../src/SessionsWindow.cpp" line="2149" />
       <source>Wait for the session identity to load, then drop the files again.</source>
-      <translation>Подождите, пока загрузится идентификатор сессии, а затем снова удалите файлы.</translation>
+      <translation>Подождите, пока загрузится идентификатор сессии, а затем снова перетащите файлы.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="2152" />
@@ -9511,22 +9511,22 @@ Folder: %3
     <message>
       <location filename="../src/SessionsWindow.cpp" line="2371" />
       <source>This project folder changed. Select it again.</source>
-      <translation>Папка проекта изменилась. Выберите его еще раз.</translation>
+      <translation>Папка проекта изменилась. Выберите ее еще раз.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="2390" />
       <source>Starting session…</source>
-      <translation>Начало сессии…</translation>
+      <translation>Запуск сессии…</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="2422" />
       <source>Could not start session %1. Check the terminal.</source>
-      <translation>Не удалось запустить сессия %1. Проверьте терминал.</translation>
+      <translation>Не удалось запустить сессию %1. Проверьте терминал.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="2423" />
       <source>Could not start session %1: %2</source>
-      <translation>Не удалось запустить сессия %1: %2.</translation>
+      <translation>Не удалось запустить сессию %1: %2</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="2470" />
@@ -9542,7 +9542,7 @@ Folder: %3
       <location filename="../src/SessionsWindow.cpp" line="2602" />
       <location filename="../src/SessionsWindow.cpp" line="3338" />
       <source>Terminating…</source>
-      <translation>Прекращение…</translation>
+      <translation>Завершение…</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="2603" />
@@ -9608,7 +9608,7 @@ Folder: %3
     <message>
       <location filename="../src/SessionsWindow.cpp" line="2861" />
       <source>Starting…</source>
-      <translation>Начало…</translation>
+      <translation>Запуск…</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="2862" />
@@ -9688,17 +9688,17 @@ Folder: %3
     <message>
       <location filename="../src/SessionsWindow.cpp" line="2961" />
       <source>%1 starting</source>
-      <translation>%1 начинается</translation>
+      <translation>%1 запускается</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="2961" />
       <source>, %1 starting</source>
-      <translation>, %1 начинается</translation>
+      <translation>, %1 запускается</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="2966" />
       <source>Folder: %1   ×</source>
-      <translation>Папка: %1 ×</translation>
+      <translation>Папка: %1   ×</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="2966" />
@@ -9750,7 +9750,7 @@ Clear folder filter</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3268" />
       <source>Mark this session's current notification as read. This does not answer a pending question.</source>
-      <translation>Отметить текущее уведомление этого сессии как прочитанное. Это не ответ на ожидающий вопрос.</translation>
+      <translation>Отметить текущее уведомление этой сессии как прочитанное. Это не ответ на ожидающий вопрос.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3275" />
@@ -9771,12 +9771,12 @@ Clear folder filter</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3308" />
       <source>Select a running session.</source>
-      <translation>Выберите текущий сессия.</translation>
+      <translation>Выберите запущенную сессию.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3309" />
       <source>Select a session.</source>
-      <translation>Выберите сессия.</translation>
+      <translation>Выберите сессию.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3329" />
@@ -9821,7 +9821,7 @@ Clear folder filter</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3375" />
       <source>Open native DeepSeek UI in browser</source>
-      <translation>Откройте собственный пользовательский интерфейс DeepSeek в браузере.</translation>
+      <translation>Открыть интерфейс DeepSeek в браузере</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3375" />
@@ -9837,7 +9837,7 @@ Clear folder filter</source>
       <location filename="../src/SessionsWindow.cpp" line="3377" />
       <location filename="../src/SessionsWindow.cpp" line="4717" />
       <source>Resume session</source>
-      <translation>Возобновить сессия</translation>
+      <translation>Возобновить сессию</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3392" />
@@ -9854,7 +9854,7 @@ Clear folder filter</source>
       <location filename="../src/SessionsWindow.cpp" line="3393" />
       <location filename="../src/SessionsWindow.cpp" line="4765" />
       <source>Terminate session…</source>
-      <translation>Завершить сессия…</translation>
+      <translation>Завершить сессию…</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3393" />
@@ -9885,22 +9885,22 @@ Clear folder filter</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3402" />
       <source>Another active or saved session uses this name. Restore becomes available when that name is free.</source>
-      <translation>Это имя используется другим активным или сохраненным сессияом. Восстановление станет доступным, когда это имя станет свободным.</translation>
+      <translation>Это имя используется другой активной или сохраненной сессией. Восстановление станет доступным, когда это имя станет свободным.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3403" />
       <source>This session is archived. Its conversation history is currently unavailable, so it cannot be restored.</source>
-      <translation>Эта сессия заархивирована. История его разговоров в настоящее время недоступна, поэтому ее невозможно восстановить.</translation>
+      <translation>Эта сессия заархивирована. История ее разговоров в настоящее время недоступна, поэтому ее невозможно восстановить.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3404" />
       <source>This session was archived. Restore explicitly to continue the same conversation; Resume all never starts archived sessions.</source>
-      <translation>Эта сессия была заархивирована. Восстановить явно, чтобы продолжить тот же разговор; Возобновить все никогда не запускает архивированные сессии.</translation>
+      <translation>Эта сессия была заархивирована. Чтобы продолжить тот же разговор, восстановите ее явно; «Возобновить все» никогда не запускает архивированные сессии.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3405" />
       <source>Activity is not tracked for this session. Sessions started with HGS 1.9 report their tools and status here.</source>
-      <translation>Активность в этом сессии не отслеживается. Сессии, начатые с HGS 1.9, сообщают о своих инструментах и ​​статусе здесь.</translation>
+      <translation>Активность в этой сессии не отслеживается. Сессии, начатые с HGS 1.9, сообщают о своих инструментах и статусе здесь.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3406" />
@@ -9915,7 +9915,7 @@ Clear folder filter</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3408" />
       <source>The agent process exited, but its terminal session still exists. Open the terminal to inspect it.</source>
-      <translation>Процесс агента завершился, но его терминальный сессия все еще существует. Откройте терминал, чтобы проверить его.</translation>
+      <translation>Процесс агента завершился, но его терминальная сессия все еще существует. Откройте терминал, чтобы проверить его.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3409" />
@@ -9970,7 +9970,7 @@ Clear folder filter</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3427" />
       <source>%1    %2    Details →</source>
-      <translation>%1 %2 Подробности →</translation>
+      <translation>%1    %2    Подробности →</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3428" />
@@ -9985,7 +9985,7 @@ Clear folder filter</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3434" />
       <source>Close the idle agent and save its conversation. Resume starts it again with the same history.</source>
-      <translation>Закройте неактивного агента и сохраните его разговор. Резюме запускает его снова с той же историей.</translation>
+      <translation>Закройте неактивного агента и сохраните его разговор. «Возобновить» запускает его снова с той же историей.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3451" />
@@ -10025,12 +10025,12 @@ Clear folder filter</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3500" />
       <source>Machine unavailable. Reconnect when it is online.</source>
-      <translation>Машина недоступна. Подключитесь повторно, когда он будет онлайн.</translation>
+      <translation>Машина недоступна. Подключитесь повторно, когда она будет онлайн.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3501" />
       <source>Resume this session before opening its terminal.</source>
-      <translation>Возобновите этот сессия, прежде чем открывать терминал.</translation>
+      <translation>Возобновите эту сессию, прежде чем открывать терминал.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3536" />
@@ -10052,7 +10052,7 @@ Clear folder filter</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3545" />
       <source>Reported by the agent. A finished response does not complete this goal.</source>
-      <translation>Об этом сообщил агент. Готовый ответ не достигает этой цели.</translation>
+      <translation>Об этом сообщил агент. Завершенный ответ не означает, что эта цель достигнута.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3547" />
@@ -10093,12 +10093,12 @@ Clear folder filter</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3569" />
       <source>Done</source>
-      <translation>Сделанный</translation>
+      <translation>Выполнено</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3569" />
       <source>In progress</source>
-      <translation>В ходе выполнения</translation>
+      <translation>Выполняется</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3569" />
@@ -10119,7 +10119,7 @@ Clear folder filter</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3578" />
       <source>Profile groups</source>
-      <translation>Профильные группы</translation>
+      <translation>Группы профилей</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3579" />
@@ -10129,12 +10129,12 @@ Clear folder filter</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3580" />
       <source>Observed runs grouped by profile; individual agent identities are not reported.</source>
-      <translation>Наблюдаемые прогоны сгруппированы по профилям; Личности отдельных агентов не сообщаются.</translation>
+      <translation>Наблюдаемые прогоны сгруппированы по профилям; идентификаторы отдельных агентов не сообщаются.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3583" />
       <source>Subagent activity is unavailable for this session.</source>
-      <translation>Для этого сессии активность субагента недоступна.</translation>
+      <translation>Для этой сессии активность субагента недоступна.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3584" />
@@ -10237,12 +10237,12 @@ Clear folder filter</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3678" />
       <source>Refresh the session before changing model settings.</source>
-      <translation>Обновите сессия перед изменением настроек модели.</translation>
+      <translation>Обновите сессию перед изменением настроек модели.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3681" />
       <source>Model settings are not available for this session.</source>
-      <translation>Настройки модели недоступны для этого сессии.</translation>
+      <translation>Настройки модели недоступны для этой сессии.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3793" />
@@ -10274,17 +10274,17 @@ Clear folder filter</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3799" />
       <source>Resume the session to send a message.</source>
-      <translation>Возобновите сессия, чтобы отправить сообщение.</translation>
+      <translation>Возобновите сессию, чтобы отправить сообщение.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3801" />
       <source>Use the Terminal tab to type into this session.</source>
-      <translation>Используйте вкладку «Терминал», чтобы войти в этот сессия.</translation>
+      <translation>Используйте вкладку «Терминал», чтобы вводить текст в эту сессию.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3802" />
       <source>Refresh the session before sending.</source>
-      <translation>Обновите сессия перед отправкой.</translation>
+      <translation>Обновите сессию перед отправкой.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3803" />
@@ -10294,7 +10294,7 @@ Clear folder filter</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3804" />
       <source>This session has no HGS tracking. Use Terminal to send a message.</source>
-      <translation>Этот сессия не отслеживается HGS. Используйте терминал для отправки сообщения.</translation>
+      <translation>Эта сессия не отслеживается HGS. Используйте терминал для отправки сообщения.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3805" />
@@ -10344,7 +10344,7 @@ Clear folder filter</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3825" />
       <source>Waiting for the agent's input prompt after interruption. Open Terminal to check.</source>
-      <translation>Ожидание ввода данных от агента после прерывания. Откройте терминал для проверки.</translation>
+      <translation>Ожидание приглашения к вводу от агента после прерывания. Откройте терминал для проверки.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3829" />
@@ -10414,7 +10414,7 @@ Clear folder filter</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4017" />
       <source>No history could be compacted. Your draft was kept without sending.</source>
-      <translation>Никакую историю невозможно сжать. Ваш черновик был сохранен без отправки.</translation>
+      <translation>Нет истории, которую можно сжать. Ваш черновик был сохранен без отправки.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4018" />
@@ -10549,12 +10549,12 @@ Resume, compact and send summarizes the saved history first. Compaction uses tok
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4223" />
       <source>Continue with a cold cache?</source>
-      <translation>Продолжить использование холодного кеша?</translation>
+      <translation>Продолжить с холодным кешем?</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4224" />
       <source>The next message may process the entire conversation again, increasing token usage, cost or subscription usage. Send with the full history, compact it into a summary before sending, or clear it and keep your draft. Compaction also uses tokens and may omit details.</source>
-      <translation>Следующее сообщение может снова обработать весь разговор, увеличивая использование токена, стоимость или использование подписки. Отправляйте с полной историей, сжимайте ее в сводку перед отправкой или очистите ее и сохраните черновик. Сжатие также использует токены и может опускать детали.</translation>
+      <translation>Следующее сообщение может снова обработать весь разговор, увеличивая использование токенов, стоимость или использование подписки. Отправляйте с полной историей, сжимайте ее в сводку перед отправкой или очистите ее и сохраните черновик. Сжатие также использует токены и может опускать детали.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4225" />
@@ -10599,12 +10599,12 @@ Resume, compact and send summarizes the saved history first. Compaction uses tok
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4461" />
       <source>This session is not running.</source>
-      <translation>Этот сессия не запущен.</translation>
+      <translation>Эта сессия не запущена.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4463" />
       <source>Refresh the session before answering.</source>
-      <translation>Прежде чем ответить, обновите сессия.</translation>
+      <translation>Прежде чем ответить, обновите сессию.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4466" />
@@ -10659,12 +10659,12 @@ Resume, compact and send summarizes the saved history first. Compaction uses tok
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4631" />
       <source>This session is no longer available. Refresh the list and open its actions again.</source>
-      <translation>Эта сессия больше не доступна. Обновите список и снова откройте его действия.</translation>
+      <translation>Эта сессия больше не доступна. Обновите список и снова откройте ее действия.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4636" />
       <source>This session is no longer in the current view. Open its actions again.</source>
-      <translation>Этот сессия больше не отображается в текущем представлении. Откройте его действия еще раз.</translation>
+      <translation>Эта сессия больше не отображается в текущем представлении. Откройте ее действия еще раз.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4665" />
@@ -10709,7 +10709,7 @@ Resume, compact and send summarizes the saved history first. Compaction uses tok
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4714" />
       <source>Keep a reminder to review this session later</source>
-      <translation>Напомните, чтобы просмотреть этот сессия позже.</translation>
+      <translation>Оставить напоминание, чтобы просмотреть эту сессию позже</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4723" />
@@ -10745,7 +10745,7 @@ Resume, compact and send summarizes the saved history first. Compaction uses tok
       <location filename="../src/SessionsWindow.cpp" line="4783" />
       <location filename="../src/SessionsWindow.cpp" line="4795" />
       <source>This session is no longer available. Open its actions again.</source>
-      <translation>Эта сессия больше не доступна. Откройте его действия еще раз.</translation>
+      <translation>Эта сессия больше не доступна. Откройте ее действия еще раз.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4794" />
@@ -10758,7 +10758,7 @@ Resume, compact and send summarizes the saved history first. Compaction uses tok
       <location filename="../src/SessionsWindow.cpp" line="5080" />
       <location filename="../src/SessionsWindow.cpp" line="5084" />
       <source>The session state changed. Open its actions again.</source>
-      <translation>Состояние сессии изменилось. Откройте его действия еще раз.</translation>
+      <translation>Состояние сессии изменилось. Откройте ее действия еще раз.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4883" />
@@ -10785,7 +10785,7 @@ Resume, compact and send summarizes the saved history first. Compaction uses tok
       <location filename="../src/SessionsWindow.cpp" line="4975" />
       <location filename="../src/SessionsWindow.cpp" line="4980" />
       <source>Fork session</source>
-      <translation>Форк-сессия</translation>
+      <translation>Разветвить сессию</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="4976" />
@@ -10813,7 +10813,7 @@ Working folder: %1</source>
       <location filename="../src/SessionsWindow.cpp" line="5007" />
       <location filename="../src/SessionsWindow.cpp" line="5010" />
       <source>Rename session</source>
-      <translation>Переименовать сессия</translation>
+      <translation>Переименовать сессию</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="5014" />
@@ -10824,7 +10824,7 @@ Working folder: %1</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="5016" />
       <source>e.g. release planning</source>
-      <translation>например планирование выпуска</translation>
+      <translation>например, планирование выпуска</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="5023" />
@@ -10844,17 +10844,17 @@ Working folder: %1</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="5065" />
       <source>Terminate session?</source>
-      <translation>Завершить сессия?</translation>
+      <translation>Завершить сессию?</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="5065" />
       <source>Forget archived session?</source>
-      <translation>Забыли заархивированную сессию?</translation>
+      <translation>Забыть заархивированную сессию?</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="5065" />
       <source>Forget saved session?</source>
-      <translation>Забыли сохраненную сессию?</translation>
+      <translation>Забыть сохраненную сессию?</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="5066" />
@@ -10864,7 +10864,7 @@ Working folder: %1</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="5066" />
       <source>Terminate %1? Its running processes will stop. No HGS archive is available for this session; any native conversation history is kept.</source>
-      <translation>Завершить работу %1? Его запущенные процессы остановятся. Для этого сессии архив HGS недоступен; любая собственная история разговоров сохраняется.</translation>
+      <translation>Завершить работу %1? Его запущенные процессы остановятся. Для этой сессии архив HGS недоступен; любая собственная история разговоров сохраняется.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="5067" />
@@ -10909,7 +10909,7 @@ Working folder: %1</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="5097" />
       <source>Terminating %1…</source>
-      <translation>Прекращение действия %1…</translation>
+      <translation>Завершение %1…</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindowGoTo.cpp" line="26" />
@@ -11191,7 +11191,7 @@ Working folder: %1</source>
     <message>
       <location filename="../src/SettingsPage.h" line="68" />
       <source>Adjusts Activity, the message field and Terminal from 75% to 200%. The session list and the side panel keep their size.</source>
-      <translation>Регулирует активность, поле сообщений и терминал с 75% до 200%. Список сессий и боковая панель сохраняют свой размер.</translation>
+      <translation>Изменяет масштаб вкладки «Активность», поля сообщений и терминала от 75% до 200%. Список сессий и боковая панель сохраняют свой размер.</translation>
     </message>
     <message>
       <location filename="../src/SettingsPage.h" line="74" />
@@ -11237,7 +11237,7 @@ Working folder: %1</source>
     <message>
       <location filename="../src/SettingsPage.h" line="93" />
       <source>Compact session rows</source>
-      <translation>Компактные строки сессии</translation>
+      <translation>Компактные строки сессий</translation>
     </message>
     <message>
       <location filename="../src/SettingsPage.h" line="93" />
@@ -11252,7 +11252,7 @@ Working folder: %1</source>
     <message>
       <location filename="../src/SettingsPage.h" line="93" />
       <source>Animate working sessions</source>
-      <translation>Анимация рабочих сессий</translation>
+      <translation>Анимировать работающие сессии</translation>
     </message>
     <message>
       <location filename="../src/SettingsPage.h" line="96" />
@@ -11277,7 +11277,7 @@ Working folder: %1</source>
     <message>
       <location filename="../src/SettingsPage.h" line="102" />
       <source>Closing Zerus keeps agents running. Projects and the arrangement of your workspace are saved on this device.</source>
-      <translation>Закрытие Zerus позволяет агентам работать. Проекты и организация вашего рабочего пространства сохраняются на этом устройстве.</translation>
+      <translation>Закрытие Zerus не останавливает агентов. Проекты и организация вашего рабочего пространства сохраняются на этом устройстве.</translation>
     </message>
     <message>
       <location filename="../src/SettingsPage.h" line="105" />
@@ -11312,7 +11312,7 @@ Working folder: %1</source>
     <message>
       <location filename="../src/SettingsPage.h" line="116" />
       <source>Off by default. When disabled, the tab is hidden and processes are not polled. Enable it to inspect running shells and background commands, read recorded output and stop selected processes. Only the selected session is inspected; opening Processes refreshes immediately. Output is read only while the tab is visible. Timings apply to this Zerus. Background refresh also controls session inspection while Terminal or Native UI is open; session overview and account limits refresh separately.</source>
-      <translation>По умолчанию выключено. Если этот параметр отключен, вкладка скрыта и процессы не опрашиваются. Включите его, чтобы проверять запущенные оболочки и фоновые команды, читать записанные выходные данные и останавливать выбранные процессы. Проверяется только выбранный сессия; открытие процессов обновляется немедленно. Вывод доступен только для чтения, пока вкладка видна. Тайминги применимы к этому Zerusу. Фоновое обновление также контролирует проверку сессии, когда открыт терминал или собственный пользовательский интерфейс; Обзор сессии и лимиты учетной записи обновляются отдельно.</translation>
+      <translation>По умолчанию выключено. Если этот параметр отключен, вкладка скрыта и процессы не опрашиваются. Включите его, чтобы проверять запущенные оболочки и фоновые команды, читать записанные выходные данные и останавливать выбранные процессы. Проверяется только выбранная сессия; при открытии вкладки «Процессы» данные сразу обновляются. Вывод считывается только тогда, когда вкладка видна. Тайминги применяются к этому Zerus. Фоновое обновление также контролирует проверку сессии, когда открыт терминал или собственный пользовательский интерфейс; обзор сессии и лимиты учетной записи обновляются отдельно.</translation>
     </message>
     <message>
       <location filename="../src/SettingsPage.h" line="126" />
@@ -11435,7 +11435,7 @@ Working folder: %1</source>
     <message>
       <location filename="../src/Shortcuts.cpp" line="30" />
       <source>Rename session</source>
-      <translation>Переименовать сессия</translation>
+      <translation>Переименовать сессию</translation>
     </message>
     <message>
       <location filename="../src/Shortcuts.cpp" line="31" />
@@ -11657,9 +11657,10 @@ Working folder: %1</source>
     </message>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="69" />
-      <location filename="../src/speech/SpeechComposer.cpp" line="464" />
+      <location filename="../src/speech/SpeechComposer.cpp" line="483" />
       <source>Play</source>
-      <translation type="unfinished" />
+      <comment>media playback</comment>
+      <translation>Воспроизвести</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="71" />
@@ -11769,7 +11770,7 @@ Working folder: %1</source>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="292" />
       <source>Continue with a cold cache?</source>
-      <translation>Продолжить использование холодного кеша?</translation>
+      <translation>Продолжить с холодным кешем?</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="294" />
@@ -11907,9 +11908,10 @@ Working folder: %1</source>
       <translation type="unfinished" />
     </message>
     <message>
-      <location filename="../src/speech/SpeechComposer.cpp" line="464" />
+      <location filename="../src/speech/SpeechComposer.cpp" line="483" />
       <source>Pause</source>
-      <translation>Приостановить</translation>
+      <comment>media playback</comment>
+      <translation>Пауза</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechComposer.cpp" line="466" />
@@ -12309,7 +12311,7 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/SwarmConflictReview.cpp" line="149" />
       <source>Value to keep</source>
-      <translation>Ценность, которую стоит сохранить</translation>
+      <translation>Значение, которое нужно сохранить</translation>
     </message>
     <message>
       <location filename="../src/SwarmConflictReview.cpp" line="149" />
@@ -12434,7 +12436,7 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/SwarmConflictReview.cpp" line="345" />
       <source>Disabled</source>
-      <translation>Неполноценный</translation>
+      <translation>Отключено</translation>
     </message>
     <message>
       <location filename="../src/SwarmConflictReview.cpp" line="392" />
@@ -12444,12 +12446,12 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/SwarmConflictReview.cpp" line="393" />
       <source>Assign this session to “%1”.</source>
-      <translation>Назначьте этот сессия «%1».</translation>
+      <translation>Назначьте эту сессию проекту «%1».</translation>
     </message>
     <message>
       <location filename="../src/SwarmConflictReview.cpp" line="394" />
       <source>The session, its messages and running agent stay intact.</source>
-      <translation>Сессия, его сообщения и работающий агент остаются нетронутыми.</translation>
+      <translation>Сессия, ее сообщения и работающий агент остаются нетронутыми.</translation>
     </message>
     <message>
       <location filename="../src/SwarmConflictReview.cpp" line="399" />
@@ -12496,7 +12498,7 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/SwarmConflictReview.cpp" line="429" />
       <source>Connected computers have different project assignments for this session. Choose the project it should belong to.</source>
-      <translation>Подключенные компьютеры имеют разные задания по проектам для этого сессии. Выберите проект, которому он должен принадлежать.</translation>
+      <translation>Подключенные компьютеры имеют разные назначения проекта для этой сессии. Выберите проект, которому она должна принадлежать.</translation>
     </message>
     <message>
       <location filename="../src/SwarmConflictReview.cpp" line="430" />
@@ -12533,7 +12535,7 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/SwarmConflictReview.cpp" line="475" />
       <source>Keep this value</source>
-      <translation>Сохраните это значение</translation>
+      <translation>Сохранить это значение</translation>
     </message>
     <message>
       <location filename="../src/SwarmConflictReview.cpp" line="476" />
@@ -12543,7 +12545,7 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/SwarmConflictReview.cpp" line="477" />
       <source>Keep this folder link</source>
-      <translation>Сохраните ссылку на эту папку</translation>
+      <translation>Сохранить ссылку на эту папку</translation>
     </message>
     <message>
       <location filename="../src/SwarmConflictReview.cpp" line="478" />
@@ -12566,7 +12568,7 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/SwarmController.cpp" line="212" />
       <source>Local catalog. Connect another computer to sync projects.</source>
-      <translation>Местный каталог. Подключите другой компьютер для синхронизации проектов.</translation>
+      <translation>Локальный каталог. Подключите другой компьютер для синхронизации проектов.</translation>
     </message>
     <message numerus="yes">
       <location filename="../src/SwarmController.cpp" line="212" />
@@ -12614,7 +12616,7 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/TerminalView.cpp" line="64" />
       <source>Attach client exited (%1) — session output is preserved above</source>
-      <translation>Присоединить клиент завершен (%1) — выходные данные сессии сохраняются выше</translation>
+      <translation>Клиент подключения завершился (%1) — выходные данные сессии сохраняются выше</translation>
     </message>
     <message>
       <location filename="../src/TerminalView.cpp" line="70" />
@@ -12698,7 +12700,7 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/TrayAgent.cpp" line="525" />
       <source>This session is no longer available: %1</source>
-      <translation>Этот сессия больше недоступен: %1</translation>
+      <translation>Эта сессия больше недоступна: %1</translation>
     </message>
     <message>
       <location filename="../src/TrayAgent.cpp" line="585" />
@@ -12751,7 +12753,7 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/TrayMenu.cpp" line="29" />
       <source>  (stopped)</source>
-      <translation>  (остановлен)</translation>
+      <translation>  (остановлена)</translation>
     </message>
     <message>
       <location filename="../src/TrayMenu.cpp" line="71" />
@@ -12786,7 +12788,7 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/TrayMenu.cpp" line="79" />
       <source>Terminal.app</source>
-      <translation>Терминал.приложение</translation>
+      <translation>Terminal.app</translation>
     </message>
     <message>
       <location filename="../src/TrayMenu.cpp" line="81" />
@@ -12801,7 +12803,7 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/TrayMenu.cpp" line="118" />
       <source>Open in  (own terminal= is set: terminal modes are indistinguishable)</source>
-      <translation>Открыть в (установлен собственный терминал=: режимы терминалов неразличимы)</translation>
+      <translation>Открыть в  (задан собственный terminal=: режимы терминалов неразличимы)</translation>
     </message>
     <message>
       <location filename="../src/TrayMenu.cpp" line="130" />
@@ -13256,12 +13258,12 @@ System: Arch-based Linux</source>
     <message>
       <location filename="../src/WindowLayer.cpp" line="53" />
       <source>Checking whether this desktop supports keeping Zerus above other windows…</source>
-      <translation>Проверка, поддерживает ли этот рабочий стол сохранение Zerus над другими окнами…</translation>
+      <translation>Проверка, может ли этот рабочий стол держать Zerus поверх других окон…</translation>
     </message>
     <message>
       <location filename="../src/WindowLayer.cpp" line="54" />
       <source>KWin did not apply this preference. Check the window's Keep Above rule in KDE settings.</source>
-      <translation>KWin не применил это предпочтение. Проверьте правило «Сохранить выше» для окна в настройках KDE.</translation>
+      <translation>KWin не применил это предпочтение. Проверьте правило «Поверх других окон» для окна в настройках KDE.</translation>
     </message>
     <message>
       <location filename="../src/WindowLayer.cpp" line="55" />
@@ -13271,12 +13273,12 @@ System: Arch-based Linux</source>
     <message>
       <location filename="../src/WindowLayer.cpp" line="56" />
       <source>Keep Above is unavailable in this Zerus session. On Wayland, KDE Plasma 6 with KWin scripting is required. You can use your desktop's window menu or rules.</source>
-      <translation>Функция «Keep выше» недоступна в этом сессии Zerus. На Wayland требуется KDE Plasma 6 со сценариями KWin. Вы можете использовать оконное меню или правила вашего рабочего стола.</translation>
+      <translation>Функция «Поверх других окон» недоступна в этой сессии Zerus. На Wayland требуется KDE Plasma 6 со сценариями KWin. Вы можете использовать оконное меню или правила вашего рабочего стола.</translation>
     </message>
     <message>
       <location filename="../src/WindowLayer.cpp" line="57" />
       <source>Files and terminals opened from Zerus may appear behind it while this is on.</source>
-      <translation>Файлы и терминалы, открытые из Zerus, могут появиться за ним, пока он включен.</translation>
+      <translation>Файлы и терминалы, открытые из Zerus, могут появиться за ним, пока этот режим включен.</translation>
     </message>
   </context>
   <context>
