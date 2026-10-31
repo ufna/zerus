@@ -163,3 +163,19 @@ fn startup_stall_does_not_renew_the_original_deadline() {
     assert!(start.elapsed() < Duration::from_secs(1));
     assert_eq!(held.try_finish(), Err(Refused::TimedOut));
 }
+
+#[test]
+fn startup_non_utf8_successful_help_is_never_old_cli_compatibility() {
+    let root = Scratch::new("bad-utf8");
+    let mut held = root.begin();
+    assert_eq!(held.wait_ready(), Err(Refused::Unavailable));
+    assert!(
+        !root.0.join("pid").exists(),
+        "no startup subcommand may run"
+    );
+    assert_eq!(
+        fs::read_to_string(root.0.join("calls")).unwrap(),
+        "[\"--help\"]\n"
+    );
+    assert!(held.configuration.is_none());
+}

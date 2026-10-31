@@ -12,6 +12,10 @@ mode = (root / 'mode').read_text()
 with (root / 'calls').open('a') as out:
     out.write(json.dumps(sys.argv[1:]) + '\n')
 if sys.argv[1:] == ['--help']:
+    if mode == 'bad-utf8':
+        sys.stdout.buffer.write(b'Desktop startup ABI: desktop-startup-v1\n\xff\n')
+        sys.stdout.buffer.flush()
+        sys.exit(0)
     print('Desktop startup ABI: desktop-startup-v1' if mode != 'old' else 'Desktop service ABI: desktop-v1')
     sys.exit(0)
 if sys.argv[1:] != ['desktop', 'startup', '--json']:

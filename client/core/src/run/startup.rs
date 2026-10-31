@@ -83,10 +83,8 @@ impl Bootstrap {
                 else {
                     return Err(Refused::Unavailable);
                 };
-                if !std::str::from_utf8(&stdout)
-                    .ok()
-                    .is_some_and(|s| s.lines().any(|l| l.trim() == HELP_MARKER))
-                {
+                let help = std::str::from_utf8(&stdout).map_err(|_| Refused::Unavailable)?;
+                if !help.lines().any(|line| line.trim() == HELP_MARKER) {
                     return Err(Refused::Unsupported);
                 }
                 drop(charge);

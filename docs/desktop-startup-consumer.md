@@ -78,3 +78,5 @@ does not yet qualify a universal prepared-replacement fence. That gate remains
 open before production prepare; old cached hello/configuration must never be
 used as held-startup proof. The helper does not reopen an old gate or turn a
 read snapshot into authority.
+
+Successful help must decode as UTF-8 before marker classification. Invalid UTF-8, including the modern marker followed by invalid bytes, is unavailable and cannot enter readable-old-CLI compatibility. The private app regression requires no startup command, watch, GUI writer or window on this refusal, while the genuine readable older CLI remains covered separately.
