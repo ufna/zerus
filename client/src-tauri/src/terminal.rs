@@ -926,10 +926,13 @@ mod tests {
         let mut acked = 0;
         while !done(sink) {
             assert!(Instant::now() < deadline, "timed out: {:?}", sink.text());
-            for _ in acked..sink.outputs() {
+            // Acknowledgements can deliver more output immediately. Advance only
+            // through this snapshot; later frames still need their own ACK.
+            let observed = sink.outputs();
+            for _ in acked..observed {
                 t.ack("main", generation);
             }
-            acked = sink.outputs();
+            acked = observed;
             std::thread::sleep(Duration::from_millis(10));
         }
     }
