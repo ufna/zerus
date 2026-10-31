@@ -14,7 +14,7 @@ import stat
 import subprocess
 
 QUALIFICATION = "mechanics (modelled identity boundary)"
-CN = "Developer ID Application: Zerus mechanics fixture (MECHANICS-NOT-A-TEAM)"
+CN = "Developer ID Application: Zerus (MECHANICS-NOT-A-TEAM)"
 SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 
 
@@ -169,6 +169,9 @@ class PrivateIdentity:
         event("keychain_references_unchanged", phase=phase)
 
     def create(self):
+        # The certificate name is ASCII and must fit commonName's 64-character bound.
+        if not CN.isascii() or not 1 <= len(CN) <= 64:
+            raise RuntimeError("synthetic certificate commonName exceeds its public syntax bound")
         require_private_home(self.home)
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         self.public_command(["/usr/bin/xcrun", "clang", "-Wno-deprecated-declarations", "-g0",

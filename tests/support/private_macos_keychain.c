@@ -18,7 +18,7 @@
 #include <strings.h>
 #include <unistd.h>
 
-static const char *fixture_cn = "Developer ID Application: Zerus mechanics fixture (MECHANICS-NOT-A-TEAM)";
+static const char *fixture_cn = "Developer ID Application: Zerus (MECHANICS-NOT-A-TEAM)";
 
 static void wipe(void *memory, size_t bytes) {
     volatile unsigned char *cursor = memory;
