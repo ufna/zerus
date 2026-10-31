@@ -41,6 +41,7 @@ pub struct Inspection {
     update: Option<OwnedSaved>,
     legacy: Option<OwnedSaved>,
     hashes: [Option<String>; 3],
+    lengths: [Option<usize>; 3],
     raw_entries: usize,
     raw_bytes: usize,
 }
@@ -73,6 +74,14 @@ impl Inspection {
     }
     pub fn raw_bytes(&self) -> usize {
         self.raw_bytes
+    }
+    /// Supplied byte length/presence only, never verified filesystem metadata.
+    pub fn raw_len(&self, slot: Slot) -> Option<usize> {
+        self.lengths[match slot {
+            Slot::Agent => 0,
+            Slot::Update => 1,
+            Slot::Legacy => 2,
+        }]
     }
 }
 fn owned(
@@ -267,6 +276,7 @@ fn inspect_mode(inputs: Inputs<'_>, selected: bool) -> Result<Inspection, Reject
         update,
         legacy,
         hashes,
+        lengths: originals.map(|v| v.map(<[u8]>::len)),
         raw_entries,
         raw_bytes,
     })

@@ -123,28 +123,21 @@ fn scoped(owner: &str, token: String, expected: Owner) -> Result<ScopedToken, Re
     ScopedToken::new(expected, token)
 }
 fn original(raw: RawOriginal, scoped: ScopedToken) -> Result<(Original, bool), Refused> {
-    // Validate exact source spelling before any UUID parsing/normalization.
-    if !crate::creation::canonical_uuid(&raw.poster_instance)
-        || raw.poster_instance == "00000000-0000-0000-0000-000000000000"
-        || raw.request_id.is_empty()
-        || raw.request_id.len() > 512
-        || raw.request_id.chars().any(char::is_control)
-    {
-        return Err(Refused::InvalidIdentity);
-    }
-    let namespace =
-        super::super::namespace(raw.bus_id, raw.daemon_owner)?.ok_or(Refused::InvalidNamespace)?;
     Ok((
-        Original {
+        Original::checked(
             scoped,
-            request_id: raw.request_id,
-            poster_instance: raw.poster_instance,
-            post_nonce: NonZeroU64::new(raw.post_nonce).ok_or(Refused::InvalidIdentity)?,
-            namespace,
-            namespace_generation: NonZeroU64::new(raw.namespace_generation)
-                .ok_or(Refused::InvalidIdentity)?,
-            actions: raw.actions.0,
-        },
+            OriginalFields {
+                request_id: raw.request_id,
+                poster_instance: raw.poster_instance,
+                post_nonce: raw.post_nonce,
+                namespace: Namespace {
+                    bus_id: raw.bus_id,
+                    owner: raw.daemon_owner,
+                },
+                namespace_generation: raw.namespace_generation,
+                actions: raw.actions.0,
+            },
+        )?,
         !raw.unknown.is_empty(),
     ))
 }
@@ -262,6 +255,31 @@ fn token_value(token: &ScopedToken) -> Value {
         Owner::SoftwareUpdate => "software_update",
     };
     json!({"owner":tag,"token":token.token()})
+}
+pub(super) fn possible_value(o: &Original) -> Value {
+    let mut value = token_value(&o.scoped);
+    value["original"] = origin_value(o);
+    value["state"] = json!("possible_post");
+    value
+}
+pub(super) fn invalidation_budget(o: &Original, id: NonZeroU32) -> usize {
+    let mut target = token_value(&o.scoped);
+    target["original"] = origin_value(o);
+    target["native_id"] = json!(id.get());
+    [
+        "native_id_collision",
+        "namespace_changed",
+        "withdrawal_conflict",
+        "unverified_result",
+    ]
+    .into_iter()
+    .map(|reason| {
+        serde_json::to_vec(&json!({"target":target,"reason":reason}))
+            .unwrap()
+            .len()
+            + 1
+    })
+    .sum()
 }
 fn output(value: Value, unknown: bool, limit: u64) -> Result<Vec<u8>, Refused> {
     if unknown {
