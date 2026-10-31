@@ -319,6 +319,13 @@ is prefixed with `@alias` and uses the longer timeout. Every call is made with
 the child's own environment: the agent attribution (`HGS_SESSION`,
 `HGS_RUN_ID`) is never passed on.
 
+`core::end_action` supplies the bounded confirmation snapshot and monotonic
+five-second timing rules for the Undo integration. Its metadata check requests
+no history; its end calls reuse the existing scoped lifecycle envelope and exact
+receipt validator. A shell run may have no native conversation. An unidentified
+run cannot become a delayed name-only mutation. This pure module performs no
+I/O and is not yet connected to the menus, timers or exit flush.
+
 | Action | Arguments (`NAME` is the session name) | Standard input | Timeout here, peer |
 | --- | --- | --- | --- |
 | Stop (interrupt) | `interrupt NAME --json` | JSON: `request_id`, `expected_run_id`, `expected_conversation_id`, `expected_turn_started` | 15 s, 45 s |
