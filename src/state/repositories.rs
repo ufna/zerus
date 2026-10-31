@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-mod directory;
+pub(super) mod directory;
 #[cfg(unix)]
 mod worker;
 #[cfg(unix)]
