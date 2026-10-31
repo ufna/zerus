@@ -23,7 +23,9 @@ impl Tree {
         ] {
             std::fs::write(bundle.join("Contents").join(name), b"synthetic, not signed").unwrap();
         }
-        Self(bundle)
+        // The selector intentionally rejects aliases; this synthetic tree is
+        // our private fixture, so bind it to its real path before checking it.
+        Self(std::fs::canonicalize(bundle).unwrap())
     }
 }
 impl Drop for Tree {
