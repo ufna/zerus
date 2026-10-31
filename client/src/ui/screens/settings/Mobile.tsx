@@ -1,18 +1,17 @@
-import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, createSignal, onCleanup, onMount, createMemo, lazy, Suspense } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { inTauri } from "../../../bridge";
 import { Icon } from "../../lib/icons";
-import { Actions, Group, Lines, SectionHead, Select, Status, Table } from "./ui";
+import { Actions, Group, Lines, SectionHead, Select, Status } from "./ui";
+import {createPhoneActions,targetOf,phoneKey,targetKey,type PhoneActions} from "./phone-actions";
 import { createMobile, type MobileState, type View } from "./mobile-page";
 
 // Settings > Mobile connection (WorkspaceSettings.h, PhonePairing.cpp,
 // MobileDeliverySettings.h, SettingsPage.h:124-139) in the approved
-// mockup's layout. The reads and their answers live in the app, one of each
-// kind at a time, for the window's life. The workspace's actions stay with
-// their own work (zerus-5wmh.24.4 to .24.8): they are shown as Qt shows
-// them for the workspace's state, disabled, with what to use meanwhile.
-// Only the shared notification timing changes here, through hgs, as in Qt.
+// mockup's layout. Reads and notification timing stay in the existing hub;
+// phone actions use one-use native plans and the workspace/relay shown here.
+// Remaining workspace/connector controls belong to .24.5 through .24.8.
 
 const DELIVERY: { value: string; label: string }[] = [
   { value: "immediate", label: "Immediately, even if I'm at a computer" },
@@ -75,48 +74,20 @@ function WorkspacePanel(props: { view?: View; refresh: () => void }) {
   );
 }
 
-function PhonesPanel(props: { view?: View; refresh: () => void }) {
-  const phones = () => props.view?.phones ?? undefined;
-  const busy = () => !!props.view?.phones_busy;
-  return (
-    <Group title="Phones" hint="Phones paired with your computers. A phone can control every computer of its workspace; revoke one you no longer use.">
-      <For each={phones()?.lists ?? []}>
-        {(list) => (
-          <>
-            <span class="set-label">{listTitle(list)}</span>
-            <Table label="Phones" rows={list.phones} rowKey={(phone) => phone.id}
-              columns={[
-                { key: "phone", label: "Phone", render: (phone) => phone.name },
-                { key: "platform", label: "Platform", render: (phone) => phone.platform },
-                { key: "paired", label: "Paired", class: "tabular", render: (phone) => when(phone.paired_at) },
-                { key: "last", label: "Last active", class: "tabular", render: (phone) => when(phone.last_seen_at) },
-                { key: "added", label: "Added from", render: (phone) => phone.added_from ?? (
-                  <span title={list.encrypted
-                    ? "Verified device membership. Private device names are not stored by the relay."
-                    : "Paired with an administrator invitation, or before Zerus recorded it"}>—</span>
-                ) },
-              ]} />
-            <div class="set-group-hint mobile-commands">
-              <div>To pair a phone with this workspace, run <code>{list.invite}</code> in a terminal.</div>
-              <For each={list.phones}>
-                {(phone) => <div>To revoke {phone.name}, run <code>{phone.revoke}</code>.</div>}
-              </For>
-            </div>
-          </>
-        )}
-      </For>
-      <Actions>
-        <button type="button" class="btn" disabled><Icon name="plus" size={14} />Pair a phone…</button>
-        <button type="button" class="btn" disabled>Revoke…</button>
-        <button type="button" class="btn" disabled={busy() || !props.view} onClick={props.refresh}><Icon name="refresh-cw" size={13} />Refresh</button>
-      </Actions>
-      <Show when={busy()} fallback={
-        <Show when={phones()?.lines.join("\n")}>{(text) => <Lines class="muted" text={text()} />}</Show>
-      }>
-        <Status kind="busy">Checking phones…</Status>
-      </Show>
-    </Group>
-  );
+const PhoneDialogs=lazy(()=>import("./PhoneDialogs"));
+function PhonesPanel(props: { view?: View; refresh: () => void; actions:PhoneActions }) {
+  const [selected,setSelected]=createSignal<string>();
+  const phones=()=>props.view?.phones, reading=()=>!!props.view?.phones_busy, busy=()=>reading()||props.actions.busy();
+  const entries=createMemo(()=>phones()?.lists.flatMap(list=>list.phones.map(phone=>({list,phone,key:phoneKey(targetOf(list),phone.id)})))??[]);
+  const chosen=()=>entries().find(e=>e.key===selected());
+  const revoke=(origin:HTMLElement)=>{const entry=chosen();if(entry)void props.actions.openRevoke(targetOf(entry.list),entry.phone.id,origin);};
+  return <section class="set-group set-phones"><div class="set-group-head"><h3>Phones</h3></div><p class="set-group-hint">Phones paired with your computers. A phone can control every computer of its workspace; revoke one you no longer use.</p>
+   <div class="set-table-wrap"><table class="set-table" aria-label="Phones"><thead><tr><th scope="col">Phone</th><th scope="col">Platform</th><th scope="col">Paired</th><th scope="col">Last active</th><th scope="col">Added from</th></tr></thead><tbody>
+    <Show when={!reading()&&entries().length} fallback={<tr class="set-table-empty"><td colspan={5}>{reading()?"":"No phones"}</td></tr>}><For each={phones()?.lists??[]}>{list=><><tr class="set-table-group"><td colspan={5}>{listTitle(list)}</td></tr><For each={list.phones}>{phone=>{const key=phoneKey(targetOf(list),phone.id);return <tr classList={{on:selected()===key}} tabIndex={0} aria-selected={selected()===key} onClick={()=>setSelected(key)} onKeyDown={e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();setSelected(key);}if(e.key==="Delete"){setSelected(key);revoke(e.currentTarget);}}}><td><span class="row"><Icon name="smartphone" size={13} class="dim"/>{phone.name}</span></td><td>{phone.platform}</td><td class="tabular">{when(phone.paired_at)}</td><td class="tabular">{when(phone.last_seen_at)}</td><td title={list.encrypted?"Verified device membership. Private device names are not stored by the relay.":"Paired with an administrator invitation, or before Zerus recorded it"}>{phone.added_from??<span class="dim">—</span>}</td></tr>;}}</For></>}</For></Show>
+   </tbody></table></div>
+   <Actions><button class="btn" disabled={busy()||!phones()?.lists.length} onClick={e=>{const targets=phones()!.lists.map(targetOf);const selected=chosen();const at=selected?targets.findIndex(t=>targetKey(t)===targetKey(targetOf(selected.list))):0;props.actions.pair(targets,at,e.currentTarget);}}><Icon name="plus" size={14}/>Pair a phone…</button><button class="btn danger" disabled={busy()||!chosen()} onClick={e=>revoke(e.currentTarget)}>Revoke…</button><button class="btn" disabled={busy()||!props.view} onClick={props.refresh}><Icon name="refresh-cw" size={13}/>Refresh</button><Status kind={reading()?"busy":"muted"}>{reading()?"Checking phones…":phones()?.lines.join("\n")}</Status></Actions>
+   <Show when={props.actions.notice()}><Status>{props.actions.notice()}</Status></Show>
+  </section>;
 }
 
 function DeliveryPanel(props: { view?: View; set: (value: string) => void }) {
@@ -151,6 +122,11 @@ export function MobileSection() {
     refreshPhones: () => invoke<View>("mobile_refresh_phones"),
     setDelivery: (value) => invoke<View>("mobile_delivery_set", { value }),
   }, setState);
+  const phoneActions=createPhoneActions({
+    open:(kind,target,phone)=>invoke("mobile_phone_open",{kind,target,phone:phone??null}),
+    invite:handle=>invoke("mobile_phone_invite",{handle}),revoke:handle=>invoke("mobile_phone_revoke",{handle}),close:handle=>invoke("mobile_phone_close",{handle}),changed:()=>page.changed(),
+  });
+  onCleanup(()=>phoneActions.close());
   onMount(() => {
     if (!inTauri()) return;
     let gone = false;
@@ -169,7 +145,8 @@ export function MobileSection() {
       <SectionHead title="Mobile connection" />
       <Show when={state().error}>{(text) => <Status kind="error">{text()}</Status>}</Show>
       <WorkspacePanel view={view()} refresh={() => page.refreshWorkspace()} />
-      <PhonesPanel view={view()} refresh={() => page.refreshPhones()} />
+      <PhonesPanel view={view()} refresh={() => page.refreshPhones()} actions={phoneActions}/>
+      <Show when={phoneActions.prompt()}>{prompt=><Suspense><PhoneDialogs prompt={prompt()} actions={phoneActions}/></Suspense>}</Show>
       <DeliveryPanel view={view()} set={(value) => page.setDelivery(value)} />
     </>
   );
