@@ -338,3 +338,50 @@ fn cancelling_a_queued_zero_cannot_forget_the_previous_positive_native_badge() {
     );
     scope.fence().unwrap().complete();
 }
+
+#[test]
+fn addressed_messages_between_match_preparations_cannot_block_the_second_ack() {
+    let bus = crate::platform::linux_test_bus::Bus::new();
+    let server = bus.connect();
+    let sender = bus.connect();
+    let (gate, scope, control, startup) = scope();
+    let first = ShellStream::prepare(&server, SHELLS[0], &scope).unwrap();
+    for index in 0..3_i32 {
+        sender
+            .emit_signal(
+                Some(server.unique_name().unwrap().as_str()),
+                "/Fixture",
+                "org.example.Fixture",
+                "Traffic",
+                &(index,),
+            )
+            .unwrap();
+    }
+    // A barrier on this other connection proves the daemon has handled all
+    // three sends before the receiving connection requests its second match.
+    zbus::blocking::fdo::DBusProxy::new(&sender)
+        .unwrap()
+        .get_id()
+        .unwrap();
+    let before = Instant::now();
+    let second = ShellStream::prepare(&server, SHELLS[1], &scope).unwrap();
+    assert!(
+        before.elapsed() < Duration::from_secs(2),
+        "AddMatch waited behind an unpolled raw receiver"
+    );
+    let streams = [first.activate(&server), second.activate(&server)];
+    scope.ready();
+    startup.complete();
+    control.close().unwrap();
+    let closed = gate.close();
+    scope.fence().unwrap().complete();
+    let removals = streams
+        .into_iter()
+        .map(ShellStream::stop)
+        .collect::<Vec<_>>();
+    assert_eq!(closed.wait_until(Instant::now()), Observation::Pending);
+    for removal in removals {
+        removal.close(&server).unwrap();
+    }
+    assert_eq!(closed.wait_until(Instant::now()), Observation::Idle);
+}

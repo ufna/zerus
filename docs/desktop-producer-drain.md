@@ -589,6 +589,12 @@ watcher tests send three item messages before the registration reply and hold an
 old reply across badge closure and watcher replacement; activation remains live.
 The ordinary installation keeps its existing registration path.
 
+Startup similarly prepares and acknowledges both shell match rules before it
+activates either raw receiver. The same worker is not yet running during that
+preparation, so a second blocking AddMatch must never follow raw activation. A
+private-bus regression queues three addressed messages between preparations and
+uses a sender-side bus barrier before the second AddMatch; both acknowledgements
+complete before receiver activation and the original charges survive cleanup.
 
 ## Optional Attention observer capture lifetimes
 
