@@ -14,18 +14,20 @@ import { setPage } from "../../store/ui";
 import { clock, providerName, stateText } from "../lib/usage";
 import { accountManagement } from "../../store/accountManagement";
 import { accountSetup } from "../../store/accountSetup";
-import { ACCOUNT_MANAGEMENT } from "./reasons";
+import {accountDistribution} from "../../store/accountDistribution";
 import { creditsText, loginLabel, memberStateText, memberOf, panelWindow, summaryLine, tone, visibleAccounts, visibleMembers } from "./accounts-ui";
 
 // Agent accounts (AccountsPage.cpp), ported from design/webui/src/screens/Accounts.tsx:
 // profiles grouped by provider identity across machines; choosing a machine
 // tag selects that machine's profile. Catalog edits use native snapshots;
-// permissions, sign-in, install and add keep their places until their slices.
+// setup and distribution share that writer and the existing terminal backend.
 
+const AccountDistributionDialog=lazy(()=>import("./AccountDistributionDialog"));
 const AccountSetupDialog = lazy(() => import("./AccountSetupDialog"));
-const managementBusy=()=>accountManagement.busy()||accountSetup.busy();
-const closeManagement=()=>{accountManagement.close();accountSetup.close();};
-const clearManagementNotice=()=>{accountManagement.clearNotice();accountSetup.clearNotice();};
+const managementBusy=()=>accountManagement.busy()||accountSetup.busy()||accountDistribution.busy();
+const closeManagement=()=>{accountManagement.close();accountSetup.close();accountDistribution.close();};
+const clearManagementNotice=()=>{accountManagement.clearNotice();accountSetup.clearNotice();accountDistribution.clearNotice();};
+const openCatalog=(...args:Parameters<typeof accountManagement.open>)=>{accountSetup.close();accountDistribution.close();accountSetup.clearNotice();accountDistribution.clearNotice();return accountManagement.open(...args);};
 const AccountDefaultsDialog = lazy(() => import("./AccountDefaultsDialog"));
 const AccountCatalogDialog = lazy(() => import("./AccountCatalogDialog"));
 
@@ -112,7 +114,7 @@ function Detail(props: { a: Account }) {
       <div class="acct-title">
         <h2 class="ell">{props.a.label}</h2>
         <span class="grow" />
-        <button class="btn" disabled={managementBusy()} onClick={event=>void accountManagement.open("rename",props.a.key,m().key,event.currentTarget)}><Icon name="pencil" size={13} />Rename…</button>
+        <button class="btn" disabled={managementBusy()} onClick={event=>void openCatalog("rename",props.a.key,m().key,event.currentTarget)}><Icon name="pencil" size={13} />Rename…</button>
       </div>
       <div class="row acct-identity">
         <AgentBadge agent={agentKind(props.a.provider)} />
@@ -134,7 +136,7 @@ function Detail(props: { a: Account }) {
                 </Show>
               </button>
               <Show when={!x.is_default && x.online && x.state === "ready" && defaultable()}>
-                <button class="btn small ghost acct-make-default" disabled={managementBusy()} title={`Use this account for new ${providerName(props.a.provider)} sessions on ${x.machine} when no account is specified. Existing sessions keep their account.`} onClick={event=>void accountManagement.open("default",props.a.key,x.key,event.currentTarget)}>Make default</button>
+                <button class="btn small ghost acct-make-default" disabled={managementBusy()} title={`Use this account for new ${providerName(props.a.provider)} sessions on ${x.machine} when no account is specified. Existing sessions keep their account.`} onClick={event=>void openCatalog("default",props.a.key,x.key,event.currentTarget)}>Make default</button>
               </Show>
             </span>
           )}</For>
@@ -165,7 +167,7 @@ function Detail(props: { a: Account }) {
               </Show>
             </span>
           </Show>
-          <button class="btn small acct-add" disabled title={ACCOUNT_MANAGEMENT}><Icon name="plus" size={12} />Add to machine…</button>
+          <button class="btn small acct-add" disabled={managementBusy()} onClick={event=>{accountManagement.close();accountSetup.close();accountManagement.clearNotice();accountSetup.clearNotice();void accountDistribution.open(props.a.key,m().key,event.currentTarget);}}><Icon name="plus" size={12} />Add to machine…</button>
         </div>
         <div class="acct-status">
           <Status kind={tone(m().state)}>{m().detail}</Status>
@@ -197,21 +199,21 @@ function Detail(props: { a: Account }) {
             Permissions on {m().machine}: <b classList={{ danger: m().permission === "bypass" }}>{m().permission_label}</b>
             <span class="dim acct-src">{m().permission_mode === "bypass" ? "set in Zerus" : "from provider settings"}</span>
           </span>
-          <button class="btn small" disabled={!m().online || nativeConfig() || managementBusy()} title={`Change permission defaults on ${m().machine}`} onClick={event=>void accountManagement.open("permissions",props.a.key,m().key,event.currentTarget)}>Change…</button>
+          <button class="btn small" disabled={!m().online || nativeConfig() || managementBusy()} title={`Change permission defaults on ${m().machine}`} onClick={event=>void openCatalog("permissions",props.a.key,m().key,event.currentTarget)}>Change…</button>
         </div>
         <Show when={m().model_supported}>
           <div class="acct-setting">
             <span>{m().model_text}</span>
-            <button class="btn small" disabled={!m().online || managementBusy()} onClick={event=>void accountManagement.open("model",props.a.key,m().key,event.currentTarget)}>Model and effort…</button>
+            <button class="btn small" disabled={!m().online || managementBusy()} onClick={event=>void openCatalog("model",props.a.key,m().key,event.currentTarget)}>Model and effort…</button>
           </div>
         </Show>
         <Actions>
           <Show when={defaultable()}>
-            <button class="btn" disabled={m().is_default || !m().online || managementBusy()} title={`Use this account for new ${providerName(props.a.provider)} sessions on ${m().machine} when no account is specified. Existing sessions keep their account.`} onClick={event=>void accountManagement.open("default",props.a.key,m().key,event.currentTarget)}>{m().is_default ? `Default on ${m().machine}` : `Make default on ${m().machine}`}</button>
+            <button class="btn" disabled={m().is_default || !m().online || managementBusy()} title={`Use this account for new ${providerName(props.a.provider)} sessions on ${m().machine} when no account is specified. Existing sessions keep their account.`} onClick={event=>void openCatalog("default",props.a.key,m().key,event.currentTarget)}>{m().is_default ? `Default on ${m().machine}` : `Make default on ${m().machine}`}</button>
           </Show>
-          <button class="btn danger" disabled={!m().online || managementBusy()} title="Remove this profile from the selected machine's Zerus catalog. You will confirm the machine and consequences before anything changes." onClick={event=>void accountManagement.open("remove",props.a.key,m().key,event.currentTarget)}><Icon name="trash" size={13} />{props.a.members.length > 1 ? `Remove from ${m().machine}…` : "Remove…"}</button>
+          <button class="btn danger" disabled={!m().online || managementBusy()} title="Remove this profile from the selected machine's Zerus catalog. You will confirm the machine and consequences before anything changes." onClick={event=>void openCatalog("remove",props.a.key,m().key,event.currentTarget)}><Icon name="trash" size={13} />{props.a.members.length > 1 ? `Remove from ${m().machine}…` : "Remove…"}</button>
         </Actions>
-        <Show when={accountManagement.notice()||accountSetup.notice()}>{text=><Status kind="ok">{text()}</Status>}</Show>
+        <Show when={accountManagement.notice()||accountSetup.notice()||accountDistribution.notice()}>{text=><Status kind="ok">{text()}</Status>}</Show>
       </section>
       <UsagePanel a={props.a} />
     </div>
@@ -280,6 +282,7 @@ export function AccountsScreen() {
           </Show>
         </Show>
       </div>
+      <Show when={accountDistribution.prompt()}>{prompt=><Suspense><AccountDistributionDialog prompt={prompt()}/></Suspense>}</Show>
       <Show when={accountSetup.prompt()}>{prompt=><Suspense><AccountSetupDialog prompt={prompt()} busy={accountSetup.busy()} close={accountSetup.close} confirm={(values,handle)=>void accountSetup.confirm(values,handle)}/></Suspense>}</Show>
       <Show when={accountManagement.prompt()}>{prompt=><Suspense><Switch><Match when={prompt().kind==="permissions" || prompt().kind==="model"}><AccountDefaultsDialog prompt={prompt()} close={accountManagement.close} confirm={(values,handle)=>void accountManagement.confirm(values,handle)}/></Match><Match when={true}><AccountCatalogDialog prompt={prompt()} close={accountManagement.close} confirm={(label,handle)=>void accountManagement.confirm(label,handle)}/></Match></Switch></Suspense>}</Show>
     </div>

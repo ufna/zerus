@@ -2,7 +2,7 @@
 use serde_json::{json, Value};
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
 };
 use zerus_client_core::account_actions::Values;
@@ -17,6 +17,21 @@ impl Drop for Scratch {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
+/// A symlink to the checked-in (executable) fake, never a copy: writing a new
+/// executable while another test thread forks lets the child inherit the
+/// write fd, and exec then fails with ETXTBSY. The fake reads its files beside
+/// the link (`Path(__file__).parent`), not beside the target.
+fn link_fake(dir: &Path, script: &str) {
+    let hgs = dir.join("hgs");
+    let _ = fs::remove_file(&hgs);
+    std::os::unix::fs::symlink(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/support")
+            .join(script),
+        hgs,
+    )
+    .unwrap();
+}
 fn setup() -> (Scratch, Binding) {
     let dir = std::env::temp_dir().join(format!(
         "zerus-account-edit-{}-{}",
@@ -24,13 +39,7 @@ fn setup() -> (Scratch, Binding) {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     fs::create_dir(&dir).unwrap();
-    fs::copy(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/support/fake_hgs_account_edits.py"),
-        dir.join("hgs"),
-    )
-    .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(dir.join("hgs"), fs::Permissions::from_mode(0o700)).unwrap();
+    link_fake(&dir, "fake_hgs_account_edits.py");
     let catalog = json!({"revision":"r1","setup_revision":true,"profiles":[{"id":"work","provider":"codex","home":"/accounts/example","label":"Example","auth_revision":"a1"}]});
     fs::write(dir.join("catalog.json"), catalog.to_string()).unwrap();
     let binding = Binding::capture(
@@ -202,4 +211,58 @@ fn setup_creates_once_restores_only_exact_saved_evidence_and_keeps_keys_off_argu
     assert!(!fs::read_to_string(scratch.0.join("calls.jsonl"))
         .unwrap()
         .contains("fixture-secret"));
+}
+
+#[test]
+fn transfer_uses_existing_hgs_copy_with_both_computer_catalog_and_auth_guards() {
+    use zerus_client_core::account_actions::{setup::Host, transfer};
+    for scenario in ["success", "legacy", "uncertain", "changed"] {
+        let (scratch, binding) = setup();
+        link_fake(&scratch.0, "fake_hgs_account_transfer.py");
+        let mut source: Value =
+            serde_json::from_slice(&fs::read(scratch.0.join("catalog.json")).unwrap()).unwrap();
+        source["copy_revision"] = json!(true);
+        source["profiles"][0]["portable"] = json!(true);
+        source["profiles"][0]["credential_file"] = json!(true);
+        if scenario == "changed" {
+            source["profiles"][0]["auth_revision"] = json!("different");
+        }
+        fs::write(scratch.0.join("studio.json"), source.to_string()).unwrap();
+        let destination = json!({"revision":"r1","setup_revision":true,"copy_revision":true,"profiles":[],"removed_profiles":[]});
+        fs::write(scratch.0.join("lab.json"), destination.to_string()).unwrap();
+        let target = Host::capture(
+            ComputerId("lab".into()),
+            "22222222-2222-4222-8222-222222222222".into(),
+            &destination,
+        )
+        .unwrap();
+        if ["legacy", "uncertain"].contains(&scenario) {
+            fs::write(scratch.0.join(scenario), b"fixture").unwrap();
+        }
+        let result = transfer::copy(
+            &scratch.0.join("hgs"),
+            &binding,
+            &target,
+            "codex-copy",
+            "Example",
+        );
+        match scenario {
+            "success" => assert_eq!(result.unwrap()["profiles"][0]["id"], "codex-copy"),
+            "uncertain" => assert!(result.unwrap_err().issued),
+            _ => assert!(!result.unwrap_err().issued),
+        }
+        let calls: Vec<Value> = fs::read_to_string(scratch.0.join("calls.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let effects = calls
+            .iter()
+            .filter(|args| args[0] == "account" && args[1] == "copy")
+            .count();
+        assert_eq!(
+            effects,
+            usize::from(["success", "uncertain"].contains(&scenario))
+        );
+    }
 }
