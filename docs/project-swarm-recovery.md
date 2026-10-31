@@ -91,3 +91,36 @@ its review tab remains unavailable until the separate conflict adapter lands.
 
 No G1 producer lease, migration capture, role drain or service effect authority
 follows from this GUI catalog coordination.
+
+## Bounded conflict review data
+
+`swarm::conflicts::Catalog` borrows the existing native snapshot. It qualifies
+the whole view before returning pages: at most 16 MiB of encoded JSON, 50,000
+conflicts, 1,024 raw variants per conflict, 500 projects with 200 folders each,
+and 512 computers. It rejects malformed, duplicate or unsupported fields and
+excess data instead of showing a prefix. Summary pages contain 64 rows; choice
+pages contain 32 unique JSON values. Each copied page is capped at 1 MiB.
+Only descriptive page data is serializable. Existing bounded Fleet/Pump titles
+can supply the session labels; missing titles keep Qt's fallback.
+
+One nonserializable `Review` retains one original conflict, its node/swarm,
+complete raw variants and grouped value indexes. Equal JSON values share their
+origin list and temporary “Shown now” marker. Opening, paging and choosing a row
+construct no command. The selection describes Qt's consequences and identifies
+project removal, folder-link removal and computer-identity merge as needing
+the existing explicit confirmation. Files, sessions and messages are preserved
+by these catalog choices.
+
+`Review::resolve` only constructs the existing `swarm resolve` invocation. It
+requires the same node/swarm and exact original key, field and variants in the
+supplied current catalog, plus confirmation for the choices above. It keeps the
+original JSON value and **all** reviewed variant IDs as causal parents; grouped
+display rows never remove parents. Unrelated catalog edits can coexist with the
+review. The CLI is not an exact-head compare-and-swap: unseen concurrent heads
+remain conflicts. Native integration must reserve the existing writer, obtain a
+fresh read, recheck the review, account actual child resources and settle the
+source after one call. An unknown result must never replay that call.
+
+This is a pure prerequisite without a native caller or UI change. The conflict
+tab remains disabled until its separate native and lazy dialog slices land.
+No filesystem, second writer, CRDT, poller or migration authority is added.
