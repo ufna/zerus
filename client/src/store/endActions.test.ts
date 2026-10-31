@@ -43,10 +43,14 @@ describe("confirmed end action grace", () => {
   it("one batch has one Undo and exact indexed references; Undo cancels the entire batch", async () => {
     const f = fixture(), effect = vi.fn(); const rows = [capture("a"), capture("b"), capture("c")];
     const job = f.app.schedule(rows, effect); await tick();
-    expect(f.bus.notices()).toHaveLength(1); expect(f.bus.notices()[0].title).toBe("Archiving 3 sessions");
+    expect(f.bus.notices()).toHaveLength(1); expect(f.bus.notices()[0].title).toBe("Archiving 3 sessions"); expect(f.bus.notices()[0].text).toBe("a, b, c");
     f.ready(); await job;
     expect(effect.mock.calls[0][0]).toEqual([0, 1, 2].map((index) => ({ id: "id-1", index })));
     const cancelled = f.app.schedule(rows, effect); await tick(); await f.bus.notices()[0].actions![0].run(); await cancelled;
+    expect(effect).toHaveBeenCalledTimes(1);
+    const larger = f.app.schedule([...rows, capture("agent/project/d"), capture("agent/project/e")], effect); await tick();
+    const notice = f.bus.notices().find((n) => n.dismissible === false)!;
+    expect(notice.text).toBe("a, b, c and 2 more"); await notice.actions![0].run(); await larger;
     expect(effect).toHaveBeenCalledTimes(1);
   });
   it("keeps five visible Undo controls and annotates the newest on a sixth without native begin", async () => {

@@ -52,7 +52,8 @@ export function createEndActions(port: EndPort, notices: NoticeBus, uuid: () => 
       const start = now();
       await port.begin(id, captures);
       if (!active || closed) { await port.cancel(id).catch(() => {}); return; }
-      noticeId = notices.notify("info", `${captures.length === 1 ? captures[0].target.name : `${captures.length} sessions`}${options.remove ? "\nThe working folder is removed afterwards." : ""}`, true, key,
+      const names = captures.length === 1 ? captures[0].target.name : captures.slice(0, 3).map((c) => c.target.name.split("/").slice(2).join("/") || c.target.name).join(", ") + (captures.length > 3 ? ` and ${captures.length - 3} more` : "");
+      noticeId = notices.notify("info", `${names}${options.remove ? "\nThe working folder is removed afterwards." : ""}`, true, key,
         `${ongoing[verb]} ${captures.length === 1 ? "session" : `${captures.length} sessions`}`, {
           dismissible: false, note,
           actions: [{ label: () => `Undo (${seconds()})`, style: "primary", disabled: () => !active, run: () => cancel() }],
