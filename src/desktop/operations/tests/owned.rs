@@ -63,8 +63,9 @@ fn isolated(case: &str) -> bool {
         return true;
     }
     let root = tempfile::tempdir().unwrap();
+    let root_path = root.path().canonicalize().unwrap();
     let mut child = Command::new(std::env::current_exe().unwrap());
-    environment(&mut child, root.path());
+    environment(&mut child, &root_path);
     let result = child
         .args([&exact, "--exact", "--nocapture", "--test-threads=1"])
         .env("OWNED_PORT_CASE", &exact)
@@ -158,7 +159,7 @@ struct Host {
 impl Host {
     fn new(large: bool) -> Self {
         let temp = tempfile::tempdir().unwrap();
-        let mut host = Self::at(temp.path(), large);
+        let mut host = Self::at(&temp.path().canonicalize().unwrap(), large);
         host._temp = Some(temp);
         host
     }
@@ -613,9 +614,10 @@ fn actual_host_exit_and_reopen_preserve_the_surviving_synthetic_custody() {
         return;
     }
     let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("crash");
+    let temp_path = temp.path().canonicalize().unwrap();
+    let root = temp_path.join("crash");
     let mut child = Command::new(std::env::current_exe().unwrap());
-    environment(&mut child, &temp.path().join("host-env"));
+    environment(&mut child, &temp_path.join("host-env"));
     let result = child
         .args([
             &format!(
