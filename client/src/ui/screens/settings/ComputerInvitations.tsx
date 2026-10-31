@@ -24,7 +24,7 @@ export default function ComputerInvitations(props:{workspace:Workspace;busy:bool
  const busy=()=>props.busy||state.busy();
  return <div class="ws-invite"><Actions>
   <button class="btn" disabled={busy()||!!state.pending()||!!props.workspace.pending} onClick={()=>void state.issue()}><Icon name="key-round" size={13}/>{tr("Give computer code")}</button>
-  <button class="btn" disabled={busy()||!state.code()} onClick={()=>void state.copy().then(copied=>{if(copied)toast("Copied","Computer code copied. It stays a credential until used or expired.");})}><Icon name="copy" size={13}/>{tr("Copy computer code")}</button>
+  <button class="btn" disabled={busy()||!state.code()} onClick={()=>void state.copy().then(copied=>{if(copied)toast("Copied",tr("Computer code copied. It stays a credential until used or expired."));})}><Icon name="copy" size={13}/>{tr("Copy computer code")}</button>
   <button class="btn" disabled={busy()||!state.pending()} onClick={()=>void state.cancel()}>{tr("Cancel code")}</button>
  </Actions><Status kind={state.pending()?"ok":"muted"}>{state.status()}</Status></div>;
 }

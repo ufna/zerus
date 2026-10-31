@@ -68,7 +68,7 @@ function Editor(props: { local: LocalState; peers: { row: MachineRow; state: Pee
   const isLocal = () => selected() === LOCAL;
   const peer = () => props.peers.find((p) => p.row.alias === selected());
   const row = () => peer()?.row;
-  const name = () => (isLocal() ? props.local.name : editor.isNew() ? "New machine" : selected());
+  const name = () => (isLocal() ? props.local.name : editor.isNew() ? tr("New machine") : selected());
   const draft = editor.draft;
   const fieldsDisabled = () => isLocal() || busy();
   const effective = () => (view().effective?.alias === selected() ? view().effective : null);

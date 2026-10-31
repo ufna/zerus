@@ -20,12 +20,12 @@ interface RecoveryView { status: string; error: string; busy: boolean; can_save:
 interface Form { enabled: boolean; rules: Record<string, boolean>; session_limit_mode: string; delays: Record<string, string> }
 
 const RULES = [
-  { id: "service", label: "Overload / server unavailable" },
-  { id: "rate_limit", label: "Temporary rate limit" },
-  { id: "session_limit", label: "Session usage limit" },
-  { id: "network", label: "Connection / timeout" },
+  { id: "service", label: trNoop("Overload / server unavailable") },
+  { id: "rate_limit", label: trNoop("Temporary rate limit") },
+  { id: "session_limit", label: trNoop("Session usage limit") },
+  { id: "network", label: trNoop("Connection / timeout") },
 ];
-const HELP = "Each positive number is a delay before the next attempt. End with −1 to stop, or 0 to repeat the previous delay forever.\nExample: 300, 0 retries every 5 minutes until stopped.\n\nNew messages and Stop cancel recovery. Sign-in, balance, other quota and context errors require your action.";
+const HELP = trNoop("Each positive number is a delay before the next attempt. End with −1 to stop, or 0 to repeat the previous delay forever.\nExample: 300, 0 retries every 5 minutes until stopped.\n\nNew messages and Stop cancel recovery. Sign-in, balance, other quota and context errors require your action.");
 
 /** Opening the section reads every machine again (Qt's openRecovery). */
 export function refreshRecovery() {
@@ -116,7 +116,7 @@ export function RecoverySection() {
             <div class="rec-mode">
               <Select value={form.session_limit_mode} label={r.label} disabled={!on() || !form.rules[r.id]}
                 onChange={(v) => edit(() => setForm("session_limit_mode", v))}
-                options={[{ value: "reset", label: "Wait for reset" }, { value: "interval", label: "Retry on a schedule" }]} />
+                options={[{ value: "reset", label: trNoop("Wait for reset") }, { value: "interval", label: trNoop("Retry on a schedule") }]} />
               <p class="set-hint">{tr("Wait until the provider's reset time by default. If no reset time is available, recovery needs your attention. Choose a schedule to retry at your own intervals.")}</p>
             </div>
           </Show>
@@ -136,7 +136,7 @@ export function RecoverySection() {
         <Check label={trNoop("Recover automatically after temporary failures")} checked={form.enabled} disabled={!usable()} onChange={(v) => edit(() => setForm("enabled", v))} />
       </Group>
       <div class="rec-rules"><For each={RULES}>{rule}</For></div>
-      <div class="set-note"><Lines text={HELP} /></div>
+      <div class="set-note"><Lines text={tr(HELP)} /></div>
       <Show when={view()?.status}>{(status) => <Status kind={statusKind()}>{status()}</Status>}</Show>
       <Show when={view()?.known && !view()!.has_machines}>
         <div class="set-actions"><button type="button" class="btn" onClick={() => setPage("machines")}>{tr("Open Machines")}</button></div>

@@ -1,6 +1,7 @@
 import type { AttachmentScope } from "../../store/activitySource";
 import type { AttachmentRef, Fetched } from "../../types";
 import type { ItemAttachment } from "./types";
+import { tr } from "../../i18n";
 
 // Activity attachment cards (ActivityView.cpp:759-782) and their Open
 // (SessionsWindow.cpp:1093-1102), apart from the view so they can be tested.
@@ -44,7 +45,7 @@ export interface OpenPort {
 /** Opens an Activity attachment as Qt does: "Opening attachment…", then a notice, or the error as a warning. */
 export function createOpen(port: OpenPort) {
   return async (computer: string, file: AttachmentRef) => {
-    port.notify("info", "Opening attachment…", false, OPENING);
+    port.notify("info", tr("Opening attachment…"), false, OPENING);
     try {
       const notice = await port.open(computer, file);
       // A plain success leaves "Opening attachment…" to expire on its own.

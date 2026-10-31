@@ -16,12 +16,12 @@ import { tr, trNoop } from "../../../i18n";
 // Legacy configuration is loaded only while its Advanced disclosure is open.
 
 const DELIVERY: { value: string; label: string }[] = [
-  { value: "immediate", label: "Immediately, even if I'm at a computer" },
-  { value: "away", label: "As soon as I'm away" },
-  { value: "away_5", label: "After 5 minutes away" },
-  { value: "away_10", label: "After 10 minutes away" },
-  { value: "away_15", label: "After 15 minutes away" },
-  { value: "away_30", label: "After 30 minutes away" },
+  { value: "immediate", label: trNoop("Immediately, even if I'm at a computer") },
+  { value: "away", label: trNoop("As soon as I'm away") },
+  { value: "away_5", label: trNoop("After 5 minutes away") },
+  { value: "away_10", label: trNoop("After 10 minutes away") },
+  { value: "away_15", label: trNoop("After 15 minutes away") },
+  { value: "away_30", label: trNoop("After 30 minutes away") },
 ];
 
 /** QLocale's short date and time, or a dash when unknown. */
@@ -42,9 +42,9 @@ function PhonesPanel(props: { view?: View; refresh: () => void; actions:PhoneAct
   const revoke=(origin:HTMLElement)=>{const entry=chosen();if(entry)void props.actions.openRevoke(targetOf(entry.list),entry.phone.id,origin);};
   return <section class="set-group set-phones"><div class="set-group-head"><h3>{tr("Phones")}</h3></div><p class="set-group-hint">{tr("Phones paired with your computers. A phone can control every computer of its workspace; revoke one you no longer use.")}</p>
    <div class="set-table-wrap"><table class="set-table" aria-label={tr("Phones")}><thead><tr><th scope="col">{tr("Phone")}</th><th scope="col">{tr("Platform")}</th><th scope="col">{tr("Paired")}</th><th scope="col">{tr("Last active")}</th><th scope="col">{tr("Added from")}</th></tr></thead><tbody>
-    <Show when={!reading()&&entries().length} fallback={<tr class="set-table-empty"><td colspan={5}>{reading()?"":"No phones"}</td></tr>}><For each={phones()?.lists??[]}>{list=><><tr class="set-table-group"><td colspan={5}>{listTitle(list)}</td></tr><For each={list.phones}>{phone=>{const key=phoneKey(targetOf(list),phone.id);return <tr classList={{on:selected()===key}} tabIndex={0} aria-selected={selected()===key} onClick={()=>setSelected(key)} onKeyDown={e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();setSelected(key);}if(e.key==="Delete"){setSelected(key);revoke(e.currentTarget);}}}><td><span class="row"><Icon name="smartphone" size={13} class="dim"/>{phone.name}</span></td><td>{phone.platform}</td><td class="tabular">{when(phone.paired_at)}</td><td class="tabular">{when(phone.last_seen_at)}</td><td title={list.encrypted?"Verified device membership. Private device names are not stored by the relay.":"Paired with an administrator invitation, or before Zerus recorded it"}>{phone.added_from??<span class="dim">—</span>}</td></tr>;}}</For></>}</For></Show>
+    <Show when={!reading()&&entries().length} fallback={<tr class="set-table-empty"><td colspan={5}>{reading()?"":tr("No phones")}</td></tr>}><For each={phones()?.lists??[]}>{list=><><tr class="set-table-group"><td colspan={5}>{listTitle(list)}</td></tr><For each={list.phones}>{phone=>{const key=phoneKey(targetOf(list),phone.id);return <tr classList={{on:selected()===key}} tabIndex={0} aria-selected={selected()===key} onClick={()=>setSelected(key)} onKeyDown={e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();setSelected(key);}if(e.key==="Delete"){setSelected(key);revoke(e.currentTarget);}}}><td><span class="row"><Icon name="smartphone" size={13} class="dim"/>{phone.name}</span></td><td>{phone.platform}</td><td class="tabular">{when(phone.paired_at)}</td><td class="tabular">{when(phone.last_seen_at)}</td><td title={list.encrypted?tr("Verified device membership. Private device names are not stored by the relay."):tr("Paired with an administrator invitation, or before Zerus recorded it")}>{phone.added_from??<span class="dim">—</span>}</td></tr>;}}</For></>}</For></Show>
    </tbody></table></div>
-   <Actions><button class="btn" disabled={busy()||!phones()?.lists.length} onClick={e=>{const targets=phones()!.lists.map(targetOf);const selected=chosen();const at=selected?targets.findIndex(t=>targetKey(t)===targetKey(targetOf(selected.list))):0;props.actions.pair(targets,at,e.currentTarget);}}><Icon name="plus" size={14}/>{tr("Pair a phone…")}</button><button class="btn danger" disabled={busy()||!chosen()} onClick={e=>revoke(e.currentTarget)}>{tr("Revoke…")}</button><button class="btn" disabled={busy()||!props.view} onClick={props.refresh}><Icon name="refresh-cw" size={13}/>{tr("Refresh")}</button><Status kind={reading()?"busy":"muted"}>{reading()?"Checking phones…":phones()?.lines.join("\n")}</Status></Actions>
+   <Actions><button class="btn" disabled={busy()||!phones()?.lists.length} onClick={e=>{const targets=phones()!.lists.map(targetOf);const selected=chosen();const at=selected?targets.findIndex(t=>targetKey(t)===targetKey(targetOf(selected.list))):0;props.actions.pair(targets,at,e.currentTarget);}}><Icon name="plus" size={14}/>{tr("Pair a phone…")}</button><button class="btn danger" disabled={busy()||!chosen()} onClick={e=>revoke(e.currentTarget)}>{tr("Revoke…")}</button><button class="btn" disabled={busy()||!props.view} onClick={props.refresh}><Icon name="refresh-cw" size={13}/>{tr("Refresh")}</button><Status kind={reading()?"busy":"muted"}>{reading()?tr("Checking phones…"):phones()?.lines.join("\n")}</Status></Actions>
    <Show when={props.actions.notice()}><Status>{props.actions.notice()}</Status></Show>
   </section>;
 }
@@ -105,7 +105,7 @@ export function MobileSection() {
       <SectionHead title={trNoop("Workspace")} intro={tr("Connect your computers and phones to one workspace. Session content is encrypted between your devices; the relay keeps routing and delivery metadata.")} />
       <Show when={state().error}>{(text) => <Status kind="error">{text()}</Status>}</Show>
       <WorkspacePanel view={view()} refresh={(afterAction) => page.refreshWorkspace(afterAction)} />
-      <button class="btn ghost set-disclosure" disabled={!!view()?.workspace?.encrypted} aria-expanded={legacyOpen()&&!view()?.workspace?.encrypted} title={view()?.workspace?.encrypted?"Unavailable while this computer uses an encrypted workspace":undefined} onClick={()=>setLegacyOpen(!legacyOpen())}><Icon name={legacyOpen()&&!view()?.workspace?.encrypted?"chevron-down":"chevron-right"} size={14}/>{tr("Advanced: legacy connector configuration")}</button>
+      <button class="btn ghost set-disclosure" disabled={!!view()?.workspace?.encrypted} aria-expanded={legacyOpen()&&!view()?.workspace?.encrypted} title={view()?.workspace?.encrypted?tr("Unavailable while this computer uses an encrypted workspace"):undefined} onClick={()=>setLegacyOpen(!legacyOpen())}><Icon name={legacyOpen()&&!view()?.workspace?.encrypted?"chevron-down":"chevron-right"} size={14}/>{tr("Advanced: legacy connector configuration")}</button>
       <Show when={legacyOpen()&&!view()?.workspace?.encrypted}><Suspense><LegacyRelay/></Suspense></Show>
       <PhonesPanel view={view()} refresh={() => page.refreshPhones()} actions={phoneActions}/>
       <Show when={phoneActions.prompt()}>{prompt=><Suspense><PhoneDialogs prompt={prompt()} actions={phoneActions}/></Suspense>}</Show>

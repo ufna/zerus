@@ -2,6 +2,7 @@ import { batch, createEffect, createMemo, createSignal, on, onCleanup, untrack }
 import type { SubagentInspection } from "../bridge";
 import type { ActivitySource } from "./activitySource";
 import type { ActivityEvent, ComputerId } from "../types";
+import { tr } from "../i18n";
 
 export interface SubagentActivityTarget {
   /** The parent row id, used by the Activity's file-reference dialog. */
@@ -58,7 +59,7 @@ export function createSubagentActivity(deps: SubagentActivityDeps) {
       if (mine !== generation) return;
       reading = false;
       if (!answer || answer.agent_id !== t.agentId || answer.parent_conversation_id !== t.conversationId || answer.run_id !== t.runId) {
-        setError("Could not refresh activity: the subagent changed or is unavailable");
+        setError(tr("Could not refresh activity: the subagent changed or is unavailable"));
         setLoaded(true);
       } else {
         batch(() => { setEvents(answer.events); setSummary(answer); setError(undefined); setLoaded(true); });
@@ -67,7 +68,7 @@ export function createSubagentActivity(deps: SubagentActivityDeps) {
     }).catch((reason: unknown) => {
       if (mine !== generation) return;
       reading = false;
-      batch(() => { setError(`Could not refresh activity: ${String(reason)}`); setLoaded(true); });
+      batch(() => { setError(tr("Could not refresh activity: %1", String(reason))); setLoaded(true); });
       schedule();
     });
   }

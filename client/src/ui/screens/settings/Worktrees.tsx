@@ -55,7 +55,7 @@ export function WorktreesSection() {
   const rules = () => state().rules;
   const can = () => controls(view(), rules(), state().sending);
   const edit = (change: Partial<Rules>) => page.edit(change);
-  const status = () => state().error ?? view()?.status ?? "Refresh to read this computer's cleanup rules.";
+  const status = () => state().error ?? view()?.status ?? tr("Refresh to read this computer's cleanup rules.");
   const kind = () => (view()?.busy ? "busy" : state().error || view()?.failed ? "error" : "muted");
   return (
     <>
@@ -63,15 +63,15 @@ export function WorktreesSection() {
       <Group>
         <Actions>
           <Select value={view()?.route ?? ""} label={trNoop("Computer")} disabled={!can().computer} onChange={(route) => page.choose(route)}
-            options={[{ value: "", label: "This computer" }, ...(view()?.peers ?? []).map((peer) => ({ value: peer, label: peer }))]} />
+            options={[{ value: "", label: tr("This computer") }, ...(view()?.peers ?? []).map((peer) => ({ value: peer, label: peer }))]} />
           <button type="button" class="btn" disabled={!can().refresh} onClick={() => page.refresh()}><Icon name="refresh-cw" size={13} />{tr("Refresh")}</button>
         </Actions>
         <p class="set-group-hint">{tr("Cleanup runs on the computer that owns each worktree, even when this window is closed. Rules are enabled by default and apply across its projects. Other computers keep their own settings.")}</p>
         <Check label={trNoop("Enable automatic worktree cleanup")} checked={rules().enabled} disabled={!can().enabled} onChange={(on) => edit({ enabled: on })} />
         <For each={[
-          ["after_session", "Clean integrated worktrees after the last session is archived or terminated"],
-          ["unused_integrated", "Periodically clean unused integrated worktrees"],
-          ["missing", "Forget verified managed worktrees whose folders no longer exist"],
+          ["after_session", tr("Clean integrated worktrees after the last session is archived or terminated")],
+          ["unused_integrated", tr("Periodically clean unused integrated worktrees")],
+          ["missing", tr("Forget verified managed worktrees whose folders no longer exist")],
         ] as const}>
           {([key, label]) => (
             <Check label={label} checked={rules()[key]} disabled={!can().others} onChange={(on) => edit({ [key]: on })} />
@@ -81,7 +81,7 @@ export function WorktreesSection() {
           <NumberField value={rules().grace_hours} min={1} max={8760} suffix="hours" label={trNoop("Minimum inactivity for periodic cleanup")}
             disabled={!can().grace} onChange={(hours) => edit({ grace_hours: hours })} />
         </Row>
-        <p class="set-group-hint">{"Only verified Zerus-created worktrees qualify. Cleanup keeps branches and conversation history. Changed, untracked and ignored local files, sessions, running programs, locked folders and incomplete checks protect a worktree. Build folders and local configuration require review in Projects > Worktrees."}</p>
+        <p class="set-group-hint">{tr("Only verified Zerus-created worktrees qualify. Cleanup keeps branches and conversation history. Changed, untracked and ignored local files, sessions, running programs, locked folders and incomplete checks protect a worktree. Build folders and local configuration require review in Projects > Worktrees.")}</p>
         <Show when={status()}>{(text) => <Status kind={kind()}>{text()}</Status>}</Show>
         <Actions><button type="button" class="btn primary" disabled={!can().apply} onClick={() => page.apply()}>{tr("Apply to this computer")}</button></Actions>
       </Group>

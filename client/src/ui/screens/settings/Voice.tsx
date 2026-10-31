@@ -93,9 +93,9 @@ export function VoiceSection() {
   const v = () => view();
   const microphone = () => text("speech/microphone");
   const microphoneOptions = createMemo<Option[]>(() => {
-    const options = [{ value: "", label: "System default microphone" }, ...microphones().map((m) => ({ value: m.id, label: m.name }))];
+    const options = [{ value: "", label: tr("System default microphone") }, ...microphones().map((m) => ({ value: m.id, label: m.name }))];
     const selected = microphone();
-    if (selected && !options.some((o) => o.value === selected)) options.push({ value: selected, label: "Selected microphone (unavailable)" });
+    if (selected && !options.some((o) => o.value === selected)) options.push({ value: selected, label: tr("Selected microphone (unavailable)") });
     return options;
   });
   const removeAnswer = (confirmed: boolean) => {
@@ -200,10 +200,10 @@ function RemoveQuestion(props: { text: string; answer: (confirmed: boolean) => v
 }
 
 const HELP: Record<string, string> = {
-  openai_http: "The processing computer sends audio to the server's /audio/transcriptions endpoint. Use the server's model ID and a two-letter language code, or leave language empty.\n\nThe optional API key is saved on the processing computer. Prefer HTTPS; private HTTP requires explicit consent. Saving sends no audio.",
-  gigaam: "Local inference runs on the processing computer named above. Saving creates a profile; it does not install the service or download model weights.\n\nv3_e2e_rnnt is the default for Russian with punctuation; use ru for Russian.\n\nCPU uses the processor. CUDA requires a supported NVIDIA GPU and CUDA-enabled PyTorch. MPS requires a supported Apple GPU/runtime. Use Test to verify the chosen model and device.",
+  openai_http: trNoop("The processing computer sends audio to the server's /audio/transcriptions endpoint. Use the server's model ID and a two-letter language code, or leave language empty.\n\nThe optional API key is saved on the processing computer. Prefer HTTPS; private HTTP requires explicit consent. Saving sends no audio."),
+  gigaam: trNoop("Local inference runs on the processing computer named above. Saving creates a profile; it does not install the service or download model weights.\n\nv3_e2e_rnnt is the default for Russian with punctuation; use ru for Russian.\n\nCPU uses the processor. CUDA requires a supported NVIDIA GPU and CUDA-enabled PyTorch. MPS requires a supported Apple GPU/runtime. Use Test to verify the chosen model and device."),
 };
-const OTHER_HELP = "This provider type cannot be edited by this version of Zerus. See the provider documentation before changing it.";
+const OTHER_HELP = trNoop("This provider type cannot be edited by this version of Zerus. See the provider documentation before changing it.");
 
 /**
  * Add or Edit speech provider (SpeechSettings.cpp ProfileEditor). The fields
@@ -233,7 +233,7 @@ function ProviderEditor(props: { editor: EditorView }) {
   const devices = () => [...(offered()?.devices ?? []), ...(!retyped() && editor().extra_device ? [editor().extra_device!] : [])];
   const types = (): Option[] => [
     ...editor().adapters.map((a) => ({ value: a.id, label: a.label })),
-    ...(editor().unsupported !== null ? [{ value: editor().unsupported!, label: "Unsupported provider type" }] : []),
+    ...(editor().unsupported !== null ? [{ value: editor().unsupported!, label: tr("Unsupported provider type") }] : []),
   ];
   // ProfileEditor::configureType: the chosen type's models and devices.
   createEffect(on(adapter, (chosen) => {
@@ -258,7 +258,7 @@ function ProviderEditor(props: { editor: EditorView }) {
     });
   };
   const close = () => void input("close_editor", { ticket: editor().ticket });
-  const documentationLabel = () => remote() ? "HTTP transcription documentation" : adapter() === "gigaam" ? "Local GigaAM documentation" : "Speech provider documentation";
+  const documentationLabel = () => remote() ? "HTTP transcription documentation" : adapter() === "gigaam" ? tr("Local GigaAM documentation") : tr("Speech provider documentation");
   const documentationUrl = () => remote() ? `${DOCUMENTATION}#openai-compatible-server` : adapter() === "gigaam" ? `${DOCUMENTATION}#local-gigaam` : DOCUMENTATION;
   let dialog: HTMLDialogElement | undefined;
   onCleanup(() => { if (dialog?.open) dialog.close(); });
@@ -296,15 +296,15 @@ function ProviderEditor(props: { editor: EditorView }) {
             <Check label={trNoop("Allow unencrypted HTTP for a local or private server")} checked={insecure()} disabled={busy()} onChange={setInsecure} /></div>
           <div class="form-row"><label for="voice-credential">{tr("API key")}</label>
             <Select id="voice-credential" value={credential()} disabled={busy()} onChange={(mode) => { setKey(""); setCredential(mode); }} options={[
-              { value: "keep", label: editor().key_stored ? "Keep stored API key" : "No API key" },
-              { value: "replace", label: "Replace API key" },
-              { value: "remove", label: "Remove API key" },
+              { value: "keep", label: editor().key_stored ? trNoop("Keep stored API key") : trNoop("No API key") },
+              { value: "replace", label: trNoop("Replace API key") },
+              { value: "remove", label: trNoop("Remove API key") },
             ]} /></div>
           <div class="form-row"><label for="voice-key">{tr("New API key")}</label>
             <input id="voice-key" class="field" type="password" maxLength={8192} autocomplete="off" disabled={busy() || credential() !== "replace"}
               value={key()} onInput={(e) => setKey(e.currentTarget.value)} /></div>
         </Show>
-        <Lines class="hint voice-help" text={HELP[adapter()] ?? OTHER_HELP} />
+        <Lines class="hint voice-help" text={tr(HELP[adapter()] ?? OTHER_HELP)} />
         <div>
           <button type="button" class="btn ghost" title={documentationUrl()} onClick={() => void openDocumentation(adapter()).then(setDocumentationFailure)}>
             {documentationLabel()}<Icon name="external-link" size={12} />

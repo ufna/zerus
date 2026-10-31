@@ -118,8 +118,8 @@ export function AnalyticsSection() {
   const detail = () => rows()?.rows.find((r) => key(r) === selected());
   const page = () => rows() ?? { rows: [], offset: 0, total: 0 };
   const computers = () => [
-    { value: "", label: "This computer" },
-    { value: "*", label: view()?.peer_limit ? "First 32 configured computers" : "All configured computers" },
+    { value: "", label: tr("This computer") },
+    { value: "*", label: view()?.peer_limit ? "First 32 configured computers" : tr("All configured computers") },
     ...(view()?.peers ?? []).map((peer) => ({ value: peer, label: peer })),
   ];
   // Checked at the click (Qt's fresh(m_local)) and pinned to the epoch of
@@ -152,11 +152,11 @@ export function AnalyticsSection() {
           <button type="button" class="btn primary" disabled={!view()?.can_refresh} onClick={refresh}><Icon name="refresh-cw" size={13} />{tr("Apply and refresh")}</button>
         </Actions>
         <Show when={failure() ?? view()?.status}>{(text) => <Status kind={failure() ? "error" : working() ? "busy" : "muted"}>{text()}</Status>}</Show>
-        <Lines class="an-overview" text={report() ? overviewText(report()!) : "Choose a range and refresh to read analytics."} />
+        <Lines class="an-overview" text={report() ? overviewText(report()!) : tr("Choose a range and refresh to read analytics.")} />
         <Show when={report()}>
           {(r) => (
             <div class="an-coverage">
-              <Show when={r().peer_limit}><Lines class="an-cov" text="This view includes at most 32 configured computers. Additional configured routes are omitted." /></Show>
+              <Show when={r().peer_limit}><Lines class="an-cov" text={tr("This view includes at most 32 configured computers. Additional configured routes are omitted.")} /></Show>
               <For each={r().missing}>{(m) => <Lines class="an-cov stale" text={`${displayRoute(m.route)}: ${m.error}`} />}</For>
               <For each={r().computers}>{(c) => <Lines class={c.current ? "an-cov" : "an-cov stale"} text={coverageText(c)} />}</For>
             </div>
@@ -166,20 +166,20 @@ export function AnalyticsSection() {
 
       <Group title={trNoop("Daily agent work")} aside={
         <Select value={provider()} label={trNoop("Provider")} onChange={(v) => { setProvider(v); setOffset(0); }}
-          options={[{ value: "", label: "All providers" }, ...PROVIDERS.map((p) => ({ value: p, label: p }))]} />
+          options={[{ value: "", label: tr("All providers") }, ...PROVIDERS.map((p) => ({ value: p, label: p }))]} />
       }>
         <div class="an-split">
           <Table class="an-table" label={trNoop("Daily agent work")} rows={page().rows} rowKey={key} selected={selected()} onSelect={setSelected}
-            empty={<span class="muted">{view()?.busy ? "Reading…" : "No current read available."}</span>}
+            empty={<span class="muted">{view()?.busy ? tr("Reading…") : tr("No current read available.")}</span>}
             columns={[
-              { key: "day", label: "UTC day", class: "tabular", render: (r) => r.date },
-              { key: "computer", label: "Computer", render: (r) => displayRoute(r.route) + (r.current ? "" : " (last known)") },
-              { key: "provider", label: "Provider", render: (r) => r.provider },
-              { key: "producer", label: "Producer", render: (r) => r.producer },
-              { key: "turns", label: "Completed turns", class: "num", render: (r) => measure(r.counters, "turn_completed") },
-              { key: "work", label: "Work", class: "num", render: (r) => measure(r.counters, "work_ms") },
-              { key: "approval", label: "Approval wait", class: "num", render: (r) => measure(r.counters, "approval_wait_ms") },
-              { key: "input", label: "Input wait", class: "num", render: (r) => measure(r.counters, "input_wait_ms") },
+              { key: "day", label: trNoop("UTC day"), class: "tabular", render: (r) => r.date },
+              { key: "computer", label: trNoop("Computer"), render: (r) => displayRoute(r.route) + (r.current ? "" : tr(" (last known)")) },
+              { key: "provider", label: trNoop("Provider"), render: (r) => r.provider },
+              { key: "producer", label: trNoop("Producer"), render: (r) => r.producer },
+              { key: "turns", label: trNoop("Completed turns"), class: "num", render: (r) => measure(r.counters, "turn_completed") },
+              { key: "work", label: trNoop("Work"), class: "num", render: (r) => measure(r.counters, "work_ms") },
+              { key: "approval", label: trNoop("Approval wait"), class: "num", render: (r) => measure(r.counters, "approval_wait_ms") },
+              { key: "input", label: trNoop("Input wait"), class: "num", render: (r) => measure(r.counters, "input_wait_ms") },
             ]} />
           <aside class="an-detail">
             <Show when={detail()} fallback={<p class="muted">{tr("Select a day to see all reported counts, token usage, typed failures and histogram means.")}</p>}>
@@ -220,14 +220,14 @@ export function AnalyticsSection() {
 
       <Show when={view()?.shorten_pending}>
         {(days) => (
-          <Question title={tr("Shorten local analytics history?")} yes="Shorten retention"
-            text={`Keep only the latest ${days()} UTC days of agent analytics on this computer. Older daily aggregates will be deleted. Speech statistics and durable delivery receipts are unaffected.`}
+          <Question title={tr("Shorten local analytics history?")} yes={tr("Shorten retention")}
+            text={tr("Keep only the latest %1 UTC days of agent analytics on this computer. Older daily aggregates will be deleted. Speech statistics and durable delivery receipts are unaffected.", days())}
             answer={answer("analytics_configure_answer")} />
         )}
       </Show>
       <Show when={view()?.purge_pending}>
-        <Question title={tr("Purge local agent analytics?")} yes="Purge local history"
-          text="Permanently delete all retained agent analytics on this computer. Speech statistics, other computers and durable delivery receipts are unaffected. Collection keeps its current enabled/disabled setting."
+        <Question title={tr("Purge local agent analytics?")} yes={tr("Purge local history")}
+          text={tr("Permanently delete all retained agent analytics on this computer. Speech statistics, other computers and durable delivery receipts are unaffected. Collection keeps its current enabled/disabled setting.")}
           answer={answer("analytics_purge")} />
       </Show>
       <Show when={review()}>

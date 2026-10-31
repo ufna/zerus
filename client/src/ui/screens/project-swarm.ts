@@ -1,5 +1,6 @@
 import { createSignal } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
+import { tr } from "../../i18n";
 
 export type Project = { id: string; name: string };
 export type Sync = { state: "local" } | { state: "shared" } | { state: "waiting" } | { state: "synced"; at: number } | { state: "error"; text: string };
@@ -70,7 +71,7 @@ export function createSwarm(call: Call = invoke) {
 }
 export const syncText = (computer: Computer) => {
   const state = computer.sync;
-  const text = state.state === "local" ? "Local catalog" : state.state === "shared" ? "Shared through swarm" : state.state === "waiting" ? "Waiting to sync" : state.state === "error" ? state.text : `Synced ${new Date(state.at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })}`;
+  const text = state.state === "local" ? tr("Local catalog") : state.state === "shared" ? tr("Shared through swarm") : state.state === "waiting" ? tr("Waiting to sync") : state.state === "error" ? state.text : tr("Synced %1", new Date(state.at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }));
   return text + (computer.tasks_outdated && state.state !== "error" ? ". Update Zerus there to share tasks" : "");
 };
 

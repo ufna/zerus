@@ -21,7 +21,7 @@ export function ApprovalsSection() {
   const optIn = createApprovalOptIn(setSetting, (error) => bus.notify("error", String(error), true));
   const [host, setHost] = createSignal("");
   const [session, setSession] = createSignal("");
-  const [state, setState] = createSignal<JournalState>({ page: { entries: [], next: 0, previous: 0 }, loading: false, status: "", detailHint: PLACEHOLDER });
+  const [state, setState] = createSignal<JournalState>({ page: { entries: [], next: 0, previous: 0 }, loading: false, status: "", detailHint: tr(PLACEHOLDER) });
   const journal = createJournal({
     list: (request) => invoke<Page>("approvals_list", { ...request }),
     detail: (id) => invoke<string>("approvals_detail", { id }),
@@ -42,7 +42,7 @@ export function ApprovalsSection() {
         <div class="set-row"><div class="set-row-text"><label class="set-label danger" for="appr-on">{tr("Automatically approve tool requests (dangerous)")}</label></div>
           <div class="set-row-control"><Switch id="appr-on" checked={flag(APPROVALS_KEY)} label={trNoop("Automatically approve tool requests (dangerous)")} disabled={optIn.busy()}
             onChange={(on) => optIn.request(on, document.getElementById("appr-on") ?? document.activeElement as HTMLElement)} /></div></div>
-        <div class="notice danger"><Icon name="triangle-alert" size={14} /><span>{APPROVALS_WARNING}</span></div>
+        <div class="notice danger"><Icon name="triangle-alert" size={14} /><span>{tr(APPROVALS_WARNING)}</span></div>
         <p class="set-group-hint">{APPROVALS_HINT}</p>
       </Group>
       <Show when={optIn.origin()} keyed>{(origin) => <ApprovalsConfirm origin={origin} actions={optIn} />}</Show>
@@ -58,7 +58,7 @@ export function ApprovalsSection() {
         <div class="an-split">
           <Table class="an-table" label={trNoop("Approval journal")} rows={loading() ? [] : page().entries} rowKey={(e) => String(e.id)}
             selected={state().selected} onSelect={journal.select}
-            empty={<span class="muted">{loading() ? "Loading approval journal…" : "No automatic approvals recorded for this filter."}</span>}
+            empty={<span class="muted">{loading() ? tr("Loading approval journal…") : tr("No automatic approvals recorded for this filter.")}</span>}
             columns={[
               { key: "time", label: "Time", class: "tabular", render: (e) => <span title={entryTime(e.at)}>{entryTime(e.at)}</span> },
               { key: "computer", label: "Computer", render: (e) => <span title={e.host}>{e.host}</span> },

@@ -58,12 +58,8 @@ const KEYBOARD = [
   "Keyboard", "Command", "Shortcut", "Alternate", "Reset", "Reset all", "Restore the default chords of the selected command",
   "Chords marked ✓ work in Terminal.", "Double-click a shortcut, or press Enter on it, to change it.", "Works in Terminal",
   "Reset all shortcuts", "Restore the default chords of every command?", "Change shortcut", "Clear", "Shortcut in use",
-  "Press the new shortcut for %1.",
+  "Press the new shortcut for %1.", "Already used by %1. Reassign?",
 ];
-const KEYBOARD_FILLED: [string, string][] = [
-  ["Already used by %1. Reassign?", "Already used by ${separatedList("],
-];
-
 const ABOUT_FILLED: [string, string][] = [
   ["Zerus %1", "`Zerus ${__APP_VERSION__}`"],
   ["hgs CLI %1", "`hgs CLI ${version}`"],
@@ -282,7 +278,7 @@ describe("Settings texts", () => {
     expect(source("Processes.tsx")).toContain(text);
   });
   it("Processes keeps Qt's timing ranges", () => {
-    const TIMINGS = [...source("Processes.tsx").matchAll(/\{ key: "([^"]+)", label: "([^"]+)", min: ([\d.]+), max: ([\d.]+) \}/g)]
+    const TIMINGS = [...source("Processes.tsx").matchAll(/\{ key: "([^"]+)", label: (?:trNoop\()?"([^"]+)"\)?, min: ([\d.]+), max: ([\d.]+) \}/g)]
       .map((m) => ({ key: m[1], label: m[2], min: Number(m[3]), max: Number(m[4]) }));
     const qtTimings = [...qt.matchAll(/timing\("(\w+)",tr\("([^"]+)"\),ProcessSettings::\w+\(\),([\d.]+),([\d.]+)\)/g)]
       .map((m) => ({ key: `processes/${m[1]}`, label: m[2], min: Number(m[3]), max: Number(m[4]) }));
@@ -297,7 +293,7 @@ describe("Settings texts", () => {
     expect(processView).toContain('tr("Terminate selected (%1)")');
     expect(sessionsUi("Processes.tsx")).toContain(`tr("Terminate selected (%1)", ids.length)`);
     expect(sessionsWindow).toContain('tr("Processes (%1)")');
-    expect(processStore).toContain("`Processes (${count})`");
+    expect(processStore).toContain('tr("Processes (%1)", count)');
   });
   it.each(PROCESS_MENU)("the session menu shows Qt's %s", (text) => {
     expect(sessionsWindow).toContain(`tr("${text}")`);
@@ -380,7 +376,7 @@ describe("Settings texts", () => {
   });
   it("Files fills in Qt's limit question", () => {
     expect(filesQt).toContain('"Zerus will automatically delete its oldest downloaded copies when they exceed %1. Files you added or edited will be kept."');
-    expect(source("Files.tsx")).toContain("Zerus will automatically delete its oldest downloaded copies when they exceed ${formatDataSize(props.bytes)}. Files you added or edited will be kept.");
+    expect(source("Files.tsx")).toContain('tr("Zerus will automatically delete its oldest downloaded copies when they exceed %1. Files you added or edited will be kept.", formatDataSize(props.bytes))');
   });
   it.each(FILES_CORE)("the download cache says Qt's %s", (text) => {
     expect(cacheQt).toContain(`"${text}"`);
@@ -425,10 +421,6 @@ describe("Settings texts", () => {
     expect(keyboard).toContain(`"${text}"`);
     expect(source("Keyboard.tsx")).toContain(text);
   });
-  it.each(KEYBOARD_FILLED)("Keyboard fills in Qt's %s", (template, shown) => {
-    expect(keyboard).toContain(`"${template}"`);
-    expect(source("Keyboard.tsx")).toContain(shown);
-  });
   it("uses Shortcuts.cpp's titles, groups, reasons and Terminal rules", () => {
     const qtTexts = [...shortcuts.matchAll(/(?:QT_TRANSLATE_NOOP\("Shortcuts", |translate\("Shortcuts", )"((?:[^"\\]|\\.)+)"/g)].map((m) => m[1]);
     expect(qtTexts.length).toBeGreaterThan(40);
@@ -451,7 +443,7 @@ describe("Settings texts", () => {
     expect(source("Sessions.tsx")).toContain(text);
   });
   it("lists the sections in Qt's order", () => {
-    const labels = [...source("sections.ts").matchAll(/label: "([^"]+)"/g)].map((m) => m[1]);
+    const labels = [...source("sections.ts").matchAll(/label: (?:trNoop\()?"([^"]+)"/g)].map((m) => m[1]);
     const nav = /nav->addItems\(\{([^}]*)\}\)/.exec(qt)![1];
     const qtOrder = [...nav.matchAll(/tr\("([^"]+)"\)/g)].map((m) => m[1]);
     // Worktrees goes in before Automatic approvals (SettingsPage.h:140).

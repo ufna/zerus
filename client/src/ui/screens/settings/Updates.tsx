@@ -26,15 +26,15 @@ function LoginItemDialog() {
     void updateCommands.fixLoginItem(restart).then((restartError) => {
       setOpen(false);
       if (restartError) {
-        toast("Login item", "The Zerus login item is updated; it applies at your next login.");
-        toast("Fix the Zerus login item", `Zerus could not restart:\n${restartError}`, "error", true);
+        toast(tr("Login item"), tr("The Zerus login item is updated; it applies at your next login."));
+        toast(tr("Fix the Zerus login item"), tr("Zerus could not restart:\n%1", restartError), "error", true);
       } else if (restart) {
-        toast("Restarting Zerus", "The login item is updated. Drafts are saved; agents keep running.");
+        toast(tr("Restarting Zerus"), tr("The login item is updated. Drafts are saved; agents keep running."));
       } else {
-        toast("Login item", "The Zerus login item is updated; it applies at your next login.");
+        toast(tr("Login item"), tr("The Zerus login item is updated; it applies at your next login."));
       }
     }).catch((error) => {
-      toast("Fix the Zerus login item", `The login item was not changed.\n\n${String(error)}`, "error", true);
+      toast(tr("Fix the Zerus login item"), tr("The login item was not changed.\n\n%1", String(error)), "error", true);
     }).finally(() => setBusy(false));
   };
   return (
@@ -101,7 +101,7 @@ export function UpdatesSection() {
           onChange={(on) => { void updateCommands.setAutomatic(on).catch(failed); }} />
         <Row label={trNoop("Release channel")} for="updates-channel">
           <Select id="updates-channel" label={trNoop("Release channel")} value={updates().channel}
-            options={[{ value: "stable", label: "Stable" }, { value: "nightly", label: "Nightly" }, { value: "dev", label: "Dev" }]}
+            options={[{ value: "stable", label: trNoop("Stable") }, { value: "nightly", label: trNoop("Nightly") }, { value: "dev", label: trNoop("Dev") }]}
             onChange={(channel) => { void updateCommands.setChannel(channel as UpdateChannel).catch(failed); }} />
           <button type="button" class="btn" disabled={updates().busy} onClick={() => { void updateCommands.check().catch(failed); }}>{tr("Check now")}</button>
         </Row>
@@ -110,7 +110,7 @@ export function UpdatesSection() {
       <Group>
         <Actions>
           <button type="button" class="btn" aria-expanded={details()} aria-controls="updates-installation-details"
-            onClick={() => setDetails(!details())}>{details() ? "Hide installation details" : "Show installation details"}</button>
+            onClick={() => setDetails(!details())}>{details() ? tr("Hide installation details") : tr("Show installation details")}</button>
         </Actions>
         <Show when={details()}>
           <div id="updates-installation-details" class="updates-details">

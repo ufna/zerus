@@ -88,8 +88,8 @@ export function TerminalTab() {
   // Qt's updateButtons tooltips; unavailable shows the reason.
   const reason = () => terminal.texts()?.reason ?? "";
   const available = () => !!terminal.texts()?.available;
-  const toggleTip = () => (connected() ? "Disconnect terminal. The session keeps running" : available() ? "Connect terminal" : reason());
-  const reconnectTip = () => (available() ? "Reconnect terminal. The session keeps running" : reason());
+  const toggleTip = () => (connected() ? tr("Disconnect terminal. The session keeps running") : available() ? tr("Connect terminal") : reason());
+  const reconnectTip = () => (available() ? tr("Reconnect terminal. The session keeps running") : reason());
   return (
     <div class="term-tab">
       <div class="term-bar">
@@ -98,7 +98,7 @@ export function TerminalTab() {
         <button class="icon-btn" data-tip={reconnectTip()} aria-label={tr("Reconnect terminal")} disabled={!terminal.ready()} onClick={() => { void terminal.reconnect(); }}>
           <Icon name="refresh-cw" size={15} />
         </button>
-        <button class="icon-btn" data-tip={toggleTip()} aria-label={connected() ? "Disconnect terminal" : "Connect terminal"} disabled={!connected() && !terminal.ready()}
+        <button class="icon-btn" data-tip={toggleTip()} aria-label={connected() ? tr("Disconnect terminal") : tr("Connect terminal")} disabled={!connected() && !terminal.ready()}
           onClick={() => { void terminal.toggle(); }}>
           <Icon name={connected() ? "unplug" : "plug"} size={15} />
         </button>

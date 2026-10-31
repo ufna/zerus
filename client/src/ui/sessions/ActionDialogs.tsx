@@ -89,7 +89,7 @@ export function actionEntries(s: Session, details?: Details, options: { context?
 export function forkEntry(s: Session, details?: Details): Item {
   const row = snapshotOf(s);
   return { label: tr("Fork session…"), icon: "git-fork", disabled: !sessionForks.available(row, details),
-    hint: details ? details.fork_reason || FORK_HINT : FORK_CHECKING,
+    hint: details ? details.fork_reason || tr(FORK_HINT) : tr(FORK_CHECKING),
     action: () => { if (details && sessionForks.available(row, details)) send({ type: "open", kind: "fork", row, details: { ...details } }); },
   };
 }

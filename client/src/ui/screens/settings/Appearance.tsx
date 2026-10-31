@@ -24,23 +24,23 @@ export function tok(s: ResolvedSkin, group: string, key: string, depth = 0): str
 const num0 = (s: ResolvedSkin, group: string, key: string) => Number(s.tokens[group]?.[key] ?? 0);
 
 const VARIANT_TEXT: Record<string, Record<string, string>> = {
-  "status-badge": { pill: "Pill status badges", dot: "Dot status badges" },
-  "agent-mark": { chip: "Agent chips", glyph: "Agent glyphs" },
-  "tree-lines": { lines: "Tree lines", indent: "Indented subagents" },
-  "attention-edge": { bar: "Attention bar", tint: "Attention tint" },
-  rail: { icons: "Icon rail", labeled: "Labeled rail" },
-  "sessions-pane": { left: "Sessions on the left", right: "Sessions on the right" },
-  inspector: { docked: "Side panel docked", collapsed: "Side panel collapsed" },
-  "activity-column": { centered: "Centered Activity", full: "Full-width Activity" },
+  "status-badge": { pill: trNoop("Pill status badges"), dot: trNoop("Dot status badges") },
+  "agent-mark": { chip: trNoop("Agent chips"), glyph: trNoop("Agent glyphs") },
+  "tree-lines": { lines: trNoop("Tree lines"), indent: trNoop("Indented subagents") },
+  "attention-edge": { bar: trNoop("Attention bar"), tint: trNoop("Attention tint") },
+  rail: { icons: trNoop("Icon rail"), labeled: trNoop("Labeled rail") },
+  "sessions-pane": { left: trNoop("Sessions on the left"), right: trNoop("Sessions on the right") },
+  inspector: { docked: trNoop("Side panel docked"), collapsed: trNoop("Side panel collapsed") },
+  "activity-column": { centered: trNoop("Centered Activity"), full: trNoop("Full-width Activity") },
 };
 
 /** Variants that differ from the base skin, as a short readable list. */
 export function variantSummary(s: ResolvedSkin): string {
   const base = skins[0];
   const parts: string[] = [];
-  for (const [k, v] of Object.entries(s.components)) if ((base.components as Record<string, string>)[k] !== v) parts.push(VARIANT_TEXT[k]?.[v] ?? `${k}: ${v}`);
-  for (const [k, v] of Object.entries(s.layout)) if ((base.layout as Record<string, string>)[k] !== v) parts.push(VARIANT_TEXT[k]?.[v] ?? `${k}: ${v}`);
-  return parts.length ? parts.join(", ") : "Standard components and layout";
+  for (const [k, v] of Object.entries(s.components)) if ((base.components as Record<string, string>)[k] !== v) parts.push(VARIANT_TEXT[k]?.[v] ? tr(VARIANT_TEXT[k][v]) : `${k}: ${v}`);
+  for (const [k, v] of Object.entries(s.layout)) if ((base.layout as Record<string, string>)[k] !== v) parts.push(VARIANT_TEXT[k]?.[v] ? tr(VARIANT_TEXT[k][v]) : `${k}: ${v}`);
+  return parts.length ? parts.join(", ") : tr("Standard components and layout");
 }
 
 /** A miniature of the workspace painted only with the skin's own tokens. */
@@ -83,7 +83,7 @@ function SkinCard(props: { skin: ResolvedSkin }) {
   const builtIn = () => skins.some((b) => b.id === s().id);
   const swatches = ["accent", "status-background", "violet", "warn", "danger", "info"];
   const pick = () => {
-    if (!chooseSkin(s().id)) toast(s().name, `Used when your system appearance is ${s().appearance}.`);
+    if (!chooseSkin(s().id)) toast(s().name, s().appearance === "dark" ? tr("Used when your system appearance is dark.") : tr("Used when your system appearance is light."));
   };
   return (
     <button class="skin-card" classList={{ chosen: chosen(), active: active() }} aria-pressed={chosen()} onClick={pick}
@@ -139,15 +139,15 @@ export function AppearanceSection() {
   const overview = liveSetting("client/overviewWidth");
   const activity = liveSetting("workspace/activityWidth", previewColumn);
   const appearanceHint = (a: "dark" | "light") =>
-    theme() === "system" ? (systemLight() === (a === "light") ? "In use with your system appearance" : `Used when your system appearance is ${a}`)
-      : theme() === a ? "In use" : `Used with the ${a === "dark" ? "Dark" : "Light"} theme`;
+    theme() === "system" ? (systemLight() === (a === "light") ? tr("In use with your system appearance") : a === "dark" ? tr("Used when your system appearance is dark") : tr("Used when your system appearance is light"))
+      : theme() === a ? tr("In use") : a === "dark" ? tr("Used with the Dark theme") : tr("Used with the Light theme");
   return (
     <>
       <SectionHead title={trNoop("Appearance")} />
       <Group>
         <Row label={trNoop("Theme")} for="set-theme" hint={trNoop("Each theme uses one skin. Follow system appearance switches between your dark and light skin.")}>
           <Select id="set-theme" value={theme()} onChange={(v) => chooseTheme(v as Theme)}
-            options={[{ value: "system", label: "Follow system appearance" }, { value: "dark", label: "Dark" }, { value: "light", label: "Light" }]} />
+            options={[{ value: "system", label: trNoop("Follow system appearance") }, { value: "dark", label: trNoop("Dark") }, { value: "light", label: trNoop("Light") }]} />
         </Row>
         <div class="set-row stack">
           <div class="set-row-text">
@@ -158,7 +158,7 @@ export function AppearanceSection() {
             <For each={[["dark", dark()], ["light", light()]] as const}>
               {([a, list]) => (
                 <div class="skin-group" role="group" aria-labelledby={`skin-group-${a}`} classList={{ idle: appearanceFor(theme(), systemLight()) !== a }}>
-                  <div class="skin-group-head"><span class="eyebrow" id={`skin-group-${a}`}>{a === "dark" ? "Dark" : "Light"}</span><span class="dim">{appearanceHint(a)}</span></div>
+                  <div class="skin-group-head"><span class="eyebrow" id={`skin-group-${a}`}>{a === "dark" ? tr("Dark") : tr("Light")}</span><span class="dim">{appearanceHint(a)}</span></div>
                   <div class="skin-grid"><For each={list}>{(s) => <SkinCard skin={s} />}</For></div>
                 </div>
               )}
@@ -172,11 +172,11 @@ export function AppearanceSection() {
       <Group>
         <Row label={trNoop("Interface language")} for="set-lang" hint={<>{tr("Restart Zerus to apply the interface language. Agent sessions keep running.")}<br />{tr("Russian is a preview. Untranslated text stays in English.")}</>}>
           <Select id="set-lang" value={text("workspace/language")} disabled={!settingsLoaded()} onChange={(v) => void setSetting("workspace/language", v)}
-            options={[{ value: "en", label: "English" }, { value: "ru", label: "Russian (preview)" }]} />
+            options={[{ value: "en", label: trNoop("English") }, { value: "ru", label: trNoop("Russian (preview)") }]} />
         </Row>
         <Row label={trNoop("Usage limit indicator")} for="set-usage" hint={trNoop("Compares used quota with the elapsed part of each limit window. The bars show usage above elapsed time; the marker shows elapsed time on the usage bar. Colors warn when the current pace would use up the limit before it resets.")}>
           <Select id="set-usage" value={text("workspace/usageIndicator")} onChange={(v) => void setSetting("workspace/usageIndicator", v)}
-            options={[{ value: "rails", label: "Usage and elapsed time bars" }, { value: "marker", label: "Pace marker" }, { value: "marker-countdown", label: "Pace marker and reset countdown" }]} />
+            options={[{ value: "rails", label: trNoop("Usage and elapsed time bars") }, { value: "marker", label: trNoop("Pace marker") }, { value: "marker-countdown", label: trNoop("Pace marker and reset countdown") }]} />
         </Row>
       </Group>
 

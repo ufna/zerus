@@ -136,7 +136,7 @@ export function Inspector(props: { available: number }) {
   const geometry = () => panelGeometry(props.available, inspectorWidth());
   let panel!: HTMLElement;
   let returnFocus: HTMLElement | undefined;
-  const restoreFocus = () => queueMicrotask(() => { if (returnFocus?.isConnected && returnFocus !== document.body) returnFocus.focus(); else document.querySelector<HTMLButtonElement>("[aria-label='Show side panel']")?.focus(); });
+  const restoreFocus = () => queueMicrotask(() => { if (returnFocus?.isConnected && returnFocus !== document.body) returnFocus.focus(); else document.querySelector<HTMLButtonElement>("[data-cmd='show-side-panel']")?.focus(); });
   createEffect(on(inspectorOpen, (open, previous) => {
     if (open) returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
     else if (previous) restoreFocus();
