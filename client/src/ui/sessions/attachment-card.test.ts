@@ -85,6 +85,6 @@ describe("Task 9's texts are Qt's", () => {
     expect(read("tray/src/ActivityView.cpp")).toContain('tr("%1 KiB")');
     expect(read("client/src/ui/sessions/transcript.ts")).toContain("`${Math.max(1, Math.ceil(bytes / 1024))} KiB` : \"File\"");
     expect(read("tray/src/MessageComposer.cpp")).toContain('tr("Open %1")');
-    expect(read("client/src/ui/sessions/Attachments.tsx")).toContain("title={`Open ${a().name}`}");
+    expect(read("client/src/ui/sessions/Attachments.tsx")).toContain('title={tr("Open %1", a().name)}');
   });
 });

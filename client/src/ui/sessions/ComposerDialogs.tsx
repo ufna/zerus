@@ -2,6 +2,7 @@ import { For, Show, createEffect } from "solid-js";
 import { Icon } from "../lib/icons";
 import { composer, type Dialog } from "../../store/composer";
 import type { ClearControl, ColdPrompt, StartQuestion } from "../../types";
+import { tr } from "../../i18n";
 
 // The composer's questions, each a modal over the shared dialog styles
 // (ActionDialogs.tsx): "Continue with a cold cache?" (SessionsWindow.cpp
@@ -24,7 +25,7 @@ function ColdDialog(props: { prompt: ColdPrompt }) {
           <button type="button" class="btn" disabled={!choice.enabled} title={choice.tooltip || undefined}
             onClick={() => { void composer.answer({ kind: "cold", action: choice.action }); }}>{choice.label}</button>
         )}</For>
-        <button type="button" class="btn primary" data-initial onClick={() => composer.closeDialog()}>Cancel</button>
+        <button type="button" class="btn primary" data-initial onClick={() => composer.closeDialog()}>{tr("Cancel")}</button>
       </div>
     </>
   );
@@ -44,7 +45,7 @@ function StartDialog(props: { question: StartQuestion }) {
           <button type="button" class="btn" disabled={!option.enabled} title={option.tooltip || undefined}
             onClick={() => { void composer.answer({ kind: "start", choice: option.choice }); }}>{option.label}</button>
         )}</For>
-        <button type="button" class="btn primary" data-initial onClick={() => composer.closeDialog()}>Cancel</button>
+        <button type="button" class="btn primary" data-initial onClick={() => composer.closeDialog()}>{tr("Cancel")}</button>
       </div>
     </>
   );
@@ -58,7 +59,7 @@ function ClearDialog(props: { control: ClearControl }) {
       <div class="dlg-body"><div class="confirm-body" id="composer-dlg-body" style={{ "white-space": "pre-wrap" }}>{props.control.text}</div></div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn primary" data-initial onClick={() => composer.closeDialog()}>Cancel</button>
+        <button type="button" class="btn primary" data-initial onClick={() => composer.closeDialog()}>{tr("Cancel")}</button>
         <button type="button" class="btn solid-danger" onClick={() => { void composer.confirmClear(); }}>{props.control.confirm}</button>
       </div>
     </>
