@@ -189,6 +189,35 @@ and refuses before checkpoint I/O. The store method does not close or activate
 anything itself.
 
 
+## Attention store checkpoint prerequisite
+
+The existing Desk owner observes its original attention-observed load and
+successful compact JSON saves through `attention_store::Observation`. This
+adds constant-sized hashes and sticky failure flags, with no second tracker,
+state copy, detector, source reader or timer. Normal load/Qt fallback and save
+behavior stay with the existing owner. A malformed, unreadable or oversized
+initial source, or any failed save, remains unreliable for that owner's
+lifetime even if a later save succeeds.
+
+The dormant `Attention::checkpoint()` must run off-thread only after the future
+Desk/native callback barrier has closed every writer and drained its actual
+resources. The host must retain the I/O charge through an outer timeout or
+receiver drop. It verifies at most 16 MiB and 50,000 observed entries, the
+current in-memory serialization against the last loaded/saved view, and the
+fresh private regular source leaf against its original-byte digest. It reuses
+the ReadMarks checkpoint file checks. Changed, public, linked or unsupported
+sources refuse. Windows refuses before checkpoint I/O.
+
+An unchanged file is synced without rewriting its whitespace or unknown
+fields. An originally absent file may be written only through the existing
+owner's writer, then reread and checked against the exact intended bytes. File
+and parent-directory sync must both succeed. Failure remains sticky, including
+a late sync failure after bytes have appeared. The result contains only source
+digest, byte length, host and entry counts; it proves neither Qt fallback
+source integrity nor a full Attention drain, native posting outcome, profile
+ownership or permission to publish Drained evidence. There is no production
+freeze caller or positive producer API in this prerequisite.
+
 ## Ordered ReadDelivery store barrier
 
 Actions now owns the same fixed four native resource slots as the existing
