@@ -456,6 +456,7 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                 }));
                 app.manage(organization);
                 app.manage(organization::clones::Clones::default());
+                app.manage(organization::overview::Overview::default());
                 app.manage(screens);
                 app.manage(newsession::NewSession::tauri(Some(dir.join(if replay {
                     "worktree-snapshots-replay.json"
@@ -1138,6 +1139,13 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         organization::set_project_collapsed,
         organization::set_default_project,
         organization::project_folders,
+        organization::overview::worktree_overview_open,
+        organization::overview::worktree_overview_refresh,
+        organization::overview::worktree_overview_page,
+        organization::overview::worktree_overview_select,
+        organization::overview::worktree_overview_candidates,
+        organization::overview::worktree_overview_close,
+        organization::overview::worktree_overview_inspect,
         organization::clones::project_clone_open,
         organization::clones::project_clone_status,
         organization::clones::project_clone_step,
