@@ -32,9 +32,11 @@ existing scoped presence and handoff locks. One IMMEDIATE transaction checks
 the independently supplied current service epoch/configuration, repeats the
 bounded journal read, and compares the original request and digest. Only the
 phase changes; every stored original identity and binding byte stays intact.
-No Ticket is reconstructed. Wrong, changed, malformed or unavailable state
-refuses, including when the observed phase was already `abort_requested`.
-Failure after commit stays unknown; inspect the same original again.
+No Ticket is reconstructed. These checks run even when the stored phase is
+already `abort_requested`: a matching repeat returns the same snapshot without
+writing, and any mismatch or malformed/unavailable state refuses. A returned
+snapshot does not distinguish a first recording from an earlier committed
+intent. Failure after commit stays unknown; inspect the same original again.
 
 Neither helper has a production caller or automatic follow-up. Recording
 abort intent produces no controller wake, notice, settlement or other journal
