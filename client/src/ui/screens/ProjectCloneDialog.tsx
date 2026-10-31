@@ -8,6 +8,7 @@ import * as bridge from "../../bridge";
 import type { Project } from "../../types";
 import type { Place } from "./project-folders";
 import "../styles/project-clone.css";
+import { tr } from "../../i18n";
 export interface CloneView { id: string; url: string; parent: string; name: string; destination: string; status: string; busy: boolean; cloning: boolean; uncertain: boolean; ready: boolean; locked: boolean; can_submit: boolean }
 const NEW = "__new__";
 /** setup-clone-computer / setup-clone. The native adapter owns the operation. */
@@ -58,31 +59,31 @@ export default function ProjectCloneDialog(props: { project: string; preferred?:
       const out = await bridge.projectCloneUse(v.id, project() === NEW ? null : project(), newName().trim());
       if (out.outcome.outcome === "refused") {setError(out.outcome.detail); return;}
       if (out.outcome.outcome === "kept") bus.notify("warn", out.outcome.detail);
-      else toast("Checkout added", `${v.destination} on ${place()!.host}`);
+      else toast(tr("Checkout added"), `${v.destination} on ${place()!.host}`);
       props.placed(out.project, out.folder); props.close();
     } catch (e) {setError(String(e));} finally {if (!gone) setBusy(false);}
   };
   const browse = async () => {if (place()!.computer) setBrowsing(true); else {const p = await bridge.pickLocalFolder(parent()).catch(() => null); if (p) setParent(p);}};
   return <>
     <dialog ref={dialog} class="dlg su-dlg" style={{width: place() ? "640px" : "460px"}} aria-labelledby="project-clone-title" onCancel={(e) => {e.preventDefault(); void close();}}>
-      <div class="dlg-head"><Icon name="download" size={18} class="accent" /><h2 id="project-clone-title">Clone repository</h2><span class="grow" /><button type="button" class="icon-btn" aria-label="Close" disabled={view()?.cloning && view()?.busy} onClick={() => void close()}><Icon name="x" size={16} /></button></div>
+      <div class="dlg-head"><Icon name="download" size={18} class="accent" /><h2 id="project-clone-title">{tr("Clone repository")}</h2><span class="grow" /><button type="button" class="icon-btn" aria-label={tr("Close")} disabled={view()?.cloning && view()?.busy} onClick={() => void close()}><Icon name="x" size={16} /></button></div>
       <Show when={place()} fallback={<>
-        <div class="dlg-body"><div class="form-row"><label for="clone-on">Clone on computer</label><select ref={enhance} id="clone-on" class="field su-rsel" value={computer()} disabled={busy()} onChange={(e) => setComputer(e.currentTarget.value)}><For each={places}>{(p) => <option value={p.computer}>{p.label}</option>}</For></select></div><Show when={error()}><p class="clone-state danger" role="status">{error()}</p></Show></div>
-        <div class="dlg-foot"><span class="grow" /><button class="btn" onClick={() => void close()}>Cancel</button><button class="btn primary" disabled={!places.length || busy()} onClick={() => void open()}>Continue</button></div>
+        <div class="dlg-body"><div class="form-row"><label for="clone-on">{tr("Clone on computer")}</label><select ref={enhance} id="clone-on" class="field su-rsel" value={computer()} disabled={busy()} onChange={(e) => setComputer(e.currentTarget.value)}><For each={places}>{(p) => <option value={p.computer}>{p.label}</option>}</For></select></div><Show when={error()}><p class="clone-state danger" role="status">{error()}</p></Show></div>
+        <div class="dlg-foot"><span class="grow" /><button class="btn" onClick={() => void close()}>{tr("Cancel")}</button><button class="btn primary" disabled={!places.length || busy()} onClick={() => void open()}>{tr("Continue")}</button></div>
       </>}>
         <div class="dlg-body">
           <p class="muted">Computer: {place()?.host}</p>
-          <div class="form-row"><label for="cl-url">Repository</label><input id="cl-url" class="field mono" maxLength={4096} placeholder="git@example.org:team/project.git" disabled={locked()} value={url()} onInput={(e) => void changeUrl(e.currentTarget.value)} /></div>
-          <div class="form-row"><label for="cl-parent">Parent folder</label><div class="row"><input id="cl-parent" class="field mono grow" maxLength={32768} disabled={locked()} value={parent()} onInput={(e) => setParent(e.currentTarget.value)} /><button class="btn" disabled={locked()} onClick={() => void browse()}>Browse…</button></div></div>
-          <div class="form-row"><label for="cl-name">Folder name</label><input id="cl-name" class="field mono" maxLength={80} disabled={locked()} value={name()} onInput={(e) => {nameEdited = true; setName(e.currentTarget.value);}} /></div>
-          <div class="form-row"><label>Destination</label><span class="mono su-select ell" title={destination()}>{destination() || "—"}</span></div>
-          <div class="form-row"><label for="cl-proj">Project</label><select ref={enhance} id="cl-proj" class="field su-rsel" value={project()} disabled={locked()} onChange={(e) => setProject(e.currentTarget.value)}><For each={props.projects.filter((p) => p.accessible)}>{(p) => <option value={p.id}>{p.name}</option>}</For><option value={NEW}>New project…</option></select></div>
-          <Show when={project() === NEW}><div class="form-row"><label for="cl-newp">New project name</label><input id="cl-newp" class="field" maxLength={80} disabled={locked()} value={newName()} onInput={(e) => setNewName(e.currentTarget.value)} /></div></Show>
-          <p class="hint">Uses Git access configured on this computer. The checkout remains available if the session cannot start.</p>
+          <div class="form-row"><label for="cl-url">{tr("Repository")}</label><input id="cl-url" class="field mono" maxLength={4096} placeholder="git@example.org:team/project.git" disabled={locked()} value={url()} onInput={(e) => void changeUrl(e.currentTarget.value)} /></div>
+          <div class="form-row"><label for="cl-parent">{tr("Parent folder")}</label><div class="row"><input id="cl-parent" class="field mono grow" maxLength={32768} disabled={locked()} value={parent()} onInput={(e) => setParent(e.currentTarget.value)} /><button class="btn" disabled={locked()} onClick={() => void browse()}>{tr("Browse…")}</button></div></div>
+          <div class="form-row"><label for="cl-name">{tr("Folder name")}</label><input id="cl-name" class="field mono" maxLength={80} disabled={locked()} value={name()} onInput={(e) => {nameEdited = true; setName(e.currentTarget.value);}} /></div>
+          <div class="form-row"><label>{tr("Destination")}</label><span class="mono su-select ell" title={destination()}>{destination() || "—"}</span></div>
+          <div class="form-row"><label for="cl-proj">{tr("Project")}</label><select ref={enhance} id="cl-proj" class="field su-rsel" value={project()} disabled={locked()} onChange={(e) => setProject(e.currentTarget.value)}><For each={props.projects.filter((p) => p.accessible)}>{(p) => <option value={p.id}>{p.name}</option>}</For><option value={NEW}>{tr("New project…")}</option></select></div>
+          <Show when={project() === NEW}><div class="form-row"><label for="cl-newp">{tr("New project name")}</label><input id="cl-newp" class="field" maxLength={80} disabled={locked()} value={newName()} onInput={(e) => setNewName(e.currentTarget.value)} /></div></Show>
+          <p class="hint">{tr("Uses Git access configured on this computer. The checkout remains available if the session cannot start.")}</p>
           <Show when={error() || view()?.status}><div class="clone-state" classList={{warn: view()?.uncertain, danger: !!error() || (!view()?.busy && !view()?.ready && !view()?.uncertain)}} role="status">{error() || view()?.status}</div></Show>
           <Show when={view()?.busy}><div class="su-progress su-indet" role="progressbar" aria-label={view()?.status} aria-valuemin={0} aria-valuemax={100}><i /></div></Show>
         </div>
-        <div class="dlg-foot"><Show when={view()?.uncertain}><button class="btn" disabled={busy()} onClick={() => void step("check")}>Check result</button><button class="btn" disabled={busy()} onClick={() => void step("retire")}>Choose another destination…</button></Show><span class="grow" /><button class="btn" disabled={view()?.cloning && view()?.busy} onClick={() => void close()}>Cancel</button><Show when={view()?.ready} fallback={<button class="btn primary" disabled={!valid() || busy() || view()?.uncertain} onClick={() => void step("begin")}>Clone repository</button>}><button class="btn primary" disabled={!validProject() || busy()} onClick={() => void use()}>Use checkout</button></Show></div>
+        <div class="dlg-foot"><Show when={view()?.uncertain}><button class="btn" disabled={busy()} onClick={() => void step("check")}>{tr("Check result")}</button><button class="btn" disabled={busy()} onClick={() => void step("retire")}>{tr("Choose another destination…")}</button></Show><span class="grow" /><button class="btn" disabled={view()?.cloning && view()?.busy} onClick={() => void close()}>{tr("Cancel")}</button><Show when={view()?.ready} fallback={<button class="btn primary" disabled={!valid() || busy() || view()?.uncertain} onClick={() => void step("begin")}>{tr("Clone repository")}</button>}><button class="btn primary" disabled={!validProject() || busy()} onClick={() => void use()}>{tr("Use checkout")}</button></Show></div>
       </Show>
     </dialog>
     <Show when={browsing()}><FolderBrowserDialog computer={place()!.host} start={parent()} calls={{list: (p, hidden) => bridge.listDirectories(place()!.computer, p, hidden), create: (p) => bridge.createDirectory(place()!.computer, p)}} onChoose={setParent} onClose={() => {setBrowsing(false); queueMicrotask(() => dialog.querySelector<HTMLElement>("#cl-parent")?.focus());}} /></Show>
