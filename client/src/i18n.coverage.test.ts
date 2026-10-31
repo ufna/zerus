@@ -99,6 +99,11 @@ const disambiguated = new Map<string, string>();
 for (const [file, text] of Object.entries(SOURCES)) {
   for (const match of text.matchAll(DISAMBIGUATED)) disambiguated.set(`${literal(match[1])}\u0004${literal(match[2])}`, file);
 }
+// Prose the Rust core and app mark with text!/source! (their own tests check
+// the catalog has them); a supplement entry may serve only those.
+const RUST = import.meta.glob(["../core/src/**/*.rs", "../src-tauri/src/**/*.rs"], { query: "?raw", import: "default", eager: true }) as Record<string, string>;
+const MARKED = /\b(?:text|source)!\(\s*("(?:[^"\\\n]|\\.)*")/g;
+const marked = new Set(Object.values(RUST).flatMap((text) => [...text.matchAll(MARKED)].map((match) => JSON.parse(match[1]) as string)));
 const translated = catalog as Record<string, unknown>;
 const englishOnly = new Set(english as string[]);
 
@@ -119,7 +124,7 @@ describe("interface string coverage", () => {
   });
 
   it("keeps only used sources in the Next-only supplement", () => {
-    expect(Object.keys(supplement).filter((source) => !sources.has(source))).toEqual([]);
+    expect(Object.keys(supplement).filter((source) => !sources.has(source) && !marked.has(source))).toEqual([]);
   });
 
   it("translates computed values only in reviewed files", () => {

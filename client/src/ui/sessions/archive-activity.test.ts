@@ -134,7 +134,7 @@ describe("Activity's local message rows (Task 7)", () => {
     submitted_at: 1_793_000_500, error: "hgs: refused", uncertain: false, message_id: null, submitted_text: null, source: null, voice: null };
   const view = (key: string): ComposerView => ({
     handle: 1, key, loaded: true, rev: 0, text_epoch: 1, question: null, input_visible: true, queue: null, text: "", position: 0, anchor: 0, attachments: [], removed: null, attaching: false,
-    sending: false, waiting: null, uncertain: false, status: "", status_error: false, can_send: true, send_label: "Send", available: true,
+    sending: false, waiting: null, uncertain: false, status: "", status_error: false, can_send: true, send_label: { source: "Send" }, available: true,
     unavailable_reason: "", block_reason: null, attachments_available: true, attachments_reason: "", session_status: "", session_status_error: false,
     session_blocks_input: false, inspect_error: false, cache: { visible: false, tone: "quiet", label: "", short_label: "" }, cache_warning: "", cache_details: "",
     context: { visible: false, text: "", tooltip: "", warning: false, tone: "quiet", percent: null, accessible_name: "" }, local: [failed],
