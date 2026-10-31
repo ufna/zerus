@@ -3,6 +3,8 @@
 use super::*;
 use serde_json::json;
 
+mod integration;
+
 const PRIVATE: &str = "PRIVATE TASK AND SQL DIAGNOSTIC";
 const OTHER: &str = "ffffffff-1111-4111-8111-111111111111";
 

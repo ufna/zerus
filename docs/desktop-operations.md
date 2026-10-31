@@ -1,5 +1,22 @@
 # Desktop operation ownership and recovery evidence
 
+The test-only root `desktop::operations::tests::integration` harness connects
+G2's unchanged conformance oracle to the merged frozen-original bridge and
+existing receipt finish with real SQLite fixtures. Its 27 vector executions are
+MODEL CONFORMANCE, counted separately from Rust test entries and eligible
+G2/SQLite proposal/receipt segments. Fixture admission, reservation and Unknown
+seeding happen before the bounded fake driver starts; that driver has no
+admit/reserve/worker/current-guard or resource-release capability.
+
+The legacy oracle's child/stdout/stderr/stop/drain/release flags omit stdin and
+never free the actual SQL undrained slot. A held-input observation here is
+symbolic, not physical worker evidence. Follow-up examples use explicitly
+independent fixture databases, without claiming continuous release or retry of
+an uncertain attempt. Exact old-epoch still-reserved results may settle after
+revoke, while terminal Unknown, changed originals and forged tickets refuse.
+No production actor, task call, callback, timer, custody or current Operations
+admission is qualified; G1 `.22`, G2 `.4.2` and later kinds remain unfinished.
+
 G2 (`zerus-5wmh.66.4`) moves window-independent operation lifecycles into
 `hgs`, preserving original identities and reviewable uncertain outcomes.
 The ownership split agreed with G1, G3 and the task executor owner on
