@@ -347,7 +347,7 @@ describe("Settings texts", () => {
   });
   it.each(MOBILE)("Mobile connection shows Qt's %s", (text) => {
     expect(mobileQt).toContain(`"${text}"`);
-    expect(source("Mobile.tsx") + source("ComputerInvitations.tsx")).toContain(text);
+    expect(source("Mobile.tsx") + source("ComputerInvitations.tsx") + source("WorkspacePanel.tsx")).toContain(text);
   });
   it.each(MOBILE_CORE)("the mobile core says Qt's %s", (text) => {
     expect(mobileQt.replaceAll("\\n", "\n")).toContain(text);

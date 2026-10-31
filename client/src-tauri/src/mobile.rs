@@ -1,13 +1,9 @@
-//! Settings > Mobile connection reads and guarded phone actions: the
-//! workspace's status from the connector, each computer's phones and the
-//! shared notification timing (core `mobile`). The page lives here for the
-//! window's life, as Qt's panels do: one status read, one phones sweep and
-//! one timing call at a time, each on a thread of its own, with
-//! "mobile-changed" when one answers. A sweep reads every enabled computer,
-//! at most eight at once. Nothing here starts, stops or changes the
-//! connector, its service or the workspace. The phones child module owns
-//! bounded one-use pairing/revoke plans on the same page. A
-//! replay never drives the CLI.
+//! Settings > Mobile connection: one status read, one bounded phones sweep
+//! and one notification-timing call at a time, with "mobile-changed" answers.
+//! The child modules share one effects gate for bounded one-use phone,
+//! computer-invitation and workspace plans. Existing CLI commands retain
+//! connector/service ownership and saved enrollment recovery. A replay never
+//! drives the CLI.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -25,6 +21,8 @@ mod phones;
 pub use phones::*;
 mod computers;
 pub use computers::*;
+mod enrollment;
+pub use enrollment::*;
 
 const REPLAY: &str = "The mobile connection is not read in a replay.";
 /// Computers whose phones are read at once.
@@ -75,6 +73,7 @@ struct Inner {
     page: Mutex<Page>,
     phone_plans: Mutex<phones::Plans>,
     computer_plans: Mutex<computers::Plans>,
+    enrollment_plans: Mutex<enrollment::Plans>,
     effects: std::sync::atomic::AtomicBool,
     /// The page's clock: monotonic, so a changed system time neither names
     /// nor hides the sync service early.
@@ -109,6 +108,7 @@ impl Inner {
             page: Mutex::new(Page::new()),
             phone_plans: Mutex::new(phones::Plans::default()),
             computer_plans: Mutex::new(computers::Plans::default()),
+            enrollment_plans: Mutex::new(enrollment::Plans::default()),
             effects: std::sync::atomic::AtomicBool::new(false),
             started: Instant::now(),
             blocked,

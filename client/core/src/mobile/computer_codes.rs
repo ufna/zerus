@@ -1,12 +1,11 @@
 //! Explicit workspace computer invitations. Secrets use stdin/stdout only.
-use super::{read_status, valid_relay, Workspace, CONNECTOR_UNSET};
-use crate::actions::{Exit, Invocation};
+use super::{read_status, valid_relay, Workspace};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{path::Path, time::Duration};
+use std::path::Path;
 
 pub const CHANGED: &str = "This mobile connection changed. Refresh status before continuing.";
-pub const UNCONFIRMED: &str = "Workspace operation was not confirmed. Refresh status before continuing. Verify that the matching computer connector is installed.";
+pub const UNCONFIRMED: &str = super::WORKSPACE_UNCONFIRMED;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Target {
@@ -48,31 +47,7 @@ impl Target {
     ) -> Result<Value, String> {
         self.fresh(connector, config)?;
         payload["expected_revision"] = json!(self.config_revision);
-        let call = Invocation {
-            args: vec![
-                "--workspace".into(),
-                action.into(),
-                "--config".into(),
-                config.to_string_lossy().into_owned(),
-            ],
-            stdin: Some(serde_json::to_vec(&payload).map_err(|_| UNCONFIRMED)?),
-            timeout: Duration::from_secs(70),
-            request_id: None,
-        };
-        // Suppress every raw error/payload: connector output can contain a code.
-        let exit = crate::run::run_without(connector, &call, &[], &CONNECTOR_UNSET, 64 * 1024)
-            .map_err(|_| UNCONFIRMED)?;
-        let Exit::Code {
-            code: 0, stdout, ..
-        } = exit
-        else {
-            return Err(UNCONFIRMED.into());
-        };
-        let value: Value = serde_json::from_slice(&stdout).map_err(|_| UNCONFIRMED)?;
-        if !value.is_object() || value.get("ok").is_some_and(|ok| ok != &Value::Bool(true)) {
-            return Err(UNCONFIRMED.into());
-        }
-        Ok(value)
+        super::workspace_request(connector, config, action, &payload)
     }
 }
 

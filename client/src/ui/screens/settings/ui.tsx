@@ -17,9 +17,9 @@ export function SectionHead(props: { title: string; intro?: JSX.Element }) {
   );
 }
 
-export function Group(props: { title?: string; hint?: JSX.Element; aside?: JSX.Element; children: JSX.Element }) {
+export function Group(props: { title?: string; hint?: JSX.Element; aside?: JSX.Element; children: JSX.Element; class?:string }) {
   return (
-    <section class="set-group">
+    <section class={props.class?`set-group ${props.class}`:"set-group"}>
       <Show when={props.title || props.aside}>
         <div class="set-group-head">
           <Show when={props.title}><h3>{tr(props.title!)}</h3></Show>
