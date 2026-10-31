@@ -22,6 +22,7 @@ use serde_json::{Map, Value};
 
 use crate::actions::{Exit, Invocation};
 
+pub mod computer_codes;
 pub mod page;
 pub mod phone_actions;
 
@@ -253,6 +254,8 @@ pub struct Workspace {
     pub running: bool,
     /// The connection's revision; a change refreshes the phones.
     pub config_revision: String,
+    /// Public relay identity; invitation results must match this snapshot.
+    pub server_url: String,
     pub controls: Controls,
 }
 
@@ -362,6 +365,7 @@ pub fn workspace(value: &Map<String, Value>) -> Workspace {
         pending,
         running,
         config_revision: text(value, "config_revision").to_owned(),
+        server_url: text(value, "server_url").to_owned(),
         controls: controls(state, running, pending_value),
     }
 }

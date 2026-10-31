@@ -53,6 +53,7 @@
   .skin-meta {display: flex; align-items: center; gap: 6px; min-width: 0; }
   .skin-name {font-weight: 600; font-size: var(--fs-sm); }
   .skin-inuse {background: var(--z-color-accent-bg); color: var(--z-color-accent); }
+  .ws-invite {border-top: 1px solid var(--z-color-divider); margin-top: 4px; padding-top: 4px; }
   .skin-swatches {display: flex; align-items: center; gap: 4px; }
   .skin-swatches i {width: 11px; height: 11px; border-radius: 50%; border: 1px solid var(--z-color-divider); }
   .skin-origin {margin-left: auto; font-size: var(--fs-2xs); color: var(--z-color-dim); }
