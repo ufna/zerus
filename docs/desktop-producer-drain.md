@@ -498,3 +498,48 @@ replacement, service/producer loss, stale epochs, capture expiry and partial
 publication. Socket/setup changes additionally need a built-app private D-Bus
 and Xvfb smoke preserving Show and --sessions, with no second instance. Native
 Windows custody and production acceptance remain separately unqualified.
+
+## Optional Linux GUI badge resource scope
+
+`platform::linux_tray::install_badge_accounted(app, conf, Charge)` is an
+internal, optional replacement for the ordinary tray installation. It requires
+`Role::Badges` and refuses a duplicate installation before native setup. There
+is no production caller, service control endpoint or takeover permission. The
+ordinary `install()` path keeps its existing SNI, menu and launcher behaviour.
+The returned weak `BadgeControl` exposes close and closed/pinned/ready diagnostics;
+none is a role-drain receipt or current ownership proof.
+
+The supplied charge covers startup before the detached installer runs, both
+shell-owner subscriptions, coalesced desired work (one), the one worker's actual
+badge sends, and at most sixteen admitted Query dispatch futures. A Query guard
+wraps zbus 5.19's generated `DispatchResult2` future, including serialization and
+`Connection::reply().await`; returning the Rust Query value is not completion.
+Pressure and closed requests return a static error without an old badge payload.
+Unissued coalesced work can be cancelled locally. A native error, discarded
+future, panic or unverified cleanup pins one fixed charge until process exit.
+
+Close fences badge offers, Query admission and periodic republishing first. The
+existing worker removes only the LauncherEntry interface, stops both bounded raw
+shell streams, acknowledges each exact RemoveMatch, waits for admitted Query
+futures, and issues at most one clear of the old nonzero badge. Both raw receivers
+are dropped before either RemoveMatch: otherwise their bounded queues could
+block the socket reader carrying the removal reply. Their charges survive until
+the acknowledgements. The clear guard survives its actual send; neither its
+return nor a successful RemoveMatch claims visual removal. Failed cleanup is
+unknown, never a retry. Calls have the existing five-second method deadline;
+an outer wait or stopped flag never releases retained native work.
+
+SNI/menu/primary activation, watcher registration and the shared GUI connection
+remain alive after badge-only closure. Those residual resources do not establish
+badge quiet by themselves: the badge subscriptions, generated replies, queued
+work and final send must each complete. A whole-window quit may still stop the
+UI worker using the existing exit path. There is no second worker, executor,
+reader thread, daemon, detector or ledger. Notification agent/update ownership
+and the GTK attention focus timer remain separate qualification work.
+
+Private-bus tests exercise the actual generated Query future and actual socket
+backpressure, explicit match-removal success/refusal, startup versus closure,
+pressure, dropped/panicking work, and one clear with no late badge republish.
+The backpressure fixture suspends only its own private D-Bus daemon and resumes
+it with a scope guard. Existing SNI/menu activation and the default badge path
+are tested separately. No owner display, session bus or desktop service is used.
