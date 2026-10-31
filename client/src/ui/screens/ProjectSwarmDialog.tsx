@@ -107,6 +107,6 @@ export default function ProjectSwarmDialog(props: { projects: Project[]; connect
         </Show>
       </div>
     </div>
-    <div class="dlg-foot"><span class="hint grow" classList={{ danger: !!state.error() || !!view()?.error }} role="status">{state.error() || view()?.status}</span><button class="btn" disabled={changing()} onClick={() => void close()}>Close</button></div>
+    <div class="dlg-foot"><span class="hint grow" classList={{ danger: !!state.error() || !!view()?.error }} title={state.error() || view()?.status} role="status">{state.error() || view()?.status}</span><button class="btn" disabled={changing()} onClick={() => void close()}>Close</button></div>
   </dialog>;
 }
