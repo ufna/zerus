@@ -24,10 +24,14 @@ The complete request is one line:
 <full-40-hex-commit><TAB>local-macos-pair-genuine<LF>
 ```
 
-No commands, environment values, paths or additional arguments come from the
-request. The hook's private configuration allowlists exactly one candidate SHA,
-its repository, the integration base used for the source review, the fixed script
-path and the published SHA-256 hashes of the script and reviewed source files.
+The parser bounds the complete line, accepts exactly 40 lowercase hexadecimal
+characters, one TAB, the fixed test name and one LF, and refuses NUL, CR, extra
+fields or trailing input. No commands, environment values, paths or additional
+arguments come from the request. The hook's private configuration allowlists exactly one candidate SHA,
+its canonical repository, the integration base used for the source review, the
+fixed script path and the published SHA-256 hashes of the complete repository
+runtime import closure. This includes the runner, preparation and signer; no
+ambient or untracked module may substitute for a reviewed import.
 For this pre-merge qualification only, the candidate may be the unmerged PR #819
 head approved by both reviewers. This resolves the bootstrap dependency without
 merging an unqualified signer. No other PR or commit inherits the exception.
@@ -42,9 +46,14 @@ queued run; an updated candidate requires new approvals and a new allowlist.
 The coordinator owns a separate clean checkout under
 `~/zerus-dev/macbundle-genuine-checkout`. The fixed proof location is
 `~/zerus-dev/macbundle-genuine-proof/<candidate-sha>/`, owned and mode 0700.
-An existing or replaced output refuses; no previous result is overwritten.
-A consumed-request marker is committed before dispatch. A crash or unknown
-result remains consumed, and is never replayed. The allowlist entry is removed
+The hook reserves a fresh output directory exclusively; an existing, linked or
+replaced output refuses and no previous result is overwritten. Before queueing
+or dispatch, an atomic exclusive durable consumed reservation binds the SHA,
+fixed test, source hashes, integration base, run/window identity and output
+device/inode. Flush its file and containing directory before dispatch. Concurrent
+duplicates cannot both reserve it. A crash or unknown result remains consumed
+and is never replayed. The runner accepts only that exact fresh reservation,
+with no prior runner-start marker, result or scratch tree. The allowlist entry is removed
 right after the run, on either outcome.
 
 The hook runs only this fixed invocation, with values derived from its own
@@ -54,10 +63,14 @@ allowlist and fixed location:
 /usr/bin/python3 -I -B tests/run_macos_paired_genuine.py --expected-sha <sha> --output-dir <fixed-proof-dir>
 ```
 
-It takes the shared heavy-job lock with an exact owner receipt, waits a bounded
+It takes the shared heavy-job lock with an exact owner receipt, waits at most
 five minutes for another owner, and never removes a foreign lock. Its EXIT trap
 releases its own lock first. No ordinary agent, tmux server, DeepSeek host,
-owner GUI, LaunchAgent or service is stopped. The hook deadline is 600 seconds.
+owner GUI, LaunchAgent or service is stopped. A single 600-second absolute
+monotonic budget starts before lock waiting and never resets. The trusted hook
+reservation supplies the remaining absolute deadline to the runner, capped at
+480 seconds with 60 seconds reserved for cleanup. Too little remaining budget
+refuses before key access. The caller cannot supply a deadline.
 
 ## Environments, existing identity and interaction
 
@@ -91,9 +104,14 @@ The existing key must already be usable without interaction in that agent
 session. No password is requested, read or supplied. A key-access, locked-key,
 interaction or partition refusal stops the run. No unlock, access change,
 partition command or alternate identity is attempted. The coordinator's owner
-window must observe and attest whether a keychain prompt appeared; any prompt
-is aborted without responding and makes the run fail. Missing or unknown
-prompt observation cannot qualify a result. A process-local no-UI flag is not
+window must observe and attest whether a keychain prompt appeared, bound to the
+exact SHA, run and window from before key access through all owned process
+reaps. The agent cannot observe dialogs itself. The coordinator tells the owner
+to deny any prompt or leave it unanswered and report it; never grant access. A
+prompt stops the owned signing command and makes the run fail. No foreign
+SecurityAgent process or dialog is manipulated by the test. A blocked signer
+reaches its deadline and aborts. Missing observation or a lingering prompt
+records an unknown outcome and cannot qualify a result. A process-local no-UI flag is not
 claimed to propagate to a separate codesign process.
 
 ## Genuine scratch campaign
@@ -131,8 +149,10 @@ successfully prepared scratch pair. No installed app or CLI is inspected.
 Inventories refuse links, special files, changing inputs and exceeded bounds:
 128 entries, 1 MiB per file and 4 MiB total. Keep only relative names, types,
 modes and hashes in the inventory. Never remove unconfirmed residue or repair
-owner state. Bound each child command at 60 seconds, each signer subprocess at
-180 seconds and the script at 480 seconds, reserving 60 seconds for cleanup.
+owner state. Each child command has a 60-second maximum and each signer subprocess a
+180-second maximum; both are clipped to the remaining absolute budget after
+reserving cleanup time. Neither a command nor lock acquisition resets the
+600-second hook budget or the runner deadline.
 A timeout supervisor may terminate only a newly created, recorded test process
 group and must reap it before cleanup. Unknown process ownership or cleanup
 stays failed and retained for coordinator review. No owner agent is terminated.
@@ -143,8 +163,10 @@ The fixed proof directory retains `raw.log`, `result.json` and `SHA256SUMS`.
 The result records exact source/base hashes, tool/case counts, both generations,
 continuity and tamper outcomes, source restoration, exact cleanup and unknowns.
 The external hook adds its one-run receipt, owner-window/prompt observation,
-lock release and exit status. The coordinator supplies that envelope with the
-hashed test artifacts; SSH is used only to read this fixed private result.
+lock release and exit status. The coordinator supplies that envelope with the hashed test artifacts. The hook
+closes the raw log after all owned reaps before computing the final manifest;
+the runner never hashes a still-growing log as final proof. SSH is used only to
+read this fixed private result.
 Raw identity names, team IDs and private paths remain in private evidence.
 PR text and Beads contain counts and hashes only.
 
@@ -156,8 +178,14 @@ remain available for audit.
 
 Both reviewers must agree this design and hook before implementation. After
 implementation, both review the exact source pin and published source hashes.
-Only then does the coordinator implement/verify the external hook, arrange the
-owner window and queue one run. Both inspect the exact final native evidence
+Only then does the coordinator implement the external hook. Its implementation
+hash and request-negative controls are reviewed before credential use: malformed
+requests, source or ancestry mismatches, linked/dirty/untracked substitutions,
+concurrent duplicates and spent crash reservations, stale output, foreign
+locks, expired deadlines and insufficient cleanup budget must refuse without
+dispatch. Use a synthetic dispatch target for these controls; they are not
+native signing evidence. After that review the coordinator arranges the owner
+window and queues one run. Both inspect the exact final native evidence
 before PR #819 may merge into `integrate/design-polish`. Main remains owned by
 the snapshot stream.
 
