@@ -624,3 +624,175 @@ current Mac/GTK observer, activity sampler, timer, thread, queue, notification
 adapter or GUI behavior changes here. Real SDK capture/destruction, connection
 and worker ownership still require separate pinned review and native tests before
 any production use or profile handoff.
+
+## Linux agent and software-update store isolation
+
+This is the agreed contract for G4's dormant optional GUI Poster resource path,
+not an executing service API. One existing Poster worker and its existing bounded
+readers/connection replace the ordinary Poster; they never run beside a second
+poster. The ordinary schema1 constructor and current GUI behavior stay unchanged.
+G1 owns the effect ledger, current producer/profile/lease proof and native routing
+permissions. G4 owns the optional Poster, codec and actual resource accounting;
+G3 owns source readers and original-byte evidence. No native authority comes
+from codec data, a filename, an idle gate or this contract.
+
+### Fixed stores and limits
+
+All paths are fixed siblings under the existing private application-data root,
+using the existing bounded readers and durable private writer:
+
+| Path | Content and writer |
+| --- | --- |
+| `linux-notifications-owned.json` | Schema2 AgentAttention records only; the agent store |
+| `linux-update-notifications-owned.json` | Same schema2 codec, SoftwareUpdate records only; the update store |
+| `linux-notifications.json` | Original schema1 bytes, read-only legacy quarantine home |
+
+The caller selects the expected `native_notice::Owner` explicitly and checks it
+on every binding and scoped-uncertain record. An owner tag in a file validates
+that expectation; it never chooses an owner. Empty or populated owner envelopes
+must not import foreign records. Both owner envelopes have empty
+`legacy_uncertain`. Decode the original legacy bytes through `quarantine_legacy`
+once and share one immutable suppression view between the owners. Never copy
+that quarantine into both files, overwrite schema1, or use typed `from_legacy`
+in place of the raw-member decoder. If the legacy home is absent but the existing
+Qt reader finds retained identities, require the existing legacy owner's durable
+checkpoint before preparing the optional path; do not invent another seed store.
+
+Combined raw input and prepared serialized output across all three homes are at
+most 16 MiB, with at most 8192 raw retained entries and at most 4096 raw legacy
+entries, counted once. Count before coalescing. Include invalidations, retained
+positive-ID claims and unresolved reservations in the combined entry/byte budget.
+Reserve the worst-case metadata capacity before admitting an effect that may
+need it. Unknown fields, unsupported versions, incomplete inputs, owner mismatch,
+missing provenance, unsafe files or excess bounds refuse the whole optional
+preparation before an ownership transition. Preserve the files; never truncate,
+evict unresolved evidence or fall back one role at a time after handoff.
+
+There is no new pair manifest, transaction marker or second effect ledger.
+Preparing both envelopes must finish and be rechecked before any typed routing
+or effect. A partially prepared pair is incomplete, not an empty new store.
+Original filesystem identities/hashes and the applicable writer scope belong to
+G1's qualified current context and G3's evidence, not a guessed file generation.
+
+### Binding, result and invalidation data
+
+A routable native binding needs the exact expected owner, original token and
+original request identifier, original Poster instance and post nonce, authenticated
+bus ID, unique daemon owner, positive server ID and observed namespace generation.
+The original Poster instance is a canonical non-nil UUID; request text is at
+most 512 UTF-8 bytes, and the original nonce and namespace generation are
+positive u64 values. Existing token/daemon/ID bounds still apply. Use the
+original caller's identifiers; do not regenerate them on load or derive
+an owner from a token, category, action or numeric ID. These fields are retained
+metadata, not a G1 effect ticket. A loaded record without the complete original
+binding cannot acquire numeric-ID authority. A result or withdrawal delta must
+match the complete original instance/request/nonce/owner/token/namespace binding;
+a stale or duplicate result cannot overwrite a newer binding. Unknown is terminal.
+
+The update envelope carries a bounded `invalidations` collection. Each entry
+names the complete immutable agent binding above, including its original token
+and request, bus/daemon/server ID and namespace generation, plus a static reason
+(`native_id_collision`, `namespace_changed`, `withdrawal_conflict` or
+`unverified_result`). A target digest may index this data but never replaces the
+full exact target. Entries have at most 16 KiB and count against the combined
+budget. They are sticky routing tombstones, not delivery attempts, new receipts
+or a retry journal. An owner-scoped clear cannot release them or shared legacy
+suppression. Exact original-edge/ID release remains a separately qualified G1
+operation, including recurring-token and rollback proof before any typed default.
+
+The codec must explicitly validate and retain the required provenance and
+invalidation fields before any writer emits them. The passive codec from PR722
+alone cannot do that: its unknown-field refusal must not be bypassed or replaced
+with an encoder that discards fields. G4 pins the concrete Rust transition types
+against these identities before mutable code; G3 retains the original raw bytes,
+order and opaque fields, never a reconstructed encoding as source evidence.
+
+### Fence, write order and restart
+
+1. Close new agent input admission before waking the existing worker. Admitted
+   immutable inputs, native calls, results, persistence and sinks keep their
+   original guards through actual completion. The final fence covers shared
+   readers/callback captures that can still reach agent state. A stopped flag,
+   timed join or connection-close return is not proof of their completion.
+2. At the agent freeze, stop every agent mutation/activation/removal route and
+   prove actual agent resource completion. The agent file is then never rewritten
+   by the update path, including on namespace change, withdrawal or collision.
+   Shared connection lifetime alone proves nothing. Updates may remain live only
+   through explicitly disjoint state/callback paths; opaque shared residue stays
+   charged and refuses the proof.
+3. An observed cross-owner collision, including a pending withdrawal, invalidates
+   both sides for activation and removal before either route or result is exposed.
+   A native call already issued keeps its original result/custody rules; it never
+   permits replay. If the agent is fenced, record the exact agent invalidation in
+   the mutable update envelope only. No post-fence repair may rewrite agent bytes
+   or relabel their old namespace under the update namespace.
+4. Mark the agent proof logically invalid before attempting that write or releasing
+   dependent work. This failure is sticky for the original qualified context. It
+   is distinct from resource `Gate::Idle`: a gate cannot retroactively acquire a
+   charge after it drained. The optional control must expose sticky proof
+   invalidation separately from resource-pinned/closed/ready diagnostics. Failed
+   delivery of an invalidation or an unavailable control is unknown and refuses
+   the proof. Unchanged agent file bytes do not restore its validity.
+5. One writer atomically replaces each file through the existing durable helper.
+   An update-envelope invalidation must be durable before any dependent in-memory
+   release. If an agent-file change is also needed before the fence, the update
+   invalidation is committed first and the agent change second. Pause affected
+   routes through both durable acknowledgements and rechecks. After the fence
+   only the update write is allowed. Never claim atomic commitment of two files.
+   A write error preserves unknown/pinned state, never successful quiet or a retry.
+6. On every load, bound and decode both envelopes and the one legacy home before
+   any numeric-ID routing or effect. Recompute collisions by exact bus ID, unique
+   daemon owner and server ID across both owners and all positive-ID claims,
+   including pending withdrawals. An invalidation target stays non-activatable
+   even when its agent record is otherwise valid. A computed collision disables
+   both sides even if its explicit invalidation was lost. Do not classify an ID
+   by action/category text or ignore the other envelope because one side froze.
+7. Lost native results need a stricter fallback than collision comparison alone.
+   Retain the existing durable uncertain reservation before a possible Notify.
+   If a crash leaves a possible issued result with no durable server ID, the
+   loader cannot prove collision absence. Pin/refuse numeric authority for every
+   possibly affected binding in that original namespace. If the namespace or
+   target set cannot be established, refuse the whole optional preparation for
+   review. Never infer that a missing invalidation means the native call was not
+   issued. No guessed recovery send or new commit protocol is introduced.
+8. A corrupt, oversized, mismatched or partially committed pair fails closed;
+   affected IDs are non-activatable and pinned for review. No import/load creates
+   a fresh reservation. Current G1 delegation/lease and the exact original effect
+   journal remain mandatory before any service call. G1's controller must reject
+   any capture/publication context after logical invalidation and re-qualify it.
+   A previously returned drain result cannot be reused. If ownership has already
+   moved, the qualified negative-invalidation path must fence dependent active
+   permissions before further effects. That consumer is still a G1 prerequisite;
+   no positive controller or typed default is admitted by this document.
+
+### Linux presentation and future proof
+
+Coordinator ruling `64faac7a`, clarified for Linux, retains byte-identical
+`im.received`, `default` and `open-session` wire IDs, texts, payload and update
+request identifiers. The freedesktop category is a presentation hint; introducing
+new categories would change shell sound/grouping/DND. The immutable owner plus
+original token/request and bus/daemon/server-ID mapping is the Linux namespace.
+After selecting that exact mapping, validate the action against that owner's
+recorded allowed set. Unmapped, stale, foreign or conflicting IDs are unbound
+suppression, never a default owner or a rerouted action. On macOS categories and
+actions route responses, so distinct per-owner identifiers remain required there.
+
+Before mutable persistence, G3 must confirm this restart/collision/commit model.
+Qualify kill/failure injection before and after the uncertain reservation, native
+issue, native result, update invalidation write, pre-fence agent write and final
+freeze. Test both directions of wrong owner, collision and pending withdrawal;
+a lost result/invalidation; an update namespace/result after agent freeze; late
+old-generation events; and a write failure with unchanged agent bytes but invalid
+proof. Demonstrate that a raw collision or possible lost native result cannot
+resurrect a stale ID on load. Compare actual Linux wire bytes against schema1.
+Account held native calls, persistence, sinks, readers and callback destruction;
+updates must remain live while the proved agent part is quiet, and vice versa.
+Pressure/unknown/restart refusal, exact original-edge release, recurring-token
+notification and rollback remain gates before default or service admission.
+
+The existing reserved G3 agent source stays
+`next-linux-owned-notification-identities`/schema2/
+`linux-notifications-owned-json-v2`. G3 reserves any update sibling family
+separately; software updates are outside `g1-background-v1` and stay Staged.
+The unchanged legacy schema1 source remains separate. No new source collector,
+frozen export, shared-file quiet claim, service API or ownership change is added.
