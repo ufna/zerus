@@ -14,6 +14,8 @@ mod producer_binding;
 #[allow(dead_code)]
 mod producer_io;
 #[allow(dead_code)]
+mod producer_prepared;
+#[allow(dead_code)]
 mod producer_session;
 mod protocol;
 mod registration;
