@@ -5,7 +5,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 MACHINE = '11111111-1111-4111-8111-111111111111'
 if '--worker' not in sys.argv:
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--app',type=Path,required=True);parser.add_argument('--shell-badge',action='store_true');options=parser.parse_args();app=options.app.resolve();assert app.is_file()
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--app',type=Path,required=True);parser.add_argument('--shell-badge',action='store_true');parser.add_argument('--projects',action='store_true');options=parser.parse_args();app=options.app.resolve();assert app.is_file()
     root=Path(tempfile.mkdtemp(prefix='zerus-worktree-review-'))
     for name in ('home','config','data','cache','runtime','tmp','tmux','state','bin','repo'):(root/name).mkdir(mode=0o700)
     (root/'repo/.git').mkdir()
@@ -17,6 +17,13 @@ if '--worker' not in sys.argv:
         {'v':1,'seq':3,'t':'snapshot','topic':'catalog.meta','value':{'host':'example-host','ok':True,'hgs_version':'1.56.0','projects':{},'peers':[]},'page':0,'last':True,'cursor':1},
         {'v':1,'seq':4,'t':'heartbeat','at':1793000000.0},
     ]
+    if options.projects:
+        organization=next(json.loads(line) for line in (REPO/'client/fixtures/replay.ndjson').read_text().splitlines() if json.loads(line).get('topic')=='organization')
+        organization['seq']=4
+        for item in organization['items']:
+            if item['key']=='project:p-sample-project':
+                item['row']['folders']=[{'id':'fixture-folder','machine':'example-host','machine_id':MACHINE,'path':str(root/'repo'),'name':'Example folder'}]
+        frames[0]['topics'].append('organization');frames[3]['seq']=5;frames.insert(3,organization)
     if options.shell_badge:
         first=frames[1]['items'][0]
         comparison=json.loads(json.dumps(first));comparison['key']='run:comparison';comparison['row'].update({'name':'codex/example/compare','run_id':'run-comparison','conversation_id':'conv-comparison','tag':'compare'})
@@ -65,6 +72,7 @@ print('{}')
 ''');fake.chmod(0o700)
     (root/'bus.conf').write_text('<busconfig><type>session</type><listen>unix:tmpdir='+str(root/'runtime')+'</listen><auth>EXTERNAL</auth><policy context="default"><allow send_destination="*"/><allow receive_sender="*"/><allow own="*"/></policy></busconfig>')
     env={'PATH':str(root/'bin')+':/usr/bin:/bin','LANG':'C.UTF-8','HOME':str(root/'home'),'XDG_CONFIG_HOME':str(root/'config'),'XDG_DATA_HOME':str(root/'data'),'XDG_CACHE_HOME':str(root/'cache'),'XDG_RUNTIME_HOME':str(root/'runtime'),'TMPDIR':str(root/'tmp'),'TMUX_TMPDIR':str(root/'tmux'),'HGS_CONFIG_DIR':str(root/'config'),'HGS_STATE_DIR':str(root/'state'),'GDK_BACKEND':'x11','WAYLAND_DISPLAY':'zerus-nonexistent','WEBKIT_DISABLE_DMABUF_RENDERER':'1','NO_AT_BRIDGE':'1','GSETTINGS_BACKEND':'memory','ZERUS_CLIENT_HEADLESS':'1','ZERUS_CLIENT_REPLAY':str(root/'replay.ndjson'),'ZERUS_CLIENT_HGS':str(fake),'ZERUS_CLIENT_QUERY':'page=sessions&skin=zerus-light&worktree-review-smoke=1','ZERUS_CLIENT_PERF':'smoke'}
+    if options.projects:env['ZERUS_CLIENT_QUERY']='page=projects&skin=zerus-light&worktree-review-smoke=projects'
     if options.shell_badge:env['ZERUS_CLIENT_QUERY']='page=sessions&skin=zerus-light&shell-badge-smoke=1'
     print('Private Worktrees walk:',root,flush=True)
     child=subprocess.Popen(['/usr/bin/dbus-run-session','--config-file',str(root/'bus.conf'),'--','/usr/bin/xvfb-run','-a','-s','-screen 0 1440x900x24','/usr/bin/python3',str(Path(__file__).resolve()),'--worker',str(root),str(app),*(['--shell-badge'] if options.shell_badge else [])],env=env,start_new_session=True)

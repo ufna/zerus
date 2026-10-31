@@ -16,6 +16,7 @@ import { folderButton, folderExists, folderLaunch, folderMenuEntry, newSessionIn
 import { copy } from "../../store/actions";
 import { nextSort, showAskedProject, shownProjects, sortFolders, type Sort, type SortColumn } from "./projects-ui";
 import { createProjectFolders } from "./project-folders";
+const ProjectWorktrees = lazy(() => import("./ProjectWorktrees"));
 const ProjectCloneDialog = lazy(() => import("./ProjectCloneDialog"));
 const ProjectFolderDialog = lazy(() => import("./ProjectFolderDialog"));
 import { catalogName, createCatalogEdits } from "./project-catalog";
@@ -67,6 +68,15 @@ export function ProjectsScreen() {
   const [sort, setSort] = createSignal<Sort>({ column: "name", ascending: true });
   const projects = createMemo(() => shownProjects(view(), allSwarm()));
   const project = () => projects().find((p) => p.id === selectedProject()) ?? projects().find((p) => p.accessible);
+  const [split, setSplit] = createSignal((() => {try {return Math.max(160, Math.min(window.innerHeight - 360, Number(localStorage.getItem("zerus.projectFolderSplit")) || 230));} catch {return 230;}})());
+  let stopSplit: (() => void) | undefined;
+  const startSplit = (event: PointerEvent) => {
+    stopSplit?.(); const startY = event.clientY, start = split();
+    const move = (next: PointerEvent) => setSplit(Math.max(160, Math.min(window.innerHeight - 360, start + next.clientY - startY)));
+    const end = () => {removeEventListener("pointermove", move); removeEventListener("pointerup", end); removeEventListener("pointercancel", end); stopSplit = undefined; try {localStorage.setItem("zerus.projectFolderSplit", String(split()));} catch { /* viewer convenience */ }};
+    stopSplit = end; addEventListener("pointermove", move); addEventListener("pointerup", end); addEventListener("pointercancel", end);
+  };
+  onCleanup(() => stopSplit?.());
   const [cloneOrigin, setCloneOrigin] = createSignal<HTMLElement>();
   const folderEdits = createProjectFolders(() => view().projects, setSelectedFolder);
   const selected = () => project()?.folders.find((f) => f.key === selectedFolder()) ?? project()?.folders[0];
@@ -258,7 +268,7 @@ export function ProjectsScreen() {
                   onChange={(event) => { const checked = event.currentTarget.checked; event.currentTarget.checked = p().is_default; if (checked && !p().is_default) void chooseDefault(p().id); }} />Default for sessions started outside Zerus
               </label>
 
-              <div class="proj-folders">
+              <div class="proj-folders" style={{height: `${split()}px`}}>
                 <div class="row proj-fhead">
                   <h2 class="section-title">Folders</h2>
                   <span class="grow" />
@@ -288,6 +298,8 @@ export function ProjectsScreen() {
                   <button class="btn small" disabled={!selected() || selected()?.machine !== machineCards[""]?.host || launchButton().disabled} onClick={() => { const f = selected(); if (f) void folderEdits.openFolder(p().id, { ...f }); }}><Icon name="folder-open" size={12} />Open folder</button>
                 </div>
               </div>
+              <div class="su-hsplit" role="separator" aria-orientation="horizontal" title="Drag to resize folders and worktrees." onPointerDown={startSplit} />
+              <Suspense><ProjectWorktrees folder={selected()} project={p().id} /></Suspense>
               <div class="row proj-foot">
                 <button class="btn danger" disabled={!edits.canEdit(p().id) || view().projects.filter((p) => p.accessible).length < 2} title={editHint()}
                   onClick={(event) => edits.openDelete(p().id, event.currentTarget)}><Icon name="trash" size={14} />Delete project…</button>
