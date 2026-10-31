@@ -32,3 +32,32 @@ Private Unix-pair tests cover exact/over-bound lines, retained buffered tails,
 expired buffered data, EOF/truncation, slow progress, blocked writes and refusal
 before payload I/O. They are framing coverage only, not a producer handshake,
 authenticated current lease, role proof or controller/native qualification.
+
+## Terminal connection ownership
+
+Any read error may leave a frame partially consumed, including timeout,
+over-bound data or interruption after earlier progress. It is terminal for that
+connection: never call `line` again or resume with another deadline. A write
+error likewise leaves its prefix uncertain. The raw framing functions above
+remain unchanged; the dormant `Channel` wrapper enforces this lifetime rule.
+
+`Channel::new` consumes the host's existing `BufReader<Stream>`, retains its
+buffered tail and reuses the existing same-user transport check. It resolves no
+path, connects to nothing and clones no FD. There is no extract, reset, Clone or
+serialization API. An error in either direction, or clean EOF, permanently
+fences both directions before shutting down the supplied stream. Later calls
+refuse even if bytes remain buffered or a new deadline is supplied. Drop shuts
+down the stream and drops the owned reader. No production caller installs this
+wrapper, and ordinary desktop/feed connections keep their current behavior.
+
+The future off-actor host must supply a dedicated blocking stream, retain and
+account any pre-existing aliases and actual worker/reader/writer lifetime, and
+keep this terminal-error rule and the residual timeout requirements beside its
+stream setup. Shutdown is never proof that other aliases, callbacks or workers
+have exited. The same-user observation is not canonical-instance, installed
+code, configuration, profile, role or current lease proof. No frame contents
+are interpreted and no producer handshake, semantic request, gate or ownership
+transition follows from constructing this wrapper. Windows refuses construction
+before transport I/O. The five added private-socket tests qualify ownership,
+buffer retention and terminal reuse refusal only; selected exact merged Mac
+checks remain deferred under the standing internal-helper exception.
