@@ -133,3 +133,29 @@ isolation contract still needs a pinned agreement. Current schema1 category
 update writes do not establish whole-file quiet; any profile capture still needs
 its applicable writer proofs and exact fresh-byte checks. No imported phase or
 this codec admits native posting, withdrawal, activation or positive service IPC.
+
+### Read-only combined inspection
+
+`owned::inspection::inspect(Inputs { agent, update, legacy })` accepts only
+caller-supplied optional byte slices. Its immutable, redacted `Inspection` checks
+the structural subset: explicit expected-owner rows, no copied legacy quarantine
+inside either owner envelope, unknown/incomplete inputs, combined 16 MiB/8192 raw
+bounds counting the one legacy home once, and load-time cross-owner namespace/ID
+collisions. Hex-case ambiguity is refused without normalizing original data.
+A rejection never discards or rewrites the supplied evidence.
+
+Getters return bounded decoded data, raw counts and SHA256 values of those exact
+supplied bytes. A reported absence is not a verified missing file. Hashes are
+not source freshness or writer proof; the actual handoff must securely read the
+then-current legacy home, bind its presence/hash, and refuse/pin any later change.
+An old cached legacy view must never be reused across rollback and re-entry.
+The existing legacy owner must checkpoint retained Qt identities when required;
+this helper discovers nothing and creates no seed store.
+
+This inspection is not the full optional preparation. Provenance, recorded
+invalidation entries, possible issued results, cross-file crash/commit ordering,
+logical proof invalidation, negative permission fencing and current native lease
+remain governed by the G1/G3 contract in `desktop-producer-drain.md`. The minimal
+codec currently rejects unknown future fields for preparation. Inspection success
+never permits activation, removal, posting, handoff or a typed default. No path,
+reader, writer, mutable transition, source adapter or runtime caller is added.
