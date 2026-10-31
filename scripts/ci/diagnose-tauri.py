@@ -128,8 +128,8 @@ def execute(binary, args, label):
             result["exit_code"] = 125  # a successful empty harness is not test execution
     save(f"{label}.json", result)
     print("END " + json.dumps(result), flush=True)
-    if timed_out or not drained:
-        raise RuntimeError(f"Owned test timeout or incomplete drain: {label}; no further test starts")
+    if timed_out or not drained or result["discarded_output_bytes"]:
+        raise RuntimeError(f"Owned test timeout, incomplete or truncated drain: {label}; no further test starts")
     return result
 
 
