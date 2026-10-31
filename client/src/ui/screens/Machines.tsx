@@ -110,7 +110,6 @@ function Editor(props: { local: LocalState; peers: { row: MachineRow; state: Pee
           <span class="dim">{tr(editor.isNew() ? "Save the machine to choose its color" : "Saved on this device")}</span>
         </div>
         <Show when={colorEditor()}>{(editor) => <MachineColorDialog alias={editor().alias} origin={editor().origin} close={() => setColorEditor(undefined)} />}</Show>
-        <Show when={setupResult()?.output}><pre class="mach-log" aria-label="Setup output">{setupResult()!.output}</pre></Show>
       </section>
 
       <Show when={!formHidden()}>
