@@ -55,7 +55,12 @@ export async function worktreeReviewSmoke(allowed: boolean, projects = false, na
       button(".dlg:has(#cleanup-inspect-title)", "Local")!.click(); await until(() => document.querySelector('.dlg:has(#cleanup-inspect-title) .ip-files tbody tr'), "local listing absent");
       document.querySelector<HTMLElement>('.dlg:has(#cleanup-inspect-title) .ip-files tbody tr')!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
       await until(() => document.querySelector('.dlg:has(#cleanup-inspect-title) .ip-diff')?.textContent?.includes("Synthetic fixture preview"), "local bounded preview absent");
-      await log("INSPECTION"); await sleep(1500); document.querySelector<HTMLButtonElement>('.dlg:has(#cleanup-inspect-title) button[aria-label="Close"]')!.click();
+      const inspectedDialog = document.querySelector<HTMLDialogElement>('.dlg:has(#cleanup-inspect-title)')!;
+      await until(() => getComputedStyle(inspectedDialog).opacity === "1", "inspection did not finish opening");
+      const rect = inspectedDialog.getBoundingClientRect();
+      await log("INSPECTION_GEOMETRY " + JSON.stringify({ open: inspectedDialog.open, top: rect.top, bottom: rect.bottom, height: innerHeight }));
+      require(inspectedDialog.open && rect.top >= 0 && rect.bottom <= innerHeight, "inspection dialog did not render inside the window");
+      await log("INSPECTION"); await sleep(5000); document.querySelector<HTMLButtonElement>('.dlg:has(#cleanup-inspect-title) button[aria-label="Close"]')!.click();
       document.querySelector<HTMLInputElement>(".worktree-manual .bc-consent input")!.click();
       button(".worktree-manual", "Remove 2 folders")!.click();
       await until(() => document.querySelector(".worktree-manual .bc-summary")?.textContent?.includes("1 removed  0 kept  1 unknown"), "manual outcomes missing");

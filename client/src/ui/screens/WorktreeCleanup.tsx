@@ -26,7 +26,7 @@ export default function WorktreeCleanup() {
   onMount(() => { dialog.showModal(); queueMicrotask(() => dialog.querySelector<HTMLElement>("[autofocus], .dlg-body select")?.focus()); });
   onCleanup(() => { dialog.close(); queueMicrotask(() => { if (origin?.isConnected) origin.focus(); }); });
   return <>
-    <dialog ref={dialog} class="dlg su-dlg worktree-cleanup" style={{ width: "780px" }} aria-labelledby="cleanup-title" onCancel={closeCleanup} onClose={closeCleanup}>
+    <dialog ref={dialog} class="dlg su-dlg worktree-cleanup" style={{ width: "780px", position: "fixed", inset: "0", margin: "auto" }} aria-labelledby="cleanup-title" onCancel={closeCleanup} onClose={closeCleanup}>
       <div class="dlg-head"><Icon name="trash" size={18} class="accent" /><h2 id="cleanup-title">Remove working folders</h2><span class="grow" /><button class="icon-btn" aria-label="Close" onClick={closeCleanup}><Icon name="x" size={16} /></button></div>
       <div class="dlg-body bc-body">
         <h3 class="section-title">Review {cleanup().rows.length} selected {cleanup().rows.length === 1 ? "worktree" : "worktrees"}</h3>
@@ -79,8 +79,6 @@ export function CleanupInspection(props: { row: InspectionRow; close: () => void
   const [data, { refetch }] = createResource(() => props.enabled === false ? undefined : props.row.id, (id) => read(id));
   const [file] = createResource(() => tab() === "local" && !data.loading && !data.error ? { id: props.row.id, ...local() } : undefined, (page) => read(page.id, page.file, page.offset));
   const text = () => mode() === "base" ? data()?.comparison : data()?.changes;
-  onMount(() => { if (props.panel) return; dialog.showModal(); queueMicrotask(() => dialog.querySelector<HTMLElement>("[autofocus], .dlg-body select")?.focus()); });
-  onCleanup(() => { if (props.panel) return; dialog.close(); if (origin instanceof HTMLElement && origin.isConnected) origin.focus(); });
   const body = <section class="su-insp" aria-label="Worktree details">
       <header class="ip-head"><h3 class="ell" title={props.row.path}>{props.row.label}</h3><button class="btn small" classList={{ on: details() }} aria-pressed={details()} onClick={() => setDetails(!details())}>Details</button><button class="icon-btn small" aria-label="Read files and commits" disabled={data.loading} onClick={() => void refetch()}><Icon name="refresh-cw" size={13} /></button></header>
       <p class="ip-brief parts"><span class="mono">{props.row.branch}</span><span>{props.row.reason}</span></p>
@@ -93,7 +91,10 @@ export function CleanupInspection(props: { row: InspectionRow; close: () => void
         <Show when={tab() === "sessions"}><Show when={data()?.review?.sessions?.length} fallback={<div class="ip-state">No related sessions.</div>}><ul class="ip-sessions" role="listbox" aria-label="Related sessions"><For each={data()?.review?.sessions?.filter((s) => typeof s === "string")}>{(s) => <li role="option" aria-selected={selectedSession() === s} classList={{ on: selectedSession() === s }} onClick={() => setSelectedSession(s)} onDblClick={openSession}><Icon name="message-square" size={13} class="dim" />{s}</li>}</For></ul><button class="btn small" disabled={!session()} onClick={openSession}>Open session</button></Show></Show>
       </Show></Show></div><div class="ip-status hint parts"><Show when={readAt()}>{(time) => <span>Updated {time()}</span>}</Show><span>{props.row.machine}</span><span>Local Git refs</span></div>
     </section>;
-  return props.panel ? body : <dialog ref={dialog} class="dlg su-dlg" style={{ width: "min(900px, calc(100vw - 48px))", height: "min(680px, calc(100vh - 48px))" }} aria-labelledby="cleanup-inspect-title" onCancel={props.close} onClose={props.close}>
+  if (props.panel) return body;
+  onMount(() => { dialog.showModal(); queueMicrotask(() => dialog.querySelector<HTMLElement>("[autofocus], .dlg-body select")?.focus()); });
+  onCleanup(() => { dialog.close(); if (origin instanceof HTMLElement && origin.isConnected) origin.focus(); });
+  return <dialog ref={dialog} class="dlg su-dlg worktree-inspection" style={{ width: "min(900px, calc(100vw - 48px))", height: "min(680px, calc(100vh - 48px))", position: "fixed", inset: "0", margin: "auto" }} aria-labelledby="cleanup-inspect-title" onCancel={props.close} onClose={props.close}>
     <div class="dlg-head"><Icon name="eye" size={18} class="accent" /><h2 id="cleanup-inspect-title">Inspect working folder</h2><span class="grow" /><button class="icon-btn" aria-label="Close" onClick={props.close}><Icon name="x" size={16} /></button></div>
     <div class="dlg-body">{body}</div>
   </dialog>;

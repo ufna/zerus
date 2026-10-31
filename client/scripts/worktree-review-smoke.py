@@ -105,7 +105,7 @@ with (root/'app.log').open('wb') as log:
             output=(root/'app.log').read_text()
             for stage in (('SHELL',) if shell_badge else ('PANEL','REVIEW','CONFIRMATION','REMOVING','OUTCOMES','UNKNOWN_REOPEN','OVERVIEW','PAGER','MANUAL_REVIEW','INSPECTION','MANUAL_OUTCOMES')):
                 if prefix+stage in output and stage not in stages:
-                    stages.add(stage);time.sleep(.1);subprocess.run(['/usr/bin/import','-window','root',str(root/(stage.lower()+'.png'))],check=True,env=env)
+                    stages.add(stage);time.sleep(.35);subprocess.run(['/usr/bin/import','-window','root',str(root/(stage.lower()+'.png'))],check=True,env=env)
             for stage in ('ESCAPE_CONFIRM','ESCAPE_REVIEW'):
                 if 'worktree-review-smoke: '+stage in output and stage not in stages:
                     stages.add(stage);key=x.XKeysymToKeycode(display,x.XStringToKeysym(b'Escape'));t.XTestFakeKeyEvent(display,key,1,0);t.XTestFakeKeyEvent(display,key,0,0);x.XFlush(display)

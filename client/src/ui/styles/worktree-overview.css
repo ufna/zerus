@@ -1,4 +1,7 @@
 @layer components {
+  /* Keep sticky table layers inside their own surface in WebKit. */
+  .worktree-overview, .worktree-manual, .worktree-inspection { contain: paint; isolation: isolate; }
+  .projects .su-tablewrap { isolation: isolate; }
   /* Worktrees overview */
   .wto-body { display: flex; flex-direction: column; gap: 8px; }
   .wto-toolbar { flex-wrap: nowrap; }
