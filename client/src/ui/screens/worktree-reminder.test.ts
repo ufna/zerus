@@ -31,6 +31,18 @@ describe("Projects worktree cleanup reminder", () => {
     expect(calls).toEqual([0, 100]); expect(changed).not.toHaveBeenCalledWith(999); expect(changed).toHaveBeenLastCalledWith(100);
     reminder.dispose();
   });
+  it("refreshes the visible panel through its one lane and discards the old count", async () => {
+    vi.useFakeTimers(); let resolve!: (reply: Reminder) => void; const changed = vi.fn();
+    const read = vi.fn().mockImplementationOnce(() => new Promise<Reminder>((r) => {resolve = r;})).mockResolvedValue({count: 1, retry_ms: REMINDER_MS});
+    const reminder = new WorktreeReminder(read, changed);
+    reminder.show(target(1), true); await tick(); reminder.refresh(); reminder.refresh(); await tick();
+    expect(read).toHaveBeenCalledTimes(1);
+    resolve({count: 99, retry_ms: REMINDER_MS}); await tick();
+    expect(read).toHaveBeenCalledTimes(2); expect(changed).not.toHaveBeenCalledWith(99); expect(changed).toHaveBeenLastCalledWith(1);
+    await vi.advanceTimersByTimeAsync(REMINDER_MS - 1); expect(read).toHaveBeenCalledTimes(2);
+    reminder.show(target(1), false); reminder.refresh(); await tick(); expect(read).toHaveBeenCalledTimes(2);
+    reminder.dispose(); reminder.refresh(); await vi.advanceTimersByTimeAsync(REMINDER_MS * 2); expect(read).toHaveBeenCalledTimes(2);
+  });
   it("never starts a queued read after the panel hides, and failures wait before another attempt", async () => {
     vi.useFakeTimers(); let resolve!: (reply: Reminder) => void; const changed = vi.fn();
     const read = vi.fn(() => new Promise<Reminder>((r) => {resolve = r;})); const reminder = new WorktreeReminder(read, changed);

@@ -9,15 +9,23 @@ export class WorktreeReminder {
   private lane = new WorktreeReadLane<Reminder>();
   private timer?: ReturnType<typeof setTimeout>;
   private signature = "";
+  private target?: ReminderTarget;
   private version = 0;
   constructor(private read: (target: ReminderTarget) => Promise<Reminder>, private changed: (count?: number) => void) {}
   show(target: ReminderTarget | undefined, visible: boolean) {
     const signature = visible && target ? target.key + "\n" + target.common : "";
+    this.target = signature ? target : undefined;
     if (signature === this.signature) return;
     this.signature = signature;
     const ticket = ++this.version;
     clearTimeout(this.timer); this.timer = undefined; this.changed();
     if (signature && target) this.pull(target, ticket);
+  }
+  refresh() {
+    if (!this.target || !this.signature) return;
+    const ticket = ++this.version;
+    clearTimeout(this.timer); this.timer = undefined; this.changed();
+    this.pull(this.target, ticket);
   }
   dispose() { this.show(undefined, false); this.version++; this.lane.close(); }
   private pull(target: ReminderTarget, ticket: number) {

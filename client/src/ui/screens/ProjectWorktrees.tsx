@@ -52,7 +52,7 @@ export default function ProjectWorktrees(props: { folder?: Folder; project: stri
     panel.onChange = () => setVersion((n) => n + 1); setReader(panel); panel.show(online());
   }));
   createEffect(on(online, (yes, old) => {if (yes && old === false) reader()?.show(true);}));
-  createEffect(on(worktreeReviewDialog, (next, old) => {if (!next && old) {returnFocus = old.origin; reader()?.refresh(online());}}));
+  createEffect(on(worktreeReviewDialog, (next, old) => {if (!next && old) {returnFocus = old.origin; reminder.refresh(); reader()?.refresh(online());}}));
   createEffect(() => {
     const reading = v()?.reading;
     if (!returnFocus || reading) return;
