@@ -20,6 +20,7 @@ use zerus_client_core::ComputerId;
 use crate::desk::{Bar, Item, MenuAction};
 
 mod badge;
+mod registration;
 #[allow(unused_imports)] // Optional internal constructor has no production caller.
 pub(crate) use badge::{Control as BadgeControl, Refused as BadgeRefused};
 
@@ -573,6 +574,8 @@ fn start_with_badge(
     }
     std::thread::spawn(move || {
         let mut registered = String::new();
+        let mut watcher_revision = 0_u64;
+        let mut registration: Option<(u64, registration::Task)> = None;
         let mut register_at = Some(Instant::now());
         let mut republish_at = None;
         let mut badge_closed = false;
@@ -680,7 +683,9 @@ fn start_with_badge(
                             };
                             if service == WATCHER {
                                 registered.clear();
-                                register_at = (!owner.is_empty()).then(Instant::now);
+                                watcher_revision = watcher_revision.wrapping_add(1);
+                                register_at = (!owner.is_empty() && registration.is_none())
+                                    .then(Instant::now);
                             } else if SHELLS.contains(&service.as_str()) && !owner.is_empty() {
                                 republish_at = Some(Instant::now() + Duration::from_secs(1));
                             }
@@ -694,33 +699,65 @@ fn start_with_badge(
                     }
                 }
             }
-            if register_at.is_some_and(|at| Instant::now() >= at) {
-                register_at = Some(Instant::now() + Duration::from_secs(5));
-                if let Ok(dbus) = zbus::blocking::fdo::DBusProxy::new(&bus) {
-                    match dbus.get_name_owner(WATCHER.try_into().unwrap()) {
-                        Ok(owner) => {
-                            let owner = owner.to_string();
-                            if owner == registered
-                                || Proxy::new(
-                                    &bus,
-                                    owner.as_str(),
-                                    "/StatusNotifierWatcher",
-                                    WATCHER,
-                                )
-                                .and_then(|watcher| {
-                                    watcher.call::<_, _, ()>(
-                                        "RegisterStatusNotifierItem",
-                                        &(name.as_str(),),
-                                    )
-                                })
-                                .is_ok()
-                            {
-                                registered = owner;
-                                register_at = None;
+            if badge_worker.is_some() {
+                if registration.is_none() && register_at.is_some_and(|at| Instant::now() >= at) {
+                    register_at = None;
+                    registration = Some((
+                        watcher_revision,
+                        registration::start(bus.inner().clone(), name.clone(), registered.clone()),
+                    ));
+                }
+                if let Some((revision, task)) = registration.as_mut() {
+                    if let Poll::Ready(result) = task.as_mut().poll(&mut context) {
+                        let current = *revision == watcher_revision;
+                        registration = None;
+                        if !current {
+                            // A completion from the previous watcher must never
+                            // erase the replacement watcher's registration wakeup.
+                            register_at = Some(Instant::now());
+                        } else {
+                            match result {
+                                Ok(Some(owner)) => {
+                                    registered = owner;
+                                    register_at = None;
+                                }
+                                Ok(None) => register_at = None,
+                                Err(_) => {
+                                    register_at = Some(Instant::now() + Duration::from_secs(5))
+                                }
                             }
                         }
-                        Err(zbus::fdo::Error::NameHasNoOwner(_)) => register_at = None,
-                        Err(_) => {}
+                    }
+                }
+            } else {
+                if register_at.is_some_and(|at| Instant::now() >= at) {
+                    register_at = Some(Instant::now() + Duration::from_secs(5));
+                    if let Ok(dbus) = zbus::blocking::fdo::DBusProxy::new(&bus) {
+                        match dbus.get_name_owner(WATCHER.try_into().unwrap()) {
+                            Ok(owner) => {
+                                let owner = owner.to_string();
+                                if owner == registered
+                                    || Proxy::new(
+                                        &bus,
+                                        owner.as_str(),
+                                        "/StatusNotifierWatcher",
+                                        WATCHER,
+                                    )
+                                    .and_then(|watcher| {
+                                        watcher.call::<_, _, ()>(
+                                            "RegisterStatusNotifierItem",
+                                            &(name.as_str(),),
+                                        )
+                                    })
+                                    .is_ok()
+                                {
+                                    registered = owner;
+                                    register_at = None;
+                                }
+                            }
+                            Err(zbus::fdo::Error::NameHasNoOwner(_)) => register_at = None,
+                            Err(_) => {}
+                        }
                     }
                 }
             }
