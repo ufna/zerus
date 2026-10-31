@@ -14,6 +14,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use zerus_client_core::attention::{Delivery, DeliveryStep, Notice};
 
+mod accounting;
+use accounting::{Completion, Resources};
+pub(crate) use accounting::{Control, Refused as AccountingRefused};
+
 /// A completion, called once on any thread.
 pub type Done<T> = Box<dyn FnOnce(T) + Send>;
 
@@ -47,6 +51,7 @@ struct Shared {
     center: Box<dyn Center>,
     hop: Hop,
     failed: Failed,
+    resources: Option<Arc<Resources>>,
 }
 
 /// The notifier: clones share it.
@@ -55,17 +60,44 @@ pub struct Notifier(Arc<Shared>);
 
 impl Notifier {
     pub fn new(center: Box<dyn Center>, hop: Hop, failed: Failed) -> Self {
+        Self::with_resources(center, hop, failed, None)
+    }
+
+    /// Optional prerequisite for the future Desk/native barrier. Current GUI
+    /// installation still uses new(). No adapter, listener or native permit.
+    #[allow(dead_code)]
+    pub fn new_accounted(
+        center: Box<dyn Center>,
+        hop: Hop,
+        failed: Failed,
+        host: zerus_client_core::desktop::drain::Charge,
+    ) -> Result<(Self, Control), AccountingRefused> {
+        let (resources, control) = Resources::new(host)?;
+        Ok((
+            Self::with_resources(center, hop, failed, Some(resources)),
+            control,
+        ))
+    }
+
+    fn with_resources(
+        center: Box<dyn Center>,
+        hop: Hop,
+        failed: Failed,
+        resources: Option<Arc<Resources>>,
+    ) -> Self {
         Self(Arc::new(Shared {
             delivery: Mutex::new(Delivery::default()),
             center,
             hop,
             failed,
+            resources,
         }))
     }
 
     /// Withdraws, then posts (`TrayAgent::observeAttention`,
     /// `TrayAgent.cpp:558-559`).
     pub fn deliver(&self, cleared: &[String], raised: &[Notice]) {
+        let Ok(work) = self.0.begin() else { return };
         let steps = {
             let mut delivery = self.0.lock();
             let mut steps = Vec::new();
@@ -78,10 +110,15 @@ impl Notifier {
             steps
         };
         execute(&self.0, steps);
+        complete(work);
     }
 }
 
 impl Shared {
+    fn begin(&self) -> Result<Option<Completion>, AccountingRefused> {
+        self.resources.as_ref().map(Resources::start).transpose()
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Delivery> {
         self.delivery.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -91,11 +128,13 @@ impl Shared {
 /// once, and its answer takes the lock again.
 fn execute(shared: &Arc<Shared>, steps: Vec<DeliveryStep>) {
     for step in steps {
+        let Ok(work) = shared.begin() else { return };
         match step {
             DeliveryStep::CheckAuthorization => {
                 let owner = Arc::clone(shared);
+                let callback = work.as_ref().map(Completion::fork);
                 shared.center.authorize(Box::new(move |(granted, error)| {
-                    later(owner, move |shared| {
+                    later(owner, callback, move |shared| {
                         shared.lock().authorized(granted, error)
                     });
                 }));
@@ -103,34 +142,52 @@ fn execute(shared: &Arc<Shared>, steps: Vec<DeliveryStep>) {
             DeliveryStep::Add { token, title, body } => {
                 let owner = Arc::clone(shared);
                 let added = token.clone();
+                let callback = work.as_ref().map(Completion::fork);
                 shared.center.add(
                     &token,
                     &title,
                     &body,
                     Box::new(move |error| {
-                        later(owner, move |shared| shared.lock().added(&added, error));
+                        later(owner, callback, move |shared| {
+                            shared.lock().added(&added, error)
+                        });
                     }),
                 );
             }
             DeliveryStep::Remove { token } => shared.center.remove(&token),
             DeliveryStep::Fail { token, detail } => (shared.failed)(token, detail),
         }
+        complete(work);
+    }
+}
+
+fn complete(work: Option<Completion>) {
+    if let Some(work) = work {
+        work.complete();
     }
 }
 
 /// A completion's next steps, decided and run where the state lives.
-fn later(shared: Arc<Shared>, decide: impl FnOnce(&Shared) -> Vec<DeliveryStep> + Send + 'static) {
+fn later(
+    shared: Arc<Shared>,
+    work: Option<Completion>,
+    decide: impl FnOnce(&Shared) -> Vec<DeliveryStep> + Send + 'static,
+) {
     let hop = Arc::clone(&shared.hop);
+    let _callback = work.as_ref().and_then(Completion::hold);
     hop(Box::new(move || {
         let steps = decide(&shared);
         execute(&shared, steps);
+        complete(work);
     }));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
     use zerus_client_core::attention::DENIED;
+    use zerus_client_core::desktop::drain::{Gate, Observation, Role};
 
     /// What the fake center was asked, and the completions it holds back.
     #[derive(Default)]
@@ -236,6 +293,21 @@ mod tests {
                 failed,
                 notifier,
             }
+        }
+
+        fn accounted() -> (Self, Gate, Control) {
+            let mut fixture = Self::new();
+            let gate = Gate::new(1).unwrap();
+            let failed = fixture.failed.clone();
+            let (notifier, control) = Notifier::new_accounted(
+                Box::new(fixture.center.clone()),
+                fixture.main.hop(),
+                Box::new(move |token, detail| failed.lock().unwrap().push((token, detail))),
+                gate.admit(Role::NativePosting).unwrap(),
+            )
+            .unwrap();
+            fixture.notifier = notifier;
+            (fixture, gate, control)
         }
 
         fn post(&self, token: &str) {
@@ -404,5 +476,263 @@ mod tests {
         );
         notifier.deliver(&["a".to_owned()], &[]);
         assert_eq!(*log.lock().unwrap(), ["add a", "remove a"]);
+    }
+
+    #[test]
+    fn accounted_close_waits_for_the_real_authorization_and_queued_hop() {
+        let (f, gate, control) = Fixture::accounted();
+        f.post("a");
+        assert_eq!(f.center.log(), ["authorize"]);
+        assert!(control.close().unwrap().closed);
+        let closed = gate.close();
+        assert_eq!(closed.wait_until(Instant::now()), Observation::Pending);
+        f.center.answer_authorization(true, None);
+        assert_eq!(closed.wait_until(Instant::now()), Observation::Pending);
+        assert_eq!(f.main.run(), 1);
+        assert!(
+            f.center.log().is_empty(),
+            "late authorization cannot add after close"
+        );
+        assert_eq!(closed.wait_until(Instant::now()), Observation::Idle);
+        f.post("b");
+        f.withdraw("a");
+        assert!(f.center.log().is_empty());
+        assert!(!control.close().unwrap().pinned);
+    }
+
+    #[test]
+    fn accounted_add_completion_never_releases_before_its_queued_result() {
+        let (f, gate, control) = Fixture::accounted();
+        f.post("a");
+        f.center.answer_authorization(true, None);
+        f.main.run();
+        assert_eq!(f.center.log(), ["authorize", &added("a")]);
+        control.close().unwrap();
+        let closed = gate.close();
+        assert_eq!(closed.wait_until(Instant::now()), Observation::Pending);
+        f.center.answer_add("a", Some("synthetic refusal"));
+        assert_eq!(closed.wait_until(Instant::now()), Observation::Pending);
+        f.main.run();
+        assert_eq!(closed.wait_until(Instant::now()), Observation::Idle);
+        assert!(
+            f.failed().is_empty(),
+            "closed scope schedules no failure sink"
+        );
+    }
+
+    #[test]
+    fn dropping_an_uncalled_center_completion_pins_even_after_all_handles_drop() {
+        let (f, gate, control) = Fixture::accounted();
+        f.post("a");
+        control.close().unwrap();
+        f.center.calls().authorizations.clear();
+        assert!(control.snapshot().unwrap().pinned);
+        let closed = gate.close();
+        drop(f);
+        drop(control);
+        assert_eq!(closed.wait_until(Instant::now()), Observation::Pending);
+        assert_eq!(closed.snapshot().unwrap().count(Role::NativePosting), 1);
+    }
+
+    #[test]
+    fn dropping_unexecuted_hop_work_never_looks_like_a_drained_callback() {
+        let (f, gate, control) = Fixture::accounted();
+        f.post("a");
+        f.center.answer_authorization(true, None);
+        control.close().unwrap();
+        f.main.0.lock().unwrap().clear();
+        assert!(control.snapshot().unwrap().pinned);
+        drop(f);
+        assert_eq!(
+            gate.close().wait_until(Instant::now()),
+            Observation::Pending
+        );
+    }
+
+    #[test]
+    fn an_already_admitted_failure_sink_is_retained_through_its_actual_return() {
+        let mut f = Fixture::new();
+        let gate = Gate::new(1).unwrap();
+        let (entered, waiting) = std::sync::mpsc::sync_channel(1);
+        let (release, resume) = std::sync::mpsc::sync_channel(1);
+        let resume = Mutex::new(resume);
+        let (notifier, control) = Notifier::new_accounted(
+            Box::new(f.center.clone()),
+            f.main.hop(),
+            Box::new(move |_, _| {
+                entered.send(()).unwrap();
+                resume.lock().unwrap().recv().unwrap();
+            }),
+            gate.admit(Role::NativePosting).unwrap(),
+        )
+        .unwrap();
+        f.notifier = notifier;
+        f.post("a");
+        f.center.answer_authorization(false, None);
+        let queue = f.main.clone();
+        let worker = std::thread::spawn(move || queue.run());
+        waiting
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        control.close().unwrap();
+        let closed = gate.close();
+        assert_eq!(closed.wait_until(Instant::now()), Observation::Pending);
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        assert_eq!(closed.wait_until(Instant::now()), Observation::Idle);
+    }
+
+    #[test]
+    fn an_accounted_native_call_panic_cannot_return_a_false_idle() {
+        struct Panics;
+        impl Center for Panics {
+            fn authorize(&self, _: Done<(bool, Option<String>)>) {
+                panic!("synthetic center failure");
+            }
+            fn add(&self, _: &str, _: &str, _: &str, _: Done<Option<String>>) {
+                unreachable!();
+            }
+            fn remove(&self, _: &str) {
+                unreachable!();
+            }
+        }
+        let gate = Gate::new(1).unwrap();
+        let (notifier, control) = Notifier::new_accounted(
+            Box::new(Panics),
+            Arc::new(|work| work()),
+            Box::new(|_, _| {}),
+            gate.admit(Role::NativePosting).unwrap(),
+        )
+        .unwrap();
+        let notice = Notice {
+            token: "a".into(),
+            title: "synthetic".into(),
+            body: "fixture".into(),
+        };
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || notifier.deliver(&[], &[notice])
+        ))
+        .is_err());
+        assert!(control.close().unwrap().pinned);
+        drop(notifier);
+        assert_eq!(
+            gate.close().wait_until(Instant::now()),
+            Observation::Pending
+        );
+    }
+
+    #[test]
+    fn an_immediate_completion_does_not_release_a_still_running_native_call() {
+        struct ImmediateThenWait {
+            entered: std::sync::mpsc::SyncSender<()>,
+            resume: Mutex<std::sync::mpsc::Receiver<()>>,
+        }
+        impl Center for ImmediateThenWait {
+            fn authorize(&self, done: Done<(bool, Option<String>)>) {
+                done((true, None));
+                self.entered.send(()).unwrap();
+                self.resume.lock().unwrap().recv().unwrap();
+            }
+            fn add(&self, _: &str, _: &str, _: &str, done: Done<Option<String>>) {
+                done(None);
+            }
+            fn remove(&self, _: &str) {
+                unreachable!();
+            }
+        }
+        let (entered, waiting) = std::sync::mpsc::sync_channel(1);
+        let (release, resume) = std::sync::mpsc::sync_channel(1);
+        let gate = Gate::new(1).unwrap();
+        let (notifier, control) = Notifier::new_accounted(
+            Box::new(ImmediateThenWait {
+                entered,
+                resume: Mutex::new(resume),
+            }),
+            Arc::new(|work| work()),
+            Box::new(|_, _| panic!("no failure")),
+            gate.admit(Role::NativePosting).unwrap(),
+        )
+        .unwrap();
+        let posting = notifier.clone();
+        let worker = std::thread::spawn(move || {
+            posting.deliver(
+                &[],
+                &[Notice {
+                    token: "a".into(),
+                    title: "fixture".into(),
+                    body: "synthetic".into(),
+                }],
+            )
+        });
+        waiting
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        control.close().unwrap();
+        let closed = gate.close();
+        assert_eq!(closed.wait_until(Instant::now()), Observation::Pending);
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        assert_eq!(closed.wait_until(Instant::now()), Observation::Idle);
+        assert!(!control.snapshot().unwrap().pinned);
+    }
+
+    #[test]
+    fn a_finished_hop_still_retains_its_calling_native_callback_until_return() {
+        let center = FakeCenter::default();
+        let (entered, waiting) = std::sync::mpsc::sync_channel(1);
+        let (release, resume) = std::sync::mpsc::sync_channel(1);
+        let resume = Mutex::new(resume);
+        let gate = Gate::new(1).unwrap();
+        let (notifier, control) = Notifier::new_accounted(
+            Box::new(center.clone()),
+            Arc::new(move |work| {
+                work();
+                entered.send(()).unwrap();
+                resume.lock().unwrap().recv().unwrap();
+            }),
+            Box::new(|_, _| {}),
+            gate.admit(Role::NativePosting).unwrap(),
+        )
+        .unwrap();
+        notifier.deliver(
+            &[],
+            &[Notice {
+                token: "a".into(),
+                title: "fixture".into(),
+                body: "synthetic".into(),
+            }],
+        );
+        let done = center.calls().authorizations.remove(0);
+        let callback = std::thread::spawn(move || done((false, None)));
+        waiting
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        control.close().unwrap();
+        let closed = gate.close();
+        assert_eq!(closed.wait_until(Instant::now()), Observation::Pending);
+        release.send(()).unwrap();
+        callback.join().unwrap();
+        assert_eq!(closed.wait_until(Instant::now()), Observation::Idle);
+        assert!(!control.snapshot().unwrap().pinned);
+    }
+
+    #[test]
+    fn weak_accounted_control_does_not_charge_a_finished_scope_or_claim_idle() {
+        let (f, gate, control) = Fixture::accounted();
+        drop(f);
+        assert_eq!(control.snapshot(), Err(AccountingRefused::Unavailable));
+        assert_eq!(control.close(), Err(AccountingRefused::Unavailable));
+        assert_eq!(gate.close().wait_until(Instant::now()), Observation::Idle);
+        let wrong = Gate::new(1).unwrap();
+        assert!(matches!(
+            Notifier::new_accounted(
+                Box::new(FakeCenter::default()),
+                Arc::new(|work| work()),
+                Box::new(|_, _| {}),
+                wrong.admit(Role::Attention).unwrap(),
+            ),
+            Err(AccountingRefused::WrongRole)
+        ));
+        assert_eq!(wrong.close().wait_until(Instant::now()), Observation::Idle);
     }
 }

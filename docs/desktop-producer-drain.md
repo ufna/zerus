@@ -218,6 +218,34 @@ source integrity nor a full Attention drain, native posting outcome, profile
 ownership or permission to publish Drained evidence. There is no production
 freeze caller or positive producer API in this prerequisite.
 
+## Optional notifier completion accounting
+
+The existing Tauri `Notifier` has an optional `new_accounted` constructor for a
+host-supplied NativePosting charge. The current Mac GUI still uses `new`, with
+no resources or control. No system center, native method, delegate, listener,
+worker, timer or writer is added by this prerequisite.
+
+The optional path retains the same host group through admitted delivery and
+Center calls, native completion ownership, queued main-thread Hop work and
+failure sinks. Even a synchronous completion cannot release the still-running
+Center call. A weak close-only control stops later admissions; a late callback
+can update its existing in-memory delivery result but schedules no new native
+step after closure. Already admitted work retains its actual lifetime. Closing
+or retaining the control itself never proves a full role drain: the host must
+close/wait its Gate off-thread and separately cover every real platform
+connection, delegate, callback ingress, Desk writer and badge resource.
+
+A completion or queued work item dropped without execution, or a panic before
+normal completion, is unverified. It pins exactly one copy of the fixed host
+charge until process exit and logs one bounded static role/slot diagnostic;
+additional failures retain no extra pin. Dropping every notifier/control cannot
+release that unknown charge. The local snapshot reports closed/pinned only,
+with no serialization or authority; an absent scope is unavailable, not idle.
+The future host must expose a pinned/unavailable refusal and never retry a lost
+native outcome or infer completion from a timeout. There is no production
+accounted constructor or freeze caller yet, and no service/native ledger job is
+admitted by these local resource helpers.
+
 ## Ordered ReadDelivery store barrier
 
 Actions now owns the same fixed four native resource slots as the existing
