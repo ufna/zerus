@@ -227,8 +227,17 @@ impl Bootstrap {
                     .unwrap()
                     .join()
                     .unwrap_or(Err(Refused::Unknown));
-                let unsupported =
-                    result == Err(Refused::Unsupported) && Arc::strong_count(&self.resources) == 1;
+                // A writer may signal completion just before dropping its final
+                // capture. Keep the original budget while that real copy ends;
+                // scheduling alone must not turn a valid old CLI into refusal.
+                if result == Err(Refused::Unsupported) {
+                    while Arc::strong_count(&self.resources) > 1 && Instant::now() < self.deadline {
+                        thread::sleep(POLL);
+                    }
+                }
+                let unsupported = result == Err(Refused::Unsupported)
+                    && Instant::now() < self.deadline
+                    && Arc::strong_count(&self.resources) == 1;
                 self.joined = Some(result);
                 return Err(if unsupported {
                     Refused::Unsupported
