@@ -26,7 +26,7 @@ export async function actOnTask(project: string, task: Task, action: BoardAction
   if (!fresh || !canDrag(fresh) || fresh.stage !== task.stage || (action.kind === "reorder"
     ? !anchor || !anchor.writable || anchor.uuid === task.uuid || anchor.stage !== fresh.stage
     : !boardActions(fresh.stage).includes(action.kind))) {
-    notify("error", "The task changed. Nothing was changed. Refresh the task."); return;
+    notify("error", tr("The task changed. Nothing was changed. Refresh the task.")); return;
   }
   // No optimistic mutation or retry: the existing stream publishes the result.
   const expectedStage = fresh.stage;

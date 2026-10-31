@@ -8,10 +8,10 @@ import { tr, trNoop } from "../../../i18n";
 // at start and after every change of one (src-tauri processes.rs).
 
 export const TIMINGS = [
-  { key: "processes/activeSeconds", label: "Open Processes tab", min: 1, max: 60 },
-  { key: "processes/backgroundSeconds", label: "Background process count", min: 5, max: 600 },
-  { key: "processes/unknownSeconds", label: "Unconfirmed process output", min: 1, max: 600 },
-  { key: "processes/loadingSeconds", label: "Show loading indicator after", min: 0, max: 5 },
+  { key: "processes/activeSeconds", label: trNoop("Open Processes tab"), min: 1, max: 60 },
+  { key: "processes/backgroundSeconds", label: trNoop("Background process count"), min: 5, max: 600 },
+  { key: "processes/unknownSeconds", label: trNoop("Unconfirmed process output"), min: 1, max: 600 },
+  { key: "processes/loadingSeconds", label: trNoop("Show loading indicator after"), min: 0, max: 5 },
 ] as const;
 
 export function ProcessesSection() {

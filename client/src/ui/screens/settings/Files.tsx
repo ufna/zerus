@@ -66,7 +66,7 @@ export function FilesSection() {
     if (checking()) return undefined;
     if (failure()) return failure();
     if (!v) return undefined;
-    return v.error ?? `Downloaded copies: ${formatDataSize(v.bytes)} in ${v.files} files`;
+    return v.error ?? tr("Downloaded copies: %1 in %2 files", formatDataSize(v.bytes), v.files);
   };
   return (
     <>
@@ -80,7 +80,7 @@ export function FilesSection() {
         </Row>
         <Row label={trNoop("Keep copies")} for="set-dl-mode">
           <Select id="set-dl-mode" value={mode()} onChange={setMode}
-            options={[{ value: "never", label: "Never clear" }, { value: "limit", label: "Limit size" }]} />
+            options={[{ value: "never", label: trNoop("Never clear") }, { value: "limit", label: trNoop("Limit size") }]} />
         </Row>
         <Row label={trNoop("Maximum size")} disabled={mode() !== "limit"}>
           <NumberField value={size()} min={0.1} max={1024} step={0.5} decimals={1} suffix="GiB" label={trNoop("Maximum size")}
@@ -110,7 +110,7 @@ function LimitQuestion(props: { bytes: number; answer: (yes: boolean) => void })
     <dialog class="dlg" ref={(el) => { dialog = el; queueMicrotask(() => el.showModal()); }} aria-labelledby="files-limit-title"
       onCancel={(e) => { e.preventDefault(); answer(false); }}>
       <div class="dlg-head"><h2 id="files-limit-title">{tr("Limit downloaded files?")}</h2></div>
-      <div class="dlg-body">{`Zerus will automatically delete its oldest downloaded copies when they exceed ${formatDataSize(props.bytes)}. Files you added or edited will be kept.`}</div>
+      <div class="dlg-body">{tr("Zerus will automatically delete its oldest downloaded copies when they exceed %1. Files you added or edited will be kept.", formatDataSize(props.bytes))}</div>
       <div class="dlg-foot">
         <span class="spacer" />
         <button type="button" class="btn" onClick={() => answer(true)}>{tr("Apply limit")}</button>

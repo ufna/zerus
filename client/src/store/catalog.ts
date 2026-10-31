@@ -6,6 +6,7 @@ import type { AgentKind, Session, Status } from "../ui/sessions/types";
 import { marks as appMarks, type RowMarks } from "./marks";
 import { connectionOf } from "./overview";
 import { childRows } from "../ui/sessions/subagents";
+import { tr } from "../i18n";
 
 // The catalog: every live session row of every computer, keyed by
 // computer + "\n" + catalog key. A batch is one reactive transaction. An
@@ -71,15 +72,15 @@ export function statusOf(v: ViewRow): Status {
 export function captionOf(status: Status, v: ViewRow): string {
   const phase = (v.phase ?? "").toLowerCase();
   switch (status) {
-    case "attention": return phase === "approval" ? "Needs approval" : phase === "input" ? "Needs input" : "Needs attention";
-    case "working": return phase === "tool" ? "Using a tool" : phase === "compacting" ? "Compacting" : "Working";
+    case "attention": return phase === "approval" ? tr("Needs approval") : phase === "input" ? tr("Needs input") : tr("Needs attention");
+    case "working": return phase === "tool" ? tr("Using a tool") : phase === "compacting" ? "Compacting" : "Working";
     case "background": return "Background";
     case "scheduled": return "Scheduled";
-    case "ready": return v.unread ? "New reply" : "Ready";
+    case "ready": return v.unread ? tr("New reply") : "Ready";
     case "error": return phase === "interrupted" ? "Interrupted" : "Error";
     case "offline": return "Offline";
     case "paused": return "Paused";
-    case "waiting": return "Waiting for result";
+    case "waiting": return tr("Waiting for result");
     case "starting": return "Starting";
     case "ended": return "Archived";
   }

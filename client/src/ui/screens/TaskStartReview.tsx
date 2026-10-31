@@ -12,7 +12,7 @@ export default function TaskStartReview() {
   const close = () => { if (taskStartReview() === review) setTaskStartReview(undefined); };
   onMount(() => { dialog.showModal(); queueMicrotask(() => closeButton?.focus()); });
   onCleanup(() => { if (dialog.open) dialog.close(); queueMicrotask(() => { if (taskStartReview() || taskStarts.scope()?.project !== review.view.project || taskStarts.scope()?.task !== review.view.task) return;
-    const target = review.origin?.isConnected ? review.origin : (document.querySelector<HTMLElement>('.tv .tv-cmd[aria-label={tr("Start task")}]:not(:disabled)') ?? document.querySelector<HTMLElement>(".tv .tv-title"));
+    const target = review.origin?.isConnected ? review.origin : (document.querySelector<HTMLElement>('.tv .tv-cmd[data-cmd="start"]:not(:disabled)') ?? document.querySelector<HTMLElement>(".tv .tv-title"));
     target?.focus(); }); });
   return <dialog ref={dialog} class="dlg" aria-labelledby="task-start-title" style={{ width: "520px" }} onCancel={close} onClose={close}>
     <div class="dlg-head"><Icon name="info" size={18} class="accent" /><h2 id="task-start-title">{tr("Task start")}</h2><span class="grow" /><button class="icon-btn" aria-label={tr("Close")} onClick={close}><Icon name="x" size={16} /></button></div>

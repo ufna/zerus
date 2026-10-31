@@ -128,7 +128,7 @@ export function App(props: { mode: () => BridgeMode | "starting" }) {
   // chords of Settings > Keyboard.
   const zoomBy = (step: number) => {
     zoom(Math.max(0.75, Math.min(2, +(contentScale() + step).toFixed(2))));
-    toast("Content scale", `${Math.round(contentScale() * 100)}%`);
+    toast(tr("Content scale"), `${Math.round(contentScale() * 100)}%`);
   };
   const commands: [string, () => void][] = [
     ["go.overview", () => setPage("dashboard")],

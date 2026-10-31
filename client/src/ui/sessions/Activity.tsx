@@ -250,7 +250,7 @@ const mediaTime = (ms: number) => {
 function DeliveryGlyph(props: { item: MediaMessage }) {
   const s = props.item.state;
   return (
-    <span class="vm-state" classList={{ issue: voiceStateIssue(s) }} title={voiceStateDetail(s)} role="img" aria-label={VOICE_STATE_LABEL[s]}>
+    <span class="vm-state" classList={{ issue: voiceStateIssue(s) }} title={voiceStateDetail(s)} role="img" aria-label={tr(VOICE_STATE_LABEL[s])}>
       <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <Show when={s === "submitted"} fallback={
           <Show when={s === "cancelled"} fallback={
@@ -534,8 +534,8 @@ function LocalDeleteDialog() {
   return (
     <dialog class="dlg" ref={el} role="alertdialog" aria-labelledby="local-delete-title" aria-describedby="local-delete-body" style={{ width: "440px" }}
       onCancel={(e) => { e.preventDefault(); cancel(); }} onClose={() => { if (!el?.open && deleting()) cancel(); }}>
-      <div class="dlg-head"><Icon name="trash" size={18} class="danger" /><h2 id="local-delete-title">{DELETE_TITLE}</h2></div>
-      <div class="dlg-body"><div class="confirm-body" id="local-delete-body">{DELETE_TEXT}</div></div>
+      <div class="dlg-head"><Icon name="trash" size={18} class="danger" /><h2 id="local-delete-title">{tr(DELETE_TITLE)}</h2></div>
+      <div class="dlg-body"><div class="confirm-body" id="local-delete-body">{tr(DELETE_TEXT)}</div></div>
       <div class="dlg-foot">
         <span class="spacer" />
         <button type="button" class="btn primary" data-initial onClick={cancel}>{tr("Cancel")}</button>

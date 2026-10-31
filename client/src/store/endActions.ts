@@ -6,8 +6,9 @@ import * as bridge from "../bridge";
 import { bus, NOTICE_MS, sessionNoticeKey, type NoticeBus } from "./notices";
 import { catalog } from "./catalog";
 import { claimEnds, endKey, type EndCapture, type EndReference } from "./endActionBusy";
+import { trNoop, tr } from "../i18n";
 
-const FIVE = "Five actions are waiting. Undo one or wait a moment.";
+const FIVE = trNoop("Five actions are waiting. Undo one or wait a moment.");
 /** The toast names at most this many sessions. */
 const NAMED = 3;
 type Titled = { computer: string; name: string; title: string };
@@ -47,7 +48,7 @@ export function createEndActions(port: EndPort, notices: NoticeBus, uuid: () => 
   let closed = false;
   async function schedule<T>(captures: EndCapture[], run: (refs: EndReference[], key: string) => Promise<T>, options: EndOptions = {}): Promise<T | undefined> {
     if (closed || !captures.length) return;
-    if (pending.size >= 5) { [...pending.values()].at(-1)?.note(FIVE); return; }
+    if (pending.size >= 5) { [...pending.values()].at(-1)?.note(tr(FIVE)); return; }
     const release = claimEnds(captures);
     if (!release) return;
     const id = uuid(), verb = actionVerb(captures[0]);
@@ -79,7 +80,7 @@ export function createEndActions(port: EndPort, notices: NoticeBus, uuid: () => 
       noticeId = notices.notify("info", `${names}${options.remove ? "\nThe working folder is removed afterwards." : ""}`, true, key,
         `${ongoing[verb]} ${captures.length === 1 ? "session" : `${captures.length} sessions`}`, {
           dismissible: false, note,
-          actions: [{ label: () => `Undo (${seconds()})`, style: "primary", disabled: () => !active, run: () => cancel() }],
+          actions: [{ label: () => tr("Undo (%1)", seconds()), style: "primary", disabled: () => !active, run: () => cancel() }],
         });
       timer = setInterval(() => setSeconds(Math.max(1, Math.ceil((5000 - (now() - start)) / 1000))), 100);
       if (options.current) createRoot((d) => { dispose = d; createComputed(() => { if (!options.current!()) cancel(true); }); });

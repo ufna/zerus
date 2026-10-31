@@ -34,19 +34,19 @@ export function taskItem(value: unknown, queue = 0): Task {
 export const sessionIdentity = (s: Session) => s.launchId ? `launch_id:${s.launchId}` : s.runId ? `run_id:${s.runId}` : "";
 export const sessionLabel = (r: TaskRef) => {
   const label = r.name.split("/").slice(2).join("/") || r.name.split("/")[1] || r.name;
-  return label ? label + (r.host ? ` @${r.host}` : "") : "Any session";
+  return label ? label + (r.host ? ` @${r.host}` : "") : tr("Any session");
 };
 const queued = (t: Task) => t.stage === "todo" || t.stage === "backlog";
 export const executorRef = (t: Task) => queued(t) ? t.target : t.executor;
 export const assignmentLabel = (t: Task) => queued(t)
-  ? t.targetKind === "new_session" ? "New session — create when started"
+  ? t.targetKind === "new_session" ? tr("New session — create when started")
     : t.targetKind === "subagent" ? `Subagent — coordinate through ${sessionLabel(t.target)}`
-    : t.target.name ? sessionLabel(t.target) : "Any available session"
+    : t.target.name ? sessionLabel(t.target) : tr("Any available session")
   : t.executor.name ? sessionLabel(t.executor) : "Unconfirmed";
 export function assignmentText(t: Task, main?: Session): string {
-  if (!queued(t)) return `${t.stage === "active" ? "Executor" : "Last executor"}: ${t.executor.name ? sessionLabel(t.executor) : "Unconfirmed"}`;
-  const assigned = !t.target.name ? "Any available session" : sessionLabel(t.target);
-  const label = t.targetKind === "new_session" ? "New session, created when started" : t.targetKind === "subagent" ? `Subagent coordinated through ${assigned}` : main && t.target.id === sessionIdentity(main) && t.target.host === main.computer ? `Main session: ${assigned}` : assigned;
+  if (!queued(t)) return `${t.stage === "active" ? "Executor" : tr("Last executor")}: ${t.executor.name ? sessionLabel(t.executor) : "Unconfirmed"}`;
+  const assigned = !t.target.name ? tr("Any available session") : sessionLabel(t.target);
+  const label = t.targetKind === "new_session" ? tr("New session, created when started") : t.targetKind === "subagent" ? tr("Subagent coordinated through %1", assigned) : main && t.target.id === sessionIdentity(main) && t.target.host === main.computer ? tr("Main session: %1", assigned) : assigned;
   return `Planned: ${label}`;
 }
 export function belongsTo(t: Task, s: Session): boolean {

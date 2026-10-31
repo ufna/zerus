@@ -29,7 +29,7 @@ function Chord(props: { id: string; slot: number }) {
   const works = () => command(props.id)?.scope === "window" && !!sequence() && terminalSafe(sequence()![0]);
   return (
     <Show when={sequence()}>
-      {(s) => <span title={works() ? "Works in Terminal" : undefined}>{nativeText(s())}{works() ? " ✓" : ""}</span>}
+      {(s) => <span title={works() ? tr("Works in Terminal") : undefined}>{nativeText(s())}{works() ? " ✓" : ""}</span>}
     </Show>
   );
 }
@@ -63,13 +63,13 @@ export function KeyboardSection() {
             <For each={list()}>
               {(g) => (
                 <>
-                  <tr class="set-table-group"><td colSpan={3}>{g.group}</td></tr>
+                  <tr class="set-table-group"><td colSpan={3}>{tr(g.group)}</td></tr>
                   <For each={g.commands}>
                     {(c) => (
                       <tr class="kb-row" ref={(el) => rows.set(c.id, el)} classList={{ on: selected() === c.id }}
                         tabindex={current() === c.id ? 0 : -1} aria-selected={selected() === c.id}
                         onClick={() => setSelected(c.id)} onFocus={() => setSelected(c.id)} onKeyDown={(e) => rowKey(e, c.id)}>
-                        <td class="kb-cmd" classList={{ custom: customized(c.id) }} onDblClick={() => setEditing({ id: c.id, slot: 0 })}>{c.title}</td>
+                        <td class="kb-cmd" classList={{ custom: customized(c.id) }} onDblClick={() => setEditing({ id: c.id, slot: 0 })}>{tr(c.title)}</td>
                         <td class="kb-chord" onDblClick={() => setEditing({ id: c.id, slot: 0 })}><Chord id={c.id} slot={0} /></td>
                         <td class="kb-chord" onDblClick={() => setEditing({ id: c.id, slot: 1 })}><Chord id={c.id} slot={1} /></td>
                       </tr>
@@ -89,7 +89,7 @@ export function KeyboardSection() {
       <p class="set-foot">{tr("Double-click a shortcut, or press Enter on it, to change it.")}</p>
       <Show when={editing()}>{(e) => <ChangeDialog id={e().id} slot={e().slot} close={() => setEditing(undefined)} />}</Show>
       <Show when={confirmAll()}>
-        <Question title={tr("Reset all shortcuts")} text="Restore the default chords of every command?"
+        <Question title={tr("Reset all shortcuts")} text={tr("Restore the default chords of every command?")}
           answer={(yes) => { setConfirmAll(false); if (yes) resetAll(); }} />
       </Show>
     </>
@@ -124,7 +124,7 @@ function Question(props: { title: string; text: string; answer: (yes: boolean) =
 
 /** Change shortcut (KeyboardSettings::editChord). */
 function ChangeDialog(props: { id: string; slot: number; close: () => void }) {
-  const title = command(props.id)?.title ?? props.id;
+  const title = tr(command(props.id)?.title ?? props.id);
   const [recorded, setRecorded] = createSignal<Sequence>(keys(props.id)[props.slot] ?? []);
   const [reason, setReason] = createSignal("");
   const [asking, setAsking] = createSignal<string[] | undefined>();
@@ -204,7 +204,7 @@ function ChangeDialog(props: { id: string; slot: number; close: () => void }) {
         <div class="dlg-body">
           <p>{tr("Press the new shortcut for %1.", title)}</p>
           <div class="kb-capture-row">
-            <div ref={field} class="dlg-input kb-capture" tabindex="0" role="textbox" aria-label={`Shortcut for ${title}`}
+            <div ref={field} class="dlg-input kb-capture" tabindex="0" role="textbox" aria-label={tr("Shortcut for %1", title)}
               data-shortcut-context="capture" onKeyDown={record} onKeyUp={released} onBlur={finish}>
               <Show when={recorded().length} fallback={<span class="kb-placeholder">{tr("Press shortcut")}</span>}>
                 {nativeText(recorded())}{recording() ? ", …" : ""}
@@ -222,7 +222,7 @@ function ChangeDialog(props: { id: string; slot: number; close: () => void }) {
       </dialog>
       <Show when={asking()}>
         {(others) => (
-          <Question title={tr("Shortcut in use")} text={`Already used by ${separatedList(others().map((id) => command(id)?.title ?? id))}. Reassign?`} answer={reassign} />
+          <Question title={tr("Shortcut in use")} text={tr("Already used by %1. Reassign?", separatedList(others().map((id) => tr(command(id)?.title ?? id))))} answer={reassign} />
         )}
       </Show>
     </>

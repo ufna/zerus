@@ -1,7 +1,7 @@
 import type { Account, FolderOut, HeaderOut, MachineMeta, PathStyle, Profile, Usage } from "../../types";
 import { current, fromProjected, period, providerName, severest, windowsAt, type Tone, type UsageWindow } from "../lib/usage";
 import { clean, leaf, native, same } from "./paths";
-import { tr } from "../../i18n";
+import { trNoop, tr } from "../../i18n";
 
 // The New session dialog's rows, as Qt keeps them in its views
 // (tray/src/NewSessionDialog.cpp): computers (loadMachines 487-510),
@@ -71,12 +71,12 @@ export function computerChoice(rows: ComputerRow[], previous: string): number {
 
 export interface ProjectRow { id: string; name: string; color: string | null; palette: number; newProject: boolean }
 
-export const NEW_PROJECT = "New project…";
+export const NEW_PROJECT = trNoop("New project…");
 
 /** The accessible projects in the organization's order, plus "New project…" for a repository source. */
 export function projectRows(projects: readonly ListedProject[], repository: boolean): ProjectRow[] {
   const rows: ProjectRow[] = projects.filter((p) => p.accessible).map((p) => ({ id: p.id, name: p.name, color: p.color, palette: p.palette, newProject: false }));
-  if (repository) rows.push({ id: "", name: NEW_PROJECT, color: null, palette: 0, newProject: true });
+  if (repository) rows.push({ id: "", name: tr(NEW_PROJECT), color: null, palette: 0, newProject: true });
   return rows;
 }
 
@@ -169,6 +169,7 @@ export interface AccountRow {
   accessible: string;
 }
 
+// Core names compared in their source form, never shown.
 const UNNAMED = new Set(["", "Default account", "Native account"]);
 
 /**

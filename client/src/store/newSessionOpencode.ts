@@ -389,7 +389,7 @@ export function createOpenCode(h: OpenCodeHost) {
     view(): OpenCodeView {
       return {
         models, model: modelValue, modelVisible: opencode(),
-        modelButton: modelValue === "" ? "Native default model" : currentOption()?.label || modelValue,
+        modelButton: modelValue === "" ? tr("Native default model") : currentOption()?.label || modelValue,
         modelEnabled: modelEnabled(), pickerOpen, picker: picker.view(),
         efforts, effort: effortValue, effortVisible, service: service(),
       };

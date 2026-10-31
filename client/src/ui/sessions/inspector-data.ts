@@ -1,5 +1,6 @@
 import { sessionUsageView } from "./session-usage-ui";
 import { object, text } from "../screens/tasks-ui";
+import { tr } from "../../i18n";
 export function sessionPlan(value: unknown) {
   const lists = object(object(value).task_lists), main = object(lists.main);
   const items = Array.isArray(main.items) ? main.items : [];
@@ -11,5 +12,5 @@ export function sessionGoal(value: unknown) {
 }
 export function usageRows(value: unknown): [string, string][] {
   const view = sessionUsageView(object(value).session_usage);
-  return [...view.rows.map((row): [string, string] => [row.label, row.value]), ...(view.context ? [["Latest context", view.context] as [string, string]] : [])];
+  return [...view.rows.map((row): [string, string] => [row.label, row.value]), ...(view.context ? [[tr("Latest context"), view.context] as [string, string]] : [])];
 }

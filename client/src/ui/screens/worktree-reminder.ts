@@ -32,7 +32,7 @@ export class WorktreeReminder {
   private pull(target: ReminderTarget, ticket: number) {
     const current = () => this.version === ticket && !!this.signature;
     const schedule = (ms: number) => { if (current()) this.timer = setTimeout(() => this.pull(target, ticket), Math.max(1000, Math.min(REMINDER_MS, ms))); };
-    void this.lane.read(() => current() ? this.read(target) : Promise.reject("Folder changed.")).then((reply) => {
+    void this.lane.read(() => current() ? this.read(target) : Promise.reject(tr("Folder changed."))).then((reply) => {
       if (!current()) return;
       this.changed(Number.isSafeInteger(reply.count) && reply.count! >= 0 ? reply.count! : undefined);
       schedule(Number.isFinite(reply.retry_ms) ? reply.retry_ms : REMINDER_MS);

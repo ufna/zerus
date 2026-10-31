@@ -162,6 +162,6 @@ describe("the drop texts are Qt's", () => {
   });
   it("fills in Qt's transfer notice", () => {
     expect(read("tray/src/SessionsWindow.cpp")).toContain('tr("Transferring files to %1…")');
-    expect(read("client/src/store/drops.ts")).toContain("`Transferring files to ${peer}…`");
+    expect(read("client/src/store/drops.ts")).toContain('tr("Transferring files to %1…", peer)');
   });
 });

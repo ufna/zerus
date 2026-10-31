@@ -20,7 +20,7 @@ export function SessionsSection() {
         <ToggleRow label={trNoop("Expand the collapsed session list on hover")} checked={flag("workspace/expandSessionsOnHover")} onChange={toggle("workspace/expandSessionsOnHover")} />
         <ToggleRow label={trNoop("Hide projects without active sessions")} checked={flag("workspace/hideEmptyProjects")} onChange={toggle("workspace/hideEmptyProjects")} />
         <ToggleRow label={trNoop("Animate working sessions")} checked={flag("workspace/animateActivity")} onChange={toggle("workspace/animateActivity")}
-          hint={motionReduced() ? "Reduce motion is on, so working sessions hold still." : undefined} />
+          hint={motionReduced() ? tr("Reduce motion is on, so working sessions hold still.") : undefined} />
         <ToggleRow label={trNoop("Show completed subagents")} checked={flag("workspace/showCompletedSubagents")} onChange={toggle("workspace/showCompletedSubagents")}
           hint={trNoop("Include agents whose latest turn has finished in the session list and its counts. Plan & agents always shows all reported agents. Agents with unknown status remain visible.")} />
         <ToggleRow label={trNoop("Notify about optional questions")} checked={flag("notifications/optionalQuestions")} onChange={toggle("notifications/optionalQuestions")}
