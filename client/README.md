@@ -323,8 +323,17 @@ the child's own environment: the agent attribution (`HGS_SESSION`,
 five-second timing rules for the Undo integration. Its metadata check requests
 no history; its end calls reuse the existing scoped lifecycle envelope and exact
 receipt validator. A shell run may have no native conversation. An unidentified
-run cannot become a delayed name-only mutation. This pure module performs no
-I/O and is not yet connected to the menus, timers or exit flush.
+run cannot become a delayed name-only mutation. This pure module performs no I/O.
+
+The native `action_delay` adapter reserves Actions' existing write lane without
+publishing a send-block fact. Main-webview registration starts a five-second
+monotonic window; its dedicated waiter never reads a source or runs a command.
+Undo, close and quit discard reservations before exit flushing. Consuming an
+elapsed reference repeats metadata equality and uses the same action, cleanup
+or Clear dispatcher, with exact receipt handling. The queue holds at most five
+windows of 1024 targets and 16,384 process-local UUID tombstones. A batch shares
+one lane for same-name archives but admits only one active member at a time.
+These native commands are not yet connected to the menus or Undo notices.
 
 | Action | Arguments (`NAME` is the session name) | Standard input | Timeout here, peer |
 | --- | --- | --- | --- |

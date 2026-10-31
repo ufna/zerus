@@ -1003,6 +1003,10 @@ export function PerfHost() {
       const { archiveCleanupSmoke } = await import("../perf/archiveCleanupSmoke");
       void archiveCleanupSmoke(!!config().replay && !!config().actions_smoke);
     }
+    if (new URLSearchParams(location.search).has("end-action-native-smoke") && inTauri()) {
+      const { endActionNativeSmoke } = await import("../perf/endActionNativeSmoke");
+      void endActionNativeSmoke(!!config().replay && !!config().actions_smoke);
+    }
     if (new URLSearchParams(location.search).has("file-ssh-smoke") && inTauri()) {
       void import("../perf/fileSshSmoke").then(({ fileSshSmoke }) => fileSshSmoke(!!config().replay && !!config().actions_smoke));
     }

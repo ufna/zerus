@@ -811,7 +811,9 @@ pub async fn termination_cleanup_confirm(
     actions: State<'_, crate::actions::Actions>,
     settings: State<'_, crate::settings::Store>,
     id: String,
+    delay: Option<crate::action_delay::Reference>,
 ) -> Result<Outcome, String> {
+    use tauri::Manager;
     if crate::actions::blocked() {
         return Err(crate::actions::REPLAY_NEEDS_HGS.into());
     }
@@ -826,12 +828,27 @@ pub async fn termination_cleanup_confirm(
         if o.at.elapsed() >= OFFER_AGE {
             return Err(STATE_CHANGED.into());
         }
+        let delayed = delay
+            .as_ref()
+            .map(|reference| {
+                app.state::<crate::action_delay::Delays>().take(
+                    reference,
+                    &o.capture.target,
+                    &zerus_client_core::Action::Terminate,
+                )
+            })
+            .transpose()?;
         m.reserved += 1;
-        o.capture
+        (o.capture, delayed)
     };
+    let (capture, delayed) = capture;
     // A remembered checkbox default never changes the action's admission.
     let _ = settings.0.set(PREF, Value::Bool(true));
-    let outcome = crate::actions::dispatch_cleanup(&actions, capture.clone()).await;
+    let outcome = if delayed.is_some() {
+        crate::actions::dispatch_cleanup_reserved(&actions, capture.clone(), delayed).await
+    } else {
+        crate::actions::dispatch_cleanup(&actions, capture.clone()).await
+    };
     let mut m = lock(&state.0.model);
     m.reserved -= 1;
     if let Ok(Outcome::Done { cleanup, receipt }) = &outcome {
