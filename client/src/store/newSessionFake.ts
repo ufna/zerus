@@ -160,18 +160,19 @@ export function shownOf(f: LaunchForm): LaunchShown {
   const ready = repository
     ? f.online && repository.can_submit && (!repository.new_project || repository.new_project_name.trim() !== "")
     : !f.prefill_pending && f.path !== "" && f.folder_online && (!f.auto_preferred || !f.catalog_pending);
-  const nameProblem = f.name.trim() ? null : "Enter a session name.";
-  const notice = f.no_machine ? (f.can_enable_local_sessions ? "Enable local sessions for this computer in Machines, or add a remote machine." : "Add a remote machine in Machines to start sessions from this computer.")
+  const nameProblem = f.name.trim() ? null : { source: "Enter a session name." };
+  const source = f.no_machine ? (f.can_enable_local_sessions ? "Enable local sessions for this computer in Machines, or add a remote machine." : "Add a remote machine in Machines to start sessions from this computer.")
     : f.account_preset && !f.account_selected ? (f.account_loading ? "Loading this session's account…" : "This session's account is unavailable. Choose another account.")
       : f.account_count === 0 ? "Restore or add an account in Agent accounts to start this agent."
         : !repository && f.path && !f.folder_online ? "This computer is unavailable. Choose another folder or reconnect it." : null;
+  const notice = source === null ? null : { source };
   return {
     start_enabled: !f.no_machine && f.account_selected && (!f.account_loading || f.agent === "sh") && !nameProblem && ready,
-    start_text: repository ? "Clone and start" : "Start session",
-    preview: f.prefill_pending ? "Checking the session's main working folder…" : f.path ? "" : "Browse to choose a folder on this computer.",
-    outside_project: false, name_problem: nameProblem, notice, automatic, auto_enabled: false, none_enabled: true, worktree_target: "", worktree_tooltip: "",
+    start_text: { source: repository ? "Clone and start" : "Start session" },
+    preview: f.prefill_pending ? { source: "Checking the session's main working folder…" } : f.path ? null : { source: "Browse to choose a folder on this computer." },
+    outside_project: false, name_problem: nameProblem, notice, automatic, auto_enabled: false, none_enabled: true, worktree_target: "", worktree_tooltip: null,
     choose_existing_enabled: false, create_manually_enabled: false, worktree_options_enabled: false, fields_enabled: true, browse_enabled: true,
-    cancel_enabled: true, open_terminal_enabled: true, open_terminal_tooltip: "", clone_launch_due: false,
+    cancel_enabled: true, open_terminal_enabled: true, open_terminal_tooltip: { source: "Also open an external terminal for this session." }, clone_launch_due: false,
   };
 }
 

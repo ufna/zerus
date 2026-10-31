@@ -1,9 +1,10 @@
 import { createSignal } from "solid-js";
+import { trNoop } from "../../i18n";
 import { invoke } from "@tauri-apps/api/core";
 import { toast } from "../../store/notices";
 import type { Inspection } from "../../store/terminationCleanup";
 export const PAGE = 256, LIMIT = 64;
-export const CATEGORIES = ["Cleanup candidates", "Review work", "In use", "Not checked", "Main folders"];
+export const CATEGORIES = [trNoop("Cleanup candidates"), trNoop("Review work"), trNoop("In use"), trNoop("Not checked"), trNoop("Main folders")];
 export interface Filter { search: string; project: string; computer: string; category: number | null; show_main: boolean; sort: "size" | "activity" | "name" }
 export const emptyFilter = (): Filter => ({ search: "", project: "", computer: "", category: null, show_main: false, sort: "size" });
 export interface OverviewRow { id: string; path: string; branch: string; machine: string; computer: string; category: number; state: string; remains: string; size: string; fresh: boolean; sessions: string[] }

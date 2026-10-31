@@ -60,3 +60,8 @@ export const uiLanguage = language;
 /** Qt's QT_TR_NOOP: marks a source for the coverage test; translate it with tr() where shown. */
 export const trNoop = <T extends string>(source: T): T => source;
 export const tr = (source: string, ...args: TranslationArgument[]) => translate(language(), source, ...args);
+/** Qt's tr(source, disambiguation) for a source that reads differently in one use ("Pause" in media playback). */
+export const trc = (disambiguation: string, source: string, ...args: TranslationArgument[]) => {
+  const key = `${disambiguation}\u0004${source}`;
+  return language() === "ru" && key in RU ? translate("ru", key, ...args) : translate("en", source, ...args);
+};

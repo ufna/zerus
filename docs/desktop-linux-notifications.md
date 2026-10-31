@@ -449,3 +449,197 @@ controls, not filesystem failure/kill, actual durability, permission-consumer,
 native resource, current-source, lease, release, recurrence or rollback proof.
 The G1 negative permission consumer remains a separate prerequisite. No runtime
 caller, source API, default, native wire behavior or ownership changes here.
+
+### Dormant startup resource prerequisite
+
+The crate-private `platform::linux_notify::startup` path has no production
+caller. Its explicit local Unix address and NativePosting charge construct one
+startup worker, one connection with the internal zbus executor disabled, and
+two logical readers over a shared raw queue of 16. Both AddMatch acknowledgements
+precede either raw reader's activation. The installed schema1 Poster keeps its
+existing constructor and behavior. Future installation must atomically select
+one constructor and preserve unresolved owners; this helper supplies no global
+installation exclusivity.
+
+`OwnedControl` is weak and close-only. Close clears readiness and fences inputs
+before cancellation/wake, performs no native I/O or join, and never renews the
+original cleanup deadline. The setup deadline starts before worker handoff;
+setup and cleanup each have one total budget of at most five seconds. Native
+construction and polling run outside Tokio on the worker. No mutex poison
+recovery, stopped flag, timed wait or empty Tokio executor establishes completion.
+
+`OwnedStartup` retains the original worker JoinHandle and armed accounting
+completion. Both raw readers and borrowed messages drop before any RemoveMatch.
+Exact removal acknowledgements, connection close/drop, executor task completion
+and disappearance of the worker's registered wake captures precede its private
+CleanExit. Only off-GUI `try_finish` joining that exact successful worker can
+complete the accounting guard. Finished is terminal for this resource slice;
+failure, lost handles, late completion, panic, poison and uncertain cleanup pin
+the original fixed group. A positively known no-native-work path still requires
+the actual worker join. Weak controls cannot manufacture a finished owner.
+
+The locked async-io reactor and driver are once-only shared process infrastructure
+outside per-startup accounting. They remain alive; Finished claims no process or
+whole-role quiet. Each startup still owns its registrations, sockets, futures,
+wakers, timers, messages, captures and executor tasks. Private qualification
+combines exact peer/capture destruction and worker joins with warmed socket/thread
+baselines and repeated starts. Counts alone do not establish resource custody.
+Both whole-process baseline controls run in separate exact test-binary children
+with private buses, no display address and fresh HOME/XDG/TMPDIR/TMUX_TMPDIR.
+Other cases keep the test harness's default parallel execution; concurrent tests
+cannot change either child's process-wide socket or thread observations.
+
+The dormant steady-state reader loop blocks on its existing coalesced wake
+channel after both readers and the executor report Pending. Each turn polls at
+most two raw readers and one executor tick; any Ready result continues
+immediately, including bursts larger than raw16. A Pending tick stays pinned
+across the receive and raw progress, preserving its executor wake registration.
+Only a completed tick is reset. The actual pinned future's lexical scope ends
+before reader destruction and match removal, including panic unwinding. Close
+sets cancellation before waking; a full channel already contains a wake token.
+Setup/cleanup deadlines and their bounded polling remain unchanged.
+
+Private wake qualification combines actual receive hooks and a birth-bound
+original-worker kernel wait observation with a body-free runnable on that same
+connection's executor, addressed bursts, coalescing/close races, actual joins and
+capture destruction. Kernel state or hook counters alone never establish
+custody, completion or whole-role quiet. The runnable and header-only synthetic
+signal probes exist only in test builds and admit no production input or sink.
+
+#### Dormant serialized ingress limits
+
+Queue 16 is an item bound. The dormant startup wraps the locked zbus 5.19 socket
+halves to enforce a full serialized frame cap F=65,536, header-fields input cap
+H=4,096 and cumulative authentication cap A=16,384 bytes. Its original fixed
+NativePosting resource group reserves B=2,097,152 bytes for the enumerated
+wire/Vec/text/private storage below before worker handoff. This is a capacity
+reservation, not measured SDK heap or RSS. A future host must supply the exact
+startup's qualified group; this helper supplies no global installation exclusion.
+Unknown outcomes and lost handles retain that same group's reservation through
+the existing pin. Only the original clean worker join releases it. No budget
+object, admission counter, queue disappearance or destructor grants release.
+
+The worker opens one explicit parsed Unix file or Linux abstract endpoint with
+the already-locked async-io 2.6 nonblocking connector under the original setup
+deadline. The only dependency addition is its Linux direct edge; no package,
+checksum or feature changes. Directory/tmpdir transports refuse; there is no
+environment lookup, autolaunch, alternative address or UID override. Both halves
+forward real peer credentials and disable FD passing. Any received or supplied
+ancillary FD refuses immediately. zbus still performs genuine EXTERNAL auth.
+The read wrapper forwards one auth byte per receive, checks every CRLF boundary
+before the SDK parser, and compares any complete OK GUID using the SDK's ASCII
+whitespace token semantics before its final LF reaches zbus. A wrong GUID can
+therefore issue neither BEGIN nor Hello.
+
+For each binary receive the wrapper validates both length and capacity of the
+original prebuffer against A, and rejects any buffered FDs. It moves that buffer
+and the exact read half into the receive scope. A frame-local helper accumulates
+only the 16-byte primary header and validates endian, message type, version,
+checked padded total size and H before returning the complete primary to the
+SDK. For an already buffered primary the same check runs before the default
+receive method. Thus the SDK's default body resize follows admission; zbus still
+owns decoding, safe Message construction and sequence identity. Known returns
+restore the same half. Cancellation destroys the actual moved half and partial
+buffer and remains sticky unknown. Every receive/decode failure becomes scalar
+`ExcessData` before SocketReader can retain, clone or broadcast it. Wrapper I/O
+errors use a fixed literal. SDK transient diagnostic construction is excluded
+from the numeric claim below.
+
+One narrow local-close EOF exception preserves normal teardown. Only the original
+worker records the private removals_acked fact after both actual readers are gone,
+all sequential RemoveMatch replies succeeded, good remains true and the original
+cleanup deadline is live. Only GatedWrite::close records close_started, conditional
+on that fact, immediately before forwarding the original close. A frame that
+has no primary bytes/admission may identify the concrete locked SDK's synthetic
+EOF only by ALL of BrokenPipe, no raw OS error and the exact literal
+`failed to read from socket`. The literal comparison uses a bounded stack
+formatter with no owned String. zbus 5.19's Unix fd_recvmsg converts bytes=0 to
+that error before returning an FD vector; rustix's ancillary RAII guard drains
+and drops any ancillary state. This is source-bound destruction evidence, not
+an observed returned no-FD vector. The separate n=0/no-FDs trait-fixture path is
+not actual SDK evidence. The locked async-io 2.6/polling Linux readiness path
+cannot synthesize the same literal; OS EPIPE and every other BrokenPipe refuse.
+The ordinary real clean-startup test must reach CleanExit and join in CI, so a
+changed dependency literal fails visibly and pins rather than silently granting
+completion. It still returns terminal UnexpectedEof, normalized to
+scalar ExcessData before SDK retention, and restores the same half on known
+return; it does not set or clear sticky refusal. Unarmed EOF, any partial primary
+or body, FDs, I/O/decode errors and cancellation still refuse. Cancellation drops
+the actual moved half even when both flags are set. Failed close/removals,
+late cleanup, incomplete executor/capture destruction or join still pin B. These
+two fixed private atomics and one local flag grant no completion or release.
+The same connection stays owned through reader/executor completion after close;
+dropping its task handle while a frame is pending would cancel it and pin.
+Only after that completion does the worker drop the connection and executor.
+
+The E2 storage envelope requires exactly one socket reader, one shared raw16
+broadcast queue and two clones of its base receiver. No filtered streams, object
+server/interfaces/names, extra signal sink, connection getter or concurrent
+control call may be added. Hello, AddMatch and RemoveMatch are sequential. Only
+one worker arm borrows a Message at a time and drops it before the next arm;
+reply/Error values die before another control call. Both readers drop before any
+RemoveMatch. Message/Data handle clones share their wire allocation.
+
+| Retained wire/text storage | Reserved maximum |
+| --- | ---: |
+| Shared base queue | 16F |
+| One worker borrowed Message | F |
+| Partial default receive Vec | F |
+| SocketReader current broadcast Message | F |
+| Capacity-one pending/control reply | F |
+| MethodError name/detail plus optional clone | 2F |
+| Hello owned unique-name copy | F |
+| Current fixed outgoing control serialization/scratch | F |
+| Total, counting receive and broadcast separately despite mutual exclusion | 24F = 1,572,864 |
+
+The prebuffer capacity is at most A. The pinned Rust 1.99.1 Vec growth paths
+keep its default receive capacity at most F (2A <= F); returning Message adopts
+that Vec rather than copying its body. MethodError name/detail byte ranges sum
+to at most F; its pending channel may clone those strings once, while the raw
+queue carries Ok(Message) handles. Fatal errors retain only the scalar. Dropping
+both active readers drains unread entries; the inactive base receiver has
+`await_active(false)` and cannot retain new frames. SocketReader's current
+Message is still counted separately.
+
+| Additional storage allowance | Reserved maximum |
+| --- | ---: |
+| Largest auth subphase, 20A + 16,384 | 344,064 |
+| At most four address/path/GUID staging copies, 4A + 256 | 65,792 |
+| Fixed private gate/counters/prefix state (compile-time size checked) | 8,192 |
+| Fixed post-auth control diagnostics | 4,096 |
+| Total supplement | 422,144 |
+
+Auth subphases do not overlap each other. The largest is REJECTED parse/join:
+Common A, gate A, borrowed-word Vec at most 16A+128 bytes, joined/Command text
+2A and 8,192 bytes scratch, below 20A+16,384. Collection/join temporaries die
+before later replace/format; that later subphase reserves Common A + gate A +
+accepted 2A + replacement 4A + formatted error 4A+512 + fixed 4,096. DATA,
+ERROR, unknown-command and line-acquisition subphases are smaller. This counts
+capacity and retained handoff storage, including empty vectors with capacity,
+rather than adding incompatible subphases or counting only string lengths.
+
+The deliberately pessimistic phase maxima are auth 1F, Hello 6F, sequential
+AddMatch 7F, raw running/close-before-reader-drop 22F and sequential removal/close
+7F, each with the supplement. No phase adds another copy/channel or overlapped
+control call on cancellation. The common bound is 24F + 422,144 = **1,995,008**,
+leaving 102,144 bytes within reserved B. A lifecycle that violates this topology
+must refuse this bound and obtain fresh G1/G3 agreement before qualification.
+
+**Production SDK allocator/metadata/whole-profile heap gate remains OPEN.**
+Decoded header Value trees, Signature/QuickFields and diagnostic construction,
+allocator rounding, queue/Arc/HashMap bookkeeping, stacks, runtime/reactor,
+FD/ancillary/kernel buffers and external tracing sinks are class M, outside this
+numeric claim. H bounds their input; H is not a metadata heap bound. Counters
+record admission, prefix/auth limits and sticky refusal only. They neither
+measure opaque allocations nor prove destruction. This dormant wire/text slice
+supplies no production activation, body routing, native method/callback adoption
+or whole-profile memory qualification.
+
+There are no Notice, PostBatch, cleared-token, native-ID, Original, Model, path,
+QtSeed, source/store, writer/ack or Desk/main-thread sink inputs. No Notify or
+CloseNotification is sent. G3 Staged bytes cannot activate this constructor.
+Agent-only completion while updates stay live, posted/results/write/sink work,
+GTK observation, clear/withdrawal/release, recurrence, rollback and replacement
+under load remain separate gates. The G1 prepared-startup exclusion/current
+profile/negative consumer and whole-profile qualification remain required before
+any production caller or ownership transition.

@@ -43,9 +43,10 @@ AGENTS = {
         members={'linux-x64': 'package/vendor/x86_64-unknown-linux-musl/bin/codex',
                  WINDOWS: 'package/vendor/x86_64-pc-windows-msvc/bin/codex.exe'},
         coverage='clear, draft preservation, literal at-mentions with file/mention completion, identity, resumed clear and pause before SessionStart, async question panels and their unviewed growth, '
-                 'two terminal sizes, animation modes and the session-start task instructions',
+                 'two terminal sizes, animation modes, manual rate-limit model choices and the session-start task instructions',
         timeout=180,
         suites=['test_clear_context_native.NativeCodexClear', 'test_codex_update.NativeCodexUpdate',
+                'test_codex_rate_limit.NativeCodexRateLimit',
                 'test_external_agents_native.NativeExternalAgents', 'test_codex_async_questions_native',
                 'test_codex_input_native',
                 'test_task_context_native.NativeCodexTaskContext', 'test_terminate_native.NativeCodexTermination'],

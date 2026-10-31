@@ -1,5 +1,6 @@
 import { For, Show } from "solid-js";
 import { current, countdown, pace, period, windowText, type UsageWindow } from "../lib/usage";
+import { tr } from "../../i18n";
 
 // Limit meters, ported from AccountUsage::Button::paintContents (tray/src/AccountUsage.h).
 // Per window: a meter (34 px, 20 compact), 6 px, the "5h 34%" text in the pace
@@ -59,7 +60,7 @@ export function UsageMeters(props: { windows: UsageWindow[]; loading?: boolean; 
   const countdownShown = (w?: UsageWindow) => indicator() === "marker-countdown" && !props.compact && !!w && current(w) && w.resetsIn !== null;
   return (
     <span class="usage-meters" classList={{ compact: props.compact }}>
-      <Show when={props.loading || props.windows.length} fallback={<span class="um-summary">{props.summary ?? "limits n/a"}</span>}>
+      <Show when={props.loading || props.windows.length} fallback={<span class="um-summary">{props.summary ?? tr("limits n/a")}</span>}>
         <For each={slots()}>{(w) => {
           const fresh = () => !!w && current(w);
           const tone = () => (w && fresh() ? pace(w).tone : undefined);

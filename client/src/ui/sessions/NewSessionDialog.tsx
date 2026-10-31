@@ -1,4 +1,5 @@
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, on, onCleanup, type JSX } from "solid-js";
+import { trText } from "../../text";
 import * as bridge from "../../bridge";
 import type { PathStyle } from "../../types";
 import { AgentGlyph, Icon } from "../lib/icons";
@@ -398,7 +399,7 @@ function NewSessionForm(props: { s: () => NewSessionState; popup: () => string |
             <span />
             <div class="ns-src-detail">
               <div class="mono ns-path ell" title={s().folderPath} style={{ visibility: s().folderPath ? "visible" : "hidden" }}>{s().folderPath || " "}</div>
-              <div class="ns-preview" classList={{ warn: !!form()?.outside_project }} title={form()?.preview || undefined}>{form()?.preview ?? ""}</div>
+              <div class="ns-preview" classList={{ warn: !!form()?.outside_project }} title={form()?.preview ? trText(form()!.preview!) : undefined}>{form()?.preview ? trText(form()!.preview!) : ""}</div>
             </div>
           </div>
         </Show>
@@ -438,7 +439,7 @@ function NewSessionForm(props: { s: () => NewSessionState; popup: () => string |
                 </Show>
               </div>
             </div>
-            <div class="mono ns-wt-target" title={form()?.worktree_tooltip || undefined}>{form()?.worktree_target ?? ""}</div>
+            <div class="mono ns-wt-target" title={form()?.worktree_tooltip ? trText(form()!.worktree_tooltip!) : undefined}>{form()?.worktree_target ?? ""}</div>
           </div>
         </div>
 
@@ -505,11 +506,11 @@ function NewSessionForm(props: { s: () => NewSessionState; popup: () => string |
             aria-describedby={form()?.name_problem ? "ns-name-problem" : undefined} onInput={(e) => act.setName(e.currentTarget.value)} />
         </div>
         <Show when={form()?.name_problem}>
-          <div class="form-row"><span /><span id="ns-name-problem" class="ns-status">{form()?.name_problem}</span></div>
+          <div class="form-row"><span /><span id="ns-name-problem" class="ns-status">{form()?.name_problem ? trText(form()!.name_problem!) : ""}</span></div>
         </Show>
         <div class="form-row">
           <span />
-          <label class="check" title={form()?.open_terminal_tooltip || undefined}>
+          <label class="check" title={form()?.open_terminal_tooltip ? trText(form()!.open_terminal_tooltip) : undefined}>
             <input type="checkbox" data-keys="check" checked={s().openTerminal} disabled={!(form()?.open_terminal_enabled ?? false)} onChange={(e) => act.setOpenTerminal(e.currentTarget.checked)} />
             {tr("Open terminal window")}
           </label>
@@ -523,7 +524,7 @@ function NewSessionForm(props: { s: () => NewSessionState; popup: () => string |
           <button type="button" class="btn" onClick={() => act.openMachines()}>{tr("Open Machines")}</button>
         </Show>
         <button type="button" class="btn" disabled={!(form()?.cancel_enabled ?? true)} onClick={() => closeNewSession()}>{tr("Cancel")}</button>
-        <button type="submit" class="btn primary ns-start" disabled={!form()?.start_enabled || s().starting || s().submitted}>{form()?.start_text ?? tr("Start session")}</button>
+        <button type="submit" class="btn primary ns-start" disabled={!form()?.start_enabled || s().starting || s().submitted}>{form() ? trText(form()!.start_text) : tr("Start session")}</button>
       </div>
     </form>
   );

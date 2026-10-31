@@ -1,5 +1,6 @@
 import { createSignal } from "solid-js";
 import type { Target } from "../types";
+import { trNoop, tr } from "../i18n";
 
 export interface NativeBinding { catalog_key: string; target: Target }
 export interface NativeRequest extends NativeBinding { nonce: string }
@@ -15,8 +16,8 @@ export interface NativeCalls {
 }
 
 export const NATIVE_OFFLINE = "Native UI is unavailable while this machine is offline.";
-export const NATIVE_OPEN = "Open the native workspace to manage DeepSeek sessions and settings.";
-export const NATIVE_CONNECTING = "Connecting to native DeepSeek UI…";
+export const NATIVE_OPEN: string = trNoop("Open the native workspace to manage DeepSeek sessions and settings.");
+export const NATIVE_CONNECTING: string = trNoop("Connecting to native DeepSeek UI…");
 export const NATIVE_FAILED = "Native UI could not load. Use Reload to reconnect, or open it in your browser.";
 
 const identity = (binding: NativeBinding | undefined) => binding && JSON.stringify([
@@ -26,7 +27,7 @@ const identity = (binding: NativeBinding | undefined) => binding && JSON.stringi
 /** One selected binding, one in-flight lookup and one coalesced next request.
  * Native profiles live in Rust's bounded cache, never a per-session JS map. */
 export function createNativeUi(calls: NativeCalls, fresh: () => string = () => crypto.randomUUID()) {
-  const [status, setStatus] = createSignal<{ status: NativePhase; text: string }>({ status: "idle", text: NATIVE_OPEN });
+  const [status, setStatus] = createSignal<{ status: NativePhase; text: string }>({ status: "idle", text: tr(NATIVE_OPEN) });
   const [request, setRequest] = createSignal<NativeRequest>();
   let binding: NativeBinding | undefined, signature: string | undefined;
   let current: NativeRequest | undefined, online = false, active = false, suspended = false;
@@ -34,7 +35,7 @@ export function createNativeUi(calls: NativeCalls, fresh: () => string = () => c
   let retiring: Promise<void> = Promise.resolve();
   let rectangle: Omit<NativeBounds, "nonce"> | undefined;
   let browserIntent: string | undefined;
-  let currentText = NATIVE_OPEN;
+  let currentText = tr(NATIVE_OPEN);
   let placement: Promise<void> | undefined, placementDirty = false;
   let retirePending = false, retireFailed = false;
   let browserOpening = false;
@@ -83,7 +84,7 @@ export function createNativeUi(calls: NativeCalls, fresh: () => string = () => c
     setRequest(current);
     needed = !!current && online;
     browserIntent = undefined;
-    update(!binding || online ? "idle" : "offline", !binding || online ? NATIVE_OPEN : NATIVE_OFFLINE);
+    update(!binding || online ? "idle" : "offline", tr(!binding || online ? NATIVE_OPEN : NATIVE_OFFLINE));
   };
   const browser = async () => {
     const mine = current;

@@ -151,6 +151,221 @@ fn abort_is_only_negative_reconciliation_intent_and_never_reopens_writers() {
     assert!(super::super::store::writer_active(&location).is_err());
 }
 
+// Complete synthetic fixture state, including schema and every table/column.
+// This is deliberately broader than the prepared journal mutation under test.
+fn database_snapshot(
+    db: &Connection,
+) -> std::collections::BTreeMap<String, Vec<Vec<rusqlite::types::Value>>> {
+    let mut names: Vec<String> = db
+        .prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    names.push("sqlite_schema".into());
+    names
+        .into_iter()
+        .map(|name| {
+            let mut stmt = db
+                .prepare(&format!("SELECT * FROM \"{}\"", name.replace('"', "\"\"")))
+                .unwrap();
+            let columns = stmt.column_count();
+            let rows = stmt
+                .query_map([], |row| (0..columns).map(|i| row.get(i)).collect())
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            (name, rows)
+        })
+        .collect()
+}
+
+#[test]
+fn persisted_abort_after_restart_changes_only_the_original_phase_and_has_no_follow_up() {
+    let (_temp, location, mut store, epoch) = fixture();
+    let presence = super::super::presence_admission::fence(&location).unwrap();
+    let lock = location.handoff_lock().unwrap();
+    drop(save(&location, &lock, &presence, &mut store, binding(&epoch)).unwrap());
+    drop(store); // No Ticket or original observation survives the old process.
+    let current_epoch = uuid::Uuid::new_v4().to_string();
+    let mut store = Store::open(&location, &current_epoch).unwrap();
+    store.db.execute_batch("CREATE TABLE recovery_sentinel (id INTEGER PRIMARY KEY, value BLOB); INSERT INTO recovery_sentinel VALUES(1,X'00FF');").unwrap();
+    let original = inspect_db(&store.db, &location.configuration)
+        .unwrap()
+        .unwrap();
+    let mut expected = database_snapshot(&store.db);
+    expected.get_mut("desktop_producer_prepared").unwrap()[0][3] =
+        "abort_requested".to_owned().into();
+    for _ in 0..2 {
+        let result = request_abort_original(
+            &location,
+            &lock,
+            &presence,
+            &mut store,
+            &original,
+            &current_epoch,
+        )
+        .unwrap();
+        assert_eq!(result.phase(), Phase::AbortRequested);
+        assert_eq!(result.digest, original.digest);
+        assert_eq!(result.binding.service_epoch, epoch);
+        assert_eq!(database_snapshot(&store.db), expected);
+        assert!(super::super::store::writer_active(&location).is_err());
+        assert!(super::super::startup_exclusion::Startup::hold(&location).is_err());
+    }
+    drop(store);
+    let next_epoch = uuid::Uuid::new_v4().to_string();
+    let mut store = Store::open(&location, &next_epoch).unwrap();
+    let before = database_snapshot(&store.db);
+    assert!(request_abort_original(
+        &location,
+        &lock,
+        &presence,
+        &mut store,
+        &original,
+        &current_epoch
+    )
+    .is_err());
+    request_abort_original(
+        &location,
+        &lock,
+        &presence,
+        &mut store,
+        &original,
+        &next_epoch,
+    )
+    .unwrap();
+    assert_eq!(database_snapshot(&store.db), before);
+    assert!(super::super::store::writer_active(&location).is_err());
+}
+
+#[test]
+fn recovered_abort_refuses_wrong_locks_presence_and_current_epoch_without_any_write() {
+    let (_temp, location, mut store, epoch) = fixture();
+    let (_other_temp, other, _other_store, _) = fixture();
+    let presence = super::super::presence_admission::fence(&location).unwrap();
+    let other_presence = super::super::presence_admission::fence(&other).unwrap();
+    let lock = location.handoff_lock().unwrap();
+    let other_lock = other.handoff_lock().unwrap();
+    drop(save(&location, &lock, &presence, &mut store, binding(&epoch)).unwrap());
+    let original = inspect_db(&store.db, &location.configuration)
+        .unwrap()
+        .unwrap();
+    let before = database_snapshot(&store.db);
+    assert!(request_abort_original(
+        &location,
+        &other_lock,
+        &presence,
+        &mut store,
+        &original,
+        &epoch
+    )
+    .is_err());
+    assert!(request_abort_original(
+        &location,
+        &lock,
+        &other_presence,
+        &mut store,
+        &original,
+        &epoch
+    )
+    .is_err());
+    for wrong in [
+        "".to_owned(),
+        uuid::Uuid::nil().to_string(),
+        uuid::Uuid::new_v4().to_string(),
+    ] {
+        assert!(
+            request_abort_original(&location, &lock, &presence, &mut store, &original, &wrong)
+                .is_err()
+        );
+    }
+    assert_eq!(database_snapshot(&store.db), before);
+    request_abort_original(&location, &lock, &presence, &mut store, &original, &epoch).unwrap();
+    let before = database_snapshot(&store.db);
+    // Even an already-aborted original must pass the independent current check.
+    assert!(request_abort_original(
+        &location,
+        &lock,
+        &presence,
+        &mut store,
+        &original,
+        &uuid::Uuid::new_v4().to_string()
+    )
+    .is_err());
+    assert_eq!(database_snapshot(&store.db), before);
+}
+
+#[test]
+fn recovered_abort_refuses_foreign_or_changed_original_without_any_write() {
+    for change in 0..5 {
+        let (_temp, location, mut store, epoch) = fixture();
+        let presence = super::super::presence_admission::fence(&location).unwrap();
+        let lock = location.handoff_lock().unwrap();
+        drop(save(&location, &lock, &presence, &mut store, binding(&epoch)).unwrap());
+        let mut original = inspect_db(&store.db, &location.configuration)
+            .unwrap()
+            .unwrap();
+        match change {
+            0 => original.binding.request_id = uuid::Uuid::new_v4().to_string(),
+            1 => original.digest = "f".repeat(64),
+            2 => original.binding.configuration = "b".repeat(64),
+            3 => {
+                store
+                    .db
+                    .execute("UPDATE service SET configuration=?1", ["b".repeat(64)])
+                    .unwrap();
+            }
+            _ => {
+                let mut changed = binding(&epoch);
+                changed.frontend.instance_epoch = uuid::Uuid::new_v4().to_string();
+                let bytes = serde_json::to_vec(&changed).unwrap();
+                store
+                    .db
+                    .execute(
+                        "UPDATE desktop_producer_prepared SET binding=?1,digest=?2",
+                        params![std::str::from_utf8(&bytes).unwrap(), digest(&bytes)],
+                    )
+                    .unwrap();
+            }
+        }
+        let before = database_snapshot(&store.db);
+        assert!(
+            request_abort_original(&location, &lock, &presence, &mut store, &original, &epoch)
+                .is_err()
+        );
+        assert_eq!(database_snapshot(&store.db), before);
+        assert!(super::super::store::writer_active(&location).is_err());
+    }
+}
+
+#[test]
+fn recovered_abort_refuses_missing_malformed_and_unavailable_journal_without_any_write() {
+    for change in 0..5 {
+        let (_temp, location, mut store, epoch) = fixture();
+        let presence = super::super::presence_admission::fence(&location).unwrap();
+        let lock = location.handoff_lock().unwrap();
+        drop(save(&location, &lock, &presence, &mut store, binding(&epoch)).unwrap());
+        let original = inspect_db(&store.db, &location.configuration)
+            .unwrap()
+            .unwrap();
+        match change {
+            0 => store.db.execute_batch("DELETE FROM desktop_producer_prepared").unwrap(),
+            1 => store.db.execute_batch("UPDATE desktop_producer_prepared SET digest='invalid'").unwrap(),
+            2 => store.db.execute_batch("PRAGMA ignore_check_constraints=ON; UPDATE desktop_producer_prepared SET phase='complete'").unwrap(),
+            3 => store.db.execute_batch("ALTER TABLE desktop_producer_prepared RENAME TO hidden_prepared; CREATE VIEW desktop_producer_prepared AS SELECT * FROM hidden_prepared").unwrap(),
+            _ => store.db.execute_batch("DROP TABLE desktop_producer_prepared").unwrap(),
+        }
+        let before = database_snapshot(&store.db);
+        assert!(
+            request_abort_original(&location, &lock, &presence, &mut store, &original, &epoch)
+                .is_err()
+        );
+        assert_eq!(database_snapshot(&store.db), before);
+    }
+}
+
 #[test]
 fn wrong_lock_presence_configuration_and_epoch_refuse_before_commit() {
     let (_temp, location, mut store, epoch) = fixture();
@@ -368,27 +583,93 @@ fn committed_preparation_survives_an_actual_process_exit_without_reply_or_drop()
     assert!(String::from_utf8_lossy(&output.stdout)
         .contains(&format!("PREPARED_FIXTURE_COMMITTED {REQUEST}")));
     assert!(super::super::store::writer_active(&location).is_err());
-    let store = Store::open(&location, &uuid::Uuid::new_v4().to_string()).unwrap();
+    let current_epoch = uuid::Uuid::new_v4().to_string();
+    let mut store = Store::open(&location, &current_epoch).unwrap();
     let snapshot = inspect_db(&store.db, &location.configuration)
         .unwrap()
         .unwrap();
     assert_eq!(snapshot.request_id(), REQUEST);
     assert_eq!(snapshot.phase(), Phase::Prepared);
+    let presence = super::super::presence_admission::fence(&location).unwrap();
+    let lock = location.handoff_lock().unwrap();
+    let original_bytes = bytes(&store);
+    let result = request_abort_original(
+        &location,
+        &lock,
+        &presence,
+        &mut store,
+        &snapshot,
+        &current_epoch,
+    )
+    .unwrap();
+    assert_eq!(result.phase(), Phase::AbortRequested);
+    assert_eq!(bytes(&store), original_bytes);
+    assert!(super::super::store::writer_active(&location).is_err());
+    assert!(super::super::startup_exclusion::Startup::hold(&location).is_err());
 }
 
-#[test]
-fn original_session_is_retained_while_its_exact_binding_is_durably_prepared() {
+// Every probe uses a real private Unix listener. The original channel remains
+// open in the returned fixture; replacing only the canonical reply cannot
+// manufacture a new association on that channel.
+struct Bound {
+    registry: super::super::producer_session::Registry,
+    session: Session,
+    peer: std::os::unix::net::UnixStream,
+    listener: std::os::unix::net::UnixListener,
+    responder: std::sync::Arc<zerus_client_core::desktop::Responder>,
+}
+fn answer_probe(
+    listener: &std::os::unix::net::UnixListener,
+    responder: &zerus_client_core::desktop::Responder,
+    changed: usize,
+) {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        time::{Duration, Instant},
+    };
+    let end = Instant::now() + Duration::from_secs(3);
+    let mut canonical = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < end => {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            result => panic!("private canonical accept {result:?}"),
+        }
+    };
+    canonical
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    canonical
+        .set_write_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    let mut query = Vec::new();
+    BufReader::new(&mut canonical)
+        .read_until(b'\n', &mut query)
+        .unwrap();
+    let reply = responder.reply(query.strip_suffix(b"\n").unwrap()).unwrap();
+    let mut value: serde_json::Value = serde_json::from_slice(&reply).unwrap();
+    match changed {
+        0 => (),
+        1 => value["instance_epoch"] = uuid::Uuid::new_v4().to_string().into(),
+        2 => value["build"]["source_commit"] = "c".repeat(40).into(),
+        3 => value["configuration"] = "c".repeat(64).into(),
+        4 => value["replay"] = true.into(),
+        5 => value["writer_epoch"] = uuid::Uuid::new_v4().to_string().into(),
+        _ => unreachable!(),
+    }
+    writeln!(canonical, "{value}").unwrap();
+}
+fn bound(location: &Location, epoch: &str, path: &std::path::Path) -> Bound {
     use super::super::producer_session::Registry;
     use std::{
         io::{BufRead, BufReader, Write},
         os::unix::net::{UnixListener, UnixStream},
         sync::Arc,
-        thread,
         time::{Duration, Instant},
     };
     use zerus_client_core::desktop::{self, producer::Challenge, Responder};
-    let (temp, location, mut store, epoch) = fixture();
-    let source = binding(&epoch);
+    let source = binding(epoch);
     let responder = Arc::new(Responder::new(
         source.frontend.application.clone(),
         source.frontend.build.clone(),
@@ -400,16 +681,17 @@ fn original_session_is_retained_while_its_exact_binding_is_durably_prepared() {
     let query = desktop::query(&source.frontend.nonce).unwrap();
     let expected =
         serde_json::from_slice(&responder.reply(&query[..query.len() - 1]).unwrap()).unwrap();
-    let path = temp.path().join("canonical");
-    let listener = UnixListener::bind(&path).unwrap();
+    let listener = UnixListener::bind(path).unwrap();
     listener.set_nonblocking(true).unwrap();
-    let registry = Registry::new(location.configuration.clone(), epoch).unwrap();
+    let registry = Registry::new(location.configuration.clone(), epoch.into()).unwrap();
     let (stream, mut peer) = UnixStream::pair().unwrap();
+    // XNU may reject setsockopt after the other endpoint has closed: configure
+    // the timeout before handing over the channel, never after refusal.
     peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
     peer.set_write_timeout(Some(Duration::from_secs(2)))
         .unwrap();
     let pending = registry.begin(BufReader::new(stream), expected).unwrap();
-    let frontend = thread::spawn(move || {
+    let frontend = std::thread::spawn(move || {
         let mut offer = String::new();
         BufReader::new(&mut peer).read_line(&mut offer).unwrap();
         let offer: serde_json::Value = serde_json::from_str(&offer).unwrap();
@@ -417,49 +699,163 @@ fn original_session_is_retained_while_its_exact_binding_is_durably_prepared() {
         assert!(responder.install_challenge(challenge, Instant::now()));
         let ready = serde_json::json!({"abi":offer["abi"],"version":1,"op":"ready","sequence":1,"configuration":offer["configuration"],"instance_epoch":offer["expected"]["instance_epoch"],"challenge":offer["challenge"]});
         writeln!(peer, "{ready}").unwrap();
-        let end = Instant::now() + Duration::from_secs(3);
-        let mut canonical = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < end => {
-                    thread::sleep(Duration::from_millis(2))
-                }
-                result => panic!("private canonical accept {result:?}"),
-            }
-        };
-        canonical
-            .set_read_timeout(Some(Duration::from_secs(1)))
-            .unwrap();
-        canonical
-            .set_write_timeout(Some(Duration::from_secs(1)))
-            .unwrap();
-        let mut query = Vec::new();
-        BufReader::new(&mut canonical)
-            .read_until(b'\n', &mut query)
-            .unwrap();
-        canonical
-            .write_all(&responder.reply(query.strip_suffix(b"\n").unwrap()).unwrap())
-            .unwrap();
-        peer
+        answer_probe(&listener, &responder, 0);
+        (peer, listener, responder)
     });
-    let session = pending.bind(&path).unwrap();
-    let _peer = frontend.join().unwrap();
-    let presence = super::super::presence_admission::fence(&location).unwrap();
-    let lock = location.handoff_lock().unwrap();
-    let _ticket =
-        ticket(prepare(&location, &lock, &presence, &mut store, &session, REQUEST).unwrap());
+    let session = pending.bind(path).unwrap();
+    let (peer, listener, responder) = frontend.join().unwrap();
+    Bound {
+        registry,
+        session,
+        peer,
+        listener,
+        responder,
+    }
+}
+fn assert_ended(
+    registry: &super::super::producer_session::Registry,
+    peer: &mut std::os::unix::net::UnixStream,
+    epoch: &str,
+) {
+    use std::{
+        io::{BufReader, Read},
+        os::unix::net::UnixStream,
+    };
+    assert_eq!(peer.read(&mut [0]).unwrap(), 0);
+    let (stream, _peer) = UnixStream::pair().unwrap();
+    // Only the real channel's destruction may have released this exact slot.
+    let pending = registry
+        .begin(BufReader::new(stream), binding(epoch).frontend)
+        .unwrap();
+    drop(pending);
+}
+
+#[test]
+fn original_session_is_retained_while_its_exact_binding_is_durably_prepared() {
+    let (temp, location, mut store, epoch) = fixture();
+    let path = temp.path().join("canonical");
+    let Bound {
+        registry,
+        session,
+        mut peer,
+        listener,
+        responder,
+    } = bound(&location, &epoch, &path);
+    let frontend = std::thread::spawn(move || answer_probe(&listener, &responder, 0));
+    let context = Context::at(&location, session, &path).unwrap();
+    frontend.join().unwrap();
+    assert!(super::super::startup_exclusion::Startup::hold(&location).is_err());
+    let _ticket = ticket(prepare(&location, &mut store, &context, REQUEST).unwrap());
     let snapshot = inspect_db(&store.db, &location.configuration)
         .unwrap()
         .unwrap();
-    assert_eq!(snapshot.binding.frontend, *session.identity().hello());
+    assert_eq!(
+        snapshot.binding.frontend,
+        *context.session.identity().hello()
+    );
     assert_eq!(
         snapshot.binding.producer_epoch,
-        session.identity().challenge().producer_epoch
+        context.session.identity().challenge().producer_epoch
     );
-    let (stream, _other_peer) = UnixStream::pair().unwrap();
-    assert!(registry
-        .begin(BufReader::new(stream), source.frontend)
-        .is_err());
-    drop(session);
+    drop(context);
+    assert_ended(&registry, &mut peer, &epoch);
     assert!(super::super::store::writer_active(&location).is_err());
+    assert!(super::super::startup_exclusion::Startup::hold(&location).is_err());
+}
+
+#[test]
+fn replacement_identity_or_changed_canonical_state_consumes_the_stale_session_without_preparing() {
+    for changed in 1..=5 {
+        let (temp, location, store, epoch) = fixture();
+        let path = temp.path().join("canonical");
+        let Bound {
+            registry,
+            session,
+            mut peer,
+            listener,
+            responder,
+        } = bound(&location, &epoch, &path);
+        let frontend = std::thread::spawn(move || answer_probe(&listener, &responder, changed));
+        assert!(Context::at(&location, session, &path).is_err());
+        frontend.join().unwrap();
+        assert_ended(&registry, &mut peer, &epoch);
+        assert!(inspect_db(&store.db, &location.configuration)
+            .unwrap()
+            .is_none());
+        assert!(super::super::startup_exclusion::Startup::hold(&location).is_ok());
+        assert!(super::super::presence_admission::fence(&location).is_ok());
+    }
+}
+
+#[test]
+fn missing_canonical_endpoint_is_not_a_preparation_and_releases_only_its_owned_context() {
+    let (temp, location, store, epoch) = fixture();
+    let path = temp.path().join("canonical");
+    let Bound {
+        registry,
+        session,
+        mut peer,
+        listener,
+        responder: _,
+    } = bound(&location, &epoch, &path);
+    drop(listener);
+    std::fs::remove_file(&path).unwrap();
+    assert!(Context::at(&location, session, &path).is_err());
+    assert_ended(&registry, &mut peer, &epoch);
+    assert!(inspect_db(&store.db, &location.configuration)
+        .unwrap()
+        .is_none());
+    assert!(super::super::startup_exclusion::Startup::hold(&location).is_ok());
+}
+
+#[test]
+fn replacement_startup_holds_the_boundary_before_any_preparer_canonical_io() {
+    let (temp, location, store, epoch) = fixture();
+    let path = temp.path().join("canonical");
+    let Bound {
+        registry,
+        session,
+        mut peer,
+        listener,
+        responder: _,
+    } = bound(&location, &epoch, &path);
+    let startup = super::super::startup_exclusion::Startup::hold(&location).unwrap();
+    assert!(Context::at(&location, session, &path).is_err());
+    assert_ended(&registry, &mut peer, &epoch);
+    // Refusal occurs at the actual held boundary, before any fresh socket query.
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    assert!(location.handoff_lock().is_err());
+    assert!(inspect_db(&store.db, &location.configuration)
+        .unwrap()
+        .is_none());
+    drop(startup);
+    assert!(location.handoff_lock().is_ok());
+    assert!(super::super::presence_admission::fence(&location).is_ok());
+}
+
+#[test]
+fn both_retained_phases_block_replacement_after_all_preparer_locks_are_released() {
+    let (_temp, location, mut store, epoch) = fixture();
+    let presence = super::super::presence_admission::fence(&location).unwrap();
+    let lock = location.handoff_lock().unwrap();
+    let original = ticket(save(&location, &lock, &presence, &mut store, binding(&epoch)).unwrap());
+    drop(lock);
+    assert!(super::super::startup_exclusion::Startup::hold(&location).is_err());
+    let lock = location.handoff_lock().unwrap();
+    request_abort(&location, &lock, &presence, &mut store, &original).unwrap();
+    let before = bytes(&store);
+    drop(lock);
+    drop(presence);
+    assert!(super::super::startup_exclusion::Startup::hold(&location).is_err());
+    assert_eq!(bytes(&store), before);
+    assert_eq!(
+        inspect_db(&store.db, &location.configuration)
+            .unwrap()
+            .unwrap()
+            .phase(),
+        Phase::AbortRequested
+    );
 }

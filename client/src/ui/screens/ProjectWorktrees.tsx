@@ -17,6 +17,8 @@ import { localWindowsFolder } from "../sessions/folder-launch";
 import { native, of, sameKey } from "../sessions/paths";
 import { text } from "./tasks-ui";
 import "../styles/project-worktrees.css";
+import { tr } from "../../i18n";
+import { captionText } from "../sessions/SessionCard";
 
 /** The mockup's WorktreePanel, using the existing picker reads/status and the
  * same guarded review and session actions as the Inspector's Worktrees tab. */
@@ -48,11 +50,11 @@ export default function ProjectWorktrees(props: { folder?: Folder; project: stri
   createEffect(on(() => context()?.key, () => {
     reader()?.dispose(); setMenu(undefined); const target = context();
     if (!target) {setReader(undefined); return;}
-    const panel = new WorktreePicker({snapshot: () => bridge.worktreeSnapshot(target.computer, target.path), catalog: (refresh) => lane.read(() => target.key === context()?.key && online() ? bridge.worktreeCatalog(target.computer, target.path, refresh) : Promise.reject("Folder changed."))}, target.path, target.machine);
+    const panel = new WorktreePicker({snapshot: () => bridge.worktreeSnapshot(target.computer, target.path), catalog: (refresh) => lane.read(() => target.key === context()?.key && online() ? bridge.worktreeCatalog(target.computer, target.path, refresh) : Promise.reject(tr("Folder changed.")))}, target.path, target.machine);
     panel.onChange = () => setVersion((n) => n + 1); setReader(panel); panel.show(online());
   }));
   createEffect(on(online, (yes, old) => {if (yes && old === false) reader()?.show(true);}));
-  createEffect(on(worktreeReviewDialog, (next, old) => {if (!next && old) {returnFocus = old.origin; reader()?.refresh(online());}}));
+  createEffect(on(worktreeReviewDialog, (next, old) => {if (!next && old) {returnFocus = old.origin; reminder.refresh(); reader()?.refresh(online());}}));
   createEffect(() => {
     const reading = v()?.reading;
     if (!returnFocus || reading) return;
@@ -70,8 +72,8 @@ export default function ProjectWorktrees(props: { folder?: Folder; project: stri
   const menu = (event: MouseEvent, row: Record<string, unknown>) => {
     event.preventDefault(); const target = context(), path = text(row.path); reader()?.select(path); const origin = event.currentTarget as HTMLElement;
     setMenu({x: event.clientX, y: event.clientY, items: [
-      ...(row.kind === "linked" ? [{label: row.available === false ? "Forget missing worktree…" : "Remove worktree…", icon: "trash", danger: true, disabled: !canCleanup(), action: () => {if (target?.key === context()?.key) review(path, origin);}}, {separator: true as const}] : []),
-      {label: "Copy path", icon: "copy", action: () => {void copy(path);}},
+      ...(row.kind === "linked" ? [{label: row.available === false ? tr("Forget missing worktree…") : tr("Remove worktree…"), icon: "trash", danger: true, disabled: !canCleanup(), action: () => {if (target?.key === context()?.key) review(path, origin);}}, {separator: true as const}] : []),
+      {label: tr("Copy path"), icon: "copy", action: () => {void copy(path);}},
     ]});
   };
   // One pass and at most fifty shown children per displayed checkout, as in
@@ -87,16 +89,16 @@ export default function ProjectWorktrees(props: { folder?: Folder; project: stri
   });
   const count = (path: string) => v()?.rows.find((r) => r.path === path)?.sessions ?? 0;
   const selectSessions = (row: Record<string, unknown>) => {const target = context(); if (target) filterFolder({computer: target.computer, path: text(row.path), checkout: row.kind !== "folder", style: style()});};
-  return <section class="wtp" aria-label="Folder and worktrees">
-    <header class="wtp-head"><b>Folder and worktrees</b><button ref={refreshButton} class="icon-btn small" title="Refresh" aria-label="Refresh" disabled={!v()?.refreshEnabled} onClick={() => reader()?.refresh(online())}><Icon name="refresh-cw" size={13} /></button><span class="grow" /><button class="btn small" disabled={!context()} onClick={clearFolderFilter}>All sessions</button><button ref={cleanupButton} class="btn small" disabled={!canCleanup()} title={cleanup().title} onClick={(e) => review("", e.currentTarget)}>{cleanup().label}</button><button class="btn small" disabled={!v()?.useEnabled} onClick={() => {const target = context(), row = current(); if (target && row && v()?.useEnabled) void newSessionFromWorktree(props.project, target.computer, text(row.path));}}><Icon name="plus" size={12} />New session…</button></header>
-    <div class="wtp-status" classList={{warn: !!context() && (!online() || (!v()?.reading && !v()?.fresh) || data().partial === true || data().stale === true), danger: data().state === "folder_unavailable"}}>{v()?.status.replace(/\.?\nSnapshot:/u, ". Snapshot:") ?? (props.folder ? localWindowsFolder(props.folder, machineCards[""]) ? "Folder management is unavailable for this computer." : machineCards[""]?.host ? "The selected computer changed. Select it again." : "Waiting for this computer's identity." : "Select a folder.")}</div>
-    <Show when={context()}><ul class="wtp-tree" role="tree" aria-label="Checkouts"><For each={trees()}>{(row) => <li class="wtp-root" classList={{on: text(row.path) === v()?.selected, gone: row.available === false}} role="treeitem" aria-selected={text(row.path) === v()?.selected}>
-      <button class="wtp-row" onClick={() => reader()?.select(text(row.path))} onDblClick={() => selectSessions(row)} onContextMenu={(e) => menu(e, row)} title="Click to select; double-click to show its sessions">
+  return <section class="wtp" aria-label={tr("Folder and worktrees")}>
+    <header class="wtp-head"><b>{tr("Folder and worktrees")}</b><button ref={refreshButton} class="icon-btn small" title={tr("Refresh")} aria-label={tr("Refresh")} disabled={!v()?.refreshEnabled} onClick={() => reader()?.refresh(online())}><Icon name="refresh-cw" size={13} /></button><span class="grow" /><button class="btn small" disabled={!context()} onClick={clearFolderFilter}>{tr("All sessions")}</button><button ref={cleanupButton} class="btn small" disabled={!canCleanup()} title={cleanup().title} onClick={(e) => review("", e.currentTarget)}>{cleanup().label}</button><button class="btn small" disabled={!v()?.useEnabled} onClick={() => {const target = context(), row = current(); if (target && row && v()?.useEnabled) void newSessionFromWorktree(props.project, target.computer, text(row.path));}}><Icon name="plus" size={12} />{tr("New session…")}</button></header>
+    <div class="wtp-status" classList={{warn: !!context() && (!online() || (!v()?.reading && !v()?.fresh) || data().partial === true || data().stale === true), danger: data().state === "folder_unavailable"}}>{v()?.status.replace(/\.?\nSnapshot:/u, ". Snapshot:") ?? (props.folder ? localWindowsFolder(props.folder, machineCards[""]) ? tr("Folder management is unavailable for this computer.") : machineCards[""]?.host ? tr("The selected computer changed. Select it again.") : tr("Waiting for this computer's identity.") : tr("Select a folder."))}</div>
+    <Show when={context()}><ul class="wtp-tree" role="tree" aria-label={tr("Checkouts")}><For each={trees()}>{(row) => <li class="wtp-root" classList={{on: text(row.path) === v()?.selected, gone: row.available === false}} role="treeitem" aria-selected={text(row.path) === v()?.selected}>
+      <button class="wtp-row" onClick={() => reader()?.select(text(row.path))} onDblClick={() => selectSessions(row)} onContextMenu={(e) => menu(e, row)} title={tr("Click to select; double-click to show its sessions")}>
         <Icon name={row.kind === "main" ? "folder-git-2" : row.kind === "bare" ? "box" : row.kind === "folder" ? "folder" : "git-branch"} size={14} class="wtp-ico" />
-        <span class="wtp-title ell"><b>{row.kind === "main" ? "Main checkout" : row.kind === "bare" ? "Bare repository" : row.kind === "folder" ? "Folder" : "Linked worktree"}</b><Show when={text(row.branch)}> / {text(row.branch)}</Show><Show when={row.detached === true}> / detached {text(row.head).slice(0, 8)}</Show></span>
-        <Show when={row.locked === true}><span class="wtp-tag">(locked)</span></Show><Show when={row.prunable === true}><span class="wtp-tag warn">(prunable)</span></Show><Show when={row.available === false}><span class="wtp-tag danger">(unavailable)</span></Show><Show when={count(text(row.path))}>{(n) => <span class="wtp-tag">({n()} {n() === 1 ? "session" : "sessions"})</span>}</Show>
+        <span class="wtp-title ell"><b>{row.kind === "main" ? tr("Main checkout") : row.kind === "bare" ? tr("Bare repository") : row.kind === "folder" ? tr("Folder") : tr("Linked worktree")}</b><Show when={text(row.branch)}> / {text(row.branch)}</Show><Show when={row.detached === true}> / detached {text(row.head).slice(0, 8)}</Show></span>
+        <Show when={row.locked === true}><span class="wtp-tag">{tr("(locked)")}</span></Show><Show when={row.prunable === true}><span class="wtp-tag warn">{tr("(prunable)")}</span></Show><Show when={row.available === false}><span class="wtp-tag danger">{tr("(unavailable)")}</span></Show><Show when={count(text(row.path))}>{(n) => <span class="wtp-tag">({n()} {n() === 1 ? "session" : "sessions"})</span>}</Show>
       </button><div class="wtp-path mono ell" title={text(row.path)}>{native(text(row.path), style())}</div>
-      <Show when={related()(row).length}><ul class="wtp-kids" role="group"><For each={related()(row)}>{(session) => <li><button class="wtp-kid" onClick={() => {setSelectedKey(session.key); setDetailTab("activity"); setPage("sessions");}}><Icon name="corner-down-right" size={12} class="dim" /><span>{session.title}</span><span class="dim">({online() ? session.caption : `last recorded: ${session.caption}`})</span></button></li>}</For></ul></Show>
+      <Show when={related()(row).length}><ul class="wtp-kids" role="group"><For each={related()(row)}>{(session) => <li><button class="wtp-kid" onClick={() => {setSelectedKey(session.key); setDetailTab("activity"); setPage("sessions");}}><Icon name="corner-down-right" size={12} class="dim" /><span>{session.title}</span><span class="dim">({online() ? session.caption : tr("last recorded: %1", captionText(session.caption))})</span></button></li>}</For></ul></Show>
     </li>}</For></ul></Show>
   </section>;
 }

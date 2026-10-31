@@ -30,7 +30,7 @@ export default function MachineColorDialog(props: { alias: string; origin?: HTML
         setSetting(`machines/vivid/${props.alias}`, vivid()),
       ]);
       if (saved.every(Boolean)) props.close();
-      else toast("Label color", "The machine appearance could not be saved. Try again.", "warn", true);
+      else toast(tr("Label color"), tr("The machine appearance could not be saved. Try again."), "warn", true);
     } finally { setBusy(false); }
   };
   onMount(() => { dialog.showModal(); queueMicrotask(() => dialog.querySelector<HTMLInputElement>("input")?.focus()); });

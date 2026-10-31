@@ -61,15 +61,35 @@
   .cd-more { position: relative; overflow: hidden; align-self: flex-start; }
   .cd-more input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 
-  .acct-filter { gap: 10px; }
-  .acct-filter select { width: 260px; }
-  .acct-body { grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); }
-  .acct-row { display: flex; flex-direction: column; gap: 7px; width: 100%; padding: 10px 12px; border-radius: var(--z-radius-lg); border: 1px solid transparent; text-align: left; }
-  .acct-row:hover { background: var(--z-color-row-hover); }
-  .acct-row.on { background: var(--z-color-row-selected); border-color: var(--z-color-row-selected-border); }
-  .acct-row b { font-size: var(--fs-md); font-weight: 600; }
-  .acct-row-tags { gap: 6px; }
-  .acct-machines { gap: 4px; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
+  /* Accounts (owner request): the Sessions list's pane on the left, whose header,
+     filter and count stay put while only the cards scroll; the detail is its own
+     scrolling pane, styled like Activity's. */
+  .acct-page { flex: 1; min-width: 0; min-height: 0; display: flex; }
+  .acct-pane { width: var(--pane-w); flex: none; position: relative; display: flex; flex-direction: column; min-height: 0; background: var(--z-color-pane); border-right: 1px solid var(--z-color-divider); }
+  .acct-head h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .acct-summary { padding: 0 4px; font-size: var(--fs-xs); }
+  .acct-filter { width: 100%; }
+  .acct-count { gap: 6px; min-height: 16px; padding: 0 4px; font-size: var(--fs-xs); }
+  .acct-scroll { flex: 1; min-height: 0; margin: 0 -4px; padding: 2px 4px 8px; overflow-y: auto; overflow-x: hidden; outline: none;
+    scrollbar-gutter: stable; scrollbar-width: thin; scrollbar-color: var(--z-color-scrollbar) transparent; }
+  .acct-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; margin: 8px; background: var(--z-color-surface); border: 1px solid var(--z-color-divider); border-radius: 12px; overflow: hidden; }
+  .acct-main-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 22px 28px; scrollbar-width: thin; scrollbar-color: var(--z-color-scrollbar) transparent; }
+  /* Account cards follow the prototype's session cards: a 34 px leading tile,
+     card plate and border, 10 px radius, 9/10/8 padding and 6 px between cards.
+     Plate, hover and border are the Overview session cards' tokens; selection is
+     the session list's. */
+  .acct-row { display: grid; grid-template-columns: 34px minmax(0, 1fr); column-gap: 10px; row-gap: 4px; align-items: center; width: 100%; margin: 0 0 6px; padding: 9px 10px 8px; border-radius: var(--z-radius-xl); border: 1px solid var(--z-color-card-border); background: var(--z-color-card); text-align: left; }
+  .acct-row:hover { background: var(--z-color-card-hover); }
+  .acct-row.on, .acct-row.on:hover { background: var(--z-color-row-selected); border-color: var(--z-color-row-selected-border); }
+  .acct-row > :not(.acct-av) { grid-column: 2; }
+  .acct-av { grid-column: 1; grid-row: 1 / span 3; align-self: start; padding-top: 1px; }
+  .acct-ptile { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; border: 1px solid var(--z-color-card-border); background: var(--z-color-field); color: var(--agent); }
+  .acct-l1 { display: flex; align-items: center; gap: 7px; min-width: 0; height: 22px; }
+  .acct-l1 b { font-size: var(--fs-md); font-weight: 600; }
+  .acct-row-tags { gap: 6px; min-width: 0; }
+  /* Machine chips wrap inside the card, so duplicate tags never clip. */
+  .acct-machines { flex: 1 1 auto; gap: 4px; row-gap: 4px; min-width: 0; flex-wrap: wrap; }
+  .acct-row-tags { align-items: flex-start; }
   .acct-machines .mach-label { height: 18px; font-size: var(--fs-xs); }
   .acct-perm { flex: none; display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: var(--z-radius-sm); background: var(--z-color-hover); color: var(--z-color-text-3); font-size: var(--fs-xs); }
   .acct-perm.bypass { background: var(--z-color-danger-bg); color: var(--z-color-danger); }
@@ -132,7 +152,7 @@
   .acct-marker { position: absolute; top: -3px; bottom: -3px; left: var(--x); width: 2px; border-radius: 1px; background: var(--z-color-text); translate: -1px 0; }
   .acct-pace { font-size: var(--fs-xs); }
   .acct-pace.warn { color: var(--z-color-warn); }
-  .acct-loading { display: grid; place-items: center; gap: 8px; padding: 90px 0; }
+  .acct-loading { display: grid; place-items: center; gap: 8px; padding: 60px 0; }
   .acct-empty { padding: 80px 16px; }
 }
 

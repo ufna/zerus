@@ -7,6 +7,7 @@ import { settings, settingsReady, setSetting } from "./settings";
 import { createRowDensity, ROW_DENSITY_KEY } from "./rowDensity";
 import type { Session, Status } from "../ui/sessions/types";
 import type { FolderScope } from "../ui/sessions/scope-filters";
+import { trNoop } from "../i18n";
 export { isActive, needsAttention };
 
 // Interface state of the first screen: page, selection, filters, list layout,
@@ -145,7 +146,7 @@ export const counts = createMemo(() => {
 });
 
 export const STATUS_LABEL: Record<Status, string> = {
-  attention: "Needs attention",
+  attention: trNoop("Needs attention"),
   working: "Working",
   background: "Background",
   scheduled: "Scheduled",
@@ -153,7 +154,7 @@ export const STATUS_LABEL: Record<Status, string> = {
   error: "Error",
   offline: "Offline",
   paused: "Paused",
-  waiting: "Waiting for result",
+  waiting: trNoop("Waiting for result"),
   starting: "Starting",
   ended: "Archived",
 };

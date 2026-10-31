@@ -9,7 +9,7 @@ const MachineColorDialog = lazy(() => import("./MachineColorDialog"));
 const MachineSetupDialog = lazy(() => import("./MachineSetupDialog"));
 const MachineConnectionDialog = lazy(() => import("./MachineConnectionDialog"));
 import { machineEditor as editor, NEW_MACHINE } from "../../store/machineEditor";
-import { tr } from "../../i18n";
+import { tr, trNoop } from "../../i18n";
 import type { MachineMeta, MachineRow } from "../../types";
 import { catalog } from "../../store/catalog";
 import { machineCards, machinesPage, requestedMachine, resolveMachine, setRequestedMachine, testConnection } from "../../store/machines";
@@ -68,7 +68,7 @@ function Editor(props: { local: LocalState; peers: { row: MachineRow; state: Pee
   const isLocal = () => selected() === LOCAL;
   const peer = () => props.peers.find((p) => p.row.alias === selected());
   const row = () => peer()?.row;
-  const name = () => (isLocal() ? props.local.name : editor.isNew() ? "New machine" : selected());
+  const name = () => (isLocal() ? props.local.name : editor.isNew() ? tr("New machine") : selected());
   const draft = editor.draft;
   const fieldsDisabled = () => isLocal() || busy();
   const effective = () => (view().effective?.alias === selected() ? view().effective : null);
@@ -106,7 +106,7 @@ function Editor(props: { local: LocalState; peers: { row: MachineRow; state: Pee
         </div>
         <div class="row mach-preview">
           <span class="dim">{tr("Preview")}</span>
-          <Show when={!editor.isNew()} fallback={<span class="entity mach-label" style={{ "--entity": "var(--z-entity-palette-7)" }}>new-machine</span>}><MachineLabel alias={name()} /></Show>
+          <Show when={!editor.isNew()} fallback={<span class="entity mach-label" style={{ "--entity": "var(--z-entity-palette-7)" }}>"new-machine"</span>}><MachineLabel alias={name()} /></Show>
           <span class="dim">{tr(editor.isNew() ? "Save the machine to choose its color" : "Saved on this device")}</span>
         </div>
         <Show when={colorEditor()}>{(editor) => <MachineColorDialog alias={editor().alias} origin={editor().origin} close={() => setColorEditor(undefined)} />}</Show>
@@ -114,7 +114,7 @@ function Editor(props: { local: LocalState; peers: { row: MachineRow; state: Pee
 
       <Show when={!formHidden()}>
         <section class="mach-section">
-          <h3>Connection</h3>
+          <h3>{tr("Connection")}</h3>
           <Show when={!isLocal() && effective()}>{(e) => (
             <Show when={!e().pending} fallback={<Status kind="busy">{e().text}</Status>}>
               <Show when={!e().error} fallback={<Status kind="error"><Lines text={e().text} /></Status>}>
@@ -122,68 +122,68 @@ function Editor(props: { local: LocalState; peers: { row: MachineRow; state: Pee
               </Show>
             </Show>
           )}</Show>
-          <Field label="Name / SSH alias" id="mach-alias">
-            <input id="mach-alias" class="field" value={isLocal() ? props.local.name : draft().alias} placeholder="e.g. studio-mac" readOnly={!editor.isNew()} disabled={fieldsDisabled()} aria-invalid={editor.isNew() && !!draft().alias && (!editor.valid() || editor.duplicate())} onInput={(e) => editor.edit("alias", e.currentTarget.value)} />
-            <Show when={editor.duplicate()}><span class="danger hint">This name already exists. Select the machine in the list to edit it.</span></Show>
+          <Field label={trNoop("Name / SSH alias")} id="mach-alias">
+            <input id="mach-alias" class="field" value={isLocal() ? props.local.name : draft().alias} placeholder={tr("e.g. studio-mac")} readOnly={!editor.isNew()} disabled={fieldsDisabled()} aria-invalid={editor.isNew() && !!draft().alias && (!editor.valid() || editor.duplicate())} onInput={(e) => editor.edit("alias", e.currentTarget.value)} />
+            <Show when={editor.duplicate()}><span class="danger hint">{tr("This name already exists. Select the machine in the list to edit it.")}</span></Show>
           </Field>
-          <Field label="Hostname / IP" id="mach-host">
+          <Field label={trNoop("Hostname / IP")} id="mach-host">
             <input id="mach-host" class="field" placeholder={hint().hostname} value={draft().hostname} disabled={fieldsDisabled()} onInput={(e) => editor.edit("hostname", e.currentTarget.value)} />
           </Field>
-          <Field label="SSH user" id="mach-user">
+          <Field label={trNoop("SSH user")} id="mach-user">
             <input id="mach-user" class="field" placeholder={hint().user} value={draft().user} disabled={fieldsDisabled()} onInput={(e) => editor.edit("user", e.currentTarget.value)} />
           </Field>
-          <Field label="Port" id="mach-port">
+          <Field label={trNoop("Port")} id="mach-port">
             <input id="mach-port" class="field tabular mach-port" placeholder={hint().port} type="number" min={0} max={65535} value={draft().port} disabled={fieldsDisabled()} onInput={(e) => editor.edit("port", e.currentTarget.value)} />
           </Field>
-          <Field label="Private key path" id="mach-key">
+          <Field label={trNoop("Private key path")} id="mach-key">
             <div class="row">
               <input id="mach-key" class="field mono grow" placeholder={hint().key} value={draft().identity_file} disabled={fieldsDisabled()} onInput={(e) => editor.edit("identity_file", e.currentTarget.value)} />
-              <button class="btn" disabled={fieldsDisabled()} title="Choose SSH private key" onClick={() => void editor.pickKey()}>Browse…</button>
+              <button class="btn" disabled={fieldsDisabled()} title={tr("Choose SSH private key")} onClick={() => void editor.pickKey()}>{tr("Browse…")}</button>
             </div>
           </Field>
           <div class="form-row mach-form-row">
             <span />
             <label class="check">
-              <input type="checkbox" checked={isLocal() || draft().enabled} disabled={fieldsDisabled()} onChange={(e) => editor.edit("enabled", e.currentTarget.checked)} />Show sessions and include in background polling
+              <input type="checkbox" checked={isLocal() || draft().enabled} disabled={fieldsDisabled()} onChange={(e) => editor.edit("enabled", e.currentTarget.checked)} />{tr("Show sessions and include in background polling")}
             </label>
           </div>
           <Actions>
-            <button class="btn primary" disabled={fieldsDisabled() || !view().loaded || !draft().revision || !editor.valid() || editor.duplicate() || !(draft().dirty || editor.isNew())} onClick={() => void editor.save()}>Save connection</button>
-            <Show when={editor.isNew()}><button class="btn" disabled={busy()} onClick={() => editor.choose(LOCAL)}>Discard draft</button></Show>
-            <button class="btn" disabled={busy() || draft().dirty || editor.isNew() || !testEnabled(selected(), view())} onClick={() => void testConnection(selected())}><Icon name="plug" size={13} />Test connection</button>
-            <button class="btn" disabled={fieldsDisabled() || editor.isNew() || draft().dirty || !draft().revision} onClick={() => void editor.openSsh()}><Icon name="square-terminal" size={13} />Open SSH terminal</button>
+            <button class="btn primary" disabled={fieldsDisabled() || !view().loaded || !draft().revision || !editor.valid() || editor.duplicate() || !(draft().dirty || editor.isNew())} onClick={() => void editor.save()}>{tr("Save connection")}</button>
+            <Show when={editor.isNew()}><button class="btn" disabled={busy()} onClick={() => editor.choose(LOCAL)}>{tr("Discard draft")}</button></Show>
+            <button class="btn" disabled={busy() || draft().dirty || editor.isNew() || !testEnabled(selected(), view())} onClick={() => void testConnection(selected())}><Icon name="plug" size={13} />{tr("Test connection")}</button>
+            <button class="btn" disabled={fieldsDisabled() || editor.isNew() || draft().dirty || !draft().revision} onClick={() => void editor.openSsh()}><Icon name="square-terminal" size={13} />{tr("Open SSH terminal")}</button>
           </Actions>
         </section>
       </Show>
 
       <section class="mach-section">
-        <h3>Setup</h3>
+        <h3>{tr("Setup")}</h3>
         <Actions>
           <Show when={isLocal() && props.local.canEnable}>
-            <button class="btn primary" disabled={busy() || !setup.canEnable()} title="Run agents on this computer too. Zerus stages the HGS CLI and a session host in your user profile." onClick={() => setup.open("enable")}>Enable local sessions</button>
+            <button class="btn primary" disabled={busy() || !setup.canEnable()} title={tr("Run agents on this computer too. Zerus stages the HGS CLI and a session host in your user profile.")} onClick={() => setup.open("enable")}>{tr("Enable local sessions")}</button>
           </Show>
           <Show when={!formHidden()}>
-            <button class="btn" disabled={busy() || isLocal() || editor.isNew() || draft().dirty} onClick={() => setup.open("install")}><Icon name="download" size={13} />Install / update HGS…</button>
+            <button class="btn" disabled={busy() || isLocal() || editor.isNew() || draft().dirty} onClick={() => setup.open("install")}><Icon name="download" size={13} />{tr("Install / update HGS…")}</button>
           </Show>
           <Show when={!(isLocal() && props.local.console)}>
             <button class="btn" disabled={busy() || editor.isNew()} onClick={() => { setMachineFilter([name()]); setPage("sessions"); }}>
-              <Icon name="rows-3" size={13} />View sessions
+              <Icon name="rows-3" size={13} />{tr("View sessions")}
             </button>
             <button class="btn" disabled={busy() || editor.isNew()} onClick={() => { setAccountMachine(isLocal() ? "" : selected()); setPage("accounts"); }}>
-              <Icon name="user-round-cog" size={13} />Agent accounts…
+              <Icon name="user-round-cog" size={13} />{tr("Agent accounts…")}
             </button>
           </Show>
         </Actions>
         <Show when={!editor.notice() && setupResult()}>{(r) => <Status kind={(setupCheck()?.error ?? r().error) ? "error" : setup.busy() || setupCheck()?.pending ? "busy" : "muted"}><Lines text={setupCheck()?.text ?? r().text} /></Status>}</Show>
         <Show when={editor.notice()}>{(n) => <Status kind={n().error ? "error" : "muted"}><Lines text={n().text} /></Status>}</Show>
         <Show when={!editor.notice() && !setupResult() && check()}>{(c) => <Status kind={c().pending ? "busy" : c().error ? "error" : "muted"}><Lines text={c().text} /></Status>}</Show>
-        <Show when={setupResult()?.output}><pre class="mach-log" aria-label="Setup output">{setupResult()!.output}</pre></Show>
+        <Show when={setupResult()?.output}><pre class="mach-log" aria-label={tr("Setup output")}>{setupResult()!.output}</pre></Show>
       </section>
 
       <Show when={!formHidden()}>
         <div class="mach-foot">
-          <button class="btn" disabled={fieldsDisabled() || editor.isNew() || draft().dirty || !(row()?.inherited && row()?.source === "local")} title="Restore the SSH settings of a machine from the shared configuration." onClick={() => void editor.reset()}>Reset SSH overrides</button>
-          <button class="btn danger" disabled={fieldsDisabled() || editor.isNew() || draft().dirty} onClick={editor.remove}><Icon name="trash" size={13} />Remove from Zerus</button>
+          <button class="btn" disabled={fieldsDisabled() || editor.isNew() || draft().dirty || !(row()?.inherited && row()?.source === "local")} title={tr("Restore the SSH settings of a machine from the shared configuration.")} onClick={() => void editor.reset()}>{tr("Reset SSH overrides")}</button>
+          <button class="btn danger" disabled={fieldsDisabled() || editor.isNew() || draft().dirty} onClick={editor.remove}><Icon name="trash" size={13} />{tr("Remove from Zerus")}</button>
         </div>
       </Show>
     </div>
@@ -226,15 +226,15 @@ export function MachinesScreen() {
             <Show when={!view().refreshing} fallback={<Spinner />}><Icon name="refresh-cw" size={15} /></Show>
           </button>
           <span class="grow" />
-          <button class="btn primary" disabled={busy()} onClick={() => { editor.choose(NEW_MACHINE); if (editor.isNew() && !editor.prompt()) queueMicrotask(() => document.getElementById("mach-alias")?.focus()); }}><Icon name="plus" size={14} />Add machine</button>
+          <button class="btn primary" disabled={busy()} onClick={() => { editor.choose(NEW_MACHINE); if (editor.isNew() && !editor.prompt()) queueMicrotask(() => document.getElementById("mach-alias")?.focus()); }}><Icon name="plus" size={14} />{tr("Add machine")}</button>
         </header>
         <p class="muted mach-summary">{summary({ console: local().console, live: ["live", "polled"].includes(catalog.computers[""]?.status ?? "") }, peers().map((p) => p.state))}</p>
         <Show when={view().error}>{(error) => <Status kind="error"><Lines text={error()} /></Status>}</Show>
         <div class="mach-body">
-          <div class="mach-list" role="list" aria-label="Machines">
+          <div class="mach-list" role="list" aria-label={tr("Machines")}>
             <MachineCard selection={LOCAL} alias={local().name} line={local().line} tile={connectionOf(catalog.computers[""]?.status).tile} meta={machineCards[""]} showMeta={!local().console} offline={false} />
             <Index each={peers()}>{(p) => <MachineCard selection={p().row.alias} alias={p().row.alias} line={p().state.line} tile={p().state.tile} meta={machineCards[p().row.alias]} showMeta offline={!p().state.live} />}</Index>
-            <Show when={editor.isNew()}><button class="mach-card draft on" aria-current title="This connection is a draft. Save it to add the machine to Zerus."><span class="row"><span class="entity mach-label" style={{ "--entity": "var(--z-entity-palette-7)" }}>New machine</span></span><span class="mach-state">Unsaved connection</span></button></Show>
+            <Show when={editor.isNew()}><button class="mach-card draft on" aria-current title={tr("This connection is a draft. Save it to add the machine to Zerus.")}><span class="row"><span class="entity mach-label" style={{ "--entity": "var(--z-entity-palette-7)" }}>{tr("New machine")}</span></span><span class="mach-state">{tr("Unsaved connection")}</span></button></Show>
           </div>
           <Editor local={local()} peers={peers()} />
         </div>

@@ -257,7 +257,11 @@ pub(crate) struct Context {
 impl Context {
     /// Only the open child's own inspection, never its parent's state or another child's.
     pub(crate) fn child_details(&self) -> Option<&Value> {
-        let child = self.session.subagent.as_ref().filter(|child| child.valid())?;
+        let child = self
+            .session
+            .subagent
+            .as_ref()
+            .filter(|child| child.valid())?;
         let details = self.details.as_deref()?;
         (text(details, "agent_id") == child.agent_id
             && text(details, "parent_conversation_id") == child.parent_conversation_id)
@@ -380,27 +384,33 @@ impl Composers {
         };
         let parent_run = target.run_id.clone();
         let parent = target.conversation_id.clone();
-        let agent = ctx.session.subagent.as_ref().map(|child| child.agent_id.clone());
+        let agent = ctx
+            .session
+            .subagent
+            .as_ref()
+            .map(|child| child.agent_id.clone());
         let archive = ctx.session.archive_id;
         let me = self.clone();
         (self.0.deps.spawn)(Box::new(move || {
-            let read = (me.0.deps.inspect)(&target, archive.as_deref(), agent.as_deref()).and_then(|mut value| {
-                if agent.as_ref().is_some_and(|agent| {
-                    text(&value, "run_id") != parent_run
-                        || text(&value, "agent_id") != *agent
-                        || text(&value, "parent_conversation_id") != parent
-                }) {
-                    return Err("The subagent changed or is unavailable".into());
-                }
-                // The details keep no events: they join the followed window
-                // apart, as Qt's inspection reply joins `m_events`.
-                let replace = value["replace_events"].as_bool() == Some(true);
-                let events = value
-                    .as_object_mut()
-                    .and_then(|fields| fields.remove("events"));
-                let expiry = expiry(&value);
-                Ok((Arc::new(value), expiry, (replace, events)))
-            });
+            let read = (me.0.deps.inspect)(&target, archive.as_deref(), agent.as_deref()).and_then(
+                |mut value| {
+                    if agent.as_ref().is_some_and(|agent| {
+                        text(&value, "run_id") != parent_run
+                            || text(&value, "agent_id") != *agent
+                            || text(&value, "parent_conversation_id") != parent
+                    }) {
+                        return Err("The subagent changed or is unavailable".into());
+                    }
+                    // The details keep no events: they join the followed window
+                    // apart, as Qt's inspection reply joins `m_events`.
+                    let replace = value["replace_events"].as_bool() == Some(true);
+                    let events = value
+                        .as_object_mut()
+                        .and_then(|fields| fields.remove("events"));
+                    let expiry = expiry(&value);
+                    Ok((Arc::new(value), expiry, (replace, events)))
+                },
+            );
             let mut hub = me.lock();
             // Another session was opened, or the follow ended, meanwhile:
             // this answer is not the current one.
@@ -576,14 +586,25 @@ pub(crate) fn session_view(composers: &Composers, hub: &Hub, composer: &Composer
     let subagent = ctx.session.subagent.as_ref().map(|child| {
         let inspected = ctx.child_details();
         let send_supported = inspected.is_some_and(|details| flag(details, "send_supported"));
-        let hint = inspected.map_or_else(|| "Loading subagent activity…".into(), |details| {
-            format!(
-                "{}{}{}",
-                text(details, "history_scope"),
-                if flag(details, "history_truncated") { ". Showing recent activity." } else { "" },
-                if send_supported { " Messages go directly to this agent." } else { " Read only. This agent is managed by the parent conversation." }
-            )
-        });
+        let hint = inspected.map_or_else(
+            || "Loading subagent activity…".into(),
+            |details| {
+                format!(
+                    "{}{}{}",
+                    text(details, "history_scope"),
+                    if flag(details, "history_truncated") {
+                        ". Showing recent activity."
+                    } else {
+                        ""
+                    },
+                    if send_supported {
+                        " Messages go directly to this agent."
+                    } else {
+                        " Read only. This agent is managed by the parent conversation."
+                    }
+                )
+            },
+        );
         SubagentView {
             agent_id: child.agent_id.clone(),
             send_supported,
@@ -878,14 +899,17 @@ impl Context {
     }
 
     pub(crate) fn conversation(&self) -> String {
-        self.details.as_deref().map(|details| {
-            if self.session.subagent.is_some() {
-                // hgs send names the parent conversation and routes with agent_id.
-                text(details, "parent_conversation_id").to_owned()
-            } else {
-                text(details, "conversation_id").to_owned()
-            }
-        }).unwrap_or_default()
+        self.details
+            .as_deref()
+            .map(|details| {
+                if self.session.subagent.is_some() {
+                    // hgs send names the parent conversation and routes with agent_id.
+                    text(details, "parent_conversation_id").to_owned()
+                } else {
+                    text(details, "conversation_id").to_owned()
+                }
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -992,7 +1016,9 @@ impl Composers {
         // (`sendMessage` 4809, `startToSend` 4707), while Qt's Send is
         // enabled (`updateControls`, `MessageComposer.cpp:1185`).
         let session = Self::rules_session(&ctx);
-        if ctx.session.subagent.is_none() && rules::can_start_stopped(&session, Self::start_busy(hub, &ctx)) {
+        if ctx.session.subagent.is_none()
+            && rules::can_start_stopped(&session, Self::start_busy(hub, &ctx))
+        {
             if !self
                 .view_of(hub, &ctx.key)
                 .is_some_and(|view| view.can_send)
@@ -1359,7 +1385,11 @@ impl Composers {
         let action = Action::Send {
             text: delivery.text.clone(),
             attachments: delivery.attachments.clone(),
-            agent_id: delivery.session.subagent.as_ref().map(|child| child.agent_id.clone()),
+            agent_id: delivery
+                .session
+                .subagent
+                .as_ref()
+                .map(|child| child.agent_id.clone()),
             expected_compaction_id: delivery.compaction.clone(),
         };
         let dispatch = &self.0.deps.dispatch;
@@ -1392,7 +1422,10 @@ impl Composers {
         let now = self.now();
         let expired = |details: Option<&Value>| details.is_some_and(|d| cache::expired(d, now));
         // Only a main session's expired cache asks for consent.
-        if delivery.session.subagent.is_none() && !delivery.consent && expired(delivery.evidence.as_deref()) {
+        if delivery.session.subagent.is_none()
+            && !delivery.consent
+            && expired(delivery.evidence.as_deref())
+        {
             return false;
         }
         let hub = self.lock();
@@ -1457,7 +1490,9 @@ impl Composers {
                 || !identity
                 || text(details, "runtime_state") != "live"
                 || text(details, "process_state") != "running"
-                || (delivery.session.subagent.is_none() && !delivery.consent && expired(Some(details)))
+                || (delivery.session.subagent.is_none()
+                    && !delivery.consent
+                    && expired(Some(details)))
             {
                 return false;
             }
@@ -4557,18 +4592,46 @@ pub(crate) mod tests {
         c.observe(&state(child_ready()));
         let view = until(&c, |v| v.loaded && v.available);
         assert!(view.input_visible);
-        assert_eq!(view.key, "studio\nclaude/sample-project/review\nconv-1\nagent-7");
-        assert_eq!(view.subagent.unwrap().hint, "Native subagent history Messages go directly to this agent.");
-        c.edit(view.handle, 1, view.text_epoch, "for the child".into(), 13, 13);
+        assert_eq!(
+            view.key,
+            "studio\nclaude/sample-project/review\nconv-1\nagent-7"
+        );
+        assert_eq!(
+            view.subagent.unwrap().hint,
+            "Native subagent history Messages go directly to this agent."
+        );
+        c.edit(
+            view.handle,
+            1,
+            view.text_epoch,
+            "for the child".into(),
+            13,
+            13,
+        );
         let view = c.current().unwrap();
-        assert_eq!(c.send_message(view.handle, 2, view.text_epoch, "for the child".into(), 13, 13), SendReply::Sending);
+        assert_eq!(
+            c.send_message(
+                view.handle,
+                2,
+                view.text_epoch,
+                "for the child".into(),
+                13,
+                13
+            ),
+            SendReply::Sending
+        );
         let view = until(&c, |v| !v.sending && v.text.is_empty());
         assert_eq!(view.local.len(), 1);
         let calls = sent(&fake);
         assert_eq!(calls.len(), 1);
         let (target, action, _) = &calls[0];
-        assert_eq!((target.run_id.as_str(), target.conversation_id.as_str()), ("run-1", "conv-1"));
-        let Action::Send { text, agent_id, .. } = action else { panic!("not a send") };
+        assert_eq!(
+            (target.run_id.as_str(), target.conversation_id.as_str()),
+            ("run-1", "conv-1")
+        );
+        let Action::Send { text, agent_id, .. } = action else {
+            panic!("not a send")
+        };
         assert_eq!(text, "for the child");
         assert_eq!(agent_id.as_deref(), Some("agent-7"));
     }
@@ -4585,10 +4648,19 @@ pub(crate) mod tests {
         assert!(!view.available && !view.input_visible);
         c.edit(view.handle, 1, view.text_epoch, "must stay".into(), 10, 10);
         let view = c.current().unwrap();
-        assert!(matches!(c.send_message(view.handle, 2, view.text_epoch, "must stay".into(), 10, 10), SendReply::Blocked { .. }));
-        assert_eq!(c.send_push(view.handle, 3, view.text_epoch, "must stay".into(), 10, 10), SendReply::Busy);
+        assert!(matches!(
+            c.send_message(view.handle, 2, view.text_epoch, "must stay".into(), 10, 10),
+            SendReply::Blocked { .. }
+        ));
+        assert_eq!(
+            c.send_push(view.handle, 3, view.text_epoch, "must stay".into(), 10, 10),
+            SendReply::Busy
+        );
         assert!(!c.send_queue_now(None));
-        assert_eq!(c.clear_context(view.handle, "run-1", "conv-1", false), SendReply::Busy);
+        assert_eq!(
+            c.clear_context(view.handle, "run-1", "conv-1", false),
+            SendReply::Busy
+        );
         c.observe(&state(ready()));
         let view = c.current().unwrap();
         assert!(!view.available && !view.subagent.unwrap().send_supported);
@@ -4600,11 +4672,25 @@ pub(crate) mod tests {
         let root = dir("child-drafts");
         let (c, _) = send_hub(&root);
         let parent = opened(&c, ready());
-        c.edit(parent.handle, 1, parent.text_epoch, "parent draft".into(), 12, 12);
+        c.edit(
+            parent.handle,
+            1,
+            parent.text_epoch,
+            "parent draft".into(),
+            12,
+            12,
+        );
         c.open(Some(child_session()));
         c.observe(&state(child_ready()));
         let child = until(&c, |v| v.loaded && v.available);
-        c.edit(child.handle, 1, child.text_epoch, "child draft".into(), 11, 11);
+        c.edit(
+            child.handle,
+            1,
+            child.text_epoch,
+            "child draft".into(),
+            11,
+            11,
+        );
         c.open(Some(session()));
         let parent = until(&c, |v| v.loaded);
         assert_eq!(parent.text, "parent draft");

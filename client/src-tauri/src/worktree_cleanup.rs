@@ -735,8 +735,12 @@ pub fn worktree_cleanup_confirm(
             } else {
                 remove(&computer, &expected, &removal)
             };
-            catalogs.invalidate_worktrees(&ComputerId(computer), &removal.common_dir);
+            catalogs.invalidate_worktrees(&ComputerId(computer.clone()), &removal.common_dir);
             let mut m = lock(&own.0);
+            if matches!(&result, review::Removed::Done { .. }) {
+                m.reminders
+                    .removed(&computer, &expected, &removal.common_dir);
+            }
             if matches!(&result, review::Removed::Unknown { .. })
                 || matches!(&result,review::Removed::Refused{reply,..} if reply["status"]!="kept")
             {
