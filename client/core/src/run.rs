@@ -1,4 +1,6 @@
 //! Runs one [`Invocation`] and reports how it ended as an [`Exit`].
+pub(crate) mod startup;
+
 use crate::actions::{Exit, Invocation};
 use std::io::{ErrorKind, Read, Write};
 use std::path::Path;
@@ -479,11 +481,13 @@ fn run_inner(
     command
         .env_remove("HGS_SESSION")
         .env_remove("HGS_RUN_ID")
-        .stdin(if consumed {
-            Stdio::null()
-        } else {
-            Stdio::piped()
-        })
+        .stdin(
+            if consumed && pipes.input.is_none() && inv.stdin.is_none() {
+                Stdio::null()
+            } else {
+                Stdio::piped()
+            },
+        )
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = match pipes.spawn.unwrap_or_else(|| Box::new(Command::spawn))(&mut command) {

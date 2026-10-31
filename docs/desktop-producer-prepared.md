@@ -9,7 +9,7 @@ The future sole service owner consumes its authenticated `Session` into an
 owned preparation Context, retaining the original request UUID, existing handoff
 lock and presence fence through a fresh canonical identity probe and preparation.
 See [startup exclusion](desktop-startup-exclusion.md) for its ordering and the
-still-missing actual frontend consumer. The helper checks both locks'
+actual frontend startup consumer. The helper checks both locks'
 configuration and the Store's current service epoch inside the transaction,
 and the session's exact clean live frontend/configuration/producer association.
 It binds the fixed background-v1 definition and fresh prospective writer,
@@ -40,11 +40,10 @@ and older retain their existing behavior. Windows preparation/abort mutation
 refuses before I/O pending native durability qualification.
 
 A read snapshot, including absence, supplies no startup authority. The actual
-replacement frontend consumer is still missing. Before any production caller,
-it must exclude a prepare-versus-startup race using the same ownership boundary
-and fresh canonical instance rechecks before writers are admitted. It must
-refuse an unsettled record without starting profile writers, including when
-the service is absent or restarting. Current profile/known-zero Presence proof,
+[replacement frontend consumer](desktop-startup-consumer.md) now retains the
+same boundary through canonical startup and refuses unsettled state before GUI
+writers, including when the service is absent. Producer preparation still has
+no production caller; persisted-original reconciliation remains required first. Current profile/known-zero Presence proof,
 continuous negative invalidation, actual SDK/resource/store barriers and whole
 profile publication/rollback remain separate required gates. This journal does
 not change the existing handoff-v1 marker or relabel historical Staged evidence.
