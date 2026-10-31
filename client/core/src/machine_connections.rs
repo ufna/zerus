@@ -306,7 +306,13 @@ mod tests {
             alias: "fixture-peer".into(),
             revision: "a".repeat(64),
         };
-        let call = setup(&list(), &reference, "/source with spaces").unwrap();
+        // Absolute on the platform that runs setup: Windows needs a drive.
+        let source = if cfg!(windows) {
+            r"C:\source with spaces"
+        } else {
+            "/source with spaces"
+        };
+        let call = setup(&list(), &reference, source).unwrap();
         assert_eq!(
             call.args,
             [
@@ -316,7 +322,7 @@ mod tests {
                 "--revision",
                 &"a".repeat(64),
                 "--source",
-                "/source with spaces"
+                source
             ]
         );
         assert!(call.stdin.is_none());
