@@ -32,6 +32,8 @@
 //! projected again only after a read finished, the fleet changed, or account
 //! reads started while Overview or Accounts shows (their busy state).
 
+pub mod account_edits;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
@@ -286,6 +288,7 @@ impl Hub {
 type SessionNotify = Arc<dyn Fn() + Send + Sync>;
 
 struct Shared {
+    edits: account_edits::Edits,
     hub: Mutex<Hub>,
     hgs: PathBuf,
     allowed: bool,
@@ -355,6 +358,7 @@ impl Screens {
     ) -> Self {
         Self(Arc::new(Shared {
             hub: Mutex::new(Hub::default()),
+            edits: account_edits::Edits::default(),
             hgs,
             allowed,
             spawn,
@@ -567,7 +571,6 @@ impl Screens {
         let hgs = &self.0.hgs;
         let local = ComputerId::local();
         let mut heard: Option<ComputerId> = None;
-        let mut limits: Vec<Run> = Vec::new();
         let runs = match job {
             Run::Catalog(host) => {
                 // Qt's requestAccounts texts, for the Accounts page as for New session.
@@ -576,69 +579,14 @@ impl Screens {
                 } else {
                     launch::read_accounts(hgs, &host)
                 };
-                let failure = reply.as_ref().err().cloned();
                 let now = if failed {
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.now()))
                         .unwrap_or(0)
                 } else {
                     self.now()
                 };
-                let mut hub = self.lock();
-                // A queued follow-up is the page's (its forced poll), for a host it lists.
-                let listed = account_hosts(&hub.fleet);
-                let again = hub.accounts.finish_catalog(&host, reply, now, &listed);
-                hub.stale = true;
-                hub.dirty.extend(ACCOUNT_SCREENS);
-                if hub
-                    .launch
-                    .as_ref()
-                    .is_some_and(|watch| watch.computer == host)
-                {
-                    heard = Some(host.clone());
-                }
-                // Only the first reply since the dialog's ask answers it; a later
-                // one, such as the page's poll, only updated the shared store.
-                if hub
-                    .launch
-                    .as_ref()
-                    .is_some_and(|watch| watch.computer == host && !watch.answered)
-                {
-                    let grouped = match &failure {
-                        // Grouped when the catalog arrives (`m_regroupAccounts`, 380-386, 883).
-                        None => hub.launch.as_ref().and_then(|watch| {
-                            let (entry, members) = launch_members(&hub, watch)?;
-                            Some((style_of(&entry), accounts::group(&members)))
-                        }),
-                        Some(_) => None,
-                    };
-                    let mut late: Option<bool> = None;
-                    if let Some(watch) = hub.launch.as_mut() {
-                        watch.replied = true;
-                        watch.answered = true;
-                        match failure {
-                            None => {
-                                watch.error = None;
-                                watch.groups = grouped;
-                                // No `launch_accounts` waits for it any more: the
-                                // catalog arrived late, and Qt's accountsReady
-                                // asks for its limits (380-388), forced once.
-                                if watch.waiting == 0 {
-                                    late = Some(std::mem::take(&mut watch.force));
-                                }
-                            }
-                            Some(detail) => {
-                                watch.error = Some(format!("Could not load accounts: {detail}"));
-                            }
-                        }
-                    }
-                    if let Some(force) = late {
-                        limits = self.launch_limits(&mut hub, &host, force);
-                    }
-                }
-                let mut runs: Vec<Run> = again.then_some(Run::Catalog(host)).into_iter().collect();
-                runs.append(&mut limits);
-                runs.extend(self.accounts_due(&mut hub, now, false));
-                self.0.catalog_done.notify_all();
+                let (runs, computer) = self.catalog_reply(host, reply, now, false);
+                heard = computer;
                 runs
             }
             Run::Usage(r) => {
@@ -738,6 +686,90 @@ impl Screens {
         if let (Some(computer), Some(notify)) = (heard, self.0.launch_notify.get()) {
             notify(&computer);
         }
+    }
+
+    /// A list read and a catalog mutation complete through the same path:
+    /// New session waiters, queued refreshes and usage reads all hear it.
+    fn catalog_reply(
+        &self,
+        host: ComputerId,
+        reply: Result<Value, String>,
+        now: u64,
+        mutation: bool,
+    ) -> (Vec<Run>, Option<ComputerId>) {
+        let failure = reply.as_ref().err().cloned();
+        let mut heard = None;
+        let mut limits = Vec::new();
+        let mut hub = self.lock();
+        // A queued follow-up is the page's (its forced poll), for a host it lists.
+        let listed = account_hosts(&hub.fleet);
+        let previous_error = hub
+            .accounts
+            .catalogs
+            .get(&host)
+            .and_then(|slot| slot.error.clone());
+        let again = hub.accounts.finish_catalog(&host, reply, now, &listed);
+        // Qt reports a failed edit through its notice bus, without turning
+        // the retained catalog into a failed list read. Dialog waiters still
+        // receive the failure and cannot launch from an unconfirmed reply.
+        if mutation && failure.is_some() {
+            if let Some(slot) = hub.accounts.catalogs.get_mut(&host) {
+                slot.error = previous_error;
+            }
+        }
+        hub.stale = true;
+        hub.dirty.extend(ACCOUNT_SCREENS);
+        if hub
+            .launch
+            .as_ref()
+            .is_some_and(|watch| watch.computer == host)
+        {
+            heard = Some(host.clone());
+        }
+        // Only the first reply since the dialog's ask answers it; a later
+        // one, such as the page's poll, only updated the shared store.
+        if hub
+            .launch
+            .as_ref()
+            .is_some_and(|watch| watch.computer == host && !watch.answered)
+        {
+            let grouped = match &failure {
+                // Grouped when the catalog arrives (`m_regroupAccounts`, 380-386, 883).
+                None => hub.launch.as_ref().and_then(|watch| {
+                    let (entry, members) = launch_members(&hub, watch)?;
+                    Some((style_of(&entry), accounts::group(&members)))
+                }),
+                Some(_) => None,
+            };
+            let mut late: Option<bool> = None;
+            if let Some(watch) = hub.launch.as_mut() {
+                watch.replied = true;
+                watch.answered = true;
+                match failure {
+                    None => {
+                        watch.error = None;
+                        watch.groups = grouped;
+                        // No `launch_accounts` waits for it any more: the
+                        // catalog arrived late, and Qt's accountsReady
+                        // asks for its limits (380-388), forced once.
+                        if watch.waiting == 0 {
+                            late = Some(std::mem::take(&mut watch.force));
+                        }
+                    }
+                    Some(detail) => {
+                        watch.error = Some(format!("Could not load accounts: {detail}"));
+                    }
+                }
+            }
+            if let Some(force) = late {
+                limits = self.launch_limits(&mut hub, &host, force);
+            }
+        }
+        let mut runs: Vec<Run> = again.then_some(Run::Catalog(host)).into_iter().collect();
+        runs.append(&mut limits);
+        runs.extend(self.accounts_due(&mut hub, now, false));
+        self.0.catalog_done.notify_all();
+        (runs, heard)
     }
 
     /// A panic files a failed reply through the existing completion path,

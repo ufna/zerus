@@ -456,6 +456,20 @@ export async function accountsView(force = false): Promise<AccountsView> {
   if (!inTauri()) return emptyAccounts([DESKTOP_ONLY]);
   return invoke<AccountsView>("accounts_view", { force });
 }
+export type AccountEditKind = "rename" | "default" | "remove";
+export interface AccountEditView { handle: string; kind: AccountEditKind; label: string; machine: string; provider: string }
+export interface AccountEditResult { notices: string[]; errors: string[] }
+export async function accountEditOpen(account: string, profile: string, kind: AccountEditKind): Promise<AccountEditView> {
+  if (!inTauri()) throw new Error(DESKTOP_ONLY);
+  return invoke("account_edit_open", { account, profile, kind });
+}
+export async function accountEditApply(handle: string, label = ""): Promise<AccountEditResult> {
+  if (!inTauri()) throw new Error(DESKTOP_ONLY);
+  return invoke("account_edit_apply", { request: { handle, label } });
+}
+export async function accountEditClose(handle: string): Promise<void> {
+  if (inTauri()) await invoke("account_edit_close", { handle });
+}
 /** Sessions' explicit account chooser reads catalogs, without profile inspects. */
 export async function accountFiltersView(force = false): Promise<AccountsView> {
   if (!inTauri()) return emptyAccounts([DESKTOP_ONLY]);

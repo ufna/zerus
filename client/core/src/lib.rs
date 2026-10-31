@@ -7,6 +7,7 @@
 //! `docs/superpowers/plans/2026-10-28-tauri-client-phase1.md` (Tasks 3 and 4)
 //! and the "Event stream" section of `docs/reference.md`.
 
+pub mod account_actions;
 pub mod actions;
 pub mod analytics;
 pub mod approvals;
