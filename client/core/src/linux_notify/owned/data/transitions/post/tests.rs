@@ -6,7 +6,7 @@ use crate::linux_notify::owned::{
 };
 use serde_json::json;
 
-fn ready(m: &mut Model, owner: Owner, n: u64) -> BatchKey {
+pub(super) fn ready(m: &mut Model, owner: Owner, n: u64) -> BatchKey {
     let key = m.prepare_batch(owner, batch(owner, n)).unwrap();
     let mut write = m.next_write().unwrap().unwrap();
     ack(m, &mut write, Disposition::Saved).unwrap();
@@ -25,7 +25,7 @@ fn save_result(m: &mut Model) -> Vec<u8> {
     ack(m, &mut write, Disposition::Saved).unwrap();
     bytes
 }
-fn retained(owner: Owner, state: &str, bus: &str, id: u32) -> Vec<u8> {
+pub(super) fn retained(owner: Owner, state: &str, bus: &str, id: u32) -> Vec<u8> {
     let mut o = input(owner, 8);
     o.namespace.bus_id = bus.into();
     let o = Original::new(owner, o).unwrap();
@@ -278,7 +278,13 @@ fn every_positive_claim_collides_in_both_directions_without_overwriting() {
                     [m.stores[0].image.clone(), m.stores[1].image.clone()],
                     before
                 );
-                assert_eq!(m.next_write().unwrap_err(), Rejection::NeedsReview);
+                if old_owner == Owner::SoftwareUpdate && new_owner == Owner::SoftwareUpdate {
+                    assert_eq!(m.next_write().unwrap_err(), Rejection::NeedsReview);
+                } else {
+                    let plan = m.next_write().unwrap().unwrap();
+                    assert_eq!(plan.attempt().phase(), WritePhase::CollisionInvalidations);
+                    assert_eq!(plan.attempt().owner(), Owner::SoftwareUpdate);
+                }
             }
         }
     }

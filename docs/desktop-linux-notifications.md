@@ -401,3 +401,48 @@ Tests here are fake-port policy vectors only. Actual resource/write-failure/kill
 qualification, full cross-file collision commits, the G1 negative permission
 consumer, exact original-edge release, recurrence and rollback remain required.
 No `.22/.23/.24/.25` positive admission or typed default follows.
+
+### Pure update-first collision continuation
+
+The optional Model now retains a restricted negative write chain for a current
+positive-ID result that collides with retained claims in its unchanged original
+namespace and affects an agent original. Both Delivered and Unknown observations
+with a positive ID qualify; the latter retains its Unknown outcome. Existing
+Delivered, UnknownPost, WithdrawalPending and UnknownWithdrawal claims all
+participate. Update-only collisions, changed or malformed namespaces, no-ID
+results and post-fence overlaps remain terminal review without a continuation.
+
+`finish_post` invalidates the context and advances its sticky negative generation
+before exposing a collision plan. No new batch, native proposal, ordinary write
+or fence can pass. `WritePhase` and `Attempt::phase` distinguish the pre-issue,
+ordinary result, collision-invalidation and collision-result images. Exact attempt
+matching also binds the original digest, including namespace generation and
+allowed actions, alongside Model/owner/preparation/item and complete before/after
+images. A barrier does not invent an individual original digest.
+
+The first collision image always selects SoftwareUpdate. It appends full exact
+agent targets with `native_id_collision`, preserving every prior claim and
+namespace. If the incoming original belongs to SoftwareUpdate, that same image
+changes only its exact possible-post uncertain row to UnknownPost with the
+observed positive ID. If it belongs to AgentAttention, only an exact Saved
+acknowledgement of the update image enables the dependent agent image. That
+second attempt retains the actual internally acknowledged predecessor attempt;
+its result likewise changes only the exact possible-post row to UnknownPost.
+Neither image overwrites an occupied positive map slot or matches by token alone.
+
+Only this exact chain may write under sticky invalidation, with one outstanding
+buffer. Unknown, refused and lost writes stay pinned, with no replacement plan,
+late-success settlement, rollback or replay. Saved retires the public plan bytes
+but retains the original report, payload, preparation and capacity. Even after
+the final Saved, the context stays invalidated and Review. There is no successful
+native completion or pair-atomicity claim. Invalidations reserve their full
+escaped worst-ID sizes before a proposal, including loaded agent originals;
+each row must fit 16 KiB within the existing combined limits.
+
+Pure tests feed old, barrier, first, final and partial image pairs through selected
+inspection and then Model construction when inspection succeeds. Same-owner
+positive duplicates require the Model check as well. These are structural restart
+controls, not filesystem failure/kill, actual durability, permission-consumer,
+native resource, current-source, lease, release, recurrence or rollback proof.
+The G1 negative permission consumer remains a separate prerequisite. No runtime
+caller, source API, default, native wire behavior or ownership changes here.
