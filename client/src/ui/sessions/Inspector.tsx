@@ -13,15 +13,16 @@ import { tasks } from "../../store/tasks";
 import { taskProject, projectTasks } from "../../store/taskContext";
 import "../styles/tasks.css";
 import { object, text } from "../screens/tasks-ui";
-import { sessionGoal, sessionPlan, usageRows } from "./inspector-data";
+import { homeShort, sessionAccount, sessionGoal, sessionPlan, usageRows } from "./inspector-data";
 import { machineCards } from "../../store/machines";
 import { filterFolder, clearFolderFilter } from "../../store/folderFilter";
 import { of, sameKey, native } from "./paths";
+import type { BoundRow } from "./scope-filters";
 import type { Session } from "./types";
 import { captionText } from "./SessionCard";
 import { tr, trNoop } from "../../i18n";
 import { accountsPage } from "../../store/accounts";
-import { sessionUsage, sessionUsageTarget } from "../../store/sessionUsage";
+import { openFilterAccounts } from "../../store/accountFilters";
 import { sessionUsageView } from "./session-usage-ui";
 import { composer } from "../../store/composer";
 import * as bridge from "../../bridge";
@@ -33,6 +34,9 @@ function TaskTabBadge() { return <Show when={taskProject() && tasks.loaded()}><s
 
 const LABEL: Record<InspectorTab, string> = { plan: trNoop("Plan & agents"), details: trNoop("Details"), worktrees: trNoop("Worktrees"), tasks: trNoop("Tasks") };
 const raw = () => selected() ? followedFor(selected()!.key).value : undefined;
+const SHELLS = new Set(["sh", "shell", "bash", "zsh", "pwsh"]);
+/** Computers whose account catalog the Inspector already asked for in this run. */
+const askedCatalogs = new Set<string>();
 function Card(props: { id: string; title: JSX.Element; aside?: JSX.Element; class?: string; classList?: Record<string, boolean>; onContextMenu?: JSX.EventHandler<HTMLElement, MouseEvent>; children: JSX.Element }) {
   const open = () => !inspectorClosed().has(props.id);
   return <section class={`icard ${props.class ?? ""}`} classList={{ closed: !open(), ...props.classList }} onContextMenu={props.onContextMenu}><header class="icard-head">
@@ -63,14 +67,24 @@ function Details() {
   const usage = () => sessionUsageView(object(raw()).session_usage);
   const context = () => composer.view()?.context;
   const clear = () => composer.view()?.clear;
-  const account = createMemo(() => {
-    const target = sessionUsageTarget(), row = s();
-    const id = text(object(raw()).account_id) || (target?.host === row.computer && target.name === row.name && target.run_id === row.runId ? sessionUsage().id : "");
-    return accountsPage().accounts.flatMap((a) => a.members).find((p) => p.host === row.computer && p.id === id);
-  });
+  // The listing's recorded binding, else the inspect's (account_id/account_home).
+  const bound = createMemo((): BoundRow & { accountId: string; accountHome: string } => {
+    const row = s(), v = object(raw());
+    return { computer: row.computer, cmd: row.cmd, accountProvider: row.accountProvider, accountReported: row.accountReported, accountId: row.accountId || text(v.account_id), accountHome: row.accountHome || text(v.account_home) };
+  }, undefined, { equals: (a, b) => (Object.keys(a) as (keyof BoundRow)[]).every((k) => a[k] === b[k]) });
+  const account = createMemo(() => sessionAccount(bound(), accountsPage()));
+  // Resolve against the screens hub's catalogs; read a computer's catalog once if none is held.
+  createEffect(on(() => s().computer, (computer) => { if (!account().account && !askedCatalogs.has(computer)) { askedCatalogs.add(computer); void openFilterAccounts(); } }));
+  const accountText = () => {
+    const a = account().account, plan = a?.usage.identity.plan;
+    if (a) return plan ? tr("%1 (%2)", a.label || tr("Unnamed account"), plan) : a.label || tr("Unnamed account");
+    return bound().accountId || bound().accountHome || (SHELLS.has(s().cmd) ? tr("No account (shell)") : tr("Account not recorded"));
+  };
+  const home = () => bound().accountHome || account().profile?.home || "";
+  const profileId = () => bound().accountId || account().profile?.id || "";
   return <div class="insp-body"><Card id="details-id" title={tr(identity().title)}><Row icon="key-round" mono title={tr(identity().title)} tail={<button class="icon-btn small" aria-label={tr(identity().caption)} title={tr(identity().caption)} disabled={!identity().value} onClick={() => void copyIdentity(snapshotOf(s()), details())}><Icon name="copy" size={13} /></button>}><span class="selectable">{value(identity().value)}</span></Row></Card>
     <Card id="details-session" title={tr("Session")}><Row icon="message-square" label={tr("name")} mono title={s().name}>{s().name}</Row><Row icon="monitor" label={tr("machine")}>{s().machine}</Row><Row icon="folder" label={tr("directory")} mono title={s().cwdPath}>{value(s().cwdPath)}</Row><Row icon="git-branch" label={tr("branch")}>{value(s().branch)}</Row><Row icon="layers" label={tr("project")}>{grouping().headers.find((p) => p.id === groupOf(s().key))?.name ?? tr("Not reported")}</Row><Row icon="clock" label={tr("last event")}>{s().updatedAt ? new Date(s().updatedAt! * 1000).toLocaleString() : tr("Not reported")}</Row><div class="hint">{tr("Activity stays on %1. Closing this window does not stop your agent.", s().machine)}</div></Card>
-    <Card id="details-account" title={tr("Account")}><Row icon="user-round-cog" label={tr("account")}>{value(account()?.label || text(object(raw()).account_id))}</Row><Row icon="hard-drive" label={tr("agent home")} mono>{value(account()?.home || text(object(raw()).agent_home))}</Row><Row icon="sparkles" label={tr("model")}>{value(s().model)} {s().effort}</Row></Card>
+    <Card id="details-account" title={tr("Account")}><Row icon="user-round-cog" label={tr("account")} title={profileId() ? tr("Profile %1", profileId()) : undefined} tail={<Show when={account().tag}><span class="acct-pid tabular" title={tr("Profile %1", profileId())}>{account().tag}</span></Show>}>{accountText()}</Row><Row icon="hard-drive" label={tr("agent home")} mono title={home() || undefined}>{value(homeShort(home()))}</Row><Row icon="sparkles" label={tr("model")}>{value(s().model)} {s().effort}</Row></Card>
     <Card id="details-usage" title={tr("Session usage")}><Show when={rows().length} fallback={<div class="hint">{tr("No native usage reported for this conversation yet.")}</div>}><table class="usage"><tbody><For each={rows()}>{([label, val]) => <tr><td>{label}</td><td class="tabular">{val}</td></tr>}</For></tbody></table><Show when={usage().costNote}><div class="hint">{usage().costNote}</div></Show><div class="hint">{usage().footer}</div></Show></Card>
     <Show when={!subagentOpen()}><div class="insp-foot"><span class="muted" title={context()?.tooltip}>{tr("Context: %1", context()?.text || tr("Not reported"))}</span><span class="grow" /><button class="btn small" title={clear()?.reason || undefined} disabled={!clear()?.enabled} onClick={() => composer.openClear()}>{clear()?.running ? tr("Clearing…") : tr("Clear session…")}</button></div></Show>
   </div>;
