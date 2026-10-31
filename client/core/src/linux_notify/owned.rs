@@ -12,6 +12,7 @@ use serde::{Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
+pub mod data;
 mod decode;
 pub mod inspection;
 #[cfg(test)]
