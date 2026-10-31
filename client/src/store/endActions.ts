@@ -41,7 +41,20 @@ export interface EndOptions {
 export function actionVerb(c: EndCapture) {
   return c.action.kind === "archive" ? "Archive" : ["terminate", "kill"].includes(c.action.kind) ? "Terminate" : c.action.kind === "clear_context" ? "Clear" : "Forget";
 }
-const ongoing = { Archive: "Archiving", Terminate: "Terminating", Clear: "Clearing", Forget: "Forgetting" };
+// One session, then several; the toast title and its cancel notices.
+const ongoing = {
+  Archive: [trNoop("Archiving session"), trNoop("Archiving %1 sessions")],
+  Terminate: [trNoop("Terminating session"), trNoop("Terminating %1 sessions")],
+  Clear: [trNoop("Clearing session"), trNoop("Clearing %1 sessions")],
+  Forget: [trNoop("Forgetting session"), trNoop("Forgetting %1 sessions")],
+};
+// Cancelled by Undo, then because the session changed.
+const cancelled = {
+  Archive: [trNoop("Archive cancelled"), trNoop("Archive cancelled: the session changed.")],
+  Terminate: [trNoop("Terminate cancelled"), trNoop("Terminate cancelled: the session changed.")],
+  Clear: [trNoop("Clear cancelled"), trNoop("Clear cancelled: the session changed.")],
+  Forget: [trNoop("Forget cancelled"), trNoop("Forget cancelled: the session changed.")],
+};
 export function createEndActions(port: EndPort, notices: NoticeBus, uuid: () => string = () => crypto.randomUUID(), now = () => performance.now(),
   titles: (captures: readonly EndCapture[]) => string[] = (captures) => captures.slice(0, NAMED).map((c) => c.target.name)) {
   const pending = new Map<string, { note(text: string): void; cancel(changed?: boolean, quiet?: boolean): void }>();
@@ -55,7 +68,7 @@ export function createEndActions(port: EndPort, notices: NoticeBus, uuid: () => 
     const key = options.key ?? (captures.length === 1 ? sessionNoticeKey(captures[0].target.computer, captures[0].target.name) : `end-batch:${id}`);
     const reportError = (error: unknown) => {
       const changed = String(error) === "The session state changed. Open its actions again.";
-      notices.notify(changed ? "info" : "error", changed ? `${verb} cancelled: the session changed.` : String(error), !changed, key);
+      notices.notify(changed ? "info" : "error", changed ? tr(cancelled[verb][1]) : String(error), !changed, key);
     };
     const [seconds, setSeconds] = createSignal(5);
     const [note, setNote] = createSignal("");
@@ -68,7 +81,7 @@ export function createEndActions(port: EndPort, notices: NoticeBus, uuid: () => 
       if (!active) return;
       finish();
       void port.cancel(id).catch(() => {});
-      if (!quiet) notices.notify("info", `${verb} cancelled${changed ? ": the session changed." : ""}`, false, key);
+      if (!quiet) notices.notify("info", tr(cancelled[verb][changed ? 1 : 0]), false, key);
     };
     pending.set(id, { cancel, note: (text) => { setNote(text); clearTimeout(noteTimer); noteTimer = setTimeout(() => setNote(""), NOTICE_MS); } });
     try {
@@ -76,9 +89,10 @@ export function createEndActions(port: EndPort, notices: NoticeBus, uuid: () => 
       await port.begin(id, captures);
       if (!active || closed) { await port.cancel(id).catch(() => {}); return; }
       // Single and batch toasts name sessions the way the session list does.
-      const names = titles(captures).join(", ") + (captures.length > NAMED ? ` and ${captures.length - NAMED} more` : "");
-      noticeId = notices.notify("info", `${names}${options.remove ? "\nThe working folder is removed afterwards." : ""}`, true, key,
-        `${ongoing[verb]} ${captures.length === 1 ? "session" : `${captures.length} sessions`}`, {
+      const listed = titles(captures).join(", ");
+      const names = captures.length > NAMED ? tr("%1 and %2 more", listed, captures.length - NAMED) : listed;
+      noticeId = notices.notify("info", `${names}${options.remove ? `\n${tr("The working folder is removed afterwards.")}` : ""}`, true, key,
+        captures.length === 1 ? tr(ongoing[verb][0]) : tr(ongoing[verb][1], captures.length), {
           dismissible: false, note,
           actions: [{ label: () => tr("Undo (%1)", seconds()), style: "primary", disabled: () => !active, run: () => cancel() }],
         });

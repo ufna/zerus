@@ -40,6 +40,8 @@ mod login_item;
 mod metrics;
 #[cfg(feature = "live")]
 mod mobile;
+#[cfg(feature = "live")]
+mod native_text;
 pub mod native_ui;
 #[cfg(feature = "live")]
 mod newsession;

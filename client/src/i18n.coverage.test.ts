@@ -43,7 +43,7 @@ const DYNAMIC_FILES: Record<string, string> = {
   "./store/contentSearch.ts": "its own notice constant",
   "./store/creations.ts": "the creations-ui notice constant",
   "./store/drops.ts": "its own drop hint constants",
-  "./store/endActions.ts": "its own notice constant",
+  "./store/endActions.ts": "its own notice constant and its title and cancel tables",
   "./store/forks.ts": "the fork-ui notice constant",
   "./store/native-ui-model.ts": "its own status constants",
   "./store/organization.ts": "its own notice and reason constants",
