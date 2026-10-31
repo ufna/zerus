@@ -121,6 +121,23 @@ remain conflicts. Native integration must reserve the existing writer, obtain a
 fresh read, recheck the review, account actual child resources and settle the
 source after one call. An unknown result must never replay that call.
 
-This is a pure prerequisite without a native caller or UI change. The conflict
-tab remains disabled until its separate native and lazy dialog slices land.
+The main-window-only `project_swarm_conflicts` and
+`project_swarm_conflict_review` commands qualify a borrowed snapshot on the
+blocking pool, outside the organization lock, with one such review read at a
+time. A changed native revision or replaced snapshot refuses the response.
+The one native-held selection uses an opaque review ID. Choosing an off-page
+value is refused; changing the value page clears the choice. Paging the summary
+list leaves the review intact. Changed variants refuse old reviews and clear
+their choice; reopening the conflict gives a new identity and Qt's changed hint.
+Labels use existing bounded Pump rows, without reading history.
+
+`project_swarm_resolve` consumes that review on admission, reserves the existing
+controller/writer and repeats the review comparison against a fresh `swarm get`
+before issuing exactly one Resolve. It uses the same accounted runner, actual
+child/pipe lifetime and post-call source barrier as Join and Sync. Neither a
+malformed/unchanged success reply nor an unknown result confirms the choice.
+The review is never restored for retry, including after close/reopen. A fresh
+read and matching source are required before ordinary catalog edits resume.
+
+The lazy visible conflict tab remains a separate slice and stays disabled.
 No filesystem, second writer, CRDT, poller or migration authority is added.

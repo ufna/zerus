@@ -332,6 +332,9 @@ impl<'a> Catalog<'a> {
         bounded(&result, PAGE_BYTES)?;
         Ok(result)
     }
+    pub fn summary_for(&self, id: &str) -> Result<Summary, String> {
+        self.summary(&self.rows[*self.indexes.get(id).ok_or(CHANGED)?])
+    }
     pub fn review(&self, id: &str) -> Result<Review, String> {
         let raw = self
             .rows

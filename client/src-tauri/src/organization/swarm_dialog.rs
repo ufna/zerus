@@ -1,5 +1,6 @@
 //! Project swarm uses the existing organization worker; one bounded dialog/job.
 //! No extra poller, writer, source store or automatic Join/Resolve retry.
+pub mod conflicts;
 use super::*;
 use serde::Serialize;
 use std::sync::atomic::AtomicBool;
@@ -58,6 +59,10 @@ pub(super) enum Action {
         keep: bool,
     },
     Sync,
+    Resolve {
+        review: String,
+        confirmed: bool,
+    },
 }
 enum Step {
     Config,
@@ -66,6 +71,7 @@ enum Step {
     JoinConfig,
     JoinLocal,
     SyncLocal,
+    ResolveLocal,
     Mutation,
     Fresh,
 }
@@ -102,6 +108,9 @@ pub(super) struct Context {
     outcome: Option<Result<String, String>>,
     after: Option<Action>,
     join: Option<(Vec<(String, String)>, bool)>,
+    review_reading: bool,
+    review: Option<conflicts::Selected>,
+    resolving: Option<conflicts::Selected>,
 }
 impl Context {
     fn new() -> Self {
@@ -123,10 +132,13 @@ impl Context {
             outcome: None,
             after: None,
             join: None,
+            review_reading: false,
+            review: None,
+            resolving: None,
         }
     }
     fn active(&self) -> bool {
-        !matches!(self.stage, Stage::Idle | Stage::Source)
+        self.review_reading || !matches!(self.stage, Stage::Idle | Stage::Source)
     }
     fn view(&self, hub: &Hub) -> Result<View, String> {
         let snapshot = hub.sync.observed_value();
@@ -212,7 +224,7 @@ impl Context {
             return Err(BUSY.into());
         }
         if self.ticket.is_some() {
-            if matches!(action, Action::Join { .. }) {
+            if matches!(action, Action::Join { .. } | Action::Resolve { .. }) {
                 return Err(EXTERNAL_CHANGED.into());
             }
             self.after = Some(action);
@@ -222,8 +234,10 @@ impl Context {
             self.mode = "reconcile";
             return Ok(());
         }
-        if matches!(action, Action::Join { .. } | Action::Sync)
-            && (hub.presentation_due || hub.recovery_due.is_some())
+        if matches!(
+            action,
+            Action::Join { .. } | Action::Sync | Action::Resolve { .. }
+        ) && (hub.presentation_due || hub.recovery_due.is_some())
         {
             return Err(swarm::sync::EXTERNAL_BUSY.into());
         }
@@ -269,6 +283,25 @@ impl Context {
                 self.status = "Synchronizing projects…".into();
                 self.stage = Stage::Queued(read_work(Step::SyncLocal, Read::Swarm)?);
             }
+            Action::Resolve { review, confirmed } => {
+                let selected = self
+                    .review
+                    .as_ref()
+                    .filter(|r| r.id == review)
+                    .ok_or(EXTERNAL_CHANGED)?;
+                let snapshot = hub.sync.observed_value().ok_or(EXTERNAL_CHANGED)?;
+                selected.invocation(&snapshot, confirmed)?;
+                let generation = hub.source_generation.checked_add(1).ok_or(STOPPED)?;
+                self.ticket = Some(hub.sync.begin_external(hub.sync.revision())?);
+                hub.source_generation = generation;
+                self.resolving = self.review.take();
+                self.join = None;
+                self.preview = None;
+                self.changing = true;
+                self.mode = "resolve";
+                self.status = "Saving your choice to the shared catalog…".into();
+                self.stage = Stage::Queued(read_work(Step::ResolveLocal, Read::Swarm)?);
+            }
         }
         Ok(())
     }
@@ -280,6 +313,7 @@ impl Context {
         if self.ticket.is_none() {
             self.preview = None;
             self.join = None;
+            self.resolving = None;
         }
     }
     fn result(
@@ -357,11 +391,27 @@ impl Context {
                     invocation: connection::sync_invocation(),
                 });
             }
+            Step::ResolveLocal => {
+                let local = reads::decode(&Read::Swarm, exit).map_err(|e| e.to_string())?;
+                self.stage = Stage::Queued(Work {
+                    step: Step::Mutation,
+                    invocation: self
+                        .resolving
+                        .as_ref()
+                        .ok_or(EXTERNAL_CHANGED)?
+                        .invocation(&local, true)?,
+                });
+            }
             Step::Mutation => {
                 self.outcome=Some(object(exit).and_then(|reply| {
                     if self.join.is_some() {
                         if reply["joined"] != true || !reply["snapshot"].is_object() {return Err(connection::INVALID.into());}
                         Ok(format!("Connected to {}.",self.preview.as_ref().ok_or(EXTERNAL_CHANGED)?.alias()))
+                    }else if self.resolving.is_some() {
+                        if reply["schema"] != 1 || !reply["conflicts"].is_array() {return Err(connection::INVALID.into());}
+                        let ticket=self.ticket.as_ref().ok_or(EXTERNAL_CHANGED)?;
+                        if reply["node_id"] != ticket.snapshot()["node_id"] || reply["swarm_id"] != ticket.snapshot()["swarm_id"] {return Err(connection::INVALID.into());}
+                        self.resolving.as_ref().unwrap().saved_status(&reply)
                     }else{Ok("Synchronization finished. Connection details are on the Computers tab.".into())}
                 }));
                 self.stage = Stage::Queued(read_work(Step::Fresh, Read::Swarm)?);
@@ -378,6 +428,11 @@ impl Context {
                     && !self.preview.as_ref().is_some_and(|p| p.joined_in(&value))
                 {
                     self.outcome = Some(Err(connection::INVALID.into()));
+                }
+                if self.outcome.as_ref().is_some_and(Result::is_ok) {
+                    if let Some(review) = &self.resolving {
+                        self.outcome = Some(review.saved_status(&value));
+                    }
                 }
                 self.expected = Some(Observation::from_reply(value).ok_or(connection::INVALID)?);
                 self.stage = Stage::Source;
@@ -434,6 +489,7 @@ impl Organization {
                     return Err(BUSY.into());
                 }
                 context.visible = false;
+                context.review = None;
                 if context.ticket.is_none() && matches!(context.stage, Stage::Queued(_)) {
                     context.stage = Stage::Idle;
                     context.preview = None;
@@ -595,6 +651,8 @@ pub(super) fn settle(hub: &mut Hub, source: &OrganizationSnapshot, now: u64) -> 
                         context.ticket = None;
                         context.preview = None;
                         context.join = None;
+                        context.review = None;
+                        context.resolving = None;
                         context.changing = false;
                         context.stage = Stage::Idle;
                         match context
