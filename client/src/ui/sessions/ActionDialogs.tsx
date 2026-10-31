@@ -14,6 +14,7 @@ import { targetOf } from "../../store/actions";
 import { setSetting } from "../../store/settings";
 import { sessionForks } from "../../store/sessionForks";
 import { FORK_CHECKING, FORK_HINT } from "./fork-ui";
+import { tr } from "../../i18n";
 
 const ForkDialog = lazy(() => import("./ForkDialog"));
 
@@ -59,13 +60,13 @@ export function actionEntries(s: Session, details?: Details, options: { context?
       action: () => { void (archived ? restoreSession(row) : change(row)); },
     },
     stop: {
-      label: "Stop", icon: "circle-stop", shown: m.stop.visible, disabled: !m.stop.enabled, hint: hint(m.stop.enabled, m.stop.reason),
+      label: tr("Stop"), icon: "circle-stop", shown: m.stop.visible, disabled: !m.stop.enabled, hint: hint(m.stop.enabled, m.stop.reason),
       action: () => { if (details) void perform(row, { kind: "interrupt", turn_started: details.turn_started }); },
     },
-    rename: { label: "Rename…", icon: "pencil", disabled: !m.rename, action: () => send({ type: "open", kind: "rename", row }) },
+    rename: { label: tr("Rename…"), icon: "pencil", disabled: !m.rename, action: () => send({ type: "open", kind: "rename", row }) },
     fork: forkEntry(s, details),
     archive: m.archive.visible
-      ? { label: "Move to archive", icon: "archive", disabled: !m.archive.enabled, hint: hint(m.archive.enabled, m.archive.reason), action: () => { void perform(row, { kind: "archive" }).then(refreshArchiveWhenDone); } }
+      ? { label: tr("Move to archive"), icon: "archive", disabled: !m.archive.enabled, hint: hint(m.archive.enabled, m.archive.reason), action: () => { void perform(row, { kind: "archive" }).then(refreshArchiveWhenDone); } }
       : undefined,
     end: {
       label: m.end.label, icon: m.end.label === "Terminate session…" ? "circle-stop" : "trash", danger: true, disabled: !m.end.enabled, hint: hint(m.end.enabled, m.end.reason),
@@ -87,7 +88,7 @@ export function actionEntries(s: Session, details?: Details, options: { context?
 /** Both menus share the inspected source and the one guarded Fork path. */
 export function forkEntry(s: Session, details?: Details): Item {
   const row = snapshotOf(s);
-  return { label: "Fork session…", icon: "git-fork", disabled: !sessionForks.available(row, details),
+  return { label: tr("Fork session…"), icon: "git-fork", disabled: !sessionForks.available(row, details),
     hint: details ? details.fork_reason || FORK_HINT : FORK_CHECKING,
     action: () => { if (details && sessionForks.available(row, details)) send({ type: "open", kind: "fork", row, details: { ...details } }); },
   };
@@ -103,9 +104,9 @@ export function copyEntries(s: Session, details?: Details): { command: Item; nam
   const c = copyState(row, !computerOffline(s.computer), details);
   return {
     command: { label: c.command.label, icon: "link", disabled: !c.command.enabled, action: () => { void copyCommand(row); } },
-    name: { label: "Copy session name", icon: "copy", action: () => { void copyName(row); } },
-    reference: { label: "Copy session reference", icon: "link", disabled: !c.reference, action: () => { void copyReference(row, details); } },
-    folder: { label: "Copy folder path", icon: "copy", disabled: !c.folder.enabled, action: () => { void copyFolder(row, details); } },
+    name: { label: tr("Copy session name"), icon: "copy", action: () => { void copyName(row); } },
+    reference: { label: tr("Copy session reference"), icon: "link", disabled: !c.reference, action: () => { void copyReference(row, details); } },
+    folder: { label: tr("Copy folder path"), icon: "copy", disabled: !c.folder.enabled, action: () => { void copyFolder(row, details); } },
   };
 }
 
@@ -131,7 +132,7 @@ export function freshActionEntry(s: Session, header = false): Item | undefined {
   const m = freshEntry(row, !computerOffline(s.computer), updating(s.computer, s.name), running());
   if (!m) return undefined;
   return {
-    label: "Start fresh…", icon: "clear", disabled: !m.enabled, hint: header ? FRESH_TIP : m.hint,
+    label: tr("Start fresh…"), icon: "clear", disabled: !m.enabled, hint: header ? FRESH_TIP : m.hint,
     action: () => {
       const live = stillListed(row);
       // Qt returns silently when the session can no longer start fresh.
@@ -176,18 +177,18 @@ function RenameDialog(props: { row: ActionRow; close: () => void }) {
   };
   return (
     <form onSubmit={submit}>
-      <div class="dlg-head"><Icon name="pencil" size={18} class="accent" /><h2 id="action-dlg-title">Rename session</h2></div>
+      <div class="dlg-head"><Icon name="pencil" size={18} class="accent" /><h2 id="action-dlg-title">{tr("Rename session")}</h2></div>
       <div class="dlg-body">
         <div class="dlg-detail dlg-context">{props.row.machine} / {prefix.slice(0, -1)}</div>
-        <label class="dlg-label" for="rename-tag">Session name</label>
-        <input id="rename-tag" data-initial class="dlg-input" placeholder="e.g. release planning" value={value()} onInput={(e) => setValue(e.currentTarget.value)} />
+        <label class="dlg-label" for="rename-tag">{tr("Session name")}</label>
+        <input id="rename-tag" data-initial class="dlg-input" placeholder={tr("e.g. release planning")} value={value()} onInput={(e) => setValue(e.currentTarget.value)} />
         <div class="dlg-detail ell" title={prefix + value()}>{prefix + value()}</div>
         <Show when={problem()}><div class="dlg-error">{problem()}</div></Show>
       </div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn" onClick={props.close}>Cancel</button>
-        <button type="submit" class="btn primary" disabled={!!problem() || value() === oldTag}>Rename</button>
+        <button type="button" class="btn" onClick={props.close}>{tr("Cancel")}</button>
+        <button type="submit" class="btn primary" disabled={!!problem() || value() === oldTag}>{tr("Rename")}</button>
       </div>
     </form>
   );
@@ -221,14 +222,14 @@ function TerminateDialog(props: { row: ActionRow; close: () => void }) {
         <div class="confirm-body" id="action-dlg-body">{copy.text}</div>
         <div class="dlg-detail">{copy.detail}</div>
         <Show when={offer()}>
-          <label class="check" style={{ "margin-top": "10px" }}><input type="checkbox" checked={remove()} onChange={(e) => setRemove(e.currentTarget.checked)} /> Remove the working folder after stopping</label>
-          <p class="hint" style={{ "margin-top": "6px" }}>Removal runs in the background after exact successful termination, only for a verified generated worktree. Unknown local data keeps the folder for review. Computer: {props.row.machine}</p>
+          <label class="check" style={{ "margin-top": "10px" }}><input type="checkbox" checked={remove()} onChange={(e) => setRemove(e.currentTarget.checked)} /> {tr("Remove the working folder after stopping")}</label>
+          <p class="hint" style={{ "margin-top": "6px" }}>{tr("Removal runs in the background after exact successful termination, only for a verified generated worktree. Unknown local data keeps the folder for review. Computer: %1", props.row.machine)}</p>
         </Show>
       </div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>Cancel</button>
-        <button type="button" class="btn solid-danger" onClick={submit}>{offer() ? remove() ? "Stop and remove folder" : "Stop and archive" : copy.confirm}</button>
+        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>{tr("Cancel")}</button>
+        <button type="button" class="btn solid-danger" onClick={submit}>{offer() ? remove() ? tr("Stop and remove folder") : tr("Stop and archive") : copy.confirm}</button>
       </div>
     </>
   );
@@ -250,7 +251,7 @@ function ForgetDialog(props: { row: ActionRow; bound: ForgetScope; close: () => 
       </div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>Cancel</button>
+        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>{tr("Cancel")}</button>
         <button type="button" class="btn solid-danger" onClick={() => { props.close(); void (archived ? forgetArchived(props.row) : forget(props.row, props.bound)); }}>{copy.confirm}</button>
       </div>
     </>
@@ -266,7 +267,7 @@ function FreshDialog(props: { row: ActionRow; close: () => void }) {
       notify("error", FRESH_CHANGED, true);
       return;
     }
-    notify("info", `Starting ${props.row.name} with a new conversation…`);
+    notify("info", tr("Starting %1 with a new conversation…", props.row.name));
     void perform(snapshotOf(live), { kind: "start_fresh" });
   };
   return (
@@ -275,7 +276,7 @@ function FreshDialog(props: { row: ActionRow; close: () => void }) {
       <div class="dlg-body"><div class="confirm-body" id="action-dlg-body" style={{ "white-space": "pre-line" }}>{copy.text}</div></div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>Cancel</button>
+        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>{tr("Cancel")}</button>
         <button type="button" class="btn solid-danger" onClick={confirm}>{copy.confirm}</button>
       </div>
     </>
@@ -295,13 +296,13 @@ function BatchDialog(props: { copy: BatchConfirmation; answer: (confirmed: boole
       <div class="dlg-body">
         <div class="confirm-body" id="action-dlg-body" style={{ "white-space": "pre-line" }}>{props.copy.text}</div>
         <details class="dlg-detail">
-          <summary>Show details</summary>
+          <summary>{tr("Show details")}</summary>
           <div style={{ "white-space": "pre-line", "max-height": "160px", overflow: "auto" }}>{props.copy.details.join("\n")}</div>
         </details>
       </div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>Cancel</button>
+        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>{tr("Cancel")}</button>
         <button type="button" class="btn solid-danger" onClick={() => { props.answer(true); props.close(); }}>{props.copy.confirm}</button>
       </div>
     </>

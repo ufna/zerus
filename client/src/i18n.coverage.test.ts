@@ -16,6 +16,7 @@ const DYNAMIC_FILES: Record<string, string> = {
   "./ui/screens/settings/ui.tsx": "titles, labels and hints passed as literal props",
   "./ui/sessions/SessionList.tsx": "its filter and scope tables",
   "./ui/sessions/SessionCard.tsx": "the core's closed caption vocabulary and child states",
+  "./ui/sessions/SavedDrafts.tsx": "the Saved drafts store's TEXTS, REASONS and SECTIONS tables and its own Show more table",
   "./ui/sessions/ArchiveBar.tsx": "the archive period table",
   "./ui/sessions/archive-dates.ts": "the archive period table",
 };
