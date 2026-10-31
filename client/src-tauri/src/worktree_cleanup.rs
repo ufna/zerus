@@ -1,5 +1,7 @@
 //! Explicit Worktrees review. The existing core/CLI checks own removal;
 //! this bounded dialog retains immutable review rows and one-use confirmations.
+pub mod manual;
+
 use serde::Serialize;
 use serde_json::Value;
 use std::{
@@ -18,6 +20,7 @@ pub struct WorktreeCleanup(Arc<Mutex<Model>>);
 #[derive(Default)]
 struct Model {
     dialog: Option<Dialog>,
+    manual: Option<manual::Dialog>,
     reading: bool,
     // Never evicted to admit another write. A full retained set refuses new
     // removals; reopening/refreshing a dialog never replays an unknown result.
@@ -108,6 +111,23 @@ pub(crate) fn inspect(
     })?;
     review::inspected(exit, path, common, file, offset)
 }
+/// The maintained exact request-bound removal path, shared by manual surfaces.
+fn remove(computer: &str, expected: &str, removal: &review::Removal) -> review::Removed {
+    let request = uuid::Uuid::new_v4().to_string();
+    let mut inv = review::remove_invocation(&ComputerId(computer.into()), removal, &request);
+    worktrees::guard(&mut inv.args, expected);
+    match probe(&inv) {
+        Err(detail) => review::Removed::Refused { reply:serde_json::json!({"status":"kept"}), detail },
+        Ok(()) => match run(&inv) {
+            Ok(exit) => match review::removed(exit, computer, &request, removal) {
+                review::Removed::Done { reply } if reply["common_dir"] != removal.common_dir => review::Removed::Unknown { detail: "Removal could not be confirmed for this repository. An unknown result will not be retried.".into() },
+                result => result,
+            },
+            Err(detail) => review::Removed::Unknown { detail },
+        }
+    }
+}
+
 impl WorktreeCleanup {
     pub(crate) fn unknown(&self, machine: &str, common: &str, path: &str) -> bool {
         lock(&self.0)
@@ -448,6 +468,21 @@ fn apply_unknown(model: &mut Model) {
         }
     }
 }
+fn apply_termination_unknown(
+    model: &mut Model,
+    term: &crate::termination_cleanup::TerminationCleanup,
+) {
+    if let Some(dialog) = &mut model.dialog {
+        for item in &mut dialog.rows {
+            if term.unknown(&dialog.machine, &dialog.common, text(&item.raw, "path")) {
+                item.outcome = Some(review::Removed::Unknown {
+                    detail: "An unknown result will not be retried.".into(),
+                });
+            }
+        }
+    }
+}
+
 pub(crate) fn machine(app: &crate::commands::AppState, computer: &str) -> Result<String, String> {
     if crate::actions::blocked() || !app.pump().online(computer) {
         return Err("Reconnect this computer before reviewing worktrees.".into());
@@ -461,6 +496,7 @@ pub(crate) fn machine(app: &crate::commands::AppState, computer: &str) -> Result
 #[tauri::command]
 pub async fn worktree_cleanup_open(
     app: State<'_, crate::commands::AppState>,
+    runtime: AppHandle,
     state: State<'_, WorktreeCleanup>,
     catalogs: State<'_, crate::newsession::NewSession>,
     computer: String,
@@ -484,10 +520,14 @@ pub async fn worktree_cleanup_open(
     };
     {
         let mut m = lock(&state.0);
-        if m.reading || m.dialog.as_ref().is_some_and(|d| d.busy) {
+        if m.reading
+            || m.manual.as_ref().is_some_and(|d| d.busy)
+            || m.dialog.as_ref().is_some_and(|d| d.busy)
+        {
             return Err("A worktree review is already running.".into());
         }
         m.reading = true;
+        m.manual = None;
         if let Some(d) = &mut m.dialog {
             d.plan = None;
             d.revision += 1;
@@ -535,6 +575,10 @@ pub async fn worktree_cleanup_open(
         let dialog = result?;
         m.dialog = Some(dialog);
         apply_unknown(&mut m);
+        apply_termination_unknown(
+            &mut m,
+            &runtime.state::<crate::termination_cleanup::TerminationCleanup>(),
+        );
         Ok(m.dialog.as_ref().unwrap().view())
     })
     .await
@@ -553,11 +597,12 @@ pub fn worktree_cleanup_view(
 #[tauri::command]
 pub async fn worktree_cleanup_refresh(
     state: State<'_, WorktreeCleanup>,
+    runtime: AppHandle,
     id: String,
 ) -> Result<View, String> {
     let (computer, machine, common, focus) = {
         let mut m = lock(&state.0);
-        if m.reading {
+        if m.reading || m.manual.as_ref().is_some_and(|d| d.busy) {
             return Err(CHANGED.into());
         }
         let d = m
@@ -611,6 +656,10 @@ pub async fn worktree_cleanup_refresh(
         }
         d.rows = rows;
         apply_unknown(&mut m);
+        apply_termination_unknown(
+            &mut m,
+            &runtime.state::<crate::termination_cleanup::TerminationCleanup>(),
+        );
         Ok(m.dialog.as_ref().unwrap().view())
     })
     .await
@@ -625,7 +674,7 @@ pub fn worktree_cleanup_prepare(
     branches: bool,
 ) -> Result<Confirmation, String> {
     let mut m = lock(&state.0);
-    if m.reading {
+    if m.reading || m.manual.as_ref().is_some_and(|d| d.busy) {
         return Err(CHANGED.into());
     }
     let d = m.dialog.as_mut().filter(|d| d.id == id).ok_or(CHANGED)?;
@@ -641,7 +690,7 @@ pub fn worktree_cleanup_confirm(
     consent: bool,
 ) -> Result<View, String> {
     let mut m = lock(&state.0);
-    if m.reading {
+    if m.reading || m.manual.as_ref().is_some_and(|d| d.busy) {
         return Err(CHANGED.into());
     }
     let quota = m.unknown.len();
@@ -666,8 +715,14 @@ pub fn worktree_cleanup_confirm(
                 };
                 (d.computer.clone(), d.machine.clone())
             };
-            let request = uuid::Uuid::new_v4().to_string();
-            let result = if machine(&app.state::<crate::commands::AppState>(), &computer).as_ref()
+            let term = app.state::<crate::termination_cleanup::TerminationCleanup>();
+            let result = if term.unknown(&expected, &removal.common_dir, &removal.path) {
+                review::Removed::Unknown {
+                    detail: "An unknown result will not be retried.".into(),
+                }
+            } else if term.unknown_overflow() {
+                review::Removed::Refused{reply:serde_json::json!({"status":"kept"}),detail:"Too many unconfirmed removals are retained. Review them before removing more worktrees.".into()}
+            } else if machine(&app.state::<crate::commands::AppState>(), &computer).as_ref()
                 != Ok(&expected)
             {
                 review::Removed::Refused {
@@ -675,22 +730,7 @@ pub fn worktree_cleanup_confirm(
                     detail: "Computer identity changed. Reconnect and review again.".into(),
                 }
             } else {
-                let mut inv =
-                    review::remove_invocation(&ComputerId(computer.clone()), &removal, &request);
-                worktrees::guard(&mut inv.args, &expected);
-                match probe(&inv) {
-                    Err(detail) => review::Removed::Refused {
-                        reply: serde_json::json!({"status":"kept"}),
-                        detail,
-                    },
-                    Ok(()) => match run(&inv) {
-                        Ok(exit) => match review::removed(exit, &computer, &request, &removal) {
-                            review::Removed::Done { reply } if reply["common_dir"] != removal.common_dir => review::Removed::Unknown { detail: "Removal could not be confirmed for this repository. An unknown result will not be retried.".into() },
-                            result => result,
-                        },
-                        Err(detail) => review::Removed::Unknown { detail },
-                    },
-                }
+                remove(&computer, &expected, &removal)
             };
             catalogs.invalidate_worktrees(&ComputerId(computer), &removal.common_dir);
             let mut m = lock(&own.0);
