@@ -33,6 +33,7 @@ def fixture_config():
         row = catalog[key]
         detail = copy.deepcopy(state)
         detail["tracked"] = True
+        detail["state"] = row["state"]
         detail["events"] = events.get(key, [])
         detail["cursor"] = detail["events"][-1]["seq"] if detail["events"] else 0
         inspect[row["name"]] = detail
@@ -92,6 +93,8 @@ def main():
     (scratch / "home").mkdir()
     (scratch / "data").mkdir()
     (scratch / "cache").mkdir()
+    for part in ("config", "state", "tmux"):
+        (scratch / part).mkdir(mode=0o700)
     (scratch / "runtime").mkdir(mode=0o700)
     (scratch / "tmp").mkdir(mode=0o700)
     hgs = scratch / "hgs"
@@ -102,9 +105,11 @@ def main():
     smoke_file.write_text('{"orders":[1,2,3]}\n', encoding="utf-8")
 
     env = {
-        "PATH": os.environ["PATH"], "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "PATH": "/usr/bin:/bin", "LANG": "C.UTF-8",
         "HOME": str(scratch / "home"), "XDG_DATA_HOME": str(scratch / "data"), "XDG_CACHE_HOME": str(scratch / "cache"),
         "XDG_RUNTIME_DIR": str(scratch / "runtime"), "TMPDIR": str(scratch / "tmp"),
+        "XDG_CONFIG_HOME": str(scratch / "config"), "XDG_STATE_HOME": str(scratch / "state"),
+        "TMUX_TMPDIR": str(scratch / "tmux"), "HGS_CONFIG_DIR": str(scratch / "config"), "HGS_STATE_DIR": str(scratch / "state"),
         "WAYLAND_DISPLAY": "zerus-none", "GDK_BACKEND": "x11", "WEBKIT_DISABLE_DMABUF_RENDERER": "1", "ZERUS_CLIENT_HEADLESS": "1",
         "ZERUS_CLIENT_REPLAY": str(CLIENT / "fixtures/replay.ndjson"), "ZERUS_CLIENT_HGS": str(hgs),
         "ZERUS_CLIENT_QUERY": "phase4-smoke=1", "ZERUS_CLIENT_PERF": "smoke", "ZERUS_CLIENT_SMOKE_FILE": str(smoke_file),

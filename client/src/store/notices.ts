@@ -16,6 +16,8 @@ export interface Notice {
   key?: string;
   actions?: NoticeAction[];
   dismissible?: boolean;
+  /** A transient refusal on an existing Undo, without replacing its focused button. */
+  note?: () => string;
 }
 
 export interface NoticeAction {
@@ -25,7 +27,7 @@ export interface NoticeAction {
   disabled?: () => boolean;
   run(): void | Promise<void>;
 }
-export type NoticeOptions = Pick<Notice, "actions" | "dismissible">;
+export type NoticeOptions = Pick<Notice, "actions" | "dismissible" | "note">;
 export const sessionNoticeKey = (computer: string, name: string) => `session-end:${computer}\n${name}`;
 
 /** At most this many show; the oldest non-sticky one goes first. */
@@ -44,9 +46,14 @@ export interface NoticeBus {
 export function createNoticeBus(): NoticeBus {
   const [list, setList] = createSignal<Notice[]>([]);
   let nextId = 1;
+  let waiting: Notice[] = [];
+  function drain(all: Notice[]) {
+    while (all.length < MAX_NOTICES && waiting.length) all.push(waiting.shift()!);
+    return all;
+  }
 
-  function dismiss(id: number) { setList((all) => all.filter((n) => n.id !== id)); }
-  function clearNotice(key: string) { setList((all) => all.filter((n) => n.key !== key)); }
+  function dismiss(id: number) { waiting = waiting.filter((n) => n.id !== id); setList((all) => drain(all.filter((n) => n.id !== id))); }
+  function clearNotice(key: string) { waiting = waiting.filter((n) => n.key !== key); setList((all) => drain(all.filter((n) => n.key !== key || n.dismissible === false))); }
 
   /**
    * Adds a notice and returns its id. A notice with a key first takes the
@@ -59,14 +66,17 @@ export function createNoticeBus(): NoticeBus {
     const id = nextId++;
     const replaced = (n: Notice) => key === undefined
       ? !sticky && n.key === undefined && !n.sticky && n.tone === tone && n.title === title && n.text === text
-      : n.key === key;
+      : n.key === key && (n.dismissible !== false || options?.dismissible === false);
+    waiting = waiting.filter((n) => !replaced(n));
     setList((all) => {
       const next = [...all.filter((n) => !replaced(n)), { id, tone, title, text, sticky, key, ...options }];
       while (next.length > MAX_NOTICES) {
         // Never the notice being added: it is the last entry.
         const others = next.slice(0, -1);
-        const loose = others.findIndex((n) => !n.sticky);
-        next.splice(loose < 0 ? 0 : loose, 1);
+        const loose = others.findIndex((n) => !n.sticky && n.dismissible !== false);
+        const at = loose < 0 ? others.findIndex((n) => n.dismissible !== false) : loose;
+        if (at < 0) { waiting.push(next.pop()!); if (waiting.length > MAX_NOTICES) waiting.shift(); }
+        else next.splice(at, 1);
       }
       return next;
     });

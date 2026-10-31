@@ -347,6 +347,11 @@ fn batch_bounds_measure_1024_and_50000_and_reject_50001_before_reservation() {
             result.unwrap();
             assert_eq!(lock(&delays.0).groups[&id].members.len(), count);
             assert_eq!(lock(&delays.0).bytes, bytes);
+            let line = quit_line(&lock(&delays.0).groups[&id]).unwrap();
+            assert!(!line.contains('\n'));
+            assert!(line.len() < 3000);
+            assert!(line.ends_with(&format!("and {} more", count - 5)));
+            assert_eq!(line.matches('"').count(), 10, "only five quoted names");
             delays.cancel(&id);
             assert_eq!(lock(&delays.0).bytes, 0);
         }

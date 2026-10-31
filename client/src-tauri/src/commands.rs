@@ -897,6 +897,7 @@ pub fn perf_away(
     let window = crate::main_window(&app).ok_or("The main window is unavailable")?;
     match how.as_str() {
         "hide" => window.hide(),
+        "close" => window.close(),
         "minimize" => window.minimize(),
         _ => return Err(format!("unknown way to take the window away: {how}")),
     }
@@ -911,7 +912,7 @@ pub fn perf_away(
         std::time::Duration::from_millis(ms),
     );
     let back = match how.as_str() {
-        "hide" => window.show(),
+        "hide" | "close" => window.show(),
         _ => window.unminimize(),
     };
     crate::window_visibility::sync_webview(&window);

@@ -1,3 +1,4 @@
+import { bus as noticeBus } from "./notices";
 import { batch, createMemo, createRoot, createSignal } from "solid-js";
 import * as bridge from "../bridge";
 import { notify } from "./actions";
@@ -55,7 +56,7 @@ export interface ComposerPort {
   allowRetry(handle: number): Promise<void>;
   cancelSend(handle: number): Promise<void>;
   interrupted(handle: number): Promise<void>;
-  clear(handle: number, run: string, conversation: string, dismiss: boolean): Promise<SendReply>;
+  clear(handle: number, run: string, conversation: string, dismiss: boolean, delay?: import("./endActionBusy").EndReference): Promise<SendReply>;
   refresh(handle: number): Promise<void>;
   /** Opens a draft attachment by its `zerus-file` path: null when it opened, else a notice; rejects with why not (Task 9). */
   openAttachment(path: string): Promise<string | null>;
@@ -140,7 +141,8 @@ function handleSet() {
   };
 }
 
-export function createComposer(port: ComposerPort, timers: Timers = realTimers, images: Images = browserImages, notices: Notices = appNotices, sent: (key: string) => void = () => {}) {
+export type ClearDriver = (session: SessionRef | undefined, control: ClearControl, execute: (reference: import("./endActionBusy").EndReference, key: string) => Promise<SendReply>, current: () => boolean) => Promise<SendReply | undefined>;
+export function createComposer(port: ComposerPort, timers: Timers = realTimers, images: Images = browserImages, notices: Notices = appNotices, sent: (key: string) => void = () => {}, delayClear?: ClearDriver) {
   const [view, setView] = createSignal<ComposerView | undefined>();
   const [text, setText] = createSignal("");
   /** `start` is the anchor and `end` the cursor position (Qt's anchor and position); start may follow end. */
@@ -173,6 +175,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
   let hintTimer: (() => void) | undefined;
   /** The draft key of the session last opened; a view of another composer is an older answer. */
   let expected: string | undefined;
+  let openedSession: SessionRef | undefined;
   let suggestionKey = "";
   let opens = 0;
   let inFlight = 0;
@@ -416,6 +419,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
     apply, receive,
     async open(session: SessionRef | undefined) {
       if (closing()) return;
+      openedSession = session ? { ...session } : undefined;
       setOpening((n) => n + 1);
       try {
         // The composer being left keeps what was typed: its edit goes first.
@@ -505,7 +509,12 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
       if (h === undefined || d?.kind !== "clear") return;
       const at = epoch;
       let r: SendReply;
-      try { r = await port.clear(h, d.control.run, d.control.conversation, d.control.dismiss); } catch (e) {
+      try {
+        const execute = (delay?: import("./endActionBusy").EndReference) => port.clear(h, d.control.run, d.control.conversation, d.control.dismiss, delay);
+        const result = delayClear ? await delayClear(openedSession, d.control, (ref) => execute(ref), () => handle() === h) : await execute();
+        if (!result) return;
+        r = result;
+      } catch (e) {
         notices("error", typeof e === "string" ? e : String(e), true);
         return;
       }
@@ -582,7 +591,18 @@ export const composer = createRoot(() => createComposer({
   send: bridge.sendMessage, push: (...args) => bridge.sendPush(...args), sendNow: (id) => bridge.queueSendNow(id), answer: bridge.sendAnswer, remove: bridge.composerRemove, undo: bridge.composerUndoRemove,
   allowRetry: bridge.composerAllowRetry, cancelSend: bridge.sendCancel, interrupted: bridge.sendInterrupted, clear: bridge.clearContext,
   refresh: bridge.composerRefresh, openAttachment: (path) => bridge.attachmentOpenDraft(path), localRetry: bridge.localRetry, localDelete: bridge.localDelete, localInspect: bridge.localInspect,
-}, realTimers, browserImages, appNotices, suggestions.dismiss));
+}, realTimers, browserImages, appNotices, suggestions.dismiss, async (session, control, execute, current) => {
+  const [{ endActions }, { catalog, rowId }, { captureEnd, sameEnd }] = await Promise.all([import("./endActions"), import("./catalog"), import("./endActionBusy")]);
+  const row = session ? catalog.rows[rowId(session.computer, session.key)] : undefined;
+  if (!row || row.runId !== control.run || row.conversationId !== control.conversation) return;
+  const captured = { ...row };
+  return endActions.schedule([captureEnd(captured, { kind: "clear_context", dismiss_prompt: control.dismiss })], async ([ref], key) => {
+    const reply = await execute(ref, key);
+    if (reply.kind !== "notice") return reply;
+    const changed = reply.error && reply.text === "The session state changed. Open its actions again.";
+    noticeBus.notify(changed || !reply.error ? "info" : "error", changed ? "Clear cancelled: the session changed." : reply.text, !changed && reply.error, key);
+  }, { current: () => current() && sameEnd(captured, catalog.rows[captured.key]) });
+}));
 
 /**
  * Typing not yet flushed goes to Rust when the window hides or the page goes:

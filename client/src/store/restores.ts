@@ -56,7 +56,7 @@ export interface RestoreDeps {
   updating(computer: string, name: string): boolean;
   /** A selection batch or a machine-wide call runs (Qt's m_pending). */
   batchRunning(): boolean;
-  perform(row: ActionRow, action: Action, options?: { quiet?: boolean }): Promise<Outcome>;
+  perform(row: ActionRow, action: Action, options?: import("./actions").PerformOptions): Promise<Outcome>;
   notify(tone: Notice["tone"], text: string, sticky?: boolean): number;
   /** The click-time recheck of a menu entry (store/actions.ts). */
   stillListed(row: ActionRow): ActionRow | undefined;
@@ -231,7 +231,7 @@ export function createRestores(deps: RestoreDeps) {
         (error: unknown) => { drop(id); throw error; },
       );
     },
-    forget: (row) => deps.perform(row, { kind: "forget_archive", archive_id: row.archiveId ?? "" }, { quiet: true }),
+    forget: (row, delay) => deps.perform(row, { kind: "forget_archive", archive_id: row.archiveId ?? "" }, { quiet: true, delay, skipDelay: !delay }),
     refresh: () => deps.refreshArchive(),
     taken: (row) => {
       const key = appeared.get(nameKey(row));
