@@ -246,9 +246,20 @@ class Machines(unittest.TestCase):
     def prepare_setup(self):
         source = self.root / 'source with spaces'
         (source / 'src').mkdir(parents=True)
-        for filename in ('Cargo.toml', 'Cargo.lock', 'build.rs', 'install.sh', 'hgs_state.py'):
+        for filename in ('Cargo.lock', 'build.rs', 'install.sh', 'hgs_state.py'):
             shutil.copy2(REPO / filename, source / filename)
-        shutil.copytree(REPO / 'scripts', source / 'scripts')
+        shutil.copytree(REPO / 'scripts', source / 'scripts', ignore=shutil.ignore_patterns('__pycache__'))
+        (source / 'Cargo.toml').write_text("[package]\nname='setup-fixture'\nversion='0.1.0'\n[dependencies]\nfixture={path='crates/fixture'}\n")
+        child = source / 'crates/fixture'
+        (child / 'src').mkdir(parents=True)
+        (child / 'Cargo.toml').write_text("[package]\nname='fixture'\nversion='0.1.0'\n[dependencies]\ncore={path='../../client/core'}\n")
+        (child / 'src/lib.rs').write_text('// fixture')
+        core = source / 'client/core'
+        (core / 'src').mkdir(parents=True)
+        (core / 'Cargo.toml').write_text("[package]\nname='core'\nversion='0.1.0'\n")
+        (core / 'src/lib.rs').write_text('// core')
+        (core / 'target').mkdir()
+        (core / 'target/private.secret').write_text('must not travel')
         (source / 'src/main.rs').write_text('// fixture source')
         (source / 'not-for-upload.secret').write_text('must not travel')
         self.script('cargo', r'''#!/usr/bin/env python3
@@ -262,6 +273,8 @@ target.mkdir(parents=True)
         remote = self.root / 'remote'
         (remote / '.local/src/hgs').mkdir(parents=True)
         (remote / '.local/src/hgs/untouched').write_text('checkout stays')
+        (remote / '.local/bin').mkdir(parents=True)
+        (remote / '.local/bin/zerus-mobile-connector').write_text('keep connector unchanged')
         return source, remote, dict(self.env, MACHINE_SSH_MODE='setup')
 
     def test_setup_native_install_uploads_only_cli_and_preserves_remote_config(self):
@@ -275,13 +288,17 @@ target.mkdir(parents=True)
         self.assertIn('Setup complete: hgs fixture-installed', result.stdout)
         self.assertTrue((remote / '.local/bin/hgs').is_file())
         self.assertTrue((remote / '.local/bin/hgs_state.py').is_file())
+        self.assertEqual((remote / '.local/bin/zerus-mobile-connector').read_text(), 'keep connector unchanged')
         self.assertFalse((remote / 'wrong-place').exists())
         self.assertEqual(existing.read_text(), 'HGS_SELF="keep-name"\nHGS_PEERS="keep-peer"\n')
         self.assertEqual((remote / '.local/src/hgs/untouched').read_text(), 'checkout stays')
         self.assertEqual(list((remote / '.local/share/hgs').glob('setup.*')), [])
         with tarfile.open(fileobj=io.BytesIO((self.root / 'bundle.tar.gz').read_bytes())) as archive:
-            names = archive.getnames()
+            names = [name.removeprefix('./') for name in archive.getnames()]
         self.assertIn('src/main.rs', names)
+        self.assertIn('crates/fixture/Cargo.toml', names)
+        self.assertIn('client/core/src/lib.rs', names)
+        self.assertNotIn('client/core/target/private.secret', names)
         self.assertIn('build.rs', names)
         self.assertIn('scripts/install-macos-session-service.py', names)
         self.assertNotIn('not-for-upload.secret', names)
@@ -295,7 +312,7 @@ target.mkdir(parents=True)
 
     def test_failed_build_keeps_installed_binary_and_cleans_staging(self):
         source, remote, env = self.prepare_setup()
-        (remote / '.local/bin').mkdir(parents=True)
+        (remote / '.local/bin').mkdir(parents=True, exist_ok=True)
         installed = remote / '.local/bin/hgs'
         installed.write_text('old binary')
         result = self.run_machine('setup', 'studio', '--source', str(source), env=dict(env, MACHINE_BUILD_FAIL='1'), success=False)

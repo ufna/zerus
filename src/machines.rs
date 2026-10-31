@@ -16,6 +16,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod source;
+
 fn yes() -> bool {
     true
 }
@@ -415,7 +417,7 @@ hgs_stage=$(mktemp -d "$HOME/.local/share/hgs/setup.XXXXXXXX")
 trap 'rm -rf "$hgs_stage"' EXIT HUP INT TERM
 tar xzf - -C "$hgs_stage"
 printf 'Building HGS for this machine…\n'
-HGS_INSTALL_PREFIX="$HOME/.local" bash "$hgs_stage/install.sh"
+HGS_MOBILE_CONNECTOR=0 HGS_INSTALL_PREFIX="$HOME/.local" bash "$hgs_stage/install.sh"
 if test ! -e "$HOME/.config/hgs/config"; then
   (set -C; printf 'HGS_SELF="%s"\n' "$1" > "$HOME/.config/hgs/config") || true
 fi
@@ -442,21 +444,14 @@ printf 'Setup complete: '
         println!("Bundle CLI sources from {} and run a native build/install on {alias} (no session restart).", root.display());
         return Ok(0);
     }
+    let sources = source::Snapshot::new(&root)?;
     let bundle = tempfile::NamedTempFile::new()?;
     let result = platform::status(
         Command::new("tar")
             .args(["czf", "-"])
             .arg("-C")
-            .arg(&root)
-            .args([
-                "Cargo.toml",
-                "Cargo.lock",
-                "build.rs",
-                "src",
-                "scripts",
-                "install.sh",
-                "hgs_state.py",
-            ])
+            .arg(sources.path())
+            .arg(".")
             .stdout(bundle.reopen()?),
     )?;
     if !result.success() {

@@ -3746,6 +3746,20 @@ whose `install.sh` or `hgs_state.py` has CRLF line endings; `.gitattributes` kee
 `*.sh` and `*.py` in LF. Identity files in `machines.local.json` may be Windows
 paths or `~\…`.
 
+On every platform, setup snapshots the CLI sources and the transitive local Cargo
+path dependencies, including the root crates and `client/core`, before SSH starts.
+The private snapshot includes package manifests, `src`, declared build/library/bin
+inputs, the root lockfile, CLI installer/helper and installer scripts. The two
+shared `voice_video.rs` and `voice_rejection.rs` validators under the relay source
+are included when present; no relay or connector package is bundled. It excludes
+build outputs, VCS directories, hidden entries, Node modules and Python caches.
+It refuses symbolic or nonregular source entries, external path dependencies and
+workspace inheritance or patch/replace overrides. The bounds are 32 packages,
+20,000 visited/copied entries, 64 MiB total, 8 MiB per file (1 MiB per manifest),
+32 directory levels and a five-second scan budget. A refusal makes no SSH call.
+The remote CLI-only install preserves configuration and existing checkouts, skips
+the mobile connector and does not install or restart services or agent processes.
+
 **Swarm worker.** Windows has no user service manager. The desktop app runs one
 hidden `hgs.exe swarm worker` and restarts it after an exit. The delay doubles
 from one second up to five minutes and resets after a run of a minute or more. A
