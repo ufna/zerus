@@ -5,6 +5,7 @@ import type { Folder } from "../../types";
 import type { Session } from "../sessions/types";
 import { WorktreePicker, catalogRoots } from "../sessions/worktree-dialogs";
 import { WorktreeReadLane } from "./worktree-read-lane";
+import { WorktreeReminder, cleanupReminderView } from "./worktree-reminder";
 import { machineCards } from "../../store/machines";
 import { computerOffline, orderedRows } from "../../store/catalog";
 import { openWorktreeReview, worktreeReviewDialog } from "../../store/worktreeCleanup";
@@ -24,13 +25,18 @@ export default function ProjectWorktrees(props: { folder?: Folder; project: stri
   let gone = false;
   let returnFocus: HTMLElement | undefined, cleanupButton: HTMLButtonElement | undefined, refreshButton: HTMLButtonElement | undefined;
   const [reader, setReader] = createSignal<WorktreePicker>(); const [version, setVersion] = createSignal(0);
+  const [reminderCount, setReminderCount] = createSignal<number>();
+  const [visible, setVisible] = createSignal(!document.hidden);
+  const reminder = new WorktreeReminder(bridge.worktreeCleanupReminder, setReminderCount);
+  const visibility = () => setVisible(!document.hidden);
+  document.addEventListener("visibilitychange", visibility);
   const context = createMemo(() => {
     const folder = props.folder; if (!folder?.path || !folder.machine || !machineCards[""]?.host) return;
     if (localWindowsFolder(folder, machineCards[""])) return;
     const computer = folder.machine === machineCards[""].host ? "" : folder.machine;
     const card = machineCards[computer];
     if (folder.machine_id && folder.machine_id !== card?.machine_id) return;
-    return {computer, machine: folder.machine, path: folder.path, key: `${computer}\n${card?.machine_id ?? ""}\n${folder.key}\n${folder.path}`};
+    return {computer, node: card?.machine_id ?? "", machine: folder.machine, path: folder.path, key: `${computer}\n${card?.machine_id ?? ""}\n${folder.key}\n${folder.path}`};
   });
   const online = () => !!context() && !computerOffline(context()!.computer);
   const style = () => of(machineCards[""]?.platform, context()?.computer === "", /Win/.test(navigator.platform) ? "windows" : "posix");
@@ -53,8 +59,13 @@ export default function ProjectWorktrees(props: { folder?: Folder; project: stri
     const origin = returnFocus; returnFocus = undefined;
     queueMicrotask(() => {if (gone || (document.activeElement !== document.body && document.activeElement !== origin)) return; if (origin.isConnected && !(origin instanceof HTMLButtonElement && origin.disabled)) origin.focus(); else if (cleanupButton && !cleanupButton.disabled) cleanupButton.focus(); else if (refreshButton && !refreshButton.disabled) refreshButton.focus();});
   });
-  onCleanup(() => {gone = true; reader()?.dispose(); lane.close(); setMenu(undefined);});
-  const canCleanup = () => !!v()?.fresh && data().state === "ok" && !!text(data().common_dir) && trees().some((r) => r.kind === "linked");
+  onCleanup(() => {gone = true; reminder.dispose(); document.removeEventListener("visibilitychange", visibility); reader()?.dispose(); lane.close(); setMenu(undefined);});
+  const cleanup = createMemo(() => cleanupReminderView(data().state, online() && !!v()?.fresh, text(data().common_dir), trees().some((r) => r.kind === "linked"), reminderCount()));
+  const canCleanup = () => cleanup().enabled;
+  createEffect(() => {
+    const target = context();
+    reminder.show(target && target.node && canCleanup() ? {key: target.key, computer: target.computer, machine: target.node, path: target.path, common: text(data().common_dir)} : undefined, visible());
+  });
   const review = (focus: string, origin?: HTMLElement) => {const target = context(); if (target && canCleanup()) void openWorktreeReview(target.computer, target.path, focus, origin);};
   const menu = (event: MouseEvent, row: Record<string, unknown>) => {
     event.preventDefault(); const target = context(), path = text(row.path); reader()?.select(path); const origin = event.currentTarget as HTMLElement;
@@ -77,7 +88,7 @@ export default function ProjectWorktrees(props: { folder?: Folder; project: stri
   const count = (path: string) => v()?.rows.find((r) => r.path === path)?.sessions ?? 0;
   const selectSessions = (row: Record<string, unknown>) => {const target = context(); if (target) filterFolder({computer: target.computer, path: text(row.path), checkout: row.kind !== "folder", style: style()});};
   return <section class="wtp" aria-label="Folder and worktrees">
-    <header class="wtp-head"><b>Folder and worktrees</b><button ref={refreshButton} class="icon-btn small" title="Refresh" aria-label="Refresh" disabled={!v()?.refreshEnabled} onClick={() => reader()?.refresh(online())}><Icon name="refresh-cw" size={13} /></button><span class="grow" /><button class="btn small" disabled={!context()} onClick={clearFolderFilter}>All sessions</button><button ref={cleanupButton} class="btn small" disabled={!canCleanup()} title="Review this repository's worktrees on its computer before anything is removed" onClick={(e) => review("", e.currentTarget)}>Clean up…</button><button class="btn small" disabled={!v()?.useEnabled} onClick={() => {const target = context(), row = current(); if (target && row && v()?.useEnabled) void newSessionFromWorktree(props.project, target.computer, text(row.path));}}><Icon name="plus" size={12} />New session…</button></header>
+    <header class="wtp-head"><b>Folder and worktrees</b><button ref={refreshButton} class="icon-btn small" title="Refresh" aria-label="Refresh" disabled={!v()?.refreshEnabled} onClick={() => reader()?.refresh(online())}><Icon name="refresh-cw" size={13} /></button><span class="grow" /><button class="btn small" disabled={!context()} onClick={clearFolderFilter}>All sessions</button><button ref={cleanupButton} class="btn small" disabled={!canCleanup()} title={cleanup().title} onClick={(e) => review("", e.currentTarget)}>{cleanup().label}</button><button class="btn small" disabled={!v()?.useEnabled} onClick={() => {const target = context(), row = current(); if (target && row && v()?.useEnabled) void newSessionFromWorktree(props.project, target.computer, text(row.path));}}><Icon name="plus" size={12} />New session…</button></header>
     <div class="wtp-status" classList={{warn: !!context() && (!online() || (!v()?.reading && !v()?.fresh) || data().partial === true || data().stale === true), danger: data().state === "folder_unavailable"}}>{v()?.status.replace(/\.?\nSnapshot:/u, ". Snapshot:") ?? (props.folder ? localWindowsFolder(props.folder, machineCards[""]) ? "Folder management is unavailable for this computer." : machineCards[""]?.host ? "The selected computer changed. Select it again." : "Waiting for this computer's identity." : "Select a folder.")}</div>
     <Show when={context()}><ul class="wtp-tree" role="tree" aria-label="Checkouts"><For each={trees()}>{(row) => <li class="wtp-root" classList={{on: text(row.path) === v()?.selected, gone: row.available === false}} role="treeitem" aria-selected={text(row.path) === v()?.selected}>
       <button class="wtp-row" onClick={() => reader()?.select(text(row.path))} onDblClick={() => selectSessions(row)} onContextMenu={(e) => menu(e, row)} title="Click to select; double-click to show its sessions">
