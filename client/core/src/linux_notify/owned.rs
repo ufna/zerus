@@ -15,6 +15,7 @@ use std::io::Write;
 pub mod data;
 mod decode;
 pub mod inspection;
+mod selected;
 #[cfg(test)]
 mod tests;
 
@@ -100,6 +101,7 @@ pub struct OwnedSaved {
     legacy: BTreeSet<String>,
     has_unknown: bool,
     raw_entries: usize,
+    selected: Option<(Owner, data::Rows)>,
 }
 impl std::fmt::Debug for OwnedSaved {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -125,6 +127,7 @@ impl OwnedSaved {
             legacy: saved.tokens.into_values().chain(saved.uncertain).collect(),
             has_unknown: false,
             raw_entries,
+            selected: None,
         };
         // Typed callers have no raw byte length: still bound the possible output.
         result.encode()?;
@@ -149,12 +152,19 @@ impl OwnedSaved {
     pub fn raw_entries(&self) -> usize {
         self.raw_entries
     }
+    /// Explicitly selected row data only, never a current ownership proof.
+    pub fn rows(&self) -> Option<&data::Rows> {
+        self.selected.as_ref().map(|(_, rows)| rows)
+    }
 
     /// Pure bounded encoding only. A later writer must read/check the existing
     /// sibling record, preserve schema1 bytes and refuse an unknown extension.
     pub fn encode(&self) -> Result<Vec<u8>, Refused> {
         if self.has_unknown {
             return Err(Refused::UnknownFields);
+        }
+        if let Some((owner, rows)) = &self.selected {
+            return selected::encode(self, *owner, rows);
         }
         let namespace = self.namespace.as_ref();
         let wire = Wire {
@@ -175,6 +185,11 @@ impl OwnedSaved {
 /// enforces secure reads and retains original bytes/hash/order for evidence.
 pub fn decode_owned(bytes: &[u8]) -> Result<OwnedSaved, Refused> {
     decode::read(bytes, true)
+}
+/// Same bounded raw-member parser with explicit owner selection and retained
+/// provenance. Data only: no current-source preparation or native permission.
+pub fn decode_owned_for(bytes: &[u8], expected: Owner) -> Result<OwnedSaved, Refused> {
+    decode::read_for(bytes, expected)
 }
 /// Raw-bounded schema1 quarantine. Duplicate raw ID members are intentionally
 /// retained until EVERY distinct token has entered unbound suppression.

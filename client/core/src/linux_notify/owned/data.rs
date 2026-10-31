@@ -179,7 +179,7 @@ impl ClaimRow {
     pub fn encode(&self) -> Result<Vec<u8>, Refused> {
         wire::encode_claim(self)
     }
-    fn scoped(&self) -> &ScopedToken {
+    pub(super) fn scoped(&self) -> &ScopedToken {
         match &self.data {
             ClaimData::Historical(t) => t,
             ClaimData::Retained(c) => &c.original().scoped,
@@ -268,6 +268,13 @@ impl Rows {
     }
     pub fn invalidations(&self) -> &[InvalidationRow] {
         &self.invalidations
+    }
+    pub fn has_unknown(&self) -> bool {
+        self.claims.iter().any(ClaimRow::has_unknown)
+            || self.invalidations.iter().any(InvalidationRow::has_unknown)
+    }
+    pub fn missing_provenance(&self) -> bool {
+        self.claims.iter().any(ClaimRow::missing_provenance)
     }
     /// Collision accounting only: includes unknown/withdrawal evidence, never
     /// an activation set or current numeric-ID permission.
