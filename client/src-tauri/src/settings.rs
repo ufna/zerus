@@ -56,6 +56,8 @@ pub fn open(app: &AppHandle, dir: &Path, replay: bool) -> Store {
             replay,
         ),
     );
+    // Natively drawn text (tray, menu bar) follows the language saved at startup.
+    crate::native_text::configure(&settings.text("workspace/language"));
     let handle = app.clone();
     settings.subscribe(Box::new(move |key, value, revision| {
         let _ = handle.emit(

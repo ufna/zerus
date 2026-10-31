@@ -36,7 +36,10 @@ use zerus_client_core::menubar::{
 };
 use zerus_client_core::readmarks::ReadMark;
 use zerus_client_core::shell;
-use zerus_client_core::{Change, ComputerId};
+use zerus_client_core::text::Text;
+use zerus_client_core::{text, Change, ComputerId};
+
+use crate::native_text::render;
 
 /// The status item is offered at most this often.
 pub const PACE: Duration = Duration::from_millis(250);
@@ -878,14 +881,18 @@ fn publish(app: &AppHandle, desk: &Desk, mode: OpenMode) {
     crate::platform::linux_tray::offer(
         app,
         desk.face(),
-        desk.tooltip(),
+        crate::native_text::lines(&desk.tooltip()),
         desk.menu(mode),
         desk.badge(),
     );
     #[cfg(target_os = "macos")]
     {
-        let (face, tooltip, menu, badge) =
-            (desk.face(), desk.tooltip(), desk.menu(mode), desk.badge());
+        let (face, tooltip, menu, badge) = (
+            desk.face(),
+            crate::native_text::lines(&desk.tooltip()),
+            desk.menu(mode),
+            desk.badge(),
+        );
         let handle = app.clone();
         let _ = app.run_on_main_thread(move || {
             crate::platform::macos_menubar::offer(&handle, face, tooltip, menu, badge)
@@ -1259,7 +1266,8 @@ impl Bar {
         self.tracking == 0 && !self.gate.is_open()
     }
 
-    /// The native items of a new menu, Qt's texts (`TrayMenu::rebuild`).
+    /// The native items of a new menu, Qt's texts (`TrayMenu::rebuild`) in
+    /// the interface language.
     pub fn layout(&mut self, entries: &[Entry]) -> Vec<Item> {
         self.layout_modes(entries, &OpenMode::ALL)
     }
@@ -1270,24 +1278,26 @@ impl Bar {
         let mut items = Vec::with_capacity(entries.len());
         for (index, entry) in entries.iter().enumerate() {
             let id = format!("zerus-{}-{index}", self.generation);
-            let mut chosen_by = |text: &str, action: MenuAction| {
+            let mut chosen_by = |text: &Text, action: MenuAction| {
                 actions.insert(id.clone(), action);
                 Item::Action {
                     id: id.clone(),
-                    text: text.to_owned(),
+                    text: render(text),
                 }
             };
             items.push(match entry {
-                Entry::Open => chosen_by("Open Zerus", MenuAction::Open),
+                Entry::Open => chosen_by(&text!("Open Zerus"), MenuAction::Open),
                 Entry::Update(version) => chosen_by(
-                    &format!("Update available: Zerus {version}"),
+                    &text!("Update available: Zerus %1", version.as_str()),
                     MenuAction::Updates,
                 ),
-                Entry::Restart => chosen_by("Restart to finish update", MenuAction::Restart),
+                Entry::Restart => {
+                    chosen_by(&text!("Restart to finish update"), MenuAction::Restart)
+                }
                 Entry::Separator => Item::Separator,
                 Entry::Label(text) => Item::Label {
                     id: id.clone(),
-                    text: text.clone(),
+                    text: render(text),
                 },
                 Entry::Session {
                     computer,
@@ -1321,8 +1331,8 @@ impl Bar {
                         modes,
                     }
                 }
-                Entry::Refresh => chosen_by("Refresh", MenuAction::Refresh),
-                Entry::Quit => chosen_by("Quit", MenuAction::Quit),
+                Entry::Refresh => chosen_by(&text!("Refresh"), MenuAction::Refresh),
+                Entry::Quit => chosen_by(&text!("Quit"), MenuAction::Quit),
             });
         }
         self.actions = Arc::new(actions);
@@ -2527,7 +2537,7 @@ mod tests {
             computer: ComputerId::from("studio"),
             key: key.into(),
             name: name.into(),
-            text: name.into(),
+            text: Text::verbatim(name),
             running,
             tty: String::new(),
         }
@@ -2546,7 +2556,7 @@ mod tests {
         let items = bar.layout(&[
             Entry::Open,
             Entry::Separator,
-            Entry::Label("studio".into()),
+            Entry::Label(Text::verbatim("studio")),
             session("run:a", "claude/sample-project/a", true),
             session("run:b", "codex/sample-project/b", false),
             Entry::Separator,
