@@ -25,6 +25,7 @@ use crate::actions::{Exit, Invocation};
 pub mod computer_codes;
 pub mod connector_actions;
 pub mod enrollment;
+pub mod legacy;
 pub mod page;
 pub mod phone_actions;
 

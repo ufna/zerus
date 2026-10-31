@@ -12,7 +12,7 @@ import WorkspacePanel from "./WorkspacePanel";
 // MobileDeliverySettings.h, SettingsPage.h:124-139) in the approved
 // mockup's layout. Reads and notification timing stay in the existing hub;
 // phone actions use one-use native plans and the workspace/relay shown here.
-// Connector and legacy configuration controls belong to .24.5 and .24.8.
+// Legacy configuration is loaded only while its Advanced disclosure is open.
 
 const DELIVERY: { value: string; label: string }[] = [
   { value: "immediate", label: "Immediately, even if I'm at a computer" },
@@ -32,6 +32,7 @@ export const listTitle = (list: { host: string; workspace_name: string }) =>
   list.host ? `${list.workspace_name} (via ${list.host})` : `${list.workspace_name} (this computer)`;
 
 const PhoneDialogs=lazy(()=>import("./PhoneDialogs"));
+const LegacyRelay=lazy(()=>import("./LegacyRelay"));
 function PhonesPanel(props: { view?: View; refresh: () => void; actions:PhoneActions }) {
   const [selected,setSelected]=createSignal<string>();
   const phones=()=>props.view?.phones, reading=()=>!!props.view?.phones_busy, busy=()=>reading()||props.actions.busy();
@@ -71,6 +72,7 @@ function DeliveryPanel(props: { view?: View; set: (value: string) => void }) {
 }
 
 export function MobileSection() {
+  const [legacyOpen,setLegacyOpen]=createSignal(false);
   const [state, setState] = createSignal<MobileState>({});
   const page = createMobile({
     view: () => invoke<View>("mobile_view"),
@@ -102,7 +104,8 @@ export function MobileSection() {
       <SectionHead title="Workspace" intro="Connect your computers and phones to one workspace. Session content is encrypted between your devices; the relay keeps routing and delivery metadata." />
       <Show when={state().error}>{(text) => <Status kind="error">{text()}</Status>}</Show>
       <WorkspacePanel view={view()} refresh={(afterAction) => page.refreshWorkspace(afterAction)} />
-      <div class="set-legacy"><button class="btn ghost set-disclosure" disabled><Icon name="chevron-right" size={13}/>Advanced: legacy connector configuration</button></div>
+      <button class="btn ghost set-disclosure" disabled={!!view()?.workspace?.encrypted} aria-expanded={legacyOpen()&&!view()?.workspace?.encrypted} title={view()?.workspace?.encrypted?"Unavailable while this computer uses an encrypted workspace":undefined} onClick={()=>setLegacyOpen(!legacyOpen())}><Icon name={legacyOpen()&&!view()?.workspace?.encrypted?"chevron-down":"chevron-right"} size={14}/>Advanced: legacy connector configuration</button>
+      <Show when={legacyOpen()&&!view()?.workspace?.encrypted}><Suspense><LegacyRelay/></Suspense></Show>
       <PhonesPanel view={view()} refresh={() => page.refreshPhones()} actions={phoneActions}/>
       <Show when={phoneActions.prompt()}>{prompt=><Suspense><PhoneDialogs prompt={prompt()} actions={phoneActions}/></Suspense>}</Show>
       <DeliveryPanel view={view()} set={(value) => page.setDelivery(value)} />

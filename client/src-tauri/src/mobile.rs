@@ -25,6 +25,8 @@ mod enrollment;
 pub use enrollment::*;
 mod connector_actions;
 pub use connector_actions::*;
+mod legacy;
+pub use legacy::*;
 
 const REPLAY: &str = "The mobile connection is not read in a replay.";
 /// Computers whose phones are read at once.
@@ -77,6 +79,7 @@ struct Inner {
     computer_plans: Mutex<computers::Plans>,
     enrollment_plans: Mutex<enrollment::Plans>,
     connector_plans: Mutex<connector_actions::Plans>,
+    legacy_plan: Mutex<Option<legacy::Plan>>,
     effects: std::sync::atomic::AtomicBool,
     /// The page's clock: monotonic, so a changed system time neither names
     /// nor hides the sync service early.
@@ -113,6 +116,7 @@ impl Inner {
             computer_plans: Mutex::new(computers::Plans::default()),
             enrollment_plans: Mutex::new(enrollment::Plans::default()),
             connector_plans: Mutex::new(connector_actions::Plans::default()),
+            legacy_plan: Mutex::new(None),
             effects: std::sync::atomic::AtomicBool::new(false),
             started: Instant::now(),
             blocked,
