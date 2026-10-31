@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{self, Read};
 use std::path::Path;
 
+pub mod windows_folders;
 mod presentation;
 pub use presentation::{qt_presentation, PresentationSeed};
 
@@ -186,6 +187,7 @@ impl Layout {
                 return Err("the project layout has an invalid run identity");
             }
         }
+        if let Some(family)=saved.extra.get(windows_folders::KEY){windows_folders::validate(family)?;}
         Ok(Self::from_saved(saved))
     }
 
