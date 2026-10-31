@@ -333,3 +333,59 @@ The agreed fixture conditions also require these concrete guards:
   paths, use markers that cannot have an Apple team ID shape, and require an
   actual non-GUI remote security session. An interaction/partition refusal
   stops without a signing retry; this fixture adds no partition remedy.
+
+### Final private-fixture access amendment (2026-11-01)
+
+The coordinator clarified the fixture boundary after the stopped `d15ebe33`
+attempt: keychain unlock and access restrictions protect the owner's keychains.
+A newly created throwaway keychain may be unlocked through its exact private
+reference using its own RAM-only password. This exception changes only the test
+fixture; the production signer and owner-keychain restrictions stay in force.
+
+The final headless attempt uses this sequence:
+
+1. Create the explicit private keychain and flush its device/inode receipt.
+   Keep the generated password in C memory until a single
+   `SecKeychainUnlock(private_ref, password_length, password, true)` call on that
+   same newly created reference has returned. Wipe the password before checking
+   the unlock result or performing the next operation. A creation or unlock
+   error stops; known-inode disposal still runs without replay.
+2. Apply the existing no-auto-lock settings to that private reference. Keep the
+   existing import access object limited to codesign and the fixture process.
+   This revision adds no partition mutation: import and signing have not yet
+   executed, so their access needs remain unqualified. Any later refusal ends
+   the final attempt rather than adding access or retrying the command.
+3. For the five A1 reference queries only, use a fresh environment with `HOME`
+   equal to the real passwd home, in the same remote SSH session and UID. These
+   commands are exactly `security list-keychains -d user|common|dynamic`,
+   `security default-keychain -d user` and `security login-keychain`. Run them
+   before creation, after creation, after codesign and after deletion. Redact
+   the real home to `~` in all output. No owner item, identity or certificate
+   query or keychain write is admitted. A metadata error or interaction request
+   stops before creation; a nonzero response records unknown availability and
+   cannot establish a successful baseline. Errors after creation stop work and
+   still trigger disposal of the known private keychain.
+4. Every other child keeps the private HOME and fresh environment. Retain the
+   private preference comparison, and additionally record bounded inventories
+   of the whole private HOME before the owned scratch root is created and after
+   its successful removal. Record relative names, types, modes and file hashes,
+   with at most 128 entries, 1 MiB per file and 4 MiB total. Refuse links, special
+   files, changing inputs and exceeded bounds. Report residue without deleting
+   or repairing it. Reference equality and private file inventories describe
+   these observations; they do not establish unchanged keychain bytes or a
+   blanket absence of securityd effects.
+
+The coordinator explicitly authorizes the real-HOME exception only for those
+five read-only commands. OpenSSL, the helper, compilation, discovery, codesign
+and deletion retain the private HOME. No owner keychain is unlocked, signed
+with or modified. D1-D4, M1-M5, the genuine Apple gate and known-inode cleanup
+remain unchanged.
+
+This amendment needs G1 and webui pre-code agreement, then both fresh exact
+source approvals before one final headless attempt. The native class runs
+alone first; the 27 non-native controls run only on success. A failure stops
+headless iteration. The next proposal must use the owner's existing Developer
+ID identity on a scratch pair inside an owner-given GUI window through the
+maintained rollout-agent path, with no keychain modification. The coordinator
+arranges that window and hook. Failed attempts and create/delete primitives
+cannot substitute for successful signer qualification or authorize this merge.
