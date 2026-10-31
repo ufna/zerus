@@ -80,9 +80,24 @@
   .acct-identity { align-items: flex-start; gap: 12px; font-size: var(--fs-sm); }
   .acct-card { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
   .acct-card h3, .acct-usage h3 { font-size: var(--fs-md); font-weight: 600; }
-  .acct-tags { display: flex; flex-wrap: wrap; gap: 6px; }
-  /* Machines of an account: a few chips, "+N more" with a searchable list, one Add button. */
-  .acct-tag.more { color: var(--z-color-muted); }
+  /* Machines of an account: one row per profile (the .acct-more-row pattern), "+N more" with a searchable list, one Add button. */
+  .acct-mrows { display: flex; flex-direction: column; gap: 2px; }
+  /* A narrow detail wraps the default action under its row; the machine name keeps its width. */
+  .acct-mrow { display: flex; flex-wrap: wrap; align-items: center; column-gap: 8px; min-height: 36px; padding-right: 6px; border-radius: 6px; }
+  .acct-mrow:hover { background: var(--z-color-hover); }
+  .acct-mrow.on { background: var(--z-color-segment-on); }
+  .acct-mrow-pick { flex: 1 1 auto; min-width: 0; min-height: 36px; align-self: stretch; display: flex; align-items: center; gap: 8px; padding: 0 6px; border-radius: 6px; text-align: left; font-size: var(--fs-sm); }
+  .acct-mrow .mtile { --mt-ring: var(--z-color-card); }
+  .acct-mstate { flex: none; font-size: var(--fs-xs); color: var(--z-color-muted); }
+  .acct-mstate[data-tone="warn"] { color: var(--z-color-warn); }
+  .acct-mrow-default { flex: none; display: flex; justify-content: flex-end; margin-left: auto; padding: 4px 0; }
+  /* Rows keep one column for Default or Make default, so the states line up. */
+  .acct-mrows.defaults .acct-mrow-default { min-width: 92px; }
+  .acct-mfoot { gap: 6px; }
+  /* Tells apart two profiles of one account on the same machine. */
+  .acct-pid { flex: none; display: inline-flex; align-items: center; height: 18px; padding: 0 5px; border-radius: var(--z-radius-sm); background: var(--z-color-hover); color: var(--z-color-text-3); font-family: var(--z-font-mono); font-size: var(--fs-2xs); }
+  .acct-mchip { flex: none; display: inline-flex; align-items: center; gap: 3px; }
+  .acct-row-usage { display: flex; min-width: 0; overflow: hidden; }
   .acct-more-anchor { position: relative; display: inline-flex; }
   .acct-more { position: absolute; z-index: 40; top: calc(100% + 6px); left: 0; width: 300px; padding: 8px; border-radius: 10px; border: 1px solid var(--z-color-border); background: var(--z-color-raised); box-shadow: var(--z-shadow-popover); display: flex; flex-direction: column; gap: 6px; animation: rise var(--z-motion-base) var(--ease) both; }
   .acct-more .field { height: 30px; }
@@ -94,16 +109,7 @@
   .acct-more-empty { padding: 6px; font-size: var(--fs-xs); }
   .acct-add { gap: 6px; }
   .acct-add .dim { font-size: var(--fs-2xs); }
-  .acct-tag-wrap { display: inline-flex; align-items: center; gap: 2px; }
   .acct-default { height: 18px; padding: 0 6px; border-radius: 4px; display: inline-flex; align-items: center; font-size: 11px; font-weight: 600; color: var(--z-color-accent); background: var(--z-color-accent-bg); }
-  .acct-make-default { height: 26px; font-size: var(--fs-xs); color: var(--z-color-muted); }
-  .acct-make-default:hover { color: var(--z-color-accent); }
-  .acct-tag { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 8px; border-radius: var(--z-radius-md); border: 1px solid var(--z-color-border); font-size: var(--fs-sm); color: var(--z-color-text-2); }
-  .acct-tag:hover:not(:disabled) { background: var(--z-color-hover); }
-  .acct-tag.on { background: var(--z-color-segment-on); border-color: var(--z-color-accent-muted); color: var(--z-color-text); }
-  .acct-tag.offline .mach-label { opacity: .6; }
-  .acct-tag.add { border-style: dashed; color: var(--z-color-accent); }
-  .acct-tag:disabled { opacity: .5; cursor: default; }
   .acct-status { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; }
   .acct-status .set-actions { padding: 0; }
   .acct-oc { border: 1px solid var(--z-color-card-border); border-radius: var(--z-radius-md); }
