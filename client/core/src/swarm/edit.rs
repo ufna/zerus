@@ -42,6 +42,13 @@ pub enum Intent {
         name: String,
         members: Vec<String>,
     },
+    /// A confirmed clone's new project and folder in one shared edit. Failure
+    /// leaves the original catalog intact; the checkout itself is kept.
+    CreateFolder {
+        id: String,
+        name: String,
+        folder: super::folder_edit::Change,
+    },
     /// A creation's source or cloned folder (SessionOrganization.cpp:258-269).
     AddFolder {
         id: String,
@@ -137,6 +144,20 @@ fn move_into(organization: &mut Value, members: &[String], project: &str) -> Res
 pub fn apply(organization: &Value, intent: &Intent) -> Result<Value, String> {
     let mut next = organization.clone();
     match intent {
+        Intent::CreateFolder { id, name, folder } => {
+            if listed(organization, id) {
+                return Err("This project identity is already listed.".into());
+            }
+            next = apply(
+                organization,
+                &Intent::Create {
+                    id: id.clone(),
+                    name: name.clone(),
+                    members: Vec::new(),
+                },
+            )?;
+            super::folder_edit::apply(&mut next, id, folder)?;
+        }
         Intent::Move {
             members, project, ..
         } => {

@@ -7,9 +7,9 @@ use zerus_client_core::swarm::{folder_edit, Folder};
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Place {
-    computer: String,
-    host: String,
-    machine_id: Option<String>,
+    pub(super) computer: String,
+    pub(super) host: String,
+    pub(super) machine_id: Option<String>,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -34,7 +34,7 @@ pub enum Change {
         copy: bool,
     },
 }
-fn machine(pump: &Pump, place: &Place) -> Result<String, String> {
+pub(super) fn machine(pump: &Pump, place: &Place) -> Result<String, String> {
     let current = pump
         .machine(&zerus_client_core::ComputerId(place.computer.clone()))
         .ok_or("Waiting for this computer's identity.")?;

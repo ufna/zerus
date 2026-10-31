@@ -9,6 +9,7 @@
 
 mod imports;
 pub mod qt;
+pub mod repository;
 pub use imports::OrganizationImport;
 pub(crate) use imports::{family_metadata, valid_family_metadata};
 

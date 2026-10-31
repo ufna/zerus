@@ -983,6 +983,10 @@ export function PerfHost() {
       const { contentSearchSmoke } = await import("../perf/contentSearchSmoke");
       void contentSearchSmoke(!!config().actions_smoke);
     }
+    if (new URLSearchParams(location.search).has("project-clone-smoke") && inTauri()) {
+      const { projectCloneSmoke } = await import("../perf/projectCloneSmoke");
+      void projectCloneSmoke(!!config().replay && !!config().actions_smoke, new URLSearchParams(location.search).get("project-clone-smoke") === "restored");
+    }
     if (new URLSearchParams(location.search).has("project-folder-smoke") && inTauri()) {
       const { projectFolderSmoke } = await import("../perf/projectFolderSmoke");
       void projectFolderSmoke(!!config().replay && !!config().actions_smoke);
