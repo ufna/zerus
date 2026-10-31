@@ -51,8 +51,8 @@ function Meter(props: { w?: UsageWindow; width: number; indicator: UsageIndicato
   );
 }
 
-/** The meters for one account. `summary` replaces them when the provider reports no windows. */
-export function UsageMeters(props: { windows: UsageWindow[]; loading?: boolean; compact?: boolean; indicator?: UsageIndicator; summary?: string }) {
+/** The meters for one account. `summary` replaces them when the provider reports no windows; `resetFrom` (default 100) is the percent from which the text adds the time to reset. */
+export function UsageMeters(props: { windows: UsageWindow[]; loading?: boolean; compact?: boolean; indicator?: UsageIndicator; summary?: string; resetFrom?: number }) {
   const indicator = () => props.indicator ?? "rails";
   const bar = () => (props.compact ? 20 : 34);
   const slots = () => (props.loading ? [undefined, undefined] : props.windows.slice(0, 2));
@@ -69,7 +69,7 @@ export function UsageMeters(props: { windows: UsageWindow[]; loading?: boolean; 
               <Show when={w} fallback={<i class="um-skeleton" />}>
                 {/* Percent changes keep a stable slot ("5h 100%"); only a reset countdown widens it. */}
                 <span class="um-text tabular" style={{ color: tone() ? toneVar(tone()!) : undefined, "min-width": props.compact ? undefined : `${period(w!).length + 5}ch` }}>
-                  {windowText(w!, !countdownShown(w))}
+                  {windowText(w!, !countdownShown(w), props.resetFrom)}
                 </span>
                 <Show when={countdownShown(w)}>
                   <span class="um-countdown tabular">

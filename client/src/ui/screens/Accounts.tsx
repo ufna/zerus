@@ -11,11 +11,12 @@ import { accountMachine, accountsPage, loadAccounts, requestedProfile, setAccoun
 import { connectionOf, osOf } from "../../store/overview";
 import { useNow } from "../../store/latest";
 import { setPage } from "../../store/ui";
-import { clock, providerName, stateText } from "../lib/usage";
+import { clock, providerName, stateText, windowsAt } from "../lib/usage";
+import { UsageMeters } from "../components/UsageMeter";
 import { accountManagement } from "../../store/accountManagement";
 import { accountSetup } from "../../store/accountSetup";
 import {accountDistribution} from "../../store/accountDistribution";
-import { creditsText, loginLabel, memberStateText, memberOf, panelWindow, summaryLine, tone, visibleAccounts, visibleMembers } from "./accounts-ui";
+import { creditsText, loginLabel, memberStateLabel, memberStateText, memberOf, panelWindow, profileTags, summaryLine, tone, visibleAccounts, visibleMembers } from "./accounts-ui";
 
 // Agent accounts (AccountsPage.cpp), ported from design/webui/src/screens/Accounts.tsx:
 // profiles grouped by provider identity across machines; choosing a machine
@@ -34,27 +35,37 @@ const AccountCatalogDialog = lazy(() => import("./AccountCatalogDialog"));
 const [selectedAccount, setSelectedAccount] = createSignal<string | undefined>();
 const [selectedProfile, setSelectedProfile] = createSignal<string | undefined>();
 
-function AccountRow(props: { a: Account }) {
+/** The id tag that tells apart two profiles of one account on the same machine. */
+function ProfileTag(props: { tag?: string; id: string }) {
+  return <Show when={props.tag}><span class="acct-pid tabular" title={`Profile ${props.id}`}>{props.tag}</span></Show>;
+}
+
+function AccountRow(props: { a: Account; now: number }) {
   const on = () => selectedAccount() === props.a.key;
+  const tags = createMemo(() => profileTags(props.a));
   const pick = () => {
     closeManagement();clearManagementNotice();
     setSelectedAccount(props.a.key);
     setSelectedProfile(memberOf(props.a, undefined, accountMachine())?.key);
   };
   return (
-    <button class="acct-row" classList={{ on: on() }} aria-current={on()} title={props.a.members.map((m) => `${m.machine}: ${m.permission_label}`).join("\n")} onClick={pick}>
+    <button class="acct-row" classList={{ on: on() }} aria-current={on()} title={props.a.members.map((m) => `${m.machine}${tags().has(m.key) ? ` ${tags().get(m.key)}` : ""}: ${m.permission_label}`).join("\n")} onClick={pick}>
       <span class="row">
         <b class="ell grow">{props.a.label}</b>
         <AgentBadge agent={agentKind(props.a.provider)} />
       </span>
       <span class="row acct-row-tags">
         <span class="row acct-machines">
-          <For each={props.a.members.slice(0, 3)}>{(m) => <MachineLabel alias={m.machine} dimmed={!m.online} />}</For>
+          <For each={props.a.members.slice(0, 3)}>{(m) => <span class="acct-mchip"><MachineLabel alias={m.machine} dimmed={!m.online} /><ProfileTag tag={tags().get(m.key)} id={m.id} /></span>}</For>
           <Show when={props.a.members.length > 3}><span class="dim">+{props.a.members.length - 3}</span></Show>
         </span>
         <span class="grow" />
         <span class="acct-perm" classList={{ bypass: props.a.permission === "Bypass" }}>{props.a.permission}</span>
       </span>
+      {/* The detail's usage windows in the Overview card's compact meters; the reset shows from 90%. */}
+      <Show when={props.a.usage.windows.length}>
+        <span class="acct-row-usage"><UsageMeters windows={windowsAt(props.a.usage.windows, props.now)} compact resetFrom={90} /></span>
+      </Show>
     </button>
   );
 }
@@ -109,6 +120,10 @@ function Detail(props: { a: Account }) {
   const nativeConfig = () => props.a.provider === "opencode";
   const defaultable = () => props.a.provider !== "dsh" && !nativeConfig();
   const matches = () => props.a.members.filter((x) => x.machine.toLowerCase().includes(moreQuery().trim().toLowerCase()));
+  const tags = createMemo(() => profileTags(props.a));
+  // The selected machine, with its profile tag when another profile shares it.
+  const where = () => (tags().has(m().key) ? `${m().machine} (${tags().get(m().key)})` : m().machine);
+  const choose = (key: string) => { setSelectedProfile(key); closeManagement(); clearManagementNotice(); };
   return (
     <div class="acct-detail">
       <div class="acct-title">
@@ -126,23 +141,33 @@ function Detail(props: { a: Account }) {
 
       <section class="acct-card box">
         <h3>Machines</h3>
-        <div class="acct-tags" role="radiogroup" aria-label="Machine profile">
+        {/* One row per profile: the row chooses it; the default is a badge or a separate button beside it. */}
+        <div class="acct-mrows" classList={{ defaults: defaultable() }} role="radiogroup" aria-label="Machine profile">
           <For each={shown()}>{(x) => (
-            <span class="acct-tag-wrap">
-              <button class="acct-tag" role="radio" aria-checked={x.key === m().key} classList={{ on: x.key === m().key, offline: !x.online }} onClick={() => { setSelectedProfile(x.key); closeManagement();clearManagementNotice(); }}>
-                <MachineLabel alias={x.machine} />{x.online ? "" : " (offline)"}
-                <Show when={x.is_default}>
+            <div class="acct-mrow" classList={{ on: x.key === m().key }}>
+              <button class="acct-mrow-pick" role="radio" aria-checked={x.key === m().key} onClick={() => choose(x.key)}>
+                <MachineTile os={osOf(machineCards[x.host]?.platform)} state={x.online ? connectionOf(catalog.computers[x.host]?.status).tile : "offline"} size={22} />
+                <MachineLabel alias={x.machine} dimmed={!x.online} />
+                <ProfileTag tag={tags().get(x.key)} id={x.id} />
+                <span class="grow" />
+                <span class="acct-mstate" data-tone={tone(x.state)}>{memberStateLabel(x.state)}</span>
+              </button>
+              <span class="acct-mrow-default">
+                <Show when={x.is_default} fallback={
+                  <Show when={x.online && x.state === "ready" && defaultable()}>
+                    <button class="btn small" disabled={managementBusy()} title={`Use this account for new ${providerName(props.a.provider)} sessions on ${x.machine} when no account is specified. Existing sessions keep their account.`} onClick={event=>void openCatalog("default",props.a.key,x.key,event.currentTarget)}>Make default</button>
+                  </Show>
+                }>
                   <span class="acct-default" title={`Default for new ${providerName(props.a.provider)} sessions on ${x.machine} when no account is chosen`}>Default</span>
                 </Show>
-              </button>
-              <Show when={!x.is_default && x.online && x.state === "ready" && defaultable()}>
-                <button class="btn small ghost acct-make-default" disabled={managementBusy()} title={`Use this account for new ${providerName(props.a.provider)} sessions on ${x.machine} when no account is specified. Existing sessions keep their account.`} onClick={event=>void openCatalog("default",props.a.key,x.key,event.currentTarget)}>Make default</button>
-              </Show>
-            </span>
+              </span>
+            </div>
           )}</For>
+        </div>
+        <div class="row acct-mfoot">
           <Show when={props.a.members.length > shown().length}>
             <span class="acct-more-anchor">
-              <button class="acct-tag more" aria-haspopup="dialog" aria-expanded={moreOpen()} onClick={() => { setMoreQuery(""); setMoreOpen(!moreOpen()); }}>
+              <button class="btn small" aria-haspopup="dialog" aria-expanded={moreOpen()} onClick={() => { setMoreQuery(""); setMoreOpen(!moreOpen()); }}>
                 +{props.a.members.length - shown().length} more
               </button>
               <Show when={moreOpen()}>
@@ -153,9 +178,10 @@ function Detail(props: { a: Account }) {
                   <div class="acct-more-list">
                     <For each={matches()} fallback={<div class="dim acct-more-empty">No machine matches.</div>}>
                       {(x) => (
-                        <button class="acct-more-row" classList={{ on: x.key === m().key }} onClick={() => { setSelectedProfile(x.key); setMoreOpen(false); closeManagement();clearManagementNotice(); }}>
+                        <button class="acct-more-row" classList={{ on: x.key === m().key }} onClick={() => { choose(x.key); setMoreOpen(false); }}>
                           <MachineTile os={osOf(machineCards[x.host]?.platform)} state={x.online ? connectionOf(catalog.computers[x.host]?.status).tile : "offline"} size={22} />
                           <MachineLabel alias={x.machine} />
+                          <ProfileTag tag={tags().get(x.key)} id={x.id} />
                           <span class="grow" />
                           <Show when={x.is_default}><span class="acct-default">Default</span></Show>
                           <span class="dim">{memberStateText(x.state)}</span>
@@ -209,9 +235,9 @@ function Detail(props: { a: Account }) {
         </Show>
         <Actions>
           <Show when={defaultable()}>
-            <button class="btn" disabled={m().is_default || !m().online || managementBusy()} title={`Use this account for new ${providerName(props.a.provider)} sessions on ${m().machine} when no account is specified. Existing sessions keep their account.`} onClick={event=>void openCatalog("default",props.a.key,m().key,event.currentTarget)}>{m().is_default ? `Default on ${m().machine}` : `Make default on ${m().machine}`}</button>
+            <button class="btn" disabled={m().is_default || !m().online || managementBusy()} title={`Use this account for new ${providerName(props.a.provider)} sessions on ${m().machine} when no account is specified. Existing sessions keep their account.`} onClick={event=>void openCatalog("default",props.a.key,m().key,event.currentTarget)}>{m().is_default ? `Default on ${where()}` : `Make default on ${where()}`}</button>
           </Show>
-          <button class="btn danger" disabled={!m().online || managementBusy()} title="Remove this profile from the selected machine's Zerus catalog. You will confirm the machine and consequences before anything changes." onClick={event=>void openCatalog("remove",props.a.key,m().key,event.currentTarget)}><Icon name="trash" size={13} />{props.a.members.length > 1 ? `Remove from ${m().machine}…` : "Remove…"}</button>
+          <button class="btn danger" disabled={!m().online || managementBusy()} title="Remove this profile from the selected machine's Zerus catalog. You will confirm the machine and consequences before anything changes." onClick={event=>void openCatalog("remove",props.a.key,m().key,event.currentTarget)}><Icon name="trash" size={13} />{props.a.members.length > 1 ? `Remove from ${where()}…` : "Remove…"}</button>
         </Actions>
         <Show when={accountManagement.notice()||accountSetup.notice()||accountDistribution.notice()}>{text=><Status kind="ok">{text()}</Status>}</Show>
       </section>
@@ -224,6 +250,8 @@ export function AccountsScreen() {
   onCleanup(closeManagement);
   const view = accountsPage;
   const visible = createMemo(() => visibleAccounts(view(), accountMachine()));
+  // The rows' reset times re-render every 15 s; one timer serves every row.
+  const now = useNow(15_000);
   // An Overview card asks for a profile: select its account once it is listed.
   createEffect(() => {
     const key = requestedProfile();
@@ -271,7 +299,7 @@ export function AccountsScreen() {
             <div class="mach-body acct-body">
               <div class="mach-list acct-list" role="list" aria-label="Agent accounts">
                 <Show when={visible().length} fallback={<p class="muted acct-none">{accountMachine() === "*" ? "No accounts." : `No accounts on ${filterName()}.`}</p>}>
-                  <Index each={visible()}>{(a) => <AccountRow a={a()} />}</Index>
+                  <Index each={visible()}>{(a) => <AccountRow a={a()} now={now()} />}</Index>
                 </Show>
                 <Show when={view().truncated > 0}><p class="dim acct-none">{view().truncated} more accounts are not shown.</p></Show>
               </div>

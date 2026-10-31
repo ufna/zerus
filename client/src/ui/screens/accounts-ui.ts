@@ -45,6 +45,29 @@ export function visibleMembers(a: Account, selectedKey: string | undefined, max 
   return chosen && !first.includes(chosen) ? [...first.slice(0, max - 1), chosen] : first;
 }
 
+/** A member's state beside its machine in the Machines card; a ready member reads "Ready". */
+export const memberStateLabel = (s: MemberState): string => memberStateText(s) || "Ready";
+
+/**
+ * Short tags that tell apart profiles of one account on the same machine:
+ * "native", or the profile id after its provider prefix, cut to the shortest
+ * length from 6 characters that no sibling shares. Machines with one profile get none.
+ */
+export function profileTags(a: Account): Map<string, string> {
+  const tags = new Map<string, string>();
+  const byHost = new Map<string, Profile[]>();
+  for (const m of a.members) byHost.set(m.host, [...(byHost.get(m.host) ?? []), m]);
+  for (const siblings of byHost.values()) {
+    if (siblings.length < 2) continue;
+    const ids = siblings.map((m) => (m.native ? "native" : m.id.startsWith(`${m.provider}-`) ? m.id.slice(m.provider.length + 1) : m.id));
+    const longest = Math.max(...ids.map((id) => id.length));
+    let n = Math.min(6, longest);
+    while (n < longest && new Set(ids.map((id) => id.slice(0, n))).size < ids.length) n++;
+    siblings.forEach((m, i) => tags.set(m.key, m.native ? "native" : ids[i].slice(0, n)));
+  }
+  return tags;
+}
+
 /** The accounts with a member on `machine` ("*" is every machine). */
 export const visibleAccounts = (view: AccountsView, machine: string): Account[] =>
   machine === "*" ? view.accounts : view.accounts.filter((a) => a.members.some((m) => m.host === machine));
