@@ -159,3 +159,56 @@ remain governed by the G1/G3 contract in `desktop-producer-drain.md`. The minima
 codec currently rejects unknown future fields for preparation. Inspection success
 never permits activation, removal, posting, handoff or a typed default. No path,
 reader, writer, mutable transition, source adapter or runtime caller is added.
+
+### Passive provenance row codec
+
+`owned::data::{decode_claim, decode_invalidation, Rows}` validates supplied
+individual row bytes with an explicit expected owner and `Placement`. It exposes
+immutable, redacted `Original`, `NativeBinding`, `AllowedActions`, `RetainedClaim`
+and `Invalidation` data. Public types implement no serde serialization. The
+explicit row encoders refuse unknown fields; G3 retains original bytes, ordering
+and opaque fields separately. This is not an envelope reader or full preparation:
+`decode_owned` is unchanged and still refuses to encode these unintegrated fields.
+
+An `original` object records `request_id`, canonical non-nil `poster_instance`,
+positive `post_nonce`, original `bus_id`/`daemon_owner`, positive
+`namespace_generation` and nonempty duplicate-free `actions` (`default` and/or
+`open-session`). Request text is nonempty, at most 512 UTF-8 bytes and has no
+control characters. UUID spelling is checked before normalization; the existing
+canonical validator is reused without a new UUID dependency. Original namespace
+fields never inherit a later envelope namespace. Actions are retained metadata;
+they do not choose a payload or authorize a callback.
+
+The private wire tags are closed:
+
+| `state` | `native_id` and placement |
+| --- | --- |
+| `possible_post` | No ID; uncertain only |
+| `delivered` | Positive ID |
+| `withdrawal_pending` | Positive ID |
+| `unknown_post` | Optional positive ID; without an ID, uncertain only |
+| `unknown_withdrawal` | Positive ID |
+
+A tokens-map row must carry that same explicit positive ID; its map key never
+supplies a missing ID. The future envelope decoder must validate canonical decimal
+keys before passing `Placement::Tokens`. All positive uncertain, withdrawal and
+unknown claims are included by `Rows::positive_claims`, not only delivered rows.
+`Rows::new` rejects duplicate map IDs and repeated original Poster-instance/nonce
+placement, including changed request, token, state or namespace. It checks raw
+row count and bytes before any coalescing. Both envelopes, legacy and prepared
+output still need the combined G1 preparation budget; this subset cannot do that.
+
+Old owner/token-only rows remain explicitly `Historical` with
+`missing_provenance`; no Delivered state or Original is synthesized. Partial,
+null, conflicting or duplicate known provenance/state fields refuse. Every
+invalidation contains the full exact agent `target` (owner, token, original and
+positive native ID), plus one of `native_id_collision`, `namespace_changed`,
+`withdrawal_conflict`, `unverified_result`. Only an explicitly selected update
+envelope accepts invalidations. Each raw/encoded invalidation is at most 16 KiB.
+
+There are no state-advance, reservation, result, withdrawal or release methods.
+Loaded possible/unknown records never become Fresh. G1's namespace pinning after
+a possible issued result without a durable ID, pre-issue barrier, cross-file
+ordering, sticky logical invalidation, negative fencing and actual resource proofs
+remain prerequisites for later mutable/runtime integration. No default, file,
+source adapter, SDK, feature, lock or native authority changes here.
