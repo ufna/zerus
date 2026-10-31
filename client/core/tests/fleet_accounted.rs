@@ -14,7 +14,10 @@ use zerus_client_core::{
 fn timing() -> Timing {
     Timing {
         silence: Duration::from_secs(30),
-        stop_grace: Duration::from_millis(100),
+        // As in tests/fleet.rs: on Windows the fixture launcher's job ends its
+        // Python fake with the launcher, so a grace shorter than the fake's
+        // EOF write loses the owned EOF this test asserts.
+        stop_grace: Duration::from_millis(500),
         ..Timing::scaled(0.01)
     }
 }
