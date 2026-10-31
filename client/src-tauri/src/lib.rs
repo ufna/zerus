@@ -387,7 +387,6 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                 app.manage(recovery::start(app.handle()));
                 app.manage(files::start());
                 app.manage(analytics::start(app.handle()));
-                app.manage(approvals::start());
                 app.manage(worktree_policy::start(app.handle()));
                 app.manage(mobile::start(app.handle()));
                 // A replay never touches the real read or attention marks.
@@ -418,6 +417,11 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                 app.manage(actions::ActivityReads::default());
                 app.manage(actions::Attention::new(dir.join(actions::attention_file(replay))));
                 let pump = app.state::<commands::AppState>().pump();
+                app.manage(approvals::start(
+                    pump.clone(),
+                    app.state::<actions::Actions>().inner().clone(),
+                    app.state::<settings::Store>().0.clone(),
+                ));
                 app.state::<actions::Actions>().set_termination_pump(pump.clone());
                 let allowed = actions::actions_allowed(
                     std::env::var("ZERUS_CLIENT_REPLAY").ok().as_deref(),

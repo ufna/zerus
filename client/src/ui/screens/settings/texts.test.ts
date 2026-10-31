@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { APPROVALS_TITLE, APPROVALS_BODY, APPROVALS_CONFIRM, APPROVALS_WARNING, APPROVALS_HINT } from "./approval-opt-in";
 
 // Every text Settings shows for a Qt control is Qt's own: it appears in the
 // Qt source it comes from and in the section that shows it.
@@ -204,11 +205,6 @@ const APPROVALS_CORE = [
   "The automatic approval journal is unavailable. No new approval was authorized.",
   "Update the local hgs CLI to use automatic approvals and its journal.",
 ];
-// webui's wording for this client, where Qt has no text (approvals stay off here).
-const APPROVALS_CLIENT = [
-  "This client never approves tool requests automatically. Answer each request in its session.",
-  "Automatic approvals are turned on in the Qt client. They work only while the Qt client is running; this client does not approve tool requests.",
-];
 
 const worktreesQt = fs.readFileSync(new URL("tray/src/WorktreeSettings.h", repo), "utf8");
 const worktreesCore = ["client/core/src/worktree_policy.rs", "client/core/src/worktree_policy/page.rs"]
@@ -320,6 +316,10 @@ describe("Settings texts", () => {
     expect(analyticsQt).toContain('"Reading %1 configured route(s)…"');
     expect(analyticsCore).toContain('"Reading {} configured route(s)…"');
   });
+  it.each([APPROVALS_TITLE, APPROVALS_BODY, APPROVALS_CONFIRM, APPROVALS_WARNING, APPROVALS_HINT])("the dangerous opt-in uses Qt and the mockup's text: %s", (text) => {
+    const mockup = fs.readFileSync(new URL("design/webui/src/screens/settings/Policies.tsx", repo), "utf8") + fs.readFileSync(new URL("design/webui/src/dialogs/SettingsDialogs.tsx", repo), "utf8");
+    expect(approvalsQt).toContain(text); expect(mockup).toContain(text);
+  });
   it.each(APPROVALS)("Automatic approvals shows Qt's %s", (text) => {
     expect(approvalsQt).toContain(`"${text}"`);
     expect(source("Approvals.tsx") + source("approvals-journal.ts")).toContain(text);
@@ -333,9 +333,6 @@ describe("Settings texts", () => {
     expect(source("approvals-journal.ts")).toContain("${page.entries.length} entries. Unconfirmed attempts require checking Activity or Terminal; they are not retried.");
     expect(approvalsQt).toContain('"Selected answer: %1"');
     expect(approvalsCore).toContain('"Selected answer: {}"');
-  });
-  it.each(APPROVALS_CLIENT)("Automatic approvals shows the client's %s", (text) => {
-    expect(source("Approvals.tsx")).toContain(text);
   });
   it.each(WORKTREES)("Worktrees shows Qt's %s", (text) => {
     expect(worktreesQt).toContain(`"${text}"`);

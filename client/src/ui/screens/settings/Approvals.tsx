@@ -1,20 +1,23 @@
 import { Show, createSignal, onCleanup, onMount } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { inTauri } from "../../../bridge";
-import { flag } from "../../../store/settings";
+import { flag, text, setSetting } from "../../../store/settings";
+import { bus } from "../../../store/notices";
+import ApprovalsConfirm from "./ApprovalsConfirm";
+import { APPROVALS_KEY, APPROVALS_WARNING, APPROVALS_HINT, createApprovalOptIn } from "./approval-opt-in";
 import { Icon } from "../../lib/icons";
-import { Actions, Group, SectionHead, Status, Table, ToggleRow } from "./ui";
+import { Actions, Group, SectionHead, Status, Table, Switch } from "./ui";
 import { PLACEHOLDER, createJournal, type JournalState, type Page } from "./approvals-journal";
 
 // Settings > Automatic approvals (tray/src/AutomaticApprovalSettings.cpp) as
-// the approved mockup lays it out. This client never approves a tool
-// request: the switch stays off, and a notice says when the Qt client had it
-// on at the switch. The journal is read only, 50 entries a page.
+// the approved mockup lays it out. The separate opt-in is never seeded from
+// Qt. The native worker owns delivery; this page reads 50 journal entries at a time.
 
 /** QLocale().toString(QDateTime, QLocale::ShortFormat): the person's local time. */
 export const entryTime = (at: number) => new Date(at).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
 
 export function ApprovalsSection() {
+  const optIn = createApprovalOptIn(setSetting, (error) => bus.notify("error", String(error), true));
   const [host, setHost] = createSignal("");
   const [session, setSession] = createSignal("");
   const [state, setState] = createSignal<JournalState>({ page: { entries: [], next: 0, previous: 0 }, loading: false, status: "", detailHint: PLACEHOLDER });
@@ -34,13 +37,14 @@ export function ApprovalsSection() {
   return (
     <>
       <SectionHead title="Automatic approvals" />
-      <Group>
-        <ToggleRow label="Automatically approve tool requests (dangerous)" checked={false} disabled onChange={() => {}}
-          hint="This client never approves tool requests automatically. Answer each request in its session." />
-        <Show when={flag("automaticApprovals/qtEnabledAtSwitch")}>
-          <Status kind="warn">Automatic approvals are turned on in the Qt client. They work only while the Qt client is running; this client does not approve tool requests.</Status>
-        </Show>
+      <Group class="appr-toggle">
+        <div class="set-row"><div class="set-row-text"><label class="set-label danger" for="appr-on">Automatically approve tool requests (dangerous)</label></div>
+          <div class="set-row-control"><Switch id="appr-on" checked={flag(APPROVALS_KEY)} label="Automatically approve tool requests (dangerous)" disabled={optIn.busy()}
+            onChange={(on) => optIn.request(on, document.getElementById("appr-on") ?? document.activeElement as HTMLElement)} /></div></div>
+        <div class="notice danger"><Icon name="triangle-alert" size={14} /><span>{APPROVALS_WARNING}</span></div>
+        <p class="set-group-hint">{APPROVALS_HINT}</p>
       </Group>
+      <Show when={optIn.origin()} keyed>{(origin) => <ApprovalsConfirm origin={origin} actions={optIn} />}</Show>
 
       <Group title="Approval journal">
         <Actions>
@@ -70,7 +74,7 @@ export function ApprovalsSection() {
           <button type="button" class="btn small" disabled={loading() || page().next <= 0} onClick={journal.older}>Older</button>
           <span class="muted">Up to 50 entries per page</span>
         </Actions>
-        <Show when={state().status}>{(text) => <Status kind={loading() ? "busy" : "muted"}>{text()}</Status>}</Show>
+        <Show when={text("automaticApprovals/error") || state().status}>{(value) => <Status kind={text("automaticApprovals/error") ? "error" : loading() ? "busy" : "muted"}>{value()}</Status>}</Show>
       </Group>
     </>
   );
