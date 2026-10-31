@@ -236,8 +236,13 @@ class PairedControls(unittest.TestCase):
                      "opt-in native pair signing requires the maintained existing-key flow and owner window")
 class NativePairSigning(unittest.TestCase):
     def test_real_pair_rebuild_continuity_and_tamper_refusal(self):
-        with tempfile.TemporaryDirectory(prefix="zerus-native-pair-") as temporary:
-            root = Path(temporary).resolve()
+        temporary = tempfile.TemporaryDirectory(prefix="zerus-native-pair-")
+        root = Path(temporary.name).resolve()
+        def hashes(app):
+            return {str(p.relative_to(app)): sign.sha256(p)
+                    for p in sorted(app.rglob("*")) if p.is_file()}
+        print(json.dumps({"event": "native_scratch", "root": str(root)}), flush=True)
+        try:
             requested = os.environ.get("HGS_MACOS_SIGN_IDENTITY", "")
             previous = root / "absent.app"
             records = []
@@ -251,14 +256,29 @@ class NativePairSigning(unittest.TestCase):
                                    check=True, capture_output=True, timeout=60)
                 prefix = root / f"prepared{generation}"; prefix.mkdir(mode=0o700)
                 output = prefix / "hgs-tray.app"
+                app_before, cli_before = hashes(app), sign.sha256(cli)
+                print(json.dumps({"event": "native_inputs", "generation": generation,
+                                  "app": str(app), "hgs": str(cli), "output": str(output),
+                                  "app_files": app_before, "hgs_sha256": cli_before}), flush=True)
                 records.append(prepare.prepare(app, cli, output, previous, requested))
                 sign.run("codesign", "--verify", "--deep", "--strict", output)
+                self.assertEqual(hashes(app), app_before)
+                self.assertEqual(sign.sha256(cli), cli_before)
+                print(json.dumps({"event": "native_pair", "generation": generation,
+                                  "output": str(output), "files": hashes(output),
+                                  "pair": records[-1]}), flush=True)
                 previous = output
             self.assertNotEqual(records[0]["signed_sha256"], records[1]["signed_sha256"])
             service = previous / "Contents/MacOS/hgs"
             contents = bytearray(service.read_bytes()); contents[0] ^= 1; service.write_bytes(contents)
-            with self.assertRaises(subprocess.CalledProcessError):
+            with self.assertRaises(subprocess.CalledProcessError) as refused:
                 sign.run("codesign", "--verify", "--deep", "--strict", previous)
+            print(json.dumps({"event": "native_tamper_refused", "service": str(service),
+                              "sha256": sign.sha256(service), "exit": refused.exception.returncode,
+                              "stderr": refused.exception.stderr}), flush=True)
+        finally:
+            temporary.cleanup()
+            print(json.dumps({"event": "native_cleanup", "root": str(root), "exists": root.exists()}), flush=True)
 
 
 if __name__ == "__main__":
