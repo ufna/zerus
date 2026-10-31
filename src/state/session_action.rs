@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::cell::{Cell, RefCell};
 
+mod status;
+pub(super) use status::dispatch as status_dispatch;
+pub(crate) use status::machine as status_machine;
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
@@ -365,9 +369,9 @@ where
     Ok(answer)
 }
 
-pub(super) fn dispatch(args: &[String]) -> Result<i32> {
+fn request_input(args: &[String], command: &str) -> Result<Request> {
     if args.len() != 2 || args[1] != "--json" {
-        return Err("usage: hgs session-action <session> --json".into());
+        return Err(format!("usage: hgs {command} <session> --json"));
     }
     let mut bytes = Vec::new();
     io::stdin()
@@ -378,12 +382,21 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         return Err("Action request is too large".into());
     }
     let request: Request = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-    let name = &args[0];
-    validate(&request, name)?;
-    let hash = format!(
+    validate(&request, &args[0])?;
+    Ok(request)
+}
+
+fn request_hash(request: &Request, name: &str) -> String {
+    format!(
         "{:x}",
         Sha256::digest(json!([name, request]).to_string().as_bytes())
-    );
+    )
+}
+
+pub(super) fn dispatch(args: &[String]) -> Result<i32> {
+    let request = request_input(args, "session-action")?;
+    let name = &args[0];
+    let hash = request_hash(&request, name);
     let directory = absolute_root()?.join("action_receipts");
     let path = directory.join(format!("{}.json", request.request_id));
     let _receipt_guard = lock(Some(
