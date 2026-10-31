@@ -202,7 +202,7 @@ function texts(profile: Profile, usage: Usage | undefined, choice: AccountChoice
   let name = usage?.identity.email ?? "";
   if (!name) name = choice.cachedEmail?.(profile.provider, profile.id) ?? "";
   if (!name) name = profile.label;
-  if (UNNAMED.has(name)) name = "Account n/a";
+  if (UNNAMED.has(name)) name = tr("Account n/a");
   const summary = usage ? launchSummary(usage, choice.now) : tr("limits n/a");
   const historical = !!usage && (usage.offline || usage.refresh_error);
   const tone = usage ? severest(windowsAt(usage.windows, choice.now).filter((w) => Number.isFinite(w.used))) : undefined;
@@ -214,10 +214,10 @@ function texts(profile: Profile, usage: Usage | undefined, choice: AccountChoice
 
 /** The shell's row: "Run shell", or "Run PowerShell" on a Windows computer. */
 function shellRow(choice: AccountChoice): AccountRow {
-  const name = choice.style === "windows" ? "Run PowerShell" : "Run shell";
+  const name = choice.style === "windows" ? tr("Run PowerShell") : tr("Run shell");
   return {
     key: "sh\n", id: "", provider: "sh", host: choice.host, shell: true, profile: undefined, members: [], usage: undefined,
-    name, summary: "Interactive terminal session", tone: undefined, tooltip: "", accessible: name,
+    name, summary: tr("Interactive terminal session"), tone: undefined, tooltip: "", accessible: name,
   };
 }
 

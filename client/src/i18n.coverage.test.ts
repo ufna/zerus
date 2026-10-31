@@ -29,6 +29,8 @@ const DYNAMIC_FILES: Record<string, string> = {
   "./ui/sessions/SavedDrafts.tsx": "the Saved drafts store's TEXTS, REASONS and SECTIONS tables and its own Show more table",
   "./ui/sessions/ArchiveBar.tsx": "the archive period table",
   "./ui/sessions/archive-dates.ts": "the archive period table",
+  "./ui/sessions/opencode-models.ts": "its credential kind table",
+  "./ui/sessions/session-usage-ui.ts": "its own token and time field tables",
 };
 
 const SOURCES = import.meta.glob(["./**/*.ts", "./**/*.tsx", "!./**/*.test.ts", "!./i18n.ts"], { query: "?raw", import: "default", eager: true }) as Record<string, string>;

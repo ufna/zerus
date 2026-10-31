@@ -3,6 +3,7 @@ import type { CreatedWorktree } from "../../types";
 import { array, object, string, type Json } from "../lib/json";
 import { composing } from "../lib/keys";
 import { absolute, clean, join, sameKey, split, type Style } from "./paths";
+import { tr } from "../../i18n";
 
 // New session's two worktree dialogs, as Qt keeps them in their views:
 // Choose existing… is WorktreePanel in picker mode (tray/src/WorktreePanel.h)
@@ -65,30 +66,30 @@ export const snapshotTime = (seconds: number): string => dayTime(seconds, true);
 export function catalogStatus(path: string, machine: string, data: Json, online: boolean, reading: boolean, error = ""): string {
   const state = string(data.state), stale = !online || flag(data, "stale") || error !== "";
   let status: string;
-  if (!path) status = "Select a folder.";
-  else if (!online) status = "Offline. Showing the last snapshot.";
-  else if (error) status = `Catalog unavailable: ${error}`;
-  else if (reading) status = "Reading folder…";
-  else if (state === "not_repo") status = "Ordinary folder (no Git).";
-  else if (state !== "ok") status = state === "folder_unavailable" ? "Folder is missing or inaccessible." : "Git information unavailable. You can still use an accessible folder.";
-  else if (flag(data, "partial")) status = "Partial catalog (first 512 worktrees).";
-  else status = `Existing working folders on ${machine}`;
+  if (!path) status = tr("Select a folder.");
+  else if (!online) status = tr("Offline. Showing the last snapshot.");
+  else if (error) status = tr("Catalog unavailable: %1", error);
+  else if (reading) status = tr("Reading folder…");
+  else if (state === "not_repo") status = tr("Ordinary folder (no Git).");
+  else if (state !== "ok") status = state === "folder_unavailable" ? tr("Folder is missing or inaccessible.") : tr("Git information unavailable. You can still use an accessible folder.");
+  else if (flag(data, "partial")) status = tr("Partial catalog (first 512 worktrees).");
+  else status = tr("Existing working folders on %1", machine);
   const sampled = typeof data.sampled_at === "number" ? data.sampled_at : 0;
-  if (sampled > 0) status += `\nSnapshot: ${snapshotTime(sampled)}${stale ? " (outdated)" : ""}`;
+  if (sampled > 0) status += tr("\nSnapshot: %1%2", snapshotTime(sampled), stale ? tr(" (outdated)") : "");
   return status;
 }
 
 /** A row's label (WorktreePanel::render): its kind, branch, marks and its session count. */
 export function worktreeLabel(row: Json, sessions: number): string {
   const kind = string(row.kind);
-  let label = kind === "main" ? "Main checkout" : kind === "linked" ? "Linked worktree" : kind === "bare" ? "Bare repository" : "Folder";
+  let label = kind === "main" ? tr("Main checkout") : kind === "linked" ? tr("Linked worktree") : kind === "bare" ? tr("Bare repository") : tr("Folder");
   const branch = string(row.branch);
   if (branch) label += ` / ${branch}`;
-  else if (flag(row, "detached")) label += ` / detached ${string(row.head).slice(0, 8)}`;
-  if (flag(row, "locked")) label += " (locked)";
-  if (flag(row, "prunable")) label += " (prunable)";
-  if (!flag(row, "available")) label += " (unavailable)";
-  return label + (sessions === 1 ? " (1 session)" : ` (${sessions} sessions)`);
+  else if (flag(row, "detached")) label += tr(" / detached %1", string(row.head).slice(0, 8));
+  if (flag(row, "locked")) label += tr(" (locked)");
+  if (flag(row, "prunable")) label += tr(" (prunable)");
+  if (!flag(row, "available")) label += tr(" (unavailable)");
+  return label + (sessions === 1 ? tr(" (1 session)") : tr(" (%1 sessions)", sessions));
 }
 
 /**
@@ -298,7 +299,7 @@ export class NewWorktree {
   view(): NewWorktreeView {
     const busy = this.request !== 0;
     return {
-      context: `Computer: ${this.machine}\nRepository: ${this.source}`,
+      context: tr("Computer: %1\nRepository: %2", this.machine, this.source),
       branch: this.branch, base: this.base, bases: this.bases, baseIndex: this.baseIndex(), destination: this.destination, error: this.error, busy,
       createEnabled: !busy && this.branch.trim() !== "" && this.base.trim() !== "" && absolute(this.destination, this.style),
     };
@@ -366,7 +367,7 @@ export class NewWorktree {
   /** Create worktree: one request; its failure is shown, never sent again. */
   create() {
     if (!this.view().createEnabled) return;
-    this.error = "Creating worktree…";
+    this.error = tr("Creating worktree…");
     const request = ++this.ticket;
     this.request = request;
     this.create_(this.branch.trim(), this.base.trim(), this.destination).then((created) => {
