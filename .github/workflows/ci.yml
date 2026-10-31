@@ -12,6 +12,10 @@ on:
         description: Commit, branch or refs/pull/NUMBER/head to test (blank uses selected workflow branch)
         type: string
         default: ''
+      diagnose_tauri:
+        description: Disposable hosted macOS Tauri freeze diagnosis (never merge this branch)
+        type: boolean
+        default: false
       run_linux:
         description: Run full Linux CLI integration tests and release build
         type: boolean
@@ -85,7 +89,7 @@ jobs:
   review:
     name: PR and manual checks
     if: >-
-      !(github.repository == 'ufna/zerus' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule') && (!inputs.ref || inputs.ref == github.sha))
+      !inputs.diagnose_tauri && !(github.repository == 'ufna/zerus' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule') && (!inputs.ref || inputs.ref == github.sha))
     cache-mode: read
     uses: ./.github/workflows/checks.yml
     with:
@@ -109,7 +113,7 @@ jobs:
     uses: ./.github/workflows/ci-dev-qualification.yml
   gate:
     name: CI gate
-    if: always() && (github.event.repository.private == false || github.event_name == 'workflow_dispatch')
+    if: always() && !inputs.diagnose_tauri && (github.event.repository.private == false || github.event_name == 'workflow_dispatch')
     needs: [automatic, review, qualification]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -221,3 +225,11 @@ jobs:
               if failed:
                   raise SystemExit(f'{failed} cache deletions failed.')
           PY
+
+  diagnose-tauri:
+    name: Disposable Tauri diagnosis
+    if: github.event_name == 'workflow_dispatch' && inputs.diagnose_tauri && github.ref == 'refs/heads/diagnose/macos-tauri-hosted'
+    permissions:
+      contents: read
+    cache-mode: read
+    uses: ./.github/workflows/diagnose-tauri.yml
