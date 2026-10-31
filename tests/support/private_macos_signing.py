@@ -214,6 +214,7 @@ class PrivateIdentity:
 
     def cleanup(self):
         failures = []
+        preferences_unchanged = None
         if self.baseline is not None:
             try:
                 if self.created and not self.signing_checked:
@@ -241,7 +242,8 @@ class PrivateIdentity:
             except (OSError, subprocess.SubprocessError, RuntimeError) as error:
                 failures.append(type(error).__name__)
             try:
-                if self.preference_files() != self.preferences_before:
+                preferences_unchanged = self.preference_files() == self.preferences_before
+                if not preferences_unchanged:
                     self.uncertain = True
                     failures.append("private preference effects changed")
             except (OSError, RuntimeError) as error:
@@ -253,9 +255,9 @@ class PrivateIdentity:
                 self.certificate.unlink()
             else:
                 failures.append("certificate ownership unconfirmed")
-        event("private_identity_deleted", keychain_exists=self.keychain.exists(),
+        event("private_identity_disposal_result", keychain_exists=self.keychain.exists(),
               certificate_exists=self.certificate.exists(),
-              private_preferences_unchanged=not failures if self.baseline is not None else None)
+              private_preferences_unchanged=preferences_unchanged)
         if failures or self.uncertain:
             event("cleanup_failure_evidence_retained", root=str(self.root), failures=failures)
             raise RuntimeError("scope or cleanup failed; owned keychain disposal attempted without state setters")

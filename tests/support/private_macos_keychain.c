@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 
 static const char *fixture_cn = "Developer ID Application: Zerus mechanics fixture (MECHANICS-NOT-A-TEAM)";
