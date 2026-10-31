@@ -328,12 +328,16 @@ run cannot become a delayed name-only mutation. This pure module performs no I/O
 The native `action_delay` adapter reserves Actions' existing write lane without
 publishing a send-block fact. Main-webview registration starts a five-second
 monotonic window; its dedicated waiter never reads a source or runs a command.
-Undo, close and quit discard reservations before exit flushing. Consuming an
+Undo and window destruction discard reservations; close-to-tray, hide and
+minimize retain their deadline. Consuming an
 elapsed reference repeats metadata equality and uses the same action, cleanup
 or Clear dispatcher, with exact receipt handling. The queue holds at most five
-windows of 1024 targets and 16,384 process-local UUID tombstones. A batch shares
+windows of 50,000 targets, with at most 16 MiB of serialized captured metadata
+across all windows. Old settled UUID tombstones roll over FIFO at 16,384; active
+windows are never evicted. A batch shares
 one lane for same-name archives but admits only one active member at a time.
 These native commands are not yet connected to the menus or Undo notices.
+The approved durable quit-delivery path is a separate prerequisite for that UI.
 
 | Action | Arguments (`NAME` is the session name) | Standard input | Timeout here, peer |
 | --- | --- | --- | --- |

@@ -7,7 +7,14 @@ fn id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 fn actions() -> Actions {
-    Actions::new(std::env::temp_dir().join(format!("zerus-undo-marks-{}.json", id())))
+    let root = std::env::temp_dir().join(format!("zerus-undo-marks-{}", id()));
+    std::fs::create_dir(&root).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    Actions::new(root.join("read-marks.json"))
 }
 fn captured(tag: &str) -> Captured {
     Captured {
@@ -238,9 +245,20 @@ fn groups_are_bounded_and_poisoned_accounting_refuses_all_pending_work() {
             .begin(&actions, id(), vec![captured(&n.to_string())])
             .unwrap();
     }
-    assert!(delays
-        .begin(&actions, id(), vec![captured("extra")])
-        .is_err());
+    let sixth = id();
+    let extra = captured("extra");
+    let before = lock(&delays.0).bytes;
+    assert_eq!(
+        delays
+            .begin(&actions, sixth.clone(), vec![extra.clone()])
+            .unwrap_err(),
+        FIVE_WAITING
+    );
+    assert!(!lock(&delays.0).seen.contains(&sixth));
+    assert_eq!(lock(&delays.0).bytes, before);
+    assert!(actions
+        .begin(Lane::key(&extra.target, &Action::Pause), &Action::Pause)
+        .is_some());
     let poisoned = delays.clone();
     assert!(std::thread::spawn(move || {
         let _guard = poisoned.0.model.lock().unwrap();
@@ -257,4 +275,176 @@ fn groups_are_bounded_and_poisoned_accounting_refuses_all_pending_work() {
             .begin(Lane::key(&c.target, &Action::Pause), &Action::Pause)
             .is_some());
     }
+}
+
+fn many_captures(count: usize) -> Vec<Captured> {
+    (0..count)
+        .map(|n| Captured {
+            target: Target {
+                computer: "example-peer".into(),
+                name: format!("codex/example-project/review-{n:05}"),
+                run_id: format!("00000000-0000-4000-8000-{n:012}"),
+                conversation_id: format!("10000000-0000-4000-8000-{n:012}"),
+            },
+            action: Action::Archive,
+            state: "paused".into(),
+        })
+        .collect()
+}
+fn memory_kib(field: &str) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        // This qualification reads only its own process, never another
+        // session's memory, configuration or application state.
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        status.lines().find_map(|line| {
+            line.strip_prefix(field)?
+                .split_whitespace()
+                .next()?
+                .parse()
+                .ok()
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = field;
+        None
+    }
+}
+
+#[test]
+fn batch_bounds_measure_1024_and_50000_and_reject_50001_before_reservation() {
+    for count in [1024, 50_000, 50_001] {
+        let actions = actions();
+        let delays = Delays::default();
+        let id = id();
+        let before = memory_kib("VmRSS:");
+        let captures = many_captures(count);
+        let bytes = capture_bytes(&captures, usize::MAX).unwrap();
+        let after_input = memory_kib("VmRSS:");
+        let start = Instant::now();
+        let result = delays.begin(&actions, id.clone(), captures);
+        println!(
+            "undo-registration {}",
+            serde_json::json!({"targets":count,"captured_json_bytes":bytes,"registration_us":start.elapsed().as_micros(),
+            "rss_before_kib":before,"rss_input_kib":after_input,"rss_registered_kib":memory_kib("VmRSS:"),"peak_kib":memory_kib("VmHWM:")})
+        );
+        if count > TARGETS {
+            assert_eq!(
+                result.unwrap_err(),
+                "Too many sessions selected at once (50001). Select at most 50,000."
+            );
+            assert!(lock(&delays.0).groups.is_empty());
+            assert_eq!(lock(&delays.0).bytes, 0);
+            let c = many_captures(1).pop().unwrap();
+            assert!(
+                actions
+                    .begin(Lane::key(&c.target, &Action::Pause), &Action::Pause)
+                    .is_some(),
+                "an oversized registration must not reserve a prefix"
+            );
+        } else {
+            result.unwrap();
+            assert_eq!(lock(&delays.0).groups[&id].members.len(), count);
+            assert_eq!(lock(&delays.0).bytes, bytes);
+            delays.cancel(&id);
+            assert_eq!(lock(&delays.0).bytes, 0);
+        }
+    }
+}
+
+fn at_byte_edge() -> Vec<Captured> {
+    let mut captures = many_captures(TARGETS);
+    let mut remaining = CAPTURE_BYTES
+        .checked_sub(capture_bytes(&captures, usize::MAX).unwrap())
+        .unwrap();
+    for capture in &mut captures {
+        let add = remaining.min(512 - capture.target.computer.len());
+        capture.target.computer.push_str(&"x".repeat(add));
+        remaining -= add;
+        if remaining == 0 {
+            break;
+        }
+    }
+    assert_eq!(remaining, 0);
+    assert_eq!(capture_bytes(&captures, usize::MAX).unwrap(), CAPTURE_BYTES);
+    captures
+}
+
+#[test]
+fn exact_aggregate_byte_budget_and_one_byte_over_are_atomic() {
+    let actions = actions();
+    let delays = Delays::default();
+    let full = id();
+    let edge = at_byte_edge();
+    let before = memory_kib("VmRSS:");
+    let start = Instant::now();
+    delays.begin(&actions, full.clone(), edge).unwrap();
+    println!(
+        "undo-byte-edge {}",
+        serde_json::json!({"captured_json_bytes":CAPTURE_BYTES,"targets":TARGETS,"registration_us":start.elapsed().as_micros(),
+        "rss_input_kib":before,"rss_registered_kib":memory_kib("VmRSS:"),"peak_kib":memory_kib("VmHWM:")})
+    );
+    assert_eq!(lock(&delays.0).bytes, CAPTURE_BYTES);
+    let extra = captured("extra");
+    assert_eq!(
+        delays
+            .begin(&actions, id(), vec![extra.clone()])
+            .unwrap_err(),
+        TOO_MUCH_DATA
+    );
+    assert!(actions
+        .begin(Lane::key(&extra.target, &Action::Pause), &Action::Pause)
+        .is_some());
+    assert_eq!(lock(&delays.0).groups.len(), 1);
+    delays.cancel(&full);
+    assert_eq!(lock(&delays.0).bytes, 0);
+    let mut over = at_byte_edge();
+    over.iter_mut()
+        .find(|c| c.target.computer.len() < 512)
+        .unwrap()
+        .target
+        .computer
+        .push('x');
+    let first = over[0].target.clone();
+    assert_eq!(capture_bytes(&over, usize::MAX).unwrap(), CAPTURE_BYTES + 1);
+    assert_eq!(
+        delays.begin(&actions, id(), over).unwrap_err(),
+        TOO_MUCH_DATA
+    );
+    assert!(lock(&delays.0).groups.is_empty());
+    assert_eq!(lock(&delays.0).bytes, 0);
+    assert!(actions
+        .begin(Lane::key(&first, &Action::Pause), &Action::Pause)
+        .is_some());
+    delays.begin(&actions, id(), vec![extra]).unwrap();
+}
+
+#[test]
+fn settled_tombstones_roll_over_fifo_without_evicting_active_windows() {
+    let actions = actions();
+    let delays = Delays::default();
+    let active = id();
+    let source = captured("active");
+    delays
+        .begin(&actions, active.clone(), vec![source.clone()])
+        .unwrap();
+    let oldest = id();
+    delays.cancel(&oldest);
+    for _ in 0..REGISTRATIONS {
+        delays.cancel(&id());
+    }
+    let model = lock(&delays.0);
+    assert!(model.groups.contains_key(&active));
+    assert!(model.seen.contains(&active));
+    assert!(!model.seen.contains(&oldest));
+    assert!(model.seen.len() <= REGISTRATIONS);
+    assert!(model.settled.len() < REGISTRATIONS);
+    drop(model);
+    delays
+        .begin(&actions, id(), vec![captured("later")])
+        .unwrap();
+    assert!(actions
+        .begin(Lane::key(&source.target, &Action::Pause), &Action::Pause)
+        .is_none());
 }
