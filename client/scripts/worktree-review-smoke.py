@@ -178,7 +178,8 @@ with (root/'app.log').open('wb') as log:
             assert not effects and not any('create' in a or 'start' in a or 'session-action' in a for a in calls)
             assert calls.count(['swarm','preview','fixture-peer'])==1 and calls.count(['swarm','join','fixture-peer'])==1 and calls.count(['swarm','sync'])==1
             assert calls.count(['swarm','get'])==6 and calls.count(['swarm','resolve'])==1,calls
-            assert (root/'swarm-request.json').is_file() and (root/'resolve-request.json').is_file() and {'PROJECTS','CONFLICT_REVIEW','RESOLVE_HELD'} <= stages
+            assert (root/'swarm-request.json').is_file() and (root/'resolve-request.json').is_file() and 'PROJECTS' in stages
+            assert all(prefix+stage in output for stage in ('CONFLICT_REVIEW','RESOLVE_HELD')),'final native stages missing'
             print('PASS main-window native Swarm API: one saved preview/Join/Sync/Resolve, six fresh reads, exact native review choice, source barrier held, no replay/creation/removal and private rendered Projects')
             raise SystemExit(0)
         if shell_badge:

@@ -33,6 +33,7 @@ export async function swarmSmoke(allowed: boolean) {
     await log("CONFLICT_REVIEW");
     await invoke("project_swarm_resolve", { id, review: reviewed.id, confirmed: false });
     await until(async () => { await read(); return !view.busy && !view.can_sync; }, "Resolve did not retain its post-call source barrier");
+    require(!view.error && view.status === "Saving your choice to the shared catalog…", "Resolve failed instead of waiting for the exact source");
     refused = false; try { await invoke("project_swarm_resolve", { id, review: reviewed.id, confirmed: true }); } catch { refused = true; }
     require(refused, "old conflict review could be reused");
     await log("RESOLVE_HELD");
