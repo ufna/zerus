@@ -7,7 +7,7 @@ const button = (over: Partial<ButtonView> = {}): ButtonView => ({ visible: true,
 
 function card(over: Partial<CardView> = {}, revision = 1, epoch = revision): QuestionView {
   return {
-    card: "question\n[\"studio\\nclaude/sample-project/review\",\"tool:t1\",\"h\"]\nrun-1\nconv-1", revision, epoch, asked: "", asked_tip: "", terminal_label: "Open Terminal",
+    card: "question\n[\"studio\\nclaude/sample-project/review\",\"tool:t1\",\"h\"]\nrun-1\nconv-1", revision, epoch, asked: "", asked_tip: "", terminal_label: { source: "Open Terminal" }, native_ui: false,
     view: {
       heading: { source: "Agent needs your answer" }, progress: null, pending: { source: "%1 pending", args: [{ kind: "number", value: 1 }] }, pending_tip: { source: "" }, nav: null, tabs_visible: false, page: 0, forms: [],
       status: { source: "" }, status_error: false, available: true, locked: false, review: false, created_at: 0,

@@ -40,3 +40,14 @@ export function eventTimeOf(d: Date, language: UiLanguage = uiLanguage()): strin
   const day = language === "ru" ? (weekday ??= new Intl.DateTimeFormat("ru", { weekday: "short" })).format(d) : DAYS[d.getDay()];
   return `${day}, ${dayTimeOf(d, true, language)}`;
 }
+
+/** A question's "Asked" time: the day and month, with the year when it is not this year, and seconds. */
+export function askedTimeOf(d: Date, now: Date = new Date(), language: UiLanguage = uiLanguage()): string {
+  return `${dayMonth(d, d.getFullYear() !== now.getFullYear(), language)} ${clockOf(d, true)}`;
+}
+
+/** The full local time with its UTC offset, as Qt's tooltip shows it: "28 Oct 2026 14:03:05 +03:00". */
+export function zonedTimeOf(d: Date, language: UiLanguage = uiLanguage()): string {
+  const minutes = -d.getTimezoneOffset(), sign = minutes < 0 ? "-" : "+", abs = Math.abs(minutes);
+  return `${dayMonth(d, true, language)} ${clockOf(d, true)} ${sign}${two(Math.floor(abs / 60))}:${two(abs % 60)}`;
+}
