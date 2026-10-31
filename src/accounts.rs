@@ -346,7 +346,7 @@ fn list(config: &Config) -> Result<Value> {
             .contains(r["id"].as_str().unwrap_or(""))
     });
     Ok(
-        json!({"host":config.host(),"profiles":visible,"removed_profiles":removed,"defaults":catalog.defaults,"revision":revision(&bytes)}),
+        json!({"host":config.host(),"profiles":visible,"removed_profiles":removed,"defaults":catalog.defaults,"revision":revision(&bytes),"setup_revision":true}),
     )
 }
 pub const AUTH_ENV: &[&str] = &[
@@ -494,6 +494,12 @@ pub fn dispatch(config: &Config, args: &[String], dry: bool) -> Result<i32> {
             "copy" => {}
             _ => return Err(Error::new(2, platform::LOCAL_SESSIONS_UNSUPPORTED)),
         }
+    }
+    // A terminal may execute well after the Accounts dialog was confirmed.
+    // New clients pin its catalog; legacy terminal calls remain compatible.
+    if matches!(operation, "login" | "install" | "start") && arg(args, "--revision").is_some() {
+        let _lock = locked(config)?;
+        check_revision(&read(config)?, args)?;
     }
     match operation {
         "ls"=>{println!("{}",list(config)?);},

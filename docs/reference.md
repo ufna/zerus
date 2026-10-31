@@ -2980,6 +2980,13 @@ hgs @mac codex /path/to/project --new --account work
 hgs account copy native-codex --from @local --to mac --as codex-work --label Work
 ```
 
+`account ls` advertises `setup_revision: true` when terminal setup accepts an
+optional `--revision REV` on `account login`, `account install` and `account start`.
+That check runs when the terminal command executes, before provider work. Calls
+without the option retain their existing behavior. Next uses the capability,
+exact computer identity and fresh catalog snapshot; unsupported or uncertain
+setup is never replayed.
+
 `accounts.json` stores metadata and selected permission modes; authorization stays
 in the profile's own directory. Managed profiles clear inherited API tokens;
 native defaults keep the user's normal environment. Tokens are not displayed in
