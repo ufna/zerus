@@ -5,6 +5,8 @@
 //! Rust code reads a setting from the managed [`Store`], for example
 //! `app.state::<settings::Store>().0.number("processes/activeSeconds")`.
 
+pub mod skins;
+
 use serde_json::{json, Value};
 use std::path::Path;
 use std::time::Duration;

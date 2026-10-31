@@ -1,4 +1,4 @@
-import { For, Show, createMemo, createSignal, onCleanup } from "solid-js";
+import { For, Show, createMemo, createSignal, onCleanup, lazy, Suspense } from "solid-js";
 import { windowLayer, setWindowLayer } from "../../../store/windowLayer";
 import { Icon } from "../../lib/icons";
 import { setContentScale, toast } from "../../../store/ui";
@@ -6,7 +6,7 @@ import { previewColumn } from "../../sessions/Activity";
 import { flag, num, setSetting, settingsLoaded, text } from "../../../store/settings";
 import { appearanceFor, chooseSkin, chooseTheme, chosenSkin, skin, skinList, skins, systemLight, theme, type Theme } from "../../../skin/runtime";
 import type { ResolvedSkin } from "../../../skin/skin";
-import { Group, Row, SectionHead, Select, Slider, Check } from "./ui";
+import { Group, Row, SectionHead, Select, Slider, Check, Actions } from "./ui";
 import { tr } from "../../../i18n";
 
 // Settings > Appearance (tray/src/SettingsPage.h:46-95, UiLanguage.h,
@@ -44,7 +44,7 @@ export function variantSummary(s: ResolvedSkin): string {
 }
 
 /** A miniature of the workspace painted only with the skin's own tokens. */
-function SkinPreview(props: { skin: ResolvedSkin }) {
+export function SkinPreview(props: { skin: ResolvedSkin }) {
   const s = () => props.skin;
   const c = (k: string) => tok(s(), "color", k);
   const r = () => `${Math.max(2, num0(s(), "radius", "card") * 0.6)}px`;
@@ -128,7 +128,11 @@ function liveSetting(key: string, preview?: (value: number | undefined) => void)
   };
 }
 
+const SkinImportDialog=lazy(()=>import("./SkinImportDialog"));
+
 export function AppearanceSection() {
+  const [importOrigin,setImportOrigin]=createSignal<HTMLElement>();
+  const openFolder=async()=>{try{await (await import("../../../skin/user")).openSkinsFolder();}catch(error){(await import("../../../store/actions")).notify("error",String(error),true);}};
   const dark = createMemo(() => skinList().filter((s) => s.appearance === "dark"));
   const light = createMemo(() => skinList().filter((s) => s.appearance === "light"));
   const scale = liveSetting("workspace/contentScale", (v) => setContentScale(v ?? num("workspace/contentScale")));
@@ -160,8 +164,10 @@ export function AppearanceSection() {
               )}
             </For>
           </div>
+          <Actions><button class="btn" onClick={event=>setImportOrigin(event.currentTarget)}><Icon name="download" size={14}/>Import skin…</button><button class="btn" onClick={()=>void openFolder()}><Icon name="folder-open" size={14}/>Open skins folder</button></Actions>
         </div>
       </Group>
+      <Show when={importOrigin()}>{origin=><Suspense><SkinImportDialog origin={origin()} close={()=>setImportOrigin(undefined)}/></Suspense>}</Show>
 
       <Group>
         <Row label="Interface language" for="set-lang" hint={<>{tr("Restart Zerus to apply the interface language. Agent sessions keep running.")}<br />{tr("Russian is a preview. Untranslated text stays in English.")}</>}>
