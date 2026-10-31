@@ -708,7 +708,7 @@ export interface CardView { heading: Text; progress: Text | null; pending: Text 
  * grows with every change of the answers from Rust, each revision's included:
  * the fields take Rust's values again, and an edit names the epoch it is based on.
  */
-export interface QuestionView { answering?: boolean; card: string; revision: number; epoch: number; asked: string; asked_tip: string; terminal_label: string; view: CardView }
+export interface QuestionView { answering?: boolean; card: string; revision: number; epoch: number; asked: string; asked_tip: string; terminal_label: Text; native_ui: boolean; view: CardView }
 export type QuestionEdit = { kind: "option"; item: string; option: string; checked: boolean } | { kind: "other"; item: string; checked: boolean } | { kind: "text"; item: string; text: string };
 export interface ColdAnswer { title: string; text: string; proceed: string }
 export type QuestionReply = { kind: "sending" } | { kind: "busy" } | { kind: "cold"; token: number; prompt: ColdAnswer } | { kind: "notice"; text: string };

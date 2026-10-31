@@ -1,6 +1,7 @@
 import { Index, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack } from "solid-js";
 import { tr } from "../../i18n";
 import { trText } from "../../text";
+import { askedTimeOf, zonedTimeOf } from "../lib/dates";
 import { Icon } from "../lib/icons";
 import { questions } from "../../store/questions";
 import { terminal } from "../../store/terminal";
@@ -81,7 +82,9 @@ function Card(props: { arrived: boolean }) {
       questions.setActive(false);
     });
   });
-  const native = () => q().terminal_label === "Open native UI";
+  const native = () => q().native_ui;
+  // Rust's "Asked" text is the fallback; the webview dates it in the interface language.
+  const asked = () => { const at = c().created_at; return at > 0 && at < 253_402_300_800 ? new Date(at * 1000) : undefined; };
   const terminalTip = () => (native() ? undefined : terminal.texts()?.available ? undefined : terminal.texts()?.reason);
   const onKey = (e: KeyboardEvent) => {
     if (e.isComposing || e.keyCode === 229) return;
@@ -95,7 +98,7 @@ function Card(props: { arrived: boolean }) {
       <div class="qcard-head">
         <Icon name="circle-question-mark" size={16} class="warn" />
         <b class="qcard-title">{trText(c().heading)}</b><span class="grow" />
-        <Show when={q().asked}><span class="qcard-dim" title={q().asked_tip}>{q().asked}</span></Show>
+        <Show when={q().asked}><span class="qcard-dim" title={asked() ? zonedTimeOf(asked()!) : q().asked_tip}>{asked() ? tr("Asked %1", askedTimeOf(asked()!)) : q().asked}</span></Show>
       </div>
       <Show when={c().progress || c().pending || c().nav}>
         <div class="qcard-meta">
@@ -125,7 +128,7 @@ function Card(props: { arrived: boolean }) {
       <div class="qcard-actions">
         <p class="qcard-status" classList={{ error: c().status_error }} title={trText(c().status)} role="status" aria-live="polite">{trText(c().status)}</p>
         <button type="button" class="btn small ghost" disabled={native() ? !nativeBinding(selected()) : !terminal.texts()?.available} title={terminalTip()}
-          onClick={() => { if (native()) openNative(); else { terminal.opened(); setDetailTab("terminal"); } }}>{q().terminal_label}</button>
+          onClick={() => { if (native()) openNative(); else { terminal.opened(); setDetailTab("terminal"); } }}>{trText(q().terminal_label)}</button>
         <Show when={c().skip.visible}><button type="button" class="btn small ghost" title={trText(c().skip_tip)} disabled={!questions.enabled(c().skip)} onClick={() => void questions.skip()}>{trText(c().skip.label)}</button></Show>
         <Show when={c().retry}><button type="button" class="btn small ghost" title={trText(c().retry_tip)} onClick={() => void questions.allowRetry()}>{tr("Allow retry")}</button></Show>
         <Show when={c().previous.visible}><button type="button" class="btn small ghost" disabled={!c().previous.enabled} onClick={() => void questions.page(c().page - 1)}>{trText(c().previous.label)}</button></Show>

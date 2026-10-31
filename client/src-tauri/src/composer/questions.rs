@@ -56,7 +56,10 @@ pub struct QuestionView {
     pub epoch: u64,
     pub asked: String,
     pub asked_tip: String,
-    pub terminal_label: String,
+    /// "Open Terminal", or "Open native UI" for DeepSeek's native UI.
+    pub terminal_label: zerus_client_core::text::Text,
+    /// The terminal button opens the agent's native UI instead of Terminal.
+    pub native_ui: bool,
     pub view: CardView,
 }
 
@@ -562,11 +565,11 @@ impl Composers {
             asked,
             asked_tip,
             terminal_label: if ctx.facts.cmd == "dsh" {
-                "Open native UI"
+                zerus_client_core::text!("Open native UI")
             } else {
-                "Open Terminal"
-            }
-            .to_owned(),
+                zerus_client_core::text!("Open Terminal")
+            },
+            native_ui: ctx.facts.cmd == "dsh",
             view: rules::card(question, &draft, &card),
         };
         (Some(view), input_visible)
@@ -1245,7 +1248,8 @@ pub(crate) mod tests {
             ["Unit", "UI"]
         );
         assert_eq!(q.view.status.english(), "Answer each question to continue.");
-        assert_eq!(q.terminal_label, "Open Terminal");
+        assert_eq!(q.terminal_label.english(), "Open Terminal");
+        assert!(!q.native_ui);
         assert!(q.asked.starts_with("Asked "));
     }
 
