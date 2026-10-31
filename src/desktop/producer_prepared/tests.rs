@@ -376,19 +376,68 @@ fn committed_preparation_survives_an_actual_process_exit_without_reply_or_drop()
     assert_eq!(snapshot.phase(), Phase::Prepared);
 }
 
-#[test]
-fn original_session_is_retained_while_its_exact_binding_is_durably_prepared() {
+// Every probe uses a real private Unix listener. The original channel remains
+// open in the returned fixture; replacing only the canonical reply cannot
+// manufacture a new association on that channel.
+struct Bound {
+    registry: super::super::producer_session::Registry,
+    session: Session,
+    peer: std::os::unix::net::UnixStream,
+    listener: std::os::unix::net::UnixListener,
+    responder: std::sync::Arc<zerus_client_core::desktop::Responder>,
+}
+fn answer_probe(
+    listener: &std::os::unix::net::UnixListener,
+    responder: &zerus_client_core::desktop::Responder,
+    changed: usize,
+) {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        time::{Duration, Instant},
+    };
+    let end = Instant::now() + Duration::from_secs(3);
+    let mut canonical = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < end => {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            result => panic!("private canonical accept {result:?}"),
+        }
+    };
+    canonical
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    canonical
+        .set_write_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    let mut query = Vec::new();
+    BufReader::new(&mut canonical)
+        .read_until(b'\n', &mut query)
+        .unwrap();
+    let reply = responder.reply(query.strip_suffix(b"\n").unwrap()).unwrap();
+    let mut value: serde_json::Value = serde_json::from_slice(&reply).unwrap();
+    match changed {
+        0 => (),
+        1 => value["instance_epoch"] = uuid::Uuid::new_v4().to_string().into(),
+        2 => value["build"]["source_commit"] = "c".repeat(40).into(),
+        3 => value["configuration"] = "c".repeat(64).into(),
+        4 => value["replay"] = true.into(),
+        5 => value["writer_epoch"] = uuid::Uuid::new_v4().to_string().into(),
+        _ => unreachable!(),
+    }
+    writeln!(canonical, "{value}").unwrap();
+}
+fn bound(location: &Location, epoch: &str, path: &std::path::Path) -> Bound {
     use super::super::producer_session::Registry;
     use std::{
         io::{BufRead, BufReader, Write},
         os::unix::net::{UnixListener, UnixStream},
         sync::Arc,
-        thread,
         time::{Duration, Instant},
     };
     use zerus_client_core::desktop::{self, producer::Challenge, Responder};
-    let (temp, location, mut store, epoch) = fixture();
-    let source = binding(&epoch);
+    let source = binding(epoch);
     let responder = Arc::new(Responder::new(
         source.frontend.application.clone(),
         source.frontend.build.clone(),
@@ -400,16 +449,17 @@ fn original_session_is_retained_while_its_exact_binding_is_durably_prepared() {
     let query = desktop::query(&source.frontend.nonce).unwrap();
     let expected =
         serde_json::from_slice(&responder.reply(&query[..query.len() - 1]).unwrap()).unwrap();
-    let path = temp.path().join("canonical");
-    let listener = UnixListener::bind(&path).unwrap();
+    let listener = UnixListener::bind(path).unwrap();
     listener.set_nonblocking(true).unwrap();
-    let registry = Registry::new(location.configuration.clone(), epoch).unwrap();
+    let registry = Registry::new(location.configuration.clone(), epoch.into()).unwrap();
     let (stream, mut peer) = UnixStream::pair().unwrap();
+    // XNU may reject setsockopt after the other endpoint has closed: configure
+    // the timeout before handing over the channel, never after refusal.
     peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
     peer.set_write_timeout(Some(Duration::from_secs(2)))
         .unwrap();
     let pending = registry.begin(BufReader::new(stream), expected).unwrap();
-    let frontend = thread::spawn(move || {
+    let frontend = std::thread::spawn(move || {
         let mut offer = String::new();
         BufReader::new(&mut peer).read_line(&mut offer).unwrap();
         let offer: serde_json::Value = serde_json::from_str(&offer).unwrap();
@@ -417,49 +467,163 @@ fn original_session_is_retained_while_its_exact_binding_is_durably_prepared() {
         assert!(responder.install_challenge(challenge, Instant::now()));
         let ready = serde_json::json!({"abi":offer["abi"],"version":1,"op":"ready","sequence":1,"configuration":offer["configuration"],"instance_epoch":offer["expected"]["instance_epoch"],"challenge":offer["challenge"]});
         writeln!(peer, "{ready}").unwrap();
-        let end = Instant::now() + Duration::from_secs(3);
-        let mut canonical = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < end => {
-                    thread::sleep(Duration::from_millis(2))
-                }
-                result => panic!("private canonical accept {result:?}"),
-            }
-        };
-        canonical
-            .set_read_timeout(Some(Duration::from_secs(1)))
-            .unwrap();
-        canonical
-            .set_write_timeout(Some(Duration::from_secs(1)))
-            .unwrap();
-        let mut query = Vec::new();
-        BufReader::new(&mut canonical)
-            .read_until(b'\n', &mut query)
-            .unwrap();
-        canonical
-            .write_all(&responder.reply(query.strip_suffix(b"\n").unwrap()).unwrap())
-            .unwrap();
-        peer
+        answer_probe(&listener, &responder, 0);
+        (peer, listener, responder)
     });
-    let session = pending.bind(&path).unwrap();
-    let _peer = frontend.join().unwrap();
-    let presence = super::super::presence_admission::fence(&location).unwrap();
-    let lock = location.handoff_lock().unwrap();
-    let _ticket =
-        ticket(prepare(&location, &lock, &presence, &mut store, &session, REQUEST).unwrap());
+    let session = pending.bind(path).unwrap();
+    let (peer, listener, responder) = frontend.join().unwrap();
+    Bound {
+        registry,
+        session,
+        peer,
+        listener,
+        responder,
+    }
+}
+fn assert_ended(
+    registry: &super::super::producer_session::Registry,
+    peer: &mut std::os::unix::net::UnixStream,
+    epoch: &str,
+) {
+    use std::{
+        io::{BufReader, Read},
+        os::unix::net::UnixStream,
+    };
+    assert_eq!(peer.read(&mut [0]).unwrap(), 0);
+    let (stream, _peer) = UnixStream::pair().unwrap();
+    // Only the real channel's destruction may have released this exact slot.
+    let pending = registry
+        .begin(BufReader::new(stream), binding(epoch).frontend)
+        .unwrap();
+    drop(pending);
+}
+
+#[test]
+fn original_session_is_retained_while_its_exact_binding_is_durably_prepared() {
+    let (temp, location, mut store, epoch) = fixture();
+    let path = temp.path().join("canonical");
+    let Bound {
+        registry,
+        session,
+        mut peer,
+        listener,
+        responder,
+    } = bound(&location, &epoch, &path);
+    let frontend = std::thread::spawn(move || answer_probe(&listener, &responder, 0));
+    let context = Context::at(&location, session, &path).unwrap();
+    frontend.join().unwrap();
+    assert!(super::super::startup_exclusion::Startup::hold(&location).is_err());
+    let _ticket = ticket(prepare(&location, &mut store, &context, REQUEST).unwrap());
     let snapshot = inspect_db(&store.db, &location.configuration)
         .unwrap()
         .unwrap();
-    assert_eq!(snapshot.binding.frontend, *session.identity().hello());
+    assert_eq!(
+        snapshot.binding.frontend,
+        *context.session.identity().hello()
+    );
     assert_eq!(
         snapshot.binding.producer_epoch,
-        session.identity().challenge().producer_epoch
+        context.session.identity().challenge().producer_epoch
     );
-    let (stream, _other_peer) = UnixStream::pair().unwrap();
-    assert!(registry
-        .begin(BufReader::new(stream), source.frontend)
-        .is_err());
-    drop(session);
+    drop(context);
+    assert_ended(&registry, &mut peer, &epoch);
     assert!(super::super::store::writer_active(&location).is_err());
+    assert!(super::super::startup_exclusion::Startup::hold(&location).is_err());
+}
+
+#[test]
+fn replacement_identity_or_changed_canonical_state_consumes_the_stale_session_without_preparing() {
+    for changed in 1..=5 {
+        let (temp, location, store, epoch) = fixture();
+        let path = temp.path().join("canonical");
+        let Bound {
+            registry,
+            session,
+            mut peer,
+            listener,
+            responder,
+        } = bound(&location, &epoch, &path);
+        let frontend = std::thread::spawn(move || answer_probe(&listener, &responder, changed));
+        assert!(Context::at(&location, session, &path).is_err());
+        frontend.join().unwrap();
+        assert_ended(&registry, &mut peer, &epoch);
+        assert!(inspect_db(&store.db, &location.configuration)
+            .unwrap()
+            .is_none());
+        assert!(super::super::startup_exclusion::Startup::hold(&location).is_ok());
+        assert!(super::super::presence_admission::fence(&location).is_ok());
+    }
+}
+
+#[test]
+fn missing_canonical_endpoint_is_not_a_preparation_and_releases_only_its_owned_context() {
+    let (temp, location, store, epoch) = fixture();
+    let path = temp.path().join("canonical");
+    let Bound {
+        registry,
+        session,
+        mut peer,
+        listener,
+        responder: _,
+    } = bound(&location, &epoch, &path);
+    drop(listener);
+    std::fs::remove_file(&path).unwrap();
+    assert!(Context::at(&location, session, &path).is_err());
+    assert_ended(&registry, &mut peer, &epoch);
+    assert!(inspect_db(&store.db, &location.configuration)
+        .unwrap()
+        .is_none());
+    assert!(super::super::startup_exclusion::Startup::hold(&location).is_ok());
+}
+
+#[test]
+fn replacement_startup_holds_the_boundary_before_any_preparer_canonical_io() {
+    let (temp, location, store, epoch) = fixture();
+    let path = temp.path().join("canonical");
+    let Bound {
+        registry,
+        session,
+        mut peer,
+        listener,
+        responder: _,
+    } = bound(&location, &epoch, &path);
+    let startup = super::super::startup_exclusion::Startup::hold(&location).unwrap();
+    assert!(Context::at(&location, session, &path).is_err());
+    assert_ended(&registry, &mut peer, &epoch);
+    // Refusal occurs at the actual held boundary, before any fresh socket query.
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    assert!(location.handoff_lock().is_err());
+    assert!(inspect_db(&store.db, &location.configuration)
+        .unwrap()
+        .is_none());
+    drop(startup);
+    assert!(location.handoff_lock().is_ok());
+    assert!(super::super::presence_admission::fence(&location).is_ok());
+}
+
+#[test]
+fn both_retained_phases_block_replacement_after_all_preparer_locks_are_released() {
+    let (_temp, location, mut store, epoch) = fixture();
+    let presence = super::super::presence_admission::fence(&location).unwrap();
+    let lock = location.handoff_lock().unwrap();
+    let original = ticket(save(&location, &lock, &presence, &mut store, binding(&epoch)).unwrap());
+    drop(lock);
+    assert!(super::super::startup_exclusion::Startup::hold(&location).is_err());
+    let lock = location.handoff_lock().unwrap();
+    request_abort(&location, &lock, &presence, &mut store, &original).unwrap();
+    let before = bytes(&store);
+    drop(lock);
+    drop(presence);
+    assert!(super::super::startup_exclusion::Startup::hold(&location).is_err());
+    assert_eq!(bytes(&store), before);
+    assert_eq!(
+        inspect_db(&store.db, &location.configuration)
+            .unwrap()
+            .unwrap()
+            .phase(),
+        Phase::AbortRequested
+    );
 }

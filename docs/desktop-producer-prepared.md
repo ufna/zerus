@@ -5,9 +5,12 @@ the existing desktop SQLite owner, schema 9. No production producer/controller
 calls it yet. It neither closes a role nor creates a Frozen, Drained, Complete,
 abort-completed or writer admission receipt.
 
-The future sole service owner retains its authenticated `Session`, original
-request UUID, existing handoff lock and existing presence fence while preparing.
-The helper checks both locks' configuration, the Store's current service epoch,
+The future sole service owner consumes its authenticated `Session` into an
+owned preparation Context, retaining the original request UUID, existing handoff
+lock and presence fence through a fresh canonical identity probe and preparation.
+See [startup exclusion](desktop-startup-exclusion.md) for its ordering and the
+still-missing actual frontend consumer. The helper checks both locks'
+configuration and the Store's current service epoch inside the transaction,
 and the session's exact clean live frontend/configuration/producer association.
 It binds the fixed background-v1 definition and fresh prospective writer,
 drain and import UUIDs. These are identities only, with no role permission.

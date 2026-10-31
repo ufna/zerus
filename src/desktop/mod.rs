@@ -20,6 +20,8 @@ mod producer_session;
 mod protocol;
 mod registration;
 mod revoke;
+#[allow(dead_code)]
+mod startup_exclusion;
 mod store;
 mod transport;
 
