@@ -50,6 +50,7 @@ fn filters_sort_and_group_before_paging_with_full_group_totals() {
     }
     let first = model.page(&Filter::default(), 0, 1001).unwrap();
     assert_eq!(first.total, 600);
+    assert_eq!(first.estimated_bytes, Some(44_850));
     assert_eq!(first.groups.len(), 1);
     assert_eq!(first.groups[0].total, 300);
     assert_eq!(first.groups[0].rows.len(), PAGE);
@@ -195,4 +196,37 @@ fn candidate_and_cleanup_limits_refuse_the_whole_selection_without_a_prefix() {
     assert_eq!(model.selection().len(), 65);
     model.select(&row(64, 0).id, false);
     assert_eq!(model.cleanup_selection().unwrap().len(), 64);
+}
+
+#[test]
+fn estimate_refuses_overflow_and_never_includes_filtered_or_stale_candidates() {
+    let mut model = Model::default();
+    let mut a = row(0, 0);
+    a.bytes = Some(u64::MAX);
+    let mut b = row(1, 0);
+    b.bytes = Some(1);
+    model.put(a);
+    model.put(b);
+    assert_eq!(
+        model
+            .page(&Filter::default(), 0, 1001)
+            .unwrap()
+            .estimated_bytes,
+        None
+    );
+    let filter = Filter {
+        search: "branch-1".into(),
+        ..Filter::default()
+    };
+    assert_eq!(
+        model.page(&filter, 0, 1001).unwrap().estimated_bytes,
+        Some(1)
+    );
+    assert_eq!(
+        model
+            .page(&Filter::default(), 0, 1300)
+            .unwrap()
+            .estimated_bytes,
+        Some(0)
+    );
 }

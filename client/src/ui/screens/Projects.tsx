@@ -10,12 +10,13 @@ import { projectToShow, setProjectToShow } from "../../store/organization";
 import { projectsPage } from "../../store/projects";
 import { flag, setSetting, settingsLoaded } from "../../store/settings";
 import { setMenu, type MenuEntry } from "../../store/ui";
-import { PROJECT_EDITING, WORKTREE_FLOWS } from "./reasons";
+import { PROJECT_EDITING } from "./reasons";
 import { machineCards } from "../../store/machines";
 import { folderButton, folderExists, folderLaunch, folderMenuEntry, newSessionInFolder } from "../sessions/newsession-view";
 import { copy } from "../../store/actions";
 import { nextSort, showAskedProject, shownProjects, sortFolders, type Sort, type SortColumn } from "./projects-ui";
 import { createProjectFolders } from "./project-folders";
+const WorktreeOverviewDialog = lazy(() => import("./WorktreeOverviewDialog"));
 const ProjectWorktrees = lazy(() => import("./ProjectWorktrees"));
 const ProjectCloneDialog = lazy(() => import("./ProjectCloneDialog"));
 const ProjectFolderDialog = lazy(() => import("./ProjectFolderDialog"));
@@ -77,6 +78,7 @@ export function ProjectsScreen() {
     stopSplit = end; addEventListener("pointermove", move); addEventListener("pointerup", end); addEventListener("pointercancel", end);
   };
   onCleanup(() => stopSplit?.());
+  const [overviewOrigin, setOverviewOrigin] = createSignal<HTMLElement>();
   const [cloneOrigin, setCloneOrigin] = createSignal<HTMLElement>();
   const folderEdits = createProjectFolders(() => view().projects, setSelectedFolder);
   const selected = () => project()?.folders.find((f) => f.key === selectedFolder()) ?? project()?.folders[0];
@@ -202,7 +204,7 @@ export function ProjectsScreen() {
         <header class="su-head">
           <h1>Projects</h1>
           <span class="grow" />
-          <button class="btn" disabled title={WORKTREE_FLOWS}><Icon name="folder-git-2" size={14} />Worktrees…</button>
+          <button class="btn" disabled={!organization.grouping().ready} onClick={(e) => setOverviewOrigin(e.currentTarget)}><Icon name="folder-git-2" size={14} />Worktrees…</button>
           <button class="btn" disabled title={PROJECT_EDITING}><Icon name="network" size={14} />Swarm…</button>
         </header>
         <p class="muted proj-hint">Organize sessions and folders across your computers. A folder can be used by several projects.</p>
@@ -308,6 +310,7 @@ export function ProjectsScreen() {
           )}</Show>
         </div>
       </div>
+      <Suspense><Show when={overviewOrigin()} keyed>{(origin) => <WorktreeOverviewDialog projects={view().projects} all={allSwarm()} origin={origin} close={() => setOverviewOrigin(undefined)} />}</Show></Suspense>
       <Suspense><Show when={cloneOrigin()} keyed>{(origin) => <ProjectCloneDialog project={project()?.id ?? "ungrouped"} preferred={selected()?.machine} projects={view().projects} origin={origin} close={() => setCloneOrigin(undefined)} placed={(project, folder) => {setSelectedProject(project); setSelectedFolder(folder);}} />}</Show></Suspense>
       <Suspense><Show when={folderEdits.prompt()} keyed>{(prompt) => <ProjectFolderDialog prompt={prompt} busy={folderEdits.busy()} folders={view().projects.find((p) => p.id === prompt.project)?.folders ?? []} close={folderEdits.close} save={(place, path, name) => { void folderEdits.save(place, path, name); }} />}</Show></Suspense>
       <Show when={colorProject()}>{(p) => <ProjectColorDialog project={p().project} origin={p().origin} close={() => setColorProject(undefined)} />}</Show>

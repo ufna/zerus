@@ -151,6 +151,7 @@ pub struct Row {
     pub branch: String,
     pub kind: String,
     pub machine: String,
+    pub computer: String,
     pub projects: Vec<String>,
     pub project_names: Vec<String>,
     pub category: u8,
@@ -247,6 +248,7 @@ pub fn project(
         branch: text(row, "branch").into(),
         kind: kind.into(),
         machine: source.machine.clone(),
+        computer: source.computer.clone(),
         projects,
         project_names,
         category,
@@ -304,6 +306,7 @@ pub struct Page {
     pub selected: usize,
     pub selected_ids: Vec<String>,
     pub candidates: usize,
+    pub estimated_bytes: Option<u64>,
     pub partial: bool,
 }
 #[derive(Default)]
@@ -517,6 +520,12 @@ impl Model {
             selected: self.selected.len(),
             selected_ids,
             candidates,
+            estimated_bytes: rows
+                .iter()
+                .filter(|(_, c, f, _)| *c == 0 && *f)
+                .try_fold(0u64, |total, (row, _, _, _)| {
+                    total.checked_add(row.bytes.unwrap_or(0))
+                }),
             partial: self.partial,
         })
     }
