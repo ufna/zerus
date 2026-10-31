@@ -98,6 +98,14 @@ shapes with private real launches. Fake, old, changed or mismatched executables/
 configuration refuse. This proposal supplies no exception or current caller for
 those shapes; that child requires its own concrete G3/native/security agreement.
 
+The separate [selected-CLI origin proposal](desktop-quit-cli-origin.md) uses one
+trust root per platform shared with G1: the existing own sealed signed Mac pair,
+gated on paired installation and genuine qualification, and a proposed Linux
+build-paired digest plus descriptor/actual-executed-image binding. It preserves
+the strict fence until qualification, binds immutable original configuration and
+fleet derivation, and makes a stale GUI/CLI pair unavailable for durable quit.
+It adds no current admission, caller or replacement pairing mechanism on Mac.
+
 ### Selector and marker inventory
 
 The implementation review must export a complete source-derived inventory of
