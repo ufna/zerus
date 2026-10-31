@@ -41,6 +41,12 @@ widgets whose `tr()` inherits a Qt base class context. It contains only complete
 unambiguous entries without disambiguation; it never guesses an agent response.
 The compiled catalog is embedded in the app, not committed as a binary.
 
+The Tauri client's `client/src/i18n.ru.json` is generated from this catalog by
+`client/scripts/generate-i18n-catalog.py`; never edit the JSON by hand. A source
+that reads differently in one use carries a Qt disambiguation, for example
+`tr("Pause", "media playback")`; the generator keys it as
+`"media playback\u0004Pause"` and the client reads it with `trc()`.
+
 Run the `ui-language` and `translation-catalog` CTest suites after building the
 desktop. `test_ui_language` uses private INI preferences and tests the English
 default under a Russian locale, explicit persistence, resource loading,

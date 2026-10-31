@@ -24,6 +24,8 @@ const DYNAMIC_FILES: Record<string, string> = {
 const SOURCES = import.meta.glob(["./**/*.ts", "./**/*.tsx", "!./**/*.test.ts", "!./i18n.ts"], { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 const STATIC = /\btr(?:Noop)?\(\s*("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`[^`$]*`)/g;
 const DYNAMIC = /\btr\(\s*(?!["'])(?!`[^`$]*`)/;
+// Qt's tr(source, disambiguation): both literal, keyed "disambiguation\u0004source".
+const DISAMBIGUATED = /\btrc\(\s*("(?:[^"\\\n]|\\.)*")\s*,\s*("(?:[^"\\\n]|\\.)*")/g;
 
 function literal(token: string): string {
   if (token.startsWith("`")) return token.slice(1, -1);
@@ -38,6 +40,10 @@ for (const [file, text] of Object.entries(SOURCES)) {
     sources.set(source, [...(sources.get(source) ?? []), file]);
   }
 }
+const disambiguated = new Map<string, string>();
+for (const [file, text] of Object.entries(SOURCES)) {
+  for (const match of text.matchAll(DISAMBIGUATED)) disambiguated.set(`${literal(match[1])}\u0004${literal(match[2])}`, file);
+}
 const translated = catalog as Record<string, unknown>;
 const englishOnly = new Set(english as string[]);
 
@@ -45,6 +51,10 @@ describe("interface string coverage", () => {
   it("translates every wrapped literal or lists it as English-only", () => {
     const missing = [...sources].filter(([source]) => !(source in translated) && !englishOnly.has(source)).map(([source, files]) => `${JSON.stringify(source)} in ${files[0]}`);
     expect(missing).toEqual([]);
+  });
+
+  it("translates every disambiguated literal", () => {
+    expect([...disambiguated].filter(([key]) => !(key in translated)).map(([key, file]) => `${JSON.stringify(key)} in ${file}`)).toEqual([]);
   });
 
   it("keeps the English-only list current", () => {
