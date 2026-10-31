@@ -214,6 +214,38 @@ impl Pump {
         Ok(())
     }
 
+    /// Read projection only, bound to the current local watch hello. A cached,
+    /// polled or offline card cannot establish ownership of device-local data.
+    pub fn local_windows_node(&self) -> Option<String> {
+        let inner = self.lock();
+        let rows = inner.mirror.computers.get("")?;
+        let machine = rows.machine.as_ref()?;
+        (rows.status == Some(ComputerStatus::Live)
+            && machine.platform.as_deref() == Some("windows")
+            && machine.ok == Some(true)
+            && machine.local_sessions != Some(false))
+        .then(|| machine.machine_id.clone())
+        .flatten()
+    }
+
+    pub fn local_windows_projects(&self, organization: &Value, node: &str) -> Option<Value> {
+        let inner = self.lock();
+        let rows = inner.mirror.computers.get("")?;
+        let machine = rows.machine.as_ref()?;
+        if rows.status != Some(ComputerStatus::Live)
+            || machine.platform.as_deref() != Some("windows")
+            || machine.ok != Some(true)
+            || machine.local_sessions == Some(false)
+            || machine.machine_id.as_deref() != Some(node)
+        {
+            return None;
+        }
+        inner
+            .grouping
+            .local_windows_projects(organization, node)
+            .ok()
+    }
+
     pub fn take_runs(&self) -> Option<zerus_client_core::swarm::runs::Snapshot> {
         self.lock().grouping.take_runs()
     }
