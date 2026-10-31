@@ -250,3 +250,85 @@ still not full current-source preparation, quiet, a current mapping, lease or
 numeric-ID permission. No mutable method, file access, source adapter, writer,
 default/runtime caller or G1 ticket is added. All later commit, negative-fencing,
 resource, crash, recurrence and rollback gates in the G1 contract remain open.
+
+### Pure post admission and barrier acknowledgements
+
+The first `owned::transitions` slice implements only supplied-data construction,
+post-only admission, one prepared barrier image and exact host acknowledgements.
+There is no native proposal/finish, clear, withdrawal, release, file access,
+runtime caller or execution stub. The later full batch must carry exact
+`NativeBinding` clears; token-only selection cannot authorize a loaded mapping.
+G1 owns production identity construction, leases, effect tickets and the negative
+permission consumer. The current `Notice` still supplies only token/title/body.
+
+`Original::new(expected_owner, OriginalInput)` shares the wire identity checks:
+the host explicitly supplies the original request, canonical non-nil Poster
+instance, positive nonce, original observed namespace/generation and action set.
+Nothing is minted from a loaded row, token hash, alias or current namespace.
+The production host/factory is absent. Within a Model, nonces must increase
+strictly, seeded from retained rows for that host; an admitted nonce never wraps or resets after
+a write refusal. Request reuse within that host is refused too, using a bounded
+(8192) exact set seeded from retained rows; it never evicts keys to admit more
+work. The host must preserve its nonce/request origin across Model replacement.
+Keys additionally bind a unique in-memory Model allocation, not merely that
+host UUID and a counter. Loading creates evidence, never fresh preparations.
+
+`Model::from_selected` consumes structural supplied-byte inspection, not a source
+receipt. Its initial images keep exact supplied presence, SHA256 and byte length;
+canonical encoding is never relabelled as original source evidence. Derived
+indexes retain explicit scoped tokens, all original agent namespaces and shared
+read-only legacy suppression. Original namespace spelling is preserved; only
+collision lookup folds hex case conservatively.
+
+`prepare_batch` validates the entire expected-owner `PostBatch` before changing
+state, including original host/nonce, suppression and pressure. Bounds are 64
+retained preparations, 128 posts/64 KiB of input UTF-8 per batch, and 4 MiB queued
+input. The accounting includes all input strings and decimal counters. Combined
+16 MiB/8192/legacy4096 limits include raw retained evidence. Before admission it
+conservatively reserves the positive-result delta and all four static invalidation
+reasons for every potentially affected agent binding, using full encoded targets
+and the maximum positive server-ID width. Fixed closed-schema margins cover
+positive-ID/state/key and namespace-header growth. Pressure cannot evict evidence.
+This deliberately conservative headroom is not permission to issue anything.
+
+Queued no-ID posts immediately suppress numeric routes in their original
+namespace, before any future native completion. `namespace_blocked == false`
+is not routing permission. `next_write` hands out at most one plan, with exact
+selected owner, Model/step key, previous presence/hash/length, and next bytes,
+hash and length. Repeating it cannot reissue the plan. There is one current
+serialized buffer, not a file snapshot per queued preparation.
+
+`ack_write(&mut WritePlan, WriteOutcome)` checks the exact Model, owner, step
+and complete attempted images before consuming any current work. Foreign, stale
+or mismatched acknowledgements leave the valid plan intact. The disposition is
+host-reported `Saved`, `RefusedBeforeWrite` or `Unknown`; none proves physical
+durability or source freshness. Saved/refused acknowledgement retires the plan's
+payload handle too, so acknowledged images do not accumulate. A saved barrier
+remains an unsettled preparation, with its namespace blocked: there is no native
+dispatch API in this slice. Verified refusal remains review-only, without retry.
+
+Unknown first sets sticky logical invalidation, then retains the exact pending
+buffer and both last-acknowledged and attempted-unconfirmed images. It cannot be
+retried, treated as unchanged, late-settled to success or cleared by a later write.
+Counter saturation cannot revive the invalidated context. Lost handles leave
+pending work; they do not demonstrate drain. A crash image containing the no-ID
+barrier fails the existing selected inspection instead of creating fresh keys.
+
+`close_agent_inputs` is sticky but admitted barrier continuations keep their
+original identities. The first `freeze_agent_writes` conservatively refuses all
+pending preparations, including updates, and retained uncertain/withdrawal
+evidence. Its `FenceData` binds the Model/fence incarnation, negative generation
+and reported agent image only. After a policy freeze, new agent admission is
+closed; only update batches whose original namespaces are disjoint from retained
+agent mappings may prepare writes. An unknown update commit invalidates the old
+fence while leaving agent bytes unchanged. No diagnostic, key, acknowledgement,
+closed flag or fence is an actual resource/current-source/lease receipt.
+
+The accepted full policy still requires one native proposal at a time, original
+kind/binding/namespace checks, terminal Unknown (positive IDs remain uncertainty),
+cross-owner collisions including pending withdrawals, update invalidation durable
+before dependent release/pre-fence agent change, and no post-fence agent writes.
+Withdrawal acknowledgement records issuance, not visual removal. Those result
+and clear paths are not implemented here. Actual persistence, child/reader/sink
+and callback destruction, negative fencing, exact release, recurrence and rollback
+need separate qualification before any typed default or profile ownership.

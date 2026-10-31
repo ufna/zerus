@@ -15,6 +15,7 @@ use std::io::Write;
 pub mod data;
 mod decode;
 pub mod inspection;
+pub use data::transitions;
 mod selected;
 #[cfg(test)]
 mod tests;

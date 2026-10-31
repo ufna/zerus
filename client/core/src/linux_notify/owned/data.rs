@@ -9,6 +9,7 @@ use std::num::{NonZeroU32, NonZeroU64};
 
 #[cfg(test)]
 mod tests;
+pub mod transitions;
 mod wire;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,6 +28,15 @@ impl Action {
 #[derive(PartialEq, Eq)]
 pub struct AllowedActions(Vec<Action>);
 impl AllowedActions {
+    fn checked(actions: Vec<Action>) -> Result<Self, Refused> {
+        if actions.is_empty()
+            || actions.len() > 2
+            || (actions.len() == 2 && actions[0] == actions[1])
+        {
+            return Err(Refused::InvalidIdentity);
+        }
+        Ok(Self(actions))
+    }
     pub fn iter(&self) -> impl ExactSizeIterator<Item = Action> + '_ {
         self.0.iter().copied()
     }
@@ -41,7 +51,59 @@ pub struct Original {
     namespace_generation: NonZeroU64,
     actions: AllowedActions,
 }
+/// Explicit untrusted host input, not an identity factory or native ticket.
+pub struct OriginalInput {
+    pub token: String,
+    pub request_id: String,
+    pub poster_instance: String,
+    pub post_nonce: u64,
+    pub namespace: Namespace,
+    pub namespace_generation: u64,
+    pub actions: Vec<Action>,
+}
+struct OriginalFields {
+    request_id: String,
+    poster_instance: String,
+    post_nonce: u64,
+    namespace: Namespace,
+    namespace_generation: u64,
+    actions: AllowedActions,
+}
 impl Original {
+    pub fn new(expected: Owner, input: OriginalInput) -> Result<Self, Refused> {
+        Self::checked(
+            ScopedToken::new(expected, input.token)?,
+            OriginalFields {
+                request_id: input.request_id,
+                poster_instance: input.poster_instance,
+                post_nonce: input.post_nonce,
+                namespace: input.namespace,
+                namespace_generation: input.namespace_generation,
+                actions: AllowedActions::checked(input.actions)?,
+            },
+        )
+    }
+    fn checked(scoped: ScopedToken, fields: OriginalFields) -> Result<Self, Refused> {
+        if !crate::creation::canonical_uuid(&fields.poster_instance)
+            || fields.poster_instance == "00000000-0000-0000-0000-000000000000"
+            || fields.request_id.is_empty()
+            || fields.request_id.len() > 512
+            || fields.request_id.chars().any(char::is_control)
+        {
+            return Err(Refused::InvalidIdentity);
+        }
+        Ok(Self {
+            scoped,
+            request_id: fields.request_id,
+            poster_instance: fields.poster_instance,
+            post_nonce: NonZeroU64::new(fields.post_nonce).ok_or(Refused::InvalidIdentity)?,
+            namespace: super::namespace(fields.namespace.bus_id, fields.namespace.owner)?
+                .ok_or(Refused::InvalidNamespace)?,
+            namespace_generation: NonZeroU64::new(fields.namespace_generation)
+                .ok_or(Refused::InvalidIdentity)?,
+            actions: fields.actions,
+        })
+    }
     pub fn scoped(&self) -> &ScopedToken {
         &self.scoped
     }
@@ -293,6 +355,7 @@ macro_rules! redacted {
     })+ };
 }
 redacted!(
+    OriginalInput,
     AllowedActions,
     Original,
     NativeBinding,
