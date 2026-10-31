@@ -97,6 +97,11 @@ impl Attempt {
         &self.challenge
     }
 
+    /// The original challenge end, shared by control I/O and the canonical probe.
+    pub fn deadline(&self) -> Instant {
+        self.deadline
+    }
+
     /// Future host calls off-actor, with its pinned canonical endpoint path.
     /// Reuses the same-user, one-second, 4096-byte exchange; no extra transport,
     /// filesystem resolver, child, thread, retry or socket replacement.
