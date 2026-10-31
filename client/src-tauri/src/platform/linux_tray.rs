@@ -19,6 +19,10 @@ use zerus_client_core::ComputerId;
 
 use crate::desk::{Bar, Item, MenuAction};
 
+mod badge;
+#[allow(unused_imports)] // Optional internal constructor has no production caller.
+pub(crate) use badge::{Control as BadgeControl, Refused as BadgeRefused};
+
 const SNI: &str = "org.kde.StatusNotifierItem";
 const PATH: &str = "/StatusNotifierItem";
 const MENU: &str = "/MenuBar";
@@ -462,11 +466,18 @@ struct Native {
     tray: Arc<Mutex<Tray>>,
     wake: std::sync::mpsc::SyncSender<()>,
     stopped: Arc<AtomicBool>,
+    badge: Option<Arc<badge::Scope>>,
 }
 impl Native {
     fn clear_badge(&self) {
+        if let Some(scope) = &self.badge {
+            let _ = scope.control().close();
+        }
         self.stopped.store(true, Ordering::Release);
         let _ = self.wake.try_send(());
+        if self.badge.is_some() {
+            return;
+        }
         let mut tray = lock(&self.tray);
         if !tray.badge_stopped && tray.badge_count > 0 {
             tray.badge_count = 0;
@@ -489,25 +500,51 @@ impl Wake for WorkerWake {
         let _ = self.0.try_send(());
     }
 }
+#[cfg(test)]
 fn start(foreground: Rgb, sink: Sink, address: Option<&str>) -> zbus::Result<Native> {
+    start_with_badge(foreground, sink, address, None)
+}
+fn start_with_badge(
+    foreground: Rgb,
+    sink: Sink,
+    address: Option<&str>,
+    badge: Option<Arc<badge::Scope>>,
+) -> zbus::Result<Native> {
     let tray = Arc::new(Mutex::new(Tray::new(foreground, sink)));
     let name = format!("org.kde.StatusNotifierItem-{}-1", std::process::id());
     let builder = match address {
         Some(address) => zbus::blocking::connection::Builder::address(address)?,
         None => zbus::blocking::connection::Builder::session()?,
     };
-    let connection = builder
+    let builder = builder
         .name(name.clone())?
         .method_timeout(Duration::from_secs(5))
         .serve_at(PATH, ItemService(tray.clone()))?
-        .serve_at(MENU, MenuService(tray.clone()))?
-        .serve_at(BADGE_PATH, BadgeService(tray.clone()))?
-        .build()?;
+        .serve_at(MENU, MenuService(tray.clone()))?;
+    let connection = if let Some(scope) = &badge {
+        builder
+            .max_queued(2)
+            .serve_at(
+                BADGE_PATH,
+                badge::Service {
+                    inner: BadgeService(tray.clone()),
+                    scope: scope.clone(),
+                },
+            )?
+            .build()?
+    } else {
+        builder
+            .serve_at(BADGE_PATH, BadgeService(tray.clone()))?
+            .build()?
+    };
     // One existing worker handles SNI registration and Qt's one-second
     // coalesced launcher republish. Bounded owner streams wake it directly;
     // no second thread, polling source or unbounded event queue is added.
     let mut owners = Vec::with_capacity(3);
     for service in [WATCHER, SHELLS[0], SHELLS[1]] {
+        if badge.is_some() && service != WATCHER {
+            continue;
+        }
         let rule = zbus::MatchRule::builder()
             .msg_type(zbus::message::Type::Signal)
             .sender("org.freedesktop.DBus")?
@@ -518,21 +555,115 @@ fn start(foreground: Rgb, sink: Sink, address: Option<&str>) -> zbus::Result<Nat
             .build();
         owners.push(MessageIterator::for_match_rule(rule, &connection, Some(2))?.into_inner());
     }
+    let mut badge_streams = Vec::new();
+    if let Some(scope) = &badge {
+        for service in SHELLS {
+            badge_streams.push(badge::ShellStream::new(&connection, service, scope)?);
+        }
+    }
     let bus = connection.clone();
     let state = tray.clone();
     let (wake, incoming) = std::sync::mpsc::sync_channel(1);
     let waker = Waker::from(Arc::new(WorkerWake(wake.clone())));
     let stopped = Arc::new(AtomicBool::new(false));
     let stop = stopped.clone();
+    let badge_worker = badge.clone();
+    if let Some(scope) = &badge {
+        scope.bind_worker(wake.clone());
+    }
     std::thread::spawn(move || {
         let mut registered = String::new();
         let mut register_at = Some(Instant::now());
         let mut republish_at = None;
+        let mut badge_closed = false;
+        let mut badge_cleanup_ok = true;
         'worker: loop {
-            if stop.load(Ordering::Acquire) {
+            if let Some(scope) = &badge_worker {
+                if scope.closed() {
+                    republish_at = None;
+                    if !badge_closed {
+                        badge_closed = true;
+                        badge_cleanup_ok &= bus
+                            .object_server()
+                            .remove::<badge::Service, _>(BADGE_PATH)
+                            .is_ok();
+                        let removals: Vec<_> = badge_streams
+                            .drain(..)
+                            .map(badge::ShellStream::stop)
+                            .collect();
+                        for removal in removals {
+                            badge_cleanup_ok &= removal.close(&bus).is_ok();
+                        }
+                    }
+                    if let Some(fence) = scope.fence() {
+                        {
+                            let mut tray = lock(&state);
+                            tray.badge_count = 0;
+                            tray.badge_stopped = true;
+                        }
+                        let cleared = !scope.needs_clear()
+                            || bus
+                                .emit_signal(
+                                    None::<&str>,
+                                    BADGE_PATH,
+                                    BADGE,
+                                    "Update",
+                                    &(LAUNCHER, badge_properties(0)),
+                                )
+                                .is_ok();
+                        if badge_cleanup_ok && cleared {
+                            fence.complete();
+                        }
+                        // Unknown cleanup/send leaves the admitted fence armed.
+                    }
+                } else if let Some((count, work)) = scope.take() {
+                    let result = bus.emit_signal(
+                        None::<&str>,
+                        BADGE_PATH,
+                        BADGE,
+                        "Update",
+                        &(LAUNCHER, badge_properties(count)),
+                    );
+                    if result.is_ok() {
+                        scope.sent(count);
+                        lock(&state).badge_sent = true;
+                        work.complete();
+                    }
+                    // Failed native work is unverified and pins through Drop.
+                }
+                if stop.load(Ordering::Acquire) && scope.finished() {
+                    break;
+                }
+            } else if stop.load(Ordering::Acquire) {
                 break;
             }
             let mut context = TaskContext::from_waker(&waker);
+            for stream in &mut badge_streams {
+                for index in 0..8 {
+                    match stream.poll(&mut context) {
+                        Poll::Ready(Some(Ok(message))) => {
+                            if stream.matches(&message) {
+                                if let Ok((_, _, owner)) =
+                                    message.body().deserialize::<(String, String, String)>()
+                                {
+                                    if !owner.is_empty() {
+                                        republish_at =
+                                            Some(Instant::now() + Duration::from_secs(1));
+                                    }
+                                }
+                            }
+                        }
+                        Poll::Ready(_) => {
+                            let _ = badge_worker.as_ref().unwrap().control().close();
+                            break;
+                        }
+                        Poll::Pending => break,
+                    }
+                    if index == 7 {
+                        waker.wake_by_ref();
+                    }
+                }
+            }
             for stream in &mut owners {
                 for index in 0..8 {
                     match Pin::new(&mut *stream).poll_next(&mut context) {
@@ -594,7 +725,11 @@ fn start(foreground: Rgb, sink: Sink, address: Option<&str>) -> zbus::Result<Nat
                 }
             }
             if republish_at.is_some_and(|at| Instant::now() >= at) {
-                publish_badge(&bus, &mut lock(&state), true);
+                if let Some(scope) = &badge_worker {
+                    let _ = scope.offer(lock(&state).badge_count);
+                } else {
+                    publish_badge(&bus, &mut lock(&state), true);
+                }
                 republish_at = None;
             }
             let deadline = register_at.into_iter().chain(republish_at).min();
@@ -609,12 +744,21 @@ fn start(foreground: Rgb, sink: Sink, address: Option<&str>) -> zbus::Result<Nat
                 }
             }
         }
+        // A premature worker exit cannot silently discard queued owner cleanup.
+        let removals: Vec<_> = badge_streams
+            .into_iter()
+            .map(badge::ShellStream::stop)
+            .collect();
+        for removal in removals {
+            let _ = removal.close(&bus);
+        }
     });
     Ok(Native {
         connection,
         tray,
         wake,
         stopped,
+        badge,
     })
 }
 #[derive(Default)]
@@ -625,7 +769,34 @@ struct Running {
 }
 pub struct TrayState(Mutex<Running>);
 pub fn install(app: &AppHandle, conf: Option<&str>) {
-    app.manage(TrayState(Mutex::new(Running::default())));
+    if app.manage(TrayState(Mutex::new(Running::default()))) {
+        install_worker(app, conf, None, None);
+    }
+}
+/// Optional host hook selected instead of install(), never an additional tray.
+/// It admits no current producer, service/native job or positive control IPC.
+#[allow(dead_code)]
+pub(crate) fn install_badge_accounted(
+    app: &AppHandle,
+    conf: Option<&str>,
+    host: zerus_client_core::desktop::drain::Charge,
+) -> Result<BadgeControl, BadgeRefused> {
+    if host.role() != zerus_client_core::desktop::drain::Role::Badges {
+        return Err(BadgeRefused::WrongRole);
+    }
+    if !app.manage(TrayState(Mutex::new(Running::default()))) {
+        return Err(BadgeRefused::Duplicate);
+    }
+    let (scope, control, startup) = badge::Scope::new(host)?;
+    install_worker(app, conf, Some(scope), Some(startup));
+    Ok(control)
+}
+fn install_worker(
+    app: &AppHandle,
+    conf: Option<&str>,
+    badge: Option<Arc<badge::Scope>>,
+    startup: Option<crate::notifier::accounting::Completion>,
+) {
     let foreground = conf
         .and_then(|c| zerus_client_core::menubar::tray_conf_value(c, "icon-color"))
         .and_then(|s| trayicon::parse_color(&s))
@@ -636,16 +807,23 @@ pub fn install(app: &AppHandle, conf: Option<&str>) {
     let app = app.clone();
     std::thread::spawn(move || {
         let target = app.clone();
-        match start(
+        match start_with_badge(
             foreground,
             Arc::new(move |action, token| dispatch(&target, action, token)),
             None,
+            badge.clone(),
         ) {
             Ok(native) => {
                 lock(&native.tray).custom_terminal = custom_terminal;
                 let state = app.state::<TrayState>();
                 let mut state = lock(&state.0);
                 if state.stopped {
+                    if let Some(scope) = &badge {
+                        scope.ready();
+                    }
+                    if let Some(startup) = startup {
+                        startup.complete();
+                    }
                     return;
                 }
                 state.native = Some(native);
@@ -657,6 +835,12 @@ pub fn install(app: &AppHandle, conf: Option<&str>) {
                         entries,
                         badge,
                     );
+                }
+                if let Some(scope) = &badge {
+                    scope.ready();
+                }
+                if let Some(startup) = startup {
+                    startup.complete();
                 }
             }
             Err(error) => {
@@ -705,18 +889,32 @@ fn offer_native(
     }
     let (changed, revision) = {
         let mut tray = lock(&native.tray);
-        if tray.badge_stopped {
+        if tray.badge_stopped && native.badge.is_none() {
             return;
         }
+        let badge = if native.badge.as_ref().is_some_and(|scope| scope.closed()) {
+            None
+        } else {
+            badge
+        };
         let offered = tray.bar.offer(face, tooltip, entries, badge);
         if let Some(count) = offered.badge {
-            tray.badge_count = count
+            let count = count
                 .and_then(|s| s.parse::<i64>().ok())
                 .unwrap_or(0)
                 .max(0);
-            tray.badge_sent = false;
+            if native
+                .badge
+                .as_ref()
+                .is_none_or(|scope| scope.offer(count).is_ok())
+            {
+                tray.badge_count = count;
+                tray.badge_sent = false;
+            }
         }
-        publish_badge(&native.connection, &mut tray, false);
+        if native.badge.is_none() {
+            publish_badge(&native.connection, &mut tray, false);
+        }
         let changed = !offered.changes.is_empty();
         tray.apply(offered.changes);
         (changed, tray.revision)
@@ -1111,6 +1309,148 @@ mod tests {
             "shutdown cannot revive the badge"
         );
         drop(native);
+    }
+
+    #[test]
+    fn accounted_badge_closure_preserves_sni_menu_activation_and_refuses_late_republish() {
+        use zerus_client_core::desktop::drain::{Gate, Observation, Role};
+        let bus = crate::platform::linux_test_bus::Bus::new();
+        let gate = Gate::new(1).unwrap();
+        let (scope, control, startup) =
+            badge::Scope::new(gate.admit(Role::Badges).unwrap()).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let native = start_with_badge(
+            Rgb::new(255, 255, 255),
+            Arc::new(move |a, t| {
+                tx.send((a, t)).unwrap();
+            }),
+            Some(&bus.address),
+            Some(scope.clone()),
+        )
+        .unwrap();
+        scope.ready();
+        startup.complete();
+        let client = bus.connect();
+        let owner = native.connection.unique_name().unwrap().to_string();
+        let mut updates = badge_updates(&client, &owner);
+        let query = Proxy::new(&client, owner.as_str(), BADGE_PATH, BADGE).unwrap();
+        offer_native(
+            &native,
+            Face::counts(8, 4, false),
+            "four".into(),
+            entries("claude/p/a"),
+            Some("4".into()),
+        );
+        expect_badge(next_badge(&mut updates, Duration::from_secs(5)).unwrap(), 4);
+        expect_badge(query.call("Query", &()).unwrap(), 4);
+        control.close().unwrap();
+        let closed = gate.close();
+        assert_eq!(
+            closed.wait_until(Instant::now() + Duration::from_secs(5)),
+            Observation::Idle
+        );
+        expect_badge(next_badge(&mut updates, Duration::from_secs(5)).unwrap(), 0);
+        assert!(!control.snapshot().unwrap().pinned);
+        assert!(
+            !native.stopped.load(Ordering::Acquire),
+            "UI worker remains alive"
+        );
+        assert!(query.call::<_, _, (String, Props)>("Query", &()).is_err());
+        offer_native(
+            &native,
+            Face::counts(9, 7, false),
+            "new tooltip".into(),
+            entries("codex/p/b"),
+            Some("7".into()),
+        );
+        let item = Proxy::new(&client, owner.as_str(), PATH, SNI).unwrap();
+        let tooltip: (String, Vec<Icon>, String, String) = item.get_property("ToolTip").unwrap();
+        assert_eq!(tooltip.2, "new tooltip");
+        item.call::<_, _, ()>("ProvideXdgActivationToken", &("after-badge-close",))
+            .unwrap();
+        item.call::<_, _, ()>("Activate", &(0_i32, 0_i32)).unwrap();
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            (MenuAction::Open, Some("after-badge-close".into()))
+        );
+        let menu = Proxy::new(&client, owner.as_str(), MENU, DBUSMENU).unwrap();
+        let (_, layout): (u32, Layout) = menu
+            .call("GetLayout", &(0_i32, -1_i32, Vec::<String>::new()))
+            .unwrap();
+        assert!(!layout.2.is_empty());
+        let id = lock(&native.tray).root.children[2].id;
+        menu.call::<_, _, ()>("Event", &(id, "clicked", Value::from(0_i32), 0_u32))
+            .unwrap();
+        assert!(
+            matches!(rx.recv_timeout(Duration::from_secs(5)).unwrap().0,MenuAction::Session { key,.. } if key == "run:codex/p/b")
+        );
+        let shell = bus.connect();
+        shell.request_name(SHELLS[0]).unwrap();
+        shell.request_name(SHELLS[1]).unwrap();
+        assert!(
+            next_badge(&mut updates, Duration::from_millis(1200)).is_none(),
+            "closed badge cannot be republished by shell churn or UI offers"
+        );
+        assert_eq!(closed.wait_until(Instant::now()), Observation::Idle);
+    }
+
+    #[test]
+    fn actual_startup_barrier_survives_close_after_interfaces_exist() {
+        use zerus_client_core::desktop::drain::{Gate, Observation, Role};
+        let bus = crate::platform::linux_test_bus::Bus::new();
+        let gate = Gate::new(1).unwrap();
+        let (scope, control, startup) =
+            badge::Scope::new(gate.admit(Role::Badges).unwrap()).unwrap();
+        let native = start_with_badge(
+            Rgb::new(255, 255, 255),
+            Arc::new(|_, _| {}),
+            Some(&bus.address),
+            Some(scope.clone()),
+        )
+        .unwrap();
+        control.close().unwrap();
+        let closed = gate.close();
+        assert_eq!(
+            closed.wait_until(Instant::now() + Duration::from_millis(30)),
+            Observation::Pending
+        );
+        scope.ready();
+        startup.complete();
+        assert_eq!(
+            closed.wait_until(Instant::now() + Duration::from_secs(5)),
+            Observation::Idle
+        );
+        let client = bus.connect();
+        let item = Proxy::new(
+            &client,
+            native.connection.unique_name().unwrap().as_str(),
+            PATH,
+            SNI,
+        )
+        .unwrap();
+        assert_eq!(item.get_property::<String>("Status").unwrap(), "Active");
+    }
+
+    #[test]
+    fn discarded_closed_startup_remains_unknown_instead_of_idle() {
+        use zerus_client_core::desktop::drain::{Gate, Observation, Role};
+        let bus = crate::platform::linux_test_bus::Bus::new();
+        let gate = Gate::new(1).unwrap();
+        let (scope, control, startup) =
+            badge::Scope::new(gate.admit(Role::Badges).unwrap()).unwrap();
+        control.close().unwrap();
+        let closed = gate.close();
+        let native = start_with_badge(
+            Rgb::new(255, 255, 255),
+            Arc::new(|_, _| {}),
+            Some(&bus.address),
+            Some(scope.clone()),
+        );
+        // Closed before any native setup is refused; startup remains explicitly unknown.
+        assert!(native.is_err());
+        drop(startup);
+        assert_eq!(closed.wait_until(Instant::now()), Observation::Pending);
+        assert!(control.snapshot().unwrap().pinned);
     }
 
     fn entries(name: &str) -> Vec<Entry> {
