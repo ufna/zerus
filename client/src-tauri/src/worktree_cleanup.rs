@@ -1,6 +1,7 @@
 //! Explicit Worktrees review. The existing core/CLI checks own removal;
 //! this bounded dialog retains immutable review rows and one-use confirmations.
 pub mod manual;
+pub mod reminder;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -22,6 +23,7 @@ struct Model {
     dialog: Option<Dialog>,
     manual: Option<manual::Dialog>,
     reading: bool,
+    reminders: reminder::Cache,
     // Never evicted to admit another write. A full retained set refuses new
     // removals; reopening/refreshing a dialog never replays an unknown result.
     unknown: BTreeMap<(String, String, String), String>,
@@ -527,6 +529,7 @@ pub async fn worktree_cleanup_open(
             return Err("A worktree review is already running.".into());
         }
         m.reading = true;
+        m.reminders.invalidate();
         m.manual = None;
         if let Some(d) = &mut m.dialog {
             d.plan = None;

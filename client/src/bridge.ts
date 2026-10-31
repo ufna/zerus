@@ -621,6 +621,8 @@ export const repositoryFields = (url: string, destination: string, style: PathSt
 export const worktreeSnapshot = (computer: ComputerId, path: string) => desktopNewSession<Record<string, unknown>>("worktree_snapshot", { computer, path });
 /** The folder's catalog: a fresh snapshot, or `hgs worktrees --path`; a rejection is its error. */
 export const worktreeCatalog = (computer: ComputerId, path: string, refresh: boolean) => desktopNewSession<Record<string, unknown>>("worktree_catalog", { computer, path, refresh });
+/** Advisory count only; the explicit review still repeats every removal check. */
+export const worktreeCleanupReminder = (input: import("./ui/screens/worktree-reminder").ReminderTarget) => desktop<import("./ui/screens/worktree-reminder").Reminder>("worktree_cleanup_reminder", { input: { computer: input.computer, expected_machine: input.machine, path: input.path, common: input.common } });
 export const worktreeCleanupOpen = (computer: string, path: string, focus: string) => desktop<import("./store/worktreeCleanup").WorktreeReview>("worktree_cleanup_open", { computer, path, focus });
 export const worktreeCleanupView = (id: string) => desktop<import("./store/worktreeCleanup").WorktreeReview>("worktree_cleanup_view", { id });
 export const worktreeCleanupRefresh = (id: string) => desktop<import("./store/worktreeCleanup").WorktreeReview>("worktree_cleanup_refresh", { id });
