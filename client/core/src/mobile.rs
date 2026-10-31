@@ -1,4 +1,4 @@
-//! Settings > Mobile connection, without its live actions for now: the
+//! Settings > Mobile connection reads and explicit phone actions: the
 //! workspace and its connector as `zerus-mobile-connector --workspace status`
 //! reports them (WorkspaceSettings.h), the phones each computer's mobile
 //! connection lists (`hgs [@host] mobile phones --json`, PhonePairing.cpp)
@@ -11,7 +11,7 @@
 //! devices, holding its private workspace state while it asks the relay,
 //! and may refresh its saved activation. No call here starts or stops the
 //! connector, changes its service or the workspace, pairs or revokes a
-//! phone; the actions that do are separate work.
+//! phone; [`phone_actions`] supplies those separate guarded calls.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -23,6 +23,7 @@ use serde_json::{Map, Value};
 use crate::actions::{Exit, Invocation};
 
 pub mod page;
+pub mod phone_actions;
 
 /// The help line that shows `hgs mobile` exists; an older `hgs` would read
 /// "mobile" as an agent to launch.

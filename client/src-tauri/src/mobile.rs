@@ -1,11 +1,12 @@
-//! Settings > Mobile connection, without its live actions for now: the
+//! Settings > Mobile connection reads and guarded phone actions: the
 //! workspace's status from the connector, each computer's phones and the
 //! shared notification timing (core `mobile`). The page lives here for the
 //! window's life, as Qt's panels do: one status read, one phones sweep and
 //! one timing call at a time, each on a thread of its own, with
 //! "mobile-changed" when one answers. A sweep reads every enabled computer,
 //! at most eight at once. Nothing here starts, stops or changes the
-//! connector, its service or the workspace, or pairs or revokes a phone. A
+//! connector, its service or the workspace. The phones child module owns
+//! bounded one-use pairing/revoke plans on the same page. A
 //! replay never drives the CLI.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -19,6 +20,9 @@ use zerus_client_core::mobile::page::{Delivery, Page, View};
 use zerus_client_core::mobile::{self, PhoneList, Workspace};
 
 use crate::organization::Organization;
+
+mod phones;
+pub use phones::*;
 
 const REPLAY: &str = "The mobile connection is not read in a replay.";
 /// Computers whose phones are read at once.
@@ -60,6 +64,8 @@ pub struct Mobile(Arc<Inner>);
 
 struct Inner {
     page: Mutex<Page>,
+    phone_plans: Mutex<phones::Plans>,
+    effects: std::sync::atomic::AtomicBool,
     /// The page's clock: monotonic, so a changed system time neither names
     /// nor hides the sync service early.
     started: Instant,
@@ -91,6 +97,8 @@ impl Inner {
     fn new(blocked: bool, calls: Calls, notify: Box<dyn Fn() + Send + Sync>) -> Inner {
         Inner {
             page: Mutex::new(Page::new()),
+            phone_plans: Mutex::new(phones::Plans::default()),
+            effects: std::sync::atomic::AtomicBool::new(false),
             started: Instant::now(),
             blocked,
             calls,
@@ -290,6 +298,15 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    pub(super) fn service_calls_for_plans() -> Calls {
+        Calls {
+            status: Box::new(|| Err("unused".into())),
+            hosts: Box::new(|| Ok(vec![])),
+            phones: Box::new(|_| Ok(None)),
+            delivery: Box::new(|_| Err("unused".into())),
+        }
+    }
 
     /// Counts each kind of call; the calls wait while `hold` is set.
     #[derive(Default)]
