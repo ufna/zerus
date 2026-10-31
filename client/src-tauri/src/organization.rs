@@ -33,6 +33,7 @@
 
 pub mod clones;
 pub mod folders;
+pub mod overview;
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read as _};

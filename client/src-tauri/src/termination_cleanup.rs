@@ -990,13 +990,7 @@ pub async fn termination_cleanup_inspect(
         )
     };
     tauri::async_runtime::spawn_blocking(move || {
-        if !zerus_client_core::creation::canonical_uuid(&machine) {
-            return Err(STATE_CHANGED.into());
-        }
-        let mut inv = review::inspect_invocation(&ComputerId(host), &path, &common, &file, offset);
-        worktrees::guard(&mut inv.args, &machine);
-        let exit = worktrees::run_guarded(&default_hgs(), &inv, bounded_run)?;
-        review::inspected(exit, &path, &common, &file, offset)
+        crate::worktree_cleanup::inspect(&host, &machine, &path, &common, &file, offset)
     })
     .await
     .map_err(|e| e.to_string())?

@@ -376,6 +376,9 @@ impl Model {
         }
         true
     }
+    pub fn is_selected(&self, id: &str) -> bool {
+        self.selected.contains(id)
+    }
     pub fn selection(&self) -> Vec<String> {
         self.selected.iter().cloned().collect()
     }

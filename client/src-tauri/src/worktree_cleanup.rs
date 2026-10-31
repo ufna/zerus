@@ -69,7 +69,12 @@ fn run(inv: &Invocation) -> Result<Exit, String> {
     run_limited(&default_hgs(), inv, &[], review::REVIEW_LIMIT)
         .map_err(|_| "The worktree reply is too large. Review the folder before continuing.".into())
 }
-fn read(computer: &str, machine: &str, common: &str, focus: &str) -> Result<Value, String> {
+pub(crate) fn read(
+    computer: &str,
+    machine: &str,
+    common: &str,
+    focus: &str,
+) -> Result<Value, String> {
     let mut inv = review::review_invocation(&ComputerId(computer.into()), common, focus);
     worktrees::guard(&mut inv.args, machine);
     probe(&inv)?;
@@ -78,6 +83,37 @@ fn read(computer: &str, machine: &str, common: &str, focus: &str) -> Result<Valu
         return Err(CHANGED.into());
     }
     Ok(value)
+}
+/// Shared bounded read-only inspector; callers retain their own opaque scope.
+pub(crate) fn inspect(
+    computer: &str,
+    machine: &str,
+    path: &str,
+    common: &str,
+    file: &str,
+    offset: usize,
+) -> Result<Value, String> {
+    if !zerus_client_core::creation::canonical_uuid(machine)
+        || file.len() > 4096
+        || file.chars().any(char::is_control)
+        || offset > 1_000_000
+    {
+        return Err(CHANGED.into());
+    }
+    let mut inv =
+        review::inspect_invocation(&ComputerId(computer.into()), path, common, file, offset);
+    worktrees::guard(&mut inv.args, machine);
+    let exit = worktrees::run_guarded(&default_hgs(), &inv, |_, inv| {
+        run(inv).unwrap_or_else(Exit::StartFailed)
+    })?;
+    review::inspected(exit, path, common, file, offset)
+}
+impl WorktreeCleanup {
+    pub(crate) fn unknown(&self, machine: &str, common: &str, path: &str) -> bool {
+        lock(&self.0)
+            .unknown
+            .contains_key(&(machine.into(), common.into(), path.into()))
+    }
 }
 fn rows(value: &Value, focus: &str) -> Result<Vec<Item>, String> {
     let mut seen = BTreeSet::new();
