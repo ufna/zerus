@@ -489,6 +489,23 @@ with private buses, no display address and fresh HOME/XDG/TMPDIR/TMUX_TMPDIR.
 Other cases keep the test harness's default parallel execution; concurrent tests
 cannot change either child's process-wide socket or thread observations.
 
+The dormant steady-state reader loop blocks on its existing coalesced wake
+channel after both readers and the executor report Pending. Each turn polls at
+most two raw readers and one executor tick; any Ready result continues
+immediately, including bursts larger than raw16. A Pending tick stays pinned
+across the receive and raw progress, preserving its executor wake registration.
+Only a completed tick is reset. The actual pinned future's lexical scope ends
+before reader destruction and match removal, including panic unwinding. Close
+sets cancellation before waking; a full channel already contains a wake token.
+Setup/cleanup deadlines and their bounded polling remain unchanged.
+
+Private wake qualification combines actual receive hooks and a birth-bound
+original-worker kernel wait observation with a body-free runnable on that same
+connection's executor, addressed bursts, coalescing/close races, actual joins and
+capture destruction. Kernel state or hook counters alone never establish
+custody, completion or whole-role quiet. The runnable and header-only synthetic
+signal probes exist only in test builds and admit no production input or sink.
+
 Queue 16 is an item bound. The locked SDK can receive frames up to 128 MiB before
 body allocation and has no smaller Builder receive-size knob. Startup code does
 not decode, copy or route bodies, or retain them beyond the SDK queues and current

@@ -238,6 +238,16 @@ enum Hook {
     Message,
     DropReaders,
     DropConnection,
+    #[cfg(test)]
+    TickCreated,
+    #[cfg(test)]
+    TickDropped,
+    #[cfg(test)]
+    BeforePark,
+    #[cfg(test)]
+    AfterPark,
+    #[cfg(test)]
+    ProbeSignal,
 }
 #[derive(Default)]
 struct Hooks {
@@ -245,6 +255,8 @@ struct Hooks {
     event: Option<Arc<dyn Fn(Hook) + Send + Sync>>,
     #[cfg(test)]
     budget: Option<Duration>,
+    #[cfg(test)]
+    runnable: Option<Arc<worker::RunnableProbe>>,
 }
 impl Hooks {
     fn budget(&self) -> Duration {
