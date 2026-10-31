@@ -983,13 +983,33 @@ export function PerfHost() {
       const { contentSearchSmoke } = await import("../perf/contentSearchSmoke");
       void contentSearchSmoke(!!config().actions_smoke);
     }
+    if (new URLSearchParams(location.search).has("project-clone-smoke") && inTauri()) {
+      const { projectCloneSmoke } = await import("../perf/projectCloneSmoke");
+      void projectCloneSmoke(!!config().replay && !!config().actions_smoke, new URLSearchParams(location.search).get("project-clone-smoke") === "restored");
+    }
+    if (new URLSearchParams(location.search).has("project-folder-smoke") && inTauri()) {
+      const { projectFolderSmoke } = await import("../perf/projectFolderSmoke");
+      void projectFolderSmoke(!!config().replay && !!config().actions_smoke);
+    }
+    if (new URLSearchParams(location.search).has("project-default-smoke") && inTauri()) {
+      const { projectDefaultSmoke } = await import("../perf/projectDefaultSmoke");
+      void projectDefaultSmoke(!!config().replay && !!config().actions_smoke, new URLSearchParams(location.search).get("project-default-smoke") === "restored");
+    }
     if (new URLSearchParams(location.search).has("project-vivid-smoke") && inTauri()) {
       const { projectVividSmoke } = await import("../perf/projectVividSmoke");
       void projectVividSmoke(!!config().replay && !!config().actions_smoke, new URLSearchParams(location.search).get("project-vivid-smoke") === "restored");
     }
+    if (new URLSearchParams(location.search).has("project-swarm-ui-smoke") && inTauri()) {
+      const { swarmUiSmoke } = await import("../perf/swarmUiSmoke");
+      void swarmUiSmoke(!!config().replay && !!config().actions_smoke);
+    }
+    if (new URLSearchParams(location.search).has("project-swarm-smoke") && inTauri()) {
+      const { swarmSmoke } = await import("../perf/swarmSmoke");
+      void swarmSmoke(!!config().replay && !!config().actions_smoke);
+    }
     if (new URLSearchParams(location.search).has("worktree-review-smoke") && inTauri()) {
       const { worktreeReviewSmoke } = await import("../perf/worktreeReviewSmoke");
-      void worktreeReviewSmoke(!!config().replay && !!config().actions_smoke);
+      void worktreeReviewSmoke(!!config().replay && !!config().actions_smoke, ["projects", "overview-native", "overview-ui"].includes(new URLSearchParams(location.search).get("worktree-review-smoke") ?? ""), new URLSearchParams(location.search).get("worktree-review-smoke") === "overview-native", new URLSearchParams(location.search).get("worktree-review-smoke") === "overview-ui");
     }
     if (new URLSearchParams(location.search).has("shell-badge-smoke") && inTauri()) {
       const { shellBadgeSmoke } = await import("../perf/shellBadgeSmoke");

@@ -990,3 +990,14 @@ export async function attachmentMedia(computer: string, file: AttachmentRef, vid
 export const actionDelayBegin = (id: string, captures: import("./store/endActionBusy").EndCapture[]) => desktop<void>("action_delay_begin", { id, captures });
 export const actionDelayWait = (id: string) => desktop<boolean>("action_delay_wait", { id });
 export const actionDelayCancel = (id: string) => desktop<void>("action_delay_cancel", { id });
+
+export const setDefaultProject = (project: string) => desktop<void>("set_default_project", { project });
+
+export const projectFolderChange = (project: string, change: import("./ui/screens/project-folders").FolderChange) => desktop<EditOutcome>("project_folder_change", { project, change: "place" in change ? { ...change, place: { computer: change.place.computer, host: change.place.host, machine_id: change.place.machine_id } } : change });
+export const projectFolderOpen = (project: string, original: FolderOut) => desktop<void>("project_folder_open", { project, original });
+
+export const projectCloneOpen = (place: import("./ui/screens/project-folders").Place) => desktop<import("./ui/screens/ProjectCloneDialog").CloneView>("project_clone_open", {place: {computer: place.computer, host: place.host, machine_id: place.machine_id}});
+export const projectCloneStatus = (id: string) => desktop<import("./ui/screens/ProjectCloneDialog").CloneView>("project_clone_status", {id});
+export const projectCloneClose = (id: string) => desktop<void>("project_clone_close", {id});
+export const projectCloneStep = (id: string, step: "begin" | "check" | "retire", source: {url: string; parent: string; name: string}) => desktop<import("./ui/screens/ProjectCloneDialog").CloneView>("project_clone_step", {id, step, source});
+export const projectCloneUse = (id: string, project: string | null, name: string) => desktop<{outcome: EditOutcome; project: string; folder: string}>("project_clone_use", {id, project, name});

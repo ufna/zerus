@@ -825,7 +825,9 @@ export function ActivityView(props: { source?: ActivitySource }) {
     // Content includes Markdown, images and tool disclosures; the viewport
     // also resizes when the composer or a question card changes height.
     const changed = () => { end.changed(); settleReading(); };
-    const resize = new ResizeObserver(changed);
+    // Resizes settle before the frame paints, so opening a session never shows
+    // its content shifted by a late card, image or Markdown height for a frame.
+    const resize = new ResizeObserver(() => { end.settle(); settleReading(); });
     resize.observe(scroller);
     const column = scroller.querySelector(".act-col");
     const mutations = new MutationObserver(changed);

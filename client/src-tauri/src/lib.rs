@@ -387,7 +387,6 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                 app.manage(recovery::start(app.handle()));
                 app.manage(files::start());
                 app.manage(analytics::start(app.handle()));
-                app.manage(approvals::start());
                 app.manage(worktree_policy::start(app.handle()));
                 app.manage(mobile::start(app.handle()));
                 // A replay never touches the real read or attention marks.
@@ -418,6 +417,11 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                 app.manage(actions::ActivityReads::default());
                 app.manage(actions::Attention::new(dir.join(actions::attention_file(replay))));
                 let pump = app.state::<commands::AppState>().pump();
+                app.manage(approvals::start(
+                    pump.clone(),
+                    app.state::<actions::Actions>().inner().clone(),
+                    app.state::<settings::Store>().0.clone(),
+                ));
                 app.state::<actions::Actions>().set_termination_pump(pump.clone());
                 let allowed = actions::actions_allowed(
                     std::env::var("ZERUS_CLIENT_REPLAY").ok().as_deref(),
@@ -451,10 +455,14 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                 // call only takes the screens hub's lock and emits, so it never
                 // waits for the main thread (organization::Presented).
                 let projects = screens.clone();
+                let swarm_app = app.handle().clone();
                 organization.set_presented(std::sync::Arc::new(move |value, default, status| {
-                    projects.organization(value, default, status)
+                    projects.organization(value, default, status);
+                    let _ = tauri::Emitter::emit(&swarm_app, "project-swarm-changed", ());
                 }));
                 app.manage(organization);
+                app.manage(organization::clones::Clones::default());
+                app.manage(organization::overview::Overview::default());
                 app.manage(screens);
                 app.manage(newsession::NewSession::tauri(Some(dir.join(if replay {
                     "worktree-snapshots-replay.json"
@@ -1033,6 +1041,9 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         native_ui::runtime::native_ui_retire,
         native_ui::runtime::native_ui_visible,
         native_ui::runtime::native_ui_bounds,
+        settings::skins::user_skins_load,
+        settings::skins::user_skin_import,
+        settings::skins::user_skins_open,
         settings::settings_get,
         settings::settings_set,
         desk::desk_take_pending,
@@ -1060,6 +1071,26 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         worktree_policy::worktree_policy_read,
         worktree_policy::worktree_policy_choose,
         worktree_policy::worktree_policy_apply,
+        mobile::mobile_phone_open,
+        mobile::mobile_phone_close,
+        mobile::mobile_phone_invite,
+        mobile::mobile_phone_revoke,
+        mobile::mobile_computer_open,
+        mobile::mobile_computer_close,
+        mobile::mobile_computer_invite,
+        mobile::mobile_computer_cancel,
+        mobile::mobile_computer_check,
+        mobile::mobile_workspace_open,
+        mobile::mobile_workspace_check_open,
+        mobile::mobile_workspace_close,
+        mobile::mobile_workspace_apply,
+        mobile::mobile_workspace_continue,
+        mobile::mobile_connector_open,
+        mobile::mobile_connector_apply,
+        mobile::mobile_connector_close,
+        mobile::mobile_legacy_open,
+        mobile::mobile_legacy_apply,
+        mobile::mobile_legacy_close,
         mobile::mobile_view,
         mobile::mobile_open,
         mobile::mobile_refresh_workspace,
@@ -1123,7 +1154,37 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         organization::move_project,
         organization::sort_project,
         organization::set_project_collapsed,
+        organization::set_default_project,
         organization::project_folders,
+        worktree_cleanup::manual::worktree_overview_review,
+        worktree_cleanup::manual::worktree_manual_view,
+        worktree_cleanup::manual::worktree_manual_remove,
+        worktree_cleanup::manual::worktree_manual_check,
+        worktree_cleanup::manual::worktree_manual_stop,
+        worktree_cleanup::manual::worktree_manual_inspect,
+        organization::overview::worktree_overview_open,
+        organization::swarm_dialog::project_swarm_open,
+        organization::swarm_dialog::project_swarm_view,
+        organization::swarm_dialog::project_swarm_preview,
+        organization::swarm_dialog::project_swarm_join,
+        organization::swarm_dialog::project_swarm_sync,
+        organization::swarm_dialog::project_swarm_close,
+        organization::swarm_dialog::conflicts::project_swarm_conflicts,
+        organization::swarm_dialog::conflicts::project_swarm_conflict_review,
+        organization::swarm_dialog::conflicts::project_swarm_resolve,
+        organization::overview::worktree_overview_refresh,
+        organization::overview::worktree_overview_page,
+        organization::overview::worktree_overview_select,
+        organization::overview::worktree_overview_candidates,
+        organization::overview::worktree_overview_close,
+        organization::overview::worktree_overview_inspect,
+        organization::clones::project_clone_open,
+        organization::clones::project_clone_status,
+        organization::clones::project_clone_step,
+        organization::clones::project_clone_close,
+        organization::clones::project_clone_use,
+        organization::folders::project_folder_change,
+        organization::folders::project_folder_open,
         screens::screen_visible,
         screens::session_usage,
         screens::accounts_view,

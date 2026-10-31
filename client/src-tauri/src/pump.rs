@@ -29,6 +29,13 @@ pub const PARK: Duration = Duration::from_millis(250);
 /// Receives every change before the coalescer folds it (the desk thread).
 pub type Tap = Box<dyn Fn(&Change) + Send>;
 
+/// A fixed-budget cursor, never a cloned fleet or an unbounded candidate queue.
+#[derive(Default)]
+pub struct ApprovalCursor {
+    computer: String,
+    row: usize,
+}
+
 #[derive(Default)]
 struct Inner {
     coalescer: Coalescer,
@@ -67,6 +74,86 @@ impl WeakPump {
 }
 
 impl Pump {
+    pub fn approval_candidates(
+        &self,
+        cursor: &mut ApprovalCursor,
+        limit: usize,
+        eligible: impl Fn(&zerus_client_core::approvals::automatic::Candidate) -> bool,
+    ) -> Vec<zerus_client_core::approvals::automatic::Candidate> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        use std::ops::Bound::{Excluded, Unbounded};
+        let inner = self.lock();
+        let mut found: Vec<zerus_client_core::approvals::automatic::Candidate> = Vec::new();
+        for _ in 0..512 {
+            let Some((computer, rows)) = inner
+                .mirror
+                .computers
+                .range(cursor.computer.clone()..)
+                .next()
+                .or_else(|| inner.mirror.computers.first_key_value())
+            else {
+                break;
+            };
+            if computer != &cursor.computer {
+                cursor.computer = computer.clone();
+                cursor.row = 0;
+            }
+            let machine = rows.machine.as_ref();
+            if rows.status != Some(ComputerStatus::Live)
+                || machine.is_none_or(|m| m.ok != Some(true) || m.machine_id.is_none())
+                || cursor.row >= rows.order.len()
+            {
+                cursor.computer = inner
+                    .mirror
+                    .computers
+                    .range::<String, _>((Excluded(computer), Unbounded))
+                    .next()
+                    .map_or_else(String::new, |(id, _)| id.clone());
+                cursor.row = 0;
+                continue;
+            }
+            let key = &rows.order[cursor.row];
+            cursor.row += 1;
+            let Some(row) = rows.rows.get(key) else {
+                continue;
+            };
+            if let Some(mut target) =
+                zerus_client_core::approvals::automatic::candidate(computer, row)
+            {
+                target.catalog_key = key.clone();
+                target.machine_id = machine.unwrap().machine_id.clone().unwrap();
+                if !found.iter().any(|old| old.key == target.key) && eligible(&target) {
+                    found.push(target);
+                    if found.len() >= limit.min(2) {
+                        break;
+                    }
+                }
+            }
+        }
+        found
+    }
+
+    pub fn approval_current(
+        &self,
+        target: &zerus_client_core::approvals::automatic::Candidate,
+    ) -> bool {
+        let inner = self.lock();
+        inner
+            .mirror
+            .computers
+            .get(&target.target.computer)
+            .is_some_and(|rows| {
+                rows.status == Some(ComputerStatus::Live)
+                    && rows.machine.as_ref().is_some_and(|m| {
+                        m.ok == Some(true) && m.machine_id.as_deref() == Some(&target.machine_id)
+                    })
+                    && rows.rows.get(&target.catalog_key).is_some_and(|row| {
+                        zerus_client_core::approvals::automatic::same(target, row)
+                    })
+            })
+    }
     pub fn poster(&self, computer: &str, key: &str, message: &str) -> Option<Arc<[u8]>> {
         self.lock()
             .coalescer
@@ -177,6 +264,13 @@ impl Pump {
         self.wake(inner);
     }
 
+    pub fn set_default_project(&self, project: &str) -> Result<(), String> {
+        let mut inner = self.lock();
+        inner.grouping.set_default_project(project)?;
+        self.wake(inner);
+        Ok(())
+    }
+
     pub fn set_collapsed(&self, project: &str, collapsed: bool) {
         let mut inner = self.lock();
         inner.grouping.set_collapsed(project, collapsed);
@@ -205,6 +299,38 @@ impl Pump {
         inner.grouping.replace_layout(layout);
         self.wake(inner);
         Ok(())
+    }
+
+    /// Read projection only, bound to the current local watch hello. A cached,
+    /// polled or offline card cannot establish ownership of device-local data.
+    pub fn local_windows_node(&self) -> Option<String> {
+        let inner = self.lock();
+        let rows = inner.mirror.computers.get("")?;
+        let machine = rows.machine.as_ref()?;
+        (rows.status == Some(ComputerStatus::Live)
+            && machine.platform.as_deref() == Some("windows")
+            && machine.ok == Some(true)
+            && machine.local_sessions != Some(false))
+        .then(|| machine.machine_id.clone())
+        .flatten()
+    }
+
+    pub fn local_windows_projects(&self, organization: &Value, node: &str) -> Option<Value> {
+        let inner = self.lock();
+        let rows = inner.mirror.computers.get("")?;
+        let machine = rows.machine.as_ref()?;
+        if rows.status != Some(ComputerStatus::Live)
+            || machine.platform.as_deref() != Some("windows")
+            || machine.ok != Some(true)
+            || machine.local_sessions == Some(false)
+            || machine.machine_id.as_deref() != Some(node)
+        {
+            return None;
+        }
+        inner
+            .grouping
+            .local_windows_projects(organization, node)
+            .ok()
     }
 
     pub fn take_runs(&self) -> Option<zerus_client_core::swarm::runs::Snapshot> {

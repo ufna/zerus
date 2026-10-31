@@ -129,11 +129,18 @@ export function createOrganization(say: Say, unsay: (key: string) => void = () =
     run(refusal(projectId, destination), () => bridge.deleteProject(projectId, destination));
   const moveProject = (projectId: string, before: string | undefined) => run(refusal(projectId), () => bridge.moveProject(projectId, before ?? null));
   const sortProject = (projectId: string) => run(refusal(projectId), () => bridge.sortProject(projectId));
+  async function setDefaultProject(projectId: string): Promise<boolean> {
+    const why = refusal(projectId);
+    if (why) { say("info", why); return false; }
+    try { await bridge.setDefaultProject(projectId); return true; }
+    catch (error) { say("error", String(error), true); return false; }
+  }
+  const changeProjectFolder = (project: string, change: import("../ui/screens/project-folders").FolderChange) => run(refusal(project, change.kind === "transfer" ? change.destination : undefined), () => bridge.projectFolderChange(project, change));
   /** Expand or collapse: this device's layout; the next batch shows it. */
   const setProjectCollapsed = (projectId: string, collapsed: boolean) => { void bridge.setProjectCollapsed(projectId, collapsed).catch(() => {}); };
 
   return { grouping, groups, defaultProject, applyGrouping, groupOf, headerOf, moveToProject, createProject,
-           renameProject, setProjectColor, deleteProject, moveProject, sortProject, setProjectCollapsed };
+           renameProject, setProjectColor, deleteProject, moveProject, sortProject, setProjectCollapsed, setDefaultProject, changeProjectFolder };
 }
 
 export type Organization = ReturnType<typeof createOrganization>;
@@ -144,7 +151,7 @@ export function bindArchivedGroups(lookup: (key: string) => string | undefined) 
 
 const app = createOrganization(notify, clearNotice, (key) => archivedGroup(key));
 export const { grouping, groups, defaultProject, applyGrouping, groupOf, headerOf, moveToProject, createProject,
-               renameProject, setProjectColor, deleteProject, moveProject, sortProject, setProjectCollapsed } = app;
+               renameProject, setProjectColor, deleteProject, moveProject, sortProject, setProjectCollapsed, setDefaultProject, changeProjectFolder } = app;
 
 /** Project settings… asks the Projects screen to show this project. */
 export const [projectToShow, setProjectToShow] = createSignal<string | undefined>();

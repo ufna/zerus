@@ -91,7 +91,7 @@ describe("defaults", () => {
     expect(DEFAULTS["workspace/theme"]).toBe("system");
     expect(DEFAULTS["processes/activeSeconds"]).toBe(2.5);
     expect(DEFAULTS["client/darkSkin"]).toBe("zerus-dark");
-    expect("automaticApprovals/enabled" in DEFAULTS).toBe(false);
+    expect(DEFAULTS["automaticApprovals/enabled"]).toBe(false);
   });
   it("accept only values of the default's type", () => {
     expect(sameType("workspace/compact", true)).toBe(true);

@@ -1122,6 +1122,13 @@ tool permissions qualify. Ordinary questions, startup trust, incomplete panels a
 persistent permission changes remain manual. Existing native identity and
 delivery guards still apply.
 
+Zerus Next uses its live event-stream catalog for the same bounded discovery;
+it does not add a peer poller. Its opt-in is device-local and is never seeded
+from Qt or imported by migration. Confirm it separately in Next. Cached,
+offline or unidentified computers cannot admit an approval; each candidate is
+freshly inspected, and its exact identities are checked again before the
+existing native Answer lane runs under the journal's original request UUID.
+
 The same Settings page contains this computer's private approval journal, naming
 the computer, session, time, question, selected answer and confirmed outcome.
 Each attempt is durably reserved before native input. Failed, cancelled and

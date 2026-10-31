@@ -14,7 +14,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use zerus_client_core::attention::{Delivery, DeliveryStep, Notice};
 
-mod accounting;
+pub(crate) mod accounting;
+pub(crate) mod owners;
+pub(crate) mod retiring;
 use accounting::{Completion, Resources};
 pub(crate) use accounting::{Control, Refused as AccountingRefused};
 
@@ -46,12 +48,19 @@ pub type Work = Box<dyn FnOnce() + Send>;
 /// A failed delivery's token and reason (`AttentionNotifier::failed`).
 pub type Failed = Box<dyn Fn(String, String) + Send + Sync>;
 
+#[derive(Clone, Copy)]
+enum CloseMode {
+    Strong,
+    FinishAdmitted,
+}
+
 struct Shared {
     delivery: Mutex<Delivery>,
     center: Box<dyn Center>,
     hop: Hop,
     failed: Failed,
     resources: Option<Arc<Resources>>,
+    close_mode: CloseMode,
 }
 
 /// The notifier: clones share it.
@@ -60,7 +69,7 @@ pub struct Notifier(Arc<Shared>);
 
 impl Notifier {
     pub fn new(center: Box<dyn Center>, hop: Hop, failed: Failed) -> Self {
-        Self::with_resources(center, hop, failed, None)
+        Self::with_resources(center, hop, failed, None, CloseMode::Strong)
     }
 
     /// Optional prerequisite for the future Desk/native barrier. Current GUI
@@ -74,7 +83,7 @@ impl Notifier {
     ) -> Result<(Self, Control), AccountingRefused> {
         let (resources, control) = Resources::new(host)?;
         Ok((
-            Self::with_resources(center, hop, failed, Some(resources)),
+            Self::with_resources(center, hop, failed, Some(resources), CloseMode::Strong),
             control,
         ))
     }
@@ -84,6 +93,7 @@ impl Notifier {
         hop: Hop,
         failed: Failed,
         resources: Option<Arc<Resources>>,
+        close_mode: CloseMode,
     ) -> Self {
         Self(Arc::new(Shared {
             delivery: Mutex::new(Delivery::default()),
@@ -91,13 +101,23 @@ impl Notifier {
             hop,
             failed,
             resources,
+            close_mode,
         }))
     }
 
     /// Withdraws, then posts (`TrayAgent::observeAttention`,
     /// `TrayAgent.cpp:558-559`).
     pub fn deliver(&self, cleared: &[String], raised: &[Notice]) {
-        let Ok(work) = self.0.begin() else { return };
+        let _ = self.try_deliver(cleared, raised);
+    }
+
+    fn try_deliver(&self, cleared: &[String], raised: &[Notice]) -> Result<(), AccountingRefused> {
+        let work = self.0.begin()?;
+        self.deliver_admitted(cleared, raised, work);
+        Ok(())
+    }
+
+    fn deliver_admitted(&self, cleared: &[String], raised: &[Notice], work: Option<Completion>) {
         let steps = {
             let mut delivery = self.0.lock();
             let mut steps = Vec::new();
@@ -109,7 +129,7 @@ impl Notifier {
             }
             steps
         };
-        execute(&self.0, steps);
+        execute(&self.0, steps, work.as_ref());
         complete(work);
     }
 }
@@ -126,9 +146,20 @@ impl Shared {
 
 /// Runs each step without holding the state's lock: a center may answer at
 /// once, and its answer takes the lock again.
-fn execute(shared: &Arc<Shared>, steps: Vec<DeliveryStep>) {
+fn execute(shared: &Arc<Shared>, steps: Vec<DeliveryStep>, origin: Option<&Completion>) {
     for step in steps {
-        let Ok(work) = shared.begin() else { return };
+        let work = match shared.close_mode {
+            CloseMode::Strong => {
+                let Ok(work) = shared.begin() else { return };
+                work
+            }
+            // Only the separate retiring constructor selects this mode. No new
+            // admission: the opaque original Completion supplies every fork.
+            CloseMode::FinishAdmitted => {
+                let Some(origin) = origin else { return };
+                Some(origin.fork())
+            }
+        };
         match step {
             DeliveryStep::CheckAuthorization => {
                 let owner = Arc::clone(shared);
@@ -177,13 +208,15 @@ fn later(
     let _callback = work.as_ref().and_then(Completion::hold);
     hop(Box::new(move || {
         let steps = decide(&shared);
-        execute(&shared, steps);
+        execute(&shared, steps, work.as_ref());
         complete(work);
     }));
 }
 
 #[cfg(test)]
 mod tests {
+    mod owners;
+    mod retiring;
     use super::*;
     use std::time::Instant;
     use zerus_client_core::attention::DENIED;

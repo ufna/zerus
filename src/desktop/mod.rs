@@ -9,6 +9,10 @@ mod handoff;
 mod import_evidence;
 mod owner;
 mod presence_admission;
+#[allow(dead_code)]
+mod producer_binding;
+#[allow(dead_code)]
+mod producer_io;
 mod protocol;
 mod registration;
 mod revoke;

@@ -1,7 +1,7 @@
 import { ProjectLabel } from "../components/ProjectLabel";
 import ProjectColorDialog from "./ProjectColorDialog";
 import ProjectCatalogDialog from "./ProjectCatalogDialog";
-import { For, Show, createEffect, createMemo, createResource, createSignal, on, onCleanup, untrack } from "solid-js";
+import { For, Show, Suspense, lazy, createEffect, createMemo, createResource, createSignal, on, onCleanup, untrack } from "solid-js";
 import { Icon } from "../lib/icons";
 import { MachineLabel } from "../components/MachineLabel";
 import type { EditOutcome, Folder, Project } from "../../types";
@@ -10,11 +10,17 @@ import { projectToShow, setProjectToShow } from "../../store/organization";
 import { projectsPage } from "../../store/projects";
 import { flag, setSetting, settingsLoaded } from "../../store/settings";
 import { setMenu, type MenuEntry } from "../../store/ui";
-import { PROJECT_EDITING, WORKTREE_FLOWS } from "./reasons";
+import { PROJECT_EDITING } from "./reasons";
 import { machineCards } from "../../store/machines";
 import { folderButton, folderExists, folderLaunch, folderMenuEntry, newSessionInFolder } from "../sessions/newsession-view";
 import { copy } from "../../store/actions";
 import { nextSort, showAskedProject, shownProjects, sortFolders, type Sort, type SortColumn } from "./projects-ui";
+import { createProjectFolders } from "./project-folders";
+const ProjectSwarmDialog = lazy(() => import("./ProjectSwarmDialog"));
+const WorktreeOverviewDialog = lazy(() => import("./WorktreeOverviewDialog"));
+const ProjectWorktrees = lazy(() => import("./ProjectWorktrees"));
+const ProjectCloneDialog = lazy(() => import("./ProjectCloneDialog"));
+const ProjectFolderDialog = lazy(() => import("./ProjectFolderDialog"));
 import { catalogName, createCatalogEdits } from "./project-catalog";
 
 // Projects (ProjectsDialog.cpp), ported from design/webui/src/screens/Projects.tsx:
@@ -25,7 +31,7 @@ import { catalogName, createCatalogEdits } from "./project-catalog";
 // organization writer. Folder/default and Swarm controls have separate work.
 
 const [selectedProject, setSelectedProject] = createSignal<string | undefined>();
-const [selectedFolder, setSelectedFolder] = createSignal(0);
+const [selectedFolder, setSelectedFolder] = createSignal<string>();
 const allSwarm = () => flag("workspace/allSwarmProjects");
 const setAllSwarm = (value: boolean) => { void setSetting("workspace/allSwarmProjects", value); };
 
@@ -59,15 +65,31 @@ function ProjectName(props: { project: Project; enabled: boolean; rename(id: str
 export function ProjectsScreen() {
   const view = projectsPage;
   const [colorProject, setColorProject] = createSignal<{ project: Project; origin: HTMLElement }>();
+  const [defaultBusy, setDefaultBusy] = createSignal(false);
+  const chooseDefault = async (id: string) => { setDefaultBusy(true); try { await organization.setDefaultProject(id); } finally { if (!left) setDefaultBusy(false); } };
   const [sort, setSort] = createSignal<Sort>({ column: "name", ascending: true });
   const projects = createMemo(() => shownProjects(view(), allSwarm()));
   const project = () => projects().find((p) => p.id === selectedProject()) ?? projects().find((p) => p.accessible);
+  const [split, setSplit] = createSignal((() => {try {return Math.max(160, Math.min(window.innerHeight - 360, Number(localStorage.getItem("zerus.projectFolderSplit")) || 230));} catch {return 230;}})());
+  let stopSplit: (() => void) | undefined;
+  const startSplit = (event: PointerEvent) => {
+    stopSplit?.(); const startY = event.clientY, start = split();
+    const move = (next: PointerEvent) => setSplit(Math.max(160, Math.min(window.innerHeight - 360, start + next.clientY - startY)));
+    const end = () => {removeEventListener("pointermove", move); removeEventListener("pointerup", end); removeEventListener("pointercancel", end); stopSplit = undefined; try {localStorage.setItem("zerus.projectFolderSplit", String(split()));} catch { /* viewer convenience */ }};
+    stopSplit = end; addEventListener("pointermove", move); addEventListener("pointerup", end); addEventListener("pointercancel", end);
+  };
+  onCleanup(() => stopSplit?.());
+  const [swarmOrigin, setSwarmOrigin] = createSignal<{ element: HTMLElement; connect: boolean; preferred?: string }>();
+  const [overviewOrigin, setOverviewOrigin] = createSignal<HTMLElement>();
+  const [cloneOrigin, setCloneOrigin] = createSignal<HTMLElement>();
+  const folderEdits = createProjectFolders(() => view().projects, setSelectedFolder);
+  const selected = () => project()?.folders.find((f) => f.key === selectedFolder()) ?? project()?.folders[0];
   const folders = createMemo(() => sortFolders(project()?.folders ?? [], sort()));
   let left = false;
   onCleanup(() => { left = true; setMenu(undefined); });
-  const choose = (p: Project) => { setSelectedProject(p.id); setSelectedFolder(0); };
+  const choose = (p: Project) => { setSelectedProject(p.id); setSelectedFolder(undefined); };
   const edits = createCatalogEdits({ ...organization, projects: () => view().projects,
-    select: (id) => { setSelectedProject(id); setSelectedFolder(0); } });
+    select: (id) => { setSelectedProject(id); setSelectedFolder(undefined); } });
   // Moving a keyed DOM node can blur it in WebKit. Preserve the keyboard
   // origin through our reorder only; another user input cancels the handoff.
   let moveFocus: { element: HTMLElement; order: string } | undefined;
@@ -103,19 +125,20 @@ export function ProjectsScreen() {
     void edits.drop(dragging()!, before); endDrag();
   };
   // ProjectsDialog.cpp:520-522: the Folders button's New session… follows the selected folder.
-  const launchFolder = () => project()?.folders[selectedFolder()] ?? NO_FOLDER;
+  const launchFolder = () => selected() ?? NO_FOLDER;
   // Read again only for another folder or once this computer's identity arrives; the last answer shows meanwhile.
   const launchPlace = () => `${launchFolder().machine}\n${launchFolder().path}\n${machineCards[""]?.host ?? ""}`;
   const [launchExists] = createResource(launchPlace, () => folderExists(untrack(launchFolder)));
   const launchButton = () => folderButton(folderLaunch(launchFolder(), launchExists.latest), launchFolder().machine);
-  const launchSelected = () => { const p = project(), f = p?.folders[selectedFolder()]; if (p && f) void newSessionInFolder(p.id, f); };
+  const launchSelected = () => { const p = project(), f = selected(); if (p && f) void newSessionInFolder(p.id, f); };
   showAskedProject(projectToShow, () => setProjectToShow(undefined), view, choose);
 
   let menuAsked = 0;
   const folderMenu = async (e: MouseEvent, index: number) => {
     e.preventDefault();
-    setSelectedFolder(index);
+    setSelectedFolder(project()?.folders[index]?.key);
     const { clientX: x, clientY: y } = e;
+    const origin = e.currentTarget as HTMLElement;
     const current = project();
     const others = projects().filter((p) => p.accessible && p.id !== current?.id);
     const folder = current?.folders[index] ?? NO_FOLDER;
@@ -123,23 +146,23 @@ export function ProjectsScreen() {
     // ProjectsDialog.cpp:556-558, checked as the menu opens: this computer's folder must exist.
     const launch = folderMenuEntry(folderLaunch(folder, await folderExists(folder)));
     // Opened for that row only: not once Projects was left, another row was chosen or a newer menu was asked.
-    const now = project()?.folders[index] ?? NO_FOLDER;
-    if (left || asked !== menuAsked || project()?.id !== current?.id || selectedFolder() !== index
+    const now = project()?.folders.find((f) => f.key === folder.key) ?? NO_FOLDER;
+    if (left || asked !== menuAsked || project()?.id !== current?.id || selected()?.key !== folder.key
       || now.key !== folder.key || now.machine !== folder.machine || now.path !== folder.path) return;
     setMenu({ x, y, items: [
       { label: "New session…", icon: "plus", ...launch, action: () => { if (current) void newSessionInFolder(current.id, folder); } },
-      disabled("Open folder", "folder-open", PROJECT_EDITING),
+      { label: "Open folder", icon: "folder-open", disabled: folder.machine !== machineCards[""]?.host || launch.disabled, action: () => { if (current) void folderEdits.openFolder(current.id, folder); } },
       // ProjectsDialog.cpp:565-566: always enabled, copies the path the row shows.
-      { label: "Copy folder path", icon: "copy", hint: project()?.folders[index]?.path, action: () => { const path = project()?.folders[index]?.path; if (path) void copy(path); } },
+      { label: "Copy folder path", icon: "copy", hint: folder.path, action: () => { void copy(folder.path); } },
       { separator: true },
       { heading: "Copy to" },
-      ...others.map((p) => disabled(p.name, "folder", PROJECT_EDITING)),
+      ...others.map((p) => ({ label: p.name, icon: "folder", disabled: !current || !folderEdits.enabled(current.id, folder) || !folderEdits.enabled(p.id), action: () => { if (current) void folderEdits.transfer(current.id, folder, p.id, true); } })),
       { heading: "Move to" },
-      ...others.map((p) => disabled(p.name, "arrow-right", PROJECT_EDITING)),
+      ...others.map((p) => ({ label: p.name, icon: "arrow-right", disabled: !current || !folderEdits.enabled(current.id, folder) || !folderEdits.enabled(p.id), action: () => { if (current) void folderEdits.transfer(current.id, folder, p.id, false); } })),
       { separator: true },
-      disabled("Edit folder…", "pencil", PROJECT_EDITING),
-      disabled("Remove folder from project", "minus", PROJECT_EDITING),
-      disabled("Add folder…", "plus", PROJECT_EDITING),
+      { label: "Edit folder…", icon: "pencil", disabled: !current || !folderEdits.enabled(current.id, folder), action: () => { if (current) void folderEdits.open(current.id, folder, origin); } },
+      { label: "Remove folder from project", icon: "minus", disabled: !current || !folderEdits.enabled(current.id, folder), action: () => { if (current) void folderEdits.remove(current.id, folder); } },
+      { label: "Add folder…", icon: "plus", disabled: !current || !folderEdits.enabled(current.id), action: () => { if (current) void folderEdits.open(current.id, undefined, origin); } },
     ] });
   };
 
@@ -183,8 +206,8 @@ export function ProjectsScreen() {
         <header class="su-head">
           <h1>Projects</h1>
           <span class="grow" />
-          <button class="btn" disabled title={WORKTREE_FLOWS}><Icon name="folder-git-2" size={14} />Worktrees…</button>
-          <button class="btn" disabled title={PROJECT_EDITING}><Icon name="network" size={14} />Swarm…</button>
+          <button class="btn" disabled={!organization.grouping().ready} onClick={(e) => setOverviewOrigin(e.currentTarget)}><Icon name="folder-git-2" size={14} />Worktrees…</button>
+          <button class="btn" disabled={!view().loaded} onClick={(e) => setSwarmOrigin({ element: e.currentTarget, connect: false })}><Icon name="network" size={14} />Swarm…</button>
         </header>
         <p class="muted proj-hint">Organize sessions and folders across your computers. A folder can be used by several projects.</p>
 
@@ -192,7 +215,7 @@ export function ProjectsScreen() {
           <div class="notice proj-guide">
             <Icon name="link" size={14} />
             <span class="grow">{notice()}</span>
-            <button class="btn small" disabled title={PROJECT_EDITING}>Connect project catalogs…</button>
+            <button class="btn small" disabled={!view().loaded} onClick={(e) => setSwarmOrigin({ element: e.currentTarget, connect: true, preferred: view().unconnected[0] })}>Connect project catalogs…</button>
           </div>
         )}</Show>
 
@@ -244,15 +267,16 @@ export function ProjectsScreen() {
                   <button class="btn" disabled={!p().accessible || !settingsLoaded()} onClick={(event) => setColorProject({ project: { ...p() }, origin: event.currentTarget })}><Icon name="palette" size={14} />Edit color…</button>
                 </div>
               </div>
-              <label class="check proj-default" title={PROJECT_EDITING}>
-                <input type="checkbox" checked={p().is_default} disabled />Default for sessions started outside Zerus
+              <label class="check proj-default" title={editHint()}>
+                <input type="checkbox" checked={p().is_default} disabled={defaultBusy() || !edits.canEdit(p().id)}
+                  onChange={(event) => { const checked = event.currentTarget.checked; event.currentTarget.checked = p().is_default; if (checked && !p().is_default) void chooseDefault(p().id); }} />Default for sessions started outside Zerus
               </label>
 
-              <div class="proj-folders">
+              <div class="proj-folders" style={{height: `${split()}px`}}>
                 <div class="row proj-fhead">
                   <h2 class="section-title">Folders</h2>
                   <span class="grow" />
-                  <button class="btn small" disabled title={PROJECT_EDITING}><Icon name="download" size={12} />Clone repository…</button>
+                  <button class="btn small" disabled={!organization.grouping().ready} onClick={(e) => setCloneOrigin(e.currentTarget)}><Icon name="download" size={12} />Clone repository…</button>
                   <button class="btn small" disabled={launchButton().disabled} title={launchButton().tip} onClick={launchSelected}><Icon name="plus" size={12} />New session…</button>
                 </div>
                 <div class="su-tablewrap">
@@ -260,8 +284,8 @@ export function ProjectsScreen() {
                     <thead><tr>{header("name", "Name")}{header("machine", "Computer")}{header("path", "Folder")}</tr></thead>
                     <tbody>
                       <For each={folders()}>{(row) => (
-                        <tr classList={{ on: selectedFolder() === row.index }} tabindex="0" aria-selected={selectedFolder() === row.index}
-                          onClick={() => setSelectedFolder(row.index)} onContextMenu={(e) => folderMenu(e, row.index)}>
+                        <tr classList={{ on: selected()?.key === row.folder.key }} tabindex="0" aria-selected={selected()?.key === row.folder.key}
+                          onClick={() => setSelectedFolder(row.folder.key)} onContextMenu={(e) => folderMenu(e, row.index)}>
                           <td class="ell" title={row.folder.name}>{row.folder.name}</td>
                           <td><MachineLabel alias={row.folder.computer} /></td>
                           <td class="mono ell" title={row.folder.path}>{row.folder.path}</td>
@@ -271,13 +295,15 @@ export function ProjectsScreen() {
                   </table>
                 </div>
                 <div class="row proj-factions">
-                  <button class="btn small" disabled title={PROJECT_EDITING}>Add folder…</button>
-                  <button class="btn small" disabled title={PROJECT_EDITING}>Edit folder…</button>
-                  <button class="btn small" disabled title={PROJECT_EDITING}>Remove folder</button>
+                  <button class="btn small" disabled={!folderEdits.enabled(p().id)} onClick={(e) => void folderEdits.open(p().id, undefined, e.currentTarget)}>Add folder…</button>
+                  <button class="btn small" disabled={!folderEdits.enabled(p().id, selected()) || !selected()} onClick={(e) => { const f = selected(); if (f) void folderEdits.open(p().id, { ...f }, e.currentTarget); }}>Edit folder…</button>
+                  <button class="btn small" disabled={!folderEdits.enabled(p().id, selected()) || !selected()} title="Remove this folder from the project. Files stay in place." onClick={() => { const f = selected(); if (f) void folderEdits.remove(p().id, { ...f }); }}>Remove folder</button>
                   <span class="grow" />
-                  <button class="btn small" disabled title={PROJECT_EDITING}><Icon name="folder-open" size={12} />Open folder</button>
+                  <button class="btn small" disabled={!selected() || selected()?.machine !== machineCards[""]?.host || launchButton().disabled} onClick={() => { const f = selected(); if (f) void folderEdits.openFolder(p().id, { ...f }); }}><Icon name="folder-open" size={12} />Open folder</button>
                 </div>
               </div>
+              <div class="su-hsplit" role="separator" aria-orientation="horizontal" title="Drag to resize folders and worktrees." onPointerDown={startSplit} />
+              <Suspense><ProjectWorktrees folder={selected()} project={p().id} /></Suspense>
               <div class="row proj-foot">
                 <button class="btn danger" disabled={!edits.canEdit(p().id) || view().projects.filter((p) => p.accessible).length < 2} title={editHint()}
                   onClick={(event) => edits.openDelete(p().id, event.currentTarget)}><Icon name="trash" size={14} />Delete project…</button>
@@ -286,6 +312,10 @@ export function ProjectsScreen() {
           )}</Show>
         </div>
       </div>
+      <Suspense><Show when={swarmOrigin()} keyed>{(origin) => <ProjectSwarmDialog projects={view().projects} connect={origin.connect} preferred={origin.preferred} origin={origin.element} close={() => setSwarmOrigin(undefined)} />}</Show></Suspense>
+      <Suspense><Show when={overviewOrigin()} keyed>{(origin) => <WorktreeOverviewDialog projects={view().projects} all={allSwarm()} origin={origin} close={() => setOverviewOrigin(undefined)} />}</Show></Suspense>
+      <Suspense><Show when={cloneOrigin()} keyed>{(origin) => <ProjectCloneDialog project={project()?.id ?? "ungrouped"} preferred={selected()?.machine} projects={view().projects} origin={origin} close={() => setCloneOrigin(undefined)} placed={(project, folder) => {setSelectedProject(project); setSelectedFolder(folder);}} />}</Show></Suspense>
+      <Suspense><Show when={folderEdits.prompt()} keyed>{(prompt) => <ProjectFolderDialog prompt={prompt} busy={folderEdits.busy()} folders={view().projects.find((p) => p.id === prompt.project)?.folders ?? []} close={folderEdits.close} save={(place, path, name) => { void folderEdits.save(place, path, name); }} />}</Show></Suspense>
       <Show when={colorProject()}>{(p) => <ProjectColorDialog project={p().project} origin={p().origin} close={() => setColorProject(undefined)} />}</Show>
       <Show when={edits.prompt()} keyed>{(prompt) => <ProjectCatalogDialog prompt={prompt} enabled={edits.enabled()}
         close={edits.close} create={(name) => { void edits.submitNew(name); }} remove={(destination) => { void edits.confirmDelete(destination); }} />}</Show>

@@ -55,7 +55,7 @@ if args==['--help']:
  print('guarded-create-v1\\n hgs [@host] session-action <session> --json scoped native lifecycle action');sys.exit(0)
 guarded=args[:2]==['--expect-machine','11111111-1111-4111-8111-111111111111']
 if guarded:args=args[2:]
-else:assert ((root/'legacy').exists() and args[0]=='archive') or ((root/'recovery').exists() and args[0]=='worktrees' and len(args)>1 and args[1].startswith('--')),args
+else:assert ((root/'legacy').exists() and args[0]=='archive') or ((root/'recovery').exists() and args[0]=='worktrees' and len(args)>1 and args[1].startswith('--')) or (args[0]=='inspect' and '--after' in args and args[args.index('--after')+1]==str(2**63-1) and args[1].startswith('codex/example/')),args
 def arg(key):return args[args.index(key)+1]
 if (root/'recovery').exists():
  import uuid

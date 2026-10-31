@@ -285,6 +285,77 @@ native outcome or infer completion from a timeout. There is no production
 accounted constructor or freeze caller yet, and no service/native ledger job is
 admitted by these local resource helpers.
 
+## Optional agent/update notifier partition
+
+The internal `notifier::owners::Partitioned` constructor reuses the existing
+Notifier and completion guards, with separate agent-attention and GUI-update
+Delivery state and failure sinks. Only the agent side takes the host-supplied
+NativePosting charge. The current SDK adapter still uses `Notifier::new` and
+has no partition/control caller; no native permission or GUI behavior changes
+in this prerequisite. Ordinary `deliver` keeps its former void semantics.
+
+The shared pure `native_notice::Owner::{AgentAttention,SoftwareUpdate}` has no
+serde or wire authority; its validator checks an explicitly supplied expected
+class, never the owner of a legacy/native ID. Each partition validates the
+complete batch before any effect: agent tokens
+use the existing bounded attention decoder; update tokens use the existing
+exact versioned update validator. Cross-owner posts/withdrawals and malformed
+legacy identifiers refuse in both directions. Tokens and Qt-compatible request
+IDs are never normalized or re-encoded. A shared native authorization request
+may fan out permission data to at most two fixed owner callbacks, one per
+Delivery; it is never a post receipt or authority to touch the other owner's
+state. No native call or sink runs under the fanout lock. An abandoned check
+retains the original callbacks and their charges; it cannot create a false Idle
+or authorize another native retry. Agent close leaves update posts, withdrawals
+and outcomes live, even when they share the same backend.
+
+A successful local delivery return means only that routing/admission ran, not
+that the framework accepted, displayed or withdrew anything. This helper does
+not verify an original Delivered mapping, create categories/actions, process a
+click, adopt a native ID, enumerate banners, or infer binding from a valid token.
+Valid historical/unbound tokens still require the agreed suppression policy at
+the future admitted adapter. That caller must separately bind owner, original
+request ID, category/action and immutable post/correlation evidence before any
+native effect or activation; it needs its own pinned review. Shared backend
+lifetime is not agent work after its actual calls and callbacks are drained.
+Platform/delegate/queued activation/badge lifetimes, authenticated producer,
+profile transition and G3 Drained publication remain unqualified here.
+
+## Admitted notifier input retirement prerequisite
+
+The separate internal `notifier::retiring::Retiring` constructor closes new
+agent inputs while allowing their already admitted continuations to finish.
+`Partitioned::new_retiring` composes it with the shared two-owner authorization
+fanout and the unchanged GUI-update partition. Existing `Notifier::new` and
+`new_accounted` keep their reviewed strong-close behavior; the SDK adapter still calls `new`. This mode has no production caller,
+new worker, runtime, source reader, persistent cache or public controller.
+
+`prepare` takes ownership of the original immutable batch before the host's
+existing main-thread dispatch. At most 64 preparations can be queued/running,
+with at most 128 combined notices/tokens and 64 KiB of original UTF-8 string
+bytes per batch. Validation reuses the expected AgentAttention token class.
+Refusal returns the complete unchanged private batch before any native effect;
+nothing is truncated, evicted or retried. Debug output omits its private data.
+The host must handle pressure before wiring this constructor into production.
+
+`InputControl::close` closes preparation admission before releasing the parent
+native scope charge. Prepared work and each derived authorization/add/remove,
+callback, Hop and failure sink retain forks of the same original Completion,
+without fresh admission. A queued original withdrawal can still cancel its
+pending original post. Unknown drops/panics pin the qualified fixed scope.
+Immediate callback execution cannot release a still-running native call or its
+queued payload reservation. Unsupported Windows close refuses before mutation.
+
+The returned Closed gate covers preparations only. The host must also close
+and wait its supplied NativePosting gate to the same absolute deadline, then
+enqueue the ordered Desk checkpoint after every failure send has returned.
+The composition test retains a native add callback, proves Pending, delivers its
+failure, verifies the original Desk save, then checkpoints the exact digest.
+Neither local Idle nor prepared work is a native lease, visual outcome, signed
+instance proof, role transfer or Drained publication permit. Native identity,
+category/action/correlation/legacy policy, activation, badges and the actual
+frontend/profile controller still need their separate qualified integration.
+
 ## Ordered ReadDelivery store barrier
 
 Actions now owns the same fixed four native resource slots as the existing
@@ -462,3 +533,268 @@ replacement, service/producer loss, stale epochs, capture expiry and partial
 publication. Socket/setup changes additionally need a built-app private D-Bus
 and Xvfb smoke preserving Show and --sessions, with no second instance. Native
 Windows custody and production acceptance remain separately unqualified.
+
+## Optional Linux GUI badge resource scope
+
+`platform::linux_tray::install_badge_accounted(app, conf, Charge)` is an
+internal, optional replacement for the ordinary tray installation. It requires
+`Role::Badges` and refuses a duplicate installation before native setup. There
+is no production caller, service control endpoint or takeover permission. The
+ordinary `install()` path keeps its existing SNI, menu and launcher behaviour.
+The returned weak `BadgeControl` exposes close and closed/pinned/ready diagnostics;
+none is a role-drain receipt or current ownership proof.
+
+The supplied charge covers startup before the detached installer runs, both
+shell-owner subscriptions, coalesced desired work (one), the one worker's actual
+badge sends, and at most sixteen admitted Query dispatch futures. A Query guard
+wraps zbus 5.19's generated `DispatchResult2` future, including serialization and
+`Connection::reply().await`; returning the Rust Query value is not completion.
+Pressure and closed requests return a static error without an old badge payload.
+Unissued coalesced work can be cancelled locally. A native error, discarded
+future, panic or unverified cleanup pins one fixed charge until process exit.
+
+Close fences badge offers, Query admission and periodic republishing first. The
+existing worker removes only the LauncherEntry interface, stops both bounded raw
+shell streams, acknowledges each exact RemoveMatch, waits for admitted Query
+futures, and issues at most one clear of the old nonzero badge. Both raw receivers
+are dropped before either RemoveMatch: otherwise their bounded queues could
+block the socket reader carrying the removal reply. Their charges survive until
+the acknowledgements. The clear guard survives its actual send; neither its
+return nor a successful RemoveMatch claims visual removal. Failed cleanup is
+unknown, never a retry. Calls have the existing five-second method deadline;
+an outer wait or stopped flag never releases retained native work.
+
+SNI/menu/primary activation, watcher registration and the shared GUI connection
+remain alive after badge-only closure. Those residual resources do not establish
+badge quiet by themselves: the badge subscriptions, generated replies, queued
+work and final send must each complete. A whole-window quit may still stop the
+UI worker using the existing exit path. There is no second worker, executor,
+reader thread, daemon, detector or ledger. Notification agent/update ownership
+and the GTK attention focus timer remain separate qualification work.
+
+Private-bus tests exercise the actual generated Query future and actual socket
+backpressure, explicit match-removal success/refusal, startup versus closure,
+pressure, dropped/panicking work, and one clear with no late badge republish.
+The backpressure fixture suspends only its own private D-Bus daemon and resumes
+it with a scope guard. Existing SNI/menu activation and the default badge path
+are tested separately. No owner display, session bus or desktop service is used.
+
+Accounted SNI registration is asynchronous and polled by that same worker while
+raw badge receivers exist. At most one registration task is in flight; it
+captures only the UI connection, item name and registered owner, never a badge
+scope or completion sink. The loop continues draining bounded receivers during
+GetNameOwner and RegisterStatusNotifierItem. An owner-change generation prevents
+an old registration result from erasing a replacement watcher's wakeup. Private
+watcher tests send three item messages before the registration reply and hold an
+old reply across badge closure and watcher replacement; activation remains live.
+The ordinary installation keeps its existing registration path.
+
+Startup similarly prepares and acknowledges both shell match rules before it
+activates either raw receiver. The same worker is not yet running during that
+preparation, so a second blocking AddMatch must never follow raw activation. A
+private-bus regression queues three addressed messages between preparations and
+uses a sender-side bus barrier before the second AddMatch; both acknowledgements
+complete before receiver activation and the original charges survive cleanup.
+
+## Optional Attention observer capture lifetimes
+
+`desk::observers` is an internal, platform-neutral prerequisite with no SDK,
+producer or controller caller. It requires one host `Attention` charge and
+admits at most two synchronous observer captures. The existing fixed completion
+scope also accepts that exact expected role; ordinary native constructors still
+require `NativePosting`. Existing native and badge paths keep their semantics.
+
+A future adapter must move the entire `Observed` into the actual native block
+capture. SDK block copies must retain that same Rust capture. Closing admissions
+or returning from `removeObserver` does not prove those copies are destroyed.
+After close, a late callback refuses before its action. Each already admitted
+callback remains charged through its actual synchronous return. The action may
+not queue or spawn unaccounted work. Callback data drops before its capture guard
+and slot, so its destructors remain covered. Only actual final capture destruction
+after closure releases its lifetime charge. Abandonment while open, a panic or
+poisoned/unknown accounting pins the existing one fixed scope until process exit;
+no timeout, retry or cancellation manufactures completion.
+
+The weak control closes capture admission before callback admission, and never
+reopens either. Hosts must wait on both that capture gate and their own closed
+Attention gate under the same absolute deadline, off the GUI thread. Unsupported
+platforms refuse close before changing admissions. An idle gate is only local
+accounting, never native removal, instrumentation coverage or authority. No
+current Mac/GTK observer, activity sampler, timer, thread, queue, notification
+adapter or GUI behavior changes here. Real SDK capture/destruction, connection
+and worker ownership still require separate pinned review and native tests before
+any production use or profile handoff.
+
+## Linux agent and software-update store isolation
+
+This is the agreed contract for G4's dormant optional GUI Poster resource path,
+not an executing service API. One existing Poster worker and its existing bounded
+readers/connection replace the ordinary Poster; they never run beside a second
+poster. The ordinary schema1 constructor and current GUI behavior stay unchanged.
+G1 owns the effect ledger, current producer/profile/lease proof and native routing
+permissions. G4 owns the optional Poster, codec and actual resource accounting;
+G3 owns source readers and original-byte evidence. No native authority comes
+from codec data, a filename, an idle gate or this contract.
+
+### Fixed stores and limits
+
+All paths are fixed siblings under the existing private application-data root,
+using the existing bounded readers and durable private writer:
+
+| Path | Content and writer |
+| --- | --- |
+| `linux-notifications-owned.json` | Schema2 AgentAttention records only; the agent store |
+| `linux-update-notifications-owned.json` | Same schema2 codec, SoftwareUpdate records only; the update store |
+| `linux-notifications.json` | Original schema1 bytes, read-only legacy quarantine home |
+
+The caller selects the expected `native_notice::Owner` explicitly and checks it
+on every binding and scoped-uncertain record. An owner tag in a file validates
+that expectation; it never chooses an owner. Empty or populated owner envelopes
+must not import foreign records. Both owner envelopes have empty
+`legacy_uncertain`. Decode the original legacy bytes through `quarantine_legacy`
+once and share one immutable suppression view between the owners.
+Derive that view from the schema1 bytes current at each optional-path handoff and record their hash in the qualified context; never reuse a view from an earlier handoff. The default schema1 path keeps writing that file whenever the optional path is off, including after a GUI rollback, so a schema1 change after handoff refuses or pins for review and is never silently re-read.
+Never copy
+that quarantine into both files, overwrite schema1, or use typed `from_legacy`
+in place of the raw-member decoder. If the legacy home is absent but the existing
+Qt reader finds retained identities, require the existing legacy owner's durable
+checkpoint before preparing the optional path; do not invent another seed store.
+
+Combined raw input and prepared serialized output across all three homes are at
+most 16 MiB, with at most 8192 raw retained entries and at most 4096 raw legacy
+entries, counted once. Count before coalescing. Include invalidations, retained
+positive-ID claims and unresolved reservations in the combined entry/byte budget.
+Reserve the worst-case metadata capacity before admitting an effect that may
+need it. Unknown fields, unsupported versions, incomplete inputs, owner mismatch,
+missing provenance, unsafe files or excess bounds refuse the whole optional
+preparation before an ownership transition. Preserve the files; never truncate,
+evict unresolved evidence or fall back one role at a time after handoff.
+
+There is no new pair manifest, transaction marker or second effect ledger.
+Preparing both envelopes must finish and be rechecked before any typed routing
+or effect. A partially prepared pair is incomplete, not an empty new store.
+Original filesystem identities/hashes and the applicable writer scope belong to
+G1's qualified current context and G3's evidence, not a guessed file generation.
+
+### Binding, result and invalidation data
+
+A routable native binding needs the exact expected owner, original token and
+original request identifier, original Poster instance and post nonce, authenticated
+bus ID, unique daemon owner, positive server ID and observed namespace generation.
+The original Poster instance is a canonical non-nil UUID; request text is at
+most 512 UTF-8 bytes, and the original nonce and namespace generation are
+positive u64 values. Existing token/daemon/ID bounds still apply. Use the
+original caller's identifiers; do not regenerate them on load or derive
+an owner from a token, category, action or numeric ID. These fields are retained
+metadata, not a G1 effect ticket. A loaded record without the complete original
+binding cannot acquire numeric-ID authority. A result or withdrawal delta must
+match the complete original instance/request/nonce/owner/token/namespace binding;
+a stale or duplicate result cannot overwrite a newer binding. Unknown is terminal.
+
+The update envelope carries a bounded `invalidations` collection. Each entry
+names the complete immutable agent binding above, including its original token
+and request, bus/daemon/server ID and namespace generation, plus a static reason
+(`native_id_collision`, `namespace_changed`, `withdrawal_conflict` or
+`unverified_result`). A target digest may index this data but never replaces the
+full exact target. Entries have at most 16 KiB and count against the combined
+budget. They are sticky routing tombstones, not delivery attempts, new receipts
+or a retry journal. An owner-scoped clear cannot release them or shared legacy
+suppression. Exact original-edge/ID release remains a separately qualified G1
+operation, including recurring-token and rollback proof before any typed default.
+
+The codec must explicitly validate and retain the required provenance and
+invalidation fields before any writer emits them. The passive codec from PR722
+alone cannot do that: its unknown-field refusal must not be bypassed or replaced
+with an encoder that discards fields. G4 pins the concrete Rust transition types
+against these identities before mutable code; G3 retains the original raw bytes,
+order and opaque fields, never a reconstructed encoding as source evidence.
+
+### Fence, write order and restart
+
+1. Close new agent input admission before waking the existing worker. Admitted
+   immutable inputs, native calls, results, persistence and sinks keep their
+   original guards through actual completion. The final fence covers shared
+   readers/callback captures that can still reach agent state. A stopped flag,
+   timed join or connection-close return is not proof of their completion.
+2. At the agent freeze, stop every agent mutation/activation/removal route and
+   prove actual agent resource completion. The agent file is then never rewritten
+   by the update path, including on namespace change, withdrawal or collision.
+   Shared connection lifetime alone proves nothing. Updates may remain live only
+   through explicitly disjoint state/callback paths; opaque shared residue stays
+   charged and refuses the proof.
+3. An observed cross-owner collision, including a pending withdrawal, invalidates
+   both sides for activation and removal before either route or result is exposed.
+   A native call already issued keeps its original result/custody rules; it never
+   permits replay. If the agent is fenced, record the exact agent invalidation in
+   the mutable update envelope only. No post-fence repair may rewrite agent bytes
+   or relabel their old namespace under the update namespace.
+4. Mark the agent proof logically invalid before attempting that write or releasing
+   dependent work. This failure is sticky for the original qualified context. It
+   is distinct from resource `Gate::Idle`: a gate cannot retroactively acquire a
+   charge after it drained. The optional control must expose sticky proof
+   invalidation separately from resource-pinned/closed/ready diagnostics. Failed
+   delivery of an invalidation or an unavailable control is unknown and refuses
+   the proof. Unchanged agent file bytes do not restore its validity.
+5. One writer atomically replaces each file through the existing durable helper.
+   An update-envelope invalidation must be durable before any dependent in-memory
+   release. If an agent-file change is also needed before the fence, the update
+   invalidation is committed first and the agent change second. Pause affected
+   routes through both durable acknowledgements and rechecks. After the fence
+   only the update write is allowed. Never claim atomic commitment of two files.
+   A write error preserves unknown/pinned state, never successful quiet or a retry.
+6. On every load, bound and decode both envelopes and the one legacy home before
+   any numeric-ID routing or effect. Recompute collisions by exact bus ID, unique
+   daemon owner and server ID across both owners and all positive-ID claims,
+   including pending withdrawals. An invalidation target stays non-activatable
+   even when its agent record is otherwise valid. A computed collision disables
+   both sides even if its explicit invalidation was lost. Do not classify an ID
+   by action/category text or ignore the other envelope because one side froze.
+7. Lost native results need a stricter fallback than collision comparison alone.
+   Retain the existing durable uncertain reservation before a possible Notify.
+   If a crash leaves a possible issued result with no durable server ID, the
+   loader cannot prove collision absence. Pin/refuse numeric authority for every
+   possibly affected binding in that original namespace. If the namespace or
+   target set cannot be established, refuse the whole optional preparation for
+   review. Never infer that a missing invalidation means the native call was not
+   issued. No guessed recovery send or new commit protocol is introduced.
+8. A corrupt, oversized, mismatched or partially committed pair fails closed;
+   affected IDs are non-activatable and pinned for review. No import/load creates
+   a fresh reservation. Current G1 delegation/lease and the exact original effect
+   journal remain mandatory before any service call. G1's controller must reject
+   any capture/publication context after logical invalidation and re-qualify it.
+   A previously returned drain result cannot be reused. If ownership has already
+   moved, the qualified negative-invalidation path must fence dependent active
+   permissions before further effects. That consumer is still a G1 prerequisite;
+   no positive controller or typed default is admitted by this document.
+
+### Linux presentation and future proof
+
+Coordinator ruling `64faac7a`, clarified for Linux, retains byte-identical
+`im.received`, `default` and `open-session` wire IDs, texts, payload and update
+request identifiers. The freedesktop category is a presentation hint; introducing
+new categories would change shell sound/grouping/DND. The immutable owner plus
+original token/request and bus/daemon/server-ID mapping is the Linux namespace.
+After selecting that exact mapping, validate the action against that owner's
+recorded allowed set. Unmapped, stale, foreign or conflicting IDs are unbound
+suppression, never a default owner or a rerouted action. On macOS categories and
+actions route responses, so distinct per-owner identifiers remain required there.
+
+Before mutable persistence, G3 must confirm this restart/collision/commit model.
+Qualify kill/failure injection before and after the uncertain reservation, native
+issue, native result, update invalidation write, pre-fence agent write and final
+freeze. Test both directions of wrong owner, collision and pending withdrawal;
+a lost result/invalidation; an update namespace/result after agent freeze; late
+old-generation events; and a write failure with unchanged agent bytes but invalid
+proof. Demonstrate that a raw collision or possible lost native result cannot
+resurrect a stale ID on load. Compare actual Linux wire bytes against schema1.
+Account held native calls, persistence, sinks, readers and callback destruction;
+updates must remain live while the proved agent part is quiet, and vice versa.
+Pressure/unknown/restart refusal, exact original-edge release, recurring-token
+notification and rollback remain gates before default or service admission.
+
+The existing reserved G3 agent source stays
+`next-linux-owned-notification-identities`/schema2/
+`linux-notifications-owned-json-v2`. G3 reserves any update sibling family
+separately; software updates are outside `g1-background-v1` and stay Staged.
+The unchanged legacy schema1 source remains separate. No new source collector,
+frozen export, shared-file quiet claim, service API or ownership change is added.

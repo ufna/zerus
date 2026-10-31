@@ -265,7 +265,8 @@ mod live {
             let creations = self.creations.get().cloned();
             if let Some(organization) = &organization {
                 let live = Arc::downgrade(self);
-                organization.set_source(Arc::new(move || live.upgrade()?.organization_snapshot()));
+                organization
+                    .set_initial_source(Arc::new(move || live.upgrade()?.organization_snapshot()));
             }
             let mut source = self.source.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(running) = source.as_ref() {

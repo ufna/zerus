@@ -325,6 +325,14 @@ no history; its end calls reuse the existing scoped lifecycle envelope and exact
 receipt validator. A shell run may have no native conversation. An unidentified
 run cannot become a delayed name-only mutation. This pure module performs no I/O.
 
+Projects folder Add/Edit/Remove/Copy/Move use the same shared organization
+writer. They compare the original folder identity and fields, preserve unknown
+record fields, apply Qt's path/duplicate rules, and change links without creating
+or removing files. The form reads the existing folder decoder; Browse and local
+Open reuse the maintained directory browser and opener. Folder selection uses
+its stable key. Local Windows folder management remains dependent on
+zerus-5wmh.66.2.31; these controls do not introduce a Windows folder model.
+
 The native `action_delay` adapter reserves Actions' existing write lane without
 publishing a send-block fact. Main-webview registration starts a five-second
 monotonic window; its dedicated waiter never reads a source or runs a command.
