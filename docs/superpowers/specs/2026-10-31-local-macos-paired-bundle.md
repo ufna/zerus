@@ -336,6 +336,10 @@ The agreed fixture conditions also require these concrete guards:
 
 ### Final private-fixture access amendment (2026-11-01)
 
+Superseded before implementation: the coordinator and G1 selected the
+[genuine rollout-agent qualification](2026-11-01-macos-genuine-pair-qualification.md).
+The private-unlock proposal below grants no execution or merge acceptance.
+
 The coordinator clarified the fixture boundary after the stopped `d15ebe33`
 attempt: keychain unlock and access restrictions protect the owner's keychains.
 A newly created throwaway keychain may be unlocked through its exact private
