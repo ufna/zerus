@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
 mod decode;
+pub mod inspection;
 #[cfg(test)]
 mod tests;
 
