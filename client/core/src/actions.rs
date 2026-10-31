@@ -714,7 +714,10 @@ pub fn invocation(
             )
         }
         Action::ForgetBinding => {
-            return scoped_lifecycle_invocation(target, "forget", request_id, 15, 45)
+            if target.conversation_id.is_empty() {
+                return Err("the session has no run or conversation to forget".into());
+            }
+            return scoped_lifecycle_invocation(target, "forget", request_id, 15, 45);
         }
     };
     let peer_call = prepend_alias(&mut args, &target.computer);
@@ -735,8 +738,8 @@ pub(crate) fn scoped_lifecycle_invocation(
     local: u64,
     peer: u64,
 ) -> Result<Invocation, String> {
-    if target.run_id.is_empty() || target.conversation_id.is_empty() {
-        return Err("the session has no run or conversation to forget".into());
+    if target.run_id.is_empty() {
+        return Err("the session has no identified run".into());
     }
     let input = json!({"request_id":request_id,"action":operation,"expected_run_id":target.run_id,"expected_conversation_id":target.conversation_id});
     let mut args = vec![

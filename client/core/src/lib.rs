@@ -7,6 +7,7 @@
 //! `docs/superpowers/plans/2026-10-28-tauri-client-phase1.md` (Tasks 3 and 4)
 //! and the "Event stream" section of `docs/reference.md`.
 
+pub mod account_actions;
 pub mod actions;
 pub mod analytics;
 pub mod approvals;
@@ -23,6 +24,7 @@ pub mod desktop;
 pub mod details;
 pub mod download_cache;
 pub mod drafts;
+pub mod end_action;
 pub mod external_file;
 pub mod file_download;
 pub mod fleet;
@@ -33,6 +35,7 @@ pub mod legacy;
 pub mod linux_notify;
 pub mod local_messages;
 pub mod machine;
+pub mod machine_connections;
 pub mod macos_notify;
 pub mod marks;
 pub mod menubar;

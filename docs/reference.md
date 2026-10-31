@@ -2980,6 +2980,13 @@ hgs @mac codex /path/to/project --new --account work
 hgs account copy native-codex --from @local --to mac --as codex-work --label Work
 ```
 
+`account ls` advertises `setup_revision: true` when terminal setup accepts an
+optional `--revision REV` on `account login`, `account install` and `account start`.
+That check runs when the terminal command executes, before provider work. Calls
+without the option retain their existing behavior. Next uses the capability,
+exact computer identity and fresh catalog snapshot; unsupported or uncertain
+setup is never replayed.
+
 `accounts.json` stores metadata and selected permission modes; authorization stays
 in the profile's own directory. Managed profiles clear inherited API tokens;
 native defaults keep the user's normal environment. Tokens are not displayed in
@@ -3745,6 +3752,27 @@ checkout on Windows. It packs the checkout with the system `tar.exe` and refuses
 whose `install.sh` or `hgs_state.py` has CRLF line endings; `.gitattributes` keeps
 `*.sh` and `*.py` in LF. Identity files in `machines.local.json` may be Windows
 paths or `~\…`.
+
+On every platform, setup snapshots the CLI sources and the transitive local Cargo
+path dependencies, including the root crates and `client/core`, before SSH starts.
+The private snapshot includes package manifests, `src`, declared build/library/bin
+inputs, the root lockfile, CLI installer/helper and installer scripts. The two
+shared `voice_video.rs` and `voice_rejection.rs` validators under the relay source
+are included when present; no relay or connector package is bundled. It excludes
+build outputs, VCS directories, hidden entries, Node modules and Python caches.
+It refuses symbolic or nonregular source entries, external path dependencies and
+workspace inheritance or patch/replace overrides. The bounds are 32 packages,
+20,000 visited/copied entries, 64 MiB total, 8 MiB per file (1 MiB per manifest),
+32 directory levels and a five-second scan budget. A refusal makes no SSH call.
+The remote CLI-only install preserves configuration and existing checkouts, skips
+the mobile connector and does not install or restart services or agent processes.
+The optional `--revision` binds setup to the saved profile snapshot, checked both
+before source preparation and before SSH. Existing setup argv remains supported.
+Next confirms the selected machine and source folder, keeps the page busy and
+shows bounded setup output when the command ends. Keep Zerus running until it
+finishes. A timeout or uncertain result is shown for review and never retried
+automatically. Enabling local Windows sessions has its own confirmation and
+rechecks the original local machine identity and current host status.
 
 **Swarm worker.** Windows has no user service manager. The desktop app runs one
 hidden `hgs.exe swarm worker` and restarts it after an exit. The delay doubles

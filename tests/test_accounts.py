@@ -230,6 +230,19 @@ class Accounts(unittest.TestCase):
         self.add(); self.assertEqual((self.config/'accounts.json').stat().st_mode & 0o777,0o600)
         self.assertEqual((self.config/'accounts/work').stat().st_mode & 0o777,0o700)
         self.assertNotIn('auth',json.loads((self.config/'accounts.json').read_text())['profiles']['work'])
+    def test_terminal_setup_refuses_stale_catalog_before_any_provider_effect(self):
+        self.assertTrue(self.ls()['setup_revision'])
+        before=self.ls()['revision']; self.add()
+        for op,account in [('login','work'),('install','codex'),('start','native-opencode')]:
+            result=self.run_hgs('account',op,account,'--revision',before,'--dry-run',ok=False)
+            self.assertIn(b'Accounts changed on this machine',result.stderr)
+        current=self.ls()['revision']
+        login=json.loads(self.run_hgs('account','login','work','--revision',current,'--dry-run').stdout)
+        self.assertEqual(login['provider'],'codex')
+        install=json.loads(self.run_hgs('account','install','codex','--revision',current,'--dry-run').stdout)
+        self.assertTrue(install['dry_run'])
+        self.assert_opencode_only_asked_its_version()
+
     def test_stale_revision_and_duplicate_rejected(self):
         before=self.ls()['revision']; self.add()
         self.run_hgs('account','add','other','--provider','kimi','--revision',before,ok=False)

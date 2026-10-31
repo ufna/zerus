@@ -218,6 +218,73 @@ source integrity nor a full Attention drain, native posting outcome, profile
 ownership or permission to publish Drained evidence. There is no production
 freeze caller or positive producer API in this prerequisite.
 
+## Ordered Desk Attention retirement prerequisite
+
+The existing Desk mailbox now has two private one-use controls. No producer,
+IPC, startup or profile controller calls them. The app retains one fixed
+Attention resource charge before the original background load (including Qt
+fallback), through saves and the final checkpoint/reply. Weak controls do not
+retain a finished resource group or keep the input channel connected. Ordinary
+input sends, lazy batches, the 250 ms pace and 10 s sweep are unchanged.
+
+The first ordered barrier stops detector observations and the sweep, after the
+preceding batch has been applied. Desk continues projecting menu/UI changes.
+Already admitted agent delivery failures can still update the original tracker
+and save their retry state, without observing or posting another edge. The
+second barrier may be enqueued only after the host has independently fenced
+and actually drained agent-native work and every completion sender. It closes
+agent completion/click mutation, checkpoints the sole original Attention value
+on the existing Desk thread, and retires that value only after successful sync
+and reply delivery. The UI thread remains with `attention=None`; there is no
+second detector, store, worker or queue.
+
+A timeout never reopens observations. Failed/late checkpoints and lost replies
+keep the same frozen value charged; unverified destruction or panic pins one
+fixed charge until process exit. The caller waits for actual resource release
+with the same absolute deadline. Unsupported Windows control refuses before
+closing anything. An absent Attention owner is unavailable, never a known-zero
+producer proof. The returned checkpoint is source metadata, not native drain,
+current ownership, profile activation or permission to publish Drained evidence.
+
+NativePosting in `g1-background-v1` covers agent attention posts, withdrawals
+and activation only. GUI software-update notices and menu projection remain
+outside it, with their existing IDs/actions/authorization. This mailbox slice
+does not close the shared native notifier. Future native integration must
+isolate per-owner IDs, categories, action routes and immutable mappings,
+including legacy/unbound suppression, and test both directions. Shared native
+connections/executors may remain for GUI work only after every agent-owned
+queued call, future, completion and reference has actually drained. Neither
+shared lifetime nor this local stop token supplies that proof. Badges and all
+other profile roles still require their separate qualification.
+
+## Optional notifier completion accounting
+
+The existing Tauri `Notifier` has an optional `new_accounted` constructor for a
+host-supplied NativePosting charge. The current Mac GUI still uses `new`, with
+no resources or control. No system center, native method, delegate, listener,
+worker, timer or writer is added by this prerequisite.
+
+The optional path retains the same host group through admitted delivery and
+Center calls, native completion ownership, queued main-thread Hop work and
+failure sinks. Even a synchronous completion cannot release the still-running
+Center call. A weak close-only control stops later admissions; a late callback
+can update its existing in-memory delivery result but schedules no new native
+step after closure. Already admitted work retains its actual lifetime. Closing
+or retaining the control itself never proves a full role drain: the host must
+close/wait its Gate off-thread and separately cover every real platform
+connection, delegate, callback ingress, Desk writer and badge resource.
+
+A completion or queued work item dropped without execution, or a panic before
+normal completion, is unverified. It pins exactly one copy of the fixed host
+charge until process exit and logs one bounded static role/slot diagnostic;
+additional failures retain no extra pin. Dropping every notifier/control cannot
+release that unknown charge. The local snapshot reports closed/pinned only,
+with no serialization or authority; an absent scope is unavailable, not idle.
+The future host must expose a pinned/unavailable refusal and never retry a lost
+native outcome or infer completion from a timeout. There is no production
+accounted constructor or freeze caller yet, and no service/native ledger job is
+admitted by these local resource helpers.
+
 ## Ordered ReadDelivery store barrier
 
 Actions now owns the same fixed four native resource slots as the existing

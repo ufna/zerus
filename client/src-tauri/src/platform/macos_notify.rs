@@ -7,7 +7,6 @@
 //! only talks to the system. It also tells the desk whether Zerus is the
 //! active app, the tracker's foreground test (`AttentionTracker.cpp:44-48`).
 use std::ptr::NonNull;
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use block2::RcBlock;
@@ -35,7 +34,7 @@ use crate::notifier::{Center, Done, Notifier};
 
 pub struct Ivars {
     app: AppHandle,
-    desk: Sender<DeskInput>,
+    desk: crate::desk::InputSender,
 }
 
 define_class!(
@@ -87,7 +86,7 @@ define_class!(
 );
 
 impl Delegate {
-    fn new(app: AppHandle, desk: Sender<DeskInput>) -> Retained<Self> {
+    fn new(app: AppHandle, desk: crate::desk::InputSender) -> Retained<Self> {
         let this = Self::alloc().set_ivars(Ivars { app, desk });
         // SAFETY: NSObject's designated initializer.
         unsafe { msg_send![super(this), init] }
@@ -213,7 +212,7 @@ pub struct NotifierState(Notifier);
 /// Sets the delegate before the first notification posts and starts
 /// following whether Zerus is the active app. Call on the main thread, from
 /// setup: a click that launched the app reaches the delegate once set.
-pub fn install(app: &AppHandle, desk: Sender<DeskInput>) {
+pub fn install(app: &AppHandle, desk: crate::desk::InputSender) {
     let delegate = Delegate::new(app.clone(), desk.clone());
     UNUserNotificationCenter::currentNotificationCenter()
         .setDelegate(Some(ProtocolObject::from_ref(&*delegate)));

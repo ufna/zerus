@@ -5,6 +5,8 @@
 //! frame-rate preference, plan Task 7).
 
 #[cfg(feature = "live")]
+mod action_delay;
+#[cfg(feature = "live")]
 mod actions;
 #[cfg(feature = "live")]
 mod analytics;
@@ -343,6 +345,13 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
             }
         })
         .on_window_event(|window, event| {
+            #[cfg(feature = "live")]
+            if window.label() == MAIN_WINDOW && matches!(event, tauri::WindowEvent::Destroyed) {
+                use tauri::Manager;
+                if let Some(delays) = window.try_state::<action_delay::Delays>() {
+                    delays.cancel_all(false);
+                }
+            }
             #[cfg(all(target_os = "linux", feature = "live"))]
             if window.label() == MAIN_WINDOW {
                 use tauri::Manager;
@@ -397,6 +406,7 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                     }
                 })));
                 app.manage(actions);
+                app.manage(action_delay::Delays::default());
                 app.manage(actions::ArchiveReads::default());
                 app.manage(content_search::Searches::default());
                 app.manage(native_ui::runtime::NativeUi::default());
@@ -1061,6 +1071,9 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         recovery::recovery_reload,
         speech_settings::open_speech_documentation,
         actions::run_action,
+        action_delay::action_delay_begin,
+        action_delay::action_delay_wait,
+        action_delay::action_delay_cancel,
         actions::set_notifications,
         actions::inspect_session,
         actions::inspect_subagent_identity,
@@ -1114,10 +1127,21 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         screens::screen_visible,
         screens::session_usage,
         screens::accounts_view,
+        screens::account_edits::account_edit_open,
+        screens::account_edits::account_edit_apply,
+        screens::account_edits::account_edit_close,
+        screens::account_edits::setup::account_setup_open,
+        screens::account_edits::setup::account_setup_apply,
+        screens::account_edits::setup::account_setup_close,
         screens::account_filters_view,
         screens::machines_view,
         screens::machine_resolve,
         screens::machine_check,
+        screens::machine_change,
+        screens::machine_ssh,
+            screens::machine_setup::machine_setup,
+            screens::machine_setup::machine_pick_source,
+        screens::machine_pick_key,
         screens::projects_view,
         screens::launch_accounts,
         screens::launch_account_rows,

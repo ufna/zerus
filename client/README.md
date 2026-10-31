@@ -319,6 +319,39 @@ is prefixed with `@alias` and uses the longer timeout. Every call is made with
 the child's own environment: the agent attribution (`HGS_SESSION`,
 `HGS_RUN_ID`) is never passed on.
 
+`core::end_action` supplies the bounded confirmation snapshot and monotonic
+five-second timing rules for the Undo integration. Its metadata check requests
+no history; its end calls reuse the existing scoped lifecycle envelope and exact
+receipt validator. A shell run may have no native conversation. An unidentified
+run cannot become a delayed name-only mutation. This pure module performs no I/O.
+
+The native `action_delay` adapter reserves Actions' existing write lane without
+publishing a send-block fact. Main-webview registration starts a five-second
+monotonic window; its dedicated waiter never reads a source or runs a command.
+Undo and window destruction discard reservations; close-to-tray, hide and
+minimize retain their deadline. Consuming an
+elapsed reference repeats metadata equality and uses the same action, cleanup
+or Clear dispatcher, with exact receipt handling. The queue holds at most five
+windows of 50,000 targets, with at most 16 MiB of serialized captured metadata
+across all windows. Old settled UUID tombstones roll over FIFO at 16,384; active
+windows are never evicted. A batch shares
+one lane for same-name archives but admits only one active member at a time.
+Confirmed Archive, Terminate, Clear session and Forget now use these native
+reservations through a lazy countdown controller. Selection Archive/Terminate/
+Forget has one window and one toast for the whole batch; Clear archive keeps its
+existing immediate confirmed flow. Native timing releases the original writer,
+which rechecks the exact captured identity. Browser timers only paint the Undo
+label. Ordinary sends and Stop stay outside the grace period.
+
+Five pending Undo notices remain visible and focusable. A sixth action adds the
+agreed transient refusal line to the newest one without reserving anything.
+Identity changes cancel a single window; a batch refuses only the changed
+member. Hiding, minimizing and close-to-tray preserve deadlines. Under the
+coordinator's budget ruling for this slice, real Quit/destruction drops pending
+windows without effects or durable state; Quit logs one bounded line per dropped group
+with at most five session names. Durable quit delivery and next-start settlement remain
+in zerus-5wmh.66.2.34.3.
+
 | Action | Arguments (`NAME` is the session name) | Standard input | Timeout here, peer |
 | --- | --- | --- | --- |
 | Stop (interrupt) | `interrupt NAME --json` | JSON: `request_id`, `expected_run_id`, `expected_conversation_id`, `expected_turn_started` | 15 s, 45 s |

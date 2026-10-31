@@ -202,9 +202,9 @@ export async function metrics(windowMs?: number): Promise<Record<string, unknown
 }
 
 /** One guarded session action; an Err (a rejected promise) is an unknown outcome. */
-export async function runAction(target: Target, action: Action): Promise<Outcome> {
+export async function runAction(target: Target, action: Action, delay?: import("./store/endActionBusy").EndReference): Promise<Outcome> {
   if (!inTauri()) return { outcome: "failed", detail: "Actions need the desktop app." };
-  return invoke<Outcome>("run_action", { target, action });
+  return invoke<Outcome>("run_action", { target, action, delay });
 }
 
 /**
@@ -456,6 +456,39 @@ export async function accountsView(force = false): Promise<AccountsView> {
   if (!inTauri()) return emptyAccounts([DESKTOP_ONLY]);
   return invoke<AccountsView>("accounts_view", { force });
 }
+export type AccountEditKind = "rename" | "default" | "remove" | "permissions" | "model";
+export interface AccountModelCatalog {
+  models: {id:string;label:string;effort_options:string[]}[];
+  defaults: {model:string;effort:string}; provider_defaults: {model:string;effort:string}; effort_supported:boolean;
+}
+export interface AccountEditValues {label?:string;mode?:string;model?:string;effort?:string}
+export interface AccountEditView { handle: string; kind: AccountEditKind; label: string; machine: string; provider: string; permission_mode?:string; permission_detail?:string; models?:AccountModelCatalog|null }
+export interface AccountEditResult { notices: string[]; errors: string[] }
+export async function accountEditOpen(account: string, profile: string, kind: AccountEditKind): Promise<AccountEditView> {
+  if (!inTauri()) throw new Error(DESKTOP_ONLY);
+  return invoke("account_edit_open", { account, profile, kind });
+}
+export async function accountEditApply(handle: string, values: AccountEditValues): Promise<AccountEditResult> {
+  if (!inTauri()) throw new Error(DESKTOP_ONLY);
+  return invoke("account_edit_apply", { request: { handle, ...values } });
+}
+export async function accountEditClose(handle: string): Promise<void> {
+  if (inTauri()) await invoke("account_edit_close", { handle });
+}
+export type AccountSetupKind="add"|"login"|"install"|"start"|"key";
+export interface AccountSetupHost {key:string;machine:string;label:string;online:boolean;providers:string[];saved:{id:string;provider:string;label:string;installed:boolean}[];listed:string[];deepseek_installed:boolean}
+export interface AccountSetupView {handle:string;kind:AccountSetupKind;hosts:AccountSetupHost[];host:string;provider:string;label:string}
+export interface AccountSetupValues {host?:string;provider?:string;saved?:string;label?:string;api_key?:string}
+export interface AccountSetupResult {notices:string[];errors:string[];profile:string|null}
+export async function accountSetupOpen(kind:AccountSetupKind,account="",profile=""):Promise<AccountSetupView> {
+  if(!inTauri())throw new Error(DESKTOP_ONLY);
+  return invoke("account_setup_open",{kind,account,profile});
+}
+export async function accountSetupApply(handle:string,values:AccountSetupValues):Promise<AccountSetupResult> {
+  if(!inTauri())throw new Error(DESKTOP_ONLY);
+  return invoke("account_setup_apply",{request:{handle,...values}});
+}
+export async function accountSetupClose(handle:string) {if(inTauri())await invoke("account_setup_close",{handle});}
 /** Sessions' explicit account chooser reads catalogs, without profile inspects. */
 export async function accountFiltersView(force = false): Promise<AccountsView> {
   if (!inTauri()) return emptyAccounts([DESKTOP_ONLY]);
@@ -472,6 +505,32 @@ export async function machinesView(force = false): Promise<MachinesView> {
 export async function machineResolve(alias: string): Promise<MachinesView> {
   if (!inTauri()) return emptyMachines(DESKTOP_ONLY);
   return invoke<MachinesView>("machine_resolve", { alias });
+}
+
+/** Explicit connection change; no retry after an unknown result. */
+export async function machineChange(request: import("./types").MachineChangeRequest): Promise<void> {
+  if (!inTauri()) throw new Error(DESKTOP_ONLY);
+  return invoke<void>("machine_change", { request });
+}
+
+/** Uses the configured terminal and existing hgs machine ssh route. */
+export async function machineSsh(reference: import("./types").MachineReference): Promise<string | null> {
+  if (!inTauri()) throw new Error(DESKTOP_ONLY);
+  return invoke<string | null>("machine_ssh", { reference });
+}
+
+export async function machinePickKey(): Promise<string | null> {
+  if (!inTauri()) throw new Error(DESKTOP_ONLY);
+  return invoke<string | null>("machine_pick_key");
+}
+
+export async function machineSetup(request: import("./types").MachineSetupRequest): Promise<import("./types").MachineSetupOutcome> {
+  if (!inTauri()) throw new Error(DESKTOP_ONLY);
+  return invoke("machine_setup", { request });
+}
+export async function machinePickSource(): Promise<string | null> {
+  if (!inTauri()) throw new Error(DESKTOP_ONLY);
+  return invoke("machine_pick_source");
 }
 
 /** "Test connection": `machine check`, up to 25 s. */
@@ -791,8 +850,8 @@ export const sendAnswer = (token: number, answer: Answer) => desktop<SendReply>(
 export const sendCancel = (handle: number) => desktop<void>("send_cancel", { handle });
 export const sendInterrupted = (handle: number) => desktop<void>("send_interrupted", { handle });
 /** Answers once the clear ended (up to 45 s). */
-export const clearContext = (handle: number, run: string, conversation: string, dismiss: boolean) =>
-  desktop<SendReply>("clear_context", { handle, run, conversation, dismiss });
+export const clearContext = (handle: number, run: string, conversation: string, dismiss: boolean, delay?: import("./store/endActionBusy").EndReference) =>
+  desktop<SendReply>("clear_context", { handle, run, conversation, dismiss, delay });
 export const localRetry = (handle: number, id: string) => desktop<SendReply>("local_retry", { handle, id });
 export const localDelete = (handle: number, id: string) => desktop<void>("local_delete", { handle, id });
 export const localInspect = (handle: number, id: string) => desktop<Inspect | null>("local_inspect", { handle, id });
@@ -872,7 +931,7 @@ export const draftRestore = (handle: number, source: DraftSource, key: string) =
 export const sessionFolderStatus = (computer: string, directory: string) => desktop<import("./store/sessionFolders").FolderStatus>("session_folder_status", { computer, directory });
 export const sessionFolderOpen = (input: import("./store/sessionFolders").FolderRequest, kind: "folder" | "shell") => desktop<string | null>("session_folder_open", { input, kind });
 
-export const terminationCleanupConfirm = (id: string) => desktop<Outcome>("termination_cleanup_confirm", { id });
+export const terminationCleanupConfirm = (id: string, delay?: import("./store/endActionBusy").EndReference) => desktop<Outcome>("termination_cleanup_confirm", { id, delay });
 export const terminationCleanupOffer = (target: Target) => desktop<{ id: string; checked: boolean } | null>("termination_cleanup_offer", { target });
 export const terminationCleanupCancel = (id: string) => desktop<void>("termination_cleanup_cancel", { id });
 export const terminationCleanupView = () => desktop<import("./store/terminationCleanup").CleanupView>("termination_cleanup_view", {});
@@ -910,3 +969,8 @@ export async function attachmentMedia(computer: string, file: AttachmentRef, vid
   const reply = await desktop<ArrayBuffer | number[]>("attachment_media", { computer, file, video });
   return reply instanceof ArrayBuffer ? reply : Uint8Array.from(reply).buffer;
 }
+
+/** Timing/reservations only: every effect still uses its original native writer. */
+export const actionDelayBegin = (id: string, captures: import("./store/endActionBusy").EndCapture[]) => desktop<void>("action_delay_begin", { id, captures });
+export const actionDelayWait = (id: string) => desktop<boolean>("action_delay_wait", { id });
+export const actionDelayCancel = (id: string) => desktop<void>("action_delay_cancel", { id });

@@ -171,10 +171,13 @@ export const restoreLimitText = (s: Pick<ActionRow, "name">) => `${s.name}: earl
 export const SHOWN_ERRORS = 3;
 
 /** The end notice; sticky (and an error) when any item failed. */
-export function summaryText(a: SelectionAction, done: number, total: number, failed: number, errors: readonly string[]): { text: string; failed: boolean } {
+export function summaryText(a: SelectionAction, done: number, total: number, failed: number, errors: readonly string[], unknown = 0): { text: string; failed: boolean } {
   let text = `${selectionText(a)}: ${done} of ${total} completed.`;
-  if (failed) text += ` ${failed} failed or changed; refresh before retrying.\n${errors.slice(0, SHOWN_ERRORS).join("\n")}`;
-  return { text, failed: failed > 0 };
+  if (failed || unknown) {
+    const counts = [failed ? `${failed} failed or changed` : "", unknown ? `${unknown} unknown` : ""].filter(Boolean).join(", ");
+    text += ` ${counts}; refresh before retrying.\n${errors.slice(0, SHOWN_ERRORS).join("\n")}`;
+  }
+  return { text, failed: failed + unknown > 0 };
 }
 
 /** Mark as read and Mark needs attention: sticky when not every target changed. */

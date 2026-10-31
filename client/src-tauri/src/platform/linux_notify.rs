@@ -648,12 +648,7 @@ fn signal(shared: &Shared, connection: &Connection, message: &zbus::Message) {
     }
 }
 
-pub fn install(
-    app: &AppHandle,
-    dir: PathBuf,
-    switch: bool,
-    desk: mpsc::Sender<crate::desk::DeskInput>,
-) {
+pub fn install(app: &AppHandle, dir: PathBuf, switch: bool, desk: crate::desk::InputSender) {
     let target = app.clone();
     let sink = Arc::new(move |event| match event {
         Event::Activated { token, activation } => {

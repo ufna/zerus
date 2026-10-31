@@ -1003,6 +1003,14 @@ export function PerfHost() {
       const { archiveCleanupSmoke } = await import("../perf/archiveCleanupSmoke");
       void archiveCleanupSmoke(!!config().replay && !!config().actions_smoke);
     }
+    if (new URLSearchParams(location.search).has("end-action-ui-smoke") && inTauri()) {
+      const { endActionUiSmoke } = await import("../perf/endActionUiSmoke");
+      void endActionUiSmoke(!!config().replay && !!config().actions_smoke);
+    }
+    if (new URLSearchParams(location.search).has("end-action-native-smoke") && inTauri()) {
+      const { endActionNativeSmoke } = await import("../perf/endActionNativeSmoke");
+      void endActionNativeSmoke(!!config().replay && !!config().actions_smoke);
+    }
     if (new URLSearchParams(location.search).has("file-ssh-smoke") && inTauri()) {
       void import("../perf/fileSshSmoke").then(({ fileSshSmoke }) => fileSshSmoke(!!config().replay && !!config().actions_smoke));
     }
@@ -1017,6 +1025,18 @@ export function PerfHost() {
     if (new URLSearchParams(location.search).has("markdown-smoke") && inTauri()) {
       const { markdownSmoke } = await import("../perf/markdownSmoke");
       void markdownSmoke(!!config().replay && !!config().actions_smoke);
+    }
+    if (new URLSearchParams(location.search).has("machines-setup-smoke") && inTauri()) {
+      const { machinesSetupSmoke } = await import("../perf/machinesSmoke");
+      void machinesSetupSmoke(!!config().replay && !!config().actions_smoke);
+    }
+    if (new URLSearchParams(location.search).has("machines-tools-smoke") && inTauri()) {
+      const { machinesToolsSmoke } = await import("../perf/machinesSmoke");
+      void machinesToolsSmoke(!!config().replay && !!config().actions_smoke);
+    }
+    if (new URLSearchParams(location.search).has("machines-smoke") && inTauri()) {
+      const { machinesSmoke } = await import("../perf/machinesSmoke");
+      void machinesSmoke(!!config().replay && !!config().actions_smoke);
     }
     if (new URLSearchParams(location.search).has("native-ui-smoke") && inTauri()) {
       const { nativeUiSmoke } = await import("../perf/nativeUiSmoke");

@@ -337,6 +337,7 @@ export interface MachineMetrics {
 /** This Windows computer's session host. */
 export interface LocalHost { state: string | null; pid: number | null; protocol: number | null; conpty: string | null; integrity: string | null; windows_session: number | null; error: string | null }
 export interface MachineMeta {
+  machine_id?: string;
   host: string | null;
   hgs_version: string | null;
   platform: string | null;
@@ -384,7 +385,7 @@ export interface Profile {
   key: string; host: ComputerId; machine: string; id: string; label: string; provider: string;
   native: boolean; installed: boolean; is_default: boolean; home: string; auth_revision: string; online: boolean;
   state: MemberState; detail: string; signed_in: boolean;
-  permission: string; permission_label: string; permission_hint: string; model_supported: boolean; model_text: string;
+  permission: string; permission_mode?: string; permission_label: string; permission_hint: string; model_supported: boolean; model_text: string;
   usage: Usage; opencode: OpenCodeInfo | null;
 }
 export interface Account {
@@ -406,12 +407,20 @@ export interface AccountsView {
   truncated: number;
 }
 export interface MachineRow { alias: string; enabled: boolean; source: string; inherited: boolean; hostname: string; user: string; port: number | null; identity_file: string; origin: string }
+export interface MachineConnection { hostname: string; user: string; port: number | null; identity_file: string; enabled: boolean }
+export type MachineChange = { kind: "set"; connection: MachineConnection; create: boolean } | { kind: "reset" | "remove" };
+export interface MachineReference { alias: string; revision: string }
+export type MachineSetupRequest = { kind: "install"; reference: MachineReference; source: string } | { kind: "enable"; machine_id: string };
+export interface MachineSetupOutcome { success: boolean; uncertain: boolean; text: string; output: string }
+export interface MachineChangeRequest { alias: string; revision: string; change: MachineChange }
 export interface Effective { alias: string; pending: boolean; error: boolean; text: string; hostname: string; user: string; port: string; key: string }
 export interface CheckResult { alias: string; pending: boolean; error: boolean; text: string }
 export interface MachinesView {
   /** Computation order from the screens hub; absent on older snapshots. */
   revision?: number;
   loaded: boolean; refreshing: boolean; error: string | null; local: string; environment_override: boolean;
+  /** Exact configuration revision, separate from the hub computation order. */
+  connection_revision?: string;
   machines: MachineRow[]; effective: Effective | null; check: CheckResult | null; busy: boolean;
 }
 export interface Folder {
