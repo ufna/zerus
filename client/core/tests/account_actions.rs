@@ -5,6 +5,7 @@ use std::{
     path::PathBuf,
     sync::atomic::{AtomicUsize, Ordering},
 };
+use zerus_client_core::account_actions::Values;
 use zerus_client_core::{
     account_actions::{Binding, Kind},
     ComputerId,
@@ -60,6 +61,7 @@ fn each_catalog_edit_reads_fresh_then_dispatches_exactly_once() {
             Kind::Rename => assert_eq!(result["profiles"][0]["label"], "New account"),
             Kind::Default => assert_eq!(result["profiles"][0]["is_default"], true),
             Kind::Remove => assert_eq!(result["profiles"], json!([])),
+            _ => unreachable!(),
         }
     }
 }
@@ -105,5 +107,52 @@ fn an_uncertain_exit_never_replays_the_mutation() {
             .count(),
         3,
         "second explicit call performs only its read and refuses the stale revision"
+    );
+}
+
+#[test]
+fn model_catalog_is_read_only_and_settings_use_the_same_guarded_cas() {
+    let (scratch, binding) = setup();
+    let models = binding.model_settings(&scratch.0.join("hgs")).unwrap();
+    assert_eq!(models.models[0].id, "model-a");
+    assert_eq!(models.provider_defaults.effort, "low");
+    assert_eq!(
+        fs::read_to_string(scratch.0.join("calls.jsonl"))
+            .unwrap()
+            .lines()
+            .count(),
+        2
+    );
+    let values = Values {
+        model: "model-a".into(),
+        effort: "high".into(),
+        ..Default::default()
+    };
+    models.validate(&values).unwrap();
+    let saved = binding
+        .execute_values(&scratch.0.join("hgs"), Kind::Model, &values)
+        .unwrap();
+    assert_eq!(
+        saved["profiles"][0]["model_defaults"],
+        json!({"model":"model-a","effort":"high"})
+    );
+    let (scratch, binding) = setup();
+    let saved = binding
+        .execute_values(
+            &scratch.0.join("hgs"),
+            Kind::Permissions,
+            &Values {
+                mode: "bypass".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(saved["profiles"][0]["permission_mode"], "bypass");
+    assert_eq!(
+        fs::read_to_string(scratch.0.join("calls.jsonl"))
+            .unwrap()
+            .lines()
+            .count(),
+        2
     );
 }

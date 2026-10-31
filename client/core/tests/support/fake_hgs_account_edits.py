@@ -17,6 +17,12 @@ if args[3] == "ls":
     print(json.dumps(catalog))
     sys.exit()
 profile = next(p for p in catalog["profiles"] if p["id"] == args[4])
+if args[3] == "model-settings":
+    print(json.dumps({"account_id": profile["id"], "provider": profile["provider"], "revision": catalog["revision"],
+        "models": [{"id": "model-a", "label": "Example model", "effort_options": ["low", "high"]}],
+        "effort_supported": True, "defaults": profile.get("model_defaults", {"model": "", "effort": ""}),
+        "provider_defaults": {"model": "model-a", "effort": "low"}}))
+    sys.exit()
 assert args[args.index("--revision") + 1] == catalog["revision"]
 if args[3] == "rename":
     profile["label"] = args[args.index("--label") + 1]
@@ -25,6 +31,14 @@ elif args[3] == "default":
 elif args[3] == "rm":
     catalog.setdefault("removed_profiles", []).append(profile)
     catalog["profiles"].remove(profile)
+elif args[3] == "permissions":
+    mode = args[args.index("--mode") + 1]
+    assert mode in ("provider", "bypass")
+    profile["permission_mode"] = mode
+elif args[3] == "model-defaults":
+    model, effort = args[args.index("--model") + 1], args[args.index("--effort") + 1]
+    assert (not model and not effort) or (model == "model-a" and effort in ("", "low", "high"))
+    profile["model_defaults"] = {"model": model, "effort": effort}
 else:
     raise AssertionError(args)
 catalog["revision"] = "r" + str(int(catalog["revision"][1:]) + 1)

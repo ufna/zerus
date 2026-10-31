@@ -456,16 +456,21 @@ export async function accountsView(force = false): Promise<AccountsView> {
   if (!inTauri()) return emptyAccounts([DESKTOP_ONLY]);
   return invoke<AccountsView>("accounts_view", { force });
 }
-export type AccountEditKind = "rename" | "default" | "remove";
-export interface AccountEditView { handle: string; kind: AccountEditKind; label: string; machine: string; provider: string }
+export type AccountEditKind = "rename" | "default" | "remove" | "permissions" | "model";
+export interface AccountModelCatalog {
+  models: {id:string;label:string;effort_options:string[]}[];
+  defaults: {model:string;effort:string}; provider_defaults: {model:string;effort:string}; effort_supported:boolean;
+}
+export interface AccountEditValues {label?:string;mode?:string;model?:string;effort?:string}
+export interface AccountEditView { handle: string; kind: AccountEditKind; label: string; machine: string; provider: string; permission_mode?:string; permission_detail?:string; models?:AccountModelCatalog|null }
 export interface AccountEditResult { notices: string[]; errors: string[] }
 export async function accountEditOpen(account: string, profile: string, kind: AccountEditKind): Promise<AccountEditView> {
   if (!inTauri()) throw new Error(DESKTOP_ONLY);
   return invoke("account_edit_open", { account, profile, kind });
 }
-export async function accountEditApply(handle: string, label = ""): Promise<AccountEditResult> {
+export async function accountEditApply(handle: string, values: AccountEditValues): Promise<AccountEditResult> {
   if (!inTauri()) throw new Error(DESKTOP_ONLY);
-  return invoke("account_edit_apply", { request: { handle, label } });
+  return invoke("account_edit_apply", { request: { handle, ...values } });
 }
 export async function accountEditClose(handle: string): Promise<void> {
   if (inTauri()) await invoke("account_edit_close", { handle });

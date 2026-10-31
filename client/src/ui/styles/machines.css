@@ -110,6 +110,9 @@
   .acct-oc-row { display: grid; grid-template-columns: 1fr auto minmax(120px, auto); gap: 14px; padding: 6px 10px; font-size: var(--fs-sm); border-bottom: 1px solid var(--z-color-divider); }
   .acct-oc-row:last-child { border-bottom: 0; }
   .acct-setting { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 8px; border-top: 1px solid var(--z-color-divider); font-size: var(--fs-sm); }
+  .acct-perm-select { margin: 8px 0; }
+  dialog[aria-labelledby^="accounts-"] .form-row .field { width: 100%; }
+  dialog[aria-labelledby^="accounts-"] p + p { margin-top: 8px; }
   .acct-usage { padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; font-size: var(--fs-sm); }
   .acct-window { display: flex; flex-direction: column; gap: 5px; padding: 6px 0; }
   .acct-window .row { gap: 8px; }
