@@ -151,6 +151,221 @@ fn abort_is_only_negative_reconciliation_intent_and_never_reopens_writers() {
     assert!(super::super::store::writer_active(&location).is_err());
 }
 
+// Complete synthetic fixture state, including schema and every table/column.
+// This is deliberately broader than the prepared journal mutation under test.
+fn database_snapshot(
+    db: &Connection,
+) -> std::collections::BTreeMap<String, Vec<Vec<rusqlite::types::Value>>> {
+    let mut names: Vec<String> = db
+        .prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    names.push("sqlite_schema".into());
+    names
+        .into_iter()
+        .map(|name| {
+            let mut stmt = db
+                .prepare(&format!("SELECT * FROM \"{}\"", name.replace('"', "\"\"")))
+                .unwrap();
+            let columns = stmt.column_count();
+            let rows = stmt
+                .query_map([], |row| (0..columns).map(|i| row.get(i)).collect())
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            (name, rows)
+        })
+        .collect()
+}
+
+#[test]
+fn persisted_abort_after_restart_changes_only_the_original_phase_and_has_no_follow_up() {
+    let (_temp, location, mut store, epoch) = fixture();
+    let presence = super::super::presence_admission::fence(&location).unwrap();
+    let lock = location.handoff_lock().unwrap();
+    drop(save(&location, &lock, &presence, &mut store, binding(&epoch)).unwrap());
+    drop(store); // No Ticket or original observation survives the old process.
+    let current_epoch = uuid::Uuid::new_v4().to_string();
+    let mut store = Store::open(&location, &current_epoch).unwrap();
+    store.db.execute_batch("CREATE TABLE recovery_sentinel (id INTEGER PRIMARY KEY, value BLOB); INSERT INTO recovery_sentinel VALUES(1,X'00FF');").unwrap();
+    let original = inspect_db(&store.db, &location.configuration)
+        .unwrap()
+        .unwrap();
+    let mut expected = database_snapshot(&store.db);
+    expected.get_mut("desktop_producer_prepared").unwrap()[0][3] =
+        "abort_requested".to_owned().into();
+    for _ in 0..2 {
+        let result = request_abort_original(
+            &location,
+            &lock,
+            &presence,
+            &mut store,
+            &original,
+            &current_epoch,
+        )
+        .unwrap();
+        assert_eq!(result.phase(), Phase::AbortRequested);
+        assert_eq!(result.digest, original.digest);
+        assert_eq!(result.binding.service_epoch, epoch);
+        assert_eq!(database_snapshot(&store.db), expected);
+        assert!(super::super::store::writer_active(&location).is_err());
+        assert!(super::super::startup_exclusion::Startup::hold(&location).is_err());
+    }
+    drop(store);
+    let next_epoch = uuid::Uuid::new_v4().to_string();
+    let mut store = Store::open(&location, &next_epoch).unwrap();
+    let before = database_snapshot(&store.db);
+    assert!(request_abort_original(
+        &location,
+        &lock,
+        &presence,
+        &mut store,
+        &original,
+        &current_epoch
+    )
+    .is_err());
+    request_abort_original(
+        &location,
+        &lock,
+        &presence,
+        &mut store,
+        &original,
+        &next_epoch,
+    )
+    .unwrap();
+    assert_eq!(database_snapshot(&store.db), before);
+    assert!(super::super::store::writer_active(&location).is_err());
+}
+
+#[test]
+fn recovered_abort_refuses_wrong_locks_presence_and_current_epoch_without_any_write() {
+    let (_temp, location, mut store, epoch) = fixture();
+    let (_other_temp, other, _other_store, _) = fixture();
+    let presence = super::super::presence_admission::fence(&location).unwrap();
+    let other_presence = super::super::presence_admission::fence(&other).unwrap();
+    let lock = location.handoff_lock().unwrap();
+    let other_lock = other.handoff_lock().unwrap();
+    drop(save(&location, &lock, &presence, &mut store, binding(&epoch)).unwrap());
+    let original = inspect_db(&store.db, &location.configuration)
+        .unwrap()
+        .unwrap();
+    let before = database_snapshot(&store.db);
+    assert!(request_abort_original(
+        &location,
+        &other_lock,
+        &presence,
+        &mut store,
+        &original,
+        &epoch
+    )
+    .is_err());
+    assert!(request_abort_original(
+        &location,
+        &lock,
+        &other_presence,
+        &mut store,
+        &original,
+        &epoch
+    )
+    .is_err());
+    for wrong in [
+        "".to_owned(),
+        uuid::Uuid::nil().to_string(),
+        uuid::Uuid::new_v4().to_string(),
+    ] {
+        assert!(
+            request_abort_original(&location, &lock, &presence, &mut store, &original, &wrong)
+                .is_err()
+        );
+    }
+    assert_eq!(database_snapshot(&store.db), before);
+    request_abort_original(&location, &lock, &presence, &mut store, &original, &epoch).unwrap();
+    let before = database_snapshot(&store.db);
+    // Even an already-aborted original must pass the independent current check.
+    assert!(request_abort_original(
+        &location,
+        &lock,
+        &presence,
+        &mut store,
+        &original,
+        &uuid::Uuid::new_v4().to_string()
+    )
+    .is_err());
+    assert_eq!(database_snapshot(&store.db), before);
+}
+
+#[test]
+fn recovered_abort_refuses_foreign_or_changed_original_without_any_write() {
+    for change in 0..5 {
+        let (_temp, location, mut store, epoch) = fixture();
+        let presence = super::super::presence_admission::fence(&location).unwrap();
+        let lock = location.handoff_lock().unwrap();
+        drop(save(&location, &lock, &presence, &mut store, binding(&epoch)).unwrap());
+        let mut original = inspect_db(&store.db, &location.configuration)
+            .unwrap()
+            .unwrap();
+        match change {
+            0 => original.binding.request_id = uuid::Uuid::new_v4().to_string(),
+            1 => original.digest = "f".repeat(64),
+            2 => original.binding.configuration = "b".repeat(64),
+            3 => {
+                store
+                    .db
+                    .execute("UPDATE service SET configuration=?1", ["b".repeat(64)])
+                    .unwrap();
+            }
+            _ => {
+                let mut changed = binding(&epoch);
+                changed.frontend.instance_epoch = uuid::Uuid::new_v4().to_string();
+                let bytes = serde_json::to_vec(&changed).unwrap();
+                store
+                    .db
+                    .execute(
+                        "UPDATE desktop_producer_prepared SET binding=?1,digest=?2",
+                        params![std::str::from_utf8(&bytes).unwrap(), digest(&bytes)],
+                    )
+                    .unwrap();
+            }
+        }
+        let before = database_snapshot(&store.db);
+        assert!(
+            request_abort_original(&location, &lock, &presence, &mut store, &original, &epoch)
+                .is_err()
+        );
+        assert_eq!(database_snapshot(&store.db), before);
+        assert!(super::super::store::writer_active(&location).is_err());
+    }
+}
+
+#[test]
+fn recovered_abort_refuses_missing_malformed_and_unavailable_journal_without_any_write() {
+    for change in 0..5 {
+        let (_temp, location, mut store, epoch) = fixture();
+        let presence = super::super::presence_admission::fence(&location).unwrap();
+        let lock = location.handoff_lock().unwrap();
+        drop(save(&location, &lock, &presence, &mut store, binding(&epoch)).unwrap());
+        let original = inspect_db(&store.db, &location.configuration)
+            .unwrap()
+            .unwrap();
+        match change {
+            0 => store.db.execute_batch("DELETE FROM desktop_producer_prepared").unwrap(),
+            1 => store.db.execute_batch("UPDATE desktop_producer_prepared SET digest='invalid'").unwrap(),
+            2 => store.db.execute_batch("PRAGMA ignore_check_constraints=ON; UPDATE desktop_producer_prepared SET phase='complete'").unwrap(),
+            3 => store.db.execute_batch("ALTER TABLE desktop_producer_prepared RENAME TO hidden_prepared; CREATE VIEW desktop_producer_prepared AS SELECT * FROM hidden_prepared").unwrap(),
+            _ => store.db.execute_batch("DROP TABLE desktop_producer_prepared").unwrap(),
+        }
+        let before = database_snapshot(&store.db);
+        assert!(
+            request_abort_original(&location, &lock, &presence, &mut store, &original, &epoch)
+                .is_err()
+        );
+        assert_eq!(database_snapshot(&store.db), before);
+    }
+}
+
 #[test]
 fn wrong_lock_presence_configuration_and_epoch_refuse_before_commit() {
     let (_temp, location, mut store, epoch) = fixture();
@@ -368,12 +583,29 @@ fn committed_preparation_survives_an_actual_process_exit_without_reply_or_drop()
     assert!(String::from_utf8_lossy(&output.stdout)
         .contains(&format!("PREPARED_FIXTURE_COMMITTED {REQUEST}")));
     assert!(super::super::store::writer_active(&location).is_err());
-    let store = Store::open(&location, &uuid::Uuid::new_v4().to_string()).unwrap();
+    let current_epoch = uuid::Uuid::new_v4().to_string();
+    let mut store = Store::open(&location, &current_epoch).unwrap();
     let snapshot = inspect_db(&store.db, &location.configuration)
         .unwrap()
         .unwrap();
     assert_eq!(snapshot.request_id(), REQUEST);
     assert_eq!(snapshot.phase(), Phase::Prepared);
+    let presence = super::super::presence_admission::fence(&location).unwrap();
+    let lock = location.handoff_lock().unwrap();
+    let original_bytes = bytes(&store);
+    let result = request_abort_original(
+        &location,
+        &lock,
+        &presence,
+        &mut store,
+        &snapshot,
+        &current_epoch,
+    )
+    .unwrap();
+    assert_eq!(result.phase(), Phase::AbortRequested);
+    assert_eq!(bytes(&store), original_bytes);
+    assert!(super::super::store::writer_active(&location).is_err());
+    assert!(super::super::startup_exclusion::Startup::hold(&location).is_err());
 }
 
 // Every probe uses a real private Unix listener. The original channel remains
