@@ -294,3 +294,36 @@ The password and private key material never enter evidence. The final source
 and mechanics evidence require fresh G1/webui acceptance before merging the
 preparation slice. The installer slice, genuine identity qualification and all
 native currentness/role/effect gates remain open.
+
+The agreed fixture conditions also require these concrete guards:
+
+- Private HOME is not proof of per-user keychain isolation. Capture the same
+  UID's read-only `security list-keychains -d user|common|dynamic`,
+  `security default-keychain -d user` and `security login-keychain` references
+  before creation, after creation, after signing and after deletion. Compare
+  responses without repairing state; a change stops before further signing.
+  Record references with the real home prefix redacted to `~`. These metadata
+  reads authorize no owner item, identity or certificate queries.
+- Exclude `/login.keychain` anywhere in the whole absolute fixture path, and
+  exclude the System path. The import access object permits only codesign and
+  the fixture process. No allow-all ACL or password-bearing partition command.
+- Run scoped production `find-identity -v -p codesigning` first. If it filters
+  the self-signed identity, record that separate negative. Test-only discovery
+  may then expose exactly the helper-proven private identity after an actual
+  scoped unfiltered matching-identity check; fingerprint, CN or cardinality
+  mismatches stop. No fabricated tool result or owner-keychain fallback.
+- The next prepare keeps the real Apple/team verifier unchanged and must fail
+  specifically on its actual Apple-anchor command. Only afterwards may a
+  test-module validator replace that boundary with real strict all-architecture
+  verification against the fixture leaf certificate and exact expected ID,
+  non-ad-hoc signature, present CDHash and stable designated requirement.
+- Supply a synthetic team marker only when native self-signed metadata has no
+  team, and only after the actual own-certificate check. All other production
+  mechanics and the final whole-app check run unchanged. The codesign wrapper
+  only appends the private keychain argument; it asserts that the rest of argv
+  is identical. Restore test patches in finally and prove both tray scripts
+  remain byte-identical to the source-approved `88cf4efa`.
+- Delete through the explicit private reference. Source expectations about
+  private creation do not prove deletion isolation: compare actual list/default
+  references and private preference files afterwards too. Unknown scope or
+  cleanup retains evidence and reports failure, without owner-state repair.

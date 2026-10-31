@@ -443,6 +443,22 @@ gate. Run the synthetic preparation controls without opting into signing:
 python3 -m unittest discover -s tests -p test_macos_paired_preparation.py -v
 ```
 
+A separate opt-in fixture exercises **mechanics (modelled identity boundary)**
+with a throwaway self-signed identity. It first proves production discovery or
+the unchanged Apple verifier refuses that identity. Its positive mechanics use
+an explicitly modelled identity boundary and actual strict own-certificate
+checks; they do not qualify an Apple-chain installation. Production verification
+and the real-identity opt-in case remain unchanged.
+
+The fixture requires a private HOME distinct from the account HOME, the shared
+Mac slot and a pinned security review before execution. Password and key bytes
+stay in memory. It compares the same UID's actual keychain reference metadata,
+never changes real search/default/trust state, restricts the synthetic key to
+codesign and its own fixture process, and proves explicit private-keychain and
+artifact deletion. See the qualification amendment in the linked design for
+the complete guards. Raw native evidence stays private; reports carry counts
+and hashes, labelled mechanics (modelled identity boundary).
+
 ### macOS privacy permissions after a signature change
 
 macOS attributes agent-launched Apple Events, Accessibility and screen capture
