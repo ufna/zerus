@@ -275,7 +275,8 @@ pub struct ComposerView {
     pub status: String,
     pub status_error: bool,
     pub can_send: bool,
-    pub send_label: String,
+    /// Interface prose; the webview translates it (`client/src/text.ts`).
+    pub send_label: zerus_client_core::text::Text,
     /// The session takes messages: no block reason (`setAvailability`).
     pub available: bool,
     pub unavailable_reason: String,
@@ -1580,13 +1581,12 @@ impl Composers {
                 && !locked
                 && !composer.uncertain,
             send_label: if composer.sending {
-                "Sending…"
+                zerus_client_core::text!("Sending…")
             } else if composer.waiting.is_some() {
-                "Waiting to send…"
+                zerus_client_core::text!("Waiting to send…")
             } else {
-                "Send"
-            }
-            .into(),
+                zerus_client_core::text!("Send")
+            },
             available: session.available,
             unavailable_reason: session.unavailable_reason,
             block_reason: session.block_reason,

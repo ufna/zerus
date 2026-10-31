@@ -1715,4 +1715,42 @@ mod tests {
             );
         }
     }
+
+    /// Every `text!`/`source!` literal in the app is a catalog source, so the
+    /// webview can translate it (as the core's own coverage test checks).
+    #[test]
+    fn every_marked_app_source_is_in_the_generated_catalog() {
+        fn collect(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    collect(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let catalog: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
+            &std::fs::read_to_string(root.join("../src/i18n.ru.json")).unwrap(),
+        )
+        .unwrap();
+        let mut files = Vec::new();
+        collect(&root.join("src"), &mut files);
+        let sources: Vec<String> = files
+            .iter()
+            .flat_map(|file| {
+                zerus_client_core::text::marked_sources(&std::fs::read_to_string(file).unwrap())
+            })
+            .collect();
+        assert!(sources.iter().any(|s| s == "Waiting to send…"));
+        let missing: Vec<_> = sources
+            .iter()
+            .filter(|s| !catalog.contains_key(s.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "app sources missing from client/src/i18n.ru.json: {missing:#?}"
+        );
+    }
 }

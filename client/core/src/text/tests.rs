@@ -46,7 +46,7 @@ fn every_marked_core_source_is_in_the_generated_catalog() {
         if file.ends_with("src/text/tests.rs") || file.ends_with("src/text.rs") {
             continue;
         }
-        sources.extend(marked(&std::fs::read_to_string(&file).unwrap()));
+        sources.extend(marked_sources(&std::fs::read_to_string(&file).unwrap()));
     }
     assert!(!sources.is_empty());
     let missing: Vec<_> = sources
@@ -68,35 +68,4 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
             out.push(path);
         }
     }
-}
-
-/// The literal after `text!(` or `source!(`, with Rust's simple escapes.
-fn marked(code: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for marker in ["text!(", "source!("] {
-        let mut rest = code;
-        while let Some(at) = rest.find(marker) {
-            rest = &rest[at + marker.len()..];
-            let trimmed = rest.trim_start();
-            let Some(body) = trimmed.strip_prefix('"') else {
-                continue;
-            };
-            let mut value = String::new();
-            let mut chars = body.chars();
-            while let Some(c) = chars.next() {
-                match c {
-                    '"' => break,
-                    '\\' => match chars.next() {
-                        Some('n') => value.push('\n'),
-                        Some('t') => value.push('\t'),
-                        Some(other) => value.push(other),
-                        None => break,
-                    },
-                    other => value.push(other),
-                }
-            }
-            out.push(value);
-        }
-    }
-    out
 }

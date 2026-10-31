@@ -130,5 +130,38 @@ macro_rules! source {
     };
 }
 
+/// The literals after `text!(` and `source!(` in Rust source, with Rust's
+/// simple escapes: the catalog coverage tests of the core and the app read them.
+#[doc(hidden)]
+pub fn marked_sources(code: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for marker in ["text!(", "source!("] {
+        let mut rest = code;
+        while let Some(at) = rest.find(marker) {
+            rest = &rest[at + marker.len()..];
+            let trimmed = rest.trim_start();
+            let Some(body) = trimmed.strip_prefix('"') else {
+                continue;
+            };
+            let mut value = String::new();
+            let mut chars = body.chars();
+            while let Some(c) = chars.next() {
+                match c {
+                    '"' => break,
+                    '\\' => match chars.next() {
+                        Some('n') => value.push('\n'),
+                        Some('t') => value.push('\t'),
+                        Some(other) => value.push(other),
+                        None => break,
+                    },
+                    other => value.push(other),
+                }
+            }
+            out.push(value);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests;
