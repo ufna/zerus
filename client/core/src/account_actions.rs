@@ -10,6 +10,7 @@ pub const CHANGED: &str = "Accounts changed on this machine. Refresh before savi
 pub const UPDATING: &str = "Accounts are updating. Wait for the update to finish.";
 pub const MAX_MEMBERS: usize = 256;
 pub mod models;
+pub mod setup;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

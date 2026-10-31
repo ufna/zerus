@@ -31,7 +31,7 @@ fn setup() -> (Scratch, Binding) {
     .unwrap();
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(dir.join("hgs"), fs::Permissions::from_mode(0o700)).unwrap();
-    let catalog = json!({"revision":"r1","profiles":[{"id":"work","provider":"codex","home":"/accounts/example","label":"Example","auth_revision":"a1"}]});
+    let catalog = json!({"revision":"r1","setup_revision":true,"profiles":[{"id":"work","provider":"codex","home":"/accounts/example","label":"Example","auth_revision":"a1"}]});
     fs::write(dir.join("catalog.json"), catalog.to_string()).unwrap();
     let binding = Binding::capture(
         ComputerId("studio".into()),
@@ -155,4 +155,51 @@ fn model_catalog_is_read_only_and_settings_use_the_same_guarded_cas() {
             .count(),
         2
     );
+}
+
+#[test]
+fn setup_creates_once_restores_only_exact_saved_evidence_and_keeps_keys_off_arguments() {
+    use zerus_client_core::account_actions::setup::Host;
+    let (scratch, binding) = setup();
+    let read = || {
+        serde_json::from_slice::<Value>(&fs::read(scratch.0.join("catalog.json")).unwrap()).unwrap()
+    };
+    let host = Host::capture(
+        binding.computer.clone(),
+        binding.machine_id.clone(),
+        &read(),
+    )
+    .unwrap();
+    let created = host
+        .create(&scratch.0.join("hgs"), "codex-new", "codex", "Work")
+        .unwrap();
+    assert_eq!(created["profiles"][1]["id"], "codex-new");
+    assert!(host
+        .create(&scratch.0.join("hgs"), "codex-other", "codex", "Work")
+        .is_err());
+    let mut catalog = read();
+    let saved = catalog["profiles"].as_array_mut().unwrap().remove(1);
+    catalog["removed_profiles"] = json!([saved.clone()]);
+    fs::write(scratch.0.join("catalog.json"), catalog.to_string()).unwrap();
+    let host = Host::capture(
+        binding.computer.clone(),
+        binding.machine_id.clone(),
+        &catalog,
+    )
+    .unwrap();
+    let mut forged = saved.clone();
+    forged["home"] = json!("/accounts/other");
+    assert!(host.restore(&scratch.0.join("hgs"), &forged).is_err());
+    let restored = host.restore(&scratch.0.join("hgs"), &saved).unwrap();
+    assert_eq!(restored["profiles"][1]["id"], "codex-new");
+    let mut catalog = read();
+    catalog["profiles"] =
+        json!([{"id":"native-dsh","provider":"dsh","installed":true,"label":"Example"}]);
+    fs::write(scratch.0.join("catalog.json"), catalog.to_string()).unwrap();
+    let host = Host::capture(binding.computer, binding.machine_id, &catalog).unwrap();
+    host.set_key(&scratch.0.join("hgs"), Some("Work"), "fixture-secret")
+        .unwrap();
+    assert!(!fs::read_to_string(scratch.0.join("calls.jsonl"))
+        .unwrap()
+        .contains("fixture-secret"));
 }

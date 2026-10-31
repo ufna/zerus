@@ -129,3 +129,13 @@
   .acct-loading { display: grid; place-items: center; gap: 8px; padding: 90px 0; }
   .acct-empty { padding: 80px 16px; }
 }
+
+  .acct-agents-row { align-items: start; }
+  .acct-agents { display: flex; flex-direction: column; gap: 4px; }
+  .acct-agent { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: var(--z-radius-md); border: 1px solid var(--z-color-border); text-align: left; font-size: var(--fs-sm); }
+  .acct-agent svg { color: var(--agent); flex: none; }
+  .acct-agent .muted { font-size: var(--fs-xs); }
+  .acct-agent:hover:not(:disabled) { background: var(--z-color-hover); }
+  .acct-agent.on { background: var(--z-color-segment-on); border-color: var(--z-color-accent-muted); }
+  .acct-agent:disabled { opacity: .5; cursor: default; }
+  .acct-add-btn { min-width: 150px; }

@@ -6,12 +6,14 @@ use std::collections::VecDeque;
 use zerus_client_core::account_actions::{
     self, models::Catalog as ModelCatalog, Binding, Kind, Values,
 };
+pub mod setup;
 
 #[derive(Default)]
 pub(super) struct Edits(Mutex<EditState>);
 #[derive(Default)]
 struct EditState {
     plans: VecDeque<(String, Plan)>,
+    setups: VecDeque<(String, setup::Plan)>,
     busy: bool,
 }
 struct Plan {
@@ -221,23 +223,26 @@ impl Screens {
         Ok(shown)
     }
     fn edit_begin(&self, binding: &Binding) -> Result<(), String> {
+        self.catalog_begin(&binding.computer, |catalog| binding.verify(catalog))
+    }
+    fn catalog_begin(&self, computer: &ComputerId, verify: impl FnOnce(&Value) -> Result<(), String>) -> Result<(), String> {
         let mut hub = self.current();
         if !hub
             .fleet
             .iter()
-            .any(|e| e.computer == binding.computer && accounts::reachable(e))
+            .any(|e| e.computer == *computer && accounts::reachable(e))
         {
             return Err("Machine is offline.".into());
         }
         let slot = hub
             .accounts
             .catalogs
-            .get_mut(&binding.computer)
+            .get_mut(computer)
             .ok_or(account_actions::CHANGED)?;
         if slot.pending {
             return Err(account_actions::UPDATING.into());
         }
-        binding.verify(slot.data.as_ref().ok_or(account_actions::CHANGED)?)?;
+        verify(slot.data.as_ref().ok_or(account_actions::CHANGED)?)?;
         // Borrow the same slot as catalog reads. Explicit refresh may queue one
         // read behind this edit, but cannot race an older reply into the store.
         slot.pending = true;
@@ -435,7 +440,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use zerus_client_core::{Change, ComputerStatus, MachineMeta};
-    fn fixture() -> (Screens, crate::pump::Pump, Binding) {
+    pub(super) fn fixture() -> (Screens, crate::pump::Pump, Binding) {
         fixture_at(PathBuf::from("unused-hgs"))
     }
     fn fixture_at(hgs: PathBuf) -> (Screens, crate::pump::Pump, Binding) {
@@ -457,7 +462,7 @@ mod tests {
             Arc::new(move || fleet.clone()),
             Arc::new(|| 0),
         );
-        let catalog = json!({"revision":"r1","profiles":[{"id":"work","provider":"codex","label":"Example","home":"/accounts/example","auth_revision":"a1","installed":false}]});
+        let catalog = json!({"revision":"r1","setup_revision":true,"profiles":[{"id":"work","provider":"codex","label":"Example","home":"/accounts/example","auth_revision":"a1","installed":false}]});
         screens.lock().accounts.catalogs.insert(
             local.clone(),
             accounts::CatalogSlot {

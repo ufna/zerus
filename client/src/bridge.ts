@@ -475,6 +475,20 @@ export async function accountEditApply(handle: string, values: AccountEditValues
 export async function accountEditClose(handle: string): Promise<void> {
   if (inTauri()) await invoke("account_edit_close", { handle });
 }
+export type AccountSetupKind="add"|"login"|"install"|"start"|"key";
+export interface AccountSetupHost {key:string;machine:string;label:string;online:boolean;providers:string[];saved:{id:string;provider:string;label:string;installed:boolean}[];listed:string[];deepseek_installed:boolean}
+export interface AccountSetupView {handle:string;kind:AccountSetupKind;hosts:AccountSetupHost[];host:string;provider:string;label:string}
+export interface AccountSetupValues {host?:string;provider?:string;saved?:string;label?:string;api_key?:string}
+export interface AccountSetupResult {notices:string[];errors:string[];profile:string|null}
+export async function accountSetupOpen(kind:AccountSetupKind,account="",profile=""):Promise<AccountSetupView> {
+  if(!inTauri())throw new Error(DESKTOP_ONLY);
+  return invoke("account_setup_open",{kind,account,profile});
+}
+export async function accountSetupApply(handle:string,values:AccountSetupValues):Promise<AccountSetupResult> {
+  if(!inTauri())throw new Error(DESKTOP_ONLY);
+  return invoke("account_setup_apply",{request:{handle,...values}});
+}
+export async function accountSetupClose(handle:string) {if(inTauri())await invoke("account_setup_close",{handle});}
 /** Sessions' explicit account chooser reads catalogs, without profile inspects. */
 export async function accountFiltersView(force = false): Promise<AccountsView> {
   if (!inTauri()) return emptyAccounts([DESKTOP_ONLY]);
