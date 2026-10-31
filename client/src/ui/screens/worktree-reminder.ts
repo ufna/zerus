@@ -1,4 +1,5 @@
 import { WorktreeReadLane } from "./worktree-read-lane";
+import { tr } from "../../i18n";
 export const REMINDER_MS = 300_000;
 export interface ReminderTarget { key: string; computer: string; machine: string; path: string; common: string }
 export interface Reminder { count: number | null; retry_ms: number }
@@ -45,10 +46,10 @@ export function cleanupReminderView(state: unknown, current: boolean, common: st
   const ready = enabled ? count ?? 0 : 0;
   return {
     enabled,
-    label: ready > 0 ? `Clean up (${ready})…` : "Clean up…",
-    title: !enabled ? state !== "ok" || !common ? "Cleanup is available for Git repositories with linked worktrees." : linked ? "Waiting for a current worktree catalog." : "This repository has no linked worktrees."
-      : ready === 1 ? "1 worktree can be removed without losing work. Review it first."
-      : ready > 1 ? `${ready} worktrees can be removed without losing work. Review them first.`
-      : "Review linked worktrees and remove the ones you no longer need.",
+    label: ready > 0 ? tr("Clean up (%1)…", ready) : tr("Clean up…"),
+    title: !enabled ? state !== "ok" || !common ? tr("Cleanup is available for Git repositories with linked worktrees.") : linked ? tr("Waiting for a current worktree catalog.") : tr("This repository has no linked worktrees.")
+      : ready === 1 ? tr("1 worktree can be removed without losing work. Review it first.")
+      : ready > 1 ? tr("%1 worktrees can be removed without losing work. Review them first.", ready)
+      : tr("Review linked worktrees and remove the ones you no longer need."),
   };
 }
