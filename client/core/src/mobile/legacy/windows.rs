@@ -85,7 +85,7 @@ pub fn apply(
     old: &Status,
     action: &str,
     edit: Option<Edit>,
-) -> Result<(Status, &'static str), String> {
+) -> Result<(Status, &'static str), Failure> {
     if status(connector, config)? != *old {
         return Err(CHANGED.into());
     }
@@ -96,10 +96,14 @@ pub fn apply(
         }
         let relay = edit.relay.trim_end_matches('/');
         if !super::super::valid_relay(relay) {
-            return Err("Enter an HTTPS relay URL without credentials, query or fragment.".into());
+            return Err(Failure::Refused(
+                "Enter an HTTPS relay URL without credentials, query or fragment.".into(),
+            ));
         }
         if !edit.replacement.is_empty() && !token(&edit.replacement) {
-            return Err("Supply the computer credential issued by this relay.".into());
+            return Err(Failure::Refused(
+                "Supply the computer credential issued by this relay.".into(),
+            ));
         }
         payload["server_url"] = json!(relay);
         payload["node_token"] = json!(edit.replacement);

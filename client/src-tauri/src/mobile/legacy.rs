@@ -10,8 +10,9 @@ enum Snapshot {
 pub(super) struct Plan {
     handle: String,
     snapshot: Snapshot,
+    form: LegacyForm,
 }
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct LegacyForm {
     handle: String,
     windows: bool,
@@ -37,6 +38,7 @@ pub struct LegacyRequest {
 pub struct LegacyReply {
     form: Option<LegacyForm>,
     notice: String,
+    kind: &'static str,
 }
 struct Active<'a>(&'a AtomicBool);
 impl Drop for Active<'_> {
@@ -72,7 +74,12 @@ impl Inner {
                 if s.encrypted() {
                     return Err(core::ENCRYPTED.into());
                 }
-                (s.exists(), s.relay().to_owned(), s.directory(&home), false)
+                (
+                    s.exists(),
+                    s.relay().to_owned(),
+                    s.directory(&home),
+                    service.status.contains("Connector service: running."),
+                )
             }
             Snapshot::Windows(s) => (
                 s.configured,
@@ -116,7 +123,11 @@ impl Inner {
         *self
             .legacy_plan
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(Plan { handle, snapshot });
+            .unwrap_or_else(PoisonError::into_inner) = Some(Plan {
+            handle,
+            snapshot,
+            form: form.clone(),
+        });
         Ok(form)
     }
     fn legacy_open(&self) -> Result<LegacyForm, String> {
@@ -197,13 +208,12 @@ impl Inner {
         drop(slot);
         // Consumed before parsing/admission or dispatch. An unknown result has no replay handle.
         let (connector, config) = workspace_runtime();
-        let notice = match plan.snapshot {
+        let result = match &plan.snapshot {
             Snapshot::Unix(snapshot) => {
                 if request.action != "save" {
                     return Err(core::CHANGED.into());
                 }
-                core::save(&config, &snapshot, request.edit, &home()?)?;
-                core::SAVED
+                core::save(&config, snapshot, request.edit, &home()?).map(|_| core::SAVED)
             }
             Snapshot::Windows(snapshot) => {
                 if mobile::read_status(&connector, &config)
@@ -217,13 +227,44 @@ impl Inner {
                 } else {
                     None
                 };
-                windows::apply(&connector, &config, &snapshot, &request.action, edit)?.1
+                windows::apply(&connector, &config, snapshot, &request.action, edit)
+                    .map(|answer| answer.1)
             }
         };
-        Ok(LegacyReply {
-            form: None,
-            notice: notice.into(),
-        })
+        self.legacy_complete(plan, result)
+    }
+    fn legacy_complete(
+        &self,
+        mut plan: Plan,
+        result: Result<&'static str, core::Failure>,
+    ) -> Result<LegacyReply, String> {
+        match result {
+            Ok(notice) => Ok(LegacyReply {
+                form: None,
+                notice: notice.into(),
+                kind: if notice.starts_with("Configuration saved privately.") {
+                    "ok"
+                } else {
+                    "muted"
+                },
+            }),
+            Err(core::Failure::Locked(message)) => Err(message),
+            Err(core::Failure::Refused(message)) => {
+                let handle = uuid::Uuid::new_v4().to_string();
+                plan.handle = handle.clone();
+                plan.form.handle = handle;
+                let form = plan.form.clone();
+                *self
+                    .legacy_plan
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = Some(plan);
+                Ok(LegacyReply {
+                    form: Some(form),
+                    notice: message,
+                    kind: "error",
+                })
+            }
+        }
     }
 }
 #[tauri::command(async)]
@@ -300,5 +341,31 @@ mod tests {
         let w=mobile::workspace(serde_json::json!({"state":"active","encrypted":true,"server_url":"https://relay.example.invalid"}).as_object().unwrap());
         i.page().workspace_answered(Ok(w));
         assert_eq!(i.legacy_open().err().unwrap(), core::ENCRYPTED);
+    }
+    #[test]
+    fn validation_rearms_the_original_snapshot_but_changed_sources_stay_locked() {
+        let i = fixture(false);
+        let old = form(&i);
+        let plan = i.legacy_plan.lock().unwrap().take().unwrap();
+        let reply = i
+            .legacy_complete(
+                plan,
+                Err(core::Failure::Refused(
+                    "Use a new receipt directory.".into(),
+                )),
+            )
+            .unwrap();
+        let fresh = reply.form.unwrap();
+        assert_ne!(fresh.handle, old.handle);
+        assert_eq!(fresh.relay, old.relay);
+        assert_eq!(reply.kind, "error");
+        let plan = i.legacy_plan.lock().unwrap().take().unwrap();
+        assert_eq!(
+            i.legacy_complete(plan, Err(core::Failure::Locked(core::CHANGED.into())))
+                .err()
+                .unwrap(),
+            core::CHANGED
+        );
+        assert!(i.legacy_plan.lock().unwrap().is_none());
     }
 }

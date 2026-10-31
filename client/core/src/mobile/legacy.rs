@@ -21,6 +21,10 @@ pub const CHANGED: &str = "Configuration changed outside this editor. Reload bef
 pub const UNKNOWN: &str =
     "Configuration was not confirmed saved. Reload to check; no connector restart was requested.";
 pub const PRIVATE: &str = "Configuration directories must be owned, private and free of symlinks.";
+pub const PRIVATE_FILE: &str =
+    "Connector configuration must be an owned regular private file (0600), at most 64 KiB.";
+pub const NOT_OBJECT: &str = "Connector configuration is not a JSON object.";
+pub const UNREADABLE: &str = "Cannot read private connector configuration; symlinks are refused.";
 pub const ENCRYPTED: &str = "Unavailable while this computer uses an encrypted workspace";
 pub const SAVED: &str = "Configuration saved privately. Changes apply when the connector restarts. Service status does not verify relay connectivity or that this configuration is active.";
 
@@ -30,6 +34,29 @@ pub struct Edit {
     pub relay: String,
     pub replacement: String,
     pub directory: PathBuf,
+}
+/// Only a validation Refused admits correcting the original snapshot.
+#[derive(Debug, PartialEq)]
+pub enum Failure {
+    Refused(String),
+    Locked(String),
+}
+impl Failure {
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Refused(s) | Self::Locked(s) => s,
+        }
+    }
+}
+impl From<String> for Failure {
+    fn from(s: String) -> Self {
+        Self::Locked(s)
+    }
+}
+impl From<&str> for Failure {
+    fn from(s: &str) -> Self {
+        Self::Locked(s.into())
+    }
 }
 #[derive(Default)]
 pub struct Snapshot {
@@ -187,7 +214,7 @@ fn prepare(old: &Snapshot, edit: Edit, home: &Path) -> Result<Prepared, String> 
 pub fn load(path: &Path) -> Result<Snapshot, String> {
     #[cfg(unix)]
     {
-        unix::load(path).map_err(|_| PRIVATE.into())
+        unix::load(path)
     }
     #[cfg(not(unix))]
     {
@@ -195,11 +222,14 @@ pub fn load(path: &Path) -> Result<Snapshot, String> {
         Err(PRIVATE.into())
     }
 }
-pub fn save(path: &Path, old: &Snapshot, edit: Edit, home: &Path) -> Result<Snapshot, String> {
+pub fn save(path: &Path, old: &Snapshot, edit: Edit, home: &Path) -> Result<Snapshot, Failure> {
     #[cfg(unix)]
     {
-        let prepared = prepare(old, edit, home)?;
-        unix::save(path, old, prepared)
+        if old.encrypted() {
+            return Err(Failure::Locked(ENCRYPTED.into()));
+        }
+        let prepared = prepare(old, edit, home).map_err(Failure::Refused)?;
+        unix::save(path, old, prepared).map_err(Failure::Locked)
     }
     #[cfg(not(unix))]
     {

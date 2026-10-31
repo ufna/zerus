@@ -91,9 +91,9 @@ fn read(dir: &File, file: &CString) -> io::Result<Snapshot> {
     let fd = match result {
         Ok(fd) => fd,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Snapshot::default()),
-        Err(e) => return Err(e),
+        Err(_) => return Err(io::Error::other(UNREADABLE)),
     };
-    let m = fd.metadata()?;
+    let m = fd.metadata().map_err(|_| io::Error::other(UNREADABLE))?;
     // SAFETY: geteuid has no preconditions.
     if !m.is_file()
         || m.uid() != unsafe { libc::geteuid() }
@@ -101,16 +101,18 @@ fn read(dir: &File, file: &CString) -> io::Result<Snapshot> {
         || m.nlink() != 1
         || m.len() > 65536
     {
-        return Err(io::ErrorKind::PermissionDenied.into());
+        return Err(io::Error::other(PRIVATE_FILE));
     }
     let mut bytes = Vec::new();
-    fd.take(65537).read_to_end(&mut bytes)?;
+    fd.take(65537)
+        .read_to_end(&mut bytes)
+        .map_err(|_| io::Error::other(UNREADABLE))?;
     if bytes.len() > 65536 {
-        return Err(io::ErrorKind::InvalidData.into());
+        return Err(io::Error::other(PRIVATE_FILE));
     }
-    let object: Value = serde_json::from_slice(&bytes)?;
+    let object: Value = serde_json::from_slice(&bytes).map_err(|_| io::Error::other(NOT_OBJECT))?;
     if !object.is_object() {
-        return Err(io::ErrorKind::InvalidData.into());
+        return Err(io::Error::other(NOT_OBJECT));
     }
     Ok(Snapshot {
         object,
@@ -132,11 +134,11 @@ fn parent(path: &Path, create: bool) -> io::Result<(File, CString)> {
         name(path.file_name().ok_or(io::ErrorKind::InvalidInput)?)?,
     ))
 }
-pub(super) fn load(path: &Path) -> io::Result<Snapshot> {
+pub(super) fn load(path: &Path) -> Result<Snapshot, String> {
     match parent(path, false) {
-        Ok((dir, file)) => read(&dir, &file),
+        Ok((dir, file)) => read(&dir, &file).map_err(|e| e.to_string()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Snapshot::default()),
-        Err(e) => Err(e),
+        Err(_) => Err(PRIVATE.into()),
     }
 }
 fn same(a: &Snapshot, b: &Snapshot) -> bool {
@@ -144,7 +146,7 @@ fn same(a: &Snapshot, b: &Snapshot) -> bool {
 }
 pub(super) fn save(path: &Path, old: &Snapshot, prepared: Prepared) -> Result<Snapshot, String> {
     let (dir, file) = parent(path, true).map_err(|_| PRIVATE)?;
-    if !same(&read(&dir, &file).map_err(|_| PRIVATE)?, old) {
+    if !same(&read(&dir, &file).map_err(|e| e.to_string())?, old) {
         return Err(CHANGED.into());
     }
     let bytes = serde_json::to_vec(&prepared.object).map_err(|_| UNKNOWN)?;

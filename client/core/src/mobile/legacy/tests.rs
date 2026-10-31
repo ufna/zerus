@@ -145,7 +145,8 @@ fn stale_even_byte_identical_replacement_is_refused_before_new_receipts() {
             &p.root
         )
         .err()
-        .unwrap(),
+        .unwrap()
+        .message(),
         CHANGED
     );
     assert!(!p.root.join("new").exists());
@@ -161,11 +162,16 @@ fn encrypted_or_malformed_private_config_never_becomes_a_legacy_edit() {
     assert_eq!(
         save(&p.path, &s, p.edit(OFFICIAL, "", "receipts-one"), &p.root)
             .err()
-            .unwrap(),
+            .unwrap()
+            .message(),
         ENCRYPTED
     );
     fs::write(&p.path, b"{ malformed credential content").unwrap();
-    assert_eq!(load(&p.path).err().unwrap(), PRIVATE);
+    assert_eq!(load(&p.path).err().unwrap(), NOT_OBJECT);
+    fs::write(&p.path, b"[]").unwrap();
+    assert_eq!(load(&p.path).err().unwrap(), NOT_OBJECT);
+    fs::write(&p.path, vec![b' '; 65537]).unwrap();
+    assert_eq!(load(&p.path).err().unwrap(), PRIVATE_FILE);
 }
 #[test]
 fn symlinks_hardlinks_public_files_and_fifo_fail_without_side_effects() {
@@ -176,19 +182,19 @@ fn symlinks_hardlinks_public_files_and_fifo_fail_without_side_effects() {
     fs::write(&other, b"private evidence").unwrap();
     fs::remove_file(&p.path).unwrap();
     symlink(&other, &p.path).unwrap();
-    assert!(load(&p.path).is_err());
+    assert_eq!(load(&p.path).err().unwrap(), UNREADABLE);
     fs::remove_file(&p.path).unwrap();
     fs::hard_link(&other, &p.path).unwrap();
-    assert!(load(&p.path).is_err());
+    assert_eq!(load(&p.path).err().unwrap(), PRIVATE_FILE);
     fs::remove_file(&p.path).unwrap();
     fs::write(&p.path, b"{}").unwrap();
     fs::set_permissions(&p.path, fs::Permissions::from_mode(0o644)).unwrap();
-    assert!(load(&p.path).is_err());
+    assert_eq!(load(&p.path).err().unwrap(), PRIVATE_FILE);
     fs::remove_file(&p.path).unwrap();
     let c = std::ffi::CString::new(p.path.as_os_str().as_encoded_bytes()).unwrap();
     // SAFETY: an owned scratch path, valid NUL-terminated string and private FIFO mode.
     assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
-    assert!(load(&p.path).is_err());
+    assert_eq!(load(&p.path).err().unwrap(), PRIVATE_FILE);
     assert_eq!(fs::read(&other).unwrap(), b"private evidence");
 }
 #[test]

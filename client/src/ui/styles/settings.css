@@ -63,6 +63,7 @@
   .ws-enroll {border-top: 1px solid var(--z-color-divider); margin-top: 4px; }
   .ws-enroll .set-row {padding: 8px 0; }
   .ws-enroll .set-wide-field, .set-legacy .set-wide-field {width: 380px; max-width: 100%; }
+  .set-disclosure {align-self: flex-start; padding-left: 4px; }
   .set-legacy p {font-size: var(--fs-sm); }
   .set-legacy .small-path {font-size: var(--fs-xs); }
   .ws-invite {border-top: 1px solid var(--z-color-divider); margin-top: 4px; padding-top: 4px; }

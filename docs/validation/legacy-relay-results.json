@@ -6,9 +6,9 @@
     "core_lib_passed": 1054,
     "core_lib_existing_ignored": 4,
     "legacy_unix_and_service": 9,
-    "windows_manager_protocol": 4,
-    "native_mobile": 23,
-    "frontend_passed": 2248,
+    "windows_manager_protocol": 5,
+    "native_mobile": 24,
+    "frontend_passed": 2249,
     "frontend_existing_skip": 1,
     "phase4_steps": 18,
     "entry_bytes": 459442,
@@ -28,8 +28,10 @@
     "restart_hidden_for_unsafe_kill_mode": true,
     "protection_copy_toast": true,
     "encrypted_config_refused_and_disclosure_closed": true,
-    "credential_inputs": 2,
-    "credential_leak_findings_outside_intended_private_configuration": 0
+    "credential_inputs": 3,
+    "credential_leak_findings_outside_intended_private_configuration": 0,
+    "validation_refusal_keeps_fields_and_ready": true,
+    "private_file_error_matches_qt": true
   },
   "limitations": [
     "Windows management protocol was exercised with a fake manager on Linux and cross-compiled; no native Windows runtime claim.",
@@ -38,31 +40,40 @@
   "captures": [
     {
       "file": "legacy-relay-open.png",
-      "sha256": "040f7f86955372d752825c5c7f6a603450d33689cc24308242624c4f1b184ff9"
+      "sha256": "9016c1d6938ca831a6c7f3d8a934bf29819f238dd97ef57af204be25ea632d94"
     },
     {
       "file": "legacy-relay-saved.png",
-      "sha256": "3de67af45660a77f3c3c493f2187dc999a2a90b5c2b73d4c7898cbfe48a66823"
+      "sha256": "372281554bc6afa9117e922119386278202a62c8d714cedd42012a2e2cd4b7a6"
     },
     {
       "file": "legacy-relay-stale.png",
-      "sha256": "754ae8f051ab4dbff18cb5225369acd54a6bd6baad7b0790fdff66142f310f69"
+      "sha256": "11f50c844e7b9e64c070c56a9413dd0605a3f70c3f98d26cf51b8f4bff75965e"
     },
     {
       "file": "legacy-relay-new-binding.png",
-      "sha256": "acc40a6ec5249ab49932e37f4bcb0c3f07c5a92d33a52be78d5a880f73ed3f21"
+      "sha256": "6c45d488fc74126dcb4ae046d7a39d433b7d79423a1198243fab366be57d671f"
     },
     {
       "file": "legacy-relay-protection.png",
-      "sha256": "18b486730c76e5be0bdb7c0c63533f7b001bf848093cf2a496b56ce35c5e09cb"
+      "sha256": "9770948fa98dda6ca59181df9bb3ad7da07eea5f943a66114876b13f98ed4526"
     },
     {
       "file": "legacy-relay-copy.png",
-      "sha256": "93082f6152bbbfe1d678fd36e58d7179fa42e51f12f146fe245a987c7141d213"
+      "sha256": "da126fdd8a0f3fe31e1ef5e470d329d0ab0fbf6f8b19a83a969fd11ed06100f2"
     },
     {
       "file": "legacy-relay-encrypted.png",
-      "sha256": "b5194635e219ba4b4db5934a11ba3077c0fcffe35786c421614824b448ddeb5f"
+      "sha256": "dfa43bf6324e53f6258b69311bb776c0a2ceff0bf86d426ca5841cf83dd2cc9e"
+    },
+    {
+      "file": "legacy-relay-validation.png",
+      "sha256": "22c1fce5f47a9ca91033e12fb24616e7752b8101db4491fee5915bc6de22f26f"
+    },
+    {
+      "file": "legacy-relay-private-file.png",
+      "sha256": "a63f6c993c9d33d2322c6a21576146b844857d70ff70ad23d50d7d84d089701b"
     }
-  ]
+  ],
+  "review_delta": "R1 disclosure left alignment; R2 Windows status/drain placement; R3 status kinds; R4 typed validation refusal re-arms the same snapshot, uncertain/changed stays locked; R5 exact private-file/read/JSON errors."
 }

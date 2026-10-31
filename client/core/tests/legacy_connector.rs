@@ -10,7 +10,6 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        use std::os::unix::fs::PermissionsExt;
         let root = std::env::temp_dir().join(format!(
             "legacy-manager-{}-{}",
             std::process::id(),
@@ -20,19 +19,12 @@ impl Fixture {
                 .as_nanos()
         ));
         fs::create_dir(&root).unwrap();
-        let exe = root.join("connector");
-        fs::copy(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/fake_legacy_manager.py"),
-            &exe,
-        )
-        .unwrap();
-        fs::set_permissions(exe, fs::Permissions::from_mode(0o700)).unwrap();
         let config = root.join("config.json");
         fs::write(&config,serde_json::json!({"configured":true,"running":false,"revision":"a".repeat(64),"generation":null,"server_url":"https://relay.example.invalid","state_dir":"example-receipts","startup_at_login":false}).to_string()).unwrap();
         Self { root, config }
     }
     fn exe(&self) -> PathBuf {
-        self.root.join("connector")
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/fake_legacy_manager.py")
     }
     fn calls(&self) -> Vec<serde_json::Value> {
         fs::read_to_string(self.root.join("calls"))
@@ -46,6 +38,28 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+#[test]
+fn validation_is_rearmable_only_after_the_fresh_windows_status_matches() {
+    let f = Fixture::new();
+    let old = windows::status(&f.exe(), &f.config).unwrap();
+    let edit = || {
+        Some(legacy::Edit {
+            relay: "http://relay.example.invalid".into(),
+            replacement: String::new(),
+            directory: PathBuf::new(),
+        })
+    };
+    assert!(matches!(
+        windows::apply(&f.exe(), &f.config, &old, "save", edit()),
+        Err(legacy::Failure::Refused(_))
+    ));
+    assert!(f.calls().iter().all(|v| v["action"] == "status"));
+    fs::write(f.root.join("mode"), "bad-status").unwrap();
+    assert!(matches!(
+        windows::apply(&f.exe(), &f.config, &old, "save", edit()),
+        Err(legacy::Failure::Locked(_))
+    ));
 }
 #[test]
 fn windows_save_uses_stdin_after_exact_revision_and_never_echoes_the_token() {
@@ -99,7 +113,8 @@ fn a_stale_snapshot_refuses_before_any_effect() {
     assert_eq!(
         windows::apply(&f.exe(), &f.config, &old, "start", None)
             .err()
-            .unwrap(),
+            .unwrap()
+            .message(),
         legacy::CHANGED
     );
     assert!(f.calls().iter().all(|v| v["action"] == "status"));
@@ -112,7 +127,8 @@ fn unknown_effect_and_untrusted_status_never_surface_output_or_replay() {
     assert_eq!(
         windows::apply(&f.exe(), &f.config, &old, "start", None)
             .err()
-            .unwrap(),
+            .unwrap()
+            .message(),
         windows::UNCONFIRMED
     );
     assert_eq!(
