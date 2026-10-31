@@ -598,7 +598,10 @@ and Details for the native Git reason `Locked by Git: Zerus quit hold <hold-uuid
 A person running Git also sees why the worktree is locked. Existing Quit/cleanup
 Review navigation can open that row. The new exact review/release surface needs
 webui's explicit ruling before UI implementation; no Unlock button, new area or
-old consent is introduced here. An ordinary Git unlock outside this protocol is
+old consent is introduced here. **No hold-installing or delivery runtime may
+reach users before the reviewed release surface is agreed and shipped in the
+same or an earlier build.** This is an enablement gate, not later UI debt. An
+ordinary Git unlock outside this protocol is
 not repair: lost/unknown restriction remains for manual review under a fresh
 owner-directed boundary.
 
@@ -610,7 +613,8 @@ archive Restore and new registration. Include:
 - matching V2/V2, private-V2/marker-V1, private-V1/marker-V2 and missing/replaced
   cuts, both the same and older configurations and stale archive/approval data;
 - existing and missing checkouts with retained Git metadata, foreign locks,
-  attempted ordinary/forced removal or pruning, and original branch/archive
+  ordinary removal, single and double `--force`, every unlock/prune variant,
+  and original branch/archive
   identity throughout;
 - paused readers/removers resumed at every decisive boundary, before/after first
   lock publication, each record fsync and verified/unknown release;

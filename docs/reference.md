@@ -302,7 +302,9 @@ either version-2 ownership write: private legacy CLI controls showed that
 version-2 refusal alone does not fence fresh old manual removal. Worktrees retains
 the existing Blocked/locked reason. Exact new review/release semantics and the full
 legacy caller, partial-cut and crash/restart matrix remain separate gates; no
-runtime hold or unlock is implemented.
+runtime hold or unlock is implemented. Hold installation and delivery must not
+ship before the reviewed release surface is available in the same or an earlier
+build.
 
 The proposed store and capture spool are excluded from all exports, diagnostics
 bundles and Private analytics aggregate export and are never uploaded. Logging
