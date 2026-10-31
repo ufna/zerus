@@ -8,7 +8,6 @@ import {createWorkspaceEnrollment,enrollmentLabel,STOP_UNAVAILABLE,relayError,co
 import {createConnectorActions,canStartConnector,canStopConnector} from "./connector-actions";
 import ComputerInvitations from "./ComputerInvitations";
 const WorkspaceConfirm=lazy(()=>import("./WorkspaceConfirm"));
-const ConnectorConfirm=lazy(()=>import("./ConnectorConfirm"));
 export default function WorkspacePanel(props:{view?:View;refresh:(afterAction?:boolean)=>void}){
  let submit!:HTMLButtonElement;
  const read=()=>props.view?.workspace,reading=()=>!!props.view?.workspace_busy;
@@ -46,6 +45,5 @@ export default function WorkspacePanel(props:{view?:View;refresh:(afterAction?:b
   <Show when={notice()}><Status>{notice()}</Status></Show>
   </Group>
   <Show when={actions.prompt()}>{prompt=><Suspense><WorkspaceConfirm prompt={prompt()} actions={actions}/></Suspense>}</Show>
-  <Show when={connector.prompt()}>{prompt=><Suspense><ConnectorConfirm prompt={prompt()} actions={connector}/></Suspense>}</Show>
  </>;
 }
