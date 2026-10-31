@@ -558,9 +558,15 @@ fn start_with_badge(
     }
     let mut badge_streams = Vec::new();
     if let Some(scope) = &badge {
-        for service in SHELLS {
-            badge_streams.push(badge::ShellStream::new(&connection, service, scope)?);
-        }
+        let prepared = SHELLS
+            .into_iter()
+            .map(|service| badge::ShellStream::prepare(&connection, service, scope))
+            .collect::<zbus::Result<Vec<_>>>()?;
+        badge_streams.extend(
+            prepared
+                .into_iter()
+                .map(|stream| stream.activate(&connection)),
+        );
     }
     let bus = connection.clone();
     let state = tray.clone();
