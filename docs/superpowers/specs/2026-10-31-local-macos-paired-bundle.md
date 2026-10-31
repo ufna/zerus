@@ -1,6 +1,6 @@
 # Local macOS paired bundle
 
-Status: proposed; scoped desktop and webui agreement required before code.
+Status: amended proposal; re-pinned desktop and webui agreement required before code.
 Engineering task: `zerus-5wmh.66.3.25.2`, under G1 (`zerus-5wmh.66.3.25`).
 
 ## Problem and boundary
@@ -36,6 +36,23 @@ type. Do not replace the PATH binary with a link into a swappable bundle.
 Existing agents and services continue using the ordinary CLI installation.
 Qt installation and public hardened/notarized packaging retain their policies.
 
+The CLI's Unix `executable_path()` and `runner_executable()` honor
+`HGS_EXECUTABLE`; otherwise they retain the invoked executable in durable
+recipes, pane environments, supervisors and registration previews. Merely
+switching the GUI to the bundled CLI would therefore record a path inside the
+app that the updater swaps. Every production child invocation through the
+bundled CLI must explicitly carry the installer-verified stable PATH CLI in
+that child's `HGS_EXECUTABLE`. This applies to launch, fork, resume, watch,
+detached helpers and ordinary service registration, including indirect calls.
+Do not set a process-global discovery variable to achieve it. Slice 3 must
+inventory every invocation path and prove that a session launched, forked or
+resumed through the paired GUI never records an app-internal executable in its
+recipe, pane environment or runner. Missing or unverified stable selection
+refuses the operation rather than using the app path as a durable fallback.
+Existing explicit CLI selections retain their ordinary behavior. Any future
+native service registration using a paired executable is a separate G1-owned
+decision; this installer grants no such registration or startup authority.
+
 The source CLI comes from the matching root Cargo build in the same checkout,
 not arbitrary PATH discovery. The installer builds the CLI with Cargo's locked
 dependencies and retains its artifact hash with the GUI build/source identity.
@@ -46,6 +63,16 @@ hashes. Existing exact-main `ZERUS_DEV_BUILD_NUMBER` and branch
 `ZERUS_LOCAL_PREVIEW_LABEL` rules still apply; the pair does not invent a channel
 or alter version strings. Build both binaries before preparing their private
 staged copy. No signing operation modifies the build-tree CLI or PATH copy.
+
+Before any app replacement or LaunchAgent write, the paired installer requires
+the stable PATH CLI to be a regular independent executable whose bytes have
+the same SHA-256 as the build-tree artifact it will copy and sign. A mismatch
+refuses with one actionable line: run `./install.sh` (or `mac-install.sh`) from
+this checkout first. The remote maintained installer already runs root
+`install.sh` first. This prevents a GUI-only update from silently leaving
+agents, hooks and services on a different CLI. A later independent CLI update
+or bundle rollback may still create skew; it must be observable as described
+below and must not silently change durable executable paths.
 
 ## Preparation and signing
 
@@ -75,6 +102,14 @@ from peer input. Preserve mutual app designated-requirement compatibility with
 the installed app. If the previous app contains a signed paired CLI, check its
 CLI continuity too; a previous unpaired app needs only existing app continuity.
 
+Record the CLI's build-tree SHA-256 before signing and its signed SHA-256 after
+signing, in `Contents/Resources/zerus-local-pair.json`, before signing the app.
+The outer signature seals that descriptive pair record. The build-tree hash
+identifies the untouched input artifact, including any toolchain ad hoc
+signature; it does not assert that the input had no signature. Validate the
+record against the staged leaf before publishing the prepared output. No
+record or hash replaces the runtime selector's independent signature checks.
+
 Apple's [TN2206](https://developer.apple.com/library/archive/technotes/tn2206/_index.html)
 describes signing nested code before its enclosing bundle and verifying with
 `--deep --strict`. Existing app continuity follows
@@ -96,6 +131,8 @@ The existing Qt default already selects its bundled CLI when present and then
 falls back to the user's CLI install directories even with launchd's bare PATH
 (`tray/src/main.cpp`, `AppConfig.cpp`). Thus rollback to an old unpaired Qt app
 still works with that registration, without pointing to a missing bundled CLI.
+An older unpaired Tauri rollback likewise uses `core::default_hgs()`'s PATH,
+user CLI and Homebrew fallback chain.
 Keep the current explicit external argument for ordinary Qt installs.
 Preserve user-authored explicit `--hgs`
 and `ZERUS_CLIENT_HGS` selection for existing CLI behavior and fixtures.
@@ -103,12 +140,26 @@ An explicit external override never establishes native authority: that future
 authority must come from the independent verified own-bundle selector and exact
 direct peer, without substituting an executable path for trust.
 
+The no-`--hgs` registration is allowed only if the resolved stable `HGS_BIN`
+equals the first existing candidate in the shared rollback fallback chain:
+the managed registration's verified launchd PATH, then the user's `.local/bin`,
+`/opt/homebrew/bin` and `/usr/local/bin`. Do not use the installer's interactive
+PATH as launchd evidence. An unknown launchd PATH or a selected CLI outside
+that chain refuses paired installation before any app replacement or plist
+write. This protects both Qt and unpaired Tauri rollback from silently opening
+with an empty fleet or selecting a different CLI.
+
 Keep ordinary unbundled/Linux/Windows discovery unchanged. Do not make core
 library users such as bare `hgs` infer native trust from a sibling file. Any
 shared discovery helper takes a descriptive path only, returns no authority,
 and needs independent native/security review before wiring. Current service
 registration is unchanged; launching a paired service for native admission is
 desktop's later integration work, not an installer side effect.
+
+Keep sibling preference inside the GUI process's selected-path state. Do not
+export `ZERUS_CLIENT_HGS` for that implicit choice: terminals and other GUI
+children inherit environment variables. Explicit user-authored overrides keep
+their current precedence and meaning.
 
 ## Install, update and rollback
 
@@ -127,6 +178,21 @@ restores that bundle's CLI along with its GUI. An older unpaired Qt rollback
 continues to find the independent PATH CLI through its existing fallback; the
 paired registration contains no CLI path that becomes invalid. Review this
 exact direction before wiring.
+
+Slice 3 also extends the existing build provenance with the bundled CLI's
+build-tree and signed SHA-256 beside the GUI source identity, and exposes the
+same descriptive pair through `--build-info`. Coordination can then compare
+the running build and `build-provenance.json` before replacing it. The updater
+summary names which CLI the new or restored app will run on both swap and
+rollback, including fallback for an older unpaired app. Missing pair metadata
+on an old app is reported as unavailable, never fabricated.
+
+Settings > About must identify the CLI the app runs: bundled or an explicit
+path. If the stable PATH CLI used by sessions differs, show both selections
+and versions rather than suggesting they are one CLI. Exact copy and placement
+need webui review against the existing About screen in slice 3, with catalog
+strings and Russian translations and no dot separators. This is an acceptance
+criterion, not an approved UI implementation in the design-only slice.
 
 Scratch preparation is a separate stage, not `HGS_TRAY_RESTART=0`: that flag can
 still replace an installation and touch registration. The scratch entry point
@@ -157,6 +223,12 @@ their controls; a skipped native suite never qualifies signing or running-self.
 Required negative controls include missing/non-Mach-O CLI, third nested code,
 links, wrong or empty team, ad hoc/unsupported certificate, signing failure,
 app/CLI continuity failure, source mismatch, and tampering after sealing.
+Slice 3 additionally requires wrong PATH/build hash refusal before mutation,
+unknown or out-of-chain fallback refusal, paired-launch/fork/resume stable
+durable-path controls, paired-to-unpaired Qt and Tauri rollback, About selection
+and skew presentation, sealed pair metadata and updater provenance/summary
+checks. Test the per-child environment across each production invocation path;
+an indirect helper must not bypass the stable recipe invariant.
 Native signer tests use two distinct synthetic app/CLI images and changed
 rebuilds; require strict whole-pair validation and refusal after tampering.
 The real running-self selector, current connections and resource lifetimes
