@@ -16632,13 +16632,15 @@ Installed package: %2</source>
       <location filename="../src/UpdateController.cpp" line="238" />
       <source>Homebrew cask: %1
 Installed version: %2</source>
-      <translation type="unfinished" />
+      <translation>Homebrew cask: %1
+Установленная версия: %2</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="239" />
       <source>macOS app installed from a download
 Installed version: %1</source>
-      <translation type="unfinished" />
+      <translation>Приложение macOS, установленное из загрузки
+Установленная версия: %1</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="240" />
@@ -16654,17 +16656,18 @@ Installed version: %1</source>
       <location filename="../src/UpdateController.cpp" line="242" />
       <source>winget package %1
 Portable Windows build %2</source>
-      <translation type="unfinished" />
+      <translation>Пакет winget %1
+Переносимая сборка для Windows %2</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="243" />
       <source>Portable Windows build %1. Download newer builds from the release page.</source>
-      <translation type="unfinished" />
+      <translation>Переносимая сборка для Windows %1. Новые сборки загружайте со страницы выпуска.</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="244" />
       <source>Windows build %1, installed for this user by the Zerus installer. It does not update itself yet; download newer builds from the release page.</source>
-      <translation type="unfinished" />
+      <translation>Сборка для Windows %1, установленная для этого пользователя установщиком Zerus. Пока она не обновляется сама; новые сборки загружайте со страницы выпуска.</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="245" />
@@ -16681,23 +16684,23 @@ System: Arch-based Linux</source>
     <message>
       <location filename="../src/UpdateController.cpp" line="248" />
       <source>Check for updates to see the available macOS build and update instructions.</source>
-      <translation type="unfinished" />
+      <translation>Проверьте обновления, чтобы увидеть доступную сборку для macOS и инструкции по обновлению.</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="249" />
       <location filename="../src/UpdateController.cpp" line="357" />
       <source>No macOS build is published in this channel yet. Choose another channel.</source>
-      <translation type="unfinished" />
+      <translation>В этом канале пока нет сборки для macOS. Выберите другой канал.</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="251" />
       <source>Download and extract the ZIP.</source>
-      <translation type="unfinished" />
+      <translation>Загрузите и распакуйте ZIP-архив.</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="251" />
       <source>Download and open the DMG.</source>
-      <translation type="unfinished" />
+      <translation>Загрузите и откройте DMG-образ.</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="252" />
@@ -16712,17 +16715,17 @@ System: Arch-based Linux</source>
     <message>
       <location filename="../src/UpdateController.cpp" line="258" />
       <source>Copy Homebrew command</source>
-      <translation type="unfinished" />
+      <translation>Скопировать команду Homebrew</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="259" />
       <source>Run this in Terminal. Homebrew replaces Zerus.app without quitting Zerus, agents or tmux; then choose Restart to finish update.</source>
-      <translation type="unfinished" />
+      <translation>Выполните её в Терминале. Homebrew заменит Zerus.app, не завершая Zerus, агентов и tmux; затем выберите «Перезапустить», чтобы завершить обновление.</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="264" />
       <source>winget carries stable releases only. Choose the stable channel for its update command.</source>
-      <translation type="unfinished" />
+      <translation>В winget есть только стабильные выпуски. Выберите стабильный канал, чтобы получить команду обновления.</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="265" />
@@ -16732,12 +16735,12 @@ System: Arch-based Linux</source>
     <message>
       <location filename="../src/UpdateController.cpp" line="265" />
       <source>Copy winget command</source>
-      <translation type="unfinished" />
+      <translation>Скопировать команду winget</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="266" />
       <source>Quit Zerus from its notification area menu, then run this in PowerShell or Command Prompt. winget lists a release once its manifest is accepted, which can take a while after GitHub. Agents and local sessions keep running.</source>
-      <translation type="unfinished" />
+      <translation>Завершите Zerus из меню в области уведомлений, затем выполните её в PowerShell или командной строке. winget показывает выпуск после принятия его манифеста, что может занять время после публикации на GitHub. Агенты и локальные сессии продолжат работу.</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="270" />
@@ -16772,7 +16775,7 @@ System: Arch-based Linux</source>
     <message>
       <location filename="../src/UpdateController.cpp" line="273" />
       <source>No supported update command is available for this installation. See the installation instructions.</source>
-      <translation type="unfinished" />
+      <translation>Для этой установки нет поддерживаемой команды обновления. См. инструкции по установке.</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="339" />
@@ -16782,92 +16785,92 @@ System: Arch-based Linux</source>
     <message>
       <location filename="../src/UpdateController.cpp" line="343" />
       <source>Dev builds do not include a Windows build yet. Choose the stable or nightly channel to hear about newer Windows builds.</source>
-      <translation type="unfinished" />
+      <translation>Сборки dev пока не включают сборку для Windows. Выберите стабильный или ночной канал, чтобы узнавать о новых сборках для Windows.</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="345" />
       <source>Zerus %1 is available. Quit Zerus, then update it with winget.</source>
-      <translation type="unfinished" />
+      <translation>Доступен Zerus %1. Завершите Zerus, затем обновите его через winget.</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="346" />
       <source>Zerus %1 is available. Download its Windows zip from the release page.</source>
-      <translation type="unfinished" />
+      <translation>Доступен Zerus %1. Загрузите его ZIP-архив для Windows со страницы выпуска.</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="348" />
       <source>Zerus %1 has no Windows build; stable releases after it carry one. Until then, choose the nightly channel to hear about newer Windows builds.</source>
-      <translation type="unfinished" />
+      <translation>У Zerus %1 нет сборки для Windows; она есть в стабильных выпусках после него. До тех пор выберите ночной канал, чтобы узнавать о новых сборках для Windows.</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="349" />
       <source>This Windows build does not update itself yet, and no newer stable release is published.</source>
-      <translation type="unfinished" />
+      <translation>Эта сборка для Windows пока не обновляется сама, а более нового стабильного выпуска нет.</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="350" />
       <source>Portable Windows build: there is no self-update, and no newer stable release is published.</source>
-      <translation type="unfinished" />
+      <translation>Переносимая сборка для Windows: самообновления нет, а более нового стабильного выпуска нет.</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="352" />
       <source>Zerus nightly %1 is available. Download its Windows zip from the release page.</source>
-      <translation type="unfinished" />
+      <translation>Доступна ночная сборка Zerus %1. Загрузите её ZIP-архив для Windows со страницы выпуска.</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="353" />
       <source>This Windows build does not update itself yet, and nightly builds of the same version cannot be compared. The release page has the newest Windows zip.</source>
-      <translation type="unfinished" />
+      <translation>Эта сборка для Windows пока не обновляется сама, а ночные сборки одной версии нельзя сравнить. Новейший ZIP-архив для Windows есть на странице выпуска.</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="354" />
       <source>Portable Windows build: there is no self-update, and nightly builds of the same version cannot be compared. The release page has the newest Windows zip.</source>
-      <translation type="unfinished" />
+      <translation>Переносимая сборка для Windows: самообновления нет, а ночные сборки одной версии нельзя сравнить. Новейший ZIP-архив для Windows есть на странице выпуска.</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="360" />
       <source>This installation follows %1 builds. To switch to %2, run: %3</source>
-      <translation type="unfinished" />
+      <translation>Эта установка следует сборкам канала %1. Чтобы перейти на %2, выполните: %3</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="361" />
       <source>This installation follows %1 builds. Download the %2 macOS app to switch channels.</source>
-      <translation type="unfinished" />
+      <translation>Эта установка следует сборкам канала %1. Чтобы сменить канал, загрузите приложение macOS канала %2.</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="363" />
       <source>Installed macOS build is at least as new as this release.</source>
-      <translation type="unfinished" />
+      <translation>Установленная сборка для macOS не старше этого выпуска.</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="364" />
       <source>Update available. Run %1; the Homebrew tap may still be propagating.</source>
-      <translation type="unfinished" />
+      <translation>Доступно обновление. Выполните %1; tap Homebrew может ещё обновляться.</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="365" />
       <source>Update available. Download the macOS app and replace Zerus in Applications.</source>
-      <translation type="unfinished" />
+      <translation>Доступно обновление. Загрузите приложение macOS и замените Zerus в «Программах».</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="367" />
       <source>Verified main build %1 is published. Use its source or platform package to update this installation.</source>
-      <translation type="unfinished" />
+      <translation>Опубликована проверенная сборка main %1. Обновите эту установку из её исходников или пакета для платформы.</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="370" />
       <source>No macOS build is published in this channel yet. This local build can be updated from source.</source>
-      <translation type="unfinished" />
+      <translation>В этом канале пока нет сборки для macOS. Эту локальную сборку можно обновить из исходников.</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="372" />
       <source>Update available for this local build. Rebuild it, or install the Homebrew cask: %1</source>
-      <translation type="unfinished" />
+      <translation>Для этой локальной сборки доступно обновление. Пересоберите её или установите cask Homebrew: %1</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="373" />
       <source>Local build: release freshness is unconfirmed. Rebuild deliberately, or install the Homebrew cask: %1</source>
-      <translation type="unfinished" />
+      <translation>Локальная сборка: актуальность выпуска не подтверждена. Пересоберите её осознанно или установите cask Homebrew: %1</translation>
     </message>
     <message>
       <location filename="../src/UpdateController.cpp" line="376" />
@@ -16941,7 +16944,7 @@ System: Arch-based Linux</source>
       <location filename="../src/UpdatesWidget.h" line="73" />
       <location filename="../src/UpdatesWidget.h" line="191" />
       <source>View release</source>
-      <translation type="unfinished" />
+      <translation>Открыть выпуск</translation>
     </message>
     <message>
       <location filename="../src/UpdatesWidget.h" line="87" />
@@ -17008,32 +17011,32 @@ System: Arch-based Linux</source>
     <message>
       <location filename="../src/UpdatesWidget.h" line="191" />
       <source>View build</source>
-      <translation type="unfinished" />
+      <translation>Открыть сборку</translation>
     </message>
     <message>
       <location filename="../src/UpdatesWidget.h" line="192" />
       <source>Download macOS ZIP</source>
-      <translation type="unfinished" />
+      <translation>Загрузить ZIP для macOS</translation>
     </message>
     <message>
       <location filename="../src/UpdatesWidget.h" line="192" />
       <source>Download DMG</source>
-      <translation type="unfinished" />
+      <translation>Загрузить DMG</translation>
     </message>
     <message>
       <location filename="../src/UpdatesWidget.h" line="192" />
       <source>Download dev package</source>
-      <translation type="unfinished" />
+      <translation>Загрузить пакет dev</translation>
     </message>
     <message>
       <location filename="../src/UpdatesWidget.h" line="192" />
       <source>Download dev source</source>
-      <translation type="unfinished" />
+      <translation>Загрузить исходники dev</translation>
     </message>
     <message>
       <location filename="../src/UpdatesWidget.h" line="194" />
       <source>Checking for updates…</source>
-      <translation type="unfinished" />
+      <translation>Проверка обновлений…</translation>
     </message>
     <message>
       <location filename="../src/UpdatesWidget.h" line="194" />
@@ -17043,12 +17046,12 @@ System: Arch-based Linux</source>
     <message>
       <location filename="../src/UpdatesWidget.h" line="194" />
       <source>Release status</source>
-      <translation type="unfinished" />
+      <translation>Состояние выпуска</translation>
     </message>
     <message>
       <location filename="../src/UpdatesWidget.h" line="194" />
       <source>Updates have not been checked</source>
-      <translation type="unfinished" />
+      <translation>Обновления не проверялись</translation>
     </message>
     <message>
       <location filename="../src/UpdatesWidget.h" line="195" />
