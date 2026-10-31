@@ -140,7 +140,13 @@ export async function worktreeReviewSmoke(allowed: boolean, projects = false, na
     require(!document.querySelector<HTMLInputElement>(".worktree-review .check input")!.checked, "branch consent was remembered");
     await log("ESCAPE_REVIEW"); await until(() => !worktreeReviewDialog(), "Escape did not close the review");
     await until(() => document.activeElement === cleanupButton(), "review focus did not return");
-    await until(() => !cleanupButton()!.disabled, "catalog not refreshed"); await menu("/unknown"); button(".menu", "Remove worktree…")!.click();
+    await until(() => !cleanupButton()!.disabled, "catalog not refreshed");
+    if (projects) {
+      await until(() => cleanupButton()?.textContent?.trim() === "Clean up (1)…", "changed review did not recount immediately");
+      require(cleanupButton()!.title === "1 worktree can be removed without losing work. Review it first.", "recount lost its singular review-first tooltip");
+      await log("RECOUNT");
+    }
+    await menu("/unknown"); button(".menu", "Remove worktree…")!.click();
     await until(() => worktreeReview()?.rows.length === 1 && worktreeReview()?.unknown, "unknown outcome not retained after reopening");
     require(button(".worktree-review", "Remove selected…")!.disabled && button(".worktree-review", "Review again")!.disabled, "unknown offered a retry");
     await log("UNKNOWN_REOPEN"); await sleep(500); button(".worktree-review", "Close")!.click();
