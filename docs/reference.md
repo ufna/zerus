@@ -1608,6 +1608,15 @@ installing its update, or it has exited and the session needs a resume. An
 older host's receipt has no `codex_update`; the desktop then only switches to
 Terminal.
 
+Codex's **Approaching rate limits** chooser also appears in Activity and on the
+phone after a turn. Its reviewed **Switch to gpt-6-luna**, **Keep current model**
+and **Keep current model (never show again)** choices use the exact guarded native
+answer path. Zerus never selects one automatically. A changed or incomplete
+chooser stays **Needs input** with an **Open Terminal** hint; it never authorizes
+a model change or an ordinary message. Each answer pins the process, run,
+conversation and complete panel before every key, and uncertain delivery is never
+replayed.
+
 After a resume, Codex asks **Resume paused goal?** when the conversation's goal
 is paused, stalled or limited by usage. Activity shows the goal from Codex's goal
 database once the centered dialog over the transcript shows the same goal and

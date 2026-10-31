@@ -53,7 +53,7 @@ const AUTHORED: [&str; 7] = [
     "claude_native_question",
 ];
 /// Sources only Terminal can answer while the host cannot.
-const TERMINAL_ONLY: [&str; 7] = [
+const TERMINAL_ONLY: [&str; 8] = [
     "claude_tool_approval",
     "kimi_tool_approval",
     "claude_terminal_choice",
@@ -61,6 +61,7 @@ const TERMINAL_ONLY: [&str; 7] = [
     "claude_terminal_safety",
     "claude_usage_limit",
     "startup_terminal_choice",
+    "codex_rate_limit",
 ];
 /// Native cards whose body refreshes in place (`refreshNativeBody`).
 const REFRESHED: [&str; 3] = [

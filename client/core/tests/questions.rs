@@ -799,6 +799,21 @@ fn read_only_cards_disable_their_options() {
 }
 
 #[test]
+fn changed_codex_rate_limit_card_opens_terminal_without_answer_options() {
+    let form = question(
+        json!({"question_id":"codex-rate-limit:fixture","question_hash":"fixture",
+        "source":"codex_rate_limit","can_answer":false,
+        "answer_unavailable_reason":"This Codex chooser changed or is incomplete. Open Terminal to answer it.",
+        "questions":[{"id":"codex_rate_limit","question":"Approaching rate limits",
+            "body":"Future native chooser text","options":[]}]}),
+    );
+    let view = card(&form, &AnswerDraft::default(), &ctx());
+    assert!(!view.submit.visible);
+    assert!(view.status.contains("Open Terminal"));
+    assert!(view.forms.iter().all(|form| form.options.is_empty()));
+}
+
+#[test]
 fn a_body_refresh_keeps_the_form() {
     let old = approval_choices();
     let mut raw = old.raw.clone();
