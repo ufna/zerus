@@ -1,8 +1,9 @@
 //! Dormant startup resources only: no stores, payloads, mappings or app sink.
 //! The once-only async-io reactor is shared process infrastructure. Every
 //! per-startup socket/task/waker/capture must still end before CleanExit/join.
-//! Raw16 bounds item count only; zbus's 128MiB frame allowance remains a
-//! separate production ingress/memory gate. This supplies no role permission.
+//! Raw16 bounds item count; ingress separately caps serialized wire/text.
+//! Decoded SDK metadata/allocator memory remains an open production gate.
+//! This supplies no role permission.
 #![allow(dead_code)] // No production constructor caller until G1 qualification.
 use crate::notifier::accounting::{Completion, Control as AccountingControl, Resources};
 use std::sync::{
@@ -13,6 +14,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use zerus_client_core::desktop::drain::{Charge, Role};
 
+mod ingress;
 #[cfg(test)]
 mod tests;
 mod worker;
@@ -174,6 +176,7 @@ fn spawn(
     // This local Linux prerequisite never interprets an autolaunch/fallback list.
     if address.is_empty()
         || address.len() > 16384
+        || address.capacity() > ingress::AUTH
         || !address.starts_with("unix:")
         || address.contains(';')
         || address.chars().any(char::is_control)
@@ -185,7 +188,11 @@ fn spawn(
     if budget.is_zero() || budget > BUDGET {
         return Err(StartupRefused::Input);
     }
-    let setup = Instant::now() + budget; // Original deadline, before handoff.
+    // Original deadline, before handoff. This existing fixed NativePosting
+    // group reserves ingress::RESERVATION. Unknown/lost handles keep that
+    // SAME group's pin; no byte object's Drop refunds it. Only this original
+    // Completion after CleanExit/join releases it.
+    let setup = Instant::now() + budget;
     let (resources, accounting) = Resources::new(host).map_err(|_| StartupRefused::Unavailable)?;
     let guard = resources.start().map_err(|_| StartupRefused::Unavailable)?;
     let (wake, receiver) = mpsc::sync_channel(1);

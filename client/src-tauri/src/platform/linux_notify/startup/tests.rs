@@ -1,4 +1,5 @@
 use super::*;
+mod byte;
 mod idle;
 use crate::platform::linux_test_bus::Bus;
 use std::pin::Pin;

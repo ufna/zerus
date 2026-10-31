@@ -161,7 +161,7 @@ pub(super) fn run(
         receiver: &receiver,
         waker: Waker::from(notify),
     };
-    let result = session(&address, &driver, setup, &hooks);
+    let result = session(address, &driver, setup, &hooks);
     let deadline = scope.cleanup().ok();
     drop(driver);
     // Only test builds carry callback captures; production Hooks is empty.
@@ -181,9 +181,11 @@ pub(super) fn run(
         Exit::Unknown
     }
 }
-fn session(address: &str, driver: &Driver<'_>, setup: Instant, hooks: &Hooks) -> Result<(), ()> {
-    let builder = zbus::connection::Builder::address(address)
-        .map_err(|_| ())?
+fn session(address: String, driver: &Driver<'_>, setup: Instant, hooks: &Hooks) -> Result<(), ()> {
+    let (socket, ingress) = driver
+        .drive(None, setup, true, ingress::connect(address))?
+        .map_err(|_| ())?;
+    let builder = zbus::connection::Builder::socket(socket)
         .internal_executor(false)
         .max_queued(RAW);
     let connection = driver
@@ -322,12 +324,19 @@ fn session(address: &str, driver: &Driver<'_>, setup: Instant, hooks: &Hooks) ->
                 .is_ok();
         }
     }
+    if good && Instant::now() < cleanup {
+        // BOTH actual readers are gone and every sequential removal succeeded.
+        // This private fact alone cannot waive an error, refund B or finish.
+        ingress.removals_acked.store(true, Ordering::Release);
+    }
     hooks.at(Hook::DropConnection);
     good &= driver
         .drive(Some(&executor), cleanup, false, connection.clone().close())
         .and_then(|r| r.map_err(|_| ()))
         .is_ok();
-    drop(connection);
+    // Retain this exact connection's task handle until the socket reader
+    // returns its local-close EOF. Dropping it now would CANCEL a pending
+    // frame, which is deliberately sticky Unknown even during local close.
     let finished = std::future::poll_fn(|context| {
         if executor.is_empty() {
             return Poll::Ready(());
@@ -344,7 +353,9 @@ fn session(address: &str, driver: &Driver<'_>, setup: Instant, hooks: &Hooks) ->
         .drive(Some(&executor), cleanup, false, finished)
         .is_ok();
     good &= executor.is_empty();
+    drop(connection);
     drop(executor);
+    good &= !ingress.refused();
     if good {
         Ok(())
     } else {
