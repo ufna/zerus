@@ -163,7 +163,8 @@ describe("toSession", () => {
       archiveId: undefined, replyId: "r1", attentionSignature: "s1", sharedRead: true, allowed: "resume rename",
       archiveReason: "No archive", terminateReason: "Use Pause", forgetReason: "No forget",
     });
-    expect(Object.values(s).some((v) => typeof v === "object" && v !== null)).toBe(false);
+    expect(Object.entries(s).filter(([key]) => key !== "subagents").some(([, v]) => typeof v === "object" && v !== null)).toBe(false);
+    expect(s.subagents).toBeUndefined();
     expect(toSession("", "run:a", view("a", { allowed_actions: null })).allowed).toBeUndefined();
     expect(toSession("", "run:a", view("a", { allowed_actions: [] })).allowed).toBe("");
     expect(toSession("", "run:a", view("x/a", { agent: "sh" }))).toMatchObject({ agent: "sh", cmd: "sh" });

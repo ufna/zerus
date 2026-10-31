@@ -67,6 +67,15 @@ impl WeakPump {
 }
 
 impl Pump {
+    pub fn poster(&self, computer: &str, key: &str, message: &str) -> Option<Arc<[u8]>> {
+        self.lock()
+            .coalescer
+            .poster(&ComputerId::from(computer), key, message)
+    }
+
+    pub fn strip_posters(&self, computer: &ComputerId, key: &str, value: &mut Value) {
+        self.lock().coalescer.strip_posters(computer, key, value);
+    }
     pub(crate) fn downgrade(&self) -> WeakPump {
         WeakPump(
             Arc::downgrade(&self.0),
@@ -518,16 +527,41 @@ impl Pump {
     /// Runs the existing observer before queuing, then signals an interested
     /// consumer after the mirror is current. Neither callback holds the pump
     /// lock, and the change is moved without copying its rows.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Preserved unaccounted callback adapter")
+    )]
     pub fn drain_with_after(
         &self,
         changes: Receiver<Change>,
         before: impl Fn(&Change) -> bool + Send + 'static,
         after: impl Fn() + Send + 'static,
     ) {
+        self.drain_after(changes, before, after, None);
+    }
+    /// Retains the source group through EOF, queued changes and both actual
+    /// observer callbacks. No queue, poller or row copy is added.
+    pub fn drain_accounted(
+        &self,
+        changes: Receiver<Change>,
+        before: impl Fn(&Change) -> bool + Send + 'static,
+        after: impl Fn() + Send + 'static,
+        resources: Arc<dyn Send + Sync>,
+    ) {
+        self.drain_after(changes, before, after, Some(resources));
+    }
+    fn drain_after(
+        &self,
+        changes: Receiver<Change>,
+        before: impl Fn(&Change) -> bool + Send + 'static,
+        after: impl Fn() + Send + 'static,
+        resources: Option<Arc<dyn Send + Sync>>,
+    ) {
         let pump = self.clone();
         std::thread::Builder::new()
             .name("zerus-client-pump".into())
             .spawn(move || {
+                let _resources = resources;
                 for change in changes {
                     let interested = before(&change);
                     pump.push(change);
@@ -698,6 +732,55 @@ mod tests {
             status: ComputerStatus::Live,
         });
         assert_eq!(receiver.try_recv(), Ok(ComputerId::from("mac")));
+    }
+
+    #[test]
+    fn accounted_consumer_retains_eof_and_queued_changes_through_both_callbacks() {
+        use zerus_client_core::desktop::drain::{Gate, Observation, Role};
+        let pump = Pump::default();
+        let gate = Gate::new(1).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (entered, events) = std::sync::mpsc::channel();
+        let after_entered = entered.clone();
+        let (resume_before, before) = std::sync::mpsc::channel();
+        let (resume_after, after) = std::sync::mpsc::channel();
+        pump.drain_accounted(
+            rx,
+            move |_| {
+                entered.send("before").unwrap();
+                before.recv_timeout(Duration::from_secs(3)).unwrap();
+                true
+            },
+            move || {
+                after_entered.send("after").unwrap();
+                after.recv_timeout(Duration::from_secs(3)).unwrap();
+            },
+            Arc::new(gate.admit(Role::Fleet).unwrap()),
+        );
+        let closed = gate.close();
+        tx.send(upsert("run:a", "codex/example/a")).unwrap();
+        tx.send(upsert("run:b", "codex/example/b")).unwrap();
+        drop(tx);
+        for key in ["run:a", "run:b"] {
+            assert_eq!(
+                events.recv_timeout(Duration::from_secs(3)).unwrap(),
+                "before"
+            );
+            assert!(pump.row("", key).is_none());
+            assert_eq!(closed.wait_until(Instant::now()), Observation::Pending);
+            resume_before.send(()).unwrap();
+            assert_eq!(
+                events.recv_timeout(Duration::from_secs(3)).unwrap(),
+                "after"
+            );
+            assert!(pump.row("", key).is_some());
+            assert_eq!(closed.wait_until(Instant::now()), Observation::Pending);
+            resume_after.send(()).unwrap();
+        }
+        assert_eq!(
+            closed.wait_until(Instant::now() + Duration::from_secs(3)),
+            Observation::Idle
+        );
     }
 
     #[test]

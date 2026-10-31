@@ -279,6 +279,8 @@ const CHILD_STATUS: Record<Subagent["state"], { kind: BadgeKind; caption: string
   working: { kind: "working", caption: "Working" },
   ready: { kind: "neutral", caption: "Ready" },
   attention: { kind: "attention", caption: "Needs input" },
+  error: { kind: "error", caption: "Error" },
+  paused: { kind: "paused", caption: "Paused" },
 };
 export const childStatus = (c: Subagent) => CHILD_STATUS[c.state];
 

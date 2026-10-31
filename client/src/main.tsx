@@ -22,6 +22,7 @@ import { composer } from "./store/composer";
 import { exitFlush } from "./store/exitFlush";
 import { startMotion } from "./ui/motion";
 import { platform } from "./store/shortcuts";
+import { loadMarkdown } from "./ui/sessions/markdown";
 
 const [mode, setMode] = createSignal<BridgeMode | "starting">("starting");
 
@@ -30,6 +31,8 @@ document.documentElement.dataset.platform = platform;
 exitFlush.register(composer.flushForExit);
 void exitFlush.start().catch((error) => console.warn("Zerus Next: exit flush listener did not start", error));
 startMotion();
+// The Markdown parser is its own chunk; Activity waits for it before placing rows.
+void loadMarkdown();
 render(() => <App mode={mode} />, document.getElementById("root")!);
 // The menu bar and notifications open sessions and show notices in this window.
 startDesk().catch((error) => console.warn("Zerus Next: the menu bar wiring did not start", error));

@@ -69,6 +69,9 @@ export interface ViewRow {
   /** `process_work.count`, -1 when unknown. */
   background?: number;
   archive_id?: string | null;
+  /** Native children by exact agent ID; never the hook-profile fallback. */
+  subagents?: Record<string, Record<string, unknown>>;
+  subagent_counts_complete?: boolean;
   /** The latest reply and the attention it raised, for marking them read. */
   reply_id?: string | null;
   attention_signature?: string | null;
@@ -142,11 +145,11 @@ export interface GroupingOut {
   /** The saved layout is retained and layout changes cannot persist this startup. */
   layout_save_paused?: boolean;
 }
-/** How a project edit ended (client/core `swarm::sync::EditOutcome`). */
-export type EditOutcome =
+/** How a project edit ended (client/core `swarm::sync::EditOutcome`), plus the reserved ID for Create. */
+export type EditOutcome = (
   | { outcome: "done"; conflicts: number }
   | { outcome: "kept"; detail: string }
-  | { outcome: "refused"; detail: string };
+  | { outcome: "refused"; detail: string }) & { project?: string };
 
 export interface Batch {
   upserts: RowOut[];
@@ -274,7 +277,7 @@ export type Action =
 export interface WorktreeCleanup { status: string; path: string; common_dir: string; reason?: string | null }
 
 export type Outcome =
-  | { outcome: "done"; receipt: unknown; cleanup: WorktreeCleanup | null }
+  | { outcome: "done"; receipt: unknown; cleanup: WorktreeCleanup | null; cleanup_capture?: import("./store/terminationCleanup").RetainedCapture | null }
   | { outcome: "failed"; detail: string }
   | { outcome: "uncertain"; detail: string };
 
@@ -639,7 +642,8 @@ export interface ArchivedActivity {
 // The composer (src-tauri/src/composer): the mirrors of its serde shapes.
 
 /** One attachment of the open draft; `path` is its `zerus-file` path. */
-export interface AttachmentView { name: string; mime: string; reference: string; bytes: number; path: string; excerpt: string | null }
+export interface ImageSize { width: number; height: number }
+export interface AttachmentView { name: string; mime: string; reference: string; bytes: number; path: string; excerpt: string | null; image_size?: ImageSize | null }
 export type ChipTone = "quiet" | "danger" | "warning" | "success";
 /** The cache chip (core `cache::Chip`); hidden when not `visible`. */
 export interface Chip { visible: boolean; tone: ChipTone; label: string; short_label: string }
@@ -663,7 +667,7 @@ export interface LocalMessage {
 /** The native queue (core input_queue::QueueView), kept separate from local messages. */
 export interface QueueView { id: string; text: string; hint: string; can_send_now: boolean; enabled: boolean; label: string }
 export interface ComposerView {
-  handle: number; key: string; loaded: boolean; rev: number; text_epoch: number; text: string; position: number; anchor: number;
+  handle: number; key: string; subagent?: { agent_id: string; send_supported: boolean; hint: string } | null; loaded: boolean; rev: number; text_epoch: number; text: string; position: number; anchor: number;
   attachments: AttachmentView[]; removed: string | null; attaching: boolean; sending: boolean; recording?: boolean; waiting: string | null; uncertain: boolean;
   status: string; status_error: boolean; can_send: boolean; send_label: string; available: boolean; unavailable_reason: string; block_reason: string | null;
   attachments_available: boolean; attachments_reason: string; session_status: string; session_status_error: boolean; session_blocks_input: boolean;
@@ -714,8 +718,10 @@ export type SendReply =
 export type Answer = { kind: "cold"; action: ColdAction } | { kind: "start"; choice: StartChoice } | { kind: "cancel" };
 /** Where Inspect on a failed local row leads. */
 export type Inspect = { kind: "native_ui" } | { kind: "terminal" } | { kind: "refresh"; notice: string };
-/** The session a composer belongs to (src-tauri `SessionRef`): `key` is the catalog key. */
-export interface SessionRef { computer: ComputerId; key: string; name: string; archive_id: string | null }
+/** One exact native child; sends still name the parent run and conversation. */
+export interface SubagentRef { agent_id: string; parent_conversation_id: string }
+/** The session or child a composer belongs to (src-tauri `SessionRef`): `key` is the parent catalog key. */
+export interface SessionRef { computer: ComputerId; key: string; name: string; archive_id: string | null; subagent?: SubagentRef }
 /** The detail tab that shows, for the composer's inspect retry (Qt's poll interval). */
 export type ComposerTab = "activity" | "terminal" | "native" | "processes";
 /** A file of an Activity message, as the journal lists it. */
@@ -751,6 +757,7 @@ export interface Fetched {
   path: string; name: string; mime: string; bytes: number;
   /** An image whose header gives its size, at most Qt's 64M pixels: a card may show its thumbnail. */
   thumbnail: boolean;
+  image_size?: ImageSize | null;
 }
 
 // Saved drafts (src-tauri `composer/saved.rs`).

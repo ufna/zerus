@@ -14,6 +14,16 @@ describe("imported machine appearance settings", () => {
     }) }));
     expect((await backend.load()).values).toEqual({ "machines/colors/peer": "#abcdef", "machines/vivid/peer": true });
   });
+
+  it("saves exact machine keys and removes only the color on Automatic", async () => {
+    const storage = memoryStorage();
+    const backend = storageBackend(storage);
+    await backend.save("machines/colors/peer", "#abcdef");
+    await backend.save("machines/vivid/peer", true);
+    await backend.save("machines/colors/other", "#123456");
+    expect(await backend.save("machines/colors/peer", null)).toEqual({ value: null, revision: 4 });
+    expect((await backend.load()).values).toEqual({ "machines/vivid/peer": true, "machines/colors/other": "#123456" });
+  });
 });
 
 function memoryStorage(initial: Record<string, string> = {}): SettingsStorage & { data: Record<string, string> } {

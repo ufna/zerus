@@ -23,6 +23,7 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use tauri::State;
+mod read_barrier;
 use zerus_client_core::actions::{
     change_notifications, classify, invocation, parse_reference, recovery_preflight,
     reference_invocation, ALREADY_ANSWERING, ALREADY_SENDING,
@@ -224,6 +225,10 @@ const TERMINATED: usize = crate::pump::MAX_TERMINATIONS;
 pub struct Actions {
     flight: InFlight,
     marks: Arc<Mutex<ReadMarks>>,
+    mark_admissions: zerus_client_core::desktop::drain::Gate,
+    #[cfg_attr(not(unix), allow(dead_code))] // Unix-only checkpoint qualification.
+    checkpoint_admission: zerus_client_core::desktop::drain::Gate,
+    pub(crate) read_delivery: crate::readsync::ReadDelivery,
     /// Wakes the read-mark delivery worker (`readsync.rs`).
     pub(crate) wake: crate::readsync::Wake,
     writes: Writes,
@@ -241,10 +246,14 @@ pub struct Actions {
 impl Actions {
     /// `marks_path` is the read-marks file; a missing one gives no marks.
     pub fn new(marks_path: PathBuf) -> Self {
+        let wake = crate::readsync::Wake::default();
         Self {
             flight: InFlight::default(),
             marks: Arc::new(Mutex::new(ReadMarks::load(marks_path))),
-            wake: crate::readsync::Wake::default(),
+            read_delivery: crate::readsync::ReadDelivery::new(wake.clone()),
+            mark_admissions: zerus_client_core::desktop::drain::Gate::new(64).unwrap(),
+            checkpoint_admission: zerus_client_core::desktop::drain::Gate::new(1).unwrap(),
+            wake,
             writes: Arc::default(),
             hook: Arc::default(),
             terminated: Arc::default(),
@@ -393,7 +402,8 @@ impl Actions {
     /// (`ReadMarkStore::add`), wakes the delivery worker and returns what is
     /// pending. No file I/O: the worker writes the marks before it sends any
     /// ([`Actions::flush_marks`]).
-    pub fn queue_marks(&self, marks: Vec<ReadMark>) -> Vec<ReadMark> {
+    pub fn queue_marks(&self, marks: Vec<ReadMark>) -> Result<Vec<ReadMark>, String> {
+        let _admission = self.admit_marks()?;
         let (added, pending) = {
             let mut store = self.marks.lock().unwrap_or_else(PoisonError::into_inner);
             (store.add_all(marks), store.pending())
@@ -402,11 +412,14 @@ impl Actions {
         if added {
             self.listener.changed();
         }
-        pending
+        Ok(pending)
     }
 
     /// Writes the marks `queue_read_marks` added since the last save.
     pub(crate) fn flush_marks(&self) {
+        let Ok(_admission) = self.admit_marks() else {
+            return;
+        };
         self.marks
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -418,6 +431,9 @@ impl Actions {
     /// while marks wait, and None (no listing named its peers yet) drops
     /// nothing. This computer's marks stay.
     pub fn drop_orphans(&self, peers: impl FnOnce() -> Option<BTreeSet<String>>) {
+        let Ok(_admission) = self.admit_marks() else {
+            return;
+        };
         let waiting = !self
             .marks
             .lock()
@@ -464,6 +480,9 @@ impl Actions {
     /// and Qt drops marks only after a successful listing. Nothing to do (the
     /// usual case) costs one lock.
     pub fn observe(&self, batch: &Batch) {
+        let Ok(_admission) = self.admit_marks() else {
+            return;
+        };
         let mut marks = self.marks.lock().unwrap_or_else(PoisonError::into_inner);
         if marks.is_empty() {
             return;
@@ -815,13 +834,122 @@ fn refused_before_claim(target: &Target, action: &Action) -> Option<String> {
 }
 
 /// Runs one action on a session. `Err("busy")` while another runs for it.
+#[derive(serde::Serialize)]
+pub struct ActionReply {
+    #[serde(flatten)]
+    outcome: Outcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cleanup_capture: Option<crate::termination_cleanup::RetainedCapture>,
+}
 #[tauri::command]
 pub async fn run_action(
+    app: tauri::AppHandle,
+    source: State<'_, crate::commands::AppState>,
+    cleanup: State<'_, crate::termination_cleanup::TerminationCleanup>,
     state: State<'_, Actions>,
     target: Target,
     action: Action,
+) -> Result<ActionReply, String> {
+    let ending = matches!(action, Action::Archive | Action::Terminate);
+    let machine = if ending {
+        crate::worktree_cleanup::machine(&source, &target.computer).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let (outcome, restore_supported) = if ending && !machine.is_empty() {
+        dispatch_guarded_end(&state, target.clone(), action, machine.clone()).await?
+    } else {
+        (dispatch(&state, target.clone(), action).await?, false)
+    };
+    let cleanup_capture = ending
+        .then(|| cleanup.observe(&app, &target, &machine, &outcome, restore_supported))
+        .flatten();
+    Ok(ActionReply {
+        outcome,
+        cleanup_capture,
+    })
+}
+
+async fn dispatch_guarded_end(
+    state: &Actions,
+    target: Target,
+    action: Action,
+    machine: String,
+) -> Result<(Outcome, bool), String> {
+    dispatch_end_with(state, target, action, machine, run).await
+}
+
+/// Legacy peers retain their original end action. Only a successful probe
+/// explicitly lacking the marker permits that fallback; transport failures
+/// never authorize a second attempt or a weaker Restore.
+pub(crate) async fn dispatch_end_with(
+    state: &Actions,
+    target: Target,
+    action: Action,
+    machine: String,
+    runner: impl Fn(&std::path::Path, &zerus_client_core::Invocation) -> zerus_client_core::Exit
+        + Send
+        + 'static,
+) -> Result<(Outcome, bool), String> {
+    if blocked() {
+        return Ok((failed(REPLAY_NEEDS_HGS), false));
+    }
+    let supported = Arc::new(AtomicBool::new(false));
+    let observed = Arc::clone(&supported);
+    let outcome = dispatch_with_plan(
+        state,
+        target,
+        action,
+        uuid::Uuid::new_v4().to_string(),
+        move |hgs, inv, _| {
+            let mut guarded = inv.clone();
+            zerus_client_core::worktrees::guard(&mut guarded.args, &machine);
+            let probe = zerus_client_core::worktrees::guard_probe(&guarded);
+            match zerus_client_core::worktrees::guard_supported(runner(hgs, &probe)) {
+                Ok(()) => {
+                    observed.store(true, Ordering::Relaxed);
+                    runner(hgs, &guarded)
+                }
+                Err(error) if error == zerus_client_core::worktrees::GUARDED_UNSUPPORTED => {
+                    runner(hgs, inv)
+                }
+                Err(error) => zerus_client_core::Exit::StartFailed(error),
+            }
+        },
+        None,
+    )
+    .await?;
+    Ok((outcome, supported.load(Ordering::Relaxed)))
+}
+
+pub(crate) async fn restore_captured(
+    state: &Actions,
+    source: crate::termination_cleanup::RestoreSource,
 ) -> Result<Outcome, String> {
-    dispatch(&state, target, action).await
+    if blocked() {
+        return Ok(failed(REPLAY_NEEDS_HGS));
+    }
+    let target = source.target.clone();
+    let action = Action::Restore {
+        archive_id: source.archive_id.clone(),
+    };
+    dispatch_with_plan(
+        state,
+        target,
+        action,
+        uuid::Uuid::new_v4().to_string(),
+        move |hgs, inv, _| {
+            if let Err(error) = crate::termination_cleanup::restore_preflight(&source, hgs) {
+                return zerus_client_core::Exit::StartFailed(error);
+            }
+            let mut guarded = inv.clone();
+            zerus_client_core::worktrees::guard(&mut guarded.args, &source.machine);
+            zerus_client_core::worktrees::run_guarded(hgs, &guarded, run)
+                .unwrap_or_else(zerus_client_core::Exit::StartFailed)
+        },
+        None,
+    )
+    .await
 }
 
 /// The one dispatcher of session actions, for `run_action` and for commands
@@ -845,11 +973,23 @@ pub async fn dispatch_as(
     if blocked() {
         return Ok(failed(REPLAY_NEEDS_HGS));
     }
-    dispatch_with(state, target, action, request_id, run).await
+    dispatch_with_plan(
+        state,
+        target,
+        action,
+        request_id,
+        |hgs, inv, read| match read {
+            Some(read) => read.run(hgs, inv),
+            None => run(hgs, inv),
+        },
+        None,
+    )
+    .await
 }
 
 /// `dispatch_as` past its replay guard, with the runner that starts `hgs`:
 /// the core's `run`, or in tests a stand-in that starts no process.
+#[cfg(test)]
 async fn dispatch_with(
     state: &Actions,
     target: Target,
@@ -859,7 +999,15 @@ async fn dispatch_with(
         + Send
         + 'static,
 ) -> Result<Outcome, String> {
-    dispatch_with_plan(state, target, action, request_id, runner, None).await
+    dispatch_with_plan(
+        state,
+        target,
+        action,
+        request_id,
+        move |hgs, inv, _| runner(hgs, inv),
+        None,
+    )
+    .await
 }
 
 /// Optional cleanup uses the same write lane and completion hooks as Terminate.
@@ -877,7 +1025,7 @@ pub(crate) async fn dispatch_cleanup(
         capture.target.clone(),
         Action::Terminate,
         uuid::Uuid::new_v4().to_string(),
-        run,
+        |hgs, inv, _| run(hgs, inv),
         Some(capture),
     )
     .await
@@ -888,7 +1036,11 @@ async fn dispatch_with_plan(
     target: Target,
     action: Action,
     request_id: String,
-    runner: impl Fn(&std::path::Path, &zerus_client_core::Invocation) -> zerus_client_core::Exit
+    runner: impl Fn(
+            &std::path::Path,
+            &zerus_client_core::Invocation,
+            Option<&crate::readsync::NativeRead>,
+        ) -> zerus_client_core::Exit
         + Send
         + 'static,
     cleanup: Option<zerus_client_core::termination_cleanup::Capture>,
@@ -911,11 +1063,18 @@ async fn dispatch_with_plan(
             _ => Err(BUSY.into()),
         };
     };
+    let mut read_call = if matches!(action, Action::MarkRead { .. }) {
+        Some(state.read_delivery.admit().ok_or(BUSY)?)
+    } else {
+        None
+    };
     if let Action::MarkRead {
         reply_id,
         attention_signature,
     } = &action
     {
+        // Admission precedes both persistence and the native read effect.
+        let _admission = state.admit_marks()?;
         // Saved before the call, so the mark survives a crash during it.
         state
             .marks
@@ -945,14 +1104,17 @@ async fn dispatch_with_plan(
         })
         .flatten();
     let cleanup_receipt = cleanup.clone();
+    let native_read = read_call.as_mut().map(crate::readsync::Call::native);
     let ran = tauri::async_runtime::spawn_blocking(move || {
+        let plain =
+            |hgs: &std::path::Path, inv: &zerus_client_core::Invocation| runner(hgs, inv, None);
         if let Some(capture) = &cleanup {
-            crate::termination_cleanup::probe(&hgs, &capture.target, &runner)?;
+            crate::termination_cleanup::probe(&hgs, &capture.target, &plain)?;
             let fresh = crate::termination_cleanup::inspection(
                 &hgs,
                 &capture.target,
                 &capture.machine,
-                &runner,
+                &plain,
             )?;
             if !capture.recheck(&fresh) {
                 return Err(zerus_client_core::termination_cleanup::STATE_CHANGED.into());
@@ -960,7 +1122,7 @@ async fn dispatch_with_plan(
         }
         if matches!(call_action, Action::Recovery { .. }) {
             let inspection = details_invocation(&call_target, None);
-            let fresh = runner(&hgs, &inspection);
+            let fresh = plain(&hgs, &inspection);
             recovery_preflight(&call_target, &call_action, fresh)?;
         }
         let mut inv = if let Some(capture) = &cleanup {
@@ -971,7 +1133,8 @@ async fn dispatch_with_plan(
         if let Some(capture) = &cleanup {
             zerus_client_core::worktrees::guard(&mut inv.args, &capture.machine);
         }
-        let exit = runner(&hgs, &inv);
+        let exit = runner(&hgs, &inv, native_read.as_ref());
+        drop(native_read);
         Ok::<_, String>((inv, exit))
     })
     .await
@@ -1065,6 +1228,26 @@ pub async fn inspect_subagent_identity(
     .await
     .ok()??;
     parse_subagent_identity(&target, &agent_id, exit)
+}
+
+/// One bounded read-only Activity page of the requested child.
+#[tauri::command]
+pub async fn inspect_subagent_activity(
+    target: Target,
+    archive_id: Option<String>,
+    agent_id: String,
+) -> Option<serde_json::Value> {
+    if blocked() {
+        return None;
+    }
+    let inv = subagent_identity_invocation(&target, archive_id.as_deref(), &agent_id)?;
+    let hgs = default_hgs();
+    let exit = tauri::async_runtime::spawn_blocking(move || {
+        zerus_client_core::run_limited(&hgs, &inv, &[], 4 * 1024 * 1024).ok()
+    })
+    .await
+    .ok()??;
+    zerus_client_core::details::parse_subagent_activity(&target, &agent_id, exit)
 }
 
 /// `hgs reference` for the session: its `zerus://session?...` URI, or why it
@@ -1328,6 +1511,7 @@ pub const BUSY: &str = "busy";
 #[tauri::command]
 pub async fn archived_activity(
     state: State<'_, ActivityReads>,
+    app: State<'_, crate::commands::AppState>,
     computer: String,
     name: String,
     archive_id: String,
@@ -1341,9 +1525,19 @@ pub async fn archived_activity(
     };
     let hgs = default_hgs();
     let id = ComputerId::from(computer.as_str());
+    let pump = app.pump();
     tauri::async_runtime::spawn_blocking(move || {
         reads::archived_activity(&hgs, &id, &name, &archive_id, after).map(|mut activity| {
             annotate_events(&mut activity.events);
+            let key = format!("archive:{archive_id}");
+            let mut value = serde_json::json!({"events": std::mem::take(&mut activity.events)});
+            pump.strip_posters(&id, &key, &mut value);
+            if let Some(serde_json::Value::Array(events)) =
+                value.get_mut("events").map(serde_json::Value::take)
+            {
+                activity.events = events;
+            }
+            pump.strip_posters(&id, &key, &mut activity.summary);
             activity
         })
     })
@@ -1416,7 +1610,10 @@ pub fn pending_read_marks(state: State<'_, Actions>) -> Vec<ReadMark> {
 /// pending marks. Not async, so calls apply in the order the frontend makes
 /// them; it does no file I/O.
 #[tauri::command]
-pub fn queue_read_marks(state: State<'_, Actions>, marks: Vec<ReadMark>) -> Vec<ReadMark> {
+pub fn queue_read_marks(
+    state: State<'_, Actions>,
+    marks: Vec<ReadMark>,
+) -> Result<Vec<ReadMark>, String> {
     state.queue_marks(marks)
 }
 
@@ -1473,7 +1670,7 @@ mod tests {
             let seen = Arc::clone(&count);
             let state = actions.clone();
             let scope = target.clone();
-            let out=tauri::async_runtime::block_on(dispatch_with_plan(&actions,target,Action::Terminate,uuid::Uuid::new_v4().to_string(),move|_,inv|{
+            let out=tauri::async_runtime::block_on(dispatch_with_plan(&actions,target,Action::Terminate,uuid::Uuid::new_v4().to_string(),move|_,inv,_|{
                 assert!(state.begin(Lane::key(&scope,&Action::Terminate),&Action::Terminate).is_none(),"same write lane held before every preflight");
                 if inv.args.last().is_some_and(|a|a=="--help") {
                     return Exit::Code{code:0,stdout:if scenario=="legacy-help"{b"guarded-create-v1".to_vec()}else{b"guarded-create-v1 scoped native lifecycle action".to_vec()},stderr:String::new()};
@@ -2738,12 +2935,14 @@ mod tests {
             attention_signature: signature.map(Into::into),
         };
         assert!(!actions.wake.wait(std::time::Duration::ZERO));
-        let pending = actions.queue_marks(vec![
-            mark("claude/sample-project/review", Some("r1"), None),
-            mark("claude/sample-project/review", None, Some("s1")),
-            // Nothing to mark: not stored (`ReadMarkStore::add`).
-            mark("claude/sample-project/other", None, None),
-        ]);
+        let pending = actions
+            .queue_marks(vec![
+                mark("claude/sample-project/review", Some("r1"), None),
+                mark("claude/sample-project/review", None, Some("s1")),
+                // Nothing to mark: not stored (`ReadMarkStore::add`).
+                mark("claude/sample-project/other", None, None),
+            ])
+            .unwrap();
         let expected = vec![mark("claude/sample-project/review", Some("r1"), Some("s1"))];
         assert_eq!(pending, expected);
         assert_eq!(actions.pending_marks(), expected);
@@ -2769,7 +2968,9 @@ mod tests {
             reply_id: Some("r1".into()),
             attention_signature: None,
         };
-        actions.queue_marks(vec![on(""), on("laptop"), on("removed")]);
+        actions
+            .queue_marks(vec![on(""), on("laptop"), on("removed")])
+            .unwrap();
         // Peers not known yet (no listing named them): nothing is dropped.
         actions.drop_orphans(|| None);
         assert_eq!(actions.pending_marks().len(), 3);
@@ -3280,14 +3481,16 @@ mod tests {
             reply_id: Some("r1".into()),
             attention_signature: None,
         };
-        actions.queue_marks(vec![
-            mark("mac", "claude/sample-project/a"),
-            mark("gone", "claude/sample-project/b"),
-        ]);
+        actions
+            .queue_marks(vec![
+                mark("mac", "claude/sample-project/a"),
+                mark("gone", "claude/sample-project/b"),
+            ])
+            .unwrap();
         assert_eq!(heard(), 1, "queued marks: one call for the call");
         let mut empty = mark("mac", "claude/sample-project/a");
         empty.reply_id = None;
-        actions.queue_marks(vec![empty]);
+        actions.queue_marks(vec![empty]).unwrap();
         assert_eq!(heard(), 0, "nothing to mark changes nothing");
         actions.drop_orphans(|| Some(["mac".to_owned(), "gone".to_owned()].into()));
         assert_eq!(heard(), 0, "every peer still listed");
@@ -3314,7 +3517,9 @@ mod tests {
         actions.observe(&upsert(Some("r1")));
         assert_eq!(heard(), 1, "the mark settled");
         assert!(actions.pending_marks().is_empty());
-        actions.queue_marks(vec![mark("mac", "claude/sample-project/c")]);
+        actions
+            .queue_marks(vec![mark("mac", "claude/sample-project/c")])
+            .unwrap();
         heard();
         actions.observe(&Batch {
             replaces: vec![ReplaceOut {

@@ -520,6 +520,11 @@ impl Endpoint {
             computer: self.identity.computer.clone(),
         })
     }
+    pub fn resources(&self) -> Option<Arc<dyn Send + Sync>> {
+        self._worker
+            .as_ref()
+            .map(|worker| worker.clone() as Arc<dyn Send + Sync>)
+    }
     pub fn spawn(&self, command: &mut Command) -> io::Result<Child> {
         (self.sender.spawn)(command)
     }

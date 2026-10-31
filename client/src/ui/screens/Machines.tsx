@@ -5,11 +5,15 @@ import { MachineTile, type MachineState } from "../components/MachineTile";
 import { MachineLabel } from "../components/MachineLabel";
 import { Actions, Lines, Spinner, Status } from "../components/Status";
 import { paletteIndex } from "../sessions/SessionCard";
+import MachineColorDialog from "./MachineColorDialog";
+import { tr } from "../../i18n";
 import type { MachineMeta, MachineRow } from "../../types";
 import { catalog } from "../../store/catalog";
 import { loadMachines, machineCards, machinesPage, requestedMachine, resolveMachine, setRequestedMachine, testConnection } from "../../store/machines";
 import { setAccountMachine } from "../../store/accounts";
 import { connectionOf, osOf } from "../../store/overview";
+import { machineAppearance } from "../../store/machineAppearance";
+import { setSetting, settings, settingsLoaded } from "../../store/settings";
 import { setMachineFilter, setPage } from "../../store/ui";
 import { MACHINE_EDITING } from "./reasons";
 import { LOCAL, localState, peerState, placeholders, summary, testEnabled, type LocalState, type PeerState } from "./machines-ui";
@@ -48,7 +52,7 @@ function MachineCard(props: { selection: string; alias: string; line: string; ti
 function Field(props: { label: string; id: string; children: JSX.Element }) {
   return (
     <div class="form-row mach-form-row">
-      <label for={props.id}>{props.label}</label>
+      <label for={props.id}>{tr(props.label)}</label>
       <div class="col" style={{ gap: "4px" }}>{props.children}</div>
     </div>
   );
@@ -64,6 +68,9 @@ function Editor(props: { local: LocalState; peers: { row: MachineRow; state: Pee
   const check = () => (view().check?.alias === selected() ? view().check : null);
   const hint = () => placeholders(effective(), selected());
   const formHidden = () => isLocal() && props.local.formHidden;
+  const [colorEditor, setColorEditor] = createSignal<{ alias: string; origin: HTMLElement }>();
+  const appearance = () => machineAppearance(settings, name(), `var(--z-entity-palette-${paletteIndex(name())})`);
+  const appearanceAvailable = () => settingsLoaded() && !!name();
   return (
     <div class="mach-editor">
       <div class="mach-title">
@@ -75,21 +82,23 @@ function Editor(props: { local: LocalState; peers: { row: MachineRow; state: Pee
       <Show when={isLocal() && props.local.sessionHost}><p class="mach-host selectable">{props.local.sessionHost}</p></Show>
 
       <section class="mach-section">
-        <h3>Appearance</h3>
+        <h3>{tr("Appearance")}</h3>
         <div class="row mach-appearance">
-          <button class="btn" disabled title={MACHINE_EDITING}>
-            <span class="mach-swatch" style={{ "--entity": `var(--z-entity-palette-${paletteIndex(name())})` }} />Label color…
+          <button class="btn" disabled={!appearanceAvailable()} onClick={(event) => setColorEditor({ alias: name(), origin: event.currentTarget })}>
+            <span class="mach-swatch" style={{ "--entity": appearance().color }} />{tr("Label color…")}
           </button>
-          <select class="field" aria-label="Label style" disabled title={MACHINE_EDITING}>
-            <option value="soft">Soft</option><option value="bright">Bright</option>
+          <select class="field" aria-label={tr("Label style")} disabled={!appearanceAvailable()} value={appearance().vivid ? "bright" : "soft"}
+            onChange={(event) => void setSetting(`machines/vivid/${name()}`, event.currentTarget.value === "bright")}>
+            <option value="soft">{tr("Soft")}</option><option value="bright">{tr("Bright")}</option>
           </select>
-          <button class="btn ghost" disabled title={MACHINE_EDITING}>Automatic</button>
+          <button class="btn ghost" disabled={!appearanceAvailable()} title={tr("Use the default color for this machine")} onClick={() => void setSetting(`machines/colors/${name()}`, null)}>{tr("Automatic")}</button>
         </div>
         <div class="row mach-preview">
-          <span class="dim">Preview</span>
+          <span class="dim">{tr("Preview")}</span>
           <MachineLabel alias={name()} />
-          <span class="dim">Saved on this device</span>
+          <span class="dim">{tr("Saved on this device")}</span>
         </div>
+        <Show when={colorEditor()}>{(editor) => <MachineColorDialog alias={editor().alias} origin={editor().origin} close={() => setColorEditor(undefined)} />}</Show>
       </section>
 
       <Show when={!formHidden()}>
@@ -195,8 +204,8 @@ export function MachinesScreen() {
     <div class="mach-page">
       <div class="mach-shell">
         <header class="mach-head">
-          <h1>Machines</h1>
-          <button class="icon-btn" title="Refresh machines" aria-label="Refresh machines" disabled={view().busy} onClick={() => void loadMachines(true)}>
+          <h1>{tr("Machines")}</h1>
+          <button class="icon-btn" title={tr("Refresh machines")} aria-label={tr("Refresh machines")} disabled={view().busy} onClick={() => void loadMachines(true)}>
             <Show when={!view().refreshing} fallback={<Spinner />}><Icon name="refresh-cw" size={15} /></Show>
           </button>
           <span class="grow" />

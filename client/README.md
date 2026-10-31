@@ -854,8 +854,8 @@ File drops follow `SessionFileDrop` and `SessionsWindow.cpp:2618-2659`. A local
 session gets quoted paths pasted without an automatic Enter. A peer's files are
 staged first with `Action::StageFiles`; the paste still names the attach
 generation and is refused if that attach changed or the Terminal is hidden.
-Other tabs attach dropped files to the main composer, except a subagent's
-Activity. The drop must stay over the detail panel, retain its entering target
+Other tabs attach dropped files to the current main or child composer. The
+drop must stay over the detail panel, retain its entering target
 and contain only regular files. Windows keeps the T1b refusal text until native
 Terminal support lands.
 
@@ -906,6 +906,25 @@ in replay mode, shared with voice. The previous Qt store is read but never
 written, including recovery. The one exit hook closes voice and the composers,
 then flushes this store on quit and termination signals. A send whose durable
 save has not started cannot dispatch during shutdown.
+
+### Subagents
+
+The catalog retains at most 256 native children per session, never the
+hook-profile fallback. The list follows Qt's completed-child rule, retaining
+the selected child and nongroup children with drafts. A child Activity is one
+bounded replacement page of at most 200 events from `inspect --subagent`, read
+only while that exact child is visible and online; it never inherits the
+parent's live state or grows a history. Child attachments carry the same exact
+agent identity.
+
+A child with a matching inspection and `send_supported` gets the ordinary
+composer layout and durable draft under
+`computer\nsession\nparent-conversation\nagent-id`. Send names the parent run
+and conversation plus `agent_id`, rechecks that identity and support before
+dispatch, and keeps its local delivery row under the same parent identity.
+Read-only children hide the editor and actions. Parent lifecycle, model, Stop,
+cache/account, question, queue and push controls never cross into a child.
+Navigation preserves parent and child drafts independently.
 
 ## Account usage and automatic recovery
 
@@ -998,6 +1017,43 @@ snapshot that contains it; it never sends the text again. Another selection,
 its guarded Remove action arrive with A2-6.
 
 ## Phase 4 smoke run
+
+DeepSeek's Native UI follows the mockup's session detail tab and existing
+question, local-message, recovery, sign-in and session-menu routes. Linux
+embeds a bounded cache of four incognito launch profiles in the main window;
+macOS, Windows and unsupported web engines use the existing browser route
+from the session menu. Opening the tab never opens a browser automatically.
+Reload reconnects the view through `hgs native-ui NAME --json`, without
+reloading or restarting a DeepSeek bridge.
+
+The native child has no app or plugin IPC. Linux checks the actual WebKit
+navigation action before handing a clicked external link to the guarded
+opener, keeps same-origin popups in place, and refuses new native windows.
+User-initiated `window.open` uses the same guarded browser handoff.
+Downloads require the exact foreground session and a native Save dialog.
+Its GTK overlay follows the measured frame and hides before menus or dialogs.
+The GLib FFI block replaces Wry's single earlier navigation-policy
+handler on that owned child before its first URL load; an unexpected handler
+graph uses browser fallback. The primary view's policy is unchanged.
+
+Run the Native UI proof from the repository root with a switch-identity build:
+
+```sh
+TAURI_CONFIG='{"identifier":"com.hgdev.hgs-tray"}' cargo build --locked \
+  --manifest-path client/src-tauri/Cargo.toml --features media,tauri/custom-protocol
+python3 client/scripts/native-ui-smoke.py \
+  --app client/src-tauri/target/debug/zerus-client \
+  --output artifacts/validation/native-ui-proof
+```
+
+The script always creates a private D-Bus, Xvfb and HOME/XDG/TMPDIR/TMUX_TMPDIR
+from a fresh environment, and uses only a local HTTP fixture and fake CLI.
+It records IPC and private-protocol refusals, native pointer gestures,
+download cancellation and exact saved bytes, profile eviction, explicit
+browser fallback, resize and activation, then the complete Phase 4 smoke.
+The ignored `native_ui::linux::tests` case separately qualifies the expected
+handler graph, primary-handler preservation and reload on that same private
+bus/display; run it explicitly with `--ignored --test-threads=1`.
 
 `scripts/make-fixture.py` deterministically generates the replay, including the
 warm and cold cache states, a paused resumable session, JSON and one-pixel PNG
@@ -1452,7 +1508,7 @@ A blank window is not detected. Known gap: on the GL path a minimised window kee
 
 ## Rules
 
-- Part B adds voice and round video, DeepSeek's Native UI and the external
+- Part B adds voice and round video and the external
   terminal, shell and folder entries; their current disabled slots stay in Qt's
   places until then.
 - The UI never separates values with dots (U+00B7, U+2022, U+2219, U+22C5,
@@ -1478,3 +1534,23 @@ built app using a private D-Bus/Xvfb, private state and fake hgs. It covers reco
 outcomes, explicit discard, unknown non-replay, source-change refusal, inspection,
 Escape and Keep, with captures of the approved chip/dialog states. The fixture
 never deletes even its own synthetic worktree files.
+
+An archived session whose folder stays for review has a sticky **Session
+archived** notice with structured counts, **Review…** and **Restore session**.
+Restore rechecks the exact archive and physical computer, then uses the existing
+archive writer. It never retries cleanup. Admitted rows stay bounded at 64;
+overflow contributes to the chip counts and uses the existing Worktrees review
+route. Its exact archive restore identity remains available independently of the
+cleanup row. A refused restore leaves the warning and recorded outcome in place.
+On an older CLI whose successful help reply lacks the computer-guard capability,
+Archive and Terminate keep their original calls. Their notice offers Review only;
+an unguarded Restore is never offered. Failed or timed-out capability probes do
+not fall back to a weaker call.
+
+For the recovery walk, first run `npm run build` in `client`, then build the
+Tauri app with `--features media,tauri/custom-protocol` so it embeds those assets.
+Add `--recovery` to the command above. Use `--legacy` for the older-CLI Archive,
+Review-only, singular-row copy and Escape walk. The normal recovery walk covers
+both Restore surfaces, changed
+archive identity, refusal, unknown outcomes, overflow, and Escape focus return,
+using a private D-Bus, Xvfb, HOME/XDG/TMPDIR/TMUX_TMPDIR and a fake hgs.

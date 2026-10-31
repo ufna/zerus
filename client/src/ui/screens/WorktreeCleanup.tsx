@@ -4,18 +4,15 @@ import { For, Show, createEffect, createMemo, createResource, createSignal, onCl
 import { MachineLabel } from "../components/MachineLabel";
 import { Icon } from "../lib/icons";
 import { terminationCleanupInspect } from "../../bridge";
-import { cleanup, cleanupDialog, closeCleanup, openCleanup, keepCleanup, checkCleanup, removeCleanup, emptyConsents, type CleanupRow } from "../../store/terminationCleanup";
+import { cleanup, cleanupDialog, closeCleanup, keepCleanup, checkCleanup, removeCleanup, emptyConsents, type CleanupRow } from "../../store/terminationCleanup";
+import { anyCleanupRestore, cleanupRestoring, restoreCleanupRow } from "../../store/cleanupNotices";
 
-/** Approved statusbar placement; all-removed jobs use the existing toast bus. */
-export function CleanupChip() {
-  return <Show when={cleanup().rows.length}><button type="button" class="chip-accent" style={{ "white-space": "pre" }} classList={{ "warn-chip": cleanup().kept > 0 || cleanup().unknown > 0 }} title={cleanup().title} aria-label={cleanup().title} onClick={openCleanup}>{cleanup().text}</button></Show>;
-}
-const labels = { removed: "Removed", kept: "Kept", unknown: "Unknown", ready: "Ready", checking: "Checking…", removing: "Checking again and removing…" };
+const labels = { removed: "Removed", kept: "Kept", review: "Review", unknown: "Unknown", ready: "Ready", checking: "Checking…", removing: "Checking again and removing…" };
 /** setup-batch-cleanup, Terminate variant. Opening displays recorded outcomes. */
 export default function WorktreeCleanup() {
   let dialog!: HTMLDialogElement;
   const origin = cleanupDialog()?.origin;
-  const [selected, setSelected] = createSignal(cleanup().rows[0]?.id);
+  const [selected, setSelected] = createSignal(cleanupDialog()?.selected ?? cleanup().rows[0]?.id);
   const [details, setDetails] = createSignal(false);
   const [consents, setConsents] = createSignal(emptyConsents());
   const [inspect, setInspect] = createSignal<CleanupRow>();
@@ -24,13 +21,14 @@ export default function WorktreeCleanup() {
   const consented = () => (!cleanup().required.local_files || consents().local_files) && (!cleanup().required.discard_changes || consents().discard_changes) && (!cleanup().required.unchecked_processes || consents().unchecked_processes);
   const summary = () => `${cleanup().removed} removed  ${cleanup().kept} kept  ${cleanup().unknown} unknown`;
   createEffect(() => { cleanup().revision; setConsents(emptyConsents()); });
+  createEffect(() => { const id = cleanupDialog()?.selected; if (id) setSelected(id); });
   onMount(() => { dialog.showModal(); queueMicrotask(() => dialog.querySelector<HTMLElement>("[autofocus], .dlg-body select")?.focus()); });
   onCleanup(() => { dialog.close(); queueMicrotask(() => { if (origin?.isConnected) origin.focus(); }); });
   return <>
     <dialog ref={dialog} class="dlg su-dlg worktree-cleanup" style={{ width: "780px" }} aria-labelledby="cleanup-title" onCancel={closeCleanup} onClose={closeCleanup}>
       <div class="dlg-head"><Icon name="trash" size={18} class="accent" /><h2 id="cleanup-title">Remove working folders</h2><span class="grow" /><button class="icon-btn" aria-label="Close" onClick={closeCleanup}><Icon name="x" size={16} /></button></div>
       <div class="dlg-body bc-body">
-        <h3 class="section-title">Review {cleanup().rows.length} selected worktrees</h3>
+        <h3 class="section-title">Review {cleanup().rows.length} selected {cleanup().rows.length === 1 ? "worktree" : "worktrees"}</h3>
         <p class="muted">Conversations and branches are kept. Removing a working folder permanently deletes its local files.</p>
         <table class="su-table bc-table"><thead><tr><th>Folder / branch</th><th>Computer</th><th>Size</th><th>Result</th></tr></thead><tbody><For each={cleanup().rows}>{(row) =>
           <tr classList={{ on: current()?.id === row.id }} onClick={() => setSelected(row.id)} title={row.path}>
@@ -39,8 +37,9 @@ export default function WorktreeCleanup() {
           </tr>
         }</For></tbody></table>
         <div class="row">
-          <button class="btn small" disabled={cleanup().busy || !current()?.can_check} onClick={() => { const row = current(); if (row) void checkCleanup(row.id); }}>Check again</button>
-          <button class="btn small" disabled={!current() || cleanup().busy} onClick={() => setInspect(current())}>View files and commits…</button>
+          <button class="btn small" disabled={cleanup().busy || anyCleanupRestore() || !current()?.can_check} onClick={() => { const row = current(); if (row) void checkCleanup(row.id); }}>Check again</button>
+          <button class="btn small" disabled={!current() || cleanup().busy || anyCleanupRestore()} onClick={() => setInspect(current())}>View files and commits…</button>
+          <Show when={current()?.restore}>{(source) => <button class="btn small primary" disabled={cleanup().busy || cleanupRestoring(source())} onClick={() => { const row = current(); if (row) void restoreCleanupRow(row); }}><Icon name="play" size={13} />Restore session</button>}</Show>
           <button class="btn small" classList={{ on: details() }} aria-pressed={details()} onClick={() => setDetails(!details())}>Details</button><span class="grow" />
         </div>
         <Show when={details()}><pre class="bc-details mono">{current()?.details}</pre></Show>
@@ -49,9 +48,9 @@ export default function WorktreeCleanup() {
           <Show when={targets().length && cleanup().required.discard_changes}><label class="check"><input type="checkbox" checked={consents().discard_changes} disabled={cleanup().busy} onChange={(e) => setConsents({ ...consents(), discard_changes: e.currentTarget.checked })} />Permanently discard uncommitted and untracked files</label></Show>
           <Show when={targets().length && cleanup().required.unchecked_processes}><label class="check" title="Accept this uncertainty for this folder for five minutes. Known programs and sessions using the folder still prevent removal."><input type="checkbox" checked={consents().unchecked_processes} disabled={cleanup().busy} onChange={(e) => setConsents({ ...consents(), unchecked_processes: e.currentTarget.checked })} />Remove even if some running programs cannot be checked</label></Show>
         </div>
-        <Show when={cleanup().busy}><progress aria-label="Removing working folders" /></Show>
+        <Show when={cleanup().cleaning ?? cleanup().busy}><progress aria-label="Removing working folders" /></Show>
       </div>
-      <div class="dlg-foot"><span class="bc-summary tabular" role="status">{summary()}<Show when={cleanup().unknown}><span class="warn bc-note">An unknown result will not be retried.</span></Show></span><span class="grow" /><button class="btn" autofocus disabled={cleanup().busy} onClick={() => void keepCleanup()}>Keep folders</button><Show when={targets().length}><button class="btn solid-danger" disabled={cleanup().busy || !consented()} onClick={() => void removeCleanup(consents())}>Remove {targets().length} folders</button></Show></div>
+      <div class="dlg-foot"><span class="bc-summary tabular" role="status">{summary()}<Show when={cleanup().unknown}><span class="warn bc-note">An unknown result will not be retried.</span></Show></span><span class="grow" /><button class="btn" autofocus disabled={cleanup().busy || anyCleanupRestore()} onClick={() => void keepCleanup()}>Keep folders</button><Show when={targets().length}><button class="btn solid-danger" disabled={cleanup().busy || anyCleanupRestore() || !consented()} onClick={() => void removeCleanup(consents())}>Remove {targets().length} folders</button></Show></div>
     </dialog>
     <Show when={inspect()}>{(row) => <CleanupInspection row={row()} close={() => setInspect(undefined)} />}</Show>
   </>;

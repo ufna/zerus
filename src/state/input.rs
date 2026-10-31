@@ -56,8 +56,12 @@ fn validate(request: &Request) -> Result<Vec<Vec<u8>>> {
     {
         return Err("message contains terminal control characters".into());
     }
-    // The composer sends messages, not provider slash commands or shell mode.
-    if request.text.trim_start().starts_with(['/', '!']) {
+    // A slash command's first token is /name. Absolute paths have another
+    // slash in that token and are ordinary message text, even /help/file.png.
+    let text = request.text.trim_start();
+    let first = text.split_whitespace().next().unwrap_or("");
+    let slash_command = first.strip_prefix('/').is_some_and(|name| !name.contains('/'));
+    if slash_command || text.starts_with('!') {
         return Err("use Terminal for slash commands and shell commands".into());
     }
     if request.attachments.len() > 8 {
@@ -1219,7 +1223,10 @@ mod tests {
             attachments: vec![],
         };
         assert!(validate(&r).is_ok());
-        for text in ["hi\x1b[201~", "hello\rbye", " /exit", "!rm test"] {
+        for text in [
+            "hi\x1b[201~", "hello\rbye", " /exit", "/help args", "/help arg/with/slashes",
+            "/clear\n/tmp/file", "/", "/ /tmp/file", "!rm test",
+        ] {
             r.text = text.into();
             assert!(validate(&r).is_err(), "{text:?}");
         }
@@ -1227,5 +1234,15 @@ mod tests {
             safe_filename("../../bad image.png", 0),
             "01-.._.._bad_image.png"
         );
+    }
+
+    #[test]
+    fn absolute_paths_are_messages_including_command_named_directories() {
+        for text in [
+            "/tmp/capture.png What is shown?", " /help/capture.png\nDescribe this.",
+            "/tmp/a b.png", "//server/share/file", "C:\\fixture\\capture.png", "The path is /tmp/file",
+        ] {
+            assert!(validate_launch_prompt(text).is_ok(), "{text:?}");
+        }
     }
 }

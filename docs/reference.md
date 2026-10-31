@@ -2472,6 +2472,13 @@ archive-triggered deletion. External or old worktrees without matching ownership
 receipts require explicit review in Projects. Recent activity or a folder/branch
 name alone never establishes that a worktree is disposable.
 
+Archive cleanup reports also carry a versioned exact archive identity and the
+launch-ownership verdict. When it fits the bounded report, `review` retains the
+structured row from the original removal check, including the total process
+count before sample limits. Missing rows stay missing. This evidence supports
+counts-only notices and retained review; displaying it never starts another
+check or removal. Restore still requires the existing fresh exact-archive guards.
+
 Read the host policy with `hgs [@host] worktrees policy get --json`; save the full
 reviewed policy from JSON stdin with `worktrees policy set --json`. The revision
 must still match. Existing policy files and writes require every versioned field;
@@ -4112,6 +4119,11 @@ reply. Saved receipts make identical requests idempotent. An uncertain result
 needs manual inspection before another request. `agent_id` is supported only for
 verified DeepSeek continuable children. Questions carry request identity/hash
 through `pending_questions`; answers use the exact unchanged request.
+
+Messages may begin with an absolute file path, including a directory named like
+a command (`/help/capture.png`). A first token of `/name` without another slash,
+or leading `!` shell mode, still requires Terminal. An argument containing a path
+does not turn `/command` into an ordinary message.
 
 ### Desktop background service
 

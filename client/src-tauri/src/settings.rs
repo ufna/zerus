@@ -124,8 +124,8 @@ pub async fn settings_get(store: State<'_, Store>) -> Result<Value, String> {
 }
 
 /// Stores one setting and answers with the value now in effect (clamped as
-/// Qt clamps it; `null` for a removed shortcut override) and the store's
-/// revision after the change.
+/// Qt clamps it; `null` for a removed override) and the store's revision after
+/// the change.
 #[tauri::command]
 pub async fn settings_set(
     app: AppHandle,

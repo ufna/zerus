@@ -144,8 +144,8 @@ There is no producer-control caller yet. Each callback and its actual child,
 stdin writer and output readers retain the same admitted group. A returned
 outcome releases neither a blocked pipe nor its capacity. The selected read
 argv, payload, local/peer deadlines, settlement and backoff stay unchanged;
-stdout is now bounded to 1 MiB. The separate pending-mark store can still accept
-writes, so delivery Idle is not a complete Read role or handoff proof.
+stdout is now bounded to 1 MiB. Native delivery Idle alone is not the pending-store durability barrier or a
+handoff proof.
 
 Four fixed resource slots now retain that same child/input/output/callback
 charge. If any copy survives the callback, one bounded log line names only
@@ -166,8 +166,9 @@ resource visibility and always has `authority:false`; it is not the service's
 read queue, a complete role drain or a takeover permit. An orphan remains
 charged until its actual holders exit, or until that GUI process is restarted.
 
-The existing `ReadMarks` store now has an explicit `checkpoint()` prerequisite,
-without a production caller. Call it off-thread under the store mutex, only
+The existing `ReadMarks` store has an explicit `checkpoint()` prerequisite.
+Its first internal Tauri caller is the dormant ordered barrier described below;
+no producer command invokes it. Call it off-thread under the store mutex, only
 after all mark-writer admissions and their callbacks have actually drained.
 Its caller must retain the role charge across blocked filesystem I/O; a timed
 out wait cannot turn it into a successful barrier. Normal GUI APIs retain their
@@ -184,9 +185,154 @@ directory-sync error can follow a completed rename and still returns failure;
 neither the file's presence nor a successful legacy flush proves durability.
 The returned hash/length/count is source metadata only, never a complete role
 drain or capture context. Native Windows checkpoint durability is unqualified
-and refuses before checkpoint I/O. Full ReadDelivery still needs every Actions
-mark writer, direct MarkRead call, ordered callbacks and its admission closure;
-the new method does not close or activate anything itself.
+and refuses before checkpoint I/O. The store method does not close or activate
+anything itself.
+
+
+## Attention store checkpoint prerequisite
+
+The existing Desk owner observes its original attention-observed load and
+successful compact JSON saves through `attention_store::Observation`. This
+adds constant-sized hashes and sticky failure flags, with no second tracker,
+state copy, detector, source reader or timer. Normal load/Qt fallback and save
+behavior stay with the existing owner. A malformed, unreadable or oversized
+initial source, or any failed save, remains unreliable for that owner's
+lifetime even if a later save succeeds.
+
+The dormant `Attention::checkpoint()` must run off-thread only after the future
+Desk/native callback barrier has closed every writer and drained its actual
+resources. The host must retain the I/O charge through an outer timeout or
+receiver drop. It verifies at most 16 MiB and 50,000 observed entries, the
+current in-memory serialization against the last loaded/saved view, and the
+fresh private regular source leaf against its original-byte digest. It reuses
+the ReadMarks checkpoint file checks. Changed, public, linked or unsupported
+sources refuse. Windows refuses before checkpoint I/O.
+
+An unchanged file is synced without rewriting its whitespace or unknown
+fields. An originally absent file may be written only through the existing
+owner's writer, then reread and checked against the exact intended bytes. File
+and parent-directory sync must both succeed. Failure remains sticky, including
+a late sync failure after bytes have appeared. The result contains only source
+digest, byte length, host and entry counts; it proves neither Qt fallback
+source integrity nor a full Attention drain, native posting outcome, profile
+ownership or permission to publish Drained evidence. There is no production
+freeze caller or positive producer API in this prerequisite.
+
+## Ordered ReadDelivery store barrier
+
+Actions now owns the same fixed four native resource slots as the existing
+read-sync worker. A direct `run_action` MarkRead reserves one of those slots
+before saving its intent, and runs the unchanged read invocation through
+`run_accounted`. Its local/peer timeout, input, empty parent environment,
+settlement and retry semantics are unchanged. The direct path shares the
+worker's 1 MiB stdout cap. A direct result callback, cancelled future, child or
+pipe cannot release another resource's admission. No second loop is added.
+Worker startup is one-use; a failed native-worker startup still leaves the
+pending-store queue admitted, preserving intents for a later application run.
+
+A separate fixed 64-group admission gate covers every Actions pending-store
+mutation: queue/merge, worker and exit flush, snapshot settlement, orphan removal
+and direct MarkRead persistence. Charges span their synchronous change listeners
+as well as file writes. Queue refusal is an error, not accepted intent; the
+existing frontend error path reloads the actual Rust pending list. Snapshot or
+orphan work refused after closure cannot mutate the frozen store. Read-only
+pending-list snapshots remain readable. Pressure refuses new admission without
+evicting pending intent. Test-only store helpers are not production entry points.
+
+The internal `Actions::freeze_reads` handle is single-use and non-serializing.
+It closes pending-store admissions first, then the native gate and cancellation
+flag, and wakes the existing loop. The handle's background caller waits for
+both gates with one absolute deadline before taking the store mutex and calling
+its checked checkpoint. Poisoned or busy store access, unreliable source state,
+failed sync and expired deadlines refuse. A timeout never reopens admissions or
+reclaims resources. A separately charged, one-use checkpoint group remains held
+through actual filesystem I/O, even if the controller abandons its wait; a sync
+completing after the deadline still cannot return success. The future controller
+must own the handle inside that background task, not detach its charge at timeout.
+Windows refuses freeze before closing any admission because native checkpoint
+durability remains unqualified.
+
+There is still no production caller of freeze, positive producer command,
+profile transition, G3 capture context or service read writer. The local
+checkpoint result is source metadata only. Every other role in the selected
+profile still requires its own qualified current drain and store barriers.
+
+
+## Fleet supervisor resource accounting
+
+Core's additive `stream::spawn_accounted` starts the same existing supervisor
+with one already-admitted host resource group. Ordinary GUI `stream::spawn`
+keeps its existing path, output, controls, arguments and deadlines. There is
+no GUI caller of the accounted constructor yet. Raw source mode reuses its
+existing admitted worker group; no new reader or event producer is created.
+The caller must bound source groups and keep its router and consumer callback
+lifetimes separately. Neither constructor nor a resource count grants authority.
+
+One primary slot covers a help probe or watch child and all of its pipe holders.
+A prior probe/watch holder refuses another primary attempt until actual release.
+The existing bounded legacy subscriptions, organization poller and one-shot
+worker-refresh read share 35 callback slots per source; a retained callback or
+pipe cannot be evicted to admit another. There is no per-session projection cache
+or new polling loop. Closing the scope is sticky. Control handles hold only a
+weak reference; an idle retained handle does not charge a completed worker.
+
+Callbacks retain their original group through result delivery and decoding.
+Child/stdin/stdout/stderr retain actual resources after a bounded stop or returned
+runner outcome. Only verified owned-child exit releases its child guard; unknown
+exit pins that admission until host exit. The decoded runner now also retains
+its admitted reader group on unavailable child exit. It still requires successful
+owned-child exit, both real pipe completions and a successful decoder before
+returning data. Existing native recovery, voice and swarm services retain their
+own authority; this tracks the existing CLI helper reads, never those services.
+
+Unix probe/watch helpers start in their own process group. Before signalling
+that group, `waitid(WNOWAIT)` verifies the still-unreaped owned child; only then
+can the supervisor signal its exact group and reap the leader. This also cleans
+up an ssh/ProxyCommand child when its hgs parent exits first, without signalling
+a reused PID/PGID. Unavailable child ownership never permits a group signal.
+Detached children (including a detached ControlPersist master) are not chased;
+any inherited pipe they retain stays charged. Group signalling is limited to
+these read helpers, never agents, terminals or caller-selected/shared groups.
+Actual reader/helper completion still releases admission, not signal delivery.
+Primary pressure stays an ordinary reconnecting state with one bounded static
+role/operation log line, never internal resource text in the computer status.
+
+### Fleet and GUI consumer barrier
+
+`Fleet::start_accounted` now passes the same host resource group through the
+existing router and supervisors. It admits at most 64 live or retired source
+groups in total. Removing a peer releases neither its slot nor its host group
+until the detached stop callback and actual supervisor/helper/pipe resources
+end. Pressure reports the existing reconnecting state; explicit Retry now may
+admit a still-listed missing source after capacity becomes available. It never
+stacks another poller. The old unaccounted constructors retain their shutdown
+behavior.
+
+A weak `FleetControl` closes source admissions and requests cancellation without
+charging a finished graph. Accounted Fleet shutdown bounds joins to one shared
+one-second wait; unfinished threads keep their guards after the handle returns.
+The GUI's existing source pump retains the same group through channel EOF,
+already queued changes, organization observation, mirror/tap processing and the
+creation observer callback. An external sink is not drained by a returned
+`StreamHandle::stop` or Fleet stop. Work scheduled by another role's observer
+remains that role's responsibility; this does not transfer G2 ownership.
+
+The dormant internal `freeze_fleet` barrier closes a fixed 64-group GUI control
+gate before stopping sources, so already admitted starts cannot recreate a
+source after close. It waits off-thread for those controls, takes the source
+without blocking or poison recovery, stops its accounted Fleet and waits for
+actual source/pump resources against the same absolute deadline. A returned
+stop or late completion never supplies successful drain. Busy/poisoned state,
+replay, pending I/O and expired deadlines refuse, leaving admissions closed.
+The one-use barrier charge remains held by its worker while stop is executing;
+dropping a controller receiver is not completion. Windows refuses before
+closing admissions because the native integration is unqualified there.
+
+The Unix GUI now uses this accounting for its existing single Fleet and pump;
+argv, source selection, subscription/callback ordering and ordinary rendering
+remain the same. No production caller freezes it yet. This supplies only the
+Fleet role prerequisite: no positive producer command, profile handoff, fresh
+capture, writer delegation or cross-role quiescence is implemented here.
 
 ## Fresh capture and publication boundary
 

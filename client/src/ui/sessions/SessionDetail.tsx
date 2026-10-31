@@ -1,7 +1,11 @@
-import { For, Match, Show, Suspense, Switch, createEffect, createMemo, createRoot, createResource, createSignal, lazy, on, onCleanup } from "solid-js";
+import { For, Match, Show, Suspense, Switch, createEffect, createMemo, createRoot, createResource, createSignal, lazy, on, onCleanup, untrack } from "solid-js";
 import * as bridge from "../../bridge";
 import { terminal } from "../../store/terminal";
 import { TerminalTab } from "./Terminal";
+import { NativeUiTab } from "./NativeUi";
+import { nativeBinding, nativeEntry, nativeRoute } from "./native-entry";
+import { nativeUi } from "../../store/native-ui";
+import { pageHidden } from "../../store/visibility";
 import { ProcessesTab } from "./Processes";
 import { drops } from "../../store/drops";
 import { processes, processesTab } from "../../store/processes";
@@ -11,7 +15,7 @@ import { Icon } from "../lib/icons";
 import { ActivityView, columnStyle } from "./Activity";
 import { AgentBadge, MachineBadge, statusOf, folderOf } from "./SessionCard";
 import { detailTab, page, selected, setDetailTab, setMenu, subagentOpen, type MenuEntry } from "../../store/ui";
-import { activity } from "../../store/session";
+import { activity, subagentActivity } from "../../store/session";
 import { activityReadOnly, type ActivitySource } from "../../store/activitySource";
 import { archiveActivity } from "../../store/archiveActivity";
 import { computerOffline } from "../../store/catalog";
@@ -99,6 +103,7 @@ function Header() {
     act().fork,
     { separator: true },
     copies().command,
+    ...(nativeEntry(s()) ? [nativeEntry(s())!] : []),
     act().change,
     ...(mark() ? [mark()!] : []),
     { separator: true },
@@ -144,8 +149,8 @@ function Header() {
 type Tab = { id: string; label: string };
 const TABS: readonly Tab[] = [{ id: "activity", label: "Activity" }, { id: "terminal", label: "Terminal" }];
 
-/** The Activity of a row: an archived row's recorded one, read-only and never streamed, else the live follow. */
-export const activitySourceFor = (key: string): ActivitySource => (activityReadOnly(key) ? archiveActivity : activity);
+/** The selected child's bounded page, an archive's recorded page, or the live parent follow. */
+export const activitySourceFor = (key: string): ActivitySource => (subagentOpen() ? subagentActivity : activityReadOnly(key) ? archiveActivity : activity);
 
 /** The tabs of a row: an archived row has no Terminal (Qt hides only that one; terminal_status answers unsupported). */
 export function detailTabs(key: string): readonly Tab[];
@@ -157,6 +162,14 @@ export function detailTabs(key: string, tabs: readonly Tab[] = TABS): readonly T
 /** The selected session's terminal status (terminal_status), refreshed when its inputs change. */
 const [terminalTexts, setTerminalTexts] = createSignal<TerminalStatus | undefined>();
 createRoot(() => {
+  createEffect(() => {
+    const s = selected(), binding = nativeBinding(s), online = !!s && s.state !== "archived" && !computerOffline(s.computer);
+    untrack(() => nativeUi.select(binding, online));
+  });
+  createEffect(() => {
+    const shown = page() === "sessions" && detailTab() === "native" && !subagentOpen() && !pageHidden();
+    untrack(() => nativeUi.opened(shown));
+  });
   // The inputs of terminal_status as one string: a row change that leaves them alone calls nothing.
   const inputs = createMemo(() => {
     const s = selected();
@@ -192,6 +205,7 @@ const tabs = () => {
   const all = [
     { id: "activity" as const, label: "Activity", show: true },
     { id: "terminal" as const, label: "Terminal", show: !!terminalTexts()?.supported && !subagentOpen() },
+    { id: "native" as const, label: "Native UI", show: selected()?.agent === "deepseek" && !subagentOpen() },
     processesTab(flag("processes/enabled"), count),
     { id: "taskview" as const, label: "Task View", show: detailTab() === "taskview" && !!selectedTask() },
   ];
@@ -210,6 +224,11 @@ export function SessionDetail() {
     onCleanup(() => observer.disconnect());
   };
   const goal = createMemo(() => sessionGoal(selected() ? followedFor(selected()!.key).value : undefined));
+  const signIn = createMemo(() => {
+    const s = selected();
+    return s?.agent === "deepseek" && s.state === "running" && !computerOffline(s.computer)
+      && detailsFor(s, true, followedFor(s.key))?.auth_required;
+  });
   const toggle = onCommand("panel.toggle", () => { if (page() === "sessions" && selected()) setInspectorOpen(!inspectorOpen()); });
   onCleanup(toggle);
   createEffect(() => {
@@ -239,14 +258,20 @@ export function SessionDetail() {
                   <div class="activity-wrap" classList={{ "has-goal": !!goal().objective }} style={columnStyle()}>
                     <Show when={goal().objective}><button class="goal-pill" onClick={() => openInspector("plan")}><Icon name="circle-dot" size={13} /><b>Pursuing goal</b><span class="ell">{goal().objective}</span><span class="grow" /><span>Details</span><Icon name="chevron-right" size={12} /></button></Show>
                     <ActivityView source={activitySourceFor(selected()!.key)} />
-                    {/* Only the subagent view stays read-only; archives keep their editable draft (Qt 3454). */}
+                    {/* Child Activity stays read-only; its own composer opens only when the inspection supports send. */}
                     <Show when={!subagentOpen()}>
-                      <QueuePanel /><div class="cmp-col"><QuestionCard /><Composer /></div>
+                      <Show when={signIn()}><div class="cmp-col"><div class="qcard">
+                        <p class="qcard-body">Sign in to DeepSeek to start using this session. Complete sign-in in the official DeepSeek UI, then return here.</p>
+                        <div class="qcard-actions"><button class="btn small" onClick={() => nativeRoute(selected())()}>Sign in to DeepSeek…</button></div>
+                      </div></div></Show>
+                      <QueuePanel /><QuestionCard />
                     </Show>
+                    <div class="cmp-col"><Composer /></div>
                   </div>
                 </Match>
                 <Match when={detailTab() === "taskview"}><Suspense><TaskView /></Suspense></Match>
                 <Match when={detailTab() === "terminal"}><TerminalTab /></Match>
+                <Match when={detailTab() === "native"}><NativeUiTab /></Match>
                 <Match when={detailTab() === "processes"}><ProcessesTab /></Match>
               </Switch>
             </div>

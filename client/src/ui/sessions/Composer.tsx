@@ -156,6 +156,7 @@ export function Composer() {
   const v = () => composer.view();
   const voice = createVoice(voicePort);
   onCleanup(() => { void voice.close(); });
+  const child = () => !!v()?.subagent;
   const online = () => !computerOffline(s().computer);
   const details = createMemo(() => detailsFor(s(), online(), followedFor(s().key)));
   createEffect(() => {
@@ -170,17 +171,17 @@ export function Composer() {
   // offline host, a failed read or a session not running reads as unavailable).
   const compacting = createMemo(() => {
     const state = followedFor(s().key).value ?? {};
-    return s().tracked && online() && !v()?.inspect_error && s().state === "running" && state.phase === "compacting" && state.runtime_state === "live"
+    return !child() && s().tracked && online() && !v()?.inspect_error && s().state === "running" && state.phase === "compacting" && state.runtime_state === "live"
       && state.process_state === "running" && state.state !== "archived";
   });
   createEffect(() => {
     const row = s(), state = followedFor(row.key).value ?? {};
     const raw = state.prompt_suggestion as { text?: unknown; at?: unknown } | undefined;
     const phase = typeof state.phase === "string" ? state.phase : row.phase;
-    const active = phase === "idle" && online() && row.state === "running";
+    const active = !child() && phase === "idle" && online() && row.state === "running";
     suggestions.set(row.catalogKey, active && typeof raw?.text === "string" ? raw.text : "", typeof raw?.at === "number" ? raw.at : 0);
   });
-  const suggestion = () => suggestions.get(s().catalogKey, !!v()?.sending || !!v()?.waiting);
+  const suggestion = () => child() ? undefined : suggestions.get(s().catalogKey, !!v()?.sending || !!v()?.waiting);
   const [compact, setCompact] = createSignal(false);
   let root!: HTMLDivElement;
   let editor!: HTMLTextAreaElement;
@@ -200,6 +201,7 @@ export function Composer() {
   }));
 
   const stopTurn = () => {
+    if (child()) return false;
     const stop = act().stop;
     if (!stop.shown || stop.disabled) return false;
     void composer.interrupted().then(() => stop.action());
@@ -208,7 +210,7 @@ export function Composer() {
   const onKey = (e: KeyboardEvent) => {
     if (e.isComposing || e.keyCode === 229) return;
     if (e.key === "Tab" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
-      const next = suggestedInput(composer.text(), suggestion(), composer.locked());
+      const next = suggestedInput(composer.text(), suggestion() ?? "", composer.locked());
       if (next) {
         e.preventDefault();
         editor.value = next;
@@ -269,7 +271,7 @@ export function Composer() {
       <div class="cmp-toolbar">
         <AttachmentsChip compact={compact()} />
         <VoiceToolbar voice={voice} compact={compact()} />
-        <Show when={mark().active}>
+        <Show when={!child() && mark().active}>
           <button type="button" class="tchip accent" classList={{ icon: compact() }} title={mark().detail} aria-label="Mark as read"
             onClick={(e) => {
               // The chip goes once read: its focus moves on first (composer-ui.ts moveFocusOff).
@@ -283,19 +285,21 @@ export function Composer() {
           <button type="button" class="tchip icon" title={jumpCaption()} aria-label={jumpCaption()}
             onClick={(e) => { if (document.activeElement === e.currentTarget) moveFocusOff(focusTranscript, editor); jumpToLatest(); }}><Icon name="chevrons-down" size={14} /></button>
         </Show>
-        <Show when={compacting()}>
+        <Show when={!child() && compacting()}>
           <span class="tchip cmp-compaction" title="The agent is compressing conversation context." role="status">
             <span class="cmp-progress" aria-label="Compacting context" />Compacting context…
           </span>
         </Show>
-        <Show when={v()?.cancel_send}>
+        <Show when={!child() && v()?.cancel_send}>
           <button type="button" class="tchip link" title={CANCEL_SEND} onClick={() => { void composer.cancelSend(); editor.focus(); }}>Cancel send</button>
         </Show>
         <ResizeHandle hidden={!input()} />
         <Show when={!input()}><span class="grow" /></Show>
-        <RecoveryChip session={s()} compact={compact()} />
-        <UsageLimitChip session={s()} compact={compact()} />
-        <Show when={v()}><CacheChip compact={compact()} /></Show>
+        <Show when={!child()}>
+          <RecoveryChip session={s()} compact={compact()} />
+          <UsageLimitChip session={s()} compact={compact()} />
+          <Show when={v()}><CacheChip compact={compact()} /></Show>
+        </Show>
         <SessionUsageChip />
       </div>
       <VoicePreview voice={voice} />
@@ -324,8 +328,8 @@ export function Composer() {
           <button type="button" class="btn ghost" title="Check the terminal before sending again to avoid a duplicate message"
             onClick={() => { void composer.allowRetry(); editor.focus(); }}><Icon name="refresh-cw" size={13} />Allow retry</button>
         </Show>
-        <ModelSettingsButton />
-        <Show when={act().stop.shown}>
+        <Show when={!child()}><ModelSettingsButton /></Show>
+        <Show when={!child() && act().stop.shown}>
           <button type="button" class="btn" aria-label="Stop current turn" title={act().stop.hint ?? USUAL_STOP} disabled={act().stop.disabled}
             onClick={() => { stopTurn(); }}><Icon name="square" size={12} />Stop</button>
         </Show>

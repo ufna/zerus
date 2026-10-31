@@ -82,6 +82,14 @@ function held<T>() {
 }
 const images = (width: number, height: number): Images => ({ size: async () => ({ width, height }), png: async () => new Uint8Array([1, 2, 3]) });
 
+describe("child draft identity", () => {
+  it("uses Qt's four-part child key without changing main or archive keys", () => {
+    expect(draftKey(SESSION)).toBe(KEY);
+    expect(draftKey({ ...SESSION, archive_id: "archive-1" })).toBe(`${KEY}\narchive-1`);
+    expect(draftKey({ ...SESSION, subagent: { agent_id: "agent-7", parent_conversation_id: "conv-1" } })).toBe(`${KEY}\nconv-1\nagent-7`);
+  });
+});
+
 describe("composer exit flush", () => {
   it("flushes pending debounce and waits for the edit before returning", async () => {
     const f = fakes(); const writing = held<void>();

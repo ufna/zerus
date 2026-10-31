@@ -1,6 +1,12 @@
 import type { ActivityEvent, LocalMessage, Reply } from "../../types";
 import { eventKey } from "../../store/activity";
 import type { ActivityItem, LocalItem, MediaMessage, TranscriptItem, VoiceState } from "./types";
+import { imageSize } from "./attachment-image";
+
+// A Symbol cannot arrive from a provider's JSON. Only our own local send
+// supplies these immutable-cache preview paths and oriented dimensions.
+const LOCAL_FILES = Symbol("local attachment presentation");
+type DisplayEvent = ActivityEvent & { [LOCAL_FILES]?: LocalMessage["attachments"] };
 
 // Journal events as the Activity items of the approved design, after the
 // rules of tray/src/ActivityView.cpp: messages by role, thinking, cleared
@@ -76,10 +82,13 @@ const attention = (e: ActivityEvent) => e.type === "PermissionRequest" || e.type
 export function attachments(e: ActivityEvent): ActivityItem["attachments"] {
   const list = Array.isArray(e.attachments) ? e.attachments : [];
   if (!list.length) return undefined;
-  return list.map((a) => {
+  return list.map((a, index) => {
     const text = (value: unknown) => (typeof value === "string" ? value : "");
     const name = text(a?.name), reference = text(a?.reference), mime = text(a?.mime);
     const bytes = typeof a?.bytes === "number" && Number.isFinite(a.bytes) ? a.bytes : 0;
+    const local = (e as DisplayEvent)[LOCAL_FILES]?.[index];
+    const own = !!local && local.name === name && local.mime === mime && local.bytes === bytes && local.reference === reference;
+    const preview = own && typeof local.preview_path === "string" && /^cache\/[a-f0-9]{64}\/[^/\\]+$/u.test(local.preview_path) ? local.preview_path : undefined;
     return {
       name,
       caption: (reference ? `${reference} ` : "") + name,
@@ -88,6 +97,7 @@ export function attachments(e: ActivityEvent): ActivityItem["attachments"] {
       request_id: text(a?.request_id),
       index: typeof a?.index === "number" && Number.isInteger(a.index) ? a.index : -1,
       image: mime.startsWith("image/") && mime !== "image/svg+xml",
+      ...(own ? { own: true, preview_path: preview, image_size: imageSize(local.image_size) } : {}),
     };
   });
 }
@@ -168,11 +178,13 @@ function media(e: ActivityEvent, id: string): MediaMessage {
   const waveform = Array.isArray(audio.waveform) ? (audio.waveform as unknown[]).map((v) => Math.max(0, Math.min(255, Number(v) || 0))) : [];
   const file = video && Object.keys(video).length ? video : audio;
   const index = Number(file.index);
+  const message = typeof e.message_id === "string" && e.message_id || (typeof voice.id === "string" ? voice.id : "");
   return {
     id, kind: "media", media: video && Object.keys(video).length ? "video" : "voice", at: timeText(e.at),
     state: state in VOICE_STATE_LABEL ? state : "uncertain",
     durationMs: Math.max(0, Number(audio.duration_ms) || 0),
     waveform: waveform.length === 64 ? waveform : [],
+    posterMessageId: video?.poster_available === true && message ? message : undefined,
     file: typeof audio.request_id === "string" && !!audio.request_id && typeof file.request_id === "string" && !!file.request_id
       && typeof file.index === "number" && Number.isSafeInteger(index) && index >= 0 ? { request_id: file.request_id, index } : undefined,
     transcript: typeof voice.transcript === "string" && voice.transcript ? voice.transcript : undefined,
@@ -241,10 +253,11 @@ export function localItem(row: LocalMessage, summary?: Record<string, unknown>):
 }
 
 /** A local row as a timeline event (Qt's `type: LocalMessage`). */
-function localEvent(row: LocalMessage): ActivityEvent {
+function localEvent(row: LocalMessage): DisplayEvent {
   return {
     type: "LocalMessage", detail: row.text, at: row.submitted_at, attachments: row.attachments as ActivityEvent["attachments"],
     source: row.source ?? undefined, voice: row.voice ?? undefined, message_id: row.message_id ?? undefined, local: row,
+    [LOCAL_FILES]: row.attachments,
   };
 }
 
@@ -301,17 +314,29 @@ export function mergeLocal(events: readonly ActivityEvent[], local: readonly Loc
       source[match] = {
         ...source[match], activity_journal_key: eventKey(source[match]), activity_key: `local-${row.id}`, activity_display_key: `local-${row.id}`, detail: row.text,
         attachments: source[match].attachments?.length ? source[match].attachments : row.attachments as ActivityEvent["attachments"], attachment_submitted_text: row.submitted_text,
-      };
+        [LOCAL_FILES]: row.attachments,
+      } as DisplayEvent;
       continue;
     }
     if (append) appended.push(localEvent(row));
   }
-  if (!appended.length) return source;
+  // A native echo may precede both the CLI acknowledgement and its durable
+  // receipt. Keep the client's row visible through that short gap; do not
+  // invent an identity binding from text. Equal-text sends remain separate.
+  const visible = source.filter((event, index) => claimed.has(index) || !candidates.some((row) => {
+    if (row.status === "error" || !row.attachments.length || !PROMPTS.has(event.type ?? "") || event.agent_id
+      || event.attachments?.length || Math.abs((event.at ?? NaN) - row.submitted_at) > NEAREST) return false;
+    const raw = event.detail ?? "";
+    if (!echoMatchesFiles(raw, row.attachments as ActivityEvent["attachments"])) return false;
+    const canonical = raw.replace(/\[(Image|File) #([1-9][0-9]{0,8})\] ?\((?:Inspect the attached image at|Read the attached file at) (?:"(?:[^"\\]|\\.)*") ?\)/g, "[$1 #$2]");
+    return canonical.trim() === row.text.trim();
+  }));
+  if (!appended.length) return visible;
   // Placed by time, after the events of the same time (Qt's stable sort by `at`).
   const placed = appended.map((e, i) => ({ e, i })).sort((a, b) => (a.e.at ?? 0) - (b.e.at ?? 0) || a.i - b.i).map((p) => p.e);
   const merged: ActivityEvent[] = [];
   let next = 0;
-  for (const e of source) {
+  for (const e of visible) {
     const at = typeof e.at === "number" ? e.at : 0;
     while (next < placed.length && at > 0 && (placed[next].at ?? 0) < at) merged.push(placed[next++]);
     merged.push(e);
@@ -402,7 +427,7 @@ export function mergeProvider(given: readonly ActivityEvent[], summary?: Record<
  * append. `local` are the open session's local rows (the composer view's).
  */
 export function buildTranscript(given: readonly ActivityEvent[], summary?: Record<string, unknown>, local: readonly LocalMessage[] = []): TranscriptItem[] {
-  const provider = mergeProvider(given, summary);
+  const provider = mergeAttachmentMessages(mergeProvider(given, summary), summary);
   if (!provider.length && !local.length) return recordedContext(summary);
   const events = mergeAttachmentMessages(local.length ? mergeLocal(provider, local) : provider, summary);
   return transcriptItems(events, summary, !provider.length);
@@ -502,7 +527,7 @@ export function createTranscriptProjection() {
       // journal event. Keep that one row through the handoff, without actions.
       const waiting = missing.filter(row => !bound.has(`local-${row.id}`));
       const bindingOnly = missing.filter(row => bound.has(`local-${row.id}`));
-      const provider = mergeProvider(given, summary);
+      const provider = mergeAttachmentMessages(mergeProvider(given, summary), summary);
       const aliased = provider.map(event => {
         const id = bindings.get(eventKey(event));
         return id ? { ...event, activity_display_key: id } : event;

@@ -999,8 +999,16 @@ export function PerfHost() {
       const { terminationCleanupSmoke } = await import("../perf/terminationCleanupSmoke");
       void terminationCleanupSmoke(!!config().replay && !!config().actions_smoke);
     }
+    if (new URLSearchParams(location.search).has("archive-cleanup-smoke") && inTauri()) {
+      const { archiveCleanupSmoke } = await import("../perf/archiveCleanupSmoke");
+      void archiveCleanupSmoke(!!config().replay && !!config().actions_smoke);
+    }
     if (new URLSearchParams(location.search).has("file-ssh-smoke") && inTauri()) {
       void import("../perf/fileSshSmoke").then(({ fileSshSmoke }) => fileSshSmoke(!!config().replay && !!config().actions_smoke));
+    }
+    if (new URLSearchParams(location.search).has("video-poster-smoke") && inTauri()) {
+      const { videoPosterSmoke } = await import("../perf/videoPosterSmoke");
+      void videoPosterSmoke(!!config().replay && !!config().actions_smoke);
     }
     if (new URLSearchParams(location.search).has("file-reference-smoke") && inTauri()) {
       const { fileReferenceSmoke } = await import("../perf/fileReferenceSmoke");
@@ -1009,6 +1017,10 @@ export function PerfHost() {
     if (new URLSearchParams(location.search).has("markdown-smoke") && inTauri()) {
       const { markdownSmoke } = await import("../perf/markdownSmoke");
       void markdownSmoke(!!config().replay && !!config().actions_smoke);
+    }
+    if (new URLSearchParams(location.search).has("native-ui-smoke") && inTauri()) {
+      const { nativeUiSmoke } = await import("../perf/nativeUiSmoke");
+      void nativeUiSmoke(!!config().replay && !!config().actions_smoke, config().smoke_file ?? undefined);
     }
     if (new URLSearchParams(location.search).has("scope-filter-smoke") && inTauri()) {
       const { scopeFilterSmoke } = await import("../perf/scopeFilterSmoke");

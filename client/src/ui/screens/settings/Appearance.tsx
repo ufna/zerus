@@ -3,10 +3,11 @@ import { windowLayer, setWindowLayer } from "../../../store/windowLayer";
 import { Icon } from "../../lib/icons";
 import { setContentScale, toast } from "../../../store/ui";
 import { previewColumn } from "../../sessions/Activity";
-import { flag, num, setSetting, text } from "../../../store/settings";
+import { flag, num, setSetting, settingsLoaded, text } from "../../../store/settings";
 import { appearanceFor, chooseSkin, chooseTheme, chosenSkin, skin, skinList, skins, systemLight, theme, type Theme } from "../../../skin/runtime";
 import type { ResolvedSkin } from "../../../skin/skin";
 import { Group, Row, SectionHead, Select, Slider, Check } from "./ui";
+import { tr } from "../../../i18n";
 
 // Settings > Appearance (tray/src/SettingsPage.h:46-95, UiLanguage.h,
 // ContentScale.h, ActivityWidth.h, WindowLayer.cpp), with the client's skins
@@ -146,8 +147,8 @@ export function AppearanceSection() {
         </Row>
         <div class="set-row stack">
           <div class="set-row-text">
-            <span class="set-label">Skin</span>
-            <div class="set-hint">A skin sets colors, fonts, radii, density and motion, and chooses variants of existing components and layouts. It never contains CSS or code.</div>
+            <span class="set-label">{tr("Skin")}</span>
+            <div class="set-hint">{tr("A skin sets colors, fonts, radii, density and motion, and chooses variants of existing components and layouts. It never contains CSS or code.")}</div>
           </div>
           <div class="skin-groups">
             <For each={[["dark", dark()], ["light", light()]] as const}>
@@ -163,8 +164,8 @@ export function AppearanceSection() {
       </Group>
 
       <Group>
-        <Row label="Interface language" for="set-lang" hint={<>Restart Zerus to apply the interface language. Agent sessions keep running.<br />Russian is a preview. Untranslated text stays in English.</>}>
-          <Select id="set-lang" value={text("workspace/language")} onChange={(v) => void setSetting("workspace/language", v)}
+        <Row label="Interface language" for="set-lang" hint={<>{tr("Restart Zerus to apply the interface language. Agent sessions keep running.")}<br />{tr("Russian is a preview. Untranslated text stays in English.")}</>}>
+          <Select id="set-lang" value={text("workspace/language")} disabled={!settingsLoaded()} onChange={(v) => void setSetting("workspace/language", v)}
             options={[{ value: "en", label: "English" }, { value: "ru", label: "Russian (preview)" }]} />
         </Row>
         <Row label="Usage limit indicator" for="set-usage" hint="Compares used quota with the elapsed part of each limit window. The bars show usage above elapsed time; the marker shows elapsed time on the usage bar. Colors warn when the current pace would use up the limit before it resets.">

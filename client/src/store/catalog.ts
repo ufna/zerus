@@ -5,6 +5,7 @@ import type { Batch, ComputerId, RowOut, ViewRow } from "../types";
 import type { AgentKind, Session, Status } from "../ui/sessions/types";
 import { marks as appMarks, type RowMarks } from "./marks";
 import { connectionOf } from "./overview";
+import { childRows } from "../ui/sessions/subagents";
 
 // The catalog: every live session row of every computer, keyed by
 // computer + "\n" + catalog key. A batch is one reactive transaction. An
@@ -125,7 +126,8 @@ export function toSession(computer: ComputerId, key: string, v: ViewRow, marks: 
     attention,
     scheduleNext: undefined,
     backgroundJobs: typeof v.background === "number" ? v.background : undefined,
-    subagents: undefined,
+    subagents: v.subagents ? childRows(v.subagents, v.subagent_counts_complete) : undefined,
+    subagentCountsComplete: !!v.subagent_counts_complete,
     reviewLater: false,
     attentionNeeded: typeof v.needs_attention === "boolean" ? v.needs_attention : undefined,
     childAttention: !!v.child_attention,
@@ -203,8 +205,11 @@ export function createCatalog(given?: RowMarks, onMachines?: (b: Batch) => void)
   const replaced = new Map<string, { id: string; at: number }>();
   const replacedListeners = new Set<(oldId: string, newId: string) => void>();
   /** The draft keys of the nonempty drafts (Rust's `draft_keys`): a row's `draft` mark. */
-  let drafts = new Set<string>();
-  const drafted = (row: Pick<Session, "computer" | "name">) => drafts.has(`${row.computer}\n${row.name}`);
+  let drafts = new Set<string>(), childDraftParents = new Set<string>();
+  const drafted = (row: Pick<Session, "computer" | "name">) => {
+    const owner = `${row.computer}\n${row.name}`;
+    return drafts.has(owner) || childDraftParents.has(owner);
+  };
 
   const put = (id: string, next: Session, fresh: string[]) => {
     next.draft = drafted(next);
@@ -278,6 +283,7 @@ export function createCatalog(given?: RowMarks, onMachines?: (b: Batch) => void)
    */
   function setDraftKeys(keys: readonly string[]) {
     drafts = new Set(keys);
+    childDraftParents = new Set(keys.filter((key) => key.split("\n").length === 4).map((key) => key.split("\n").slice(0, 2).join("\n")));
     batch(() => {
       for (const id of catalog.order) {
         const row = catalog.rows[id];
@@ -286,11 +292,11 @@ export function createCatalog(given?: RowMarks, onMachines?: (b: Batch) => void)
     });
   }
 
-  return { catalog, applyBatch, onReplaced, setDraftKeys };
+  return { catalog, applyBatch, onReplaced, setDraftKeys, hasDraftKey: (key: string) => drafts.has(key) };
 }
 
 /** The app's catalog. Tests build their own with `createCatalog`. */
-export const { catalog, applyBatch, onReplaced, setDraftKeys } = createCatalog(appMarks, applyMachines);
+export const { catalog, applyBatch, onReplaced, setDraftKeys, hasDraftKey } = createCatalog(appMarks, applyMachines);
 
 /** Rows in display order. */
 export const orderedRows = () => catalog.order.map((id) => catalog.rows[id]).filter(Boolean);

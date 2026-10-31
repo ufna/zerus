@@ -56,7 +56,23 @@ export const setCompactRows = rowDensity.set;
 export const expandCompactRows = rowDensity.expandAll;
 export const hasCompactRows = rowDensity.any;
 export const [stripMode, setStripMode] = createSignal(params.get("strip") === "1");
-export const [menu, setMenu] = createSignal<{ x: number; y: number; items: MenuEntry[] } | undefined>();
+type Menu = { x: number; y: number; items: MenuEntry[] };
+// Keep the logical snapshot synchronous for guarded asynchronous menu reads.
+// Only its painted layer waits for the native child to acknowledge hiding.
+export const [menu, rememberMenu] = createSignal<Menu | undefined>();
+export const [visibleMenu, publishMenu] = createSignal<Menu | undefined>();
+let menuBarrier: ((scope: string, opening: boolean) => Promise<void> | undefined) | undefined;
+let menuRevision = 0;
+/** A native child must acknowledge hiding before an app menu can cover it. */
+export function bindMenuBarrier(barrier: typeof menuBarrier) { menuBarrier = barrier; }
+export const nativeOverlayBarrier = (scope: string, opening: boolean) => menuBarrier?.(scope, opening);
+export function setMenu(value: Menu | undefined) {
+  const revision = ++menuRevision;
+  rememberMenu(value);
+  const wait = nativeOverlayBarrier("menu", !!value);
+  if (!value || !wait) { publishMenu(value); return; }
+  void wait.then(() => { if (revision === menuRevision) publishMenu(value); }).catch(() => {});
+}
 export const [contentScale, setContentScale] = createSignal(1);
 /** A row the session list scrolls to once it lists it (Qt's `revealRow`); a new selection drops it. */
 export const [revealing, setRevealing] = createSignal<string | undefined>();

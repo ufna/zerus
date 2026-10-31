@@ -1367,18 +1367,24 @@ pub async fn move_to_project(
 }
 
 /// New project…, with the sessions it takes (none from the list's menu).
+#[derive(serde::Serialize)]
+pub struct CreatedProject {
+    #[serde(flatten)]
+    outcome: EditOutcome,
+    /// The writer's reserved identity, never a name-based lookup.
+    project: String,
+}
+
 #[tauri::command]
 pub async fn create_project(
     state: State<'_, Organization>,
     name: String,
     members: Vec<String>,
-) -> Result<EditOutcome, String> {
-    edit(state, move |_| Intent::Create {
-        id: uuid::Uuid::new_v4().to_string(),
-        name,
-        members,
-    })
-    .await
+) -> Result<CreatedProject, String> {
+    let project = uuid::Uuid::new_v4().to_string();
+    let id = project.clone();
+    let outcome = edit(state, move |_| Intent::Create { id, name, members }).await?;
+    Ok(CreatedProject { outcome, project })
 }
 
 /// Uses the existing shared organization writer; local vivid never enters it.
@@ -1465,6 +1471,30 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn creation_keeps_the_edit_outcome_and_returns_its_exact_project() {
+        for outcome in [
+            EditOutcome::Done { conflicts: 0 },
+            EditOutcome::Kept {
+                detail: "offline".into(),
+            },
+            EditOutcome::Refused {
+                detail: "not ready".into(),
+            },
+        ] {
+            let mut expected = serde_json::to_value(&outcome).unwrap();
+            expected["project"] = json!("reserved-project");
+            assert_eq!(
+                serde_json::to_value(CreatedProject {
+                    outcome,
+                    project: "reserved-project".into(),
+                })
+                .unwrap(),
+                expected
+            );
+        }
+    }
     use zerus_client_core::swarm::edit::shared;
     use zerus_client_core::{ComputerId, ViewRow};
 

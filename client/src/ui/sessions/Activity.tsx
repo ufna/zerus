@@ -1,9 +1,14 @@
+import { nativeRoute } from "./native-entry";
 import { createActivityScroll } from "./activity-scroll";
 import { activityReadingRows, createActivityAnchor } from "./activity-anchor";
 import { searchPreview, clearSearchPreview } from "../../store/searchSelection";
 import { SearchHighlight } from "./SearchHighlight";
-import { For, Show, batch, createContext, createEffect, createMemo, createSignal, on, onCleanup, onMount, useContext } from "solid-js";
-import { attachmentFetch, attachmentMedia, attachmentOpen, copyVerbatim } from "../../bridge";
+import { For, Show, batch, createContext, createEffect, createMemo, createSignal, on, onCleanup, onMount, useContext, type JSX } from "solid-js";
+import { Dynamic } from "solid-js/web";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { createImageHandoff, fittedImage } from "./attachment-image";
+import { attachmentFetch, attachmentMedia, attachmentOpen, attachmentPin, attachmentUnpin, copyVerbatim, inTauri } from "../../bridge";
+import { posterUrl, visiblePoster } from "./video-poster";
 import { notify } from "../../store/actions";
 import { previews } from "../../store/attachments";
 import { mediaPlayback } from "../../store/mediaPlayback";
@@ -23,7 +28,7 @@ import type { LocalMessage } from "../../types";
 import { animationFrames, createActivityEnd, newLocalSends } from "./activity-end";
 import { buildTranscript, createTranscriptProjection, VOICE_STATE_LABEL, voiceStateDetail, voiceStateIssue } from "./transcript";
 import { DELETE_TEXT, DELETE_TITLE, retryReason, routeInspect } from "./local-actions";
-import { inlineParts, markdownBlocks } from "./markdown";
+import { markdownReady, markdownTree, type Inline, type MarkdownBlock } from "./markdown";
 import { openExternal, openSessionFile } from "./sessionFiles";
 import { SessionFileDialog } from "./SessionFileDialog";
 import { statusOf } from "./SessionCard";
@@ -168,43 +173,68 @@ function layoutDisclosure() {
   return [open, () => setWanted((value) => !value)] as const;
 }
 
-function inline(text: string, session?: () => Session | undefined) {
-  return inlineParts(text).map((part) => {
-    if (part.kind === "code") return <code>{part.text}</code>;
-    if (part.kind === "bold") return <b>{part.text}</b>;
-    if (part.kind === "external" || part.kind === "file") {
-      return <a href={part.href} title={part.href} draggable={false} onAuxClick={(event) => event.preventDefault()} onDragStart={(event) => event.preventDefault()} onClick={(event) => {
-        event.preventDefault();
-        if (part.kind === "external") openExternal(part.href);
-        else {
-          const current = session?.();
-          if (current) openSessionFile(current, part.href);
-        }
-      }}>{part.text}</a>;
+function inlines(parts: Inline[], session?: () => Session | undefined): JSX.Element[] {
+  return parts.map((part): JSX.Element => {
+    switch (part.kind) {
+      case "text": return part.text;
+      case "code": return <code>{part.text}</code>;
+      case "br": return <br />;
+      case "bold": return <b>{inlines(part.children, session)}</b>;
+      case "em": return <em>{inlines(part.children, session)}</em>;
+      case "del": return <del>{inlines(part.children, session)}</del>;
+      default: {
+        const link = part;
+        return <a href={link.href} title={link.href} draggable={false} onAuxClick={(event) => event.preventDefault()} onDragStart={(event) => event.preventDefault()} onClick={(event) => {
+          event.preventDefault();
+          if (link.kind === "external") openExternal(link.href);
+          else {
+            const current = session?.();
+            if (current) openSessionFile(current, link.href);
+          }
+        }}>{inlines(link.children, session)}</a>;
+      }
     }
-    return part.text;
+  });
+}
+
+const HEADINGS = ["h1", "h2", "h3", "h4", "h5", "h6"] as const;
+
+function blocks(list: MarkdownBlock[], session?: () => Session | undefined): JSX.Element[] {
+  return list.map((b): JSX.Element => {
+    switch (b.kind) {
+      case "code": return <pre class="act-code mono">{b.text}</pre>;
+      case "text": return <>{inlines(b.inline, session)}</>;
+      case "heading": return <Dynamic component={HEADINGS[b.level - 1]} class="md-heading">{inlines(b.inline, session)}</Dynamic>;
+      case "hr": return <hr class="md-rule" />;
+      case "quote": return <blockquote class="md-quote">{blocks(b.blocks, session)}</blockquote>;
+      case "list": {
+        const items = b.items.map((item) => (
+          <li classList={{ "md-task": item.task }}>
+            <Show when={item.task}><input type="checkbox" class="md-check" checked={item.checked} disabled aria-label={item.checked ? "Done" : "Not done"} /></Show>
+            {blocks(item.blocks, session)}
+          </li>
+        ));
+        return b.ordered ? <ol class="md-list" start={b.start}>{items}</ol> : <ul class="md-list">{items}</ul>;
+      }
+      case "table": return (
+        <div class="act-table-wrap" role="region" aria-label="Message table" tabindex="0">
+          <table class="act-table" style={{ "--table-columns": b.header.length }}>
+            <thead><tr>{b.header.map((cell, column) => <th scope="col" style={{ "text-align": b.align[column] }}>{inlines(cell, session)}</th>)}</tr></thead>
+            <Show when={b.rows.length}><tbody>{b.rows.map((row) => <tr>{row.map((cell, column) => <td style={{ "text-align": b.align[column] }}>{inlines(cell, session)}</td>)}</tr>)}</tbody></Show>
+          </table>
+        </div>
+      );
+      default: return <p>{inlines(b.inline, session)}</p>;
+    }
   });
 }
 
 export function Body(props: { text: string }) {
   const session = useContext(ActivitySession);
-  return (
-    <For each={markdownBlocks(props.text)}>
-      {(b) => {
-        if (b.kind === "code") return <pre class="act-code mono">{b.text}</pre>;
-        if (b.kind === "table") return (
-          <div class="act-table-wrap" role="region" aria-label="Message table" tabindex="0">
-            <table class="act-table" style={{ "--table-columns": b.header.length }}>
-              <thead><tr><For each={b.header}>{(cell, column) => <th scope="col" style={{ "text-align": b.align[column()] }}>{inline(cell, session)}</th>}</For></tr></thead>
-              <Show when={b.rows.length}><tbody><For each={b.rows}>{(row) => <tr><For each={row}>{(cell, column) => <td style={{ "text-align": b.align[column()] }}>{inline(cell, session)}</td>}</For></tr>}</For></tbody></Show>
-            </table>
-          </div>
-        );
-        if (b.kind === "ul") return <ul class="md-list"><For each={b.text.split("\n")}>{(li) => <li>{inline(li.replace(/^- /, ""), session)}</li>}</For></ul>;
-        return <p>{inline(b.text, session)}</p>;
-      }}
-    </For>
-  );
+  // Rerenders once when the lazily loaded parser arrives; Activity places its
+  // rows only after that, so placed rows keep their height.
+  const tree = createMemo(() => { markdownReady(); return markdownTree(props.text); });
+  return <>{blocks(tree(), session)}</>;
 }
 
 // ---------------------------------------------------------------------------
@@ -258,7 +288,7 @@ function Waveform(props: { values: number[] }) {
   return <>{layer("rest")}{layer("played")}</>;
 }
 
-function MediaCard(props: { item: MediaMessage; scope?: AttachmentScope }) {
+function MediaCard(props: { item: MediaMessage; scope?: AttachmentScope; sourceId?: string; postersEnabled?: boolean }) {
   const it = props.item;
   const video = it.media === "video";
   const [transcript, toggleTranscript] = layoutDisclosure();
@@ -268,6 +298,17 @@ function MediaCard(props: { item: MediaMessage; scope?: AttachmentScope }) {
   const [isPlaying, setPlaying] = createSignal(false);
   const [loading, setLoading] = createSignal(false);
   const [url, setUrl] = createSignal("");
+  const [poster, setPoster] = createSignal("");
+  let posterCard: HTMLButtonElement | undefined;
+  let posterGate: ReturnType<typeof visiblePoster> | undefined;
+  onMount(() => {
+    const source = props.sourceId;
+    if (!video || !source || !it.posterMessageId || !posterCard || !inTauri()) return;
+    const url = posterUrl(source, it.posterMessageId);
+    if (url) { posterGate = visiblePoster(posterCard, url, setPoster); posterGate.setEnabled(!!props.postersEnabled); }
+  });
+  createEffect(() => { const enabled = !!props.postersEnabled; posterGate?.setEnabled(enabled); });
+  onCleanup(() => posterGate?.dispose());
   const [error, setError] = createSignal("");
   const visibleError = createMemo((previous: string) => held() ? previous : error() || it.error || "", "");
   const target = createMemo(() => it.file ? cardTarget(it.file, props.scope) : undefined,
@@ -357,11 +398,12 @@ function MediaCard(props: { item: MediaMessage; scope?: AttachmentScope }) {
       }>
         {/* The round video plays in place: click plays or pauses; a ring shows progress. */}
         <div class="vm-row video">
-          <button class="vm-poster" classList={{ playing: isPlaying(), started: position() > 0 && position() < duration() }}
+          <button ref={posterCard} class="vm-poster" classList={{ playing: isPlaying(), started: position() > 0 && position() < duration() }}
             style={{ "--p": String(ratio()) }} aria-pressed={isPlaying()}
             aria-label={`${isPlaying() ? "Pause" : "Play"} video message (${mediaTime(duration())})`} disabled={!target() || loading()} title={!target() ? "Recording is unavailable." : undefined} aria-busy={loading()} onClick={() => { if (isPlaying()) pause(); else void play(); }}>
-            <span class="vm-frames" classList={{ real: !!url() }} aria-hidden="true">
-              <Show when={url()}><video ref={(el) => { player = el; }} src={url()} playsinline preload="metadata"
+            <span class="vm-frames" classList={{ real: !!poster() || isPlaying() }} aria-hidden="true">
+              <Show when={poster() && !isPlaying()}><img src={poster()} alt="" /></Show>
+              <Show when={url()}><video ref={(el) => { player = el; }} src={url()} playsinline preload="metadata" style={{ position: "absolute", inset: "0", opacity: isPlaying() ? 1 : 0 }}
                 onLoadedMetadata={loaded} onTimeUpdate={moved} onPlaying={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} onError={failed} /></Show>
             </span>
             <svg class="vm-ring" viewBox="0 0 200 200" aria-hidden="true">
@@ -404,25 +446,31 @@ function AttachmentCard(props: { file: ItemAttachment; scope?: AttachmentScope }
     previews.show(now.computer, now.ref);
     onCleanup(() => previews.hide(now.computer, now.ref));
   }));
-  const thumbnail = () => {
-    const now = target();
-    if (!now || !props.file.image) return undefined;
-    const state = previews.state(now.computer, now.ref);
-    return state.kind === "ready" && state.fetched.thumbnail ? state.url : undefined;
-  };
-  const contents = () => <>
+  const handoff = createImageHandoff(async (url) => {
+    const image = new Image(); image.src = url; await image.decode();
+  });
+  const localPath = () => props.file.preview_path;
+  createEffect(on(localPath, (path) => {
+    if (!path) return;
+    // Retain the immutable local copy while this row is visible, including
+    // after its native local-message record has reconciled away.
+    attachmentPin(path);
+    handoff.local(convertFileSrc(path, "zerus-file"));
+    onCleanup(() => attachmentUnpin(path));
+  }));
+  const remote = () => { const now=target(); return now && props.file.image ? previews.state(now.computer,now.ref) : undefined; };
+  createEffect(() => { const state=remote(); if(state?.kind === "ready") void handoff.remote(state.url); });
+  const size = () => props.file.image_size ?? (remote()?.kind === "ready" ? (remote() as Extract<ReturnType<typeof previews.state>,{kind:"ready"}>).fetched.image_size ?? undefined : undefined);
+  return <button type="button" class="att-card" aria-disabled={!target()} tabindex={target() ? 0 : -1}
+    title={target() ? props.file.caption : `Attachment: ${props.file.name}`} onClick={() => { const now=target(); if(now) void openAttachment(now.computer,now.ref); }}>
     <Show when={props.file.image}>
-      <span class="att-thumb"><Show when={thumbnail()}>{(url) => <img src={url()} alt="" onError={() => { const now=target(); if(now)previews.failed(now.computer,now.ref); }} />}</Show></span>
+      <span class="att-thumb"><img src={handoff.url()} style={fittedImage(size())} alt=""
+        onError={() => { const now=target(); if(now)previews.failed(now.computer,now.ref); }} /></span>
     </Show>
     <span class="att-caption">{props.file.caption}</span>
     <span class="dim">{props.file.meta}</span>
     <span class="att-open" style={{ visibility: target() ? "visible" : "hidden" }}>Open →</span>
-  </>;
-  return (
-    <Show when={target()} fallback={<span class="att-card" title={`Attachment: ${props.file.name}`}>{contents()}</span>}>
-      {(now) => <button class="att-card" title={props.file.caption} onClick={() => void openAttachment(now().computer,now().ref)}>{contents()}</button>}
-    </Show>
-  );
+  </button>;
 }
 
 // ---------------------------------------------------------------------------
@@ -440,10 +488,14 @@ function LocalActions(props: { local: LocalItem }) {
     if (reason(action)) return;
     if (action === "retry") void composer.localRetry(id);
     else if (action === "delete") setDeleting({ id, from });
-    else void composer.localInspect(id).then((routed) => routeInspect(routed, {
-      showTerminal: () => { terminal.opened(); setDetailTab("terminal"); },
-      notify: (tone, text) => { notify(tone, text); },
-    }));
+    else {
+      const showNativeUi = nativeRoute(selected());
+      void composer.localInspect(id).then((routed) => routeInspect(routed, {
+        showNativeUi,
+        showTerminal: () => { terminal.opened(); setDetailTab("terminal"); },
+        notify: (tone, text) => { notify(tone, text); },
+      }));
+    }
   };
   const label = (action: LocalItem["actions"][number]) => (action === "retry" ? "Retry" : action === "delete" ? "Delete" : props.local.inspectLabel);
   return (
@@ -493,13 +545,13 @@ function LocalDeleteDialog() {
 }
 
 function ItemBody(props: { item: ActivityItem; scope?: AttachmentScope }) {
-  const it = props.item;
+  const it = () => props.item;
   return (
     <div class="act-body">
-      <Show when={it.kind === "user"} fallback={<Body text={it.body ?? ""} />}>
+      <Show when={it().kind === "user"} fallback={<Body text={it().body ?? ""} />}>
         {/* A Codex question reply reads as Question and Your answer blocks (ActivityView.cpp:347-363). */}
-        <Show when={it.replies?.length} fallback={<Body text={it.body ?? ""} />}>
-          <For each={it.replies}>{(r) => (
+        <Show when={it().replies?.length} fallback={<Body text={it().body ?? ""} />}>
+          <For each={it().replies}>{(r) => (
             <div class="act-reply">
               <div class="act-reply-q">Question</div>
               <p class="wrap-pre">{r.question}</p>
@@ -508,24 +560,25 @@ function ItemBody(props: { item: ActivityItem; scope?: AttachmentScope }) {
           )}</For>
         </Show>
       </Show>
-      <Show when={it.local?.error}><p class="act-error">{it.local!.error}</p></Show>
-      <Show when={it.code}><pre class="act-code mono">{it.code}</pre></Show>
-      <Show when={it.attachments}>
+      <Show when={it().local?.error}><p class="act-error">{it().local!.error}</p></Show>
+      <Show when={it().code}><pre class="act-code mono">{it().code}</pre></Show>
+      <Show when={it().attachments}>
         <div class="act-attachments">
-          <For each={it.attachments}>{(a) => (
+          <For each={it().attachments?.map((_, index) => index)}>{(index) => (
             // Reserve the same card geometry before its delivery receipt arrives.
             // A missing request remains read-only; it never authorizes a file read.
-            <AttachmentCard file={a} scope={props.scope} />
+            <AttachmentCard file={it().attachments![index]} scope={props.scope} />
           )}</For>
         </div>
       </Show>
-      <Show when={it.local?.actions.length}><LocalActions local={it.local!} /></Show>
+      <Show when={it().local?.actions.length}><LocalActions local={it().local!} /></Show>
     </div>
   );
 }
 
 function EchoBody(props: { item: ActivityItem; scope?: AttachmentScope }) {
   const request = createMemo(() => {
+    if (!props.item.echoBody) return undefined;
     const files = props.item.attachments;
     if (!props.scope || !files?.length) return undefined;
     return { scope: props.scope, files };
@@ -541,23 +594,22 @@ function EchoBody(props: { item: ActivityItem; scope?: AttachmentScope }) {
     onCleanup(() => { live = false; });
   }));
   const state = () => {
+    if (!props.item.echoBody) return "cards";
     const current = request();
+    if (props.item.attachments?.length && props.item.attachments.every((file) => file.own)) return "cards";
     if (!current) return "raw";
     const now = answer();
     if (now.current !== current || !now.done) return "loading";
     return now.ok ? "cards" : "raw";
   };
-  return <>
-    <Show when={state() === "cards"}><ItemBody {...props} /></Show>
-    <Show when={state() === "raw"}><ItemBody {...props} item={{ ...props.item, body: props.item.echoBody, attachments: undefined }} /></Show>
-    <Show when={state() === "loading"}><ItemBody {...props} item={{ ...props.item, attachments: undefined }} /></Show>
-  </>;
+  const shown = createMemo(() => state() === "raw" && props.item.echoBody ? { ...props.item, body: props.item.echoBody, attachments: undefined } : props.item);
+  return <ItemBody {...props} item={shown()} />;
 }
 
-function Item(props: { item: TranscriptItem; scope?: AttachmentScope }) {
+function Item(props: { item: TranscriptItem; scope?: AttachmentScope; sourceId?: string; postersEnabled?: boolean }) {
   const [open, toggleOpen] = layoutDisclosure();
   const it = props.item;
-  if (it.kind === "media") return <MediaCard item={it} scope={props.scope} />;
+  if (it.kind === "media") return <MediaCard item={it} scope={props.scope} sourceId={props.sourceId} postersEnabled={props.postersEnabled} />;
   if (it.kind === "context") return <div class="act-label eyebrow" id={`item-${it.id}`}>{it.body}</div>;
   if (it.kind === "thinking") return <div class="act-thinking" id={`item-${it.id}`}><span class="eyebrow">Thinking</span><p>{it.body}</p></div>;
   if (it.kind === "report")
@@ -594,9 +646,7 @@ function Item(props: { item: TranscriptItem; scope?: AttachmentScope }) {
           <span class="grow" />
           <Show when={it.kind === "agent"}><button class="icon-btn small act-copy" title="Copy as Markdown" onClick={() => copyText(it.body ?? "", "The reply is on the clipboard")}><Icon name="copy" size={12} /></button></Show>
         </header>
-        <Show when={it.echoBody} fallback={<ItemBody item={it} scope={props.scope} />}>
-          <EchoBody item={it} scope={props.scope} />
-        </Show>
+        <EchoBody item={it} scope={props.scope} />
       </article>
     </Show>
   );
@@ -638,12 +688,17 @@ export function jumpToLatest() {
 export const transcriptOf = (source: ActivitySource, local: readonly LocalMessage[] = []) => buildTranscript(source.events(), source.summary(), local);
 
 /**
- * The local rows of the selected session's composer: none for a read-only
- * source, a subagent, or while the composer of another session still shows.
+ * Only the matching main or child composer's local rows reach the transcript.
  */
 export function localRows(source: ActivitySource, s: Session | undefined): readonly LocalMessage[] {
-  const v = composer.view();
-  if (!v || !s || source.readOnly || subagentOpen()) return [];
+  const v = composer.view(), child = subagentOpen();
+  if (!v || !s) return [];
+  if (child) {
+    const key = draftKey({ computer: s.computer, key: s.catalogKey, name: s.name, archive_id: null,
+      subagent: { agent_id: child, parent_conversation_id: s.conversationId ?? "" } });
+    return v.subagent?.agent_id === child && v.key === key ? v.local : [];
+  }
+  if (source.readOnly) return [];
   const key = draftKey({ computer: s.computer, key: s.catalogKey, name: s.name, archive_id: s.state === "archived" ? s.archiveId ?? null : null });
   return v.key === key ? v.local : [];
 }
@@ -658,7 +713,7 @@ export const readsOlder = (source: ActivitySource) => !source.loadingOlder() && 
  * nothing for it.
  */
 export function paneStates(source: ActivitySource, s: Session | undefined) {
-  const live = source.readOnly || !s ? undefined : statusOf(s);
+  const live = source.readOnly || !s || subagentOpen() ? undefined : statusOf(s);
   return {
     /** "This conversation is archived." in place of the transcript. */
     archived: live === "ended",
@@ -723,8 +778,10 @@ export function ActivityView(props: { source?: ActivitySource }) {
     () => scroller.scrollTo({ top: scroller.scrollHeight, behavior: "instant" }),
     animationFrames,
     () => !motion.active() && !selectionInside(),
-    () => { if (view.loaded || view.items.length) setPlaced(true); },
+    // Messages render with the final Markdown before placement (see markdown.ts).
+    () => { if ((view.loaded || view.items.length) && markdownReady()) setPlaced(true); },
   );
+  createEffect(on(markdownReady, (ready) => { if (ready) end.changed(); }, { defer: true }));
   let latestAfterScroll = false;
   const motion = createActivityScroll(() => scroller.scrollTop, (flush) => {
     const atEnd = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 1;
@@ -871,7 +928,7 @@ export function ActivityView(props: { source?: ActivitySource }) {
             <div class="subagent-bar">
               <button class="btn small" onClick={() => setSubagentOpen(undefined)}><Icon name="arrow-right" size={12} style={{ rotate: "180deg" }} />Main activity</button>
               <b>{s()?.subagents?.find((k) => k.id === subagentOpen())?.name}</b>
-              <span class="hint">Showing recent activity. Read only: this agent is managed by the parent conversation.</span>
+              <span class="hint">{composer.view()?.subagent?.hint ?? "Loading subagent activity…"}</span>
             </div>
           </Show>
           <Show when={preview()}>{(p) => <section class="search-preview" aria-label="Search result">
@@ -890,7 +947,7 @@ export function ActivityView(props: { source?: ActivitySource }) {
           <Show when={!states().archived} fallback={<div class="notice"><Icon name="archive" size={14} /><div>This conversation is archived.</div></div>}>
             <Show when={view.loaded || view.items.length} fallback={<div class="act-older hint">Reading activity…</div>}>
               <Show when={view.items.length} fallback={<div class="act-older hint">No recorded activity yet.</div>}>
-                <For each={view.items}>{(it) => <Item item={it} scope={scope()} />}</For>
+                <For each={view.items}>{(it) => <Item item={it} scope={scope()} sourceId={source().target()?.id} postersEnabled={placed() && !pageHidden()} />}</For>
               </Show>
             </Show>
             <Show when={states().working && liveTool()}>

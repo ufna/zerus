@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildTranscript, localFileAvailable, mergeLocal, createTranscriptProjection } from "./transcript";
-import type { ActivityEvent, LocalMessage } from "../../types";
+import type { ActivityEvent, EventAttachment, LocalMessage } from "../../types";
 import type { ActivityItem } from "./types";
 
 const local = (status: "sending" | "error" | "sent", uncertain = false, extra: Partial<LocalMessage> = {}): LocalMessage => ({
@@ -137,4 +137,42 @@ describe("local-to-recorded display identity", () => {
     const projection=createTranscriptProjection(),row=local("error");projection.build([],{},[row]);
     expect(projection.build([event(1)],{},[]).map(item=>item.id)).toEqual(["s1"]);
   });
+});
+
+describe('real image receipt races',()=>{
+ const shapes=[{width:2560,height:720},{width:720,height:2560},{width:80,height:50},{width:2400,height:1200},{width:800,height:1200}];
+ for(const count of [1,2,3]) for(const shape of shapes) it(`retains geometry for ${count} image(s) at ${shape.width}x${shape.height} when journal precedes acknowledgement`,()=>{
+  const files=Array.from({length:count},(_,index)=>({name:`image${index}.png`,mime:'image/png',bytes:100,reference:`[Image #${index+1}]`,image_size:shape,preview_path:`cache/${'a'.repeat(64)}/image${index}.png`}));
+  const text='Above\n'+files.map(f=>f.reference).join('\n')+'\nBelow';
+  const row=local('sending',false,{id:'request',text,attachments:files});
+  const raw=text.replace(/\[Image #(\d+)\]/g,(_,n)=>`[Image #${n}] (Inspect the attached image at "/home/example/.local/state/hgs/sessions/attachments/message-test/${String(n).padStart(2,'0')}-image${Number(n)-1}.png")`);
+  const event={seq:4,type:'UserPromptSubmit',at:row.submitted_at+.2,detail:raw};
+  const metadata=files.map((f,index)=>{const {image_size,preview_path,...base}=f;void image_size;void preview_path;return {...base,request_id:'request',index};});
+  const receipt={source:'hgs_delivery',type:'UserPromptSubmit',message_id:'request',detail:text,submitted_text:raw,attachments:metadata};
+  const projection=createTranscriptProjection();const first=projection.build([],{},[row]) as ActivityItem[];
+  const echo=projection.build([event],{},[row]) as ActivityItem[];
+  // Rust may reconcile away the local row without publishing its Sent state.
+  const recorded=projection.build([event],{attachment_messages:[receipt]},[]) as ActivityItem[];
+  for(const items of [first,echo,recorded]){
+   expect(items).toHaveLength(1);expect(items[0].id).toBe('local-request');expect(items[0].body).toBe(text);
+   expect(items[0].attachments?.map(f=>[f.image_size,f.preview_path])).toEqual(files.map(f=>[f.image_size,f.preview_path]));
+  }
+  expect(recorded[0].attachments?.map(f=>[f.request_id,f.index])).toEqual(files.map((_,i)=>['request',i]));
+ });
+ it('cannot acquire a private local preview path from journal JSON',()=>{
+  const items=buildTranscript([{seq:1,type:'UserPromptSubmit',attachments:[{name:'x.png',mime:'image/png',bytes:1,reference:'[Image #1]',request_id:'r',index:0,preview_path:`cache/${'a'.repeat(64)}/x.png`,image_size:{width:20,height:20}} as unknown as EventAttachment]}]) as ActivityItem[];
+  expect(items[0].attachments?.[0].preview_path).toBeUndefined();expect(items[0].attachments?.[0].own).toBeUndefined();
+ });
+});
+
+it('keeps equal-text image sends distinct when their separate receipts arrive',()=>{
+ const image={name:'x.png',mime:'image/png',bytes:1,reference:'[Image #1]',image_size:{width:20,height:30},preview_path:`cache/${'a'.repeat(64)}/x.png`};
+ const one=local('sending',false,{id:'one',text:'See [Image #1]',attachments:[image]}),two={...one,id:'two',submitted_at:one.submitted_at+1};
+ const raw=(name:string)=>`See [Image #1] (Inspect the attached image at "/home/example/.local/state/hgs/sessions/attachments/message-${name}/01-x.png")`;
+ const events=[{seq:1,type:'UserPromptSubmit',at:one.submitted_at+.2,detail:raw('one')},{seq:2,type:'UserPromptSubmit',at:two.submitted_at+.2,detail:raw('two')}];
+ const projection=createTranscriptProjection();projection.build([],{},[one,two]);
+ expect(projection.build(events,{},[one,two]).map(r=>r.id)).toEqual(['local-one','local-two']);
+ const receipts=[one,two].map(r=>({source:'hgs_delivery',message_id:r.id,detail:r.text,submitted_text:raw(r.id),attachments:[{name:image.name,mime:image.mime,bytes:1,reference:image.reference,request_id:r.id,index:0}]}));
+ const final=projection.build(events,{attachment_messages:receipts},[]) as ActivityItem[];
+ expect(final.map(r=>r.id)).toEqual(['local-one','local-two']);expect(final.map(r=>r.attachments?.[0].request_id)).toEqual(['one','two']);
 });

@@ -1,6 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { emptyAccounts, emptyBatch, emptyMachines, emptyProjects, isEmptyBatch, type AccountsView, type MachinesView, type ProjectsView, type Screen, type Action, type Batch, type ComputerId, type Details, type EditOutcome, type Outcome, type ReadMark, type Target, type TerminalConnected, type TerminalFacts, type TerminalEvent, type TerminalStatus, type TerminalTarget, type ArchivePage, type ArchivedActivity, type ProcessTarget, type Answer, type ComposerTab, type ComposerView, type Inspect, type SendReply, type SessionRef, type AttachmentRef, type Fetched, type ConflictsPage, type DraftSource, type SavedDraftDetail, type SavedDraftsPage, type QuestionEdit, type QuestionReply, type ClearControl, emptyUsage, type TerminalFinished, type SessionUsageRef, type Usage } from "./types";
+import { emptyAccounts, emptyBatch, emptyMachines, emptyProjects, isEmptyBatch, type AccountsView, type MachinesView, type ProjectsView, type Screen, type Action, type ActivityEvent, type Batch, type ComputerId, type Details, type EditOutcome, type Outcome, type ReadMark, type Target, type TerminalConnected, type TerminalFacts, type TerminalEvent, type TerminalStatus, type TerminalTarget, type ArchivePage, type ArchivedActivity, type ProcessTarget, type Answer, type ComposerTab, type ComposerView, type Inspect, type SendReply, type SessionRef, type AttachmentRef, type Fetched, type ConflictsPage, type DraftSource, type SavedDraftDetail, type SavedDraftsPage, type QuestionEdit, type QuestionReply, type ClearControl, emptyUsage, type TerminalFinished, type SessionUsageRef, type Usage } from "./types";
 import type { CreatedWorktree, CreationAction, CreationAdmission, CreationCard, CreationEvent, FolderOut, LaunchAccounts, LaunchChoices, LaunchPlan, LaunchStart, MachineMeta, NewSessionContext, NewSessionFormInput, NewSessionFormView, PathStyle, RepositoryFields } from "./types";
 import type { ActivityPort, FollowRequest } from "./store/activity";
 import { documentVisibility, type PageVisibility } from "./store/visibility";
@@ -22,6 +22,13 @@ export interface Source extends ActivityPort {
 let source: Source | undefined;
 
 export const inTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+export const nativeUiOpen = (request: import("./store/native-ui-model").NativeRequest, reload: boolean, embedded: boolean) => desktop<import("./store/native-ui-model").NativeStatus>("native_ui_open", { request, reload, embedded });
+export const nativeUiRetire = () => inTauri() ? invoke<void>("native_ui_retire") : Promise.resolve();
+export const nativeUiVisible = (nonce: string, visible: boolean) => inTauri() ? invoke<void>("native_ui_visible", { nonce, visible }) : Promise.resolve();
+export const nativeUiBounds = (bounds: import("./store/native-ui-model").NativeBounds) => inTauri() ? invoke<void>("native_ui_bounds", { bounds }) : Promise.resolve();
+export const nativeUiBrowser = (request: import("./store/native-ui-model").NativeRequest) => desktop<void>("native_ui_browser", { request });
+export const onNativeUi = (listener: (status: import("./store/native-ui-model").NativeStatus) => void) => onEvent("native-ui", listener);
 
 export async function followTasks(project: string | null): Promise<void> {
   if (!inTauri()) { if (project) throw new Error("Tasks need a live hgs event stream."); return; }
@@ -219,6 +226,23 @@ export async function inspectSession(target: Target, archiveId: string | null): 
 export async function inspectSubagentIdentity(target: Target, archiveId: string | null, agentId: string): Promise<{ agent_id: string; conversation_id: string; cwd?: string | null } | null> {
   if (!inTauri()) return null;
   return (await invoke<{ agent_id: string; conversation_id: string; cwd?: string | null } | null>("inspect_subagent_identity", { target, archiveId, agentId })) ?? null;
+}
+
+export type SubagentInspection = Record<string, unknown> & {
+  agent_id: string;
+  conversation_id: string;
+  parent_conversation_id: string;
+  run_id: string;
+  events: ActivityEvent[];
+  send_supported?: boolean;
+  history_scope?: string;
+  history_truncated?: boolean;
+};
+
+/** One bounded read-only Activity page of the requested child. */
+export async function inspectSubagentActivity(target: Target, archiveId: string | null, agentId: string): Promise<SubagentInspection | null> {
+  if (!inTauri()) return null;
+  return (await invoke<SubagentInspection | null>("inspect_subagent_activity", { target, archiveId, agentId })) ?? null;
 }
 
 /** Read marks whose delivery has not been confirmed yet; undefined outside the app, which keeps no list. */
@@ -855,6 +879,7 @@ export const terminationCleanupView = () => desktop<import("./store/terminationC
 export const terminationCleanupCheck = (id: string) => desktop<import("./store/terminationCleanup").CleanupView>("termination_cleanup_check", { id });
 export const terminationCleanupRemove = (revision: number, consents: import("./store/terminationCleanup").Consents) => desktop<import("./store/terminationCleanup").CleanupView>("termination_cleanup_remove", { revision, consents });
 export const terminationCleanupKeep = (revision: number) => desktop<import("./store/terminationCleanup").CleanupView>("termination_cleanup_keep", { revision });
+export const terminationCleanupRestore = (source: import("./store/terminationCleanup").RestoreSource) => desktop<Outcome>("termination_cleanup_restore", { source });
 export const terminationCleanupInspect = (id: string, file = "", offset = 0) => desktop<import("./store/terminationCleanup").Inspection>("termination_cleanup_inspect", { id, file, offset });
 export const onTerminationCleanupChanged = (changed: () => void) => inTauri() ? listen("termination-cleanup-changed", changed) : Promise.resolve(() => {});
 export const onTerminationFolderRemoved = (changed: (label: string) => void) => inTauri() ? listen<string>("termination-folder-removed", (e) => changed(e.payload)) : Promise.resolve(() => {});
