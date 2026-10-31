@@ -74,6 +74,15 @@ mod sockets {
     fn clean_eof_and_partial_frame_are_not_confused() {
         let (stream, peer) = UnixStream::pair().unwrap();
         drop(peer);
+        #[cfg(target_vendor = "apple")]
+        assert_eq!(
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EINVAL),
+            "exercise XNU's shutdown socket-option refusal"
+        );
         assert!(line(&mut BufReader::new(stream), until())
             .unwrap()
             .is_none());
@@ -81,6 +90,45 @@ mod sockets {
         peer.write_all(b"partial").unwrap();
         drop(peer);
         assert!(line(&mut BufReader::new(stream), until()).is_err());
+    }
+
+    #[test]
+    fn shutdown_timeout_mapping_is_apple_only_and_preserves_other_errors() {
+        assert!(receive_timeout_result(Ok(()), true).is_ok());
+        assert!(
+            receive_timeout_result(Err(io::Error::from_raw_os_error(libc::EINVAL)), true).is_ok()
+        );
+        for (apple, errno) in [
+            (false, libc::EINVAL),
+            (true, libc::EBADF),
+            (true, libc::EINTR),
+            (true, libc::EIO),
+        ] {
+            assert_eq!(
+                receive_timeout_result(Err(io::Error::from_raw_os_error(errno)), apple)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(errno)
+            );
+        }
+        for kind in [io::ErrorKind::TimedOut, io::ErrorKind::InvalidInput] {
+            assert_eq!(
+                receive_timeout_result(Err(kind.into()), true)
+                    .unwrap_err()
+                    .kind(),
+                kind
+            );
+        }
+    }
+
+    #[test]
+    fn complete_final_frame_is_drained_before_closed_peer_eof() {
+        let (stream, mut peer) = UnixStream::pair().unwrap();
+        peer.write_all(b"final\n").unwrap();
+        drop(peer);
+        let mut reader = BufReader::new(stream);
+        assert_eq!(line(&mut reader, until()).unwrap().unwrap(), b"final\n");
+        assert!(line(&mut reader, until()).unwrap().is_none());
     }
 
     #[test]
