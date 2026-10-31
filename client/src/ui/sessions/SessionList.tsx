@@ -619,8 +619,8 @@ export function SessionList() {
   );
 }
 
-/** QSplitter handle: 8 px, transparent; drag sets the docked width (min 270). */
-function ResizeHandle() {
+/** QSplitter handle: 8 px, transparent; drag sets the docked width (min 270). Accounts shares it, so both lists keep one width. */
+export function ResizeHandle() {
   const [dragging, setDragging] = createSignal(false);
   const down = (e: PointerEvent) => {
     const el = e.currentTarget as HTMLElement;
