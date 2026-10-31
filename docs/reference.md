@@ -272,7 +272,9 @@ session-action-status SESSION --json`. The selected executable must advertise
 forwarded. Its existing private Swarm catalog supplies the machine identity
 without initialization, locking or saving. An unguarded remote receipt read is
 refused. This reader is a recovery prerequisite; it does not enable durable
-delivery of pending Undo actions when Zerus quits.
+delivery of pending Undo actions when Zerus quits. The independently reviewable
+[pure shared journal model](desktop-quit-journal.md) also leaves current Quit
+behavior unchanged; the actual store and detached delivery remain separately gated.
 
 `hgs hooks --account native-claude --json` inspects the account's hook
 registration without running the agent. Use another exact account ID for an
