@@ -6,8 +6,9 @@ GUI still owns its poster. G1's producer drain and native adapter admission
 remain prerequisites; no import, marker, parsed receipt or document grants them.
 The completed Mac switch is not reopened.
 
-The proposed [Mac host admission boundary](desktop-macos-native-admission.md)
-specifies the next G1/G4 agreement. It is not an executable API.
+The [Mac host admission boundary](desktop-macos-native-admission.md) records
+the G1/G4 structural agreement and remaining prerequisites. It is not an
+executable API.
 
 ## Current boundary and ownership
 

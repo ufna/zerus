@@ -1,9 +1,12 @@
-# Proposed macOS native host admission contract
+# macOS native host admission boundary
 
-Status: G4 proposal for agreement with G1, after the read-only peer helper in
-PR #674. This document adds no command, capability, schema, caller or execution
-authority. G1's `.66.3.24` is Linux-only. macOS needs its own actor integration
-and the current producer/profile drain in `.66.3.23` before any takeover.
+Status: G1/G4 structural agreement after the read-only peer helper in PR #674.
+There are no positive exports or executing handshake yet. This document adds
+no command, capability, schema, caller or execution authority. G1's `.66.3.24`
+is Linux-only. Mac actor/native/bootstrap/activation integration belongs to
+`.66.3.25`, dependent on the current producer/profile drain in `.66.3.23`.
+The passive prerequisite `.66.3.25.1` owns trusted installation selection,
+reciprocal connection and launch-origin qualification before any host caller.
 G2 `.66.4.2` preempts this work when `.66.3.22` becomes executable.
 
 This specializes the approved [notification design](desktop-macos-notifications.md)
@@ -29,30 +32,45 @@ supplied-requirement digest. Failure or unsupported audit identity refuses;
 there is no PID/path or same-UID-only substitute for the native signed check.
 
 A service challenge, configuration, canonical app instance, clean production
-build and current profile ownership must also match. Reuse `.23`'s canonical
-responder/challenge binding rather than infer ownership from a socket probe.
+build and current profile ownership must also match for the canonical host.
+The current `.23` nonce/cache is **diagnostics only**, not authenticated
+producer/profile ownership. Reuse its fields only after the actual `.23`
+controller is qualified; never infer ownership from a socket probe.
 The ordinary delegation hello, `show`, `sessions`, instance lock/socket and
 updater discovery remain byte-compatible. The host must authenticate the
-current service through G1's connection/challenge mechanism; a path or a
-peer-provided service epoch alone is not that proof. G1 must specify this
-reciprocal binding before an executing client is implemented.
+current service through G1's connection/challenge mechanism; a path, same UID
+or echoed service epoch alone is not that proof. `.25.1` must select **both**
+expected app and service identity from trusted installation policy and bind
+the retained current connection, fresh challenge, configuration and actual
+actor state. The installed hgs CLI has no guaranteed app-style designated
+signing requirement today. Do not assume the app requirement authenticates
+hgs, use peer-provided policy or add signing/installer changes to bypass this
+gap. Unsupported or ambiguous service proof refuses. No executing handshake
+may ship before that pinned contract is agreed.
 
 Proposed handshake: `desktop-native-macos-v1`, version 1, carried as an additive
-operation on desktop-v1. A closed `HostHello` carries configuration, instance,
-build and intended role; a service-issued `Challenge` carries a fresh nonce,
-service epoch and ingress epoch. The ten-second one-use challenge deadline
+operation on desktop-v1. A closed `HostHello` describes the already selected
+configuration, optional canonical instance, build and intended role; a
+service-issued `Challenge` carries a fresh nonce, service epoch and ingress
+epoch. The ten-second one-use challenge deadline
 matches `.23`. `LeaseBinding` contains configuration, service/writer epochs,
 canonical instance, adapter, lease and the G1-owned installation-binding ID.
 All these values are checked against current actor state, not accepted because
-they decode. A lease is never reconstructed from an imported record.
+they decode. A lease is never reconstructed from an imported record. The ABI
+name, version and message names remain design names, not committed wire ABI.
 
-Two roles need an explicit G1 decision: the canonical `NativeHost` may receive
-jobs; an early LaunchServices `ResponseIngress` may submit only a bounded OS
-response while yielding to the maintained canonical LaunchAgent. The latter
-cannot claim canonical instance ownership, receive jobs, change host policy or
-present a session. G1 must define how that transient signed connection binds
-the current canonical configuration and challenge, including when no canonical
-host is running. Until then, the transient route refuses rather than guessing.
+The agreed roles are separate. `NativeHost` requires the exact live canonical
+context to receive jobs. An early LaunchServices `ResponseIngress` is
+response-only under a fresh current service/ingress binding: exact pinned
+production configuration, trusted installed app and a per-connection transient
+epoch. It never fabricates canonical ownership; with no canonical host,
+`canonical_instance` is absent. Original Post epochs/instance remain immutable
+and separate from current ingress. The actor finds the exact Delivered mapping
+only in that **already selected configuration** and current active ownership.
+Transient input cannot select an endpoint/configuration, scan other
+configurations, receive a job/lease, present a target, change policy or spend a
+bootstrap. Missing/ambiguous trusted local selection or actor binding refuses.
+Durable actor deduplication handles duplicate acceptance; there is no app spool.
 
 ## Proposed typed boundary
 
@@ -61,8 +79,8 @@ only. G4 implements the signed host's native method and callback handling.
 
 | Proposed type/message | Exact binding and permitted result |
 | --- | --- |
-| `NativeJobBinding` | Full existing native `Reserve` fields: request ID, intent ID, revision, writer/service epochs, adapter, lease and retry-of. Add configuration, canonical instance, installation-binding ID, original Post request ID, OS request ID and per-post correlation. Retain the original exact session target. |
-| `VerifiedMacJob` | Nonserializable G1 construction only after current authenticated profile drain, intent/tombstone/lease checks and committed `fresh=true` reservation. One `Post` or `Withdrawal`; no Badge/Presence or G2 operation kind. Existing reservation/status never creates this type. |
+| `NativeJobBinding` | Full existing native `Reserve` fields: request ID, intent ID, revision, writer/service epochs, adapter, lease and retry-of. Add configuration, canonical instance, installation-binding ID, original Post request ID, OS request ID and per-post correlation. Retain the immutable original Post target, binding and payload digest; current ingress is separate. |
+| `VerifiedMacJob` | Nonserializable G1 construction only after current authenticated profile drain, intent/tombstone/lease checks and committed `fresh=true` reservation. One `Post` or `Withdrawal`; no Badge/Presence or G2 operation kind. Existing reservation/status never creates this type. It is never a G4 decoded type. |
 | `PostPayload` | Frozen original Qt-compatible request ID/token, correlation, title, body and default-sound choice. Reuse the pure `Envelope`; title/body each at most 16 KiB and token at most 8192 bytes. No executable, arbitrary path or session alias. |
 | `NativeFinish` | Exact original binding plus before-call refusal, framework acceptance or Unknown. Allowlisted receipt metadata only; no title/body, raw signing identity or system error text. |
 | `ResponseCandidate` | Default-action envelope from the pure parser: original request ID, token and correlation. It is untrusted input; G1 looks up the original Delivered mapping and current intent before durable acceptance. |
@@ -132,10 +150,14 @@ It remains that way after posting. A valid claim or `--sessions` promotes the
 same instance; plain `show` changes nothing. A crash-only restart with a spent
 bootstrap and no current admission exits cleanly; KeepAlive is unchanged.
 
-The exact host-mode response and launch-origin proof are G1 decisions: an
-untrusted startup flag cannot assert manual launch, bypass a durable Quit
-cutoff or choose a pending bootstrap. G1 owns the second-Quit cutoff and
-policy revision. `Notify when Zerus is closed` defaults on; off plus Quit blocks
+The exact host-mode response and launch-origin proof belong to G1 `.25.1`.
+It must qualify the OS origin and actual canonical frontend-ready path before
+clearing suppression after the disabled setting and explicit Quit. Argv,
+environment, a `hello.manual` flag,
+reconnect or login bootstrap never proves manual launch. G1 alone returns the
+future host-mode decision from durable policy; the app never self-selects
+permission or chooses a pending bootstrap. Pre-handoff ordinary app launching
+remains unchanged. G1 owns the second-Quit cutoff and policy revision. `Notify when Zerus is closed` defaults on; off plus Quit blocks
 this flow until a manual launch. Its future macOS-only Settings row follows
 the existing approved placement. No outage changes the stored value.
 Preserve `.9.30` Exit/`exit_work` fallback and updater-only `quit_with_flush`.
@@ -158,9 +180,16 @@ results retain their admission until completion. Timeout, cancellation, EOF,
 dropped receiver or a bounded stop is not drain. No per-request detached
 thread or second runtime is introduced; G1 owns worker/connection accounting.
 
-Before runtime code: agree G1's Mac actor dependency, exact wire/exports,
-reciprocal service proof, transient ingress binding and launch-origin semantics.
-Then use separate small slices for passive typed protocol/fake-center traces,
+G1 retains `src/desktop/*`, root manifests/locks, SQL/journal, trusted policy,
+admission/reserve/finish and actual worker/FD accounting. G4 retains the
+existing app-native implementation and pure `macos_notify` data/peer helper.
+No new app startup, listener or control caller is admitted by this agreement.
+
+Independent G4 work may add documentation or pure **untrusted** codec/model
+vectors over the agreed fields, without a G1 authority constructor, native
+caller or runtime transport. Executable transport/host integration waits for
+`.25.1`, `.23` and `.25`, then pinned G1 and webui review of exact wire/exports,
+reciprocal proof, ingress and launch-origin semantics. Subsequent slices cover
 signed host lifecycle and early delegate, and finally qualified native/activation
 integration after profile handoff. Startup, transport, signing, window,
 capability, manifest or packaging changes need pinned pre-merge review.
