@@ -2750,6 +2750,19 @@ impl Composers {
         conversation: &str,
         dismiss: bool,
     ) -> SendReply {
+        self.clear_context_using(handle, run, conversation, dismiss, |target, action, id| {
+            (self.0.deps.dispatch)(target, action, id)
+        })
+    }
+
+    pub(crate) fn clear_context_using(
+        &self,
+        handle: u64,
+        run: &str,
+        conversation: &str,
+        dismiss: bool,
+        dispatch: impl FnOnce(Target, Action, String) -> Result<Outcome, String>,
+    ) -> SendReply {
         let (key, target) = {
             let mut hub = self.lock();
             let Some(ctx) = self.context(&hub) else {
@@ -2783,7 +2796,6 @@ impl Composers {
             (ctx.key, target)
         };
         self.changed();
-        let dispatch = &self.0.deps.dispatch;
         let action = Action::ClearContext {
             dismiss_prompt: dismiss,
         };
@@ -2895,15 +2907,58 @@ pub fn send_interrupted(state: State<'_, Composers>, handle: u64) {
 /// Blocking: it answers once the reset ended (`Composers::clear_context`).
 #[tauri::command(rename_all = "snake_case")]
 pub async fn clear_context(
+    app: tauri::AppHandle,
     state: State<'_, Composers>,
     handle: u64,
     run: String,
     conversation: String,
     dismiss: bool,
+    delay: Option<crate::action_delay::Reference>,
 ) -> Result<SendReply, String> {
+    use tauri::Manager;
+    let delayed = delay
+        .as_ref()
+        .map(|reference| {
+            app.state::<crate::action_delay::Delays>().take_clear(
+                reference,
+                &run,
+                &conversation,
+                dismiss,
+            )
+        })
+        .transpose()?;
+    let actions = app.state::<crate::actions::Actions>().inner().clone();
+    let machine = delayed
+        .as_ref()
+        .map(|(captured, _)| {
+            crate::worktree_cleanup::machine(
+                &app.state::<crate::commands::AppState>(),
+                &captured.target.computer,
+            )
+            .unwrap_or_default()
+        })
+        .unwrap_or_default();
     let composers = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        composers.clear_context(handle, &run, &conversation, dismiss)
+        if let Some((captured, claim)) = delayed {
+            composers.clear_context_using(
+                handle,
+                &run,
+                &conversation,
+                dismiss,
+                move |target, action, request_id| {
+                    if captured.target == target && captured.action == action {
+                        tauri::async_runtime::block_on(crate::actions::dispatch_delayed(
+                            &actions, captured, claim, machine, request_id,
+                        ))
+                    } else {
+                        Err(zerus_client_core::end_action::STATE_CHANGED.into())
+                    }
+                },
+            )
+        } else {
+            composers.clear_context(handle, &run, &conversation, dismiss)
+        }
     })
     .await
     .map_err(|e| e.to_string())

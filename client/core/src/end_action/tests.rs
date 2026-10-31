@@ -157,6 +157,9 @@ fn metadata_reads_skip_history_and_refuse_every_changed_identity_without_a_repla
         assert!(c.checked_inspection(exited(&sending)).is_ok());
     }
     let c = capture(Action::Archive);
+    let mut opaque = record(&c);
+    opaque["current_provider_detail"] = json!("x".repeat(256 * 1024));
+    assert!(c.checked_inspection(exited(&opaque)).is_ok());
     assert!(c.checked_inspection(Exit::TimedOut).is_err());
     assert!(c.checked_inspection(exited(&Value::Null)).is_err());
     let mut large = record(&c);

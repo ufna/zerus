@@ -8,7 +8,10 @@ use serde_json::Value;
 use std::time::{Duration, Instant};
 
 pub const UNDO_WINDOW: Duration = Duration::from_secs(5);
-pub const METADATA_LIMIT: usize = 64 * 1024;
+// Match the existing bounded native inspection budget. Provider metadata can
+// contain a current question or other opaque details even without history.
+pub const METADATA_LIMIT: usize = 2 * 1024 * 1024;
+const RECEIPT_LIMIT: usize = 64 * 1024;
 pub const STATE_CHANGED: &str = crate::termination_cleanup::STATE_CHANGED;
 
 /// The exact confirmation, not an execution permission. Deserialized values
@@ -132,7 +135,7 @@ impl Captured {
         if !self.valid() {
             return actions::failed(STATE_CHANGED);
         }
-        if matches!(&exit, Exit::Code { stdout, .. } if stdout.len() > METADATA_LIMIT) {
+        if matches!(&exit, Exit::Code { stdout, .. } if stdout.len() > RECEIPT_LIMIT) {
             return actions::failed("Invalid acknowledgement. Check the session before retrying.");
         }
         if matches!(self.action, Action::ClearContext { .. }) {

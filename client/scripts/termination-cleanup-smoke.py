@@ -13,8 +13,9 @@ if '--worker' not in sys.argv:
     parser.add_argument('--app', type=Path, required=True)
     parser.add_argument('--recovery', action='store_true')
     parser.add_argument('--legacy', action='store_true', help='Recovery against help without guarded-create-v1')
+    parser.add_argument('--undo-native', action='store_true', help='Native delay/cancel/hidden/source/quit seam')
     args = parser.parse_args()
-    if args.legacy: args.recovery = True
+    if args.legacy or args.undo_native: args.recovery = True
     app = args.app.resolve()
     assert app.is_file()
     root = Path(tempfile.mkdtemp(prefix='zerus-cleanup-walk-'))
@@ -24,6 +25,7 @@ if '--worker' not in sys.argv:
     tags = ('kept', 'unowned', 'unknown', 'restore-refused', 'changed', *(f'extra-{n}' for n in range(61))) if args.recovery else ('clean', 'kept', 'unknown', 'unknown-only', 'changed')
     if args.recovery: (root/'recovery').write_text(json.dumps(tags))
     if args.legacy: (root/'legacy').touch()
+    if args.undo_native: (root/'undo-native').touch()
     rows = []
     for tag in tags:
         folder = root/'repo'/tag
@@ -45,6 +47,7 @@ from pathlib import Path
 root=Path(__file__).resolve().parent.parent
 args=sys.argv[1:]
 with (root/'calls.jsonl').open('a') as f:f.write(json.dumps(args)+'\\n')
+with (root/'calls-time.jsonl').open('a') as f:f.write(json.dumps({'at':time.monotonic(),'args':args})+'\\n')
 if args==['--help']:
  if (root/'legacy').exists():print('hgs stable help');sys.exit(0)
  print('guarded-create-v1\\n hgs [@host] session-action <session> --json scoped native lifecycle action');sys.exit(0)
@@ -61,13 +64,25 @@ if (root/'recovery').exists():
    'ownership_id':'owner-'+tag,'zerus_owned':True,'archive_restore_ready':True,'changes':2,'untracked':1,'ignored_count':1,
    'sessions':['synthetic/other'],'process_count':2,'processes':[{'pid':1},{'pid':2}],'unreadable_processes':[{'pid':3}],
    'disk_bytes':1024,'disk_complete':True,'integration':{'kind':'ancestor','base':'main'}}
- if args[0]=='archive':
+ if args[0]=='archive' or (args[0]=='session-action' and (root/'undo-native').exists()):
+  scoped=None
+  if args[0]=='session-action':
+   scoped=json.load(sys.stdin);assert scoped['action']=='archive'
   name=args[1];tag=name.rsplit('/',1)[-1];(root/('archived-'+tag)).write_text(archive_id(tag))
   report={'status':'unconfirmed' if tag in ('unknown','extra-60') else 'kept','path':str(root/'repo'/tag),'common_dir':str(root/'repo/.git'),
    'reason':'Cannot remove private paths: '+', '.join('/private/secret-'+str(n) for n in range(30)),
    'archive':{'version':1,'archive_id':archive_id(tag),'name':name,'run_id':'run-'+tag,'conversation_id':'conv-'+tag,'owner_id':'owner-'+tag,'launch_owned':tag!='unowned'}}
   if tag!='unowned':report['review']=review_row(tag)
-  print('ZERUS_WORKTREE_CLEANUP '+json.dumps(report),file=sys.stderr);print('hgs: archived '+name);sys.exit(0)
+  print('ZERUS_WORKTREE_CLEANUP '+json.dumps(report),file=sys.stderr)
+  if scoped:
+   assert scoped['expected_run_id']=='run-'+tag and scoped['expected_conversation_id']=='conv-'+tag
+   print(json.dumps({'request_id':scoped['request_id'],'name':name,'run_id':'run-'+tag,'conversation_id':'conv-'+tag,'status':'completed'}))
+  else:print('hgs: archived '+name)
+  sys.exit(0)
+ if args[0]=='inspect' and (root/'undo-native').exists():
+  name=args[1];tag=name.rsplit('/',1)[-1];assert arg('--after')==str(2**63-1)
+  print(json.dumps({'name':name,'run_id':'replacement' if tag=='changed' else 'run-'+tag,'conversation_id':'conv-'+tag,'state':'paused',
+   'current_provider_detail':'x'*(3*1024*1024 if tag=='restore-refused' else 256*1024)}));sys.exit(0)
  if args[0]=='inspect' and '--archive' in args:
   name=args[1];tag=name.rsplit('/',1)[-1];assert arg('--archive')==archive_id(tag)
   assert (root/('archived-'+tag)).exists() and not (root/('restored-'+tag)).exists()
@@ -122,6 +137,7 @@ raise RuntimeError(args)
     env['XDG_RUNTIME_DIR']=str(root/'runtime');env['XDG_STATE_HOME']=str(root/'state')
     if args.recovery:env['ZERUS_CLIENT_QUERY']='page=sessions&skin=zerus-light&archive-cleanup-smoke=1'
     if args.legacy:env['ZERUS_CLIENT_QUERY']='page=sessions&skin=zerus-light&archive-cleanup-smoke=legacy'
+    if args.undo_native:env['ZERUS_CLIENT_QUERY']='page=sessions&skin=zerus-light&end-action-native-smoke=1'
     (root/'environment.json').write_text(json.dumps(env))
     print('Private Archive recovery walk:' if args.recovery else 'Private Terminate cleanup walk:', root, flush=True)
     child = subprocess.Popen(['/usr/bin/dbus-run-session','--config-file',str(root/'bus.conf'),'--','/usr/bin/xvfb-run','-a','-s','-screen 0 1440x900x24','/usr/bin/python3',str(Path(__file__).resolve()),'--worker',str(root),str(app),*(['recovery'] if args.recovery else [])],env=env,start_new_session=True)
@@ -131,6 +147,7 @@ raise RuntimeError(args)
     raise SystemExit(result)
 root, app = Path(sys.argv[2]), Path(sys.argv[3])
 recovery=sys.argv[4:]==['recovery']
+undo_native=(root/'undo-native').exists()
 assert os.environ['HOME']==str(root/'home')
 # Private wrapper-generated X11 and D-Bus only; no owner environment inherited.
 env=json.loads((root/'environment.json').read_text())
@@ -151,8 +168,10 @@ with (root/'app.log').open('wb') as log:
     try:
         while time.monotonic()<deadline:
             output=(root/'app.log').read_text()
-            for stage in (('NOTICE','REVIEW','RESTORING','RESTORED','REFUSED','UNOWNED','UNKNOWN','OVERFLOW') if recovery else ('CLEANING','MIXED','REOPENED','UNKNOWN','INSPECTION')):
-                if ('archive-smoke: ' if recovery else 'cleanup-smoke: ')+stage in output and stage not in stages:
+            prefix='undo-native: ' if undo_native else 'archive-smoke: ' if recovery else 'cleanup-smoke: '
+            for stage in (('NATIVE','RESTORED','SOURCE_CHANGED') if undo_native else ('NOTICE','REVIEW','RESTORING','RESTORED','REFUSED','UNOWNED','UNKNOWN','OVERFLOW') if recovery else ('CLEANING','MIXED','REOPENED','UNKNOWN','INSPECTION')):
+                if prefix+stage in output and stage not in stages:
+                    if undo_native and stage=='NATIVE':(root/'pending-observed').write_text(str(time.monotonic()))
                     stages.add(stage);time.sleep(.15)
                     subprocess.run(['/usr/bin/import','-window','root',str(root/(stage.lower()+'.png'))],check=True,env=env)
             if ('archive-smoke: ESCAPE_REVIEW' if recovery else 'cleanup-smoke: ESCAPE_CLEANING') in output and 'escape' not in stages:
@@ -167,11 +186,23 @@ with (root/'app.log').open('wb') as log:
             if child.poll() is not None: break
             time.sleep(.03)
         else: raise RuntimeError('private built-app walk timed out')
-        print('\n'.join(l for l in output.splitlines() if ('archive-smoke:' if recovery else 'cleanup-smoke:') in l))
+        print('\n'.join(l for l in output.splitlines() if ('undo-native:' if undo_native else 'archive-smoke:' if recovery else 'cleanup-smoke:') in l))
         assert child.returncode==0, output
         calls=[json.loads(l) for l in (root/'calls.jsonl').read_text().splitlines()]
         effects=[c for c in calls if 'session-action' in c]
         removals=[c for c in calls if 'remove' in c]
+        if undo_native:
+            assert len(effects)==1 and effects[0][-2:]==['codex/example/kept','--json'],effects
+            assert not removals and not any('codex/example/extra-0' in c for c in calls),'quit started a pending action'
+            assert sum('codex/example/changed' in c and 'inspect' in c for c in calls)==1,calls
+            assert sum('codex/example/restore-refused' in c and 'inspect' in c for c in calls)==1,calls
+            issued=next(c for c in map(json.loads,(root/'calls-time.jsonl').read_text().splitlines()) if 'session-action' in c['args'])
+            assert issued['at']-float((root/'pending-observed').read_text())>=4.7,'effect issued before the native window'
+            assert all('undo-native: '+s in output for s in ('EXECUTED_HIDDEN','SOURCE_CHANGED','LIMIT_REFUSED','QUIT_PENDING')),output
+            assert {'NATIVE','RESTORED'}<=stages,stages
+            assert all((root/'repo'/tag/'changes.txt').exists() for tag in json.loads((root/'recovery').read_text()))
+            print('PASS native five-second/cancel/hidden/exact source/quit seam; one scoped fake archive only')
+            raise SystemExit(0)
         if recovery:
             archives=[c for c in calls if 'archive' in c];restores=[c for c in calls if 'resume' in c]
             if (root/'legacy').exists():
