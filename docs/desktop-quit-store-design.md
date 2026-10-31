@@ -1,7 +1,9 @@
 # Durable quit store and custody proposal
 
-Status: proposed for the second G3/native/security agreement
-(`zerus-5wmh.66.2.34.3.3`). The merged pure model is documented in
+Status: architecture accepted for the second G3/native/security agreement
+(`zerus-5wmh.66.2.34.3.3`); the Git-lock amendment below is proposed for a fresh
+G3 and native/security agreement (`zerus-5wmh.66.2.34.3.4.1`). The merged pure
+model is documented in
 [desktop-quit-journal.md](desktop-quit-journal.md). This proposal adds no runtime
 implementation or positive delivery. Current real Quit still drops pending
 requests. Windows delivery remains fenced pending its PC/kernel qualification.
@@ -506,43 +508,128 @@ refuse without dispatch. No recovery read calls attempt/perform to settle a clai
 A per-Scope flag is insufficient: supervisor.rs independently calls after_archive.
 A marker understood only by a new executable is also insufficient: old resident
 supervisors and maintenance binaries cannot be restarted for this feature.
-Proposed compatibility barrier (`zerus-5wmh.66.2.34.3.4`):
+Proposed compatibility barrier (`zerus-5wmh.66.2.34.3.4`), amended after
+private legacy interoperability controls:
 
-1. Under the existing repository-then-state lock order, freshly verify the exact
-   run/conversation, launch-record owner nonce and current dual ownership receipts.
-   A linked checkout with missing/replaced/unknown launch ownership refuses before
-   stop. A positively verified main/non-Git folder needs no linked-checkout hold;
-   an Option::None caused by an inspection error is not that proof.
-2. Preserve the original owner nonce, path/common/metadata identity and branch/
-   archive restore information, but durably upgrade both private receipt and Git
-   per-checkout marker to negative-only ownership version 2. Include a bounded
-   KeepForReview record tied to that exact owner and original source run/launch.
-   Repeated sources for the same owner use indexed audit rows, not an unbounded
-   list in the 16 KiB marker.
-3. Legacy owned() accepts only version 1 and compares both records exactly.
-   Version 2 or any partial mismatch therefore makes all those old automatic
-   paths refuse, including an already resident supervisor. New code centrally
-   rejects the restriction on lifecycle, periodic and missing-checkout removals.
-4. Stop only after the durable restriction is verified. Partial writes/failures
-   retain denial/manual-review evidence; never roll back to version 1, expire the
-   hold or infer permission from a folder name/global setting. Later manual
-   removal uses a new exact ownership/fingerprint review and explicit confirmation.
+1. Freshly verify the exact run/conversation, recorded launch owner nonce and both
+   original ownership receipts, under the existing repository-then-state lock
+   order. A missing/replaced/unknown linked-checkout owner refuses before stop.
+   A positively verified main/non-Git folder needs no linked-checkout hold;
+   inspection failure is not that proof. These locks live under the selected
+   state root; they do **not** exclude an old caller using another configuration.
+2. **Install the native Git worktree lock first**, before either version-2 write
+   or any stop. Its existing `locked` leaf belongs to the exact pinned Git
+   per-checkout metadata directory. Create without replacement or following links,
+   verify its private native identity, and durably sync both file and directory.
+   Never overwrite, adopt or borrow an existing foreign/unknown lock. Use the
+   bounded ASCII reason `Zerus quit hold <hold-uuid>` with a fresh canonical
+   public hold UUID; this is not the secret helper-start nonce. Bind its exact
+   bytes, inode/native file identity and metadata directory to the original
+   owner, request and registration. This is negative evidence only.
+3. Preserve the original owner nonce, path/common/metadata identity and branch/
+   archive restore information. Write and fsync the private negative-only
+   ownership version 2 **before** writing and fsyncing the matching Git owner
+   marker version 2. Include bounded KeepForReview and exact Git-barrier bindings.
+   Repeated sources for one owner use indexed audit rows, not an unbounded list
+   in the 16 KiB marker. Stop only after verifying all three durable records.
+4. Every partial cut remains denied/manual-reviewable, including a lock with
+   version-1 records. Never roll back, downgrade, expire or repair away a hold.
+   An unexpected replacement or missing barrier refuses stop and positive
+   delivery; a successfully created but incomplete barrier remains held for
+   explicit recovery. Root/bootstrap, selected-CLI and resource gates still apply.
+5. New readers centrally refuse automatic cleanup for restricted ownership.
+   Legacy `owned()` rejects version 2; the Git lock must additionally deny old
+   manual Git removal and pruning. An existing lock alone is **not** proof that
+   an already-issued old removal has drained. Before enabling delivery, qualify
+   old callers paused before/after their final Git checks, across distinct
+   state-root lock domains. If the actual old operation cannot be excluded or
+   proven drained, refuse before stop. Do not signal old agents/callers or infer
+   safety from process names, idle state or a filesystem lock's presence.
 
-The ownership revision is negative evidence, not positive removal/launch
-permission. Restoration must preserve exact branch/archive identity and must not
-silently re-enable automatic cleanup on the restricted original owner. Test
-legacy binaries as well as the new central paths; don't substitute a new-reader
-unit test for the old resident behavior.
+### Why the dual version-2 records are insufficient
 
-For every version-2 receipt/marker pair and **each partial-mismatch cut**, run the
-actual old resident supervisor, maintenance binary and Qt cleanup paths against
-private fixtures. Record exact bytes/hashes before and after: unknown versions
-must remain byte-identical, with no repair, rewrite, re-stamp, deletion or
-registration refresh. Refusal to remove a checkout alone is insufficient proof.
-Qt's manual Remove worktree must route version 2 to the new fresh manual review;
-it cannot accept the old review or silently downgrade ownership. Include races
-with old readers, restore and explicit new confirmation. Preserve the original
-negative restriction throughout every partial outcome.
+Two actual private pre-hold CLI controls used source `ed80595e`, a separately
+built and hashed executable, and Git 2.56.0. With matching synthetic version-2
+receipt/marker records, fresh old manual review plus the existing exact
+unreadable-process consent removed the checkout and its Git marker. The private
+receipt and archive stayed byte/inode-identical and the branch stayed retained.
+This violates the required negative-evidence preservation; version refusal in
+`owned()` protects automatic cleanup but not every manual path.
+
+A second control installed a native Git worktree lock before the same version-2
+pair. Old manual removal refused as locked, offered no process exception, and
+preserved checkout, branch and every receipt/marker/archive/lock byte and inode.
+Two separate native Git restore-step controls also refused a missing but still
+registered checkout. These are **two actual legacy CLI cases plus two Git-only
+controls**, not old Qt, supervisor, maintenance, partial-cut, race or production
+qualification. The required matrix below remains open. No mutable hold, store
+or delivery caller is enabled by these controls or this proposal.
+
+### Release belongs to a new reviewed native operation
+
+A completed action receipt alone must not unlock the worktree: the private
+version-2 record by itself did not stop the demonstrated old manual removal.
+Normal release therefore requires both verified effect completion and actual
+helper/exchange/pipe/writer/reader drain, **and** a fresh explicit removal/release
+review through the new qualified native implementation. Bind that review to the
+original owner and unchanged hold UUID, exact barrier file, metadata, checkout,
+branch/archive, current source and fresh file/process fingerprints. It consumes
+no old approval. The reviewed native actor alone may remove its exact barrier
+as part of that operation; legacy Qt/CLI calls cannot release it. Version-2
+ownership is never rewritten to version 1 and no branch is deleted implicitly.
+
+Unknown effects or custody, incomplete writes, lost acknowledgement, crash,
+restart and changed/missing/replaced lock identity retain the hold. There is no
+startup/timeout/age-based automatic unlock or replay. A cut before release leaves
+the barrier held; a cut after an attempted unlock leaves an explicitly unknown
+release, never permission to repeat it. Any new observation must distinguish
+those cuts with actual file/operation evidence. An explicit operator recovery
+may release only after its own separately reviewed native custody/source proof
+and fresh exact owner/barrier confirmation. It cannot erase unresolved charges,
+replay delivery, downgrade ownership, borrow a foreign lock or convert uncertainty
+into permission. The exact release transaction and its legacy-race exclusion
+must be agreed and qualified before implementation; this document supplies no
+release API or new UI action.
+
+### Worktrees presentation and interoperability matrix
+
+While held, Worktrees uses its existing Blocked state, unavailable Remove choice
+and Details for the native Git reason `Locked by Git: Zerus quit hold <hold-uuid>`.
+A person running Git also sees why the worktree is locked. Existing Quit/cleanup
+Review navigation can open that row. The new exact review/release surface needs
+webui's explicit ruling before UI implementation; no Unlock button, new area or
+old consent is introduced here. **No hold-installing or delivery runtime may
+reach users before the reviewed release surface is agreed and shipped in the
+same or an earlier build.** This is an enablement gate, not later UI debt. An
+ordinary Git unlock outside this protocol is
+not repair: lost/unknown restriction remains for manual review under a fresh
+owner-directed boundary.
+
+Qualify every current-hgs and actual old-hgs/Qt path that can remove, prune,
+restore or restamp a checkout: manual removal, automatic archive cleanup,
+Terminate cleanup, supervisor completion, periodic/missing maintenance, explicit
+archive Restore and new registration. Include:
+
+- matching V2/V2, private-V2/marker-V1, private-V1/marker-V2 and missing/replaced
+  cuts, both the same and older configurations and stale archive/approval data;
+- existing and missing checkouts with retained Git metadata, foreign locks,
+  ordinary removal, single and double `--force`, every unlock/prune variant,
+  and original branch/archive
+  identity throughout;
+- paused readers/removers resumed at every decisive boundary, before/after first
+  lock publication, each record fsync and verified/unknown release;
+- crash/restart before and after release, original helper/resource drain and
+  explicit recovery, without any automatic unlock, downgrade or replay.
+
+For each case record exact executable/source/Git versions and before/after
+bytes, hashes, inodes and native registration identities. The old caller itself
+must execute: a new reader unit test or direct Git command is not its substitute.
+All negative records stay byte-identical across old paths and partial outcomes;
+refusal to delete the checkout alone is insufficient. A caller reaching
+`created()` must neither carry a restricted original owner nor erase/restamp its
+negative evidence. Any actual violation stops delivery and requires a concrete
+amendment with fresh G3 and webui/native/security review; never narrow the matrix
+or restart old agents to make it pass.
 
 ## Read-only recovery, notices and retention
 
