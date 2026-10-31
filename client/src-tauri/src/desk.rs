@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -51,6 +51,9 @@ pub const SWEEP: Duration = Duration::from_secs(10);
 pub const ATTENTION_FILE: &str = "attention-observed.json";
 /// Banners for optional questions (`QuestionNotificationSettings.h`).
 pub const OPTIONAL_QUESTIONS: &str = "notifications/optionalQuestions";
+
+mod attention_barrier;
+pub use attention_barrier::InputSender;
 
 pub enum DeskInput {
     Change(Box<Change>),
@@ -178,7 +181,8 @@ impl Inbox {
 
 /// Kept in the app state.
 pub struct DeskState {
-    sender: Mutex<Sender<DeskInput>>,
+    sender: Mutex<InputSender>,
+    _attention_owner: attention_barrier::Owner,
     mode: Mutex<OpenMode>,
     dir: PathBuf,
     inbox: Mutex<Inbox>,
@@ -307,7 +311,8 @@ pub fn start(
     mode: OpenMode,
     attention: Option<LoadAttention>,
 ) {
-    let (sender, inputs) = mpsc::channel();
+    let (sender, inputs, owner) = attention_barrier::channel(attention.is_some());
+    let attention = attention.map(|load| owner.track(load));
     let tap = sender.clone();
     pump.tap(Box::new(move |change: &Change| {
         if menu_bar_change(change) {
@@ -317,7 +322,7 @@ pub fn start(
     // The marks reach the desk the moment they change, from the window's
     // commands or a settled read mark, so the menu bar follows a click in the
     // window at once.
-    let marks = |sender: &Sender<DeskInput>| -> crate::actions::Listener {
+    let marks = |sender: &InputSender| -> crate::actions::Listener {
         let sender = sender.clone();
         Box::new(move || {
             let _ = sender.send(DeskInput::Marks);
@@ -332,6 +337,7 @@ pub fn start(
     let focused = Arc::new(AtomicBool::new(false));
     app.manage(DeskState {
         sender: Mutex::new(sender),
+        _attention_owner: owner,
         mode: Mutex::new(mode),
         dir,
         inbox: Mutex::new(Inbox::default()),
@@ -345,7 +351,7 @@ pub fn start(
 }
 
 /// The desk thread's input, for the notifier's clicks and failures.
-pub fn sender(app: &AppHandle) -> Option<Sender<DeskInput>> {
+pub fn sender(app: &AppHandle) -> Option<InputSender> {
     app.try_state::<DeskState>()
         .map(|state| lock(&state.sender).clone())
 }
@@ -364,6 +370,8 @@ pub struct Attention {
     pub tracker: Tracker,
     pub path: PathBuf,
     checkpoint: zerus_client_core::attention_store::Observation,
+    // Last: the sole source/tracker value drops before its lifetime charge.
+    lifetime: Option<attention_barrier::Lifetime>,
 }
 
 impl Attention {
@@ -386,6 +394,7 @@ impl Attention {
             tracker: Tracker::new(saved),
             path,
             checkpoint,
+            lifetime: None,
         }
     }
 
@@ -409,9 +418,8 @@ impl Attention {
         }
     }
 
-    /// Dormant until the Desk/native callback barrier is qualified. Retain the
-    /// actual worker through sync, even after an outer timeout or disconnect.
-    #[allow(dead_code)]
+    /// Internal ordered-barrier checkpoint; no production controller calls it.
+    /// Retain the actual worker through sync after an outer timeout/disconnect.
     pub(crate) fn checkpoint(
         &mut self,
     ) -> std::io::Result<zerus_client_core::attention_store::Checkpoint> {
@@ -542,6 +550,8 @@ pub struct DeskLoop {
     pub attention: Option<Attention>,
     click: Option<Click>,
     swept: Instant,
+    observing_attention: bool,
+    attention_completions: bool,
 }
 
 impl DeskLoop {
@@ -552,6 +562,8 @@ impl DeskLoop {
             attention,
             click: None,
             swept: now,
+            observing_attention: true,
+            attention_completions: true,
         }
     }
 
@@ -559,7 +571,7 @@ impl DeskLoop {
     /// until a clicked notification's wait ends.
     pub fn wait(&self, now: Instant) -> Duration {
         let mut wait = SWEEP;
-        if self.attention.is_some() {
+        if self.attention.is_some() && self.observing_attention {
             wait = (self.swept + SWEEP).saturating_duration_since(now);
         }
         if let Some(click) = &self.click {
@@ -615,7 +627,7 @@ impl DeskLoop {
                         outcome.publish = true;
                     }
                 }
-                DeskInput::Clicked(token) => {
+                DeskInput::Clicked(token) if self.attention_completions => {
                     // A token that does not decode opens nothing (`TrayAgent.cpp:176-179`).
                     if let Some(target) = attention::target(&token) {
                         self.click = Some(Click {
@@ -626,7 +638,7 @@ impl DeskLoop {
                     }
                 }
                 #[cfg(target_os = "linux")]
-                DeskInput::LinuxClicked { token, activation } => {
+                DeskInput::LinuxClicked { token, activation } if self.attention_completions => {
                     if let Some(target) = attention::target(&token) {
                         self.click = Some(Click {
                             target,
@@ -636,15 +648,23 @@ impl DeskLoop {
                         outcome.activation = (!activation.is_empty()).then_some(activation);
                     }
                 }
-                DeskInput::Failed { token, detail } => {
+                DeskInput::Failed { token, detail }
+                    if self.attention_completions
+                        || zerus_client_core::updates::is_update_token(&token) =>
+                {
                     eprintln!("Zerus: notification: {detail}");
-                    if let Some(attention) = self.attention.as_mut() {
-                        attention.tracker.delivery_failed(&token, cx.unix);
+                    if self.attention_completions {
+                        if let Some(attention) = self.attention.as_mut() {
+                            attention.tracker.delivery_failed(&token, cx.unix);
+                        }
                     }
                     outcome
                         .window_notices
                         .push(format!("System notification was not delivered: {detail}"));
                 }
+                DeskInput::Clicked(_) | DeskInput::Failed { .. } => {}
+                #[cfg(target_os = "linux")]
+                DeskInput::LinuxClicked { .. } => {}
             }
         }
         // Read once however many changes were announced.
@@ -660,11 +680,11 @@ impl DeskLoop {
             (cx.publish)(&self.desk, self.mode);
         }
         if let Some(attention) = self.attention.as_mut() {
-            if cx.now >= self.swept + SWEEP {
+            if self.observing_attention && cx.now >= self.swept + SWEEP {
                 self.swept = cx.now;
                 dirty.extend(self.desk.computers().keys().cloned());
             }
-            if !dirty.is_empty() {
+            if self.observing_attention && !dirty.is_empty() {
                 // Qt reads the setting at each observation (`TrayAgent.cpp:554`).
                 attention
                     .tracker
@@ -747,7 +767,7 @@ fn optional_questions(app: &AppHandle) -> bool {
 
 fn run(
     app: AppHandle,
-    inputs: Receiver<DeskInput>,
+    inputs: Receiver<attention_barrier::Message>,
     mode: OpenMode,
     attention: Option<LoadAttention>,
     focused: Arc<AtomicBool>,
@@ -764,11 +784,18 @@ fn run(
             Err(RecvTimeoutError::Timeout) => None,
             Err(RecvTimeoutError::Disconnected) => return,
         };
-        let batch = first
-            .into_iter()
-            .chain(std::iter::from_fn(|| inputs.try_recv().ok()));
+        // A barrier at the head must run before any timer observation. One
+        // encountered during a lazy batch runs after that batch's apply().
+        let first = match first {
+            Some(attention_barrier::Message::Barrier(command)) => {
+                command.run(&mut state);
+                continue;
+            }
+            other => other,
+        };
+        let mut batch = attention_barrier::Batch::new(first, &inputs);
         let outcome = state.round(
-            batch,
+            &mut batch,
             &mut Context {
                 publish: &mut |desk, mode| publish(&app, desk, mode),
                 now: Instant::now(),
@@ -780,6 +807,9 @@ fn run(
             },
         );
         apply(&app, outcome);
+        if let Some(command) = batch.barrier {
+            command.run(&mut state);
+        }
         std::thread::sleep(PACE);
     }
 }
