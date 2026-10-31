@@ -1022,6 +1022,10 @@ export function PerfHost() {
       const { markdownSmoke } = await import("../perf/markdownSmoke");
       void markdownSmoke(!!config().replay && !!config().actions_smoke);
     }
+    if (new URLSearchParams(location.search).has("machines-smoke") && inTauri()) {
+      const { machinesSmoke } = await import("../perf/machinesSmoke");
+      void machinesSmoke(!!config().replay && !!config().actions_smoke);
+    }
     if (new URLSearchParams(location.search).has("native-ui-smoke") && inTauri()) {
       const { nativeUiSmoke } = await import("../perf/nativeUiSmoke");
       void nativeUiSmoke(!!config().replay && !!config().actions_smoke, config().smoke_file ?? undefined);

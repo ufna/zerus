@@ -488,6 +488,12 @@ export async function machineResolve(alias: string): Promise<MachinesView> {
   return invoke<MachinesView>("machine_resolve", { alias });
 }
 
+/** Explicit connection change; no retry after an unknown result. */
+export async function machineChange(request: import("./types").MachineChangeRequest): Promise<void> {
+  if (!inTauri()) throw new Error(DESKTOP_ONLY);
+  return invoke<void>("machine_change", { request });
+}
+
 /** "Test connection": `machine check`, up to 25 s. */
 export async function machineCheck(alias: string): Promise<MachinesView> {
   if (!inTauri()) return emptyMachines(DESKTOP_ONLY);
