@@ -1,7 +1,7 @@
 //! Read-only native reservation data. No lease, dispatch or new-send authority.
 //! A reserved row may already have reached the OS. Re-reading it NEVER replaces
 //! the original fresh reservation plus the actor's live profile/lease proof.
-use super::{hash, json, uuid, Identity, Kind, Reserve, PAYLOAD_BYTES};
+use super::{hash, json, uuid, Identity, Kind, Reservation, Reserve, State, PAYLOAD_BYTES};
 use anyhow::{anyhow, ensure, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
@@ -59,6 +59,48 @@ impl Snapshot {
     pub fn reservation_fingerprint(&self) -> &str {
         &self.fingerprint
     }
+}
+
+/// A snapshot obtained by consuming the original fresh commit response.
+/// This retains origin, not current permission: it owns no database, clock,
+/// configuration, live lease, role proof, worker charge or native connection.
+pub struct OriginalSnapshot(Snapshot);
+impl std::fmt::Debug for OriginalSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OriginalNativeReservationSnapshot { .. }")
+    }
+}
+impl OriginalSnapshot {
+    pub fn snapshot(&self) -> &Snapshot {
+        &self.0
+    }
+}
+
+/// Consume the original reserve response once, then recheck its exact row.
+/// Duplicate/coalesced responses have no private origin, even if their public
+/// `fresh`/`attempt` fields are changed. Errors consume the response too; they
+/// never authorize replay or restore the original commit result after restart.
+/// There is no production caller. A future actor must choose the correct store
+/// and reverify its live configuration/profile/lease and actual resources.
+pub fn inspect_original(db: &mut Connection, reservation: Reservation) -> Result<OriginalSnapshot> {
+    let origin = reservation
+        .origin
+        .ok_or_else(|| anyhow!("original fresh reservation response is unavailable"))?;
+    ensure!(
+        reservation.fresh
+            && reservation.attempt.seq == origin.seq
+            && reservation.attempt.request_id == origin.request.request_id
+            && reservation.attempt.intent_id == origin.request.intent_id
+            && reservation.attempt.revision == origin.request.revision
+            && reservation.attempt.state == State::Reserved,
+        "original reservation response changed"
+    );
+    let snapshot = inspect(db, &origin.request)?;
+    ensure!(
+        snapshot.seq == origin.seq,
+        "original reservation sequence changed"
+    );
+    Ok(OriginalSnapshot(snapshot))
 }
 
 fn fingerprint(request: &Reserve) -> Result<String> {
