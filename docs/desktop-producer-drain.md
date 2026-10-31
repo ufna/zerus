@@ -652,7 +652,9 @@ on every binding and scoped-uncertain record. An owner tag in a file validates
 that expectation; it never chooses an owner. Empty or populated owner envelopes
 must not import foreign records. Both owner envelopes have empty
 `legacy_uncertain`. Decode the original legacy bytes through `quarantine_legacy`
-once and share one immutable suppression view between the owners. Never copy
+once and share one immutable suppression view between the owners.
+Derive that view from the schema1 bytes current at each optional-path handoff and record their hash in the qualified context; never reuse a view from an earlier handoff. The default schema1 path keeps writing that file whenever the optional path is off, including after a GUI rollback, so a schema1 change after handoff refuses or pins for review and is never silently re-read.
+Never copy
 that quarantine into both files, overwrite schema1, or use typed `from_legacy`
 in place of the raw-member decoder. If the legacy home is absent but the existing
 Qt reader finds retained identities, require the existing legacy owner's durable
