@@ -262,10 +262,13 @@ pub(super) fn possible_value(o: &Original) -> Value {
     value["state"] = json!("possible_post");
     value
 }
-pub(super) fn invalidation_budget(o: &Original, id: NonZeroU32) -> usize {
+pub(super) fn invalidation_value(o: &Original, id: NonZeroU32, reason: &str) -> Value {
     let mut target = token_value(&o.scoped);
     target["original"] = origin_value(o);
     target["native_id"] = json!(id.get());
+    json!({"target":target,"reason":reason})
+}
+pub(super) fn invalidation_budget(o: &Original, id: NonZeroU32) -> Result<usize, Refused> {
     [
         "native_id_collision",
         "namespace_changed",
@@ -273,13 +276,15 @@ pub(super) fn invalidation_budget(o: &Original, id: NonZeroU32) -> usize {
         "unverified_result",
     ]
     .into_iter()
-    .map(|reason| {
-        serde_json::to_vec(&json!({"target":target,"reason":reason}))
+    .try_fold(0, |total, reason| {
+        let size = serde_json::to_vec(&invalidation_value(o, id, reason))
             .unwrap()
-            .len()
-            + 1
+            .len();
+        if size > 16384 {
+            return Err(Refused::TooLarge);
+        }
+        Ok(total + size + 1)
     })
-    .sum()
 }
 fn output(value: Value, unknown: bool, limit: u64) -> Result<Vec<u8>, Refused> {
     if unknown {
