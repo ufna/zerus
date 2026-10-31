@@ -75,7 +75,7 @@ transaction:
    `AT_EMPTY_PATH`; never reopen the pathname or fall back to PATH. Unsupported
    descriptor execution refuses. An open fd alone does not exclude in-place
    modification, so it is not sufficient image proof.
-4. Before allowing production anchor access, independently pin the actual child
+4. Before allowing the child production anchor access, independently pin its
    birth and actual executed image through kernel evidence, including its
    `/proc/<pid>/exe` identity and bounded hash. Match it to both the pinned source
    descriptor and embedded expectation, with fresh generation checks. Qualify
@@ -94,6 +94,21 @@ The image's descriptor, native observations and constructor remain private to
 the shared module. Tests use a distinct typed fixture result that cannot create
 native admission. No public function takes a digest/path/JSON and returns an
 admitted identity. Hashes are comparison evidence, not caller-supplied authority.
+
+There is an unresolved **initial admission ordering** gate on both platforms.
+The quit-store design requires the GUI's initial summary/generation/resource
+transaction before helper preparation or spawn. Image or configuration proof
+must not be obtained by an uncharged origin-probe child before that transaction;
+calling it a version check, using another ledger or reusing a G1 ticket does not
+remove the resource requirement. Conversely, proof required before the GUI's
+first anchor probe cannot depend on that not-yet-admitted helper. The descriptor
+execution sequence above describes later charged execution and cannot by itself
+authorize the initial anchor open. The concrete pre-anchor source/image/config
+evidence and its relation to later actual execution need explicit G3/native
+agreement and qualification. No already-live peer, static selection or passive
+observation is presumed to solve that gap. Until it is resolved, initial durable
+admission stays unavailable; this proposal authorizes no origin-only process,
+connection or exception to the initial transaction order.
 
 The maintained Arch service currently launches `hgs-tray` without `--hgs`, and
 the desktop entry adds `--sessions`. Current core discovery uses the explicit
