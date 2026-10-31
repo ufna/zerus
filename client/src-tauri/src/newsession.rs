@@ -1178,18 +1178,30 @@ mod tests {
         let mut with_card = none.clone();
         with_card.local = Some(console.clone());
         assert_eq!(
-            form_view(with_card).shown.notice.as_ref().map(|t| t.source.as_ref()),
+            form_view(with_card)
+                .shown
+                .notice
+                .as_ref()
+                .map(|t| t.source.as_ref()),
             Some(launch::ENABLE_OR_REMOTE)
         );
         assert_eq!(
-            form_view(none.clone()).shown.notice.as_ref().map(|t| t.source.as_ref()),
+            form_view(none.clone())
+                .shown
+                .notice
+                .as_ref()
+                .map(|t| t.source.as_ref()),
             Some(launch::REMOTE_ONLY)
         );
         console.platform = Some("linux".into());
         let mut linux = none;
         linux.local = Some(console);
         assert_eq!(
-            form_view(linux).shown.notice.as_ref().map(|t| t.source.as_ref()),
+            form_view(linux)
+                .shown
+                .notice
+                .as_ref()
+                .map(|t| t.source.as_ref()),
             Some(launch::REMOTE_ONLY)
         );
     }
