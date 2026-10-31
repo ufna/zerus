@@ -310,6 +310,18 @@ struct Shared {
 #[derive(Clone)]
 pub struct Screens(Arc<Shared>);
 
+/// Existing Machines page admission, held across an explicit local action.
+struct MachineWork(Screens);
+impl Drop for MachineWork {
+    fn drop(&mut self) {
+        let mut hub = self.0.lock();
+        hub.machines.finish_write();
+        hub.dirty.insert(Screen::Machines);
+        drop(hub);
+        self.0.publish();
+    }
+}
+
 /// A read the hub decided to start.
 #[derive(Clone)]
 enum Run {
@@ -1066,17 +1078,7 @@ impl Screens {
             hub.dirty.insert(Screen::Machines);
             call
         };
-        struct Writing(Screens);
-        impl Drop for Writing {
-            fn drop(&mut self) {
-                let mut hub = self.0.lock();
-                hub.machines.finish_write();
-                hub.dirty.insert(Screen::Machines);
-                drop(hub);
-                self.0.publish();
-            }
-        }
-        let _writing = Writing(self.clone());
+        let _writing = MachineWork(self.clone());
         self.publish();
         let exit = zerus_client_core::run_limited(
             &self.0.hgs,
@@ -1093,6 +1095,41 @@ impl Screens {
         ));
         self.lock().machines.finish_list(reply);
         Ok(())
+    }
+
+    /// Open the saved alias in the configured terminal, including offline
+    /// aliases whose host key or login needs manual repair. No remote probe.
+    pub fn ssh_machine(
+        &self,
+        reference: zerus_client_core::machine_connections::Reference,
+        terminal: &mut zerus_client_core::terminal_launch::Launcher,
+    ) -> Result<Option<String>, String> {
+        use zerus_client_core::machine_connections;
+        if !self.0.allowed {
+            return Err(REPLAY_NEEDS_HGS.into());
+        }
+        {
+            let mut hub = self.lock();
+            let list = hub
+                .machines
+                .list
+                .as_ref()
+                .ok_or(machine_connections::CHANGED)?;
+            machine_connections::ssh_arguments(list, &reference)?;
+            if !hub.machines.start_write() {
+                return Err("A machine request is already running.".into());
+            }
+            hub.dirty.insert(Screen::Machines);
+        }
+        let _work = MachineWork(self.clone());
+        self.publish();
+        let fresh = message(reads::read(
+            &self.0.hgs,
+            &ComputerId::local(),
+            &Read::Machines,
+        ))?;
+        let args = machine_connections::ssh_arguments(&fresh, &reference)?;
+        terminal.open_program(&self.0.hgs.to_string_lossy(), &args)
     }
 
     /// The selected peer's effective connection, read on selection.
@@ -1430,6 +1467,67 @@ pub async fn machine_change(
     tauri::async_runtime::spawn_blocking(move || screens.change_machine(request))
         .await
         .map_err(|error| error.to_string())?
+}
+
+/// Explicit Machines click: use the existing terminal/console host and hgs.
+#[tauri::command]
+pub async fn machine_ssh(
+    app: tauri::AppHandle,
+    state: State<'_, Screens>,
+    reference: zerus_client_core::machine_connections::Reference,
+) -> Result<Option<String>, String> {
+    use tauri::Manager;
+    if crate::actions::blocked() {
+        return Err(REPLAY_NEEDS_HGS.into());
+    }
+    let screens = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|error| error.to_string())?;
+        let settings = crate::desk::terminal_settings(&dir);
+        let mut terminal = zerus_client_core::terminal_launch::Launcher::new(settings);
+        screens.ssh_machine(reference, &mut terminal)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Choose a path only. The draft owns late-result checks; no key bytes are read.
+#[tauri::command]
+pub async fn machine_pick_key(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    if crate::actions::blocked() {
+        return Err(REPLAY_NEEDS_HGS.into());
+    }
+    let window = crate::main_window(&app).ok_or("The main window is unavailable.")?;
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("Choose SSH private key")
+            .set_parent(&window)
+            .blocking_pick_file()
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    let Some(file) = picked else {
+        return Ok(None);
+    };
+    let path = file
+        .into_path()
+        .map_err(|_| "Choose a local SSH key file.".to_owned())?;
+    if !path.is_absolute() {
+        return Err("Choose a local SSH key file.".into());
+    }
+    let path = path
+        .to_str()
+        .ok_or("Choose a local SSH key file.")?
+        .to_owned();
+    if path.len() > 4096 || path.chars().any(char::is_control) {
+        return Err("Choose an absolute SSH key path or a path starting with ~/ .".into());
+    }
+    Ok(Some(path))
 }
 
 #[tauri::command(async)]
@@ -2251,6 +2349,109 @@ mod tests {
         h.drain();
         assert_eq!(h.count("account ls"), 2);
         assert_eq!(h.published(Screen::Accounts)["busy"], json!(false));
+    }
+
+    struct MachineTerminal(Arc<Mutex<Vec<zerus_client_core::terminal_launch::Start>>>);
+    impl zerus_client_core::terminal_launch::Desktop for MachineTerminal {
+        fn find(&self, _: &str) -> Option<String> {
+            None
+        }
+        fn env(&self, _: &str) -> Option<String> {
+            None
+        }
+        fn exists(&self, _: &str) -> bool {
+            false
+        }
+        fn home(&self) -> String {
+            "/synthetic/home".into()
+        }
+        fn console_host(&self) -> String {
+            "unused".into()
+        }
+        fn start(
+            &mut self,
+            start: &zerus_client_core::terminal_launch::Start,
+        ) -> Result<(), String> {
+            self.0.lock().unwrap().push(start.clone());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn machine_ssh_rechecks_the_saved_alias_and_uses_the_maintained_terminal_route() {
+        use zerus_client_core::{
+            machine_connections::Reference,
+            terminal_launch::{Launcher, NoKonsole, Platform, Settings},
+        };
+        let snapshot = json!({"local":"fixture-local","revision":"a".repeat(64),"machines":[{"alias":"fixture-peer","enabled":false}]});
+        let h = harness(json!({"machine ls":{"stdout":snapshot.to_string()}}), true);
+        h.screens.lock().machines.finish_list(Ok(snapshot));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut terminal = Launcher::with(
+            Settings {
+                template: "fixture-terminal --command {cmd}".into(),
+                ..Default::default()
+            },
+            Platform::Linux,
+            Box::new(MachineTerminal(calls.clone())),
+            Box::new(NoKonsole),
+        );
+        let reference = Reference {
+            alias: "fixture-peer".into(),
+            revision: "a".repeat(64),
+        };
+        assert_eq!(h.screens.ssh_machine(reference, &mut terminal), Ok(None));
+        assert_eq!(
+            h.count("machine ls"),
+            1,
+            "one local recheck, no remote connection probe"
+        );
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].program, "fixture-terminal");
+        assert_eq!(
+            calls[0].arguments,
+            [
+                "--command",
+                &format!("{} machine ssh fixture-peer", h.fake.hgs.display())
+            ]
+        );
+        assert!(!h.screens.machines(false).busy);
+    }
+
+    #[test]
+    fn machine_ssh_refuses_a_changed_revision_before_any_terminal_launch() {
+        use zerus_client_core::{
+            machine_connections::{Reference, CHANGED},
+            terminal_launch::{Launcher, NoKonsole, Platform, Settings},
+        };
+        let snapshot = json!({"local":"fixture-local","revision":"a".repeat(64),"machines":[{"alias":"fixture-peer"}]});
+        let mut changed = snapshot.clone();
+        changed["revision"] = json!("b".repeat(64));
+        let h = harness(json!({"machine ls":{"stdout":changed.to_string()}}), true);
+        h.screens.lock().machines.finish_list(Ok(snapshot));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut terminal = Launcher::with(
+            Settings {
+                template: "fixture-terminal --command {cmd}".into(),
+                ..Default::default()
+            },
+            Platform::Linux,
+            Box::new(MachineTerminal(calls.clone())),
+            Box::new(NoKonsole),
+        );
+        assert_eq!(
+            h.screens.ssh_machine(
+                Reference {
+                    alias: "fixture-peer".into(),
+                    revision: "a".repeat(64)
+                },
+                &mut terminal
+            ),
+            Err(CHANGED.into())
+        );
+        assert!(calls.lock().unwrap().is_empty());
+        assert!(!h.screens.machines(false).busy);
     }
 
     #[test]
