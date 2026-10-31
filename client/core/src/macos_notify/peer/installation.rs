@@ -394,7 +394,10 @@ fn static_signature(path: &Path, anchor: *const c_void) -> Result<Signature, Ref
         CFNumberGetTypeID()
     })?;
     let mut bits: i64 = 0;
-    if unsafe { CFNumberGetValue(flags, 4, (&mut bits as *mut i64).cast()) } == 0 || bits & 2 != 0 {
+    if unsafe { CFNumberGetValue(flags, 4, (&mut bits as *mut i64).cast()) } == 0
+        || !(0..=u32::MAX as i64).contains(&bits)
+        || bits & 2 != 0
+    {
         return Err(Refusal::Signature);
     }
     let cms = field(&info, unsafe { kSecCodeInfoCMS }, unsafe {
@@ -436,6 +439,13 @@ fn static_signature(path: &Path, anchor: *const c_void) -> Result<Signature, Ref
     let requirement = format!("({}) and cdhash H\"{hash}\"", text(dr_text.ptr())?);
     if requirement.len() > super::REQUIREMENT_BYTES {
         return Err(Refusal::Metadata);
+    }
+    // Prepare BOTH exact expectations before any peer input. The first check
+    // validated every architecture against the genuine signer. This second
+    // check pins only the already selected native architecture's code hash.
+    let exact = super::requirement(&requirement).map_err(|_| Refusal::Signature)?;
+    if unsafe { SecStaticCodeCheckValidity(code.ptr(), STRICT & !1, exact.as_ptr()) } != 0 {
+        return Err(Refusal::Signature);
     }
     Ok(Signature {
         identifier,
