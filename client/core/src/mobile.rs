@@ -23,12 +23,16 @@ use serde_json::{Map, Value};
 use crate::actions::{Exit, Invocation};
 
 pub mod computer_codes;
+pub mod enrollment;
 pub mod page;
 pub mod phone_actions;
 
 /// The help line that shows `hgs mobile` exists; an older `hgs` would read
 /// "mobile" as an agent to launch.
 pub const PHONES_MARKER: &str = "mobile phones|invite|revoke-phone";
+pub const STOP_MARKER: &str = "Workspace stop ABI: service-preflight-v1";
+pub const STOP_UNAVAILABLE: &str = "Stop is not available with this connector version. You can change the workspace while the connector is stopped.";
+pub const WORKSPACE_UNCONFIRMED: &str = "Workspace operation was not confirmed. Refresh status before continuing. Verify that the matching computer connector is installed.";
 /// The connector's status reply, at most.
 const STATUS_BYTES: usize = 64 * 1024;
 /// Any other reply, at most.
@@ -252,15 +256,23 @@ pub struct Workspace {
     /// A saved connection waiting for its result.
     pub pending: Option<String>,
     pub running: bool,
+    /// Fresh help capability; never inferred from workspace encryption.
+    pub stop_supported: bool,
     /// The connection's revision; a change refreshes the phones.
     pub config_revision: String,
     /// Public relay identity; invitation results must match this snapshot.
     pub server_url: String,
+    pub node_id: String,
+    pub generation: Option<String>,
+    pub pending_state: Option<String>,
+    pub pending_node_id: Option<String>,
+    pub pending_action: Option<String>,
+    pub migration_reason: Option<String>,
     pub controls: Controls,
 }
 
 /// WorkspaceSettings::controls: which of the workspace's actions the page
-/// shows in this state. This client shows them disabled for now.
+/// shows in this state. Writable controls also require a fresh effect admission.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Controls {
     pub change: bool,
@@ -364,8 +376,27 @@ pub fn workspace(value: &Map<String, Value>) -> Workspace {
         connection,
         pending,
         running,
+        stop_supported: false,
         config_revision: text(value, "config_revision").to_owned(),
         server_url: text(value, "server_url").to_owned(),
+        node_id: text(value, "node_id").to_owned(),
+        generation: value
+            .get("generation")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        pending_state: pending_value
+            .and_then(|v| v["state"].as_str())
+            .map(str::to_owned),
+        pending_node_id: pending_value
+            .and_then(|v| v["node_id"].as_str())
+            .map(str::to_owned),
+        pending_action: pending_value
+            .and_then(|v| v["action"].as_str())
+            .map(str::to_owned),
+        migration_reason: value
+            .get("migration")
+            .and_then(|v| v["reason"].as_str())
+            .map(str::to_owned),
         controls: controls(state, running, pending_value),
     }
 }
@@ -407,7 +438,7 @@ pub fn read_status_in(
     config: &Path,
     parent_env: &[(&str, &str)],
 ) -> Result<Workspace, String> {
-    status(
+    let mut workspace = status(
         crate::run::run_without(
             connector,
             &status_invocation(config),
@@ -416,7 +447,51 @@ pub fn read_status_in(
             STATUS_BYTES,
         )
         .ok(),
-    )
+    )?;
+    // Bounded read on the existing workspace read/action lane, no new poller.
+    let probe = Invocation {
+        args: vec!["--help".into()],
+        stdin: None,
+        timeout: Duration::from_secs(5),
+        request_id: None,
+    };
+    workspace.stop_supported = matches!(crate::run::run_without(connector, &probe, parent_env, &CONNECTOR_UNSET, 16_384),
+        Ok(Exit::Code { code: 0, stdout, .. }) if String::from_utf8_lossy(&stdout).lines().any(|line| line == STOP_MARKER));
+    Ok(workspace)
+}
+
+/// Existing workspace protocol, on private stdin, with no raw error exposure.
+/// Callers admit a typed action and freshly bind the exact configuration first.
+fn workspace_request(
+    connector: &Path,
+    config: &Path,
+    action: &str,
+    payload: &Value,
+) -> Result<Value, String> {
+    let call = Invocation {
+        args: vec![
+            "--workspace".into(),
+            action.into(),
+            "--config".into(),
+            config.to_string_lossy().into_owned(),
+        ],
+        stdin: Some(serde_json::to_vec(payload).map_err(|_| WORKSPACE_UNCONFIRMED)?),
+        timeout: Duration::from_secs(70),
+        request_id: None,
+    };
+    let exit = crate::run::run_without(connector, &call, &[], &CONNECTOR_UNSET, STATUS_BYTES)
+        .map_err(|_| WORKSPACE_UNCONFIRMED)?;
+    let Exit::Code {
+        code: 0, stdout, ..
+    } = exit
+    else {
+        return Err(WORKSPACE_UNCONFIRMED.into());
+    };
+    let value: Value = serde_json::from_slice(&stdout).map_err(|_| WORKSPACE_UNCONFIRMED)?;
+    if !value.is_object() || value.get("ok").is_some_and(|ok| ok != &Value::Bool(true)) {
+        return Err(WORKSPACE_UNCONFIRMED.into());
+    }
+    Ok(value)
 }
 
 /// HgsClient's failureDetail for an `hgs` call that did not finish cleanly;

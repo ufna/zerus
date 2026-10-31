@@ -6,13 +6,13 @@ import { Icon } from "../../lib/icons";
 import { Actions, Group, Lines, SectionHead, Select, Status } from "./ui";
 import {createPhoneActions,targetOf,phoneKey,targetKey,type PhoneActions} from "./phone-actions";
 import { createMobile, type MobileState, type View } from "./mobile-page";
-import ComputerInvitations from "./ComputerInvitations";
+import WorkspacePanel from "./WorkspacePanel";
 
 // Settings > Mobile connection (WorkspaceSettings.h, PhonePairing.cpp,
 // MobileDeliverySettings.h, SettingsPage.h:124-139) in the approved
 // mockup's layout. Reads and notification timing stay in the existing hub;
 // phone actions use one-use native plans and the workspace/relay shown here.
-// Remaining workspace/connector controls belong to .24.5 through .24.8.
+// Connector and legacy configuration controls belong to .24.5 and .24.8.
 
 const DELIVERY: { value: string; label: string }[] = [
   { value: "immediate", label: "Immediately, even if I'm at a computer" },
@@ -30,46 +30,6 @@ const when = (seconds: number | null) =>
 /** A workspace's heading: where its phones were read from. */
 export const listTitle = (list: { host: string; workspace_name: string }) =>
   list.host ? `${list.workspace_name} (via ${list.host})` : `${list.workspace_name} (this computer)`;
-
-function WorkspacePanel(props: { view?: View; refresh: () => void }) {
-  const read = () => props.view?.workspace ?? undefined;
-  const busy = () => !!props.view?.workspace_busy;
-  const controls = () => read()?.controls;
-  return (
-    <Group title="Workspace">
-      <p class="set-group-hint">Connect your computers and phones to one workspace. Session content is encrypted between your devices; the relay keeps routing and delivery metadata.</p>
-      <Show when={read()} fallback={
-        <Show when={props.view?.workspace_error} fallback={<Status kind="busy">Workspace: checking…</Status>}>
-          <Lines text="Workspace status is unconfirmed" />
-        </Show>
-      }>
-        {(workspace) => (
-          <>
-            <Lines text={workspace().summary} />
-            <span class="muted">{workspace().connection}</span>
-            <Show when={workspace().pending}>{(text) => <Status kind="warn">{text()}</Status>}</Show>
-          </>
-        )}
-      </Show>
-      <Show when={props.view?.workspace_error}>{(text) => <Status kind="error">{text()}</Status>}</Show>
-      <Actions>
-        <Show when={controls()?.change}><button type="button" class="btn" disabled>Change workspace…</button></Show>
-        <Show when={controls()?.enrollment}><button type="button" class="btn" disabled>Create workspace</button></Show>
-        <Show when={controls()?.start}><button type="button" class="btn" disabled><Icon name="play" size={13} />Start connector</button></Show>
-        <Show when={controls()?.stop}><button type="button" class="btn" disabled><Icon name="square" size={12} />Stop connector</button></Show>
-        <button type="button" class="btn" disabled={busy() || !props.view} onClick={props.refresh}><Icon name="refresh-cw" size={13} />Refresh status</button>
-      </Actions>
-      <Show when={controls()?.check}>{(text) => <Actions><button type="button" class="btn" disabled>{text()}</button></Actions>}</Show>
-      <Show when={controls()?.invitations}>
-        <ComputerInvitations workspace={read()!} busy={busy()} refresh={props.refresh}/>
-      </Show>
-      <Actions>
-        <button type="button" class="btn ghost" disabled><Icon name="chevron-right" size={13} />Advanced: legacy connector configuration</button>
-      </Actions>
-      <p class="set-group-hint">Changing the workspace, starting or stopping the connector, checking a saved connection and the legacy connector configuration are not available in this client yet.</p>
-    </Group>
-  );
-}
 
 const PhoneDialogs=lazy(()=>import("./PhoneDialogs"));
 function PhonesPanel(props: { view?: View; refresh: () => void; actions:PhoneActions }) {
@@ -139,9 +99,10 @@ export function MobileSection() {
   const view = () => state().view;
   return (
     <>
-      <SectionHead title="Mobile connection" />
+      <SectionHead title="Workspace" intro="Connect your computers and phones to one workspace. Session content is encrypted between your devices; the relay keeps routing and delivery metadata." />
       <Show when={state().error}>{(text) => <Status kind="error">{text()}</Status>}</Show>
-      <WorkspacePanel view={view()} refresh={() => page.refreshWorkspace()} />
+      <WorkspacePanel view={view()} refresh={(afterAction) => page.refreshWorkspace(afterAction)} />
+      <div class="set-legacy"><button class="btn ghost set-disclosure" disabled><Icon name="chevron-right" size={13}/>Advanced: legacy connector configuration</button></div>
       <PhonesPanel view={view()} refresh={() => page.refreshPhones()} actions={phoneActions}/>
       <Show when={phoneActions.prompt()}>{prompt=><Suspense><PhoneDialogs prompt={prompt()} actions={phoneActions}/></Suspense>}</Show>
       <DeliveryPanel view={view()} set={(value) => page.setDelivery(value)} />

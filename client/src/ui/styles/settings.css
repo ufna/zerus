@@ -53,6 +53,16 @@
   .skin-meta {display: flex; align-items: center; gap: 6px; min-width: 0; }
   .skin-name {font-weight: 600; font-size: var(--fs-sm); }
   .skin-inuse {background: var(--z-color-accent-bg); color: var(--z-color-accent); }
+  .ws-panel {padding: 8px 16px 10px; }
+  .ws-summary {display: flex; align-items: flex-start; gap: 12px; padding: 10px 0 2px; font-size: var(--fs-sm); }
+  .ws-icon {display: grid; place-items: center; width: 36px; height: 36px; flex: none; border-radius: var(--z-radius-lg); background: var(--z-color-hover); color: var(--z-color-muted); }
+  .ws-icon.ok {background: var(--z-color-accent-bg); color: var(--z-color-accent); }
+  .ws-icon.warn {background: var(--z-color-warn-bg); color: var(--z-color-warn); }
+  .ws-title > div:first-child {font-weight: 600; font-size: var(--fs-md); color: var(--z-color-text); }
+  .ws-title > div + div {color: var(--z-color-muted); }
+  .ws-enroll {border-top: 1px solid var(--z-color-divider); margin-top: 4px; }
+  .ws-enroll .set-row {padding: 8px 0; }
+  .ws-enroll .set-wide-field {width: 380px; max-width: 100%; }
   .ws-invite {border-top: 1px solid var(--z-color-divider); margin-top: 4px; padding-top: 4px; }
   .skin-swatches {display: flex; align-items: center; gap: 4px; }
   .skin-swatches i {width: 11px; height: 11px; border-radius: 50%; border: 1px solid var(--z-color-divider); }
