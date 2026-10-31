@@ -19,8 +19,9 @@ The future consumer must claim its canonical instance before this check and
 hold the existing boundary through actual writer admission. A snapshot followed
 by a later start is insufficient. An absent-state result also needs that actual
 canonical startup ordering; it must not become a general permit that survives
-concurrent service creation. The consumer retains the actual helper/pipe lifetime and refuses before GUI
-writers when this check fails. Its canonical ordering is part of the consumer
+concurrent service creation. With a supporting CLI, the consumer retains the actual helper/pipe lifetime
+and refuses before GUI writers when this check fails. Its old-CLI compatibility
+path retains the previous GUI startup and grants no held/current producer proof. Its canonical ordering is part of the consumer
 contract, not an independent property of this Startup value.
 
 `producer_prepared::Context` consumes the original authenticated `Session`,

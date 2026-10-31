@@ -29,6 +29,7 @@ pub fn prepare(identity: &crate::identity::Identity) -> (crate::instance::Reply,
 /// writers or GUI actor exist. Replay and other bundle identities stay isolated.
 pub fn hold(
     production: bool,
+    responder: &Arc<Responder>,
 ) -> Result<Option<desktop::startup::Bootstrap>, desktop::startup::Refused> {
     if !production || std::env::var_os("ZERUS_CLIENT_REPLAY").is_some_and(|v| !v.is_empty()) {
         return Ok(None);
@@ -38,8 +39,24 @@ pub fn hold(
         &uuid::Uuid::new_v4().to_string(),
         &[],
     )?;
-    held.wait_ready()?;
-    Ok(Some(held))
+    match held.wait_ready() {
+        Ok(()) => Ok(Some(held)),
+        Err(desktop::startup::Refused::Unsupported) => {
+            // Compatibility only: preserve today's GUI writers and cached hello,
+            // without invoking the unknown command or claiming a held bootstrap.
+            let responder = responder.clone();
+            let _ = std::thread::Builder::new()
+                .name("zerus-desktop-identity".into())
+                .spawn(move || {
+                    let selected = zerus_client_core::default_hgs();
+                    if let Some(configuration) = desktop::selected_configuration(&selected, &[]) {
+                        responder.configure_once(configuration);
+                    }
+                });
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Request release after setup registered its writers, then retain and actually

@@ -59,7 +59,9 @@ fn startup_duplex_keeps_input_until_release_and_joins_before_returning_configura
 fn startup_help_marker_is_exact_and_old_cli_never_receives_an_unknown_command() {
     let root = Scratch::new("old");
     let mut held = root.begin();
-    assert!(held.wait_ready().is_err());
+    assert_eq!(held.wait_ready(), Err(Refused::Unsupported));
+    assert!(held.worker.is_none());
+    assert_eq!(Arc::strong_count(&held.resources), 1);
     assert_eq!(
         fs::read_to_string(root.0.join("calls")).unwrap(),
         "[\"--help\"]\n"

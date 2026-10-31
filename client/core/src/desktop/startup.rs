@@ -57,6 +57,8 @@ impl Frame {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refused {
+    /// Known absence of the new command capability; no startup helper ran.
+    Unsupported,
     Invalid,
     Unavailable,
     TimedOut,

@@ -41,8 +41,10 @@ refuses before I/O pending native durability qualification.
 
 A read snapshot, including absence, supplies no startup authority. The actual
 [replacement frontend consumer](desktop-startup-consumer.md) now retains the
-same boundary through canonical startup and refuses unsettled state before GUI
-writers, including when the service is absent. Producer preparation still has
+same boundary through supported-CLI canonical startup and refuses unsettled
+state before GUI writers, including when the service is absent. Older CLI
+compatibility keeps the existing GUI startup and is not a qualified universal
+prepared-replacement fence. Producer preparation still has
 no production caller; persisted-original reconciliation remains required first. Current profile/known-zero Presence proof,
 continuous negative invalidation, actual SDK/resource/store barriers and whole
 profile publication/rollback remain separate required gates. This journal does

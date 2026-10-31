@@ -222,7 +222,7 @@ pub fn run() {
                 instance::Claim::Claimed(claimed) => {
                     #[cfg(feature = "live")]
                     {
-                        desktop_bootstrap = match desktop_hello::hold(identity.is_switch()) {
+                        desktop_bootstrap = match desktop_hello::hold(identity.is_switch(), &responder) {
                             Ok(held) => held,
                             Err(_) => {
                                 eprintln!("zerus-client: desktop startup refused before writers; use a compatible local hgs and reconcile unsettled desktop state");

@@ -87,7 +87,7 @@ impl Bootstrap {
                     .ok()
                     .is_some_and(|s| s.lines().any(|l| l.trim() == HELP_MARKER))
                 {
-                    return Err(Refused::Unavailable);
+                    return Err(Refused::Unsupported);
                 }
                 drop(charge);
                 if stop.load(Ordering::Acquire) || Instant::now() >= deadline {
@@ -204,11 +204,39 @@ impl Bootstrap {
         if self.configuration.is_some() {
             return Err(Refused::Invalid);
         }
-        self.configuration = Some(
-            self.ready
-                .recv_timeout(self.deadline.saturating_duration_since(Instant::now()))
-                .map_err(|_| Refused::Unavailable)?,
-        );
+        match self
+            .ready
+            .recv_timeout(self.deadline.saturating_duration_since(Instant::now()))
+        {
+            Ok(configuration) => self.configuration = Some(configuration),
+            Err(_) => {
+                // A missing marker refuses ONLY the new path. Confirm the exact
+                // help worker and all pipe copies ended first. A started helper's
+                // unknown/refused outcome is never legacy compatibility permission.
+                while self.worker.as_ref().is_some_and(|h| !h.is_finished())
+                    && Instant::now() < self.deadline
+                {
+                    thread::sleep(POLL);
+                }
+                if !self.worker.as_ref().is_some_and(|h| h.is_finished()) {
+                    return Err(Refused::Unavailable);
+                }
+                let result = self
+                    .worker
+                    .take()
+                    .unwrap()
+                    .join()
+                    .unwrap_or(Err(Refused::Unknown));
+                let unsupported =
+                    result == Err(Refused::Unsupported) && Arc::strong_count(&self.resources) == 1;
+                self.joined = Some(result);
+                return Err(if unsupported {
+                    Refused::Unsupported
+                } else {
+                    Refused::Unavailable
+                });
+            }
+        }
         if Instant::now() >= self.deadline {
             return Err(Refused::TimedOut);
         }
