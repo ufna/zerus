@@ -207,6 +207,7 @@ impl Review {
             project,
             origins,
             shown,
+            removal: self.field.removal(value),
         })
     }
     pub(super) fn consequence(&self, c: &Catalog<'_>, value: &Value) -> String {

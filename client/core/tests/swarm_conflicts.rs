@@ -139,6 +139,7 @@ fn confirmations_cover_exact_removal_and_identity_merge_values() {
         let review = catalog.review(&id(&catalog)).unwrap();
         let selection = review.selection(&catalog, confirmed_index).unwrap();
         assert!(selection.confirmation);
+        assert!(review.choices(&catalog, 0).unwrap().rows[confirmed_index].removal);
         assert_eq!(selection.action, action);
         assert!(selection
             .outcome
