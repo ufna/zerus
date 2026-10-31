@@ -1,4 +1,5 @@
 use super::*;
+mod idle;
 use crate::platform::linux_test_bus::Bus;
 use std::pin::Pin;
 use std::sync::Condvar;
@@ -116,6 +117,7 @@ fn held_real_receiver_destruction_and_repeated_close_keep_original_deadline_and_
     let held = hold.clone();
     let hooks = Hooks {
         budget: None,
+        runnable: None,
         event: Some(Arc::new(move |at| {
             if matches!(at, Hook::DropReaders) {
                 held.enter();
@@ -152,6 +154,7 @@ fn all_public_handle_loss_during_setup_pins_instead_of_inventing_completion() {
     let held = hold.clone();
     let hooks = Hooks {
         budget: None,
+        runnable: None,
         event: Some(Arc::new(move |at| {
             if matches!(at, Hook::BeforeNative) {
                 held.enter();
@@ -187,6 +190,7 @@ fn both_match_acknowledgements_precede_shared16_raw_activation_under_addressed_b
     let trace = order.clone();
     let hooks = Hooks {
         budget: None,
+        runnable: None,
         event: Some(Arc::new(move |at| {
             let mut trace = trace.lock().unwrap();
             trace.push(at);
@@ -344,6 +348,7 @@ fn repeated_exact_connections_and_captures_end_while_one_shared_reactor_remains(
         let weak = Arc::downgrade(&capture);
         let hooks = Hooks {
             budget: None,
+            runnable: None,
             event: Some(Arc::new(move |_| {
                 let _keep = &capture;
             })),
@@ -423,6 +428,7 @@ fn close_before_native_work_waits_for_the_original_worker_join() {
     let held = hold.clone();
     let hooks = Hooks {
         budget: None,
+        runnable: None,
         event: Some(Arc::new(move |at| {
             if at == Hook::BeforeNative {
                 held.enter();
@@ -453,6 +459,7 @@ fn panic_or_poison_never_releases_or_accepts_a_later_finish() {
         let gate = Gate::new(1).unwrap();
         let hooks = Hooks {
             budget: None,
+            runnable: None,
             event: Some(Arc::new(move |at| {
                 if !poison && at == Hook::DropReaders {
                     panic!("private reader teardown panic");
@@ -500,6 +507,7 @@ fn actual_borrowed_message_and_connection_drop_hold_accounting_until_their_retur
         let held = hold.clone();
         let hooks = Hooks {
             budget: None,
+            runnable: None,
             event: Some(Arc::new(move |at| {
                 if at == phase {
                     held.enter();
@@ -547,6 +555,7 @@ fn original_setup_and_cleanup_deadlines_expire_without_late_success_or_renewal()
         let held = hold.clone();
         let hooks = Hooks {
             budget: Some(Duration::from_millis(500)),
+            runnable: None,
             event: Some(Arc::new(move |at| {
                 if at == phase {
                     held.enter();
@@ -600,6 +609,7 @@ fn actual_authentication_timeout_never_becomes_no_work_or_a_retry() {
     let gate = Gate::new(1).unwrap();
     let hooks = Hooks {
         budget: Some(Duration::from_millis(500)),
+        runnable: None,
         event: None,
     };
     let (mut startup, control) = spawn(
@@ -633,6 +643,7 @@ fn actual_unanswered_match_removal_pins_and_close_never_renews_it() {
     let gate = Gate::new(1).unwrap();
     let hooks = Hooks {
         budget: Some(Duration::from_millis(500)),
+        runnable: None,
         event: None,
     };
     let (mut startup, control) = spawn(

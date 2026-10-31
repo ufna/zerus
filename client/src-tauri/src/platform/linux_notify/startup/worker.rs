@@ -22,6 +22,64 @@ struct Driver<'a> {
     receiver: &'a mpsc::Receiver<()>,
     waker: Waker,
 }
+#[cfg(test)]
+struct TickCapture<'a>(&'a Hooks);
+#[cfg(test)]
+impl Drop for TickCapture<'_> {
+    fn drop(&mut self) {
+        self.0.at(Hook::TickDropped);
+    }
+}
+// Test-only runnable admitted to this startup's existing executor. It carries
+// no native input, body or ID. The test consumes its one retained task waker
+// before CleanExit, and the original worker still owns the task handle.
+#[cfg(test)]
+#[derive(Default)]
+pub(super) struct RunnableProbe {
+    ready: AtomicBool,
+    waker: Mutex<Option<Waker>>,
+    pub(super) pending: AtomicBool,
+    pub(super) finished: AtomicBool,
+    pub(super) dropped: AtomicBool,
+}
+#[cfg(test)]
+impl RunnableProbe {
+    pub(super) fn wake(&self) {
+        let waker = {
+            let mut waker = self.waker.lock().unwrap();
+            self.ready.store(true, Ordering::Release);
+            waker.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+}
+#[cfg(test)]
+struct ProbeFuture(Arc<RunnableProbe>);
+#[cfg(test)]
+impl Future for ProbeFuture {
+    type Output = ();
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
+        let mut waker = self.0.waker.lock().unwrap();
+        if self.0.ready.load(Ordering::Acquire) {
+            self.0.finished.store(true, Ordering::Release);
+            Poll::Ready(())
+        } else {
+            *waker = Some(context.waker().clone());
+            self.0.pending.store(true, Ordering::Release);
+            Poll::Pending
+        }
+    }
+}
+#[cfg(test)]
+impl Drop for ProbeFuture {
+    fn drop(&mut self) {
+        let waker = self.0.waker.lock().unwrap().take();
+        drop(waker);
+        self.0.dropped.store(true, Ordering::Release);
+    }
+}
 impl Driver<'_> {
     fn drive<T>(
         &self,
@@ -171,7 +229,26 @@ fn session(address: &str, driver: &Driver<'_>, setup: Instant, hooks: &Hooks) ->
         good &= readers.iter().all(|r| r.max_queued() == RAW);
         if good && driver.scope.ready(setup).is_ok() {
             hooks.at(Hook::Raw);
+            // This lexical scope owns the ACTUAL pinned future, including
+            // pin!'s hidden storage. It ends before DropReaders and removals.
+            // A Pending async-executor tick owns its registered sleeper; merely
+            // dropping its Pin reference would not destroy that future.
+            #[cfg(test)]
+            let _runnable = hooks
+                .runnable
+                .as_ref()
+                .map(|probe| executor.spawn(ProbeFuture(probe.clone()), "private-idle-wake-probe"));
+            let next_tick = || async {
+                #[cfg(test)]
+                let _capture = {
+                    hooks.at(Hook::TickCreated);
+                    TickCapture(hooks)
+                };
+                executor.tick().await
+            };
+            let mut tick = pin!(next_tick());
             while !driver.scope.cancel.load(Ordering::Acquire) {
+                let mut progress = false;
                 let mut context = Context::from_waker(&driver.waker);
                 for reader in &mut readers {
                     if driver.scope.cancel.load(Ordering::Acquire) {
@@ -181,7 +258,14 @@ fn session(address: &str, driver: &Driver<'_>, setup: Instant, hooks: &Hooks) ->
                         Poll::Ready(Some(Ok(message))) => {
                             // No body decoding, copying, retention or routing.
                             hooks.at(Hook::Message);
+                            #[cfg(test)]
+                            if message.header().member().map(|m| m.as_str())
+                                == Some("IdleWakeProbe")
+                            {
+                                hooks.at(Hook::ProbeSignal);
+                            }
                             drop(message);
+                            progress = true;
                         }
                         Poll::Ready(_) => {
                             good = false;
@@ -193,9 +277,30 @@ fn session(address: &str, driver: &Driver<'_>, setup: Instant, hooks: &Hooks) ->
                 if driver.scope.cancel.load(Ordering::Acquire) {
                     break;
                 }
-                let tick = executor.tick();
-                let _ = pin!(tick).poll(&mut context);
-                let _ = driver.receiver.recv_timeout(Duration::from_millis(10));
+                if tick.as_mut().poll(&mut context).is_ready() {
+                    // Only a completed tick is reset. A Pending tick and its
+                    // wake registration survive raw progress and idle recv.
+                    tick.set(next_tick());
+                    progress = true;
+                }
+                if driver.scope.cancel.load(Ordering::Acquire) {
+                    break;
+                }
+                if progress {
+                    continue;
+                }
+                #[cfg(test)]
+                hooks.at(Hook::BeforePark);
+                // Both readers and the retained tick were Pending. No token
+                // pre-drain: a coalesced Full or a poll-to-park wake is retained.
+                let received = driver.receiver.recv();
+                #[cfg(test)]
+                hooks.at(Hook::AfterPark);
+                if received.is_err() {
+                    good = false;
+                    let _ = driver.scope.close();
+                    break;
+                }
             }
         } else {
             good = false;
