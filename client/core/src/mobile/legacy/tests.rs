@@ -6,7 +6,12 @@ struct Private {
 }
 impl Private {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(crate::fsx::temporary(Path::new("legacy-config")));
+        // The store refuses symlinked ancestors, and macOS's TMPDIR sits under
+        // the /var symlink; resolve it so only the fixture's own paths are tested.
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(crate::fsx::temporary(Path::new("legacy-config")));
         fs::create_dir(&root).unwrap();
         #[cfg(unix)]
         {
