@@ -7,6 +7,7 @@ use zerus_client_core::account_actions::{
     self, models::Catalog as ModelCatalog, Binding, Kind, Values,
 };
 pub mod setup;
+pub mod distribution;
 
 #[derive(Default)]
 pub(super) struct Edits(Mutex<EditState>);
@@ -14,6 +15,7 @@ pub(super) struct Edits(Mutex<EditState>);
 struct EditState {
     plans: VecDeque<(String, Plan)>,
     setups: VecDeque<(String, setup::Plan)>,
+    distributions: VecDeque<(String, distribution::Plan)>,
     busy: bool,
 }
 struct Plan {
@@ -443,7 +445,7 @@ mod tests {
     pub(super) fn fixture() -> (Screens, crate::pump::Pump, Binding) {
         fixture_at(PathBuf::from("unused-hgs"))
     }
-    fn fixture_at(hgs: PathBuf) -> (Screens, crate::pump::Pump, Binding) {
+    pub(super) fn fixture_at(hgs: PathBuf) -> (Screens, crate::pump::Pump, Binding) {
         let local = ComputerId::local();
         let fleet = vec![FleetEntry {
             computer: local.clone(),

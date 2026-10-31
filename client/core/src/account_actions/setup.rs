@@ -69,10 +69,13 @@ impl Host {
         Ok(self.call(op, id))
     }
     pub fn fresh(&self, hgs: &Path) -> Result<Value, String> {
-        let call = self.invocation(&["ls"]);
-        let catalog = run_catalog(hgs, &call)?;
+        let catalog = self.read(hgs)?;
         self.verify(&catalog)?;
         Ok(catalog)
+    }
+    pub fn read(&self, hgs: &Path) -> Result<Value, String> {
+        let call = self.invocation(&["ls"]);
+        run_catalog(hgs, &call)
     }
     pub fn create(
         &self,
