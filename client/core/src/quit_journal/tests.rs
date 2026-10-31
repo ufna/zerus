@@ -207,6 +207,20 @@ fn byte_counter_includes_full_descriptor_cleanup_and_exact_boundary() {
         owner_id: String::new(),
     });
     let c = context();
+    let mut kept = d.clone();
+    kept.removal_choice = RemovalChoice::Keep;
+    let kept = Record::new(
+        c.clone(),
+        vec![Group::new(&c, uuid(3), 0, Action::Terminate, vec![kept]).unwrap()],
+    )
+    .unwrap();
+    assert!(kept.groups()[0].members[0]
+        .descriptor
+        .cleanup
+        .as_ref()
+        .unwrap()
+        .owner_id
+        .is_empty());
     let g = Group::new(&c, uuid(3), 0, Action::Terminate, vec![d]).unwrap();
     let with = Record::new(c, vec![g]).unwrap();
     assert!(with.capture_bytes() > r.capture_bytes());

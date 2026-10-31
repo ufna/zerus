@@ -302,7 +302,7 @@ impl Descriptor {
         )?;
         match (self.removal_choice, &self.cleanup) {
             (RemovalChoice::Keep, None) => Ok(()),
-            (RemovalChoice::RemoveAfterTermination, Some(cleanup)) => {
+            (RemovalChoice::Keep | RemovalChoice::RemoveAfterTermination, Some(cleanup)) => {
                 cleanup.validate(&self.captured)
             }
             _ => Err(Error::Invalid),

@@ -23,7 +23,8 @@ Groups and members retain their original frozen deadline ordinals. Each member
 binds its original request UUID, full `end_action::Captured`, original native
 removal choice, optional bounded cleanup evidence and mandatory `KeepForReview`
 restriction. Choosing removal requires exact-target evidence; missing ownership
-inside that evidence stays unknown. There is no conversion back to a live cleanup
+inside that evidence stays unknown. Keep choices can also retain this negative
+evidence, including missing ownership, for later review. There is no conversion back to a live cleanup
 Capture or permission. A later host must freshly establish exact ownership and
 persist the central negative cleanup hold before any stop, including supervisor,
 archive and maintenance paths.
