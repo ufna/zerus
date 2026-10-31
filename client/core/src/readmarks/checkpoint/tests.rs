@@ -1,5 +1,7 @@
 use super::*;
 use crate::readmarks::ReadMark;
+#[cfg(unix)]
+use std::fs::OpenOptions;
 use std::path::PathBuf;
 
 struct Temp(PathBuf);
