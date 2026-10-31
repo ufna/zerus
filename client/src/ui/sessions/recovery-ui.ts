@@ -71,11 +71,8 @@ export interface RecoveryView {
 const history = (job: Recovery, now: number): RecoveryAttempt[] => list(job.history).map((raw) => {
   const entry = object(raw);
   const seconds = number(entry.at);
-  const at = new Date(seconds * 1000);
-  const two = (n: number) => String(n).padStart(2, "0");
-  const stamp = `${at.getDate()} ${dayTime(seconds).split(" ").slice(1, 3).join(" ")}:${two(at.getSeconds())}`;
   return {
-    at: stamp,
+    at: dayTime(seconds, true),
     label: text(entry.state) === "waiting" ? tr("Retry scheduled") : recoveryStatus(entry, now),
     attempts: number(entry.attempt),
     reason: text(entry.reason),
