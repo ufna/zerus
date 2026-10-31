@@ -59,6 +59,8 @@ function ProjectName(props: { project: Project; enabled: boolean; rename(id: str
 export function ProjectsScreen() {
   const view = projectsPage;
   const [colorProject, setColorProject] = createSignal<{ project: Project; origin: HTMLElement }>();
+  const [defaultBusy, setDefaultBusy] = createSignal(false);
+  const chooseDefault = async (id: string) => { setDefaultBusy(true); try { await organization.setDefaultProject(id); } finally { if (!left) setDefaultBusy(false); } };
   const [sort, setSort] = createSignal<Sort>({ column: "name", ascending: true });
   const projects = createMemo(() => shownProjects(view(), allSwarm()));
   const project = () => projects().find((p) => p.id === selectedProject()) ?? projects().find((p) => p.accessible);
@@ -244,8 +246,9 @@ export function ProjectsScreen() {
                   <button class="btn" disabled={!p().accessible || !settingsLoaded()} onClick={(event) => setColorProject({ project: { ...p() }, origin: event.currentTarget })}><Icon name="palette" size={14} />Edit color…</button>
                 </div>
               </div>
-              <label class="check proj-default" title={PROJECT_EDITING}>
-                <input type="checkbox" checked={p().is_default} disabled />Default for sessions started outside Zerus
+              <label class="check proj-default" title={editHint()}>
+                <input type="checkbox" checked={p().is_default} disabled={defaultBusy() || !edits.canEdit(p().id)}
+                  onChange={(event) => { const checked = event.currentTarget.checked; event.currentTarget.checked = p().is_default; if (checked && !p().is_default) void chooseDefault(p().id); }} />Default for sessions started outside Zerus
               </label>
 
               <div class="proj-folders">
