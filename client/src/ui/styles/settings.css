@@ -56,6 +56,12 @@
   .skin-swatches {display: flex; align-items: center; gap: 4px; }
   .skin-swatches i {width: 11px; height: 11px; border-radius: 50%; border: 1px solid var(--z-color-divider); }
   .skin-origin {margin-left: auto; font-size: var(--fs-2xs); color: var(--z-color-dim); }
+  .si-grid {display: grid; grid-template-columns: minmax(0, 1fr) 250px; gap: 16px; }
+  textarea.si-text {width: 100%; height: 360px; resize: vertical; font-size: var(--fs-xs); white-space: pre; tab-size: 2; }
+  .si-result {display: flex; flex-direction: column; gap: 8px; font-size: var(--fs-sm); }
+  .si-name {display: flex; align-items: center; gap: 8px; }
+  .si-result .kv {grid-template-columns: 110px 1fr; }
+  @media (max-width: 1180px) {.si-grid {grid-template-columns: minmax(0, 1fr); }}
   .skin-variants {font-size: var(--fs-2xs); color: var(--z-color-dim); }
   /* The mockup's narrow and reduced-motion rules, with the client's Reduce
      motion setting (motion.css) as well as the system's. */
