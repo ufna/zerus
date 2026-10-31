@@ -992,3 +992,6 @@ export const actionDelayWait = (id: string) => desktop<boolean>("action_delay_wa
 export const actionDelayCancel = (id: string) => desktop<void>("action_delay_cancel", { id });
 
 export const setDefaultProject = (project: string) => desktop<void>("set_default_project", { project });
+
+export const projectFolderChange = (project: string, change: import("./ui/screens/project-folders").FolderChange) => desktop<EditOutcome>("project_folder_change", { project, change: "place" in change ? { ...change, place: { computer: change.place.computer, host: change.place.host, machine_id: change.place.machine_id } } : change });
+export const projectFolderOpen = (project: string, original: FolderOut) => desktop<void>("project_folder_open", { project, original });

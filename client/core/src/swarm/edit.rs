@@ -51,6 +51,11 @@ pub enum Intent {
         name: String,
         style: crate::paths::Style,
     },
+    /// Project folder links, through the same shared writer. No file effects.
+    Folder {
+        project: String,
+        change: super::folder_edit::Change,
+    },
     /// Shared color only; vivid fill remains a device-local preference.
     Color { project: String, color: String },
     /// renameGroup (147-152).
@@ -192,6 +197,9 @@ pub fn apply(organization: &Value, intent: &Intent) -> Result<Value, String> {
                 folders.push(json!({"id": id, "machine": machine,
                     "path": clean, "name": name.trim().chars().take(NAME_CHARS).collect::<String>()}));
             }
+        }
+        Intent::Folder { project, change } => {
+            super::folder_edit::apply(&mut next, project, change)?;
         }
         Intent::Color { project, color } => {
             if color.len() != 7

@@ -983,6 +983,10 @@ export function PerfHost() {
       const { contentSearchSmoke } = await import("../perf/contentSearchSmoke");
       void contentSearchSmoke(!!config().actions_smoke);
     }
+    if (new URLSearchParams(location.search).has("project-folder-smoke") && inTauri()) {
+      const { projectFolderSmoke } = await import("../perf/projectFolderSmoke");
+      void projectFolderSmoke(!!config().replay && !!config().actions_smoke);
+    }
     if (new URLSearchParams(location.search).has("project-default-smoke") && inTauri()) {
       const { projectDefaultSmoke } = await import("../perf/projectDefaultSmoke");
       void projectDefaultSmoke(!!config().replay && !!config().actions_smoke, new URLSearchParams(location.search).get("project-default-smoke") === "restored");
