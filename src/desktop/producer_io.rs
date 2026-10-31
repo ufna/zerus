@@ -1,4 +1,4 @@
-//! Bounded producer control-line I/O only. No caller, controller or authority.
+//! Bounded control I/O only. No production caller, controller or authority.
 use super::transport::Stream;
 #[cfg(unix)]
 use anyhow::ensure;
@@ -12,6 +12,62 @@ use std::{
 
 pub(super) const LINE_BYTES: usize = 16 << 10;
 pub(super) const MAX_WAIT: Duration = zerus_client_core::desktop::producer::timing::IDLE_LIMIT;
+
+/// Own the supplied reader and its buffered tail, with no FD clone or reset.
+/// Same-user transport evidence only, never canonical instance or role proof.
+pub(super) struct Channel {
+    reader: BufReader<Stream>,
+    closed: bool,
+}
+impl Channel {
+    pub fn new(reader: BufReader<Stream>) -> Result<Self> {
+        #[cfg(unix)]
+        {
+            let channel = Self {
+                reader,
+                closed: false,
+            };
+            super::transport::authenticate(channel.reader.get_ref())?;
+            Ok(channel)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = reader;
+            anyhow::bail!("producer control I/O is unsupported")
+        }
+    }
+
+    pub fn line(&mut self, until: Instant) -> Result<Option<Vec<u8>>> {
+        anyhow::ensure!(!self.closed, "producer control connection is closed");
+        let result = line(&mut self.reader, until);
+        if !matches!(&result, Ok(Some(_))) {
+            self.close();
+        }
+        result
+    }
+
+    pub fn write_line(&mut self, bytes: &[u8], until: Instant) -> Result<()> {
+        anyhow::ensure!(!self.closed, "producer control connection is closed");
+        let result = write_line(self.reader.get_mut(), bytes, until);
+        if result.is_err() {
+            self.close();
+        }
+        result
+    }
+
+    fn close(&mut self) {
+        if !self.closed {
+            // Fence access first, including when shutdown itself cannot succeed.
+            self.closed = true;
+            super::transport::shutdown(self.reader.get_ref());
+        }
+    }
+}
+impl Drop for Channel {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
 
 fn remaining(until: Instant) -> io::Result<Duration> {
     let left = until.saturating_duration_since(Instant::now());
@@ -109,3 +165,6 @@ pub(super) fn write_line(stream: &mut Stream, bytes: &[u8], until: Instant) -> R
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, unix))]
+mod channel_tests;
