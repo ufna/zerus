@@ -6,8 +6,10 @@ import { uiLanguage, type UiLanguage } from "../../i18n";
 // "г." dot reads as a separator. Clocks are 24 h in both.
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const two = (n: number) => String(n).padStart(2, "0");
 let genitive: Intl.DateTimeFormat | undefined;
+let weekday: Intl.DateTimeFormat | undefined;
 
 /** The month as it follows a day: "Nov", or the Russian genitive "ноября". */
 export function monthName(d: Date, language: UiLanguage = uiLanguage()): string {
@@ -32,3 +34,9 @@ export const dayTimeOf = (d: Date, seconds = false, language: UiLanguage = uiLan
 /** The transcript's message time: "Oct 27 09:12" as the design shows it, "27 октября 09:12" in Russian. */
 export const messageTimeOf = (d: Date, language: UiLanguage = uiLanguage()): string =>
   language === "ru" ? dayTimeOf(d, false, language) : `${MONTHS[d.getMonth()]} ${d.getDate()} ${clockOf(d)}`;
+
+/** Qt's "ddd, d MMM HH:mm:ss" for a last recorded event: "Tue, 27 Oct 11:43:08", "вт, 27 октября 11:43:08". */
+export function eventTimeOf(d: Date, language: UiLanguage = uiLanguage()): string {
+  const day = language === "ru" ? (weekday ??= new Intl.DateTimeFormat("ru", { weekday: "short" })).format(d) : DAYS[d.getDay()];
+  return `${day}, ${dayTimeOf(d, true, language)}`;
+}
