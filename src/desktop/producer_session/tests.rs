@@ -111,10 +111,10 @@ fn registry_validates_its_fixed_configuration_and_service_identity() {
     }
     let registry = registry();
     let (stream, mut peer) = UnixStream::pair().unwrap();
+    peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
     let mut bad = expected();
     bad.build.source_dirty = Some(true);
     assert!(registry.begin(BufReader::new(stream), bad).is_err());
-    peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
     assert_eq!(peer.read(&mut [0]).unwrap(), 0);
     assert!(!registry.state.lock().unwrap().occupied);
 }
