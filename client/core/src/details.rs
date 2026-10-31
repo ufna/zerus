@@ -327,7 +327,10 @@ mod tests {
             stderr: String::new(),
         };
         let page = serde_json::json!({"name":t.name,"run_id":"r1","parent_conversation_id":"parent","agent_id":"child","conversation_id":"parent/child","send_supported":true,"events":[{"seq":1,"type":"Stop"}]});
-        assert_eq!(parse_subagent_activity(&t, "child", exit(&page)), Some(page.clone()));
+        assert_eq!(
+            parse_subagent_activity(&t, "child", exit(&page)),
+            Some(page.clone())
+        );
         let mut wrong = page.clone();
         wrong["parent_conversation_id"] = serde_json::json!("other");
         assert!(parse_subagent_activity(&t, "child", exit(&wrong)).is_none());
