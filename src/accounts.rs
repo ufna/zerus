@@ -346,7 +346,7 @@ fn list(config: &Config) -> Result<Value> {
             .contains(r["id"].as_str().unwrap_or(""))
     });
     Ok(
-        json!({"host":config.host(),"profiles":visible,"removed_profiles":removed,"defaults":catalog.defaults,"revision":revision(&bytes),"setup_revision":true}),
+        json!({"host":config.host(),"profiles":visible,"removed_profiles":removed,"defaults":catalog.defaults,"revision":revision(&bytes),"setup_revision":true,"copy_revision":true}),
     )
 }
 pub const AUTH_ENV: &[&str] = &[
@@ -590,13 +590,25 @@ pub fn dispatch(config: &Config, args: &[String], dry: bool) -> Result<i32> {
             use std::io::IsTerminal;
             if std::io::stdout().is_terminal() {return Err(Error::new(1,"Credential transport cannot write to a terminal. Use account copy."));}
             if dry{return Err(Error::new(1,"Credential transport has no dry-run mode."));}
-            std::io::stdout().write_all(&export(config,id)?)?;
+            let _lock=if arg(args,"--revision").is_some()||arg(args,"--auth-revision").is_some(){Some(locked(config)?)}else{None};
+            check_revision(&read(config)?,args)?;
+            check_export_auth(config,id,args)?;
+            let bytes=export(config,id)?;
+            check_export_auth(config,id,args)?;
+            std::io::stdout().write_all(&bytes)?;
         },
         "_import"=>{
             use std::io::{IsTerminal,Read};
             if std::io::stdin().is_terminal() || dry {return Err(Error::new(1,"Credential transport requires a private input pipe. Use account copy."));}
+            if args.iter().any(|a|a=="--guarded-stream") {
+                // The physical identity guard has already passed in cli.rs.
+                // Admit the catalog too before the sender releases any bytes.
+                {let _lock=locked(config)?;check_revision(&read(config)?,args)?;}
+                std::io::stdout().write_all(IMPORT_READY)?;
+                std::io::stdout().flush()?;
+            }
             let mut payload=Vec::new();std::io::stdin().take((MAX_TRANSFER+1)as u64).read_to_end(&mut payload)?;
-            println!("{}",import(config,id,arg(args,"--label").unwrap_or(id),&payload)?);
+            println!("{}",import(config,id,arg(args,"--label").unwrap_or(id),&payload,args)?);
         },
         "login"=>{
             if id=="native-dsh" {return crate::native_ui::open(config,"","@account",dry);}
@@ -721,7 +733,16 @@ fn valid_credential_name(name: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
 }
-fn import(config: &Config, id: &str, label: &str, payload: &[u8]) -> Result<Value> {
+fn check_export_auth(config: &Config, id: &str, args: &[String]) -> Result<()> {
+    if let Some(expected)=arg(args,"--auth-revision") {
+        let (profile,_,native)=lookup(config,id)?;
+        if expected.is_empty() || row(config,id,&profile,native)["auth_revision"] != expected {
+            return Err(Error::new(1,"The source sign-in changed. Refresh Accounts before copying."));
+        }
+    }
+    Ok(())
+}
+fn import(config: &Config, id: &str, label: &str, payload: &[u8], args: &[String]) -> Result<Value> {
     use base64::Engine;
     if payload.len() > MAX_TRANSFER {
         return Err(Error::new(1, "Account transfer exceeds the size limit."));
@@ -798,7 +819,9 @@ fn import(config: &Config, id: &str, label: &str, payload: &[u8]) -> Result<Valu
         files.insert(name, data);
     }
     let _lock = locked(config)?;
-    let mut catalog = decode(&read(config)?)?;
+    let bytes=read(config)?;
+    check_revision(&bytes,args)?;
+    let mut catalog = decode(&bytes)?;
     if catalog.profiles.contains_key(id) || profile_home(config, id).exists() {
         return Err(Error::new(
             1,
@@ -832,6 +855,7 @@ fn transport(
     host: &str,
     args: &[String],
     input: Option<&[u8]>,
+    ready: bool,
 ) -> Result<Vec<u8>> {
     use std::io::Read;
     use std::process::Stdio;
@@ -873,16 +897,24 @@ fn transport(
     )?;
     let mut child = ssh.child;
     let (write_tx, write_rx) = std::sync::mpsc::channel();
+    let (ready_tx,ready_rx)=std::sync::mpsc::channel();
     if let Some(bytes) = input {
         let bytes = bytes.to_vec();
         let mut pipe = ssh.stdin.unwrap();
         std::thread::spawn(move || {
-            let _ = write_tx.send(pipe.write_all(&bytes).is_ok());
+            let admitted=!ready || ready_rx.recv_timeout(std::time::Duration::from_secs(20)).unwrap_or(false);
+            let _ = write_tx.send(admitted && pipe.write_all(&bytes).is_ok());
         });
     }
     let (read_tx, read_rx) = std::sync::mpsc::channel();
-    let pipe = ssh.stdout.unwrap();
+    let mut pipe = ssh.stdout.unwrap();
     std::thread::spawn(move || {
+        if ready {
+            let mut marker=[0;IMPORT_READY.len()];
+            let admitted=pipe.read_exact(&mut marker).is_ok() && marker==IMPORT_READY;
+            let _=ready_tx.send(admitted);
+            if !admitted {let _=read_tx.send(Err(std::io::Error::other("Destination did not admit the guarded transfer")));return;}
+        }
         let mut output = Vec::new();
         let result = pipe
             .take((MAX_TRANSFER + 1) as u64)
@@ -937,6 +969,7 @@ fn transport(
     let out = out.unwrap();
     Ok(out)
 }
+const IMPORT_READY:&[u8]=b"zerus-account-import-ready-v1\n";
 fn copy_account(config: &Config, args: &[String], dry: bool) -> Result<Value> {
     let id = args
         .get(1)
@@ -951,6 +984,11 @@ fn copy_account(config: &Config, args: &[String], dry: bool) -> Result<Value> {
     let from = arg(args, "--from").unwrap_or("@local");
     let to = arg(args, "--to").ok_or_else(|| Error::new(1, "--to MACHINE is required."))?;
     let local = |host: &str| host.is_empty() || host == "@local" || config.is_self(host);
+    let guards=["--source-machine","--destination-machine","--source-revision","--destination-revision","--source-auth-revision"];
+    let guarded=guards.iter().any(|g|arg(args,g).is_some());
+    if guarded && guards.iter().any(|g|arg(args,g).is_none_or(str::is_empty)) {
+        return Err(Error::new(1,"Account copy needs both machine identities, catalog revisions and the source sign-in revision."));
+    }
     if !platform::local_sessions() && (local(from) || local(to)) {
         return Err(Error::new(2, platform::LOCAL_SESSIONS_UNSUPPORTED));
     }
@@ -964,23 +1002,28 @@ fn copy_account(config: &Config, args: &[String], dry: bool) -> Result<Value> {
     if dry {
         return Ok(json!({"dry_run":true,"source":from,"destination":to,"id":dest}));
     }
+    let mut export_args=vec!["account".into(),"_export".into(),id.clone()];
+    let mut import_args=vec!["account".into(),"_import".into(),dest.into(),"--label".into(),label.into()];
+    if guarded {
+        export_args.splice(0..0,["--expect-machine".into(),arg(args,"--source-machine").unwrap().into()]);
+        export_args.extend(["--revision".into(),arg(args,"--source-revision").unwrap().into(),"--auth-revision".into(),arg(args,"--source-auth-revision").unwrap().into()]);
+        import_args.splice(0..0,["--expect-machine".into(),arg(args,"--destination-machine").unwrap().into()]);
+        import_args.extend(["--revision".into(),arg(args,"--destination-revision").unwrap().into()]);
+        import_args.push("--guarded-stream".into());
+    }
     let exported = transport(
         config,
         from,
-        &["account".into(), "_export".into(), id.clone()],
+        &export_args,
         None,
+        false,
     )?;
     let receipt = transport(
         config,
         to,
-        &[
-            "account".into(),
-            "_import".into(),
-            dest.into(),
-            "--label".into(),
-            label.into(),
-        ],
+        &import_args,
         Some(&exported),
+        guarded,
     )?;
     serde_json::from_slice(&receipt)
         .map_err(|_| Error::new(1, "Destination returned an invalid account receipt."))

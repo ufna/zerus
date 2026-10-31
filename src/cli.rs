@@ -546,6 +546,7 @@ pub fn dispatch(mut args: Vec<String>) -> Result<i32> {
             print!("{}", usage_text(cfg!(unix)));
             println!("Encrypted workspace ABI: guarded-local-v1");
             println!("Desktop creation ABI: guarded-create-v1");
+            println!("Account transfer ABI: revision-copy-v1");
             #[cfg(windows)]
             print!("{}\nMobile gateway ABI: windows-local-v1\n", crate::host::admin::HELP);
             return Ok(0);

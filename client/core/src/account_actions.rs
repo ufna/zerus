@@ -11,6 +11,7 @@ pub const UPDATING: &str = "Accounts are updating. Wait for the update to finish
 pub const MAX_MEMBERS: usize = 256;
 pub mod models;
 pub mod setup;
+pub mod transfer;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

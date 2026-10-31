@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRoot, createSignal } from "solid-js";
-import { createEndActions, type EndPort } from "./endActions";
+import { createEndActions, endTitles, type EndPort } from "./endActions";
 import { pendingEnd, type EndCapture } from "./endActionBusy";
 import { createNoticeBus, NOTICE_MS } from "./notices";
 
@@ -39,6 +39,27 @@ describe("confirmed end action grace", () => {
     await f.bus.notices()[0].actions![0].run(); await job;
     expect(effect).not.toHaveBeenCalled(); expect(f.calls).toContain("cancel id-1");
     expect(f.bus.notices()[0].text).toMatch(/cancelled$/);
+  });
+  it("names single and batch sessions with the session list's own titles", async () => {
+    const rows = [
+      { computer: "other", name: "codex/example/a", title: "elsewhere" },
+      { computer: "test", name: "codex/example/a", title: "a" },
+      { computer: "test", name: "codex/example/b", title: "" },
+      { computer: "test", name: "codex/example/c", title: "Renamed c" },
+    ];
+    const names = ["codex/example/a", "codex/example/b", "codex/example/c", "codex/example/d"].map((n) => capture(n));
+    expect(endTitles(names, rows)).toEqual(["a", "codex/example/b", "Renamed c"]);
+    expect(endTitles([capture("codex/example/missing")], rows)).toEqual(["codex/example/missing"]);
+    const bus = createNoticeBus(), app = createEndActions({ begin: async () => {}, wait: () => new Promise(() => {}), cancel: async () => {} }, bus,
+      () => "id-1", () => Date.now(), (captures) => endTitles(captures, rows));
+    void app.schedule([names[0]], vi.fn()); await tick();
+    expect(bus.notices()[0].text).toBe("a");
+    app.close();
+    const batch = createNoticeBus(), many = createEndActions({ begin: async () => {}, wait: () => new Promise(() => {}), cancel: async () => {} }, batch,
+      () => "id-2", () => Date.now(), (captures) => endTitles(captures, rows));
+    void many.schedule(names, vi.fn()); await tick();
+    expect(batch.notices()[0].text).toBe("a, codex/example/b, Renamed c and 1 more");
+    many.close();
   });
   it("one batch has one Undo and exact indexed references; Undo cancels the entire batch", async () => {
     const f = fixture(), effect = vi.fn(); const rows = [capture("a"), capture("b"), capture("c")];
