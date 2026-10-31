@@ -543,3 +543,13 @@ pressure, dropped/panicking work, and one clear with no late badge republish.
 The backpressure fixture suspends only its own private D-Bus daemon and resumes
 it with a scope guard. Existing SNI/menu activation and the default badge path
 are tested separately. No owner display, session bus or desktop service is used.
+
+Accounted SNI registration is asynchronous and polled by that same worker while
+raw badge receivers exist. At most one registration task is in flight; it
+captures only the UI connection, item name and registered owner, never a badge
+scope or completion sink. The loop continues draining bounded receivers during
+GetNameOwner and RegisterStatusNotifierItem. An owner-change generation prevents
+an old registration result from erasing a replacement watcher's wakeup. Private
+watcher tests send three item messages before the registration reply and hold an
+old reply across badge closure and watcher replacement; activation remains live.
+The ordinary installation keeps its existing registration path.
