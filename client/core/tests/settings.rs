@@ -108,8 +108,13 @@ fn linux_and_windows_switches_seed_once_and_keep_the_clients_choices() {
         assert_eq!(migrated.get("workspace/theme"), "light");
         assert_eq!(migrated.get("workspace/language"), "ru");
         assert_eq!(migrated.get(QT_AUTOMATIC_APPROVALS), true);
-        assert!(!migrated.all().contains_key("automaticApprovals/enabled"));
+        assert!(!migrated.flag("automaticApprovals/enabled"));
+        assert_eq!(migrated.get("automaticApprovals/error"), "");
         let seed = migrated.seed_record().unwrap();
+        let seeded = seed["keys"].as_array().unwrap();
+        for name in ["automaticApprovals/enabled", "automaticApprovals/error"] {
+            assert!(!seeded.contains(&json!(name)), "{name}");
+        }
         assert!(migrated.flush_within(FLUSH));
         drop(migrated);
         assert_eq!(fs::read(qt.path()).unwrap(), source);
@@ -218,8 +223,15 @@ fn every_key_has_qt_s_default_and_range() {
     assert_eq!(default("updates/channel"), "stable");
     assert_eq!(default("updates/automatic"), true);
     assert_eq!(default("shortcuts/queue.sendNow"), json!([]));
-    // The opt-in itself is not a client setting.
-    assert!(find("automaticApprovals/enabled").is_none());
+    // Qt's historical opt-in never arms the client's worker or imports errors.
+    let automatic = find("automaticApprovals/enabled").unwrap();
+    assert!(matches!(automatic.kind, Kind::Flag(false)));
+    assert_eq!(default(automatic.name), false);
+    assert!(!automatic.seeded);
+    let error = find("automaticApprovals/error").unwrap();
+    assert!(matches!(error.kind, Kind::Text("")));
+    assert_eq!(default(error.name), "");
+    assert!(!error.seeded);
     assert!(find("shortcuts/").is_none() && find("shortcuts/a/b").is_none());
     assert_eq!(default("client/darkSkin"), "zerus-dark");
     assert_eq!(default("client/lightSkin"), "zerus-light");

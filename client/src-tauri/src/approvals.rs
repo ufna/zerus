@@ -1,8 +1,6 @@
-//! Settings > Automatic approvals (AutomaticApprovalSettings.cpp): its
-//! journal only. This client never approves a tool request, so its switch
-//! stays off; the journal is read through `hgs approval-log list|detail` on
-//! the blocking pool, and a passed probe is remembered as HgsClient
-//! remembers it. A replay never drives the CLI.
+//! Settings > Automatic approvals: paged journal reads and the separate,
+//! default-off native worker. Only that worker can reserve and deliver a
+//! verified one-time permission; the webview never supplies an answer.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -11,15 +9,24 @@ use tauri::State;
 use zerus_client_core::approvals::{self, Operation, Page};
 use zerus_client_core::default_hgs;
 
+mod automatic;
+
 /// Whether the local `hgs` answered the probe, and whether this is a replay.
 pub struct Approvals {
     supported: Arc<AtomicBool>,
     blocked: bool,
+    _worker: automatic::Worker,
 }
 
-pub fn start() -> Approvals {
+pub fn start(
+    pump: crate::pump::Pump,
+    actions: crate::actions::Actions,
+    settings: zerus_client_core::settings::Settings,
+) -> Approvals {
+    let supported = Arc::new(AtomicBool::new(false));
     Approvals {
-        supported: Arc::new(AtomicBool::new(false)),
+        _worker: automatic::Worker::start(pump, actions, settings, supported.clone()),
+        supported,
         blocked: crate::actions::blocked(),
     }
 }

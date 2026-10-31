@@ -89,6 +89,17 @@ pub const QT_AUTOMATIC_APPROVALS: &str = "automaticApprovals/qtEnabledAtSwitch";
 
 /// Every local setting the client has. Sources are in the plan's table.
 pub const KEYS: &[Key] = &[
+    // Dangerous Next opt-in: never seed Qt's enabled value or transient error.
+    Key {
+        name: crate::approvals::automatic::ENABLED,
+        kind: Kind::Flag(false),
+        seeded: false,
+    },
+    Key {
+        name: crate::approvals::automatic::ERROR,
+        kind: Kind::Text(""),
+        seeded: false,
+    },
     // Appearance (SettingsPage.h:46-95, UiLanguage.h, ContentScale.h,
     // ActivityWidth.h, WindowLayer.cpp).
     key(
