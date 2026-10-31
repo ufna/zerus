@@ -4,6 +4,7 @@
 // The core projects resets as Unix seconds; `fromProjected` turns them into
 // minutes from `now` on each 15 s render, so nothing else runs on a timer.
 import type { ProjectedWindow, Usage } from "../../types";
+import { tr } from "../../i18n";
 
 export interface UsageWindow {
   /** Window length in minutes (300 = 5 h, 10080 = 7 d); null when the provider reports none. */
@@ -69,13 +70,13 @@ export function period(w: UsageWindow) {
   const m = w.minutes ?? 0;
   const duration = m === 10080 ? "7d" : m && m % 1440 === 0 ? `${m / 1440}d` : m && m % 60 === 0 ? `${m / 60}h` : m ? `${m}m` : "";
   const name = w.label ?? "";
-  return name ? (duration ? `${name} ${duration}` : name) : duration || "Usage";
+  return name ? (duration ? `${name} ${duration}` : name) : duration || tr("Usage");
 }
 
 export function remaining(minutes: number | null) {
-  if (minutes === null) return "reset unknown";
+  if (minutes === null) return tr("reset unknown");
   const m = Math.max(0, Math.ceil(minutes));
-  if (!m) return "refresh needed";
+  if (!m) return tr("refresh needed");
   if (m >= 1440) return `${Math.floor(m / 1440)}d ${Math.floor((m % 1440) / 60)}h`;
   if (m >= 60) return `${Math.floor(m / 60)}h ${m % 60}m`;
   return `${m}m`;
@@ -89,7 +90,7 @@ export function countdown(minutes: number) {
 
 /** "5h 34%", with the time to reset once usage reaches `resetFrom` percent. */
 export function windowText(w: UsageWindow, withReset = true, resetFrom = 100) {
-  if (!current(w)) return `${period(w)} refresh`;
+  if (!current(w)) return tr("%1 refresh", period(w));
   return `${period(w)} ${Math.round(w.used)}%${withReset && w.used >= resetFrom ? ` (${remaining(w.resetsIn)})` : ""}`;
 }
 
@@ -104,8 +105,8 @@ export function forecast(w: UsageWindow) {
   if (!current(w)) return "";
   const p = pace(w);
   if (!p.known || p.early || p.used >= 100) return "";
-  return p.runsOutIn >= 0 ? `At the current pace, the limit runs out in about ${approximately(p.runsOutIn)}`
-    : `At the current pace, about ${Math.round(p.projected)}% by reset`;
+  return p.runsOutIn >= 0 ? tr("At the current pace, the limit runs out in about %1", approximately(p.runsOutIn))
+    : tr("At the current pace, about %1% by reset", Math.round(p.projected));
 }
 
 const TONES: Tone[] = ["normal", "warning", "critical"];

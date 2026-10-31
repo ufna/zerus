@@ -17,6 +17,7 @@ import { accountManagement } from "../../store/accountManagement";
 import { accountSetup } from "../../store/accountSetup";
 import {accountDistribution} from "../../store/accountDistribution";
 import { creditsText, loginLabel, memberStateLabel, memberStateText, memberOf, panelWindow, profileTags, summaryLine, tone, visibleAccounts, visibleMembers } from "./accounts-ui";
+import { tr } from "../../i18n";
 
 // Agent accounts (AccountsPage.cpp), ported from design/webui/src/screens/Accounts.tsx:
 // profiles grouped by provider identity across machines; choosing a machine
@@ -37,7 +38,7 @@ const [selectedProfile, setSelectedProfile] = createSignal<string | undefined>()
 
 /** The id tag that tells apart two profiles of one account on the same machine. */
 function ProfileTag(props: { tag?: string; id: string }) {
-  return <Show when={props.tag}><span class="acct-pid tabular" title={`Profile ${props.id}`}>{props.tag}</span></Show>;
+  return <Show when={props.tag}><span class="acct-pid tabular" title={tr("Profile %1", props.id)}>{props.tag}</span></Show>;
 }
 
 function AccountRow(props: { a: Account; now: number }) {
@@ -77,14 +78,14 @@ function UsagePanel(props: { a: Account }) {
   return (
     <section class="acct-usage box">
       <div class="row">
-        <h3>Account usage</h3>
+        <h3>{tr("Account usage")}</h3>
         <span class="grow" />
-        <Show when={u().checked_at !== null}><span class="dim">{u().seeded ? "Checked" : "Updated"} {clock(u().checked_at!)}</span></Show>
+        <Show when={u().checked_at !== null}><span class="dim">{u().seeded ? tr("Checked %1", clock(u().checked_at!)) : tr("Updated %1", clock(u().checked_at!))}</span></Show>
       </div>
-      <p class="muted">Shared by sessions using this account.</p>
-      <Show when={u().offline}><Status>Machine is offline. Showing the last available account data.</Status></Show>
-      <Show when={u().refreshing}><Status kind="busy">Updating… Previous values remain visible.</Status></Show>
-      <Show when={!u().refreshing && u().refresh_error}><Status kind="warn">Update failed. Showing the last available values.</Status></Show>
+      <p class="muted">{tr("Shared by sessions using this account.")}</p>
+      <Show when={u().offline}><Status>{tr("Machine is offline. Showing the last available account data.")}</Status></Show>
+      <Show when={u().refreshing}><Status kind="busy">{tr("Updating… Previous values remain visible.")}</Status></Show>
+      <Show when={!u().refreshing && u().refresh_error}><Status kind="warn">{tr("Update failed. Showing the last available values.")}</Status></Show>
       <Show when={!u().windows.length && !u().balances.length && !u().offline}><p>{stateText(u())}</p></Show>
       <For each={u().windows}>{(p) => {
         const w = () => panelWindow(p, now());
@@ -94,7 +95,7 @@ function UsagePanel(props: { a: Account }) {
             <div class="acct-meter rails">
               <div class="acct-bar" classList={{ warn: w().tone === "warning", danger: w().tone === "critical" }}><i style={{ "--w": `${w().used}%` }} /></div>
               <Show when={w().elapsed !== undefined}>
-                <div class="acct-bar elapsed" title={`${Math.round(w().elapsed!)}% of the window elapsed`}><i style={{ "--w": `${w().elapsed}%` }} /></div>
+                <div class="acct-bar elapsed" title={tr("%1% of the window elapsed", Math.round(w().elapsed!))}><i style={{ "--w": `${w().elapsed}%` }} /></div>
               </Show>
             </div>
             <div class="row dim">
@@ -129,7 +130,7 @@ function Detail(props: { a: Account }) {
       <div class="acct-title">
         <h2 class="ell">{props.a.label}</h2>
         <span class="grow" />
-        <button class="btn" disabled={managementBusy()} onClick={event=>void openCatalog("rename",props.a.key,m().key,event.currentTarget)}><Icon name="pencil" size={13} />Rename…</button>
+        <button class="btn" disabled={managementBusy()} onClick={event=>void openCatalog("rename",props.a.key,m().key,event.currentTarget)}><Icon name="pencil" size={13} />{tr("Rename…")}</button>
       </div>
       <div class="row acct-identity">
         <AgentBadge agent={agentKind(props.a.provider)} />
@@ -140,9 +141,9 @@ function Detail(props: { a: Account }) {
       </div>
 
       <section class="acct-card box">
-        <h3>Machines</h3>
+        <h3>{tr("Machines")}</h3>
         {/* One row per profile: the row chooses it; the default is a badge or a separate button beside it. */}
-        <div class="acct-mrows" classList={{ defaults: defaultable() }} role="radiogroup" aria-label="Machine profile">
+        <div class="acct-mrows" classList={{ defaults: defaultable() }} role="radiogroup" aria-label={tr("Machine profile")}>
           <For each={shown()}>{(x) => (
             <div class="acct-mrow" classList={{ on: x.key === m().key }}>
               <button class="acct-mrow-pick" role="radio" aria-checked={x.key === m().key} onClick={() => choose(x.key)}>
@@ -155,10 +156,10 @@ function Detail(props: { a: Account }) {
               <span class="acct-mrow-default">
                 <Show when={x.is_default} fallback={
                   <Show when={x.online && x.state === "ready" && defaultable()}>
-                    <button class="btn small" disabled={managementBusy()} title={`Use this account for new ${providerName(props.a.provider)} sessions on ${x.machine} when no account is specified. Existing sessions keep their account.`} onClick={event=>void openCatalog("default",props.a.key,x.key,event.currentTarget)}>Make default</button>
+                    <button class="btn small" disabled={managementBusy()} title={tr("Use this account for new %1 sessions on %2 when no account is specified. Existing sessions keep their account.", providerName(props.a.provider), x.machine)} onClick={event=>void openCatalog("default",props.a.key,x.key,event.currentTarget)}>{tr("Make default")}</button>
                   </Show>
                 }>
-                  <span class="acct-default" title={`Default for new ${providerName(props.a.provider)} sessions on ${x.machine} when no account is chosen`}>Default</span>
+                  <span class="acct-default" title={tr("Default for new %1 sessions on %2 when no account is chosen", providerName(props.a.provider), x.machine)}>{tr("Default")}</span>
                 </Show>
               </span>
             </div>
@@ -171,19 +172,19 @@ function Detail(props: { a: Account }) {
                 +{props.a.members.length - shown().length} more
               </button>
               <Show when={moreOpen()}>
-                <div class="acct-more" role="dialog" aria-label={`Machines with ${props.a.label}`}
+                <div class="acct-more" role="dialog" aria-label={tr("Machines with %1", props.a.label)}
                   onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setMoreOpen(false); } }}>
-                  <input class="field" type="search" placeholder={`Search ${props.a.members.length} machines`} value={moreQuery()}
-                    onInput={(e) => setMoreQuery(e.currentTarget.value)} autofocus aria-label="Search machines" />
+                  <input class="field" type="search" placeholder={tr("Search %1 machines", props.a.members.length)} value={moreQuery()}
+                    onInput={(e) => setMoreQuery(e.currentTarget.value)} autofocus aria-label={tr("Search machines")} />
                   <div class="acct-more-list">
-                    <For each={matches()} fallback={<div class="dim acct-more-empty">No machine matches.</div>}>
+                    <For each={matches()} fallback={<div class="dim acct-more-empty">{tr("No machine matches.")}</div>}>
                       {(x) => (
                         <button class="acct-more-row" classList={{ on: x.key === m().key }} onClick={() => { choose(x.key); setMoreOpen(false); }}>
                           <MachineTile os={osOf(machineCards[x.host]?.platform)} state={x.online ? connectionOf(catalog.computers[x.host]?.status).tile : "offline"} size={22} />
                           <MachineLabel alias={x.machine} />
                           <ProfileTag tag={tags().get(x.key)} id={x.id} />
                           <span class="grow" />
-                          <Show when={x.is_default}><span class="acct-default">Default</span></Show>
+                          <Show when={x.is_default}><span class="acct-default">{tr("Default")}</span></Show>
                           <span class="dim">{memberStateText(x.state)}</span>
                         </button>
                       )}
@@ -193,13 +194,13 @@ function Detail(props: { a: Account }) {
               </Show>
             </span>
           </Show>
-          <button class="btn small acct-add" disabled={managementBusy()} onClick={event=>{accountManagement.close();accountSetup.close();accountManagement.clearNotice();accountSetup.clearNotice();void accountDistribution.open(props.a.key,m().key,event.currentTarget);}}><Icon name="plus" size={12} />Add to machine…</button>
+          <button class="btn small acct-add" disabled={managementBusy()} onClick={event=>{accountManagement.close();accountSetup.close();accountManagement.clearNotice();accountSetup.clearNotice();void accountDistribution.open(props.a.key,m().key,event.currentTarget);}}><Icon name="plus" size={12} />{tr("Add to machine…")}</button>
         </div>
         <div class="acct-status">
           <Status kind={tone(m().state)}>{m().detail}</Status>
           <Actions>
-            <Show when={loginLabel(m())}>{(label) => <button class="btn" disabled={!m().online||!m().installed||managementBusy()} title={m().provider==="dsh"?`Save a DeepSeek API key on ${m().machine}.`:undefined} onClick={event=>{accountManagement.close();accountManagement.clearNotice();void accountSetup.open(m().provider==="dsh"?"key":"login",event.currentTarget,props.a.key,m().key);}}><Icon name="key-round" size={13} />{label()}</button>}</Show>
-            <Show when={!m().installed}><button class="btn" disabled={!m().online||m().provider==="opencode"||managementBusy()} onClick={event=>{accountManagement.close();accountManagement.clearNotice();void accountSetup.open("install",event.currentTarget,props.a.key,m().key);}}><Icon name="download" size={13} />Install agent…</button></Show>
+            <Show when={loginLabel(m())}>{(label) => <button class="btn" disabled={!m().online||!m().installed||managementBusy()} title={m().provider==="dsh"?tr("Save a DeepSeek API key on %1.", m().machine):undefined} onClick={event=>{accountManagement.close();accountManagement.clearNotice();void accountSetup.open(m().provider==="dsh"?"key":"login",event.currentTarget,props.a.key,m().key);}}><Icon name="key-round" size={13} />{label()}</button>}</Show>
+            <Show when={!m().installed}><button class="btn" disabled={!m().online||m().provider==="opencode"||managementBusy()} onClick={event=>{accountManagement.close();accountManagement.clearNotice();void accountSetup.open("install",event.currentTarget,props.a.key,m().key);}}><Icon name="download" size={13} />{tr("Install agent…")}</button></Show>
             <Show when={m().opencode?.stopped}>
               <button class="btn" disabled={!m().online||managementBusy()} onClick={event=>{accountManagement.close();accountManagement.clearNotice();void accountSetup.open("start",event.currentTarget,props.a.key,m().key);}}><Icon name="play" size={13} />Start OpenCode on {m().machine}</button>
             </Show>
@@ -208,7 +209,7 @@ function Detail(props: { a: Account }) {
         <Show when={m().opencode}>{(oc) => (
           <>
             <Show when={oc().providers.length}>
-              <div class="acct-oc" aria-label="OpenCode providers">
+              <div class="acct-oc" aria-label={tr("OpenCode providers")}>
                 <For each={oc().providers}>{(p) => (
                   <div class="acct-oc-row"><span class="grow">{p.label}</span><span class="muted tabular">{p.models}</span><span class="dim">{p.connection}</span></div>
                 )}</For>
@@ -222,22 +223,22 @@ function Detail(props: { a: Account }) {
         )}</Show>
         <div class="acct-setting">
           <span title={m().permission_hint}>
-            Permissions on {m().machine}: <b classList={{ danger: m().permission === "bypass" }}>{m().permission_label}</b>
-            <span class="dim acct-src">{m().permission_mode === "bypass" ? "set in Zerus" : "from provider settings"}</span>
+            {tr("Permissions on %1:", m().machine)} <b classList={{ danger: m().permission === "bypass" }}>{m().permission_label}</b>
+            <span class="dim acct-src">{m().permission_mode === "bypass" ? tr("set in Zerus") : tr("from provider settings")}</span>
           </span>
-          <button class="btn small" disabled={!m().online || nativeConfig() || managementBusy()} title={`Change permission defaults on ${m().machine}`} onClick={event=>void openCatalog("permissions",props.a.key,m().key,event.currentTarget)}>Change…</button>
+          <button class="btn small" disabled={!m().online || nativeConfig() || managementBusy()} title={tr("Change permission defaults on %1", m().machine)} onClick={event=>void openCatalog("permissions",props.a.key,m().key,event.currentTarget)}>{tr("Change…")}</button>
         </div>
         <Show when={m().model_supported}>
           <div class="acct-setting">
             <span>{m().model_text}</span>
-            <button class="btn small" disabled={!m().online || managementBusy()} onClick={event=>void openCatalog("model",props.a.key,m().key,event.currentTarget)}>Model and effort…</button>
+            <button class="btn small" disabled={!m().online || managementBusy()} onClick={event=>void openCatalog("model",props.a.key,m().key,event.currentTarget)}>{tr("Model and effort…")}</button>
           </div>
         </Show>
         <Actions>
           <Show when={defaultable()}>
-            <button class="btn" disabled={m().is_default || !m().online || managementBusy()} title={`Use this account for new ${providerName(props.a.provider)} sessions on ${m().machine} when no account is specified. Existing sessions keep their account.`} onClick={event=>void openCatalog("default",props.a.key,m().key,event.currentTarget)}>{m().is_default ? `Default on ${where()}` : `Make default on ${where()}`}</button>
+            <button class="btn" disabled={m().is_default || !m().online || managementBusy()} title={tr("Use this account for new %1 sessions on %2 when no account is specified. Existing sessions keep their account.", providerName(props.a.provider), m().machine)} onClick={event=>void openCatalog("default",props.a.key,m().key,event.currentTarget)}>{m().is_default ? tr("Default on %1", where()) : tr("Make default on %1", where())}</button>
           </Show>
-          <button class="btn danger" disabled={!m().online || managementBusy()} title="Remove this profile from the selected machine's Zerus catalog. You will confirm the machine and consequences before anything changes." onClick={event=>void openCatalog("remove",props.a.key,m().key,event.currentTarget)}><Icon name="trash" size={13} />{props.a.members.length > 1 ? `Remove from ${where()}…` : "Remove…"}</button>
+          <button class="btn danger" disabled={!m().online || managementBusy()} title={tr("Remove this profile from the selected machine's Zerus catalog. You will confirm the machine and consequences before anything changes.")} onClick={event=>void openCatalog("remove",props.a.key,m().key,event.currentTarget)}><Icon name="trash" size={13} />{props.a.members.length > 1 ? tr("Remove from %1…", where()) : tr("Remove…")}</button>
         </Actions>
         <Show when={accountManagement.notice()||accountSetup.notice()||accountDistribution.notice()}>{text=><Status kind="ok">{text()}</Status>}</Show>
       </section>
@@ -268,24 +269,24 @@ export function AccountsScreen() {
     <div class="mach-page acct-page">
       <div class="mach-shell">
         <header class="mach-head">
-          <h1>Agent accounts</h1>
-          <button class="icon-btn" aria-label="Refresh accounts" disabled={view().busy || managementBusy()} onClick={() => void loadAccounts(true)}
-            title={view().busy ? `Updating accounts… ${view().pending} remaining` : "Refresh account usage (automatically every 5 minutes)"}>
+          <h1>{tr("Agent accounts")}</h1>
+          <button class="icon-btn" aria-label={tr("Refresh accounts")} disabled={view().busy || managementBusy()} onClick={() => void loadAccounts(true)}
+            title={view().busy ? tr("Updating accounts… %1 remaining", view().pending) : tr("Refresh account usage (automatically every 5 minutes)")}>
             <Show when={!view().busy} fallback={<Spinner />}><Icon name="refresh-cw" size={15} /></Show>
           </button>
           <span class="grow" />
-          <button class="btn primary" disabled={!!view().no_hosts||managementBusy()} title={view().no_hosts??undefined} onClick={event=>{accountManagement.close();accountManagement.clearNotice();void accountSetup.open("add",event.currentTarget,"","",accountMachine());}}><Icon name="plus" size={14} />Add account</button>
+          <button class="btn primary" disabled={!!view().no_hosts||managementBusy()} title={view().no_hosts??undefined} onClick={event=>{accountManagement.close();accountManagement.clearNotice();void accountSetup.open("add",event.currentTarget,"","",accountMachine());}}><Icon name="plus" size={14} />{tr("Add account")}</button>
         </header>
-        <p class="muted mach-summary">Your accounts across all machines. Choose an account to manage where it is available.</p>
+        <p class="muted mach-summary">{tr("Your accounts across all machines. Choose an account to manage where it is available.")}</p>
         <For each={view().notices}>{(notice) => <Status kind="warn">{notice}</Status>}</For>
         <Show when={!view().no_hosts} fallback={
-          <div class="empty acct-empty"><Icon name="user-round-cog" size={28} /><h3>No machine keeps agent accounts</h3>
+          <div class="empty acct-empty"><Icon name="user-round-cog" size={28} /><h3>{tr("No machine keeps agent accounts")}</h3>
             <p>{view().no_hosts}</p>
-            <button class="btn" onClick={() => setPage("machines")}>Open Machines</button></div>
+            <button class="btn" onClick={() => setPage("machines")}>{tr("Open Machines")}</button></div>
         }>
           <div class="row acct-filter">
-            <select class="field" aria-label="Machine" value={accountMachine()} onChange={(e) => {closeManagement();clearManagementNotice();setAccountMachine(e.currentTarget.value);}}>
-              <option value="*">All machines</option>
+            <select class="field" aria-label={tr("Machine")} value={accountMachine()} onChange={(e) => {closeManagement();clearManagementNotice();setAccountMachine(e.currentTarget.value);}}>
+              <option value="*">{tr("All machines")}</option>
               <For each={view().hosts}>{(h) => <option value={h.computer}>{h.label}</option>}</For>
             </select>
             <Show when={view().snapshot}>
@@ -294,16 +295,16 @@ export function AccountsScreen() {
             </Show>
           </div>
           <Show when={view().snapshot} fallback={
-            <div class="acct-loading"><div class="row"><Spinner /><span>Loading accounts…</span></div><p class="muted">Checking accounts across your machines.</p></div>
+            <div class="acct-loading"><div class="row"><Spinner /><span>{tr("Loading accounts…")}</span></div><p class="muted">{tr("Checking accounts across your machines.")}</p></div>
           }>
             <div class="mach-body acct-body">
-              <div class="mach-list acct-list" role="list" aria-label="Agent accounts">
-                <Show when={visible().length} fallback={<p class="muted acct-none">{accountMachine() === "*" ? "No accounts." : `No accounts on ${filterName()}.`}</p>}>
+              <div class="mach-list acct-list" role="list" aria-label={tr("Agent accounts")}>
+                <Show when={visible().length} fallback={<p class="muted acct-none">{accountMachine() === "*" ? tr("No accounts.") : tr("No accounts on %1.", filterName())}</p>}>
                   <Index each={visible()}>{(a) => <AccountRow a={a()} now={now()} />}</Index>
                 </Show>
                 <Show when={view().truncated > 0}><p class="dim acct-none">{view().truncated} more accounts are not shown.</p></Show>
               </div>
-              <Show when={current()} fallback={<div class="acct-detail"><h2 class="muted">Choose an account</h2></div>}>
+              <Show when={current()} fallback={<div class="acct-detail"><h2 class="muted">{tr("Choose an account")}</h2></div>}>
                 {(a) => <Show when={a().key} keyed><Detail a={a()} /></Show>}
               </Show>
             </div>
