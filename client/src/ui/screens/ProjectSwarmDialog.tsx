@@ -8,6 +8,7 @@ import { setPage } from "../../store/ui";
 import type { Project } from "../../types";
 import { createSwarm, syncText, seedMappings, initialAlias } from "./project-swarm";
 import "../styles/project-swarm.css";
+import { tr } from "../../i18n";
 const SwarmConflicts = lazy(() => import("./SwarmConflicts"));
 
 /** setup-swarm Computers / Connect computer; the native worker owns every call. */
@@ -76,42 +77,42 @@ export default function ProjectSwarmDialog(props: { projects: Project[]; connect
   const header = (column: number, label: string) => <th aria-sort={sort().column === column ? (sort().ascending ? "ascending" : "descending") : "none"}><button class="su-th" onClick={() => setSort((s) => ({ column, ascending: s.column === column ? !s.ascending : true }))}>{label}</button></th>;
   const label = (id: string): Project => props.projects.find((p) => p.id === id) ?? { id, name: localById().get(id)?.name ?? id, color: null, accessible: false, is_default: false, palette: 0, folders: [] };
   return <dialog ref={dialog} class="dlg su-dlg project-swarm" style={{ width: "780px", height: "min(680px, calc(100vh - 48px))", position: "fixed", inset: "0", margin: "auto" }} aria-labelledby="project-swarm-title" onCancel={(e) => { if (e.target !== e.currentTarget) return; e.preventDefault(); void close(); }}>
-    <div class="dlg-head"><Icon name="network" size={18} class="accent" /><h2 id="project-swarm-title">Project swarm</h2><span class="grow" /><button class="icon-btn" aria-label="Close" disabled={changing()} onClick={() => void close()}><Icon name="x" size={16} /></button></div>
+    <div class="dlg-head"><Icon name="network" size={18} class="accent" /><h2 id="project-swarm-title">{tr("Project swarm")}</h2><span class="grow" /><button class="icon-btn" aria-label={tr("Close")} disabled={changing()} onClick={() => void close()}><Icon name="x" size={16} /></button></div>
     <div class="dlg-body sw-body">
-      <p class="muted" title={view()?.catalog ? `Swarm ID: ${view()!.catalog!.swarm_id}` : undefined}>Projects are shared between connected computers. SSH settings and credentials stay on this computer. Joining through one member brings the whole project catalog.</p>
-      <div class="tabs sw-tabs" role="tablist" aria-label="Project swarm">
-        <button id="swarm-computers-tab" class="tab" role="tab" classList={{ on: tab() === "computers" }} aria-selected={tab() === "computers"} aria-controls="swarm-computers" onClick={() => setTab("computers")}>Computers</button>
-        <button id="swarm-connect-tab" class="tab" role="tab" classList={{ on: tab() === "connect" }} aria-selected={tab() === "connect"} aria-controls="swarm-connect" onClick={() => setTab("connect")}>Connect computer</button>
+      <p class="muted" title={view()?.catalog ? `Swarm ID: ${view()!.catalog!.swarm_id}` : undefined}>{tr("Projects are shared between connected computers. SSH settings and credentials stay on this computer. Joining through one member brings the whole project catalog.")}</p>
+      <div class="tabs sw-tabs" role="tablist" aria-label={tr("Project swarm")}>
+        <button id="swarm-computers-tab" class="tab" role="tab" classList={{ on: tab() === "computers" }} aria-selected={tab() === "computers"} aria-controls="swarm-computers" onClick={() => setTab("computers")}>{tr("Computers")}</button>
+        <button id="swarm-connect-tab" class="tab" role="tab" classList={{ on: tab() === "connect" }} aria-selected={tab() === "connect"} aria-controls="swarm-connect" onClick={() => setTab("connect")}>{tr("Connect computer")}</button>
         <button id="swarm-conflicts-tab" class="tab" role="tab" classList={{ on: tab() === "conflicts" }} aria-selected={tab() === "conflicts"} aria-controls="swarm-conflicts" onClick={() => setTab("conflicts")}>Conflicts ({view()?.catalog?.conflicts ?? 0})</button>
       </div>
       <div class="sw-tabbody">
         <Show when={tab() === "conflicts"}><div id="swarm-conflicts" class="sw-page" role="tabpanel" aria-labelledby="swarm-conflicts-tab"><Suspense><SwarmConflicts view={view} working={state.working} changed={state.changed} resolve={state.resolve} report={setReviewError} /></Suspense></div></Show>
         <Show when={tab() === "computers"}>
           <div id="swarm-computers" class="sw-page" role="tabpanel" aria-labelledby="swarm-computers-tab">
-            <div class="row"><input class="field grow" type="search" maxLength={4096} placeholder="Find a computer or connection…" value={filter()} onInput={(e) => setFilter(e.currentTarget.value)} /><span class="hint tabular">{filter() ? `${rows().length} of ${computers().length} computers` : `${computers().length} computers`}</span></div>
-            <div class="su-tablewrap grow"><table class="su-table sw-table"><thead><tr>{header(0, "Computer")}{header(1, "Local access")}{header(2, "Sync connection")}</tr></thead><tbody>
+            <div class="row"><input class="field grow" type="search" maxLength={4096} placeholder={tr("Find a computer or connection…")} value={filter()} onInput={(e) => setFilter(e.currentTarget.value)} /><span class="hint tabular">{filter() ? `${rows().length} of ${computers().length} computers` : `${computers().length} computers`}</span></div>
+            <div class="su-tablewrap grow"><table class="su-table sw-table"><thead><tr>{header(0, "Computer")}{header(1, tr("Local access"))}{header(2, tr("Sync connection"))}</tr></thead><tbody>
               <For each={rows().map((r) => r.id)}>{(id) => { const row = () => computerById().get(id)!; return <tr><td title={`${row().name}\n${row().id}`}><MachineLabel alias={row().name} class="mbadge" /></td><td title={row().access} classList={{ dim: row().access === "Not configured" }}>{row().access}</td><td title={syncText(row())} classList={{ danger: row().sync.state === "error", warn: row().tasks_outdated }}>{syncText(row())}</td></tr>; }}</For>
             </tbody></table></div>
-            <div class="row"><button class="btn" disabled={changing()} onClick={() => void manage()}>Manage connections…</button><span class="grow" /><button class="btn" disabled={busy() || !view()?.can_sync} onClick={() => void state.sync()}><Icon name="refresh-cw" size={13} />Sync now</button></div>
+            <div class="row"><button class="btn" disabled={changing()} onClick={() => void manage()}>{tr("Manage connections…")}</button><span class="grow" /><button class="btn" disabled={busy() || !view()?.can_sync} onClick={() => void state.sync()}><Icon name="refresh-cw" size={13} />{tr("Sync now")}</button></div>
           </div>
         </Show>
         <Show when={tab() === "connect"}>
           <div id="swarm-connect" class="sw-page" role="tabpanel" aria-labelledby="swarm-connect-tab">
-            <div class="row"><select class="field grow" aria-label="Computer to connect" value={alias()} disabled={busy()} onChange={(e) => chooseAlias(e.currentTarget.value)}><For each={view()?.aliases ?? []}>{(a) => <option value={a}>{a}</option>}</For></select><button class="btn" disabled={busy() || !view()?.can_preview || !alias()} onClick={() => void runPreview()}>Preview connection</button></div>
+            <div class="row"><select class="field grow" aria-label={tr("Computer to connect")} value={alias()} disabled={busy()} onChange={(e) => chooseAlias(e.currentTarget.value)}><For each={view()?.aliases ?? []}>{(a) => <option value={a}>{a}</option>}</For></select><button class="btn" disabled={busy() || !view()?.can_preview || !alias()} onClick={() => void runPreview()}>{tr("Preview connection")}</button></div>
             <div class="sw-preview grow"><Switch>
-              <Match when={!busy() && !view()?.aliases.length}><p class="sw-msg">Add a computer in Manage connections first.</p></Match>
-              <Match when={loading()}><div class="sw-msg"><p>Reading the other project catalog…</p><div class="su-progress su-indet" role="progressbar" aria-label="Reading the other project catalog"><i /></div></div></Match>
-              <Match when={preview()?.initialized && preview()?.same_swarm}><p class="sw-msg su-pre">{`${alias()} already shares this project catalog.\nConnect directly to synchronize through this computer.`}</p></Match>
-              <Match when={differs()}><p class="muted">Choose which projects are the same. Projects stay separate unless you match them below.</p><div class="su-tablewrap"><table class="su-table sw-map"><thead><tr><th>Project on this computer</th><th>Project in the other catalog</th></tr></thead><tbody><For each={(view()?.projects ?? []).map((p) => p.id)}>{(id) => <tr><td><ProjectLabel project={label(id)} small /></td><td><select class="field" aria-label={`Match ${localById().get(id)?.name ?? id}`} disabled={busy()} value={mapping().get(id) ?? ""} onChange={(e) => setMapping((m) => new Map(m).set(id, e.currentTarget.value))}><option value="" selected={!mapping().get(id)}>Keep as a separate project</option><For each={preview()?.projects ?? []}>{(p) => <option value={p.id} selected={mapping().get(id) === p.id}>{p.name} ({p.id.slice(0, 8)})</option>}</For></select></td></tr>}</For></tbody></table></div></Match>
-              <Match when={view()?.status === `Connected to ${alias()}.`}><p class="sw-msg">Connected to {alias()}.</p></Match>
-              <Match when={true}><p class="sw-msg">Choose a computer and preview its project catalog before connecting.</p></Match>
+              <Match when={!busy() && !view()?.aliases.length}><p class="sw-msg">{tr("Add a computer in Manage connections first.")}</p></Match>
+              <Match when={loading()}><div class="sw-msg"><p>{tr("Reading the other project catalog…")}</p><div class="su-progress su-indet" role="progressbar" aria-label={tr("Reading the other project catalog")}><i /></div></div></Match>
+              <Match when={preview()?.initialized && preview()?.same_swarm}><p class="sw-msg su-pre">{tr("%1 already shares this project catalog.\nConnect directly to synchronize through this computer.", alias())}</p></Match>
+              <Match when={differs()}><p class="muted">{tr("Choose which projects are the same. Projects stay separate unless you match them below.")}</p><div class="su-tablewrap"><table class="su-table sw-map"><thead><tr><th>{tr("Project on this computer")}</th><th>{tr("Project in the other catalog")}</th></tr></thead><tbody><For each={(view()?.projects ?? []).map((p) => p.id)}>{(id) => <tr><td><ProjectLabel project={label(id)} small /></td><td><select class="field" aria-label={`Match ${localById().get(id)?.name ?? id}`} disabled={busy()} value={mapping().get(id) ?? ""} onChange={(e) => setMapping((m) => new Map(m).set(id, e.currentTarget.value))}><option value="" selected={!mapping().get(id)}>{tr("Keep as a separate project")}</option><For each={preview()?.projects ?? []}>{(p) => <option value={p.id} selected={mapping().get(id) === p.id}>{p.name} ({p.id.slice(0, 8)})</option>}</For></select></td></tr>}</For></tbody></table></div></Match>
+              <Match when={view()?.status === tr("Connected to %1.", alias())}><p class="sw-msg">Connected to {alias()}.</p></Match>
+              <Match when={true}><p class="sw-msg">{tr("Choose a computer and preview its project catalog before connecting.")}</p></Match>
             </Switch></div>
-            <label class="check" style={{ visibility: differs() ? "visible" : "hidden" }}><input type="checkbox" checked={keep()} disabled={busy()} onChange={(e) => setKeep(e.currentTarget.checked)} />Keep swarm placement for sessions already in its catalog</label>
-            <div class="row"><span class="grow" /><button class="btn primary" disabled={busy() || !preview()?.initialized || !view()?.can_join} onClick={join}>{differs() ? "Join and merge projects" : "Connect this member"}</button></div>
+            <label class="check" style={{ visibility: differs() ? "visible" : "hidden" }}><input type="checkbox" checked={keep()} disabled={busy()} onChange={(e) => setKeep(e.currentTarget.checked)} />{tr("Keep swarm placement for sessions already in its catalog")}</label>
+            <div class="row"><span class="grow" /><button class="btn primary" disabled={busy() || !preview()?.initialized || !view()?.can_join} onClick={join}>{differs() ? tr("Join and merge projects") : tr("Connect this member")}</button></div>
           </div>
         </Show>
       </div>
     </div>
-    <div class="dlg-foot"><span class="hint grow" classList={{ danger: !!reviewError() || !!state.error() || !!view()?.error }} title={reviewError() || state.error() || view()?.status} role="status">{reviewError() || state.error() || view()?.status}</span><button class="btn" disabled={changing()} onClick={() => void close()}>Close</button></div>
+    <div class="dlg-foot"><span class="hint grow" classList={{ danger: !!reviewError() || !!state.error() || !!view()?.error }} title={reviewError() || state.error() || view()?.status} role="status">{reviewError() || state.error() || view()?.status}</span><button class="btn" disabled={changing()} onClick={() => void close()}>{tr("Close")}</button></div>
   </dialog>;
 }

@@ -297,7 +297,8 @@ export function AccountsScreen() {
               <Show when={!view().busy} fallback={<Spinner />}><Icon name="refresh-cw" size={15} /></Show>
             </button>
             <span class="grow" />
-            <button class="btn small primary" disabled={!!view().no_hosts||managementBusy()} title={view().no_hosts??undefined} onClick={event=>{accountManagement.close();accountManagement.clearNotice();void accountSetup.open("add",event.currentTarget,"","",accountMachine());}}><Icon name="plus" size={13} />{tr("Add account")}</button>
+            {/* The Sessions pane's "+" button: a text button cannot fit the pane in every language. */}
+            <button class="icon-btn hd" aria-label={tr("Add account")} data-tip={view().no_hosts ?? tr("Add account")} disabled={!!view().no_hosts||managementBusy()} onClick={event=>{accountManagement.close();accountManagement.clearNotice();void accountSetup.open("add",event.currentTarget,"","",accountMachine());}}><Icon name="add" size={18} /></button>
           </header>
           <p class="muted acct-summary">{tr("Your accounts across all machines. Choose an account to manage where it is available.")}</p>
           <For each={view().notices}>{(notice) => <Status kind="warn">{notice}</Status>}</For>
