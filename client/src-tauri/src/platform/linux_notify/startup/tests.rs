@@ -270,8 +270,67 @@ fn zbus_drivers() -> std::collections::BTreeSet<String> {
         .collect()
 }
 
+// Whole-process /proc baselines belong in an exact child, isolated from every
+// other test in the default parallel harness. Each child also owns its bus and
+// filesystem environment. These resource-only cases need no display; clearing
+// the environment prevents either child from opening an inherited display.
+fn private_process_case(case: &str) -> bool {
+    if std::env::var("ZERUS_STARTUP_PROCESS_CASE").as_deref() == Ok(case) {
+        return true;
+    }
+    use std::os::unix::fs::DirBuilderExt;
+    let root = std::env::temp_dir().join(format!("zsc-{}", uuid::Uuid::new_v4()));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&root)
+        .unwrap();
+    let mut child = std::process::Command::new("dbus-run-session");
+    child
+        .arg("--")
+        .arg(std::env::current_exe().unwrap())
+        .args([case, "--exact", "--nocapture", "--test-threads=1"])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("LANG", "C.UTF-8")
+        .env("GDK_BACKEND", "x11")
+        .env("WAYLAND_DISPLAY", "startup-none")
+        .env("NO_AT_BRIDGE", "1")
+        .env("ZERUS_STARTUP_PROCESS_CASE", case)
+        .stdin(std::process::Stdio::null());
+    for (key, part) in [
+        ("HOME", "home"),
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_DATA_HOME", "data"),
+        ("XDG_STATE_HOME", "state"),
+        ("XDG_CACHE_HOME", "cache"),
+        ("XDG_RUNTIME_DIR", "runtime"),
+        ("TMPDIR", "tmp"),
+        ("TMUX_TMPDIR", "tmux"),
+    ] {
+        let path = root.join(part);
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&path)
+            .unwrap();
+        child.env(key, path);
+    }
+    let output = child.output().unwrap();
+    print!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(output.status.success(), "private process case {case}");
+    false
+}
+
 #[test]
 fn repeated_exact_connections_and_captures_end_while_one_shared_reactor_remains() {
+    const CASE: &str = "platform::linux_notify::startup::tests::repeated_exact_connections_and_captures_end_while_one_shared_reactor_remains";
+    if !private_process_case(CASE) {
+        return;
+    }
     let bus = Bus::new();
     let observer = bus.connect(); // Warm the one shared reactor before baselining.
     let proxy = zbus::blocking::fdo::DBusProxy::new(&observer).unwrap();
@@ -313,6 +372,7 @@ fn repeated_exact_connections_and_captures_end_while_one_shared_reactor_remains(
         wait(|| socket_fds() == sockets);
         assert_eq!(reactor_count(), 1);
     }
+    println!("WARM STARTUP: sixteen exact startup joins, zero retained startup sockets/captures, one shared reactor and no extra zbus driver");
 }
 
 #[test]
@@ -607,51 +667,7 @@ fn actual_unanswered_match_removal_pins_and_close_never_renews_it() {
 #[test]
 fn cold_private_process_initializes_one_global_reactor_and_reuses_it() {
     const CASE: &str = "platform::linux_notify::startup::tests::cold_private_process_initializes_one_global_reactor_and_reuses_it";
-    if std::env::var("ZERUS_STARTUP_COLD_WORKER").as_deref() != Ok("1") {
-        use std::os::unix::fs::DirBuilderExt;
-        let root = std::env::temp_dir().join(format!("zsc-{}", uuid::Uuid::new_v4()));
-        std::fs::DirBuilder::new()
-            .mode(0o700)
-            .create(&root)
-            .unwrap();
-        let mut child = std::process::Command::new("dbus-run-session");
-        child
-            .args(["--", "xvfb-run", "-a", "-s", "-screen 0 1440x900x24"])
-            .arg(std::env::current_exe().unwrap())
-            .args([CASE, "--exact", "--nocapture", "--test-threads=1"])
-            .env_clear()
-            .env("PATH", "/usr/bin:/bin")
-            .env("LANG", "C.UTF-8")
-            .env("GDK_BACKEND", "x11")
-            .env("WAYLAND_DISPLAY", "startup-none")
-            .env("NO_AT_BRIDGE", "1")
-            .env("ZERUS_STARTUP_COLD_WORKER", "1")
-            .stdin(std::process::Stdio::null());
-        for (key, part) in [
-            ("HOME", "home"),
-            ("XDG_CONFIG_HOME", "config"),
-            ("XDG_DATA_HOME", "data"),
-            ("XDG_STATE_HOME", "state"),
-            ("XDG_CACHE_HOME", "cache"),
-            ("XDG_RUNTIME_DIR", "runtime"),
-            ("TMPDIR", "tmp"),
-            ("TMUX_TMPDIR", "tmux"),
-        ] {
-            let path = root.join(part);
-            std::fs::DirBuilder::new()
-                .mode(0o700)
-                .create(&path)
-                .unwrap();
-            child.env(key, path);
-        }
-        let output = child.output().unwrap();
-        print!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(output.status.success());
-        std::fs::remove_dir_all(root).unwrap();
+    if !private_process_case(CASE) {
         return;
     }
     assert_eq!(reactor_count(), 0);

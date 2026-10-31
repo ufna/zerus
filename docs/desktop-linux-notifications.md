@@ -484,6 +484,10 @@ whole-role quiet. Each startup still owns its registrations, sockets, futures,
 wakers, timers, messages, captures and executor tasks. Private qualification
 combines exact peer/capture destruction and worker joins with warmed socket/thread
 baselines and repeated starts. Counts alone do not establish resource custody.
+Both whole-process baseline controls run in separate exact test-binary children
+with private buses, no display address and fresh HOME/XDG/TMPDIR/TMUX_TMPDIR.
+Other cases keep the test harness's default parallel execution; concurrent tests
+cannot change either child's process-wide socket or thread observations.
 
 Queue 16 is an item bound. The locked SDK can receive frames up to 128 MiB before
 body allocation and has no smaller Builder receive-size knob. Startup code does
