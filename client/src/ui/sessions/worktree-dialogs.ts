@@ -30,6 +30,7 @@ interface Counts { sessions: readonly PickerSession[]; style: Style; roots: Map<
 /** One checkout or folder the picker lists. */
 export interface WorktreeRow {
   path: string;
+  sessions: number;
   /** "Main checkout / main (1 session)" and the like. */
   label: string;
   /** The path, then the locked and prunable reasons, one per line. */
@@ -40,6 +41,9 @@ export interface WorktreeRow {
 
 export interface WorktreePickerView {
   status: string;
+  /** Fresh display data only; cleanup still rechecks through its native review. */
+  fresh: boolean;
+  reading: boolean;
   rows: WorktreeRow[];
   /** The selected row's path; undefined without rows. */
   selected: string | undefined;
@@ -144,6 +148,8 @@ export class WorktreePicker {
   show(online: boolean) { this.read(online, false); }
   refresh(online: boolean) { this.read(online, true); }
 
+  catalog(): Json { return this.data; }
+
   select(path: string) {
     this.selection = path;
     this.changed();
@@ -166,7 +172,7 @@ export class WorktreePicker {
     selected ??= rows[0];
     const current = online && !this.request && this.error === "" && !flag(data, "stale");
     return {
-      status, rows, selected: selected?.path,
+      status, rows, selected: selected?.path, fresh: current, reading: !!this.request,
       refreshEnabled: online && !this.request && this.path !== "",
       useEnabled: !!selected?.usable && current,
     };
@@ -199,7 +205,7 @@ export class WorktreePicker {
       const path = string(row.path);
       const count = (row.kind !== "folder" ? counts.roots : counts.folders).get(sameKey(path, counts.style)) ?? 0;
       return {
-        path, label: worktreeLabel(row, count),
+        path, sessions: count, label: worktreeLabel(row, count),
         tooltip: `${path}\n${string(row.locked_reason)}\n${string(row.prunable_reason)}`,
         usable: flag(row, "available") && row.kind !== "bare" && !stale,
       };
