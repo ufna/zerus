@@ -549,9 +549,9 @@ class WorkflowSecurityTests(unittest.TestCase):
         checks = (ROOT / ".github/workflows/checks.yml").read_text()
         macos_steps = {
             "client-native-macos-core": (("Core tests", "core", ""), ("Media and video check", "media", "")),
-            "client-native-macos-tauri": (("Tauri clippy", "tauri-clippy", "        if: always()\n        timeout-minutes: 25\n"),),
+            "client-native-macos-tauri": (("Tauri tests", "tauri-test", "        timeout-minutes: 25\n"),
+                                          ("Tauri clippy", "tauri-clippy", "        if: always()\n        timeout-minutes: 25\n")),
         }
-        self.assertNotIn("name: Tauri tests\n", job(checks, "client-native-macos-tauri"))
         for name, runner, selected, timeout in (("client-native-linux", "ubuntu-24.04", "linux", "45"),
                                                 ("client-native-macos-core", "macos-15", "macos", "90"),
                                                 ("client-native-macos-tauri", "macos-15", "macos", "90"),
