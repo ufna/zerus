@@ -66,3 +66,9 @@ profile/known-zero Presence proof,
 continuous negative invalidation, actual SDK/resource/store barriers and whole
 profile publication/rollback remain separate required gates. This journal does
 not change the existing handoff-v1 marker or relabel historical Staged evidence.
+
+The [universal replacement policy](desktop-universal-prepared-policy.md) separates
+legacy-compatible identity, completed original bootstrap and future replacement
+enforcement. It inventories maintained startup/rollback and the required
+service-side fail-safe handling of manual legacy writers. This is a contract
+only; all production prepare remains fenced.
