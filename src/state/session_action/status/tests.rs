@@ -322,3 +322,77 @@ fn a_symlink_in_any_existing_ancestor_never_redirects_the_receipt_read() {
     assert_eq!(observe(&redirected, &request(), NAME).unwrap_err(), INVALID);
     assert_eq!(f.observe().unwrap()["status"], "completed");
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_terminal_refusal_never_acquires_a_controlling_terminal() {
+    use std::os::{fd::FromRawFd, unix::process::CommandExt};
+    const PROBE: &str = "HGS_TEST_RECEIPT_STATUS_TTY";
+    if let Some(path) = std::env::var_os(PROBE) {
+        let controlling_terminal = || {
+            let fd = unsafe {
+                libc::open(
+                    c"/dev/tty".as_ptr(),
+                    libc::O_RDONLY | libc::O_NOCTTY | libc::O_NONBLOCK,
+                )
+            };
+            if fd < 0 {
+                false
+            } else {
+                unsafe { libc::close(fd) };
+                true
+            }
+        };
+        assert!(
+            !controlling_terminal(),
+            "fixture must start without a controlling terminal"
+        );
+        let path = PathBuf::from(path);
+        let directory = Directory::open(path.parent().unwrap()).unwrap();
+        assert!(directory
+            .read_private(path.file_name().unwrap().to_str().unwrap())
+            .is_err());
+        assert!(
+            !controlling_terminal(),
+            "rejecting a terminal must not adopt it before the metadata check"
+        );
+        return;
+    }
+    // A new private PTY, with no native session, shell or owner terminal.
+    let fd = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) };
+    assert!(fd >= 0);
+    let _master = unsafe { fs::File::from_raw_fd(fd) };
+    assert_eq!(unsafe { libc::grantpt(fd) }, 0);
+    assert_eq!(unsafe { libc::unlockpt(fd) }, 0);
+    let mut name = [0i8; 256];
+    assert_eq!(
+        unsafe { libc::ptsname_r(fd, name.as_mut_ptr(), name.len()) },
+        0
+    );
+    let name = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }
+        .to_str()
+        .unwrap();
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command.args(["--exact", "state::session_action::status::tests::a_terminal_refusal_never_acquires_a_controlling_terminal", "--nocapture"])
+        .env(PROBE, name);
+    // SAFETY: setsid is async-signal-safe, and only the new fixture child changes session.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+    let output = command.output().unwrap();
+    println!(
+        "private PTY child:\n{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.status.success(),
+        "private terminal-refusal child failed"
+    );
+}

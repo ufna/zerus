@@ -17,7 +17,7 @@ impl Directory {
     }
 
     pub(in crate::state) fn read_private(&self, name: &str) -> Result<File> {
-        if name.is_empty() || name.contains(['/', '\\']) || name == "." || name == ".." {
+        if name.is_empty() || name.contains(['/', '\\', ':']) || name == "." || name == ".." {
             return Err("Invalid existing file name".into());
         }
         #[cfg(unix)]
@@ -29,7 +29,11 @@ impl Directory {
                 libc::openat(
                     self.file.as_raw_fd(),
                     name.as_ptr(),
-                    libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+                    libc::O_RDONLY
+                        | libc::O_NOFOLLOW
+                        | libc::O_NONBLOCK
+                        | libc::O_NOCTTY
+                        | libc::O_CLOEXEC,
                 )
             };
             if fd < 0 {
