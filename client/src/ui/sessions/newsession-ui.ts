@@ -1,6 +1,7 @@
 import type { Account, FolderOut, HeaderOut, MachineMeta, PathStyle, Profile, Usage } from "../../types";
 import { current, fromProjected, period, providerName, severest, windowsAt, type Tone, type UsageWindow } from "../lib/usage";
 import { clean, leaf, native, same } from "./paths";
+import { tr } from "../../i18n";
 
 // The New session dialog's rows, as Qt keeps them in its views
 // (tray/src/NewSessionDialog.cpp): computers (loadMachines 487-510),
@@ -188,12 +189,12 @@ export function launchWindows(usage: Usage | undefined, now: number): UsageWindo
 /** AccountUsage::launchSummary: each current window "{period} {n}% used", then balances, joined by two spaces; else "limits n/a". */
 export function launchSummary(usage: Usage, now: number): string {
   const limits: string[] = [];
-  for (const window of launchWindows(usage, now)) limits.push(`${period(window)} ${Math.round(window.used)}% used`);
+  for (const window of launchWindows(usage, now)) limits.push(period(window) + tr(" %1% used", Math.round(window.used)));
   for (const balance of usage.balances) {
     const amount = balance.balance;
-    if (/^\s*[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?\s*$/.test(amount) && Number.isFinite(Number(amount))) limits.push(`Balance: ${amount} ${balance.currency}`.trim());
+    if (/^\s*[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?\s*$/.test(amount) && Number.isFinite(Number(amount))) limits.push(tr("Balance: %1 %2", amount, balance.currency).trim());
   }
-  return limits.length ? limits.join("  ") : "limits n/a";
+  return limits.length ? limits.join("  ") : tr("limits n/a");
 }
 
 /** The row's texts (updateUsage 1002-1023). */
@@ -202,7 +203,7 @@ function texts(profile: Profile, usage: Usage | undefined, choice: AccountChoice
   if (!name) name = choice.cachedEmail?.(profile.provider, profile.id) ?? "";
   if (!name) name = profile.label;
   if (UNNAMED.has(name)) name = "Account n/a";
-  const summary = usage ? launchSummary(usage, choice.now) : "limits n/a";
+  const summary = usage ? launchSummary(usage, choice.now) : tr("limits n/a");
   const historical = !!usage && (usage.offline || usage.refresh_error);
   const tone = usage ? severest(windowsAt(usage.windows, choice.now).filter((w) => Number.isFinite(w.used))) : undefined;
   return {

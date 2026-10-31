@@ -10,7 +10,7 @@
     <message>
       <location filename="../src/AccountUsage.h" line="352" />
       <source>Configured</source>
-      <translation type="unfinished" />
+      <translation>Настроено</translation>
     </message>
     <message>
       <location filename="../src/AccountUsage.h" line="352" />
@@ -5492,23 +5492,23 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
       <location filename="../src/AccountUsage.h" line="50" />
       <location filename="../src/AccountUsage.h" line="56" />
       <source>%1h</source>
-      <translation type="unfinished" />
+      <translation>%1 ч</translation>
     </message>
     <message>
       <location filename="../src/AccountUsage.h" line="51" />
       <location filename="../src/AccountUsage.h" line="55" />
       <source>%1d</source>
-      <translation type="unfinished" />
+      <translation>%1 д</translation>
     </message>
     <message>
       <location filename="../src/AccountUsage.h" line="102" />
       <source>At the current pace, the limit runs out in about %1</source>
-      <translation type="unfinished" />
+      <translation>При текущем темпе лимит закончится примерно через %1</translation>
     </message>
     <message>
       <location filename="../src/AccountUsage.h" line="103" />
       <source>At the current pace, about %1% by reset</source>
-      <translation type="unfinished" />
+      <translation>При текущем темпе к сбросу будет около %1%</translation>
     </message>
     <message>
       <location filename="../src/AccountUsage.h" line="112" />
@@ -5518,22 +5518,22 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/AccountUsage.h" line="134" />
       <source> %1% used</source>
-      <translation type="unfinished" />
+      <translation> использовано %1%</translation>
     </message>
     <message>
       <location filename="../src/AccountUsage.h" line="139" />
       <source>Balance: %1 %2</source>
-      <translation type="unfinished" />
+      <translation>Баланс: %1 %2</translation>
     </message>
     <message>
       <location filename="../src/AccountUsage.h" line="141" />
       <source>limits n/a</source>
-      <translation type="unfinished" />
+      <translation>лимиты н/д</translation>
     </message>
     <message>
       <location filename="../src/AccountUsage.h" line="158" />
       <source>Latest account usage is below the limit. Answer any open usage-limit choice in Activity or Terminal, then send a message to continue.</source>
-      <translation type="unfinished" />
+      <translation>По последним данным использование учётной записи ниже лимита. Ответьте на открытый вопрос о лимите в активности или терминале, затем отправьте сообщение для продолжения.</translation>
     </message>
     <message>
       <location filename="../src/AccountUsage.h" line="164" />
@@ -5578,7 +5578,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/AccountUsage.h" line="187" />
       <source>OpenCode uses its native provider configuration. Usage is not available here.</source>
-      <translation type="unfinished" />
+      <translation>OpenCode использует собственные настройки провайдеров. Использование здесь недоступно.</translation>
     </message>
     <message>
       <location filename="../src/AccountUsage.h" line="188" />
@@ -5639,7 +5639,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/AccountUsage.h" line="208" />
       <source> (in %1)</source>
-      <translation type="unfinished" />
+      <translation> (через %1)</translation>
     </message>
     <message>
       <location filename="../src/AccountUsage.h" line="212" />
@@ -6090,7 +6090,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/RecoveryWidgets.h" line="27" />
       <source>Waiting for reset at %1</source>
-      <translation type="unfinished" />
+      <translation>Ожидание сброса: %1</translation>
     </message>
     <message>
       <location filename="../src/RecoveryWidgets.h" line="29" />
@@ -6268,7 +6268,7 @@ Drag to reorder, or use Alt+Up / Alt+Down.</source>
     <message>
       <location filename="../src/SessionPresentation.h" line="89" />
       <source>Session limit reached</source>
-      <translation type="unfinished" />
+      <translation>Достигнут лимит сессии</translation>
     </message>
     <message>
       <location filename="../src/SessionPresentation.h" line="90" />
@@ -7546,7 +7546,7 @@ New messages and Stop cancel recovery. Sign-in, balance, other quota and context
     <message>
       <location filename="../src/RecoveryWidgets.h" line="70" />
       <source>Recovery attempts — Zerus</source>
-      <translation type="unfinished" />
+      <translation>Попытки восстановления — Zerus</translation>
     </message>
     <message>
       <location filename="../src/RecoveryWidgets.h" line="75" />
@@ -7587,7 +7587,7 @@ New messages and Stop cancel recovery. Sign-in, balance, other quota and context
     <message>
       <location filename="../src/RecoveryWidgets.h" line="123" />
       <source>The session usage limit stopped this turn. Automatic recovery can wait for reset or retry on a schedule when enabled in Settings. Your draft is kept.</source>
-      <translation type="unfinished" />
+      <translation>Лимит использования сессии остановил этот ход. Если автоматическое восстановление включено в настройках, оно может дождаться сброса или повторять попытки по расписанию. Ваш черновик сохранен.</translation>
     </message>
     <message>
       <location filename="../src/RecoveryWidgets.h" line="125" />
@@ -7602,7 +7602,7 @@ New messages and Stop cancel recovery. Sign-in, balance, other quota and context
     <message>
       <location filename="../src/RecoveryWidgets.h" line="135" />
       <source> (%1 attempts)</source>
-      <translation type="unfinished" />
+      <translation> (попыток: %1)</translation>
     </message>
     <message>
       <location filename="../src/RecoveryWidgets.h" line="135" />
@@ -9725,7 +9725,7 @@ Clear folder filter</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3095" />
       <source>Usage available</source>
-      <translation type="unfinished" />
+      <translation>Лимит доступен</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="3095" />

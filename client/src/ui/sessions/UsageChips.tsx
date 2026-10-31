@@ -77,7 +77,7 @@ export function UsageLimitChip(props: { session: Session; compact: boolean }) {
           onClick={(event) => { setKeyboard(event.detail === 0); setOpen(!open()); }}>
           <Icon name={percent() !== undefined ? "gauge" : "attention"} size={13} />
           <Show when={percent() !== undefined} fallback={<Show when={props.compact} fallback={<>{(summary()?.label ?? tr("Usage available"))}<Show when={summary()?.remaining}><span class="usage-reset">{summary()!.remaining}</span></Show></>}>
-            {summary()?.shortLabel ?? "Usage"}
+            {summary()?.shortLabel ?? tr("Usage")}
           </Show>}>
             {props.compact ? `${percent()}%` : label()}
           </Show>

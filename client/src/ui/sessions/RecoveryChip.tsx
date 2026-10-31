@@ -36,7 +36,7 @@ export function RecoveryChip(props: { session: Session; compact: boolean }) {
     if (!historyOpen() && historyDialog?.open) historyDialog.close();
   });
   onCleanup(() => { if (historyDialog?.open) historyDialog.close(); });
-  const historyText = () => view().attempts.map((entry) => `${entry.at}  ${entry.label} (${entry.attempts} attempts)${entry.reason ? `\n${entry.reason}` : ""}`).join("\n");
+  const historyText = () => view().attempts.map((entry) => `${tr("%1  %2 (%3 attempts)", entry.at, entry.label, entry.attempts)}${entry.reason ? `\n${entry.reason}` : ""}`).join("\n");
   const openTerminal = () => {
     setOpen(false);
     if (!online()) return;
