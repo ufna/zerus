@@ -7,7 +7,7 @@ marker, status, store or positive API.
 
 The future host selects its configuration, current service epoch and expected
 clean, live frontend identity independently. The helper rejects an already
-writer-owned expectation, generates fresh random challenge and producer UUIDs,
+writer-owned expectation and nil identity UUIDs, generates fresh random challenge and producer UUIDs,
 and exposes only the challenge data for the existing cached frontend slot.
 Nothing installs it automatically. `probe_at` consumes the attempt on every
 outcome and reuses the existing same-user canonical socket exchange, one-second

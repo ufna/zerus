@@ -52,7 +52,7 @@ fn attempt_requires_exact_unowned_live_clean_frontend_and_canonical_service_epoc
             Err(Refused::InvalidIdentity)
         ));
     }
-    for change in 0..7 {
+    for change in 0..9 {
         let mut hello = expected();
         match change {
             0 => hello.build.source_dirty = Some(true),
@@ -61,7 +61,9 @@ fn attempt_requires_exact_unowned_live_clean_frontend_and_canonical_service_epoc
             3 => hello.writer_epoch = Some(EPOCH.into()),
             4 => hello.configuration = Some("c".repeat(64)),
             5 => hello.instance_epoch = "old".into(),
-            _ => hello.application = "dev.example".into(),
+            6 => hello.application = "dev.example".into(),
+            7 => hello.instance_epoch = "00000000-0000-0000-0000-000000000000".into(),
+            _ => hello.nonce = "00000000-0000-0000-0000-000000000000".into(),
         }
         assert!(matches!(
             Attempt::new(&"a".repeat(64), EPOCH, hello),

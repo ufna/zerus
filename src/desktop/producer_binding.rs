@@ -53,6 +53,10 @@ impl Matched {
     }
 }
 
+fn non_nil_uuid(value: &str) -> bool {
+    uuid::Uuid::parse_str(value).is_ok_and(|id| !id.is_nil() && id.to_string() == value)
+}
+
 impl Attempt {
     pub fn new(configuration: &str, service_epoch: &str, expected: Hello) -> Result<Self, Refused> {
         Self::at(configuration, service_epoch, expected, Instant::now())
@@ -64,9 +68,9 @@ impl Attempt {
         expected: Hello,
         started: Instant,
     ) -> Result<Self, Refused> {
-        let valid_epoch = uuid::Uuid::parse_str(service_epoch)
-            .is_ok_and(|id| !id.is_nil() && id.to_string() == service_epoch);
-        if !valid_epoch
+        if !non_nil_uuid(service_epoch)
+            || !non_nil_uuid(&expected.instance_epoch)
+            || !non_nil_uuid(&expected.nonce)
             || !expected.identity_matches(&expected.nonce, configuration)
             || expected.writer_epoch.is_some()
         {
