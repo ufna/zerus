@@ -489,6 +489,22 @@ export async function accountSetupApply(handle:string,values:AccountSetupValues)
   return invoke("account_setup_apply",{request:{handle,...values}});
 }
 export async function accountSetupClose(handle:string) {if(inTauri())await invoke("account_setup_close",{handle});}
+export interface AccountDistributionMachine {key:string;machine:string;platform:string;version:string;blocked:string|null;present:boolean;saved:boolean}
+export interface AccountDistributionForm {handle:string;label:string;provider:string;machines:AccountDistributionMachine[];sources:{key:string;label:string}[]}
+export type AccountDistributionState="pending"|"working"|"added"|"needs-signin"|"failed"|"unknown";
+export interface AccountDistributionProgress {handle:string;host:string;machine:string;state:AccountDistributionState;text:string;saved:boolean;profile:string|null}
+export interface AccountDistributionValues {hosts:string[];method:"copy"|"signin"|"apikey";use_saved:boolean;source:string;label:string;profile_id:string;api_key:string}
+export async function accountDistributionOpen(account:string,profile:string):Promise<AccountDistributionForm> {
+  if(!inTauri())throw new Error(DESKTOP_ONLY);return invoke("account_distribution_open",{account,profile});
+}
+export async function accountDistributionApply(handle:string,values:AccountDistributionValues):Promise<AccountDistributionProgress[]> {
+  if(!inTauri())throw new Error(DESKTOP_ONLY);return invoke("account_distribution_apply",{request:{handle,...values}});
+}
+export async function accountDistributionClose(handle:string){if(inTauri())await invoke("account_distribution_close",{handle});}
+export async function accountDistributionProgress(handle:string,receive:(row:AccountDistributionProgress)=>void) {
+  if(!inTauri())return ()=>{};
+  return listen<AccountDistributionProgress>("account-distribution-progress",event=>{if(event.payload.handle===handle)receive(event.payload);});
+}
 /** Sessions' explicit account chooser reads catalogs, without profile inspects. */
 export async function accountFiltersView(force = false): Promise<AccountsView> {
   if (!inTauri()) return emptyAccounts([DESKTOP_ONLY]);

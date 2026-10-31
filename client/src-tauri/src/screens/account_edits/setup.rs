@@ -71,7 +71,7 @@ pub struct SetupResult {
     errors: Vec<String>,
     profile: Option<String>,
 }
-fn row_evidence(row: &Value) -> Value {
+pub(super) fn row_evidence(row: &Value) -> Value {
     serde_json::json!({"id":row["id"],"provider":row["provider"],"home":row["home"],"auth_revision":row["auth_revision"]})
 }
 fn same_machine(pump: &crate::pump::Pump, host: &HostBinding) -> bool {
@@ -82,7 +82,7 @@ fn same_machine(pump: &crate::pump::Pump, host: &HostBinding) -> bool {
             .as_deref()
             == Some(&host.machine_id)
 }
-fn setup_terminal(
+pub(super) fn setup_terminal(
     dir: &std::path::Path,
     hgs: &std::path::Path,
     args: &[String],

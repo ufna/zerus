@@ -203,3 +203,62 @@ fn setup_creates_once_restores_only_exact_saved_evidence_and_keeps_keys_off_argu
         .unwrap()
         .contains("fixture-secret"));
 }
+
+#[test]
+fn transfer_uses_existing_hgs_copy_with_both_computer_catalog_and_auth_guards() {
+    use zerus_client_core::account_actions::{setup::Host, transfer};
+    for scenario in ["success", "legacy", "uncertain", "changed"] {
+        let (scratch, binding) = setup();
+        fs::copy(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/support/fake_hgs_account_transfer.py"),
+            scratch.0.join("hgs"),
+        )
+        .unwrap();
+        let mut source: Value =
+            serde_json::from_slice(&fs::read(scratch.0.join("catalog.json")).unwrap()).unwrap();
+        source["copy_revision"] = json!(true);
+        source["profiles"][0]["portable"] = json!(true);
+        source["profiles"][0]["credential_file"] = json!(true);
+        if scenario == "changed" {
+            source["profiles"][0]["auth_revision"] = json!("different");
+        }
+        fs::write(scratch.0.join("studio.json"), source.to_string()).unwrap();
+        let destination = json!({"revision":"r1","setup_revision":true,"copy_revision":true,"profiles":[],"removed_profiles":[]});
+        fs::write(scratch.0.join("lab.json"), destination.to_string()).unwrap();
+        let target = Host::capture(
+            ComputerId("lab".into()),
+            "22222222-2222-4222-8222-222222222222".into(),
+            &destination,
+        )
+        .unwrap();
+        if ["legacy", "uncertain"].contains(&scenario) {
+            fs::write(scratch.0.join(scenario), b"fixture").unwrap();
+        }
+        let result = transfer::copy(
+            &scratch.0.join("hgs"),
+            &binding,
+            &target,
+            "codex-copy",
+            "Example",
+        );
+        match scenario {
+            "success" => assert_eq!(result.unwrap()["profiles"][0]["id"], "codex-copy"),
+            "uncertain" => assert!(result.unwrap_err().issued),
+            _ => assert!(!result.unwrap_err().issued),
+        }
+        let calls: Vec<Value> = fs::read_to_string(scratch.0.join("calls.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let effects = calls
+            .iter()
+            .filter(|args| args[0] == "account" && args[1] == "copy")
+            .count();
+        assert_eq!(
+            effects,
+            usize::from(["success", "uncertain"].contains(&scenario))
+        );
+    }
+}
