@@ -1,4 +1,5 @@
 import { nativeRoute } from "./native-entry";
+import { tr } from "../../i18n";
 import { createActivityScroll } from "./activity-scroll";
 import { activityReadingRows, createActivityAnchor } from "./activity-anchor";
 import { searchPreview, clearSearchPreview } from "../../store/searchSelection";
@@ -31,7 +32,7 @@ import { DELETE_TEXT, DELETE_TITLE, retryReason, routeInspect } from "./local-ac
 import { markdownReady, markdownTree, type Inline, type MarkdownBlock } from "./markdown";
 import { openExternal, openSessionFile } from "./sessionFiles";
 import { SessionFileDialog } from "./SessionFileDialog";
-import { statusOf } from "./SessionCard";
+import { captionText, statusOf } from "./SessionCard";
 import type { ActivityItem, ItemAttachment, LocalItem, MediaMessage, Session, TranscriptItem } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -75,8 +76,8 @@ export const columnStyle = () => ({
 export function columnMenuItems(): MenuEntry[] {
   const atDefault = !fullWidth() && columnWidth() === COLUMN.initial;
   return [
-    { label: "Full-width Activity", checked: fullWidth(), action: () => setFullWidth(!fullWidth()) },
-    { label: "Reset Activity width", icon: "rotate-ccw", disabled: atDefault, action: atDefault ? undefined : resetColumn },
+    { label: tr("Full-width Activity"), checked: fullWidth(), action: () => setFullWidth(!fullWidth()) },
+    { label: tr("Reset Activity width"), icon: "rotate-ccw", disabled: atDefault, action: atDefault ? undefined : resetColumn },
   ];
 }
 
@@ -97,7 +98,7 @@ function ColumnEdge(props: { right?: boolean }) {
   const width = (distance: number) => clamp(start + 2 * distance, narrowest, widest) / contentScale();
   return (
     <div class="col-edge" classList={{ right: props.right, dragging: dragging() }} role="separator" aria-orientation="vertical" tabindex="0"
-      aria-label="Activity width" aria-valuemin={COLUMN.min} aria-valuemax={COLUMN.max} aria-valuenow={columnWidth()}
+      aria-label={tr("Activity width")} aria-valuemin={COLUMN.min} aria-valuemax={COLUMN.max} aria-valuenow={columnWidth()}
       onPointerDown={(e) => {
         if (e.button !== 0) return;
         e.preventDefault();
@@ -142,8 +143,8 @@ function activityMenu(e: MouseEvent) {
   const text = getSelection()?.toString() ?? "";
   setMenu({
     x: e.clientX, y: e.clientY, items: [
-      { label: "Copy", icon: "copy", kbd: "Ctrl+C", disabled: !text, action: text ? () => copyText(text, "The selected text is on the clipboard") : undefined },
-      { label: "Select All", kbd: "Ctrl+A", action: () => { const col = scroller.querySelector(".act-col"); if (col) getSelection()?.selectAllChildren(col); } },
+      { label: tr("Copy"), icon: "copy", kbd: "Ctrl+C", disabled: !text, action: text ? () => copyText(text, tr("The selected text is on the clipboard")) : undefined },
+      { label: tr("Select All"), kbd: "Ctrl+A", action: () => { const col = scroller.querySelector(".act-col"); if (col) getSelection()?.selectAllChildren(col); } },
       { separator: true },
       ...columnMenuItems(),
     ],
@@ -154,7 +155,7 @@ function activityMenu(e: MouseEvent) {
 // Transcript
 
 const copyText = (text: string, what: string) => {
-  void copyVerbatim(text).then(() => toast("Copied", what), () => toast("Not copied", "The clipboard is unavailable", "error"));
+  void copyVerbatim(text).then(() => toast(tr("Copied"), what), () => toast(tr("Not copied"), tr("The clipboard is unavailable"), "error"));
 };
 
 // Inline Markdown stays text except its links: HTTP(S) uses the system
@@ -210,14 +211,14 @@ function blocks(list: MarkdownBlock[], session?: () => Session | undefined): JSX
       case "list": {
         const items = b.items.map((item) => (
           <li classList={{ "md-task": item.task }}>
-            <Show when={item.task}><input type="checkbox" class="md-check" checked={item.checked} disabled aria-label={item.checked ? "Done" : "Not done"} /></Show>
+            <Show when={item.task}><input type="checkbox" class="md-check" checked={item.checked} disabled aria-label={item.checked ? tr("Done") : tr("Not done")} /></Show>
             {blocks(item.blocks, session)}
           </li>
         ));
         return b.ordered ? <ol class="md-list" start={b.start}>{items}</ol> : <ul class="md-list">{items}</ul>;
       }
       case "table": return (
-        <div class="act-table-wrap" role="region" aria-label="Message table" tabindex="0">
+        <div class="act-table-wrap" role="region" aria-label={tr("Message table")} tabindex="0">
           <table class="act-table" style={{ "--table-columns": b.header.length }}>
             <thead><tr>{b.header.map((cell, column) => <th scope="col" style={{ "text-align": b.align[column] }}>{inlines(cell, session)}</th>)}</tr></thead>
             <Show when={b.rows.length}><tbody>{b.rows.map((row) => <tr>{row.map((cell, column) => <td style={{ "text-align": b.align[column] }}>{inlines(cell, session)}</td>)}</tr>)}</tbody></Show>
@@ -267,7 +268,7 @@ function DeliveryGlyph(props: { item: MediaMessage }) {
 /** 32×32 transcript toggle: a down arrow beside an "A", or a chevron when open. */
 function TranscriptButton(props: { open: boolean; onToggle: () => void }) {
   return (
-    <button class="vm-tbtn" data-tip={props.open ? "Hide transcript" : "Show transcript"} aria-label={props.open ? "Hide transcript" : "Show transcript"}
+    <button class="vm-tbtn" data-tip={props.open ? tr("Hide transcript") : tr("Show transcript")} aria-label={props.open ? tr("Hide transcript") : tr("Show transcript")}
       aria-expanded={props.open} onClick={props.onToggle}>
       <svg width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <Show when={props.open} fallback={<path d="M10 8V19M6 15L10 19L14 15M16 24L20.5 12L25 24M17.5 20H23.5" />}><path d="M10 19L16 13L22 19" /></Show>
@@ -344,7 +345,7 @@ function MediaCard(props: { item: MediaMessage; scope?: AttachmentScope; sourceI
       }
       await Promise.resolve();
       if (mine.current() && target() === current && player) await player.play();
-    } catch (failure) { if (mine.current()) { setError(`Could not play recording: ${String(failure)}`); setPlaying(false); } }
+    } catch (failure) { if (mine.current()) { setError(tr("Could not play recording: %1", String(failure))); setPlaying(false); } }
     finally { if (mine.current()) setLoading(false); }
   };
   const pause = () => { player?.pause(); setPlaying(false); };
@@ -358,7 +359,7 @@ function MediaCard(props: { item: MediaMessage; scope?: AttachmentScope; sourceI
   const failed = (event: Event) => {
     if (!claim?.current() || !objectUrl) return;
     setPlaying(false); setLoading(false);
-    setError(`Could not play recording: ${(event.currentTarget as HTMLMediaElement).error?.message || "Recording is unavailable."}`);
+    setError(tr("Could not play recording: %1", (event.currentTarget as HTMLMediaElement).error?.message || tr("Recording is unavailable.")));
   };
   const seek = (e: MouseEvent) => {
     if (!target() || !duration()) return;
@@ -370,7 +371,7 @@ function MediaCard(props: { item: MediaMessage; scope?: AttachmentScope; sourceI
   return (
     <article class="act-msg k-user media" id={`item-${it.id}`}>
       <header>
-        <b>{video ? "You (video)" : "You (voice)"}</b>
+        <b>{video ? tr("You (video)") : tr("You (voice)")}</b>
         <span class="grow" />
         <span class="act-time">{it.at}</span>
         <DeliveryGlyph item={it} />
@@ -378,8 +379,8 @@ function MediaCard(props: { item: MediaMessage; scope?: AttachmentScope; sourceI
       <Show when={video} fallback={
         <div class="vm-row">
           <div class="vp" style={{ "--p": String(ratio()) }}>
-            <button class="vp-btn" aria-label={`Play or pause voice message (${mediaTime(duration())})`} aria-pressed={isPlaying()}
-              disabled={!target() || loading()} title={!target() ? "Recording is unavailable." : undefined} aria-busy={loading()} onClick={() => { if (isPlaying()) pause(); else void play(); }}>
+            <button class="vp-btn" aria-label={tr("Play or pause voice message (%1)", mediaTime(duration()))} aria-pressed={isPlaying()}
+              disabled={!target() || loading()} title={!target() ? tr("Recording is unavailable.") : undefined} aria-busy={loading()} onClick={() => { if (isPlaying()) pause(); else void play(); }}>
               <svg width="44" height="44" viewBox="0 0 44 44" aria-hidden="true">
                 <Show when={isPlaying()} fallback={<path d="M17 12L31 22L17 32Z" />}>
                   <rect x="15" y="13" width="5" height="18" rx="1" /><rect x="24" y="13" width="5" height="18" rx="1" />
@@ -387,7 +388,7 @@ function MediaCard(props: { item: MediaMessage; scope?: AttachmentScope; sourceI
               </svg>
             </button>
             <div class="vp-side">
-              <div class="vp-wave" role="slider" tabindex="-1" aria-label="Seek" aria-valuemin={0} aria-valuemax={duration()} aria-valuenow={position()} onClick={seek}>
+              <div class="vp-wave" role="slider" tabindex="-1" aria-label={tr("Seek")} aria-valuemin={0} aria-valuemax={duration()} aria-valuenow={position()} onClick={seek}>
                 <Waveform values={it.waveform} />
               </div>
               <span class="vp-caption tabular">{mediaTime(position())} / {mediaTime(duration())}</span>
@@ -400,7 +401,7 @@ function MediaCard(props: { item: MediaMessage; scope?: AttachmentScope; sourceI
         <div class="vm-row video">
           <button ref={posterCard} class="vm-poster" classList={{ playing: isPlaying(), started: position() > 0 && position() < duration() }}
             style={{ "--p": String(ratio()) }} aria-pressed={isPlaying()}
-            aria-label={`${isPlaying() ? "Pause" : "Play"} video message (${mediaTime(duration())})`} disabled={!target() || loading()} title={!target() ? "Recording is unavailable." : undefined} aria-busy={loading()} onClick={() => { if (isPlaying()) pause(); else void play(); }}>
+            aria-label={isPlaying() ? tr("Pause video message (%1)", mediaTime(duration())) : tr("Play video message (%1)", mediaTime(duration()))} disabled={!target() || loading()} title={!target() ? tr("Recording is unavailable.") : undefined} aria-busy={loading()} onClick={() => { if (isPlaying()) pause(); else void play(); }}>
             <span class="vm-frames" classList={{ real: !!poster() || isPlaying() }} aria-hidden="true">
               <Show when={poster() && !isPlaying()}><img src={poster()} alt="" /></Show>
               <Show when={url()}><video ref={(el) => { player = el; }} src={url()} playsinline preload="metadata" style={{ position: "absolute", inset: "0", opacity: isPlaying() ? 1 : 0 }}
@@ -462,14 +463,14 @@ function AttachmentCard(props: { file: ItemAttachment; scope?: AttachmentScope }
   createEffect(() => { const state=remote(); if(state?.kind === "ready") void handoff.remote(state.url); });
   const size = () => props.file.image_size ?? (remote()?.kind === "ready" ? (remote() as Extract<ReturnType<typeof previews.state>,{kind:"ready"}>).fetched.image_size ?? undefined : undefined);
   return <button type="button" class="att-card" aria-disabled={!target()} tabindex={target() ? 0 : -1}
-    title={target() ? props.file.caption : `Attachment: ${props.file.name}`} onClick={() => { const now=target(); if(now) void openAttachment(now.computer,now.ref); }}>
+    title={target() ? props.file.caption : tr("Attachment: %1", props.file.name)} onClick={() => { const now=target(); if(now) void openAttachment(now.computer,now.ref); }}>
     <Show when={props.file.image}>
       <span class="att-thumb"><img src={handoff.url()} style={fittedImage(size())} alt=""
         onError={() => { const now=target(); if(now)previews.failed(now.computer,now.ref); }} /></span>
     </Show>
     <span class="att-caption">{props.file.caption}</span>
     <span class="dim">{props.file.meta}</span>
-    <span class="att-open" style={{ visibility: target() ? "visible" : "hidden" }}>Open →</span>
+    <span class="att-open" style={{ visibility: target() ? "visible" : "hidden" }}>{tr("Open →")}</span>
   </button>;
 }
 
@@ -497,7 +498,7 @@ function LocalActions(props: { local: LocalItem }) {
       }));
     }
   };
-  const label = (action: LocalItem["actions"][number]) => (action === "retry" ? "Retry" : action === "delete" ? "Delete" : props.local.inspectLabel);
+  const label = (action: LocalItem["actions"][number]) => (action === "retry" ? tr("Retry") : action === "delete" ? tr("Delete") : props.local.inspectLabel);
   return (
     <div class="act-local-actions">
       <For each={props.local.actions}>{(action) => (
@@ -537,8 +538,8 @@ function LocalDeleteDialog() {
       <div class="dlg-body"><div class="confirm-body" id="local-delete-body">{DELETE_TEXT}</div></div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn primary" data-initial onClick={cancel}>Cancel</button>
-        <button type="button" class="btn solid-danger" onClick={confirm}>Delete</button>
+        <button type="button" class="btn primary" data-initial onClick={cancel}>{tr("Cancel")}</button>
+        <button type="button" class="btn solid-danger" onClick={confirm}>{tr("Delete")}</button>
       </div>
     </dialog>
   );
@@ -553,9 +554,9 @@ function ItemBody(props: { item: ActivityItem; scope?: AttachmentScope }) {
         <Show when={it().replies?.length} fallback={<Body text={it().body ?? ""} />}>
           <For each={it().replies}>{(r) => (
             <div class="act-reply">
-              <div class="act-reply-q">Question</div>
+              <div class="act-reply-q">{tr("Question")}</div>
               <p class="wrap-pre">{r.question}</p>
-              <div class="act-reply-a"><b>Your answer</b><p class="wrap-pre">{r.answer}</p></div>
+              <div class="act-reply-a"><b>{tr("Your answer")}</b><p class="wrap-pre">{r.answer}</p></div>
             </div>
           )}</For>
         </Show>
@@ -611,12 +612,12 @@ function Item(props: { item: TranscriptItem; scope?: AttachmentScope; sourceId?:
   const it = props.item;
   if (it.kind === "media") return <MediaCard item={it} scope={props.scope} sourceId={props.sourceId} postersEnabled={props.postersEnabled} />;
   if (it.kind === "context") return <div class="act-label eyebrow" id={`item-${it.id}`}>{it.body}</div>;
-  if (it.kind === "thinking") return <div class="act-thinking" id={`item-${it.id}`}><span class="eyebrow">Thinking</span><p>{it.body}</p></div>;
+  if (it.kind === "thinking") return <div class="act-thinking" id={`item-${it.id}`}><span class="eyebrow">{tr("Thinking")}</span><p>{it.body}</p></div>;
   if (it.kind === "report")
     return (
       <div class="act-notice" id={`item-${it.id}`} classList={{ open: open() }}>
-        <div class="row"><Icon name="bot" size={13} /><b>{it.title}</b><Show when={it.sender}><span class="muted">from {it.sender}</span></Show><span class="grow" /><span class="act-time">{it.at}</span></div>
-        <button class="link" onClick={toggleOpen}>{open() ? "▾ Hide report" : "▸ Show report"}</button>
+        <div class="row"><Icon name="bot" size={13} /><b>{it.title}</b><Show when={it.sender}><span class="muted">{tr("from %1", it.sender!)}</span></Show><span class="grow" /><span class="act-time">{it.at}</span></div>
+        <button class="link" onClick={toggleOpen}>{open() ? tr("▾ Hide report") : tr("▸ Show report")}</button>
         <Show when={open()}><p class="act-notice-body">{it.body}</p></Show>
       </div>
     );
@@ -637,14 +638,14 @@ function Item(props: { item: TranscriptItem; scope?: AttachmentScope; sourceId?:
     }>
       <article class={`act-msg k-${it.kind}`} id={`item-${it.id}`}>
         <header>
-          <b>{it.label ?? (it.kind === "user" ? "You" : it.kind === "agent" ? "Agent" : it.sender ?? "Zerus")}</b>
+          <b>{it.label ?? (it.kind === "user" ? tr("You") : it.kind === "agent" ? tr("Agent") : it.sender ?? "Zerus")}</b>
           {/* A local row's stamp stands in for the time and the receipt (ActivityView.cpp:1053-1055). */}
           <Show when={it.local} fallback={<span class="act-time">{it.at}</span>}>
             {(l) => <span class="act-stamp" classList={{ failed: !!l().error || l().uncertain }}>{l().stamp}</span>}
           </Show>
           <Show when={it.kind === "user" && it.receipt}><span class="act-receipt"><Icon name="check" size={11} />{it.receipt}</span></Show>
           <span class="grow" />
-          <Show when={it.kind === "agent"}><button class="icon-btn small act-copy" title="Copy as Markdown" onClick={() => copyText(it.body ?? "", "The reply is on the clipboard")}><Icon name="copy" size={12} /></button></Show>
+          <Show when={it.kind === "agent"}><button class="icon-btn small act-copy" title={tr("Copy as Markdown")} onClick={() => copyText(it.body ?? "", tr("The reply is on the clipboard"))}><Icon name="copy" size={12} /></button></Show>
         </header>
         <EchoBody item={it} scope={props.scope} />
       </article>
@@ -906,8 +907,8 @@ export function ActivityView(props: { source?: ActivitySource }) {
     <div class="activity" style={{ position: "relative" }}>
       <Show when={!placed()}>
         <div class="act-col" style={{ position: "absolute", inset: "0", "min-height": "0", "pointer-events": "none" }} role="status">
-          <div class="act-label eyebrow">Recorded activity — messages and tool excerpts</div>
-          <div class="act-older hint">Reading activity…</div>
+          <div class="act-label eyebrow">{tr("Recorded activity — messages and tool excerpts")}</div>
+          <div class="act-older hint">{tr("Reading activity…")}</div>
         </div>
       </Show>
       <LocalDeleteDialog />
@@ -928,44 +929,44 @@ export function ActivityView(props: { source?: ActivitySource }) {
           <Show when={!fullWidth()}><ColumnEdge /><ColumnEdge right /></Show>
           <Show when={subagentOpen()}>
             <div class="subagent-bar">
-              <button class="btn small" onClick={() => setSubagentOpen(undefined)}><Icon name="arrow-right" size={12} style={{ rotate: "180deg" }} />Main activity</button>
+              <button class="btn small" onClick={() => setSubagentOpen(undefined)}><Icon name="arrow-right" size={12} style={{ rotate: "180deg" }} />{tr("Main activity")}</button>
               <b>{s()?.subagents?.find((k) => k.id === subagentOpen())?.name}</b>
-              <span class="hint">{composer.view()?.subagent?.hint ?? "Loading subagent activity…"}</span>
+              <span class="hint">{composer.view()?.subagent?.hint ?? tr("Loading subagent activity…")}</span>
             </div>
           </Show>
-          <Show when={preview()}>{(p) => <section class="search-preview" aria-label="Search result">
-            <div class="act-label eyebrow">SEARCH RESULT — Saved message</div>
-            <Show when={p().hit.content_truncated}><div class="hint">Excerpt around the match. This message is too long to display in full.</div></Show>
+          <Show when={preview()}>{(p) => <section class="search-preview" aria-label={tr("Search result")}>
+            <div class="act-label eyebrow">{tr("SEARCH RESULT — Saved message")}</div>
+            <Show when={p().hit.content_truncated}><div class="hint">{tr("Excerpt around the match. This message is too long to display in full.")}</div></Show>
             <div class="search-preview-body"><SearchHighlight text={String(p().hit.event.detail ?? "")} query={p().query} /></div>
           </section>}</Show>
           <Show when={!preview()}>
           <div class="act-label eyebrow" style={{ position: "relative" }}>
-            <span style={{ visibility: source().loadingOlder() ? "hidden" : "visible" }}>Recorded activity — messages and tool excerpts</span>
-            <span class="act-older hint" style={{ position: "absolute", inset: "0", padding: "0", display: "flex", "align-items": "center", "justify-content": "center", "text-transform": "none", "letter-spacing": "normal", "font-weight": "normal", visibility: source().loadingOlder() ? "visible" : "hidden" }} aria-hidden={!source().loadingOlder()}>Reading earlier activity…</span>
+            <span style={{ visibility: source().loadingOlder() ? "hidden" : "visible" }}>{tr("Recorded activity — messages and tool excerpts")}</span>
+            <span class="act-older hint" style={{ position: "absolute", inset: "0", padding: "0", display: "flex", "align-items": "center", "justify-content": "center", "text-transform": "none", "letter-spacing": "normal", "font-weight": "normal", visibility: source().loadingOlder() ? "visible" : "hidden" }} aria-hidden={!source().loadingOlder()}>{tr("Reading earlier activity…")}</span>
           </div>
           <Show when={view.expired}>
-            <div class="act-older hint">Older events have expired from the journal.</div>
+            <div class="act-older hint">{tr("Older events have expired from the journal.")}</div>
           </Show>
-          <Show when={!states().archived} fallback={<div class="notice"><Icon name="archive" size={14} /><div>This conversation is archived.</div></div>}>
-            <Show when={view.loaded || view.items.length} fallback={<div class="act-older hint">Reading activity…</div>}>
-              <Show when={view.items.length} fallback={<div class="act-older hint">No recorded activity yet.</div>}>
+          <Show when={!states().archived} fallback={<div class="notice"><Icon name="archive" size={14} /><div>{tr("This conversation is archived.")}</div></div>}>
+            <Show when={view.loaded || view.items.length} fallback={<div class="act-older hint">{tr("Reading activity…")}</div>}>
+              <Show when={view.items.length} fallback={<div class="act-older hint">{tr("No recorded activity yet.")}</div>}>
                 <For each={view.items}>{(it) => <Item item={it} scope={scope()} sourceId={source().target()?.id} postersEnabled={placed() && !pageHidden()} />}</For>
               </Show>
             </Show>
             <Show when={states().working && liveTool()}>
-              <div class="act-live"><span class="typing"><i /><i /><i /></span>Agent is running <b class="mono ell">{liveTool()}</b></div>
+              <div class="act-live"><span class="typing"><i /><i /><i /></span>{tr("Agent is running")} <b class="mono ell">{liveTool()}</b></div>
             </Show>
             <Show when={states().attention}>
-              <div class="notice warn"><Icon name="circle-alert" size={14} /><div><b>{s()?.caption}.</b> Answer it in the agent's terminal or in the Zerus app; answering here arrives with the session actions.</div></div>
+              <div class="notice warn"><Icon name="circle-alert" size={14} /><div><b>{captionText(s()?.caption ?? "")}.</b> {tr("Answer it in the agent's terminal or in the Zerus app; answering here arrives with the session actions.")}</div></div>
             </Show>
             <Show when={states().error}>
-              <div class="notice danger"><Icon name="circle-alert" size={14} /><div><b>{s()?.caption}.</b> {s()?.summary}</div></div>
+              <div class="notice danger"><Icon name="circle-alert" size={14} /><div><b>{captionText(s()?.caption ?? "")}.</b> {s()?.summary}</div></div>
             </Show>
             <Show when={states().offline}>
-              <div class="notice warn"><Icon name="wifi-off" size={14} /><div><b>{s()?.machine} is offline.</b> This is the last activity received. It updates again when the machine reconnects.</div></div>
+              <div class="notice warn"><Icon name="wifi-off" size={14} /><div><b>{tr("%1 is offline.", s()?.machine ?? "")}</b> {tr("This is the last activity received. It updates again when the machine reconnects.")}</div></div>
             </Show>
             <Show when={states().ended}>
-              <div class="notice"><Icon name="archive" size={14} /><div>This session left the list; its Activity stopped here.</div></div>
+              <div class="notice"><Icon name="archive" size={14} /><div>{tr("This session left the list; its Activity stopped here.")}</div></div>
             </Show>
             <Show when={states().failure}>
               <div class="notice danger"><Icon name="circle-alert" size={14} /><div>{states().failure}</div></div>
