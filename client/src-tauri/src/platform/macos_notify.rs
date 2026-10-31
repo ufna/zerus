@@ -33,6 +33,7 @@ use crate::desk::DeskInput;
 use crate::notifier::{Center, Done, Notifier};
 
 pub(crate) mod observers;
+mod owned_request;
 
 pub struct Ivars {
     app: AppHandle,
