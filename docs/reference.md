@@ -288,7 +288,9 @@ CLI selection (`ZERUS_CLIENT_HGS` or `--hgs`) or fleet routing (`HGS_SELF`,
 Empty, non-UTF8 and default-looking explicit selectors also refuse. Native origin
 evidence must precede Config::load's default HGS_STATE_DIR injection and the GUI's
 `--hgs` conversion; later mutations cannot erase an original override. Such
-launches keep drop-on-Quit with a bounded reason in the existing notice.
+launches keep drop-on-Quit. The proposed future caller uses a freshly selected,
+translated note in the group's existing Undo toast at registration; a refusal
+first discovered at Quit is diagnostic only, with closed codes and counts.
 The initial strict fence also excludes the maintained Mac LaunchAgent's `--hgs`
 launch and Linux launches passing it. Exact selected executable/configuration
 origin must be qualified on both maintained launch paths before delivery is
@@ -315,8 +317,12 @@ callers. Kernel birth/cwd/open-file evidence must be complete; hidden/unreadable
 or omitted observations are UNVERIFIED. Existing process helpers and repeated
 empty snapshots do not provide atomic exclusion, and no qualifying mechanism is
 available yet. If that proof cannot be established, publish no hold or durable
-delivery for the worktree and keep today's drop-on-Quit with a bounded existing
-diagnostic. After any partial hold, retain denial/manual recovery instead of
+delivery for the worktree and keep today's drop-on-Quit with the registration-time
+Undo note and Quit-time diagnostic boundary above. Today's Tauri client has no
+visible Quit notice; current toasts and the bounded local stderr drop line remain
+unchanged until the qualified caller lands. No new confirmation, exit delay or
+next-start notice is introduced for pre-hold refusal. After any partial hold,
+retain denial/manual recovery instead of
 rolling it back. No signals, restarts, process-name assumptions, old consent or
 unlock/downgrade repairs close the race. See the design's exact negative evidence
 and still-unprotectable legacy windows; R3, the full matrix and the shipped

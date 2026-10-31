@@ -78,11 +78,18 @@ transaction:
 4. Before allowing the child production anchor access, independently pin its
    birth and actual executed image through kernel evidence, including its
    `/proc/<pid>/exe` identity and bounded hash. Match it to both the pinned source
-   descriptor and embedded expectation, with fresh generation checks. Qualify
-   replacement, in-place writer, exec failure, child exit, PID reuse, hidden image
-   and updater races. Any unsupported observation refuses; successful spawn is
-   not successful image binding.
-5. The genuine child captures its own original environment before `Config::load`
+   descriptor and embedded expectation, with fresh generation checks. A hash at
+   observation time does not prove the pages mapped at exec unless writes were
+   excluded from exec through the complete check. That write-exclusion assumption
+   must be proven on the actual running kernel and filesystem; descriptor exec
+   and generic ETXTBSY expectations do not establish it. Unsupported or
+   unqualified filesystems/kernels make this binding unavailable. Qualification
+   includes a modify-then-restore writer spanning exec and hash, replacement,
+   exec failure, child exit, hidden image and updater races. Keep the owned child
+   unreaped during the check, with one custody owner for reaping, no auto-reap or
+   SA_NOCLDWAIT, and a pinned pidfd for observations retained beyond the wait.
+   Successful spawn or main-ELF hash alone is not successful loaded-image binding.
+5. The genuine child captures its received environment before `Config::load`
    and cannot proceed to any production probe merely because it was exec'd.
    Its initial mode parks behind the reviewed one-use stdin/parent-observed birth
    and sealed-registration protocol. Actual worker, child, fd and pipe custody
@@ -109,6 +116,12 @@ agreement and qualification. No already-live peer, static selection or passive
 observation is presumed to solve that gap. Until it is resolved, initial durable
 admission stays unavailable; this proposal authorizes no origin-only process,
 connection or exception to the initial transaction order.
+The next proposed boundary is finite in-process acquisition/read-set evidence
+with zero child, connection or anchor operations: immutable raw inputs, pinned
+image descriptor and bounded captured configuration bytes. Whether that evidence
+can authorize anything remains a separate G1/G3/native decision. Later charged
+execution must bind those exact inputs, never re-resolve them; no configuration
+derivation is presumed available without its own shared bounded native contract.
 
 The maintained Arch service currently launches `hgs-tray` without `--hgs`, and
 the desktop entry adds `--sessions`. Current core discovery uses the explicit
@@ -142,10 +155,12 @@ requires the entire native origin and resource graph.
   serialized digest is insufficient. Mac external overrides cannot substitute
   for G1's own sealed bundle. This proposal does not activate that relaxation.
 - The parent records its native default derivation separately from original user
-  observations. A qualified child independently captures its original scope and
-  verifies the parent's actual normalized derivations through the native
-  parent/child custody graph. Caller JSON or an environment allow flag cannot
-  label an override as a native derivation.
+  observations. The parent constructs its child's arguments/environment. The
+  child's pre-loader capture is only a consistency check that its received scope
+  equals the parent's sealed native derivation; it is not independent evidence
+  of the GUI's original inputs. That original provenance and the parent/child
+  custody graph must be established separately. Caller JSON or an environment
+  allow flag cannot label an override as a native derivation.
 - Build an immutable native configuration object from a complete, bounded input
   manifest. Include state/config root derivation, original working directory
   where relevant, configuration and machine-catalog file identities/digests,
@@ -181,14 +196,33 @@ and coordinator rollouts must install the built pair together once the mechanism
 exists. Mac uses the existing paired installer and its signed bundle swap and
 rollback; no second updater or pairing record is introduced.
 
-Refusal before the first hold/reservation retains drop-on-Quit and carries the
-whole original group's failure to survive Quit in the existing Quit notice
-**before exit** and diagnostic. Use a fixed catalog sentence plus counts as core
-Text, including Russian translation. Emit only bounded reason codes/counts/
-digests, never paths, PIDs, process names or private configuration values. Do not
-show success, omit a member or repack a group. After any partial hold or charge,
-retain denial/manual recovery and unresolved custody; mismatch is not repair.
-Exact copy uses webui's existing-surface review, not a new UI area.
+This includes a running GUI whose embedded expectation becomes stale after a
+CLI-only install or on-disk Linux pair change. Durable quit stays unavailable
+until the pair matches and the GUI restarts. CLI-first coordinator rollouts may
+pass through this truthful unavailable window. Do not add a restart prompt,
+automatic update/restart or new skew surface.
+
+There is no existing visible Quit notice in today's Tauri client. Current
+drop-on-Quit logs through `action_delay::cancel_all` only, and a hidden window
+cannot display a notice before the exit-flush acknowledgement or timeout closes
+it. Current toasts and the pre-existing local stderr drop line, including its
+bounded five-name group preview, stay unchanged until the qualified caller lands.
+
+For that future caller, evaluate native availability freshly at group registration
+and use the group's existing Undo-window toast note line for one fixed core Text
+sentence, translated through the catalog including Russian, such as
+"Quitting Zerus before this runs cancels it." It applies to the whole original
+group and is chosen from that fresh evaluation, never a cached Boolean. Undo
+windows registered during running-GUI pair skew use this same sentence. Do not
+omit members, repack a group, show success or imply an action will survive Quit.
+
+A refusal first discovered at Quit is diagnostic only: new origin reasons use
+bounded closed codes, counts and digests, without paths, PIDs, process names or
+private configuration values, alongside the existing local drop line. No new
+pre-exit dialog/confirmation, exit delay or next-start notice is introduced;
+pre-hold refusal has no durable record. A confirmation would need owner direction
+and is outside this scope. After any partial hold or charge, retain denial/manual
+recovery and unresolved custody; mismatch is not repair.
 
 ## Independent gates and proposed review sequence
 

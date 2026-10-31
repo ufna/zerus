@@ -50,9 +50,10 @@ closed; do not resolve `..`, symlinks or alternate spellings to turn an override
 into a default. A lexical comparison cannot establish native ownership; its only use
 here is refusal before I/O. Every store entry point shares this guard; an early
 startup availability check cannot bypass it at a later Quit or recovery read.
-An isolated launch retains drop-on-Quit with one bounded reason plus the existing
-bounded pending counts/names. It starts no preparer, helper or status subprocess
-through this protocol.
+An isolated launch retains drop-on-Quit and starts no preparer, helper or status
+subprocess through this protocol. The future refusal presentation uses the
+registration-time Undo toast note and Quit-time diagnostic rules below; today's
+toast and bounded local stderr drop line remain unchanged until its caller lands.
 
 ### Original environment and entry-point provenance
 
@@ -80,9 +81,11 @@ entry cannot borrow an earlier permissive check after its context has changed.
 Helper normalization is possible only from a genuinely admitted native parent
 whose original scope passed. It may construct a minimal child environment using
 that parent's verified default configuration derivation; it may never erase an
-original explicit override to obtain admission. The child independently captures
-its original environment before its own Config::load. That classification is
-necessary but insufficient: original-stdin nonce, actual parent-observed child
+original explicit override to obtain admission. The child captures its received
+environment before its own Config::load and checks consistency with the parent's
+sealed native derivation. This is not independent evidence of the GUI's original
+environment. That classification is necessary but insufficient: original-stdin
+nonce, actual parent-observed child
 birth, sealed registration and inherited exact custody must establish the parent/
 helper origin graph described below. A caller JSON field, environment flag or
 decoded classification cannot mint ProductionAnchor or live-worker authority.
@@ -540,7 +543,8 @@ the pre-hold quiescence and exclusion requirement below is actually qualified:
    and durable publication; a point-in-time snapshot is not that exclusion.
    If this cannot be proven before publication, publish **no hold** for that
    worktree, reserve no durable delivery for it, and retain today's drop-on-Quit
-   behavior with a bounded reason in the existing diagnostic/notice surface.
+   behavior with the registration-time Undo toast note and Quit-time diagnostic
+   rules below.
    Do not silently omit a member or repack an original group to permit partial
    delivery; original group validity, ordering and refusal rules still apply.
    Do not claim that its requested action will survive Quit. This is a proposed
@@ -746,14 +750,27 @@ Use existing sticky action/cleanup notices with bounded ordered counts and at mo
 five names per group. Keep native removal choice and negative evidence across all
 partial outcomes. UI acknowledgement is exact notice identity only; it is neither
 receipt acceptance nor resource release. Unknown effects and unissued pending
-members remain explicit. Windows and isolated launches retain today's truthful
-drop wording; production Linux/macOS wording changes only when their actual
-qualified delivery caller lands.
+members remain explicit. Today's Tauri client has no visible Quit notice:
+drop-on-Quit is only `action_delay::cancel_all`'s local stderr line, which may
+include up to five Debug-quoted session names. A hidden window need not appear
+before exit-flush acknowledgement/timeout. Current toasts and that pre-existing
+bounded local line remain unchanged until the qualified delivery caller lands.
 
-When that caller lands, show the bounded isolation/refused-selector reason in
-the existing Quit notice, including an inherited agent HGS_STATE_DIR; stderr
-alone is insufficient. Disk-full and storage-cap refusals use that same notice
-path. Reasons expose no private path, raw environment value or provider error.
+For that caller, a fresh native availability evaluation at each original group
+registration chooses one fixed catalog sentence as core Text in the group's
+existing Undo-window toast note, with Russian translation: for example,
+"Quitting Zerus before this runs cancels it." It describes the whole original
+group, never some members, and never comes from a cached availability Boolean.
+This includes isolation, refused selectors, an inherited agent HGS_STATE_DIR,
+running-GUI pair skew and an already known storage/cap refusal.
+
+A refusal first appearing at Quit is diagnostic only, using bounded closed
+codes/counts/digests alongside the existing drop line, never success. No pre-exit
+dialog/confirmation, exit delay or next-start notice is added for a refusal
+before any durable record. Such a confirmation would require owner direction.
+New origin/store reasons expose no session names, paths, raw environment values,
+PIDs, process names or provider errors. A partial hold/reservation still retains
+the existing denial/manual-recovery and custody requirements.
 
 Retention is indexed and bounded. Only genuinely settled payloads/notices may be
 compacted into spent UUID tombstones; never prune unresolved evidence to admit
@@ -766,8 +783,8 @@ independent. No timer, expiry or age creates execution/cleanup permission.
 Registrations, captures, notices and tombstones contain session names, paths and
 targets. The quit store, bootstrap/custody files and capture spool are **never**
 included in any export or diagnostics bundle, including Private analytics'
-aggregate export, and are never uploaded. Diagnostic logging is restricted to
-bounded counts, closed reason codes and digests; it must not include payloads,
+aggregate export, and are never uploaded. New origin/store diagnostic logging
+is restricted to bounded counts, closed reason codes and digests; it must not include payloads,
 session names, paths, targets, raw environment values or startup nonces. Operator
 recovery output obeys the same rule. Its audited repair evidence remains private
 under the same storage bounds, rather than becoming a public transcript or dump.
