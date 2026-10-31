@@ -5,6 +5,7 @@ import { Icon } from "../lib/icons";
 import { contentScale } from "../../store/ui";
 import { skin } from "../../skin/runtime";
 import { terminal, type Screen } from "../../store/terminal";
+import { tr } from "../../i18n";
 
 // xterm.js 6 loads when Terminal first opens. Linux keeps the DOM renderer;
 // macOS and Windows add the WebGL addon and fall back to DOM when its
@@ -94,7 +95,7 @@ export function TerminalTab() {
       <div class="term-bar">
         <span class="ell" title={terminal.status()}>{terminal.status()}</span>
         <span class="grow" />
-        <button class="icon-btn" data-tip={reconnectTip()} aria-label="Reconnect terminal" disabled={!terminal.ready()} onClick={() => { void terminal.reconnect(); }}>
+        <button class="icon-btn" data-tip={reconnectTip()} aria-label={tr("Reconnect terminal")} disabled={!terminal.ready()} onClick={() => { void terminal.reconnect(); }}>
           <Icon name="refresh-cw" size={15} />
         </button>
         <button class="icon-btn" data-tip={toggleTip()} aria-label={connected() ? "Disconnect terminal" : "Connect terminal"} disabled={!connected() && !terminal.ready()}

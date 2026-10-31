@@ -103,7 +103,7 @@ function UsagePanel(props: { a: Account }) {
             </div>
             <div class="row dim">
               <Show when={w().resets}><span>{w().resets}</span></Show>
-              <Show when={u().seeded && u().checked_at !== null}><span>Checked {clock(u().checked_at!)}</span></Show>
+              <Show when={u().seeded && u().checked_at !== null}><span>{tr("Checked %1", clock(u().checked_at!))}</span></Show>
               <span class="grow" />
               <span class="acct-pace">{w().forecast}</span>
             </div>
@@ -172,7 +172,7 @@ function Detail(props: { a: Account }) {
           <Show when={props.a.members.length > shown().length}>
             <span class="acct-more-anchor">
               <button class="btn small" aria-haspopup="dialog" aria-expanded={moreOpen()} onClick={() => { setMoreQuery(""); setMoreOpen(!moreOpen()); }}>
-                +{props.a.members.length - shown().length} more
+                {tr("+%1 more", props.a.members.length - shown().length)}
               </button>
               <Show when={moreOpen()}>
                 <div class="acct-more" role="dialog" aria-label={tr("Machines with %1", props.a.label)}
@@ -205,7 +205,7 @@ function Detail(props: { a: Account }) {
             <Show when={loginLabel(m())}>{(label) => <button class="btn" disabled={!m().online||!m().installed||managementBusy()} title={m().provider==="dsh"?tr("Save a DeepSeek API key on %1.", m().machine):undefined} onClick={event=>{accountManagement.close();accountManagement.clearNotice();void accountSetup.open(m().provider==="dsh"?"key":"login",event.currentTarget,props.a.key,m().key);}}><Icon name="key-round" size={13} />{label()}</button>}</Show>
             <Show when={!m().installed}><button class="btn" disabled={!m().online||m().provider==="opencode"||managementBusy()} onClick={event=>{accountManagement.close();accountManagement.clearNotice();void accountSetup.open("install",event.currentTarget,props.a.key,m().key);}}><Icon name="download" size={13} />{tr("Install agent…")}</button></Show>
             <Show when={m().opencode?.stopped}>
-              <button class="btn" disabled={!m().online||managementBusy()} onClick={event=>{accountManagement.close();accountManagement.clearNotice();void accountSetup.open("start",event.currentTarget,props.a.key,m().key);}}><Icon name="play" size={13} />Start OpenCode on {m().machine}</button>
+              <button class="btn" disabled={!m().online||managementBusy()} onClick={event=>{accountManagement.close();accountManagement.clearNotice();void accountSetup.open("start",event.currentTarget,props.a.key,m().key);}}><Icon name="play" size={13} />{tr("Start OpenCode on %1", m().machine)}</button>
             </Show>
           </Actions>
         </div>
@@ -218,9 +218,9 @@ function Detail(props: { a: Account }) {
                 )}</For>
               </div>
             </Show>
-            <Show when={oc().truncated}><p class="dim">Showing the first {oc().providers.length} providers.</p></Show>
+            <Show when={oc().truncated}><p class="dim">{tr("Showing the first %1 providers.", oc().providers.length)}</p></Show>
             <Show when={oc().stale_catalog_at !== null}>
-              <p class="dim">Last known catalog from {new Date(oc().stale_catalog_at! * 1000).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" })}.</p>
+              <p class="dim">{tr("Last known catalog from %1.", new Date(oc().stale_catalog_at! * 1000).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" }))}</p>
             </Show>
           </>
         )}</Show>

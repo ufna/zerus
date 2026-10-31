@@ -25,7 +25,7 @@ export function SessionFileDialog() {
           <div class="dlg-body">
             <div class="dlg-detail">{file().title}</div>
             <div class="dlg-detail session-file-path">{file().path}</div>
-            <Show when={file().location}><div class="dlg-detail">Source position: {file().location}</div></Show>
+            <Show when={file().location}><div class="dlg-detail">{tr("Source position: %1", file().location ?? "")}</div></Show>
             <Show when={file().checking || file().hint}><div class="dlg-detail session-file-hint">{file().checking ? tr("Checking the downloaded copy…") : file().hint}</div></Show>
             <Show when={file().checking || file().downloading}><progress aria-label={file().downloading ? tr("Downloading file from %1", file().computer) : tr("Checking the downloaded copy…")} /></Show>
             <Show when={file().error}><div class="dlg-error">{file().error}</div></Show>

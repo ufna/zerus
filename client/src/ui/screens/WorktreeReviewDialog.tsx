@@ -21,10 +21,10 @@ export default function WorktreeReviewDialog() {
   return <>
     <dialog ref={dialog} class="dlg su-dlg worktree-review" style={{ width: "820px" }} aria-labelledby="worktree-review-title" onCancel={(e) => { e.preventDefault(); if (!busy()) closeWorktreeReview(); }} onClose={closeWorktreeReview}>
       <div class="dlg-head"><Icon name="folder-git-2" size={18} class="accent" /><h2 id="worktree-review-title">{title()}</h2><span class="grow" /><button class="icon-btn" aria-label={tr("Close")} disabled={busy()} onClick={closeWorktreeReview}><Icon name="x" size={16} /></button></div>
-      <div class="dlg-body"><p class="muted su-pre">Computer: {view()?.machine ?? worktreeReviewDialog()?.machine}{"\n"}{view()?.focus ? `Worktree: ${view()?.focus}` : `Repository: ${view()?.repository ?? ""}`}</p>
+      <div class="dlg-body"><p class="muted su-pre">{view()?.focus ? tr("Computer: %1\nWorktree: %2", view()?.machine ?? worktreeReviewDialog()?.machine ?? "", view()?.focus ?? "") : tr("Computer: %1\nRepository: %2", view()?.machine ?? worktreeReviewDialog()?.machine ?? "", view()?.repository ?? "")}</p>
         <p class="hint">{tr("Removal uses git worktree remove without force. Ignored files in a removed folder, such as build output, are deleted with it. Blocked worktrees explain what to finish first.")}</p>
         <table class="su-table wc-table"><thead><tr><th /><th>{tr("Worktree")}</th><th>{tr("State")}</th><th>{tr("Details")}</th></tr></thead><tbody>
-          <Show when={!reading()} fallback={<tr><td colspan="4" class="hint">Reviewing worktrees on {view()?.machine ?? worktreeReviewDialog()?.machine}…</td></tr>}><For each={view()?.rows}>{(row) =>
+          <Show when={!reading()} fallback={<tr><td colspan="4" class="hint">{tr("Reviewing worktrees on %1…", view()?.machine ?? worktreeReviewDialog()?.machine ?? "")}</td></tr>}><For each={view()?.rows}>{(row) =>
             <tr classList={{ blocked: !row.selectable }} title={row.path}><td><input type="checkbox" aria-label={`Select ${row.path}`} checked={!!checked()[row.id]} disabled={!row.selectable || busy() || reading()} onChange={(e) => setChecked({ ...checked(), [row.id]: e.currentTarget.checked })} /></td><td><div class="ell"><b>{leaf(row.path)}</b></div><div class="mono dim ell">{row.branch || "—"}</div></td><td><span class="wc-verdict" data-v={row.state}>{row.state}</span></td><td class="hint" title={row.details}>{row.brief}</td></tr>
           }</For></Show>
         </tbody></table>
@@ -48,9 +48,9 @@ function WorktreeConfirm(props: { value: WorktreeConfirmation; title: string; or
   onCleanup(() => { dialog.close(); queueMicrotask(() => { if (props.origin.isConnected) props.origin.focus(); }); });
   return <dialog ref={dialog} class="dlg su-dlg" style={{ width: "520px" }} aria-labelledby="worktree-confirm-title" onCancel={(e) => { e.preventDefault(); props.cancel(); }}>
     <div class="dlg-head"><Icon name="triangle-alert" size={18} class="accent" /><h2 id="worktree-confirm-title">{props.title}</h2><span class="grow" /><button class="icon-btn" aria-label={tr("Close")} onClick={props.cancel}><Icon name="x" size={16} /></button></div>
-    <div class="dlg-body"><div class="notice warn"><Icon name="triangle-alert" size={16} /><b>Remove {c.paths.length} {c.paths.length === 1 ? "worktree" : "worktrees"} on {c.machine}?</b></div>
+    <div class="dlg-body"><div class="notice warn"><Icon name="triangle-alert" size={16} /><b>{c.paths.length === 1 ? tr("Remove 1 worktree on %1?", c.machine) : tr("Remove %1 worktrees on %2?", c.paths.length, c.machine)}</b></div>
       <ul class="cc-list mono"><For each={c.paths}>{(path) => <li>{path}</li>}</For></ul><ul class="cc-facts">
-        <Show when={c.ignored.length}><li style={{ "white-space": "pre-line" }}>Ignored files deleted with them: {c.ignored.join("\n") }.</li></Show><Show when={c.missing}><li>{tr("Missing folders: only Git's record is removed.")}</li></Show>
+        <Show when={c.ignored.length}><li style={{ "white-space": "pre-line" }}>{tr("Ignored files deleted with them:")} {c.ignored.join("\n") }.</li></Show><Show when={c.missing}><li>{tr("Missing folders: only Git's record is removed.")}</li></Show>
         <li>{c.branches.length ? tr("Merged branches deleted: %1.", c.branches.join(", ")) : tr("All branches are kept.")}</li><Show when={c.process_warning}><li>{c.process_warning}</li></Show><li>{tr("Each worktree is checked again before removal. This cannot be undone.")}</li>
       </ul><Show when={c.consent}><label class="check"><input type="checkbox" checked={consent()} onChange={(e) => setConsent(e.currentTarget.checked)} />{c.consent}</label></Show>
     </div><div class="dlg-foot"><span class="grow" /><button class="btn" autofocus onClick={props.cancel}>{tr("Cancel")}</button><button class="btn solid-danger" disabled={!!c.consent && !consent()} onClick={() => void props.confirm(consent())}>{c.button}</button></div>

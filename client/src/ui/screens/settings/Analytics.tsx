@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { inTauri } from "../../../bridge";
 import { Icon } from "../../lib/icons";
 import { Actions, Check, Group, Lines, NumberField, Row, SectionHead, Select, Status, Table } from "./ui";
+import { tr, trNoop } from "../../../i18n";
 import {
   PROVIDERS, coverageText, defaultRange, detailText, displayRoute, measure, overviewText, pageText, voiceText,
   type Report, type Row as Bucket,
@@ -138,17 +139,17 @@ export function AnalyticsSection() {
 
   return (
     <>
-      <SectionHead title="Private analytics" intro="Content-free daily counters stay on each computer. Reads do not enable collection. Unknown measures are unavailable, not zero. Dates are inclusive UTC days (up to 90)." />
+      <SectionHead title={trNoop("Private analytics")} intro={tr("Content-free daily counters stay on each computer. Reads do not enable collection. Unknown measures are unavailable, not zero. Dates are inclusive UTC days (up to 90).")} />
       <Group>
         <Actions>
-          <Select value={selection()} label="Selected computers" onChange={setSelection} options={computers()} />
-          <label class="an-date"><span class="set-label">From</span>
-            <input class="field tabular" type="date" aria-label="From UTC day" value={from()} onChange={(e) => setFrom(e.currentTarget.value)} />
+          <Select value={selection()} label={trNoop("Selected computers")} onChange={setSelection} options={computers()} />
+          <label class="an-date"><span class="set-label">{tr("From")}</span>
+            <input class="field tabular" type="date" aria-label={tr("From UTC day")} value={from()} onChange={(e) => setFrom(e.currentTarget.value)} />
           </label>
-          <label class="an-date"><span class="set-label">Through</span>
-            <input class="field tabular" type="date" aria-label="Through UTC day" value={through()} onChange={(e) => setThrough(e.currentTarget.value)} />
+          <label class="an-date"><span class="set-label">{tr("Through")}</span>
+            <input class="field tabular" type="date" aria-label={tr("Through UTC day")} value={through()} onChange={(e) => setThrough(e.currentTarget.value)} />
           </label>
-          <button type="button" class="btn primary" disabled={!view()?.can_refresh} onClick={refresh}><Icon name="refresh-cw" size={13} />Apply and refresh</button>
+          <button type="button" class="btn primary" disabled={!view()?.can_refresh} onClick={refresh}><Icon name="refresh-cw" size={13} />{tr("Apply and refresh")}</button>
         </Actions>
         <Show when={failure() ?? view()?.status}>{(text) => <Status kind={failure() ? "error" : working() ? "busy" : "muted"}>{text()}</Status>}</Show>
         <Lines class="an-overview" text={report() ? overviewText(report()!) : "Choose a range and refresh to read analytics."} />
@@ -163,12 +164,12 @@ export function AnalyticsSection() {
         </Show>
       </Group>
 
-      <Group title="Daily agent work" aside={
-        <Select value={provider()} label="Provider" onChange={(v) => { setProvider(v); setOffset(0); }}
+      <Group title={trNoop("Daily agent work")} aside={
+        <Select value={provider()} label={trNoop("Provider")} onChange={(v) => { setProvider(v); setOffset(0); }}
           options={[{ value: "", label: "All providers" }, ...PROVIDERS.map((p) => ({ value: p, label: p }))]} />
       }>
         <div class="an-split">
-          <Table class="an-table" label="Daily agent work" rows={page().rows} rowKey={key} selected={selected()} onSelect={setSelected}
+          <Table class="an-table" label={trNoop("Daily agent work")} rows={page().rows} rowKey={key} selected={selected()} onSelect={setSelected}
             empty={<span class="muted">{view()?.busy ? "Reading…" : "No current read available."}</span>}
             columns={[
               { key: "day", label: "UTC day", class: "tabular", render: (r) => r.date },
@@ -181,51 +182,51 @@ export function AnalyticsSection() {
               { key: "input", label: "Input wait", class: "num", render: (r) => measure(r.counters, "input_wait_ms") },
             ]} />
           <aside class="an-detail">
-            <Show when={detail()} fallback={<p class="muted">Select a day to see all reported counts, token usage, typed failures and histogram means.</p>}>
+            <Show when={detail()} fallback={<p class="muted">{tr("Select a day to see all reported counts, token usage, typed failures and histogram means.")}</p>}>
               {(r) => <Lines text={detailText(r())} />}
             </Show>
           </aside>
         </div>
         <Actions>
-          <button type="button" class="btn small" disabled={page().offset === 0} onClick={() => setOffset(Math.max(0, page().offset - 50))}><Icon name="chevron-left" size={12} />Previous</button>
-          <button type="button" class="btn small" disabled={page().offset + page().rows.length >= page().total} onClick={() => setOffset(page().offset + 50)}>Next<Icon name="chevron-right" size={12} /></button>
+          <button type="button" class="btn small" disabled={page().offset === 0} onClick={() => setOffset(Math.max(0, page().offset - 50))}><Icon name="chevron-left" size={12} />{tr("Previous")}</button>
+          <button type="button" class="btn small" disabled={page().offset + page().rows.length >= page().total} onClick={() => setOffset(page().offset + 50)}>{tr("Next")}<Icon name="chevron-right" size={12} /></button>
           <span class="muted tabular">{pageText(page().offset, page().rows.length, page().total)}</span>
         </Actions>
       </Group>
 
-      <Group title="Voice on processing computers" hint="Voice counts are separate from agent turns. Accepted audio and total queue/processing time have units; percentile latency is unavailable. Speech collection is managed independently on its processing host.">
+      <Group title={trNoop("Voice on processing computers")} hint={trNoop("Voice counts are separate from agent turns. Accepted audio and total queue/processing time have units; percentile latency is unavailable. Speech collection is managed independently on its processing host.")}>
         <div class="an-voice">
           <For each={report()?.voice ?? []}>{(v) => <Lines class="muted" text={voiceText(v)} />}</For>
         </div>
       </Group>
 
-      <Group title="Collection on this computer" hint="Disabling collection keeps existing history. Purge removes only this computer's agent analytics, not speech statistics or durable delivery receipts. Remote collection controls are read-only here.">
-        <Check label="Collect content-free agent analytics" checked={enabled()} disabled={!view()?.can_change_local} onChange={setEnabled} />
-        <Row label="Daily aggregate retention">
-          <NumberField value={retention()} min={1} max={90} suffix="days" label="Daily aggregate retention"
+      <Group title={trNoop("Collection on this computer")} hint={trNoop("Disabling collection keeps existing history. Purge removes only this computer's agent analytics, not speech statistics or durable delivery receipts. Remote collection controls are read-only here.")}>
+        <Check label={trNoop("Collect content-free agent analytics")} checked={enabled()} disabled={!view()?.can_change_local} onChange={setEnabled} />
+        <Row label={trNoop("Daily aggregate retention")}>
+          <NumberField value={retention()} min={1} max={90} suffix="days" label={trNoop("Daily aggregate retention")}
             disabled={!view()?.can_change_local} onChange={setRetention} />
         </Row>
         <Actions>
-          <button type="button" class="btn primary" disabled={!view()?.can_change_local} onClick={applyLocal}>Apply locally</button>
+          <button type="button" class="btn primary" disabled={!view()?.can_change_local} onClick={applyLocal}>{tr("Apply locally")}</button>
           <button type="button" class="btn danger" disabled={!view()?.can_change_local}
             onClick={() => void change(invoke<View>("analytics_purge_check")).then(apply, failed)}>
-            <Icon name="trash" size={13} />Purge local history…
+            <Icon name="trash" size={13} />{tr("Purge local history…")}
           </button>
         </Actions>
       </Group>
       <Actions>
-        <button type="button" class="btn" disabled={!view()?.can_export} onClick={openReview}><Icon name="file-text" size={14} />Review aggregate diagnostics…</button>
+        <button type="button" class="btn" disabled={!view()?.can_export} onClick={openReview}><Icon name="file-text" size={14} />{tr("Review aggregate diagnostics…")}</button>
       </Actions>
 
       <Show when={view()?.shorten_pending}>
         {(days) => (
-          <Question title="Shorten local analytics history?" yes="Shorten retention"
+          <Question title={tr("Shorten local analytics history?")} yes="Shorten retention"
             text={`Keep only the latest ${days()} UTC days of agent analytics on this computer. Older daily aggregates will be deleted. Speech statistics and durable delivery receipts are unaffected.`}
             answer={answer("analytics_configure_answer")} />
         )}
       </Show>
       <Show when={view()?.purge_pending}>
-        <Question title="Purge local agent analytics?" yes="Purge local history"
+        <Question title={tr("Purge local agent analytics?")} yes="Purge local history"
           text="Permanently delete all retained agent analytics on this computer. Speech statistics, other computers and durable delivery receipts are unaffected. Collection keeps its current enabled/disabled setting."
           answer={answer("analytics_purge")} />
       </Show>
@@ -257,7 +258,7 @@ function Question(props: { title: string; text: string; yes: string; answer: (ye
       <div class="dlg-foot">
         <span class="spacer" />
         <button type="button" class="btn danger" onClick={() => answer(true)}>{props.yes}</button>
-        <button type="button" class="btn primary" autofocus onClick={() => answer(false)}>Cancel</button>
+        <button type="button" class="btn primary" autofocus onClick={() => answer(false)}>{tr("Cancel")}</button>
       </div>
     </dialog>
   );
@@ -271,15 +272,15 @@ function Review(props: { text: string; close: (save: boolean) => void }) {
   return (
     <dialog class="dlg wide" ref={(el) => { dialog = el; queueMicrotask(() => el.showModal()); }} aria-labelledby="analytics-review-title"
       onCancel={(e) => { e.preventDefault(); close(false); }}>
-      <div class="dlg-head"><h2 id="analytics-review-title">Review aggregate diagnostics</h2></div>
+      <div class="dlg-head"><h2 id="analytics-review-title">{tr("Review aggregate diagnostics")}</h2></div>
       <div class="dlg-body">
-        Review these aggregate fields before saving a local JSON file. Computer numbers are anonymous within this file. This export includes no logs, message content, account details or native identifiers, and is never uploaded automatically.
-        <pre class="an-json" aria-label="Aggregate diagnostics">{props.text}</pre>
+        {tr("Review these aggregate fields before saving a local JSON file. Computer numbers are anonymous within this file. This export includes no logs, message content, account details or native identifiers, and is never uploaded automatically.")}
+        <pre class="an-json" aria-label={tr("Aggregate diagnostics")}>{props.text}</pre>
       </div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn" onClick={() => close(true)}>Save file…</button>
-        <button type="button" class="btn primary" autofocus onClick={() => close(false)}>Cancel</button>
+        <button type="button" class="btn" onClick={() => close(true)}>{tr("Save file…")}</button>
+        <button type="button" class="btn primary" autofocus onClick={() => close(false)}>{tr("Cancel")}</button>
       </div>
     </dialog>
   );

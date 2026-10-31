@@ -8,6 +8,7 @@ import { APPROVALS_KEY, APPROVALS_WARNING, APPROVALS_HINT, createApprovalOptIn }
 import { Icon } from "../../lib/icons";
 import { Actions, Group, SectionHead, Status, Table, Switch } from "./ui";
 import { PLACEHOLDER, createJournal, type JournalState, type Page } from "./approvals-journal";
+import { tr, trNoop } from "../../../i18n";
 
 // Settings > Automatic approvals (tray/src/AutomaticApprovalSettings.cpp) as
 // the approved mockup lays it out. The separate opt-in is never seeded from
@@ -36,26 +37,26 @@ export function ApprovalsSection() {
 
   return (
     <>
-      <SectionHead title="Automatic approvals" />
+      <SectionHead title={trNoop("Automatic approvals")} />
       <Group class="appr-toggle">
-        <div class="set-row"><div class="set-row-text"><label class="set-label danger" for="appr-on">Automatically approve tool requests (dangerous)</label></div>
-          <div class="set-row-control"><Switch id="appr-on" checked={flag(APPROVALS_KEY)} label="Automatically approve tool requests (dangerous)" disabled={optIn.busy()}
+        <div class="set-row"><div class="set-row-text"><label class="set-label danger" for="appr-on">{tr("Automatically approve tool requests (dangerous)")}</label></div>
+          <div class="set-row-control"><Switch id="appr-on" checked={flag(APPROVALS_KEY)} label={trNoop("Automatically approve tool requests (dangerous)")} disabled={optIn.busy()}
             onChange={(on) => optIn.request(on, document.getElementById("appr-on") ?? document.activeElement as HTMLElement)} /></div></div>
         <div class="notice danger"><Icon name="triangle-alert" size={14} /><span>{APPROVALS_WARNING}</span></div>
         <p class="set-group-hint">{APPROVALS_HINT}</p>
       </Group>
       <Show when={optIn.origin()} keyed>{(origin) => <ApprovalsConfirm origin={origin} actions={optIn} />}</Show>
 
-      <Group title="Approval journal">
+      <Group title={trNoop("Approval journal")}>
         <Actions>
-          <input class="field grow" placeholder="Exact computer name (optional)" aria-label="Exact computer name (optional)"
+          <input class="field grow" placeholder={tr("Exact computer name (optional)")} aria-label={tr("Exact computer name (optional)")}
             value={host()} onInput={(e) => { setHost(e.currentTarget.value); edited(); }} />
-          <input class="field grow" placeholder="Exact session name (optional)" aria-label="Exact session name (optional)"
+          <input class="field grow" placeholder={tr("Exact session name (optional)")} aria-label={tr("Exact session name (optional)")}
             value={session()} onInput={(e) => { setSession(e.currentTarget.value); edited(); }} />
-          <button type="button" class="btn" onClick={firstPage}><Icon name="refresh-cw" size={13} />Refresh</button>
+          <button type="button" class="btn" onClick={firstPage}><Icon name="refresh-cw" size={13} />{tr("Refresh")}</button>
         </Actions>
         <div class="an-split">
-          <Table class="an-table" label="Approval journal" rows={loading() ? [] : page().entries} rowKey={(e) => String(e.id)}
+          <Table class="an-table" label={trNoop("Approval journal")} rows={loading() ? [] : page().entries} rowKey={(e) => String(e.id)}
             selected={state().selected} onSelect={journal.select}
             empty={<span class="muted">{loading() ? "Loading approval journal…" : "No automatic approvals recorded for this filter."}</span>}
             columns={[
@@ -70,9 +71,9 @@ export function ApprovalsSection() {
           </aside>
         </div>
         <Actions>
-          <button type="button" class="btn small" disabled={loading() || page().previous <= 0} onClick={journal.newer}>Newer</button>
-          <button type="button" class="btn small" disabled={loading() || page().next <= 0} onClick={journal.older}>Older</button>
-          <span class="muted">Up to 50 entries per page</span>
+          <button type="button" class="btn small" disabled={loading() || page().previous <= 0} onClick={journal.newer}>{tr("Newer")}</button>
+          <button type="button" class="btn small" disabled={loading() || page().next <= 0} onClick={journal.older}>{tr("Older")}</button>
+          <span class="muted">{tr("Up to 50 entries per page")}</span>
         </Actions>
         <Show when={text("automaticApprovals/error") || state().status}>{(value) => <Status kind={text("automaticApprovals/error") ? "error" : loading() ? "busy" : "muted"}>{value()}</Status>}</Show>
       </Group>

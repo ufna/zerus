@@ -65,7 +65,7 @@ const STATE_TEXT: Record<string, string> = {
 function LoginItemButton() {
   return (
     <Show when={updates().login_item_deprioritized}>
-      <button type="button" class="chip-accent warn-chip" title="macOS limits background priority for this login item" onClick={openUpdates}>Fix login item</button>
+      <button type="button" class="chip-accent warn-chip" title={tr("macOS limits background priority for this login item")} onClick={openUpdates}>{tr("Fix login item")}</button>
     </Show>
   );
 }

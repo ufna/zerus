@@ -21,7 +21,7 @@ export default function WorktreeCleanup() {
   const current = () => cleanup().rows.find((r) => r.id === selected()) ?? cleanup().rows[0];
   const targets = createMemo(() => cleanup().rows.filter((r) => r.ready));
   const consented = () => (!cleanup().required.local_files || consents().local_files) && (!cleanup().required.discard_changes || consents().discard_changes) && (!cleanup().required.unchecked_processes || consents().unchecked_processes);
-  const summary = () => `${cleanup().removed} removed  ${cleanup().kept} kept  ${cleanup().unknown} unknown`;
+  const summary = () => tr("%1 removed  %2 kept  %3 unknown", cleanup().removed, cleanup().kept, cleanup().unknown);
   createEffect(() => { cleanup().revision; setConsents(emptyConsents()); });
   createEffect(() => { const id = cleanupDialog()?.selected; if (id) setSelected(id); });
   onMount(() => { dialog.showModal(); queueMicrotask(() => dialog.querySelector<HTMLElement>("[autofocus], .dlg-body select")?.focus()); });
@@ -30,7 +30,7 @@ export default function WorktreeCleanup() {
     <dialog ref={dialog} class="dlg su-dlg worktree-cleanup" style={{ width: "780px", position: "fixed", inset: "0", margin: "auto" }} aria-labelledby="cleanup-title" onCancel={closeCleanup} onClose={closeCleanup}>
       <div class="dlg-head"><Icon name="trash" size={18} class="accent" /><h2 id="cleanup-title">{tr("Remove working folders")}</h2><span class="grow" /><button class="icon-btn" aria-label={tr("Close")} onClick={closeCleanup}><Icon name="x" size={16} /></button></div>
       <div class="dlg-body bc-body">
-        <h3 class="section-title">Review {cleanup().rows.length} selected {cleanup().rows.length === 1 ? "worktree" : "worktrees"}</h3>
+        <h3 class="section-title">{cleanup().rows.length === 1 ? tr("Review 1 selected worktree") : tr("Review %1 selected worktrees", cleanup().rows.length)}</h3>
         <p class="muted">{tr("Conversations and branches are kept. Removing a working folder permanently deletes its local files.")}</p>
         <table class="su-table bc-table"><thead><tr><th>{tr("Folder / branch")}</th><th>{tr("Computer")}</th><th>{tr("Size")}</th><th>{tr("Result")}</th></tr></thead><tbody><For each={cleanup().rows}>{(row) =>
           <tr classList={{ on: current()?.id === row.id }} onClick={() => setSelected(row.id)} title={row.path}>
@@ -52,7 +52,7 @@ export default function WorktreeCleanup() {
         </div>
         <Show when={cleanup().cleaning ?? cleanup().busy}><progress aria-label={tr("Removing working folders")} /></Show>
       </div>
-      <div class="dlg-foot"><span class="bc-summary tabular" role="status">{summary()}<Show when={cleanup().unknown}><span class="warn bc-note">{tr("An unknown result will not be retried.")}</span></Show></span><span class="grow" /><button class="btn" autofocus disabled={cleanup().busy || anyCleanupRestore()} onClick={() => void keepCleanup()}>{tr("Keep folders")}</button><Show when={targets().length}><button class="btn solid-danger" disabled={cleanup().busy || anyCleanupRestore() || !consented()} onClick={() => void removeCleanup(consents())}>Remove {targets().length} folders</button></Show></div>
+      <div class="dlg-foot"><span class="bc-summary tabular" role="status">{summary()}<Show when={cleanup().unknown}><span class="warn bc-note">{tr("An unknown result will not be retried.")}</span></Show></span><span class="grow" /><button class="btn" autofocus disabled={cleanup().busy || anyCleanupRestore()} onClick={() => void keepCleanup()}>{tr("Keep folders")}</button><Show when={targets().length}><button class="btn solid-danger" disabled={cleanup().busy || anyCleanupRestore() || !consented()} onClick={() => void removeCleanup(consents())}>{tr("Remove %1 folders", targets().length)}</button></Show></div>
     </dialog>
     <Show when={inspect()}>{(row) => <CleanupInspection row={row()} close={() => setInspect(undefined)} />}</Show>
   </>;
@@ -90,7 +90,7 @@ export function CleanupInspection(props: { row: InspectionRow; close: () => void
         <Show when={tab() === "commits"}><pre class="ip-diff mono grow">{data()?.commits?.text ?? data()?.commits?.error ?? tr("No additional commits.")}</pre></Show>
         <Show when={tab() === "local"}><div class="notice warn"><Icon name="triangle-alert" size={14} /><span>{tr("Outside Git. Removing this folder deletes these files too.")}</span></div><div class="row"><button class="btn small" onClick={() => setLocal({ file: ".", offset: 0 })}>{tr("Browse all files")}</button><button class="btn small" disabled={file()?.file?.next_offset === undefined || file.loading} onClick={() => setLocal({ ...local(), offset: file()?.file?.next_offset ?? 0 })}>{tr("Next")}</button></div><Show when={!file.loading} fallback={<div class="ip-state">{tr("Loading…")}</div>}><Show when={!file.error} fallback={<div class="ip-state">{String(file.error)}</div>}><table class="su-table ip-files"><thead><tr><th>{tr("Local file / folder")}</th><th>{tr("Size")}</th></tr></thead><tbody><For each={file()?.file?.entries}>{(f) => <tr onDblClick={() => { if (!f.symlink) setLocal({ file: f.path, offset: 0 }); }}><td class="mono ell">{f.path}{f.directory ? "/" : ""}</td><td>—</td></tr>}</For></tbody></table><Show when={file()?.file?.text !== undefined || file()?.file?.binary}><pre class="ip-diff mono">{file()?.file?.binary ? tr("Binary file; text preview is unavailable.") : file()?.file?.text}{file()?.file?.truncated ? "\nPreview is truncated." : ""}</pre></Show></Show></Show></Show>
         <Show when={tab() === "sessions"}><Show when={data()?.review?.sessions?.length} fallback={<div class="ip-state">{tr("No related sessions.")}</div>}><ul class="ip-sessions" role="listbox" aria-label={tr("Related sessions")}><For each={data()?.review?.sessions?.filter((s) => typeof s === "string")}>{(s) => <li role="option" aria-selected={selectedSession() === s} classList={{ on: selectedSession() === s }} onClick={() => setSelectedSession(s)} onDblClick={openSession}><Icon name="message-square" size={13} class="dim" />{s}</li>}</For></ul><button class="btn small" disabled={!session()} onClick={openSession}>{tr("Open session")}</button></Show></Show>
-      </Show></Show></div><div class="ip-status hint parts"><Show when={readAt()}>{(time) => <span>Updated {time()}</span>}</Show><span>{props.row.machine}</span><span>{tr("Local Git refs")}</span></div>
+      </Show></Show></div><div class="ip-status hint parts"><Show when={readAt()}>{(time) => <span>{tr("Updated %1", time())}</span>}</Show><span>{props.row.machine}</span><span>{tr("Local Git refs")}</span></div>
     </section>;
   if (props.panel) return body;
   onMount(() => { dialog.showModal(); queueMicrotask(() => dialog.querySelector<HTMLElement>("[autofocus], .dlg-body select")?.focus()); });

@@ -505,12 +505,12 @@
     <message>
       <location filename="../src/AccountsPage.cpp" line="684" />
       <source>Showing the first %1 providers.</source>
-      <translation type="unfinished" />
+      <translation>Показаны только первые провайдеры (%1).</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="688" />
       <source>Last known catalog from %1.</source>
-      <translation type="unfinished" />
+      <translation>Последний известный каталог от %1.</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="746" />
@@ -1382,17 +1382,17 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="61" />
       <source>Private analytics</source>
-      <translation type="unfinished" />
+      <translation>Локальная аналитика</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="62" />
       <source>Content-free daily counters stay on each computer. Reads do not enable collection. Unknown measures are unavailable, not zero. Dates are inclusive UTC days (up to 90).</source>
-      <translation type="unfinished" />
+      <translation>Ежедневные счётчики без содержимого хранятся на каждом компьютере. Чтение не включает сбор. Неизвестные показатели недоступны, а не равны нулю. Даты — дни UTC включительно (до 90).</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="64" />
       <source>Selected computers</source>
-      <translation type="unfinished" />
+      <translation>Выбранные компьютеры</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="65" />
@@ -1409,17 +1409,17 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="66" />
       <source>Apply and refresh</source>
-      <translation type="unfinished" />
+      <translation>Применить и обновить</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="71" />
       <source>From UTC day</source>
-      <translation type="unfinished" />
+      <translation>Начальный день (UTC)</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="71" />
       <source>Through UTC day</source>
-      <translation type="unfinished" />
+      <translation>Конечный день (UTC)</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="72" />
@@ -1439,13 +1439,13 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="76" />
       <source>Daily agent work</source>
-      <translation type="unfinished" />
+      <translation>Работа агентов по дням</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="77" />
       <location filename="../src/AnalyticsSettings.cpp" line="81" />
       <source>Provider</source>
-      <translation type="unfinished" />
+      <translation>Провайдер</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="77" />
@@ -1500,27 +1500,27 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="87" />
       <source>Select a day to see all reported counts, token usage, typed failures and histogram means.</source>
-      <translation type="unfinished" />
+      <translation>Выберите день, чтобы увидеть все счётчики, использование токенов, ошибки по типам и средние значения гистограмм.</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="88" />
       <source>Voice on processing computers</source>
-      <translation type="unfinished" />
+      <translation>Голос на компьютерах обработки</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="90" />
       <source>Voice counts are separate from agent turns. Accepted audio and total queue/processing time have units; percentile latency is unavailable. Speech collection is managed independently on its processing host.</source>
-      <translation type="unfinished" />
+      <translation>Голосовые счётчики ведутся отдельно от ходов агентов. Для принятого звука и общего времени в очереди и обработки указаны единицы; перцентили задержки недоступны. Сбор речевой статистики управляется отдельно на её компьютере обработки.</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="91" />
       <source>Collection on this computer</source>
-      <translation type="unfinished" />
+      <translation>Сбор на этом компьютере</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="93" />
       <source>Collect content-free agent analytics</source>
-      <translation type="unfinished" />
+      <translation>Собирать аналитику агентов без содержимого</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="94" />
@@ -1530,27 +1530,27 @@ To use it here again, choose Add account or Add to %1. Zerus can reuse the saved
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="94" />
       <source>Daily aggregate retention</source>
-      <translation type="unfinished" />
+      <translation>Хранение дневных сводок</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="95" />
       <source>Apply locally</source>
-      <translation type="unfinished" />
+      <translation>Применить локально</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="96" />
       <source>Purge local history…</source>
-      <translation type="unfinished" />
+      <translation>Очистить локальную историю…</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="97" />
       <source>Disabling collection keeps existing history. Purge removes only this computer's agent analytics, not speech statistics or durable delivery receipts. Remote collection controls are read-only here.</source>
-      <translation type="unfinished" />
+      <translation>Отключение сбора сохраняет существующую историю. Очистка удаляет только аналитику агентов этого компьютера, но не статистику речи и не долговременные подтверждения доставки. Настройки сбора на других компьютерах здесь доступны только для чтения.</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="98" />
       <source>Review aggregate diagnostics…</source>
-      <translation type="unfinished" />
+      <translation>Проверить сводную диагностику…</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="117" />
@@ -1738,7 +1738,7 @@ Coverage below applies to every total and recorded sample.</source>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="263" />
       <source>Shorten local analytics history?</source>
-      <translation type="unfinished" />
+      <translation>Сократить локальную историю аналитики?</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="263" />
@@ -1763,7 +1763,7 @@ Coverage below applies to every total and recorded sample.</source>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="282" />
       <source>Purge local agent analytics?</source>
-      <translation type="unfinished" />
+      <translation>Очистить локальную аналитику агентов?</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="282" />
@@ -1778,17 +1778,17 @@ Coverage below applies to every total and recorded sample.</source>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="298" />
       <source>Review aggregate diagnostics</source>
-      <translation type="unfinished" />
+      <translation>Проверить сводную диагностику</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="299" />
       <source>Review these aggregate fields before saving a local JSON file. Computer numbers are anonymous within this file. This export includes no logs, message content, account details or native identifiers, and is never uploaded automatically.</source>
-      <translation type="unfinished" />
+      <translation>Проверьте эти сводные поля перед сохранением локального JSON-файла. Номера компьютеров анонимны в пределах файла. Экспорт не содержит журналов, содержимого сообщений, данных учётных записей и собственных идентификаторов агентов и никогда не выгружается автоматически.</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="301" />
       <source>Save file…</source>
-      <translation type="unfinished" />
+      <translation>Сохранить файл…</translation>
     </message>
     <message>
       <location filename="../src/AnalyticsSettings.cpp" line="301" />
@@ -2000,12 +2000,12 @@ Coverage below applies to every total and recorded sample.</source>
     <message>
       <location filename="../src/AutomaticApprovalSettings.cpp" line="31" />
       <source>Automatic approvals</source>
-      <translation type="unfinished" />
+      <translation>Автоматические одобрения</translation>
     </message>
     <message>
       <location filename="../src/AutomaticApprovalSettings.cpp" line="32" />
       <source>Automatically approve tool requests (dangerous)</source>
-      <translation type="unfinished" />
+      <translation>Автоматически одобрять запросы инструментов (опасно)</translation>
     </message>
     <message>
       <location filename="../src/AutomaticApprovalSettings.cpp" line="34" />
@@ -2035,17 +2035,17 @@ Coverage below applies to every total and recorded sample.</source>
     <message>
       <location filename="../src/AutomaticApprovalSettings.cpp" line="49" />
       <source>Approval journal</source>
-      <translation type="unfinished" />
+      <translation>Журнал одобрений</translation>
     </message>
     <message>
       <location filename="../src/AutomaticApprovalSettings.cpp" line="51" />
       <source>Exact computer name (optional)</source>
-      <translation type="unfinished" />
+      <translation>Точное имя компьютера (необязательно)</translation>
     </message>
     <message>
       <location filename="../src/AutomaticApprovalSettings.cpp" line="52" />
       <source>Exact session name (optional)</source>
-      <translation type="unfinished" />
+      <translation>Точное имя сессии (необязательно)</translation>
     </message>
     <message>
       <location filename="../src/AutomaticApprovalSettings.cpp" line="53" />
@@ -2090,7 +2090,7 @@ Coverage below applies to every total and recorded sample.</source>
     <message>
       <location filename="../src/AutomaticApprovalSettings.cpp" line="66" />
       <source>Up to 50 entries per page</source>
-      <translation type="unfinished" />
+      <translation>До 50 записей на странице</translation>
     </message>
     <message>
       <location filename="../src/AutomaticApprovalSettings.cpp" line="68" />
@@ -2745,7 +2745,7 @@ Sessions</source>
     <message>
       <location filename="../src/DownloadCacheSettings.cpp" line="21" />
       <source>Files</source>
-      <translation type="unfinished" />
+      <translation>Файлы</translation>
     </message>
     <message>
       <location filename="../src/DownloadCacheSettings.cpp" line="22" />
@@ -2755,7 +2755,7 @@ Sessions</source>
     <message>
       <location filename="../src/DownloadCacheSettings.cpp" line="26" />
       <source>Downloaded files</source>
-      <translation type="unfinished" />
+      <translation>Скачанные файлы</translation>
     </message>
     <message>
       <location filename="../src/DownloadCacheSettings.cpp" line="28" />
@@ -2770,7 +2770,7 @@ Sessions</source>
     <message>
       <location filename="../src/DownloadCacheSettings.cpp" line="30" />
       <source>Keep copies</source>
-      <translation type="unfinished" />
+      <translation>Хранить копии</translation>
     </message>
     <message>
       <location filename="../src/DownloadCacheSettings.cpp" line="32" />
@@ -2780,7 +2780,7 @@ Sessions</source>
     <message>
       <location filename="../src/DownloadCacheSettings.cpp" line="35" />
       <source>Maximum size</source>
-      <translation type="unfinished" />
+      <translation>Максимальный размер</translation>
     </message>
     <message>
       <location filename="../src/DownloadCacheSettings.cpp" line="36" />
@@ -2795,7 +2795,7 @@ Sessions</source>
     <message>
       <location filename="../src/DownloadCacheSettings.cpp" line="47" />
       <source>Limit downloaded files?</source>
-      <translation type="unfinished" />
+      <translation>Ограничить объём скачанных файлов?</translation>
     </message>
     <message>
       <location filename="../src/DownloadCacheSettings.cpp" line="48" />
@@ -2805,12 +2805,12 @@ Sessions</source>
     <message>
       <location filename="../src/DownloadCacheSettings.cpp" line="51" />
       <source>Apply limit</source>
-      <translation type="unfinished" />
+      <translation>Применить ограничение</translation>
     </message>
     <message>
       <location filename="../src/DownloadCacheSettings.cpp" line="76" />
       <source>Checking downloaded files…</source>
-      <translation type="unfinished" />
+      <translation>Проверка скачанных файлов…</translation>
     </message>
     <message>
       <location filename="../src/DownloadCacheSettings.cpp" line="82" />
@@ -2823,7 +2823,7 @@ Sessions</source>
     <message>
       <location filename="../src/GoToDialog.cpp" line="158" />
       <source>Go to… (type &gt; for commands)</source>
-      <translation type="unfinished" />
+      <translation>Перейти… (введите &gt; для команд)</translation>
     </message>
   </context>
   <context>
@@ -3460,7 +3460,7 @@ Open the path to check whether the folder exists before trying again.</source>
     <message>
       <location filename="../src/KeyboardSettings.cpp" line="30" />
       <source>Keyboard</source>
-      <translation type="unfinished" />
+      <translation>Клавиатура</translation>
     </message>
     <message>
       <location filename="../src/KeyboardSettings.cpp" line="36" />
@@ -3470,42 +3470,42 @@ Open the path to check whether the folder exists before trying again.</source>
     <message>
       <location filename="../src/KeyboardSettings.cpp" line="36" />
       <source>Shortcut</source>
-      <translation type="unfinished" />
+      <translation>Сочетание</translation>
     </message>
     <message>
       <location filename="../src/KeyboardSettings.cpp" line="36" />
       <source>Alternate</source>
-      <translation type="unfinished" />
+      <translation>Дополнительное</translation>
     </message>
     <message>
       <location filename="../src/KeyboardSettings.cpp" line="44" />
       <source>Reset</source>
-      <translation type="unfinished" />
+      <translation>Сбросить</translation>
     </message>
     <message>
       <location filename="../src/KeyboardSettings.cpp" line="46" />
       <source>Restore the default chords of the selected command</source>
-      <translation type="unfinished" />
+      <translation>Восстановить сочетания по умолчанию для выбранной команды</translation>
     </message>
     <message>
       <location filename="../src/KeyboardSettings.cpp" line="48" />
       <source>Reset all</source>
-      <translation type="unfinished" />
+      <translation>Сбросить все</translation>
     </message>
     <message>
       <location filename="../src/KeyboardSettings.cpp" line="55" />
       <source>Chords marked ✓ work in Terminal.</source>
-      <translation type="unfinished" />
+      <translation>Сочетания с отметкой ✓ работают в терминале.</translation>
     </message>
     <message>
       <location filename="../src/KeyboardSettings.cpp" line="59" />
       <source>Double-click a shortcut, or press Enter on it, to change it.</source>
-      <translation type="unfinished" />
+      <translation>Чтобы изменить сочетание, дважды щёлкните его или нажмите на нём Enter.</translation>
     </message>
     <message>
       <location filename="../src/KeyboardSettings.cpp" line="73" />
       <source>Reset all shortcuts</source>
-      <translation type="unfinished" />
+      <translation>Сбросить все сочетания клавиш</translation>
     </message>
     <message>
       <location filename="../src/KeyboardSettings.cpp" line="73" />
@@ -3520,22 +3520,22 @@ Open the path to check whether the folder exists before trying again.</source>
     <message>
       <location filename="../src/KeyboardSettings.cpp" line="146" />
       <source>Change shortcut</source>
-      <translation type="unfinished" />
+      <translation>Изменить сочетание клавиш</translation>
     </message>
     <message>
       <location filename="../src/KeyboardSettings.cpp" line="148" />
       <source>Press the new shortcut for %1.</source>
-      <translation type="unfinished" />
+      <translation>Нажмите новое сочетание для «%1».</translation>
     </message>
     <message>
       <location filename="../src/KeyboardSettings.cpp" line="153" />
       <source>Clear</source>
-      <translation type="unfinished" />
+      <translation>Очистить</translation>
     </message>
     <message>
       <location filename="../src/KeyboardSettings.cpp" line="184" />
       <source>Shortcut in use</source>
-      <translation type="unfinished" />
+      <translation>Сочетание уже используется</translation>
     </message>
     <message>
       <location filename="../src/KeyboardSettings.cpp" line="184" />
@@ -3777,12 +3777,12 @@ Open the path to check whether the folder exists before trying again.</source>
       <location filename="../src/MachinesPage.cpp" line="98" />
       <location filename="../src/MachinesPage.cpp" line="438" />
       <source>Enable local sessions</source>
-      <translation type="unfinished" />
+      <translation>Включить локальные сессии</translation>
     </message>
     <message>
       <location filename="../src/MachinesPage.cpp" line="99" />
       <source>Run agents on this computer too. Zerus stages the HGS CLI and a session host in your user profile.</source>
-      <translation type="unfinished" />
+      <translation>Запускать агентов и на этом компьютере. Zerus размещает HGS CLI и хост сессий в вашем профиле пользователя.</translation>
     </message>
     <message>
       <location filename="../src/MachinesPage.cpp" line="100" />
@@ -4124,7 +4124,7 @@ Unsaved connection</source>
     <message>
       <location filename="../src/MachinesPage.cpp" line="435" />
       <source>Run agents on this computer too? Zerus stages the HGS CLI and a session host in your user profile and enables local sessions. To disable local sessions again, run hgs session-host uninstall.</source>
-      <translation type="unfinished" />
+      <translation>Запускать агентов и на этом компьютере? Zerus разместит HGS CLI и хост сессий в вашем профиле пользователя и включит локальные сессии. Чтобы снова отключить локальные сессии, выполните hgs session-host uninstall.</translation>
     </message>
     <message>
       <location filename="../src/MachinesPage.cpp" line="441" />
@@ -4139,7 +4139,7 @@ Unsaved connection</source>
     <message>
       <location filename="../src/MachinesPage.cpp" line="447" />
       <source>Build and install the HGS CLI on %1 using SSH. The newest stable Rust and tmux must already be installed there. Existing sessions and configuration are preserved.</source>
-      <translation type="unfinished" />
+      <translation>Собрать и установить HGS CLI на %1 по SSH. Там уже должны быть установлены последний стабильный Rust и tmux. Существующие сессии и настройки сохранятся.</translation>
     </message>
     <message>
       <location filename="../src/MachinesPage.cpp" line="448" />
@@ -4753,12 +4753,12 @@ Current: %3%4
     <message>
       <location filename="../src/MobileDeliverySettings.h" line="30" />
       <source>Phone notifications</source>
-      <translation type="unfinished" />
+      <translation>Уведомления на телефон</translation>
     </message>
     <message>
       <location filename="../src/MobileDeliverySettings.h" line="31" />
       <source>When I'm not at a computer, send notifications to my phone</source>
-      <translation type="unfinished" />
+      <translation>Когда я не за компьютером, отправлять уведомления на телефон</translation>
     </message>
     <message>
       <location filename="../src/MobileDeliverySettings.h" line="42" />
@@ -4768,7 +4768,7 @@ Current: %3%4
     <message>
       <location filename="../src/MobileDeliverySettings.h" line="45" />
       <source>You count as away after two minutes without keyboard or mouse input on every computer running Zerus, or while their screens are locked. Your computers and the phone share this choice.</source>
-      <translation type="unfinished" />
+      <translation>Zerus считает, что вас нет на месте, если на всех компьютерах с Zerus две минуты не было ввода с клавиатуры или мыши или их экраны заблокированы. Этот выбор общий для ваших компьютеров и телефона.</translation>
     </message>
     <message>
       <location filename="../src/MobileDeliverySettings.h" line="50" />
@@ -5551,7 +5551,7 @@ Repository: %2</source>
       <location filename="../src/PhonePairing.cpp" line="116" />
       <location filename="../src/PhonePairing.cpp" line="120" />
       <source>Workspace</source>
-      <translation type="unfinished" />
+      <translation>Пространство</translation>
     </message>
     <message>
       <location filename="../src/PhonePairing.cpp" line="118" />
@@ -5566,32 +5566,32 @@ Repository: %2</source>
     <message>
       <location filename="../src/PhonePairing.cpp" line="135" />
       <source>Server</source>
-      <translation type="unfinished" />
+      <translation>Сервер</translation>
     </message>
     <message>
       <location filename="../src/PhonePairing.cpp" line="137" />
       <source>Enter the code manually</source>
-      <translation type="unfinished" />
+      <translation>Ввести код вручную</translation>
     </message>
     <message>
       <location filename="../src/PhonePairing.cpp" line="141" />
       <source>Pairing code</source>
-      <translation type="unfinished" />
+      <translation>Код сопряжения</translation>
     </message>
     <message>
       <location filename="../src/PhonePairing.cpp" line="160" />
       <source>Copy code</source>
-      <translation type="unfinished" />
+      <translation>Копировать код</translation>
     </message>
     <message>
       <location filename="../src/PhonePairing.cpp" line="161" />
       <source>Copy link</source>
-      <translation type="unfinished" />
+      <translation>Копировать ссылку</translation>
     </message>
     <message>
       <location filename="../src/PhonePairing.cpp" line="162" />
       <source>New code</source>
-      <translation type="unfinished" />
+      <translation>Новый код</translation>
     </message>
     <message>
       <location filename="../src/PhonePairing.cpp" line="163" />
@@ -5633,7 +5633,7 @@ Repository: %2</source>
     <message>
       <location filename="../src/PhonePairing.cpp" line="235" />
       <source>This invitation is too large for a QR code. Use Copy code to enter it on your phone.</source>
-      <translation type="unfinished" />
+      <translation>Это приглашение слишком велико для QR-кода. Используйте «Копировать код», чтобы ввести его на телефоне.</translation>
     </message>
     <message>
       <location filename="../src/PhonePairing.cpp" line="239" />
@@ -5644,7 +5644,7 @@ End-to-end encrypted. Keep this computer online until the phone confirms pairing
     <message>
       <location filename="../src/PhonePairing.cpp" line="240" />
       <source>Workspace: %1</source>
-      <translation type="unfinished" />
+      <translation>Пространство: %1</translation>
     </message>
     <message>
       <location filename="../src/PhonePairing.cpp" line="249" />
@@ -5663,47 +5663,47 @@ End-to-end encrypted. Keep this computer online until the phone confirms pairing
       <location filename="../src/PhonePairing.cpp" line="260" />
       <location filename="../src/PhonePairing.cpp" line="264" />
       <source>Phones</source>
-      <translation type="unfinished" />
+      <translation>Телефоны</translation>
     </message>
     <message>
       <location filename="../src/PhonePairing.cpp" line="261" />
       <source>Phones paired with your computers. A phone can control every computer of its workspace; revoke one you no longer use.</source>
-      <translation type="unfinished" />
+      <translation>Телефоны, сопряжённые с вашими компьютерами. Телефон может управлять всеми компьютерами своего пространства; отзовите доступ у того, которым больше не пользуетесь.</translation>
     </message>
     <message>
       <location filename="../src/PhonePairing.cpp" line="265" />
       <source>Phone</source>
-      <translation type="unfinished" />
+      <translation>Телефон</translation>
     </message>
     <message>
       <location filename="../src/PhonePairing.cpp" line="265" />
       <source>Platform</source>
-      <translation type="unfinished" />
+      <translation>Платформа</translation>
     </message>
     <message>
       <location filename="../src/PhonePairing.cpp" line="265" />
       <source>Paired</source>
-      <translation type="unfinished" />
+      <translation>Сопряжён</translation>
     </message>
     <message>
       <location filename="../src/PhonePairing.cpp" line="265" />
       <source>Last active</source>
-      <translation type="unfinished" />
+      <translation>Последняя активность</translation>
     </message>
     <message>
       <location filename="../src/PhonePairing.cpp" line="265" />
       <source>Added from</source>
-      <translation type="unfinished" />
+      <translation>Добавлен с</translation>
     </message>
     <message>
       <location filename="../src/PhonePairing.cpp" line="270" />
       <source>Pair a phone…</source>
-      <translation type="unfinished" />
+      <translation>Подключить телефон…</translation>
     </message>
     <message>
       <location filename="../src/PhonePairing.cpp" line="271" />
       <source>Revoke…</source>
-      <translation type="unfinished" />
+      <translation>Отозвать…</translation>
     </message>
     <message>
       <location filename="../src/PhonePairing.cpp" line="272" />
@@ -5783,12 +5783,12 @@ End-to-end encrypted. Keep this computer online until the phone confirms pairing
     <message>
       <location filename="../src/PhonePairing.cpp" line="401" />
       <source>%1 loses access to every computer of %2 at once, and its queued requests are cancelled. Pair it again to restore access.</source>
-      <translation type="unfinished" />
+      <translation>%1 сразу теряет доступ ко всем компьютерам пространства %2, а его запросы в очереди отменяются. Чтобы вернуть доступ, выполните сопряжение снова.</translation>
     </message>
     <message>
       <location filename="../src/PhonePairing.cpp" line="403" />
       <source>Revoke</source>
-      <translation type="unfinished" />
+      <translation>Отозвать</translation>
     </message>
     <message>
       <location filename="../src/PhonePairing.cpp" line="409" />
@@ -5801,7 +5801,7 @@ End-to-end encrypted. Keep this computer online until the phone confirms pairing
     <message>
       <location filename="../src/PhonePairing.cpp" line="77" />
       <source>Pairing QR code</source>
-      <translation type="unfinished" />
+      <translation>QR-код для сопряжения</translation>
     </message>
   </context>
   <context>
@@ -6081,7 +6081,7 @@ Only observed commands are shown; older history may be unavailable.</source>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="80" />
       <source>Type</source>
-      <translation type="unfinished" />
+      <translation>Тип</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="81" />
@@ -6091,27 +6091,27 @@ Only observed commands are shown; older history may be unavailable.</source>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="82" />
       <source>Auto-detect</source>
-      <translation type="unfinished" />
+      <translation>Автоопределение</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="82" />
       <source>Language</source>
-      <translation type="unfinished" />
+      <translation>Язык</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="83" />
       <source>Device</source>
-      <translation type="unfinished" />
+      <translation>Устройство</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="84" />
       <source>Base URL</source>
-      <translation type="unfinished" />
+      <translation>Базовый URL</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="85" />
       <source>Allow unencrypted HTTP for a local or private server</source>
-      <translation type="unfinished" />
+      <translation>Разрешить незашифрованный HTTP для локального или частного сервера</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="89" />
@@ -6141,12 +6141,12 @@ Only observed commands are shown; older history may be unavailable.</source>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="91" />
       <source>New API key</source>
-      <translation type="unfinished" />
+      <translation>Новый API-ключ</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="99" />
       <source>Check operation status</source>
-      <translation type="unfinished" />
+      <translation>Проверить состояние операции</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="106" />
@@ -6176,7 +6176,7 @@ Only observed commands are shown; older history may be unavailable.</source>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="167" />
       <source>Speech provider documentation</source>
-      <translation type="unfinished" />
+      <translation>Документация провайдеров речи</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="169" />
@@ -8605,7 +8605,7 @@ Connect directly to synchronize through this computer.</source>
     <message>
       <location filename="../src/WorktreeReviewUi.h" line="27" />
       <source>In use</source>
-      <translation type="unfinished" />
+      <translation>Используется</translation>
     </message>
     <message>
       <location filename="../src/WorktreeReviewUi.h" line="28" />
@@ -9123,7 +9123,7 @@ Connect directly to synchronize through this computer.</source>
     <message>
       <location filename="../src/RecoverySettings.h" line="108" />
       <source>Wait until the provider's reset time by default. If no reset time is available, recovery needs your attention. Choose a schedule to retry at your own intervals.</source>
-      <translation type="unfinished" />
+      <translation>По умолчанию ждать времени сброса у провайдера. Если время сброса неизвестно, восстановлению потребуется ваше внимание. Выберите расписание, чтобы повторять попытки через свои интервалы.</translation>
     </message>
     <message>
       <location filename="../src/RecoverySettings.h" line="111" />
@@ -9401,7 +9401,7 @@ New messages and Stop cancel recovery. Sign-in, balance, other quota and context
     <message>
       <location filename="../src/RelaySettings.h" line="53" />
       <source>Changes apply when the connector restarts. Restart only after pending connector requests and receipts have drained.</source>
-      <translation type="unfinished" />
+      <translation>Изменения вступят в силу после перезапуска коннектора. Перезапускайте его только после того, как ожидающие запросы и подтверждения коннектора будут обработаны.</translation>
     </message>
     <message>
       <location filename="../src/RelaySettings.h" line="67" />
@@ -11305,7 +11305,7 @@ Open Terminal to check the agent before trying again.</source>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1403" />
       <source>Task executor launch</source>
-      <translation type="unfinished" />
+      <translation>Запуск исполнителя задачи</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1404" />
@@ -11460,23 +11460,23 @@ Check the task history and this executor before allowing another launch. Releasi
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1777" />
       <source>Fix login item</source>
-      <translation type="unfinished" />
+      <translation>Исправить объект входа</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1782" />
       <source>macOS starts Zerus at background priority, so it can stop responding while the computer is busy.</source>
-      <translation type="unfinished" />
+      <translation>macOS запускает Zerus с фоновым приоритетом, поэтому он может перестать отвечать, пока компьютер занят.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1789" />
       <location filename="../src/SessionsWindow.cpp" line="1814" />
       <source>Fix the Zerus login item</source>
-      <translation type="unfinished" />
+      <translation>Исправить объект входа Zerus</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1790" />
       <source>macOS runs Zerus at background priority.</source>
-      <translation type="unfinished" />
+      <translation>macOS запускает Zerus с фоновым приоритетом.</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1791" />
@@ -11489,12 +11489,12 @@ Update and Restart applies it now: Zerus quits and opens again. Saved drafts, se
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1798" />
       <source>Update Only</source>
-      <translation type="unfinished" />
+      <translation>Только обновить</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1799" />
       <source>Update and Restart</source>
-      <translation type="unfinished" />
+      <translation>Обновить и перезапустить</translation>
     </message>
     <message>
       <location filename="../src/SessionsWindow.cpp" line="1815" />
@@ -13593,27 +13593,27 @@ Clear folder filter</source>
     <message>
       <location filename="../src/SettingsPage.h" line="43" />
       <source>Files</source>
-      <translation type="unfinished" />
+      <translation>Файлы</translation>
     </message>
     <message>
       <location filename="../src/SettingsPage.h" line="43" />
       <source>Automatic approvals</source>
-      <translation type="unfinished" />
+      <translation>Автоматические одобрения</translation>
     </message>
     <message>
       <location filename="../src/SettingsPage.h" line="43" />
       <source>Voice input</source>
-      <translation type="unfinished" />
+      <translation>Голосовой ввод</translation>
     </message>
     <message>
       <location filename="../src/SettingsPage.h" line="43" />
       <source>Keyboard</source>
-      <translation type="unfinished" />
+      <translation>Клавиатура</translation>
     </message>
     <message>
       <location filename="../src/SettingsPage.h" line="43" />
       <source>Private analytics</source>
-      <translation type="unfinished" />
+      <translation>Локальная аналитика</translation>
     </message>
     <message>
       <location filename="../src/SettingsPage.h" line="43" />
@@ -13674,12 +13674,12 @@ Clear folder filter</source>
     <message>
       <location filename="../src/SettingsPage.h" line="57" />
       <source>Usage limit indicator</source>
-      <translation type="unfinished" />
+      <translation>Индикатор лимита</translation>
     </message>
     <message>
       <location filename="../src/SettingsPage.h" line="58" />
       <source>Compares used quota with the elapsed part of each limit window. The bars show usage above elapsed time; the marker shows elapsed time on the usage bar. Colors warn when the current pace would use up the limit before it resets.</source>
-      <translation type="unfinished" />
+      <translation>Сравнивает израсходованную квоту с прошедшей частью каждого окна лимита. Полосы показывают использование над полосой прошедшего времени; метка отмечает прошедшее время на полосе использования. Цвет предупреждает, если при текущем темпе лимит закончится до сброса.</translation>
     </message>
     <message>
       <location filename="../src/SettingsPage.h" line="60" />
@@ -13705,7 +13705,7 @@ Clear folder filter</source>
     <message>
       <location filename="../src/SettingsPage.h" line="82" />
       <source>Maximum Activity width</source>
-      <translation type="unfinished" />
+      <translation>Максимальная ширина активности</translation>
     </message>
     <message>
       <location filename="../src/SettingsPage.h" line="85" />
@@ -13761,22 +13761,22 @@ Clear folder filter</source>
     <message>
       <location filename="../src/SettingsPage.h" line="101" />
       <source>Show completed subagents</source>
-      <translation type="unfinished" />
+      <translation>Показывать завершённых субагентов</translation>
     </message>
     <message>
       <location filename="../src/SettingsPage.h" line="102" />
       <source>Include agents whose latest turn has finished in the session list and its counts. Plan &amp; agents always shows all reported agents. Agents with unknown status remain visible.</source>
-      <translation type="unfinished" />
+      <translation>Показывать в списке сессий агентов, чей последний ход завершён, и учитывать их в счётчиках. «План и агенты» всегда показывает всех агентов, о которых есть данные. Агенты с неизвестным статусом остаются видимыми.</translation>
     </message>
     <message>
       <location filename="../src/SettingsPage.h" line="104" />
       <source>Notify about optional questions</source>
-      <translation type="unfinished" />
+      <translation>Уведомлять о необязательных вопросах</translation>
     </message>
     <message>
       <location filename="../src/SettingsPage.h" line="105" />
       <source>Off by default. Shows a system notification once for each new optional question, which the agent keeps working without. It is withdrawn when the questions are answered or skipped, or the session is marked as read. Questions that need an answer always notify.</source>
-      <translation type="unfinished" />
+      <translation>По умолчанию выключено. Показывает системное уведомление один раз для каждого нового необязательного вопроса, без ответа на который агент продолжает работу. Уведомление снимается, когда на вопросы ответили или их пропустили либо когда сессия отмечена как прочитанная. О вопросах, требующих ответа, уведомление приходит всегда.</translation>
     </message>
     <message>
       <location filename="../src/SettingsPage.h" line="107" />
@@ -13821,7 +13821,7 @@ Clear folder filter</source>
     <message>
       <location filename="../src/SettingsPage.h" line="126" />
       <source>Advanced: legacy connector configuration</source>
-      <translation type="unfinished" />
+      <translation>Дополнительно: настройка прежнего коннектора</translation>
     </message>
     <message>
       <location filename="../src/SettingsPage.h" line="140" />
@@ -13867,7 +13867,7 @@ Clear folder filter</source>
       <location filename="../src/Shortcuts.cpp" line="23" />
       <location filename="../src/Shortcuts.cpp" line="24" />
       <source>Go to</source>
-      <translation type="unfinished" />
+      <translation>Перейти</translation>
     </message>
     <message>
       <location filename="../src/Shortcuts.cpp" line="17" />
@@ -13907,7 +13907,7 @@ Clear folder filter</source>
     <message>
       <location filename="../src/Shortcuts.cpp" line="24" />
       <source>Keyboard shortcuts</source>
-      <translation type="unfinished" />
+      <translation>Сочетания клавиш</translation>
     </message>
     <message>
       <location filename="../src/Shortcuts.cpp" line="25" />
@@ -14101,12 +14101,12 @@ Clear folder filter</source>
     <message>
       <location filename="../src/ShortcutsDialog.cpp" line="49" />
       <source>Keyboard shortcuts</source>
-      <translation type="unfinished" />
+      <translation>Сочетания клавиш</translation>
     </message>
     <message>
       <location filename="../src/ShortcutsDialog.cpp" line="55" />
       <source>Filter shortcuts</source>
-      <translation type="unfinished" />
+      <translation>Фильтр сочетаний клавиш</translation>
     </message>
     <message>
       <location filename="../src/ShortcutsDialog.cpp" line="61" />
@@ -14116,12 +14116,12 @@ Clear folder filter</source>
     <message>
       <location filename="../src/ShortcutsDialog.cpp" line="61" />
       <source>Shortcut</source>
-      <translation type="unfinished" />
+      <translation>Сочетание</translation>
     </message>
     <message>
       <location filename="../src/ShortcutsDialog.cpp" line="70" />
       <source>Customize…</source>
-      <translation type="unfinished" />
+      <translation>Настроить…</translation>
     </message>
     <message>
       <location filename="../src/ShortcutsDialog.cpp" line="107" />
@@ -14614,42 +14614,42 @@ Clear folder filter</source>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="190" />
       <source>Voice input</source>
-      <translation type="unfinished" />
+      <translation>Голосовой ввод</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="191" />
       <source>Preview before sending</source>
-      <translation type="unfinished" />
+      <translation>Предпросмотр перед отправкой</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="193" />
       <source>Show Stop instead of Send while recording audio or video. Stop retains a preview for review and a separate Send. This preference applies on this device.</source>
-      <translation type="unfinished" />
+      <translation>Показывать «Остановить» вместо «Отправить» во время записи звука или видео. «Остановить» сохраняет запись для предпросмотра и отдельной отправки. Настройка действует на этом устройстве.</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="195" />
       <source>Manage recognition providers on a processing computer. Recording starts on this device; Send voice uses the provider selected beside your recording.</source>
-      <translation type="unfinished" />
+      <translation>Управляйте провайдерами распознавания на компьютере обработки. Запись начинается на этом устройстве; отправка голоса использует провайдера, выбранного рядом с записью.</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="196" />
       <source>Configure providers on</source>
-      <translation type="unfinished" />
+      <translation>Настроить провайдеров на</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="201" />
       <source>Add</source>
-      <translation type="unfinished" />
+      <translation>Добавить</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="201" />
       <source>Edit</source>
-      <translation type="unfinished" />
+      <translation>Изменить</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="202" />
       <source>Test</source>
-      <translation type="unfinished" />
+      <translation>Проверить</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="202" />
@@ -14659,37 +14659,37 @@ Clear folder filter</source>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="203" />
       <source>Use as default</source>
-      <translation type="unfinished" />
+      <translation>Использовать по умолчанию</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="204" />
       <source>Test sends a short synthetic recording from the selected computer. It may load a prepared model or use the remote API; it does not use your microphone or send anything to an agent.</source>
-      <translation type="unfinished" />
+      <translation>Проверка отправляет короткую синтетическую запись с выбранного компьютера. Она может загрузить подготовленную модель или использовать удалённый API; микрофон не используется, и агенту ничего не отправляется.</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="208" />
       <source>Speech provider documentation</source>
-      <translation type="unfinished" />
+      <translation>Документация провайдеров речи</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="211" />
       <source>Refresh providers and microphones</source>
-      <translation type="unfinished" />
+      <translation>Обновить список провайдеров и микрофонов</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="213" />
       <source>Check operation status</source>
-      <translation type="unfinished" />
+      <translation>Проверить состояние операции</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="214" />
       <source>Microphone on this device</source>
-      <translation type="unfinished" />
+      <translation>Микрофон на этом устройстве</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="216" />
       <source>Provider settings and credentials stay on their processing computer. Recordings are limited to two minutes. Original audio and recognized text remain in conversation history; your typed draft stays separate.</source>
-      <translation type="unfinished" />
+      <translation>Настройки и учётные данные провайдера остаются на его компьютере обработки. Длительность записи — до двух минут. Исходный звук и распознанный текст остаются в истории разговора; набранный черновик хранится отдельно.</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="244" />
@@ -14715,7 +14715,7 @@ Language: %1</source>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="257" />
       <source>Auto-detect</source>
-      <translation type="unfinished" />
+      <translation>Автоопределение</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="263" />
@@ -14833,7 +14833,7 @@ These counters stay on the speech computer and contain no audio or recognized te
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="345" />
       <source>Remove speech provider?</source>
-      <translation type="unfinished" />
+      <translation>Удалить провайдера речи?</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="345" />
@@ -14843,7 +14843,7 @@ These counters stay on the speech computer and contain no audio or recognized te
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="348" />
       <source>Remove provider</source>
-      <translation type="unfinished" />
+      <translation>Удалить провайдера</translation>
     </message>
     <message>
       <location filename="../src/speech/SpeechSettings.cpp" line="365" />
@@ -15178,7 +15178,7 @@ Updating the hgs command line for local sessions</source>
       <location filename="../src/TaskDialogs.cpp" line="583" />
       <location filename="../src/TaskDialogs.cpp" line="585" />
       <source>Cancel %1?</source>
-      <translation type="unfinished" />
+      <translation>Отменить %1?</translation>
     </message>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="589" />
@@ -15188,7 +15188,7 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="591" />
       <source>The agent is not running, so hgs will refuse the message; the task is cancelled all the same.</source>
-      <translation type="unfinished" />
+      <translation>Агент не запущен, поэтому hgs отклонит сообщение; задача всё равно будет отменена.</translation>
     </message>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="592" />
@@ -15198,22 +15198,22 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="595" />
       <source>Reason (optional) — saved as a comment on the task, not sent to the agent</source>
-      <translation type="unfinished" />
+      <translation>Причина (необязательно) — сохраняется как комментарий к задаче и не отправляется агенту</translation>
     </message>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="596" />
       <source>Why it is cancelled</source>
-      <translation type="unfinished" />
+      <translation>Почему задача отменена</translation>
     </message>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="599" />
       <source>Keep running</source>
-      <translation type="unfinished" />
+      <translation>Не отменять</translation>
     </message>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="600" />
       <source>Cancel task</source>
-      <translation type="unfinished" />
+      <translation>Отменить задачу</translation>
     </message>
   </context>
   <context>
@@ -15428,7 +15428,7 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/TaskInspector.cpp" line="87" />
       <source>New task</source>
-      <translation type="unfinished" />
+      <translation>Новая задача</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="90" />
@@ -15438,7 +15438,7 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/TaskInspector.cpp" line="90" />
       <source>New task title</source>
-      <translation type="unfinished" />
+      <translation>Название новой задачи</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="139" />
@@ -15542,12 +15542,12 @@ Updating the hgs command line for local sessions</source>
     <message>
       <location filename="../src/TaskInspector.cpp" line="248" />
       <source>Release message recovery</source>
-      <translation type="unfinished" />
+      <translation>Освободить запись восстановления сообщения</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="249" />
       <source>The previous message may already have reached the executor. Releasing this local record neither cancels nor resends it. Check the task and executor Activity before sending another message.</source>
-      <translation type="unfinished" />
+      <translation>Предыдущее сообщение могло уже дойти до исполнителя. Освобождение этой локальной записи не отменяет и не отправляет его повторно. Прежде чем отправлять новое сообщение, проверьте задачу и активность исполнителя.</translation>
     </message>
     <message>
       <location filename="../src/TaskInspector.cpp" line="267" />
@@ -16131,7 +16131,7 @@ Press Enter to retry with the same card identity.</source>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="626" />
       <source>no limit</source>
-      <translation type="unfinished" />
+      <translation>без ограничения</translation>
     </message>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="628" />
@@ -16141,7 +16141,7 @@ Press Enter to retry with the same card identity.</source>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="628" />
       <source>per hour</source>
-      <translation type="unfinished" />
+      <translation>в час</translation>
     </message>
     <message>
       <location filename="../src/TaskDialogs.cpp" line="632" />
@@ -16910,12 +16910,12 @@ System: Arch-based Linux</source>
     <message>
       <location filename="../src/UpdatesWidget.h" line="59" />
       <source>Installed</source>
-      <translation type="unfinished" />
+      <translation>Установлено</translation>
     </message>
     <message>
       <location filename="../src/UpdatesWidget.h" line="60" />
       <source>Latest release</source>
-      <translation type="unfinished" />
+      <translation>Последний выпуск</translation>
     </message>
     <message>
       <location filename="../src/UpdatesWidget.h" line="68" />
@@ -16931,7 +16931,7 @@ System: Arch-based Linux</source>
     <message>
       <location filename="../src/UpdatesWidget.h" line="87" />
       <source>Update checks</source>
-      <translation type="unfinished" />
+      <translation>Проверка обновлений</translation>
     </message>
     <message>
       <location filename="../src/UpdatesWidget.h" line="90" />
@@ -16941,13 +16941,13 @@ System: Arch-based Linux</source>
     <message>
       <location filename="../src/UpdatesWidget.h" line="94" />
       <source>Available updates appear in the tray and workspace, with a system notification.</source>
-      <translation type="unfinished" />
+      <translation>Доступные обновления появляются в трее и в рабочем окне вместе с системным уведомлением.</translation>
     </message>
     <message>
       <location filename="../src/UpdatesWidget.h" line="100" />
       <location filename="../src/UpdatesWidget.h" line="119" />
       <source>Release channel</source>
-      <translation type="unfinished" />
+      <translation>Канал выпусков</translation>
     </message>
     <message>
       <location filename="../src/UpdatesWidget.h" line="101" />
@@ -16967,7 +16967,7 @@ System: Arch-based Linux</source>
     <message>
       <location filename="../src/UpdatesWidget.h" line="105" />
       <source>Check now</source>
-      <translation type="unfinished" />
+      <translation>Проверить сейчас</translation>
     </message>
     <message>
       <location filename="../src/UpdatesWidget.h" line="129" />
@@ -16983,7 +16983,7 @@ System: Arch-based Linux</source>
     <message>
       <location filename="../src/UpdatesWidget.h" line="151" />
       <source>Installation instructions</source>
-      <translation type="unfinished" />
+      <translation>Инструкции по установке</translation>
     </message>
     <message>
       <location filename="../src/UpdatesWidget.h" line="161" />
@@ -17097,7 +17097,7 @@ System: Arch-based Linux</source>
     <message>
       <location filename="../src/WindowsMobileSettings.h" line="31" />
       <source>Enter the computer credential issued by your relay. Saving does not start the connector. Start and Stop affect only the connector; closing Zerus keeps it and native sessions running.</source>
-      <translation type="unfinished" />
+      <translation>Введите учётные данные компьютера, выданные вашим ретранслятором. Сохранение не запускает коннектор. «Запустить» и «Остановить» влияют только на коннектор; при закрытии Zerus он и сессии агентов продолжают работать.</translation>
     </message>
     <message>
       <location filename="../src/WindowsMobileSettings.h" line="32" />
@@ -17127,12 +17127,12 @@ System: Arch-based Linux</source>
     <message>
       <location filename="../src/WindowsMobileSettings.h" line="38" />
       <source>Start connector</source>
-      <translation type="unfinished" />
+      <translation>Запустить коннектор</translation>
     </message>
     <message>
       <location filename="../src/WindowsMobileSettings.h" line="39" />
       <source>Stop connector</source>
-      <translation type="unfinished" />
+      <translation>Остановить коннектор</translation>
     </message>
     <message>
       <location filename="../src/WindowsMobileSettings.h" line="40" />
@@ -17142,12 +17142,12 @@ System: Arch-based Linux</source>
     <message>
       <location filename="../src/WindowsMobileSettings.h" line="41" />
       <source>Start the connector after each Windows login. It uses a private receipt journal. Stop waits for its current phone request; reload status to confirm it has stopped before changing configuration.</source>
-      <translation type="unfinished" />
+      <translation>Запускать коннектор при каждом входе в Windows. Он использует локальный журнал подтверждений. «Остановить» дожидается текущего запроса с телефона; прежде чем менять настройки, обновите состояние и убедитесь, что коннектор остановлен.</translation>
     </message>
     <message>
       <location filename="../src/WindowsMobileSettings.h" line="42" />
       <source>This Windows gateway controls existing local sessions. Mobile session creation, folder/worktree operations, peer routing, DeepSeek, OpenCode and voice are unavailable.</source>
-      <translation type="unfinished" />
+      <translation>Этот шлюз Windows управляет существующими локальными сессиями. Создание сессий с телефона, операции с папками и рабочими деревьями, маршрутизация между компьютерами, DeepSeek, OpenCode и голос недоступны.</translation>
     </message>
     <message>
       <location filename="../src/WindowsMobileSettings.h" line="45" />
@@ -17197,12 +17197,12 @@ System: Arch-based Linux</source>
       <location filename="../src/WorkspaceSettings.h" line="216" />
       <location filename="../src/WorkspaceSettings.h" line="244" />
       <source>Workspace</source>
-      <translation type="unfinished" />
+      <translation>Пространство</translation>
     </message>
     <message>
       <location filename="../src/WorkspaceSettings.h" line="61" />
       <source>Connect your computers and phones to one workspace. Session content is encrypted between your devices; the relay keeps routing and delivery metadata.</source>
-      <translation type="unfinished" />
+      <translation>Объедините компьютеры и телефоны в одно пространство. Содержимое сессий шифруется между вашими устройствами; ретранслятор хранит только метаданные маршрутизации и доставки.</translation>
     </message>
     <message>
       <location filename="../src/WorkspaceSettings.h" line="62" />
@@ -17212,22 +17212,22 @@ System: Arch-based Linux</source>
     <message>
       <location filename="../src/WorkspaceSettings.h" line="65" />
       <source>Change workspace…</source>
-      <translation type="unfinished" />
+      <translation>Сменить пространство…</translation>
     </message>
     <message>
       <location filename="../src/WorkspaceSettings.h" line="66" />
       <source>Start connector</source>
-      <translation type="unfinished" />
+      <translation>Запустить коннектор</translation>
     </message>
     <message>
       <location filename="../src/WorkspaceSettings.h" line="67" />
       <source>Stop connector</source>
-      <translation type="unfinished" />
+      <translation>Остановить коннектор</translation>
     </message>
     <message>
       <location filename="../src/WorkspaceSettings.h" line="68" />
       <source>Refresh status</source>
-      <translation type="unfinished" />
+      <translation>Обновить состояние</translation>
     </message>
     <message>
       <location filename="../src/WorkspaceSettings.h" line="72" />
@@ -17244,7 +17244,7 @@ System: Arch-based Linux</source>
     <message>
       <location filename="../src/WorkspaceSettings.h" line="72" />
       <source>Connection</source>
-      <translation type="unfinished" />
+      <translation>Подключение</translation>
     </message>
     <message>
       <location filename="../src/WorkspaceSettings.h" line="73" />
@@ -17254,7 +17254,7 @@ System: Arch-based Linux</source>
     <message>
       <location filename="../src/WorkspaceSettings.h" line="75" />
       <source>Computer invitation code</source>
-      <translation type="unfinished" />
+      <translation>Код приглашения компьютера</translation>
     </message>
     <message>
       <location filename="../src/WorkspaceSettings.h" line="78" />
@@ -17265,17 +17265,17 @@ System: Arch-based Linux</source>
     <message>
       <location filename="../src/WorkspaceSettings.h" line="80" />
       <source>Give computer code</source>
-      <translation type="unfinished" />
+      <translation>Выдать код компьютера</translation>
     </message>
     <message>
       <location filename="../src/WorkspaceSettings.h" line="81" />
       <source>Copy computer code</source>
-      <translation type="unfinished" />
+      <translation>Копировать код компьютера</translation>
     </message>
     <message>
       <location filename="../src/WorkspaceSettings.h" line="82" />
       <source>Cancel code</source>
-      <translation type="unfinished" />
+      <translation>Отменить код</translation>
     </message>
     <message>
       <location filename="../src/WorkspaceSettings.h" line="89" />
@@ -17365,17 +17365,17 @@ System: Arch-based Linux</source>
     <message>
       <location filename="../src/WorkspaceSettings.h" line="205" />
       <source>Disconnect legacy locally and switch…</source>
-      <translation type="unfinished" />
+      <translation>Отключить прежний ретранслятор локально и перейти…</translation>
     </message>
     <message>
       <location filename="../src/WorkspaceSettings.h" line="205" />
       <source>Continue connecting</source>
-      <translation type="unfinished" />
+      <translation>Продолжить подключение</translation>
     </message>
     <message>
       <location filename="../src/WorkspaceSettings.h" line="206" />
       <source>The new encrypted workspace is ready. The old relay has not confirmed retirement. You can explicitly disconnect its local configuration before switching.</source>
-      <translation type="unfinished" />
+      <translation>Новое зашифрованное пространство готово. Прежний ретранслятор не подтвердил отключение. Перед переходом можно явно отключить его локальную конфигурацию.</translation>
     </message>
     <message>
       <location filename="../src/WorkspaceSettings.h" line="206" />
@@ -17516,7 +17516,7 @@ Private session content is encrypted.</source>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="29" />
       <source>Review %1 selected worktrees</source>
-      <translation type="unfinished" />
+      <translation>Проверка выбранных рабочих деревьев: %1</translation>
     </message>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="31" />
@@ -17666,7 +17666,7 @@ Private session content is encrypted.</source>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="158" />
       <source>Remove %1 folders</source>
-      <translation type="unfinished" />
+      <translation>Удалить папки (%1)</translation>
     </message>
     <message>
       <location filename="../src/WorktreeBatchCleanupDialog.h" line="161" />
@@ -17959,7 +17959,8 @@ Repository: %2</source>
       <location filename="../src/WorktreeCleanupDialog.h" line="107" />
       <source>Computer: %1
 Worktree: %2</source>
-      <translation type="unfinished" />
+      <translation>Компьютер: %1
+Рабочее дерево: %2</translation>
     </message>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="110" />
@@ -18069,12 +18070,12 @@ Worktree: %2</source>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="174" />
       <source>Remove 1 worktree on %1?</source>
-      <translation type="unfinished" />
+      <translation>Удалить 1 рабочее дерево на %1?</translation>
     </message>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="174" />
       <source>Remove %1 worktrees on %2?</source>
-      <translation type="unfinished" />
+      <translation>Удалить рабочие деревья (%1) на %2?</translation>
     </message>
     <message>
       <location filename="../src/WorktreeCleanupDialog.h" line="176" />
@@ -18198,7 +18199,7 @@ Worktree: %2</source>
     <message>
       <location filename="../src/WorktreeCleanupStatus.h" line="82" />
       <source>Dismiss</source>
-      <translation type="unfinished" />
+      <translation>Закрыть</translation>
     </message>
   </context>
   <context>
@@ -18812,12 +18813,12 @@ Snapshot: %1%2</source>
     <message>
       <location filename="../src/WorktreeSettings.h" line="25" />
       <source>Cleanup runs on the computer that owns each worktree, even when this window is closed. Rules are enabled by default and apply across its projects. Other computers keep their own settings.</source>
-      <translation type="unfinished" />
+      <translation>Очистка выполняется на компьютере, которому принадлежит рабочее дерево, даже когда это окно закрыто. Правила включены по умолчанию и действуют для всех проектов этого компьютера. У других компьютеров свои настройки.</translation>
     </message>
     <message>
       <location filename="../src/WorktreeSettings.h" line="27" />
       <source>Enable automatic worktree cleanup</source>
-      <translation type="unfinished" />
+      <translation>Включить автоматическую очистку рабочих деревьев</translation>
     </message>
     <message>
       <location filename="../src/WorktreeSettings.h" line="28" />
@@ -18842,7 +18843,7 @@ Snapshot: %1%2</source>
     <message>
       <location filename="../src/WorktreeSettings.h" line="31" />
       <source>Minimum inactivity for periodic cleanup</source>
-      <translation type="unfinished" />
+      <translation>Минимальное бездействие для периодической очистки</translation>
     </message>
     <message>
       <location filename="../src/WorktreeSettings.h" line="32" />
@@ -18857,7 +18858,7 @@ Snapshot: %1%2</source>
     <message>
       <location filename="../src/WorktreeSettings.h" line="34" />
       <source>Apply to this computer</source>
-      <translation type="unfinished" />
+      <translation>Применить к этому компьютеру</translation>
     </message>
     <message>
       <location filename="../src/WorktreeSettings.h" line="67" />

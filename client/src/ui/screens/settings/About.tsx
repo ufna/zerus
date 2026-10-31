@@ -4,6 +4,7 @@ import { inTauri } from "../../../bridge";
 import { Icon } from "../../lib/icons";
 import { SectionHead } from "./ui";
 import { installedVersion, type BuildInfo } from "./about-version";
+import { tr, trNoop } from "../../../i18n";
 
 // Settings > About (tray/src/SettingsPage.h:146-155): the installed Zerus
 // as UpdateController::installedVersion names it, the hgs CLI, checked
@@ -38,11 +39,11 @@ export function AboutSection() {
   onMount(refreshAbout);
   return (
     <>
-      <SectionHead title="About" />
+      <SectionHead title={trNoop("About")} />
       <p class="selectable">{zerus()}</p>
       <p class="selectable">{cli()}</p>
       <div>
-        <button class="btn" title="https://github.com/ufna/zerus" aria-label="Open Zerus repository on GitHub"
+        <button class="btn" title="https://github.com/ufna/zerus" aria-label={tr("Open Zerus repository on GitHub")}
           onClick={() => { if (inTauri()) void invoke("open_repository").catch(() => {}); }}>
           <Icon name="github" size={16} />ufna/zerus
         </button>

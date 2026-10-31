@@ -4,6 +4,7 @@ import { selected, setDetailTab } from "../../store/ui";
 import { questions } from "../../store/questions";
 import { pageHidden } from "../../store/visibility";
 import { Icon } from "../lib/icons";
+import { tr } from "../../i18n";
 
 /** design/webui screens/sessions/SessionDetail NativeTab. */
 export function NativeUiTab() {
@@ -29,13 +30,13 @@ export function NativeUiTab() {
   // as well as on a new exact request.
   createEffect(() => { nativeUi.request(); pageHidden(); untrack(measure); });
   return <div class="native-tab">
-    <div class="term-bar"><b>DeepSeek workspace / {selected()?.machine}</b><span class="grow" />
-      <Show when={questions.view()}><button class="btn small" onClick={() => setDetailTab("activity")}>Respond in Activity</button></Show>
-      <button class="icon-btn" title="Reload" aria-label="Reload native UI" disabled={nativeUi.status().status === "offline"} onClick={() => nativeUi.reload()}><Icon name="refresh-cw" size={15} /></button>
+    <div class="term-bar"><b>{tr("DeepSeek workspace / %1", selected()?.machine ?? "")}</b><span class="grow" />
+      <Show when={questions.view()}><button class="btn small" onClick={() => setDetailTab("activity")}>{tr("Respond in Activity")}</button></Show>
+      <button class="icon-btn" title={tr("Reload")} aria-label={tr("Reload native UI")} disabled={nativeUi.status().status === "offline"} onClick={() => nativeUi.reload()}><Icon name="refresh-cw" size={15} /></button>
     </div>
     <div class="native-frame" ref={frame}>
       <Show when={nativeUi.status().status !== "ready"}>
-        <div class="empty" role="status"><Icon name="monitor-smartphone" size={30} /><h3>Agent's own web UI</h3><p>{nativeUi.status().text}</p></div>
+        <div class="empty" role="status"><Icon name="monitor-smartphone" size={30} /><h3>{tr("Agent's own web UI")}</h3><p>{nativeUi.status().text}</p></div>
       </Show>
     </div>
   </div>;
