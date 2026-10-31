@@ -7,6 +7,8 @@ mod feed;
 mod frontend;
 mod handoff;
 mod import_evidence;
+#[allow(dead_code)]
+mod operations;
 mod owner;
 mod presence_admission;
 #[allow(dead_code)]
