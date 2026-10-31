@@ -24,7 +24,8 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Build {
     pub app_version: String,
-    pub installed: String,
+    /// The version, its source commit and any local changes, as interface prose.
+    pub installed: zerus_client_core::text::Text,
     pub dev_number: u64,
     pub source_commit: String,
 }
@@ -35,13 +36,13 @@ impl Build {
         let app_version = info["versionName"].as_str().unwrap_or("").to_owned();
         let dev_number = info["devBuildNumber"].as_u64().unwrap_or(0);
         let source_commit = info["sourceCommit"].as_str().unwrap_or("").to_owned();
-        let mut installed = app_version.clone();
+        let mut installed = zerus_client_core::text::Text::verbatim(app_version.clone());
         if dev_number == 0 && info.get("previewLabel").is_none() && !source_commit.is_empty() {
-            let short = &source_commit[..source_commit.len().min(7)];
+            let short = source_commit[..source_commit.len().min(7)].to_owned();
             installed = if info["sourceDirty"].as_bool() == Some(true) {
-                format!("{app_version} (local changes {short})")
+                zerus_client_core::text!("%1 (local changes %2)", app_version.clone(), short)
             } else {
-                format!("{app_version} ({short})")
+                zerus_client_core::text!("%1 (%2)", app_version.clone(), short)
             };
         }
         Self {
@@ -60,7 +61,7 @@ pub struct UpdatesView {
     pub available: bool,
     /// Interface prose; the webview translates it (`client/src/text.ts`).
     pub heading: zerus_client_core::text::Text,
-    pub installed: String,
+    pub installed: zerus_client_core::text::Text,
     /// The published version as it is, or "Not checked".
     pub latest: zerus_client_core::text::Text,
     pub comparison: Option<zerus_client_core::text::Text>,
@@ -202,7 +203,7 @@ impl UpdatesView {
         });
         let installed =
             if macos_installation(&state.installation) && !state.installation.version.is_empty() {
-                state.installation.version.clone()
+                zerus_client_core::text::Text::verbatim(state.installation.version.clone())
             } else {
                 build.installed.clone()
             };
@@ -1234,7 +1235,7 @@ mod tests {
             };
             let build = Build {
                 app_version: "0.46.0".into(),
-                installed: "0.46.0".into(),
+                installed: zerus_client_core::text::Text::verbatim("0.46.0"),
                 dev_number: 0,
                 source_commit: String::new(),
             };

@@ -27,7 +27,7 @@ BASE = {
     "busy": False,
     "available": False,
     "heading": text("Updates have not been checked"),
-    "installed": "0.46.2 (abcdef0)",
+    "installed": verbatim("0.46.2 (abcdef0)"),
     "latest": text("Not checked"),
     "comparison": None,
     "last_checked": "Never",
