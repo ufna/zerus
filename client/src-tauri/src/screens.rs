@@ -1042,6 +1042,59 @@ impl Screens {
         self.machines_answer()
     }
 
+    /// One explicit local profile write. The existing CLI owns the config file
+    /// lock/revision; this hub only serializes the page's admission.
+    pub fn change_machine(
+        &self,
+        request: zerus_client_core::machine_connections::Request,
+    ) -> Result<(), String> {
+        use zerus_client_core::machine_connections;
+        if !self.0.allowed {
+            return Err(REPLAY_NEEDS_HGS.into());
+        }
+        let call = {
+            let mut hub = self.lock();
+            let list = hub
+                .machines
+                .list
+                .as_ref()
+                .ok_or(machine_connections::CHANGED)?;
+            let call = machine_connections::prepare(list, &request)?;
+            if !hub.machines.start_write() {
+                return Err("A machine request is already running.".into());
+            }
+            hub.dirty.insert(Screen::Machines);
+            call
+        };
+        struct Writing(Screens);
+        impl Drop for Writing {
+            fn drop(&mut self) {
+                let mut hub = self.0.lock();
+                hub.machines.finish_write();
+                hub.dirty.insert(Screen::Machines);
+                drop(hub);
+                self.0.publish();
+            }
+        }
+        let _writing = Writing(self.clone());
+        self.publish();
+        let exit = zerus_client_core::run_limited(
+            &self.0.hgs,
+            &call,
+            &[],
+            machine_connections::RESPONSE_BYTES,
+        )
+        .map_err(|_| machine_connections::UNCERTAIN.to_owned())?;
+        machine_connections::checked(exit, &request.alias)?;
+        let reply = message(reads::read(
+            &self.0.hgs,
+            &ComputerId::local(),
+            &Read::Machines,
+        ));
+        self.lock().machines.finish_list(reply);
+        Ok(())
+    }
+
     /// The selected peer's effective connection, read on selection.
     pub fn resolve(&self, alias: String) -> Revisioned<MachinesView> {
         let start = self.0.allowed && self.lock().machines.start_resolve(&alias);
@@ -1366,6 +1419,17 @@ pub fn machines_view(
     force: bool,
 ) -> Result<Revisioned<MachinesView>, String> {
     Ok(state.machines(force))
+}
+
+#[tauri::command]
+pub async fn machine_change(
+    state: State<'_, Screens>,
+    request: zerus_client_core::machine_connections::Request,
+) -> Result<(), String> {
+    let screens = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || screens.change_machine(request))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command(async)]
@@ -2187,6 +2251,92 @@ mod tests {
         h.drain();
         assert_eq!(h.count("account ls"), 2);
         assert_eq!(h.published(Screen::Accounts)["busy"], json!(false));
+    }
+
+    #[test]
+    fn machine_profile_write_uses_the_saved_revision_then_refreshes_the_same_hub() {
+        use zerus_client_core::machine_connections::{Change, Request};
+        let old = json!({"local":"fixture-local","revision":"a".repeat(64),
+            "machines":[{"alias":"fixture-peer","source":"local","inherited":true}]});
+        let mut updated = old.clone();
+        updated["revision"] = json!("b".repeat(64));
+        let command = format!("machine reset fixture-peer --revision {}", "a".repeat(64));
+        let h = harness(
+            json!({
+                command.clone():{"stdout":json!({"ok":true,"alias":"fixture-peer","dry_run":false}).to_string()},
+                "machine ls":{"stdout":updated.to_string()}
+            }),
+            true,
+        );
+        h.screens.lock().machines.finish_list(Ok(old));
+        let req = Request {
+            alias: "fixture-peer".into(),
+            revision: "a".repeat(64),
+            change: Change::Reset,
+        };
+        assert!(h.screens.change_machine(req.clone()).is_ok());
+        assert_eq!(h.count(&command), 1);
+        assert_eq!(h.count("machine ls"), 1);
+        assert_eq!(
+            h.screens.machines(false).connection_revision,
+            "b".repeat(64)
+        );
+        assert!(!h.screens.machines(false).busy);
+        assert!(h.screens.change_machine(req).is_err());
+        assert_eq!(
+            h.count(&command),
+            1,
+            "stale original write never reaches hgs again"
+        );
+    }
+
+    #[test]
+    fn machine_profile_unknown_reply_releases_the_page_lane_without_replay() {
+        use zerus_client_core::machine_connections::{Change, Request, UNCERTAIN};
+        let command = format!("machine remove fixture-peer --revision {}", "a".repeat(64));
+        let h = harness(json!({command.clone():{"stdout":"not-json"}}), true);
+        h.screens.lock().machines.finish_list(Ok(json!({"local":"fixture-local","revision":"a".repeat(64),"machines":[{"alias":"fixture-peer"}]})));
+        let req = Request {
+            alias: "fixture-peer".into(),
+            revision: "a".repeat(64),
+            change: Change::Remove,
+        };
+        assert_eq!(h.screens.change_machine(req), Err(UNCERTAIN.into()));
+        assert!(!h.screens.machines(false).busy);
+        assert_eq!(h.count(&command), 1);
+        assert_eq!(
+            h.queued(),
+            0,
+            "unknown result queues neither retry nor another effect"
+        );
+        assert_eq!(
+            h.count("machine ls"),
+            0,
+            "failed write keeps the reviewed snapshot"
+        );
+    }
+
+    #[test]
+    fn machine_profile_replay_and_an_active_page_read_refuse_before_writing() {
+        use zerus_client_core::machine_connections::{Change, Request};
+        let h = harness(json!({}), false);
+        let req = Request {
+            alias: "fixture-peer".into(),
+            revision: "a".repeat(64),
+            change: Change::Remove,
+        };
+        assert_eq!(
+            h.screens.change_machine(req.clone()),
+            Err(REPLAY_NEEDS_HGS.into())
+        );
+        assert!(h.fake.calls().is_empty());
+        let h = harness(json!({}), true);
+        let mut hub = h.screens.lock();
+        hub.machines.finish_list(Ok(json!({"local":"fixture-local","revision":"a".repeat(64),"machines":[{"alias":"fixture-peer"}]})));
+        assert!(hub.machines.start_check("fixture-peer"));
+        drop(hub);
+        assert!(h.screens.change_machine(req).is_err());
+        assert!(h.fake.calls().is_empty());
     }
 
     #[test]

@@ -35,6 +35,7 @@ pub mod legacy;
 pub mod linux_notify;
 pub mod local_messages;
 pub mod machine;
+pub mod machine_connections;
 pub mod macos_notify;
 pub mod marks;
 pub mod menubar;

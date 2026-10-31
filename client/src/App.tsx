@@ -17,7 +17,6 @@ import { SessionDetail } from "./ui/sessions/SessionDetail";
 import { CreationPanel } from "./ui/sessions/CreationPanel";
 import { selectedCreation } from "./store/creations";
 import { OverviewScreen } from "./ui/screens/Overview";
-import { MachinesScreen } from "./ui/screens/Machines";
 import { ProjectsScreen } from "./ui/screens/Projects";
 import { applySkin, skin } from "./skin/runtime";
 import { catalog } from "./store/catalog";
@@ -38,6 +37,7 @@ const WorktreeReviewDialog = lazy(() => import("./ui/screens/WorktreeReviewDialo
 
 // Accounts keeps its data and refresh cadence in store/accounts; only its
 // screen loads on first navigation.
+const MachinesScreen = lazy(() => import("./ui/screens/Machines").then((m) => ({ default: m.MachinesScreen })));
 const AccountsScreen = lazy(() => import("./ui/screens/Accounts").then((m) => ({ default: m.AccountsScreen })));
 // Settings and its sections load the first time Settings opens; their
 // state lives in their modules, so it stays once loaded.
