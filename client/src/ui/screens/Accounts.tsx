@@ -19,6 +19,7 @@ import { accountSetup } from "../../store/accountSetup";
 import {accountDistribution} from "../../store/accountDistribution";
 import { creditsText, loginLabel, memberStateLabel, memberStateText, memberOf, panelWindow, profileTags, summaryLine, tone, visibleAccounts, visibleMembers } from "./accounts-ui";
 import { tr } from "../../i18n";
+import { trText } from "../../text";
 
 // Agent accounts (AccountsPage.cpp), ported from design/webui/src/screens/Accounts.tsx:
 // profiles grouped by provider identity across machines; choosing a machine
@@ -51,7 +52,7 @@ function AccountRow(props: { a: Account; now: number }) {
     setSelectedProfile(memberOf(props.a, undefined, accountMachine())?.key);
   };
   return (
-    <button class="acct-row" classList={{ on: on() }} aria-current={on()} title={props.a.members.map((m) => `${m.machine}${tags().has(m.key) ? ` ${tags().get(m.key)}` : ""}: ${m.permission_label}`).join("\n")} onClick={pick}>
+    <button class="acct-row" classList={{ on: on() }} aria-current={on()} title={props.a.members.map((m) => `${m.machine}${tags().has(m.key) ? ` ${tags().get(m.key)}` : ""}: ${trText(m.permission_label)}`).join("\n")} onClick={pick}>
       {/* The session card's 34 px leading column, holding the provider tile. */}
       <span class="acct-av"><span class="acct-ptile" style={{ "--agent": `var(--z-agent-${agentKind(props.a.provider)})` }}><ProviderGlyph agent={agentKind(props.a.provider)} size={18} /></span></span>
       <span class="acct-l1">
@@ -64,7 +65,7 @@ function AccountRow(props: { a: Account; now: number }) {
           <Show when={props.a.members.length > 3}><span class="dim">+{props.a.members.length - 3}</span></Show>
         </span>
         <span class="grow" />
-        <span class="acct-perm" classList={{ bypass: props.a.permission === "Bypass" }}>{props.a.permission}</span>
+        <span class="acct-perm" classList={{ bypass: props.a.members.length > 0 && props.a.members.every((m) => m.permission === "bypass") }}>{trText(props.a.permission)}</span>
       </span>
       {/* The detail's usage windows in the Overview card's compact meters; the reset shows from 90%. */}
       <Show when={props.a.usage.windows.length}>
@@ -138,8 +139,8 @@ function Detail(props: { a: Account }) {
       <div class="row acct-identity">
         <AgentBadge agent={agentKind(props.a.provider)} />
         <div class="col selectable">
-          <For each={props.a.identity_lines}>{(line) => <span>{line}</span>}</For>
-          <Show when={props.a.identity_note}><span class="muted">{props.a.identity_note}</span></Show>
+          <For each={props.a.identity_lines}>{(line) => <span>{trText(line)}</span>}</For>
+          <Show when={props.a.identity_note}>{(note) => <span class="muted">{trText(note())}</span>}</Show>
         </div>
       </div>
 
@@ -200,7 +201,7 @@ function Detail(props: { a: Account }) {
           <button class="btn small acct-add" disabled={managementBusy()} onClick={event=>{accountManagement.close();accountSetup.close();accountManagement.clearNotice();accountSetup.clearNotice();void accountDistribution.open(props.a.key,m().key,event.currentTarget);}}><Icon name="plus" size={12} />{tr("Add to machine…")}</button>
         </div>
         <div class="acct-status">
-          <Status kind={tone(m().state)}>{m().detail}</Status>
+          <Status kind={tone(m().state)}>{trText(m().detail)}</Status>
           <Actions>
             <Show when={loginLabel(m())}>{(label) => <button class="btn" disabled={!m().online||!m().installed||managementBusy()} title={m().provider==="dsh"?tr("Save a DeepSeek API key on %1.", m().machine):undefined} onClick={event=>{accountManagement.close();accountManagement.clearNotice();void accountSetup.open(m().provider==="dsh"?"key":"login",event.currentTarget,props.a.key,m().key);}}><Icon name="key-round" size={13} />{label()}</button>}</Show>
             <Show when={!m().installed}><button class="btn" disabled={!m().online||m().provider==="opencode"||managementBusy()} onClick={event=>{accountManagement.close();accountManagement.clearNotice();void accountSetup.open("install",event.currentTarget,props.a.key,m().key);}}><Icon name="download" size={13} />{tr("Install agent…")}</button></Show>
@@ -225,15 +226,15 @@ function Detail(props: { a: Account }) {
           </>
         )}</Show>
         <div class="acct-setting">
-          <span title={m().permission_hint}>
-            {tr("Permissions on %1:", m().machine)} <b classList={{ danger: m().permission === "bypass" }}>{m().permission_label}</b>
+          <span title={trText(m().permission_hint)}>
+            {tr("Permissions on %1:", m().machine)} <b classList={{ danger: m().permission === "bypass" }}>{trText(m().permission_label)}</b>
             <span class="dim acct-src">{m().permission_mode === "bypass" ? tr("set in Zerus") : tr("from provider settings")}</span>
           </span>
           <button class="btn small" disabled={!m().online || nativeConfig() || managementBusy()} title={tr("Change permission defaults on %1", m().machine)} onClick={event=>void openCatalog("permissions",props.a.key,m().key,event.currentTarget)}>{tr("Change…")}</button>
         </div>
         <Show when={m().model_supported}>
           <div class="acct-setting">
-            <span>{m().model_text}</span>
+            <span>{trText(m().model_text)}</span>
             <button class="btn small" disabled={!m().online || managementBusy()} onClick={event=>void openCatalog("model",props.a.key,m().key,event.currentTarget)}>{tr("Model and effort…")}</button>
           </div>
         </Show>

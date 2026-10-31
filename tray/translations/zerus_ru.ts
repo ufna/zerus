@@ -356,12 +356,12 @@
     <message>
       <location filename="../src/AccountsPage.cpp" line="611" />
       <source>New sessions: Provider settings</source>
-      <translation type="unfinished" />
+      <translation>Новые сессии: настройки провайдера</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="612" />
       <source>New sessions: %1%2</source>
-      <translation type="unfinished" />
+      <translation>Новые сессии: %1%2</translation>
     </message>
     <message>
       <location filename="../src/AccountsPage.cpp" line="621" />
