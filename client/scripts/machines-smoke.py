@@ -18,7 +18,9 @@ def main():
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--inner', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--tools', action='store_true', help='Exercise the configured SSH terminal and native key picker')
+    parser.add_argument('--setup', action='store_true', help='Exercise confirmed setup with the private fake CLI only')
     args = parser.parse_args()
+    assert not (args.setup and args.tools)
     app, output = args.app.resolve(), args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     if not args.inner:
@@ -35,6 +37,7 @@ def main():
             command = ['dbus-run-session','--','xvfb-run','-a','-s','-screen 0 1440x900x24',sys.executable,__file__,
                        '--app',str(app),'--output',str(output),'--inner']
             if args.tools:command.append('--tools')
+            if args.setup:command.append('--setup')
             log.write('EXECUTED '+json.dumps(command)+'\nFresh allowlisted private HOME/XDG/TMPDIR/TMUX_TMPDIR/D-Bus/Xvfb\n');log.flush()
             result = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=100)
             log.write('\nEXIT_CODE '+str(result.returncode)+'\n')
@@ -51,7 +54,7 @@ def main():
     assert os.environ.get('DISPLAY') and os.environ.get('DBUS_SESSION_BUS_ADDRESS')
     scratch = Path(os.environ['TMPDIR'])/'machines-fixture';scratch.mkdir(mode=0o700)
     fake = scratch/'hgs';shutil.copy2(CLIENT/'src-tauri/tests/support/fake_hgs_machines.py',fake);fake.chmod(0o700)
-    (scratch/'config.json').write_text(json.dumps({'machines_fixture':True,'disabled_peer':args.tools}))
+    (scratch/'config.json').write_text(json.dumps({'machines_fixture':True,'disabled_peer':args.tools,'setup_fixture':args.setup}))
     helpers = scratch/'helpers';helpers.mkdir(mode=0o700)
     for name in ['hgs','systemctl','launchctl','xdg-open','gio','sensible-browser']:
         file=helpers/name;file.write_text('#!/bin/sh\nexit 1\n');file.chmod(0o700)
@@ -66,6 +69,14 @@ def main():
         'GDK_BACKEND','WAYLAND_DISPLAY','NO_AT_BRIDGE','WEBKIT_DISABLE_DMABUF_RENDERER','GSETTINGS_BACKEND'] if key in os.environ}
     env.update(PATH=str(helpers)+':/usr/bin:/bin',ZERUS_CLIENT_HEADLESS='1',ZERUS_CLIENT_REPLAY=str(CLIENT/'fixtures/replay.ndjson'),
                ZERUS_CLIENT_HGS=str(fake),ZERUS_CLIENT_QUERY='machines-tools-smoke=1' if args.tools else 'machines-smoke=1',ZERUS_CLIENT_PERF='smoke')
+    if args.setup:
+        frames = [json.loads(line) for line in (CLIENT/'fixtures/replay.ndjson').read_text().splitlines()]
+        for frame in frames:
+            if frame.get('topic') == 'catalog.meta':
+                frame['value'].update(local_sessions=False,local_host={'state':'not-installed','protocol':1})
+                frame['value']['metrics']['platform']='windows'
+        replay=scratch/'setup-replay.ndjson';replay.write_text('\n'.join(json.dumps(f) for f in frames)+'\n')
+        env.update(ZERUS_CLIENT_REPLAY=str(replay),ZERUS_CLIENT_QUERY='machines-setup-smoke=1')
     import gi
     gi.require_version('Gtk','3.0');gi.require_version('Gdk','3.0')
     from gi.repository import Gtk,Gdk,GLib
@@ -139,8 +150,8 @@ def main():
             deadline=time.monotonic()+70
             while process.poll() is None and time.monotonic()<deadline:
                 text=(output/'app.log').read_text()
-                stages=['SSH_OPENED','KEY_CANCEL_WAIT','KEY_PICK_WAIT','PICKED'] if args.tools else ['EXISTING','UNSAVED','NEW','REMOVE']
-                prefix='machine-tools-smoke: ' if args.tools else 'machines-smoke: '
+                stages=['SETUP','INSTALLED','UNKNOWN','ENABLE'] if args.setup else ['SSH_OPENED','KEY_CANCEL_WAIT','KEY_PICK_WAIT','PICKED'] if args.tools else ['EXISTING','UNSAVED','NEW','REMOVE']
+                prefix='machine-setup-smoke: ' if args.setup else 'machine-tools-smoke: ' if args.tools else 'machines-smoke: '
                 for stage in stages:
                     if stage not in captured and prefix+stage in text:
                         # The log arrives before WebKit's next compositor frame.
@@ -154,12 +165,16 @@ def main():
             code=process.poll()
             if code is None:raise RuntimeError('Machines smoke exceeded 70 seconds')
             text=(output/'app.log').read_text()
-            assert code==0 and ('machine-tools-smoke: PASS 9' if args.tools else 'machines-smoke: PASS 12') in text,text[-5000:]
+            assert code==0 and ('machine-setup-smoke: PASS 10' if args.setup else 'machine-tools-smoke: PASS 9' if args.tools else 'machines-smoke: PASS 12') in text,text[-5000:]
             assert len(captured)==4,captured
             calls=[json.loads(line) for line in (scratch/'log.ndjson').read_text().splitlines()]
             writes=[c for c in calls if c['argv'][:1]==['machine'] and c['argv'][1] in ['set','reset','remove']]
-            assert len(writes)==(0 if args.tools else 4),writes
+            assert len(writes)==(0 if args.tools or args.setup else 4),writes
             assert all('--revision' in c['argv'] for c in writes)
+            if args.setup:
+                setups=[c for c in calls if c['argv'][:2]==['machine','setup']]
+                assert len(setups)==2 and all('--revision' in c['argv'] for c in setups)
+                assert sum(c['argv']==['session-host','install','--json'] for c in calls)==1
             if args.tools:
                 import shlex,re
                 terminals=[c for c in calls if c['argv'][0]=='private-terminal'];assert len(terminals)==1
@@ -169,8 +184,8 @@ def main():
                 assert key_path.read_text()=='synthetic path fixture, not a key\n'
                 (output/'native-parents.json').write_text(json.dumps(parents,indent=2)+'\n')
             shutil.copy2(scratch/'log.ndjson',output/'calls.ndjson')
-            (output/'results.json').write_text(json.dumps({'passed':9 if args.tools else 12,'failed':0,'mutations':len(writes),'captures':sorted(captured),'native_checks':4 if args.tools else 0},indent=2)+'\n')
-            print('PASS tools9/native4' if args.tools else 'PASS 12; four exact revision-guarded writes; four screenshots',flush=True)
+            (output/'results.json').write_text(json.dumps({'passed':10 if args.setup else 9 if args.tools else 12,'failed':0,'mutations':len(writes),'captures':sorted(captured),'native_checks':4 if args.tools else 0},indent=2)+'\n')
+            print('PASS setup10' if args.setup else 'PASS tools9/native4' if args.tools else 'PASS 12; four exact revision-guarded writes; four screenshots',flush=True)
         finally:
             if process.poll() is None:
                 process.terminate()

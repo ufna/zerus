@@ -305,6 +305,36 @@ target.mkdir(parents=True)
         self.assertIn('BatchMode=yes', self.ssh_args())
         self.assertIn('StrictHostKeyChecking=yes', self.ssh_args())
 
+    def test_setup_revision_is_additive_and_refuses_stale_or_missing_alias_before_ssh(self):
+        source, remote, env = self.prepare_setup()
+        self.set_profile('studio', {'hostname': 'peer.invalid'})
+        expected = json.loads(self.run_machine('ls').stdout)['revision']
+        self.run_machine('setup', 'studio', '--source', str(source), '--revision', expected, env=env)
+        (self.root / 'ssh-args.json').unlink()
+        self.set_profile('studio', {'hostname': 'changed.invalid'})
+        result = self.run_machine('setup', 'studio', '--source', str(source), '--revision', expected, env=env, success=False)
+        self.assertIn('Reload the page before setup', result.stderr)
+        self.assertFalse((self.root / 'ssh-args.json').exists())
+        current = json.loads(self.run_machine('ls').stdout)['revision']
+        self.run_machine('setup', 'missing.invalid', '--source', str(source), '--revision', current, env=env, success=False)
+        self.assertFalse((self.root / 'ssh-args.json').exists())
+
+    def test_setup_rechecks_the_original_profile_after_source_packaging(self):
+        source, remote, env = self.prepare_setup()
+        self.set_profile('studio', {'hostname': 'peer.invalid'})
+        expected = json.loads(self.run_machine('ls').stdout)['revision']
+        real_tar = shutil.which('tar')
+        if not real_tar:
+            self.skipTest('tar not installed')
+        self.script('tar', f'''#!/usr/bin/python3
+import subprocess,sys,pathlib
+r=subprocess.run([{real_tar!r},*sys.argv[1:]])
+pathlib.Path({str(self.config / 'machines.local.json')!r}).write_text('{{}}\\n')
+sys.exit(r.returncode)
+''')
+        self.run_machine('setup', 'studio', '--source', str(source), '--revision', expected, env=env, success=False)
+        self.assertFalse((self.root / 'ssh-args.json').exists())
+
     def test_setup_initializes_config_only_for_new_machine(self):
         source, remote, env = self.prepare_setup()
         self.run_machine('setup', 'studio', '--source', str(source), env=env)

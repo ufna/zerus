@@ -117,6 +117,34 @@ pub fn ssh_arguments(list: &Value, reference: &Reference) -> Result<Vec<String>,
     Ok(crate::terminal_launch::ssh_arguments(&reference.alias))
 }
 
+/// One explicitly confirmed setup of the original saved alias. The CLI repeats
+/// this revision check immediately before SSH; an uncertain result never retries.
+pub fn setup(list: &Value, reference: &Reference, source: &str) -> Result<Invocation, String> {
+    selected_row(list, &reference.alias, &reference.revision)?.ok_or(CHANGED)?;
+    if source.len() > 4096
+        || source.chars().any(char::is_control)
+        || (!source.is_empty() && !Path::new(source).is_absolute())
+    {
+        return Err("Choose an absolute HGS source folder path.".into());
+    }
+    let mut args = vec![
+        "machine".into(),
+        "setup".into(),
+        reference.alias.clone(),
+        "--revision".into(),
+        reference.revision.clone(),
+    ];
+    if !source.is_empty() {
+        args.extend(["--source".into(), source.into()]);
+    }
+    Ok(Invocation {
+        args,
+        stdin: None,
+        timeout: Duration::from_secs(30 * 60),
+        request_id: None,
+    })
+}
+
 /// Prepare only from this hub's original snapshot. hgs repeats the revision
 /// comparison under its existing file lock; no write follows a stale snapshot.
 pub fn prepare(list: &Value, request: &Request) -> Result<Invocation, String> {
@@ -269,6 +297,31 @@ mod tests {
         for alias in ["fixture-local", "absent", "@peer", "-oProxyCommand=x"] {
             reference.alias = alias.into();
             assert!(ssh_arguments(&snapshot, &reference).is_err());
+        }
+    }
+
+    #[test]
+    fn confirmed_setup_uses_the_saved_revision_and_bounded_absolute_source() {
+        let reference = Reference {
+            alias: "fixture-peer".into(),
+            revision: "a".repeat(64),
+        };
+        let call = setup(&list(), &reference, "/source with spaces").unwrap();
+        assert_eq!(
+            call.args,
+            [
+                "machine",
+                "setup",
+                "fixture-peer",
+                "--revision",
+                &"a".repeat(64),
+                "--source",
+                "/source with spaces"
+            ]
+        );
+        assert!(call.stdin.is_none());
+        for source in ["relative/source", "/bad\nsource"] {
+            assert!(setup(&list(), &reference, source).is_err());
         }
     }
 

@@ -33,6 +33,7 @@
 //! reads started while Overview or Accounts shows (their busy state).
 
 pub mod account_edits;
+pub mod machine_setup;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -2349,6 +2350,77 @@ mod tests {
         h.drain();
         assert_eq!(h.count("account ls"), 2);
         assert_eq!(h.published(Screen::Accounts)["busy"], json!(false));
+    }
+
+    #[test]
+    fn machine_setup_rechecks_and_runs_only_the_original_confirmed_call() {
+        let snapshot = json!({"local":"fixture-local","revision":"a".repeat(64),"machines":[{"alias":"fixture-peer"}]});
+        let command = format!(
+            "machine setup fixture-peer --revision {} --source /synthetic/source",
+            "a".repeat(64)
+        );
+        let h = harness(
+            json!({"machine ls":{"stdout":snapshot.to_string()},(command.clone()):{"stdout":"setup complete"}}),
+            true,
+        );
+        h.screens.lock().machines.finish_list(Ok(snapshot));
+        let result = h
+            .screens
+            .setup_machine(
+                machine_setup::Request::Install {
+                    reference: zerus_client_core::machine_connections::Reference {
+                        alias: "fixture-peer".into(),
+                        revision: "a".repeat(64),
+                    },
+                    source: "/synthetic/source".into(),
+                },
+                None,
+            )
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(h.count("machine ls"), 1);
+        assert_eq!(h.count(&command), 1);
+        assert!(!h.screens.machines(false).busy);
+    }
+    #[test]
+    fn machine_setup_local_enable_checks_current_console_and_original_identity() {
+        use zerus_client_core::machine::{LocalHost, MachineMeta};
+        let h = harness(
+            json!({"session-host status --json":{"stdout":"{\"enabled\":false}"},"session-host install --json":{"stdout":"{\"enabled\":true}"}}),
+            true,
+        );
+        let meta = MachineMeta {
+            machine_id: Some("original".into()),
+            platform: Some("windows".into()),
+            local_sessions: Some(false),
+            local_host: Some(LocalHost {
+                state: Some("not-installed".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(h
+            .screens
+            .setup_machine(
+                machine_setup::Request::Enable {
+                    machine_id: "replaced".into()
+                },
+                Some(meta.clone())
+            )
+            .is_err());
+        assert_eq!(h.count("session-host install --json"), 0);
+        let result = h
+            .screens
+            .setup_machine(
+                machine_setup::Request::Enable {
+                    machine_id: "original".into(),
+                },
+                Some(meta),
+            )
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(h.count("session-host status --json"), 1);
+        assert_eq!(h.count("session-host install --json"), 1);
     }
 
     struct MachineTerminal(Arc<Mutex<Vec<zerus_client_core::terminal_launch::Start>>>);

@@ -3766,6 +3766,13 @@ workspace inheritance or patch/replace overrides. The bounds are 32 packages,
 32 directory levels and a five-second scan budget. A refusal makes no SSH call.
 The remote CLI-only install preserves configuration and existing checkouts, skips
 the mobile connector and does not install or restart services or agent processes.
+The optional `--revision` binds setup to the saved profile snapshot, checked both
+before source preparation and before SSH. Existing setup argv remains supported.
+Next confirms the selected machine and source folder, keeps the page busy and
+shows bounded setup output when the command ends. Keep Zerus running until it
+finishes. A timeout or uncertain result is shown for review and never retried
+automatically. Enabling local Windows sessions has its own confirmation and
+rechecks the original local machine identity and current host status.
 
 **Swarm worker.** Windows has no user service manager. The desktop app runs one
 hidden `hgs.exe swarm worker` and restarts it after an exit. The delay doubles

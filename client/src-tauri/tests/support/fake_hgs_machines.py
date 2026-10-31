@@ -31,6 +31,17 @@ if args == ["machine", "ls"]:
         for alias, row in profiles.items()]})
 elif args[:2] == ["machine", "resolve"]:
     emit({"alias": args[2], "effective": {"hostname": "peer.invalid", "user": "fixture", "port": "22", "identity_files": ["/home/example/.ssh/id_fixture"]}})
+elif args[:2] == ["machine", "setup"] and config.get("setup_fixture"):
+    import time
+    assert args[args.index("--revision") + 1] == revision and args[2] in profiles
+    time.sleep(.15)
+    count = sum(json.loads(line)["argv"][:2] == ["machine", "setup"] for line in (root / "log.ndjson").read_text().splitlines())
+    print("Setup complete: hgs fixture-installed" if count == 1 else "Original setup output; uncertain fixture result")
+    if count > 1: raise SystemExit(75)
+elif args == ["session-host", "status", "--json"] and config.get("setup_fixture"):
+    emit({"enabled": False})
+elif args == ["session-host", "install", "--json"] and config.get("setup_fixture"):
+    emit({"enabled": True, "cli": {"path": "C:\\Users\\example\\hgs.exe"}})
 elif args[:2] == ["machine", "check"]:
     emit({"ok": True, "ssh_ok": True, "os": "Linux", "arch": "x86_64", "hgs": "hgs fixture", "tmux": "tmux fixture"})
 elif args[:1] == ["machine"] and args[1:2] in (["set"], ["reset"], ["remove"]):
