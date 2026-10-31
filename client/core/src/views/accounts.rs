@@ -322,7 +322,7 @@ pub fn refs(fleet: &[FleetEntry], state: &AccountsState) -> Vec<(UsageRef, bool)
     out
 }
 
-pub(crate) fn provider_name(provider: &str) -> String {
+pub fn provider_name(provider: &str) -> String {
     match provider {
         "claude" => "Claude",
         "codex" => "Codex",

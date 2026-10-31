@@ -13,6 +13,7 @@ import { useNow } from "../../store/latest";
 import { setPage } from "../../store/ui";
 import { clock, providerName, stateText } from "../lib/usage";
 import { accountManagement } from "../../store/accountManagement";
+import { accountSetup } from "../../store/accountSetup";
 import { ACCOUNT_MANAGEMENT } from "./reasons";
 import { creditsText, loginLabel, memberStateText, memberOf, panelWindow, summaryLine, tone, visibleAccounts, visibleMembers } from "./accounts-ui";
 
@@ -21,6 +22,10 @@ import { creditsText, loginLabel, memberStateText, memberOf, panelWindow, summar
 // tag selects that machine's profile. Catalog edits use native snapshots;
 // permissions, sign-in, install and add keep their places until their slices.
 
+const AccountSetupDialog = lazy(() => import("./AccountSetupDialog"));
+const managementBusy=()=>accountManagement.busy()||accountSetup.busy();
+const closeManagement=()=>{accountManagement.close();accountSetup.close();};
+const clearManagementNotice=()=>{accountManagement.clearNotice();accountSetup.clearNotice();};
 const AccountDefaultsDialog = lazy(() => import("./AccountDefaultsDialog"));
 const AccountCatalogDialog = lazy(() => import("./AccountCatalogDialog"));
 
@@ -30,7 +35,7 @@ const [selectedProfile, setSelectedProfile] = createSignal<string | undefined>()
 function AccountRow(props: { a: Account }) {
   const on = () => selectedAccount() === props.a.key;
   const pick = () => {
-    accountManagement.close();accountManagement.clearNotice();
+    closeManagement();clearManagementNotice();
     setSelectedAccount(props.a.key);
     setSelectedProfile(memberOf(props.a, undefined, accountMachine())?.key);
   };
@@ -107,7 +112,7 @@ function Detail(props: { a: Account }) {
       <div class="acct-title">
         <h2 class="ell">{props.a.label}</h2>
         <span class="grow" />
-        <button class="btn" disabled={accountManagement.busy()} onClick={event=>void accountManagement.open("rename",props.a.key,m().key,event.currentTarget)}><Icon name="pencil" size={13} />Rename…</button>
+        <button class="btn" disabled={managementBusy()} onClick={event=>void accountManagement.open("rename",props.a.key,m().key,event.currentTarget)}><Icon name="pencil" size={13} />Rename…</button>
       </div>
       <div class="row acct-identity">
         <AgentBadge agent={agentKind(props.a.provider)} />
@@ -122,14 +127,14 @@ function Detail(props: { a: Account }) {
         <div class="acct-tags" role="radiogroup" aria-label="Machine profile">
           <For each={shown()}>{(x) => (
             <span class="acct-tag-wrap">
-              <button class="acct-tag" role="radio" aria-checked={x.key === m().key} classList={{ on: x.key === m().key, offline: !x.online }} onClick={() => { setSelectedProfile(x.key); accountManagement.close(); accountManagement.clearNotice(); }}>
+              <button class="acct-tag" role="radio" aria-checked={x.key === m().key} classList={{ on: x.key === m().key, offline: !x.online }} onClick={() => { setSelectedProfile(x.key); closeManagement();clearManagementNotice(); }}>
                 <MachineLabel alias={x.machine} />{x.online ? "" : " (offline)"}
                 <Show when={x.is_default}>
                   <span class="acct-default" title={`Default for new ${providerName(props.a.provider)} sessions on ${x.machine} when no account is chosen`}>Default</span>
                 </Show>
               </button>
               <Show when={!x.is_default && x.online && x.state === "ready" && defaultable()}>
-                <button class="btn small ghost acct-make-default" disabled={accountManagement.busy()} title={`Use this account for new ${providerName(props.a.provider)} sessions on ${x.machine} when no account is specified. Existing sessions keep their account.`} onClick={event=>void accountManagement.open("default",props.a.key,x.key,event.currentTarget)}>Make default</button>
+                <button class="btn small ghost acct-make-default" disabled={managementBusy()} title={`Use this account for new ${providerName(props.a.provider)} sessions on ${x.machine} when no account is specified. Existing sessions keep their account.`} onClick={event=>void accountManagement.open("default",props.a.key,x.key,event.currentTarget)}>Make default</button>
               </Show>
             </span>
           )}</For>
@@ -146,7 +151,7 @@ function Detail(props: { a: Account }) {
                   <div class="acct-more-list">
                     <For each={matches()} fallback={<div class="dim acct-more-empty">No machine matches.</div>}>
                       {(x) => (
-                        <button class="acct-more-row" classList={{ on: x.key === m().key }} onClick={() => { setSelectedProfile(x.key); setMoreOpen(false); accountManagement.close(); accountManagement.clearNotice(); }}>
+                        <button class="acct-more-row" classList={{ on: x.key === m().key }} onClick={() => { setSelectedProfile(x.key); setMoreOpen(false); closeManagement();clearManagementNotice(); }}>
                           <MachineTile os={osOf(machineCards[x.host]?.platform)} state={x.online ? connectionOf(catalog.computers[x.host]?.status).tile : "offline"} size={22} />
                           <MachineLabel alias={x.machine} />
                           <span class="grow" />
@@ -165,10 +170,10 @@ function Detail(props: { a: Account }) {
         <div class="acct-status">
           <Status kind={tone(m().state)}>{m().detail}</Status>
           <Actions>
-            <Show when={loginLabel(m())}>{(label) => <button class="btn" disabled title={ACCOUNT_MANAGEMENT}><Icon name="key-round" size={13} />{label()}</button>}</Show>
-            <Show when={!m().installed}><button class="btn" disabled title={ACCOUNT_MANAGEMENT}><Icon name="download" size={13} />Install agent…</button></Show>
+            <Show when={loginLabel(m())}>{(label) => <button class="btn" disabled={!m().online||!m().installed||managementBusy()} title={m().provider==="dsh"?`Save a DeepSeek API key on ${m().machine}.`:undefined} onClick={event=>{accountManagement.close();accountManagement.clearNotice();void accountSetup.open(m().provider==="dsh"?"key":"login",event.currentTarget,props.a.key,m().key);}}><Icon name="key-round" size={13} />{label()}</button>}</Show>
+            <Show when={!m().installed}><button class="btn" disabled={!m().online||m().provider==="opencode"||managementBusy()} onClick={event=>{accountManagement.close();accountManagement.clearNotice();void accountSetup.open("install",event.currentTarget,props.a.key,m().key);}}><Icon name="download" size={13} />Install agent…</button></Show>
             <Show when={m().opencode?.stopped}>
-              <button class="btn" disabled title={ACCOUNT_MANAGEMENT}><Icon name="play" size={13} />Start OpenCode on {m().machine}</button>
+              <button class="btn" disabled={!m().online||managementBusy()} onClick={event=>{accountManagement.close();accountManagement.clearNotice();void accountSetup.open("start",event.currentTarget,props.a.key,m().key);}}><Icon name="play" size={13} />Start OpenCode on {m().machine}</button>
             </Show>
           </Actions>
         </div>
@@ -192,21 +197,21 @@ function Detail(props: { a: Account }) {
             Permissions on {m().machine}: <b classList={{ danger: m().permission === "bypass" }}>{m().permission_label}</b>
             <span class="dim acct-src">{m().permission_mode === "bypass" ? "set in Zerus" : "from provider settings"}</span>
           </span>
-          <button class="btn small" disabled={!m().online || nativeConfig() || accountManagement.busy()} title={`Change permission defaults on ${m().machine}`} onClick={event=>void accountManagement.open("permissions",props.a.key,m().key,event.currentTarget)}>Change…</button>
+          <button class="btn small" disabled={!m().online || nativeConfig() || managementBusy()} title={`Change permission defaults on ${m().machine}`} onClick={event=>void accountManagement.open("permissions",props.a.key,m().key,event.currentTarget)}>Change…</button>
         </div>
         <Show when={m().model_supported}>
           <div class="acct-setting">
             <span>{m().model_text}</span>
-            <button class="btn small" disabled={!m().online || accountManagement.busy()} onClick={event=>void accountManagement.open("model",props.a.key,m().key,event.currentTarget)}>Model and effort…</button>
+            <button class="btn small" disabled={!m().online || managementBusy()} onClick={event=>void accountManagement.open("model",props.a.key,m().key,event.currentTarget)}>Model and effort…</button>
           </div>
         </Show>
         <Actions>
           <Show when={defaultable()}>
-            <button class="btn" disabled={m().is_default || !m().online || accountManagement.busy()} title={`Use this account for new ${providerName(props.a.provider)} sessions on ${m().machine} when no account is specified. Existing sessions keep their account.`} onClick={event=>void accountManagement.open("default",props.a.key,m().key,event.currentTarget)}>{m().is_default ? `Default on ${m().machine}` : `Make default on ${m().machine}`}</button>
+            <button class="btn" disabled={m().is_default || !m().online || managementBusy()} title={`Use this account for new ${providerName(props.a.provider)} sessions on ${m().machine} when no account is specified. Existing sessions keep their account.`} onClick={event=>void accountManagement.open("default",props.a.key,m().key,event.currentTarget)}>{m().is_default ? `Default on ${m().machine}` : `Make default on ${m().machine}`}</button>
           </Show>
-          <button class="btn danger" disabled={!m().online || accountManagement.busy()} title="Remove this profile from the selected machine's Zerus catalog. You will confirm the machine and consequences before anything changes." onClick={event=>void accountManagement.open("remove",props.a.key,m().key,event.currentTarget)}><Icon name="trash" size={13} />{props.a.members.length > 1 ? `Remove from ${m().machine}…` : "Remove…"}</button>
+          <button class="btn danger" disabled={!m().online || managementBusy()} title="Remove this profile from the selected machine's Zerus catalog. You will confirm the machine and consequences before anything changes." onClick={event=>void accountManagement.open("remove",props.a.key,m().key,event.currentTarget)}><Icon name="trash" size={13} />{props.a.members.length > 1 ? `Remove from ${m().machine}…` : "Remove…"}</button>
         </Actions>
-        <Show when={accountManagement.notice()}>{text=><Status kind="ok">{text()}</Status>}</Show>
+        <Show when={accountManagement.notice()||accountSetup.notice()}>{text=><Status kind="ok">{text()}</Status>}</Show>
       </section>
       <UsagePanel a={props.a} />
     </div>
@@ -214,7 +219,7 @@ function Detail(props: { a: Account }) {
 }
 
 export function AccountsScreen() {
-  onCleanup(accountManagement.close);
+  onCleanup(closeManagement);
   const view = accountsPage;
   const visible = createMemo(() => visibleAccounts(view(), accountMachine()));
   // An Overview card asks for a profile: select its account once it is listed.
@@ -222,7 +227,7 @@ export function AccountsScreen() {
     const key = requestedProfile();
     const account = key ? view().accounts.find((a) => a.members.some((m) => m.key === key)) : undefined;
     if (!account) return;
-    accountManagement.close();accountManagement.clearNotice();
+    closeManagement();accountManagement.clearNotice();
     setSelectedAccount(account.key);
     setSelectedProfile(key);
     setRequestedProfile(undefined);
@@ -234,12 +239,12 @@ export function AccountsScreen() {
       <div class="mach-shell">
         <header class="mach-head">
           <h1>Agent accounts</h1>
-          <button class="icon-btn" aria-label="Refresh accounts" disabled={view().busy || accountManagement.busy()} onClick={() => void loadAccounts(true)}
+          <button class="icon-btn" aria-label="Refresh accounts" disabled={view().busy || managementBusy()} onClick={() => void loadAccounts(true)}
             title={view().busy ? `Updating accounts… ${view().pending} remaining` : "Refresh account usage (automatically every 5 minutes)"}>
             <Show when={!view().busy} fallback={<Spinner />}><Icon name="refresh-cw" size={15} /></Show>
           </button>
           <span class="grow" />
-          <button class="btn primary" disabled title={view().no_hosts ?? ACCOUNT_MANAGEMENT}><Icon name="plus" size={14} />Add account</button>
+          <button class="btn primary" disabled={!!view().no_hosts||managementBusy()} title={view().no_hosts??undefined} onClick={event=>{accountManagement.close();accountManagement.clearNotice();void accountSetup.open("add",event.currentTarget,"","",accountMachine());}}><Icon name="plus" size={14} />Add account</button>
         </header>
         <p class="muted mach-summary">Your accounts across all machines. Choose an account to manage where it is available.</p>
         <For each={view().notices}>{(notice) => <Status kind="warn">{notice}</Status>}</For>
@@ -249,7 +254,7 @@ export function AccountsScreen() {
             <button class="btn" onClick={() => setPage("machines")}>Open Machines</button></div>
         }>
           <div class="row acct-filter">
-            <select class="field" aria-label="Machine" value={accountMachine()} onChange={(e) => {accountManagement.close();accountManagement.clearNotice();setAccountMachine(e.currentTarget.value);}}>
+            <select class="field" aria-label="Machine" value={accountMachine()} onChange={(e) => {closeManagement();clearManagementNotice();setAccountMachine(e.currentTarget.value);}}>
               <option value="*">All machines</option>
               <For each={view().hosts}>{(h) => <option value={h.computer}>{h.label}</option>}</For>
             </select>
@@ -275,6 +280,7 @@ export function AccountsScreen() {
           </Show>
         </Show>
       </div>
+      <Show when={accountSetup.prompt()}>{prompt=><Suspense><AccountSetupDialog prompt={prompt()} busy={accountSetup.busy()} close={accountSetup.close} confirm={(values,handle)=>void accountSetup.confirm(values,handle)}/></Suspense>}</Show>
       <Show when={accountManagement.prompt()}>{prompt=><Suspense><Switch><Match when={prompt().kind==="permissions" || prompt().kind==="model"}><AccountDefaultsDialog prompt={prompt()} close={accountManagement.close} confirm={(values,handle)=>void accountManagement.confirm(values,handle)}/></Match><Match when={true}><AccountCatalogDialog prompt={prompt()} close={accountManagement.close} confirm={(label,handle)=>void accountManagement.confirm(label,handle)}/></Match></Switch></Suspense>}</Show>
     </div>
   );
