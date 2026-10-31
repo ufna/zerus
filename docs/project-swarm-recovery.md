@@ -14,7 +14,7 @@ most 512 computers and 1 MiB of text (plus fixed row overhead); individual label
 are at most 512 bytes and peer errors 4,000 bytes. Malformed, duplicate or
 oversized data refuses the whole view, never a prefix. Conflict count is metadata;
 conflict payloads remain in the existing native snapshot for explicit review.
-There is no source read, poller or UI caller in this prerequisite.
+The projection performs no source read or polling.
 
 ## Catalog-operation reservation
 
@@ -30,14 +30,14 @@ a source failure, timeout or source termination does not release the reservation
 Nothing retries a Join or Resolve.
 
 `finish_external(ticket, observation, now)` accepts one bounded, validated,
-initialized snapshot for the same local node. The future native caller must
+initialized snapshot for the same local node. The native caller must
 serialize the external operation with this worker, invalidate pre-command source
 reads and obtain this snapshot **after** that operation finishes, even when its
 outcome is unknown. Neither a command error nor a cached topic snapshot proves
 that completion. A failed fresh read keeps the reservation closed for review.
 If an unknown delivery could still complete later, a single snapshot is also
 insufficient: operation-specific settlement is required before release. The
-future native integration must qualify that behavior rather than infer it from
+native integration must qualify that behavior rather than infer it from
 the decoder, an exited wrapper or a timeout.
 
 Completion discards observations held during the operation. The ordinary
@@ -47,8 +47,7 @@ resumes. An old catalog identity is discarded, never queued for later admission;
 elapsed time cannot qualify it. This helper does not establish source freshness
 or perform that native source barrier itself.
 
-There is no native dispatcher/caller in this first slice. These are GUI catalog
-coordination primitives, separate from G1 production migration: no service lease,
+These are GUI catalog coordination primitives, separate from G1 production migration: no service lease,
 role drain, source export, marker phase or effect permission is granted.
 
 ## Native Preview, Join and Sync
@@ -78,7 +77,17 @@ cancels queued work; an admitted changing call cannot be closed until the runner
 returns, and late actual resources keep their charge. Reopening never replays.
 Replay without a selected fake CLI dispatches nothing.
 
-This slice registers the bounded native commands and a private fake-only test
-walk, with no product dialog caller yet. The lazy mockup dialog follows. No G1
-producer lease, migration capture, role drain or service effect authority follows
-from this GUI catalog coordination.
+The lazy `ProjectSwarmDialog` follows the mockup's Computers and Connect computer
+tabs. It keeps one native view, coalesces fixed-size change events and rejects
+status replies that predate an explicit action. It adds no polling timer.
+Computer filtering/sorting uses stable IDs, and project mappings are exact IDs
+with identical IDs preselected (the CLI merges those keys) and distinct projects
+separate by default. A failed/uninitialized preview cannot
+join; changing the selected computer discards the displayed preview. Close and
+Escape restore focus, while an admitted changing call keeps the dialog open.
+The unconnected-catalog notice preselects its first saved unconnected computer.
+Manage connections uses the existing Machines page. The conflict count is shown;
+its review tab remains unavailable until the separate conflict adapter lands.
+
+No G1 producer lease, migration capture, role drain or service effect authority
+follows from this GUI catalog coordination.
