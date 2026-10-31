@@ -335,6 +335,13 @@ const COLUMNS: &str = "seq,request_id,intent_id,revision,state";
 pub struct Reservation {
     pub fresh: bool,
     pub attempt: Attempt,
+    // Only the original successful commit creates this process-local origin.
+    // Public response data and later indexed reads cannot reconstruct it.
+    origin: Option<ReservationOrigin>,
+}
+struct ReservationOrigin {
+    request: Reserve,
+    seq: i64,
 }
 
 /// Commit before native input. An exact duplicate, a crash, a cancelled worker
@@ -390,6 +397,7 @@ pub fn reserve(db: &mut Connection, request: &Reserve) -> Result<Reservation> {
         return Ok(Reservation {
             fresh: false,
             attempt,
+            origin: None,
         });
     }
     let allowed: bool = tx.query_row(
@@ -423,6 +431,7 @@ pub fn reserve(db: &mut Connection, request: &Reserve) -> Result<Reservation> {
             return Ok(Reservation {
                 fresh: false,
                 attempt,
+                origin: None,
             });
         }
         ensure!(
@@ -443,6 +452,10 @@ pub fn reserve(db: &mut Connection, request: &Reserve) -> Result<Reservation> {
     tx.commit()?;
     Ok(Reservation {
         fresh: true,
+        origin: Some(ReservationOrigin {
+            request: request.clone(),
+            seq: attempt.seq,
+        }),
         attempt,
     })
 }

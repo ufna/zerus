@@ -51,3 +51,40 @@ Isolated SQLite tests cover the complete request and stored binding, epochs,
 revoke/withdrawal/baseline refusal, terminal attempts, corrupt/oversized data,
 exact-byte retention, no schema/data writes and unique indexed query plans.
 They qualify this read helper only, not an actor/worker, native API or live lease.
+
+## Original commit response
+
+`native::inspect_original` consumes the existing non-Clone, non-serializing
+`Reservation` returned by `reserve`. Only the original successful fresh commit
+adds its private process-local origin, after the transaction commits. Exact
+duplicate and coalesced responses carry no origin. Setting their public `fresh`
+flag or copying an `Attempt` cannot create one; changing an original response's
+public fields refuses. Existing reservation and receipt SQL, schema and response
+data remain unchanged. The private field also prevents external struct-literal
+construction; there are no such callers in this repository.
+
+The helper checks the sealed complete original request and sequence against the
+public response, then uses the same bounded indexed read-only inspection above.
+Changed epochs, withdrawn or blocked intents, terminal receipts and changed
+stored bindings refuse. An error consumes the response too. Losing it, dropping
+it or restarting cannot reconstruct it by reading the row or reserving again.
+Only the existing explicit retry after a confirmed pre-delivery refusal may
+commit a different attempt with its own original response. Unknown is never a
+retry reason.
+
+`OriginalSnapshot` has private fields, redacted Debug and no Clone or serde
+implementation. It exposes only a borrowed `Snapshot`. This proves origin from
+a fresh commit response, not freshness at a later dispatch. It owns no store,
+configuration identity, clock, current lease, role proof, native connection or
+worker charge. The future actor must choose the correct store, bind the original
+response to its current configuration/profile/leases and recheck all live guards
+at native admission. Even a genuine original response does not prove that no
+other caller used its public data to issue an effect. No production caller,
+worker, controller or positive desktop API is added by this prerequisite.
+
+Linux tests qualify exact commit origin, read-only inspection, public-field
+tampering, duplicate/coalesced/lost responses, changed current bindings and
+confirmed-refusal retry separation. The Mac is not qualified for this internal
+helper under the coordinator's standing exception; selected ledger and root
+checks at the exact merged head remain required once it is reachable. This is
+not native execution or whole-profile handoff qualification.

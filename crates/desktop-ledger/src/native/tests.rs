@@ -5,7 +5,7 @@ use serde_json::json;
 fn id(n: u32) -> String {
     format!("{n:08x}-1111-4111-8111-111111111111")
 }
-fn fixture(kind: Kind) -> (Connection, Reserve) {
+fn unreserved_fixture(kind: Kind) -> (Connection, Reserve) {
     let mut db = Connection::open_in_memory().unwrap();
     let tx = db.transaction().unwrap();
     crate::migrate(&tx).unwrap();
@@ -43,8 +43,160 @@ fn fixture(kind: Kind) -> (Connection, Reserve) {
         lease: id(4),
         retry_of: None,
     };
+    (db, req)
+}
+fn fixture(kind: Kind) -> (Connection, Reserve) {
+    let (mut db, req) = unreserved_fixture(kind);
     assert!(reserve(&mut db, &req).unwrap().fresh);
     (db, req)
+}
+
+#[test]
+fn original_response_retains_exact_commit_data_without_an_inspection_write() {
+    for kind in [Kind::Post, Kind::Withdrawal] {
+        let (mut db, req) = unreserved_fixture(kind);
+        let response = reserve(&mut db, &req).unwrap();
+        let seq = response.attempt.seq;
+        let changes = db.total_changes();
+        let schema: i64 = db
+            .query_row("PRAGMA schema_version", [], |r| r.get(0))
+            .unwrap();
+        let original = inspect_original(&mut db, response).unwrap();
+        let snapshot = original.snapshot();
+        assert_eq!(snapshot.seq(), seq);
+        assert_eq!(snapshot.identity().kind, kind);
+        assert_eq!(
+            json(snapshot.request(), 4096).unwrap(),
+            json(&req, 4096).unwrap()
+        );
+        assert_eq!(
+            snapshot.payload_sha256(),
+            hash(snapshot.payload_json().as_bytes())
+        );
+        assert_eq!(
+            format!("{original:?}"),
+            "OriginalNativeReservationSnapshot { .. }"
+        );
+        assert_eq!(db.total_changes(), changes);
+        assert_eq!(
+            db.query_row("PRAGMA schema_version", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            schema
+        );
+        assert!(db.is_autocommit());
+    }
+}
+
+#[test]
+fn duplicate_coalesced_and_reloaded_data_cannot_manufacture_original_response() {
+    let (mut db, req) = unreserved_fixture(Kind::Post);
+    let original = reserve(&mut db, &req).unwrap();
+    let mut duplicate = reserve(&mut db, &req).unwrap();
+    assert!(!duplicate.fresh);
+    duplicate.fresh = true;
+    assert!(inspect_original(&mut db, duplicate).is_err());
+    let mut another = req.clone();
+    another.request_id = id(6);
+    let mut coalesced = reserve(&mut db, &another).unwrap();
+    assert!(!coalesced.fresh);
+    coalesced.fresh = true;
+    coalesced.attempt = original.attempt.clone();
+    assert!(inspect_original(&mut db, coalesced).is_err());
+    drop(original); // Losing the only original response is not recoverable here.
+    assert!(inspect(&mut db, &req).is_ok());
+    let mut reloaded = reserve(&mut db, &req).unwrap();
+    reloaded.fresh = true;
+    assert!(inspect_original(&mut db, reloaded).is_err());
+}
+
+#[test]
+fn changed_public_response_fields_refuse_even_with_a_private_origin() {
+    for field in 0..6 {
+        let (mut db, req) = unreserved_fixture(Kind::Post);
+        let mut response = reserve(&mut db, &req).unwrap();
+        match field {
+            0 => response.fresh = false,
+            1 => response.attempt.seq += 1,
+            2 => response.attempt.request_id = id(90),
+            3 => response.attempt.intent_id = "b".repeat(64),
+            4 => response.attempt.revision += 1,
+            _ => response.attempt.state = State::Delivered,
+        }
+        assert!(
+            inspect_original(&mut db, response).is_err(),
+            "field {field}"
+        );
+        assert_eq!(crate::status(&db).unwrap()["attempts"]["reserved"], 1);
+    }
+}
+
+#[test]
+fn original_inspection_rechecks_current_epochs_intent_receipt_and_sequence() {
+    for case in 0..7 {
+        let (mut db, req) = unreserved_fixture(Kind::Post);
+        let response = reserve(&mut db, &req).unwrap();
+        match case {
+            0 => crate::revoke(&db, "manual_rollback").unwrap(),
+            1 => begin_service(&mut db, &id(90)).unwrap(),
+            2 => authorize(&mut db, &id(90), &id(1)).unwrap(),
+            3 => crate::withdraw(&mut db, &req.intent_id, 2).unwrap(),
+            4 => finish(&mut db, &req, State::Unknown, &json!({})).unwrap(),
+            5 => {
+                db.execute("UPDATE desktop_attempts SET seq=seq+1", [])
+                    .unwrap();
+            }
+            _ => {
+                db.execute("UPDATE desktop_attempts SET lease=?1", [id(90)])
+                    .unwrap();
+            }
+        }
+        let changes = db.total_changes();
+        assert!(inspect_original(&mut db, response).is_err(), "fence {case}");
+        assert_eq!(db.total_changes(), changes);
+        assert!(db.is_autocommit());
+    }
+}
+
+#[test]
+fn only_a_new_confirmed_refusal_retry_has_its_own_original_commit() {
+    for outcome in [State::Refused, State::Unknown, State::Delivered] {
+        let (mut db, req) = unreserved_fixture(Kind::Post);
+        let old = reserve(&mut db, &req).unwrap();
+        finish(&mut db, &req, outcome.clone(), &json!({})).unwrap();
+        assert!(inspect_original(&mut db, old).is_err());
+        let mut retry = req.clone();
+        retry.request_id = id(6);
+        retry.retry_of = Some(req.request_id.clone());
+        if outcome == State::Refused {
+            let response = reserve(&mut db, &retry).unwrap();
+            let original = inspect_original(&mut db, response).unwrap();
+            assert_eq!(original.snapshot().seq(), 2);
+            assert_eq!(
+                original.snapshot().request().retry_of.as_deref(),
+                Some(req.request_id.as_str())
+            );
+            let mut duplicate = reserve(&mut db, &retry).unwrap();
+            duplicate.fresh = true;
+            assert!(inspect_original(&mut db, duplicate).is_err());
+        } else {
+            assert!(reserve(&mut db, &retry).is_err());
+        }
+    }
+}
+
+#[test]
+fn origin_does_not_keep_a_snapshot_current_or_support_non_native_effects() {
+    let (mut db, req) = unreserved_fixture(Kind::Post);
+    let response = reserve(&mut db, &req).unwrap();
+    let original = inspect_original(&mut db, response).unwrap();
+    crate::revoke(&db, "manual_rollback").unwrap();
+    assert!(inspect(&mut db, original.snapshot().request()).is_err());
+    assert_eq!(original.snapshot().request().lease, req.lease);
+    for kind in [Kind::Badge, Kind::Presence] {
+        let (mut db, req) = unreserved_fixture(kind);
+        let response = reserve(&mut db, &req).unwrap();
+        assert!(inspect_original(&mut db, response).is_err());
+    }
 }
 
 #[test]
