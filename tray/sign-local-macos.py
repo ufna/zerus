@@ -6,6 +6,8 @@ does not enable the hardened runtime: its Qt libraries live outside the bundle.
 Release bundles use scripts/sign-macos.py and its hardened signing policy.
 """
 import argparse
+import hashlib
+import json
 import os
 from pathlib import Path
 import plistlib
@@ -18,6 +20,7 @@ KINDS = ("Developer ID Application", "Apple Development")
 IDENTITY = re.compile(r'^\s*\d+\)\s+([0-9A-Fa-f]{40})\s+"([^"]+)"\s*$', re.M)
 MACH_O = {b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xce",
           b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca", b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca"}
+PAIR_RECORD = "Contents/Resources/zerus-local-pair.json"
 
 
 def run(*args):
@@ -113,23 +116,90 @@ def verify_continuity(app, installed):
                              "The installed app is unchanged; select its signing identity.\n" + error.stderr.strip()) from error
 
 
-def sign(app, installed, requested=""):
-    if app.resolve() == installed.resolve() or app.is_symlink():
-        raise ValueError("Signing requires a separate source bundle; the installed app must stay untouched.")
+def source_layout(app, *, paired=False):
+    """Validate before running signing tools; never follow nested links or special files."""
+    if app.is_symlink():
+        raise ValueError("The source bundle contains a link; refusing to sign external code.")
     info = bundle_info(app, source=True)
     executable = app / "Contents/MacOS" / info["CFBundleExecutable"]
     if not executable.is_file() or executable.is_symlink():
         raise ValueError("The source bundle executable is missing or is a link.")
-    # The source CMake bundle contains one executable and resources. Do not deep
-    # sign unexpected embedded code or follow links into Homebrew installations.
+    expected = {executable}
+    if paired:
+        expected.add(app / "Contents/MacOS/hgs")
+        if (app / PAIR_RECORD).exists() or (app / PAIR_RECORD).is_symlink():
+            raise ValueError("The source already has pair metadata; prepare a fresh unsigned copy.")
+        for path in expected:
+            if (not path.is_file() or path.is_symlink() or path.stat().st_nlink != 1
+                    or not os.access(path, os.X_OK)):
+                raise ValueError("Paired code must be independent regular executable files.")
+            with path.open("rb") as stream:
+                if stream.read(4) not in MACH_O:
+                    raise ValueError("Paired code must contain exactly the two expected Mach-O executables.")
+    # Single-code mode stays the default. Paired mode adds only the fixed hgs
+    # leaf, never general deep signing or links into Homebrew installations.
     for path in app.rglob("*"):
         if path.is_symlink():
             raise ValueError("The source bundle contains a link; refusing to sign external code.")
-        if path.is_file() and path != executable:
+        if not path.is_file() and not path.is_dir():
+            raise ValueError("The source bundle contains a special file.")
+        if path.is_file() and path not in expected:
             with path.open("rb") as stream:
                 if stream.read(4) in MACH_O:
                     raise ValueError("Unexpected nested code in the source bundle; use the distribution signer.")
+    return info
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(256 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def genuine_signature(path, identifier):
+    run("codesign", "--verify", "--strict", "--all-architectures", "-R", "=anchor apple generic", path)
+    signed = details(path)
+    if (signed.get("Signature") == "adhoc"
+            or not any(signed.get("Authority", "").startswith(kind + ":") for kind in KINDS)
+            or signed.get("TeamIdentifier", "") in ("", "not set")
+            or signed.get("Identifier") != identifier
+            or not signed.get("CDHash") or "cdhash" in requirement(path).lower()):
+        raise ValueError("Paired code requires genuine, stable Apple application signatures and exact identifiers.")
+    return signed
+
+
+def sign_code(path, identity, identifier=None):
+    command = ["codesign", "--force", "--sign", identity, "--options", "0", "--timestamp=none"]
+    if identifier:
+        command += ["--identifier", identifier]
+    try:
+        run(*command, path)
+    except subprocess.CalledProcessError as error:
+        raise ValueError("codesign could not use the selected private key. Test signing from Terminal on the Mac; "
+                         "unlock its keychain and respond to any key-access dialog there. "
+                         "The installer does not unlock keys or change their access controls. "
+                         "See docs/macos-distribution.md#local-source-builds.\n" + error.stderr.strip()) from error
+
+
+def sign(app, installed, requested="", *, paired=False):
+    if app.resolve() == installed.resolve() or app.is_symlink():
+        raise ValueError("Signing requires a separate source bundle; the installed app must stay untouched.")
+    info = source_layout(app, paired=paired)
     current = installed_identity(installed)
+    service = app / "Contents/MacOS/hgs"
+    previous_service = installed / "Contents/MacOS/hgs"
+    paired_previous = False
+    if paired and current:
+        genuine_signature(installed, BUNDLE_ID)
+        if previous_service.exists() or previous_service.is_symlink():
+            if previous_service.is_symlink() or not previous_service.is_file():
+                raise ValueError("The installed paired CLI is not a regular file; preserve it for review.")
+            previous = genuine_signature(previous_service, "hgs")
+            if previous["TeamIdentifier"] != current["TeamIdentifier"]:
+                raise ValueError("The installed app and CLI have different signing teams.")
+            paired_previous = True
     identity = select_identity(identities(), current, requested)
     # The installer supplies a private copy. Promote only after a compatible key
     # has been selected; failed preparation must retain the local identifier.
@@ -141,13 +211,15 @@ def sign(app, installed, requested=""):
         if promoted:
             info["CFBundleIdentifier"] = BUNDLE_ID
             plist.write_bytes(plistlib.dumps(info))
-        try:
-            run("codesign", "--force", "--sign", identity, "--options", "0", "--timestamp=none", app)
-        except subprocess.CalledProcessError as error:
-            raise ValueError("codesign could not use the selected private key. Test signing from Terminal on the Mac; "
-                             "unlock its keychain and respond to any key-access dialog there. "
-                             "The installer does not unlock keys or change their access controls. "
-                             "See docs/macos-distribution.md#local-source-builds.\n" + error.stderr.strip()) from error
+        if paired:
+            build_hash = sha256(service)
+            sign_code(service, identity, "hgs")
+            genuine_signature(service, "hgs")
+            record = {"schema": 1, "build_sha256": build_hash, "signed_sha256": sha256(service)}
+            record_path = app / PAIR_RECORD
+            record_path.parent.mkdir(parents=True, exist_ok=True)
+            record_path.write_text(json.dumps(record, sort_keys=True) + "\n")
+        sign_code(app, identity)
         run("codesign", "--verify", "--deep", "--strict", app)
         signed = details(app)
         if (signed.get("Signature") == "adhoc" or not any(signed.get("Authority", "").startswith(kind + ":")
@@ -156,10 +228,25 @@ def sign(app, installed, requested=""):
             raise ValueError("The source bundle did not receive a stable certificate signature.")
         if current:
             verify_continuity(app, installed)
+        if paired:
+            application = genuine_signature(app, BUNDLE_ID)
+            cli = genuine_signature(service, "hgs")
+            if (application["TeamIdentifier"] != cli["TeamIdentifier"]
+                    or application["CDHash"] == cli["CDHash"]):
+                raise ValueError("The paired app and distinct CLI must have the same signing team.")
+            if paired_previous:
+                verify_continuity(service, previous_service)
+            if (json.loads((app / PAIR_RECORD).read_text()) != record
+                    or sha256(service) != record["signed_sha256"]):
+                raise ValueError("The signed CLI or sealed pair metadata changed during preparation.")
+            # Last check covers both nested code and the new resource seal.
+            run("codesign", "--verify", "--deep", "--strict", "--all-architectures", app)
+        if current:
             print("Local certificate signature verified; privacy identity matches the installed application.")
         else:
             print("Local certificate signature verified; subsequent compatible rebuilds retain this identity.")
         complete = True
+        return record if paired else None
     finally:
         if promoted and not complete:
             plist.write_bytes(original)
@@ -169,9 +256,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("app", type=Path)
     parser.add_argument("installed", type=Path)
+    parser.add_argument("--paired", action="store_true", help="sign only the fixed app plus Contents/MacOS/hgs pair")
     args = parser.parse_args()
     try:
-        sign(args.app, args.installed, os.environ.get("HGS_MACOS_SIGN_IDENTITY", ""))
+        sign(args.app, args.installed, os.environ.get("HGS_MACOS_SIGN_IDENTITY", ""), paired=args.paired)
     except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
         message = error.stderr.strip() if isinstance(error, subprocess.CalledProcessError) else str(error)
         parser.exit(1, f"Local macOS signing failed: {message}\n")
