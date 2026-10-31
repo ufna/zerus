@@ -156,6 +156,33 @@ fn error_reply(done: Done<Option<String>>) -> RcBlock<dyn Fn(*mut NSError)> {
     })
 }
 
+/// The existing settings query owns its continuation before any result arrives.
+/// Copying this block retains it; an uncalled final drop is not completion.
+fn settings_reply(
+    done: Done<(bool, Option<String>)>,
+) -> RcBlock<dyn Fn(NonNull<UNNotificationSettings>)> {
+    let done = once(done);
+    RcBlock::new(move |settings: NonNull<UNNotificationSettings>| {
+        let Some(done) = take(&done) else { return };
+        // SAFETY: the system passes a valid settings object.
+        let status = unsafe { settings.as_ref() }.authorizationStatus();
+        if status == UNAuthorizationStatus::NotDetermined {
+            let reply = authorization_reply(done);
+            UNUserNotificationCenter::currentNotificationCenter()
+                .requestAuthorizationWithOptions_completionHandler(
+                    UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound,
+                    &reply,
+                );
+        } else {
+            done((
+                status == UNAuthorizationStatus::Authorized
+                    || status == UNAuthorizationStatus::Provisional,
+                None,
+            ));
+        }
+    })
+}
+
 #[cfg(test)]
 mod completion_tests;
 
@@ -164,26 +191,7 @@ struct System;
 
 impl Center for System {
     fn authorize(&self, done: Done<(bool, Option<String>)>) {
-        let done = once(done);
-        let block = RcBlock::new(move |settings: NonNull<UNNotificationSettings>| {
-            let Some(done) = take(&done) else { return };
-            // SAFETY: the system passes a valid settings object.
-            let status = unsafe { settings.as_ref() }.authorizationStatus();
-            if status == UNAuthorizationStatus::NotDetermined {
-                let reply = authorization_reply(done);
-                UNUserNotificationCenter::currentNotificationCenter()
-                    .requestAuthorizationWithOptions_completionHandler(
-                        UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound,
-                        &reply,
-                    );
-            } else {
-                done((
-                    status == UNAuthorizationStatus::Authorized
-                        || status == UNAuthorizationStatus::Provisional,
-                    None,
-                ));
-            }
-        });
+        let block = settings_reply(done);
         UNUserNotificationCenter::currentNotificationCenter()
             .getNotificationSettingsWithCompletionHandler(&block);
     }

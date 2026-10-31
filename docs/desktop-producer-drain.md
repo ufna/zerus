@@ -838,6 +838,14 @@ close still refuses derived native calls and failure sinks while original
 callbacks drain. The controls also cover real Foundation error descriptions and
 a synchronous Hop that finishes before the calling block actually returns.
 
+The existing settings-query closure also has a private `settings_reply`
+factory, with the same one-shot consumption, status handling, authorization
+options and center calls if invoked. A separate headless control leaves this
+block uncalled: actual native copies retain the original accounted continuation,
+and final destruction without a query result pins that same group. No settings
+object is constructed, queried or fabricated for the test. It proves no SDK
+query submission, result delivery, success or failure path, permission or drain.
+
 These tests never call UNUserNotificationCenter, request permission, post a
 banner or open a display. They qualify actual block mechanics with a fake
 Center, not real SDK request/callback origin or native effect admission. Full
