@@ -108,10 +108,10 @@ class PublicationTests(unittest.TestCase):
         self.assertIn(f'version "{VERSION}"', text)
         self.assertIn('sha256 "' + "c" * 64 + '"', text)
         self.assertIn("releases/download/v#{version}/zerus-#{version}-macos-arm64.zip", text)
-        self.assertIn('conflicts_with cask: "zerus@nightly"', text)
+        self.assertIn('conflicts_with cask: ["zerus@nightly", "zerus@dev"]', text)
         self.assertEqual(macos_release.cask_fields(text), {"version": VERSION, "sha256": "c" * 64})
-        self.assertNotIn("@", text.replace("#{", "").replace("zerus@nightly", ""), "template markers must all be replaced")
-        for stanza in ("preflight", "postflight", "uninstall", "uninstall_preflight", "auto_updates"):
+        self.assertNotRegex(text, r"@[A-Z_]+@", "template markers must all be replaced")
+        for stanza in ("preflight", "postflight", "zap", "uninstall", "uninstall_preflight", "launchctl", "quit", "auto_updates"):
             self.assertNotRegex(text, rf"(?m)^  {stanza}\b", "upgrades must not quit the GUI or unload agents")
         with self.assertRaisesRegex(ValueError, "template"):
             macos_release.require_template_cask(text + "  postflight do\n", VERSION, "c" * 64)
@@ -142,6 +142,30 @@ class PublicationTests(unittest.TestCase):
         (directory / "homebrew/zerus.rb").write_text(macos_release.render_cask(VERSION, "d" * 64))
         with self.assertRaisesRegex(ValueError, "template"):
             common.validate_candidate(directory, VERSION)
+
+    def test_sealed_previous_cask_validates_unchanged_but_new_casks_use_the_current_template(self):
+        directory = self.candidate(macos=True, dmg=True)
+        cask = directory / "homebrew/zerus.rb"
+        digest = common.sha256(directory / self.info["macos"]["asset"])
+        previous = (ROOT / "packaging/homebrew/previous/zerus.rb.in").read_text().replace(
+            "@VERSION@", VERSION).replace("@SHA256@", digest)
+        cask.write_text(previous)
+        before = {path.relative_to(directory): path.read_bytes() for path in directory.rglob("*") if path.is_file()}
+        common.validate_candidate(directory, VERSION, COMMIT)
+        self.assertEqual(before, {path.relative_to(directory): path.read_bytes()
+                                  for path in directory.rglob("*") if path.is_file()})
+        with self.assertRaisesRegex(ValueError, "template"):
+            macos_release.require_template_cask(previous, VERSION, digest)
+        self.assertNotIn("  zap ", macos_release.render_cask(VERSION, digest))
+        for edited in (previous + "# edited\n", previous.replace(digest, "d" * 64),
+                       previous.replace(f'version "{VERSION}"', 'version "0.37.1"'),
+                       previous.replace("com.hgdev.hgs-recovery", "com.example.foreign"),
+                       previous.replace('conflicts_with cask: "zerus@nightly"',
+                                        'conflicts_with cask: ["zerus@nightly", "zerus@dev"]')):
+            with self.subTest(edited=edited):
+                cask.write_text(edited)
+                with self.assertRaisesRegex(ValueError, "template"):
+                    common.validate_candidate(directory, VERSION, COMMIT)
 
     def test_disk_image_is_sealed_and_cannot_change_after_validation(self):
         directory = self.candidate(macos=True, dmg=True)

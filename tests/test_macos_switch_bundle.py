@@ -49,13 +49,16 @@ class SwitchBundle(unittest.TestCase):
             output = Path(scratch) / "switch.conf.json"
             subprocess.run([sys.executable, str(ROOT / "client/scripts/switch-config.py"), str(output)], check=True)
             config = json.loads(output.read_text())
+            generated_info = Path(config["bundle"]["macOS"]["infoPlist"])
+            self.assertEqual(plistlib.loads(generated_info.read_bytes())["ZerusReleaseVersion"], VERSION)
         self.assertEqual(config["identifier"], "com.hgdev.hgs-tray.local")
         self.assertEqual((config["productName"], config["mainBinaryName"], config["version"]), ("Zerus", "hgs-tray", VERSION))
         bundle = config["bundle"]
         self.assertEqual(bundle["targets"], ["app"])
         self.assertEqual(list(bundle["resources"].values()), ["setup/com.hgdev.hgs-tray.plist"])
         self.assertEqual(bundle["macOS"]["minimumSystemVersion"], "14.0")
-        paths = [*bundle["resources"], bundle["macOS"]["infoPlist"], *bundle["macOS"]["files"].values()]
+        self.assertTrue(generated_info.is_absolute())
+        paths = [*bundle["resources"], *bundle["macOS"]["files"].values()]
         for path in paths:
             self.assertTrue(Path(path).is_absolute() and Path(path).is_file(), path)
         self.assertEqual(sorted(bundle["macOS"]["files"]), ["Resources/Assets.car", "Resources/en.lproj/InfoPlist.strings",
@@ -78,7 +81,7 @@ class SwitchBundle(unittest.TestCase):
     def bundle(self, root, **changes):
         app = Path(root) / "Zerus.app"
         info = dict(SWITCH_INFO, CFBundleIdentifier="com.hgdev.hgs-tray.local", CFBundleExecutable="hgs-tray",
-                    CFBundleShortVersionString=VERSION, LSMinimumSystemVersion="14.0")
+                    CFBundleShortVersionString=VERSION, LSMinimumSystemVersion="14.0", ZerusReleaseVersion=VERSION)
         info.update(changes)
         for name in check.TAURI_REQUIRED:
             (app / name).parent.mkdir(parents=True, exist_ok=True)
@@ -119,7 +122,8 @@ class SwitchBundle(unittest.TestCase):
         self.assertIn("Contents/MacOS/hgs-tray: requires macOS 15.0, newer than 14.0", findings)
 
     def test_both_identifiers_pass_and_others_do_not(self):
-        good = dict(SWITCH_INFO, CFBundleExecutable="hgs-tray", CFBundleShortVersionString=VERSION, LSMinimumSystemVersion="14.0")
+        good = dict(SWITCH_INFO, CFBundleExecutable="hgs-tray", CFBundleShortVersionString=VERSION,
+                    LSMinimumSystemVersion="14.0", ZerusReleaseVersion=VERSION)
         for identifier in ("com.hgdev.hgs-tray", "com.hgdev.hgs-tray.local"):
             self.assertEqual(check.tauri_plist_findings(dict(good, CFBundleIdentifier=identifier), VERSION), [])
         self.assertTrue(check.tauri_plist_findings(dict(good, CFBundleIdentifier="dev.zerus.next"), VERSION))
