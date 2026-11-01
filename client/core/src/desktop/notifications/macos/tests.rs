@@ -237,6 +237,29 @@ fn deadline_is_unknown_and_late_copies_cannot_rewrite_or_replay_the_attempt() {
 }
 
 #[test]
+fn posting_uses_the_original_completion_time_even_when_the_poll_is_late() {
+    for (timely, accepted) in [(true, true), (true, false), (false, true), (false, false)] {
+        let (mut host, fake, now) = fixture();
+        host.receive(ToHost::Command(command(1)), &fake, now)
+            .unwrap();
+        fake.auth().complete(true);
+        host.poll(&fake, now);
+        let (_, post) = fake.posted();
+        if !timely {
+            host.pending[0].until = Instant::now() - Duration::from_millis(1);
+        }
+        post.complete(accepted);
+        host.poll(&fake, now + WAIT + WAIT);
+        let output = receipt(&mut host);
+        assert!(
+            matches!(output.frame, FromHost::Receipt(Receipt { outcome, .. })
+            if if timely && accepted { matches!(outcome, Outcome::Delivered { .. }) }
+               else { outcome == Outcome::Unknown { code: if timely { Uncertainty::NativeError } else { Uncertainty::Deadline } } })
+        );
+    }
+}
+
+#[test]
 fn eight_undrained_calls_bound_admission_even_after_receipts_arrive() {
     let (mut host, fake, now) = fixture();
     for seq in 1..=IN_FLIGHT as i64 {

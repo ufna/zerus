@@ -22,8 +22,13 @@ const WAIT: Duration = Duration::from_secs(10);
 #[derive(Clone)]
 pub struct Hold(Arc<()>);
 
+#[derive(Clone, Copy)]
+struct Completed {
+    at: Instant,
+    accepted: bool,
+}
 struct Original {
-    value: Arc<Mutex<Option<bool>>>,
+    value: Arc<Mutex<Option<Completed>>>,
     fired: AtomicBool,
     _hold: Hold,
 }
@@ -34,7 +39,11 @@ pub struct Callback(Arc<Original>);
 impl Callback {
     pub fn complete(&self, accepted: bool) {
         if !self.0.fired.swap(true, Ordering::AcqRel) {
-            *self.0.value.lock().unwrap_or_else(PoisonError::into_inner) = Some(accepted);
+            let mut value = self.0.value.lock().unwrap_or_else(PoisonError::into_inner);
+            *value = Some(Completed {
+                at: Instant::now(),
+                accepted,
+            });
         }
     }
 }
@@ -56,7 +65,7 @@ struct Pending {
     command: Command,
     phase: Phase,
     hold: Hold,
-    observed: Arc<Mutex<Option<bool>>>,
+    observed: Arc<Mutex<Option<Completed>>>,
     until: Instant,
     terminal: Option<Outcome>,
     sent: bool,
@@ -87,7 +96,9 @@ pub struct Host {
     guard: Guard,
     pending: Vec<Pending>,
     output: VecDeque<Emission>,
-    // Callback comparison cache only. This is not an intent/delivery ledger.
+    // Callback comparison cache only, not an intent/delivery ledger. Entries
+    // shrink ONLY by Withdraw, never TTL/age eviction. Factory/cutover must
+    // preserve the 8192 cap and surface capacity, not silently drop mappings.
     mappings: BTreeMap<String, Activation>,
     native: Hold,
     highest: i64,
@@ -235,11 +246,11 @@ impl Host {
                             pending.terminal = Some(Outcome::Refused {
                                 code: Refusal::Cancelled,
                             });
-                        } else if observed == Some(false) {
+                        } else if observed.is_some_and(|value| !value.accepted) {
                             pending.terminal = Some(Outcome::Refused {
                                 code: Refusal::PermissionDenied,
                             });
-                        } else if observed == Some(true) {
+                        } else if observed.is_some_and(|value| value.accepted) {
                             pending.phase = Phase::Posting;
                             let reply = pending.capture();
                             if let Action::Post { token, title, body } = &pending.command.action {
@@ -256,32 +267,41 @@ impl Host {
                         }
                     }
                     Phase::Posting => {
-                        pending.terminal = if expired {
-                            Some(Outcome::Unknown {
-                                code: Uncertainty::Deadline,
-                            })
-                        } else if observed == Some(true) {
-                            let mapping = Activation {
-                                request_id: pending.command.binding.request_id.clone(),
-                                token: pending.command.action.token().into(),
-                                native_id: NativeId::Macos {
-                                    request_id: crate::attention::request_id(
-                                        pending.command.action.token(),
-                                    ),
-                                },
+                        pending.terminal =
+                            if observed.is_some_and(|value| value.at >= pending.until) {
+                                Some(Outcome::Unknown {
+                                    code: Uncertainty::Deadline,
+                                })
+                            } else if observed.is_some_and(|value| value.accepted) {
+                                let mapping = Activation {
+                                    request_id: pending.command.binding.request_id.clone(),
+                                    token: pending.command.action.token().into(),
+                                    native_id: NativeId::Macos {
+                                        request_id: crate::attention::request_id(
+                                            pending.command.action.token(),
+                                        ),
+                                    },
+                                };
+                                self.mappings
+                                    .insert(mapping.request_id.clone(), mapping.clone());
+                                Some(Outcome::Delivered {
+                                    native_id: mapping.native_id,
+                                })
+                            } else if observed.is_some() {
+                                Some(Outcome::Unknown {
+                                    code: Uncertainty::NativeError,
+                                })
+                            } else if expired {
+                                Some(Outcome::Unknown {
+                                    code: Uncertainty::Deadline,
+                                })
+                            } else if pending.drained() {
+                                Some(Outcome::Unknown {
+                                    code: Uncertainty::NativeError,
+                                })
+                            } else {
+                                None
                             };
-                            self.mappings
-                                .insert(mapping.request_id.clone(), mapping.clone());
-                            Some(Outcome::Delivered {
-                                native_id: mapping.native_id,
-                            })
-                        } else if observed == Some(false) || pending.drained() {
-                            Some(Outcome::Unknown {
-                                code: Uncertainty::NativeError,
-                            })
-                        } else {
-                            None
-                        };
                     }
                 }
             }
