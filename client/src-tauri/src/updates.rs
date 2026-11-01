@@ -1311,7 +1311,7 @@ pub fn notification_current(app: &AppHandle, token: &str) -> bool {
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn open_page(app: &AppHandle) {
-    if let Err(error) = crate::lifecycle::show_main(app) {
+    if let Err(error) = crate::lifecycle::request_main(app) {
         eprintln!("zerus-client: could not open Updates: {error}");
     }
     crate::desk::open_updates(app);
