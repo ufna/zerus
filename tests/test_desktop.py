@@ -67,11 +67,12 @@ class Desktop(unittest.TestCase):
             if os.name != 'nt':
                 self.assertEqual(process.returncode, 0, error + output)
 
-    def serve(self):
+    def serve(self, background=False):
         # The service must create a private endpoint even when its launcher
         # supplies a permissive mask; probing readiness races socket creation.
         options = {'umask': 0} if os.name != 'nt' else {}
-        process = subprocess.Popen([str(HGS), 'desktop', 'serve'], env=self.env,
+        args = [str(HGS), 'desktop', 'serve'] + (['--background'] if background else [])
+        process = subprocess.Popen(args, env=self.env,
                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **options)
         self.addCleanup(self.stop, process)
         deadline = time.monotonic() + 10
@@ -344,6 +345,49 @@ class Desktop(unittest.TestCase):
         self.assertFalse((self.state / 'desktop-presence.json').exists())
         self.assertFalse((self.state / 'read-marks.json').exists())
         self.assertFalse((self.root / 'unexpected-tool').exists())
+
+    def test_background_fleet_lifetime_revoke_and_stale_epoch(self):
+        self.env['HGS_PEERS'] = ''
+        process, first = self.serve(background=True)
+        self.assertEqual(first['ownership'], 'background_readonly')
+        self.assertFalse(first['writers_enabled'])
+        watcher, hello, frames = self.watch()
+        self.assertEqual(hello['value']['ownership'], 'background_readonly')
+        deadline = time.monotonic() + 10
+        current = first
+        while time.monotonic() < deadline:
+            current = self.cli('desktop', 'status', '--json')
+            if current['background_runtime']['transport_ready']:
+                break
+            time.sleep(0.02)
+        self.assertTrue(current['background_runtime']['transport_ready'], current)
+        self.assertTrue(current['lifecycle']['background']['fleet']['ready'])
+        self.assertEqual(current['background_runtime']['workers'], 1)
+        self.assertEqual(current['attention_counts']['aggregate']['attention'], 0)
+        self.assertTrue(current['attention_counts']['aggregate']['complete'])
+        text = subprocess.run([str(HGS), 'desktop', 'status'], env=self.env,
+                              capture_output=True, text=True, timeout=10)
+        self.assertEqual(text.returncode, 0, text.stderr)
+        self.assertIn('background fleet', text.stdout)
+        for enabled in (True, False):
+            result = self.cli('desktop', 'request', '--json', data={
+                'op': 'automatic_approvals', 'request_id': str(uuid.uuid4()), 'enabled': enabled})
+            self.assertFalse(result['accepted'], 'generic CLI must not change approval policy')
+        request_id = str(uuid.uuid4())
+        result = self.cli('desktop', 'revoke', '--json', '--request-id', request_id)
+        self.assertTrue(result['revoked'])
+        self.assertEqual(result['writer_epoch'], first['epoch'])
+        stopped = self.cli('desktop', 'status', '--json')
+        self.assertTrue(stopped['background_runtime']['drained'])
+        self.assertEqual(stopped['ownership'], 'revoked')
+        watcher.stdin.close()
+        watcher.wait(timeout=5)
+        self.stop(process)
+        replacement, second = self.serve(background=True)
+        self.assertNotEqual(first['epoch'], second['epoch'])
+        stale = self.cli('desktop', 'revoke', '--json', '--request-id', request_id, ok=False)
+        self.assertEqual(json.loads(stale.stdout)['code'], 'writer_epoch_changed')
+        self.assertEqual(self.cli('desktop', 'status', '--json')['background_runtime']['state'], 'running')
 
     def test_lifecycle_probe_binds_the_live_service_and_nondefault_configuration(self):
         missing = self.cli('desktop', 'status', '--json')['lifecycle']

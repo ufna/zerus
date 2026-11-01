@@ -4273,6 +4273,20 @@ hgs desktop status --json
 hgs desktop watch --json
 ```
 
+`hgs desktop serve --background` explicitly starts the service-owned bounded
+fleet runtime. The actor applies its watch packets and publishes catalog/count
+updates through the same endpoint. It keeps each original event's ingress permit
+through the database transaction; UI-supplied feed packets cannot enter the owned
+observation path. Failed frames invalidate their exact source until resnapshot.
+The existing plain `serve` and emitted registrations stay passive during the
+UI cutover. This first runtime slice enables no presence/read/approval/posting
+writer, and generic approval policy requests remain refused.
+
+Revoking background mode stops and drains its own streams before returning a
+checkpointed receipt. These receipts bind the service incarnation; an old revoke
+cannot stop a replacement instance. Incomplete shutdown is reported as an error,
+never as drained. Native agents, tmux and unrelated services are not stopped.
+
 The existing `hgs presence set --json` payload and success output remain
 compatible. Its writes now hold a scoped `desktop-presence.lock`. Before any
 handoff, a passive service leaves that legacy producer available. A supported
@@ -4285,11 +4299,11 @@ listings read at most 4 KiB of a private regular leaf; malformed, oversized or
 special files provide no presence evidence.
 
 The private `desktop-v1` service kernel is local to one user and canonical
-configuration/state identity. It is **passive until the writer handoff is
-implemented**: it starts no fleet readers, presence/read workers, notifications
-or automatic approvals. It does not register itself with an OS service manager.
-Existing desktop clients retain their current owners. This kernel alone does
-not establish Qt retirement or native platform acceptance.
+configuration/state identity. Plain `serve` is passive; explicit background mode
+owns the bounded fleet readers described above. Presence/read workers,
+notifications and automatic approvals remain inactive pending their integration.
+Maintained installers register the service with the OS manager. Desktop client
+cutover and native posting are separate changes.
 
 `status` is read-only and never starts a service or creates state. Its JSON
 reports `running`, `ownership`, `configuration`, executable `version`, schema,

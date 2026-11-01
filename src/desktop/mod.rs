@@ -1,11 +1,11 @@
-//! Durable desktop service kernel. Pre-handoff it owns no fleet or effect writer.
+//! Durable desktop service kernel with explicit service-owned fleet activation.
+mod background;
 mod catalog_read;
 mod counts;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod custody;
 mod fanout;
 mod feed;
-#[allow(dead_code)] // Started by the active service lifecycle, never by a UI feed.
 mod fleet;
 mod frontend;
 mod handoff;
@@ -50,7 +50,7 @@ use std::{
 use store::{Location, Store};
 use transport::{Listener, Stream, TIMEOUT};
 
-const USAGE: &str = "usage: hgs desktop serve [--config-dir DIR --state-dir DIR] | status [--json] | startup --json | owner-status --json | watch --json | feed --json | request --json | registration --json | revoke --json [--request-id UUID] [--reason rollback] | import-evidence --json | import-status --json --import-id UUID";
+const USAGE: &str = "usage: hgs desktop serve [--config-dir DIR --state-dir DIR] [--background] | status [--json] | startup --json | owner-status --json | watch --json | feed --json | request --json | registration --json | revoke --json [--request-id UUID] [--reason rollback] | import-evidence --json | import-status --json --import-id UUID";
 const HEARTBEAT: Duration = Duration::from_secs(10);
 pub const STARTUP_REFUSED: i32 = 78;
 
@@ -64,6 +64,11 @@ impl std::fmt::Display for StartupRefused {
 impl std::error::Error for StartupRefused {}
 
 pub fn registered_command(args: &[String]) -> bool {
+    let args = if args.len() == 7 && args[6] == "--background" {
+        &args[..6]
+    } else {
+        args
+    };
     matches!(args, [desktop, serve, config_flag, _, state_flag, _]
         if desktop == "desktop" && serve == "serve"
         && config_flag == "--config-dir" && state_flag == "--state-dir")
@@ -81,6 +86,11 @@ pub fn launchd_command(args: &[String]) -> bool {
 /// local service form changes configuration before Config::load; ordinary hgs
 /// routing and all existing HGS_* selection remain unchanged.
 pub fn launch_configuration(args: &[String]) -> cli::Result<()> {
+    let args = if args.len() == 7 && args[6] == "--background" {
+        &args[..6]
+    } else {
+        args
+    };
     if let [desktop, serve, config_flag, config, state_flag, state] = args {
         if desktop == "desktop"
             && serve == "serve"
@@ -121,14 +131,20 @@ pub fn dispatch(config: &Config, target: &str, args: &[String], dry: bool) -> cl
             .collect::<Vec<_>>()
             .as_slice()
         {
-            ["serve"] => serve(location),
-            ["serve", "--config-dir", dir, "--state-dir", state] => {
+            ["serve"] => serve(config, location, false),
+            ["serve", "--background"] => serve(config, location, true),
+            ["serve", "--config-dir", dir, "--state-dir", state]
+            | ["serve", "--config-dir", dir, "--state-dir", state, "--background"] => {
                 if std::path::Path::new(dir) != config.dir
                     || std::path::Path::new(state) != config.state
                 {
                     return Err(anyhow::anyhow!("desktop registration configuration was not selected; invoke its exact local command").context(StartupRefused));
                 }
-                serve(location)
+                serve(
+                    config,
+                    location,
+                    args.last().is_some_and(|arg| arg == "--background"),
+                )
             }
             ["registration", "--json"] => {
                 println!("{}", registration::preview(config, &location)?);
@@ -155,7 +171,11 @@ pub fn dispatch(config: &Config, target: &str, args: &[String], dry: bool) -> cl
                 let status = status(&location)?;
                 println!(
                     "Desktop service: {}",
-                    if status["running"] == true {
+                    if status["ownership"] == "background_readonly" {
+                        "running (background fleet, effect writers inactive)"
+                    } else if status["ownership"] == "revoked" {
+                        "running (background workers revoked)"
+                    } else if status["running"] == true {
                         "running (passive, awaiting handoff)"
                     } else {
                         "not running"
@@ -297,7 +317,7 @@ impl Drop for Permit {
     }
 }
 
-fn serve(location: Location) -> Result<()> {
+fn serve(config: &Config, location: Location, background_mode: bool) -> Result<()> {
     let (_signals, _lock, listener, epoch, mut store) = (|| -> Result<_> {
         let signals = platform::ShutdownGuard::install()?;
         // This dedicated service process has no workers yet. Make socket creation
@@ -319,8 +339,9 @@ fn serve(location: Location) -> Result<()> {
     let mut feed = feed::Broker::new(&epoch);
     let mut reads = catalog_read::Reader::default();
     let mut frontend = frontend::Cache::default();
+    let mut background: Option<background::Runtime> = None;
     // At most16 queued controls/data, thirteen bounded parsers and one passive
-    // producer. No upstream reader starts here; later sources share this actor.
+    // producer. Background mode owns the only internal source producer.
     let (send, receive) = mpsc::sync_channel(protocol::PENDING);
     let acceptor = {
         let (listener, stopped, active, ingress) = (
@@ -372,11 +393,169 @@ fn serve(location: Location) -> Result<()> {
     let mut heartbeat = Instant::now() + HEARTBEAT;
     let mut collect_at = Instant::now();
     let mut failed = false;
-    while platform::shutdown_signal() == 0 {
-        frontend.tick(&location);
-        store.recover_operation_custody(&location);
-        match receive.recv_timeout(Duration::from_millis(200)) {
-            Ok(Event::Command(hello, queue)) => {
+    let run_result = (|| -> Result<()> {
+        if background_mode {
+            background = Some(
+                background::Runtime::start(config, &epoch, &mut feed).context(StartupRefused)?,
+            );
+        }
+        while platform::shutdown_signal() == 0 {
+            let mut changed = false;
+            if let Some(runtime) = &mut background {
+                for mut change in runtime.poll(&mut store, &mut feed) {
+                    changed = true;
+                    seq += 1;
+                    change["attention_counts"] = attention_counts(&store, &epoch, seq, &feed);
+                    fanout.publish(
+                        protocol::encode(&frame(&epoch, seq, "catalog_changed", change))?.into(),
+                    );
+                }
+            }
+            frontend.tick(&location);
+            store.recover_operation_custody(&location);
+            match receive.recv_timeout(if changed {
+                Duration::ZERO
+            } else {
+                Duration::from_millis(200)
+            }) {
+                Ok(Event::Command(hello, queue)) => {
+                    let mut value = projection(
+                        &location,
+                        &store,
+                        &epoch,
+                        fanout.len(),
+                        &migration,
+                        &feed,
+                        &reads,
+                    );
+                    value["frontend_read_delivery"] = frontend.status();
+                    value["attention_counts"] = attention_counts(&store, &epoch, seq, &feed);
+                    if let Some(runtime) = &background {
+                        runtime.decorate(&mut value);
+                    }
+                    let mut streaming = false;
+                    let reply = if hello.abi != ABI || hello.configuration != location.configuration
+                    {
+                        frame(
+                            &epoch,
+                            seq,
+                            "error",
+                            json!({"code":"incompatible_configuration"}),
+                        )
+                    } else if hello.op == "watch" && hello.request.is_none() {
+                        if fanout.subscribe(queue.clone()) {
+                            streaming = true;
+                            frame(&epoch, seq, "hello", value)
+                        } else {
+                            frame(&epoch, seq, "error", json!({"code":"subscriber_limit"}))
+                        }
+                    } else if hello.op == "status" && hello.request.is_none() {
+                        frame(&epoch, seq, "status", value)
+                    } else if hello.op == "request" {
+                        let result = if hello.request.as_ref().is_some_and(|v| {
+                            matches!(v["op"].as_str(), Some("catalog_page" | "catalog_close"))
+                        }) {
+                            reads.request(&store, &feed, &epoch, hello.request.as_ref().unwrap())
+                        } else if let Some(runtime) = &mut background {
+                            let request_value = hello.request.as_ref().unwrap_or(&Value::Null);
+                            if matches!(
+                                request_value["op"].as_str(),
+                                Some("revoke" | "revoke_status")
+                            ) {
+                                revoke::request_with_runtime(
+                                    &location,
+                                    &mut store,
+                                    request_value,
+                                    &epoch,
+                                    || runtime.drain(Duration::from_millis(750)),
+                                )
+                            } else {
+                                request(&location, &mut store, hello.request.as_ref())
+                            }
+                        } else {
+                            request(&location, &mut store, hello.request.as_ref())
+                        };
+                        migration = handoff::inspect(&location);
+                        frame(&epoch, seq, "response", result)
+                    } else {
+                        frame(
+                            &epoch,
+                            seq,
+                            "error",
+                            json!({"code":"unsupported_operation"}),
+                        )
+                    };
+                    queue.offer(protocol::encode(&reply)?.into());
+                    if !streaming {
+                        queue.close();
+                    }
+                }
+                Ok(Event::FeedOpen(hello, reply)) => {
+                    let producer = if hello.abi == ABI
+                        && hello.configuration == location.configuration
+                        && hello.op == "feed"
+                        && background.is_none()
+                    {
+                        feed.open(hello.request.as_ref()).ok()
+                    } else {
+                        None
+                    };
+                    let value = json!({"accepted":producer.is_some(),"durable":false,"feed_abi":feed::ABI,"display_only":true,
+                    "incarnation":producer.as_ref().map(|p|p.incarnation),"code":if producer.is_some(){"display_only"}else{"feed_unavailable"}});
+                    let _ = reply.send(feed::Opened {
+                        producer,
+                        reply: frame(&epoch, seq, "feed", value),
+                    });
+                }
+                Ok(Event::FeedData(data)) => {
+                    let outcome = feed.apply(&mut store, &data.producer, &data.packet);
+                    let accepted = outcome.is_ok();
+                    if let Ok(Some(change)) = outcome {
+                        seq += 1;
+                        let mut change = change;
+                        change["attention_counts"] = attention_counts(&store, &epoch, seq, &feed);
+                        fanout.publish(
+                            protocol::encode(&frame(&epoch, seq, "catalog_changed", change))?
+                                .into(),
+                        );
+                    }
+                    if !accepted {
+                        feed.failed(&data.producer);
+                    }
+                    let value = json!({"accepted":accepted,"durable":false,"feed_abi":feed::ABI,"display_only":true,
+                    "incarnation":data.producer.incarnation,"code":if accepted{"observed"}else{"feed_item_refused"}});
+                    let _ = data.reply.send(frame(&epoch, seq, "feed_receipt", value));
+                }
+                Ok(Event::ListenerFailed) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    failed = true;
+                    break;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => (),
+            }
+            if feed.retire(&mut store).unwrap_or(false) {
+                seq += 1;
+                fanout.publish(
+                protocol::encode(&frame(
+                    &epoch,
+                    seq,
+                    "catalog_changed",
+                    json!({"display_only":true,"retired":true,"attention_counts":attention_counts(&store,&epoch,seq,&feed)}),
+                ))?
+                .into(),
+            );
+            }
+            if Instant::now() >= collect_at {
+                let delay = if store.collect_catalog() {
+                    Duration::from_millis(250)
+                } else {
+                    HEARTBEAT
+                };
+                collect_at = Instant::now() + delay;
+            }
+            if Instant::now() >= heartbeat {
+                store.recover_effects(&epoch);
+                seq += 1;
+                migration = handoff::inspect(&location);
                 let mut value = projection(
                     &location,
                     &store,
@@ -388,125 +567,16 @@ fn serve(location: Location) -> Result<()> {
                 );
                 value["frontend_read_delivery"] = frontend.status();
                 value["attention_counts"] = attention_counts(&store, &epoch, seq, &feed);
-                let mut streaming = false;
-                let reply = if hello.abi != ABI || hello.configuration != location.configuration {
-                    frame(
-                        &epoch,
-                        seq,
-                        "error",
-                        json!({"code":"incompatible_configuration"}),
-                    )
-                } else if hello.op == "watch" && hello.request.is_none() {
-                    if fanout.subscribe(queue.clone()) {
-                        streaming = true;
-                        frame(&epoch, seq, "hello", value)
-                    } else {
-                        frame(&epoch, seq, "error", json!({"code":"subscriber_limit"}))
-                    }
-                } else if hello.op == "status" && hello.request.is_none() {
-                    frame(&epoch, seq, "status", value)
-                } else if hello.op == "request" {
-                    let result = if hello.request.as_ref().is_some_and(|v| {
-                        matches!(v["op"].as_str(), Some("catalog_page" | "catalog_close"))
-                    }) {
-                        reads.request(&store, &feed, &epoch, hello.request.as_ref().unwrap())
-                    } else {
-                        request(&location, &mut store, hello.request.as_ref())
-                    };
-                    migration = handoff::inspect(&location);
-                    frame(&epoch, seq, "response", result)
-                } else {
-                    frame(
-                        &epoch,
-                        seq,
-                        "error",
-                        json!({"code":"unsupported_operation"}),
-                    )
-                };
-                queue.offer(protocol::encode(&reply)?.into());
-                if !streaming {
-                    queue.close();
+                if let Some(runtime) = &background {
+                    runtime.decorate(&mut value);
                 }
+                fanout.publish(protocol::encode(&frame(&epoch, seq, "heartbeat", value))?.into());
+                heartbeat = Instant::now() + HEARTBEAT;
             }
-            Ok(Event::FeedOpen(hello, reply)) => {
-                let producer = if hello.abi == ABI
-                    && hello.configuration == location.configuration
-                    && hello.op == "feed"
-                {
-                    feed.open(hello.request.as_ref()).ok()
-                } else {
-                    None
-                };
-                let value = json!({"accepted":producer.is_some(),"durable":false,"feed_abi":feed::ABI,"display_only":true,
-                    "incarnation":producer.as_ref().map(|p|p.incarnation),"code":if producer.is_some(){"display_only"}else{"feed_unavailable"}});
-                let _ = reply.send(feed::Opened {
-                    producer,
-                    reply: frame(&epoch, seq, "feed", value),
-                });
-            }
-            Ok(Event::FeedData(data)) => {
-                let outcome = feed.apply(&mut store, &data.producer, &data.packet);
-                let accepted = outcome.is_ok();
-                if let Ok(Some(change)) = outcome {
-                    seq += 1;
-                    let mut change = change;
-                    change["attention_counts"] = attention_counts(&store, &epoch, seq, &feed);
-                    fanout.publish(
-                        protocol::encode(&frame(&epoch, seq, "catalog_changed", change))?.into(),
-                    );
-                }
-                if !accepted {
-                    feed.failed(&data.producer);
-                }
-                let value = json!({"accepted":accepted,"durable":false,"feed_abi":feed::ABI,"display_only":true,
-                    "incarnation":data.producer.incarnation,"code":if accepted{"observed"}else{"feed_item_refused"}});
-                let _ = data.reply.send(frame(&epoch, seq, "feed_receipt", value));
-            }
-            Ok(Event::ListenerFailed) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                failed = true;
-                break;
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => (),
         }
-        if feed.retire(&mut store).unwrap_or(false) {
-            seq += 1;
-            fanout.publish(
-                protocol::encode(&frame(
-                    &epoch,
-                    seq,
-                    "catalog_changed",
-                    json!({"display_only":true,"retired":true,"attention_counts":attention_counts(&store,&epoch,seq,&feed)}),
-                ))?
-                .into(),
-            );
-        }
-        if Instant::now() >= collect_at {
-            let delay = if store.collect_catalog() {
-                Duration::from_millis(250)
-            } else {
-                HEARTBEAT
-            };
-            collect_at = Instant::now() + delay;
-        }
-        if Instant::now() >= heartbeat {
-            store.recover_effects(&epoch);
-            seq += 1;
-            migration = handoff::inspect(&location);
-            let mut value = projection(
-                &location,
-                &store,
-                &epoch,
-                fanout.len(),
-                &migration,
-                &feed,
-                &reads,
-            );
-            value["frontend_read_delivery"] = frontend.status();
-            value["attention_counts"] = attention_counts(&store, &epoch, seq, &feed);
-            fanout.publish(protocol::encode(&frame(&epoch, seq, "heartbeat", value))?.into());
-            heartbeat = Instant::now() + HEARTBEAT;
-        }
-    }
+        ensure!(!failed, "desktop listener failed");
+        Ok(())
+    })();
     stopped.store(true, Ordering::SeqCst);
     listener.close();
     let _ = acceptor.join();
@@ -520,9 +590,26 @@ fn serve(location: Location) -> Result<()> {
     while active.load(Ordering::SeqCst) != 0 && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(10));
     }
-    feed.stop(&mut store)?;
-    store.checkpoint()?;
-    ensure!(!failed, "desktop listener failed");
+    let drained = background
+        .as_mut()
+        .map_or(Ok(()), |runtime| runtime.drain(Duration::from_secs(4)));
+    let feed_stopped = feed.stop(&mut store);
+    let checkpointed = store.checkpoint();
+    if let Err(error) = run_result {
+        if drained.is_err() {
+            eprintln!("desktop fleet cleanup is incomplete");
+        }
+        if feed_stopped.is_err() {
+            eprintln!("desktop feed cleanup is incomplete");
+        }
+        if checkpointed.is_err() {
+            eprintln!("desktop shutdown checkpoint is incomplete");
+        }
+        return Err(error);
+    }
+    drained?;
+    feed_stopped?;
+    checkpointed?;
     ensure!(
         active.load(Ordering::SeqCst) == 0,
         "desktop connections did not drain"
@@ -671,4 +758,36 @@ fn watch(location: &Location) -> Result<()> {
         output.flush()?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod background_command_tests {
+    use super::*;
+    #[test]
+    fn registered_mode_keeps_original_path_validation_and_launchd_boundary() {
+        let old: Vec<String> = [
+            "desktop",
+            "serve",
+            "--config-dir",
+            "/private/config",
+            "--state-dir",
+            "/private/state",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        assert!(registered_command(&old));
+        let mut background = old.clone();
+        background.push("--background".into());
+        assert!(registered_command(&background));
+        background.push("--launchd".into());
+        assert!(launchd_command(&background));
+        let mut invalid = old;
+        invalid[5] = "--background".into();
+        assert!(
+            registered_command(&invalid),
+            "path value must not be swallowed as an option"
+        );
+        assert!(launch_configuration(&invalid).is_err());
+    }
 }

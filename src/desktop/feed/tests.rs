@@ -17,6 +17,23 @@ fn role() -> Value {
 }
 
 #[test]
+fn failed_internal_observation_invalidates_only_its_original_generation() {
+    let (_temp, mut store, mut broker) = fixture();
+    let producer = broker.claim_internal().unwrap();
+    broker.apply(&mut store, &producer, &begin(1)).unwrap();
+    assert!(broker.available("peer"));
+    broker.invalidate(&producer, &begin(1));
+    assert!(!broker.available("peer"));
+    broker.apply(&mut store, &producer, &begin(2)).unwrap();
+    assert!(broker.available("peer"));
+    broker.invalidate(&producer, &begin(1));
+    assert!(
+        broker.available("peer"),
+        "late failure must not invalidate replacement"
+    );
+}
+
+#[test]
 fn expected_aliases_are_bounded_and_an_older_listing_keeps_the_previous_set() {
     let (_temp, mut store, mut broker) = fixture();
     let producer = broker.claim_internal().unwrap();
