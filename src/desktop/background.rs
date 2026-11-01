@@ -1,6 +1,8 @@
 //! Service-owned upstream lifetime. The actor applies every original event.
 use super::{
-    delivery, feed, fleet, presence_worker,
+    delivery, details,
+    fanout::Queue,
+    feed, fleet, presence_worker,
     store::{Location, Store},
 };
 use crate::config::Config;
@@ -19,6 +21,7 @@ pub(super) struct Runtime {
     producer: Arc<feed::Producer>,
     presence: Option<presence_worker::Runtime>,
     delivery: delivery::Runtime,
+    details: details::Adapter,
 }
 
 impl Runtime {
@@ -31,6 +34,7 @@ impl Runtime {
                 producer,
                 presence: None,
                 delivery,
+                details: details::Adapter::new(epoch),
             }),
             Err(error) => {
                 producer.close();
@@ -46,7 +50,17 @@ impl Runtime {
 
     /// Each original permit is held through the transaction and observation
     /// point. At most sixteen packets are processed per actor turn.
-    pub fn poll(&mut self, store: &mut Store, broker: &mut feed::Broker) -> (Vec<Value>, bool) {
+    pub fn poll(
+        &mut self,
+        store: &mut Store,
+        broker: &mut feed::Broker,
+        seq: &mut u64,
+    ) -> (Vec<Value>, bool) {
+        let fleet = &self.fleet;
+        self.details.tick(
+            &mut |computer, generation, controls| fleet.controls(computer, generation, controls),
+            seq,
+        );
         let mut changes = Vec::new();
         let mut consumed = 0;
         for _ in 0..POLL_EVENTS {
@@ -57,11 +71,20 @@ impl Runtime {
             match broker.apply(store, &self.producer, &event.packet) {
                 Ok(change) => {
                     self.delivery.observe(store, &event);
+                    let fleet = &self.fleet;
+                    self.details.observe(
+                        &event,
+                        &mut |computer, generation, controls| {
+                            fleet.controls(computer, generation, controls)
+                        },
+                        seq,
+                    );
                     if let Some(change) = change {
                         changes.push(change);
                     }
                 }
                 Err(_) => {
+                    self.details.reject(&event, seq);
                     broker.invalidate(&self.producer, &event.packet);
                     self.fleet.reject(&event);
                 }
@@ -75,7 +98,21 @@ impl Runtime {
         self.delivery.request(store, value)
     }
 
+    pub fn details_open(&mut self, queue: &Arc<Queue>) -> Option<Value> {
+        self.details.open(queue)
+    }
+    pub fn details_request(&mut self, store: &Store, request: &Value, seq: &mut u64) -> Value {
+        let fleet = &self.fleet;
+        self.details.request(
+            store,
+            request,
+            &mut |computer, generation, controls| fleet.controls(computer, generation, controls),
+            seq,
+        )
+    }
+
     pub fn decorate(&self, value: &mut Value) {
+        value["detail_subscriptions"] = self.details.status();
         let status = self.fleet.status();
         let ready = status["transport_ready"] == true;
         let code = match status["state"].as_str() {
@@ -129,6 +166,7 @@ impl Runtime {
     }
 
     pub fn drain(&mut self, store: &mut Store, timeout: Duration) -> Result<()> {
+        self.details.stop();
         self.producer.close();
         self.delivery.request_stop();
         if let Some(presence) = &self.presence {

@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 use zerus_client_core::{source, ComputerId, ComputerStatus, Timing};
-use zerus_watch_protocol::{topic, Body};
+use zerus_watch_protocol::{topic, Body, Control};
 
 const POLL_ITEMS: usize = 16;
 struct Computer {
@@ -58,6 +58,17 @@ fn spawn(command: &mut Command) -> std::io::Result<Child> {
 }
 
 impl Runtime {
+    /// Bind service projection identity to this original handle's wire epoch.
+    pub fn controls(&self, computer: &str, generation: u64, controls: &[Control]) -> bool {
+        self.computers
+            .get(&ComputerId::from(computer))
+            .is_some_and(|source| {
+                !self.stopping
+                    && source.accepting
+                    && source.generation == generation
+                    && source.handle.controls(source.wire_generation, controls)
+            })
+    }
     /// Called only after lifecycle ownership, configuration lock and epoch.
     /// No standalone/GUI activation route is provided by this module.
     pub fn start(config: &Config, epoch: &str) -> Result<Self> {
@@ -425,6 +436,7 @@ impl Runtime {
             && usage.connecting == 0
             && usage.items == 0
             && usage.legacy_spools == 0
+            && usage.controls == 0
     }
 
     pub fn status(&self) -> Value {
@@ -436,6 +448,7 @@ impl Runtime {
             && u.connecting == 0
             && u.items == 0
             && u.legacy_spools == 0;
+        let drained = drained && u.controls == 0;
         let ready = !self.stopping
             && self.error.is_none()
             && self.computers.len() == self.desired.len() + 1
@@ -447,6 +460,7 @@ impl Runtime {
             "display_only":true,"authority":false,"error":self.error,
             "workers":u.workers,"readers":u.readers,"connecting":u.connecting,
             "ingress_bytes":u.bytes,"ingress_items":u.items,"high_ingress_bytes":u.high_bytes,
+            "control_batches":u.controls,"control_bytes":u.control_bytes,
             "retiring":self.retiring.len(),"pending_retirements":self.pending.len(),
             "legacy_spools":u.legacy_spools,"legacy_reserved_bytes":u.legacy_reserved_bytes,
             "computers":self.computers.iter().map(|(id,c)|json!({"computer":id.0,
@@ -454,6 +468,7 @@ impl Runtime {
                 "attempt":c.status.attempt(),"accepting":c.accepting})).collect::<Vec<_>>(),
             "limits":{"sources":source::SOURCES,"connecting":source::CONNECTIONS,
                 "ingress_bytes":source::INGRESS_BYTES,"ingress_items":source::INGRESS_ITEMS,
+                "control_batches":source::CONTROL_BATCHES,"control_bytes":source::CONTROL_BYTES,
                 "pending_retirements":source::SOURCES,
                 "poll_items":POLL_ITEMS,"restart_ms":self.timing.restart.map(|d|d.as_millis())}})
     }

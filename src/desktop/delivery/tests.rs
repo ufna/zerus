@@ -46,7 +46,7 @@ impl Fixture {
     fn new(run: Runner) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let location = Location {
-            root: temp.path().join("state/desktop"),
+            root: temp.path().canonicalize().unwrap().join("state/desktop"),
             configuration: "a".repeat(64),
         };
         location.prepare().unwrap();
@@ -54,7 +54,11 @@ impl Fixture {
         let store = Store::open(&location, &epoch).unwrap();
         let mut feed = feed::Broker::new(&epoch);
         let producer = feed.claim_internal().unwrap();
-        let runtime = Runtime::new(&epoch, temp.path().join("approval-audit"), run);
+        let runtime = Runtime::new(
+            &epoch,
+            temp.path().canonicalize().unwrap().join("approval-audit"),
+            run,
+        );
         Self {
             _temp: temp,
             location,

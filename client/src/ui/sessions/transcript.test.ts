@@ -176,3 +176,67 @@ it('keeps equal-text image sends distinct when their separate receipts arrive',(
  const final=projection.build(events,{attachment_messages:receipts},[]) as ActivityItem[];
  expect(final.map(r=>r.id)).toEqual(['local-one','local-two']);expect(final.map(r=>r.attachments?.[0].request_id)).toEqual(['one','two']);
 });
+
+describe("main message window outside the tool-event tail", () => {
+  const base = 1_793_000_000;
+  const messages: ActivityEvent[] = Array.from({ length: 30 }, (_, i) => ({
+    seq: 10 + i * 500, type: i % 2 ? "Stop" : "UserPromptSubmit", source: "codex_hooks",
+    at: base + i * 300, detail: `${i % 2 ? "Reply" : "Request"} ${i}`,
+  }));
+  const tools: ActivityEvent[] = Array.from({ length: 100 }, (_, i) => ({
+    seq: 25_000 + i, type: i % 2 ? "PostToolUse" : "PreToolUse", source: "codex_hooks",
+    at: base + 40_000 + i, tool: "Bash", detail: `tool ${i}`,
+  }));
+  const summary = { message_events: messages, history_truncated: false, message_events_truncated: false };
+
+  it("renders all 30 bounded journal messages before the 100 recent tools on cold open", () => {
+    for (const build of [buildTranscript, createTranscriptProjection().build]) {
+      const items = build(tools, summary);
+      const conversation = items.filter(item => item.kind === "user" || item.kind === "agent");
+      expect(conversation).toHaveLength(30);
+      expect(conversation.map(item => "body" in item ? item.body : undefined)).toEqual(messages.map(event => event.detail));
+      expect(items[0]).toMatchObject({ id: "s10", kind: "user", body: "Request 0" });
+      expect(items.filter(item => item.kind === "tools")).toHaveLength(5);
+    }
+  });
+
+  it("deduplicates by journal identity when an older tool page also carries the messages", () => {
+    const projection = createTranscriptProjection();
+    const before = projection.build(tools, summary);
+    const after = projection.build([...messages, ...tools], summary);
+    expect(after).toEqual(before);
+    expect(new Set(after.map(item => item.id)).size).toBe(after.length);
+    expect(tools).toHaveLength(100);
+    expect(messages).toHaveLength(30);
+  });
+
+  it("merges a provider response with its older Stop and retains equal-text messages with different sequences", () => {
+    const stop = { ...messages[1], agent_id: "main" };
+    const window = [messages[0], stop, ...messages.slice(2), { ...messages[0], seq: 20, at: base + 1 }];
+    const items = buildTranscript(tools, { ...summary, message_events: window,
+      provider_messages: [{ type: "AgentMessage", source: "codex_transcript", message_id: "provider-1", agent_id: "main", at: stop.at, detail: `${stop.detail} in full` }] });
+    expect(items.filter(item => item.kind === "user" && item.body === messages[0].detail)).toHaveLength(2);
+    expect(items.filter(item => item.kind === "agent" && item.body === `${stop.detail} in full`)).toHaveLength(1);
+    expect(items.filter(item => item.kind === "agent" && item.body === stop.detail)).toHaveLength(0);
+  });
+});
+
+describe("bounded message-window input", () => {
+  it("renders main UserMessage rows and excludes nested child messages and operational rows", () => {
+    const items = buildTranscript([], { message_events: [
+      { seq: 1, type: "UserMessage", agent_id: "main", detail: "Main request", at: 1 },
+      { seq: 2, type: "Stop", agent_id: "child", detail: "Child reply", at: 2 },
+      { seq: 3, type: "PreToolUse", detail: "Not a main message", at: 3 },
+    ] });
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ kind: "user", body: "Main request" });
+  });
+
+  it("retains at most the native 100-message window without growing a history cache", () => {
+    const message_events = Array.from({ length: 140 }, (_, i) => ({ seq: i + 1, type: "Stop", detail: `Reply ${i}`, at: i + 1 }));
+    const items = buildTranscript([], { message_events });
+    expect(items).toHaveLength(100);
+    expect(items[0]).toMatchObject({ id: "s41", body: "Reply 40" });
+    expect(items.at(-1)).toMatchObject({ id: "s140", body: "Reply 139" });
+  });
+});

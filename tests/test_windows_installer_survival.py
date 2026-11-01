@@ -141,6 +141,7 @@ class Installer(windows_host.HostCase):
         before = self.staged()
 
         # Files an older version shipped and this one does not.
+        (self.app / "platforms").mkdir(exist_ok=True)
         (self.app / "platforms" / "qstale.dll").write_bytes(b"older Qt plugin")
         (self.app / "avcodec-60.dll").write_bytes(b"older FFmpeg")
         (self.app / "oldplugins").mkdir()

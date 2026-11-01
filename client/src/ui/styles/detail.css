@@ -74,6 +74,7 @@
   .col-edge:hover::before, .col-edge:focus-visible::before { opacity: .55; }
   .col-edge.dragging::before { opacity: 1; transition: none; }
   .act-label { padding: 2px 0; }
+  .act-history-header { display: flex; align-items: center; gap: 8px; min-height: 26px; }
   .act-virtual { position: relative; box-sizing: border-box; flex: none; width: 100%; }
   .act-virtual-flow { position: relative; width: 100%; }
   .act-virtual-spacer { overflow-anchor: none; }
