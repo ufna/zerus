@@ -218,7 +218,9 @@ async fn walk(
 ) -> Result<(), &'static str> {
     let mut cursor = None::<String>;
     let result = async {
-        row(shared, computer, &source, epoch, &stop, Change::Computer { computer: ComputerId::from(computer), status: ComputerStatus::Reconnecting { attempt: 0 } }).await?;
+        if since.is_none() {
+            row(shared, computer, &source, epoch, &stop, Change::Computer { computer: ComputerId::from(computer), status: ComputerStatus::Reconnecting { attempt: 0 } }).await?;
+        }
         let mut keys = since.is_none().then(BTreeSet::new);
         let mut key_bytes = 0;
         let mut start = since;

@@ -86,6 +86,12 @@ elif args == ['desktop', 'watch', '--json']:
         wait(root / ('page-started' if config['replace_projection'] == 'early' else 'initial-complete'))
         hint(1, '0', 'b' * 32)
         (root / 'projection-replaced').touch()
+    if config.get('delta_live'):
+        wait(root / 'send-delta')
+        hint(1, '1')
+        wait(root / 'live-delta-started')
+        hint(2, '2')
+        (root / 'live-delta-hinted').touch()
     if config.get('large'):
         wait(root / 'initial-complete')
         hint(1, '3')
@@ -138,6 +144,15 @@ elif args == ['desktop', 'request', '--json']:
                 (root / 'refresh-started').touch()
                 wait(root / 'finish-refresh')
                 page.update(through_revision='3', revision='3', items=[change('fresh', '3')])
+        if config.get('delta_live') and number == 2:
+            (root / 'live-delta-started').touch()
+            wait(root / 'live-delta-hinted')
+            wait(root / 'finish-live-delta')
+            page.update(through_revision='1', revision='2', stale=True, items=[change('first-delta', '1')])
+        elif config.get('delta_live') and number == 3:
+            (root / 'next-live-delta-started').touch()
+            wait(root / 'finish-next-live-delta')
+            page.update(through_revision='2', revision='2', items=[change('second-delta', '2')])
         if config.get('failure') == 'changed_through' and number <= 2:
             page.update(through_revision=str(number), revision=str(number), next_cursor=cursor if number == 1 else None)
         elif config.get('failure') and number == 1:

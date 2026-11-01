@@ -513,3 +513,55 @@ fn stuck_view_callback_cannot_hold_the_quit_completion_past_its_deadline() {
         service.join().await.unwrap();
     });
 }
+
+#[test]
+fn hint_driven_delta_walks_never_take_an_already_live_computer_offline() {
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        let fixture = Fixture::new(json!({"delta_live":true}));
+        let (service, pump) = fixture.start(true);
+        let statuses = Arc::new(Mutex::new(Vec::new()));
+        let observe = statuses.clone();
+        pump.tap(Box::new(move |change| {
+            if let Change::Computer { computer, status } = change {
+                if computer.is_local() {
+                    observe.lock().unwrap().push(*status);
+                }
+            }
+        }));
+        eventually("initial live baseline", || {
+            statuses.lock().unwrap().contains(&ComputerStatus::Live)
+        })
+        .await;
+        statuses.lock().unwrap().clear();
+        fs::write(fixture.0.join("send-delta"), []).unwrap();
+        eventually("delta round trip held", || {
+            fixture.0.join("live-delta-hinted").exists()
+        })
+        .await;
+        let during_rpc = statuses.lock().unwrap().clone();
+        fs::write(fixture.0.join("finish-live-delta"), []).unwrap();
+        eventually("next coalesced delta held", || {
+            fixture.0.join("next-live-delta-started").exists()
+        })
+        .await;
+        let newer_head_pending = statuses.lock().unwrap().clone();
+        fs::write(fixture.0.join("finish-next-live-delta"), []).unwrap();
+        eventually("second contiguous delta consumed", || {
+            pump.row("", "second-delta").is_some()
+        })
+        .await;
+        let all = statuses.lock().unwrap().clone();
+        service.join().await.unwrap();
+        for (phase, statuses) in [
+            ("RPC in flight", during_rpc),
+            ("newer head pending", newer_head_pending),
+            ("finished", all),
+        ] {
+            assert!(
+                statuses.iter().all(|s| *s == ComputerStatus::Live),
+                "{phase}: {statuses:?}"
+            );
+        }
+    });
+}

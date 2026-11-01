@@ -169,7 +169,10 @@ impl CatalogDelivery {
                 }
                 pump.push(Change::Computer {
                     computer,
-                    status: if clean {
+                    // A contiguous delta range remains live even when a newer
+                    // head needs another catch-up. Pending display changes do
+                    // not mean this computer lost its connection.
+                    status: if through.is_some() {
                         ComputerStatus::Live
                     } else {
                         ComputerStatus::Reconnecting { attempt: 0 }
