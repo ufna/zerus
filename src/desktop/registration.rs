@@ -181,7 +181,7 @@ fn render(spec: &Spec, os: Os) -> Result<String> {
     spec.validate(os)?;
     let argv = spec.argv(os);
     Ok(match os {
-        Os::Linux => format!("# {MARKER}; configuration={}\n[Unit]\nDescription=Zerus desktop background service\nStartLimitIntervalSec=300\nStartLimitBurst=3\n\n[Service]\nType=simple\nExecStart={}\nRestart=on-failure\nRestartSec=10\nRestartPreventExitStatus=78\nTimeoutStopSec=10\n# Desktop owns only its readers; never terminate native process groups.\nKillMode=process\nUMask=0077\n\n[Install]\nWantedBy=default.target\n",spec.configuration,argv.iter().map(|arg|unit_quote(arg)).collect::<Vec<_>>().join(" ")),
+        Os::Linux => format!("# {MARKER}; configuration={}\n[Unit]\nDescription=Zerus desktop background service\nAfter=graphical-session.target\nPartOf=graphical-session.target\nStartLimitIntervalSec=300\nStartLimitBurst=3\n\n[Service]\nType=simple\nExecStart={}\nRestart=on-failure\nRestartSec=10\nRestartPreventExitStatus=78\nTimeoutStopSec=10\n# Desktop owns only its readers; never terminate native process groups.\nKillMode=process\nUMask=0077\n\n[Install]\nWantedBy=graphical-session.target\n",spec.configuration,argv.iter().map(|arg|unit_quote(arg)).collect::<Vec<_>>().join(" ")),
         Os::Mac => {
             let arguments = argv.iter().map(|arg|format!("<string>{}</string>",xml(arg))).collect::<String>();
             format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<!-- {MARKER}; configuration={} -->\n<plist version=\"1.0\"><dict>\n<key>Label</key><string>com.hgdev.hgs-desktop</string>\n<key>ProgramArguments</key><array>{arguments}</array>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n<key>ThrottleInterval</key><integer>10</integer>\n<key>AbandonProcessGroup</key><true/>\n<key>LimitLoadToSessionType</key><string>Aqua</string>\n</dict></plist>\n",spec.configuration)
@@ -231,6 +231,9 @@ mod tests {
         assert!(unit.contains("StartLimitIntervalSec=300\nStartLimitBurst=3"));
         assert!(unit.contains("RestartPreventExitStatus=78"));
         assert!(!unit.contains("ExecStop"));
+        assert!(unit.contains("After=graphical-session.target\nPartOf=graphical-session.target"));
+        assert!(unit.contains("WantedBy=graphical-session.target"));
+        assert!(!unit.contains("WantedBy=default.target"));
     }
     #[test]
     fn mac_is_a_user_agent_with_exact_arguments_and_no_other_labels() {

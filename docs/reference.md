@@ -4434,7 +4434,14 @@ configurations automatically. Windows definitions use the current SID,
 restarts one minute apart (the [Task Scheduler schema minimum](https://learn.microsoft.com/en-us/windows/win32/taskschd/taskschedulerschema-interval-restarttype-element)).
 Paths with environment-variable markers are refused on Windows because Task
 Scheduler expands them even inside quoted arguments. Linux permits three starts
-within five minutes and does not restart a startup refusal (exit 78). macOS adds
+within five minutes and does not restart a startup refusal (exit 78). The Linux
+unit is ordered after and is part of `graphical-session.target`, and is enabled
+for that target rather than `default.target`. Plasma and GNOME establish this
+session after importing the graphical environment into the user manager. Bare
+window managers without that integration must arrange a session target that
+pulls in `graphical-session.target`, or import their session environment and
+manually enable/start `hgs-desktop.service` for that login. Direct manual start
+of `graphical-session.target` itself can be refused by systemd. macOS adds
 the private `--launchd` argument to the exact registered form: permanent startup
 refusals print a diagnostic and exit successfully, so
 [`SuccessfulExit=false`](https://github.com/apple-oss-distributions/launchd/blob/main/man/launchd.plist.5)
