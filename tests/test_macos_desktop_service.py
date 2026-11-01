@@ -170,7 +170,7 @@ class MacDesktopService(unittest.TestCase):
     def test_owned_marker_does_not_make_malformed_or_nonservice_arguments_safe(self):
         original = self.command.plan["definition"]
         for argv in ([], ["relative/hgs", "desktop", "serve"], ["/private/example/agent", "run", "session"]):
-            definition = plistlib.loads(original)
+            definition = plistlib.loads(original.encode() if isinstance(original, str) else original)
             definition["ProgramArguments"] = argv
             content = plistlib.dumps(definition).decode().replace("?>", "?>\n<!-- " + installer.MARKER
                         + "; configuration=" + self.command.config + " -->", 1)
