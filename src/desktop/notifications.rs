@@ -220,6 +220,50 @@ impl Outbox {
         ))
     }
 
+    /// Actor-only convenience: authority stays in this original private Session.
+    /// A new request ID is not a retry grant; reserve returns consumed edges.
+    pub fn offer_intent(
+        &mut self,
+        store: &mut Store,
+        intent_id: &str,
+        revision: u64,
+        now: Instant,
+    ) -> Result<Offered> {
+        self.require_current_writer(store)?;
+        self.offer(
+            store,
+            Reserve {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                intent_id: intent_id.into(),
+                revision,
+                epoch: self.session.writer_epoch.clone(),
+                service_epoch: self.session.service_epoch.clone(),
+                adapter: self.session.adapter.clone(),
+                lease: self.session.lease.clone(),
+                retry_of: None,
+            },
+            now,
+        )
+    }
+
+    pub fn available(&self) -> bool {
+        !self.stopping.load(Ordering::Acquire)
+            && self.error.is_none()
+            && self.pending.len() < wire::IN_FLIGHT
+    }
+
+    /// Revoke callbacks and cancel this original queued work. This does not
+    /// manufacture a native close receipt or release its retained resources.
+    pub fn retire_intent(&mut self, store: &mut Store, intent_id: &str) -> Result<()> {
+        ledger::withdraw(&mut store.db, intent_id, 1)?;
+        for pending in &self.pending {
+            if pending.binding.intent_id == intent_id {
+                pending.shared.cancel.store(true, Ordering::Release);
+            }
+        }
+        Ok(())
+    }
+
     /// Called by the actor for an intent derived from its own committed fleet
     /// observations. Existing/historic/unknown attempts never enqueue a send.
     pub fn offer(&mut self, store: &mut Store, request: Reserve, now: Instant) -> Result<Offered> {
@@ -490,6 +534,81 @@ impl Outbox {
             [],
             |r| r.get(0),
         )?)
+    }
+    /// Schema-14 live projection: cursor is an attention edge ID, not an
+    /// attempt sequence. The actor uses this after discovery is available;
+    /// unknown/delivered historical tombstones are never scanned or replayed.
+    pub fn restore_live_head(&self, store: &Store) -> Result<i64> {
+        self.require_current_writer(store)?;
+        Ok(store.db.query_row(
+            "SELECT COALESCE(MAX(id),0) FROM desktop_attention_edges WHERE live=1",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+    pub fn restore_live_page(
+        &self,
+        store: &Store,
+        after: i64,
+        through: i64,
+    ) -> Result<RestorePage> {
+        self.require_current_writer(store)?;
+        ensure!(
+            after >= 0 && through >= after,
+            "invalid live notification cursor"
+        );
+        let mut query=store.db.prepare("SELECT e.id,
+          CASE WHEN length(CAST(e.payload AS BLOB))<=?3 THEN e.payload END,
+          CASE WHEN length(CAST(a.receipt AS BLOB))<=?4 THEN a.receipt END,e.blocked
+          FROM desktop_attention_edges e LEFT JOIN desktop_attempts a ON a.seq=(
+            SELECT seq FROM desktop_attempts WHERE intent_id=e.intent AND state='delivered' ORDER BY seq DESC LIMIT 1)
+          WHERE e.live=1 AND e.id>?1 AND e.id<=?2 ORDER BY e.id LIMIT 16")?;
+        let rows = query
+            .query_map(
+                params![after, through, ledger::PAYLOAD_BYTES, ledger::RECEIPT_BYTES],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                        r.get::<_, bool>(3)?,
+                    ))
+                },
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let complete = rows.len() < 16 || rows.last().is_some_and(|r| r.0 == through);
+        let next = rows.last().map_or(through, |r| r.0);
+        let mut mappings = Vec::new();
+        for (_, payload, receipt, blocked) in rows {
+            if blocked {
+                continue;
+            }
+            let Some(receipt) = receipt else { continue };
+            let receipt: Receipt = serde_json::from_str(&receipt)?;
+            ensure!(receipt.binding.valid(), "invalid live notification binding");
+            let Outcome::Delivered { native_id } = receipt.outcome else {
+                continue;
+            };
+            let Action::Post { token, .. } =
+                serde_json::from_str(&payload.context("live notification payload unavailable")?)?
+            else {
+                continue;
+            };
+            let activation = Activation {
+                request_id: receipt.binding.request_id,
+                token,
+                native_id,
+            };
+            if self.current_activation(store, &activation)?.is_some() {
+                mappings.push(activation);
+            }
+        }
+        Ok(RestorePage {
+            after: next,
+            through,
+            complete,
+            mappings,
+        })
     }
     /// Fixed highwater, sixteen indexed candidates per turn. This rebuilds
     /// callback routing after upgrade, without a whole journal read or resend.
