@@ -1431,7 +1431,7 @@ Generate `.SRCINFO` with `makepkg --printsrcinfo`; never edit it manually.
 
 | Class | Packages | Reason |
 | --- | --- | --- |
-| Desktop runtime | `webkit2gtk-4.1`, `javascriptcoregtk-4.1`, `gtk3`, `gdk-pixbuf2`, `glib2`, `cairo`, `libsoup3`, `libappindicator`, `dbus`, `hicolor-icon-theme` | Zerus Next webview, GTK integration, tray and icons |
+| Desktop runtime | `webkit2gtk-4.1`, `gtk3`, `gdk-pixbuf2`, `glib2`, `cairo`, `libsoup3`, `libappindicator`, `dbus`, `hicolor-icon-theme` | Zerus Next webview, GTK integration, tray and icons |
 | Media runtime | `alsa-lib`, `gstreamer`, `gst-plugins-base-libs`, `gst-plugins-base`, `gst-plugins-good`, `gst-plugins-bad`, `gst-plugins-ugly`, `gst-libav` | Voice capture, camera/round video, H.264/AAC and playback |
 | CLI/runtime tools | `tmux>=3.7`, `openssh`, `python`, `curl`, `procps-ng`, `bash`, `tar` | Persistent sessions, remote access, compatibility helper, account HTTP, process inspection, installers and remote source transfer |
 | Native library runtime | `glibc`, `libgcc`, `libstdc++` | Dynamically linked CLI/desktop binaries |
