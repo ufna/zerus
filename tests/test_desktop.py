@@ -370,6 +370,9 @@ class Desktop(unittest.TestCase):
         self.assertEqual(current['background_runtime']['workers'], 1)
         self.assertEqual(current['attention_counts']['aggregate']['attention'], 0)
         self.assertTrue(current['attention_counts']['aggregate']['complete'])
+        self.assertEqual(current['maintenance']['abi'], 'desktop-maintenance-v1')
+        self.assertIsNone(current['maintenance']['configuration'])
+        self.assertFalse(current['maintenance']['updates']['busy'])
         text = subprocess.run([str(HGS), 'desktop', 'status'], env=self.env,
                               capture_output=True, text=True, timeout=10)
         self.assertEqual(text.returncode, 0, text.stderr)
@@ -387,6 +390,7 @@ class Desktop(unittest.TestCase):
         stopped = self.cli('desktop', 'status', '--json')
         self.assertTrue(stopped['background_runtime']['drained'])
         self.assertEqual(stopped['ownership'], 'revoked')
+        self.assertFalse(stopped['maintenance']['ready'])
         self.assertTrue(stopped['lifecycle']['background']['presence']['drained'])
         self.assertFalse(stopped['writers_enabled'])
         self.cli('presence', 'set', '--json', data={'idle_seconds': 0, 'locked': False})
@@ -436,6 +440,26 @@ class Desktop(unittest.TestCase):
         self.assertFalse(receipt['found'])
         self.assertFalse(receipt['durable'])
 
+    def test_maintenance_configure_requires_native_authority_and_result_is_readonly(self):
+        self.serve()
+        help_text = subprocess.run([str(HGS), '--help'], env=self.env,
+                                   capture_output=True, text=True, timeout=10)
+        self.assertIn('Desktop maintenance ABI: desktop-maintenance-v1', help_text.stdout)
+        request = {'op': 'maintenance_configure', 'request_id': str(uuid.uuid4()),
+                   'update': None, 'recovery': None}
+        with closing(sqlite3.connect(self.desktop / 'state.sqlite3')) as db:
+            before = db.execute('SELECT value FROM desktop_maintenance WHERE id=1').fetchone()[0]
+        self.assertFalse(self.cli('desktop', 'request', '--json', data=request)['accepted'])
+        envelope = {'abi': 'desktop-ui-request-v1', 'attempt': str(uuid.uuid4()), 'request': request}
+        self.assertFalse(self.cli('desktop', 'frontend-request', '--json', data=envelope)['accepted'])
+        result = self.cli('desktop', 'request', '--json', data={
+            'op': 'maintenance_result', 'request_id': str(uuid.uuid4()),
+            'original_request_id': request['request_id']})
+        self.assertFalse(result['accepted'])
+        self.assertEqual(result['code'], 'unknown_request')
+        with closing(sqlite3.connect(self.desktop / 'state.sqlite3')) as db:
+            self.assertEqual(db.execute('SELECT value FROM desktop_maintenance WHERE id=1').fetchone()[0], before)
+
     def test_lifecycle_probe_binds_the_live_service_and_nondefault_configuration(self):
         missing = self.cli('desktop', 'status', '--json')['lifecycle']
         self.assertFalse(missing['ipc_ready'])
@@ -483,9 +507,13 @@ class Desktop(unittest.TestCase):
         request_id = str(uuid.uuid4())
         result = self.cli('desktop', 'request', '--json', data={'op': 'ping', 'request_id': request_id})
         self.assertEqual(result, dict(request_id=request_id, accepted=True, durable=False, op='pong'))
-        for op in ('read', 'approval_settings', 'focus', 'activate', 'subscribe', 'maintenance_configure', 'maintenance_result', 'unknown'):
+        for op in ('read', 'approval_settings', 'focus', 'activate', 'subscribe', 'maintenance_configure', 'unknown'):
             result = self.cli('desktop', 'request', '--json', data={'op': op, 'request_id': request_id, 'enabled': True})
             self.assertEqual(result, dict(request_id=request_id, accepted=False, code='handoff_required'))
+        result = self.cli('desktop', 'request', '--json', data={
+            'op': 'maintenance_result', 'request_id': request_id, 'enabled': True})
+        self.assertEqual(result, dict(request_id=request_id, accepted=False,
+                                     durable=False, code='maintenance_refused'))
         result = self.cli('desktop', 'request', '--json', data={'op': 'ping', 'request_id': 'not-a-uuid'})
         self.assertEqual(result['code'], 'invalid_request_id')
         self.assertFalse((self.desktop / 'approval-log').exists())

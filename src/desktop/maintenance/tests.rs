@@ -60,6 +60,38 @@ impl Fixture {
 fn no_io() -> Runner {
     Arc::new(|_, _, _| panic!("unexpected I/O"))
 }
+
+#[test]
+fn original_result_is_readable_while_passive_without_an_executor_or_write() {
+    let mut f = Fixture::new(no_io());
+    let original = f.configure(Value::Null, Value::Null);
+    assert_eq!(original["durable"], true);
+    let before: String = f
+        .store
+        .db
+        .query_row(
+            "SELECT value FROM desktop_maintenance WHERE id=1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let query = json!({"op":"maintenance_result","request_id":id(),"original_request_id":original["original_request_id"]});
+    let result = result_request(&f.store, &query);
+    assert_eq!(result["accepted"], true);
+    assert_eq!(result["revision"], original["revision"]);
+    let bad = json!({"op":"maintenance_configure","request_id":id(),"update":null,"recovery":null});
+    assert_eq!(result_request(&f.store, &bad)["accepted"], false);
+    let after: String = f
+        .store
+        .db
+        .query_row(
+            "SELECT value FROM desktop_maintenance WHERE id=1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(before, after);
+}
 fn update(automatic: bool) -> Value {
     json!({"gui":{"bundle_id":"com.hgdev.hgs-tray","executable":std::env::temp_dir().join("fixture/hgs-tray"),"app_version":"1.0.0","dev_number":2,"source_commit":"a".repeat(40)},"channel":"stable","automatic":automatic})
 }

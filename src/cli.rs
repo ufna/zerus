@@ -57,6 +57,7 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        hgs desktop import-status --json --import-id UUID  read one import manifest
        Desktop service ABI: desktop-v1
        Desktop frontend request ABI: desktop-ui-request-v1
+       Desktop maintenance ABI: desktop-maintenance-v1
        Desktop startup ABI: desktop-startup-v1
        Desktop logon registration ABI: desktop-logon-task-v1
         Desktop revoke ABI: desktop-revoke-v1

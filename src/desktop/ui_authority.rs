@@ -126,6 +126,9 @@ impl Validated {
     pub fn id(&self) -> &str {
         self.0.id()
     }
+    pub fn operation(&self) -> &'static str {
+        self.0.operation()
+    }
     pub fn into_request(self) -> Result<Request> {
         match self.1 {
             Freshness::Native {
@@ -161,6 +164,7 @@ impl Authorized {
                 self.frontend.identity.birth.clone(),
                 self.instance,
             ),
+            self.envelope.request.operation(),
             self.serial,
             Instant::now(),
         )?;
@@ -269,27 +273,57 @@ fn validate(
             && reply.request.fingerprint == envelope.request.fingerprint(),
         "original frontend child/request does not match"
     );
+    if let Request::MaintenanceConfigure {
+        update: Some(update),
+        ..
+    } = &envelope.request
+    {
+        ensure!(
+            update.gui.bundle_id == reply.hello.application
+                && update.gui.app_version == reply.hello.build.version
+                && update.gui.source_commit == reply.hello.build.source_commit
+                && platform::file_identity(Path::new(&update.gui.executable)).is_some_and(
+                    |id| Some(id) == platform::file_identity(Path::new(&frontend.executable))
+                ),
+            "maintenance GUI origin does not match the authenticated frontend"
+        );
+    }
     Ok(())
 }
 
 type Instance = (u32, String, String);
 #[derive(Default)]
 pub(super) struct Order {
-    current: Option<(Instance, u64)>,
+    current: Option<(Instance, BTreeMap<&'static str, u64>)>,
     retired: BTreeMap<Instance, Instant>,
 }
 impl Order {
     /// Intent order comes from the native cache, never a caller field. This
     /// prevents a slower earlier Enable from overtaking a later Disable.
-    fn observe(&mut self, instance: Instance, serial: u64, now: Instant) -> Result<()> {
+    fn observe(
+        &mut self,
+        instance: Instance,
+        operation: &'static str,
+        serial: u64,
+        now: Instant,
+    ) -> Result<()> {
+        ensure!(
+            matches!(operation, "automatic_approvals" | "maintenance_configure"),
+            "unknown frontend operation"
+        );
         self.retired.retain(|_, until| now < *until);
         ensure!(
             serial != 0 && !self.retired.contains_key(&instance),
             "stale frontend instance"
         );
-        if let Some((old, previous)) = &self.current {
+        if let Some((old, previous)) = &mut self.current {
             if *old == instance {
-                ensure!(serial > *previous, "stale frontend intent");
+                ensure!(
+                    serial > previous.get(operation).copied().unwrap_or(0),
+                    "stale frontend intent"
+                );
+                previous.insert(operation, serial);
+                return Ok(());
             } else {
                 ensure!(
                     self.retired.len() < 16,
@@ -298,7 +332,7 @@ impl Order {
                 self.retired.insert(old.clone(), now + WAIT);
             }
         }
-        self.current = Some((instance, serial));
+        self.current = Some((instance, BTreeMap::from([(operation, serial)])));
         Ok(())
     }
 }
@@ -601,6 +635,57 @@ mod tests {
     }
 
     #[test]
+    fn maintenance_gui_identity_is_bound_to_the_actual_frontend_not_the_cli() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("hgs-tray");
+        std::fs::write(&path, b"private fixture image").unwrap();
+        let (mut envelope, caller, mut frontend, mut reply) = fixture();
+        frontend.executable = path.to_str().unwrap().into();
+        let update = zerus_client_core::maintenance::UpdateConfiguration {
+            gui: zerus_client_core::maintenance::GuiIdentity {
+                bundle_id: reply.hello.application.clone(),
+                executable: frontend.executable.clone(),
+                app_version: reply.hello.build.version.clone(),
+                dev_number: 0,
+                source_commit: reply.hello.build.source_commit.clone(),
+            },
+            channel: zerus_client_core::updates::Channel::Stable,
+            automatic: true,
+        };
+        envelope.request = Request::MaintenanceConfigure {
+            request_id: id(2),
+            update: Some(Box::new(update)),
+            recovery: None,
+        };
+        reply.request.fingerprint = envelope.request.fingerprint();
+        assert!(validate(&envelope, &caller, &frontend, &reply, &"a".repeat(64)).is_ok());
+        for field in 0..3 {
+            let mut wrong = envelope.clone();
+            let Request::MaintenanceConfigure {
+                update: Some(update),
+                ..
+            } = &mut wrong.request
+            else {
+                unreachable!()
+            };
+            match field {
+                0 => update.gui.app_version = "another build".into(),
+                1 => update.gui.source_commit = "b".repeat(40),
+                _ => {
+                    update.gui.executable = temp
+                        .path()
+                        .join("not-the-frontend")
+                        .to_str()
+                        .unwrap()
+                        .into()
+                }
+            }
+            reply.request.fingerprint = wrong.request.fingerprint();
+            assert!(validate(&wrong, &caller, &frontend, &reply, &"a".repeat(64)).is_err());
+        }
+    }
+
+    #[test]
     fn a_child_without_markers_cannot_hide_a_marked_parent() {
         let end = Instant::now() + WAIT;
         let error = ancestry(8, end, |pid| match pid {
@@ -621,16 +706,49 @@ mod tests {
         let now = Instant::now();
         let a = (7, "100".into(), id(1));
         let b = (7, "200".into(), id(2));
-        order.observe(a.clone(), 2, now).unwrap();
-        assert!(order.observe(a.clone(), 1, now).is_err());
-        assert!(order.observe(a.clone(), 2, now).is_err());
-        order.observe(a.clone(), 3, now).unwrap();
-        order.observe(b.clone(), 1, now).unwrap();
-        assert!(order.observe(a.clone(), 4, now).is_err());
-        order.observe(b, 2, now).unwrap();
+        order
+            .observe(a.clone(), "automatic_approvals", 2, now)
+            .unwrap();
+        assert!(order
+            .observe(a.clone(), "automatic_approvals", 1, now)
+            .is_err());
+        assert!(order
+            .observe(a.clone(), "automatic_approvals", 2, now)
+            .is_err());
+        order
+            .observe(a.clone(), "automatic_approvals", 3, now)
+            .unwrap();
+        order
+            .observe(b.clone(), "automatic_approvals", 1, now)
+            .unwrap();
+        assert!(order
+            .observe(a.clone(), "automatic_approvals", 4, now)
+            .is_err());
+        order.observe(b, "automatic_approvals", 2, now).unwrap();
         // An already authenticated request cannot survive WAIT, so the old
         // instance entry may expire without retaining unbounded history.
-        order.observe(a, 5, now + WAIT).unwrap();
+        order
+            .observe(a, "automatic_approvals", 5, now + WAIT)
+            .unwrap();
+    }
+
+    #[test]
+    fn maintenance_does_not_obsolete_an_unrelated_approval_intent() {
+        let mut order = Order::default();
+        let now = Instant::now();
+        let instance = (7, "100".into(), id(1));
+        order
+            .observe(instance.clone(), "maintenance_configure", 2, now)
+            .unwrap();
+        order
+            .observe(instance.clone(), "automatic_approvals", 1, now)
+            .unwrap();
+        order
+            .observe(instance.clone(), "automatic_approvals", 3, now)
+            .unwrap();
+        assert!(order
+            .observe(instance, "automatic_approvals", 1, now)
+            .is_err());
     }
 
     #[test]

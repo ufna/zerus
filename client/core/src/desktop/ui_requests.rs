@@ -18,15 +18,59 @@ pub const HELP_MARKER: &str = "Desktop frontend request ABI: desktop-ui-request-
 pub const LIMIT: usize = 8;
 pub const LIFETIME: Duration = Duration::from_secs(10);
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
-    AutomaticApprovals { request_id: String, enabled: bool },
+    AutomaticApprovals {
+        request_id: String,
+        enabled: bool,
+    },
+    MaintenanceConfigure {
+        request_id: String,
+        #[serde(deserialize_with = "required_option")]
+        update: Option<Box<crate::maintenance::UpdateConfiguration>>,
+        #[serde(deserialize_with = "required_option")]
+        recovery: Option<Box<crate::maintenance::RecoveryConfiguration>>,
+    },
+}
+fn required_option<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    d: D,
+) -> Result<Option<T>, D::Error> {
+    Option::deserialize(d)
 }
 impl Request {
+    pub fn maintenance_configure(
+        request_id: String,
+        configuration: crate::maintenance::Configuration,
+    ) -> Self {
+        Self::MaintenanceConfigure {
+            request_id,
+            update: configuration.update.map(Box::new),
+            recovery: configuration.recovery.map(Box::new),
+        }
+    }
     pub fn id(&self) -> &str {
         match self {
-            Self::AutomaticApprovals { request_id, .. } => request_id,
+            Self::AutomaticApprovals { request_id, .. }
+            | Self::MaintenanceConfigure { request_id, .. } => request_id,
+        }
+    }
+    pub fn operation(&self) -> &'static str {
+        match self {
+            Self::AutomaticApprovals { .. } => "automatic_approvals",
+            Self::MaintenanceConfigure { .. } => "maintenance_configure",
+        }
+    }
+    fn valid(&self) -> bool {
+        match self {
+            Self::AutomaticApprovals { .. } => true,
+            Self::MaintenanceConfigure {
+                update, recovery, ..
+            } => crate::maintenance::Configuration {
+                update: update.as_deref().cloned(),
+                recovery: recovery.as_deref().cloned(),
+            }
+            .valid(),
         }
     }
     pub fn fingerprint(&self) -> String {
@@ -46,7 +90,10 @@ pub struct Envelope {
 }
 impl Envelope {
     pub fn valid(&self) -> bool {
-        self.abi == ABI && canonical_uuid(&self.attempt) && canonical_uuid(self.request.id())
+        self.abi == ABI
+            && canonical_uuid(&self.attempt)
+            && canonical_uuid(self.request.id())
+            && self.request.valid()
     }
 }
 
@@ -317,6 +364,37 @@ mod tests {
         let mut bad = serde_json::to_value(&value.request).unwrap();
         bad["confirmed"] = true.into();
         assert!(serde_json::from_value::<Request>(bad).is_err());
+    }
+
+    #[test]
+    fn maintenance_configure_requires_both_subsystems_and_uses_the_same_fingerprint() {
+        let value = serde_json::json!({"op":"maintenance_configure","request_id":id(4),
+            "update":null,"recovery":null});
+        let request: Request = serde_json::from_value(value.clone()).unwrap();
+        let envelope = Envelope {
+            abi: ABI.into(),
+            attempt: id(5),
+            request,
+        };
+        assert!(envelope.valid());
+        assert_eq!(serde_json::to_value(&envelope.request).unwrap(), value);
+        assert_eq!(envelope.request.operation(), "maintenance_configure");
+        for field in ["update", "recovery"] {
+            let mut missing = value.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<Request>(missing).is_err());
+        }
+        let mut claimed = value;
+        claimed["confirmed"] = true.into();
+        assert!(serde_json::from_value::<Request>(claimed).is_err());
+        assert_ne!(
+            envelope.request.fingerprint(),
+            Request::AutomaticApprovals {
+                request_id: id(4),
+                enabled: false
+            }
+            .fingerprint()
+        );
     }
 
     #[test]
