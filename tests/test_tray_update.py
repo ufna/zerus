@@ -314,7 +314,11 @@ class TrayUpdate(unittest.TestCase):
             helper.parent.mkdir(parents=True, exist_ok=True)
             self.script(helper, f'#!{sys.executable}\nimport json, os, pathlib, sys\n'
                         'with (pathlib.Path(os.environ["TRAY_FIXTURE"]) / "desktop-service.calls").open("a") as log:\n'
-                        '    log.write(json.dumps(sys.argv[1:]) + "\\n")\n')
+                        '    log.write(json.dumps(sys.argv[1:]) + "\\n")\n'
+                        'if "--check" not in sys.argv:\n'
+                        '    status = int(os.environ.get("TRAY_DESKTOP_SERVICE_STATUS", "0"))\n'
+                        '    if status: print("Desktop service refresh pending" if status == 3 else "Desktop service registration refused", file=sys.stderr)\n'
+                        '    sys.exit(status)\n')
             self.script(self.bin / 'uname', '#!/bin/sh\necho Linux\n')
             for tool in ('gtk-update-icon-cache', 'kbuildsycoca6'):
                 self.script(self.bin / tool, '#!/bin/sh\nexit 0\n')
@@ -384,6 +388,35 @@ class TrayUpdate(unittest.TestCase):
         self.assertEqual(calls[0][-1], '--check')
         self.assertNotIn('--check', calls[-1])
         self.assertEqual(calls[-1], ['--hgs', str(self.home / '.local/bin/hgs')])
+
+    def test_headless_pending_backend_refresh_continues_the_live_gui_update(self):
+        install = self.client_installer(self.build('client-1'))
+        self.launch('first')
+        self.draft('kept', 'unsent Qt text')
+        env = dict(self.env, TRAY_DESKTOP_SERVICE_STATUS='3')
+        env.pop('XDG_SESSION_TYPE', None)
+        result = subprocess.run(['bash', str(install)], env=env, capture_output=True, text=True, timeout=90)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('Desktop backend refresh pending', result.stdout)
+        self.assertIn('Continuing the GUI update', result.stdout)
+        self.assertEqual([variant for variant, _ in self.running()], ['client-1'])
+        self.assertIn("'client-1'", self.installed.read_text())
+        self.assertEqual(json.loads((self.drafts / 'kept/draft.json').read_text())['text'], 'unsent Qt text')
+        calls = [json.loads(line) for line in (self.root / 'desktop-service.calls').read_text().splitlines()]
+        self.assertEqual(calls, [['--hgs', str(self.home / '.local/bin/hgs'), '--check'],
+                                 ['--hgs', str(self.home / '.local/bin/hgs')]])
+
+    def test_backend_registration_error_still_blocks_the_live_gui_update(self):
+        install = self.client_installer(self.build('client-1'))
+        self.launch('first')
+        env = dict(self.env, TRAY_DESKTOP_SERVICE_STATUS='1')
+        env.pop('XDG_SESSION_TYPE', None)
+        result = subprocess.run(['bash', str(install)], env=env, capture_output=True, text=True, timeout=90)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual([variant for variant, _ in self.running()], ['first'])
+        self.assertIn("'first'", self.installed.read_text())
+        self.assertIn('Desktop service registration refused', result.stderr)
+        self.assertNotIn('Continuing the GUI update', result.stdout)
 
     def test_client_install_without_gstreamer_keeps_media_only(self):
         install = self.client_installer(self.build('client-1'), gstreamer=False)

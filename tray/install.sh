@@ -408,7 +408,13 @@ else
         fi
         # The helper imports this login's environment before service creation.
         # Unchanged backend code stays alive across a UI-only update.
-        python3 "${SERVICE_HELPER}" --hgs "${HGS_BIN}"
+        DESKTOP_STATUS=0
+        python3 "${SERVICE_HELPER}" --hgs "${HGS_BIN}" || DESKTOP_STATUS=$?
+        case "${DESKTOP_STATUS}" in
+            0) ;;
+            3) echo "Desktop backend refresh pending. Continuing the GUI update; refresh the backend from the current graphical session." ;;
+            *) exit "${DESKTOP_STATUS}" ;;
+        esac
     fi
     echo "[4/4] Reloading and enabling hgs-tray.service..."
     systemctl --user daemon-reload

@@ -77,6 +77,10 @@ retains `pending_restart` and returns status 3. `install.sh` reports that notice
 after completing its connector and worker updates and exits successfully; it
 does not restart the desktop backend with stale graphical data. Other refresh
 errors still fail the installer after those independent steps have completed.
+The Next source GUI installer handles status 3 the same way and continues its
+independent, draft-preserving GUI update. The backend still needs a refresh from
+the current graphical session; other registration errors keep the GUI update
+blocked.
 
 Readiness must match the selected CLI's lifecycle ABI and configuration, with
 `lifecycle.ipc_ready=true` and the systemd main PID. This establishes IPC
