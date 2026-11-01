@@ -148,7 +148,8 @@ def main():
                             "--manifest-path", str(ROOT / "services/mobile/connector/Cargo.toml")],
                            cwd=ROOT, check=True)
             subprocess.run([sys.executable, str(ROOT / "scripts/collect-licenses.py"), str(licenses / "rust/desktop"),
-                            "--manifest-path", str(ROOT / "client/src-tauri/Cargo.toml"), "--features", "video"],
+                            "--manifest-path", str(ROOT / "client/src-tauri/Cargo.toml"),
+                            "--manifest-features", f"{ROOT / 'client/src-tauri/Cargo.toml'}=video"],
                            cwd=ROOT, check=True)
         require((licenses / "rust/desktop/inventory.json").is_file(), "Collect Tauri dependency license texts first.")
         if args.frontend_licenses:

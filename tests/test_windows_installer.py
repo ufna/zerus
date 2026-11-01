@@ -241,6 +241,25 @@ class Script(unittest.TestCase):
         # Upgrades and the uninstaller find earlier installs by this identity.
         self.assertEqual(self.setup["AppId"], "{{6F1B0C52-7E3A-4D8B-9C41-2A5E8F0D3B17}")
 
+    def test_tauri_checks_evergreen_before_changes_and_login_is_an_explicit_unchecked_task(self):
+        prepare = self.procedure("PrepareToInstall")
+        self.assertLess(prepare.index("if not WebView2Installed()"), prepare.index("LinkedPath"))
+        self.assertIn("HKCU", self.procedure("WebView2Installed"))
+        self.assertIn("HKLM32", self.procedure("WebView2Installed"))
+        self.assertIn("F3017226-FE2A-4295-8BDF-00C3A9A7E4C5", self.procedure("WebView2Installed"))
+        self.assertIn('Name: "login"; Description: "Start Zerus at login"; Flags: unchecked', self.text)
+        self.assertIn('Parameters: "--install-login-item"; Tasks: login;', self.text)
+        uninstall = self.text.split("[UninstallRun]", 1)[1].split("\n[", 1)[0]
+        self.assertIn('Parameters: "--remove-login-item"', uninstall)
+        self.assertNotIn("RegWrite", self.text)
+        self.assertNotIn("RegDelete", self.text)
+        self.assertNotIn("/silent /install", self.text)
+        hook = self.procedure("DesktopServiceRegistration")
+        self.assertIn("hook pending the maintained G1", hook)
+        self.assertNotIn("Exec(", hook)
+        self.assertIn("DesktopServiceRegistration(True)", self.procedure("CurStepChanged"))
+        self.assertIn("DesktopServiceRegistration(False)", self.procedure("CurUninstallStepChanged"))
+
     def test_it_touches_nothing_outside_its_folder_and_the_start_menu(self):
         sections = set(re.findall(r"(?m)^\[(\w+)\]$", self.text))
         self.assertEqual(sections, {"Setup", "Files", "Icons", "Run", "Tasks", "UninstallRun", "UninstallDelete", "Code"})

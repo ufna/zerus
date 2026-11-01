@@ -28,12 +28,18 @@ Use
 - Local sessions remain opt-in: use Machines or hgs.exe session-host install.
   The staged CLI and host images live outside this app folder, so replacing
   or uninstalling this folder does not remove native agents or their sessions.
+- Desktop service setup remains separate from optional GUI login start.
+  hgs.exe desktop registration --json previews the maintained logon definition
+  and readiness contract. The installer has a marked hook for the Windows G1
+  setup/removal command; it creates no ad-hoc scheduled task while that command
+  is pending.
 - The bundled Rust outbound connector keeps its existing configuration and
   durable request receipts. Closing Zerus does not stop native sessions.
 
 Updates
-A per-user installer and the portable zip are distributed at
-https://github.com/ufna/zerus/releases. The installer preserves configuration,
+The portable zip is distributed at https://github.com/ufna/zerus/releases.
+The per-user installer is currently built and tested in CI; publishing that
+installer is a separate release task. The installer preserves configuration,
 state, drafts and staged native hosts, and removes obsolete app files only
 inside its verified owned installation folder. For a portable update, quit
 hgs-tray from its tray menu before replacing the app folder. Keep your data.

@@ -118,6 +118,9 @@ jobs:
           "$RUNNER_TEMP/speech-http-venv/bin/python" -m unittest discover -s services/speech/tests -v
       - name: Release publication contract checks
         run: python3 -m unittest discover -s tests -p 'test_*publication.py'
+      - name: Windows installer and runtime prerequisite contracts
+        working-directory: tests
+        run: python3 -m unittest test_windows_installer test_frontend_licenses test_webview2_ci
       - name: Linux package staging contracts
         run: python3 -m unittest discover -s tests -p test_linux_packaging.py
       - name: Workflow trust boundary checks
@@ -1515,6 +1518,11 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ steps.rust-cache.outputs.cache-primary-key }}
+      # The app installer checks but never silently installs a shared runtime.
+      # Only this disposable CI runner may use the verified bootstrapper.
+      - name: WebView2 Evergreen prerequisite for Windows package tests
+        timeout-minutes: 6
+        run: python scripts/ci/ensure-webview2.py </dev/null
       - name: Portable zip from the tested executables
         run: |
           python scripts/package-windows.py --cli target/release/hgs.exe --gui target/windows-next/release/hgs-tray.exe \
