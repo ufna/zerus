@@ -78,6 +78,30 @@ use that exact path. The desktop installs to `~/.local/bin/hgs-tray` on Linux or
 `~/Applications/hgs-tray.app` on macOS. The installer configures autostart through
 systemd or launchd.
 
+For a local Linux Zerus Next source build, an explicit private WebKitGTK/GTK3
+stack can be selected at installation:
+
+```sh
+HGS_LINUX_GUI=client HGS_LINUX_WEBKIT_PREFIX=/absolute/private/prefix ./tray/install.sh
+```
+
+The prefix must contain `lib/libwebkit2gtk-4.1.so.0`, its JavaScriptCore library,
+GTK3 under `gtk/lib`, and the WebKit processes under `libexec/webkit2gtk-4.1`.
+The installer saves the selection in `~/.local/share/hgs/local-webkit.json`
+(`$HGS_INSTALL_PREFIX/share/hgs/local-webkit.json` for an isolated install).
+Later preview installs retain it without the variable. The local service and
+desktop entry use `~/.local/libexec/hgs-tray-launch`; it selects these libraries
+and processes only for Zerus Next, leaving the real `hgs-tray` binary available
+to the maintained updater and its rollback checks. If the stack disappears or
+is incomplete, the next launch uses system libraries. Qt rollback also uses
+system libraries. Published packages continue using stock WebKitGTK.
+
+Run `HGS_LINUX_WEBKIT_PREFIX= ./tray/install.sh` to clear the selection. Changing
+the setting takes effect at the next GUI start; if the binary is unchanged, the
+installer leaves the current GUI running. A changed build still uses the normal
+draft-preserving update. The opt-in does not modify global library paths or
+the environment of existing native agents.
+
 `HGS_MOBILE_CONNECTOR=1 ./install.sh` also builds the Rust mobile connector
 (`services/mobile/connector`) into `~/.local/bin/zerus-mobile-connector`. Later
 runs update that copy when it changed; `HGS_MOBILE_CONNECTOR=0` always skips it.
