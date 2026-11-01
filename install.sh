@@ -22,7 +22,8 @@ else
     exit 1
 fi
 
-export PATH="$(dirname "$cargo_bin"):$PATH"
+PATH="$(dirname "$cargo_bin"):$PATH"
+export PATH
 "$cargo_bin" build --manifest-path "$here/Cargo.toml" --locked --release
 build_dir="${CARGO_TARGET_DIR:-$here/target}"
 mkdir -p "$prefix/bin"
