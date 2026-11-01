@@ -170,11 +170,30 @@ fn forward(name: &str, activation: Activation) -> bool {
 
 fn listen(pipe: OwnedHandle, stop: Arc<AtomicBool>, sender: mpsc::SyncSender<Activation>) {
     while !stop.load(Ordering::Acquire) {
-        let connected =
-            unsafe { ConnectNamedPipe(pipe.as_raw_handle(), std::ptr::null_mut()) } != 0;
-        if !connected && unsafe { GetLastError() } != ERROR_PIPE_CONNECTED {
-            std::thread::sleep(Duration::from_millis(250));
-            continue;
+        let state = if unsafe { ConnectNamedPipe(pipe.as_raw_handle(), std::ptr::null_mut()) } != 0
+        {
+            // PIPE_NOWAIT success makes a disconnected instance available;
+            // it does not mean a client has connected yet.
+            ERROR_PIPE_LISTENING
+        } else {
+            unsafe { GetLastError() }
+        };
+        match state {
+            // A short-lived launcher can write and close before this thread
+            // accepts it. Drain those bytes before DisconnectNamedPipe discards
+            // them, and reset the instance for the following launcher.
+            ERROR_PIPE_CONNECTED | ERROR_NO_DATA => {}
+            ERROR_PIPE_LISTENING => {
+                std::thread::sleep(Duration::from_millis(250));
+                continue;
+            }
+            error => {
+                eprintln!(
+                    "zerus-client: activation pipe: {}",
+                    io::Error::from_raw_os_error(error as i32)
+                );
+                return;
+            }
         }
         let end = Instant::now() + Duration::from_millis(200);
         let mut bytes = Vec::with_capacity(32);
@@ -207,6 +226,23 @@ fn listen(pipe: OwnedHandle, stop: Arc<AtomicBool>, sender: mpsc::SyncSender<Act
             DisconnectNamedPipe(pipe.as_raw_handle());
         }
     }
+}
+
+fn create_pipe(name: &str, security: &Security) -> io::Result<OwnedHandle> {
+    let attrs = security.attributes();
+    let pipe_name = wide(&format!(r"\\.\pipe\{name}"));
+    owned(unsafe {
+        CreateNamedPipeW(
+            pipe_name.as_ptr(),
+            PIPE_ACCESS_INBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            1,
+            0,
+            64,
+            200,
+            &attrs,
+        )
+    })
 }
 
 pub fn claim(
@@ -259,20 +295,7 @@ fn claim_at(name: &str, directory: &Path, activation: Activation) -> Claim {
         Ok(s) => s,
         Err(e) => return Claim::Failed(e.to_string()),
     };
-    let attrs = security.attributes();
-    let pipe_name = wide(&format!(r"\\.\pipe\{name}"));
-    let pipe = owned(unsafe {
-        CreateNamedPipeW(
-            pipe_name.as_ptr(),
-            PIPE_ACCESS_INBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE,
-            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT | PIPE_REJECT_REMOTE_CLIENTS,
-            1,
-            0,
-            64,
-            200,
-            &attrs,
-        )
-    });
+    let pipe = create_pipe(name, &security);
     let (tx, rx) = mpsc::sync_channel(32);
     let stop = Arc::new(AtomicBool::new(false));
     let thread = match pipe {
@@ -298,6 +321,26 @@ fn claim_at(name: &str, directory: &Path, activation: Activation) -> Claim {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn closed_client_is_drained_before_accept_and_the_next_client_can_connect() {
+        let name = format!("zerus-early-close-{}", uuid::Uuid::new_v4());
+        let pipe = create_pipe(&name, &Security::user_only().unwrap()).unwrap();
+        // No listener exists yet: forward must have written AND closed its
+        // handle before the first ConnectNamedPipe call can possibly happen.
+        assert!(forward(&name, Activation::Show));
+        let (sender, receiver) = mpsc::sync_channel(32);
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
+        let thread = std::thread::spawn(move || listen(pipe, stopped, sender));
+        let first = receiver.recv_timeout(Duration::from_secs(2));
+        let forwarded = forward(&name, Activation::Sessions);
+        let second = receiver.recv_timeout(Duration::from_secs(2));
+        stop.store(true, Ordering::Release);
+        thread.join().unwrap();
+        assert_eq!(first, Ok(Activation::Show));
+        assert!(forwarded);
+        assert_eq!(second, Ok(Activation::Sessions));
+    }
     #[test]
     fn profile_key_keeps_qt_unicode_casefold_compatibility() {
         assert_eq!(
