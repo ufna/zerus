@@ -56,13 +56,16 @@ def main():
     def wheel(point):
         xt.XTestFakeMotionEvent(display, -1, point["x"], point["y"], 0)
         x.XFlush(display)
-        for index in range(160):
+        for index in range(64 if point.get("staticWheel") else 160):
             if stopped.is_set():
                 return
             xt.XTestFakeButtonEvent(display, 5, 1, 0)
             xt.XTestFakeButtonEvent(display, 5, 0, 0)
             x.XFlush(display)
-            stopped.wait(.04 + index % 3 * .005 if index % 7 else .27 + index % 9 * .008)
+            delay = .9 if point.get("staticWheel") and index % 4 == 3 else .04
+            if not point.get("staticWheel"):
+                delay = .04 + index % 3 * .005 if index % 7 else .27 + index % 9 * .008
+            stopped.wait(delay)
 
     try:
         for line in app.stdout:

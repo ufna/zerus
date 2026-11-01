@@ -1158,6 +1158,10 @@ Use `--only variable-scroll` for the long Markdown/append regression. On Linux,
 add `--native-wheel` to replay the queued-scroll/layout ordering and drive
 trusted wheel input while the provider window rotates. Its XTest driver verifies
 that the display server is the original sibling Xvfb owned by `xvfb-run`.
+Use `--static-wheel --static-shape mixed` with those flags for separate gestures
+and 900 ms pauses without event-window changes. This also checks that remounting
+static rows does not change their scroll range. `--renderer shm|dmabuf` selects
+the Linux renderer configuration; Xvfb does not qualify hardware DMA-BUF.
 
 The runner supplies the release binary, replay and fake, isolates `HOME`,
 `XDG_DATA_HOME` and `XDG_CACHE_HOME`, and forces the safe headless environment:
