@@ -476,7 +476,9 @@ pub fn deliver(app: &AppHandle, cleared: Vec<String>, raised: Vec<Notice>) {
             data.hBalloonIcon = unsafe {
                 LoadIconW(
                     GetModuleHandleW(std::ptr::null()),
-                    std::ptr::dangling::<u16>(),
+                    std::ptr::without_provenance::<u16>(
+                        tauri::utils::platform::WINDOWS_APP_ICON_RESOURCE_ID as usize,
+                    ),
                 )
             };
             if data.hBalloonIcon.is_null() {

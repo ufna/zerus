@@ -133,7 +133,9 @@ mod tests {
         use windows_sys::Win32::{System::LibraryLoader::*, UI::WindowsAndMessaging::RT_MANIFEST};
         unsafe {
             let module = GetModuleHandleW(std::ptr::null());
-            let resource = FindResourceW(module, std::ptr::dangling::<u16>(), RT_MANIFEST);
+            // MAKEINTRESOURCEW(1) encodes an integer, not an aligned string pointer.
+            let resource =
+                FindResourceW(module, std::ptr::without_provenance::<u16>(1), RT_MANIFEST);
             assert!(
                 !resource.is_null(),
                 "unit-test image must carry its own manifest"
