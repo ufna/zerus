@@ -139,6 +139,8 @@ if [ "${GUI}" = "client" ]; then
         --output "${LOCAL_STAGE}/hgs-tray.app" --installed "${APP_DEST}"
     # The parent remains private; the installed bundle has its normal app mode.
     chmod 755 "${LOCAL_STAGE}/hgs-tray.app"
+    python3 "${SCRIPT_DIR}/prepare-local-macos.py" --check-cli \
+        --hgs "${LOCAL_CLI_BUILD}" --runner-hgs "${HGS_BIN}"
     if [ "$(bundle_cdhash "${LOCAL_STAGE}/hgs-tray.app/Contents/MacOS/hgs")" != \
          "$(bundle_cdhash "${APP_DEST}/Contents/MacOS/hgs")" ]; then
         DESKTOP_ARGS+=(--restart)

@@ -32,7 +32,7 @@ pub enum Refusal {
 }
 
 /// Expectations selected together from this process's own verified bundle.
-/// There is no path/requirement extraction, Clone, serde or caller input.
+/// There is no requirement extraction, Clone, serde or caller input.
 pub struct Selection {
     original: Snapshot,
 }
@@ -60,6 +60,11 @@ pub fn select_own() -> Result<Selection, Refusal> {
     snapshot().map(|original| Selection { original })
 }
 impl Selection {
+    /// CLI routing only, after actual running-self and sealed-pair verification.
+    /// A caller must not treat this path as a lease or native effect permission.
+    pub fn service_executable(&self) -> &Path {
+        &self.original.service.executable
+    }
     pub fn observe_service<'a>(
         &'a self,
         connection: &'a UnixStream,

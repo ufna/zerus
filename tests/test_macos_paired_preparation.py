@@ -103,6 +103,24 @@ class PairedControls(unittest.TestCase):
             sign.sign(self.app, self.installed)
         self.run.assert_not_called()
 
+    def test_cli_drift_during_signing_refuses_and_removes_only_the_private_copy(self):
+        runner = self.root / "stable-hgs"
+        original = self.hgs.read_bytes()
+        real_sign = sign.sign
+        for change_both in (False, True):
+            self.hgs.write_bytes(original)
+            runner.write_bytes(original); runner.chmod(0o755)
+            def drift(*args, **kwargs):
+                record = real_sign(*args, **kwargs)
+                self.hgs.write_bytes(MAGIC + b"changed during signing")
+                if change_both: runner.write_bytes(self.hgs.read_bytes())
+                return record
+            with self.subTest(change_both=change_both), mock.patch.object(sign, "sign", side_effect=drift):
+                with self.assertRaises(ValueError):
+                    prepare.prepare(self.app, self.hgs, self.output, self.installed, runner=runner)
+                self.assertFalse(self.output.exists())
+                self.assertFalse(self.installed.exists())
+
     def test_installed_runner_must_match_and_stay_an_independent_ordinary_file(self):
         runner = self.root / "stable-hgs"
         runner.write_bytes(self.hgs.read_bytes()); runner.chmod(0o755)
@@ -120,6 +138,18 @@ class PairedControls(unittest.TestCase):
                     prepare.prepare(self.app, self.hgs, self.output, self.installed, runner=target)
                 self.assertFalse(self.output.exists())
                 self.run.assert_not_called()
+
+    def test_cargo_artifact_hardlink_is_copied_not_signed_in_place(self):
+        cargo_artifact = self.root / "deps-hgs"; os.link(self.hgs, cargo_artifact)
+        runner = self.root / "stable-hgs"
+        runner.write_bytes(self.hgs.read_bytes()); runner.chmod(0o755)
+        before = self.hgs.read_bytes()
+        prepare.prepare(self.app, self.hgs, self.output, self.installed, runner=runner)
+        self.assertEqual(self.hgs.stat().st_nlink, 2)
+        self.assertEqual(self.hgs.read_bytes(), before)
+        self.assertEqual(cargo_artifact.read_bytes(), before)
+        self.assertEqual(runner.read_bytes(), before)
+        self.assertEqual((self.output / "Contents/MacOS/hgs").stat().st_nlink, 1)
 
     def test_missing_text_link_and_hardlinked_paired_code_refuse_before_tools(self):
         cli = self.app / "Contents/MacOS/hgs"

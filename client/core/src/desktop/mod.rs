@@ -16,6 +16,7 @@ pub mod drain;
 pub mod notifications;
 pub mod producer;
 pub mod profile;
+pub mod relay;
 pub mod service;
 pub mod startup;
 pub mod ui_requests;

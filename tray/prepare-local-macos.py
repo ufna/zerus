@@ -25,7 +25,11 @@ def check_cli(hgs, runner):
     """The signed private copy and the independent agent CLI start as one build."""
     for path in (hgs, runner):
         node = path.lstat()
-        if not stat.S_ISREG(node.st_mode) or node.st_nlink != 1 or not os.access(path, os.X_OK):
+        # Cargo may hard-link target/release/hgs to its hashed deps artifact.
+        # That read-only input is copied, never signed; the installed runner
+        # and both staged code files must still be independent single-link files.
+        if (not stat.S_ISREG(node.st_mode) or (path == runner and node.st_nlink != 1)
+                or not os.access(path, os.X_OK)):
             raise ValueError("The build and stable CLIs must be independent regular executable files.")
         if signer.regular_bytes(path, 4) not in signer.MACH_O:
             raise ValueError("The build and stable CLIs must be Mach-O executables.")
@@ -73,7 +77,12 @@ def prepare(app, hgs, output, installed, requested="", runner=None):
         shutil.copytree(app, output, symlinks=True, dirs_exist_ok=True)
         output.chmod(0o700)
         shutil.copy2(hgs, output / "Contents/MacOS/hgs", follow_symlinks=False)
-        return signer.sign(output, installed, requested, paired=True)
+        record = signer.sign(output, installed, requested, paired=True)
+        if runner is not None:
+            check_cli(hgs, runner)
+            if signer.sha256(hgs) != record["build_sha256"]:
+                raise ValueError("The CLI build changed during signing; no application was installed.")
+        return record
     except BaseException:
         # A replaced output is uncertain. Preserve it rather than deleting a
         # path we no longer own. rmtree itself never follows a root symlink.

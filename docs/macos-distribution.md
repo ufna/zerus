@@ -420,8 +420,13 @@ After the app swap, the owned desktop LaunchAgent selects the signed bundled
 CLI as its executable and sets `HGS_EXECUTABLE` to the independent stable CLI
 for ordinary descendants. A changed backend reloads only this desktop service;
 an unchanged backend stays running. The GUI keeps its explicit `--hgs` stable
-CLI selection. Authenticated frontend relays must use the bundled service image;
-the stable runner is not native authority. Native host entry/cutover is a separate
+CLI selection. The desktop-service client selects the bundled CLI only through
+fresh native running-self and sealed-pair verification; a purported pair that
+fails stays unavailable. Unpaired/source launches keep ordinary CLI discovery.
+The shared `desktop::relay::select` API also supplies the bundled service image
+for the authenticated frontend-request sender; that still-unavailable sender is
+a separate UI integration. The stable runner is not native authority.
+Native host entry/cutover is a separate
 change: pairing alone enables neither notifications nor a new permission.
 `update-installed.py` still saves drafts, checks native processes and keeps one
 rollback app; an old Qt copy continues to use the stable CLI.

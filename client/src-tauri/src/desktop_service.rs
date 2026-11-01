@@ -504,7 +504,12 @@ async fn command(
         .admit(Role::Fleet)
         .map_err(|_| "service_transport_busy")?;
     let hgs = shared.hgs.clone();
+    let state = shared.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let hgs = zerus_client_core::desktop::relay::select(&hgs)?;
+        if state.stopped.load(Ordering::Acquire) || stop.load(Ordering::Acquire) {
+            return Err("stopped");
+        }
         let inv = zerus_client_core::Invocation {
             args,
             stdin: stdin.map(String::into_bytes),
@@ -630,7 +635,18 @@ async fn connection(
     if shared.stopped.load(Ordering::Acquire) || stop.load(Ordering::Acquire) {
         return Err("stopped");
     }
-    let mut command = tokio::process::Command::new(&shared.hgs);
+    // Retain/join the synchronous native verifier off the UI/runtime actor,
+    // including when a stop arrives. No child starts after that stop.
+    let ordinary = shared.hgs.clone();
+    let hgs = tauri::async_runtime::spawn_blocking(move || {
+        zerus_client_core::desktop::relay::select(&ordinary)
+    })
+    .await
+    .map_err(|_| "paired_desktop_cli_unavailable")??;
+    if shared.stopped.load(Ordering::Acquire) || stop.load(Ordering::Acquire) {
+        return Err("stopped");
+    }
+    let mut command = tokio::process::Command::new(hgs);
     command
         .args(["desktop", "watch", "--json"])
         .stdin(Stdio::piped())
