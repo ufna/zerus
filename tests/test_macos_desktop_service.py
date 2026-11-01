@@ -290,7 +290,7 @@ class MacDesktopService(unittest.TestCase):
         with self.assertRaisesRegex(installer.Refusal, "timed out"):
             installer.run([sys.executable, "-c", "import time; time.sleep(10)"], env=env, timeout=0.05)
 
-    def test_source_install_restarts_desktop_only_for_changed_cli_bytes(self):
+    def source_install_fixture(self):
         source = self.root / "source"; (source / "scripts").mkdir(parents=True)
         (source / "install.sh").write_bytes((ROOT / "install.sh").read_bytes())
         shim = source / "hgs_state.py"; shim.write_text("first shim")
@@ -322,6 +322,10 @@ class MacDesktopService(unittest.TestCase):
                     "XDG_RUNTIME_DIR", "TMPDIR", "TMUX_TMPDIR"):
             directory = self.home / key.lower(); directory.mkdir()
             env[key] = str(directory)
+        return source, shim, calls, workers, agents, env
+
+    def test_source_install_restarts_desktop_only_for_changed_cli_bytes(self):
+        source, shim, calls, workers, agents, env = self.source_install_fixture()
         for revision, content in [("one", "first shim"), ("one", "first shim"),
                                   ("one", "second shim"), ("two", "second shim")]:
             shim.write_text(content)
@@ -333,6 +337,21 @@ class MacDesktopService(unittest.TestCase):
                          [[name, args] for args in (["--restart"], [], ["--restart"], ["--restart"])
                           for name in ("recovery", "swarm", "voice")])
         self.assertTrue(all(path.read_text() == "existing worker definition" for path in agents.iterdir()))
+
+    def test_source_install_finishes_worker_updates_before_desktop_success_or_refusal(self):
+        source, _, _, workers, _, env = self.source_install_fixture()
+        for exit_code in (0, 1):
+            with self.subTest(exit_code=exit_code):
+                workers.unlink(missing_ok=True)
+                (source / "scripts/install-macos-desktop-service.py").write_text(
+                    "import json, sys\nfrom pathlib import Path\nwith Path(" + repr(str(workers))
+                    + ").open('a') as log: log.write(json.dumps(['desktop',sys.argv[2:]])+'\\n')\n"
+                    + f"raise SystemExit({exit_code})\n")
+                result = subprocess.run(["bash", str(source / "install.sh")],
+                    env=dict(env, FIXTURE_REVISION=f"case-{exit_code}"), capture_output=True, text=True, timeout=20)
+                self.assertEqual(result.returncode, exit_code, result.stdout + result.stderr)
+                self.assertEqual([json.loads(line) for line in workers.read_text().splitlines()],
+                                 [[name, ["--restart"]] for name in ("recovery", "swarm", "voice", "desktop")])
 
 
 if __name__ == "__main__":

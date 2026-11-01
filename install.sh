@@ -102,11 +102,6 @@ if [ -z "${HGS_INSTALL_PREFIX:-}" ] && [ -z "${HGS_STATE_DIR:-}" ] && [ "$(uname
     if [ "$changed" -eq 1 ]; then session_args+=(--restart); fi
     python3 "$here/scripts/install-macos-session-service.py" "$prefix/bin/hgs" "${session_args[@]}"
 fi
-if [ -z "${HGS_INSTALL_PREFIX:-}" ] && [ -z "${HGS_STATE_DIR:-}" ] && [ -z "${HGS_CONFIG_DIR:-}" ] && [ "$(uname -s)" = Darwin ]; then
-    desktop_args=()
-    if [ "$desktop_changed" -eq 1 ]; then desktop_args+=(--restart); fi
-    python3 "$here/scripts/install-macos-desktop-service.py" "$prefix/bin/hgs" "${desktop_args[@]}"
-fi
 if [ -z "${HGS_INSTALL_PREFIX:-}" ] && [ -z "${HGS_STATE_DIR:-}" ] && [ "${HGS_RECOVERY_SERVICE:-1}" != "0" ]; then
     worker_args=()
     if [ "$changed" -eq 1 ]; then worker_args+=(--restart); fi
@@ -121,4 +116,10 @@ if [ -z "${HGS_INSTALL_PREFIX:-}" ] && [ -z "${HGS_STATE_DIR:-}" ] && [ -z "${HG
     voice_args=()
     if [ "$changed" -eq 1 ]; then voice_args+=(--restart); fi
     python3 "$here/scripts/install-voice-service.py" "$prefix/bin/hgs" "${voice_args[@]}"
+fi
+# Desktop refusals must not interrupt the existing workers' update path.
+if [ -z "${HGS_INSTALL_PREFIX:-}" ] && [ -z "${HGS_STATE_DIR:-}" ] && [ -z "${HGS_CONFIG_DIR:-}" ] && [ "$(uname -s)" = Darwin ]; then
+    desktop_args=()
+    if [ "$desktop_changed" -eq 1 ]; then desktop_args+=(--restart); fi
+    python3 "$here/scripts/install-macos-desktop-service.py" "$prefix/bin/hgs" "${desktop_args[@]}"
 fi
