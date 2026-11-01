@@ -9,7 +9,7 @@ use std::{
 };
 use zerus_desktop_migration::{canonical, configuration, HANDOFF_LOCK};
 
-pub const SCHEMA: i64 = 9;
+pub const SCHEMA: i64 = 10;
 pub struct HandoffLock {
     _lock: platform::FileLock,
     root: PathBuf,
@@ -222,6 +222,7 @@ impl Store {
         }
         let _file = private_file(&path, true)?;
         let mut db = Connection::open_with_flags(&path, flags | OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        super::counts::register(&db)?;
         db.busy_timeout(Duration::from_secs(2))?;
         let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if version == 0 {
@@ -300,6 +301,12 @@ impl Store {
             let tx = db.transaction()?;
             super::producer_prepared::migrate(&tx)?;
             tx.execute_batch("PRAGMA user_version=9;")?;
+            tx.commit()?;
+        }
+        if version < 10 {
+            let tx = db.transaction()?;
+            super::counts::migrate(&tx)?;
+            tx.execute_batch("PRAGMA user_version=10;")?;
             tx.commit()?;
         }
         zerus_desktop_catalog::begin_service(&mut db, epoch)?;

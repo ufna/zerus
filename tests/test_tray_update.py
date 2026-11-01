@@ -303,6 +303,7 @@ class TrayUpdate(unittest.TestCase):
 
     def installer(self, build, plugin=None):
         """A copy of tray/install.sh whose cmake builds `build` and, given bytes, the native UI plugin."""
+        self.env['HGS_LINUX_GUI'] = 'qt'  # Existing Qt cases exercise the explicit fallback.
         tray = self.root / 'tray'
         if not tray.exists():
             for name in ('install.sh', 'update-installed.py', 'linux-launcher.py', 'packaging/hgs-tray.service', 'packaging/hgs-tray.desktop'):
@@ -322,6 +323,7 @@ class TrayUpdate(unittest.TestCase):
 
     def client_installer(self, build, gstreamer=True):
         install = self.installer(build)
+        self.env.pop('HGS_LINUX_GUI', None)
         tauri = self.root / 'client/src-tauri'
         tauri.mkdir(parents=True, exist_ok=True)
         (tauri / 'Cargo.toml').write_text('[features]\nmedia = []\nvideo = []\n')
@@ -339,7 +341,7 @@ class TrayUpdate(unittest.TestCase):
         plugin = prefix / 'lib/hgs-tray/plugins/libhgs-tray-native-ui.so'
         plugin.parent.mkdir(parents=True)
         plugin.write_bytes(b'for the Qt rollback')
-        env = dict(self.env, HGS_LINUX_GUI='client', HGS_INSTALL_PREFIX=str(prefix))
+        env = dict(self.env, HGS_INSTALL_PREFIX=str(prefix))
         result = subprocess.run(['bash', str(install)], env=env, capture_output=True, text=True, timeout=90)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         binary = prefix / 'bin/hgs-tray'
@@ -354,7 +356,6 @@ class TrayUpdate(unittest.TestCase):
         self.assertEqual(plugin.read_bytes(), b'for the Qt rollback')
         self.assertFalse((self.root / 'systemctl').exists(), 'a scratch prefix never reaches systemd')
         self.assertIn('no service-manager action', result.stdout)
-        env.pop('HGS_LINUX_GUI')
         unit_before = unit.read_bytes()
         result = subprocess.run(['bash', str(install)], env=env, capture_output=True, text=True, timeout=90)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -364,6 +365,16 @@ class TrayUpdate(unittest.TestCase):
         self.assertEqual(len(calls), 4, 'npm ci and the Tauri build on each install')
         for call in calls[1::2]:
             self.assertEqual(call[-2:], ['--features', 'video'])
+
+    def test_default_install_upgrades_existing_qt_to_next(self):
+        install = self.client_installer(self.build('client-1'))
+        self.launch('first')
+        env = dict(self.env)
+        self.assertNotIn('HGS_LINUX_GUI', env)
+        result = subprocess.run(['bash', str(install)], env=env, capture_output=True, text=True, timeout=90)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("'client-1'", self.installed.read_text())
+        self.assertTrue((self.root / 'systemctl').exists())
 
     def test_client_install_without_gstreamer_keeps_media_only(self):
         install = self.client_installer(self.build('client-1'), gstreamer=False)

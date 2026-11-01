@@ -481,6 +481,39 @@ async function hideLaunchStatusStep() {
   }
 }
 
+async function unfocusedMotionStep() {
+  const root = document.documentElement;
+  const saved = new Map(["pageHidden", "motionUnfocused", "reduceMotion"].map((key) => [key, root.dataset[key]]));
+  const fixture = document.createElement("div");
+  fixture.style.cssText = "position:fixed;left:600px;top:200px;width:350px;z-index:100";
+  try {
+    delete root.dataset.pageHidden;
+    delete root.dataset.reduceMotion;
+    root.dataset.motionUnfocused = "1";
+    fixture.innerHTML = '<div class="qcard arrived">A question arriving while unfocused</div><div class="toast">An arriving notice</div><span class="typing"><i></i></span>';
+    document.body.append(fixture);
+    const question = fixture.querySelector<HTMLElement>(".qcard")!;
+    const toast = fixture.querySelector<HTMLElement>(".toast")!;
+    const endless = fixture.querySelector<HTMLElement>(".typing i")!;
+    const entrances = [...question.getAnimations(), ...toast.getAnimations()];
+    if (entrances.length < 2) throw new Error("the question/toast entrance fixture has no animations");
+    if (getComputedStyle(endless).animationPlayState !== "paused") throw new Error("endless motion did not pause while unfocused");
+    await until(() => entrances.every((animation) => animation.playState === "finished"), 2500,
+      "a visible question/toast entrance froze while unfocused");
+    if (Number(getComputedStyle(question).opacity) < .99 || Number(getComputedStyle(toast).opacity) < .99) {
+      throw new Error("a completed entrance stayed invisible while unfocused");
+    }
+    root.dataset.pageHidden = "1";
+    const hidden = document.createElement("div"); hidden.className = "qcard arrived"; fixture.append(hidden);
+    if (getComputedStyle(hidden).animationPlayState !== "paused") throw new Error("hidden-document entrances must pause");
+  } finally {
+    fixture.remove();
+    for (const [key, value] of saved) {
+      if (value === undefined) delete root.dataset[key]; else root.dataset[key] = value;
+    }
+  }
+}
+
 export async function phase4Smoke(allowed: boolean, smokeFile?: string) {
   const exit = (code: number) => invoke("exit_app", { code }).catch(() => {});
   if (!allowed) {
@@ -506,6 +539,7 @@ export async function phase4Smoke(allowed: boolean, smokeFile?: string) {
     ["send-follow", sendFollowStep],
     ["subagent", subagentStep],
     ["hide-launch-status", hideLaunchStatusStep],
+    ["unfocused-motion", unfocusedMotionStep],
   ];
   let current = "start";
   try {

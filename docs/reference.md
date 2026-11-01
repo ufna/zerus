@@ -3698,11 +3698,11 @@ never `HGS_TRAY_RESTART=0`.
 
 Linux installs the binary under `~/.local/bin`, a systemd user service under
 `~/.config/systemd/user` and a launcher under `~/.local/share/applications`.
-The launcher is not a second autostart entry. `HGS_LINUX_GUI=client` selects the
-Tauri client, later installs retain the selected GUI, and a fresh installation
-defaults to Qt. `HGS_INSTALL_PREFIX` redirects the binary, launch files and
+The launcher is not a second autostart entry. Fresh installs and upgrades default
+to Zerus Next; `HGS_LINUX_GUI=client` selects it explicitly.
+`HGS_LINUX_GUI=qt` keeps the Qt source-build fallback until Linux acceptance. `HGS_INSTALL_PREFIX` redirects the binary, launch files and
 updater state into a scratch prefix and performs no service-manager action; see
-[Linux source installation and the Tauri client switch](linux-distribution.md).
+[Linux packages and source installation](linux-distribution.md).
 The service belongs to `graphical-session.target`, restarts after crashes and
 does not loop on exit code 4 (system tray unavailable). Compare
 `systemctl --user status hgs-tray.service` and `journalctl --user -u
@@ -4374,6 +4374,26 @@ current broadcast watermark; subsequent ten-second heartbeats advance `seq`.
 Unary answers do not advance the broadcast watermark. A new epoch invalidates
 subscriptions; it never authorizes replay. EOF on a watch's stdin detaches that
 client. Control requests use a separate connection, not the display stream.
+
+Status, watch hello/heartbeat and `catalog_changed` include `attention_counts`.
+Its `shared_host_state` scope uses the existing session projection, shared read
+marks and shared mute settings; `local_marks_included:false` means device-local
+Review later and acknowledgement overlays are still separate. These presentation
+counts confer no posting, read or approval authority. Per-computer entries carry
+source incarnation/generation, online and complete flags. The aggregate reports
+unknown attention as null while any expected computer is incomplete or offline;
+`known_attention` is explicitly partial. The service epoch, projection generation
+and revision bind counts to the same subscriber stream. A restart invalidates
+coverage and catalog cursors, preserving only last-known display rows.
+
+The fleet runtime seam reuses the existing watch-v1 source supervisors: at most
+64 computer workers, four concurrent connection attempts and 16 MiB/1,024 ingress
+items, with permits retained through actor application. There are no per-session
+workers. Reconnect uses the existing 5/15/60/300-second backoff and resets source
+generation; gaps trigger a complete resnapshot. Removed aliases retire their
+exact projection and use the normal bounded collector. Slow UI subscribers never
+hold source ingress. The active service lifecycle starts and drains this runtime;
+the passive kernel and UI feed cannot activate it.
 
 `hgs desktop request --json` reads a JSON object from stdin with `op` and a
 canonical UUID `request_id`. `ping` returns an exact-ID, read-only `pong` with

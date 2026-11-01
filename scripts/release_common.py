@@ -11,8 +11,12 @@ from macos_release import cask_for, macos_assets, require_template_cask, validat
 
 REPOSITORY = "ufna/zerus"
 PACKAGES = ("zerus", "zerus-ade-bin", "zerus-git")
-BINARY_LIBRARIES = ("qt6-base", "qt6-multimedia", "qt6-svg", "kstatusnotifieritem",
-                   "kwindowsystem", "kidletime", "libgcc", "libstdc++", "glibc")
+BINARY_LIBRARIES = ("webkit2gtk-4.1", "gtk3", "gdk-pixbuf2", "glib2", "cairo", "libsoup3",
+                   "alsa-lib", "gstreamer", "gst-plugins-base-libs",
+                   "libappindicator", "dbus", "libgcc", "libstdc++", "glibc")
+# Previously published Qt packages remain immutable and retryable.
+QT_BINARY_LIBRARIES = ("qt6-base", "qt6-multimedia", "qt6-svg", "kstatusnotifieritem",
+                       "kwindowsystem", "kidletime", "libgcc", "libstdc++", "glibc")
 # Candidates sealed before Qt WebEngine became optional (zerus-abnk, 2026-10-13)
 # required it, and their recipes lacked its optional-dependency line. Retrying
 # their publication must keep working unchanged.
@@ -61,7 +65,7 @@ def metadata(text):
 
 def binary_library_names(floors):
     """The ordered build libraries of a sealed candidate's floors: current or legacy."""
-    for names in (BINARY_LIBRARIES, LEGACY_BINARY_LIBRARIES):
+    for names in (BINARY_LIBRARIES, QT_BINARY_LIBRARIES, LEGACY_BINARY_LIBRARIES):
         if set(floors) == set(names):
             return names
     raise ValueError("Missing binary build-library provenance.")

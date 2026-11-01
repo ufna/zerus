@@ -215,13 +215,9 @@ SCRATCH=0
 if [ -n "${HGS_INSTALL_PREFIX:-}" ]; then SCRATCH=1; fi
 LIVE="${RESTART_RUNNING}"
 if [ "${SCRATCH}" = "1" ]; then LIVE=0; fi
-GUI="${HGS_LINUX_GUI:-}"
-if [ -z "${GUI}" ]; then
-    GUI=qt
-    if [ "$(python3 "${SCRIPT_DIR}/update-installed.py" --installed-gui "${BIN_DEST}" 2>/dev/null)" = "tauri" ]; then
-        GUI=client
-    fi
-fi
+# Fresh installs and upgrades use Zerus Next. Qt remains an explicit fallback
+# until Linux acceptance: HGS_LINUX_GUI=qt ./tray/install.sh.
+GUI="${HGS_LINUX_GUI:-client}"
 case "${GUI}" in qt|client) ;; *) echo "HGS_LINUX_GUI must be qt or client" >&2; exit 1 ;; esac
 
 # --- 1. build -----------------------------------------------------------------

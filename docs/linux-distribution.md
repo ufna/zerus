@@ -1,21 +1,21 @@
-# Linux source installation and the Tauri client switch
+# Linux packages and source installation
 
-This runbook covers a source installation on the owner's Arch Linux machine.
-It does not change the AUR packages or their contents. The coordinated switch
-is performed by design-ac with the owner; implementers qualify only scratch
-installations and private headless sessions.
+The four AUR packages ship Zerus Next as `hgs-tray`, built from `client/` with
+voice and round video. Source installs use Next by default too. The coordinator
+and owner perform installed-machine acceptance; local checks use scratch
+installations and private sessions.
 
 ## What the installer preserves
 
 `tray/install.sh` keeps the executable name `hgs-tray`, the application desktop
 entry, and the `hgs-tray.service` user unit. The service starts the selected
-binary without opening a window. The desktop entry runs `hgs-tray --sessions`,
+binary. The desktop entry runs `hgs-tray --sessions`,
 which opens Sessions through the existing single-instance socket. A second
 start forwards `show` or `sessions`; it does not create another GUI.
 
-A fresh Linux installation defaults to Qt. Select the Tauri client explicitly
-with `HGS_LINUX_GUI=client`. Later runs without that variable retain whichever
-GUI is installed. `HGS_LINUX_GUI=qt` selects Qt again.
+Fresh installs and upgrades default to Zerus Next. `HGS_LINUX_GUI=client`
+selects it explicitly. `HGS_LINUX_GUI=qt` retains the Qt source-build fallback
+until Linux acceptance; it does not change what the AUR packages ship.
 
 The client uses Qt's `com.hgdev.hgs-tray` identity and data root. Its first
 start imports Qt and development-client drafts read-only and seeds its settings
@@ -61,7 +61,8 @@ scratch binary without `--sessions`; the desktop entry must include it.
 
 macOS enables the client's `video` feature whenever it exists. Linux enables it
 only when `pkg-config --exists gstreamer-1.0 gstreamer-app-1.0` succeeds;
-otherwise the build keeps `media` and prints that round video is not included.
+otherwise the source installer keeps `media` and prints that round video is not included.
+AUR builds always enable `video` and require the GStreamer build/runtime packages.
 Runtime video also needs the encoders and muxers listed in
 `client/media/README.md`.
 
@@ -77,8 +78,8 @@ bash -n tray/install.sh
 ```
 
 The matrix covers Qt to client, client to newer client, rollback to Qt, both
-draft stores, a missing GStreamer development package, installed-GUI
-persistence, the numbered Dev guard, and the absence of real service calls.
+draft stores, a missing GStreamer development package, the default Next upgrade and explicit Qt
+fallback, the numbered Dev guard, and the absence of real service calls.
 
 ## Switch the owner to Zerus Next
 
@@ -121,7 +122,7 @@ The build must have the selected Dev number and exact clean source commit. The
 draft import marker must be complete, with no `unfinished` result. The settings
 seed must name Qt's INI source and the keys actually carried over.
 
-Design-ac and the owner then check on the real display:
+The coordinator and owner then check on the real display:
 
 - hidden login start, the desktop entry, and a second `--sessions` invocation
   produce one instance and one tray item;

@@ -22,13 +22,14 @@ migration deliberately after saving your sessions. Never kill a live server or
 native agents as part of a Zerus GUI/package update.
 [Official tmux releases](https://github.com/tmux/tmux/releases).
 
-For the desktop: CMake, a C++17 compiler and Qt 6 with Widgets and Multimedia.
-Linux also needs KDE Frameworks 6 KStatusNotifierItem, KWindowSystem and KIdleTime,
-a system tray and user systemd for the standard autostart setup. On Linux, Qt
-WebEngine is optional: when it is installed, the build adds the embedded
-DeepSeek [Native UI](reference.md#deepseek); otherwise Native UI opens in your
-browser. On macOS, the installer uses Qt from Homebrew, and the desktop app
-requires macOS 14 or later.
+For the Linux desktop: Rust, Node.js/npm, GTK3, WebKitGTK 4.1, ALSA and
+GStreamer. The source installer and AUR packages build Zerus Next by default;
+standard autostart uses user systemd. `HGS_LINUX_GUI=qt` keeps the explicit
+Qt fallback until Linux acceptance and needs CMake, a C++17 compiler, Qt 6
+Widgets/Multimedia/SVG and KDE Frameworks KStatusNotifierItem, KWindowSystem
+and KIdleTime. Qt WebEngine is optional for that fallback's embedded DeepSeek
+[Native UI](reference.md#deepseek). On macOS, the Qt source-build path uses
+Homebrew Qt and requires macOS 14 or later.
 
 ## Local installation
 
@@ -64,9 +65,17 @@ fresh consent once; no permissions are reset automatically. Source builds link
 Homebrew Qt and are signed locally without the hardened runtime or notarization;
 use the published app for distribution. See [macOS signing](macos-distribution.md#local-source-builds).
 
-On Arch Linux, desktop dependencies include `cmake`, `qt6-base`, `qt6-tools`, `qt6-multimedia`, `qt6-svg`,
-`kstatusnotifieritem`, `kwindowsystem`, `kidletime` and C++ build tools; add
-`qt6-webengine` for the embedded Native UI.
+On Arch Linux, install the Next build and runtime dependencies before a source
+install (AUR recipes declare them automatically):
+
+```sh
+sudo pacman -S --needed base-devel rust nodejs npm python tmux openssh \
+  webkit2gtk-4.1 gtk3 alsa-lib libappindicator dbus gstreamer gst-plugins-base-libs \
+  gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav
+```
+
+GStreamer supplies the camera, H.264/AAC encoding and media playback plugins.
+See [Linux packages and source installation](linux-distribution.md).
 
 The desktop starts in English on every operating system. Settings > Appearance >
 Interface language offers an optional Russian preview; restart only Zerus to
