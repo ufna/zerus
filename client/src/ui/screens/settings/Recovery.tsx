@@ -141,7 +141,8 @@ export function RecoverySection() {
       <Show when={view()?.known && !view()!.has_machines}>
         <div class="set-actions"><button type="button" class="btn" onClick={() => setPage("machines")}>{tr("Open Machines")}</button></div>
       </Show>
-      <Show when={message()}>{(text) => <Status kind={text() === "Saved." ? "ok" : "error"}>{text()}</Status>}</Show>
+      <Show when={!message() && view()?.error}>{(error) => <Status kind="error">{tr(error())}</Status>}</Show>
+      <Show when={message()}>{(text) => <Status kind={text() === "Saved." ? "ok" : "error"}>{tr(text())}</Status>}</Show>
       <div class="set-actions">
         <button type="button" class="btn primary" disabled={!usable() || !view()?.can_save || saving()} onClick={() => void save()}>{tr("Save recovery settings")}</button>
         <button type="button" class="btn" onClick={() => void reload()}>{tr("Reload")}</button>
