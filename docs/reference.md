@@ -297,6 +297,30 @@ Tests use typed fixture scopes and decoy anchors; they never probe the owner's
 real anchor. Missing or tampered existing state requires explicit operator
 recovery, with unresolved charges retained. These are design requirements; the
 current runtime has no durable quit-store caller. Windows stays fenced.
+The proposed cleanup restriction also needs a native Git worktree lock before
+either version-2 ownership write: private legacy CLI controls showed that
+version-2 refusal alone does not fence fresh old manual removal. Worktrees retains
+the existing Blocked/locked reason. Exact new review/release semantics and the full
+legacy caller, partial-cut and crash/restart matrix remain separate gates; no
+runtime hold or unlock is implemented. Hold installation and delivery must not
+ship before the reviewed release surface is available in the same or an earlier
+build.
+
+A private actual V1-hgs/native-Git race also showed that Git 2.56 can remove a
+checkout, its V2 marker and a newly installed native lock after its already-issued
+remover passed the absent-lock check. A Git lock therefore supplies no drain
+proof. The proposed hold now requires verified native quiescence **and exclusion
+through publication before any hold write**, across old configurations and paused
+callers. Kernel birth/cwd/open-file evidence must be complete; hidden/unreadable
+or omitted observations are UNVERIFIED. Existing process helpers and repeated
+empty snapshots do not provide atomic exclusion, and no qualifying mechanism is
+available yet. If that proof cannot be established, publish no hold or durable
+delivery for the worktree and keep today's drop-on-Quit with a bounded existing
+diagnostic. After any partial hold, retain denial/manual recovery instead of
+rolling it back. No signals, restarts, process-name assumptions, old consent or
+unlock/downgrade repairs close the race. See the design's exact negative evidence
+and still-unprotectable legacy windows; R3, the full matrix and the shipped
+release-surface gate remain unchanged. This is documentation only.
 
 The proposed store and capture spool are excluded from all exports, diagnostics
 bundles and Private analytics aggregate export and are never uploaded. Logging

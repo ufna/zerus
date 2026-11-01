@@ -32,6 +32,8 @@ use zerus_client_core::attention::{self, Notice};
 use crate::desk::DeskInput;
 use crate::notifier::{Center, Done, Notifier};
 
+pub(crate) mod observers;
+
 pub struct Ivars {
     app: AppHandle,
     desk: crate::desk::InputSender,

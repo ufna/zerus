@@ -1,7 +1,7 @@
 //! Optional synchronous observer captures, not SDK removal or role proof.
-//! A future adapter must put the whole Observed inside the actual copied native
+//! An optional adapter must put the whole Observed inside the actual copied native
 //! block. Removing its observer/token is not proof that those copies are gone.
-#![allow(dead_code)] // No SDK/producer/controller caller in this prerequisite.
+#![allow(dead_code)] // The optional SDK adapter has no production caller.
 use crate::notifier::accounting::{self, Completion, Resources};
 use std::sync::{Arc, Weak};
 use zerus_client_core::desktop::drain::{Charge, Closed, Gate, Role};
@@ -63,6 +63,13 @@ impl Observers {
         });
         let control = Control(Arc::downgrade(&scope));
         Ok((Self(scope), control))
+    }
+
+    /// One adapter owner obligation in this same fixed resource group. An
+    /// explicit close may complete it after removal; abandonment drops it
+    /// uncompleted and pins even after callback admissions have been fenced.
+    pub fn retain_owner(&self) -> Result<Completion, Refused> {
+        self.0.resources.start().map_err(Refused::from)
     }
 
     /// Wrap before native registration. A refusal leaves the action with the

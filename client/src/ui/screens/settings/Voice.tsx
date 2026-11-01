@@ -7,6 +7,7 @@ import { Icon } from "../../lib/icons";
 import { Check, Group, Lines, SectionHead, Select, Status, type Option } from "./ui";
 import { formValid, retype, type AdapterView, type EditorForm } from "./voice-form";
 import { tr, trNoop } from "../../../i18n";
+import { trText, type Text } from "../../../text";
 
 // Settings > Voice input (tray/src/speech/SpeechSettings.cpp) as the approved
 // mockup lays it out (design/webui/src/screens/settings/Voice.tsx). The
@@ -29,7 +30,7 @@ interface View {
   hosts: Option[]; host: string; loaded: boolean; profiles: ProfileRow[]; selected: number | null; details: string;
   can_add: boolean; can_edit: boolean; can_remove: boolean; can_test: boolean; can_use_default: boolean;
   default_text: string; status: string; result: string; result_failed: boolean; can_refresh: boolean;
-  pending: string; can_check: boolean; statistics: string; editor: EditorView | null;
+  pending: string; can_check: boolean; statistics: Text | null; editor: EditorView | null;
 }
 interface RemoveAsk { ticket: number; text: string }
 interface Microphone { id: string; name: string; default: boolean }
@@ -172,7 +173,7 @@ export function VoiceSection() {
           </div>
         </Show>
         <p class="set-group-hint">{tr("Provider settings and credentials stay on their processing computer. Recordings are limited to two minutes. Original audio and recognized text remain in conversation history; your typed draft stays separate.")}</p>
-        <Show when={v()?.statistics}>{(text) => <Lines class="muted voice-stats" text={text()} />}</Show>
+        <Show when={v()?.statistics}>{(text) => <Lines class="muted voice-stats" text={trText(text())} />}</Show>
       </Group>
       <Show when={v()?.editor}>{(editor) => <ProviderEditor editor={editor()} />}</Show>
       <Show when={ask()}>{(asked) => <RemoveQuestion text={asked().text} answer={removeAnswer} />}</Show>

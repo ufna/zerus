@@ -164,6 +164,46 @@ data, never placement, project/worktree mutation, launch, release or settlement.
 This pure module has no source factory, current routing proof, actor, I/O or
 production caller; G2 `.4.3`, `.4.2` and G1 current Operations admission stay open.
 
+The separate pure `creation_worktree` policy proposes one original 15-second
+`worktrees status` lookup. Its binding keeps the original source target distinct
+from the expected prepared destination, common directory and branch. Pending
+worktree or original unknown records require receipt support and settled clone
+evidence; ambiguous ownership and later-stage contradictions remain review-only.
+The same private byte, duplicate-key and one-shot rules apply. Created evidence
+requires exact observed destination/common/branch and `effects_started=true`;
+its closed receipt has nine fields. Failed evidence requires an explicit Boolean
+`effects_started` and has only six fields, with the complete expected binding
+returned separately. Optional failed path/branch identities must still match;
+they are discarded rather than manufactured when absent. A nonempty or malformed
+`resource_error` refuses. Neither variant calls the reducer or grants ID rotation,
+retry, launch, settlement or release, including a failed no-effect observation.
+The encoded receipt cap remains 16 KiB; original/reply caps remain 1 MiB/64 KiB.
+There is no G1 operation kind, actor, caller, I/O or current production admission.
+
+The separate [original launch-status contract](desktop-creation-launch-status.md)
+defines a proposed bounded target-side observation. It accounts for bootstrap
+identity reads as well as selected sources, keeps missing evidence unknown and
+leaves the current whole-session listing path unchanged. The command, capability
+marker and caller are not implemented or admitted by that contract.
+
+The pure `task_message` policy names `TaskMessageRecovery`: the existing
+`--recover-only` command can reserve an uncertain canonical comment or reconcile
+task metadata, so a future caller needs executing-kind admission. This slice
+only proposes the original queue/note call once, with the existing 90-second
+timeout, exact original marker and frozen stdin. It never reconstructs missing
+input. Send/reopen and deferred native input remain review-only.
+
+Configuration/project/task are independently retained expected data, not fields
+observed in an outbox record. Raw record and input each stay at most 1 MiB;
+known duplicate fields are refused at every inspected level before projection.
+Queue/note evidence must carry the exact original task/request/mode/dispatch and
+expected state, without any message executor or nonempty native delivery fields.
+The closed eight-field receipt explicitly carries `executor: null`, with the
+complete binding returned separately; it is capped at 16 KiB and contains no
+body, files, prompt or errors. A missing reservation is never no-effect proof.
+No receipt delivers, consumes, settles, releases or rotates anything, and this
+module supplies no runner, I/O, store, current G1 kind/profile or caller.
+
 The first pure policy is `operation_recovery::task_start::Original`. G1 and G2
 agreed its contract on 2026-10-30. It has no actor integration, process runner,
 SQL, positive job IPC or executing permission. The dedicated operation

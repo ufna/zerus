@@ -385,13 +385,13 @@ export interface OpenCodeInfo { providers: { label: string; connection: string; 
 export interface Profile {
   key: string; host: ComputerId; machine: string; id: string; label: string; provider: string;
   native: boolean; installed: boolean; is_default: boolean; home: string; auth_revision: string; online: boolean;
-  state: MemberState; detail: string; signed_in: boolean;
-  permission: string; permission_mode?: string; permission_label: string; permission_hint: string; model_supported: boolean; model_text: string;
+  state: MemberState; detail: Text; signed_in: boolean;
+  permission: string; permission_mode?: string; permission_label: Text; permission_hint: Text; model_supported: boolean; model_text: Text;
   usage: Usage; opencode: OpenCodeInfo | null;
 }
 export interface Account {
   key: string; label: string; provider: string; installed: boolean; machines: string[]; members: Profile[];
-  usage: Usage; permission: string; identity_lines: string[]; identity_note: string;
+  usage: Usage; permission: Text; identity_lines: Text[]; identity_note: Text | null;
 }
 export interface AccountHost { computer: ComputerId; name: string; label: string; online: boolean }
 export interface BindingEvidence { host: ComputerId; provider: string; id: string; home: string; group: string }
@@ -693,22 +693,22 @@ export interface ComposerView {
 }
 
 // The question card (src-tauri composer/questions.rs, core questions.rs).
-export interface ButtonView { visible: boolean; enabled: boolean; label: string; review_label: string | null }
-export interface OptionView { id: string; label: string; description: string; markdown: boolean; checked: boolean; enabled: boolean; visible: boolean }
-export interface TextView { visible: boolean; enabled: boolean; value: string; placeholder: string; accessible_name: string; max_units: number; max_chars: number }
-export interface FormView { id: string; tab: string; prompt: string; body: string; markdown: boolean; monospace_body: boolean; multi: boolean;
-  mode: string; mode_visible: boolean; options: OptionView[]; other: OptionView | null; text: TextView | null }
-export interface QueueNav { previous: boolean; next: boolean; previous_tip: string; next_tip: string }
-export interface CardView { heading: string; progress: string; pending: string; pending_tip: string; nav: QueueNav | null; tabs_visible: boolean;
-  page: number; forms: FormView[]; status: string; status_error: boolean; available: boolean; locked: boolean; review: boolean; created_at: number;
-  submit: ButtonView; approve: ButtonView; deny: ButtonView; skip: ButtonView; previous: ButtonView; next: ButtonView; retry: boolean; skip_tip: string; retry_tip: string }
+export interface ButtonView { visible: boolean; enabled: boolean; label: Text; review_label: Text | null }
+export interface OptionView { id: string; label: Text; description: Text; markdown: boolean; checked: boolean; enabled: boolean; visible: boolean }
+export interface TextView { visible: boolean; enabled: boolean; value: string; placeholder: Text; accessible_name: Text; max_units: number; max_chars: number }
+export interface FormView { id: string; tab: Text; prompt: string; body: string; markdown: boolean; monospace_body: boolean; multi: boolean;
+  mode: Text; mode_visible: boolean; options: OptionView[]; other: OptionView | null; text: TextView | null }
+export interface QueueNav { previous: boolean; next: boolean; previous_tip: Text; next_tip: Text }
+export interface CardView { heading: Text; progress: Text | null; pending: Text | null; pending_tip: Text; nav: QueueNav | null; tabs_visible: boolean;
+  page: number; forms: FormView[]; status: Text; status_error: boolean; available: boolean; locked: boolean; review: boolean; created_at: number;
+  submit: ButtonView; approve: ButtonView; deny: ButtonView; skip: ButtonView; previous: ButtonView; next: ButtonView; retry: boolean; skip_tip: Text; retry_tip: Text }
 /**
  * `revision` grows when the card is built again (a new card, a changed form,
  * a restored answer): the review starts again and the fields reset. `epoch`
  * grows with every change of the answers from Rust, each revision's included:
  * the fields take Rust's values again, and an edit names the epoch it is based on.
  */
-export interface QuestionView { answering?: boolean; card: string; revision: number; epoch: number; asked: string; asked_tip: string; terminal_label: string; view: CardView }
+export interface QuestionView { answering?: boolean; card: string; revision: number; epoch: number; asked: string; asked_tip: string; terminal_label: Text; native_ui: boolean; view: CardView }
 export type QuestionEdit = { kind: "option"; item: string; option: string; checked: boolean } | { kind: "other"; item: string; checked: boolean } | { kind: "text"; item: string; text: string };
 export interface ColdAnswer { title: string; text: string; proceed: string }
 export type QuestionReply = { kind: "sending" } | { kind: "busy" } | { kind: "cold"; token: number; prompt: ColdAnswer } | { kind: "notice"; text: string };
@@ -797,19 +797,21 @@ export type UpdateChannel = "stable" | "nightly" | "dev";
 export interface UpdatesView {
   busy: boolean;
   available: boolean;
-  heading: string;
-  installed: string;
-  latest: string;
-  comparison: string;
+  /** Interface prose from the core and app (core Text); the webview translates it. */
+  heading: Text;
+  installed: Text;
+  latest: Text;
+  comparison: Text | null;
+  /** RFC 3339 time, or "Never". */
   last_checked: string;
   cached: boolean;
-  error: string;
+  error: Text | null;
   channel: UpdateChannel;
   automatic: boolean;
-  release_label: string;
+  release_label: Text;
   release_enabled: boolean;
-  download_label: string | null;
-  details: { ownership: string; command: string; copy_name: string; instructions: string };
+  download_label: Text | null;
+  details: { ownership: Text; command: Text | null; copy_name: Text | null; instructions: Text | null };
   restart_required: boolean;
   login_item_deprioritized: boolean;
   version: string;
@@ -820,19 +822,19 @@ export interface UpdatesView {
 export const emptyUpdatesView = (): UpdatesView => ({
   busy: false,
   available: false,
-  heading: "Updates have not been checked",
-  installed: "",
-  latest: "Not checked",
-  comparison: "",
+  heading: { source: "Updates have not been checked" },
+  installed: { source: "" },
+  latest: { source: "Not checked" },
+  comparison: null,
   last_checked: "Never",
   cached: false,
-  error: "",
+  error: null,
   channel: "stable",
   automatic: true,
-  release_label: "View release",
+  release_label: { source: "View release" },
   release_enabled: false,
   download_label: null,
-  details: { ownership: "", command: "", copy_name: "Copy command", instructions: "" },
+  details: { ownership: { source: "" }, command: null, copy_name: null, instructions: null },
   restart_required: false,
   login_item_deprioritized: false,
   version: "",

@@ -6,13 +6,13 @@ import { emptyAccounts, type Account, type Profile } from "../../types";
 
 const member = (extra: Partial<Profile> = {}): Profile => ({
   key: "\u001fclaude-work", host: "", machine: "workstation", id: "claude-work", label: "Work", provider: "claude", native: false,
-  installed: true, is_default: false, home: "", auth_revision: "", online: true, state: "ready", detail: "Ready on workstation.",
-  signed_in: true, permission: "auto", permission_label: "Auto", permission_hint: "", model_supported: true, model_text: "",
+  installed: true, is_default: false, home: "", auth_revision: "", online: true, state: "ready", detail: { source: "Ready on workstation." },
+  signed_in: true, permission: "auto", permission_label: { source: "Auto" }, permission_hint: { source: "" }, model_supported: true, model_text: { source: "" },
   usage: usageOf(), opencode: null, ...extra,
 });
 const account = (members: Profile[], key = "a"): Account => ({
   key, label: "Work", provider: members[0].provider, installed: true, machines: members.map((m) => m.machine), members,
-  usage: usageOf(), permission: "Auto", identity_lines: [], identity_note: "",
+  usage: usageOf(), permission: { source: "Auto" }, identity_lines: [], identity_note: null,
 });
 
 describe("accounts page", () => {

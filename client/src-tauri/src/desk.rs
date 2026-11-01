@@ -53,7 +53,7 @@ pub const ATTENTION_FILE: &str = "attention-observed.json";
 pub const OPTIONAL_QUESTIONS: &str = "notifications/optionalQuestions";
 
 mod attention_barrier;
-mod observers;
+pub(crate) mod observers;
 pub use attention_barrier::InputSender;
 
 pub enum DeskInput {

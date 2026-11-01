@@ -598,13 +598,13 @@ complete before receiver activation and the original charges survive cleanup.
 
 ## Optional Attention observer capture lifetimes
 
-`desk::observers` is an internal, platform-neutral prerequisite with no SDK,
-producer or controller caller. It requires one host `Attention` charge and
+`desk::observers` is an internal, platform-neutral helper with no SDK
+dependency or producer/controller caller. It requires one host `Attention` charge and
 admits at most two synchronous observer captures. The existing fixed completion
 scope also accepts that exact expected role; ordinary native constructors still
 require `NativePosting`. Existing native and badge paths keep their semantics.
 
-A future adapter must move the entire `Observed` into the actual native block
+An adapter must move the entire `Observed` into the actual native block
 capture. SDK block copies must retain that same Rust capture. Closing admissions
 or returning from `removeObserver` does not prove those copies are destroyed.
 After close, a late callback refuses before its action. Each already admitted
@@ -624,6 +624,26 @@ current Mac/GTK observer, activity sampler, timer, thread, queue, notification
 adapter or GUI behavior changes here. Real SDK capture/destruction, connection
 and worker ownership still require separate pinned review and native tests before
 any production use or profile handoff.
+
+The dormant `platform::macos_notify::observers::ActivityObservers` adapter now
+owns the exact factory, both Cocoa registration tokens and both real `RcBlock`
+references. Each block holds the entire original `Observed`. Explicit `close`
+fences capture and callback admissions before removing those exact tokens, then
+releases only the adapter's own block references. Native copies and admitted
+callbacks keep the original host charge until their actual final destruction
+and return. A retained owner Completion in that same existing resource group
+completes only after explicit removal; dropping an open adapter fences late
+callbacks and removes its registrations but pins that group. Removal alone,
+logical close and cancellation never establish completion.
+
+Its actions remain synchronous and may not queue unaccounted work. The host
+must still wait on both closed gates under one deadline. Headless Mac tests use
+an independent process-local notification center and synthetic names to cover
+registration, posting, removal, actual native block copies, post-close refusal,
+delayed final destruction, an in-flight callback and open abandonment. This
+optional adapter has no production caller. `follow_activity`, the current GUI,
+notification permissions, producers, controllers and profile handoff remain
+unchanged and unqualified by these lifecycle tests.
 
 ## Linux agent and software-update store isolation
 
