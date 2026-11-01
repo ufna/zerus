@@ -94,7 +94,6 @@ impl Runtime {
     }
     pub fn suppress_foreground(&mut self, now: Instant) {
         self.foreground_until = Some(now + FOCUS_TTL);
-        self.reset_policy();
     }
 
     /// The actor calls this only after OWN successful Broker::apply, while the
@@ -204,6 +203,25 @@ impl Runtime {
                 self.pending = None;
                 break;
             };
+            if row.baseline {
+                let since = self.sources[&scope.source.computer].since;
+                match state::baseline_key(&store.db, &scope, since, &row.key)? {
+                    state::BaselineKey::Changed => continue,
+                    state::BaselineKey::Gap => {
+                        let watermark = changes::watermark(&store.db, &scope.source.computer)?;
+                        let source = self.sources.get_mut(&scope.source.computer).unwrap();
+                        source.baselined = false;
+                        source.baseline = None;
+                        source.delta = None;
+                        source.since = watermark
+                            .revision
+                            .context("attention baseline reset watermark")?;
+                        self.pending = None;
+                        break;
+                    }
+                    state::BaselineKey::Unchanged => {}
+                }
+            }
             if let Some(raw) = row.raw {
                 ensure!(
                     raw.len() <= catalog::PAGE_BYTES,
@@ -378,7 +396,9 @@ impl Runtime {
                 match state::withdrawal(&mut store.db, &edge.intent)? {
                     state::Withdrawal::Waiting => continue,
                     state::Withdrawal::Ready(id) => {
-                        outbox.offer_intent(store, &id, 1, Instant::now())?;
+                        outbox
+                            .offer_intent(store, &id, 1, Instant::now())
+                            .context("notification withdrawal offer failed")?;
                     }
                     state::Withdrawal::Absent => {}
                 }
@@ -398,7 +418,8 @@ impl Runtime {
                     scope.source.generation,
                     &scope.projection,
                 ))?;
-                if !edge.ready
+                if self.foreground_until.is_some_and(|t| Instant::now() < t)
+                    || !edge.ready
                     || !self.policy.enabled
                     || edge.policy_revision != self.policy_revision
                     || edge.scope != stamp
@@ -423,7 +444,9 @@ impl Runtime {
                 {
                     continue;
                 }
-                outbox.offer_intent(store, &edge.intent, 1, Instant::now())?;
+                outbox
+                    .offer_intent(store, &edge.intent, 1, Instant::now())
+                    .context("notification post offer failed")?;
             }
             state::clean(&store.db, edge.id)?;
         }
@@ -445,6 +468,6 @@ impl Runtime {
         self.stopping && self.pending.is_none()
     }
     pub fn status(&self) -> Value {
-        json!({"sources":self.sources.len(),"pending_rows":self.pending.as_ref().map_or(0,|p|p.rows.len()),"enabled":self.policy.enabled,"optional_questions":self.policy.optional_questions,"stopping":self.stopping,"error":self.error,"source_limit":catalog::MAX_SOURCES,"rows_per_turn":ROWS_PER_TURN,"effects_per_turn":EFFECTS_PER_TURN})
+        json!({"sources":self.sources.len(),"pending_rows":self.pending.as_ref().map_or(0,|p|p.rows.len()),"enabled":self.policy.enabled,"optional_questions":self.policy.optional_questions,"stopping":self.stopping,"error":self.error,"stopped_on_error":self.error.is_some(),"error_retryable":self.error.as_ref().map(|_|false),"source_limit":catalog::MAX_SOURCES,"rows_per_turn":ROWS_PER_TURN,"effects_per_turn":EFFECTS_PER_TURN})
     }
 }

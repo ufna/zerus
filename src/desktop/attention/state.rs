@@ -29,6 +29,7 @@ pub(super) fn migrate(db: &Connection) -> Result<()> {
       CREATE TABLE desktop_attention_sessions(
         id TEXT PRIMARY KEY, computer TEXT NOT NULL, catalog_key TEXT NOT NULL, scope TEXT NOT NULL, row_hash TEXT NOT NULL, policy_revision INTEGER NOT NULL, state TEXT NOT NULL, bytes INTEGER NOT NULL);
       CREATE INDEX desktop_attention_row ON desktop_attention_sessions(computer,catalog_key);
+      CREATE INDEX desktop_attention_changed_key ON desktop_catalog_changes(generation,key,revision);
       CREATE INDEX desktop_attention_catalog_identity ON desktop_catalog_rows(generation,
         CASE WHEN json_valid(json) THEN json_extract(json,'$.cmd') END,
         CASE WHEN json_valid(json) THEN json_extract(json,'$.conversation_id') END);
@@ -39,6 +40,34 @@ pub(super) fn migrate(db: &Connection) -> Result<()> {
       CREATE TRIGGER desktop_attention_session_update AFTER UPDATE ON desktop_attention_sessions BEGIN UPDATE desktop_attention_totals SET state_bytes=state_bytes+new.bytes-old.bytes WHERE id=1; END;")?;
     Ok(())
 }
+/// A baseline reads live rows in bounded pages, not a historical snapshot.
+/// A key changed after its starting watermark belongs to the delta walk, even
+/// if the newer value is first encountered on a later baseline page. Retention
+/// loss invalidates the interval instead of treating an absent journal row as
+/// proof that the catalog value existed at the baseline's start.
+pub(super) enum BaselineKey {
+    Unchanged,
+    Changed,
+    Gap,
+}
+pub(super) fn baseline_key(
+    db: &Connection,
+    scope: &zerus_desktop_catalog::changes::Scope,
+    since: i64,
+    key: &str,
+) -> Result<BaselineKey> {
+    let (generation,floor):(i64,i64)=db.query_row("SELECT v.generation,v.floor FROM desktop_catalog_sources s JOIN desktop_catalog_change_views v ON v.generation=s.visible WHERE s.computer=?1 AND v.projection=?2",params![scope.source.computer,scope.projection],|r|Ok((r.get(0)?,r.get(1)?)))?;
+    if since < floor {
+        return Ok(BaselineKey::Gap);
+    }
+    let changed:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM desktop_catalog_changes WHERE generation=?1 AND key=?2 AND revision>?3 LIMIT 1)",params![generation,key,since],|r|r.get(0))?;
+    Ok(if changed {
+        BaselineKey::Changed
+    } else {
+        BaselineKey::Unchanged
+    })
+}
+
 fn text(row: &rusqlite::Row<'_>, index: usize, cap: usize) -> rusqlite::Result<String> {
     let value = row.get_ref(index)?;
     let value = value.as_str().map_err(|_| rusqlite::Error::InvalidQuery)?;

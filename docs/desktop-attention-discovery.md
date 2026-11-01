@@ -14,7 +14,11 @@ and refreshes foreground suppression, which expires after five seconds. These
 Rust calls are not generic IPC settings or writer permissions.
 
 The initial catalog snapshot and retention-gap replacements consume old edges.
-Subsequent work follows indexed catalog deltas. One actor turn processes at most
+Subsequent work follows indexed catalog deltas. A key changed after a
+baseline's start watermark is skipped by that walk and processed by the delta
+walk; a key-first journal index bounds the lookup. Journal retention loss
+restarts a baseline before any unproven row can be consumed. Foreground refresh
+only suppresses observations while active and never restarts a baseline. One actor turn processes at most
 four rows and eight dirty effects. The temporary page has at most 128 rows and
 1 MiB; only the 64 computer cursors remain resident. Each row passes through the
 shared attention Tracker, preserving Mute, suppressed baselines, optional
@@ -46,3 +50,7 @@ its exact native mapping and obtains its own reservation. Live restoration uses
 `restore_live_head/page`: an immutable highwater of attention edge IDs, at most
 16 indexed candidates per page, with the original callback guard still applied.
 It does not scan retired attempt history or resend notifications.
+
+A non-retryable offer or SQL failure stops discovery and is explicit in status
+(`stopped_on_error`, `error_retryable: false`). Repairing a writer underneath the
+runtime does not replay its failed offer; lifecycle recovery remains explicit.

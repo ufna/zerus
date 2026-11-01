@@ -144,29 +144,35 @@ impl Fixture {
             limits: Default::default(),
         };
         self.apply(Body::Hello(hello), true);
-        self.apply(
-            Body::Snapshot(Snapshot {
-                topic: "catalog".into(),
-                page: 0,
-                key: None,
-                value: None,
-                last: true,
-                cursor: 0,
-                items: Some(
-                    rows.into_iter()
-                        .map(|row| {
-                            serde_json::to_value(CatalogItem {
-                                key: zerus_watch_protocol::catalog_key(&row).unwrap(),
-                                row,
-                            })
-                            .unwrap()
-                        })
-                        .collect(),
-                ),
-            }),
-            false,
-        );
+        let pages = rows.len().div_ceil(catalog::PAGE_ROWS).max(1);
+        let mut rows = rows.into_iter();
+        for page in 0..pages {
+            let items = rows
+                .by_ref()
+                .take(catalog::PAGE_ROWS)
+                .map(|row| {
+                    serde_json::to_value(CatalogItem {
+                        key: zerus_watch_protocol::catalog_key(&row).unwrap(),
+                        row,
+                    })
+                    .unwrap()
+                })
+                .collect();
+            self.apply(
+                Body::Snapshot(Snapshot {
+                    topic: "catalog".into(),
+                    page: page as u32,
+                    key: None,
+                    value: None,
+                    last: page + 1 == pages,
+                    cursor: 0,
+                    items: Some(items),
+                }),
+                false,
+            );
+        }
     }
+
     fn delta(&mut self, raw: Value) {
         self.cursor += 1;
         self.apply(
@@ -834,7 +840,7 @@ fn schema_fourteen_migrates_an_existing_thirteen_without_changing_prior_effects(
         .db
         .query_row("SELECT count(*) FROM desktop_intents", [], |r| r.get(0))
         .unwrap();
-    f.store.db.execute_batch("DROP INDEX desktop_attention_catalog_identity; DROP TABLE desktop_attention_edges; DROP TABLE desktop_attention_sessions; DROP TABLE desktop_attention_totals; PRAGMA user_version=13;").unwrap();
+    f.store.db.execute_batch("DROP INDEX desktop_attention_changed_key; DROP INDEX desktop_attention_catalog_identity; DROP TABLE desktop_attention_edges; DROP TABLE desktop_attention_sessions; DROP TABLE desktop_attention_totals; PRAGMA user_version=13;").unwrap();
     let location = Location {
         root: std::path::Path::new(&root).parent().unwrap().to_owned(),
         configuration: "a".repeat(64),
@@ -857,4 +863,254 @@ fn schema_fourteen_migrates_an_existing_thirteen_without_changing_prior_effects(
         count
     );
     assert_eq!(state::head(&store.db).unwrap(), 0);
+}
+
+fn fleet_rows(count: usize) -> Vec<Value> {
+    (0..count)
+        .map(|i| {
+            let mut raw = row();
+            raw["run_id"] = json!(format!("run-{i}"));
+            raw["name"] = json!(format!("codex/example/session-{i}"));
+            raw["conversation_id"] = json!(format!("conversation-{i}"));
+            raw["read"]["conversation_id"] = raw["conversation_id"].clone();
+            raw
+        })
+        .collect()
+}
+fn assert_single_reply(f: &mut Fixture, reply: &str) {
+    let dispatch = f.host.try_next().unwrap().begin().unwrap();
+    let target = attention::target(dispatch.command().action.token()).unwrap();
+    assert_eq!(target["reply"], reply);
+    assert!(f.host.try_next().is_err());
+}
+
+#[test]
+fn focus_refresh_never_restarts_a_multi_page_baseline_or_loses_a_later_reply() {
+    let mut f = Fixture::new();
+    f.runtime.set_policy(enabled());
+    let rows = fleet_rows(200);
+    f.snapshot(rows.clone());
+    let revision = f.runtime.policy_revision;
+    for _ in 0..100 {
+        f.runtime.suppress_foreground(Instant::now());
+        f.tick();
+        assert_eq!(f.runtime.policy_revision, revision);
+    }
+    assert!(
+        f.runtime.sources[""].baselined,
+        "focus must allow the original walk to finish"
+    );
+    f.runtime
+        .suppress_foreground(Instant::now() - FOCUS_TTL - Duration::from_secs(1));
+    f.tick();
+    assert!(f.runtime.sources[""].baselined);
+    let mut changed = rows[199].clone();
+    changed["reply_id"] = json!("new-199");
+    f.delta(changed);
+    f.ticks(400);
+    assert_single_reply(&mut f, "new-199");
+}
+
+#[test]
+fn initial_baseline_skips_newer_keys_on_both_queued_and_unread_pages() {
+    for position in [100, 199] {
+        let mut f = Fixture::new();
+        f.runtime.set_policy(enabled());
+        let rows = fleet_rows(200);
+        f.snapshot(rows.clone());
+        f.tick();
+        assert!(!f.runtime.sources[""].baselined);
+        let mut changed = rows[position].clone();
+        changed["reply_id"] = json!(format!("new-{position}"));
+        f.delta(changed);
+        f.ticks(400);
+        assert_single_reply(&mut f, &format!("new-{position}"));
+    }
+}
+
+#[test]
+fn policy_baseline_preserves_a_later_page_reply_newer_than_its_start_revision() {
+    let mut f = Fixture::new();
+    let rows = fleet_rows(200);
+    f.snapshot(rows.clone());
+    f.ticks(100);
+    assert!(f.runtime.sources[""].baselined);
+    f.runtime.set_policy(enabled());
+    f.tick();
+    let mut changed = rows[199].clone();
+    changed["reply_id"] = json!("after-policy");
+    f.delta(changed);
+    f.ticks(400);
+    assert_single_reply(&mut f, "after-policy");
+}
+
+#[test]
+fn retention_gap_baseline_preserves_replies_after_its_new_start() {
+    let mut f = Fixture::new();
+    f.runtime.set_policy(enabled());
+    let rows = fleet_rows(200);
+    f.snapshot(rows.clone());
+    f.ticks(100);
+    let mut lost = rows[0].clone();
+    lost["reply_id"] = json!("lost-interval");
+    f.delta(lost);
+    f.store
+        .db
+        .execute("UPDATE desktop_catalog_change_views SET floor=head", [])
+        .unwrap();
+    f.tick();
+    f.tick();
+    assert!(!f.runtime.sources[""].baselined);
+    let mut changed = rows[199].clone();
+    changed["reply_id"] = json!("after-gap");
+    f.delta(changed);
+    f.ticks(400);
+    assert_single_reply(&mut f, "after-gap");
+}
+
+#[test]
+fn losing_journal_coverage_mid_baseline_resets_before_consuming_an_unproven_row() {
+    let mut f = Fixture::new();
+    f.runtime.set_policy(enabled());
+    let rows = fleet_rows(200);
+    f.snapshot(rows.clone());
+    f.tick();
+    let mut changed = rows[199].clone();
+    changed["reply_id"] = json!("lost-interval");
+    f.delta(changed);
+    f.store
+        .db
+        .execute("UPDATE desktop_catalog_change_views SET floor=head", [])
+        .unwrap();
+    f.tick();
+    assert_eq!(f.runtime.sources[""].since, 1);
+    assert!(f.runtime.pending.is_none());
+    // The lost interval is consumed, but a later edge is still observed.
+    f.tick();
+    let mut changed = rows[199].clone();
+    changed["reply_id"] = json!("new-after-reset");
+    f.delta(changed);
+    f.ticks(400);
+    assert_single_reply(&mut f, "new-after-reset");
+}
+
+#[test]
+fn a_reply_observed_while_focused_stays_consumed_after_focus_expires() {
+    let mut f = Fixture::new();
+    f.runtime.set_policy(enabled());
+    let rows = fleet_rows(200);
+    f.snapshot(rows.clone());
+    f.ticks(100);
+    f.runtime.suppress_foreground(Instant::now());
+    let mut changed = rows[199].clone();
+    changed["reply_id"] = json!("seen-focused");
+    f.delta(changed.clone());
+    f.ticks(10);
+    assert!(f.host.try_next().is_err());
+    f.runtime
+        .suppress_foreground(Instant::now() - FOCUS_TTL - Duration::from_secs(1));
+    f.delta(changed.clone());
+    f.ticks(10);
+    assert!(f.host.try_next().is_err());
+    changed["reply_id"] = json!("new-background");
+    f.delta(changed);
+    f.ticks(10);
+    assert_single_reply(&mut f, "new-background");
+}
+
+#[test]
+fn an_offer_failure_is_explicitly_non_retryable_even_if_the_writer_is_repaired() {
+    let mut f = Fixture::new();
+    f.runtime.set_policy(enabled());
+    let mut initial = row();
+    initial["reply_id"] = Value::Null;
+    f.snapshot(vec![initial]);
+    f.ticks(4);
+    ledger::revoke(&f.store.db, "fixture").unwrap();
+    f.delta(row());
+    f.runtime.poll(&mut f.store, Some(&mut f.outbox));
+    let status = f.runtime.status();
+    assert_eq!(status["stopped_on_error"], true);
+    assert_eq!(status["error_retryable"], false);
+    assert!(status["error"]
+        .as_str()
+        .unwrap()
+        .contains("notification post offer failed"));
+    assert!(f.host.try_next().is_err());
+    let writer: String = f
+        .store
+        .db
+        .query_row("SELECT epoch FROM desktop_writer WHERE id=1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    ledger::authorize(&mut f.store.db, &writer, &f.runtime.epoch).unwrap();
+    f.runtime.poll(&mut f.store, Some(&mut f.outbox));
+    assert_eq!(f.runtime.status()["error"], status["error"]);
+    assert!(f.host.try_next().is_err());
+    assert_eq!(
+        f.store
+            .db
+            .query_row("SELECT count(*) FROM desktop_attempts", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn twenty_thousand_row_delta_stream_reports_expression_index_cost() {
+    // Paired local samples, not a latency threshold or a native/process count.
+    // Only this expression index differs; the new journal index is present in
+    // both fixtures. Every catalog row is updated once in bounded native pages.
+    for indexed in [false, true] {
+        let mut f = Fixture::new();
+        if !indexed {
+            f.store
+                .db
+                .execute_batch("DROP INDEX desktop_attention_catalog_identity")
+                .unwrap();
+        }
+        let rows = fleet_rows(20_000);
+        f.snapshot(rows.clone());
+        let started = Instant::now();
+        for page in rows.chunks(catalog::PAGE_ROWS) {
+            let upsert = page
+                .iter()
+                .cloned()
+                .map(|mut row| {
+                    row["fixture_delta"] = json!(1);
+                    CatalogItem {
+                        key: zerus_watch_protocol::catalog_key(&row).unwrap(),
+                        row,
+                    }
+                })
+                .collect();
+            f.cursor += 1;
+            f.apply(
+                Body::Delta(Delta {
+                    topic: "catalog".into(),
+                    cursor: f.cursor,
+                    upsert,
+                    remove: Vec::new(),
+                }),
+                false,
+            );
+        }
+        let elapsed = started.elapsed();
+        assert_eq!(
+            f.store
+                .db
+                .query_row("SELECT count(*) FROM desktop_catalog_changes", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            20_000
+        );
+        assert_eq!(f.store.db.query_row("SELECT count(*) FROM desktop_catalog_rows r JOIN desktop_catalog_sources s ON s.visible=r.generation WHERE json_extract(r.json,'$.fixture_delta')=1",[],|r|r.get::<_,i64>(0)).unwrap(),20_000);
+        println!(
+            "attention expression-index={indexed}: 20000 delta rows / {} frames / {:.3} seconds",
+            f.cursor,
+            elapsed.as_secs_f64()
+        );
+    }
 }
