@@ -88,6 +88,11 @@ unchanged active backend during GUI-only updates. The signed notification host
 keeps `com.hgdev.hgs-tray`; its service command interface and delivery integration
 are a separate change.
 
+A custom or foreign `com.hgdev.hgs-desktop.plist` makes this preflight refuse
+the GUI update before replacing the app. Review or migrate that definition
+deliberately, then rerun the installer; it does not overwrite another
+configuration's LaunchAgent to complete an update.
+
 `zerus-setup --mobile-connector install` writes the
 `com.hgdev.zerus-mobile-connector` LaunchAgent for the bundled connector
 (`AbandonProcessGroup`, `KeepAlive` on failure only, logs in `~/Library/Logs/hgs`),
