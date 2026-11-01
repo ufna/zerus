@@ -227,13 +227,23 @@ fn menu(inner: &mut Inner, entries: &[Entry]) {
         match item {
             Item::Action { id, text } => {
                 unsafe {
-                    AppendMenuW(native, MF_STRING, next as usize, wide(&text).as_ptr());
+                    AppendMenuW(
+                        native,
+                        MF_STRING,
+                        next as usize,
+                        wide(&text.replace('&', "&&")).as_ptr(),
+                    );
                 }
                 bindings.insert(next, id);
                 next += 1;
             }
             Item::Label { text, .. } => unsafe {
-                AppendMenuW(native, MF_STRING | MF_DISABLED, 0, wide(&text).as_ptr());
+                AppendMenuW(
+                    native,
+                    MF_STRING | MF_DISABLED,
+                    0,
+                    wide(&text.replace('&', "&&")).as_ptr(),
+                );
             },
             Item::Separator => unsafe {
                 AppendMenuW(native, MF_SEPARATOR, 0, std::ptr::null());
@@ -252,7 +262,7 @@ fn menu(inner: &mut Inner, entries: &[Entry]) {
                             submenu,
                             MF_STRING | if checked { MF_CHECKED } else { MF_UNCHECKED },
                             next as usize,
-                            wide(&text).as_ptr(),
+                            wide(&text.replace('&', "&&")).as_ptr(),
                         );
                     }
                     bindings.insert(next, id);
@@ -260,7 +270,12 @@ fn menu(inner: &mut Inner, entries: &[Entry]) {
                 }
                 let label = crate::native_text::render(&Text::new("Open in"));
                 unsafe {
-                    AppendMenuW(native, MF_POPUP, submenu as usize, wide(&label).as_ptr());
+                    AppendMenuW(
+                        native,
+                        MF_POPUP,
+                        submenu as usize,
+                        wide(&label.replace('&', "&&")).as_ptr(),
+                    );
                 }
             }
         }

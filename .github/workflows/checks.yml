@@ -218,6 +218,9 @@ jobs:
           cargo +1.99.1 fmt --check --manifest-path crates/desktop-read-policy/Cargo.toml
           cargo +1.99.1 clippy --locked --manifest-path crates/desktop-read-policy/Cargo.toml --target-dir target/desktop-crates --all-targets -- -D warnings
           cargo +1.99.1 test --locked --manifest-path crates/desktop-read-policy/Cargo.toml --target-dir target/desktop-crates
+          cargo +1.99.1 fmt --check --manifest-path crates/presence-sampler/Cargo.toml
+          cargo +1.99.1 clippy --locked --manifest-path crates/presence-sampler/Cargo.toml --target-dir target/desktop-crates --all-targets -- -D warnings
+          cargo +1.99.1 test --locked --manifest-path crates/presence-sampler/Cargo.toml --target-dir target/desktop-crates
       # Packages fail without a notice for every shipped crate; find out here.
       - name: Rust license notices
         run: python3 scripts/collect-licenses.py "$RUNNER_TEMP/rust-licenses"
