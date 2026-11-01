@@ -528,7 +528,10 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                                 }
                             }
                         } else if hello.request.as_ref().is_some_and(|v| {
-                            matches!(v["op"].as_str(), Some("catalog_page" | "catalog_close"))
+                            matches!(
+                                v["op"].as_str(),
+                                Some("catalog_page" | "catalog_changes" | "catalog_close")
+                            )
                         }) {
                             reads.request(&store, &feed, &epoch, hello.request.as_ref().unwrap())
                         } else if hello
@@ -622,7 +625,9 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                     &epoch,
                     seq,
                     "catalog_changed",
-                    json!({"display_only":true,"retired":true,"attention_counts":attention_counts(&store,&epoch,seq,&feed)}),
+                    json!({"display_only":true,"retired":true,"reset_required":true,
+                        "changes_abi":catalog_read::CHANGES_ABI,
+                        "attention_counts":attention_counts(&store,&epoch,seq,&feed)}),
                 ))?
                 .into(),
             );
