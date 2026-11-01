@@ -22,6 +22,7 @@ pub fn render(text: &Text) -> String {
 }
 
 /// Lines of a tooltip, each rendered, joined by line breaks.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn lines(texts: &[Text]) -> String {
     texts.iter().map(render).collect::<Vec<_>>().join("\n")
 }
