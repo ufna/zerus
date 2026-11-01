@@ -592,6 +592,7 @@ class WorkflowSecurityTests(unittest.TestCase):
         script = (ROOT / "scripts/ci/client-native.sh").read_text()
         self.assertIn('if [ "$platform" = macos ]; then', script)
         self.assertIn('--features macos-native-peer macos_notify::peer::installation', script)
+        self.assertIn('--features macos-native-peer --all-targets -- -D warnings', script)
         self.assertNotIn('--ignored', script)
         self.assertNotIn('ZERUS_MAC_PEER_TEAM_REQUIREMENT=', script)
 

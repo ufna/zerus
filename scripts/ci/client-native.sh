@@ -10,6 +10,8 @@ core_tests() {
     presence_tests
     cargo +1.99.1 test --locked --manifest-path client/core/Cargo.toml --no-fail-fast
     if [ "$platform" = macos ]; then
+        cargo +1.99.1 clippy --locked --manifest-path client/core/Cargo.toml \
+            --features macos-native-peer --all-targets -- -D warnings
         # Negative selection/owned-child tests only. The separate signed-peer
         # fixtures stay ignored and receive no signing identity or key access.
         cargo +1.99.1 test --locked --manifest-path client/core/Cargo.toml \
