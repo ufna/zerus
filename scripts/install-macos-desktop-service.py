@@ -174,7 +174,7 @@ def ready(value, status, pid):
 
 
 def install(binary, home, source, restart=False, check_only=False, remove=False,
-            command=run, clock=time.monotonic, sleep=time.sleep):
+            command=run, clock=time.monotonic, sleep=time.sleep, runner_hgs=None, refresh_runner=False):
     require(home.is_absolute(), "Desktop service HOME must be absolute.")
     binary = Path(os.path.abspath(binary))  # Retain the maintained CLI path, including a cask symlink.
     require(binary.is_file() and os.access(binary, os.X_OK), "Desktop service requires an executable hgs CLI.")
@@ -186,6 +186,33 @@ def install(binary, home, source, restart=False, check_only=False, remove=False,
     value, destination, content = registration(binary, home, env, command)
     previous = read_definition(destination)
     previous_definition = owned(previous[0] if previous is not None else None, value)
+    if refresh_runner and previous_definition is not None:
+        # Root CLI-only installs must not change a maintained paired backend
+        # back into the unsigned PATH CLI. Its owned registration is the
+        # selection; this is not runtime signature or notification authority.
+        old_environment = previous_definition.get("EnvironmentVariables", {})
+        require(isinstance(old_environment, dict), "The owned desktop environment is invalid; it was kept.")
+        old_runner = old_environment.get("HGS_EXECUTABLE")
+        if old_runner is not None:
+            require(isinstance(old_runner, str) and Path(old_runner).is_absolute(),
+                    "The owned desktop runner selection is invalid; it was kept.")
+            return install(Path(previous_definition["ProgramArguments"][0]), home, source,
+                           check_only=check_only, remove=remove, command=command, clock=clock,
+                           sleep=sleep, runner_hgs=binary)
+    if runner_hgs is not None:
+        runner_hgs = Path(os.path.abspath(runner_hgs))
+        ordinary(runner_hgs)
+        require(os.access(runner_hgs, os.X_OK) and runner_hgs != binary
+                and not os.path.samefile(binary, runner_hgs),
+                "Desktop runner must be an independent executable CLI outside the bundle.")
+        require(not any(part.endswith(".app") for part in runner_hgs.parts),
+                "Desktop runner must stay outside the replaceable application.")
+        # Query/validate the exact service image BEFORE applying the ordinary
+        # runner override: registration itself honors HGS_EXECUTABLE.
+        definition = plistlib.loads(content)
+        definition["EnvironmentVariables"] = {"HGS_EXECUTABLE": str(runner_hgs)}
+        content = plistlib.dumps(definition).replace(b"?>", b"?>\n<!-- " + MARKER.encode()
+                    + b"; configuration=" + value["configuration"].encode() + b" -->", 1)
     domain = f"gui/{os.getuid()}"
     target = domain + "/" + LABEL
     def launchctl(*args):
@@ -258,13 +285,16 @@ def main():
     group.add_argument("--check-only", action="store_true")
     group.add_argument("--remove", action="store_true")
     parser.add_argument("--restart", action="store_true", help="reload only this owned desktop service after a backend upgrade")
+    parser.add_argument("--runner-hgs", type=Path, help="stable independent CLI for ordinary service descendants")
+    parser.add_argument("--refresh-runner", action="store_true", help="retain an owned paired service during a CLI-only install")
     args = parser.parse_args()
     if sys.platform != "darwin":
         return 0
     if os.geteuid() == 0:
         parser.error("run the desktop installer as the login user, without sudo")
     try:
-        state = install(args.binary, Path.home(), os.environ, args.restart, args.check_only, args.remove)
+        state = install(args.binary, Path.home(), os.environ, args.restart, args.check_only, args.remove,
+                        runner_hgs=args.runner_hgs, refresh_runner=args.refresh_runner)
         if state == "deferred":
             print("Desktop service registered for the next Aqua login; IPC readiness is unverified.")
         elif state == "ready":
