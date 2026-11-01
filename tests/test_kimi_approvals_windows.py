@@ -154,6 +154,7 @@ class NativeWindowsKimiApprovals(approvals.ApprovalCases, approvals.GoalCases, a
         text = 'Start the fixture goal.' if self.goal_mode else 'Run the fixture command.'
         marker = '1. Switch to Never Ask and start' if self.goal_mode else '1. Approve once'
         if self.plan_scenario:
+            ready = self.plan_mode_on()
             text, marker = approvals.PLAN_PROMPT, 'Ready to build with this plan?'
         payload = dict(request_id=str(uuid.uuid4()), text=text,
                        expected_run_id=ready['run_id'], expected_conversation_id=ready.get('conversation_id') or '')
@@ -197,6 +198,10 @@ class NativeWindowsKimiApprovals(approvals.ApprovalCases, approvals.GoalCases, a
 
     def height(self):
         return self.rpc('pane_info', target=dict(name=self.name))['height']
+
+    def press(self, key):
+        """One key into the private pseudoconsole, written as tmux send-keys writes it."""
+        self.rpc('send_keys', target=dict(name=self.name), keys=[dict(named=key)])
 
     def until(self, predicate, seconds=WAIT):
         end = time.monotonic() + seconds
