@@ -18,7 +18,7 @@ use tokio::{
 use zerus_client_core::{
     desktop::{
         drain::{Gate, Role},
-        service::{self, CatalogPage, Snapshot},
+        service::{self, CatalogPage, ChangePage, Revision, Snapshot},
     },
     Change, ComputerId, ComputerStatus,
 };
@@ -28,6 +28,9 @@ const HELP: &str = "Desktop service ABI: desktop-v1";
 const SOURCES: usize = 64;
 const KEY_BYTES: usize = 32 << 20;
 const CATALOG_KEYS: usize = 1_000_000;
+
+mod catalog;
+use catalog::catalog_loop;
 
 /// Registered at setup before start_source. Some contains a verified service
 /// watch frame; None invalidates the prior projection. Callbacks must not block.
@@ -47,23 +50,47 @@ enum Control {
 
 #[derive(Default)]
 struct Dirty {
-    versions: BTreeMap<String, u64>,
     sources: BTreeMap<String, SourceVersion>,
+    heads: BTreeMap<String, Revision>,
+    progress: BTreeMap<String, Revision>,
     pending: BTreeSet<String>,
     next: u64,
 }
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 struct SourceVersion {
     incarnation: u64,
     generation: u64,
+    projection: Option<String>,
+    online: bool,
+    serial: u64,
 }
 impl SourceVersion {
     fn from(value: &Value) -> Self {
         Self {
             incarnation: value["incarnation"].as_u64().unwrap_or(0),
             generation: value["generation"].as_u64().unwrap_or(0),
+            projection: value["projection"].as_str().map(str::to_owned),
+            online: value["online"] == true,
+            serial: 0,
         }
+    }
+    fn identity(&self) -> service::CatalogIdentity {
+        service::CatalogIdentity {
+            incarnation: self.incarnation,
+            generation: self.generation,
+            projection: self.projection.clone(),
+        }
+    }
+    fn matches(&self, current: &Self) -> bool {
+        self.serial == current.serial
+            && self.incarnation == current.incarnation
+            && self.generation == current.generation
+            && self.online == current.online
+            && self
+                .projection
+                .as_ref()
+                .is_none_or(|p| current.projection.as_ref() == Some(p))
     }
 }
 
@@ -85,9 +112,8 @@ pub struct CatalogDelivery {
 enum CatalogValue {
     Row(Box<Change>),
     Finish {
-        version: u64,
-        complete: bool,
-        keys: BTreeSet<String>,
+        through: Option<Revision>,
+        keys: Option<BTreeSet<String>>,
         done: oneshot::Sender<()>,
     },
 }
@@ -102,7 +128,7 @@ impl CatalogDelivery {
             .snapshot
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let dirty = shared.dirty.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut dirty = shared.dirty.lock().unwrap_or_else(PoisonError::into_inner);
         if self.stopped.load(Ordering::Acquire)
             || shared.stopped.load(Ordering::Acquire)
             || snapshot.epoch.as_deref() != Some(&self.epoch)
@@ -116,14 +142,29 @@ impl CatalogDelivery {
                 pump.push(*change);
             }
             CatalogValue::Finish {
-                version,
-                complete,
+                through,
                 keys,
                 done,
             } => {
-                let clean = complete && dirty.versions.get(&self.computer) == Some(&version);
+                // Only baseline PLUS a fully consumed contiguous delta walk
+                // establishes membership, even when a newer hint is pending.
+                let clean = through.is_some_and(|through| {
+                    dirty
+                        .heads
+                        .get(&self.computer)
+                        .is_none_or(|head| *head <= through)
+                });
+                if let Some(through) = through {
+                    dirty.progress.insert(self.computer.clone(), through);
+                }
+                if clean || through.is_none() {
+                    dirty.pending.remove(&self.computer);
+                } else {
+                    dirty.pending.insert(self.computer.clone());
+                    shared.changed.notify_one();
+                }
                 let computer = ComputerId(self.computer);
-                if clean {
+                if let (Some(keys), Some(_)) = (keys, through) {
                     pump.service_catalog_finish(&computer, &keys);
                 }
                 pump.push(Change::Computer {
@@ -376,13 +417,7 @@ impl Service {
             .unwrap_or_else(PoisonError::into_inner)
             .take();
         if let Some(drain) = drain {
-            tauri::async_runtime::spawn_blocking(move || {
-                drain
-                    .join()
-                    .map_err(|_| "The service view did not stop.".to_owned())
-            })
-            .await
-            .map_err(|error| error.to_string())??;
+            join_view(drain, RPC_WAIT).await?;
         }
         let closed = self.shared.rpc.close();
         let drained = tauri::async_runtime::spawn_blocking(move || {
@@ -396,6 +431,19 @@ impl Service {
         Ok(())
     }
 }
+async fn join_view(drain: std::thread::JoinHandle<()>, wait: Duration) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + wait;
+    while !drain.is_finished() {
+        if tokio::time::Instant::now() >= deadline {
+            return Err("The service view did not stop before the quit deadline.".into());
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    drain
+        .join()
+        .map_err(|_| "The service view did not stop.".to_owned())
+}
+
 impl Drop for Service {
     fn drop(&mut self) {
         self.stop();
@@ -417,25 +465,59 @@ impl Shared {
         });
     }
     fn dirty(&self, computer: &str, source: SourceVersion) -> Result<bool, &'static str> {
+        self.catalog_hint(computer, source, None, false)
+    }
+    fn catalog_hint(
+        &self,
+        computer: &str,
+        mut source: SourceVersion,
+        head: Option<Revision>,
+        reset: bool,
+    ) -> Result<bool, &'static str> {
+        if !source.identity().valid() {
+            return Err("invalid_catalog_scope");
+        }
         let mut dirty = self.dirty.lock().unwrap_or_else(PoisonError::into_inner);
-        if !dirty.versions.contains_key(computer) && dirty.versions.len() >= SOURCES {
+        if !dirty.sources.contains_key(computer) && dirty.sources.len() >= SOURCES {
             return Err("source_capacity");
         }
-        dirty.next = dirty
-            .next
-            .checked_add(1)
-            .ok_or("source_generation_exhausted")?;
-        let next = dirty.next;
-        dirty.versions.insert(computer.into(), next);
-        let replaced = dirty
-            .sources
-            .insert(computer.into(), source)
-            .is_some_and(|old| old != source);
-        dirty.pending.insert(computer.into());
-        self.changed.notify_one();
+        let replaced = reset
+            || dirty.sources.get(computer).is_none_or(|old| {
+                old.incarnation != source.incarnation
+                    || old.generation != source.generation
+                    || old.online != source.online
+                    || (old.projection.is_some() && old.projection != source.projection)
+            });
+        if replaced {
+            dirty.next = dirty
+                .next
+                .checked_add(1)
+                .ok_or("source_generation_exhausted")?;
+            source.serial = dirty.next;
+            dirty.heads.remove(computer);
+            dirty.progress.remove(computer);
+        } else {
+            source.serial = dirty.sources[computer].serial;
+        }
+        dirty.sources.insert(computer.into(), source);
+        if let Some(head) = head {
+            dirty
+                .heads
+                .entry(computer.into())
+                .and_modify(|old| *old = (*old).max(head))
+                .or_insert(head);
+        }
+        let caught = dirty
+            .progress
+            .get(computer)
+            .is_some_and(|since| dirty.heads.get(computer).is_none_or(|head| head <= since));
+        if !caught {
+            dirty.pending.insert(computer.into());
+            self.changed.notify_one();
+        }
         Ok(replaced)
     }
-    fn current(&self, computer: &str, source: SourceVersion, epoch: &str) -> bool {
+    fn current(&self, computer: &str, source: &SourceVersion, epoch: &str) -> bool {
         self.snapshot
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -448,12 +530,13 @@ impl Shared {
                 .unwrap_or_else(PoisonError::into_inner)
                 .sources
                 .get(computer)
-                == Some(&source)
+                .is_some_and(|current| source.matches(current))
     }
     fn invalidate(&self) -> Vec<String> {
         let mut dirty = self.dirty.lock().unwrap_or_else(PoisonError::into_inner);
-        let computers = dirty.versions.keys().cloned().collect();
-        dirty.versions.clear();
+        let computers = dirty.sources.keys().cloned().collect();
+        dirty.heads.clear();
+        dirty.progress.clear();
         dirty.sources.clear();
         dirty.pending.clear();
         computers
@@ -555,10 +638,12 @@ async fn request(
 
 async fn preflight(shared: &Arc<Shared>, stop: Arc<AtomicBool>) -> Result<String, &'static str> {
     let help = command(shared, vec!["--help".into()], None, stop.clone()).await?;
-    if !std::str::from_utf8(&help)
-        .ok()
-        .is_some_and(|help| help.lines().any(|line| line.trim() == HELP))
-    {
+    if !std::str::from_utf8(&help).ok().is_some_and(|help| {
+        help.lines().any(|line| line.trim() == HELP)
+            && help
+                .lines()
+                .any(|line| line.trim() == service::CHANGES_HELP)
+    }) {
         return Err("incompatible_service_cli");
     }
     let bytes = command(
@@ -573,6 +658,9 @@ async fn preflight(shared: &Arc<Shared>, stop: Arc<AtomicBool>) -> Result<String
         .as_str()
         .filter(|value| zerus_client_core::desktop::digest(value))
         .ok_or("incompatible_service")?;
+    if value["catalog_reads"]["changes_abi"] != service::CHANGES_ABI {
+        return Err("incompatible_catalog_changes");
+    }
     let mut state = service::State::new(configuration.into())?;
     state.status(&value)?;
     if let Some(responder) = &shared.responder {
@@ -680,7 +768,7 @@ async fn connection(
                                 if let Some(computers) = state.snapshot().attention_counts.as_ref().and_then(|counts| counts["computers"].as_array()) {
                                     for computer in computers {
                                         if let Some(name) = computer["computer"].as_str() {
-                                            let known = shared.dirty.lock().unwrap_or_else(PoisonError::into_inner).versions.contains_key(name);
+                                            let known = shared.dirty.lock().unwrap_or_else(PoisonError::into_inner).sources.contains_key(name);
                                             if !known { shared.dirty(name, SourceVersion::from(computer))?; }
                                         }
                                     }
@@ -688,10 +776,11 @@ async fn connection(
                             }
                             service::Update::Catalog { computer, removed } => {
                                 if removed {
-                                    { let mut dirty = shared.dirty.lock().unwrap_or_else(PoisonError::into_inner); dirty.versions.remove(&computer); dirty.sources.remove(&computer); dirty.pending.remove(&computer); }
+                                    { let mut dirty = shared.dirty.lock().unwrap_or_else(PoisonError::into_inner); dirty.progress.remove(&computer); dirty.heads.remove(&computer); dirty.sources.remove(&computer); dirty.pending.remove(&computer); }
                                     emit(&shared, Change::Computer { computer: ComputerId(computer.clone()), status: ComputerStatus::Ended }, &stop).await?;
                                     emit(&shared, Change::Replace { computer: ComputerId(computer), rows: vec![] }, &stop).await?;
-                                } else if shared.dirty(&computer, SourceVersion::from(&frame["value"]))? {
+                                } else if shared.catalog_hint(&computer, SourceVersion::from(&frame["value"]),
+                                    serde_json::from_value(frame["value"]["revision"].clone()).map_err(|_| "invalid_catalog_revision")?, frame["value"]["reset_required"] == true)? {
                                     emit(&shared, Change::Computer { computer: ComputerId(computer), status: ComputerStatus::Probing }, &stop).await?;
                                 }
                             }
@@ -772,125 +861,6 @@ pub async fn desktop_service_automatic_approvals(
     Ok(
         json!({"request_id":request_id,"op":"automatic_approvals","accepted":false,"durable":false,"code":"frontend_route_unavailable"}),
     )
-}
-
-async fn catalog_loop(shared: Arc<Shared>, stop: Arc<AtomicBool>) -> Result<(), &'static str> {
-    loop {
-        if stop.load(Ordering::Acquire) {
-            return Ok(());
-        }
-        let work = {
-            let mut dirty = shared.dirty.lock().unwrap_or_else(PoisonError::into_inner);
-            dirty.pending.pop_first().and_then(|computer| {
-                dirty
-                    .versions
-                    .get(&computer)
-                    .zip(dirty.sources.get(&computer))
-                    .map(|(version, source)| (computer, *version, *source))
-            })
-        };
-        if let Some((computer, version, source)) = work {
-            let epoch = shared
-                .snapshot
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .epoch
-                .clone()
-                .ok_or("service_unavailable")?;
-            catalog_walk(&shared, &computer, version, source, &epoch, stop.clone()).await?;
-        } else {
-            shared.changed.notified().await;
-        }
-    }
-}
-
-async fn catalog_walk(
-    shared: &Arc<Shared>,
-    computer: &str,
-    version: u64,
-    source: SourceVersion,
-    epoch: &str,
-    stop: Arc<AtomicBool>,
-) -> Result<(), &'static str> {
-    let (mut cursor, mut keys, mut key_bytes) = (None::<String>, BTreeSet::new(), 0usize);
-    let result = async {
-        loop {
-            if stop.load(Ordering::Acquire) || !shared.current(computer, source, epoch) {
-                return Ok(());
-            }
-            let id = uuid::Uuid::new_v4().to_string();
-            let value = request(
-                shared,
-                json!({"op":"catalog_page","request_id":id,"computer":computer,"cursor":cursor}),
-                stop.clone(),
-            )
-            .await?;
-            let page = CatalogPage::checked(value, &id, epoch, computer)?;
-            cursor = page.next_cursor;
-            if stop.load(Ordering::Acquire) || !shared.current(computer, source, epoch) {
-                return Ok(());
-            }
-            for item in page.items {
-                if !shared.current(computer, source, epoch) {
-                    return Ok(());
-                }
-                key_bytes += item.key.len();
-                if key_bytes > KEY_BYTES
-                    || keys.len() >= CATALOG_KEYS
-                    || !keys.insert(item.key.clone())
-                {
-                    return Err("catalog_capacity_or_duplicate");
-                }
-                let row = zerus_client_core::view::row(&item.row);
-                emit_data(
-                    shared,
-                    Data::Catalog(CatalogDelivery {
-                        shared: Arc::downgrade(shared),
-                        computer: computer.into(),
-                        epoch: epoch.into(),
-                        source,
-                        stopped: stop.clone(),
-                        value: CatalogValue::Row(Box::new(Change::Upsert {
-                            computer: ComputerId::from(computer),
-                            key: item.key,
-                            row,
-                        })),
-                    }),
-                    &stop,
-                )
-                .await?;
-            }
-            if cursor.is_none() {
-                let (done, joined) = oneshot::channel();
-                emit_data(
-                    shared,
-                    Data::Catalog(CatalogDelivery {
-                        shared: Arc::downgrade(shared),
-                        computer: computer.into(),
-                        epoch: epoch.into(),
-                        source,
-                        stopped: stop.clone(),
-                        value: CatalogValue::Finish {
-                            version,
-                            complete: page.complete,
-                            keys: std::mem::take(&mut keys),
-                            done,
-                        },
-                    }),
-                    &stop,
-                )
-                .await?;
-                // Only one retained membership set and one serial walk at a time.
-                joined.await.map_err(|_| "catalog_invalidated")?;
-                return Ok(());
-            }
-        }
-    }
-    .await;
-    if let Some(cursor) = cursor {
-        let _ = request(shared, json!({"op":"catalog_close","request_id":uuid::Uuid::new_v4().to_string(),"computer":computer,"cursor":cursor}), stop).await;
-    }
-    result
 }
 
 #[cfg(all(test, unix))]

@@ -106,33 +106,56 @@ fn dirty_walk_finishes_its_cursor_and_coalesces_one_refresh_without_deleting_row
             key: "unseen".into(),
             row: zerus_client_core::view::row(&json!({"name":"codex/example/unseen"})),
         });
-        eventually("one follow-up refresh", || {
+        eventually("partial delta waits", || {
+            fixture.0.join("delta-page-two").exists()
+        })
+        .await;
+        assert!(
+            pump.row("", "unseen").is_some(),
+            "partial catch-up cannot infer deletion"
+        );
+        assert!(pump.row("", "inserted").is_some());
+        fs::write(fixture.0.join("finish-delta"), []).unwrap();
+        eventually("one follow-up delta", || {
             fixture.0.join("refresh-started").exists()
         })
         .await;
-        let pages: Vec<_> = fixture
-            .calls()
-            .into_iter()
-            .filter(|c| c["value"]["op"] == "catalog_page")
-            .collect();
-        assert_eq!(pages.len(), 3);
-        assert!(pages[0]["value"]["cursor"].is_null());
-        assert!(pages[1]["value"]["cursor"].is_string());
-        assert!(pages[2]["value"]["cursor"].is_null());
         assert!(
-            pump.row("", "unseen").is_some(),
-            "dirty walk cannot infer deletion"
+            pump.row("", "unseen").is_none(),
+            "fully consumed baseline plus delta establishes membership"
         );
         fs::write(fixture.0.join("finish-refresh"), []).unwrap();
-        eventually("clean refresh removes old membership", || {
-            pump.row("", "unseen").is_none()
+        eventually("new high-water consumed", || {
+            pump.row("", "fresh").is_some()
         })
         .await;
+        let calls = fixture.calls();
+        let pages: Vec<_> = calls
+            .iter()
+            .filter(|c| c["value"]["op"] == "catalog_page")
+            .collect();
+        assert_eq!(pages.len(), 2, "hints must not restart a baseline");
+        assert!(pages[0]["value"]["cursor"].is_null());
+        assert!(
+            pages[1]["value"]["cursor"].is_string(),
+            "the original insertion walk must finish"
+        );
+        let deltas: Vec<_> = calls
+            .iter()
+            .filter(|c| c["value"]["op"] == "catalog_changes")
+            .collect();
+        assert_eq!(deltas.len(), 3);
+        assert_eq!(deltas[0]["value"]["since_revision"], "0");
+        assert_eq!(deltas[1]["value"]["since_revision"], "0");
+        assert!(deltas[1]["value"]["cursor"].is_string());
+        assert_eq!(deltas[2]["value"]["since_revision"], "2");
+        assert!(deltas[2]["value"]["cursor"].is_null());
         assert!(pump.row("", "row").is_some());
+        assert!(pump.row("", "first").is_none());
         service.join().await.unwrap();
         assert_eq!(
             fs::read_to_string(fixture.0.join("page-number")).unwrap(),
-            "3"
+            "2"
         );
     });
 }
@@ -205,13 +228,15 @@ fn queued_catalog_rows_are_discarded_after_source_replacement_and_removal() {
         let old = SourceVersion {
             incarnation: 1,
             generation: 1,
+            ..SourceVersion::default()
         };
         service.shared.dirty("", old).unwrap();
+        let old = service.shared.dirty.lock().unwrap().sources[""].clone();
         let delivery = |key: &str| CatalogDelivery {
             shared: Arc::downgrade(&service.shared),
             computer: "".into(),
             epoch: "epoch".into(),
-            source: old,
+            source: old.clone(),
             stopped: Arc::new(AtomicBool::new(false)),
             value: CatalogValue::Row(Box::new(Change::Upsert {
                 computer: ComputerId::local(),
@@ -227,12 +252,13 @@ fn queued_catalog_rows_are_discarded_after_source_replacement_and_removal() {
                 SourceVersion {
                     incarnation: 1,
                     generation: 2,
+                    ..SourceVersion::default()
                 },
             )
             .unwrap();
         queued.apply(&pump, &|_| {});
         assert!(pump.row("", "stale").is_none());
-        service.shared.dirty("", old).unwrap();
+        service.shared.dirty("", old.clone()).unwrap();
         let queued = delivery("removed");
         service.shared.invalidate();
         queued.apply(&pump, &|_| {});
@@ -338,5 +364,152 @@ fn exit_waits_for_the_owned_proxy_and_blocked_view_callback_before_finishing() {
         release.send(()).unwrap();
         exiting.await.unwrap();
         assert!(finished.load(Ordering::Acquire));
+    });
+}
+
+#[test]
+fn full_projection_replacement_rebaselines_even_with_unchanged_native_generation() {
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        for stage in ["early", "late"] {
+            let fixture = Fixture::new(json!({"replace_projection":stage}));
+            let (service, pump) = fixture.start(true);
+            eventually("replacement baseline and catch-up", || {
+                pump.row("", "replacement").is_some() && pump.row("", "row").is_none()
+            })
+            .await;
+            service.join().await.unwrap();
+            let calls = fixture.calls();
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|c| c["value"]["op"] == "catalog_page")
+                    .count(),
+                2
+            );
+            assert!(calls.iter().any(|c| c["value"]["op"] == "catalog_close"));
+            assert!(pump.row("", "obsolete").is_none());
+        }
+    });
+}
+#[test]
+fn retention_gap_and_unknown_cursor_outcome_restart_from_a_fresh_baseline() {
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        for failure in ["gap", "unknown", "changed_through"] {
+            let fixture = Fixture::new(json!({"failure":failure}));
+            let (service, pump) = fixture.start(true);
+            eventually("fresh baseline caught up", || {
+                pump.row("", "recovered").is_some() && pump.row("", "row").is_none()
+            })
+            .await;
+            service.join().await.unwrap();
+            let calls = fixture.calls();
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|c| c["value"]["op"] == "catalog_page")
+                    .count(),
+                2
+            );
+            let deltas: Vec<_> = calls
+                .iter()
+                .filter(|c| c["value"]["op"] == "catalog_changes")
+                .collect();
+            assert_eq!(
+                deltas.len(),
+                if failure == "changed_through" { 3 } else { 2 }
+            );
+            assert_eq!(deltas[0]["value"]["since_revision"], "0");
+            assert_eq!(deltas.last().unwrap()["value"]["since_revision"], "5");
+            assert_ne!(
+                deltas[0]["value"]["request_id"],
+                deltas.last().unwrap()["value"]["request_id"]
+            );
+        }
+    });
+}
+#[test]
+fn offline_baseline_retains_last_known_rows_without_delta_or_complete_zero() {
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        let fixture = Fixture::new(json!({"offline":true}));
+        let (service, pump) = fixture.start(true);
+        pump.push(Change::Upsert {
+            computer: ComputerId::local(),
+            key: "retained".into(),
+            row: zerus_client_core::view::row(&json!({"name":"codex/example/retained"})),
+        });
+        eventually("offline retained source", || pump.row("", "row").is_some()).await;
+        service.join().await.unwrap();
+        assert!(pump.row("", "retained").is_some());
+        assert!(!fixture
+            .calls()
+            .iter()
+            .any(|c| c["value"]["op"] == "catalog_changes"));
+    });
+}
+#[test]
+fn twenty_thousand_rows_need_only_one_three_key_delta_after_the_baseline() {
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        let fixture = Fixture::new(json!({"large":20000}));
+        let (service, pump) = fixture.start(true);
+        // The bounded serial walk spawns one isolated CLI per page.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while pump.row("", "new").is_none() {
+            assert!(Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(pump.row("", "row-19999").is_some());
+        assert!(pump.row("", "row-1").is_none());
+        service.join().await.unwrap();
+        let calls = fixture.calls();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|c| c["value"]["op"] == "catalog_page")
+                .count(),
+            157
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|c| c["value"]["op"] == "catalog_changes")
+                .count(),
+            2
+        );
+    });
+}
+#[test]
+fn stuck_view_callback_cannot_hold_the_quit_completion_past_its_deadline() {
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        let fixture = Fixture::new(json!({}));
+        let pump = crate::pump::Pump::default();
+        let (sink, rx) = std::sync::mpsc::sync_channel(256);
+        let (entered, observed) = std::sync::mpsc::channel();
+        let (release, resume) = std::sync::mpsc::channel();
+        let first = AtomicBool::new(true);
+        let drain = pump.drain_service(rx, move |change| {
+            if matches!(change, Change::Upsert { .. }) && first.swap(false, Ordering::AcqRel) {
+                entered.send(()).unwrap();
+                resume.recv_timeout(Duration::from_secs(10)).unwrap();
+            }
+        });
+        let service = Service::start(fixture.0.join("hgs"), pump, sink, true, drain, None, vec![]);
+        eventually("blocked callback", || observed.try_recv().is_ok()).await;
+        let finished = AtomicBool::new(false);
+        let started = Instant::now();
+        crate::exit_flush::finish_service_exit_with_deadline(
+            service.clone(),
+            || finished.store(true, Ordering::Release),
+            Duration::from_millis(40),
+        )
+        .await;
+        assert!(finished.load(Ordering::Acquire));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        release.send(()).unwrap();
+        service.join().await.unwrap();
     });
 }
