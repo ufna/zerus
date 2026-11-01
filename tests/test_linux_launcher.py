@@ -33,14 +33,15 @@ class LinuxLauncher(unittest.TestCase):
         self.env = {k: v for k, v in os.environ.items()
                     if k not in ('HGS_LINUX_WEBKIT_PREFIX', 'LD_LIBRARY_PATH', 'WEBKIT_EXEC_PATH')}
 
-    def gui(self, kind):
+    def gui(self, kind, capability=1):
         self.binary.write_text(f'''#!{sys.executable}
 import json, os, sys
 if sys.argv[1:] == ['--build-info']:
-    print(json.dumps({{'ZerusGUI': {kind!r}}}))
+    print(json.dumps({{'ZerusGUI': {kind!r}, 'localWebKitChildEnvironment': {capability}}}))
 else:
     print(json.dumps({{'args': sys.argv[1:], 'libraries': os.environ.get('LD_LIBRARY_PATH'),
-                      'processes': os.environ.get('WEBKIT_EXEC_PATH')}}))
+                      'processes': os.environ.get('WEBKIT_EXEC_PATH'),
+                      'original': os.environ.get({launcher.ENV_MARKER!r})}}))
 ''')
         self.binary.chmod(0o755)
 
@@ -69,12 +70,23 @@ else:
         self.assertEqual(self.configure().stdout, '')
         self.assertEqual(setting.read_bytes(), before)
         result, _ = self.launch(LD_LIBRARY_PATH='/other/libraries')
+        marker = result.pop('original')
+        self.assertEqual(json.loads(marker), dict(version=1, LD_LIBRARY_PATH=b'/other/libraries'.hex(), WEBKIT_EXEC_PATH=None))
         self.assertEqual(result, dict(args=['--sessions', 'two words'],
                                      libraries=f'{self.stack}/gtk/lib:{self.stack}/lib:/other/libraries',
                                      processes=f'{self.stack}/libexec/webkit2gtk-4.1'))
         self.assertEqual(self.configure(HGS_LINUX_WEBKIT_PREFIX='').returncode, 0)
         self.assertFalse(setting.exists())
-        self.assertIsNone(self.launch()[0]['libraries'])
+        self.assertFalse((self.install / launcher.LAUNCHER).exists())
+
+    def test_marker_preserves_unset_empty_and_existing_webkit_process_path(self):
+        self.select()
+        for env, libraries, processes in (({}, None, None),
+                                          ({'LD_LIBRARY_PATH': '', 'WEBKIT_EXEC_PATH': ''}, '', ''),
+                                          ({'WEBKIT_EXEC_PATH': '/original/processes'}, None, '/original/processes')):
+            original = json.loads(self.launch(**env)[0]['original'])
+            decode = lambda value: None if value is None else bytes.fromhex(value).decode()
+            self.assertEqual((decode(original['LD_LIBRARY_PATH']), decode(original['WEBKIT_EXEC_PATH'])), (libraries, processes))
 
     def test_missing_or_partial_stack_falls_back_and_returns_without_reconfiguration(self):
         self.select()
@@ -94,6 +106,9 @@ else:
         self.select()
         self.gui('qt')
         self.assertIsNone(self.launch()[0]['libraries'])
+        self.assertIsNone(self.launch()[0]['original'])
+        self.gui('tauri', capability=0)
+        self.assertIsNone(self.launch()[0]['libraries'], 'older client rollback cannot sanitize children')
         self.gui('tauri')
         for value in ('{', '[]', '{"version":1,"prefix":"relative"}', 'x' * 5000):
             (self.install / launcher.SETTING).write_text(value)

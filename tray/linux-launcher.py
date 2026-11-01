@@ -9,6 +9,7 @@ import tempfile
 
 SETTING = Path('share/hgs/local-webkit.json')
 LAUNCHER = Path('libexec/hgs-tray-launch')
+ENV_MARKER = 'HGS_LINUX_WEBKIT_ORIGINAL_ENV'
 LIBRARIES = ('gtk/lib/libgtk-3.so.0', 'gtk/lib/libgdk-3.so.0',
              'lib/libwebkit2gtk-4.1.so.0', 'lib/libjavascriptcoregtk-4.1.so.0')
 PROCESSES = tuple(f'libexec/webkit2gtk-4.1/{name}' for name in
@@ -64,9 +65,11 @@ def install_launcher(install):
                                  'with libraries and WebKit processes (no colon or newline)')
             content = (json.dumps({'version': 1, 'prefix': str(Path(value))}) + '\n').encode()
             changed |= replace(setting, content, 0o600)
-        elif setting.exists():
-            setting.unlink()
-            changed = True
+        else:
+            for path in (setting, install / LAUNCHER):
+                if path.exists():
+                    path.unlink()
+                    changed = True
     # Unset retains the local selection, including when its private disk is absent.
     if setting.exists():
         changed |= replace(install / LAUNCHER, Path(__file__).read_bytes(), 0o755)
@@ -87,13 +90,19 @@ def environment(install, binary):
         info = subprocess.run([str(binary), '--build-info'], capture_output=True,
                               text=True, timeout=5, check=True)
         identity = json.loads(info.stdout)
-        if not isinstance(identity, dict) or identity.get('ZerusGUI') != 'tauri':
+        if (not isinstance(identity, dict) or identity.get('ZerusGUI') != 'tauri'
+                or identity.get('localWebKitChildEnvironment') != 1):
             return env
     except (OSError, ValueError, subprocess.SubprocessError):
         return env
     libraries = f'{prefix}/gtk/lib:{prefix}/lib'
     if env.get('LD_LIBRARY_PATH'):
         libraries += ':' + env['LD_LIBRARY_PATH']
+    # Zerus restores this environment at each non-WebKit child boundary. Encode
+    # bytes so an unset, empty or non-UTF-8 original value survives exactly.
+    original = {key: (os.fsencode(env[key]).hex() if key in env else None)
+                for key in ('LD_LIBRARY_PATH', 'WEBKIT_EXEC_PATH')}
+    env[ENV_MARKER] = json.dumps({'version': 1, **original})
     env['LD_LIBRARY_PATH'] = libraries
     env['WEBKIT_EXEC_PATH'] = str(prefix / 'libexec/webkit2gtk-4.1')
     return env

@@ -107,7 +107,7 @@ pub fn open_url(url: &str) -> std::io::Result<()> {
     } else {
         "xdg-open"
     };
-    let mut child = std::process::Command::new(program)
+    let mut child = crate::child_environment::command(program)
         .arg(url)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

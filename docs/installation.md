@@ -93,14 +93,17 @@ Later preview installs retain it without the variable. The local service and
 desktop entry use `~/.local/libexec/hgs-tray-launch`; it selects these libraries
 and processes only for Zerus Next, leaving the real `hgs-tray` binary available
 to the maintained updater and its rollback checks. If the stack disappears or
-is incomplete, the next launch uses system libraries. Qt rollback also uses
-system libraries. Published packages continue using stock WebKitGTK.
+is incomplete, the next launch uses system libraries. Qt and older Zerus Next
+rollback builds also use system libraries. Published packages continue using stock WebKitGTK.
 
 Run `HGS_LINUX_WEBKIT_PREFIX= ./tray/install.sh` to clear the selection. Changing
 the setting takes effect at the next GUI start; if the binary is unchanged, the
 installer leaves the current GUI running. A changed build still uses the normal
 draft-preserving update. The opt-in does not modify global library paths or
-the environment of existing native agents.
+the environment of native agents. The launcher records the original library
+variables; Zerus restores them when starting CLI commands, watches, Terminal
+clients, desktop terminals and external applications. WebKit's own subprocesses
+keep the private stack.
 
 `HGS_MOBILE_CONNECTOR=1 ./install.sh` also builds the Rust mobile connector
 (`services/mobile/connector`) into `~/.local/bin/zerus-mobile-connector`. Later
