@@ -3,6 +3,7 @@ use std::path::Path;
 use tauri::AppHandle;
 use tauri_plugin_opener::OpenerExt;
 
+#[cfg(any(feature = "media", all(feature = "live", target_os = "linux")))]
 pub fn url(app: &AppHandle, url: &str) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     if std::env::var_os(crate::child_environment::WEBKIT_MARKER).is_some() {

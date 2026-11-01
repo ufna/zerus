@@ -494,6 +494,12 @@ stops an idle session host without disabling anything.
   `hgs-tray.exe` in the Startup folder (`shell:startup`) and add a space and
   `--background` at the end of its **Target** field, so Zerus starts in the
   notification area without opening its window.
+  Zerus Next also supports an explicit per-user login registration:
+  `hgs-tray.exe --install-login-item` enables background startup and
+  `hgs-tray.exe --remove-login-item` removes it. Pass the same `--hgs` selector
+  when registering a custom CLI. It is never enabled automatically. Existing
+  Startup-folder shortcuts remain valid; duplicate background starts keep the
+  window hidden.
 - Without SSH connection sharing, every poll of every machine is a full SSH
   handshake: about 150 ms per machine on a LAN. The app lists this computer at
   most once every 15 seconds, or every 5 seconds with local sessions enabled.

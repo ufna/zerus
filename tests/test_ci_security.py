@@ -600,6 +600,18 @@ class WorkflowSecurityTests(unittest.TestCase):
         for stage in ("macos:core", "macos:media", "macos:tauri-test", "macos:tauri-clippy"):
             self.assertIn(stage, script)
 
+    def test_windows_shell_candidate_is_disposable_and_unprivileged(self):
+        native = job((ROOT / ".github/workflows/checks.yml").read_text(), "client-native-windows")
+        self.assertNotIn("secrets.", native)
+        self.assertNotIn("environment:", native)
+        self.assertIn("run: bash scripts/ci/windows-next-shell.sh", native)
+        self.assertIn("retention-days: 3", native)
+        script = (ROOT / "scripts/ci/windows-next-shell.sh").read_text()
+        self.assertIn("cargo test --locked", script)
+        self.assertIn("--debug --no-bundle", script)
+        self.assertNotIn("--install-login-item", script)
+        self.assertNotIn("--sessions", script)
+
     def checks_steps(self, name):
         """One checks.yml job's steps, each with its indented body."""
         body = job((ROOT / ".github/workflows/checks.yml").read_text(), name).split("\n    steps:\n", 1)[1]
