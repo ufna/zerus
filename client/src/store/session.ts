@@ -14,7 +14,7 @@ import { createSubagentActivity } from "./subagentActivity";
 import { archive } from "./archive";
 import { applyGrouping } from "./organization";
 import { activityReadOnly } from "./activitySource";
-import { compactRows, detailTab, page, selected, selectedKey, setCompactRows, setDetailTab, setSelectedKey, subagentOpen } from "./ui";
+import { compactRows, detailTab, page, selected, selectedKey, setCompactRows, setDetailTab, setReadSelectionKey, setSelectedKey, subagentOpen } from "./ui";
 import { startScreens } from "./screens";
 import { documentVisibility } from "./visibility";
 import { processes, trackFollow, trackShown } from "./processes";
@@ -84,6 +84,9 @@ function composerEvent(e: ComposerEvent) {
 }
 
 createRoot(() => {
+  // Another selection lets the row whose reply was just read leave the
+  // filtered list (Qt's selectSession and selectCreation clear m_readSelectionKey).
+  createEffect(on(selectedKey, () => { setReadSelectionKey(undefined); }, { defer: true }));
   createEffect(on(() => {
     const s = selected();
     return s ? `${s.key}\n${s.name}` : undefined;

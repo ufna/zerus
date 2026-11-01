@@ -14,6 +14,7 @@ vi.mock("../../store/marks", async (orig) => ({ ...(await orig<object>()), markR
 vi.mock("../../store/actions", async (orig) => ({ ...(await orig<object>()), notify: m.notify, stillListed: m.stillListed }));
 
 import { markAllEntry, markAllLabel, markAllTip, markEntry, markReadChip } from "./mark-entries";
+import { bindSearchRow, listedByFilter, readSelectionKey, setReadSelectionKey, setSelectedKey } from "../../store/ui";
 import type { Session } from "./types";
 
 const session = (extra: Record<string, unknown> = {}, reviewLater = false) => ({
@@ -102,5 +103,52 @@ describe("markAllEntry", () => {
     m.markAllRead.mockReturnValue(0);
     markAllEntry().action!();
     expect(m.notify).not.toHaveBeenCalled();
+  });
+});
+
+describe("the open row after a read (Qt's m_readSelectionKey)", () => {
+  beforeEach(() => { setSelectedKey(undefined); setReadSelectionKey(undefined); });
+
+  it("keeps the selected row after Mark as read, never another row or a refused mark", () => {
+    setSelectedKey("run:a");
+    markEntry(session({}, true))!.action!();
+    expect(readSelectionKey()).toBe("run:a");
+    setReadSelectionKey(undefined);
+    markEntry(session({ key: "run:b" }, true))!.action!();
+    expect(readSelectionKey()).toBeUndefined();
+    m.markRead.mockReturnValue(false);
+    markEntry(session({}, true))!.action!();
+    expect(readSelectionKey()).toBeUndefined();
+  });
+
+  it("keeps the selected row with an unread reply after Mark all as read", () => {
+    const rows: Record<string, Session> = { "run:u": session({ key: "run:u", unreadReply: true }), "run:r": session({ key: "run:r", unreadReply: false }) };
+    bindSearchRow((key) => rows[key]);
+    m.unreadReplies.mockReturnValue(new Map([["a", "1"]]));
+    setSelectedKey("run:r");
+    markAllEntry().action!();
+    expect(readSelectionKey()).toBeUndefined();
+    setSelectedKey("run:u");
+    markAllEntry().action!();
+    expect(readSelectionKey()).toBe("run:u");
+    bindSearchRow(() => undefined);
+  });
+
+  it("lists the kept row under Needs attention and Active only while it is selected and kept", () => {
+    // No computer is online here: this row matches neither filter by itself.
+    const read = session({ key: "run:k" });
+    expect(listedByFilter(read, "attention")).toBe(false);
+    setSelectedKey("run:k");
+    expect(listedByFilter(read, "attention")).toBe(false);
+    setReadSelectionKey("run:k");
+    expect(listedByFilter(read, "attention")).toBe(true);
+    expect(listedByFilter(read, "active")).toBe(true);
+    expect(listedByFilter(read, "paused")).toBe(false);
+    expect(listedByFilter(read, "archived")).toBe(false);
+    expect(listedByFilter(session({ key: "run:k", state: "archived" }), "attention")).toBe(false);
+    expect(listedByFilter(session({ key: "run:other" }), "attention")).toBe(false);
+    setSelectedKey("run:other");
+    expect(listedByFilter(read, "attention")).toBe(false);
+    expect(listedByFilter(read, "all")).toBe(true);
   });
 });

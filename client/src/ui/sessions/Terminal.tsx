@@ -4,7 +4,7 @@ import type { FitAddon } from "@xterm/addon-fit";
 import { Icon } from "../lib/icons";
 import { contentScale } from "../../store/ui";
 import { skin } from "../../skin/runtime";
-import { terminal, type Screen } from "../../store/terminal";
+import { screenShowsLatest, terminal, type Screen } from "../../store/terminal";
 import { tr } from "../../i18n";
 
 // xterm.js 6 loads when Terminal first opens. Linux keeps the DOM renderer;
@@ -72,7 +72,10 @@ export function TerminalTab() {
     if (gone) { term.dispose(); return; }
     const measure = () => { if (host.clientWidth > 0 && host.clientHeight > 0) fit.fit(); };
     measure();
-    const screen: Screen = { write: (bytes, done) => term.write(bytes, done), paste: (text) => term.paste(text), reset: () => term.reset(), size: () => ({ cols: term.cols, rows: term.rows }) };
+    const screen: Screen = {
+      write: (bytes, done) => term.write(bytes, done), paste: (text) => term.paste(text), reset: () => term.reset(), size: () => ({ cols: term.cols, rows: term.rows }),
+      latest: () => screenShowsLatest(term),
+    };
     term.onData((data) => terminal.input(encoder.encode(data), screen));
     term.onBinary((data) => terminal.input(Uint8Array.from(data, (c) => c.charCodeAt(0) & 255), screen));
     term.onResize(({ cols, rows }) => terminal.resized(cols, rows));

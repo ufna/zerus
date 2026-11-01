@@ -631,6 +631,27 @@ export function createMarks(port: MarksPort = bridgePort, storage: MigratedStora
     return true;
   }
 
+  /**
+   * FleetState::markReplyRead: reads exactly this reply of the listed,
+   * unarchived session of that name and conversation while it is still the
+   * row's unread reply. Only the reply: the attention, its acknowledgement and
+   * Review later stay. Queued for a shared-read host, kept here for an older
+   * one. False when nothing matched (a newer reply, another conversation).
+   */
+  function markReplyRead(computer: string, name: string, conversation: string, reply: string): boolean {
+    if (!reply || !conversation) return false;
+    const s = listed(new Set([computer])).find((s) => s.state !== "archived" && s.name === name
+      && (s.conversationId ?? "") === conversation && (s.replyId ?? "") === reply && readState(s).unreadReply);
+    if (!s) return false;
+    const c = change();
+    const fresh: ReadMark[] = [];
+    writeReply(replyKeyOf(s), reply, c);
+    queueRead(s, true, false, fresh, c);
+    c.names.add(pair(s.computer, s.name));
+    commit(c, fresh);
+    return true;
+  }
+
   /** FleetState::setReviewLater(..., true): false when the row is gone. */
   function markNeedsAttention(row: ActionRow): boolean {
     const s = matching(row);
@@ -729,6 +750,7 @@ export function createMarks(port: MarksPort = bridgePort, storage: MigratedStora
     loadPending,
     observe,
     markRead,
+    markReplyRead,
     markNeedsAttention,
     unreadReplies,
     markAllRead,
@@ -751,7 +773,7 @@ export type Marks = ReturnType<typeof createMarks>;
 
 /** The app's marks; the app catalog applies them. Tests build their own with `createMarks`. */
 export const marks = createMarks();
-export const { overlay, markRead, markNeedsAttention, unreadReplies, markAllRead, loadPending } = marks;
+export const { overlay, markRead, markReplyRead, markNeedsAttention, unreadReplies, markAllRead, loadPending } = marks;
 /** Hands a batch the catalog just applied to the marks (session.ts). */
 export const observeMarks = marks.observe;
 void marks.load();

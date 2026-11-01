@@ -132,6 +132,20 @@ export function matchesFilter(s: Session, f: StateFilter): boolean {
   }
 }
 
+/**
+ * The selected row whose reply was just read (Qt's m_readSelectionKey): it
+ * stays listed under Needs attention and Active until another row is selected,
+ * so reading it never replaces the open conversation. session.ts clears it on
+ * every selection change.
+ */
+export const [readSelectionKey, setReadSelectionKey] = createSignal<string | undefined>();
+
+/** The state filter with the open row kept after its read (SessionsWindowRows.cpp:272-275). */
+export function listedByFilter(s: Session, f: StateFilter): boolean {
+  if (matchesFilter(s, f)) return true;
+  return (f === "attention" || f === "active") && s.state !== "archived" && s.key === selectedKey() && s.key === readSelectionKey();
+}
+
 export const counts = createMemo(() => {
   let all = 0, active = 0, attention = 0, working = 0, paused = 0;
   for (const s of orderedRows()) {
