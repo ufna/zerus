@@ -213,11 +213,11 @@ fn queued_catalog_rows_are_discarded_after_source_replacement_and_removal() {
             epoch: "epoch".into(),
             source: old,
             stopped: Arc::new(AtomicBool::new(false)),
-            value: CatalogValue::Row(Change::Upsert {
+            value: CatalogValue::Row(Box::new(Change::Upsert {
                 computer: ComputerId::local(),
                 key: key.into(),
                 row: zerus_client_core::view::row(&json!({"name":"codex/example/row"})),
-            }),
+            })),
         };
         let queued = delivery("stale");
         service
@@ -305,5 +305,38 @@ fn approval_seam_is_an_explicit_refusal_without_a_generic_cli_policy_call() {
         assert_eq!(result["accepted"], false);
         assert_eq!(result["durable"], false);
         assert_eq!(result["code"], "frontend_route_unavailable");
+    });
+}
+
+#[test]
+fn exit_waits_for_the_owned_proxy_and_blocked_view_callback_before_finishing() {
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        let fixture = Fixture::new(json!({}));
+        let pump = crate::pump::Pump::default();
+        let (sink, rx) = std::sync::mpsc::sync_channel(256);
+        let (entered, observed) = std::sync::mpsc::channel();
+        let (release, resume) = std::sync::mpsc::channel();
+        let first = AtomicBool::new(true);
+        let drain = pump.drain_service(rx, move |change| {
+            if matches!(change, Change::Upsert { .. }) && first.swap(false, Ordering::AcqRel) {
+                entered.send(()).unwrap();
+                resume.recv_timeout(Duration::from_secs(10)).unwrap();
+            }
+        });
+        let service = Service::start(fixture.0.join("hgs"), pump, sink, true, drain, None, vec![]);
+        eventually("view callback entered", || observed.try_recv().is_ok()).await;
+        let finished = Arc::new(AtomicBool::new(false));
+        let ended = finished.clone();
+        let exiting = tauri::async_runtime::spawn(crate::exit_flush::finish_service_exit(
+            service,
+            move || ended.store(true, Ordering::Release),
+        ));
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!finished.load(Ordering::Acquire));
+        assert!(!exiting.inner().is_finished());
+        release.send(()).unwrap();
+        exiting.await.unwrap();
+        assert!(finished.load(Ordering::Acquire));
     });
 }

@@ -71,6 +71,7 @@ impl AppState {
         let _ = self.live.desktop_responder.set(responder);
     }
 
+    #[allow(dead_code)] // .66.3.36 registers its maintenance projection after that adapter lands.
     pub fn register_service_projection(
         &self,
         observer: crate::desktop_service::Projection,
@@ -191,6 +192,7 @@ mod live {
         }
     }
     impl Live {
+        #[allow(dead_code)] // Reserved setup hook for the .66.3.36 maintenance consumer.
         pub(super) fn register_service_projection(
             &self,
             observer: crate::desktop_service::Projection,

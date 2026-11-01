@@ -714,7 +714,7 @@ describe("legacy read marks", () => {
 // These reads belong to the service actor. A GUI may only overlay a committed
 // exact identity; IPC availability, a local queue or a superseded row is not it.
 describe("service read intents", () => {
-  async function fixture(ready: boolean) {
+  async function fixture(ready: boolean, extra: Partial<ViewRow> = {}) {
     const { createDesktopService } = await import("./desktopService");
     const service = createDesktopService();
     service.apply({ connected: true, epoch: "epoch", generation: 1,
@@ -722,7 +722,7 @@ describe("service read intents", () => {
       attention_counts: null, automatic_approvals: null, details_available: false, code: "background_unready" });
     const port = fakePort();
     const store = createMarks(port, memoryStorage(), service), data = createCatalog(store);
-    data.applyBatch(batchOf({ upserts: [rowOut()] }));
+    data.applyBatch(batchOf({ upserts: [rowOut(extra)] }));
     await store.load(); await flush();
     return { port, store, ...data, row: () => data.catalog.rows[id()] };
   }
@@ -731,6 +731,28 @@ describe("service read intents", () => {
     expect(f.store.markRead(snapshotOf(f.row()))).toBe(false);
     expect(f.row().unread).toBe(true);
     expect(f.port.queueReadMarks).not.toHaveBeenCalled();
+  });
+  it("reports service readiness without blaming a newer reply", async () => {
+    const f = await fixture(false);
+    expect(f.store.markReadUnavailable(snapshotOf(f.row()))).toBe("Read marks are unavailable until the background service is ready.");
+    expect(f.port.queueReadMarks).not.toHaveBeenCalled();
+    const missing = await fixture(true, { run_id: "" });
+    expect(missing.store.markReadUnavailable(snapshotOf(missing.row()))).toBe("This host has no shared read state for this session.");
+  });
+  it("keeps local mark-read, dwell and bulk read for hosts without shared read state", async () => {
+    const single = await fixture(false, { shared_read: false });
+    expect(single.store.markReadUnavailable(snapshotOf(single.row()))).toBeUndefined();
+    expect(single.store.markRead(snapshotOf(single.row()))).toBe(true);
+    expect(single.row().unread).toBe(false);
+    expect(single.port.queueReadMarks).not.toHaveBeenCalled();
+    const dwell = await fixture(false, { shared_read: false });
+    expect(dwell.store.markReplyRead("", NAME, "conv-1", "r1")).toBe(true);
+    expect(dwell.row().unread).toBe(false);
+    expect(dwell.port.queueReadMarks).not.toHaveBeenCalled();
+    const all = await fixture(false, { shared_read: false });
+    expect(all.store.markAllRead()).toBe(1);
+    expect(all.row().unread).toBe(false);
+    expect(all.port.queueReadMarks).not.toHaveBeenCalled();
   });
   it("overlays only after durable commit and coalesces repeated dwell/menu actions", async () => {
     const f = await fixture(true), commit = deferred<ReadMark[]>();

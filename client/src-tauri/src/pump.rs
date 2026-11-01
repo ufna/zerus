@@ -295,7 +295,7 @@ impl Pump {
                     match data {
                         crate::desktop_service::Data::Change(change) => {
                             observe(&change);
-                            pump.push(change);
+                            pump.push(*change);
                         }
                         crate::desktop_service::Data::Catalog(delivery) => {
                             delivery.apply(&pump, &observe)

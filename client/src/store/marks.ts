@@ -665,11 +665,26 @@ export function createMarks(port: MarksPort = bridgePort, storage: MigratedStora
     return true;
   }
 
+  const sharedReadNeeded = (s: Session) => s.sharedRead && !!(
+    (s.replyId && s.readReplyId !== s.replyId) || (s.attentionSignature && s.readAttentionSignature !== s.attentionSignature)
+  );
+
+  /** A current row can be unread because the service is unavailable; that is
+   * distinct from an identity changing under an open menu. Older hosts keep
+   * their device-local read overlay and need no host writer at all. */
+  function markReadUnavailable(row: ActionRow): string | undefined {
+    if (!service.enabled()) return;
+    const s = matching(row);
+    if (!s || s.replyId !== row.replyId || s.fingerprint !== row.fingerprint || s.attentionSignature !== row.attentionSignature || !sharedReadNeeded(s)) return;
+    if (!s.runId || !s.conversationId) return tr("This host has no shared read state for this session.");
+    if (!service.ready("reads")) return tr("Read marks are unavailable until the background service is ready.");
+  }
+
   function markRead(row: ActionRow): boolean {
     const s = matching(row);
     if (!s || (s.replyId ?? "") !== (row.replyId ?? "") || s.fingerprint !== row.fingerprint
       || (s.attentionSignature ?? "") !== (row.attentionSignature ?? "")) return false;
-    if (service.enabled()) return serviceRead(s, true);
+    if (service.enabled() && sharedReadNeeded(s)) return serviceRead(s, true);
     const before = readState(s);
     const c = change();
     const fresh: ReadMark[] = [];
@@ -696,7 +711,7 @@ export function createMarks(port: MarksPort = bridgePort, storage: MigratedStora
     const s = listed(new Set([computer])).find((s) => s.state !== "archived" && s.name === name
       && (s.conversationId ?? "") === conversation && (s.replyId ?? "") === reply && readState(s).unreadReply);
     if (!s) return false;
-    if (service.enabled()) return serviceRead(s, false);
+    if (service.enabled() && s.sharedRead) return serviceRead(s, false);
     const c = change();
     const fresh: ReadMark[] = [];
     writeReply(replyKeyOf(s), reply, c);
@@ -789,7 +804,7 @@ export function createMarks(port: MarksPort = bridgePort, storage: MigratedStora
       const key = replyKeyOf(s);
       if (snapshot.get(key) !== s.replyId) continue;
       if (!s.sharedRead && replies.get(key) === s.replyId) continue;
-      if (service.enabled()) { if (serviceRead(s, false)) count++; continue; }
+      if (service.enabled() && s.sharedRead) { if (serviceRead(s, false)) count++; continue; }
       writeReply(key, s.replyId!, c);
       queueRead(s, true, false, fresh, c);
       count++;
@@ -805,6 +820,7 @@ export function createMarks(port: MarksPort = bridgePort, storage: MigratedStora
     loadPending,
     observe,
     markRead,
+    markReadUnavailable,
     markReplyRead,
     markNeedsAttention,
     unreadReplies,
@@ -828,7 +844,7 @@ export type Marks = ReturnType<typeof createMarks>;
 
 /** The app's marks; the app catalog applies them. Tests build their own with `createMarks`. */
 export const marks = createMarks();
-export const { overlay, markRead, markReplyRead, markNeedsAttention, unreadReplies, markAllRead, loadPending } = marks;
+export const { overlay, markReadUnavailable, markRead, markReplyRead, markNeedsAttention, unreadReplies, markAllRead, loadPending } = marks;
 /** Hands a batch the catalog just applied to the marks (session.ts). */
 export const observeMarks = marks.observe;
 void marks.load();

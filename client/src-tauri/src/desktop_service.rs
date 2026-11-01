@@ -68,7 +68,7 @@ impl SourceVersion {
 }
 
 pub enum Data {
-    Change(Change),
+    Change(Box<Change>),
     Catalog(CatalogDelivery),
 }
 
@@ -83,7 +83,7 @@ pub struct CatalogDelivery {
     value: CatalogValue,
 }
 enum CatalogValue {
-    Row(Change),
+    Row(Box<Change>),
     Finish {
         version: u64,
         complete: bool,
@@ -113,7 +113,7 @@ impl CatalogDelivery {
         match self.value {
             CatalogValue::Row(change) => {
                 observe(&change);
-                pump.push(change);
+                pump.push(*change);
             }
             CatalogValue::Finish {
                 version,
@@ -461,7 +461,7 @@ impl Shared {
 }
 
 async fn emit(shared: &Shared, change: Change, stop: &AtomicBool) -> Result<(), &'static str> {
-    emit_data(shared, Data::Change(change), stop).await
+    emit_data(shared, Data::Change(Box::new(change)), stop).await
 }
 async fn emit_data(
     shared: &Shared,
@@ -850,11 +850,11 @@ async fn catalog_walk(
                         epoch: epoch.into(),
                         source,
                         stopped: stop.clone(),
-                        value: CatalogValue::Row(Change::Upsert {
+                        value: CatalogValue::Row(Box::new(Change::Upsert {
                             computer: ComputerId::from(computer),
                             key: item.key,
                             row,
-                        }),
+                        })),
                     }),
                     &stop,
                 )
