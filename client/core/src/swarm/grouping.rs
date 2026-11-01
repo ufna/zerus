@@ -700,6 +700,25 @@ impl Grouping {
         self.layout.presentation_seeded()
     }
 
+    pub fn windows_folders_import_layout(&self) -> Result<Option<super::layout::Layout>, &'static str> {
+        self.layout
+            .windows_folders_import_pending()
+            .map(|pending| pending.then(|| self.layout.clone()))
+    }
+
+    pub fn seed_windows_folders(
+        &mut self,
+        seed: super::layout::WindowsFoldersSeed,
+        context: &super::layout::WindowsFoldersContext<'_>,
+    ) -> Result<bool, &'static str> {
+        let changed = self.layout.seed_windows_folders(seed, context)?;
+        if changed {
+            let layout = std::mem::take(&mut self.layout);
+            self.replace_layout(layout);
+        }
+        Ok(changed)
+    }
+
     pub fn seed_presentation(
         &mut self,
         seed: super::layout::PresentationSeed,

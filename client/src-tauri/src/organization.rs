@@ -143,6 +143,9 @@ struct Hub {
     /// Only an adopted current source observation can qualify local metadata.
     /// Kept out of Controller: it is never shared state or apply input.
     windows_read: Option<(u64, u64, String)>,
+    /// One startup attempt once both the local watch and catalog are current.
+    /// Failed/absent sources stay unhandled on disk for the next startup.
+    windows_import_attempted: bool,
 }
 
 #[derive(Clone)]
@@ -254,6 +257,100 @@ impl Organization {
         hub.shown = None;
         self.publish(&mut hub);
         self.release(hub);
+        Ok(())
+    }
+
+    fn recover_windows_folders(&self) -> Result<(), String> {
+        let (node, generation, revision, catalog, source, recovery) = {
+            let mut hub = self.lock();
+            if hub.windows_import_attempted {
+                return Ok(());
+            }
+            let Some(node) = self.windows_read_node(&hub) else {
+                return Ok(());
+            };
+            let (Some(catalog), Some(source), Some(recovery)) = (
+                hub.sync.observed_value(),
+                hub.source.clone(),
+                hub.qt_recovery.clone(),
+            ) else {
+                return Ok(());
+            };
+            hub.windows_import_attempted = true;
+            (
+                node,
+                hub.source_generation,
+                hub.sync.revision(),
+                catalog,
+                source,
+                recovery,
+            )
+        };
+        let Some(layout) = self.0.pump.windows_folders_import_layout()? else {
+            return Ok(());
+        };
+        // The fixed local Qt source is supplied only by the switch identity.
+        // Its explicit folder machine IDs are checked against the independent
+        // current local watch and hgs catalog, never aliases or path spellings.
+        // No organization key means no call to the nonempty-source importer,
+        // and no durable empty/handled family is manufactured.
+        if recovery
+            .source
+            .snapshot()?
+            .is_none_or(|snapshot| !snapshot.values.contains_key(swarm::qt_import::KEY))
+        {
+            return Ok(());
+        }
+        let context = swarm::layout::WindowsFoldersContext {
+            source_node: &node,
+            current_node: &node,
+            catalog: &catalog,
+        };
+        let seed_at = recovery
+            .settings
+            .seed_record()
+            .and_then(|record| record["at"].as_u64());
+        let Some(seed) = swarm::layout::qt_windows_folders(
+            &layout,
+            &recovery.source,
+            &self.0.layout,
+            &context,
+            seed_at,
+        )?
+        else {
+            return Ok(());
+        };
+        // Source callbacks run outside our locks. A source change during the
+        // Qt read invalidates the attempt; commit rechecks the current catalog
+        // and live project IDs under the same writer as every Layout save.
+        let Some(snapshot) = source() else {
+            return Ok(());
+        };
+        let mut writer = self.writer();
+        let mut hub = self.lock();
+        if generation != hub.source_generation
+            || revision != hub.sync.revision()
+            || self.windows_read_node(&hub).as_deref() != Some(&node)
+            || snapshot.node_id != node
+            || snapshot.digest != catalog["digest"].as_str().unwrap_or_default()
+            || snapshot.swarm_id != catalog["swarm_id"].as_str().unwrap_or_default()
+            || snapshot.base != catalog["organization"]
+        {
+            return Ok(());
+        }
+        let Some(current) = hub.sync.observed_value() else {
+            return Ok(());
+        };
+        let context = swarm::layout::WindowsFoldersContext {
+            source_node: &node,
+            current_node: &node,
+            catalog: &current,
+        };
+        self.0.pump.seed_windows_folders(seed, &context)?;
+        hub.shown = None;
+        self.publish(&mut hub);
+        self.release(hub);
+        writer.save_layout(&self.0.pump, &self.0.layout, self.0.layout_writable);
         Ok(())
     }
     pub fn new(
@@ -952,6 +1049,13 @@ impl Organization {
         }
         if self.catalog_pass() {
             return;
+        }
+        if let Err(detail) = self.recover_windows_folders() {
+            let mut hub = self.lock();
+            hub.notice = Some(detail);
+            hub.shown = None;
+            self.publish(&mut hub);
+            self.release(hub);
         }
         self.runs_writer().request(false);
         let mut writer = self.writer();
