@@ -252,8 +252,8 @@ fn menu(inner: &mut Inner, entries: &[Entry]) {
                 let submenu = unsafe { CreatePopupMenu() };
                 for (id, mode, checked) in modes {
                     let text = match mode {
-                        OpenMode::Tab => "Windows Terminal tab",
-                        OpenMode::Window => "Windows Terminal window",
+                        OpenMode::Tab => zerus_client_core::source!("Windows Terminal tab"),
+                        OpenMode::Window => zerus_client_core::source!("Windows Terminal window"),
                         _ => mode.label(),
                     };
                     let text = crate::native_text::render(&Text::new(text));
