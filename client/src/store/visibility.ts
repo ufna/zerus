@@ -26,3 +26,10 @@ documentVisibility.onChange(() => setHidden(documentVisibility.hidden()));
 
 /** Reactive: true while the window is hidden or minimised. */
 export const pageHidden = hidden;
+
+/**
+ * Whether the window is the active one (Qt's isActiveWindow): the webview's
+ * document has the focus. Not reactive; window `focus` and `blur` say when it
+ * changes.
+ */
+export const documentFocused = () => typeof document !== "undefined" && document.hasFocus();

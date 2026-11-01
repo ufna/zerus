@@ -6,7 +6,7 @@ import { catalog, computerFresh, hasDraftKey, orderedRows } from "../../store/ca
 import { machineCards } from "../../store/machines";
 import { archiveMachineChoices, archiveProjectChoices } from "./archive-filters";
 import { defaultProject, grouping, groups } from "../../store/organization";
-import { stateFilter, matchesFilter, search, machineFilter, projectFilter, accountFilter, folderFilter, expandedChildren, compactRows, selected, selectedKey, subagentOpen } from "../../store/ui";
+import { stateFilter, matchesFilter, listedByFilter, search,machineFilter, projectFilter, accountFilter, folderFilter, expandedChildren, compactRows, selected, selectedKey, subagentOpen } from "../../store/ui";
 import { compileScopes, scopeCounts } from "./scope-filters";
 import { withCreations } from "../../store/creations";
 import { isWorking, needsAttention } from "../../store/attention";
@@ -71,13 +71,13 @@ const scoped = createMemo(() => compileScopes(scopes()));
 export const membersByGroup = createMemo(() => groupMembers(catalog.order, catalog.rows, groups, defaultProject()));
 
 const matchesLiveFilters = (s: Session, f: Parameters<typeof matchesFilter>[1], hosts: readonly string[], q: string) =>
-  matchesFilter(s, f) && (!hosts.length || hosts.includes(s.machine)) && scoped()(s, projectOf(s)) && sessionMatchesSearch(s, q);
+  listedByFilter(s, f) && (!hosts.length || hosts.includes(s.machine)) && scoped()(s, projectOf(s)) && sessionMatchesSearch(s, q);
 
 /** Whether the filters list an owner once its collapsed project is revealed. */
 export function listedSessionIgnoringCollapse(id: string): boolean {
   if (stateFilter() === "archived") return false;
   const s = catalog.rows[id];
-  return !!s && matchesFilter(s, stateFilter()) && sessionMatchesSearch(s, search().trim())
+  return !!s && listedByFilter(s, stateFilter()) && sessionMatchesSearch(s, search().trim())
     && compileScopes(scopes())(s, groups[id]?.group ?? defaultProject());
 }
 

@@ -1,7 +1,7 @@
 import { GONE, notify, stillListed } from "../../store/actions";
 import { markAllRead, markNeedsAttention, markRead, unreadReplies } from "../../store/marks";
 import { computerFresh } from "../../store/catalog";
-import { needsAttention, type MenuEntry } from "../../store/ui";
+import { needsAttention, selected, selectedKey, setReadSelectionKey, type MenuEntry } from "../../store/ui";
 import type { AttentionFacts } from "../../store/attention";
 import { snapshotOf, type ActionRow } from "./actions-ui";
 import type { Session } from "./types";
@@ -22,11 +22,12 @@ export function markReadChip(s: AttentionFacts, online: boolean): { active: bool
   return { active, detail: tr(s.reviewLater ? CHIP_REVIEW : CHIP_READ) };
 }
 
-/** Mark as read, with Qt's refusal notice. */
+/** Mark as read, with Qt's refusal notice. The open row stays listed until another selection (SessionsWindow.cpp:5432). */
 export function runMarkRead(row: ActionRow): boolean {
   if (!stillListed(row)) return false;
   const ok = markRead(row);
   if (!ok) notify("error", NEW_REPLY, true);
+  else if (row.key === selectedKey()) setReadSelectionKey(row.key);
   return ok;
 }
 
@@ -52,8 +53,14 @@ export const markAllTip = (e: { label: string; hint?: string }) => `${e.label}\n
 
 export const markAllLabel = (n: number) => (n > 0 ? tr("Mark all as read (%1)", n) : tr("Mark all as read"));
 
-/** Mark all as read: every current reply on every machine; a count shows its notice. */
+/**
+ * Mark all as read: every current reply on every machine; a count shows its
+ * notice. An open row with an unread reply stays listed until another
+ * selection (SessionsWindow.cpp:3393-3395).
+ */
 export function runMarkAll(): number {
+  const open = selected();
+  if (open?.unreadReply) setReadSelectionKey(open.key);
   const n = markAllRead();
   if (n > 0) notify("info", n === 1 ? "1 reply marked as read." : `${n} replies marked as read.`);
   return n;

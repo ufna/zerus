@@ -27,6 +27,7 @@ import { composer, draftKey } from "../../store/composer";
 import { terminal } from "../../store/terminal";
 import type { LocalMessage } from "../../types";
 import { animationFrames, createActivityEnd, newLocalSends } from "./activity-end";
+import { replyVisible } from "../../store/viewedReply";
 import { buildTranscript, createTranscriptProjection, VOICE_STATE_LABEL, voiceStateDetail, voiceStateIssue } from "./transcript";
 import { DELETE_TEXT, DELETE_TITLE, retryReason, routeInspect } from "./local-actions";
 import { markdownReady, markdownTree, type Inline, type MarkdownBlock } from "./markdown";
@@ -665,7 +666,18 @@ const [unseen, setUnseen] = createSignal(0);
 /** The mounted transcript's scroller (one Activity view shows at a time). */
 let liveScroller: HTMLDivElement | undefined;
 let liveLatest: (() => void) | undefined;
+let liveReply: ((key: string, reply: string) => boolean) | undefined;
 export { following, unseen };
+
+/**
+ * Whether the mounted Activity shows this reply of the row `key` (Qt's
+ * ActivityView::replyVisible): its own live follow only, never a subagent's,
+ * an archive's or a search result. Reads geometry only when asked; it never
+ * scrolls.
+ */
+export function activityShowsReply(key: string, reply: string): boolean {
+  return !!liveReply?.(key, reply);
+}
 
 /**
  * Puts the focus in the transcript (Qt's browser), e.g. before a focused chip
@@ -811,9 +823,21 @@ export function ActivityView(props: { source?: ActivitySource }) {
     reading.reset(); end.pin();
     scroller.scrollTo({ top: scroller.scrollHeight, behavior: "instant" });
   };
+  const showsReply = (key: string, reply: string) => {
+    const shown = source();
+    if (shown.readOnly || subagentOpen() || shown.target()?.id !== key || !scroller.isConnected) return false;
+    const rows = activityReadingRows(scroller);
+    return replyVisible({
+      settled: () => placed() && !preview() && !motion.deferred(),
+      below: () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight,
+      viewport: () => scroller.clientHeight,
+      offset: (id) => rows.offset(id),
+    }, reply, shown.events(), shown.summary());
+  };
   onMount(() => {
     liveScroller = scroller;
     liveLatest = latest;
+    liveReply = showsReply;
     const pointerEnded = () => motion.release();
     window.addEventListener("pointerup", pointerEnded); window.addEventListener("pointercancel", pointerEnded); window.addEventListener("blur", pointerEnded);
     onCleanup(() => { window.removeEventListener("pointerup", pointerEnded); window.removeEventListener("pointercancel", pointerEnded); window.removeEventListener("blur", pointerEnded); });
@@ -845,6 +869,7 @@ export function ActivityView(props: { source?: ActivitySource }) {
     end.dispose(); reading.dispose(); motion.dispose();
     if (liveScroller === scroller) liveScroller = undefined;
     if (liveLatest === latest) liveLatest = undefined;
+    if (liveReply === showsReply) liveReply = undefined;
   });
   const onScroll = () => {
     if (motion.active()) {

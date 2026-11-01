@@ -280,6 +280,73 @@ describe("markRead", () => {
   });
 });
 
+describe("markReplyRead", () => {
+  it("reads only the reply: the attention stays unacknowledged and one reply-only mark is queued", async () => {
+    const a = await setup([{ computer: "", key: "run:a", row: asking() }]);
+    expect(a.row()).toMatchObject({ unreadReply: true, status: "attention" });
+    expect(a.marks.markReplyRead("", NAME, "conv-1", "r1")).toBe(true);
+    expect(a.row()).toMatchObject({ unreadReply: false, status: "attention", caption: "Needs approval", attention: "approval" });
+    expect(a.port.queueReadMarks).toHaveBeenCalledWith([mark()]);
+    expect(a.port.updateAttentionMarks).toHaveBeenCalledWith({}, { [REPLY]: "r1" });
+    await flush();
+    expect(a.marks.pending()).toEqual([mark()]);
+    expect(a.row().unreadReply).toBe(false);
+  });
+
+  it("keeps Review later", async () => {
+    const a = await setup([rowOut()], fakePort({ marks: { [keyOf()]: { review: true, acknowledged: "" } }, replies: {} }));
+    expect(a.row()).toMatchObject({ unread: true, reviewLater: true });
+    expect(a.marks.markReplyRead("", NAME, "conv-1", "r1")).toBe(true);
+    expect(a.row()).toMatchObject({ unread: false, unreadReply: false, reviewLater: true });
+    expect(a.port.updateAttentionMarks).toHaveBeenCalledWith({}, { [REPLY]: "r1" });
+  });
+
+  it("refuses another computer, name, conversation or reply, an empty identity, a read reply and an archived row", async () => {
+    const refused: [Partial<ViewRow>, [string, string, string, string]][] = [
+      [{}, ["mac", NAME, "conv-1", "r1"]],
+      [{}, ["", "claude/sample-project/b", "conv-1", "r1"]],
+      [{}, ["", NAME, "conv-2", "r1"]],
+      [{}, ["", NAME, "conv-1", "r0"]],
+      [{}, ["", NAME, "conv-1", ""]],
+      [{ conversation_id: null }, ["", NAME, "", "r1"]],
+      [{ read_reply_id: "r1" }, ["", NAME, "conv-1", "r1"]],
+      [{ state: "archived" }, ["", NAME, "conv-1", "r1"]],
+    ];
+    for (const [extra, args] of refused) {
+      const a = await setup([rowOut(extra)]);
+      expect(a.marks.markReplyRead(...args)).toBe(false);
+      expect(a.port.queueReadMarks).not.toHaveBeenCalled();
+      expect(a.port.updateAttentionMarks).not.toHaveBeenCalled();
+    }
+  });
+
+  it("never reads the next reply that arrived after the view", async () => {
+    const a = await setup([rowOut()]);
+    a.receive(batchOf({ upserts: [rowOut({ reply_id: "r2" })] }));
+    expect(a.marks.markReplyRead("", NAME, "conv-1", "r1")).toBe(false);
+    expect(a.row().unread).toBe(true);
+  });
+
+  it("keeps an older host's read reply on this device and queues nothing", async () => {
+    const legacy = { shared_read: false, attention_signature: undefined };
+    const a = await setup([rowOut(legacy, "run:d", "mac")]);
+    expect(a.marks.markReplyRead("mac", NAME, "conv-1", "r1")).toBe(true);
+    expect(a.row("run:d", "mac").unread).toBe(false);
+    expect(a.port.queueReadMarks).not.toHaveBeenCalled();
+    expect(a.port.updateAttentionMarks).toHaveBeenCalledWith({}, { [replyKey("mac", "claude", "conv-1")]: "r1" });
+    a.receive(batchOf({ upserts: [rowOut({ ...legacy, reply_id: "r2" }, "run:d", "mac")] }));
+    expect(a.row("run:d", "mac").unread).toBe(true);
+  });
+
+  it("reads a reply not shown unread yet (a session with background work), as Qt's unreadReply does", async () => {
+    const a = await setup([rowOut({ unread_candidate: false, status: "background" })]);
+    expect(a.row()).toMatchObject({ unread: false, unreadReply: true });
+    expect(a.marks.markReplyRead("", NAME, "conv-1", "r1")).toBe(true);
+    expect(a.row().unreadReply).toBe(false);
+    expect(a.port.queueReadMarks).toHaveBeenCalledWith([mark()]);
+  });
+});
+
 describe("affected rows only", () => {
   it("marking one row patches that row and leaves the other untouched", async () => {
     await createRoot(async (dispose) => {

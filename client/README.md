@@ -652,6 +652,25 @@ hidden sessions included, except sessions marked for review; at 0 the entry is
 disabled. A run marks those replies read and shows "1 reply marked as read."
 or "N replies marked as read."
 
+### Viewed reply
+
+As Qt's `checkViewedReply`, the selected session's unread reply is read once
+it stayed in view for a second (`src/store/viewedReply.ts`, checked every
+400 ms while the window shows). The window must be shown, not minimised and
+focused, the Sessions page current and no modal dialog or popup open; a
+subagent's Activity, an archived row and a computer that is not online never
+count. The followed inspection must have succeeded and name the row's
+conversation and reply. Activity must be within 30 px of its end, show no
+search result or deferred layout, and have the reply's row start in the
+viewport (when that row is not rendered: an empty final Stop of an idle
+session, or loaded events at or past the reply). Terminal must be connected,
+at its bottom and not blank. Any change of the session, conversation or reply
+starts the second again. Only that reply is read (`markReplyRead`): the
+attention and Review later stay, and a read mark is queued as for Mark as
+read. Nothing scrolls. The open row then stays under Needs attention and
+Active until another row is selected, as it does after Mark as read and Mark
+all as read.
+
 ### Copy actions
 
 The copy entries build text locally or ask `hgs` for it and put it on the
