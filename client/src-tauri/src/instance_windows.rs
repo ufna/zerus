@@ -584,7 +584,7 @@ mod tests {
                 timeout: Duration::from_secs(8),
                 request_id: Some(envelope.request.id().into()),
             };
-            let output = zerus_client_core::run_owned(
+            let output = zerus_client_core::run::run_owned(
                 Path::new(control["cli"].as_str().unwrap()),
                 &inv,
                 &[],
