@@ -1,6 +1,6 @@
 //! Service-owned upstream lifetime. The actor applies every original event.
 use super::{
-    details,
+    delivery, details,
     fanout::Queue,
     feed, fleet, presence_worker,
     store::{Location, Store},
@@ -20,17 +20,20 @@ pub(super) struct Runtime {
     fleet: fleet::Runtime,
     producer: Arc<feed::Producer>,
     presence: Option<presence_worker::Runtime>,
+    delivery: delivery::Runtime,
     details: details::Adapter,
 }
 
 impl Runtime {
     pub fn start(config: &Config, epoch: &str, broker: &mut feed::Broker) -> Result<Self> {
+        let delivery = delivery::Runtime::start(config, epoch)?;
         let producer = broker.claim_internal()?;
         match fleet::Runtime::start(config, epoch) {
             Ok(fleet) => Ok(Self {
                 fleet,
                 producer,
                 presence: None,
+                delivery,
                 details: details::Adapter::new(epoch),
             }),
             Err(error) => {
@@ -67,6 +70,7 @@ impl Runtime {
             consumed += 1;
             match broker.apply(store, &self.producer, &event.packet) {
                 Ok(change) => {
+                    self.delivery.observe(store, &event);
                     let fleet = &self.fleet;
                     self.details.observe(
                         &event,
@@ -75,8 +79,6 @@ impl Runtime {
                         },
                         seq,
                     );
-                    // .29 delivery.observe(store, &event): after commit and
-                    // before dropping this service-owned event/permit.
                     if let Some(change) = change {
                         changes.push(change);
                     }
@@ -88,7 +90,12 @@ impl Runtime {
                 }
             }
         }
+        self.delivery.poll(store);
         (changes, consumed == POLL_EVENTS)
+    }
+
+    pub fn delivery_request(&mut self, store: &mut Store, value: &Value) -> Value {
+        self.delivery.request(store, value)
     }
 
     pub fn details_open(&mut self, queue: &Arc<Queue>) -> Option<Value> {
@@ -115,15 +122,37 @@ impl Runtime {
             _ => "starting_or_degraded",
         };
         let presence = self.presence.as_ref().map(presence_worker::Runtime::status);
-        value["ownership"] =
-            if code == "drained" && presence.as_ref().is_none_or(|p| p["drained"] == true) {
-                "revoked"
-            } else if presence.is_some() {
-                "background_service"
-            } else {
-                "background_readonly"
-            }
-            .into();
+        let delivery = self.delivery.status();
+        let writer = delivery["writer_ready"] == true && delivery["stopping"] == false;
+        value["automatic_approvals"] = (writer
+            && delivery["approvals"]["enabled"] == true
+            && delivery["approvals"]["error"].is_null())
+        .into();
+        value["components"]["reads"] = if writer {
+            "running"
+        } else {
+            "awaiting_handoff"
+        }
+        .into();
+        value["components"]["approvals"] = if value["automatic_approvals"] == true {
+            "running"
+        } else {
+            "disabled_or_unavailable"
+        }
+        .into();
+        value["lifecycle"]["background"]["delivery"] = delivery.clone();
+        value["delivery_runtime"] = delivery.clone();
+        value["ownership"] = if code == "drained"
+            && delivery["drained"] == true
+            && presence.as_ref().is_none_or(|p| p["drained"] == true)
+        {
+            "revoked"
+        } else if presence.is_some() {
+            "background_service"
+        } else {
+            "background_readonly"
+        }
+        .into();
         value["upstreams"] = status["computers"].clone();
         value["background_runtime"] = status.clone();
         value["components"]["fleet"] = code.into();
@@ -136,9 +165,10 @@ impl Runtime {
         }
     }
 
-    pub fn drain(&mut self, timeout: Duration) -> Result<()> {
+    pub fn drain(&mut self, store: &mut Store, timeout: Duration) -> Result<()> {
         self.details.stop();
         self.producer.close();
+        self.delivery.request_stop();
         if let Some(presence) = &self.presence {
             presence.request_stop();
         }
@@ -146,6 +176,8 @@ impl Runtime {
         let mut failure = None;
         loop {
             let fleet_done = self.fleet.stop();
+            self.delivery.poll(store);
+            let delivery_done = self.delivery.drained();
             let presence_done = match self.presence.as_mut().map(presence_worker::Runtime::stop) {
                 None | Some(Ok(true)) => true,
                 Some(Ok(false)) => false,
@@ -154,7 +186,7 @@ impl Runtime {
                     true // join failed, but still finish draining the fleet
                 }
             };
-            if fleet_done && presence_done {
+            if fleet_done && presence_done && delivery_done {
                 return failure.map_or(Ok(()), Err);
             }
             ensure!(

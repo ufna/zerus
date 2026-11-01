@@ -4,7 +4,6 @@ mod catalog_read;
 mod counts;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod custody;
-#[allow(dead_code)] // Activation and writer handoff belong to the service lifecycle.
 mod delivery;
 mod details;
 mod fanout;
@@ -35,6 +34,7 @@ mod startup_exclusion;
 mod startup_stdio;
 mod store;
 mod transport;
+mod ui_authority;
 
 use crate::{cli, config::Config, platform};
 use anyhow::{ensure, Context, Result};
@@ -235,7 +235,7 @@ pub fn dispatch(config: &Config, target: &str, args: &[String], dry: bool) -> cl
                     "desktop revocation is not settled; keep Qt stopped and inspect the same request_id");
                 Ok(())
             }
-            ["request", "--json"] => {
+            ["request", "--json"] | ["frontend-request", "--json"] => {
                 let mut bytes = Vec::new();
                 std::io::stdin()
                     .take(protocol::CONTROL_BYTES as u64 + 1)
@@ -248,8 +248,16 @@ pub fn dispatch(config: &Config, target: &str, args: &[String], dry: bool) -> cl
                     serde_json::from_slice(&bytes).context("invalid desktop request")?;
                 println!(
                     "{}",
-                    exchange(&location, "request", Some(request))?
-                        .context("desktop service is not running")?
+                    exchange(
+                        &location,
+                        if args[0] == "frontend-request" {
+                            "frontend_request"
+                        } else {
+                            "request"
+                        },
+                        Some(request)
+                    )?
+                    .context("desktop service is not running")?
                 );
                 Ok(())
             }
@@ -311,7 +319,7 @@ fn projection(
 }
 
 enum Event {
-    Command(Hello, Arc<Queue>),
+    Command(Hello, Arc<Queue>, Option<Box<ui_authority::Authorized>>),
     FeedOpen(Hello, mpsc::SyncSender<feed::Opened>),
     FeedData(feed::Data),
     ListenerFailed,
@@ -346,10 +354,13 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
     let mut reads = catalog_read::Reader::default();
     let mut frontend = frontend::Cache::default();
     let mut background: Option<background::Runtime> = None;
+    let mut frontend_order = ui_authority::Order::default();
+    let ui_scope = Arc::new(ui_authority::Scope::new(config, &location));
     // At most16 queued controls/data, thirteen bounded parsers and one passive
     // producer. Background mode owns the only internal source producer.
     let (send, receive) = mpsc::sync_channel(protocol::PENDING);
     let acceptor = {
+        let ui_scope = ui_scope.clone();
         let (listener, stopped, active, ingress) = (
             listener.clone(),
             stopped.clone(),
@@ -374,10 +385,11 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                             let permit = Permit(active.clone());
                             let (send, stopped, ingress) =
                                 (send.clone(), stopped.clone(), ingress.clone());
+                            let ui_scope = ui_scope.clone();
                             let _ = thread::Builder::new().name("desktop-client".into()).spawn(
                                 move || {
                                     let _permit = permit;
-                                    let _ = client(stream, send, stopped, ingress);
+                                    let _ = client(stream, send, stopped, ingress, &ui_scope);
                                 },
                             );
                         }
@@ -437,7 +449,7 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
             } else {
                 Duration::from_millis(200)
             }) {
-                Ok(Event::Command(hello, queue)) => {
+                Ok(Event::Command(hello, queue, authority)) => {
                     let mut value = projection(
                         &location,
                         &store,
@@ -477,6 +489,27 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                         }
                     } else if hello.op == "status" && hello.request.is_none() {
                         frame(&epoch, seq, "status", value)
+                    } else if hello.op == "frontend_request" {
+                        let result = match (authority, &mut background) {
+                            (Some(authority), Some(runtime)) => {
+                                match authority.into_request(&mut frontend_order) {
+                                    Ok(request) => runtime.delivery_request(&mut store, &request),
+                                    Err(_) => frontend_refused(
+                                        hello.request.as_ref(),
+                                        "frontend_identity_expired",
+                                    ),
+                                }
+                            }
+                            (None, _) => frontend_refused(
+                                hello.request.as_ref(),
+                                "frontend_authentication_refused",
+                            ),
+                            (_, None) => frontend_refused(
+                                hello.request.as_ref(),
+                                "desktop_background_unavailable",
+                            ),
+                        };
+                        frame(&epoch, seq, "response", result)
                     } else if hello.op == "request" {
                         let result = if hello.request.as_ref().is_some_and(|v| {
                             matches!(
@@ -498,6 +531,12 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                             matches!(v["op"].as_str(), Some("catalog_page" | "catalog_close"))
                         }) {
                             reads.request(&store, &feed, &epoch, hello.request.as_ref().unwrap())
+                        } else if hello
+                            .request
+                            .as_ref()
+                            .is_some_and(|v| v["op"] == "delivery_result")
+                        {
+                            delivery::result_request(&store, hello.request.as_ref().unwrap())
                         } else if let Some(runtime) = &mut background {
                             let request_value = hello.request.as_ref().unwrap_or(&Value::Null);
                             if matches!(
@@ -509,8 +548,10 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                                     &mut store,
                                     request_value,
                                     &epoch,
-                                    || runtime.drain(Duration::from_millis(750)),
+                                    |store| runtime.drain(store, Duration::from_millis(750)),
                                 )
+                            } else if matches!(request_value["op"].as_str(), Some("read_intent")) {
+                                runtime.delivery_request(&mut store, request_value)
                             } else {
                                 request(&location, &mut store, hello.request.as_ref())
                             }
@@ -626,7 +667,7 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
     let _ = acceptor.join();
     drop(fanout);
     for event in receive.try_iter() {
-        if let Event::Command(_, queue) = event {
+        if let Event::Command(_, queue, _) = event {
             queue.close();
         }
     }
@@ -634,9 +675,9 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
     while active.load(Ordering::SeqCst) != 0 && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(10));
     }
-    let drained = background
-        .as_mut()
-        .map_or(Ok(()), |runtime| runtime.drain(Duration::from_secs(4)));
+    let drained = background.as_mut().map_or(Ok(()), |runtime| {
+        runtime.drain(&mut store, Duration::from_secs(4))
+    });
     let feed_stopped = feed.stop(&mut store);
     let checkpointed = store.checkpoint();
     if let Err(error) = run_result {
@@ -666,6 +707,7 @@ fn client(
     send: mpsc::SyncSender<Event>,
     stopped: Arc<AtomicBool>,
     ingress: Arc<feed::Ingress>,
+    location: &ui_authority::Scope,
 ) -> Result<()> {
     // Unix peer credentials require no input. Windows pipe impersonation can
     // require a completed read, so that authentication remains after the hello.
@@ -684,9 +726,23 @@ fn client(
         return feed::client(stream, reader, hello, send, stopped, ingress);
     }
     let watching = hello.op == "watch";
+    let authority = if hello.op == "frontend_request"
+        && hello.abi == ABI
+        && hello.configuration == location.configuration
+    {
+        transport::peer_pid(&stream)
+            .ok()
+            .and_then(|pid| ui_authority::authenticate(location, pid, hello.request.as_ref()?).ok())
+    } else {
+        None
+    };
     let queue = Arc::new(Queue::default());
-    send.try_send(Event::Command(hello, queue.clone()))
-        .map_err(|_| anyhow::anyhow!("desktop admission is full"))?;
+    send.try_send(Event::Command(
+        hello,
+        queue.clone(),
+        authority.map(Box::new),
+    ))
+    .map_err(|_| anyhow::anyhow!("desktop admission is full"))?;
     // Close even if a timeout change or thread creation fails after admission.
     struct CloseQueue(Arc<Queue>);
     impl Drop for CloseQueue {
@@ -723,6 +779,11 @@ fn client(
         let _ = reader.join();
     }
     written
+}
+
+fn frontend_refused(request: Option<&Value>, code: &str) -> Value {
+    json!({"request_id":request.and_then(|v|v.get("request")).and_then(|v|v.get("request_id")),
+        "accepted":false,"durable":false,"code":code})
 }
 
 fn request(location: &Location, store: &mut Store, value: Option<&Value>) -> Value {
@@ -768,7 +829,7 @@ fn exchange(location: &Location, op: &str, request: Option<Value>) -> Result<Opt
     };
     // Revocation includes a bounded SQLite busy wait and durable filesystem I/O.
     // A timeout remains an unknown result, never permission to start Qt.
-    if revoking {
+    if revoking || op == "frontend_request" {
         stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     }
     let bytes = protocol::line(&mut BufReader::new(stream), protocol::FRAME_BYTES)?
