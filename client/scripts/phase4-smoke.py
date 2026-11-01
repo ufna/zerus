@@ -10,6 +10,7 @@ from pathlib import Path
 import shutil
 import signal
 import subprocess
+import sys
 import wave
 
 
@@ -86,7 +87,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app", type=Path, default=CLIENT / "src-tauri/target/release/zerus-client")
     parser.add_argument("--scratch", type=Path, required=True, help="a new directory; logs are kept here")
+    parser.add_argument("--only", help="run one named phase4 step")
+    parser.add_argument("--native-wheel", action="store_true", help="drive variable-scroll with trusted wheel events in its private Xvfb")
     args = parser.parse_args()
+    if args.native_wheel and args.only != "variable-scroll":
+        parser.error("--native-wheel requires --only variable-scroll")
     app = args.app.resolve()
     scratch = args.scratch.resolve()
     if not app.is_file():
@@ -133,10 +138,13 @@ def main():
         "TMUX_TMPDIR": str(scratch / "tmux"), "HGS_CONFIG_DIR": str(scratch / "config"), "HGS_STATE_DIR": str(scratch / "state"),
         "WAYLAND_DISPLAY": "zerus-none", "GDK_BACKEND": "x11", "WEBKIT_DISABLE_DMABUF_RENDERER": "1", "ZERUS_CLIENT_HEADLESS": "1",
         "ZERUS_CLIENT_REPLAY": str(replay), "ZERUS_CLIENT_HGS": str(hgs),
-        "ZERUS_CLIENT_QUERY": "phase4-smoke=1", "ZERUS_CLIENT_PERF": "smoke", "ZERUS_CLIENT_SMOKE_FILE": str(smoke_file),
+        "ZERUS_CLIENT_QUERY": "phase4-smoke=1" + ("&phase4-only=" + args.only if args.only else "") + ("&phase4-native-wheel=1&phase4-provider-window=1" if args.native_wheel else ""), "ZERUS_CLIENT_PERF": "smoke", "ZERUS_CLIENT_SMOKE_FILE": str(smoke_file),
         "ZERUS_CLIENT_SMOKE_NOW": "1793000100",
     }
-    command = ["dbus-run-session", "--", "xvfb-run", "-a", "-s", "-screen 0 1440x900x24", str(app), "--sessions"]
+    child = [str(app), "--sessions"]
+    if args.native_wheel:
+        child = [sys.executable, str(CLIENT / "scripts/phase4-wheel-driver.py"), *child]
+    command = ["dbus-run-session", "--", "xvfb-run", "-a", "-s", "-screen 0 1440x900x24", *child]
     app_log = scratch / "app.log"
     print("GDK_BACKEND=x11 WAYLAND_DISPLAY=zerus-none DISPLAY=<unset>", flush=True)
     with app_log.open("w", encoding="utf-8") as output:

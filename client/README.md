@@ -1143,6 +1143,11 @@ Run the smoke with a new scratch directory (choose another name on a rerun):
 python3 scripts/phase4-smoke.py --scratch "$PWD/target/phase4-smoke-run"
 ```
 
+Use `--only variable-scroll` for the long Markdown/append regression. On Linux,
+add `--native-wheel` to replay the queued-scroll/layout ordering and drive
+trusted wheel input while the provider window rotates. Its XTest driver verifies
+that the display server is the original sibling Xvfb owned by `xvfb-run`.
+
 The runner supplies the release binary, replay and fake, isolates `HOME`,
 `XDG_DATA_HOME` and `XDG_CACHE_HOME`, and forces the safe headless environment:
 no `DISPLAY`, a nonexistent `WAYLAND_DISPLAY`, `GDK_BACKEND=x11`,
