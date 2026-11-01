@@ -63,7 +63,7 @@ fn invocation(operation: &str, plan: &Value) -> Result<Invocation> {
 
 fn exchange(operation: &str, plan: &Value) -> Result<Value> {
     let invocation = invocation(operation, plan)?;
-    let result = zerus_client_core::run_limited(&powershell()?, &invocation, &[], CAP)
+    let result = zerus_client_core::run::run_hidden_limited(&powershell()?, &invocation, &[], CAP)
         .map_err(|_| anyhow::anyhow!("desktop registration helper output exceeded its bound; inspect status before retrying"))?;
     let value = match result {
         Exit::Code {
