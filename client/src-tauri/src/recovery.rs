@@ -23,6 +23,8 @@ use crate::settings::Store;
 
 /// How often the service looks at the fleet.
 const FOLLOW: Duration = Duration::from_secs(1);
+const SERVICE_UNAVAILABLE: &str =
+    zerus_client_core::source!("Recovery settings are unavailable from the desktop service.");
 
 /// The service's state.
 pub struct Recovery(Arc<Inner>);
@@ -51,7 +53,7 @@ impl Inner {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let Some(projected) = projected.as_ref() else {
-            return json!({"status":"","error":"Recovery settings are unavailable from the desktop service.",
+            return json!({"status":"","error":SERVICE_UNAVAILABLE,
                 "busy":false,"can_save":false,"known":false,"has_machines":false,"has_policy":false,"saves":0});
         };
         let current = projected.ready && projected.current_origin;
@@ -270,7 +272,7 @@ pub fn recovery_save(
 ) -> Result<Value, String> {
     allowed(recovery.0.blocked)?;
     if recovery.0.service_mode {
-        return Err("Recovery settings are unavailable from the desktop service.".into());
+        return Err(SERVICE_UNAVAILABLE.into());
     }
     let (calls, persist, message, view) = {
         let mut sync = recovery.0.sync();

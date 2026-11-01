@@ -411,19 +411,20 @@ impl Updates {
             automatic: state.automatic,
         }
     }
-    /// Called off GUI by the validated service stream. No locks, I/O or wait:
-    /// one bounded pending projection and one coalesced worker wake at most.
+    /// Called off GUI by the validated service stream. Never waits for a lock
+    /// or I/O: one bounded pending projection and one coalesced worker wake.
     fn receive_projection(&self, frame: Option<&serde_json::Value>) {
         if !self.0.service_mode {
             return;
         }
-        if frame.is_some_and(|f| !matches!(f["t"].as_str(), Some("hello" | "status"))) {
+        if frame.is_some_and(|f| !matches!(f["t"].as_str(), Some("hello" | "status" | "heartbeat")))
+        {
             return;
         }
         let projection = frame.and_then(|frame| {
             let epoch = frame["epoch"].as_str()?;
             let value: zerus_client_core::maintenance::Projection =
-                serde_json::from_value(frame["value"]["maintenance_runtime"].clone()).ok()?;
+                serde_json::from_value(frame["value"]["maintenance"].clone()).ok()?;
             value.valid_for(epoch).then_some(value)
         });
         let version = self
@@ -431,9 +432,12 @@ impl Updates {
             .projection_version
             .try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_add(1))
             .map_or(u64::MAX, |n| n + 1);
-        // A full slot is not replaced or grown. The newer version invalidates
-        // the queued older value; a subsequent service status can recover it.
-        let _ = self.0.projection_sender.try_send((version, projection));
+        // Replace the older pending frame without waiting for the consumer.
+        // On contention the version fence still invalidates stale positives.
+        if let Ok(receiver) = self.0.projection_receiver.try_lock() {
+            let _ = receiver.try_recv();
+            let _ = self.0.projection_sender.try_send((version, projection));
+        }
         if !self.0.projection_wake.swap(true, Ordering::AcqRel) {
             self.send(Request::Projection);
         }
@@ -1307,7 +1311,7 @@ pub fn notification_current(app: &AppHandle, token: &str) -> bool {
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn open_page(app: &AppHandle) {
-    if let Err(error) = crate::lifecycle::show_main(app) {
+    if let Err(error) = crate::lifecycle::request_main(app) {
         eprintln!("zerus-client: could not open Updates: {error}");
     }
     crate::desk::open_updates(app);
@@ -1738,7 +1742,7 @@ mod tests {
     fn projected_frame(fixture: &Fixture) -> serde_json::Value {
         use zerus_client_core::maintenance as dto;
         let feed = zerus_client_core::updates::parse_feed(&stable(), Channel::Stable);
-        serde_json::json!({"t":"status","epoch":"fixture-epoch","value":{"maintenance_runtime":dto::Projection {
+        serde_json::json!({"t":"status","epoch":"fixture-epoch","value":{"maintenance":dto::Projection {
             abi:dto::ABI.into(),epoch:"fixture-epoch".into(),revision:Some(1),ready:true,error:None,
             configuration:Some(dto::Configuration {update:Some(fixture.service.native_configuration()),recovery:None}),
             updates:dto::UpdateProjection {ready:true,current_origin:true,available:true,channel:Some(Channel::Stable),automatic:true,
@@ -1794,15 +1798,15 @@ mod tests {
             let mut value = frame.clone();
             match field {
                 "gui" => {
-                    value["value"]["maintenance_runtime"]["configuration"]["update"]["gui"]
-                        ["app_version"] = "999.0.0".into()
+                    value["value"]["maintenance"]["configuration"]["update"]["gui"]["app_version"] =
+                        "999.0.0".into()
                 }
-                "epoch" => value["value"]["maintenance_runtime"]["epoch"] = "other".into(),
+                "epoch" => value["value"]["maintenance"]["epoch"] = "other".into(),
                 _ => {
-                    value["value"]
+                    value["value"]["maintenance"]
                         .as_object_mut()
                         .unwrap()
-                        .remove("maintenance_runtime");
+                        .remove("abi");
                 }
             }
             fixture.service.receive_projection(Some(&value));
@@ -1832,13 +1836,39 @@ mod tests {
         );
     }
     #[test]
+    fn rapid_status_frames_keep_the_latest_projection_without_another_heartbeat() {
+        let fixture = service_fixture(Arc::new(|_| panic!("no fallback fetch")));
+        let mut frame = projected_frame(&fixture);
+        frame["value"]["maintenance"]["updates"]["available"] = false.into();
+        fixture.service.receive_projection(Some(&frame));
+        frame["t"] = "heartbeat".into();
+        frame["value"]["maintenance"]["updates"]["available"] = true.into();
+        fixture.service.receive_projection(Some(&frame));
+        assert_eq!(fixture.receiver.as_ref().unwrap().try_iter().count(), 1);
+        fixture.service.consume_projection();
+        assert!(fixture.service.view().available);
+        assert!(fixture.service.view().error.is_none());
+    }
+    #[test]
+    fn a_contended_projection_slot_refuses_stale_data_without_waiting() {
+        let fixture = service_fixture(Arc::new(|_| panic!("no fallback fetch")));
+        let frame = projected_frame(&fixture);
+        fixture.service.receive_projection(Some(&frame));
+        let receiver = lock(&fixture.service.0.projection_receiver);
+        fixture.service.receive_projection(None);
+        drop(receiver);
+        fixture.service.consume_projection();
+        assert!(!fixture.service.view().available);
+        assert!(fixture.service.view().error.is_some());
+    }
+    #[test]
     fn older_service_cache_does_not_replace_a_newer_manual_check() {
         let fixture = service_fixture(Arc::new(|_| Ok(stable())));
         fixture.service.detect();
         fixture.service.check(false);
         let manual = fixture.service.view();
         let mut frame = projected_frame(&fixture);
-        frame["value"]["maintenance_runtime"]["updates"]["feed"]["version"] = "0.1.0".into();
+        frame["value"]["maintenance"]["updates"]["feed"]["version"] = "0.1.0".into();
         fixture.service.receive_projection(Some(&frame));
         fixture.service.consume_projection();
         assert_eq!(fixture.service.view().version, manual.version);
