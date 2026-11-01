@@ -36,6 +36,32 @@ fn one_explicit_startup_switch_is_off_by_default() {
     }
     assert!(enabled(Some("1")));
 }
+
+#[test]
+fn status_and_heartbeat_preserve_the_original_lease_and_refresh_component_readiness() {
+    let mut initial = status();
+    initial["details"] = json!({"abi":details::ABI,"epoch":EPOCH,"lease":REQUEST,"limits":{"demands_per_subscriber":64}});
+    initial["detail_subscriptions"] = json!({"abi":details::ABI,"stopping":false});
+    initial["lifecycle"]["background"]["fleet"] = json!({"ready":true,"code":"running"});
+    let mut state = state();
+    state.frame(&frame(0, "hello", initial.clone())).unwrap();
+    assert!(state.snapshot().details_available);
+    initial.as_object_mut().unwrap().remove("details");
+    state.frame(&frame(1, "status", initial.clone())).unwrap();
+    assert!(
+        state.snapshot().details_available,
+        "status has a summary, not a new lease"
+    );
+    initial["lifecycle"]["background"]["fleet"] = json!({"ready":false,"code":"source_gap"});
+    assert_eq!(
+        state.frame(&frame(2, "heartbeat", initial)),
+        Ok(Update::Status)
+    );
+    assert!(!state.snapshot().component_ready("fleet"));
+    assert!(state.snapshot().details_available);
+    state.disconnect("offline");
+    assert!(!state.snapshot().details_available);
+}
 #[test]
 fn ipc_readiness_does_not_advertise_missing_background_components() {
     let mut state = state();

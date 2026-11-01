@@ -1,9 +1,9 @@
 use super::*;
 use std::{fs, path::Path, time::Instant};
 
-struct Fixture(PathBuf);
+pub(super) struct Fixture(PathBuf);
 impl Fixture {
-    fn new(config: Value) -> Self {
+    pub(super) fn new(config: Value) -> Self {
         use std::os::unix::fs::DirBuilderExt;
         let root =
             std::env::temp_dir().join(format!("zerus-client-service-{}", uuid::Uuid::new_v4()));
@@ -23,7 +23,7 @@ impl Fixture {
             .filter_map(|line| serde_json::from_str(line).ok())
             .collect()
     }
-    fn start(&self, allowed: bool) -> (Arc<Service>, crate::pump::Pump) {
+    pub(super) fn start(&self, allowed: bool) -> (Arc<Service>, crate::pump::Pump) {
         let pump = crate::pump::Pump::default();
         let (sink, rx) = std::sync::mpsc::sync_channel(256);
         let drain = pump.drain_service(rx, |_| {});
@@ -563,5 +563,215 @@ fn hint_driven_delta_walks_never_take_an_already_live_computer_offline() {
                 "{phase}: {statuses:?}"
             );
         }
+    });
+}
+
+fn detail_spec(topic: &str, after: Option<i64>) -> zerus_watch_protocol::Subscription {
+    zerus_watch_protocol::Subscription {
+        topic: topic.into(),
+        session: matches!(topic, "activity" | "processes").then(|| {
+            zerus_watch_protocol::SessionRef {
+                name: "codex/example/session".into(),
+                run_id: Some("run".into()),
+                conversation_id: Some("conversation".into()),
+            }
+        }),
+        project: (topic == "tasks").then(|| "project".into()),
+        after,
+        tail: (topic == "activity" && after.is_none()).then_some(100),
+        interval_ms: (topic == "processes").then_some(10_000),
+        ..Default::default()
+    }
+}
+#[test]
+fn one_service_lease_delivers_native_activity_processes_tasks_and_organization() {
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        let fixture = Fixture::new(json!({"details":true}));
+        let (service, pump) = fixture.start(true);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let observe = seen.clone();
+        pump.tap(Box::new(move |change| {
+            observe.lock().unwrap().push(change.clone())
+        }));
+        // Demand can precede the watch hello without creating a fallback.
+        for topic in ["activity", "processes", "tasks", "organization"] {
+            service.follow_detail("", detail_spec(topic, None)).unwrap();
+        }
+        eventually("four original native topics",|| {
+            let rows = seen.lock().unwrap();
+            rows.iter().any(|c|matches!(c,Change::Activity {update:zerus_client_core::ActivityUpdate::Replace {events,cursor:101},..} if events.len()==2))
+                && rows.iter().any(|c|matches!(c,Change::Activity {update:zerus_client_core::ActivityUpdate::State {value,..},..} if value["message_events"][0]["detail"]=="all-day message"))
+                && rows.iter().any(|c|matches!(c,Change::Processes {update:zerus_client_core::ProcessesUpdate::State {..},..}))
+                && rows.iter().any(|c|matches!(c,Change::Tasks {update:zerus_client_core::TasksUpdate::List {tasks,..},..} if tasks.len()==1))
+                && rows.iter().any(|c|matches!(c,Change::Organization {update:zerus_client_core::OrganizationUpdate::State {..},..}))
+        }).await;
+        assert!(service.snapshot().details_available);
+        assert_eq!(
+            service.organization_snapshot().unwrap().digest,
+            "org-digest"
+        );
+        eventually(
+            "original Hello physical identity overrides metadata caption identity",
+            || {
+                pump.machine(&ComputerId::local()).is_some_and(|m| {
+                    m.ok == Some(true)
+                        && m.machine_id.as_deref() == Some("00000000-0000-4000-8000-000000000009")
+                })
+            },
+        )
+        .await;
+        assert_eq!(watch_calls(&fixture.calls()), 1);
+        assert!(fixture
+            .calls()
+            .iter()
+            .all(|c| c["args"] == json!(["--help"]) || c["args"][0] == "desktop"));
+        service.join().await.unwrap();
+    });
+}
+#[test]
+fn older_activity_and_changed_process_interval_retire_ids_but_refresh_reuses_demand() {
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        let fixture = Fixture::new(json!({"details":true}));
+        let (service, pump) = fixture.start(true);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let observe = seen.clone();
+        pump.tap(Box::new(move |c| observe.lock().unwrap().push(c.clone())));
+        service
+            .follow_detail("", detail_spec("activity", None))
+            .unwrap();
+        service
+            .follow_detail("", detail_spec("processes", None))
+            .unwrap();
+        eventually("both initial follows", || {
+            fixture
+                .calls()
+                .iter()
+                .filter(|c| c["value"]["op"] == "detail_follow")
+                .count()
+                == 2
+        })
+        .await;
+        service
+            .follow_detail("", detail_spec("activity", Some(0)))
+            .unwrap();
+        eventually("older native events",||seen.lock().unwrap().iter().any(|c|
+            matches!(c,Change::Activity {update:zerus_client_core::ActivityUpdate::Events {events,..},..} if events.iter().any(|e|e["seq"]==1)))).await;
+        let calls = fixture.calls();
+        let activity: Vec<_> = calls
+            .iter()
+            .filter(|c| {
+                c["value"]["op"] == "detail_follow"
+                    && c["value"]["subscription"]["topic"] == "activity"
+            })
+            .collect();
+        assert_eq!(activity.len(), 2);
+        assert_ne!(activity[0]["value"]["id"], activity[1]["value"]["id"]);
+        assert!(activity[1]["value"]["subscription"]["tail"].is_null());
+        let old = &activity[0]["value"]["id"];
+        let retired = calls
+            .iter()
+            .position(|c| c["value"]["op"] == "detail_unfollow" && &c["value"]["id"] == old)
+            .unwrap();
+        let replaced = calls
+            .iter()
+            .position(|c| c["value"] == activity[1]["value"])
+            .unwrap();
+        assert!(retired < replaced);
+        let process_id = calls
+            .iter()
+            .find(|c| c["value"]["subscription"]["topic"] == "processes")
+            .unwrap()["value"]["id"]
+            .clone();
+        service.processes_update("", "run:run", None).unwrap();
+        eventually("bounded process refresh", || {
+            fixture.calls().iter().any(|c| {
+                c["value"]["subscription"]["refresh"] == true && c["value"]["id"] == process_id
+            })
+        })
+        .await;
+        service.processes_update("", "run:run", Some(2000)).unwrap();
+        eventually("new interval uses a fresh view", || {
+            fixture.calls().iter().any(|c| {
+                c["value"]["subscription"]["interval_ms"] == 2000 && c["value"]["id"] != process_id
+            })
+        })
+        .await;
+        service.join().await.unwrap();
+    });
+}
+#[test]
+fn detail_sequence_gap_preserves_last_known_rows_and_requires_explicit_retry() {
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        let fixture = Fixture::new(json!({"details":true,"detail_gap":true}));
+        let (service, pump) = fixture.start(true);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let observe = seen.clone();
+        pump.tap(Box::new(move |c| observe.lock().unwrap().push(c.clone())));
+        eventually("initial catalog", || pump.row("", "row").is_some()).await;
+        service
+            .follow_detail("", detail_spec("activity", None))
+            .unwrap();
+        eventually("detail sequence refused", || {
+            service.snapshot().code == "detail_sequence_gap"
+        })
+        .await;
+        assert!(pump.row("", "row").is_some());
+        assert!(!seen.lock().unwrap().iter().any(|c| matches!(
+            c,
+            Change::Activity {
+                update: zerus_client_core::ActivityUpdate::Ended,
+                ..
+            }
+        )));
+        assert_eq!(watch_calls(&fixture.calls()), 1);
+        service.join().await.unwrap();
+    });
+}
+#[test]
+fn refused_detail_demand_is_visible_without_disconnecting_other_views() {
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        let fixture = Fixture::new(json!({"details":true,"detail_refused":true}));
+        let (service, pump) = fixture.start(true);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let observe = seen.clone();
+        pump.tap(Box::new(move |c| observe.lock().unwrap().push(c.clone())));
+        service
+            .follow_detail("", detail_spec("activity", None))
+            .unwrap();
+        eventually("explicit unsupported topic",||seen.lock().unwrap().iter().any(|c|
+            matches!(c,Change::Activity {update:zerus_client_core::ActivityUpdate::Connection {ready:false,code,..},..} if code=="unsupported_topic"))).await;
+        assert!(service.snapshot().connected);
+        assert_eq!(watch_calls(&fixture.calls()), 1);
+        service.join().await.unwrap();
+    });
+}
+
+#[test]
+fn missing_detail_abi_settles_activity_as_unavailable_without_a_fallback() {
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        let fixture = Fixture::new(json!({}));
+        let (service, pump) = fixture.start(true);
+        eventually("older service connected", || {
+            watch_calls(&fixture.calls()) == 1 && service.snapshot().connected
+        })
+        .await;
+        service
+            .follow_detail("", detail_spec("activity", None))
+            .unwrap();
+        let batch = pump.take(Duration::ZERO);
+        assert!(batch.activity.iter().any(|out| out.kind == "connection"
+            && out.payload["ready"] == false
+            && out.payload["pending"] == false));
+        assert!(!service.snapshot().details_available);
+        assert!(!fixture
+            .calls()
+            .iter()
+            .any(|c| c["value"]["op"] == "detail_follow"));
+        service.join().await.unwrap();
     });
 }

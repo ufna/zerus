@@ -8,6 +8,7 @@ pub use catalog::{
     CatalogIdentity, CatalogItem, CatalogPage, ChangeItem, ChangePage, Revision, CHANGES_ABI,
     CHANGES_HELP,
 };
+pub mod details;
 
 pub const MODE_ENV: &str = "ZERUS_CLIENT_DESKTOP_SERVICE";
 pub const ABI: &str = "desktop-v1";
@@ -166,9 +167,9 @@ impl State {
             background,
             attention_counts: counts,
             automatic_approvals: value["automatic_approvals"].as_bool(),
-            // Subscription dispatch is deliberately unsupported until the
-            // service-owned details adapter is integrated on both sides.
-            details_available: false,
+            details_available: self.snapshot.details_available
+                && value["detail_subscriptions"]["abi"] == details::ABI
+                && value["detail_subscriptions"]["stopping"] != true,
             code: String::new(),
         };
         self.snapshot.code = if value["background_start"]["admitted"] == false
@@ -201,6 +202,11 @@ impl State {
                 return Err("unexpected_service_hello");
             }
             self.status(&value["value"])?;
+            self.snapshot.details_available = details::Lease::parse(
+                &value["value"]["details"],
+                self.snapshot.epoch.as_deref().unwrap(),
+            )
+            .is_some();
             if value["epoch"].as_str() != self.snapshot.epoch.as_deref() {
                 return Err("service_epoch_changed");
             }
@@ -214,13 +220,13 @@ impl State {
             if self.seq.is_some_and(|old| seq < old) {
                 return Err("stale_service_frame");
             }
-            if kind == "status" {
+            if matches!(kind, "status" | "heartbeat") {
                 self.status(&value["value"])?;
             }
         }
         self.seq = Some(seq);
         match kind {
-            "hello" | "status" => Ok(Update::Status),
+            "hello" | "status" | "heartbeat" => Ok(Update::Status),
             "catalog_changed" => {
                 let body = &value["value"];
                 let computer = body["computer"]

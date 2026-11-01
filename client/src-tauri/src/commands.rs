@@ -249,21 +249,39 @@ mod live {
                 return Err("Invalid task project.".into());
             }
             let source = self.source.lock().unwrap_or_else(PoisonError::into_inner);
-            let Some(Source::Fleet(fleet)) = source.as_ref() else {
-                return Err("Tasks need a live hgs event stream.".into());
-            };
             let mut current = self
                 .tasks_project
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            if let Some(old) = current.take() {
-                fleet.unfollow_tasks(&ComputerId::local(), &old);
-            }
-            if let Some(next) = project {
-                fleet
-                    .follow_tasks(&ComputerId::local(), &next)
-                    .map_err(|e| e.to_string())?;
-                *current = Some(next);
+            match source.as_ref() {
+                Some(Source::Fleet(fleet)) => {
+                    if let Some(old) = current.take() {
+                        fleet.unfollow_tasks(&ComputerId::local(), &old);
+                    }
+                    if let Some(next) = project {
+                        fleet
+                            .follow_tasks(&ComputerId::local(), &next)
+                            .map_err(|e| e.to_string())?;
+                        *current = Some(next);
+                    }
+                }
+                Some(Source::Service(service)) => {
+                    if let Some(old) = current.take() {
+                        service.unfollow_detail("", zerus_watch_protocol::topic::TASKS, &old);
+                    }
+                    if let Some(next) = project {
+                        service.follow_detail(
+                            "",
+                            zerus_watch_protocol::Subscription {
+                                topic: zerus_watch_protocol::topic::TASKS.into(),
+                                project: Some(next.clone()),
+                                ..Default::default()
+                            },
+                        )?;
+                        *current = Some(next);
+                    }
+                }
+                _ => return Err("Tasks need a live hgs event stream.".into()),
             }
             Ok(())
         }
@@ -308,7 +326,10 @@ mod live {
             let _admission = self.admit()?;
             let organization = self.organization.get().cloned();
             let creations = self.creations.get().cloned();
-            if let Some(organization) = &organization {
+            if let Some(organization) = organization
+                .as_ref()
+                .filter(|_| !crate::desktop_service::mode())
+            {
                 let live = Arc::downgrade(self);
                 organization
                     .set_initial_source(Arc::new(move || live.upgrade()?.organization_snapshot()));
@@ -346,6 +367,21 @@ mod live {
                         .unwrap_or_else(PoisonError::into_inner)
                         .clone(),
                 );
+                if let Some(organization) = &organization {
+                    // The observer runs under detail admission. Its source
+                    // callback must not re-enter Live.source or that admission.
+                    let weak = Arc::downgrade(&service);
+                    organization.set_initial_source(Arc::new(move || {
+                        weak.upgrade()?.organization_snapshot()
+                    }));
+                    service.follow_detail(
+                        "",
+                        zerus_watch_protocol::Subscription {
+                            topic: zerus_watch_protocol::topic::ORGANIZATION.into(),
+                            ..Default::default()
+                        },
+                    )?;
+                }
                 *source = Some(Source::Service(service));
                 return Ok("service".into());
             }
@@ -425,7 +461,7 @@ mod live {
             {
                 Source::Fleet(fleet) => fleet.organization_snapshot(&ComputerId::local()),
                 Source::Replay(replay) => replay.organization_snapshot(),
-                Source::Service(_) => None,
+                Source::Service(service) => service.organization_snapshot(),
             }
         }
 
@@ -483,7 +519,21 @@ mod live {
                         .map_err(|error| error.to_string())?
                 }
                 Some(Source::Replay(replay)) => replay.follow(&computer, &key, after, tail),
-                Some(Source::Service(_)) => return Err("Activity is unavailable until the background service supports detail subscriptions.".into()),
+                Some(Source::Service(service)) => {
+                    if session.key() != key {
+                        return Err(FollowError::KeyMismatch.to_string());
+                    }
+                    service.follow_detail(
+                        &computer,
+                        zerus_watch_protocol::Subscription {
+                            topic: zerus_watch_protocol::topic::ACTIVITY.into(),
+                            session: Some(session),
+                            after,
+                            tail: after.is_none().then_some(tail),
+                            ..Default::default()
+                        },
+                    )?;
+                }
                 None => return Err("not started".into()),
             }
             Ok(())
@@ -537,7 +587,26 @@ mod live {
                     replay.follow_processes(&target.computer, &target.key);
                     Ok(())
                 }
-                Some(Source::Service(_)) => Err("Processes are unavailable until the background service supports detail subscriptions.".into()),
+                Some(Source::Service(service)) => {
+                    let session = SessionRef {
+                        name: target.name.clone(),
+                        run_id: (!target.run_id.is_empty()).then(|| target.run_id.clone()),
+                        conversation_id: (!target.conversation_id.is_empty())
+                            .then(|| target.conversation_id.clone()),
+                    };
+                    if session.key() != target.key {
+                        return Err(FollowError::KeyMismatch.to_string());
+                    }
+                    service.follow_detail(
+                        &target.computer,
+                        zerus_watch_protocol::Subscription {
+                            topic: zerus_watch_protocol::topic::PROCESSES.into(),
+                            session: Some(session),
+                            interval_ms: Some(10_000),
+                            ..Default::default()
+                        },
+                    )
+                }
                 None => Err("not started".into()),
             }
         }
@@ -558,7 +627,9 @@ mod live {
                     .set_processes_interval(&ComputerId(target.computer.clone()), &target.key, ms)
                     .map_err(|error| error.to_string()),
                 Some(Source::Replay(_)) => Ok(()),
-                Some(Source::Service(_)) => Err("Processes are unavailable until the background service supports detail subscriptions.".into()),
+                Some(Source::Service(service)) => {
+                    service.processes_update(&target.computer, &target.key, Some(ms))
+                }
                 None => Err("not started".into()),
             }
         }
@@ -575,7 +646,9 @@ mod live {
                     .refresh_processes(&ComputerId(target.computer.clone()), &target.key)
                     .map_err(|error| error.to_string()),
                 Some(Source::Replay(_)) => Ok(()),
-                Some(Source::Service(_)) => Err("Processes are unavailable until the background service supports detail subscriptions.".into()),
+                Some(Source::Service(service)) => {
+                    service.processes_update(&target.computer, &target.key, None)
+                }
                 None => Err("not started".into()),
             }
         }
@@ -595,7 +668,12 @@ mod live {
                 Some(Source::Replay(replay)) => {
                     replay.unfollow_processes(&target.computer, &target.key);
                 }
-                Some(Source::Service(_)) | None => {}
+                Some(Source::Service(service)) => service.unfollow_detail(
+                    &target.computer,
+                    zerus_watch_protocol::topic::PROCESSES,
+                    &target.key,
+                ),
+                None => {}
             }
         }
 
@@ -612,7 +690,9 @@ mod live {
                     fleet.unfollow(&ComputerId(computer), &key);
                 }
                 Some(Source::Replay(replay)) => replay.unfollow(&computer, &key),
-                Some(Source::Service(_)) => (),
+                Some(Source::Service(service)) => {
+                    service.unfollow_detail(&computer, zerus_watch_protocol::topic::ACTIVITY, &key)
+                }
                 None => return Err("not started".into()),
             }
             Ok(())
