@@ -15,6 +15,7 @@ mod claude_statusline;
 mod claude_subagents;
 mod attachments;
 mod computer_files;
+pub(crate) mod creation_launch_status;
 pub(crate) mod voice;
 mod interrupt;
 mod clear_context;

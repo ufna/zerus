@@ -1,16 +1,16 @@
 # Bounded original launch-status observation contract
 
 G1 accepted this contract on 2026-11-01 for G2 `zerus-5wmh.66.4.3.3`.
-The command, capability response and caller described here are **not implemented**.
-This document grants no current actor, source, kind, profile or executing
-permission. Implementation needs separate exact source and private proof reviews.
+The standalone command and capability response have an implementation candidate
+under `zerus-5wmh.66.4.3.4`; its native qualification and exact implementation/proof
+reviews remain open. No caller is implemented. This document grants no current
+actor, source, kind, profile or executing permission.
 Generic hgs configuration, help, remote routing, current Qt/creation listing and
 launch producers retain their existing behavior.
 
 ## Full entry chain and deliberate first-slice narrowing
 
-Current main handles only `--macos-session-service` and Windows `__host` before
-`cli::dispatch`. An ordinary target read enters `cli::dispatch`, platform environment
+An ordinary target read enters `cli::dispatch`, platform environment
 preparation, desktop launch_configuration, `Config::load` and then its guard.
 `Config::load` reads config with unbounded read_to_string, `machines::load` reads
 machines.local.json with unbounded fs::read, sets HGS_STATE_DIR and may call
@@ -21,11 +21,24 @@ launches SSH with its own configuration/key/known-host reads. None is covered by
 a selected-session byte cap. The complete read contract must include preliminary
 reads too.
 
-The proposed command entry runs before those generic helpers, at the first line
-of `cli::dispatch`, and returns before platform preparation,
-desktop service configuration, `Config::load`, argument target routing, terminal
-access or any generic guard. Main's two unrelated special forms do not match its
-argv. No changes to generic loader, machine profile reader or existing guards.
+The reserved entry runs before those generic helpers. Main first probes OS
+arguments, before Unicode conversion or its unrelated Mac/Windows special forms;
+the first line of `cli::dispatch` retains the same typed entry for direct callers.
+Both return before platform preparation, desktop service configuration,
+`Config::load`, target routing, terminal access or any generic guard. Generic
+loaders, machine profile readers and existing guards keep their behavior.
+
+The OS probe skips argv0 without decoding or using it as identity, and examines
+at most ten later items using the SAME positional reserved predicate as the typed
+entry. It retains ten fixed slots: exact borrowed ASCII keyword/leading-@ facts
+and strict text only after checking 256 encoded bytes per item and 1024 total
+retained bytes. Invalid Unicode, excess retained bytes or a tenth item on a
+recognized reserved form gives a fixed diagnostic before cwd/config/source or
+transport operations. It never truncates, normalizes or logs an argument.
+Unrelated input drops this probe and follows ordinary main behavior; there is no
+global Unicode or argument-count restriction. Standard args_os construction,
+native process-argv storage, runtime/loader initialization and whole-process heap
+are outside these retained-probe limits. This is no native original-scope witness.
 
 Accepted exact target argv forms:
 
@@ -41,7 +54,9 @@ No missing flags, duplicates, --dry-run, --read-only alias, stdin or trailing ar
 Recognize the command by exact command/flag positions only. A keyword inside an
 unrelated program or session argument must never select this entry.
 Bare command / malformed recognized reserved forms fail with fixed diagnostics,
-never fall through to default program launch. Direct `@host` forms for this command
+never fall through to default program launch. Reserved diagnostic writes are bounded to
+256 bytes; an output I/O failure preserves the refusal code without a panic
+or raw backtrace. Ordinary CLI diagnostic behavior stays unchanged. Direct `@host` forms for this command
 are recognized and refused before `Config::load`. No SSH/remote controller exists
 in this first slice. Supporting `hgs @alias ...` later requires its own bounded
 source-host bootstrap/profile/SSH contract; ordinary existing @ routing remains
@@ -51,7 +66,7 @@ selected host; no caller/runner or remote invocation is added now.
 
 ## Safe additive capability preflight
 
-The proposed exact `hgs --help creation-launch-status-v1` returns only
+The exact `hgs --help creation-launch-status-v1` returns only
 `creation-launch-status-v1\n`, success, <=256 bytes, with no config/environment
 preparation/source opens. This reserved help form is intercepted at the same
 entry. An older hgs sees a known-safe leading --help, never an unknown program.
@@ -70,7 +85,7 @@ by the future caller. This slice supplies no such caller or execution window.
 No config, machines.local.json, projects, alias catalog, SSH configuration,
 provider home, native logs or arbitrary pathname is read by the new target entry.
 Resolve only HOME (Windows USERPROFILE is not used: Windows is unsupported in
-this first read), HGS_CONFIG_DIR, HGS_STATE_DIR, XDG_STATE_HOME and current_dir
+this first read), HGS_CONFIG_DIR, HGS_STATE_DIR, XDG_STATE_HOME and one bounded cwd observation
 through process environment/OS calls, using existing Config path formulas but
 without `Config::load` or mutation. Config assignments currently consume only
 HGS_SELF/HGS_PEERS/HGS_TAB/HGS_TAB_COLORS, none selects config/state roots, so
@@ -79,9 +94,27 @@ overrides use the existing defaults; HOME must exist. Reject non-UTF8, empty or
 oversized selected values rather than inventing a home.
 Each selected env/path <=4096 bytes; aggregate selected path input <=16 KiB; resolved
 absolute paths <=4096 bytes and <=32 normal components, no .. or symlink-following
-canonicalization. Relative configured roots resolve against bounded current_dir,
+canonicalization. Relative configured roots resolve against that one bounded cwd,
 then reject non-normal components. No hostname subprocess, process-wide env
 mutation or default root creation. These restrictions apply only to the new command.
+
+Create the application counters before acquiring OS path input. Linux performs
+exactly one direct SYS_getcwd into a fixed 4096-byte nonzero-sentinel buffer,
+charged before the call. Its positive return must include one terminal NUL,
+strict UTF-8, an absolute path of at most 4095 bytes and at most 32 normal
+components. Any error, including EINTR, refuses without std/libc getcwd,
+iteration, realpath, procfs, resize, retry or fallback. This is not a kernel
+completion deadline or an atomic cwd/currentness observation.
+
+Mac uses one charged owned open of literal dot with read-only, directory,
+no-follow, nonblocking and CLOEXEC flags; charged metadata before/after one
+F_GETPATH must agree. The fixed buffer is at least the actual SDK MAXPATHLEN;
+a real terminator must be within that API range, never supplied by zero-filled
+unwritten storage. Consume and close this transient descriptor exactly once
+before ANY source root is opened. A close error or unknown result refuses,
+without retry or File Drop closing a possibly reused descriptor number. This
+extra transient open counts toward the same ledger and is no source receipt.
+Native API/ABI/error/close proof remains required on the actual Mac target.
 
 | Stage | Exact application metadata sources | Initial raw cap | Recheck/physical read cap |
 | --- | --- | --- | --- |
@@ -110,17 +143,33 @@ presence check; any present
 route means Unknown, no route body/other binding/rename traversal. Pin at most
 four existing directories: config-root/swarm, state-root, state-root/launches,
 state-root/name_routes when present. Each path walk <=33 directory opens. At
-most 16 calls to `Directory::open` (including every verify/recheck walk), charged
-conservatively before each call against a total of 1024 application directory/file
-open attempts; metadata/stat calls separately cap at 4096. Initial files stay open
+most 16 private directory walks (including every verify/recheck walk), with all
+component-count-plus-one opens reserved BEFORE a walk, against 1024 total
+application directory/file open attempts. Metadata/stat reservations separately
+cap at 4096. Reserved counts and actually executed API/syscall counts are distinct;
+unused reservations remain spent. Initial files stay open
 through same-file/path checks; close-only handles release no lifecycle authority.
 Any inability to stay within the counters refuses/Unknown, never silently omits
 checks. Private proof will check exact instrumented/open counts and syscall
 inventory against these ceilings, including empty roots and large sibling sets.
 
-Reuse Directory's Unix no-link component walk; each opened selected directory
-requires private/euid/type verification. read_private uses openat READONLY,
-NOFOLLOW|NONBLOCK|NOCTTY|CLOEXEC then regular/private/euid/single-link checks.
+The private reader follows Directory's Unix no-link component pattern with one
+direct libc open of slash and one openat per bounded NUL-checked normal component.
+No std open wrapper or EINTR retry is used; the generic Directory/platform APIs
+and callers remain unchanged. Every opened descriptor is immediately owned.
+Selected directories require private/euid/type verification. Fixed leaves use
+one openat READONLY|NOFOLLOW|NONBLOCK|NOCTTY|CLOEXEC followed by the existing
+regular/private/euid/single-link predicate.
+
+Reserve FIVE slots BEFORE every std path/file metadata invocation, including
+inside each reused private predicate, and one eUID query slot before that
+predicate. Two metadata APIs reserve ten. The audited Rust layer can call statx,
+a NULL availability probe and a legacy stat; the observed libc statx can add
+fstatat on ENOSYS. Five covers that branch composition only. Actual target
+libc/ABI/symbol/weak-resolution/signal/cold-warm/error paths still need source
+and sealed native proof; an extra or unbounded competing path withholds
+qualification without raising limits or omitting it. No all-runtime/kernel
+syscall bound, native drain or completion deadline follows from this ledger.
 Its opened metadata must be captured before/after bounded read, and original
 file identity/mode/owner/links/length/ctime+mtime nanos/hash/presence compared with
 the final path reopen, with held source roots verified before/after the whole

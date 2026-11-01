@@ -419,6 +419,9 @@ fn usage_text(tmux: bool) -> Cow<'static, str> {
 }
 
 pub fn dispatch(mut args: Vec<String>) -> Result<i32> {
+    if let Some(result) = state::creation_launch_status::early(&args) {
+        return result;
+    }
     if crate::desktop::launchd_command(&args) {
         args.pop();
         return dispatch(args).map_err(|mut error| {
