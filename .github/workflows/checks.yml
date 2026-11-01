@@ -228,6 +228,12 @@ jobs:
           cargo +1.99.1 fmt --check --manifest-path crates/presence-sampler/Cargo.toml
           cargo +1.99.1 clippy --locked --manifest-path crates/presence-sampler/Cargo.toml --target-dir target/desktop-crates --all-targets -- -D warnings
           cargo +1.99.1 test --locked --manifest-path crates/presence-sampler/Cargo.toml --target-dir target/desktop-crates
+      - name: Freedesktop notification wire crate (format, lints, private bus tests)
+        run: |
+          sudo apt-get update && sudo apt-get install --no-install-recommends -y dbus-daemon
+          cargo +1.99.1 fmt --check --manifest-path crates/freedesktop-notify/Cargo.toml
+          cargo +1.99.1 clippy --locked --manifest-path crates/freedesktop-notify/Cargo.toml --target-dir target/desktop-crates --all-targets -- -D warnings
+          cargo +1.99.1 test --locked --manifest-path crates/freedesktop-notify/Cargo.toml --target-dir target/desktop-crates
       # Packages fail without a notice for every shipped crate; find out here.
       - name: Rust license notices
         run: python3 scripts/collect-licenses.py "$RUNNER_TEMP/rust-licenses"

@@ -72,6 +72,7 @@ webkit2gtk = "2.0.2"
 # Tauri's AppIndicator backend has no primary-click events on Linux. The
 # approved Linux adapter exports the same native SNI/DBusMenu protocol as Qt.
 zbus = { version = "5.19", features = ["blocking-api"] }
+zerus-freedesktop-notify = { path = "../../crates/freedesktop-notify" }
 # Dormant bounded socket ingress, using zbus's already-locked async-io backend.
 async-io = "2.6"
 
