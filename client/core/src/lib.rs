@@ -38,6 +38,7 @@ pub mod local_messages;
 pub mod machine;
 pub mod machine_connections;
 pub mod macos_notify;
+pub mod maintenance;
 pub mod marks;
 pub mod menubar;
 pub mod migration;
