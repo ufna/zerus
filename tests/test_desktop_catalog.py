@@ -145,6 +145,7 @@ class Catalog(unittest.TestCase):
         self.assertEqual(value['items'], [row])
         self.assertIsNone(value['next_cursor'])
         with closing(sqlite3.connect(self.desktop / 'state.sqlite3')) as db, db:
+            db.create_function("desktop_shared_flags", 1, lambda raw: 0)
             db.execute("UPDATE desktop_catalog_rows SET key=?,json='{}',bytes=200066", ('\x01' * 200_000,))
         refused = self.page()
         self.assertEqual(refused['code'], 'catalog_read_refused')
