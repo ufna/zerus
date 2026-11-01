@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createStore } from "solid-js/store";
 import { createRoot, createSignal } from "solid-js";
 import { createEndActions, endTitles, type EndPort } from "./endActions";
-import { pendingEnd, type EndCapture } from "./endActionBusy";
+import { pendingEnd, sameEnd, type EndCapture } from "./endActionBusy";
 import { createNoticeBus, NOTICE_MS } from "./notices";
 
 const capture = (name = "claude/example", kind = "archive"): EndCapture => ({ target: { computer: "test", name, run_id: "run-1", conversation_id: "conversation-1" }, action: { kind } as EndCapture["action"], state: kind === "archive" ? "paused" : "running" });
@@ -26,8 +27,8 @@ describe("confirmed end action grace", () => {
     const job = f.app.schedule([capture()], effect); await tick();
     const notice = f.bus.notices()[0], label = notice.actions![0].label as () => string;
     expect(notice).toMatchObject({ title: "Archiving session", text: "claude/example", sticky: true, dismissible: false });
-    expect(label()).toBe("Undo (5)"); expect(pendingEnd("test", "claude/example")).toBe(true);
-    vi.advanceTimersByTime(2100); expect(label()).toBe("Undo (3)"); expect(effect).not.toHaveBeenCalled();
+    expect(label()).toBe("Undo (3)"); expect(pendingEnd("test", "claude/example")).toBe(true);
+    vi.advanceTimersByTime(1100); expect(label()).toBe("Undo (2)"); expect(effect).not.toHaveBeenCalled();
     vi.advanceTimersByTime(5000); expect(label()).toBe("Undo (1)"); expect(effect).not.toHaveBeenCalled();
     f.ready(); expect(await job).toBe("done");
     expect(effect).toHaveBeenCalledExactlyOnceWith([{ id: "id-1", index: 0 }], "session-end:test\nclaude/example");
@@ -94,6 +95,21 @@ describe("confirmed end action grace", () => {
       const job = f.app.schedule([capture("changing")], effect, { current: same }); await tick();
       setSame(false); await tick(); await job;
       expect(effect).not.toHaveBeenCalled(); expect(f.bus.notices()[0].text).toBe("Archive cancelled: the session changed."); dispose();
+    });
+  });
+  it("ignores presentation/read changes but cancels an actually replaced target", async () => {
+    await createRoot(async (dispose) => {
+      const f = fixture(), effect = vi.fn();
+      const captured = { key: "target", computer: "test", name: "changing", runId: "run-1", conversationId: "conversation-1", state: "running", unread: true, activity: "idle" };
+      const [row, update] = createStore({ ...captured });
+      const job = f.app.schedule([capture("changing", "clear_context")], effect, { current: () => sameEnd(captured, row) }); await tick();
+      update({ unread: false, activity: "working" }); await tick();
+      expect(f.bus.notices()[0].title).toBe("Clearing session");
+      expect(f.calls).not.toContain("cancel id-1");
+      update({ conversationId: "replacement" }); await tick(); await job;
+      expect(effect).not.toHaveBeenCalled();
+      expect(f.bus.notices()[0].text).toBe("Clear cancelled: the session changed.");
+      dispose();
     });
   });
   it("quit/page destruction makes Undo inert and drops pending calls, even if native wait answered true", async () => {

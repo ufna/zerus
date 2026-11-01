@@ -11,6 +11,7 @@ import { trNoop, tr } from "../i18n";
 const FIVE = trNoop("Five actions are waiting. Undo one or wait a moment.");
 /** The toast names at most this many sessions. */
 const NAMED = 3;
+const UNDO_MS = 3000;
 type Titled = { computer: string; name: string; title: string };
 /** The session list's label (its title, else its name) for the first captures; one pass, stops when all are found. */
 export function endTitles(captures: readonly EndCapture[], rows: Iterable<Titled>): string[] {
@@ -70,7 +71,7 @@ export function createEndActions(port: EndPort, notices: NoticeBus, uuid: () => 
       const changed = String(error) === "The session state changed. Open its actions again.";
       notices.notify(changed ? "info" : "error", changed ? tr(cancelled[verb][1]) : String(error), !changed, key);
     };
-    const [seconds, setSeconds] = createSignal(5);
+    const [seconds, setSeconds] = createSignal(UNDO_MS / 1000);
     const [note, setNote] = createSignal("");
     let noticeId: number | undefined;
     let active = true, timer: ReturnType<typeof setInterval> | undefined, noteTimer: ReturnType<typeof setTimeout> | undefined, dispose: (() => void) | undefined;
@@ -96,7 +97,7 @@ export function createEndActions(port: EndPort, notices: NoticeBus, uuid: () => 
           dismissible: false, note,
           actions: [{ label: () => tr("Undo (%1)", seconds()), style: "primary", disabled: () => !active, run: () => cancel() }],
         });
-      timer = setInterval(() => setSeconds(Math.max(1, Math.ceil((5000 - (now() - start)) / 1000))), 100);
+      timer = setInterval(() => setSeconds(Math.max(1, Math.ceil((UNDO_MS - (now() - start)) / 1000))), 100);
       if (options.current) createRoot((d) => { dispose = d; createComputed(() => { if (!options.current!()) cancel(true); }); });
       const ready = await port.wait(id);
       if (!active) return;

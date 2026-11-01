@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::{Duration, Instant};
 
-pub const UNDO_WINDOW: Duration = Duration::from_secs(5);
+pub const UNDO_WINDOW: Duration = Duration::from_secs(3);
 // Match the existing bounded native inspection budget. Provider metadata can
 // contain a current question or other opaque details even without history.
 pub const METADATA_LIMIT: usize = 2 * 1024 * 1024;
