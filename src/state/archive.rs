@@ -315,7 +315,21 @@ pub(super) fn forget_scoped(name: &str, id: &str, dry: bool, scope: Option<&sess
     remove_synced(&path(id)?)
 }
 
-/// Commit the restore only after the provider confirms the exact archived ID.
+/// The immutable source of a still-pending restore, before its binding changes.
+pub(super) fn restore_source(record: &Value) -> Result<Value> {
+    let archived = read_archive(string(record, "name"), string(record, "restore_archive_id"))?;
+    if string(record, "expected_id").is_empty()
+        || record["expected_id"] != record["conversation_id"]
+        || archived["conversation_id"] != record["expected_id"]
+        || archived["agent"] != record["agent"]
+        || string(&archived, "run_id").is_empty()
+    {
+        return Err("archive restore source changed; refresh before clearing".into());
+    }
+    Ok(archived)
+}
+
+/// Commit the restore after its exact ID, or its explicitly cleared successor.
 /// The active binding has already been synced by the caller before this runs.
 pub(super) fn confirm_restore(record: &mut Value) -> Result<()> {
     let id = string(record, "restore_archive_id").to_owned();
@@ -324,7 +338,9 @@ pub(super) fn confirm_restore(record: &mut Value) -> Result<()> {
     }
     if path(&id)?.exists() {
         let archived = read_archive(string(record, "name"), &id)?;
-        if archived["conversation_id"] != record["conversation_id"] {
+        if archived["conversation_id"] != record["conversation_id"]
+            && !clear_context::restored_successor(record, &archived)
+        {
             return Err("archive restore confirmed a different conversation".into());
         }
         remove_synced(&path(&id)?)?;
@@ -334,7 +350,14 @@ pub(super) fn confirm_restore(record: &mut Value) -> Result<()> {
     write(record)
 }
 
-pub(super) fn failed_restore(record: &Value) -> Result<bool> {
+pub(super) fn failed_restore(record: &mut Value) -> Result<bool> {
+    // An accepted SessionStart already synced the active conversation. Retry
+    // finalization only; never discard it after an archive cleanup failure.
+    // On failure, propagate uncertainty with both records left recoverable.
+    if !string(record, "restore_archive_id").is_empty() && string(record, "expected_id").is_empty() {
+        confirm_restore(record)?;
+        return Ok(false);
+    }
     let id = string(record, "restore_archive_id");
     if id.is_empty() || !path(id)?.exists() {
         return Ok(false);
@@ -362,4 +385,145 @@ pub(super) fn known_exit(record: &Value) -> bool {
         (string(record, "agent"), string(end, "reason")),
         ("claude", "prompt_input_exit") | ("codex", "other") | ("kimi", "exit")
     )
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    // Each filesystem cut runs in its own literal environment: other parallel
+    // state tests must never see this test's HGS_STATE_DIR.
+    #[test]
+    fn restored_clear_finalization_preserves_each_durable_cut() {
+        for cut in [
+            "before_start",
+            "unconfirmed_clear",
+            "before_delete",
+            "after_delete",
+            "after_flags",
+            "unreadable",
+            "replaced",
+            "stale_anchor",
+            "missing_anchor",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "state::archive::tests::restore_cut_probe",
+                    "--exact",
+                    "--nocapture",
+                ])
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", root.path())
+                .env("HGS_CONFIG_DIR", root.path().join("config"))
+                .env("HGS_STATE_DIR", root.path().join("state"))
+                .env("HGS_TEST_RESTORE_CUT", cut)
+                .output()
+                .unwrap();
+            println!(
+                "restore cut {cut}: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            assert!(
+                output.status.success(),
+                "{cut}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    #[test]
+    fn restore_cut_probe() {
+        let Ok(cut) = std::env::var("HGS_TEST_RESTORE_CUT") else {
+            return;
+        };
+        let id = "11111111-1111-4111-8111-111111111111";
+        let name = "codex/restore-test";
+        let source = json!({"version":1,"name":name,"agent":"codex","archive_id":id,
+            "run_id":"archived-run","conversation_id":"saved"});
+        let mut record = json!({"version":1,"name":name,"agent":"codex","run_id":"live-run",
+            "pid":42,"conversation_id":"new","restore_archive_id":id,"activity":"idle","phase":"idle",
+            "main_done":true,"active_tools":{},"subagents":{},"session_clear":{"at":1.0,
+                "run_id":"live-run","conversation_id":"new","previous_conversation_id":"saved",
+                "source":"native_hook","restore_archive_id":id,"restore_archive_run_id":"archived-run",
+                "restore_clear_request_id":"22222222-2222-4222-8222-222222222222"}});
+        if ["before_start", "unconfirmed_clear"].contains(&cut.as_str()) {
+            record["conversation_id"] = json!("saved");
+            record["expected_id"] = json!("saved");
+            record.as_object_mut().unwrap().remove("session_clear");
+            if cut == "unconfirmed_clear" {
+                record["clear_context_request"] = json!({"run_id":"live-run","conversation_id":"saved",
+                    "restore_archive_id":id,"restore_archive_run_id":"archived-run",
+                    "request_id":"22222222-2222-4222-8222-222222222222"});
+            }
+        } else {
+            assert!(clear_context::restore_committed(&record));
+            assert!(!clear_context::available(&record, true));
+        }
+        atomic(&path(id).unwrap(), &source.to_string()).unwrap();
+        match cut.as_str() {
+            "after_delete" => remove_synced(&path(id).unwrap()).unwrap(),
+            "after_flags" => {
+                remove_synced(&path(id).unwrap()).unwrap();
+                record.as_object_mut().unwrap().remove("restore_archive_id");
+            }
+            "unreadable" => fs::write(path(id).unwrap(), b"incomplete archive").unwrap(),
+            "replaced" => {
+                let mut replaced = source.clone();
+                replaced["run_id"] = json!("replacement-run");
+                atomic(&path(id).unwrap(), &replaced.to_string()).unwrap();
+            }
+            "stale_anchor" => record["session_clear"]["run_id"] = json!("earlier-run"),
+            "missing_anchor" => { record.as_object_mut().unwrap().remove("session_clear"); }
+            "before_start" | "unconfirmed_clear" | "before_delete" => {}
+            _ => panic!("unknown cut"),
+        }
+        write(&mut record).unwrap();
+        let before = fs::read(path(id).unwrap()).ok();
+        assert_eq!(clear_context::available(&record, true), cut == "after_flags");
+        // Exercise the real finalizer with a synthetic failed exit status, not
+        // a claim that this probe ran or stopped an agent process.
+        let result = supervisor::finish(
+            name,
+            "live-run",
+            42,
+            std::process::ExitStatus::from_raw(256),
+        );
+        if ["before_start", "unconfirmed_clear"].contains(&cut.as_str()) {
+            result.unwrap();
+            assert!(!record_path(name).exists());
+            let kept = read_archive(name, id).unwrap();
+            assert_eq!(kept["conversation_id"], "saved");
+            assert!(!string(&kept, "last_restore_error").is_empty());
+            return;
+        }
+        let current = read(name).unwrap();
+        assert_eq!(current["conversation_id"], "new");
+        assert_eq!(current["run_id"], "live-run");
+        assert_eq!(current["session_clear"], record["session_clear"]);
+        if ["stale_anchor", "missing_anchor"].contains(&cut.as_str()) {
+            assert!(result.is_err());
+            assert_eq!(fs::read(path(id).unwrap()).ok(), before);
+            assert_eq!(current["restore_archive_id"], id);
+            return;
+        }
+        if ["unreadable", "replaced"].contains(&cut.as_str()) {
+            assert!(result.is_err());
+            assert_eq!(fs::read(path(id).unwrap()).ok(), before);
+            assert!(clear_context::restore_committed(&current));
+            // Retrying finalization after the source is made readable and exact
+            // uses the already durable transition, with no new hook or command.
+            atomic(&path(id).unwrap(), &source.to_string()).unwrap();
+            let mut current = current;
+            confirm_restore(&mut current).unwrap();
+        } else {
+            result.unwrap();
+        }
+        let current = read(name).unwrap();
+        assert_eq!(current["conversation_id"], "new");
+        assert!(current.get("restore_archive_id").is_none());
+        assert!(!path(id).unwrap().exists());
+    }
 }

@@ -818,3 +818,62 @@ The existing reserved G3 agent source stays
 separately; software updates are outside `g1-background-v1` and stay Staged.
 The unchanged legacy schema1 source remains separate. No new source collector,
 frozen export, shared-file quiet claim, service API or ownership change is added.
+
+### Cocoa one-shot completion custody
+
+The existing authorization-result and add-error block construction has private
+`authorization_reply` and `error_reply` factories. `System` uses these same
+factories with unchanged notification-center calls, options, one-shot consumption
+and error descriptions. Current GUI installation still uses the ordinary
+unaccounted notifier. A block factory supplies neither a native permission nor
+an original resource admission.
+
+Headless Mac controls wrap real accounted Notifier continuations captured by a
+fake Center in these actual Cocoa blocks. Native block copies share the one
+continuation. A consumed copy has no remaining obligation; the original callback
+and its queued Hop retain the same fixed NativePosting group until actual return
+and work completion. Dropping an uncalled final block or an unexecuted Hop pins
+that original group. Duplicate calls cannot recover, replay or refund it. Strong
+close still refuses derived native calls and failure sinks while original
+callbacks drain. The controls also cover real Foundation error descriptions and
+a synchronous Hop that finishes before the calling block actually returns.
+
+These tests never call UNUserNotificationCenter, request permission, post a
+banner or open a display. They qualify actual block mechanics with a fake
+Center, not real SDK request/callback origin or native effect admission. Full
+per-owner native resources, callback/delegate custody, current producer/profile
+and service gates remain separate prerequisites.
+
+### Dormant Cocoa owner request data
+
+The private, uncalled `macos_notify::owned_request` factory constructs SDK data
+only. It validates the explicit existing Owner, whole Notice and supplied
+original canonical non-nil correlation UUID before any Cocoa object construction.
+It generates no ID, clips nothing, and bounds UTF-8 bytes to 8192 for the token,
+4096 for the title and 16384 for the body. These caps apply only to this dormant
+factory; the current System, Delegate and ordinary GUI remain unchanged.
+
+A Draft contains an immutable UNNotificationRequest with the exact raw token,
+Qt-compatible request identifier, title, body and default sound. Its two string
+userInfo entries use the existing token and correlation keys. The distinct
+categories are `zerus.attention.agent.v1` and `zerus.attention.update.v1`. No
+category/action object, custom button or action identifier is introduced, and
+no category is registered with UNUserNotificationCenter. Later registration is
+global app state and needs separate agreement: it must retain today's implicit
+default/open actions and texts, with any future application action identifiers
+isolated per owner. There is no posting or response/withdrawal route here.
+
+Expected Owner is selected before validation; neither a category nor a valid
+token establishes the original native owner. A Draft is comparison data, never
+an accepted-post mapping, a delivered receipt or an execution permit. A valid
+historical token remains text; constructing a Draft does not adopt its old native
+post. Future upgrades must preserve existing legacy/unbound handling, and a new
+category must never claim a legacy notification. Actual original mappings,
+per-owner native resources, delegate/current-controller custody and all SDK
+origin/effect/profile/service gates remain separate prerequisites.
+
+Headless Mac controls construct and copy these actual request data objects,
+inspect metadata and exact raw identities, and refuse wrong-owner, unbound,
+invalid-correlation and oversized inputs. They call no Center method, request
+no permission, post no banner and use no display. Input byte caps are not an
+SDK allocator, decoded-memory, RSS or whole-profile heap bound.

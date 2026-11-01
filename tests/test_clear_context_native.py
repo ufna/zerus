@@ -145,7 +145,7 @@ plugins=false
 name="Fixture"
 base_url="''' + getattr(self, 'provider_url', 'http://127.0.0.1:1/v1') + '''"
 wire_api="responses"
-''')
+''' + '[projects.' + json.dumps(str(self.root.resolve())) + ']\ntrust_level="trusted"\n')
         NativeCodexClear.assert_plugin_sync_off(self, native_home)
         path = native_home / 'sessions/2026/10/09' / ('rollout-fixture-' + self.conversation_id + '.jsonl')
         path.parent.mkdir(parents=True)
@@ -485,6 +485,31 @@ wire_api="responses"
         # Codex reports the cleared conversation only with the next turn's SessionStart.
         test_input.InputTransport.send(self, test_input.InputTransport.payload(self, text='First fixture message'))
         self.assert_new_conversation(fresh['session_clear']['at'])
+
+    def test_archive_restored_conversation_clears_and_settles_on_its_real_start(self):
+        import test_clear_context
+        test_clear_context.ResumedClearContext.restored(self)
+        info = test_clear_context.ClearContext.inspect(self)
+        self.assertTrue(info['resume_message_can_send'], info.get('resume_message_reason'))
+        self.assertTrue(info['clear_context_supported'], info.get('clear_context_reason'))
+        self.assertFalse(info['compact_context_supported'])
+        self.assertFalse(info['fork_supported'])
+        self.assertNotIn('pause', info['allowed_actions'])
+        receipt = test_clear_context.ClearContext.clear(self)
+        self.assertEqual(receipt['status'], 'confirmed')
+        current = json.loads(self.record_path.read_text())
+        self.assertEqual(self.archive_path.read_bytes(), self.archive_bytes)
+        self.assertEqual((current['conversation_id'], current['expected_id']),
+                         (self.conversation_id, self.conversation_id))
+        self.assertTrue(current['session_clear']['awaiting_session_start'])
+        self.assertNotIn('resume_pending', current)
+        fresh = test_clear_context.ClearContext.inspect(self)
+        test_input.InputTransport.send(self, test_input.InputTransport.payload(self, text='First restored fixture message'))
+        self.assert_new_conversation(fresh['session_clear']['at'])
+        current = json.loads(self.record_path.read_text())
+        self.assertFalse(self.archive_path.exists())
+        self.assertNotIn('restore_archive_id', current)
+        self.assertNotIn('resume_pending', current)
 
     def test_resumed_terminal_clear_is_confirmed_by_its_deferred_session_start(self):
         self.resumed()

@@ -39,6 +39,16 @@ pub(super) fn observe_start(record: &mut Value, event: &Value) {
         let at = if journaled { record["session_clear"]["at"].clone() } else { json!(now()) };
         record["session_clear"] = json!({"at":at,"run_id":record["run_id"],
             "conversation_id":next,"previous_conversation_id":previous,"source":"native_hook","journaled":journaled});
+        // Only the accepted, real clear SessionStart carries this transaction
+        // across the active-write/archive-delete crash cut. A reset panel alone
+        // never settles an archive restore.
+        if string(event,"source") == "clear" && resume_input::pending(record) {
+            if let Some(request) = restore_request(record).cloned() {
+                record["session_clear"]["restore_archive_id"] = request["restore_archive_id"].clone();
+                record["session_clear"]["restore_archive_run_id"] = request["restore_archive_run_id"].clone();
+                record["session_clear"]["restore_clear_request_id"] = request["request_id"].clone();
+            }
+        }
     } else {
         for key in ["session_clear", "cleared_conversations"] { record.as_object_mut().unwrap().remove(key); }
     }
@@ -133,7 +143,10 @@ fn codex_reset_panel_below(screen: &str, cwd: &str, home: &Path) -> bool {
 pub(super) fn observe_terminal(record: &mut Value) -> Result<bool> {
     // A resume awaiting its deferred SessionStart has no hook-confirmed idle
     // state: its exact process must still own the restored conversation.
-    let resumed = resume_input::clearable(record);
+    let resumed = resume_clearable(record);
+    if !string(record,"restore_archive_id").is_empty() && restore_request(record).is_none() {
+        return Ok(false);
+    }
     // The failed-turn path deliberately preserves the missing idle hook. A
     // matching explicit request may confirm its native reset through the same
     // full panel/composer checks, without rewriting the session's work state.
@@ -182,6 +195,9 @@ fn blocked(record: &Value) -> Option<String> {
     let error = string(record,"error");
     Some(if pause_active(record) { "Wait for the session to finish pausing".into() }
     else if !error.is_empty() { format!("The session reported an error: {}", journal::clipped(&json!(error),240)) }
+    else if !string(record,"restore_archive_id").is_empty() && string(record,"expected_id").is_empty() {
+        "Wait for the restored archive cleanup before clearing again".into()
+    }
     // A confirmed Codex clear keeps its request until the deferred SessionStart.
     else if awaiting_start(record) { "The cleared conversation starts with the next message".into() }
     else if record["clear_context_request"].is_object() {
@@ -290,11 +306,62 @@ fn working(record: &Value, main_turn: bool) -> String {
 /// resume may clear before it: the clear's own SessionStart then names the new
 /// conversation (`resumed_start`). Compaction keeps requiring `available`.
 pub(super) fn resumed(record: &Value, live: bool) -> bool {
-    live && unblocked(record) && resume_input::idle(record)
+    live && unblocked(record) && resume_clearable(record) && resume_input::ready(record).is_ok()
 }
 /// `resumed` for an inspection whose summary already verified the resume.
 pub(super) fn resumed_verified(record: &Value, live: bool, verified: bool) -> bool {
-    live && unblocked(record) && resume_input::idle_checked(record, verified)
+    live && unblocked(record) && verified && resume_clearable(record)
+}
+
+/// Clear alone may reset an exactly verified archive resume. Keep the shared
+/// pause/send/settings predicates unchanged, including their restore fence.
+pub(super) fn resume_clearable(record: &Value) -> bool {
+    resume_input::pending(record)
+        && record["input_pending_at"].as_f64().unwrap_or(0.0) == 0.0
+        && !telemetry::work_remains(record)
+        && (string(record, "restore_archive_id").is_empty()
+            || archive::restore_source(record).is_ok())
+}
+
+fn restore_request(record: &Value) -> Option<&Value> {
+    let request = &record["clear_context_request"];
+    (!string(record, "restore_archive_id").is_empty()
+        && request["restore_archive_id"] == record["restore_archive_id"]
+        && request["run_id"] == record["run_id"]
+        && !string(record, "run_id").is_empty()
+        && request["conversation_id"] == record["conversation_id"]
+        && !string(request, "restore_archive_run_id").is_empty()
+        && uuid::Uuid::parse_str(string(request, "request_id")).is_ok())
+    .then_some(request)
+}
+
+/// The accepted native clear hook retained the exact original archive identity
+/// before removing its request. This is not authority from a previous ID alone.
+pub(super) fn restore_committed(record: &Value) -> bool {
+    let clear = &record["session_clear"];
+    record["agent"] == "codex"
+        && string(record, "expected_id").is_empty()
+        && clear["at"].as_f64().is_some_and(|at| at > 0.0)
+        && clear["awaiting_session_start"] != true
+        && clear["source"] == "native_hook"
+        && clear["run_id"] == record["run_id"]
+        && !string(record, "run_id").is_empty()
+        && !string(record, "conversation_id").is_empty()
+        && clear["conversation_id"] == record["conversation_id"]
+        && !string(clear, "previous_conversation_id").is_empty()
+        && clear["previous_conversation_id"] != record["conversation_id"]
+        && clear["restore_archive_id"] == record["restore_archive_id"]
+        && !string(record, "restore_archive_id").is_empty()
+        && !string(clear, "restore_archive_run_id").is_empty()
+        && uuid::Uuid::parse_str(string(clear, "restore_clear_request_id")).is_ok()
+}
+pub(super) fn restored_successor(record: &Value, archived: &Value) -> bool {
+    let clear = &record["session_clear"];
+    restore_committed(record)
+        && archived["agent"] == record["agent"]
+        && clear["previous_conversation_id"] == archived["conversation_id"]
+        && clear["restore_archive_id"] == archived["archive_id"]
+        && clear["restore_archive_run_id"] == archived["run_id"]
 }
 /// Claude sends no hook when Esc stops a turn, so the session stays
 /// Interrupted until its next message while its prompt already takes /clear,
@@ -328,8 +395,13 @@ pub(super) fn failed(record: &Value, live: bool) -> bool {
 /// confirms the resume when it was requested or observed for the expected
 /// conversation, or the exact supervised Codex still holds its rollout open.
 pub(super) fn resumed_start(record: &Value, event: &Value) -> bool {
+    if !string(record,"restore_archive_id").is_empty() {
+        return string(event,"source") == "clear" && resume_input::pending(record)
+            && restore_request(record).is_some_and(|request| archive::restore_source(record)
+                .is_ok_and(|archived| archived["run_id"] == request["restore_archive_run_id"]));
+    }
     string(event,"source") == "clear"
-        && resume_input::pending(record) && string(record,"restore_archive_id").is_empty()
+        && resume_input::pending(record)
         && (awaiting_start(record) || record["clear_context_request"]["conversation_id"] == record["conversation_id"]
             || resume_input::owned(record).is_ok())
 }
@@ -406,7 +478,7 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     let mut guard=Some(lock(None)?);
     let current=read(name)?;
     // A resume before its deferred SessionStart is verified as for its first message.
-    let resuming=resume_input::clearable(&current);
+    let resuming=resume_clearable(&current);
     let stopped=!resuming && interrupted(&current,true);
     let failed=!resuming && !stopped && self::failed(&current,true);
     let dismiss=request.dismiss_prompt && !resuming && !stopped && !failed && !available(&current,true);
@@ -427,6 +499,12 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     if path.exists() {return Err("This clear was already attempted. Check Terminal before trying again".into());}
     recovery::cancel_for_input(name)?;
     record["clear_context_request"]=json!({"request_id":request.request_id,"conversation_id":request.expected_conversation_id,"at":now()});
+    if resuming && !string(&record,"restore_archive_id").is_empty() {
+        let archived = archive::restore_source(&record)?;
+        record["clear_context_request"]["run_id"] = record["run_id"].clone();
+        record["clear_context_request"]["restore_archive_id"] = record["restore_archive_id"].clone();
+        record["clear_context_request"]["restore_archive_run_id"] = archived["run_id"].clone();
+    }
     write(&mut record)?;
     atomic(&path,&json!({"status":"in_progress","run_id":request.expected_run_id,"conversation_id":request.expected_conversation_id}).to_string())?;
     // No Ctrl-U: never discard a native draft. Escape only on explicit request.
@@ -457,7 +535,18 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         }
         std::thread::sleep(COMMAND_SETTLE);
         let current=if dismiss {kimi_tui_choice::identity(&record)?}
-            else if resuming {resume_input::owned(&record)?;kimi_tui_choice::identity(&record)?}
+            else if resuming {
+                resume_input::owned(&record)?;
+                let current=kimi_tui_choice::identity(&record)?;
+                if !resume_clearable(&current) {return Err("The resumed clear target changed before /clear".into());}
+                if let Some(request)=restore_request(&record) {
+                    let archived=archive::restore_source(&current)?;
+                    if archived["run_id"] != request["restore_archive_run_id"] {
+                        return Err("The restored archive changed before /clear".into());
+                    }
+                }
+                current
+            }
             else if stopped {input::checked_interrupted(name,&request.expected_run_id,&request.expected_conversation_id)?}
             else if failed {input::checked_failed(name,&request.expected_run_id,&request.expected_conversation_id)?}
             else {input::checked_ready(name,&request.expected_run_id,&request.expected_conversation_id)?};

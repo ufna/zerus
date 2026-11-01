@@ -66,12 +66,12 @@ describe("the session menu (Qt showSessionMenu 5266-5382)", () => {
     expect(labels(sessionMenu(archivedSession("", "Local", archived("dsh"))))).toEqual(expected);
   });
 
-  it("a live row keeps its terminal entry and the Mute and Mark group", () => {
+  it("a live row starts with Mark then Mute and keeps its terminal entry", () => {
     const live = toSession("", "run:run-live", { name: "codex/example/live", agent: "codex", state: "running", status: "ready", run_id: "run-live", conversation_id: "conv-live" });
     expect(labels(sessionMenu(live))).toEqual([
+      "Mark needs attention", "Mute", "---",
       "Compact session row", "Expand all collapsed", "---",
       "Open terminal", "Open folder", "Open shell in session folder", "Copy connect command", "---",
-      "Mute", "Mark needs attention", "---",
       "Pause session", "Clear session…", "Rename…", "Fork session…", "Move to project…", "---",
       "Copy session name", "Copy session reference", "Copy folder path", "---",
       "Terminate session…",

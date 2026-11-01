@@ -64,7 +64,7 @@ pub(super) fn finish(name: &str, run_id: &str, child_id: u32, status: ExitStatus
         "unconfirmed_exit"
     });
     write(&mut record)?;
-    if archive::failed_restore(&record)? {
+    if archive::failed_restore(&mut record)? {
         return Ok(());
     }
     if clean {

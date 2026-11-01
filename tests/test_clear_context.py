@@ -69,7 +69,7 @@ int main(int argc, char **argv) {
             if (escape) { if (escape == 1 && c == '[') escape = 2; else if (escape == 1 || (c >= 0x40 && c <= 0x7e)) escape = 0; continue; }
             if (c == 0x1b) { escape = 1; continue; }
             if (c == '\r') {
-                if (!strcmp(text, "/clear")) { cleared = 1; close(open("native-cleared", O_CREAT | O_WRONLY, 0600)); }
+                if (!strcmp(text, "/clear") && access("refuse-clear", F_OK)) { cleared = 1; close(open("native-cleared", O_CREAT | O_WRONLY, 0600)); }
                 else { append("submitted", text, length); append("submitted", "\n", 1); }
                 length = 0; text[0] = 0;
             } else if (c >= 0x20 && length + 1 < sizeof text) { text[length++] = c; text[length] = 0; }
@@ -323,6 +323,108 @@ class ResumedClearContext(unittest.TestCase):
   self.assertEqual(fresh['session_usage']['context']['used'],32)
   self.assertEqual(sum(e['type']=='SessionCleared' for e in fresh['events']),1)
   return fresh
+ def restored(self):
+  self.resumed()
+  self.archive_id=str(uuid.uuid4())
+  self.archive_path=self.state/'archives'/(self.archive_id+'.json')
+  self.archive_path.parent.mkdir(exist_ok=True)
+  archived=dict(self.record,run_id=str(uuid.uuid4()),archive_id=self.archive_id,archived_at=time.time(),state='archived')
+  for key in ('expected_id','restore_archive_id','resume_pending'):
+   archived.pop(key,None)
+  self.archive_path.write_text(json.dumps(archived)+'\n')
+  self.archive_bytes=self.archive_path.read_bytes()
+  self.record.update(restore_archive_id=self.archive_id)
+  self.record.pop('resume_pending',None)
+  self.write_record()
+ def test_archive_restored_clear_preserves_source_until_its_new_session_start(self):
+  self.restored();info=self.inspect()
+  self.assertTrue(info['resume_message_can_send'],info.get('resume_message_reason'))
+  self.assertTrue(info['clear_context_supported'],info.get('clear_context_reason'))
+  self.assertFalse(info['compact_context_supported']);self.assertFalse(info['fork_supported'])
+  self.assertNotIn('pause',info['allowed_actions'])
+  request=dict(request_id=str(uuid.uuid4()),expected_run_id=self.run_id,expected_conversation_id=self.conversation_id)
+  self.assertEqual(self.clear(request)['status'],'confirmed')
+  self.assertEqual(self.received(),b'/clear\r')
+  current=json.loads(self.record_path.read_text())
+  self.assertEqual(self.archive_path.read_bytes(),self.archive_bytes)
+  self.assertEqual((current['conversation_id'],current['expected_id']),(self.conversation_id,self.conversation_id))
+  self.assertEqual(current['restore_archive_id'],self.archive_id);self.assertNotIn('resume_pending',current)
+  self.assertTrue(current['session_clear']['awaiting_session_start'])
+  self.assertEqual((current['run_id'],current['pid'],current['supervisor']),(self.run_id,self.record['pid'],self.record['supervisor']))
+  self.clear(request,False);self.assertEqual(self.received(),b'/clear\r')
+  fresh=self.inspect();self.assertFalse(fresh['clear_context_supported'])
+  receipt=test_input.InputTransport.send(self,test_input.InputTransport.payload(self,text='Fresh restored fixture request'))
+  self.assertEqual(receipt['conversation_id'],self.conversation_id)
+  self.wait_for(lambda:(self.root/'submitted').exists())
+  self.assertEqual((self.root/'submitted').read_text(),'Fresh restored fixture request\n')
+  self.assert_cleared(self.started())
+  current=json.loads(self.record_path.read_text())
+  self.assertFalse(self.archive_path.exists())
+  self.assertNotIn('restore_archive_id',current);self.assertNotIn('resume_pending',current)
+ def test_archive_launch_reservation_does_not_change_clear_or_pause_eligibility(self):
+  self.restored();self.record['resume_pending']=True;self.write_record()
+  self.assertTrue(self.inspect()['clear_context_supported'])
+  self.assertEqual(self.clear()['status'],'confirmed')
+  self.assertTrue(json.loads(self.record_path.read_text())['resume_pending'])
+  self.assertEqual(self.archive_path.read_bytes(),self.archive_bytes)
+  self.assert_cleared(self.started());self.assertFalse(self.archive_path.exists())
+ def test_archive_original_conversation_still_settles_without_clear(self):
+  self.restored()
+  self.hook(dict(hook_event_name='SessionStart',session_id=self.conversation_id,source='resume',cwd='/fixture',transcript_path=str(self.rollout)))
+  current=json.loads(self.record_path.read_text())
+  self.assertEqual(current['conversation_id'],self.conversation_id)
+  self.assertFalse(self.archive_path.exists());self.assertNotIn('restore_archive_id',current)
+  self.assertNotIn('session_clear',current);self.assertEqual(self.received(),b'')
+ def test_archive_clear_refuses_changed_source_sent_input_and_lost_native_identity(self):
+  self.restored();original=self.record.copy()
+  mutations=[dict(input_pending_at=time.time()),dict(expected_id=str(uuid.uuid4())),
+    dict(supervisor=dict(pid=original['supervisor']['pid'],start='changed')),
+    dict(active_tools={'fixture-tool':dict(name='fixture',started=time.time())}),
+    dict(restore_archive_id=str(uuid.uuid4()))]
+  for patch in mutations:
+   with self.subTest(patch=patch):
+    self.record=dict(original,**patch);self.write_record()
+    self.assertFalse(self.inspect()['clear_context_supported'])
+    self.clear(success=False);self.assertEqual(self.received(),b'')
+    self.assertEqual(self.archive_path.read_bytes(),self.archive_bytes)
+  self.record=original;self.write_record()
+  for key,value in [('conversation_id',str(uuid.uuid4())),('agent','claude')]:
+   with self.subTest(archive_field=key):
+    archived=json.loads(self.archive_bytes);archived[key]=value;self.archive_path.write_text(json.dumps(archived))
+    changed=self.archive_path.read_bytes();self.assertFalse(self.inspect()['clear_context_supported'])
+    self.clear(success=False);self.assertEqual(self.received(),b'');self.assertEqual(self.archive_path.read_bytes(),changed)
+  self.archive_path.write_bytes(self.archive_bytes)
+ def test_archive_clear_wrong_start_and_stale_request_preserve_original(self):
+  self.restored();self.assertEqual(self.clear()['status'],'confirmed')
+  pending=json.loads(self.record_path.read_text())
+  for field,value,source in [('run_id','stale-run','clear'),('restore_archive_id',str(uuid.uuid4()),'clear'),
+       ('restore_archive_run_id','stale-archive-run','clear'),('conversation_id',str(uuid.uuid4()),'clear'),
+       ('request_id','invalid-request','clear'),('run_id',self.run_id,'resume')]:
+   with self.subTest(field=field,source=source):
+    self.record=json.loads(json.dumps(pending));self.record['clear_context_request'][field]=value;self.write_record()
+    self.started(source);current=json.loads(self.record_path.read_text())
+    self.assertEqual(current['conversation_id'],self.conversation_id)
+    self.assertEqual(current['expected_id'],self.conversation_id)
+    self.assertEqual(self.archive_path.read_bytes(),self.archive_bytes)
+  self.record=pending;self.write_record()
+  self.hook(dict(hook_event_name='SessionStart',agent_id='fixture-child',session_id=str(uuid.uuid4()),source='clear'))
+  self.assertEqual(json.loads(self.record_path.read_text())['conversation_id'],self.conversation_id)
+  self.assertEqual(self.archive_path.read_bytes(),self.archive_bytes)
+ def test_unrequested_archive_terminal_clear_never_settles_restore(self):
+  self.restored();self.tmux('send-keys','-t',self.pane,'-l','/clear');self.tmux('send-keys','-t',self.pane,'Enter')
+  self.wait_for(lambda:(self.root/'native-cleared').exists())
+  self.assertFalse(self.inspect().get('session_clear'))
+  self.started();current=json.loads(self.record_path.read_text())
+  self.assertEqual(current['conversation_id'],self.conversation_id)
+  self.assertEqual(self.archive_path.read_bytes(),self.archive_bytes)
+ def test_unconfirmed_archive_clear_keeps_source_and_no_replay_receipt(self):
+  self.restored();(self.root/'refuse-clear').touch()
+  request=dict(request_id=str(uuid.uuid4()),expected_run_id=self.run_id,expected_conversation_id=self.conversation_id)
+  self.assertEqual(self.clear(request)['status'],'submitted')
+  self.assertEqual(self.archive_path.read_bytes(),self.archive_bytes)
+  self.assertEqual(json.loads(self.record_path.read_text())['expected_id'],self.conversation_id)
+  self.clear(request,False);self.assertEqual(self.received(),b'/clear\r')
+  self.assertFalse(self.inspect()['clear_context_supported'])
  def test_verified_resume_clears_before_its_deferred_session_start(self):
   self.resumed();info=self.inspect()
   self.assertTrue(info['resume_message_can_send'],info.get('resume_message_reason'))

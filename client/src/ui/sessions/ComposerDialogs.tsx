@@ -59,8 +59,8 @@ function ClearDialog(props: { control: ClearControl }) {
       <div class="dlg-body"><div class="confirm-body" id="composer-dlg-body" style={{ "white-space": "pre-wrap" }}>{props.control.text}</div></div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn primary" data-initial onClick={() => composer.closeDialog()}>{tr("Cancel")}</button>
         <button type="button" class="btn solid-danger" onClick={() => { void composer.confirmClear(); }}>{props.control.confirm}</button>
+        <button type="button" class="btn primary" data-initial onClick={() => composer.closeDialog()}>{tr("Cancel")}</button>
       </div>
     </>
   );

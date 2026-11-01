@@ -1845,6 +1845,54 @@ mod tests {
     }
 
     #[test]
+    fn delayed_clear_accepts_real_inspect_shape_and_keeps_exact_mutation_identity() {
+        use serde_json::json;
+        use zerus_client_core::{end_action::Captured, Exit};
+        for runtime in ["live", "stopped"] {
+            let actions = Actions::new(
+                std::env::temp_dir()
+                    .join(format!("zerus-clear-inspect-{}.json", uuid::Uuid::new_v4())),
+            );
+            let target = review();
+            let action = Action::ClearContext {
+                dismiss_prompt: false,
+            };
+            let captured = Captured {
+                target: target.clone(),
+                action: action.clone(),
+                state: "running".into(),
+            };
+            let claim = actions.reserve_end(&target).unwrap();
+            let source = target.clone();
+            let mutations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let count = Arc::clone(&mutations);
+            let out = tauri::async_runtime::block_on(dispatch_reserved_plan(
+                &actions, target, action, uuid::Uuid::new_v4().to_string(),
+                move |_, inv, _| {
+                    let value = if inv.args.iter().any(|arg| arg == "inspect") {
+                        json!({"name": source.name, "run_id": source.run_id, "conversation_id": source.conversation_id,
+                            "runtime_state": runtime, "process_state": "running", "tracked": true})
+                    } else {
+                        assert!(inv.args.iter().any(|arg| arg == "clear-context"));
+                        let input: serde_json::Value = serde_json::from_slice(inv.stdin.as_ref().unwrap()).unwrap();
+                        assert_eq!(input["expected_run_id"], source.run_id);
+                        assert_eq!(input["expected_conversation_id"], source.conversation_id);
+                        count.fetch_add(1, Ordering::Relaxed);
+                        json!({"name": source.name, "run_id": source.run_id, "conversation_id": source.conversation_id,
+                            "status": "confirmed", "request_id": input["request_id"]})
+                    };
+                    Exit::Code { code: 0, stdout: serde_json::to_vec(&value).unwrap(), stderr: String::new() }
+                }, None, Some((captured, claim)),
+            )).unwrap();
+            assert_eq!(
+                mutations.load(Ordering::Relaxed),
+                usize::from(runtime == "live")
+            );
+            assert_eq!(matches!(out, Outcome::Done { .. }), runtime == "live");
+        }
+    }
+
+    #[test]
     fn delayed_end_uses_the_reserved_lane_fresh_metadata_and_exact_scoped_receipt_once() {
         use serde_json::json;
         use zerus_client_core::{end_action::Captured, Exit};

@@ -14,8 +14,9 @@ use zbus::blocking::{Connection, MessageIterator, Proxy};
 use zbus::export::futures_core::Stream;
 use zbus::zvariant::{ObjectPath, OwnedValue, Structure, Value};
 use zerus_client_core::menubar::{Apply, Entry, Face, OpenMode};
+use zerus_client_core::text::Text;
 use zerus_client_core::trayicon::{self, Rect, Rgb, Step};
-use zerus_client_core::ComputerId;
+use zerus_client_core::{text, ComputerId};
 
 use crate::desk::{Bar, Item, MenuAction};
 
@@ -184,17 +185,19 @@ impl Tray {
             Item::OpenIn { modes, .. } => {
                 props.insert(
                     "label".into(),
-                    string(if self.custom_terminal {
-                        "Open in  (own terminal= is set: terminal modes are indistinguishable)"
+                    string(&crate::native_text::render(&if self.custom_terminal {
+                        text!(
+                            "Open in  (own terminal= is set: terminal modes are indistinguishable)"
+                        )
                     } else {
-                        "Open in"
-                    }),
+                        text!("Open in")
+                    })),
                 );
                 props.insert("children-display".into(), string("submenu"));
                 for (shared, mode, checked) in modes {
                     let mut node = self.node(Item::Action {
                         id: shared,
-                        text: mode.label().into(),
+                        text: crate::native_text::render(&Text::new(mode.label())),
                     });
                     node.props.insert("toggle-type".into(), string("radio"));
                     node.props
@@ -1499,12 +1502,12 @@ mod tests {
     fn entries(name: &str) -> Vec<Entry> {
         vec![
             Entry::Open,
-            Entry::Label("fixture".into()),
+            Entry::Label(Text::verbatim("fixture")),
             Entry::Session {
                 computer: "fixture".into(),
                 key: format!("run:{name}"),
                 name: name.into(),
-                text: name.into(),
+                text: Text::verbatim(name),
                 running: false,
                 tty: String::new(),
             },

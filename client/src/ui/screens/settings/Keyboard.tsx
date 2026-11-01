@@ -115,8 +115,8 @@ function Question(props: { title: string; text: string; answer: (yes: boolean) =
       <div class="dlg-body">{props.text}</div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn" onClick={() => answer(false)}>{tr("No")}</button>
-        <button type="button" class="btn primary" onClick={() => answer(true)}>{tr("Yes")}</button>
+        <button type="button" class="btn" onClick={() => answer(true)}>{tr("Yes")}</button>
+        <button type="button" class="btn primary" autofocus onClick={() => answer(false)}>{tr("No")}</button>
       </div>
     </dialog>
   );

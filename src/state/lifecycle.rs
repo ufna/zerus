@@ -363,7 +363,7 @@ fn spawn_agent(argv: &[String], name: &str, run_id: &str) -> Result<std::process
             if let Some(mut record) = read_run(name, run_id)? {
                 record["error"] = json!(error);
                 write(&mut record)?;
-                archive::failed_restore(&record)?;
+                archive::failed_restore(&mut record)?;
             }
             Err(error)
         }
@@ -708,7 +708,7 @@ fn resume_archive(name: &str, id: &str, dry: bool, scope: Option<&session_action
         let mut failed = read(name)?;
         if string(&failed, "run_id") == run_id {
             failed["error"] = json!(error);
-            archive::failed_restore(&failed)?;
+            archive::failed_restore(&mut failed)?;
         }
         return Err(error);
     }

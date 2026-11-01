@@ -16584,7 +16584,7 @@ Press Enter to retry with the same card identity.</source>
       <location filename="../src/TrayMenu.cpp" line="89" />
       <location filename="../src/TrayMenu.cpp" line="162" />
       <source>Open Zerus</source>
-      <translation type="unfinished" />
+      <translation>Открыть Zerus</translation>
     </message>
     <message>
       <location filename="../src/TrayMenu.cpp" line="120" />
@@ -16594,7 +16594,7 @@ Press Enter to retry with the same card identity.</source>
     <message>
       <location filename="../src/TrayMenu.cpp" line="147" />
       <source>Open in  (own terminal= is set: terminal modes are indistinguishable)</source>
-      <translation>Открыть в  (задан собственный terminal=: режимы терминалов неразличимы)</translation>
+      <translation>Открыть через  (задан собственный terminal=: режимы терминалов неразличимы)</translation>
     </message>
     <message>
       <location filename="../src/TrayMenu.cpp" line="164" />
@@ -16609,7 +16609,7 @@ Press Enter to retry with the same card identity.</source>
     <message>
       <location filename="../src/TrayMenu.cpp" line="203" />
       <source>No remote machines</source>
-      <translation type="unfinished" />
+      <translation>Нет удалённых машин</translation>
     </message>
   </context>
   <context>

@@ -18,5 +18,6 @@ export const isEndAction = (action: Action) => ["archive", "terminate", "kill", 
 export const captureEnd = (row: ActionRow, action: EndAction): EndCapture => ({
   target: { computer: row.computer, name: row.name, run_id: row.runId ?? "", conversation_id: row.conversationId ?? "" }, action, state: row.state,
 });
-export const sameEnd = (a: ActionRow, b: ActionRow | undefined) => !!b && a.computer === b.computer && a.name === b.name && a.runId === b.runId
+type EndIdentity = Pick<ActionRow, "computer" | "name" | "runId" | "conversationId" | "state" | "archiveId">;
+export const sameEnd = (a: EndIdentity, b: EndIdentity | undefined) => !!b && a.computer === b.computer && a.name === b.name && a.runId === b.runId
   && a.conversationId === b.conversationId && a.state === b.state && a.archiveId === b.archiveId;

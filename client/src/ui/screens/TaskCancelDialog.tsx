@@ -29,6 +29,6 @@ export default function TaskCancelDialog() {
       <label class="td-label" for="td-reason">{tr("Reason (optional) — saved as a comment on the task, not sent to the agent")}</label>
       <input id="td-reason" class="field" placeholder={tr("Why it is cancelled")} value={reason()} onInput={(e) => setReason(e.currentTarget.value)} />
     </div>
-    <div class="dlg-foot"><button ref={keep} class="btn" autofocus onClick={close}>{tr("Keep running")}</button><span class="spacer" /><button class="btn solid-danger" onClick={() => void confirmTaskCancellation(reason())}><Icon name="x" size={13} />{tr("Cancel task")}</button></div>
+    <div class="dlg-foot"><span class="spacer" /><button type="button" class="btn solid-danger" onClick={() => void confirmTaskCancellation(reason())}><Icon name="x" size={13} />{tr("Cancel task")}</button><button ref={keep} type="button" class="btn primary" autofocus onClick={close}>{tr("Keep running")}</button></div>
   </dialog>;
 }
