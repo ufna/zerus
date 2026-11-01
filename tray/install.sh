@@ -71,6 +71,14 @@ bundle_cdhash() {
 # when switching to the client (docs/macos-distribution.md#tauri-client-switch).
 GUI="${HGS_MAC_GUI:-client}"
 case "${GUI}" in qt|client) ;; *) echo "HGS_MAC_GUI must be qt or client" >&2; exit 1 ;; esac
+DESKTOP_ARGS=()
+if [ "${GUI}" = "client" ]; then
+    # Capture the root build before the GUI changes CARGO_TARGET_DIR. The SSH
+    # wrapper supplies its retained native build explicitly; never sign that file.
+    LOCAL_CLI_BUILD="${HGS_MAC_CLI_BUILD:-${CARGO_TARGET_DIR:-${SCRIPT_DIR}/../target}/release/hgs}"
+    python3 "${SCRIPT_DIR}/prepare-local-macos.py" --check-cli \
+        --hgs "${LOCAL_CLI_BUILD}" --runner-hgs "${HGS_BIN}"
+fi
 
 # --- 1. build -----------------------------------------------------------------
 echo "[1/4] Building..."
@@ -125,9 +133,26 @@ echo "[2/4] Installing the .app bundle to ~/Applications..."
 # copy receives the public identity and compatible certificate before replacement.
 LOCAL_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/zerus-source-install.XXXXXX")"
 trap 'rm -rf "${LOCAL_STAGE}"' EXIT
-ditto "${BUILD_APP}" "${LOCAL_STAGE}/hgs-tray.app"
+if [ "${GUI}" = "client" ]; then
+    python3 "${SCRIPT_DIR}/prepare-local-macos.py" --app "${BUILD_APP}" \
+        --hgs "${LOCAL_CLI_BUILD}" --runner-hgs "${HGS_BIN}" \
+        --output "${LOCAL_STAGE}/hgs-tray.app" --installed "${APP_DEST}"
+    # The parent remains private; the installed bundle has its normal app mode.
+    chmod 755 "${LOCAL_STAGE}/hgs-tray.app"
+    python3 "${SCRIPT_DIR}/prepare-local-macos.py" --check-cli \
+        --hgs "${LOCAL_CLI_BUILD}" --runner-hgs "${HGS_BIN}"
+    if [ "$(bundle_cdhash "${LOCAL_STAGE}/hgs-tray.app/Contents/MacOS/hgs")" != \
+         "$(bundle_cdhash "${APP_DEST}/Contents/MacOS/hgs")" ]; then
+        DESKTOP_ARGS+=(--restart)
+    fi
+    DESKTOP_ARGS+=(--runner-hgs "${HGS_BIN}")
+    DESKTOP_HGS="${APP_DEST}/Contents/MacOS/hgs"
+else
+    ditto "${BUILD_APP}" "${LOCAL_STAGE}/hgs-tray.app"
+    python3 "${SCRIPT_DIR}/sign-local-macos.py" "${LOCAL_STAGE}/hgs-tray.app" "${APP_DEST}"
+    DESKTOP_HGS="${HGS_BIN}"
+fi
 BUILD_APP="${LOCAL_STAGE}/hgs-tray.app"
-python3 "${SCRIPT_DIR}/sign-local-macos.py" "${BUILD_APP}" "${APP_DEST}"
 # The numbered Dev guard before anything is replaced (docs/reference.md); without
 # the live update, also no switch between Qt and the client.
 if [ "${RESTART_RUNNING}" = "1" ]; then
@@ -159,7 +184,6 @@ echo "[3/4] Installing the LaunchAgent to ~/Library/LaunchAgents..."
 # путь к hgs подставляются здесь -- тем же приёмом, каким linux-ветка ниже правит Exec= в
 # .desktop. ~/.local/bin в PATH у launchd нет вовсе, так что --hgs обязателен: без него
 # трей не находит hgs и молча показывает пустой флот.
-python3 "${SCRIPT_DIR}/../scripts/install-macos-desktop-service.py" "${HGS_BIN}"
 # stderr агента (StandardErrorPath в plist): туда же, куда macOS складывает логи
 # пользовательских программ. Без файла launchd молча выбрасывает stderr, и зависание
 # главного потока (см. MainThreadWatchdog.h) не оставляет ни строчки.
@@ -180,6 +204,9 @@ if [ "${UPDATE}" = "1" ]; then
     python3 "${SCRIPT_DIR}/update-installed.py" "${BUILD_APP}" "${APP_DEST}"
     RELOAD=0
 fi
+# The selected signed service image is in the INSTALLED pair, never the staging
+# copy. Only a real backend change reloads this owned service, not native agents.
+python3 "${SCRIPT_DIR}/../scripts/install-macos-desktop-service.py" "${DESKTOP_HGS}" ${DESKTOP_ARGS[@]+"${DESKTOP_ARGS[@]}"}
 # launchctl list печатает "PID<TAB>Status<TAB>Label"; PID "-" значит, что агент
 # зарегистрирован, но не работает (Status -- код его последнего выхода).
 AGENT_PID="$(launchctl list 2>/dev/null | awk -v l="${LABEL}" '$3 == l { print $1 }')"

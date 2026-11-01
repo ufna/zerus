@@ -109,6 +109,89 @@ class MacDesktopService(unittest.TestCase):
         self.assertEqual(self.install(), "ready")
         self.assertEqual(self.command.mutations(), [])
 
+    def test_separate_runner_never_changes_the_selected_service_registration(self):
+        runner = self.root / "stable-hgs"; runner.write_text("independent runner"); runner.chmod(0o755)
+        self.assertEqual(self.install(runner_hgs=runner), "ready")
+        definition = plistlib.loads(self.command.destination.read_bytes())
+        self.assertEqual(definition["ProgramArguments"][0], str(self.binary))
+        self.assertEqual(definition["EnvironmentVariables"], {"HGS_EXECUTABLE": str(runner)})
+        self.assertTrue(all(env["HGS_EXECUTABLE"] == str(self.binary) for _, env in self.command.calls))
+        self.command.calls.clear()
+        self.assertEqual(self.install(runner_hgs=runner), "ready")
+        self.assertEqual(self.command.mutations(), [])
+
+    def test_cli_only_refresh_retains_the_owned_backend_and_its_unchanged_process(self):
+        runner = self.root / "stable-hgs"; runner.write_text("independent runner"); runner.chmod(0o755)
+        self.install(runner_hgs=runner)
+        self.command.calls.clear()
+        # The root installer calls the stable CLI, whose own preview still names
+        # itself. The old owned plist retains the original service selection.
+        stable = Commands(self.home, runner)
+        def command(argv, **kwargs):
+            if argv[:3] == [str(runner), "desktop", "registration"]:
+                return stable(argv, **kwargs)
+            return self.command(argv, **kwargs)
+        self.assertEqual(installer.install(runner, self.home, {}, restart=True,
+            refresh_runner=True, command=command), "ready")
+        definition = plistlib.loads(self.command.destination.read_bytes())
+        self.assertEqual(definition["ProgramArguments"][0], str(self.binary))
+        self.assertEqual(definition["EnvironmentVariables"]["HGS_EXECUTABLE"], str(runner))
+        self.assertEqual(self.command.mutations(), [])
+
+    def test_runner_link_in_bundle_or_missing_backend_is_never_substituted(self):
+        runner = self.root / "stable-hgs"
+        runner.symlink_to(self.binary)
+        with self.assertRaises(installer.Refusal): self.install(runner_hgs=runner)
+        runner.unlink(); runner.write_text("independent runner"); runner.chmod(0o755)
+        self.install(runner_hgs=runner)
+        original = self.command.destination.read_bytes()
+        self.binary.unlink()
+        with self.assertRaises(installer.Refusal):
+            self.install(runner_hgs=runner)
+        self.assertEqual(self.command.destination.read_bytes(), original)
+
+    def test_cli_refresh_repairs_a_paired_registration_after_unpaired_qt_rollback(self):
+        bundled = self.root / "hgs-tray.app/Contents/MacOS/hgs"
+        bundled.parent.mkdir(parents=True)
+        bundled.write_text("paired CLI"); bundled.chmod(0o755)
+        paired = Commands(self.home, bundled)
+        self.assertEqual(installer.install(bundled, self.home, {}, runner_hgs=self.binary,
+                                          command=paired), "ready")
+        # Model update-installed.py restoring the unpaired Qt app at the SAME
+        # location; the old registration remains until this CLI-only refresh.
+        bundled.unlink()
+        qt = bundled.with_name("hgs-tray"); qt.write_text("Qt rollback"); qt.chmod(0o755)
+        (bundled.parent.parent / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleIdentifier": "com.hgdev.hgs-tray", "CFBundleExecutable": "hgs-tray"}))
+        self.command.loaded = True
+        self.command.printed_argv = paired.argv
+        self.assertEqual(self.install(refresh_runner=True, restart=True), "ready")
+        restored = plistlib.loads(self.command.destination.read_bytes())
+        self.assertEqual(restored["ProgramArguments"], self.command.argv)
+        self.assertNotIn("EnvironmentVariables", restored)
+        self.assertEqual([args[1] for args in self.command.mutations()], ["bootout", "bootstrap"])
+        self.assertFalse(bundled.exists())
+        self.assertEqual(qt.read_text(), "Qt rollback")
+
+    def test_cli_refresh_never_repairs_a_pair_with_its_helper_missing(self):
+        bundled = self.root / "hgs-tray.app/Contents/MacOS/hgs"
+        bundled.parent.mkdir(parents=True)
+        bundled.write_text("paired CLI"); bundled.chmod(0o755)
+        paired = Commands(self.home, bundled)
+        installer.install(bundled, self.home, {}, runner_hgs=self.binary, command=paired)
+        bundled.unlink()
+        qt = bundled.with_name("hgs-tray"); qt.write_text("app"); qt.chmod(0o755)
+        contents = bundled.parent.parent
+        (contents / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleIdentifier": "com.hgdev.hgs-tray", "CFBundleExecutable": "hgs-tray"}))
+        (contents / "Resources").mkdir()
+        record = contents / "Resources/zerus-local-pair.json"; record.write_text("retained pair")
+        original = self.command.destination.read_bytes()
+        with self.assertRaises((installer.Refusal, OSError)):
+            self.install(refresh_runner=True, restart=True)
+        self.assertEqual(self.command.destination.read_bytes(), original)
+        self.assertEqual(self.command.mutations(), [])
+
     def test_backend_upgrade_reloads_only_the_owned_desktop_label(self):
         self.existing(); self.command.loaded = True
         self.assertEqual(self.install(restart=True), "ready")
@@ -332,7 +415,7 @@ class MacDesktopService(unittest.TestCase):
             result = subprocess.run(["bash", str(source / "install.sh")],
                 env=dict(env, FIXTURE_REVISION=revision), capture_output=True, text=True, timeout=20)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(calls.read_text().splitlines(), ["--restart", "", "", "--restart"])
+        self.assertEqual(calls.read_text().splitlines(), ["--refresh-runner --restart", "--refresh-runner", "--refresh-runner", "--refresh-runner --restart"])
         self.assertEqual([json.loads(line) for line in workers.read_text().splitlines()],
                          [[name, args] for args in (["--restart"], [], ["--restart"], ["--restart"])
                           for name in ("recovery", "swarm", "voice")])
@@ -351,7 +434,8 @@ class MacDesktopService(unittest.TestCase):
                     env=dict(env, FIXTURE_REVISION=f"case-{exit_code}"), capture_output=True, text=True, timeout=20)
                 self.assertEqual(result.returncode, exit_code, result.stdout + result.stderr)
                 self.assertEqual([json.loads(line) for line in workers.read_text().splitlines()],
-                                 [[name, ["--restart"]] for name in ("recovery", "swarm", "voice", "desktop")])
+                                 [[name, ["--restart"]] for name in ("recovery", "swarm", "voice")]
+                                 + [["desktop", ["--refresh-runner", "--restart"]]])
 
 
 if __name__ == "__main__":

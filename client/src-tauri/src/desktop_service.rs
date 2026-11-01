@@ -186,6 +186,7 @@ impl CatalogDelivery {
 
 struct Shared {
     hgs: PathBuf,
+    relay: Mutex<Option<Arc<zerus_client_core::desktop::relay::Connection>>>,
     pump: crate::pump::Pump,
     sink: Mutex<Option<SyncSender<Data>>>,
     snapshot: Mutex<Snapshot>,
@@ -225,6 +226,7 @@ impl Service {
     ) -> Arc<Self> {
         let shared = Arc::new(Shared {
             hgs,
+            relay: Mutex::new(None),
             pump,
             sink: Mutex::new(Some(sink)),
             snapshot: Mutex::new(Snapshot::default()),
@@ -589,8 +591,18 @@ async fn command(
         .rpc
         .admit(Role::Fleet)
         .map_err(|_| "service_transport_busy")?;
-    let hgs = shared.hgs.clone();
+    let relay = shared
+        .relay
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+        .ok_or("service_unavailable")?;
+    let state = shared.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let hgs = relay.executable()?;
+        if state.stopped.load(Ordering::Acquire) || stop.load(Ordering::Acquire) {
+            return Err("stopped");
+        }
         let inv = zerus_client_core::Invocation {
             args,
             stdin: stdin.map(String::into_bytes),
@@ -599,7 +611,7 @@ async fn command(
         };
         let guard: Arc<dyn Send + Sync> = Arc::new(charge);
         match zerus_client_core::run::run_accounted(
-            &hgs,
+            hgs,
             &inv,
             &[],
             service::FRAME_BYTES,
@@ -685,6 +697,7 @@ async fn run(shared: Arc<Shared>, mut control: watch::Receiver<Control>) {
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(stop.clone());
         let result = connection(shared.clone(), &mut control, stop.clone()).await;
+        *shared.relay.lock().unwrap_or_else(PoisonError::into_inner) = None;
         stop.store(true, Ordering::Release);
         let computers = shared.invalidate();
         shared.unavailable(result.err().unwrap_or("service_unavailable"));
@@ -717,11 +730,33 @@ async fn connection(
     control: &mut watch::Receiver<Control>,
     stop: Arc<AtomicBool>,
 ) -> Result<(), &'static str> {
+    let ordinary = shared.hgs.clone();
+    let relay = Arc::new(
+        tauri::async_runtime::spawn_blocking(move || {
+            zerus_client_core::desktop::relay::Connection::select(&ordinary)
+        })
+        .await
+        .map_err(|_| "paired_desktop_cli_unavailable")??,
+    );
+    if shared.stopped.load(Ordering::Acquire) || stop.load(Ordering::Acquire) {
+        return Err("stopped");
+    }
+    *shared.relay.lock().unwrap_or_else(PoisonError::into_inner) = Some(relay.clone());
     let configuration = preflight(&shared, stop.clone()).await?;
     if shared.stopped.load(Ordering::Acquire) || stop.load(Ordering::Acquire) {
         return Err("stopped");
     }
-    let mut command = tokio::process::Command::new(&shared.hgs);
+    // Retain/join the synchronous native verifier off the UI/runtime actor,
+    // including when a stop arrives. No child starts after that stop.
+    let hgs = tauri::async_runtime::spawn_blocking(move || {
+        relay.executable().map(std::path::Path::to_owned)
+    })
+    .await
+    .map_err(|_| "paired_desktop_cli_unavailable")??;
+    if shared.stopped.load(Ordering::Acquire) || stop.load(Ordering::Acquire) {
+        return Err("stopped");
+    }
+    let mut command = tokio::process::Command::new(hgs);
     command
         .args(["desktop", "watch", "--json"])
         .stdin(Stdio::piped())
