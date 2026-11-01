@@ -18,15 +18,18 @@ pub fn prepare(identity: &crate::identity::Identity) -> (crate::instance::Reply,
     ));
     let cached = Arc::clone(&responder);
     let reply: crate::instance::Reply = Arc::new(move |stream, line| {
-        desktop::same_user(stream)
-            .then(|| cached.reply(line))
-            .flatten()
+        #[cfg(unix)]
+        let same = desktop::same_user(stream);
+        #[cfg(windows)]
+        let same = crate::instance::same_user(stream);
+        same.then(|| cached.reply(line)).flatten()
     });
     (reply, responder)
 }
 
 /// Only the process that claimed the canonical socket calls this, before any
 /// writers or GUI actor exist. Replay and other bundle identities stay isolated.
+#[cfg(unix)]
 pub fn hold(
     production: bool,
     responder: &Arc<Responder>,
@@ -66,6 +69,7 @@ pub fn hold(
 /// Request release after setup registered its writers, then retain and actually
 /// join the original helper worker off the GUI actor. No late/unknown result can
 /// publish configuration or make this instance eligible for producer binding.
+#[cfg(unix)]
 pub fn finish(mut held: desktop::startup::Bootstrap, responder: Arc<Responder>) {
     if held.release().is_err() {
         eprintln!(
