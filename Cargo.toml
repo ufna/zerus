@@ -33,6 +33,7 @@ tempfile = "3"
 toml_edit = "0.25"
 unicode-width = "0.2"
 uuid = { version = "1", features = ["v4"] }
+ureq = { version = "3.4", default-features = false, features = ["rustls", "platform-verifier"] }
 zerus-replica = { path = "crates/replica" }
 zerus-watch-protocol = { path = "crates/watch-protocol" }
 zerus-desktop-migration = { path = "crates/desktop-migration" }
