@@ -629,7 +629,18 @@ mod tests {
                             if !original.own || original.parent == 0 { break; }
                             pid = original.parent;
                         }
-                        Err(e) => { eprintln!("ancestry hop={hop} metadata={e}"); break; }
+                        Err(e) => {
+                            let observed = owned(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, 0, pid) });
+                            if let Ok(process) = observed {
+                                let filename = image(process.as_raw_handle()).ok().and_then(|p|
+                                    std::path::Path::new(&p).file_name().map(|s| s.to_string_lossy().into_owned()));
+                                let wait = unsafe { WaitForSingleObject(process.as_raw_handle(), 0) };
+                                eprintln!("ancestry hop={hop} image={filename:?} wait={wait} metadata={e}");
+                            } else {
+                                eprintln!("ancestry hop={hop} metadata={e}");
+                            }
+                            break;
+                        }
                     }
                 }
                 panic!("clean native ancestry refused: {error}");
