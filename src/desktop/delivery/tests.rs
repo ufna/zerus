@@ -6,6 +6,33 @@ use zerus_watch_protocol::CatalogItem;
 fn id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
+
+#[test]
+fn committed_policy_receipt_remains_readable_without_a_runtime() {
+    let mut f = Fixture::new(Arc::new(|_, _, _, _| panic!("no executor needed")));
+    let receipt = f.enabled(true);
+    let location = f.location;
+    drop(f.runtime);
+    drop(f.store);
+    let store = Store::open(&location, &id()).unwrap();
+    let response = result_request(
+        &store,
+        &json!({"op":"delivery_result",
+        "request_id":id(),"original_request_id":receipt["request_id"]}),
+    );
+    assert_eq!(response["result"], receipt);
+    assert_eq!(response["found"], true);
+    assert_eq!(response["durable"], false);
+    assert_eq!(
+        result_request(
+            &store,
+            &json!({"op":"automatic_approvals",
+        "request_id":id(),"enabled":false})
+        )["accepted"],
+        false
+    );
+    assert!(state::policy(&store.db).unwrap().enabled);
+}
 struct Fixture {
     _temp: tempfile::TempDir,
     location: Location,

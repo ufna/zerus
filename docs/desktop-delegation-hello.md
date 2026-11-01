@@ -50,3 +50,32 @@ this command has no polling loop or retained cache.
 Windows currently reports unsupported/unknown. Its permanent instance lock and
 native ownership protocol need their separate runtime qualification. No Unix
 probe result substitutes for that proof.
+
+## Native frontend policy requests
+
+The selected CLI advertises `Desktop frontend request ABI: desktop-ui-request-v1`.
+After its confirmation UI, Next prepares a closed `AutomaticApprovals` request
+with a stable request UUID and a fresh attempt UUID. Its native responder reserves
+one of eight short-lived slots. The maintained runner binds the original `Child`
+before sending the envelope to `hgs desktop frontend-request --json`, and retains
+the registration with the child and all pipes. An expired registration supplies
+no evidence and cannot release a still-retained resource slot.
+
+The instance listener answers the fixed `desktop-ui-request-v1 ATTEMPT` query
+from that cache. The service matches the socket peer's PID, birth, selected CLI
+image and direct frontend parent to the actual canonical instance peer and its
+installed frontend image. Configuration, request fingerprint and original child
+binding must all match. Bounded ancestry inspection refuses agent markers,
+agent executables and unavailable ancestry. Native serials prevent a delayed
+older setting from overtaking a newer one. A wire role, confirmation flag or
+nonce alone supplies no authority. Generic desktop requests cannot change this
+policy. Windows refuses this route until its native reply and ancestry adapters
+are implemented.
+
+Only the service actor commits policy and read intents, and responses claim
+`durable:true` only after that commit. The delivery worker observes successfully
+applied service-owned fleet events; passive UI projections cannot authorize an
+Answer. Approval policy remains default-off and existing writer/handoff checks
+still precede delivery. `delivery_result` is an indexed read-only query available
+even while the service is passive after revocation. Retry an unknown interaction
+with the same logical request UUID; do not fabricate a new delivery receipt.
