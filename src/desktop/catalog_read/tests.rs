@@ -269,7 +269,10 @@ fn encoded_output_and_corrupt_row_failures_release_the_walk() {
         f.read(&mut reader, Some(&old), now)["code"],
         "catalog_cursor_expired"
     );
-    f.store.db.execute_batch("UPDATE desktop_catalog_rows SET key='repaired',json='not-json',bytes=80 WHERE length(key)>1000").unwrap();
+    // Simulate damaged stored bytes, bypassing the normal writer's JSON
+    // validation and derived-count trigger.
+    f.store.db.execute_batch("DROP TRIGGER desktop_counts_update;
+        UPDATE desktop_catalog_rows SET key='repaired',json='not-json',bytes=80 WHERE length(key)>1000").unwrap();
     // The malformed private body is never returned as a diagnostic.
     let first = token(&f.read(&mut reader, None, now));
     let result = f.read(&mut reader, Some(&first), now);

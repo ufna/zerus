@@ -74,11 +74,24 @@ pub struct Item {
     event: Event,
     _permit: Permit,
 }
+/// Opaque retained ingress admission for a host that moves the decoded payload
+/// into its own event type. Release only after applying or discarding the event.
+pub struct IngressPermit {
+    _permit: Permit,
+}
 impl Item {
     /// Keep this item until its frame has been applied or explicitly discarded.
     /// Its permit counts both queued and consumer-owned work against the cap.
     pub fn event(&self) -> &Event {
         &self.event
+    }
+    pub fn into_parts(self) -> (Event, IngressPermit) {
+        (
+            self.event,
+            IngressPermit {
+                _permit: self._permit,
+            },
+        )
     }
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -415,6 +428,18 @@ pub struct Handle {
     _slot: Registration,
 }
 impl Handle {
+    pub fn request_stop(&self) {
+        self.stream.request_stop();
+    }
+    /// Only joins an already finished supervisor. Pending reader/helper guards
+    /// remain in Sender::usage even after this returns true.
+    pub fn join_if_finished(&mut self) -> bool {
+        self.stream.join_source_if_finished()
+    }
+    /// Early owner drop, without waiting on upstream I/O. Not a drain barrier.
+    pub fn detach(self) {
+        self.stream.detach_source();
+    }
     pub fn identity(&self) -> &Identity {
         &self._slot.identity
     }

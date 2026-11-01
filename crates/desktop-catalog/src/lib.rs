@@ -313,6 +313,32 @@ pub fn disconnect_many(db: &mut Connection, sources: &[Source]) -> Result<()> {
     Ok(())
 }
 
+/// Remove a configured alias's exact projection, without scanning its rows.
+/// Generation storage is reclaimed by the usual indexed, bounded collector.
+pub fn remove_source(db: &mut Connection, source: &Source) -> Result<()> {
+    validate_source(source)?;
+    let tx = db.transaction()?;
+    owner(&tx, source)?;
+    if let Some(old) = state(&tx, &source.computer)? {
+        ensure!(
+            old.epoch == source.service_epoch
+                && old.incarnation as u64 == source.incarnation
+                && old.generation as u64 == source.generation,
+            "stale catalog source removal"
+        );
+        tx.execute(
+            "UPDATE desktop_catalog_generations SET obsolete=1 WHERE id IN (?1,?2)",
+            params![old.visible, old.staged],
+        )?;
+        tx.execute(
+            "DELETE FROM desktop_catalog_sources WHERE computer=?1",
+            [&source.computer],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 fn apply_inner(db: &mut Connection, source: &Source, frame: &Frame) -> Result<Applied> {
     check_frame(frame)?;
     let tx = db.transaction()?;
