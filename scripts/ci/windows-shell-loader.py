@@ -88,6 +88,10 @@ def diagnose(target, output):
         if code or not re.fullmatch('[0-9a-f]{40}', source.strip()):
             raise ValueError('Cannot bind the checked-out source')
         report['source'] = source.strip()
+        # The registration fixture runs the CLI after the shell tests. Retain
+        # that exact image too when a later native startup/status check fails.
+        cli = target / 'debug/hgs.exe'
+        report['cli_image'] = regular_copy(cli, output / 'cli/hgs.exe') if cli.exists() else None
         images = list((target / 'debug/deps').glob('zerus_client_lib-*.exe'))
         if len(images) != 1:
             raise ValueError(f"Expected one test image; found {len(images)}")
@@ -137,7 +141,8 @@ def diagnose(target, output):
         dlls = list(crt.glob('*.dll'))
         if not 1 <= len(dlls) <= 32:
             raise ValueError("Unexpected CRT file count")
-        if 2 * image.stat().st_size + sum(path.stat().st_size for path in dlls) > IMAGE_LIMIT:
+        cli_bytes = report['cli_image']['bytes'] if report['cli_image'] else 0
+        if 2 * image.stat().st_size + cli_bytes + sum(path.stat().st_size for path in dlls) > IMAGE_LIMIT:
             raise ValueError('Diagnostic images exceed their aggregate bound')
         report['control_image'] = regular_copy(image, control / image.name)
         report['control_crt'] = [regular_copy(path, control / path.name) for path in dlls]
