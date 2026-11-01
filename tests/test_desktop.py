@@ -345,6 +345,29 @@ class Desktop(unittest.TestCase):
         self.assertFalse((self.state / 'read-marks.json').exists())
         self.assertFalse((self.root / 'unexpected-tool').exists())
 
+    def test_lifecycle_probe_binds_the_live_service_and_nondefault_configuration(self):
+        missing = self.cli('desktop', 'status', '--json')['lifecycle']
+        self.assertFalse(missing['ipc_ready'])
+        self.assertEqual(missing['phase'], 'unavailable')
+        self.assertIsNone(missing['epoch'])
+        process, first = self.serve()
+        lifecycle = first['lifecycle']
+        self.assertTrue(lifecycle['ipc_ready'])
+        self.assertEqual(lifecycle['abi'], 'desktop-lifecycle-v1')
+        self.assertEqual(lifecycle['pid'], process.pid)
+        for key in ('configuration', 'epoch', 'generation'):
+            self.assertEqual(lifecycle[key], first[key])
+        self.assertTrue(all(not component['ready'] for component in lifecycle['background'].values()))
+        registration = self.cli('desktop', 'registration', '--json')
+        probe = registration['readiness']
+        self.assertEqual(probe['expected_configuration'], first['configuration'])
+        self.assertEqual(probe['environment'], dict(HGS_CONFIG_DIR=str(self.config), HGS_STATE_DIR=str(self.state)))
+        result = subprocess.run(probe['argv'], env={**self.env, **probe['environment']},
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['lifecycle'], lifecycle)
+        self.assertFalse((self.root / 'unexpected-tool').exists())
+
     def test_queries_and_effect_refusal_have_exact_request_ids(self):
         self.serve()
         request_id = str(uuid.uuid4())

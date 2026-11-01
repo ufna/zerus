@@ -139,8 +139,22 @@ pub fn preview(config: &Config, location: &Location) -> Result<Value> {
     };
     Ok(
         json!({"schema":1,"operation":"preview","configuration":spec.configuration,"label":label,"destination":destination,
-        "argv":spec.argv(os),"definition":render(&spec,os)?}),
+        "argv":spec.argv(os),"definition":render(&spec,os)?,
+        "readiness":super::lifecycle::probe(&spec.binary,&spec.config,&spec.state,&spec.configuration),
+        "session":session_requirements(os)}),
     )
+}
+
+fn session_requirements(os: Os) -> Value {
+    match os {
+        Os::Linux => {
+            json!({"kind":"graphical_user", "environment":["XDG_RUNTIME_DIR","DBUS_SESSION_BUS_ADDRESS"],
+            "wayland_environment":["WAYLAND_DISPLAY","XDG_SESSION_TYPE"],
+            "start_after":"graphical-session.target","import_from":"current_login_session"})
+        }
+        Os::Mac => json!({"kind":"aqua", "notification_bundle":"com.hgdev.hgs-tray"}),
+        Os::Windows => json!({"kind":"interactive_user", "allow_session_zero":false}),
+    }
 }
 
 fn unit_quote(value: &str) -> String {
@@ -167,7 +181,7 @@ fn render(spec: &Spec, os: Os) -> Result<String> {
     spec.validate(os)?;
     let argv = spec.argv(os);
     Ok(match os {
-        Os::Linux => format!("# {MARKER}; configuration={}\n[Unit]\nDescription=Zerus desktop background service\nStartLimitIntervalSec=300\nStartLimitBurst=3\n\n[Service]\nType=simple\nExecStart={}\nRestart=on-failure\nRestartSec=10\nRestartPreventExitStatus=78\nTimeoutStopSec=10\n# Desktop owns only its readers; never terminate native process groups.\nKillMode=process\nUMask=0077\n\n[Install]\nWantedBy=default.target\n",spec.configuration,argv.iter().map(|arg|unit_quote(arg)).collect::<Vec<_>>().join(" ")),
+        Os::Linux => format!("# {MARKER}; configuration={}\n[Unit]\nDescription=Zerus desktop background service\nAfter=graphical-session.target\nPartOf=graphical-session.target\nStartLimitIntervalSec=300\nStartLimitBurst=3\n\n[Service]\nType=simple\nExecStart={}\nRestart=on-failure\nRestartSec=10\nRestartPreventExitStatus=78\nTimeoutStopSec=10\n# Desktop owns only its readers; never terminate native process groups.\nKillMode=process\nUMask=0077\n\n[Install]\nWantedBy=graphical-session.target\n",spec.configuration,argv.iter().map(|arg|unit_quote(arg)).collect::<Vec<_>>().join(" ")),
         Os::Mac => {
             let arguments = argv.iter().map(|arg|format!("<string>{}</string>",xml(arg))).collect::<String>();
             format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<!-- {MARKER}; configuration={} -->\n<plist version=\"1.0\"><dict>\n<key>Label</key><string>com.hgdev.hgs-desktop</string>\n<key>ProgramArguments</key><array>{arguments}</array>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n<key>ThrottleInterval</key><integer>10</integer>\n<key>AbandonProcessGroup</key><true/>\n<key>LimitLoadToSessionType</key><string>Aqua</string>\n</dict></plist>\n",spec.configuration)
@@ -217,6 +231,9 @@ mod tests {
         assert!(unit.contains("StartLimitIntervalSec=300\nStartLimitBurst=3"));
         assert!(unit.contains("RestartPreventExitStatus=78"));
         assert!(!unit.contains("ExecStop"));
+        assert!(unit.contains("After=graphical-session.target\nPartOf=graphical-session.target"));
+        assert!(unit.contains("WantedBy=graphical-session.target"));
+        assert!(!unit.contains("WantedBy=default.target"));
     }
     #[test]
     fn mac_is_a_user_agent_with_exact_arguments_and_no_other_labels() {
@@ -239,6 +256,22 @@ mod tests {
         assert!(!task.contains("powershell"));
         assert!(task.contains("<Count>3</Count>"));
         assert!(task.contains("<Interval>PT1M</Interval>"));
+    }
+    #[test]
+    fn session_contract_does_not_fall_back_to_a_machine_service() {
+        assert_eq!(
+            session_requirements(Os::Linux)["import_from"],
+            "current_login_session"
+        );
+        assert_eq!(
+            session_requirements(Os::Linux)["wayland_environment"],
+            json!(["WAYLAND_DISPLAY", "XDG_SESSION_TYPE"])
+        );
+        assert_eq!(session_requirements(Os::Mac)["kind"], "aqua");
+        assert_eq!(
+            session_requirements(Os::Windows)["allow_session_zero"],
+            false
+        );
     }
     #[test]
     fn malformed_registration_inputs_never_render() {

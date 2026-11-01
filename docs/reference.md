@@ -4426,8 +4426,19 @@ guards and revocation protocol. The kernel writes no takeover marker. See the
 exact [migration contract](desktop-migration.md).
 
 `hgs desktop registration --json` previews the current platform's per-user
-definition and exact configuration identity. It creates no files, contacts no
-service manager and enables no writer. Its `operation:preview` identifies this
+registration and includes a `readiness` probe for that exact binary and
+configuration. Run its `argv` directly with the two supplied `HGS_CONFIG_DIR`
+and `HGS_STATE_DIR` values, then require the returned configuration to equal
+`expected_configuration`. `lifecycle.ipc_ready` means the private endpoint and
+store are ready; it does not mean background writers are active. The same
+`lifecycle` object supplies the actual service PID, epoch and generation, plus
+per-component readiness. Its epoch changes on service restart. The registration's
+`session` object describes the graphical login environment needed by platform
+installers; it is a requirement, not a claim that the environment is present.
+
+The preview also contains the per-user definition and exact configuration identity.
+It creates no files, contacts no service manager and enables no writer.
+Its `operation:preview` identifies this
 render-only operation; it makes no claim about OS registration. Maintained installer
 ownership checks and delegation are separate steps before using the definition.
 
@@ -4443,7 +4454,14 @@ configurations automatically. Windows definitions use the current SID,
 restarts one minute apart (the [Task Scheduler schema minimum](https://learn.microsoft.com/en-us/windows/win32/taskschd/taskschedulerschema-interval-restarttype-element)).
 Paths with environment-variable markers are refused on Windows because Task
 Scheduler expands them even inside quoted arguments. Linux permits three starts
-within five minutes and does not restart a startup refusal (exit 78). macOS adds
+within five minutes and does not restart a startup refusal (exit 78). The Linux
+unit is ordered after and is part of `graphical-session.target`, and is enabled
+for that target rather than `default.target`. Plasma and GNOME establish this
+session after importing the graphical environment into the user manager. Bare
+window managers without that integration must arrange a session target that
+pulls in `graphical-session.target`, or import their session environment and
+manually enable/start `hgs-desktop.service` for that login. Direct manual start
+of `graphical-session.target` itself can be refused by systemd. macOS adds
 the private `--launchd` argument to the exact registered form: permanent startup
 refusals print a diagnostic and exit successfully, so
 [`SuccessfulExit=false`](https://github.com/apple-oss-distributions/launchd/blob/main/man/launchd.plist.5)
