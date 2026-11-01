@@ -61,6 +61,8 @@ class Commands:
             elif argv[1] == "bootout":
                 self.loaded = False
             elif argv[1] == "bootstrap":
+                self.printed_path = argv[3]
+                self.printed_argv = plistlib.loads(Path(argv[3]).read_bytes())["ProgramArguments"]
                 self.loaded = True
         else:
             raise AssertionError(argv)
@@ -116,12 +118,85 @@ class MacDesktopService(unittest.TestCase):
             ["launchctl", "bootstrap", domain, str(self.command.destination)]])
 
     def test_custom_definition_refuses_before_launchd_and_keeps_all_bytes(self):
-        path = self.existing(self.command.plan["definition"].replace("--launchd", "--custom"))
-        before = path.read_bytes()
-        with self.assertRaisesRegex(installer.Refusal, "custom"):
-            self.install(restart=True)
-        self.assertEqual(path.read_bytes(), before)
+        original = self.command.plan["definition"]
+        for content in (original.replace(installer.MARKER, "Unmanaged definition"),
+                        original.replace(self.command.config, "b" * 64),
+                        original.replace(self.command.config, self.command.config + "b"),
+                        original.replace("<string>" + installer.LABEL, "<string>com.example.foreign")):
+            path = self.existing(content)
+            with self.subTest(content=content), self.assertRaisesRegex(installer.Refusal, "custom"):
+                self.install(restart=True)
+            self.assertEqual(path.read_text(), content)
         self.assertFalse(any(argv[0] == "launchctl" for argv, _ in self.command.calls))
+
+    def test_owned_old_cli_path_is_preflighted_and_replaced_using_its_loaded_argv(self):
+        old_argv = list(self.command.argv)
+        old_argv[0] = str(self.root / "source-install/hgs")  # The old binary need not still exist.
+        old = self.command.plan["definition"].replace(self.command.argv[0], old_argv[0])
+        path = self.existing(old)
+        self.command.loaded = True; self.command.printed_argv = old_argv
+        self.assertEqual(self.install(check_only=True), "checked")
+        self.assertEqual(path.read_text(), old)
+        self.assertEqual(self.command.mutations(), [])
+        inode = path.stat().st_ino
+        self.assertEqual(self.install(), "ready")
+        self.assertEqual(path.read_text(), self.command.plan["definition"])
+        self.assertNotEqual(path.stat().st_ino, inode)
+        self.assertEqual(self.command.printed_argv, self.command.argv)
+        self.assertEqual([args[1] for args in self.command.mutations()], ["bootout", "bootstrap"])
+
+    def test_owned_definition_drift_can_be_upgraded_or_removed(self):
+        original = self.command.plan["definition"]
+        old = original.replace("<integer>10</integer>", "<integer>30</integer>")
+        prefix, suffix = old.rsplit("</dict>", 1)
+        old = prefix + "<key>ProcessType</key><string>Background</string></dict>" + suffix
+        for remove in (False, True):
+            with self.subTest(remove=remove):
+                path = self.existing(old); self.command.loaded = True
+                self.assertEqual(self.install(remove=remove), "removed" if remove else "ready")
+                self.assertEqual(path.exists(), not remove)
+                if not remove:
+                    self.assertEqual(path.read_text(), original)
+
+    def test_owned_old_cli_path_can_be_removed_after_the_binary_has_moved(self):
+        old_argv = list(self.command.argv); old_argv[0] = str(self.root / "removed-source/hgs")
+        path = self.existing(self.command.plan["definition"].replace(self.command.argv[0], old_argv[0]))
+        self.command.loaded = True; self.command.printed_argv = old_argv
+        self.assertEqual(self.install(remove=True), "removed")
+        self.assertFalse(path.exists())
+        self.assertFalse(Path(old_argv[0]).exists())
+        self.assertEqual([args[1] for args in self.command.mutations()], ["bootout"])
+
+    def test_owned_marker_does_not_make_malformed_or_nonservice_arguments_safe(self):
+        original = self.command.plan["definition"]
+        for argv in ([], ["relative/hgs", "desktop", "serve"], ["/private/example/agent", "run", "session"]):
+            definition = plistlib.loads(original)
+            definition["ProgramArguments"] = argv
+            content = plistlib.dumps(definition).decode().replace("?>", "?>\n<!-- " + installer.MARKER
+                        + "; configuration=" + self.command.config + " -->", 1)
+            path = self.existing(content)
+            with self.subTest(argv=argv), self.assertRaisesRegex(installer.Refusal, "invalid arguments"):
+                self.install(restart=True)
+            self.assertEqual(path.read_text(), content)
+        self.assertFalse(any(args[0] == "launchctl" for args, _ in self.command.calls))
+
+    def test_loaded_old_definition_must_match_old_not_new_argv(self):
+        old = self.command.plan["definition"].replace(self.command.argv[0], str(self.root / "old/hgs"))
+        self.existing(old); self.command.loaded = True
+        # The loaded argv matches the new CLI but not the owned definition on disk.
+        with self.assertRaisesRegex(installer.Refusal, "Loaded"):
+            self.install()
+        self.assertEqual(self.command.mutations(), [])
+
+    def test_owned_reload_keeps_unknown_process_group_protection(self):
+        old = self.command.plan["definition"].replace("<key>AbandonProcessGroup</key>\n\t<true/>",
+                                                                  "<key>AbandonProcessGroup</key>\n\t<false/>")
+        self.assertNotEqual(old, self.command.plan["definition"])
+        path = self.existing(old); self.command.loaded = True
+        with self.assertRaisesRegex(installer.Refusal, "process group"):
+            self.install(restart=True)
+        self.assertEqual(path.read_text(), old)
+        self.assertEqual(self.command.mutations(), [])
 
     def test_symlink_and_actual_fifo_definition_refuse_before_open(self):
         path = self.command.destination; path.parent.mkdir(parents=True)
@@ -220,13 +295,15 @@ class MacDesktopService(unittest.TestCase):
         (source / "install.sh").write_bytes((ROOT / "install.sh").read_bytes())
         shim = source / "hgs_state.py"; shim.write_text("first shim")
         calls = self.root / "desktop-install.calls"
+        workers = self.root / "worker-install.calls"
         (source / "scripts/install-macos-session-service.py").write_text("pass\n")
         agents = self.home / "Library/LaunchAgents"; agents.mkdir(parents=True)
         for label in ("com.hgdev.hgs-recovery", "com.hgdev.hgs-swarm", "com.hgdev.hgs-voice"):
-            (agents / (label + ".plist")).write_text("existing worker; never rewrite or restart")
+            (agents / (label + ".plist")).write_text("existing worker definition")
         for name in ("recovery", "swarm", "voice"):
             (source / f"scripts/install-{name}-service.py").write_text(
-                "raise RuntimeError('existing worker was unexpectedly invoked')\n")
+                "import json, sys\nfrom pathlib import Path\nwith Path(" + repr(str(workers))
+                + ").open('a') as log: log.write(json.dumps([" + repr(name) + ",sys.argv[2:]])+'\\n')\n")
         (source / "scripts/install-macos-desktop-service.py").write_text(
             "import sys\nfrom pathlib import Path\nwith Path(" + repr(str(calls))
             + ").open('a') as log: log.write(' '.join(sys.argv[2:])+'\\n')\n")
@@ -245,13 +322,17 @@ class MacDesktopService(unittest.TestCase):
                     "XDG_RUNTIME_DIR", "TMPDIR", "TMUX_TMPDIR"):
             directory = self.home / key.lower(); directory.mkdir()
             env[key] = str(directory)
-        for revision, content in [("one", "first shim"), ("one", "second shim"), ("two", "second shim")]:
+        for revision, content in [("one", "first shim"), ("one", "first shim"),
+                                  ("one", "second shim"), ("two", "second shim")]:
             shim.write_text(content)
             result = subprocess.run(["bash", str(source / "install.sh")],
                 env=dict(env, FIXTURE_REVISION=revision), capture_output=True, text=True, timeout=20)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(calls.read_text().splitlines(), ["--restart", "", "--restart"])
-        self.assertTrue(all(path.read_text() == "existing worker; never rewrite or restart" for path in agents.iterdir()))
+        self.assertEqual(calls.read_text().splitlines(), ["--restart", "", "", "--restart"])
+        self.assertEqual([json.loads(line) for line in workers.read_text().splitlines()],
+                         [[name, args] for args in (["--restart"], [], ["--restart"], ["--restart"])
+                          for name in ("recovery", "swarm", "voice")])
+        self.assertTrue(all(path.read_text() == "existing worker definition" for path in agents.iterdir()))
 
 
 if __name__ == "__main__":

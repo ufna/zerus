@@ -75,11 +75,14 @@ user's Aqua session. It consumes the selected CLI's `desktop registration
 --json` definition and checks the lifecycle ABI, configuration and loaded actor
 PID before reporting IPC ready. A missing Aqua session saves the registration
 for next login and reports readiness as unverified. IPC readiness does not mean
-that background workers have started. Custom, linked or mismatched definitions
-are kept; `zerus-setup --remove` removes only the exact owned registration.
+that background workers have started. Unmarked or linked files and definitions
+for another configuration are kept. A marker for the same configuration and
+service label identifies an owned registration even when its old CLI path or definition differs. The
+installer checks a loaded job against that old argv before replacing or
+removing it.
 
 Source `install.sh` reloads the owned desktop service when its CLI bytes
-change and keeps existing recovery, swarm and voice registrations running.
+change. Recovery, swarm and voice retain their existing installer/update rules.
 `tray/install.sh` preflights it before the GUI swap and retains an
 unchanged active backend during GUI-only updates. The signed notification host
 keeps `com.hgdev.hgs-tray`; its service command interface and delivery integration

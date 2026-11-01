@@ -132,10 +132,18 @@ def registration(binary, home, env, command=run):
 
 def owned(content, value):
     if content is None:
-        return
-    require(f"{MARKER}; configuration={value['configuration']}".encode() in content
-            and plistlib.loads(content) == plistlib.loads(value["definition"]),
+        return None
+    definition = plistlib.loads(content)
+    markers = re.findall(rb"<!--\s*" + re.escape(MARKER.encode())
+                         + rb"; configuration=([0-9a-f]{64})\s*-->", content)
+    require(markers == [value["configuration"].encode()] and isinstance(definition, dict)
+            and definition.get("Label") == LABEL,
             "Existing desktop LaunchAgent is custom or belongs to another configuration; it was kept.")
+    argv = definition.get("ProgramArguments")
+    require(isinstance(argv, list) and len(argv) >= 3 and argv[1:3] == ["desktop", "serve"]
+            and all(isinstance(part, str) and part and not any(ord(c) < 32 for c in part) for part in argv)
+            and Path(argv[0]).is_absolute(), "Owned desktop definition has invalid arguments; it was kept.")
+    return definition
 
 
 def loaded_identity(printed, destination, argv):
@@ -177,7 +185,7 @@ def install(binary, home, source, restart=False, check_only=False, remove=False,
     env = environment(binary, home, source)
     value, destination, content = registration(binary, home, env, command)
     previous = read_definition(destination)
-    owned(previous[0] if previous is not None else None, value)
+    previous_definition = owned(previous[0] if previous is not None else None, value)
     domain = f"gui/{os.getuid()}"
     target = domain + "/" + LABEL
     def launchctl(*args):
@@ -185,15 +193,18 @@ def install(binary, home, source, restart=False, check_only=False, remove=False,
     gui = launchctl("print", domain).returncode == 0
     printed = launchctl("print", target) if gui else None
     loaded = printed is not None and printed.returncode == 0
+    changed = previous is None or previous[0] != content
     if loaded:
         require(previous is not None, "Desktop label is loaded without an owned definition; it was kept.")
-        loaded_identity(printed.stdout, destination, value["argv"])
+        loaded_identity(printed.stdout, destination, previous_definition["ProgramArguments"])
+        if remove or restart or changed:
+            require(previous_definition.get("AbandonProcessGroup") is True,
+                    "The old desktop definition cannot preserve its process group during unload; it was kept.")
     require(read_definition(destination) == previous, "Desktop definition changed during preflight; it was kept.")
     if check_only:
         return "checked"
     if remove and previous is None:
         return "unchanged"
-    changed = previous is None or previous[0] != content
     if loaded and (remove or restart or changed):
         result = launchctl("bootout", target)
         require(result.returncode == 0, "Cannot unload the owned desktop service; inspect it before retrying.")

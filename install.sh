@@ -107,24 +107,17 @@ if [ -z "${HGS_INSTALL_PREFIX:-}" ] && [ -z "${HGS_STATE_DIR:-}" ] && [ -z "${HG
     if [ "$desktop_changed" -eq 1 ]; then desktop_args+=(--restart); fi
     python3 "$here/scripts/install-macos-desktop-service.py" "$prefix/bin/hgs" "${desktop_args[@]}"
 fi
-# A Mac backend upgrade refreshes Desktop, not unrelated resident workers.
-# Keep every existing worker definition, including custom files and links.
-keep_macos_worker() {
-    [ "$(uname -s)" = Darwin ] && {
-        [ -e "$HOME/Library/LaunchAgents/$1.plist" ] || [ -L "$HOME/Library/LaunchAgents/$1.plist" ];
-    }
-}
-if [ -z "${HGS_INSTALL_PREFIX:-}" ] && [ -z "${HGS_STATE_DIR:-}" ] && [ "${HGS_RECOVERY_SERVICE:-1}" != "0" ] && ! keep_macos_worker com.hgdev.hgs-recovery; then
+if [ -z "${HGS_INSTALL_PREFIX:-}" ] && [ -z "${HGS_STATE_DIR:-}" ] && [ "${HGS_RECOVERY_SERVICE:-1}" != "0" ]; then
     worker_args=()
     if [ "$changed" -eq 1 ]; then worker_args+=(--restart); fi
     python3 "$here/scripts/install-recovery-service.py" "$prefix/bin/hgs" "${worker_args[@]}"
 fi
-if [ -z "${HGS_INSTALL_PREFIX:-}" ] && [ -z "${HGS_STATE_DIR:-}" ] && [ -z "${HGS_CONFIG_DIR:-}" ] && [ "${HGS_SWARM_SERVICE:-1}" != "0" ] && ! keep_macos_worker com.hgdev.hgs-swarm; then
+if [ -z "${HGS_INSTALL_PREFIX:-}" ] && [ -z "${HGS_STATE_DIR:-}" ] && [ -z "${HGS_CONFIG_DIR:-}" ] && [ "${HGS_SWARM_SERVICE:-1}" != "0" ]; then
     swarm_args=()
     if [ "$changed" -eq 1 ]; then swarm_args+=(--restart); fi
     python3 "$here/scripts/install-swarm-service.py" "$prefix/bin/hgs" "${swarm_args[@]}"
 fi
-if [ -z "${HGS_INSTALL_PREFIX:-}" ] && [ -z "${HGS_STATE_DIR:-}" ] && [ -z "${HGS_CONFIG_DIR:-}" ] && [ "${HGS_VOICE_SERVICE:-1}" != "0" ] && ! keep_macos_worker com.hgdev.hgs-voice; then
+if [ -z "${HGS_INSTALL_PREFIX:-}" ] && [ -z "${HGS_STATE_DIR:-}" ] && [ -z "${HGS_CONFIG_DIR:-}" ] && [ "${HGS_VOICE_SERVICE:-1}" != "0" ]; then
     voice_args=()
     if [ "$changed" -eq 1 ]; then voice_args+=(--restart); fi
     python3 "$here/scripts/install-voice-service.py" "$prefix/bin/hgs" "${voice_args[@]}"
