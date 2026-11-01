@@ -1,3 +1,4 @@
+import { desktopService, serviceApprovalIntent } from "../../../store/desktopService";
 import { Show, createSignal, onCleanup, onMount } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { inTauri } from "../../../bridge";
@@ -18,7 +19,7 @@ import { tr, trNoop } from "../../../i18n";
 export const entryTime = (at: number) => new Date(at).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
 
 export function ApprovalsSection() {
-  const optIn = createApprovalOptIn(setSetting, (error) => bus.notify("error", String(error), true));
+  const optIn = createApprovalOptIn((key, enabled) => desktopService.enabled() ? serviceApprovalIntent.submit(enabled) : setSetting(key, enabled), (error) => bus.notify("error", String(error), true));
   const [host, setHost] = createSignal("");
   const [session, setSession] = createSignal("");
   const [state, setState] = createSignal<JournalState>({ page: { entries: [], next: 0, previous: 0 }, loading: false, status: "", detailHint: tr(PLACEHOLDER) });
@@ -40,8 +41,9 @@ export function ApprovalsSection() {
       <SectionHead title={trNoop("Automatic approvals")} />
       <Group class="appr-toggle">
         <div class="set-row"><div class="set-row-text"><label class="set-label danger" for="appr-on">{tr("Automatically approve tool requests (dangerous)")}</label></div>
-          <div class="set-row-control"><Switch id="appr-on" checked={flag(APPROVALS_KEY)} label={trNoop("Automatically approve tool requests (dangerous)")} disabled={optIn.busy()}
+          <div class="set-row-control"><Switch id="appr-on" checked={desktopService.enabled() ? desktopService.state()?.automatic_approvals === true : flag(APPROVALS_KEY)} label={trNoop("Automatically approve tool requests (dangerous)")} disabled={optIn.busy() || (desktopService.enabled() && (!desktopService.ready("approvals") || desktopService.state()?.automatic_approvals == null))}
             onChange={(on) => optIn.request(on, document.getElementById("appr-on") ?? document.activeElement as HTMLElement)} /></div></div>
+        <Show when={desktopService.enabled()}><p class="set-group-hint">{tr("Automatic approvals are owned by the background service and may continue while this window is closed.")}</p></Show>
         <div class="notice danger"><Icon name="triangle-alert" size={14} /><span>{tr(APPROVALS_WARNING)}</span></div>
         <p class="set-group-hint">{APPROVALS_HINT}</p>
       </Group>

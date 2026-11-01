@@ -15,6 +15,7 @@ use zerus_desktop_migration::canonical_uuid;
 pub mod drain;
 pub mod producer;
 pub mod profile;
+pub mod service;
 pub mod startup;
 pub mod ui_requests;
 

@@ -28,6 +28,8 @@ mod creations;
 mod desk;
 #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
 mod desktop_hello;
+#[cfg(feature = "live")]
+mod desktop_service;
 mod display;
 #[cfg(feature = "live")]
 mod drops;
@@ -451,6 +453,10 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
             #[cfg(feature = "live")]
             {
                 let dir = data_dir(app.handle());
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                if let Some(responder) = &startup.desktop_responder {
+                    app.state::<commands::AppState>().set_desktop_responder(responder.clone());
+                }
                 std::fs::create_dir_all(&dir)?;
                 let replay = std::env::var_os("ZERUS_CLIENT_REPLAY").is_some_and(|list| !list.is_empty());
                 app.manage(settings::open(app.handle(), &dir, replay));
@@ -464,7 +470,11 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                 app.manage(mobile::start(app.handle()));
                 // A replay never touches the real read or attention marks.
                 let actions = actions::Actions::new(dir.join(actions::marks_file(replay)));
+                if desktop_service::mode() { actions.disarm_read_delivery()?; }
                 let notice_app = app.handle().clone();
+                if desktop_service::mode() {
+                    app.manage(actions.read_delivery.clone());
+                } else {
                 app.manage(readsync::start(actions.clone(), std::sync::Arc::new(move |health, saturated| {
                     #[cfg(any(target_os = "linux", target_os = "macos"))]
                     if let Some(responder) = &startup.desktop_responder {
@@ -477,6 +487,7 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                             "All four read-delivery slots are waiting for child processes or pipes to close. See hgs desktop status for details.");
                     }
                 })));
+                }
                 app.manage(actions);
                 app.manage(action_delay::Delays::default());
                 app.manage(actions::ArchiveReads::default());
@@ -743,7 +754,7 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                     // Attention notifications under the running identity: the
                     // switch bundle, or another build on request; never a replay.
                     let identity = app.state::<identity::Identity>().inner().clone();
-                    let posts = identity.notifications(identity::flag("ZERUS_CLIENT_NOTIFICATIONS"), replay);
+                    let posts = !desktop_service::mode() && identity.notifications(identity::flag("ZERUS_CLIENT_NOTIFICATIONS"), replay);
                     let bundled = platform::macos::bundle_identifier().is_some();
                     if posts && !bundled {
                         eprintln!("zerus-client: notifications need an app bundle; this process has none, so none post");
@@ -774,7 +785,7 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                     let conf = desk::tray_conf();
                     platform::linux_tray::install(app.handle(), conf.as_deref());
                     let identity = app.state::<identity::Identity>().inner().clone();
-                    let posts = identity.notifications(identity::flag("ZERUS_CLIENT_NOTIFICATIONS"), replay);
+                    let posts = !desktop_service::mode() && identity.notifications(identity::flag("ZERUS_CLIENT_NOTIFICATIONS"), replay);
                     let switch = identity.is_switch();
                     let attention = posts.then(|| {
                         let path = dir.join(desk::ATTENTION_FILE);
@@ -793,7 +804,7 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                     let conf = desk::tray_conf();
                     platform::windows::tray::install(app.handle(), conf.as_deref())?;
                     let identity = app.state::<identity::Identity>().inner().clone();
-                    let posts = identity.notifications(identity::flag("ZERUS_CLIENT_NOTIFICATIONS"), replay);
+                    let posts = !desktop_service::mode() && identity.notifications(identity::flag("ZERUS_CLIENT_NOTIFICATIONS"), replay);
                     let switch = identity.is_switch();
                     let attention = posts.then(|| {
                         let path = dir.join(desk::ATTENTION_FILE);
@@ -804,7 +815,7 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                         })) as desk::LoadAttention
                     });
                     desk::start(app.handle(), &pump, dir.clone(), desk::load_windows_mode(&dir, conf.as_deref()), attention);
-                    if switch && !replay {
+                    if switch && !replay && !desktop_service::mode() {
                         match platform::windows::worker::Worker::start(zerus_client_core::default_hgs()) {
                             Ok(worker) => { app.manage(worker); }
                             Err(error) => eprintln!("zerus-client: cannot supervise swarm worker: {error}"),
@@ -1133,6 +1144,10 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         exit_flush::exit_flush_ack,
         commands::perf_away,
         commands::perf_resize,
+        desktop_service::desktop_service_mode,
+        desktop_service::desktop_service_retry,
+        desktop_service::desktop_service_read_marks,
+        desktop_service::desktop_service_automatic_approvals,
         commands::build_info,
         commands::voice_support,
         renderer::renderer_frame,

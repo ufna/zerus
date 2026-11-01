@@ -710,3 +710,48 @@ describe("legacy read marks", () => {
     expect(a.port.queueReadMarks).not.toHaveBeenCalled();
   });
 });
+
+// These reads belong to the service actor. A GUI may only overlay a committed
+// exact identity; IPC availability, a local queue or a superseded row is not it.
+describe("service read intents", () => {
+  async function fixture(ready: boolean) {
+    const { createDesktopService } = await import("./desktopService");
+    const service = createDesktopService();
+    service.apply({ connected: true, epoch: "epoch", generation: 1,
+      background: { reads: { ready, code: ready ? "ready" : "not_started" } },
+      attention_counts: null, automatic_approvals: null, details_available: false, code: "background_unready" });
+    const port = fakePort();
+    const store = createMarks(port, memoryStorage(), service), data = createCatalog(store);
+    data.applyBatch(batchOf({ upserts: [rowOut()] }));
+    await store.load(); await flush();
+    return { port, store, ...data, row: () => data.catalog.rows[id()] };
+  }
+  it("does not migrate or mark locally when the service read component is unavailable", async () => {
+    const f = await fixture(false);
+    expect(f.store.markRead(snapshotOf(f.row()))).toBe(false);
+    expect(f.row().unread).toBe(true);
+    expect(f.port.queueReadMarks).not.toHaveBeenCalled();
+  });
+  it("overlays only after durable commit and coalesces repeated dwell/menu actions", async () => {
+    const f = await fixture(true), commit = deferred<ReadMark[]>();
+    f.port.queueReadMarks.mockImplementationOnce(() => commit.promise);
+    const row = snapshotOf(f.row());
+    expect(f.store.markRead(row)).toBe(true);
+    expect(f.store.markRead(row)).toBe(false);
+    expect(f.row().unread).toBe(true);
+    expect(f.port.updateAttentionMarks).not.toHaveBeenCalled();
+    commit.resolve([mark()]); await flush();
+    expect(f.row().unread).toBe(false);
+    expect(f.port.queueReadMarks).toHaveBeenCalledOnce();
+  });
+  it("does not acknowledge a newer reply while an older read is being committed", async () => {
+    const f = await fixture(true), commit = deferred<ReadMark[]>();
+    f.port.queueReadMarks.mockImplementationOnce(() => commit.promise);
+    f.store.markRead(snapshotOf(f.row()));
+    f.applyBatch(batchOf({ upserts: [rowOut({ reply_id: "r2" })] }));
+    commit.resolve([mark()]); await flush();
+    expect(f.row().replyId).toBe("r2");
+    expect(f.row().unread).toBe(true);
+    expect(f.port.updateAttentionMarks).not.toHaveBeenCalled();
+  });
+});

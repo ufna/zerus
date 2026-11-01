@@ -31,6 +31,10 @@ pub fn hold(
     production: bool,
     responder: &Arc<Responder>,
 ) -> Result<Option<desktop::startup::Bootstrap>, desktop::startup::Refused> {
+    if crate::desktop_service::mode() {
+        // A consumer keeps its canonical identity but never claims GUI writer startup.
+        return Ok(None);
+    }
     if !production || std::env::var_os("ZERUS_CLIENT_REPLAY").is_some_and(|v| !v.is_empty()) {
         return Ok(None);
     }

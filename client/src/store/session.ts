@@ -1,3 +1,4 @@
+import { desktopService } from "./desktopService";
 import { batch, createEffect, createRoot, createSignal, on, untrack } from "solid-js";
 import { activityPort, composerTab, inspectSubagentActivity, processesFollow, processesShown, windowVisibility } from "../bridge";
 import { applyBatch, catalog, computerFresh, computerOffline, onReplaced, orderedRows, setDraftKeys } from "./catalog";
@@ -62,6 +63,7 @@ export const subagentActivity = createRoot(() => {
 /** Applies one batch from the bridge: its rows and their grouping are one reactive update. */
 export function receive(b: Batch) {
   batch(() => {
+    if (b.desktop_service) desktopService.apply(b.desktop_service);
     applyBatch(b);
     applyGrouping(b);
     archive.applyGroups(b.groups ?? []);
