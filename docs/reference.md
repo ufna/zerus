@@ -4296,6 +4296,9 @@ posting workers are integrated separately.
 
 Background mode also owns one presence sampler/writer outside the actor. It
 samples every two seconds and uses the existing `desktop-presence.json` format.
+It writes on a 30-second heartbeat, a lock change or a return from at least
+120 seconds idle to active; steady samples do not each sync a file. Readers
+already age the recorded idle value between writes.
 The worker retains the same scoped lock used by `hgs presence set` until its
 last sample/write has returned and it has joined. A concurrent legacy writer is
 refused. Unknown idle or lock input never defaults to zero/unlocked or refreshes

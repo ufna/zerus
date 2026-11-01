@@ -127,26 +127,27 @@ pub(crate) fn write_sample(
     sample: zerus_presence_sampler::Sample,
     at: f64,
 ) -> Result<bool> {
-    let (Some(idle), Some(locked)) = (sample.idle, sample.locked) else {
+    let Some((idle_seconds, locked)) = sample_values(sample)? else {
         return Ok(false);
     };
+    ensure!(at.is_finite() && at >= 0.0, "invalid presence timestamp");
+    write(root, &Input { idle_seconds, locked }, at)?;
+    Ok(true)
+}
+
+pub(crate) fn sample_values(sample: zerus_presence_sampler::Sample) -> Result<Option<(f64, bool)>> {
+    let (Some(idle), Some(locked)) = (sample.idle, sample.locked) else {
+        return Ok(None);
+    };
     if !idle.since_input {
-        return Ok(false);
+        return Ok(None);
     }
     let idle_seconds = idle.elapsed.as_secs_f64();
     ensure!(
-        idle_seconds <= MAX_IDLE_SECONDS && at.is_finite() && at >= 0.0,
+        idle_seconds <= MAX_IDLE_SECONDS,
         "invalid presence sample"
     );
-    write(
-        root,
-        &Input {
-            idle_seconds,
-            locked,
-        },
-        at,
-    )?;
-    Ok(true)
+    Ok(Some((idle_seconds, locked)))
 }
 
 /// `desktop_presence` for `hgs ls --json --local`, aged to `at`. Records written
