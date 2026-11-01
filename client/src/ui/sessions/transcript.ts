@@ -60,15 +60,16 @@ export function timeText(at: number | undefined): string {
 }
 
 type Role = "user" | "assistant" | "notice" | "";
+const childEvent = (event: ActivityEvent): event is ActivityEvent & { agent_id: string } => !!event.agent_id && event.agent_id !== "main";
 
 /** ActivityView.cpp messageRole: who wrote an event, if anyone. */
 export function messageRole(e: ActivityEvent): Role {
   if (e.source === "zerus_task" && e.type === "TaskEntry") return e.task_role === "person" ? "user" : e.task_role === "agent" ? "assistant" : "";
   if (e.source === "hgs_voice" && e.voice && typeof e.voice === "object") return "user";
-  if (e.agent_id || (!e.detail && !(e.attachments?.length))) return "";
+  if (childEvent(e) || (!e.detail && !(e.attachments?.length))) return "";
   if (e.origin === "task_notification" || e.origin === "subagent_report" || e.origin === "peer_message") return "notice";
   switch (e.type) {
-    case "UserPromptSubmit": case "UserPromptQueued": case "TurnStarted": case "QuestionAnswered": case "LocalMessage": return "user";
+    case "UserPromptSubmit": case "UserPromptQueued": case "UserMessage": case "TurnStarted": case "QuestionAnswered": case "LocalMessage": return "user";
     case "Stop": case "AgentMessage": return "assistant";
   }
   return "";
@@ -155,7 +156,7 @@ export function mergeAttachmentMessages(given: readonly ActivityEvent[], summary
     if (receipts.filter((other) => typeof other.submitted_text === "string" && other.submitted_text.trim() === submitted).length !== 1) continue;
     const exact: number[] = [];
     events.forEach((event, index) => {
-      if (event.source !== "hgs_voice" && !event.agent_id && !event.attachments?.length && PROMPTS.has(event.type ?? "")
+      if (event.source !== "hgs_voice" && !childEvent(event) && !event.attachments?.length && PROMPTS.has(event.type ?? "")
         && (event.detail ?? "").trim() === submitted) exact.push(index);
     });
     if (exact.length !== 1) continue;
@@ -284,7 +285,7 @@ export function mergeLocal(events: readonly ActivityEvent[], local: readonly Loc
     const sent = row.status !== "error";
     let match = -1;
     const exact: number[] = [];
-    const eligible = (e: ActivityEvent, i: number) => !claimed.has(i) && !e.agent_id && e.source !== "hgs_voice" && PROMPTS.has(e.type ?? "")
+    const eligible = (e: ActivityEvent, i: number) => !claimed.has(i) && !childEvent(e) && e.source !== "hgs_voice" && PROMPTS.has(e.type ?? "")
       && (!e.activity_display_key || e.activity_display_key === `local-${row.id}`);
     if (sent) match = source.findIndex((e, i) => eligible(e, i) && e.activity_display_key === `local-${row.id}`);
     if (sent && match < 0) match = source.findIndex((e, i) => eligible(e, i)
@@ -324,7 +325,7 @@ export function mergeLocal(events: readonly ActivityEvent[], local: readonly Loc
   // receipt. Keep the client's row visible through that short gap; do not
   // invent an identity binding from text. Equal-text sends remain separate.
   const visible = source.filter((event, index) => claimed.has(index) || !candidates.some((row) => {
-    if (row.status === "error" || !row.attachments.length || !PROMPTS.has(event.type ?? "") || event.agent_id
+    if (row.status === "error" || !row.attachments.length || !PROMPTS.has(event.type ?? "") || childEvent(event)
       || event.attachments?.length || Math.abs((event.at ?? NaN) - row.submitted_at) > NEAREST) return false;
     const raw = event.detail ?? "";
     if (!echoMatchesFiles(raw, row.attachments as ActivityEvent["attachments"])) return false;
@@ -346,6 +347,30 @@ export function mergeLocal(events: readonly ActivityEvent[], local: readonly Loc
 }
 
 const PROVIDER_SOURCES = new Set(["codex_transcript", "claude_transcript", "kimi_wire"]);
+const MESSAGE_TYPES = new Set(["SessionCleared", "UserPromptSubmit", "UserPromptQueued", "UserMessage", "TurnStarted", "QuestionAnswered", "AgentMessage", "Stop"]);
+
+/** The inspection keeps up to 100 main journal messages independently of its
+ * tool-event tail. Merge that bounded window for display only; tool cursors and
+ * older-page requests continue to use the source's original journal events. */
+export function mergeMessages(given: readonly ActivityEvent[], summary?: Record<string, unknown>): readonly ActivityEvent[] {
+  if (!Array.isArray(summary?.message_events) || !summary.message_events.length) return given;
+  const events = [...given];
+  const known = new Set(given.map(eventKey));
+  for (const value of summary.message_events.slice(-100)) {
+    if (!value || typeof value !== "object") continue;
+    const message = value as ActivityEvent;
+    if (!MESSAGE_TYPES.has(message.type ?? "") || childEvent(message)
+      || typeof message.seq !== "number" || !Number.isSafeInteger(message.seq) || message.seq <= 0) continue;
+    const key = eventKey(message);
+    if (known.has(key)) continue;
+    known.add(key);
+    events.push(message);
+  }
+  if (events.length === given.length) return given;
+  if (events.every(event => typeof event.seq === "number" && event.seq > 0)) events.sort((a, b) => a.seq! - b.seq!);
+  else if (events.every(event => typeof event.at === "number" && Number.isFinite(event.at) && event.at > 0)) events.sort((a, b) => a.at! - b.at!);
+  return events;
+}
 const isExcerpt = (excerpt: string, full: string) => {
   const prefix = excerpt.endsWith("…") ? excerpt.slice(0, -1) : excerpt;
   return !!prefix && full.startsWith(prefix);
@@ -370,7 +395,7 @@ export function mergeProvider(given: readonly ActivityEvent[], summary?: Record<
   // Index only matching candidates once, rather than scanning every loaded
   // journal page for each provider row on every streaming rebuild.
   const index = (e: ActivityEvent, i: number) => {
-    if (e.agent_id || (e.type !== "Stop" && !PROVIDER_SOURCES.has(e.source ?? ""))) return;
+    if (childEvent(e) || (e.type !== "Stop" && !PROVIDER_SOURCES.has(e.source ?? ""))) return;
     const key = nativeKey(e);
     if (key) identities.add(key);
     const second = Math.floor(at(e));
@@ -382,7 +407,7 @@ export function mergeProvider(given: readonly ActivityEvent[], summary?: Record<
   for (const value of summary.provider_messages.slice(-100)) {
     if (!value || typeof value !== "object") continue;
     const message = value as ActivityEvent;
-    if (!PROVIDER_SOURCES.has(message.source ?? "") || message.agent_id
+    if (!PROVIDER_SOURCES.has(message.source ?? "") || childEvent(message)
       || (message.type !== "AgentMessage" && !(message.type === "AgentThinking" && message.source === "claude_transcript"))) continue;
     const key = nativeKey(message);
     if (key && identities.has(key)) continue;
@@ -427,7 +452,7 @@ export function mergeProvider(given: readonly ActivityEvent[], summary?: Record<
  * append. `local` are the open session's local rows (the composer view's).
  */
 export function buildTranscript(given: readonly ActivityEvent[], summary?: Record<string, unknown>, local: readonly LocalMessage[] = []): TranscriptItem[] {
-  const provider = mergeAttachmentMessages(mergeProvider(given, summary), summary);
+  const provider = mergeAttachmentMessages(mergeProvider(mergeMessages(given, summary), summary), summary);
   if (!provider.length && !local.length) return recordedContext(summary);
   const events = mergeAttachmentMessages(local.length ? mergeLocal(provider, local) : provider, summary);
   return transcriptItems(events, summary, !provider.length);
@@ -497,7 +522,7 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
       if (g.type === "PreToolUse") calls++;
     }
     const last = group[group.length - 1];
-    const lines = group.map((g) => `${eventTitle(g.type)}${g.tool ? ` / ${g.tool}` : ""}${g.agent_id ? tr(" (subagent %1)", g.agent_id) : ""}  ${preview(g.detail)}`);
+    const lines = group.map((g) => `${eventTitle(g.type)}${g.tool ? ` / ${g.tool}` : ""}${childEvent(g) ? tr(" (subagent %1)", g.agent_id) : ""}  ${preview(g.detail)}`);
     const shownTools = tools.slice(0, 3).join(", ") + (tools.length > 3 ? " …" : "");
     if (group.length === 1) {
       items.push({ id, kind: "tool", at: timeText(last.at), title: `${eventTitle(e.type)}${e.tool ? ` / ${e.tool}` : ""}`, body: preview(e.detail), lines, warn: attention(e) });
@@ -527,7 +552,7 @@ export function createTranscriptProjection() {
       // journal event. Keep that one row through the handoff, without actions.
       const waiting = missing.filter(row => !bound.has(`local-${row.id}`));
       const bindingOnly = missing.filter(row => bound.has(`local-${row.id}`));
-      const provider = mergeAttachmentMessages(mergeProvider(given, summary), summary);
+      const provider = mergeAttachmentMessages(mergeProvider(mergeMessages(given, summary), summary), summary);
       const aliased = provider.map(event => {
         const id = bindings.get(eventKey(event));
         return id ? { ...event, activity_display_key: id } : event;
