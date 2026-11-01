@@ -23,6 +23,73 @@ once from Qt's INI store. Qt's own drafts and settings stay in place. The
 updater snapshots both draft stores and retains native agents, tmux servers,
 hgs services, and the mobile connector.
 
+## Desktop background service
+
+`hgs-desktop.service` is separate from the UI's `hgs-tray.service`. A normal
+Next source installation registers the backend using the selected local CLI's
+`hgs desktop registration --json` definition and readiness probe. Packaged
+installations opt in as the desktop user, without sudo:
+
+```sh
+zerus-setup --desktop-service
+```
+
+The command writes this user's `hgs-desktop.service` under
+`$XDG_CONFIG_HOME/systemd/user` (default `~/.config/systemd/user`) and enables
+it for `graphical-session.target`. It imports the current login's runtime,
+D-Bus and Wayland environment before starting the service. A genuine X11
+session imports its display and clears stale Wayland data. The helper never
+imports GUI-specific library paths into the user manager. Custom units,
+drop-ins, symlinks and registrations for another configuration are kept for
+manual review. Pacman never writes user homes or starts services.
+Because the live Next source installer preflights this registration, a user
+drop-in on `hgs-desktop.service` also blocks `tray/install.sh` GUI updates until
+the customization is deliberately reviewed and removed.
+
+For a separate configuration, pass absolute `--config-dir` and `--state-dir`
+paths and optionally `--hgs /absolute/path/to/hgs`. `--check` validates the
+registration without changes. `--no-start` registers the next graphical login
+without starting a child. Without a current graphical environment, registration
+also defers startup; it never borrows stale display data from the manager.
+
+A desktop environment must import its login environment before bringing up
+`graphical-session.target`. Bare window managers need their own graphical
+session integration. After that window manager has exported its current login
+variables, run:
+
+```sh
+zerus-setup --desktop-service session
+```
+
+For a source installation, use
+`python3 ~/.local/lib/zerus/install-linux-desktop-service.py session --hgs ~/.local/bin/hgs`.
+Run this again when replacing the graphical session: importing environment into
+the manager alone cannot update an already running child. The helper restarts
+only the owned desktop backend when its session or backend changes. A UI-only
+update keeps the unchanged backend alive. `install.sh` refreshes an already
+managed registration after a deliberate CLI upgrade; a CLI-only installation
+with no registration creates no desktop service. An inactive service stays
+stopped, and an active backend upgrade without a current graphical environment
+remains pending until an explicit session refresh. Package upgrades require the
+same explicit `zerus-setup --desktop-service` step; pacman performs no refresh.
+For SSH or agent-shell CLI upgrades without a graphical session, the helper
+retains `pending_restart` and returns status 3. `install.sh` reports that notice
+after completing its connector and worker updates and exits successfully; it
+does not restart the desktop backend with stale graphical data. Other refresh
+errors still fail the installer after those independent steps have completed.
+The Next source GUI installer handles status 3 the same way and continues its
+independent, draft-preserving GUI update. The backend still needs a refresh from
+the current graphical session; other registration errors keep the GUI update
+blocked.
+
+Readiness must match the selected CLI's lifecycle ABI and configuration, with
+`lifecycle.ipc_ready=true` and the systemd main PID. This establishes IPC
+readiness only. The current registration still runs passive `desktop serve`;
+each background component reports its separate status and is not enabled by
+registration alone. Inspect `hgs desktop status --json` and
+`journalctl --user -u hgs-desktop.service` when startup fails. No native agent,
+tmux server, recovery, voice or mobile service is stopped by this helper.
+
 ## Qualify in a scratch prefix
 
 Use a clean checkout of the exact candidate and a new prefix. Never use the
@@ -87,8 +154,9 @@ Work from a clean, persistent checkout of the exact main commit. Use the CI
 sequence from that exact main push, not a semantic version or an unrelated run.
 Check the running GUI's `--build-info` and
 `~/.local/share/hgs/build-provenance.json`, coordinate the time, and ask the
-owner to stop typing while Qt quits. Do not run `install.sh` or change any
-service other than the GUI's existing unit.
+owner to stop typing while Qt quits. Do not run `install.sh` as part of this
+UI-only switch. The installer also registers the selected CLI's desktop
+backend; an unchanged running backend stays alive.
 
 ```sh
 cd CLEAN_MAIN_CHECKOUT

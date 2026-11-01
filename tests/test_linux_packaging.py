@@ -28,6 +28,7 @@ class LinuxPackaging(unittest.TestCase):
         for name in ("README.md", "CONTRIBUTING.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "tmux.conf",
                      "hgs_state.py", "packaging/linux/zerus-setup", "packaging/linux/hgs-tray.desktop",
                      "packaging/linux/hgs-tray.service", "scripts/install-mobile-connector-service.py",
+                     "scripts/install-linux-desktop-service.py",
                      "docs/licenses/codex-LICENSE.txt", "tray/resources/icons/hgs-zerus-symbolic.svg"):
             self.file("source/" + name)
         for size in (16, 24, 32, 48, 64, 128, 256, 512, 1024):

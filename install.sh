@@ -22,7 +22,8 @@ else
     exit 1
 fi
 
-export PATH="$(dirname "$cargo_bin"):$PATH"
+PATH="$(dirname "$cargo_bin"):$PATH"
+export PATH
 "$cargo_bin" build --manifest-path "$here/Cargo.toml" --locked --release
 build_dir="${CARGO_TARGET_DIR:-$here/target}"
 mkdir -p "$prefix/bin"
@@ -117,6 +118,22 @@ if [ -z "${HGS_INSTALL_PREFIX:-}" ] && [ -z "${HGS_STATE_DIR:-}" ] && [ -z "${HG
     if [ "$changed" -eq 1 ]; then voice_args+=(--restart); fi
     python3 "$here/scripts/install-voice-service.py" "$prefix/bin/hgs" "${voice_args[@]}"
 fi
+# Only deliberate per-user source upgrades refresh an existing desktop service.
+# Package/staging/root/foreign configuration installs never touch user services.
+# Run after the existing connector/worker steps: a headless pending desktop
+# refresh must not prevent those independent updates from completing.
+if [ "$(uname -s)" = "Linux" ] && [ "$(id -u)" -ne 0 ] && \
+   [ -z "${HGS_INSTALL_PREFIX:-}" ] && [ -z "${DESTDIR:-}" ] && \
+   [ -z "${HGS_CONFIG_DIR:-}" ] && [ -z "${HGS_STATE_DIR:-}" ]; then
+    desktop_status=0
+    python3 "$here/scripts/install-linux-desktop-service.py" refresh --hgs "$prefix/bin/hgs" || desktop_status=$?
+    case "$desktop_status" in
+        0) ;;
+        3) echo "Desktop backend refresh pending. CLI, connector and worker installation completed; refresh from the current graphical session." ;;
+        *) exit "$desktop_status" ;;
+    esac
+fi
+
 # Desktop refusals must not interrupt the existing workers' update path.
 if [ -z "${HGS_INSTALL_PREFIX:-}" ] && [ -z "${HGS_STATE_DIR:-}" ] && [ -z "${HGS_CONFIG_DIR:-}" ] && [ "$(uname -s)" = Darwin ]; then
     desktop_args=()

@@ -412,6 +412,25 @@ class Desktop(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)['lifecycle'], lifecycle)
         self.assertFalse((self.root / 'unexpected-tool').exists())
 
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux installer consumer')
+    def test_linux_installer_consumes_the_real_scoped_readiness_probe(self):
+        import runpy
+        script = Path(__file__).resolve().parents[1] / 'scripts/install-linux-desktop-service.py'
+        consumer = runpy.run_path(str(script))['Installer']
+        process, status = self.serve()
+        selected = consumer(str(HGS), self.env)
+        live = selected.probe()
+        self.assertTrue(live['ipc_ready'])
+        self.assertEqual(live['pid'], process.pid)
+        self.assertEqual(live['configuration'], status['configuration'])
+        self.assertFalse(any(value['ready'] for value in live['background'].values()))
+        other = dict(self.env, HGS_CONFIG_DIR=str(self.root / 'other-config'),
+                     HGS_STATE_DIR=str(self.root / 'other-state'))
+        absent = consumer(str(HGS), other).probe()
+        self.assertFalse(absent['ipc_ready'])
+        self.assertNotEqual(absent['configuration'], live['configuration'])
+        self.assertFalse((self.root / 'unexpected-tool').exists())
+
     def test_queries_and_effect_refusal_have_exact_request_ids(self):
         self.serve()
         request_id = str(uuid.uuid4())
