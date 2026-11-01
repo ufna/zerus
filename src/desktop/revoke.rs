@@ -93,6 +93,20 @@ fn record(store: &Store, id: &str) -> Result<Option<Record>> {
     Ok(store.db.query_row("SELECT substr(fingerprint,1,65),substr(reason,1,33),substr(writer_epoch,1,37),substr(state,1,16),substr(result,1,4097) FROM desktop_commands WHERE request_id=?1",[id],|r|Ok(Record {fingerprint:r.get(0)?,reason:r.get(1)?,writer_epoch:r.get(2)?,state:r.get(3)?,result:r.get(4)?})).optional()?)
 }
 
+/// A requested background mode is not a new handoff. Every retained revoke,
+/// including an interrupted one, blocks restart. Historical handoff state also
+/// requires explicit reconciliation; a login must not reinterpret it as consent.
+pub(super) fn background_permitted(location: &Location, store: &Store) -> Result<bool> {
+    let lock = location.handoff_lock()?;
+    let marker = handoff::marker(location, &lock)?;
+    let revoked: bool = store.db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM desktop_commands LIMIT 1)",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(!revoked && marker.is_none())
+}
+
 /// The drain callback runs only after policy revocation commits. Current kernel
 /// callers drain their owned runtime here. Effect dispatchers must also cancel
 /// their leases and settle owned workers before marker/checkpoint success.
@@ -467,6 +481,32 @@ pub fn offline(location: &Location, command: &Command) -> Result<Value> {
 mod tests {
     use super::*;
     use zerus_desktop_migration::{canonical, Handoff, Phase, HANDOFF_FILE};
+
+    #[test]
+    fn even_an_interrupted_revoke_blocks_background_restart() {
+        let mut f = Fixture::new();
+        assert!(background_permitted(&f.location, &f.store).unwrap());
+        let command = f.command();
+        let epoch = f.epoch.clone();
+        let error = execute_scoped(
+            &f.location,
+            &mut f.store,
+            &command,
+            None,
+            Some(&epoch),
+            || anyhow::bail!("fixture drain still pending"),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<Declined>().unwrap().0,
+            "drain_not_settled"
+        );
+        assert!(!background_permitted(&f.location, &f.store).unwrap());
+        let next = uuid::Uuid::new_v4().to_string();
+        drop(f.store);
+        let reopened = Store::open(&f.location, &next).unwrap();
+        assert!(!background_permitted(&f.location, &reopened).unwrap());
+    }
 
     #[test]
     fn runtime_revoke_receipt_cannot_drain_a_replacement_service() {

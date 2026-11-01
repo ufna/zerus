@@ -17,6 +17,7 @@ mod lifecycle;
 mod operations;
 mod owner;
 mod presence_admission;
+mod presence_worker;
 #[allow(dead_code)]
 mod producer_binding;
 #[allow(dead_code)]
@@ -173,7 +174,9 @@ pub fn dispatch(config: &Config, target: &str, args: &[String], dry: bool) -> cl
                 let status = status(&location)?;
                 println!(
                     "Desktop service: {}",
-                    if status["ownership"] == "background_readonly" {
+                    if status["ownership"] == "background_service" {
+                        "running (background fleet and presence)"
+                    } else if status["ownership"] == "background_readonly" {
                         "running (background fleet, effect writers inactive)"
                     } else if status["ownership"] == "revoked" {
                         "running (background workers revoked)"
@@ -395,17 +398,29 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
     let mut heartbeat = Instant::now() + HEARTBEAT;
     let mut collect_at = Instant::now();
     let mut failed = false;
+    let mut background_blocked = false;
     let run_result = (|| -> Result<()> {
         if background_mode {
+            background_blocked = !revoke::background_permitted(&location, &store)?;
+        }
+        if background_mode && !background_blocked {
             background = Some(
                 background::Runtime::start(config, &epoch, &mut feed).context(StartupRefused)?,
             );
+            // Store the runtime first: a writer startup error still drains the
+            // fleet through the common shutdown path below.
+            background
+                .as_mut()
+                .unwrap()
+                .start_presence(&location)
+                .context(StartupRefused)?;
         }
         while platform::shutdown_signal() == 0 {
-            let mut changed = false;
+            let mut full_batch = false;
             if let Some(runtime) = &mut background {
-                for mut change in runtime.poll(&mut store, &mut feed) {
-                    changed = true;
+                let (changes, full) = runtime.poll(&mut store, &mut feed);
+                full_batch = full;
+                for mut change in changes {
                     seq += 1;
                     change["attention_counts"] = attention_counts(&store, &epoch, seq, &feed);
                     fanout.publish(
@@ -415,7 +430,7 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
             }
             frontend.tick(&location);
             store.recover_operation_custody(&location);
-            match receive.recv_timeout(if changed {
+            match receive.recv_timeout(if full_batch {
                 Duration::ZERO
             } else {
                 Duration::from_millis(200)
@@ -434,6 +449,8 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                     value["attention_counts"] = attention_counts(&store, &epoch, seq, &feed);
                     if let Some(runtime) = &background {
                         runtime.decorate(&mut value);
+                    } else if background_blocked {
+                        value["background_start"] = json!({"admitted":false,"code":"explicit_handoff_required","durably_blocked":true});
                     }
                     let mut streaming = false;
                     let reply = if hello.abi != ABI || hello.configuration != location.configuration
@@ -571,6 +588,8 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                 value["attention_counts"] = attention_counts(&store, &epoch, seq, &feed);
                 if let Some(runtime) = &background {
                     runtime.decorate(&mut value);
+                } else if background_blocked {
+                    value["background_start"] = json!({"admitted":false,"code":"explicit_handoff_required","durably_blocked":true});
                 }
                 fanout.publish(protocol::encode(&frame(&epoch, seq, "heartbeat", value))?.into());
                 heartbeat = Instant::now() + HEARTBEAT;

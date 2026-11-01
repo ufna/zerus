@@ -4291,12 +4291,28 @@ updates through the same endpoint. It keeps each original event's ingress permit
 through the database transaction; UI-supplied feed packets cannot enter the owned
 observation path. Failed frames invalidate their exact source until resnapshot.
 The existing plain `serve` and emitted registrations stay passive during the
-UI cutover. This first runtime slice enables no presence/read/approval/posting
-writer, and generic approval policy requests remain refused.
+UI cutover. Generic approval policy requests remain refused; read, approval and
+posting workers are integrated separately.
+
+Background mode also owns one presence sampler/writer outside the actor. It
+samples every two seconds and uses the existing `desktop-presence.json` format.
+The worker retains the same scoped lock used by `hgs presence set` until its
+last sample/write has returned and it has joined. A concurrent legacy writer is
+refused. Unknown idle or lock input never defaults to zero/unlocked or refreshes
+the previous record. Wayland durations measured only since observation began
+are also withheld until actual resumed input is observed. Thus a service restart
+does not turn an hour-away owner into a recently active owner. Existing records
+expire normally after 120 seconds without valid samples. Status distinguishes
+published, unknown-input, write-error and incomplete-shutdown states.
 
 Revoking background mode stops and drains its own streams before returning a
 checkpointed receipt. These receipts bind the service incarnation; an old revoke
-cannot stop a replacement instance. Incomplete shutdown is reported as an error,
+cannot stop a replacement instance. Any retained revoke (even interrupted) or
+historical handoff state also prevents background startup after login/restart:
+the endpoint stays passive with `background_start.code=explicit_handoff_required`.
+Passing `--background` again never clears that block. A new explicit handoff is
+part of the coordinated UI cutover, not an automatic service restart.
+Incomplete shutdown is reported as an error,
 never as drained. Native agents, tmux and unrelated services are not stopped.
 
 The existing `hgs presence set --json` payload and success output remain
@@ -4312,7 +4328,7 @@ special files provide no presence evidence.
 
 The private `desktop-v1` service kernel is local to one user and canonical
 configuration/state identity. Plain `serve` is passive; explicit background mode
-owns the bounded fleet readers described above. Presence/read workers,
+owns the fleet readers and presence writer described above. Read workers,
 notifications and automatic approvals remain inactive pending their integration.
 Maintained installers register the service with the OS manager. Desktop client
 cutover and native posting are separate changes.
