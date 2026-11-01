@@ -14,8 +14,9 @@ use super::Store;
 use crate::{
     config::Config,
     desktop::{feed, fleet},
-    platform,
 };
+#[cfg(unix)]
+use crate::platform;
 use anyhow::{ensure, Result};
 use rusqlite::OptionalExtension;
 use serde_json::{json, Value};

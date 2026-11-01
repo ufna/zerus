@@ -74,9 +74,12 @@ impl Fixture {
         self.runtime.poll(&mut self.store);
     }
     fn enabled(&mut self, enabled: bool) -> Value {
-        self.runtime.request(
+        self.native_policy(&json!({"op":"automatic_approvals","request_id":id(),"enabled":enabled}))
+    }
+    fn native_policy(&mut self, value: &Value) -> Value {
+        self.runtime.frontend_request(
             &mut self.store,
-            &json!({"op":"automatic_approvals","request_id":id(),"enabled":enabled}),
+            crate::desktop::ui_authority::Validated::fixture(value),
         )
     }
     fn source(&mut self, row: Value, native: bool) {
@@ -185,10 +188,10 @@ fn policy_defaults_off_and_replayed_receipts_never_reapply_old_settings() {
     let mut f = Fixture::new(quiet());
     assert!(!state::policy(&f.store.db).unwrap().enabled);
     let first = json!({"op":"automatic_approvals","request_id":id(),"enabled":true});
-    let receipt = f.runtime.request(&mut f.store, &first);
+    let receipt = f.native_policy(&first);
     assert_eq!(receipt["durable"], true);
     assert_eq!(f.enabled(false)["accepted"], true);
-    assert_eq!(f.runtime.request(&mut f.store, &first), receipt);
+    assert_eq!(f.native_policy(&first), receipt);
     assert!(!state::policy(&f.store.db).unwrap().enabled);
     let result=f.runtime.request(&mut f.store,&json!({"op":"delivery_result","request_id":id(),"original_request_id":first["request_id"]}));
     assert_eq!(result["result"], receipt);
@@ -199,6 +202,21 @@ fn policy_defaults_off_and_replayed_receipts_never_reapply_old_settings() {
     assert!(zerus_desktop_ledger::status(&store.db).unwrap()["revoked"]
         .as_bool()
         .unwrap());
+}
+
+#[test]
+fn generic_runtime_policy_requests_cannot_bypass_the_native_permit_type() {
+    let mut f = Fixture::new(quiet());
+    for enabled in [true, false] {
+        let result = f.runtime.request(
+            &mut f.store,
+            &json!({"op":"automatic_approvals",
+            "request_id":id(),"enabled":enabled}),
+        );
+        assert_eq!(result["accepted"], false);
+        assert_eq!(result["code"], "frontend_authentication_required");
+    }
+    assert!(!state::policy(&f.store.db).unwrap().enabled);
 }
 
 #[test]

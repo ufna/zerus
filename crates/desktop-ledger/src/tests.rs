@@ -34,6 +34,22 @@ fn identity(edge: &str) -> Identity {
         edge: edge.into(),
     }
 }
+
+#[test]
+fn local_computer_alias_is_distinct_from_a_named_peer() {
+    let mut db = database();
+    let remote = put_intent(&mut db, &identity("edge"), 1, &json!({})).unwrap();
+    let mut local = identity("edge");
+    if let Target::Session { computer, .. } = &mut local.target {
+        computer.clear();
+    }
+    let local_id = put_intent(&mut db, &local, 1, &json!({})).unwrap();
+    assert_ne!(local_id, remote);
+    if let Target::Session { computer, .. } = &mut local.target {
+        *computer = "invalid\npeer".into();
+    }
+    assert!(put_intent(&mut db, &local, 1, &json!({})).is_err());
+}
 fn request(intent: &str, n: u32) -> Reserve {
     Reserve {
         request_id: id(n + 10),
