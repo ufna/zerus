@@ -33,11 +33,44 @@ struct Inner {
     persist: Mutex<()>,
     /// A replay without an explicit CLI: nothing is read or written.
     blocked: bool,
+    service_mode: bool,
+    projection: Mutex<Option<zerus_client_core::maintenance::RecoveryProjection>>,
 }
 
 impl Inner {
     fn sync(&self) -> MutexGuard<'_, RecoverySync> {
         self.sync.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn view(&self) -> Value {
+        if !self.service_mode {
+            return view(&self.sync());
+        }
+        let projected = self
+            .projection
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(projected) = projected.as_ref() else {
+            return json!({"status":"","error":"Recovery settings are unavailable from the desktop service.",
+                "busy":false,"can_save":false,"known":false,"has_machines":false,"has_policy":false,"saves":0});
+        };
+        let current = projected.ready && projected.current_origin;
+        json!({"status":projected.status,"error":projected.error,"busy":current && projected.busy,
+            "can_save":false,"known":current && projected.known,"has_machines":current && projected.has_machines,
+            "has_policy":projected.has_policy,"saves":projected.saves})
+        // Save remains unavailable until the authenticated native route lands;
+        // a read-only watch projection never enables a mutation itself.
+    }
+    fn envelope(&self) -> Map<String, Value> {
+        if !self.service_mode {
+            return self.sync().envelope().clone();
+        }
+        self.projection
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(|p| p.envelope.clone())
+            .unwrap_or_default()
     }
 
     /// Stores the newest policy known now. Writes take turns, and each
@@ -83,8 +116,10 @@ pub fn start(app: &AppHandle) -> Recovery {
         sync: Mutex::new(RecoverySync::new(&stored)),
         persist: Mutex::new(()),
         blocked: crate::actions::blocked(),
+        service_mode: crate::desktop_service::mode(),
+        projection: Mutex::new(None),
     });
-    if !inner.blocked && !crate::desktop_service::mode() {
+    if !inner.blocked && !inner.service_mode {
         let (handle, service) = (app.clone(), Arc::clone(&inner));
         let periods = (REFRESH.as_secs() / FOLLOW.as_secs()).max(1);
         let started = std::thread::Builder::new()
@@ -110,6 +145,24 @@ pub fn start(app: &AppHandle) -> Recovery {
         }
     }
     Recovery(inner)
+}
+
+/// Apply a read-only service projection to the existing Recovery view. The
+/// separate recovery executor and its policy persistence are untouched.
+pub(crate) fn service_projection(
+    app: &AppHandle,
+    value: Option<&zerus_client_core::maintenance::RecoveryProjection>,
+) {
+    let recovery = app.state::<Recovery>();
+    if !recovery.0.service_mode {
+        return;
+    }
+    *recovery
+        .0
+        .projection
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = value.cloned();
+    let _ = app.emit("recovery-changed", recovery.0.view());
 }
 
 /// One look at the fleet `waited` after the service started: this
@@ -191,7 +244,7 @@ fn spawn(app: &AppHandle, inner: &Arc<Inner>, calls: Vec<Call>) {
 /// The page's view.
 #[tauri::command]
 pub fn recovery_view(recovery: State<'_, Recovery>) -> Value {
-    view(&recovery.0.sync())
+    recovery.0.view()
 }
 
 /// The form for the newest policy and that policy (`base`), which the page
@@ -199,7 +252,7 @@ pub fn recovery_view(recovery: State<'_, Recovery>) -> Value {
 /// both null before any policy.
 #[tauri::command]
 pub fn recovery_load(recovery: State<'_, Recovery>) -> Value {
-    let envelope = recovery.0.sync().envelope().clone();
+    let envelope = recovery.0.envelope();
     let loaded = form(&envelope);
     let base = loaded.as_ref().map(|_| Value::Object(envelope));
     json!({ "form": loaded, "base": base })
@@ -216,6 +269,9 @@ pub fn recovery_save(
     base: Map<String, Value>,
 ) -> Result<Value, String> {
     allowed(recovery.0.blocked)?;
+    if recovery.0.service_mode {
+        return Err("Recovery settings are unavailable from the desktop service.".into());
+    }
     let (calls, persist, message, view) = {
         let mut sync = recovery.0.sync();
         let (effects, message) = match policy(&base, &form) {
@@ -237,6 +293,9 @@ pub fn recovery_save(
 #[tauri::command(async)]
 pub fn recovery_reload(app: AppHandle, recovery: State<'_, Recovery>) -> Result<Value, String> {
     allowed(recovery.0.blocked)?;
+    if recovery.0.service_mode {
+        return Ok(recovery.0.view());
+    }
     let (calls, persist, view) = {
         let mut sync = recovery.0.sync();
         let (calls, persist) = settle(sync.refresh());
@@ -273,6 +332,8 @@ mod tests {
             sync: Mutex::new(RecoverySync::new(&newest.to_string())),
             persist: Mutex::new(()),
             blocked: false,
+            service_mode: false,
+            projection: Mutex::new(None),
         };
         // A slower thread's Persist carries an older policy; the newest is kept.
         let older = json!({"order": [8, "w"], "policy": {"revision": 8}}).to_string();
@@ -283,5 +344,45 @@ mod tests {
         assert!(store.0.flush_within(Duration::from_secs(5)));
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn service_projection_is_read_only_and_missing_source_never_restarts_local_sync() {
+        let inner = Inner {
+            sync: Mutex::new(RecoverySync::new("")),
+            persist: Mutex::new(()),
+            blocked: false,
+            service_mode: true,
+            projection: Mutex::new(None),
+        };
+        assert_eq!(inner.view()["known"], false);
+        assert_eq!(inner.view()["can_save"], false);
+        let projection = zerus_client_core::maintenance::RecoveryProjection {
+            ready: true,
+            current_origin: true,
+            known: true,
+            has_machines: true,
+            has_policy: true,
+            can_save: true,
+            envelope: json!({"order":[3,"fixture"],"policy":{"enabled":false}})
+                .as_object()
+                .unwrap()
+                .clone(),
+            ..zerus_client_core::maintenance::RecoveryProjection::default()
+        };
+        *inner.projection.lock().unwrap() = Some(projection.clone());
+        assert_eq!(inner.view()["known"], true);
+        assert_eq!(
+            inner.view()["can_save"],
+            false,
+            "watch readiness cannot authorize save"
+        );
+        assert_eq!(inner.envelope(), projection.envelope);
+        assert!(
+            !inner.sync().known(),
+            "service projection never drives the local sync engine"
+        );
+        *inner.projection.lock().unwrap() = None;
+        assert_eq!(inner.view()["known"], false);
+        assert!(inner.envelope().is_empty());
     }
 }

@@ -2,8 +2,8 @@
 //! persisted state and notices, on one worker (`UpdateController`).
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State as TauriState};
@@ -98,6 +98,7 @@ struct UpdateState {
     login_item_deprioritized: bool,
     fresh_for_notification: bool,
     automatic_in_flight: bool,
+    from_service: bool,
 }
 
 impl Default for UpdateState {
@@ -120,6 +121,7 @@ impl Default for UpdateState {
             login_item_deprioritized: false,
             fresh_for_notification: false,
             automatic_in_flight: false,
+            from_service: false,
         }
     }
 }
@@ -130,6 +132,9 @@ type Compare = Arc<dyn Fn(&Feed, &Installation) -> Option<i32> + Send + Sync>;
 type Changed = Arc<dyn Fn(UpdatesView) + Send + Sync>;
 type Notify = Arc<dyn Fn(Notice) + Send + Sync>;
 type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
+type ProjectionEvent = (u64, Option<zerus_client_core::maintenance::Projection>);
+type MaintenanceChanged =
+    Arc<dyn Fn(Option<&zerus_client_core::maintenance::Projection>) + Send + Sync>;
 
 #[derive(Clone)]
 struct Hooks {
@@ -139,6 +144,7 @@ struct Hooks {
     changed: Changed,
     notify: Notify,
     now: Clock,
+    maintenance_changed: MaintenanceChanged,
 }
 
 struct Shared {
@@ -152,6 +158,12 @@ struct Shared {
     sender: Sender<Request>,
     hooks: Hooks,
     dev_identity: bool,
+    service_mode: bool,
+    bundle_id: String,
+    projection_sender: SyncSender<ProjectionEvent>,
+    projection_receiver: Mutex<Receiver<ProjectionEvent>>,
+    projection_version: AtomicU64,
+    projection_wake: AtomicBool,
 }
 
 #[derive(Clone)]
@@ -161,6 +173,7 @@ enum Request {
     Check(bool),
     Channel(Channel),
     Automatic(bool),
+    Projection,
 }
 
 fn lock<T>(state: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -258,9 +271,12 @@ impl Updates {
         build: Build,
         executable: PathBuf,
         dev_identity: bool,
+        service_mode: bool,
+        bundle_id: String,
         hooks: Hooks,
     ) -> (Self, Receiver<Request>) {
         let (sender, receiver) = mpsc::channel();
+        let (projection_sender, projection_receiver) = mpsc::sync_channel(1);
         let started_release = packaged_bundle_release(
             &executable
                 .parent()
@@ -285,6 +301,12 @@ impl Updates {
                 sender,
                 hooks,
                 dev_identity,
+                service_mode,
+                bundle_id,
+                projection_sender,
+                projection_receiver: Mutex::new(projection_receiver),
+                projection_version: AtomicU64::new(0),
+                projection_wake: AtomicBool::new(false),
             })),
             receiver,
         )
@@ -329,6 +351,7 @@ impl Updates {
             state.feed = parsed;
             state.last_success = checked;
             state.cached = true;
+            state.from_service = self.0.service_mode;
         }
         self.changed();
         self.compare();
@@ -370,7 +393,123 @@ impl Updates {
         }
     }
 
+    /// Explicit native build/preferences for the authenticated frontend owner.
+    /// This value is data; it cannot grant request authority by itself.
+    pub(crate) fn native_configuration(
+        &self,
+    ) -> zerus_client_core::maintenance::UpdateConfiguration {
+        let state = lock(&self.0.state);
+        zerus_client_core::maintenance::UpdateConfiguration {
+            gui: zerus_client_core::maintenance::GuiIdentity {
+                bundle_id: self.0.bundle_id.clone(),
+                executable: self.0.executable.to_string_lossy().into_owned(),
+                app_version: self.0.build.app_version.clone(),
+                dev_number: self.0.build.dev_number,
+                source_commit: self.0.build.source_commit.clone(),
+            },
+            channel: state.channel,
+            automatic: state.automatic,
+        }
+    }
+    /// Called off GUI by the validated service stream. No locks, I/O or wait:
+    /// one bounded pending projection and one coalesced worker wake at most.
+    fn receive_projection(&self, frame: Option<&serde_json::Value>) {
+        if !self.0.service_mode {
+            return;
+        }
+        if frame.is_some_and(|f| !matches!(f["t"].as_str(), Some("hello" | "status"))) {
+            return;
+        }
+        let projection = frame.and_then(|frame| {
+            let epoch = frame["epoch"].as_str()?;
+            let value: zerus_client_core::maintenance::Projection =
+                serde_json::from_value(frame["value"]["maintenance_runtime"].clone()).ok()?;
+            value.valid_for(epoch).then_some(value)
+        });
+        let version = self
+            .0
+            .projection_version
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_add(1))
+            .map_or(u64::MAX, |n| n + 1);
+        // A full slot is not replaced or grown. The newer version invalidates
+        // the queued older value; a subsequent service status can recover it.
+        let _ = self.0.projection_sender.try_send((version, projection));
+        if !self.0.projection_wake.swap(true, Ordering::AcqRel) {
+            self.send(Request::Projection);
+        }
+    }
+    fn consume_projection(&self) {
+        self.0.projection_wake.store(false, Ordering::Release);
+        let queued = lock(&self.0.projection_receiver).try_recv().ok();
+        let latest = self.0.projection_version.load(Ordering::Acquire);
+        let projection = queued
+            .filter(|(version, _)| *version == latest && latest != u64::MAX)
+            .and_then(|(_, view)| view);
+        let projection = projection.as_ref().filter(|view| view.ready);
+        (self.0.hooks.maintenance_changed)(projection);
+        let config = self.native_configuration();
+        let current = projection.filter(|view| {
+            view.configuration.as_ref().and_then(|c| c.update.as_ref()) == Some(&config)
+        });
+        let Some(view) = current else {
+            self.service_unavailable();
+            return;
+        };
+        let update = &view.updates;
+        let mut state = lock(&self.0.state);
+        if update.channel != Some(state.channel) || update.automatic != state.automatic {
+            drop(state);
+            self.service_unavailable();
+            return;
+        }
+        if state.from_service || update.last_success >= state.last_success {
+            state.feed = update.feed.clone();
+            state.installation = update.installation.clone();
+            state.last_success = update.last_success;
+            state.from_service = true;
+            state.available = update.ready && update.current_origin && update.available;
+            state.cached = update.cached || !update.current_origin && update.feed.valid;
+            state.comparison = update.feed.valid.then(|| {
+                comparison_message(
+                    &update.installation,
+                    &update.feed,
+                    &self.0.build.app_version,
+                    update.comparison,
+                    update.compared,
+                    running_platform(),
+                )
+            });
+        }
+        state.busy = update.busy;
+        state.error = update
+            .error
+            .as_ref()
+            .map(|_| zerus_client_core::text!("Check failed. Try again later."));
+        state.fresh_for_notification = false;
+        state.automatic_in_flight = false;
+        drop(state);
+        self.changed();
+    }
+    fn service_unavailable(&self) {
+        let mut state = lock(&self.0.state);
+        if state.from_service {
+            state.available = false;
+            state.cached = state.feed.valid;
+        }
+        state.busy = false;
+        state.fresh_for_notification = false;
+        state.automatic_in_flight = false;
+        state.error = Some(zerus_client_core::text!(
+            "Automatic update checks are unavailable from the desktop service."
+        ));
+        drop(state);
+        self.changed();
+    }
+
     fn check_automatic(&self) {
+        if self.0.service_mode {
+            return;
+        }
         let state = lock(&self.0.state).clone();
         if !state.automatic || state.installation.kind == "checking" {
             return;
@@ -438,6 +577,7 @@ impl Updates {
                     state.cached = false;
                     state.available = false;
                     state.feed = feed;
+                    state.from_service = false;
                     state.last_success = now;
                     state.error = None;
                     state.comparison = None;
@@ -558,7 +698,7 @@ impl Updates {
             update_token(current.channel, &current.feed, newer && fresh && !quiet)
         };
         self.changed();
-        if !token.is_empty() && self.claim_notification(&token) {
+        if !self.0.service_mode && !token.is_empty() && self.claim_notification(&token) {
             let version = lock(&self.0.state).feed.version.clone();
             (self.0.hooks.notify)(Notice {
                 token,
@@ -607,6 +747,9 @@ impl Updates {
         self.restore();
         self.compare();
         self.check_automatic();
+        if self.0.service_mode {
+            self.service_unavailable();
+        }
     }
 
     fn set_automatic(&self, enabled: bool) {
@@ -625,6 +768,9 @@ impl Updates {
         if enabled {
             self.check_automatic();
         }
+        if self.0.service_mode {
+            self.service_unavailable();
+        }
     }
 
     fn invalidate(&self) {
@@ -640,14 +786,23 @@ impl Updates {
         self.detect();
         self.refresh_restart();
         self.check_automatic();
+        if self.0.service_mode {
+            self.service_unavailable();
+        }
         loop {
-            match receiver.recv_timeout(TIMER) {
+            let request = if self.0.service_mode {
+                receiver.recv().map_err(|_| RecvTimeoutError::Disconnected)
+            } else {
+                receiver.recv_timeout(TIMER)
+            };
+            match request {
                 Ok(Request::Check(automatic)) => {
                     self.refresh_restart();
                     self.check(automatic);
                 }
                 Ok(Request::Channel(channel)) => self.set_channel(channel),
                 Ok(Request::Automatic(enabled)) => self.set_automatic(enabled),
+                Ok(Request::Projection) => self.consume_projection(),
                 Err(RecvTimeoutError::Timeout) => {
                     self.refresh_restart();
                     self.check_automatic();
@@ -724,9 +879,22 @@ pub fn start(app: &AppHandle) -> Updates {
         changed,
         notify,
         now: Arc::new(unix_now),
+        maintenance_changed: {
+            let app = app.clone();
+            Arc::new(move |view| {
+                crate::recovery::service_projection(&app, view.map(|v| &v.recovery))
+            })
+        },
     };
-    let (service, receiver) =
-        Updates::new(settings, Build::current(), executable, dev_identity, hooks);
+    let (service, receiver) = Updates::new(
+        settings,
+        Build::current(),
+        executable,
+        dev_identity,
+        crate::desktop_service::mode(),
+        app.state::<crate::identity::Identity>().bundle_id.clone(),
+        hooks,
+    );
     if replay {
         if let Some(path) = std::env::var_os("ZERUS_CLIENT_UPDATES_FIXTURE") {
             match read_replay_view(Path::new(&path)) {
@@ -738,6 +906,17 @@ pub fn start(app: &AppHandle) -> Updates {
             }
         }
     } else {
+        if service.0.service_mode {
+            let updates = service.clone();
+            if let Err(error) = app
+                .state::<crate::commands::AppState>()
+                .register_service_projection(Arc::new(move |frame| {
+                    updates.receive_projection(frame)
+                }))
+            {
+                eprintln!("zerus-client: maintenance projection: {error}");
+            }
+        }
         spawn(service.clone(), receiver);
     }
     service
@@ -1206,6 +1385,14 @@ mod tests {
             configure: impl FnOnce(&Settings),
             dev_identity: bool,
         ) -> Self {
+            Self::with_modes(fetch, configure, dev_identity, false)
+        }
+        fn with_modes(
+            fetch: Fetch,
+            configure: impl FnOnce(&Settings),
+            dev_identity: bool,
+            service_mode: bool,
+        ) -> Self {
             let root = std::env::temp_dir().join(format!(
                 "zerus-native-updates-{}-{}",
                 std::process::id(),
@@ -1232,6 +1419,7 @@ mod tests {
                     Arc::new(move |notice| notices.lock().unwrap().push(notice))
                 },
                 now: Arc::new(|| 1000),
+                maintenance_changed: Arc::new(|_| {}),
             };
             let build = Build {
                 app_version: "0.46.0".into(),
@@ -1244,6 +1432,13 @@ mod tests {
                 build,
                 root.join("hgs-tray"),
                 dev_identity,
+                service_mode,
+                if dev_identity {
+                    "dev.zerus.next"
+                } else {
+                    "com.hgdev.hgs-tray"
+                }
+                .into(),
                 hooks,
             );
             Self {
@@ -1529,5 +1724,124 @@ mod tests {
         fn feed_valid_for_test(&self) -> bool {
             self.release_enabled
         }
+    }
+    fn service_fixture(fetch: Fetch) -> Fixture {
+        Fixture::with_modes(
+            fetch,
+            |settings| {
+                settings.set("updates/automatic", true.into()).unwrap();
+            },
+            false,
+            true,
+        )
+    }
+    fn projected_frame(fixture: &Fixture) -> serde_json::Value {
+        use zerus_client_core::maintenance as dto;
+        let feed = zerus_client_core::updates::parse_feed(&stable(), Channel::Stable);
+        serde_json::json!({"t":"status","epoch":"fixture-epoch","value":{"maintenance_runtime":dto::Projection {
+            abi:dto::ABI.into(),epoch:"fixture-epoch".into(),revision:Some(1),ready:true,error:None,
+            configuration:Some(dto::Configuration {update:Some(fixture.service.native_configuration()),recovery:None}),
+            updates:dto::UpdateProjection {ready:true,current_origin:true,available:true,channel:Some(Channel::Stable),automatic:true,
+                last_success:900,feed,installation:Installation {kind:"source".into(),..Installation::default()},..dto::UpdateProjection::default()},
+            recovery:dto::RecoveryProjection::default(),
+        }}})
+    }
+    #[test]
+    fn service_mode_never_auto_fetches_on_start_channel_or_enable() {
+        let mut fixture =
+            service_fixture(Arc::new(|_| panic!("automatic UI fetch in service mode")));
+        fixture.start();
+        fixture.service.send(Request::Channel(Channel::Nightly));
+        fixture.service.send(Request::Automatic(true));
+        until(&fixture, |view| {
+            view.channel == Channel::Nightly && view.error.is_some()
+        });
+        fixture.service.check_automatic();
+        assert!(fixture.notices.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn service_mode_manual_check_stays_local_and_never_posts_native_notice() {
+        let mut fixture = service_fixture(Arc::new(|_| Ok(stable())));
+        fixture.start();
+        fixture.service.send(Request::Check(false));
+        until(&fixture, |view| !view.busy && view.available);
+        assert!(fixture.notices.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn service_projection_updates_existing_model_with_native_gui_build() {
+        let fixture = service_fixture(Arc::new(|_| panic!("no fetch from watch")));
+        let frame = projected_frame(&fixture);
+        fixture.service.receive_projection(Some(&frame));
+        fixture.service.consume_projection();
+        assert!(fixture.service.view().available);
+        assert_eq!(
+            fixture.service.view().installed,
+            fixture.service.0.build.installed
+        );
+        assert!(fixture.notices.lock().unwrap().is_empty());
+        fixture.service.receive_projection(None);
+        fixture.service.consume_projection();
+        let view = fixture.service.view();
+        assert!(!view.available);
+        assert!(view.cached);
+        assert!(view.error.is_some());
+    }
+    #[test]
+    fn service_projection_rejects_wrong_gui_epoch_and_missing_abi_without_polling() {
+        let fixture = service_fixture(Arc::new(|_| panic!("no fallback fetch")));
+        let frame = projected_frame(&fixture);
+        for field in ["gui", "epoch", "abi"] {
+            let mut value = frame.clone();
+            match field {
+                "gui" => {
+                    value["value"]["maintenance_runtime"]["configuration"]["update"]["gui"]
+                        ["app_version"] = "999.0.0".into()
+                }
+                "epoch" => value["value"]["maintenance_runtime"]["epoch"] = "other".into(),
+                _ => {
+                    value["value"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("maintenance_runtime");
+                }
+            }
+            fixture.service.receive_projection(Some(&value));
+            fixture.service.consume_projection();
+            assert!(!fixture.service.view().available);
+            assert!(fixture.service.view().error.is_some());
+        }
+    }
+    #[test]
+    fn bounded_projection_slot_cannot_lose_disconnect_to_an_older_positive() {
+        let fixture = service_fixture(Arc::new(|_| panic!("no fetch")));
+        let frame = projected_frame(&fixture);
+        fixture.service.receive_projection(Some(&frame));
+        fixture.service.receive_projection(None);
+        assert_eq!(
+            fixture.receiver.as_ref().unwrap().try_iter().count(),
+            1,
+            "one wake, never an unbounded watch queue"
+        );
+        fixture.service.consume_projection();
+        assert!(!fixture.service.view().available);
+        fixture.service.receive_projection(Some(&frame));
+        fixture.service.consume_projection();
+        assert!(
+            fixture.service.view().available,
+            "next fresh status recovers"
+        );
+    }
+    #[test]
+    fn older_service_cache_does_not_replace_a_newer_manual_check() {
+        let fixture = service_fixture(Arc::new(|_| Ok(stable())));
+        fixture.service.detect();
+        fixture.service.check(false);
+        let manual = fixture.service.view();
+        let mut frame = projected_frame(&fixture);
+        frame["value"]["maintenance_runtime"]["updates"]["feed"]["version"] = "0.1.0".into();
+        fixture.service.receive_projection(Some(&frame));
+        fixture.service.consume_projection();
+        assert_eq!(fixture.service.view().version, manual.version);
+        assert_eq!(fixture.service.view().last_checked, manual.last_checked);
     }
 }
