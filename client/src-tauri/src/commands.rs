@@ -923,6 +923,22 @@ pub fn perf_away(
     Ok(serde_json::json!({ "how": how, "minimized": minimized, "sample": sample }))
 }
 
+#[tauri::command(async, rename_all = "snake_case")]
+pub fn perf_resize(app: tauri::AppHandle, width: u32, height: u32) -> Result<(), String> {
+    if !perf_mode() {
+        return Err("not a measurement run (ZERUS_CLIENT_PERF is not set)".into());
+    }
+    let window = crate::main_window(&app).ok_or("The main window is unavailable")?;
+    window
+        .set_size(tauri::LogicalSize::new(
+            width.clamp(640, 3840),
+            height.clamp(480, 2160),
+        ))
+        .map_err(|error| error.to_string())?;
+    crate::window_visibility::sync_webview(&window);
+    Ok(())
+}
+
 /// RSS and CPU of the client's process tree (the app and its webview
 /// processes). Sampling blocks for its 500 ms window, so it runs off the main thread.
 /// `window_ms` sets the window between the two samples (default 500 ms; an idle
