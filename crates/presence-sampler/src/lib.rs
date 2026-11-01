@@ -17,6 +17,8 @@ use std::time::Duration;
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(any(windows, test))]
+mod windows;
 
 /// The distinction matters when interpreting a small idle duration: a Wayland
 /// lower bound is not proof that input happened recently.
@@ -26,6 +28,7 @@ pub enum IdleSource {
     Mutter,
     KdeScreenSaver,
     MacEventSource,
+    WindowsLastInput,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +53,8 @@ pub struct Sample {
 pub struct Sampler {
     #[cfg(target_os = "linux")]
     linux: linux::LinuxSampler,
+    #[cfg(windows)]
+    windows: windows::WindowsSampler,
 }
 
 impl Sampler {
@@ -62,14 +67,16 @@ impl Sampler {
         return self.linux.sample();
         #[cfg(target_os = "macos")]
         return macos::sample();
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        #[cfg(windows)]
+        return self.windows.sample();
+        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         Sample::default()
     }
 }
 
 // Also bounds invalid OS values before they can reach the existing hgs presence
 // input contract. This is a validity check, not an away threshold.
-#[cfg(any(target_os = "linux", target_os = "macos", test))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows, test))]
 const MAX_IDLE: Duration = Duration::from_secs(10 * 365 * 24 * 60 * 60);
 
 #[cfg(any(target_os = "macos", test))]

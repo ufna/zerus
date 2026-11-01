@@ -14,6 +14,7 @@ on_exit() {
 }
 trap on_exit EXIT
 python scripts/ci/windows-desktop-registration-tests.py
+cargo test --locked --manifest-path crates/presence-sampler/Cargo.toml
 for selected in windows_shell::tests instance::tests platform::windows::startup::tests platform::windows::drawing::tests cli::tests lifecycle::tests window_layer::tests; do
     cargo test --locked --manifest-path client/src-tauri/Cargo.toml --lib "$selected"
 done
