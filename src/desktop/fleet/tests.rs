@@ -658,3 +658,83 @@ fn failed_alias_removal_is_visible_and_keeps_counts_incomplete() {
     );
     stop(&mut runtime);
 }
+
+#[test]
+fn shared_detail_fence_uses_one_original_handle_and_exact_projection_generation() {
+    use crate::desktop::{details, fanout::Queue};
+    use zerus_watch_protocol::{Control, Ping};
+    let epoch = uuid::Uuid::new_v4().to_string();
+    let mut greeting = hello();
+    greeting["topics"] = json!(["catalog", "catalog.meta", "activity"]);
+    let fake = Fake::new(
+        json!({"":{"runs":[[{"lines":[greeting,snapshot(0,true,vec![])]},{"serve":true}]]}}),
+    );
+    let mut runtime = fake.start(&epoch);
+    let mut store = fake.store(&epoch);
+    let mut broker = feed::Broker::new(&epoch);
+    let producer = broker.claim_internal().unwrap();
+    let mut details = details::Adapter::new(&epoch);
+    let queue = Arc::new(Queue::default());
+    let lease = details.open(&queue).unwrap()["lease"].clone();
+    let mut seq = 0;
+    let generation = loop {
+        let event = next(&mut runtime);
+        broker.apply(&mut store, &producer, &event.packet).unwrap();
+        details.observe(&event, &mut |c, g, v| runtime.controls(c, g, v), &mut seq);
+        if let feed::Packet::Watch {
+            generation: g,
+            frame,
+            ..
+        } = &event.packet
+        {
+            if matches!(&frame.body,Body::Snapshot(s) if s.topic==topic::CATALOG && s.last) {
+                break *g;
+            }
+        }
+    };
+    assert!(generation > 0);
+    assert!(!runtime.controls("", generation + 99, &[Control::Ping(Ping::default())]));
+    let reply=details.request(&store,&json!({"op":"detail_follow","request_id":uuid::Uuid::new_v4().to_string(),"epoch":epoch,"lease":lease,
+        "id":uuid::Uuid::new_v4().to_string(),"computer":"","subscription":{"topic":"activity","session":{"name":"claude/example/a","run_id":"r","conversation_id":"c"},"tail":100}}),
+        &mut|c,g,v|runtime.controls(c,g,v),&mut seq);
+    assert_eq!(reply["accepted"], true);
+    let until = Instant::now() + Duration::from_secs(5);
+    let mut delivered = false;
+    while !delivered {
+        assert!(Instant::now() < until);
+        let event = next(&mut runtime);
+        broker.apply(&mut store, &producer, &event.packet).unwrap();
+        details.observe(&event, &mut |c, g, v| runtime.controls(c, g, v), &mut seq);
+        while let Some(bytes) = queue.take() {
+            let frame: Value = serde_json::from_slice(&bytes).unwrap();
+            if frame["t"] == "detail" {
+                assert_eq!(frame["value"]["generation"], generation);
+                assert_eq!(frame["value"]["detail_seq"], 1);
+                delivered = true;
+            }
+        }
+    }
+    assert_eq!(
+        fake.log()
+            .iter()
+            .filter(|e| e["args"] == json!(["watch", "--json"]))
+            .count(),
+        1
+    );
+    let controls: Vec<_> = fake
+        .log()
+        .into_iter()
+        .filter_map(|e| e.get("stdin").cloned())
+        .collect();
+    assert!(matches!(
+        controls
+            .iter()
+            .map(|v| v["op"].as_str().unwrap())
+            .collect::<Vec<_>>()
+            .as_slice(),
+        ["unsubscribe", "ping", "subscribe"]
+    ));
+    details.stop();
+    stop(&mut runtime);
+    assert_eq!(runtime.status()["control_batches"], 0);
+}

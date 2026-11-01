@@ -383,6 +383,7 @@ pub(crate) fn read_line(
 
 enum Input {
     SourceResnapshot,
+    SourceControls(crate::source::ControlBatch),
     Reconnect,
     Line {
         generation: u64,
@@ -559,6 +560,9 @@ pub struct StreamHandle {
 }
 
 impl StreamHandle {
+    pub(crate) fn source_controls(&self, batch: crate::source::ControlBatch) -> bool {
+        self.raw_source && !self.stopped() && self.tx.try_send(Input::SourceControls(batch)).is_ok()
+    }
     pub(crate) fn wake_source_resnapshot(&self) -> bool {
         !self.stopped()
             && match self.tx.try_send(Input::SourceResnapshot) {
@@ -1648,6 +1652,25 @@ impl Supervisor {
                 Ok(Input::UnsubscribeTasks { key }) => {
                     self.state.tasks_mut().unfollow(&key);
                     self.unsubscribe_tasks(&key);
+                }
+                Ok(Input::SourceControls(batch)) => {
+                    if self
+                        .source
+                        .as_ref()
+                        .is_some_and(|source| source.resnapshot.accepting(batch.generation))
+                        && self.greeted
+                        && batch.generation == self.generation
+                    {
+                        if let Some(stdin) = self.stdin.as_mut() {
+                            if stdin
+                                .write_all(&batch.bytes)
+                                .and_then(|()| stdin.flush())
+                                .is_err()
+                            {
+                                return Outcome::Ended;
+                            }
+                        }
+                    }
                 }
                 Ok(Input::Control(control)) => self.write(&control),
                 // A queued wake from an older attempt must never restart a

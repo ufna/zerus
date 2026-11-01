@@ -6,6 +6,7 @@ mod counts;
 mod custody;
 #[allow(dead_code)] // Activation and writer handoff belong to the service lifecycle.
 mod delivery;
+mod details;
 mod fanout;
 mod feed;
 mod fleet;
@@ -418,8 +419,9 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
         while platform::shutdown_signal() == 0 {
             let mut full_batch = false;
             if let Some(runtime) = &mut background {
-                let (changes, full) = runtime.poll(&mut store, &mut feed);
-                full_batch = full;
+                let previous = seq;
+                let (changes, full) = runtime.poll(&mut store, &mut feed, &mut seq);
+                full_batch = full || previous != seq;
                 for mut change in changes {
                     seq += 1;
                     change["attention_counts"] = attention_counts(&store, &epoch, seq, &feed);
@@ -464,6 +466,11 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                     } else if hello.op == "watch" && hello.request.is_none() {
                         if fanout.subscribe(queue.clone()) {
                             streaming = true;
+                            if let Some(runtime) = &mut background {
+                                if let Some(details) = runtime.details_open(&queue) {
+                                    value["details"] = details;
+                                }
+                            }
                             frame(&epoch, seq, "hello", value)
                         } else {
                             frame(&epoch, seq, "error", json!({"code":"subscriber_limit"}))
@@ -472,6 +479,22 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                         frame(&epoch, seq, "status", value)
                     } else if hello.op == "request" {
                         let result = if hello.request.as_ref().is_some_and(|v| {
+                            matches!(
+                                v["op"].as_str(),
+                                Some("detail_follow" | "detail_unfollow" | "detail_source")
+                            )
+                        }) {
+                            match &mut background {
+                                Some(runtime) => runtime.details_request(
+                                    &store,
+                                    hello.request.as_ref().unwrap(),
+                                    &mut seq,
+                                ),
+                                None => {
+                                    json!({"request_id":hello.request.as_ref().unwrap()["request_id"],"accepted":false,"code":"details_unavailable"})
+                                }
+                            }
+                        } else if hello.request.as_ref().is_some_and(|v| {
                             matches!(v["op"].as_str(), Some("catalog_page" | "catalog_close"))
                         }) {
                             reads.request(&store, &feed, &epoch, hello.request.as_ref().unwrap())

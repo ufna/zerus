@@ -52,13 +52,13 @@ pub(super) fn read(job: Job, list: impl Fn(&str) -> Result<Value, String>) -> Do
 
 /// Worker threads that read lists with this computer's configuration.
 pub(super) struct Pool {
-    jobs: mpsc::Sender<Job>,
+    jobs: mpsc::SyncSender<Job>,
 }
 
 impl Pool {
     /// Starts `workers` threads; `finished` receives every read.
     pub(super) fn spawn(workers: usize, finished: impl Fn(Done) + Clone + Send + 'static) -> Self {
-        let (jobs, queue) = mpsc::channel::<Job>();
+        let (jobs, queue) = mpsc::sync_channel::<Job>(zerus_watch_protocol::TASKS_SUBSCRIPTIONS);
         let queue = Arc::new(Mutex::new(queue));
         for index in 0..workers {
             let queue = Arc::clone(&queue);
@@ -82,8 +82,12 @@ impl Pool {
         Self { jobs }
     }
 
-    pub(super) fn run(&self, job: Job) {
-        let _ = self.jobs.send(job);
+    /// Reject without blocking the watch loop or losing the original token.
+    pub(super) fn run(&self, job: Job) -> Option<Job> {
+        match self.jobs.try_send(job) {
+            Ok(()) => None,
+            Err(mpsc::TrySendError::Full(job) | mpsc::TrySendError::Disconnected(job)) => Some(job),
+        }
     }
 }
 
@@ -260,6 +264,30 @@ mod tests {
 
     fn result(job: &Job, value: Value) -> Done {
         Done { token: job.token, key: job.key.clone(), value: Some(Ok(value)) }
+    }
+
+    #[test]
+    fn unsubscribed_callback_cannot_cross_the_detail_fence() {
+        let mut state = Tasks::new();
+        let old = state.subscribe("project", Instant::now());
+        state.unsubscribe("project");
+        let current = state.subscribe("project", Instant::now());
+        assert!(old.token < current.token);
+        state.done(result(&old, listing("project", &["old"])), |_| Vec::new());
+        assert!(!state.pending());
+        state.done(result(&current, listing("project", &["current"])), |_| Vec::new());
+        assert!(state.pending());
+    }
+
+    #[test]
+    fn a_full_read_queue_returns_the_original_job_without_waiting() {
+        let (jobs, _receiver) = mpsc::sync_channel(1);
+        let pool = Pool { jobs };
+        let mut state = Tasks::new();
+        assert!(pool.run(state.subscribe("project", Instant::now())).is_none());
+        let next = state.subscribe("project", Instant::now());
+        let token = next.token;
+        assert_eq!(pool.run(next).unwrap().token, token);
     }
 
     #[test]

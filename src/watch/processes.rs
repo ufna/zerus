@@ -52,13 +52,13 @@ pub(super) fn read(job: Job, inspect: impl Fn(&str) -> Result<Value, String>) ->
 
 /// Worker threads that run reads.
 pub(super) struct Pool {
-    jobs: mpsc::Sender<Job>,
+    jobs: mpsc::SyncSender<Job>,
 }
 
 impl Pool {
     /// Starts `workers` threads; `finished` receives every read.
     pub(super) fn spawn(workers: usize, finished: impl Fn(Done) + Clone + Send + 'static) -> Self {
-        let (jobs, queue) = mpsc::channel::<Job>();
+        let (jobs, queue) = mpsc::sync_channel::<Job>(zerus_watch_protocol::PROCESSES_SUBSCRIPTIONS);
         let queue = Arc::new(Mutex::new(queue));
         for index in 0..workers {
             let queue = Arc::clone(&queue);
@@ -75,8 +75,12 @@ impl Pool {
         Self { jobs }
     }
 
-    pub(super) fn run(&self, job: Job) {
-        let _ = self.jobs.send(job);
+    /// Reject without blocking the watch loop or losing the original token.
+    pub(super) fn run(&self, job: Job) -> Option<Job> {
+        match self.jobs.try_send(job) {
+            Ok(()) => None,
+            Err(mpsc::TrySendError::Full(job) | mpsc::TrySendError::Disconnected(job)) => Some(job),
+        }
     }
 }
 
@@ -307,6 +311,31 @@ mod tests {
     fn inventory(run: &str, count: u64, sampled: f64) -> Value {
         json!({"run_id":run,"processes":{"items":[],"active_count":count,"sampled_at":sampled},
                "process_work":{"count":count,"command":"","sampled_at":sampled}})
+    }
+
+    #[test]
+    fn unsubscribed_callback_cannot_cross_the_detail_fence() {
+        let mut state = Processes::new();
+        let old = state.subscribe("run:r", "claude/example/a", Some("r".into()), None, Instant::now());
+        state.unsubscribe("run:r");
+        let current = state.subscribe("run:r", "claude/example/a", Some("r".into()), None, Instant::now());
+        assert!(old.token < current.token);
+        state.done(result(&old, inventory("r", 99, 1.0)));
+        assert!(!state.pending());
+        state.done(result(&current, inventory("r", 1, 2.0)));
+        assert!(state.pending());
+    }
+
+    #[test]
+    fn a_full_read_queue_returns_the_original_job_without_waiting() {
+        let (jobs, _receiver) = mpsc::sync_channel(1);
+        let pool = Pool { jobs };
+        let mut state = Processes::new();
+        let old = state.subscribe("run:r", "claude/example/a", Some("r".into()), None, Instant::now());
+        assert!(pool.run(old).is_none());
+        let next = state.subscribe("run:r", "claude/example/a", Some("r".into()), None, Instant::now());
+        let token = next.token;
+        assert_eq!(pool.run(next).unwrap().token, token);
     }
 
     #[test]

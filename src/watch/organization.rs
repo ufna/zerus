@@ -60,12 +60,12 @@ pub(super) fn read(job: Job, snapshot: impl Fn() -> Result<Value, String>) -> Do
 
 /// The worker thread that reads the catalog with this computer's configuration.
 pub(super) struct Pool {
-    jobs: mpsc::Sender<Job>,
+    jobs: mpsc::SyncSender<Job>,
 }
 
 impl Pool {
     pub(super) fn spawn(finished: impl Fn(Done) + Send + 'static) -> Self {
-        let (jobs, queue) = mpsc::channel::<Job>();
+        let (jobs, queue) = mpsc::sync_channel::<Job>(1);
         std::thread::Builder::new()
             .name("hgs-watch-organization".into())
             .spawn(move || {
@@ -83,8 +83,12 @@ impl Pool {
         Self { jobs }
     }
 
-    pub(super) fn run(&self, job: Job) {
-        let _ = self.jobs.send(job);
+    /// Reject without blocking the watch loop or losing the original token.
+    pub(super) fn run(&self, job: Job) -> Option<Job> {
+        match self.jobs.try_send(job) {
+            Ok(()) => None,
+            Err(mpsc::TrySendError::Full(job) | mpsc::TrySendError::Disconnected(job)) => Some(job),
+        }
     }
 }
 
@@ -344,6 +348,30 @@ mod tests {
     fn without_written(mut value: Value) -> Value {
         value.as_object_mut().unwrap().remove("written");
         value
+    }
+
+    #[test]
+    fn unsubscribed_callback_cannot_cross_the_detail_fence() {
+        let mut state = Organization::new();
+        let old = state.subscribe(Vec::new(), 0, Instant::now());
+        state.unsubscribe();
+        let current = state.subscribe(Vec::new(), 0, Instant::now());
+        assert!(old.token < current.token);
+        state.done(Done { token: old.token, value: Some(Ok(snapshot(1, false))) });
+        assert!(state.plan(524288).is_none());
+        state.done(Done { token: current.token, value: Some(Ok(snapshot(1, false))) });
+        assert!(state.plan(524288).is_some());
+    }
+
+    #[test]
+    fn a_full_read_queue_returns_the_original_job_without_waiting() {
+        let (jobs, _receiver) = mpsc::sync_channel(1);
+        let pool = Pool { jobs };
+        let mut state = Organization::new();
+        assert!(pool.run(state.subscribe(Vec::new(), 0, Instant::now())).is_none());
+        let next = state.subscribe(Vec::new(), 0, Instant::now());
+        let token = next.token;
+        assert_eq!(pool.run(next).unwrap().token, token);
     }
 
     #[test]
