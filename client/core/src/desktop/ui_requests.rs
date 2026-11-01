@@ -58,6 +58,7 @@ pub struct Evidence {
     pub fingerprint: String,
     pub child_pid: u32,
     pub child_birth: String,
+    pub serial: u64,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -81,29 +82,39 @@ struct Slot {
     envelope: Envelope,
     until: Instant,
     child: Mutex<Option<(u32, String)>>,
+    serial: u64,
 }
 
 #[derive(Default)]
-pub(super) struct Cache(Mutex<BTreeMap<String, Weak<Slot>>>);
+struct State {
+    slots: BTreeMap<String, Weak<Slot>>,
+    serial: u64,
+}
+#[derive(Default)]
+pub(super) struct Cache(Mutex<State>);
 impl Cache {
     pub fn prepare(&self, envelope: Envelope) -> io::Result<Registration> {
         if !envelope.valid() {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        let mut slots = self.0.lock().map_err(|_| io::ErrorKind::Other)?;
+        let mut state = self.0.lock().map_err(|_| io::ErrorKind::Other)?;
         // Expiration revokes evidence but does not recycle a live resource slot.
         // The runner must retain Registration::resources with its original
         // child and all pipes, including incomplete exchanges.
-        slots.retain(|_, slot| slot.strong_count() != 0);
-        if slots.len() == LIMIT || slots.contains_key(&envelope.attempt) {
+        state.slots.retain(|_, slot| slot.strong_count() != 0);
+        if state.slots.len() == LIMIT || state.slots.contains_key(&envelope.attempt) {
             return Err(io::ErrorKind::WouldBlock.into());
         }
+        state.serial = state.serial.checked_add(1).ok_or(io::ErrorKind::Other)?;
         let slot = Arc::new(Slot {
             envelope,
             until: Instant::now() + LIFETIME,
             child: Mutex::new(None),
+            serial: state.serial,
         });
-        slots.insert(slot.envelope.attempt.clone(), Arc::downgrade(&slot));
+        state
+            .slots
+            .insert(slot.envelope.attempt.clone(), Arc::downgrade(&slot));
         Ok(Registration(slot))
     }
 
@@ -111,7 +122,7 @@ impl Cache {
         self.evidence_at(attempt, Instant::now())
     }
     fn evidence_at(&self, attempt: &str, now: Instant) -> Option<Evidence> {
-        let slot = self.0.try_lock().ok()?.get(attempt)?.upgrade()?;
+        let slot = self.0.try_lock().ok()?.slots.get(attempt)?.upgrade()?;
         if now >= slot.until {
             return None;
         }
@@ -122,6 +133,7 @@ impl Cache {
             fingerprint: slot.envelope.request.fingerprint(),
             child_pid,
             child_birth,
+            serial: slot.serial,
         })
     }
 }
@@ -339,6 +351,18 @@ mod tests {
             let mut bytes = Vec::new();
             std::io::stdin().take(4096).read_to_end(&mut bytes).unwrap();
         }
+    }
+
+    #[test]
+    fn native_serial_survives_slot_release_and_never_wraps() {
+        let cache = Cache::default();
+        let first = cache.prepare(envelope(1)).unwrap();
+        assert_eq!(first.0.serial, 1);
+        drop(first);
+        let next = cache.prepare(envelope(2)).unwrap();
+        assert_eq!(next.0.serial, 2);
+        cache.0.lock().unwrap().serial = u64::MAX;
+        assert!(cache.prepare(envelope(3)).is_err());
     }
 
     #[test]
