@@ -106,7 +106,7 @@ jobs:
           path: artifacts/macos-signed
       - name: Arch release dependencies
         run: |
-          pacman -Syu --noconfirm --needed base-devel git rust cmake ninja qt6-base qt6-tools qt6-webengine qt6-multimedia qt6-svg kstatusnotifieritem kwindowsystem kidletime tmux openssh python namcap desktop-file-utils
+          pacman -Syu --noconfirm --needed base-devel git rust nodejs npm webkit2gtk-4.1 gtk3 alsa-lib gstreamer gst-plugins-base-libs libappindicator librsvg xdotool dbus gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav tmux openssh python namcap desktop-file-utils
           useradd -m user
           chown -R user:user "$GITHUB_WORKSPACE"
       - name: Assemble exact verified candidate
