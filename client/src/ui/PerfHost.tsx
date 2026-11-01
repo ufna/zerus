@@ -21,7 +21,7 @@ import { snapshotOf, terminateCopy, type ActionRow } from "./sessions/actions-ui
 import type { Action, CreationCard, EditOutcome, Outcome } from "../types";
 import { inTauri, metrics, onCreations, pumpStats } from "../bridge";
 import { restoreSettings, setSetting } from "../store/settings";
-import { motionVisibility, motionPaused } from "../store/visibility";
+import { motionVisibility, motionPaused, motionUnfocused } from "../store/visibility";
 import { setPage, type Page } from "../store/ui";
 import { accountsPage } from "../store/accounts";
 import { machinesPage } from "../store/machines";
@@ -180,7 +180,7 @@ async function autoRun(config: PerfConfig) {
   }), 1);
   /** The page while the window was last away (perf_away): its animations and what the pump did until it returned. */
   type Pump = typeof pumpStats;
-  type MotionSample = { state: "paused" | "running"; focused: boolean; animations: string };
+  type MotionSample = { state: "paused" | "running"; focused: boolean; linux_unfocused: boolean; animations: string };
   let away: { visibility: string; animations?: string; hidden_ms?: number; pump?: Pump; motion?: MotionSample[] } = { visibility: document.visibilityState };
   let atHide: { at: number; pump: Pump } | undefined;
   const onVisibility = () => {
@@ -197,9 +197,9 @@ async function autoRun(config: PerfConfig) {
   };
   document.addEventListener("visibilitychange", onVisibility);
   const onMotion = () => {
-    const sample: MotionSample = { state: motionPaused() ? "paused" : "running", focused: document.hasFocus(), animations: animationStates() };
+    const sample: MotionSample = { state: motionPaused() ? "paused" : "running", focused: document.hasFocus(), linux_unfocused: motionUnfocused(), animations: animationStates() };
     away.motion = [...(away.motion ?? []).slice(-63), sample];
-    log(`motion ${sample.state} after ${elapsed()}; focus ${sample.focused}; animations ${sample.animations}`);
+    log(`motion ${sample.state} after ${elapsed()}; document focus ${sample.focused}; Linux toplevel unfocused ${sample.linux_unfocused}; animations ${sample.animations}`);
   };
   const stopMotion = motionVisibility.onChange(onMotion);
   const cutoff = setTimeout(() => { log(`run timeout after ${elapsed()}, saving ${finished.length} scenarios`); void failed("run timeout (8 min)"); }, RUN_TIMEOUT_MS);

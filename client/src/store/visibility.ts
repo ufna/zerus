@@ -1,9 +1,11 @@
 import { createSignal } from "solid-js";
+import { isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 // The webview derives the page's visibility from its window. The batch pump
 // (bridge.ts) and Working clocks (store/ui.ts) use only that document state;
-// motion also pauses on focus loss because a Wayland window does not report
-// minimisation and the GL path otherwise keeps painting it.
+// Linux endless motion also pauses on toplevel focus loss because a Wayland
+// window can keep a visible document while minimised and the GL path paints it.
 
 export interface PageVisibility {
   hidden(): boolean;
@@ -39,24 +41,60 @@ export function anyHidden(...sources: PageVisibility[]): PageVisibility {
   };
 }
 
-const windowFocus: PageVisibility = {
-  hidden: () => typeof document !== "undefined" && typeof document.hasFocus === "function" && !document.hasFocus(),
-  onChange(listener) {
-    if (typeof window === "undefined" || typeof window.addEventListener !== "function" || typeof window.removeEventListener !== "function") return () => {};
-    window.addEventListener("focus", listener);
-    window.addEventListener("blur", listener);
-    return () => {
-      window.removeEventListener("focus", listener);
-      window.removeEventListener("blur", listener);
-    };
-  },
-};
+export interface NativeFocus {
+  isFocused(): Promise<boolean>;
+  onFocusChanged(listener: (event: { payload: boolean }) => void): Promise<() => void>;
+}
 
-export const motionVisibility = anyHidden(documentVisibility, windowFocus);
+/** Toplevel focus remains true while a native child, such as DeepSeek's GTK overlay, has focus. */
+export function nativeFocusVisibility(native: NativeFocus): PageVisibility {
+  let focused = true, epoch = 0, revision = 0, stop: (() => void) | undefined;
+  const listeners = new Set<() => void>();
+  const update = (value: boolean) => {
+    revision++;
+    if (focused === value) return;
+    focused = value;
+    for (const listener of [...listeners]) listener();
+  };
+  return {
+    hidden: () => !focused,
+    onChange(listener) {
+      listeners.add(listener);
+      if (listeners.size === 1) {
+        const generation = ++epoch;
+        void native.onFocusChanged(({ payload }) => { if (generation === epoch) update(payload); }).then((unlisten) => {
+          if (generation !== epoch) { unlisten(); return; }
+          stop = unlisten;
+          const readRevision = revision;
+          void native.isFocused().then((value) => {
+            if (generation === epoch && revision === readRevision) update(value);
+          }).catch(() => {});
+        }).catch(() => {});
+      }
+      return () => {
+        listeners.delete(listener);
+        if (!listeners.size) { epoch++; stop?.(); stop = undefined; }
+      };
+    },
+  };
+}
+
+export function focusMotionVisibility(document: PageVisibility, focus: PageVisibility, linux: boolean): PageVisibility {
+  return linux ? anyHidden(document, focus) : document;
+}
+
+const linux = typeof navigator !== "undefined" && /Linux/.test(navigator.userAgent);
+const windowFocus = linux && isTauri() ? nativeFocusVisibility(getCurrentWindow())
+  : { hidden: () => false, onChange: () => () => {} };
+const [unfocused, setUnfocused] = createSignal(windowFocus.hidden());
+windowFocus.onChange(() => setUnfocused(windowFocus.hidden()));
+export const motionUnfocused = unfocused;
+
+export const motionVisibility = focusMotionVisibility(documentVisibility, windowFocus, linux);
 const [paused, setPaused] = createSignal(motionVisibility.hidden());
 motionVisibility.onChange(() => setPaused(motionVisibility.hidden()));
 
-/** Reactive: pause motion while the window is hidden, minimised or unfocused. */
+/** Reactive: pause endless motion when hidden, or when the Linux toplevel is unfocused. */
 export const motionPaused = paused;
 
 // Data subscriptions, selection and media still use document visibility only.

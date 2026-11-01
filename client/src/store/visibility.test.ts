@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { anyHidden, type PageVisibility } from "./visibility";
+import { anyHidden, focusMotionVisibility, nativeFocusVisibility, type PageVisibility } from "./visibility";
 
 function source(initial = false) {
   let hidden = initial;
@@ -22,34 +22,52 @@ function source(initial = false) {
 }
 
 describe("anyHidden", () => {
-  it("pauses motion on blur without hiding Activity, media or data subscriptions", async () => {
-    let focused = true;
-    const doc = Object.assign(new EventTarget(), {
-      visibilityState: "visible",
-      hasFocus: () => focused,
+  it("keeps focus pausing Linux-only and separate from document visibility", () => {
+    const doc = source(), focus = source();
+    const linux = focusMotionVisibility(doc.visibility, focus.visibility, true);
+    const other = focusMotionVisibility(doc.visibility, focus.visibility, false);
+    focus.setHidden(true);
+    expect([doc.visibility.hidden(), linux.hidden(), other.hidden()]).toEqual([false, true, false]);
+    doc.setHidden(true);
+    expect([linux.hidden(), other.hidden()]).toEqual([true, true]);
+  });
+
+  it("uses toplevel focus even when the webview loses focus to a native child", async () => {
+    let changed!: (event: { payload: boolean }) => void;
+    const stop = vi.fn();
+    const doc = source();
+    const native = nativeFocusVisibility({
+      isFocused: async () => true,
+      onFocusChanged: async (listener) => { changed = listener; return stop; },
     });
-    const win = new EventTarget();
-    vi.stubGlobal("document", doc);
-    vi.stubGlobal("window", win);
-    vi.resetModules();
-    try {
-      const { pageHidden, motionPaused } = await import("./visibility");
-      expect([pageHidden(), motionPaused()]).toEqual([false, false]);
-      focused = false;
-      win.dispatchEvent(new Event("blur"));
-      expect([pageHidden(), motionPaused()]).toEqual([false, true]);
-      doc.visibilityState = "hidden";
-      doc.dispatchEvent(new Event("visibilitychange"));
-      focused = true;
-      win.dispatchEvent(new Event("focus"));
-      expect([pageHidden(), motionPaused()]).toEqual([true, true]);
-      doc.visibilityState = "visible";
-      doc.dispatchEvent(new Event("visibilitychange"));
-      expect([pageHidden(), motionPaused()]).toEqual([false, false]);
-    } finally {
-      vi.unstubAllGlobals();
-      vi.resetModules();
-    }
+    const combined = focusMotionVisibility(doc.visibility, native, true);
+    let changes = 0;
+    const off = combined.onChange(() => changes++);
+    await Promise.resolve(); await Promise.resolve();
+    // Only native toplevel events feed this source, so document blur does not pause it.
+    expect(combined.hidden()).toBe(false);
+    changed({ payload: false });
+    expect(combined.hidden()).toBe(true);
+    changed({ payload: true });
+    expect(combined.hidden()).toBe(false);
+    expect(changes).toBe(2);
+    off();
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it("ignores a stale initial focus query after a newer native event", async () => {
+    let changed!: (event: { payload: boolean }) => void;
+    let resolve!: (focused: boolean) => void;
+    const focus = nativeFocusVisibility({
+      isFocused: () => new Promise<boolean>((done) => { resolve = done; }),
+      onFocusChanged: async (listener) => { changed = listener; return () => {}; },
+    });
+    const off = focus.onChange(() => {});
+    await Promise.resolve();
+    changed({ payload: false }); resolve(true);
+    await Promise.resolve();
+    expect(focus.hidden()).toBe(true);
+    off();
   });
 
   it("keeps motion paused until both document visibility and focus allow it", () => {
