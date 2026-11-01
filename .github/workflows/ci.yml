@@ -1,223 +1,166 @@
-name: CI
-run-name: CI ${{ inputs.ref || github.ref_name }} (${{ github.event_name }})
+name: Accounting compiler evidence only
+run-name: Accounting no-run ${{ inputs.ref }} attempt ${{ github.run_attempt }}
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
     inputs:
       ref:
-        description: Commit, branch or refs/pull/NUMBER/head to test (blank uses selected workflow branch)
+        description: Exact reviewed diagnostic commit (must equal the selected workflow commit)
+        required: true
         type: string
-        default: ''
-      run_linux:
-        description: Run full Linux CLI integration tests and release build
-        type: boolean
-        default: true
-      run_arch:
-        description: Build/test Arch desktop and pacman package
-        type: boolean
-        default: true
-      run_macos:
-        description: Run macOS CLI and desktop builds/tests
-        type: boolean
-        default: true
-      run_ios:
-        description: Run iOS core tests and simulator build
-        type: boolean
-        default: true
-      run_windows:
-        description: Run Windows client and desktop tests and build the portable zip
-        type: boolean
-        default: true
-  workflow_call:
-    inputs:
-      ref:
-        description: Commit or ref to test
-        type: string
-        default: ''
-      run_linux:
-        type: boolean
-        default: false
-      run_arch:
-        type: boolean
-        default: false
-      run_macos:
-        type: boolean
-        default: false
-      run_windows:
-        type: boolean
-        default: false
-      run_ios:
-        type: boolean
-        default: false
 
 permissions:
   contents: read
-
-# Fixed modes are enforced by scoped cache tokens, including checked-out code.
-cache-mode: read
-
-concurrency:
-  group: ${{ (github.repository == 'ufna/zerus' && github.ref == 'refs/heads/main' && github.event_name == 'push' && github.event.repository.private == false && vars.DEV_UPDATES_ENABLED == 'true') && format('ci-dev-run-{0}', github.run_id) || format('ci-{0}-{1}', github.workflow, inputs.ref || github.ref) }}
-  # Dev main uses independent build and signing/sealing job locks.
-  # Keep PR/manual and pre-rollout whole-run cancellation unchanged.
-  cancel-in-progress: ${{ !(github.repository == 'ufna/zerus' && github.ref == 'refs/heads/main' && github.event_name == 'push' && github.event.repository.private == false && vars.DEV_UPDATES_ENABLED == 'true') }}
+cache-mode: none
 
 jobs:
-  automatic:
-    name: Trusted main checks
+  compiler-evidence:
+    name: One diagnostic no-run compiler artifact
     if: >-
-      github.repository == 'ufna/zerus' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule') && (!inputs.ref || inputs.ref == github.sha) &&
-      !(github.repository == 'ufna/zerus' && github.ref == 'refs/heads/main' && github.event_name == 'push' && github.event.repository.private == false && vars.DEV_UPDATES_ENABLED == 'true')
-    cache-mode: write
-    uses: ./.github/workflows/checks.yml
-    with:
-      ref: ${{ inputs.ref || github.sha }}
-      run_linux: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || inputs.run_linux }}
-      run_arch: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || inputs.run_arch }}
-      run_macos: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || inputs.run_macos }}
-      run_windows: false
-      run_ios: false
-      save_caches: true
-  review:
-    name: PR and manual checks
-    if: >-
-      !(github.repository == 'ufna/zerus' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule') && (!inputs.ref || inputs.ref == github.sha))
-    cache-mode: read
-    uses: ./.github/workflows/checks.yml
-    with:
-      ref: ${{ inputs.ref || github.sha }}
-      run_linux: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || inputs.run_linux }}
-      run_arch: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || inputs.run_arch }}
-      run_macos: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || inputs.run_macos }}
-      run_windows: ${{ inputs.run_windows || false }}
-      run_ios: ${{ inputs.run_ios || false }}
-      filter_pr_platforms: ${{ github.event_name == 'pull_request' }}
-  qualification:
-    name: Credential-free Dev builds
-    if: >-
-      !cancelled() && github.repository == 'ufna/zerus' && github.ref == 'refs/heads/main' && github.event_name == 'push' && github.event.repository.private == false && vars.DEV_UPDATES_ENABLED == 'true' &&
-      (!inputs.ref || inputs.ref == github.sha)
-    cache-mode: write
-    concurrency:
-      # Build-only work does not wait for an older full regression campaign.
-      group: ci-main-dev-builds
-      cancel-in-progress: false
-    uses: ./.github/workflows/ci-dev-qualification.yml
-  gate:
-    name: CI gate
-    if: always() && (github.event.repository.private == false || github.event_name == 'workflow_dispatch')
-    needs: [automatic, review, qualification]
+      github.repository == 'ufna/zerus' && github.event.repository.private == false &&
+      github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/ci/accounting-no-run-cf3-r2'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 39
     cache-mode: none
     env:
-      RESULTS: ${{ toJSON(needs) }}
+      INPUT_REF: ${{ inputs.ref }}
+    defaults:
+      run:
+        shell: bash
     steps:
-      - run: |
-          python3 - <<'PY'
-          import json, os
-          results = json.loads(os.environ['RESULTS'])
-          conclusions = sorted(job['result'] for job in results.values())
-          if conclusions != ['skipped', 'skipped', 'success']:
-              raise SystemExit(f'Exactly one selected check workflow must succeed: {conclusions}')
-          PY
-  dev-tail:
-    name: CI Dev signing and sealing
-    needs: [gate, qualification]
-    if: >-
-      !cancelled() && needs.gate.result == 'success' && needs.qualification.result == 'success' &&
-      github.repository == 'ufna/zerus' && github.ref == 'refs/heads/main' && github.event_name == 'push' && github.event.repository.private == false && vars.DEV_UPDATES_ENABLED == 'true'
-    permissions:
-      contents: write
-    cache-mode: none
-    concurrency:
-      group: ci-main-dev-signing-sealing
-      cancel-in-progress: false
-    uses: ./.github/workflows/ci-dev-tail.yml
-    with:
-      unsigned_release: ${{ needs.qualification.outputs.unsigned_release }}
-    secrets:
-      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-      ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
-      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-      ANDROID_GOOGLE_SERVICES_JSON: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}
-      MACOS_DEVELOPER_ID_P12: ${{ secrets.MACOS_DEVELOPER_ID_P12 }}
-      MACOS_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
-      APPLE_NOTARY_API_KEY_P8: ${{ secrets.APPLE_NOTARY_API_KEY_P8 }}
-      APPLE_NOTARY_API_KEY_ID: ${{ secrets.APPLE_NOTARY_API_KEY_ID }}
-      APPLE_NOTARY_API_ISSUER_ID: ${{ secrets.APPLE_NOTARY_API_ISSUER_ID }}
-  cache-trim:
-    name: Trim superseded caches
-    needs: [automatic, qualification]
-    # Housekeeping only: a failure never fails the run or holds back Dev.
-    if: >-
-      always() && github.repository == 'ufna/zerus' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule') && (!inputs.ref || inputs.ref == github.sha)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    continue-on-error: true
-    cache-mode: none
-    permissions:
-      actions: write
-    steps:
-      - name: Keep the two newest main entries per key family and drop day-old PR entries
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Bind the one selected workflow attempt
+        timeout-minutes: 1
         run: |
-          python3 - <<'PY'
-          import datetime, json, subprocess
+          set -euo pipefail
+          [[ "$INPUT_REF" =~ ^[0-9a-f]{40}$ ]]
+          test "$INPUT_REF" = "$GITHUB_SHA"
+          test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$RUNNER_OS" = Linux
+          test "$RUNNER_ARCH" = X64
+          test "$RUNNER_ENVIRONMENT" = github-hosted
 
-          def when(value):
-              return datetime.datetime.fromisoformat(value[:19]).replace(tzinfo=datetime.timezone.utc)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
 
-          def stale(caches, now):
-              """Main entries beyond the newest two of each key family, and PR entries older than a day."""
-              families, doomed = {}, []
-              for cache in caches:
-                  if cache['ref'] == 'refs/heads/main':
-                      # The last key segment is a run ID or a content hash.
-                      families.setdefault(cache['key'].rsplit('-', 1)[0], []).append(cache)
-                  elif cache['ref'].startswith('refs/pull/') and now - when(cache['created_at']) > datetime.timedelta(days=1):
-                      doomed.append(cache)
-              for entries in families.values():
-                  entries.sort(key=lambda cache: (when(cache['created_at']), cache['id']), reverse=True)
-                  doomed += entries[2:]
-              return doomed
+      - name: Verify exact CF3 derivation and allocate disposable paths
+        id: paths
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git show -s --format=%P HEAD)" = cf3dc42d4cc6f47d51b2faaea6620463844ad288
+          actual="$(git diff --name-only HEAD^ HEAD | LC_ALL=C sort)"
+          expected=$'.github/workflows/ci.yml\nscripts/ci/accounting-no-run-evidence.py\nsrc/state/creation_launch_status.rs'
+          test "$actual" = "$expected"
+          root="$RUNNER_TEMP/accounting-no-run-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          umask 077
+          mkdir "$root"
+          mkdir "$root"/{home,cargo,rustup,target,tmp,config,data,state,cache,evidence}
+          git ls-files -z > "$root/evidence/tracked-paths.z"
+          toolchain="$root/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin"
+          {
+            echo "EVIDENCE_DIR=$root/evidence"
+            echo "BUILD_HOME=$root/home"
+            echo "BUILD_TMP=$root/tmp"
+            echo "BUILD_CONFIG=$root/config"
+            echo "BUILD_DATA=$root/data"
+            echo "BUILD_STATE=$root/state"
+            echo "BUILD_CACHE=$root/cache"
+            echo "CARGO_HOME=$root/cargo"
+            echo "RUSTUP_HOME=$root/rustup"
+            echo "CARGO_TARGET_DIR=$root/target"
+            echo "BUILD_CARGO=$toolchain/cargo"
+            echo "BUILD_RUSTC=$toolchain/rustc"
+            echo "BUILD_RUSTDOC=$toolchain/rustdoc"
+            echo "BUILD_PATH=$toolchain:/usr/bin:/bin"
+            echo "RUSTUP_BIN=$(command -v rustup)"
+          } >> "$GITHUB_ENV"
 
-          def api(path, *args):
-              result = subprocess.run(['gh', 'api', 'repos/ufna/zerus/actions/caches' + path, *args],
-                                      capture_output=True, text=True)
-              return result.returncode, result.stdout, (result.stderr.strip().splitlines() or [''])[-1][:200]
+      - name: Install only the selected public toolchain and record identities
+        timeout-minutes: 4
+        run: |
+          set -euo pipefail
+          env -i PATH=/usr/bin:/bin HOME="$BUILD_HOME" CARGO_HOME="$CARGO_HOME" \
+            RUSTUP_HOME="$RUSTUP_HOME" LANG=C.UTF-8 \
+            "$RUSTUP_BIN" toolchain install 1.99.1-x86_64-unknown-linux-gnu --profile minimal --no-self-update
+          "$BUILD_RUSTC" --version --verbose > "$EVIDENCE_DIR/rustc-version.txt"
+          "$BUILD_CARGO" --version --verbose > "$EVIDENCE_DIR/cargo-version.txt"
+          "$BUILD_RUSTC" --test --print cfg --target x86_64-unknown-linux-gnu > "$EVIDENCE_DIR/compiler-cfg.txt"
+          cc --version > "$EVIDENCE_DIR/cc-version.txt"
+          ar --version > "$EVIDENCE_DIR/ar-version.txt"
+          python3 -I -S -B scripts/ci/accounting-no-run-evidence.py before
 
-          if __name__ == '__main__':
-              caches = []
-              for page in range(1, 21):
-                  status, output, error = api(f'?per_page=100&page={page}')
-                  if status:
-                      raise SystemExit(f'Cache listing failed: {error}')
-                  data = json.loads(output)
-                  caches += data['actions_caches']
-                  if not data['actions_caches'] or len(caches) >= data['total_count']:
-                      break
-              doomed = stale(caches, datetime.datetime.now(datetime.timezone.utc))
-              deleted = freed = failed = 0
-              for cache in doomed:
-                  status, _, error = api(f'/{cache["id"]}', '--method', 'DELETE')
-                  label = f'{cache["ref"]} {cache["key"]} ({cache["size_in_bytes"] / 2**20:.1f} MiB)'
-                  if not status:
-                      deleted, freed = deleted + 1, freed + cache['size_in_bytes']
-                      print('Deleted ' + label)
-                  elif 'HTTP 404' in error:
-                      print('Already deleted ' + label)
-                  else:
-                      failed += 1
-                      print(f'Not deleted {label}: {error}')
-              total = sum(cache['size_in_bytes'] for cache in caches)
-              print(f'Deleted {deleted} of {len(caches)} entries, {freed / 2**30:.2f} of {total / 2**30:.2f} GiB.')
-              if failed:
-                  raise SystemExit(f'{failed} cache deletions failed.')
-          PY
+      - name: ONE root Cargo test-artifact build; never run its output
+        id: compile
+        timeout-minutes: 24
+        run: |
+          set -uo pipefail
+          set +e
+          env -i PATH="$BUILD_PATH" HOME="$BUILD_HOME" LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+            CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" \
+            CARGO_TARGET_DIR="$CARGO_TARGET_DIR" RUSTC="$BUILD_RUSTC" RUSTDOC="$BUILD_RUSTDOC" \
+            CARGO_BUILD_JOBS=4 CARGO_INCREMENTAL=0 CARGO_TERM_COLOR=never \
+            CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 \
+            HGS_CONFIG_DIR="$BUILD_CONFIG" HGS_DATA_DIR="$BUILD_DATA" HGS_STATE_DIR="$BUILD_STATE" \
+            XDG_CONFIG_HOME="$BUILD_CONFIG" XDG_DATA_HOME="$BUILD_DATA" \
+            XDG_STATE_HOME="$BUILD_STATE" XDG_CACHE_HOME="$BUILD_CACHE" \
+            TMPDIR="$BUILD_TMP" TMP="$BUILD_TMP" TEMP="$BUILD_TMP" TMUX_TMPDIR="$BUILD_TMP" \
+            "$BUILD_CARGO" test --locked --bin hgs --no-run --message-format=json-render-diagnostics --verbose \
+            2>&1 | python3 -I -S -B scripts/ci/accounting-no-run-evidence.py capture
+          codes=("${PIPESTATUS[@]}")
+          set -e
+          printf '%s\t%s\n' "${codes[0]}" "${codes[1]}" > "$EVIDENCE_DIR/pipeline-status.txt"
+          test "${codes[0]}" = 0 && test "${codes[1]}" = 0
+
+      - name: Passive source-final, Cargo-record and emitted-ELF evidence
+        if: always() && steps.paths.outcome == 'success'
+        timeout-minutes: 2
+        run: python3 -I -S -B scripts/ci/accounting-no-run-evidence.py collect
+
+      - name: Retain only named bounded diagnostic evidence
+        if: always() && steps.paths.outcome == 'success'
+        id: retention
+        timeout-minutes: 2
+        run: python3 -I -S -B scripts/ci/accounting-no-run-evidence.py retention
+
+      - name: Upload the bounded named diagnostic evidence
+        id: upload
+        if: always() && steps.retention.outcome == 'success'
+        timeout-minutes: 2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: accounting-compiler-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+          path: |
+            ${{ env.EVIDENCE_DIR }}/cargo-combined.raw
+            ${{ env.EVIDENCE_DIR }}/capture.json
+            ${{ env.EVIDENCE_DIR }}/pipeline-status.txt
+            ${{ env.EVIDENCE_DIR }}/context.json
+            ${{ env.EVIDENCE_DIR }}/toolchain.json
+            ${{ env.EVIDENCE_DIR }}/source-before.json
+            ${{ env.EVIDENCE_DIR }}/source-after.json
+            ${{ env.EVIDENCE_DIR }}/compiler-evidence.json
+            ${{ env.EVIDENCE_DIR }}/hgs-test.elf
+            ${{ env.EVIDENCE_DIR }}/hgs-test.elf.partial
+            ${{ env.EVIDENCE_DIR }}/retention.json
+
+      - name: Bind the immutable diagnostic artifact receipt
+        if: always() && steps.upload.outcome == 'success'
+        timeout-minutes: 1
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
+          [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          printf 'Diagnostic artifact %s SHA256 %s; source %s; run %s attempt %s job %s.\n' \
+            "$ARTIFACT_ID" "$ARTIFACT_DIGEST" "$GITHUB_SHA" "$GITHUB_RUN_ID" \
+            "$GITHUB_RUN_ATTEMPT" "$GITHUB_JOB" >> "$GITHUB_STEP_SUMMARY"
