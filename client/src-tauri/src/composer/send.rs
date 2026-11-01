@@ -751,7 +751,10 @@ pub enum SendReply {
     /// Ask "Continue with a cold cache?"; answer with `token`.
     Cold { token: u64, prompt: ColdPrompt },
     /// Ask "Start the session to send?"; answer with `token`.
-    Start { token: u64, question: StartQuestion },
+    Start {
+        token: u64,
+        question: Box<StartQuestion>,
+    },
     /// The cold cache's Clear context: open the Clear session dialog with
     /// the view's `clear` (`sendMessage` 4843).
     ClearContext { token: u64 },
@@ -1030,7 +1033,10 @@ impl Composers {
             let usage = session_usage::context(&details["session_usage"], ctx.recorded());
             let question = rules::start_question(&session, &usage.text);
             let token = self.ask_start(hub, &ctx, session);
-            return SendReply::Start { token, question };
+            return SendReply::Start {
+                token,
+                question: Box::new(question),
+            };
         }
         if let Some(reason) = ctx.reason() {
             if let Some(composer) = hub.composers.get_mut(&ctx.key) {
@@ -5928,13 +5934,11 @@ mod continuations {
         ) else {
             panic!("no question")
         };
-        assert_eq!(question.title, "Start the session to send?");
+        assert_eq!(question.title.english(), "Start the session to send?");
+        let informative = question.informative.english();
         assert!(
-            question
-                .informative
-                .contains("full context (43% (85.3k/200k))."),
-            "{}",
-            question.informative
+            informative.contains("full context (43% (85.3k/200k)).\n\n"),
+            "{informative}"
         );
         assert_eq!(
             c.answer(

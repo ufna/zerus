@@ -720,8 +720,8 @@ export type ColdAction = "send" | "compact" | "clear";
 export interface ColdChoice { action: ColdAction; label: string; enabled: boolean; tooltip: string }
 export interface ColdPrompt { title: string; text: string; informative: string; choices: ColdChoice[] }
 export type StartChoice = "resume" | "resume_compact" | "fresh";
-export interface StartOption { choice: StartChoice; label: string; enabled: boolean; tooltip: string }
-export interface StartQuestion { title: string; text: string; informative: string; options: StartOption[] }
+export interface StartOption { choice: StartChoice; label: Text; enabled: boolean; tooltip: Text | null }
+export interface StartQuestion { title: Text; text: Text; informative: Text; options: StartOption[] }
 export type SendReply =
   | { kind: "sending" } | { kind: "busy" } | { kind: "blocked"; reason: string } | { kind: "notice"; text: string; error: boolean }
   | { kind: "cold"; token: number; prompt: ColdPrompt } | { kind: "clear_context"; token: number } | { kind: "start"; token: number; question: StartQuestion };

@@ -404,6 +404,38 @@ class Desktop(unittest.TestCase):
         self.assertEqual(json.loads(stale.stdout)['code'], 'writer_epoch_changed')
         self.assertEqual(self.cli('desktop', 'status', '--json')['ownership'], 'passive')
 
+    def test_frontend_policy_requires_a_registered_original_ui_child(self):
+        self.serve()
+        help_text = subprocess.run([str(HGS), '--help'], env=self.env,
+                                   capture_output=True, text=True, timeout=10)
+        self.assertIn('Desktop frontend request ABI: desktop-ui-request-v1', help_text.stdout)
+        for enabled in (True, False):
+            request = {'op': 'automatic_approvals', 'request_id': str(uuid.uuid4()), 'enabled': enabled}
+            generic = self.cli('desktop', 'request', '--json', data=request)
+            self.assertFalse(generic['accepted'])
+            envelope = {'abi': 'desktop-ui-request-v1', 'attempt': str(uuid.uuid4()), 'request': request}
+            refused = self.cli('desktop', 'frontend-request', '--json', data=envelope)
+            self.assertFalse(refused['accepted'])
+            self.assertFalse(refused['durable'])
+            self.assertEqual(refused['code'], 'frontend_authentication_refused')
+            for field in ('confirmed', 'role', 'caller_pid'):
+                claimed = dict(envelope, **{field: True})
+                self.assertFalse(self.cli('desktop', 'frontend-request', '--json', data=claimed)['accepted'])
+            tagged = dict(self.env, HGS_SESSION='codex/example', HGS_RUN_ID=str(uuid.uuid4()))
+            attempted = subprocess.run([str(HGS), 'desktop', 'frontend-request', '--json'],
+                                       env=tagged, input=json.dumps(envelope), capture_output=True,
+                                       text=True, timeout=10)
+            if attempted.returncode == 0:
+                self.assertFalse(json.loads(attempted.stdout)['accepted'])
+        with closing(sqlite3.connect(self.desktop / 'state.sqlite3')) as db:
+            self.assertEqual(db.execute('SELECT enabled,revision,requests FROM desktop_delivery_policy').fetchone(), (0, 0, 0))
+        receipt = self.cli('desktop', 'request', '--json', data={
+            'op': 'delivery_result', 'request_id': str(uuid.uuid4()),
+            'original_request_id': str(uuid.uuid4())})
+        self.assertTrue(receipt['accepted'])
+        self.assertFalse(receipt['found'])
+        self.assertFalse(receipt['durable'])
+
     def test_lifecycle_probe_binds_the_live_service_and_nondefault_configuration(self):
         missing = self.cli('desktop', 'status', '--json')['lifecycle']
         self.assertFalse(missing['ipc_ready'])
