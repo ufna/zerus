@@ -429,6 +429,9 @@ fails stays unavailable. Unpaired/source launches keep ordinary CLI discovery.
 The read-only service client verifies once per connection, then checks the fixed
 generation metadata before each CLI exchange; catalog pages do not rehash the
 whole app. Changed generations refuse until an explicit reconnect verifies again.
+Ancestors are compared by identity, mode and ownership, so unrelated home-folder
+updates do not invalidate the app. The bundle directory's ctime is excluded
+because last-used xattrs change it; code, plist and seal files keep full stamps.
 The shared `desktop::relay::select` API also supplies the bundled service image
 for the authenticated frontend-request sender; that still-unavailable sender is
 a separate UI integration. The stable runner is not native authority.

@@ -122,10 +122,14 @@ struct Node {
     path: PathBuf,
     device: u64,
     inode: u64,
-    bytes: u64,
     mode: u32,
     uid: u32,
-    changed: (i64, i64),
+    content: Option<ContentStamp>,
+}
+#[derive(PartialEq, Eq)]
+struct ContentStamp {
+    bytes: u64,
+    changed: Option<(i64, i64)>,
     modified: (i64, i64),
 }
 
@@ -183,21 +187,34 @@ fn generation(bundle: &Path) -> Result<Vec<Node>, Refusal> {
             }
             // The fixed code/plist/seal leaves must be ordinary files, and
             // fixed directories must be directories. Never follow a link.
-            let file = matches!(
-                path.file_name().and_then(|x| x.to_str()),
-                Some("hgs" | "hgs-tray" | "Info.plist" | "CodeResources")
-            );
+            let file = [
+                "Contents/MacOS/hgs",
+                "Contents/MacOS/hgs-tray",
+                "Contents/Info.plist",
+                "Contents/_CodeSignature/CodeResources",
+            ]
+            .iter()
+            .any(|leaf| path == bundle.join(leaf));
             if file == m.is_dir() {
                 return Err(Refusal::UnsupportedLayout);
             }
             Ok(Node {
                 device: m.dev(),
                 inode: m.ino(),
-                bytes: m.len(),
                 mode: m.mode(),
                 uid: m.uid(),
-                changed: (m.ctime(), m.ctime_nsec()),
-                modified: (m.mtime(), m.mtime_nsec()),
+                // Parent directory churn is unrelated to this sealed pair.
+                // Preserve every ancestor's identity, ownership, mode and
+                // no-link checks, without recording its contents' timestamps.
+                content: path.starts_with(bundle).then(|| ContentStamp {
+                    bytes: m.len(),
+                    // LaunchServices may update lastuseddate xattrs when an
+                    // app is opened. Directory ctime is not sealed content.
+                    // The bundle's mtime/size still detect membership changes;
+                    // fixed code, plist and seal nodes keep their full stamps.
+                    changed: (path != bundle).then(|| (m.ctime(), m.ctime_nsec())),
+                    modified: (m.mtime(), m.mtime_nsec()),
+                }),
                 path,
             })
         })
