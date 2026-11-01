@@ -5,8 +5,9 @@ Owner: `zerus-5wmh.66.8.1` (G6). Basis: the
 especially its responsibility tables, migration contract and G1–G7 gates.
 Execution order for this assignment: **Linux on arch, macOS, Windows on va-kids**.
 Windows is reachable; the inventory's original unreachable-PC note is historical.
-**All native acceptance below is pending.** A merged PR or a private fixture pass
-does not check a box. Qt deletion stays a draft until the coordinator accepts the
+**Full platform acceptance remains pending.** Recorded subchecks do not establish
+platform acceptance; a merged PR or a private fixture pass does not check a box.
+Qt deletion stays a draft until the coordinator accepts the
 results for all three platforms; do not deploy the deletion branch for these tests.
 
 For each platform, record the exact Next and last-Qt release/source, installed
@@ -69,13 +70,38 @@ unless testing the final install. Do not touch unrelated desktop/apps/settings.
 | [ ] Upgrade with agents running | Upgrade the last Qt install in its owned folder; verify exact native session/run/conversation and ConPTY jobs, saved drafts and accounts survive. Stale Qt payload cleanup must stay inside that installer-owned folder. | `.66.7.3`, `.66.6.15`; fleet-c/fixes-u |
 | [ ] One-time import | Check actual legacy registry/INI preferences, folder mapping, geometry, drafts and attention seed. Restart and rollback/forward: no source writes, reimport or automatic policy inheritance. | G3 `.66.5.2.1`, `.66.5.3/.10`, [#870](https://github.com/ufna/zerus/pull/870) |
 | [ ] Service registration/readiness | Check opt-in registration in the interactive user session, never LocalSystem/Session 0; verify named-pipe identity and independent background readiness with UI closed. Remove temporary logon entries. | `.66.3.27.3`, `.66.3.31`, [#912](https://github.com/ufna/zerus/pull/912); fixes-u/desktop-u |
-| [ ] Standard-user registration | Repeat service registration, readiness and removal as a non-administrator interactive user. Record the actual account privilege class; an administrator CI or staging account does not cover this check. Arrange a suitable existing test account with the coordinator. | `.66.8.1`, [#912](https://github.com/ufna/zerus/pull/912) review follow-up; fixes-u/coordinator |
+| [x] Standard-user passive registration | Install, status, idempotent reinstall and removal passed on an existing non-administrator console token; see the evidence below. Actual login triggering and service readiness remain in the preceding unchecked row. | `.66.8.1`, [#912](https://github.com/ufna/zerus/pull/912) review follow-up; fixes-u |
 | [ ] Notifications/clicks | In the real desktop, receive one service-owned toast/badge, click to exact session, reject stale clicks and check lock/idle state without manipulating unrelated apps. | `.66.3.30`, `.66.6.15`, [#907](https://github.com/ufna/zerus/pull/907) ledger, [#914](https://github.com/ufna/zerus/pull/914) discovery; fixes-u |
 | [ ] Tray/lifecycle | Check tray/menu, background/second-instance routing, WebView2 window, draft-safe exit and opt-in login start; remove temporary startup values and shortcuts. | [#874](https://github.com/ufna/zerus/pull/874), `.66.6.15` |
 | [ ] Terminal | Check PowerShell/Windows Terminal/ConPTY paths with spaces/non-ASCII, exact session selection, resize/paste and live-session continuity. Exercise supported operations only; unsupported remote paths must refuse clearly. | `.52`, `.66.6.15`, Windows native contracts; fixes-u |
 | [ ] Voice/video | Verify actual supported capture/preview/transcription/cancel paths and privacy consent; unsupported paths refuse visibly. An unavailable release-required inventory capability blocks acceptance rather than counting as a skip. | G2 `.66.4.5`, inventory voice/media rows |
 | [ ] UI/durable parity | Run the complete inventory responsibility walk, especially tasks, folder mapping and bounded details; approvals remain default-off and generic/agent toggles refuse. UI-only mode has no competing GUI Fleet. | G1–G4/G7, `.66.3.31/.32/.35/.37/.38` |
 | [ ] Qt rollback | Before deletion, restore last Qt using the maintained rollback/install route only after settled service revoke. Verify original state and live sessions, then return to Next. Remove test staging/registrations only after owned processes exit. | `.66.3.31`, `.66.7.3`; desktop-u/fleet-c |
+
+### Recorded Windows registration subcheck — 2026-11-02
+
+fixes-u reported one lifecycle case with eight real CLI invocations, using source
+`e2c80a0e6f6ddff83e2ad48a59e8e7c9be0d263f`, CI run
+[41359593881](https://github.com/ufna/zerus/actions/runs/41359593881), attempt 1,
+job `125007003118`, artifact `13105895095` (`windows-shell-loader`). The staged
+`cli/hgs.exe` was 50,289,152 bytes with SHA256
+`013f899e4708b8a87f181b32486b3414c71f17501042bef148e29fc792aa6372`.
+The retained report matches that source and binary identity.
+
+The original console logon token had `effectiveAdministrator=false` and no
+Administrators SID in its complete groups, including deny-only membership;
+this was a standard user rather than an unelevated administrator. The task was
+initially absent; install registered it in READY state, reinstall changed
+neither registration nor the staged CLI, and removal restored absence.
+fixes-u confirmed child waits, task/temporary launcher absence and removal of
+the private test profile and stage; no native agents were touched.
+
+The local enable marker remained absent. Final service status was not running,
+with writers disabled, lifecycle unavailable, IPC not ready and no PID, epoch
+or generation. This covers passive registration only. Login triggering, service
+start/readiness, background work, presence, notifications and GUI remain pending.
+The separate CI first-status 15-second timeout remains a failed CI result;
+this PC subcheck does not make that workflow green.
 
 The notification checks require the service's actual lifecycle/adapter wiring,
 not only the merged ledger, discovery or host primitives. Exercise old unread
