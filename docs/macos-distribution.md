@@ -49,7 +49,7 @@ See [DMG installation](installation.md#macos-dmg) for CLI and local-session setu
 | `Contents/MacOS/hgs` | CLI, linked by the cask into Homebrew's `bin` |
 | `Contents/MacOS/zerus-mobile-connector` | Rust mobile connector, signed with the other code; its LaunchAgent is opt-in through `zerus-setup --mobile-connector install` |
 | `Contents/Resources/bin/zerus-setup` | Per-user setup, linked by the cask |
-| `Contents/Resources/setup` | `hgs_state.py`, the three LaunchAgent installers with their `launchd_agent.py` helper, the mobile connector's service installer and the tray LaunchAgent template |
+| `Contents/Resources/setup` | `hgs_state.py`, the desktop/session/recovery/swarm LaunchAgent installers, `launchd_agent.py`, the mobile connector's service installer and the tray LaunchAgent template |
 | `Contents/Resources/licenses` | Zerus and Codex notices, CLI/connector Cargo notices in `rust/`, Tauri Cargo notices in `client-rust/`, and locked frontend notices in `frontend/` |
 
 The bundle ID stays `com.hgdev.hgs-tray`, so settings, drafts and LaunchAgent
@@ -69,6 +69,24 @@ The casks have no install/uninstall hooks or `zap` action: upgrades and removal
 never quit the GUI, unload agents or write to user homes. Per-user setup and
 removal stay explicit through `zerus-setup` and `zerus-setup --remove`. Existing
 settings, drafts, logs and connector journals remain on disk.
+
+Explicit `zerus-setup` also registers `com.hgdev.hgs-desktop` in the current
+user's Aqua session. It consumes the selected CLI's `desktop registration
+--json` definition and checks the lifecycle ABI, configuration and loaded actor
+PID before reporting IPC ready. A missing Aqua session saves the registration
+for next login and reports readiness as unverified. IPC readiness does not mean
+that background workers have started. Unmarked or linked files and definitions
+for another configuration are kept. A marker for the same configuration and
+service label identifies an owned registration even when its old CLI path or definition differs. The
+installer checks a loaded job against that old argv before replacing or
+removing it.
+
+Source `install.sh` reloads the owned desktop service when its CLI bytes
+change. Recovery, swarm and voice retain their existing installer/update rules.
+`tray/install.sh` preflights it before the GUI swap and retains an
+unchanged active backend during GUI-only updates. The signed notification host
+keeps `com.hgdev.hgs-tray`; its service command interface and delivery integration
+are a separate change.
 
 `zerus-setup --mobile-connector install` writes the
 `com.hgdev.zerus-mobile-connector` LaunchAgent for the bundled connector

@@ -1,9 +1,10 @@
 # Durable desktop read queue
 
 The service's schema 4 includes indexed read intent and exact dispatch receipts.
-This is an internal actor API in `zerus_desktop_ledger::reads`. The service still
-refuses frontend read commands and starts no delivery workers or fleet source;
-writer takeover remains fenced. Existing `hgs read` and client APIs are unchanged.
+The queue lives in `zerus_desktop_ledger::reads`; the service delivery component
+is `src/desktop/delivery.rs`. Activation, writer handoff and frontend routing
+belong to the service lifecycle. Merely opening the database or submitting an
+intent never grants writer ownership. Existing `hgs read` remains unchanged.
 
 `zerus-desktop-read-policy` contains the existing client `ReadMark`, field merge,
 snapshot settlement, receipt interpretation and retry delays. The client reexports
@@ -27,10 +28,10 @@ Indexed host summaries and per-computer due indexes avoid scanning pending marks
 Each returned ticket pins the attempt UUID, both epochs, queue sequence, revision
 and exact mark. An attempt UUID is never reused, including after a crash.
 
-The future worker must independently verify current delegation and fresh source
-identity before dispatch, pass the exact mark to the selected host's existing
-`hgs read`, and honor cancellation and drain. A policy row or this reservation is
-not runtime handoff proof. No subprocess is launched by the queue itself.
+The service worker checks the existing writer/service epoch and admits only
+computers observed by its own fleet. It passes the exact mark to the selected
+host's existing `hgs read` and honors cancellation and retained native resources.
+A policy row or this reservation is not runtime handoff proof. No subprocess is launched by the queue itself.
 
 `finish` requires the exact ticket. A result for an older revision releases only
 its owned slot and cannot delay the changed mark. Exact repeat completion is
@@ -77,3 +78,61 @@ replay, stale completion and snapshot refusal, changed intent during an owned
 call, partial application, fair four-slot admission and SQLite-full rollback.
 A 50,000-row fixture verifies indexed host, due and keyset query plans without
 table scans or temporary sorting and checks bounded dispatch and pagination.
+
+## Service delivery interface
+
+Schema 11 adds the explicit default-off automatic-approval policy, immutable
+policy request receipts and an index for bounded catalog lookup by session name.
+The actor calls `Runtime::start(config, epoch)` only under its existing lifecycle
+ownership. `poll(&mut Store)` never waits for a running executor. Four read slots
+and two approval slots include resources retained by the native runner, even
+when its main worker has returned. `request_stop()` cancels admission and owned
+calls; `drained()` remains false while an original worker, persistence completion
+or runner resource remains held.
+
+After successfully applying an internal `FleetEvent`, the actor calls
+`observe(&Store, &event)` while retaining its ingress permit. Failed apply,
+incomplete/offline sources and passive UI feed frames cannot establish delivery
+evidence. Discovery visits one catalog page per second, with at most 128 rows;
+read retirement keyset-pages at most 16 pending intents per tick, with a captured
+sequence watermark. It looks up each session through the catalog index and uses
+the existing exact settlement policy, including superseded run identities. An
+unacknowledged early intent cannot starve later intents.
+
+The component accepts three closed request shapes for the existing desktop-v1
+request transport:
+
+- `read_intent`: canonical UUID `request_id` and the exact `mark` fields
+  `computer`, `name`, `run_id`, `conversation_id`, `reply_id`, and
+  `attention_signature`. Acceptance follows the queue commit; it means queued,
+  never delivered or read.
+- `automatic_approvals`: canonical UUID `request_id` and Boolean `enabled`.
+  This explicit service policy does not import the old Qt or UI opt-in. The
+  policy update and immutable request receipt commit together. Replaying an old
+  request returns that receipt without undoing a newer setting.
+- `delivery_result`: a new canonical UUID `request_id` and the canonical
+  `original_request_id`. This indexed lookup returns the original acceptance
+  receipt after a transport timeout; it neither replays nor proves delivery.
+
+All store and approval-journal mutations stay on the actor. Bounded executors
+perform native I/O and return one bounded completion. A failed worker start
+retains its original reservation as not sent. A failed completion commit retains
+the exact completion for persistence retry, without invoking the native action
+again. Status distinguishes the queue, policy, held slots and component errors.
+
+## Automatic approvals
+
+A current service catalog row is only a discovery candidate. An executor must
+inspect the actual live native session and match its run, conversation and
+reviewed one-time question/choice through the existing automatic-approval
+selector. The actor rechecks its current source, writer and explicit policy,
+then commits the existing private approval journal reservation before scheduling
+an answer. The answer carries that reservation's original native request UUID
+and the exact question hash/run/conversation selectors. Broader grants, ordinary
+questions and startup trust remain manual.
+
+Unknown, prepared or previously settled journal reservations never authorize
+another answer, including after a restart. Disabling the policy cancels pending
+inspections and answers; cancellation after a possible send remains unknown.
+Read receipt retries remain distinct from this no-replay approval rule. Neither
+status nor a command receipt establishes worker drain, currentness or release.
