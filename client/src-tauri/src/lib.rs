@@ -39,6 +39,9 @@ mod files;
 mod identity;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod instance;
+#[cfg(windows)]
+#[path = "instance_windows.rs"]
+mod instance;
 mod lifecycle;
 #[cfg(feature = "live")]
 mod login_item;
@@ -105,6 +108,8 @@ mod window_layer;
 #[cfg(feature = "live")]
 mod window_geometry;
 mod window_visibility;
+#[cfg(any(windows, test))]
+mod windows_shell;
 #[cfg(feature = "live")]
 mod worktree_cleanup;
 #[cfg(feature = "live")]
@@ -162,7 +167,7 @@ pub struct Startup {
     /// Started with `--sessions`, or a build that opens its window by default.
     pub opens_sessions: bool,
     /// The claimed single-instance socket and the activations it receives.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub instance: Option<instance::Claimed>,
     #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
     pub desktop_responder: Option<std::sync::Arc<zerus_client_core::desktop::Responder>>,
@@ -187,12 +192,42 @@ pub fn run() {
             return;
         }
         Ok(cli::Command::BuildInfo) => {
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", windows))]
             let info = cli::build_info_for(&cli::BUILD, &context.config().identifier);
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(any(target_os = "linux", windows)))]
             let info = cli::build_info(&cli::BUILD);
             println!("{info}");
             return;
+        }
+        Ok(cli::Command::LoginItem { enabled }) => {
+            #[cfg(all(windows, feature = "live"))]
+            {
+                let identity = identity::current(&context.config().identifier);
+                if !identity.is_switch() {
+                    eprintln!("Login registration requires the installed Zerus identity");
+                    std::process::exit(2);
+                }
+                let result = std::env::current_exe()
+                    .map_err(|e| e.to_string())
+                    .and_then(|exe| platform::windows::startup::login_item(enabled, &exe, &args));
+                match result {
+                    Ok(()) => println!(
+                        "Zerus login item {}",
+                        if enabled { "installed" } else { "removed" }
+                    ),
+                    Err(error) => {
+                        eprintln!("zerus-client: {error}");
+                        std::process::exit(3);
+                    }
+                }
+                return;
+            }
+            #[cfg(not(all(windows, feature = "live")))]
+            {
+                let _ = enabled;
+                eprintln!("Login registration is available in the Windows desktop build only");
+                std::process::exit(2);
+            }
         }
         Err(error) => {
             eprint!("zerus-client: {error}\n\n{}", cli::usage());
@@ -212,7 +247,7 @@ pub fn run() {
     let mut desktop_responder = None;
     #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
     let mut desktop_bootstrap = None;
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     let instance = match identity.instance_name(identity::flag("ZERUS_CLIENT_SINGLE_INSTANCE")) {
         None => None,
         Some(name) => {
@@ -221,15 +256,15 @@ pub fn run() {
             } else {
                 instance::Activation::Show
             };
-            #[cfg(feature = "live")]
+            #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
             let (reply, responder) = desktop_hello::prepare(&identity);
-            #[cfg(feature = "live")]
+            #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
             let reply = Some(reply);
-            #[cfg(not(feature = "live"))]
+            #[cfg(not(all(feature = "live", any(target_os = "linux", target_os = "macos"))))]
             let reply = None;
             match instance::claim(&name, identity.launchd_label(), activation, reply) {
                 instance::Claim::Claimed(claimed) => {
-                    #[cfg(feature = "live")]
+                    #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
                     {
                         desktop_bootstrap = match desktop_hello::hold(
                             identity.is_switch(),
@@ -256,6 +291,16 @@ pub fn run() {
             }
         }
     };
+    #[cfg(all(windows, feature = "live"))]
+    {
+        let replay = std::env::var_os("ZERUS_CLIENT_REPLAY").is_some_and(|list| !list.is_empty());
+        let hgs = platform::windows::startup::select_hgs(
+            options.hgs.as_deref(),
+            identity.is_switch() && !replay,
+        );
+        std::env::set_var("ZERUS_CLIENT_HGS", hgs);
+        platform::windows::startup::prepare(&args, &identity.bundle_id);
+    }
     #[cfg(target_os = "macos")]
     platform::macos::raise_main_thread_qos();
     launch(
@@ -263,7 +308,7 @@ pub fn run() {
         Startup {
             identity,
             opens_sessions,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             instance,
             #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
             desktop_responder,
@@ -294,10 +339,10 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
     // Linux and macOS keep the live fleet in the tray/menu bar. A build without the data source has
     // none and keeps its window as the way back.
     let menu_bar = cfg!(all(
-        any(target_os = "macos", target_os = "linux"),
+        any(target_os = "macos", target_os = "linux", windows),
         feature = "live"
     ));
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     let (listening, activations) = match startup.instance {
         Some(claimed) => (Some(claimed.listening), Some(claimed.activations)),
         None => (None, None),
@@ -330,7 +375,7 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
     // the app in front; a menu-bar build activates only to show its window.
     #[cfg(target_os = "macos")]
     let builder = builder.activate_ignoring_other_apps(!menu_bar);
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     let builder = builder.manage(instance::InstanceState(std::sync::Mutex::new(listening)));
     // A page that loads (again) takes what the menu bar sent once it asks,
     // with the number it learns when it has loaded.
@@ -743,16 +788,37 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                         if let Some(sender) = desk::sender(app.handle()) { platform::linux_notify::install(app.handle(), dir.clone(), switch, sender); }
                     }
                 }
+                #[cfg(windows)]
+                {
+                    let conf = desk::tray_conf();
+                    platform::windows::tray::install(app.handle(), conf.as_deref())?;
+                    let identity = app.state::<identity::Identity>().inner().clone();
+                    let posts = identity.notifications(identity::flag("ZERUS_CLIENT_NOTIFICATIONS"), replay);
+                    let switch = identity.is_switch();
+                    let attention = posts.then(|| {
+                        let path = dir.join(desk::ATTENTION_FILE);
+                        Box::new(move || desk::Attention::load(path, || {
+                            if !switch { return None; }
+                            zerus_client_core::settings::QtStore::here().and_then(|store| store.snapshot().ok().flatten())
+                                .and_then(|snapshot| snapshot.values.get("attention/observed").map(|v| v.to_text().into_bytes()))
+                        })) as desk::LoadAttention
+                    });
+                    desk::start(app.handle(), &pump, dir.clone(), desk::load_windows_mode(&dir, conf.as_deref()), attention);
+                    if switch && !replay {
+                        app.manage(platform::windows::worker::Worker::start(zerus_client_core::default_hgs()));
+                    }
+                }
                 app.manage(updates::start(app.handle()));
                 if menu_bar {
                     lifecycle::start_fleet(|| app.state::<commands::AppState>().start_source());
                 }
             }
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             {
                 if let Some(activations) = activations {
                     forward_activations(app.handle().clone(), activations);
                 }
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 exit_on_signals(app.handle().clone());
             }
             let display = display::display_name();
@@ -889,7 +955,7 @@ fn processes_hub(app: &AppHandle, allowed: bool) -> processes::ProcessHub {
 
 /// A `sessions` line from a later start opens and raises the window; `show`
 /// changes nothing visible (`main.cpp:424-433`).
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn forward_activations(
     app: tauri::AppHandle,
     activations: std::sync::mpsc::Receiver<instance::Activation>,
