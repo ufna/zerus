@@ -93,6 +93,8 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphic
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# The manifest must also reach the library's Windows unit-test executable.
+embed-resource = "3"
 
 # Dependencies optimised once keep the debug app responsive.
 [profile.dev.package."*"]

@@ -127,6 +127,29 @@ pub fn wide_text<const N: usize>(text: &str) -> [u16; N] {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[cfg(windows)]
+    #[test]
+    fn library_test_image_embeds_common_controls_v6() {
+        use windows_sys::Win32::{System::LibraryLoader::*, UI::WindowsAndMessaging::RT_MANIFEST};
+        unsafe {
+            let module = GetModuleHandleW(std::ptr::null());
+            // MAKEINTRESOURCEW(1) encodes an integer, not an aligned string pointer.
+            let resource =
+                FindResourceW(module, std::ptr::without_provenance::<u16>(1), RT_MANIFEST);
+            assert!(
+                !resource.is_null(),
+                "unit-test image must carry its own manifest"
+            );
+            let size = SizeofResource(module, resource) as usize;
+            assert!((1..=16_384).contains(&size));
+            let loaded = LoadResource(module, resource);
+            let pointer = LockResource(loaded).cast::<u8>();
+            assert!(!pointer.is_null());
+            let manifest = std::str::from_utf8(std::slice::from_raw_parts(pointer, size)).unwrap();
+            assert!(manifest.contains("Microsoft.Windows.Common-Controls"));
+            assert!(manifest.contains("6.0.0.0"));
+        }
+    }
     #[test]
     fn only_an_enabled_host_stages_and_explicit_selectors_are_preserved() {
         let bin = Path::new("C:/Zerus/hgs.exe");
