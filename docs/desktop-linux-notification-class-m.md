@@ -272,8 +272,3 @@ store/writer, native ID, Notice/PostBatch, Notify/CloseNotification, app sink or
 production role permission is introduced. G1 owns any future handoff and whole
 profile qualification. Dormant owned-store persistence, if selected next, keeps
 its own separate pre-code contract and private-path qualification.
-
-The [private supervisor contract](desktop-linux-notification-class-m-supervisor.md)
-records the bounded preparation method and its separate native review gates.
-It does not establish eligible delegation, an Xvfb source closure or an
-execution window, and it adds no production permission.
