@@ -255,6 +255,21 @@ pub struct Actions {
 }
 
 impl Actions {
+    pub fn disarm_read_delivery(&self) -> Result<(), String> {
+        use zerus_client_core::desktop::drain::Observation;
+        let marks = self.mark_admissions.close();
+        let delivery = self.read_delivery.stop();
+        let now = std::time::Instant::now();
+        if marks.wait_until(now) != Observation::Idle
+            || delivery.wait_until(now) != Observation::Idle
+        {
+            return Err(
+                "Read delivery has not stopped; the background service cannot be connected yet."
+                    .into(),
+            );
+        }
+        Ok(())
+    }
     /// `marks_path` is the read-marks file; a missing one gives no marks.
     pub fn new(marks_path: PathBuf) -> Self {
         let wake = crate::readsync::Wake::default();
@@ -1059,6 +1074,9 @@ pub async fn dispatch_as(
     action: Action,
     request_id: String,
 ) -> Result<Outcome, String> {
+    if crate::desktop_service::mode() && matches!(action, Action::MarkRead { .. }) {
+        return Err("Read marks are unavailable until the background service is ready.".into());
+    }
     if blocked() {
         return Ok(failed(REPLAY_NEEDS_HGS));
     }
@@ -1763,6 +1781,9 @@ pub fn copy_command(computer: String, name: String, archive_id: Option<String>) 
 /// Read marks the host has not shown yet, for the store to apply optimistically.
 #[tauri::command]
 pub fn pending_read_marks(state: State<'_, Actions>) -> Vec<ReadMark> {
+    if crate::desktop_service::mode() {
+        return Vec::new();
+    }
     state
         .marks
         .lock()
@@ -1780,6 +1801,9 @@ pub fn queue_read_marks(
     state: State<'_, Actions>,
     marks: Vec<ReadMark>,
 ) -> Result<Vec<ReadMark>, String> {
+    if crate::desktop_service::mode() {
+        return Err("Use the background service read-intent route.".into());
+    }
     state.queue_marks(marks)
 }
 

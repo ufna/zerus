@@ -169,9 +169,20 @@ Environment:
 | Variable | Effect |
 | --- | --- |
 | `ZERUS_CLIENT_HGS` | The `hgs` to run (default: the first `hgs` on `PATH`, then in `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin`, since an app started from Finder or a launcher gets a short `PATH`) |
+| `ZERUS_CLIENT_DESKTOP_SERVICE` | Exact value `1` selects the experimental desktop-service source at startup (default off). No legacy Fleet, read delivery, automatic approval, notification or recovery-sync worker starts in that mode; unavailable service stays unavailable. This does not activate the service. |
 | `ZERUS_CLIENT_REPLAY` | Replay synthetic watch streams instead of running `hgs`: a path list (`:` on Unix), the first file is this computer, `alias=file` entries are peers, e.g. `fixtures/replay.ndjson:mac=fixtures/replay-mac.ndjson` |
 | `ZERUS_CLIENT_REPLAY_INTERVAL_MS` | The pause per `heartbeat` frame of a replay (default 900) |
 | `ZERUS_CLIENT_QUERY` | URL parameters for the window, e.g. `select=claude/sample-project/api-refactor` opens that session and `page=settings` that screen |
+
+The service source validates lifecycle component readiness and reads bounded catalog
+pages through one subscriber. Shared host attention counts remain separate from
+this device's review marks; incomplete/null counts remain unknown. Read intents
+are acknowledged only after a durable actor receipt, retaining their request UUID
+through an uncertain result. Activity/process/task/organization subscriptions and
+the authenticated automatic-approval settings route remain explicitly unavailable
+until their service adapters are integrated. The current automatic updater is also
+a remaining service dependency. Keep this switch off for normal installations;
+this source is not a complete UI-only cutover.
 
 A build without the `live` feature (`--no-default-features`) has no data source;
 the frontend then uses its built-in replay.

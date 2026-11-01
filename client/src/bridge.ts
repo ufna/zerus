@@ -1,3 +1,4 @@
+import { desktopService } from "./store/desktopService";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { emptyAccounts, emptyBatch, emptyMachines, emptyProjects, isEmptyBatch, type AccountsView, type MachinesView, type ProjectsView, type Screen, type Action, type ActivityEvent, type Batch, type ComputerId, type Details, type EditOutcome, type Outcome, type ReadMark, type Target, type TerminalConnected, type TerminalFacts, type TerminalEvent, type TerminalStatus, type TerminalTarget, type ArchivePage, type ArchivedActivity, type ProcessTarget, type Answer, type ComposerTab, type ComposerView, type Inspect, type SendReply, type SessionRef, type AttachmentRef, type Fetched, type ConflictsPage, type DraftSource, type SavedDraftDetail, type SavedDraftsPage, type QuestionEdit, type QuestionReply, type ClearControl, emptyUsage, type TerminalFinished, type SessionUsageRef, type Usage } from "./types";
@@ -83,8 +84,18 @@ export async function startBridge(onBatch: (b: Batch) => void): Promise<BridgeMo
       source = tauriSource;
       mode = "tauri";
     } catch (error) {
-      // A build without the live feature has no data source of its own.
-      console.warn("Zerus Next: no live data in this build, using the built-in replay.", error);
+      // An enabled service source remains unavailable even when startup
+      // rejects. Never hide that failure behind synthetic rows or a writer.
+      const service = await invoke<boolean>("desktop_service_mode").catch(() => false);
+      if (service) {
+        desktopService.apply({ connected: false, epoch: null, generation: null, background: {}, attention_counts: null,
+          automatic_approvals: null, details_available: false, code: "service_unavailable" });
+        source = tauriSource;
+        mode = "tauri";
+      } else {
+        // A build without the live feature has no data source of its own.
+        console.warn("Zerus Next: no live data in this build, using the built-in replay.", error);
+      }
     }
   }
   if (!source) {
@@ -184,6 +195,7 @@ export function normalize(b: Partial<Batch>): Batch {
   return {
     upserts: b.upserts ?? e.upserts, removes: b.removes ?? e.removes, replaces: b.replaces ?? e.replaces, computers: b.computers ?? e.computers,
     machines: b.machines ?? [], activity: b.activity ?? e.activity, tasks: b.tasks ?? [], groups: b.groups ?? [], grouping: b.grouping ?? undefined,
+    desktop_service: b.desktop_service ?? undefined,
     processes_view: b.processes_view ?? undefined,
     composer: b.composer ?? undefined, draft_keys: b.draft_keys ?? undefined, composer_events: b.composer_events ?? undefined,
   };
@@ -284,7 +296,7 @@ export async function updateAttentionMarks(marks: Record<string, Mark | null>, r
 /** Merges read marks into the pending ones and wakes the Rust delivery worker; answers every pending mark (undefined outside the app). */
 export async function queueReadMarks(marks: ReadMark[]): Promise<ReadMark[] | undefined> {
   if (!inTauri()) return undefined;
-  return invoke<ReadMark[]>("queue_read_marks", { marks });
+  return invoke<ReadMark[]>(desktopService.enabled() ? "desktop_service_read_marks" : "queue_read_marks", { marks });
 }
 
 /** `hgs reference` for a session: its `zerus://session?...` URI. */

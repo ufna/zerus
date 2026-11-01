@@ -63,6 +63,22 @@ impl AppState {
         self.live.start()
     }
 
+    pub fn desktop_service(&self) -> Option<std::sync::Arc<crate::desktop_service::Service>> {
+        self.live.desktop_service()
+    }
+
+    pub fn set_desktop_responder(&self, responder: Arc<zerus_client_core::desktop::Responder>) {
+        let _ = self.live.desktop_responder.set(responder);
+    }
+
+    #[allow(dead_code)] // .66.3.36 registers its maintenance projection after that adapter lands.
+    pub fn register_service_projection(
+        &self,
+        observer: crate::desktop_service::Projection,
+    ) -> Result<(), String> {
+        self.live.register_service_projection(observer)
+    }
+
     /// The peers this computer's listing names; None before a listing named
     /// them, and for a replay.
     pub fn peers(&self) -> Option<std::collections::BTreeSet<String>> {
@@ -140,6 +156,7 @@ mod live {
     enum Source {
         Fleet(Fleet),
         Replay(Replay),
+        Service(Arc<crate::desktop_service::Service>),
     }
 
     pub struct Live {
@@ -147,6 +164,8 @@ mod live {
         source: Mutex<Option<Source>>,
         pub organization: OnceLock<Organization>,
         pub creations: OnceLock<crate::creations::CreationHost>,
+        pub(super) desktop_responder: OnceLock<Arc<zerus_client_core::desktop::Responder>>,
+        service_projections: Mutex<Vec<crate::desktop_service::Projection>>,
         tasks_project: Mutex<Option<String>>,
         controls: zerus_client_core::desktop::drain::Gate,
         resources: zerus_client_core::desktop::drain::Gate,
@@ -162,6 +181,8 @@ mod live {
                 source: Mutex::new(None),
                 organization: OnceLock::new(),
                 creations: OnceLock::new(),
+                desktop_responder: OnceLock::new(),
+                service_projections: Mutex::new(Vec::new()),
                 tasks_project: Mutex::new(None),
                 controls: Gate::new(64).unwrap(),
                 resources: Gate::new(1).unwrap(),
@@ -171,6 +192,25 @@ mod live {
         }
     }
     impl Live {
+        #[allow(dead_code)] // Reserved setup hook for the .66.3.36 maintenance consumer.
+        pub(super) fn register_service_projection(
+            &self,
+            observer: crate::desktop_service::Projection,
+        ) -> Result<(), String> {
+            let source = self.source.lock().unwrap_or_else(PoisonError::into_inner);
+            if source.is_some() {
+                return Err("Service projections must be registered before startup.".into());
+            }
+            let mut projections = self
+                .service_projections
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if projections.len() >= 8 {
+                return Err("Too many service projections.".into());
+            }
+            projections.push(observer);
+            Ok(())
+        }
         fn admit(&self) -> Result<zerus_client_core::desktop::drain::Charge, String> {
             self.controls
                 .admit(zerus_client_core::desktop::drain::Role::Fleet)
@@ -237,6 +277,10 @@ mod live {
                 .as_ref()
             {
                 Some(Source::Fleet(fleet)) => fleet.reconnect(&ComputerId::from(computer)),
+                Some(Source::Service(service)) => {
+                    service.retry();
+                    true
+                }
                 Some(Source::Replay(_)) | None => false,
             }
         }
@@ -274,8 +318,35 @@ mod live {
                 return Ok(match running {
                     Source::Fleet(_) => "live",
                     Source::Replay(_) => "replay",
+                    Source::Service(_) => "service",
                 }
                 .into());
+            }
+            if crate::desktop_service::mode() {
+                let (sink, changes) = mpsc::sync_channel(256);
+                let pump = self.pump.clone();
+                let observe = organization.clone();
+                let drain = pump.drain_service(changes, move |change| {
+                    if let Some(organization) = &observe {
+                        organization.observe(change);
+                    }
+                });
+                let allowed = replay.is_none()
+                    || std::env::var_os("ZERUS_CLIENT_HGS").is_some_and(|value| !value.is_empty());
+                let service = crate::desktop_service::Service::start(
+                    hgs(),
+                    pump,
+                    sink,
+                    allowed,
+                    drain,
+                    self.desktop_responder.get().cloned(),
+                    self.service_projections
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .clone(),
+                );
+                *source = Some(Source::Service(service));
+                return Ok("service".into());
             }
             let resources: Arc<dyn Send + Sync> = Arc::new(
                 self.resources
@@ -331,6 +402,18 @@ mod live {
             Ok(mode.into())
         }
 
+        pub fn desktop_service(&self) -> Option<Arc<crate::desktop_service::Service>> {
+            match self
+                .source
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+            {
+                Some(Source::Service(service)) => Some(service.clone()),
+                _ => None,
+            }
+        }
+
         /// The base and versions of this computer's latest organization state.
         fn organization_snapshot(&self) -> Option<OrganizationSnapshot> {
             match self
@@ -341,6 +424,7 @@ mod live {
             {
                 Source::Fleet(fleet) => fleet.organization_snapshot(&ComputerId::local()),
                 Source::Replay(replay) => replay.organization_snapshot(),
+                Source::Service(_) => None,
             }
         }
 
@@ -398,6 +482,7 @@ mod live {
                         .map_err(|error| error.to_string())?
                 }
                 Some(Source::Replay(replay)) => replay.follow(&computer, &key, after, tail),
+                Some(Source::Service(_)) => return Err("Activity is unavailable until the background service supports detail subscriptions.".into()),
                 None => return Err("not started".into()),
             }
             Ok(())
@@ -451,6 +536,7 @@ mod live {
                     replay.follow_processes(&target.computer, &target.key);
                     Ok(())
                 }
+                Some(Source::Service(_)) => Err("Processes are unavailable until the background service supports detail subscriptions.".into()),
                 None => Err("not started".into()),
             }
         }
@@ -471,6 +557,7 @@ mod live {
                     .set_processes_interval(&ComputerId(target.computer.clone()), &target.key, ms)
                     .map_err(|error| error.to_string()),
                 Some(Source::Replay(_)) => Ok(()),
+                Some(Source::Service(_)) => Err("Processes are unavailable until the background service supports detail subscriptions.".into()),
                 None => Err("not started".into()),
             }
         }
@@ -487,6 +574,7 @@ mod live {
                     .refresh_processes(&ComputerId(target.computer.clone()), &target.key)
                     .map_err(|error| error.to_string()),
                 Some(Source::Replay(_)) => Ok(()),
+                Some(Source::Service(_)) => Err("Processes are unavailable until the background service supports detail subscriptions.".into()),
                 None => Err("not started".into()),
             }
         }
@@ -506,7 +594,7 @@ mod live {
                 Some(Source::Replay(replay)) => {
                     replay.unfollow_processes(&target.computer, &target.key);
                 }
-                None => {}
+                Some(Source::Service(_)) | None => {}
             }
         }
 
@@ -523,6 +611,7 @@ mod live {
                     fleet.unfollow(&ComputerId(computer), &key);
                 }
                 Some(Source::Replay(replay)) => replay.unfollow(&computer, &key),
+                Some(Source::Service(_)) => (),
                 None => return Err("not started".into()),
             }
             Ok(())

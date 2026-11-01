@@ -1,5 +1,5 @@
 import { GONE, notify, stillListed } from "../../store/actions";
-import { markAllRead, markNeedsAttention, markRead, unreadReplies } from "../../store/marks";
+import { markAllRead, markNeedsAttention, markRead, markReadUnavailable, unreadReplies } from "../../store/marks";
 import { computerFresh } from "../../store/catalog";
 import { needsAttention, selected, selectedKey, setReadSelectionKey, type MenuEntry } from "../../store/ui";
 import type { AttentionFacts } from "../../store/attention";
@@ -25,6 +25,8 @@ export function markReadChip(s: AttentionFacts, online: boolean): { active: bool
 /** Mark as read, with Qt's refusal notice. The open row stays listed until another selection (SessionsWindow.cpp:5432). */
 export function runMarkRead(row: ActionRow): boolean {
   if (!stillListed(row)) return false;
+  const reason = markReadUnavailable(row);
+  if (reason) { notify("error", reason, true); return false; }
   const ok = markRead(row);
   if (!ok) notify("error", NEW_REPLY, true);
   else if (row.key === selectedKey()) setReadSelectionKey(row.key);
