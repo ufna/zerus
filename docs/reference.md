@@ -32,6 +32,17 @@ fresh session name; `--new -n review` uses your label and rejects an occupied na
 Arguments after `--` go to the agent or project wrapper. Arbitrary terminal commands
 can run through `hgs`; native lifecycle and Activity functions require an adapter.
 
+Inside a session's own terminal (tmux on Linux and macOS, the session host on
+Windows), `hgs` never attaches or switches that terminal, so an agent starts other
+sessions detached. `hgs claude /path/to/project --new -n review -d` starts the new
+session beside the current one and prints `hgs: started NAME`, as `fork -d` and
+`resume -d` do; `hgs guide launch` gives agents the full form with `--launch-id`.
+A launch without `-d` and `hgs a` are refused there with exit 2 (`already inside
+tmux session NAME; use --new -d or open a new tab`; Windows names no tmux). The new
+session gets its own session and run identity, never the caller's. Its account
+comes from the launch (`--account ID` or the computer's default for that agent);
+the account profile that the calling session runs under is not passed on.
+
 ### Session references
 
 **Copy session reference** in the desktop session context menu copies a

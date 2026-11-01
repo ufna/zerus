@@ -128,8 +128,10 @@ const STARTUP_POLL: Duration = Duration::from_millis(100);
 /// Variables that describe the session a command runs in. A launch from inside
 /// a session must not hand them to the new one: tmux starts a pane from its
 /// server's environment, which never holds them. A launch sets those its session
-/// needs again.
+/// needs again. `CLAUDECODE` is the mark Claude Code sets for the commands it
+/// runs; a Claude Code that finds it refuses to start as one nested in another.
 const SESSION_CONTEXT: &[&str] = &[
+    "CLAUDECODE",
     "TMUX",
     "TMUX_PANE",
     "HGS_HOST_SESSION",
@@ -1881,6 +1883,10 @@ mod tests {
             "HGS_SESSION=claude/outer/main",
             "hgs_run_id=outer-run",
             "HGS_TRACKING=1",
+            "HGS_ACCOUNT_ID=outer-profile",
+            "HGS_LAUNCH_ID=outer-launch",
+            "HGS_FORK_PARENT_ID=outer-parent",
+            "CLAUDECODE=1",
             "HGS_STATE_DIR=C:\\state",
             "ANTHROPIC_API_KEY=secret",
             "CLAUDE_CONFIG_DIR=C:\\claude",

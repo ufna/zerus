@@ -348,12 +348,19 @@ pub(crate) fn executable_path() -> Result<PathBuf> {
     }
     Ok(env::current_exe()?)
 }
-/// Refuse a launch or attach inside a session pane, `-d` or not; only `fork -d`
-/// and `resume -d` start a session from inside one.
-fn nested_guard(dry: bool) -> Result<()> {
+/// The detached form that a launch refused inside a session pane names: a new
+/// session started beside that one, as `fork -d` and `resume -d` start theirs.
+const DETACHED_LAUNCH: &str = "--new -d";
+/// Refuse to attach this terminal inside a session pane: `hgs a`, and a launch
+/// without `-d`. A detached launch, `fork -d` and `resume -d` start their
+/// sessions from inside one; `retry` names that detached form, if any.
+fn nested_guard(dry: bool, retry: Option<&str>) -> Result<()> {
     if !dry && terminal().inside() {
         let name = terminal().enclosing_session();
-        return Err(Error::new(2, nested_refusal(cfg!(unix), Some(&name), None)));
+        return Err(Error::new(
+            2,
+            nested_refusal(cfg!(unix), Some(&name), retry),
+        ));
     }
     Ok(())
 }
@@ -1315,7 +1322,7 @@ fn attach_command(config: &Config, args: &[String], client: &str, mut dry: bool)
         );
         return Ok(0);
     }
-    nested_guard(false)?;
+    nested_guard(false, None)?;
     // Resolve exact name to an immutable tmux session ID before checking the run.
     // If it disappears later, attach fails instead of creating or selecting a new one.
     const ENDED: &str = "session is no longer running; resume it explicitly";
@@ -1351,7 +1358,7 @@ fn attach(config: &Config, session: &str, client: &str, dry: bool) -> Result<i32
         );
         return Ok(0);
     }
-    nested_guard(false)?;
+    nested_guard(false, None)?;
     terminal().attachable()?;
     if !session_exists(session) && config.state.is_dir() {
         env::set_var("HGS_CLIENT", client);
@@ -1883,7 +1890,12 @@ impl LaunchOptions {
             }
             i += 1;
         }
-        nested_guard(options.dry)?;
+        // Inside a session pane only a detached launch runs: it starts its
+        // session beside that one, as `fork -d` and `resume -d` do, and never
+        // attaches or switches this terminal.
+        if !options.detached {
+            nested_guard(options.dry, Some(DETACHED_LAUNCH))?;
+        }
         if options.launch_id.is_some() && !options.new_only {
             return Err(Error::new(1, "--launch-id requires --new"));
         }
@@ -2040,6 +2052,14 @@ fn launch(
             println!("DeepSeek session ready: {name}\nOpen this session in Zerus.");
         }
         return Ok(0);
+    }
+    // From inside a session only a detached launch or a dry run gets here
+    // (`nested_guard`). The new session takes an identity of its own: tmux
+    // starts its pane from the server's environment and the Windows host drops
+    // the caller's session variables (`host::SESSION_CONTEXT`), and its account
+    // comes from this launch, never from the caller's profile.
+    if terminal().inside() {
+        crate::accounts::forget_session_profile(config);
     }
     let explicit_account = options.account.is_some();
     // Exact conversation lookup is scoped to the chosen account's native home.
@@ -2455,7 +2475,7 @@ mod tests {
     }
 
     #[test]
-    fn inside_a_session_only_tmux_is_named_and_a_launch_is_refused_even_detached() {
+    fn inside_a_session_only_tmux_is_named_and_only_a_detached_launch_starts() {
         // Unix keeps tmux's wording byte for byte.
         assert_eq!(
             nested_refusal(true, Some("sh/MyProj/work-1"), None),
@@ -2472,6 +2492,10 @@ mod tests {
         assert_eq!(
             nested_refusal(true, None, Some("resume -d")),
             "already inside tmux; use resume -d or open a new tab"
+        );
+        assert_eq!(
+            nested_refusal(true, Some("sh/MyProj/work-1"), Some(DETACHED_LAUNCH)),
+            "already inside tmux session sh/MyProj/work-1; use --new -d or open a new tab"
         );
         // A Windows host session is named as the host resolves it, without tmux.
         assert_eq!(
@@ -2490,9 +2514,14 @@ mod tests {
             nested_refusal(false, None, Some("resume -d")),
             "already inside a session; use resume -d or open a new tab"
         );
+        assert_eq!(
+            nested_refusal(false, Some("sh/MyProj/work-1"), Some(DETACHED_LAUNCH)),
+            "already inside session sh/MyProj/work-1; use --new -d or open a new tab"
+        );
 
-        // On either platform a launch inside a session is refused with or
-        // without -d, as inside tmux; a dry run is not.
+        // On either platform a launch inside a session starts only detached,
+        // as `fork -d` and `resume -d` do: one that would attach this terminal
+        // is refused and names the detached form; a dry run is not refused.
         struct Inside;
         impl TerminalBackend for Inside {
             fn inside(&self) -> bool {
@@ -2508,19 +2537,61 @@ mod tests {
             let args = words.iter().map(|word| word.to_string()).collect::<Vec<_>>();
             LaunchOptions::parse(&args, dry)
         };
+        // What `hgs guide launch` tells agents to run, and shorter forms.
+        let id = "0b6f4c9e-3c1d-4b8f-9a35-6f2e2d6f6a10";
+        let guide = ["/abs/MyProj", "--new", "-n", "x", "-d", "--launch-id", id];
+        let guide = [&guide[..], &["--", "prompt"]].concat();
+        let detached: [&[&str]; 3] = [
+            &guide,
+            &["MyProj", "--new", "-n", "x", "-d"],
+            &["MyProj", "-n", "x", "-d"],
+        ];
+        let without_d = guide.iter().copied().filter(|word| *word != "-d");
+        let without_d = without_d.collect::<Vec<_>>();
+        let attached: [&[&str]; 3] = [
+            &without_d,
+            &["MyProj", "--new", "-n", "x"],
+            &["MyProj", "-n", "x"],
+        ];
         state::backend::with_fake(&Inside, || {
-            for words in [&["MyProj", "-n", "x", "-d"][..], &["MyProj", "-n", "x"]] {
+            for words in detached {
+                assert!(launch(words, false).unwrap().detached, "{words:?}");
+            }
+            let options = launch(detached[0], false).unwrap();
+            assert!(options.new_only);
+            assert_eq!(options.launch_id.as_deref(), Some(id));
+            assert_eq!(options.extra, ["prompt"]);
+            for words in attached {
                 let error = launch(words, false).err().unwrap();
-                assert_eq!(error.code, 2);
+                assert_eq!(error.code, 2, "{words:?}");
                 assert_eq!(
                     error.message,
-                    nested_refusal(cfg!(unix), Some("sh/MyProj/work-1"), None)
+                    nested_refusal(cfg!(unix), Some("sh/MyProj/work-1"), Some(DETACHED_LAUNCH))
                 );
+                assert!(launch(words, true).is_ok(), "{words:?}");
             }
-            assert!(launch(&["MyProj", "-n", "x", "-d"], true).is_ok());
+            // The other launch rules still apply to a detached launch there.
+            for words in [
+                &["MyProj", "-n", "x", "-d", "--launch-id", id][..],
+                &["MyProj", "--new", "-n", "x/y", "-d"],
+                &["MyProj", "--new", "-c", "-d"],
+            ] {
+                assert_eq!(launch(words, false).err().unwrap().code, 1, "{words:?}");
+            }
+            // Attaching names no detached form.
+            let error = nested_guard(false, None).err().unwrap();
+            assert_eq!(error.code, 2);
+            assert_eq!(
+                error.message,
+                nested_refusal(cfg!(unix), Some("sh/MyProj/work-1"), None)
+            );
+            assert!(nested_guard(true, None).is_ok());
         });
         state::backend::with_fake(&Outside, || {
-            assert!(launch(&["MyProj", "-n", "x", "-d"], false).is_ok());
+            for words in detached.into_iter().chain(attached) {
+                assert!(launch(words, false).is_ok(), "{words:?}");
+            }
+            assert!(nested_guard(false, None).is_ok());
         });
     }
 

@@ -464,6 +464,42 @@ pub fn select(config: &Config, id: &str, provider: &str) -> Result<Vec<String>> 
     }
     Ok(environment)
 }
+/// The variables, as `var` reads them, that hold the account profile of the
+/// session a command runs in: with `HGS_ACCOUNT_ID` naming a profile, not a
+/// native login, an agent home equal to that profile's (`home` of its ID) and
+/// the Anthropic configuration in it, as `select` and `run_environment` set
+/// them. A value that differs is not the profile's and is kept.
+fn session_profile_variables(
+    home: impl Fn(&str) -> PathBuf,
+    var: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Vec<&'static str> {
+    let Some(id) = var("HGS_ACCOUNT_ID")
+        .and_then(|id| id.into_string().ok())
+        .filter(|id| !id.is_empty() && !id.starts_with("native-"))
+    else {
+        return Vec::new();
+    };
+    let home = home(&id);
+    let is = |key: &str, path: &Path| var(key).is_some_and(|value| Path::new(&value) == path);
+    let mut found: Vec<&'static str> = ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "KIMI_CODE_HOME"]
+        .into_iter()
+        .filter(|key| is(key, &home))
+        .collect();
+    if is("ANTHROPIC_CONFIG_DIR", &home.join("anthropic")) {
+        found.push("ANTHROPIC_CONFIG_DIR");
+    }
+    found
+}
+/// A launch from inside a session starts a session of its own. The account
+/// profile that the enclosing session runs under is in this process's
+/// environment, but it is not this computer's native login: drop it, so that
+/// the new session's account (`--account`, the default, or none) alone decides
+/// its home, and a native one never runs on the caller's profile.
+pub fn forget_session_profile(config: &Config) {
+    for key in session_profile_variables(|id| profile_home(config, id), |key| env::var_os(key)) {
+        env::remove_var(key);
+    }
+}
 fn arg<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
     args.iter()
         .position(|x| x == name)
@@ -1122,6 +1158,61 @@ mod permission_tests {
         ];
         let words = shell_words::split(&supervisor_script(&quoted)).unwrap();
         assert_eq!(&words[2..4], quoted.as_slice());
+    }
+    #[test]
+    fn a_launch_from_a_profile_session_drops_only_that_profiles_variables() {
+        let accounts = Path::new("/private/hgs/accounts");
+        let found = |pairs: &[(&str, &str)]| {
+            session_profile_variables(
+                |id| accounts.join(id),
+                |key| {
+                    pairs
+                        .iter()
+                        .find(|(name, _)| *name == key)
+                        .map(|(_, value)| std::ffi::OsString::from(value))
+                },
+            )
+        };
+        let work = "/private/hgs/accounts/work";
+        // A Claude profile session: its agent home and Anthropic configuration.
+        // Another agent's home, which its own launch passed on, stays.
+        assert_eq!(
+            found(&[
+                ("HGS_ACCOUNT_ID", "work"),
+                ("CLAUDE_CONFIG_DIR", "/private/hgs/accounts/work/"),
+                (
+                    "ANTHROPIC_CONFIG_DIR",
+                    "/private/hgs/accounts/work/anthropic"
+                ),
+                ("CODEX_HOME", "/custom/codex"),
+            ]),
+            ["CLAUDE_CONFIG_DIR", "ANTHROPIC_CONFIG_DIR"]
+        );
+        assert_eq!(
+            found(&[
+                ("HGS_ACCOUNT_ID", "review"),
+                ("CODEX_HOME", "/private/hgs/accounts/review")
+            ]),
+            ["CODEX_HOME"]
+        );
+        // A native login, no account, or values that are not the profile's
+        // own are this computer's settings and are kept.
+        for pairs in [
+            &[
+                ("HGS_ACCOUNT_ID", "native-claude"),
+                ("CLAUDE_CONFIG_DIR", work),
+            ][..],
+            &[("HGS_ACCOUNT_ID", ""), ("CLAUDE_CONFIG_DIR", work)],
+            &[("CLAUDE_CONFIG_DIR", work)],
+            &[
+                ("HGS_ACCOUNT_ID", "work"),
+                ("CLAUDE_CONFIG_DIR", "/elsewhere"),
+            ],
+            &[("HGS_ACCOUNT_ID", "other"), ("KIMI_CODE_HOME", work)],
+            &[("HGS_ACCOUNT_ID", "work"), ("ANTHROPIC_CONFIG_DIR", work)],
+        ] {
+            assert!(found(pairs).is_empty(), "{pairs:?}");
+        }
     }
     #[test]
     fn account_defaults_respect_explicit_launch_mode_and_prompt_delimiter() {
