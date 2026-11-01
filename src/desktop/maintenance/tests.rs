@@ -305,23 +305,133 @@ fn recovery_edit_is_reserved_before_dispatch_and_never_replayed_on_restart() {
     assert!(f.runtime.jobs.is_empty());
 }
 #[test]
-fn full_request_history_refuses_instead_of_forgetting_replay_identities() {
+fn full_plain_history_evicts_oldest_and_keeps_recent_retries_idempotent() {
     let mut f = Fixture::new(no_io());
     f.runtime.load(&f.store).unwrap();
     let stored = f.runtime.stored.as_mut().unwrap();
-    for _ in 0..state::REQUESTS {
+    let oldest = id();
+    let recent = id();
+    for revision in 0..state::REQUESTS {
+        let request = if revision == 0 {
+            oldest.clone()
+        } else if revision == state::REQUESTS - 1 {
+            recent.clone()
+        } else {
+            id()
+        };
         stored.receipts.insert(
-            id(),
+            request,
             state::Receipt {
                 fingerprint: "a".repeat(64),
-                revision: 0,
+                revision: revision as u64,
                 recovery_save: "not_requested".into(),
             },
         );
     }
+    stored.revision = state::REQUESTS as u64;
     state::save(&mut f.store.db, stored).unwrap();
-    assert_eq!(f.configure(Value::Null, Value::Null)["accepted"], false);
-    assert_eq!(state::load(&f.store.db).unwrap().revision, 0);
+    let request =
+        json!({"op":"maintenance_configure","request_id":id(),"update":null,"recovery":null});
+    let receipt = f.runtime.request(&mut f.store, &request);
+    assert_eq!(receipt["accepted"], true);
+    assert_eq!(f.runtime.request(&mut f.store, &request), receipt);
+    let stored = state::load(&f.store.db).unwrap();
+    assert_eq!(stored.receipts.len(), state::REQUESTS);
+    assert!(!stored.receipts.contains_key(&oldest));
+    assert!(stored.receipts.contains_key(&recent));
+}
+#[test]
+fn full_unknown_edit_bucket_does_not_freeze_plain_gui_configuration() {
+    let mut f = Fixture::new(no_io());
+    f.runtime.load(&f.store).unwrap();
+    let stored = f.runtime.stored.as_mut().unwrap();
+    let original = id();
+    for revision in 0..state::UNKNOWN_REQUESTS {
+        let request = if revision == 0 {
+            original.clone()
+        } else {
+            id()
+        };
+        stored.receipts.insert(
+            request,
+            state::Receipt {
+                fingerprint: "a".repeat(64),
+                revision: revision as u64,
+                recovery_save: "unknown".into(),
+            },
+        );
+    }
+    stored.revision = state::UNKNOWN_REQUESTS as u64;
+    state::save(&mut f.store.db, stored).unwrap();
+    assert_eq!(f.configure(update(false), Value::Null)["accepted"], true);
+    let stored = state::load(&f.store.db).unwrap();
+    assert_eq!(stored.receipts[&original].recovery_save, "unknown");
+    assert_eq!(stored.receipts.len(), state::UNKNOWN_REQUESTS + 1);
+}
+#[test]
+fn old_unknown_edit_survives_plain_receipt_eviction() {
+    let mut f = Fixture::new(no_io());
+    f.runtime.load(&f.store).unwrap();
+    let stored = f.runtime.stored.as_mut().unwrap();
+    let original = id();
+    stored.receipts.insert(
+        original.clone(),
+        state::Receipt {
+            fingerprint: "a".repeat(64),
+            revision: 0,
+            recovery_save: "unknown".into(),
+        },
+    );
+    for revision in 1..=state::REQUESTS {
+        stored.receipts.insert(
+            id(),
+            state::Receipt {
+                fingerprint: "a".repeat(64),
+                revision: revision as u64,
+                recovery_save: "not_requested".into(),
+            },
+        );
+    }
+    stored.revision = state::REQUESTS as u64;
+    state::save(&mut f.store.db, stored).unwrap();
+    assert_eq!(f.configure(Value::Null, Value::Null)["accepted"], true);
+    let stored = state::load(&f.store.db).unwrap();
+    assert_eq!(stored.receipts[&original].recovery_save, "unknown");
+    assert_eq!(stored.receipts.len(), state::REQUESTS + 1);
+}
+#[test]
+fn windows_interval_comes_from_the_selected_gui_installation() {
+    let mut f = Fixture::new(no_io());
+    let mut selected = update(true);
+    selected["channel"] = "dev".into();
+    f.configure(selected, Value::Null);
+    let stored = f.runtime.stored.as_mut().unwrap();
+    stored.updates.insert(
+        "dev".into(),
+        UpdateProjection {
+            last_attempt: unix_now() - 1800,
+            installation: zerus_client_core::updates::Installation {
+                kind: "portable".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    state::save(&mut f.store.db, stored).unwrap();
+    f.runtime.poll(&mut f.store);
+    assert!(
+        f.runtime.jobs.is_empty(),
+        "Windows Stable interval applies even to a Dev channel on another test OS"
+    );
+}
+#[test]
+fn a_late_owned_heartbeat_keeps_the_same_recovery_model() {
+    let mut f = Fixture::new(no_io());
+    f.native_source();
+    f.runtime.source.as_mut().unwrap().at = Instant::now() - Duration::from_secs(20);
+    assert!(f.runtime.recovery_current(&f.store));
+    f.runtime.source.as_mut().unwrap().at = Instant::now() - Duration::from_secs(31);
+    assert!(!f.runtime.recovery_current(&f.store));
 }
 impl Runtime {
     fn observe_fixture(&mut self, store: &Store, packet: &feed::Packet) {
