@@ -348,11 +348,16 @@ class Desktop(unittest.TestCase):
 
     def test_background_fleet_lifetime_revoke_and_stale_epoch(self):
         self.env['HGS_PEERS'] = ''
+        # Exercise unavailable inputs without consulting the owner's desktop.
+        self.env['DBUS_SESSION_BUS_ADDRESS'] = 'unix:path=' + str(self.root / 'missing-bus')
+        self.env['XDG_RUNTIME_DIR'] = str(self.root)
+        self.env['XDG_SESSION_TYPE'] = 'wayland'
+        self.env['WAYLAND_DISPLAY'] = 'missing-wayland'
         process, first = self.serve(background=True)
-        self.assertEqual(first['ownership'], 'background_readonly')
-        self.assertFalse(first['writers_enabled'])
+        self.assertEqual(first['ownership'], 'background_service')
+        self.assertTrue(first['writers_enabled'])
         watcher, hello, frames = self.watch()
-        self.assertEqual(hello['value']['ownership'], 'background_readonly')
+        self.assertEqual(hello['value']['ownership'], 'background_service')
         deadline = time.monotonic() + 10
         current = first
         while time.monotonic() < deadline:
@@ -373,6 +378,8 @@ class Desktop(unittest.TestCase):
             result = self.cli('desktop', 'request', '--json', data={
                 'op': 'automatic_approvals', 'request_id': str(uuid.uuid4()), 'enabled': enabled})
             self.assertFalse(result['accepted'], 'generic CLI must not change approval policy')
+        legacy = self.cli('presence', 'set', '--json', data={'idle_seconds': 0, 'locked': False}, ok=False)
+        self.assertNotEqual(legacy.returncode, 0, 'service must exclude the legacy writer')
         request_id = str(uuid.uuid4())
         result = self.cli('desktop', 'revoke', '--json', '--request-id', request_id)
         self.assertTrue(result['revoked'])
@@ -380,14 +387,22 @@ class Desktop(unittest.TestCase):
         stopped = self.cli('desktop', 'status', '--json')
         self.assertTrue(stopped['background_runtime']['drained'])
         self.assertEqual(stopped['ownership'], 'revoked')
+        self.assertTrue(stopped['lifecycle']['background']['presence']['drained'])
+        self.assertFalse(stopped['writers_enabled'])
+        self.cli('presence', 'set', '--json', data={'idle_seconds': 0, 'locked': False})
         watcher.stdin.close()
         watcher.wait(timeout=5)
         self.stop(process)
         replacement, second = self.serve(background=True)
         self.assertNotEqual(first['epoch'], second['epoch'])
+        self.assertEqual(second['ownership'], 'passive')
+        self.assertFalse(second['writers_enabled'])
+        self.assertEqual(second['background_start']['code'], 'explicit_handoff_required')
+        self.assertNotIn('background_runtime', second)
+        self.assertTrue(all(not component['ready'] for component in second['lifecycle']['background'].values()))
         stale = self.cli('desktop', 'revoke', '--json', '--request-id', request_id, ok=False)
         self.assertEqual(json.loads(stale.stdout)['code'], 'writer_epoch_changed')
-        self.assertEqual(self.cli('desktop', 'status', '--json')['background_runtime']['state'], 'running')
+        self.assertEqual(self.cli('desktop', 'status', '--json')['ownership'], 'passive')
 
     def test_lifecycle_probe_binds_the_live_service_and_nondefault_configuration(self):
         missing = self.cli('desktop', 'status', '--json')['lifecycle']
@@ -632,7 +647,7 @@ class Desktop(unittest.TestCase):
             db.execute('PRAGMA user_version=1')
         database.chmod(0o600)
         process, status = self.serve()
-        self.assertEqual(status['schema'], 10)
+        self.assertEqual(status['schema'], 11)
         self.assertEqual(status['generation'], 8)
         self.assertEqual(status['configuration'], configuration)
         self.assertTrue(status['effect_journal']['revoked'])
@@ -642,13 +657,18 @@ class Desktop(unittest.TestCase):
         self.assertFalse(status['read_queue']['recovery_error'])
         self.stop(process)
         with closing(sqlite3.connect(database)) as db:
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 10)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 11)
             self.assertEqual(db.execute('SELECT rows,bytes FROM desktop_catalog_totals').fetchone(), (0, 0))
             self.assertEqual(db.execute('SELECT count(*) FROM desktop_catalog_sources').fetchone()[0], 0)
             self.assertEqual(db.execute('SELECT configuration FROM service').fetchone()[0], configuration)
 
     @staticmethod
-    def remove_counts_schema(db):
+    def remove_counts_and_delivery_schema(db):
+        # Rewind every later layer, rather than leaving a schema-11 database
+        # labelled as an older version. Production migrations stay strict.
+        db.execute('DROP INDEX desktop_delivery_catalog_name')
+        db.execute('DROP TABLE desktop_delivery_requests')
+        db.execute('DROP TABLE desktop_delivery_policy')
         for suffix in ('generation', 'insert', 'delete', 'update'):
             db.execute(f'DROP TRIGGER desktop_counts_{suffix}')
         db.execute('ALTER TABLE desktop_catalog_rows DROP COLUMN shared_flags')
@@ -670,11 +690,11 @@ class Desktop(unittest.TestCase):
             db.execute('DROP INDEX desktop_commands_pending')
             for table in ('desktop_producer_prepared', 'desktop_operation_custody', 'desktop_operation_attempts', 'desktop_operations', 'desktop_operation_totals'):
                 db.execute(f'DROP TABLE {table}')
-            self.remove_counts_schema(db)
+            self.remove_counts_and_delivery_schema(db)
             db.execute('PRAGMA user_version=5')
         for _ in range(2):
             process, status = self.serve()
-            self.assertEqual(status['schema'], 10)
+            self.assertEqual(status['schema'], 11)
             self.assertEqual(status['catalog_projection']['stored_bytes'], expected)
             self.assertEqual(status['catalog_projection']['stored_rows'], 0)
             self.stop(process)
@@ -691,7 +711,7 @@ class Desktop(unittest.TestCase):
             db.execute('DROP INDEX desktop_commands_pending')
             for table in ('desktop_producer_prepared', 'desktop_operation_custody', 'desktop_operation_attempts', 'desktop_operations', 'desktop_operation_totals'):
                 db.execute(f'DROP TABLE {table}')
-            self.remove_counts_schema(db)
+            self.remove_counts_and_delivery_schema(db)
             db.execute('PRAGMA user_version=6')
             db.execute('CREATE TABLE desktop_operation_totals (fixture TEXT)')
         self.failed_serve()
@@ -700,7 +720,7 @@ class Desktop(unittest.TestCase):
             self.assertEqual(db.execute("SELECT count(*) FROM sqlite_schema WHERE name='desktop_operations'").fetchone()[0], 0)
             db.execute('DROP TABLE desktop_operation_totals')
         process, status = self.serve()
-        self.assertEqual(status['schema'], 10)
+        self.assertEqual(status['schema'], 11)
         self.assertEqual({key:status['operation_queue'][key] for key in ('unsettled','undrained','admissions_paused','recovery_error')}, dict(unsettled=0, undrained=0, admissions_paused=True, recovery_error=False))
         self.assertFalse(status['writers_enabled'])
         self.stop(process)
@@ -713,7 +733,7 @@ class Desktop(unittest.TestCase):
             db.execute('DROP TABLE desktop_producer_prepared')
             db.execute('DROP TABLE desktop_operation_custody')
             db.execute('DROP INDEX desktop_commands_pending')
-            self.remove_counts_schema(db)
+            self.remove_counts_and_delivery_schema(db)
             db.execute('PRAGMA user_version=7')
             db.execute('CREATE INDEX desktop_commands_pending ON desktop_commands(request_id)')
         self.failed_serve()
@@ -723,7 +743,7 @@ class Desktop(unittest.TestCase):
             self.assertEqual(db.execute("SELECT count(*) FROM sqlite_schema WHERE name LIKE 'desktop_custody_%'").fetchone()[0], 0)
             db.execute('DROP INDEX desktop_commands_pending')
         process, status = self.serve()
-        self.assertEqual(status['schema'], 10)
+        self.assertEqual(status['schema'], 11)
         self.assertEqual(status['operation_queue']['undrained'], 0)
         self.assertTrue(status['operation_queue']['admissions_paused'])
         self.assertFalse((self.desktop / 'operation-custody').exists())
@@ -735,7 +755,7 @@ class Desktop(unittest.TestCase):
         database = self.desktop / 'state.sqlite3'
         with closing(sqlite3.connect(database)) as db, db:
             db.execute('DROP TABLE desktop_producer_prepared')
-            self.remove_counts_schema(db)
+            self.remove_counts_and_delivery_schema(db)
             db.execute('PRAGMA user_version=8')
             db.execute('CREATE TABLE desktop_producer_prepared (fixture TEXT)')
             db.execute("INSERT INTO desktop_producer_prepared VALUES('retained')")
@@ -745,11 +765,11 @@ class Desktop(unittest.TestCase):
             self.assertEqual(db.execute('SELECT fixture FROM desktop_producer_prepared').fetchone()[0], 'retained')
             db.execute('DROP TABLE desktop_producer_prepared')
         process, status = self.serve()
-        self.assertEqual(status['schema'], 10)
+        self.assertEqual(status['schema'], 11)
         self.assertFalse(status['writers_enabled'])
         self.stop(process)
         with closing(sqlite3.connect(database)) as db:
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 10)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 11)
             self.assertEqual(db.execute('SELECT count(*) FROM desktop_producer_prepared').fetchone()[0], 0)
 
     def test_catalog_collection_progresses_without_a_frontend(self):
