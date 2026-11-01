@@ -1,4 +1,6 @@
 //! Durable desktop service kernel with explicit service-owned fleet activation.
+#[allow(dead_code)] // Discovery is bound to the original notification factory at cutover.
+mod attention;
 mod background;
 mod catalog_read;
 mod counts;

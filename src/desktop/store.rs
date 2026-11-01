@@ -12,7 +12,7 @@ use zerus_desktop_migration::{canonical, configuration, HANDOFF_LOCK};
 #[path = "maintenance.rs"]
 pub(crate) mod maintenance;
 
-pub const SCHEMA: i64 = 13;
+pub const SCHEMA: i64 = 14;
 pub struct HandoffLock {
     _lock: platform::FileLock,
     root: PathBuf,
@@ -328,6 +328,12 @@ impl Store {
             let tx = db.transaction()?;
             zerus_desktop_catalog::changes::migrate(&tx)?;
             tx.execute_batch("PRAGMA user_version=13;")?;
+            tx.commit()?;
+        }
+        if version < 14 {
+            let tx = db.transaction()?;
+            super::attention::migrate(&tx)?;
+            tx.execute_batch("PRAGMA user_version=14;")?;
             tx.commit()?;
         }
         zerus_desktop_catalog::begin_service(&mut db, epoch)?;
