@@ -5999,6 +5999,7 @@ dependencies = [
  "zbus",
  "zerus-client-core",
  "zerus-client-media",
+ "zerus-freedesktop-notify",
  "zerus-watch-protocol",
 ]
 
@@ -6060,6 +6061,13 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "zerus-freedesktop-notify"
+version = "0.1.0"
+dependencies = [
+ "zbus",
 ]
 
 [[package]]
