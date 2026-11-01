@@ -98,6 +98,14 @@ impl Runtime {
         self.delivery.request(store, value)
     }
 
+    pub fn frontend_request(
+        &mut self,
+        store: &mut Store,
+        authority: super::ui_authority::Validated,
+    ) -> Value {
+        self.delivery.frontend_request(store, authority)
+    }
+
     pub fn details_open(&mut self, queue: &Arc<Queue>) -> Option<Value> {
         self.details.open(queue)
     }

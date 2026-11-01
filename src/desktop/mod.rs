@@ -13,6 +13,8 @@ mod frontend;
 mod handoff;
 mod import_evidence;
 mod lifecycle;
+#[allow(dead_code)] // Platform adapters attach this outbox in the next integration slice.
+mod notifications;
 #[allow(dead_code)]
 mod operations;
 mod owner;
@@ -493,7 +495,7 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                         let result = match (authority, &mut background) {
                             (Some(authority), Some(runtime)) => {
                                 match authority.into_request(&mut frontend_order) {
-                                    Ok(request) => runtime.delivery_request(&mut store, &request),
+                                    Ok(request) => runtime.frontend_request(&mut store, request),
                                     Err(_) => frontend_refused(
                                         hello.request.as_ref(),
                                         "frontend_identity_expired",
