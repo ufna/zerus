@@ -66,6 +66,9 @@ fn basic(process: HANDLE, pid: u32) -> io::Result<Basic> {
     )?;
     Ok(value)
 }
+fn context(stage: &str, error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), format!("{stage}: {error}"))
+}
 fn image(process: HANDLE) -> io::Result<String> {
     let mut bytes = vec![0u16; 32768];
     let mut count = bytes.len() as u32;
@@ -98,9 +101,10 @@ impl Original {
                 0,
                 pid,
             )
-        })?;
+        })
+        .map_err(|e| context("open original process", e))?;
         let before = birth(limited.as_raw_handle()).ok_or(io::ErrorKind::PermissionDenied)?;
-        let sid = user(limited.as_raw_handle())?;
+        let sid = user(limited.as_raw_handle()).map_err(|e| context("read original SID", e))?;
         let own = sid == user(unsafe { GetCurrentProcess() })?;
         let process = if own {
             let full = owned(unsafe {
@@ -109,7 +113,8 @@ impl Original {
                     0,
                     pid,
                 )
-            })?;
+            })
+            .map_err(|e| context("open same-user process memory", e))?;
             require(
                 birth(full.as_raw_handle()).as_deref() == Some(before.as_str())
                     && user(full.as_raw_handle())? == sid,
@@ -450,7 +455,8 @@ pub struct Ancestry {
 impl Ancestry {
     pub fn inspect(pid: u32, until: Instant) -> io::Result<Self> {
         require(Instant::now() < until)?;
-        let mut current = Original::open(pid)?;
+        let mut current =
+            Original::open(pid).map_err(|e| context("initial ancestor metadata", e))?;
         let mut chain: Vec<Arc<Original>> = Vec::new();
         loop {
             require(
@@ -475,7 +481,10 @@ impl Ancestry {
                 .and_then(|s| s.to_str())
                 .ok_or(io::ErrorKind::InvalidData)?
                 .to_owned();
-            if agent_name(&name)? || agent(&current.environment(until)?)? {
+            let environment = current
+                .environment(until)
+                .map_err(|e| context(&format!("ancestor environment at hop {}", chain.len()), e))?;
+            if agent_name(&name)? || agent(&environment)? {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     "agent-descended frontend request refused",
@@ -483,7 +492,8 @@ impl Ancestry {
             }
             let parent = current.parent;
             chain.push(Arc::new(current));
-            current = Original::open(parent)?;
+            current = Original::open(parent)
+                .map_err(|e| context(&format!("ancestor metadata at hop {}", chain.len()), e))?;
         }
     }
     pub fn validate(&self, until: Instant) -> io::Result<()> {
@@ -590,8 +600,25 @@ mod tests {
     }
     #[test]
     fn native_clean_ancestry_requires_a_real_verified_other_user_boundary() {
-        let chain =
-            Ancestry::inspect(std::process::id(), Instant::now() + Duration::from_secs(2)).unwrap();
+        let chain = Ancestry::inspect(std::process::id(), Instant::now() + Duration::from_secs(2))
+            .unwrap_or_else(|error| {
+                let until = Instant::now() + Duration::from_secs(2);
+                let mut pid = std::process::id();
+                for hop in 0..LIMIT {
+                    if Instant::now() >= until { break; }
+                    match Original::open(pid) {
+                        Ok(original) => {
+                            eprintln!("ancestry hop={hop} pid={pid} parent={} own={} current={} env_read={:?}",
+                                original.parent, original.own, original.current(),
+                                original.environment(until).map(|_| ()).map_err(|e| e.to_string()));
+                            if !original.own || original.parent == 0 { break; }
+                            pid = original.parent;
+                        }
+                        Err(e) => { eprintln!("ancestry hop={hop} metadata={e}"); break; }
+                    }
+                }
+                panic!("clean native ancestry refused: {error}");
+            });
         assert!(!chain.boundary.own);
         assert!(!chain.chain.is_empty());
         assert!(chain.chain.len() <= LIMIT);
@@ -610,5 +637,55 @@ mod tests {
         original.birth = birth;
         original.image.push_str(".changed");
         assert!(!original.current());
+    }
+
+    #[test]
+    fn native_environment_changed_after_admission_is_rechecked_at_use() {
+        use std::{io::Read, sync::mpsc, thread};
+        let mut child=Held(Command::new("cmd.exe").creation_flags(CREATE_NO_WINDOW)
+            .args(["/D","/Q","/C","set /p HGS_TEST_WAIT=& set HGS_RUN_ID=late-tag& echo READY& set /p HGS_TEST_WAIT="])
+            .env_remove("HGS_SESSION").env_remove("HGS_RUN_ID")
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap());
+        let until = Instant::now() + Duration::from_secs(2);
+        let original = Original::open(child.0.id()).unwrap();
+        let admitted = Ancestry::inspect(child.0.id(), until).unwrap();
+        let mut stdout = child.0.stdout.take().unwrap();
+        let (send, receive) = mpsc::sync_channel(1);
+        let reader = thread::spawn(move || {
+            let mut line = Vec::new();
+            for _ in 0..32 {
+                let mut byte = [0u8];
+                match stdout.read(&mut byte) {
+                    Ok(1) => {
+                        line.push(byte[0]);
+                        if byte[0] == b'\n' {
+                            break;
+                        }
+                    }
+                    _ => break,
+                }
+            }
+            let _ = send.send(line);
+        });
+        child
+            .0
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"continue\n")
+            .unwrap();
+        let ready = receive.recv_timeout(Duration::from_secs(2));
+        let tagged = original.environment(until).and_then(|bytes| agent(&bytes));
+        let current = original.current();
+        let result = admitted.validate(until);
+        drop(child);
+        reader.join().unwrap();
+        assert!(ready.unwrap().ends_with(b"READY\r\n"));
+        assert!(tagged.unwrap());
+        assert!(current);
+        assert!(
+            result.is_err(),
+            "a still-live process acquiring an agent marker must lose admission"
+        );
     }
 }

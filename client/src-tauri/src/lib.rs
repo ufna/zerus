@@ -26,7 +26,10 @@ mod content_search;
 mod creations;
 #[cfg(feature = "live")]
 mod desk;
-#[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos", windows)))]
+#[cfg(all(
+    feature = "live",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
 mod desktop_hello;
 #[cfg(feature = "live")]
 mod desktop_service;
@@ -171,7 +174,10 @@ pub struct Startup {
     /// The claimed single-instance socket and the activations it receives.
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub instance: Option<instance::Claimed>,
-    #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos", windows)))]
+    #[cfg(all(
+        feature = "live",
+        any(target_os = "linux", target_os = "macos", windows)
+    ))]
     pub desktop_responder: Option<std::sync::Arc<zerus_client_core::desktop::Responder>>,
     #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
     pub desktop_bootstrap: Option<zerus_client_core::desktop::startup::Bootstrap>,
@@ -245,7 +251,10 @@ pub fn run() {
     }
     let identity = identity::current(&context.config().identifier);
     let opens_sessions = options.opens_sessions(identity.is_switch());
-    #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos", windows)))]
+    #[cfg(all(
+        feature = "live",
+        any(target_os = "linux", target_os = "macos", windows)
+    ))]
     let mut desktop_responder = None;
     #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
     let mut desktop_bootstrap = None;
@@ -258,11 +267,20 @@ pub fn run() {
             } else {
                 instance::Activation::Show
             };
-            #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos", windows)))]
+            #[cfg(all(
+                feature = "live",
+                any(target_os = "linux", target_os = "macos", windows)
+            ))]
             let (reply, responder) = desktop_hello::prepare(&identity);
-            #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos", windows)))]
+            #[cfg(all(
+                feature = "live",
+                any(target_os = "linux", target_os = "macos", windows)
+            ))]
             let reply = Some(reply);
-            #[cfg(not(all(feature = "live", any(target_os = "linux", target_os = "macos", windows))))]
+            #[cfg(not(all(
+                feature = "live",
+                any(target_os = "linux", target_os = "macos", windows)
+            )))]
             let reply = None;
             match instance::claim(&name, identity.launchd_label(), activation, reply) {
                 instance::Claim::Claimed(claimed) => {
@@ -281,7 +299,9 @@ pub fn run() {
                         desktop_responder = Some(responder);
                     }
                     #[cfg(all(windows, feature = "live"))]
-                    { desktop_responder = Some(responder); }
+                    {
+                        desktop_responder = Some(responder);
+                    }
                     Some(claimed)
                 }
                 instance::Claim::Forwarded => {
@@ -314,7 +334,10 @@ pub fn run() {
             opens_sessions,
             #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             instance,
-            #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos", windows)))]
+            #[cfg(all(
+                feature = "live",
+                any(target_os = "linux", target_os = "macos", windows)
+            ))]
             desktop_responder,
             #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos")))]
             desktop_bootstrap,

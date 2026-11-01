@@ -1,7 +1,9 @@
 //! Background setup for the canonical instance's read-only delegation hello.
 //! The socket callback uses cached identity only; there is no probe-time child.
 use std::sync::Arc;
-use zerus_client_core::desktop::{self, Build, Responder};
+#[cfg(unix)]
+use zerus_client_core::desktop;
+use zerus_client_core::desktop::{Build, Responder};
 
 pub fn prepare(identity: &crate::identity::Identity) -> (crate::instance::Reply, Arc<Responder>) {
     let info = crate::cli::build_info(&crate::cli::BUILD);
