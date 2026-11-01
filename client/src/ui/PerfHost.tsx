@@ -21,6 +21,7 @@ import { snapshotOf, terminateCopy, type ActionRow } from "./sessions/actions-ui
 import type { Action, CreationCard, EditOutcome, Outcome } from "../types";
 import { inTauri, metrics, onCreations, pumpStats } from "../bridge";
 import { restoreSettings, setSetting } from "../store/settings";
+import { motionVisibility, motionPaused, motionUnfocused } from "../store/visibility";
 import { setPage, type Page } from "../store/ui";
 import { accountsPage } from "../store/accounts";
 import { machinesPage } from "../store/machines";
@@ -179,12 +180,13 @@ async function autoRun(config: PerfConfig) {
   }), 1);
   /** The page while the window was last away (perf_away): its animations and what the pump did until it returned. */
   type Pump = typeof pumpStats;
-  let away: { visibility: string; animations?: string; hidden_ms?: number; pump?: Pump } = { visibility: document.visibilityState };
+  type MotionSample = { state: "paused" | "running"; focused: boolean; linux_unfocused: boolean; animations: string };
+  let away: { visibility: string; animations?: string; hidden_ms?: number; pump?: Pump; motion?: MotionSample[] } = { visibility: document.visibilityState };
   let atHide: { at: number; pump: Pump } | undefined;
   const onVisibility = () => {
     if (document.visibilityState === "hidden") {
       atHide = { at: performance.now(), pump: { ...pumpStats } };
-      away = { visibility: "hidden", animations: animationStates() };
+      away = { ...away, visibility: "hidden", animations: animationStates() };
     } else if (atHide) {
       const before = atHide.pump;
       away.hidden_ms = Math.round(performance.now() - atHide.at);
@@ -194,6 +196,12 @@ async function autoRun(config: PerfConfig) {
     log(`visibility ${document.visibilityState} after ${elapsed()}${away.animations && document.visibilityState === "hidden" ? `; animations ${away.animations}` : ""}`);
   };
   document.addEventListener("visibilitychange", onVisibility);
+  const onMotion = () => {
+    const sample: MotionSample = { state: motionPaused() ? "paused" : "running", focused: document.hasFocus(), linux_unfocused: motionUnfocused(), animations: animationStates() };
+    away.motion = [...(away.motion ?? []).slice(-63), sample];
+    log(`motion ${sample.state} after ${elapsed()}; document focus ${sample.focused}; Linux toplevel unfocused ${sample.linux_unfocused}; animations ${sample.animations}`);
+  };
+  const stopMotion = motionVisibility.onChange(onMotion);
   const cutoff = setTimeout(() => { log(`run timeout after ${elapsed()}, saving ${finished.length} scenarios`); void failed("run timeout (8 min)"); }, RUN_TIMEOUT_MS);
   try {
     log(`start (display ${config.display ?? "n/a"}, preference ${config.preference ?? "n/a"}, visibility ${document.visibilityState}, cross-origin isolated ${crossOriginIsolated})`);
@@ -280,7 +288,8 @@ async function autoRun(config: PerfConfig) {
       const s = (result as { sample?: { total?: { cpu_percent?: number }; processes?: { role?: string; cpu_percent?: number | null }[]; window_ms?: number } }).sample;
       const roles = (s?.processes ?? []).map((p) => `${p.role} ${p.cpu_percent ?? "n/a"}%`).join(", ");
       const pump = away.pump ? Object.entries(away.pump).map(([k, v]) => `${k} +${v}`).join(", ") : "n/a";
-      const page = away.visibility === "hidden" ? `hidden for ${away.hidden_ms ?? "n/a"} ms, animations ${away.animations}, pump while hidden ${pump}` : `stayed ${away.visibility}`;
+      const motion = away.motion?.map((sample) => `${sample.state} (focus ${sample.focused}, animations ${sample.animations})`).join("; ") || "no change";
+      const page = `${away.visibility === "hidden" ? `hidden for ${away.hidden_ms ?? "n/a"} ms, animations ${away.animations}, pump while hidden ${pump}` : `stayed ${away.visibility}`}; motion ${motion}`;
       log(`window ${how}: ${s?.total?.cpu_percent ?? "n/a"}% CPU over ${s?.window_ms ?? "n/a"} ms (${roles}); page ${page}${"minimized" in result ? `; minimized ${result.minimized}` : ""}${"error" in result ? `; ${(result as { error: string }).error}` : ""}`);
       await sleep(1000);
       // As displayed again: the motion resumed and the pump caught up.
@@ -294,6 +303,9 @@ async function autoRun(config: PerfConfig) {
     clearTimeout(cutoff);
     log(`failed: ${String(error)}`);
     await failed(error);
+  } finally {
+    stopMotion();
+    document.removeEventListener("visibilitychange", onVisibility);
   }
 }
 

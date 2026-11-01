@@ -997,7 +997,7 @@ pub fn window_notice(app: &AppHandle, title: &str, text: &str) {
 /// Qt's `TrayAgent::notify` on macOS: `osascript display notification`,
 /// shown at once without the app's own permission (`TrayAgent.cpp:796-830`).
 pub fn tray_notify(title: &str, body: &str) {
-    let spawned = std::process::Command::new("osascript")
+    let spawned = crate::child_environment::command("osascript")
         .arg("-e")
         .arg(shell::notification_script(title, body))
         .stdin(Stdio::null())
@@ -1075,7 +1075,7 @@ fn open_in_terminal(command: &str) -> Result<(), String> {
 /// the log.
 fn detached_script(program: &str, script: &str) -> Result<(), String> {
     let home = std::env::var_os("HOME").unwrap_or_else(|| "/".into());
-    let spawned = std::process::Command::new(program)
+    let spawned = crate::child_environment::command(program)
         .arg("-e")
         .arg(script)
         .current_dir(home)

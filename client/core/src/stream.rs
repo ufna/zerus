@@ -173,7 +173,7 @@ pub enum Probe {
 /// `hgs [@alias] <args>` without an agent's attribution identity: the client
 /// acts for the person even when it was started from an agent's shell.
 pub(crate) fn hgs_command(hgs: &Path, computer: &ComputerId, args: &[&str]) -> Command {
-    let mut command = Command::new(hgs);
+    let mut command = crate::child_environment::command(hgs);
     if let Some(alias) = computer.alias() {
         command.arg(format!("@{alias}"));
     }
@@ -828,6 +828,30 @@ impl StreamHandle {
     pub fn request_stop(&self) {
         self.close_admissions();
         let _ = self.tx.try_send(Input::Stop);
+    }
+
+    /// Nonblocking source-owner barrier. No upstream I/O or joins of live work.
+    pub(crate) fn join_source_if_finished(&mut self) -> bool {
+        assert!(self.raw_source);
+        if self
+            .thread
+            .as_ref()
+            .is_some_and(|thread| !thread.is_finished())
+        {
+            return false;
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        true
+    }
+
+    /// Cancel a source on an owner's early drop without blocking its actor.
+    /// Endpoint guards still count unfinished I/O; this is never a drain proof.
+    pub(crate) fn detach_source(mut self) {
+        assert!(self.raw_source);
+        self.request_stop();
+        self.thread.take();
     }
 
     fn close_admissions(&self) {

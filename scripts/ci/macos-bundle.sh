@@ -37,7 +37,7 @@ switch_config="$PWD/target/macos-switch.conf.json"
 python3 client/scripts/switch-config.py "$switch_config" --release "$release"
 (cd client && npm exec -- tauri build --config "$switch_config" --bundles app --features video --ci --no-sign -- --locked)
 python3 scripts/collect-licenses.py artifacts/macos-client-licenses \
-    --manifest-path client/src-tauri/Cargo.toml --features video
+    --manifest-path client/src-tauri/Cargo.toml --manifest-features client/src-tauri/Cargo.toml=video
 python3 client/scripts/collect-notices.py artifacts/macos-frontend-licenses
 if [ "$run_tests" = true ]; then
     (cd client && npm run check && npm test) 2>&1 | tee artifacts/test-results/macos-bundle-web.log

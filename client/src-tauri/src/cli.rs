@@ -165,6 +165,9 @@ pub fn build_info_for(facts: &BuildFacts, identifier: &str) -> Value {
     let mut info = build_info(facts);
     info["CFBundleIdentifier"] = Value::from(identifier);
     info["ZerusGUI"] = Value::from("tauri");
+    // Older Tauri rollback builds must use stock libraries: they cannot restore
+    // the launcher's environment before starting agents or external programs.
+    info["localWebKitChildEnvironment"] = Value::from(1);
     info
 }
 
@@ -354,6 +357,7 @@ mod tests {
             let identified = build_info_for(&dev, "com.hgdev.hgs-tray");
             assert_eq!(identified["CFBundleIdentifier"], "com.hgdev.hgs-tray");
             assert_eq!(identified["ZerusGUI"], "tauri");
+            assert_eq!(identified["localWebKitChildEnvironment"], 1);
         }
     }
 

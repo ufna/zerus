@@ -215,13 +215,9 @@ SCRATCH=0
 if [ -n "${HGS_INSTALL_PREFIX:-}" ]; then SCRATCH=1; fi
 LIVE="${RESTART_RUNNING}"
 if [ "${SCRATCH}" = "1" ]; then LIVE=0; fi
-GUI="${HGS_LINUX_GUI:-}"
-if [ -z "${GUI}" ]; then
-    GUI=qt
-    if [ "$(python3 "${SCRIPT_DIR}/update-installed.py" --installed-gui "${BIN_DEST}" 2>/dev/null)" = "tauri" ]; then
-        GUI=client
-    fi
-fi
+# Fresh installs and upgrades use Zerus Next. Qt remains an explicit fallback
+# until Linux acceptance: HGS_LINUX_GUI=qt ./tray/install.sh.
+GUI="${HGS_LINUX_GUI:-client}"
 case "${GUI}" in qt|client) ;; *) echo "HGS_LINUX_GUI must be qt or client" >&2; exit 1 ;; esac
 
 # --- 1. build -----------------------------------------------------------------
@@ -259,6 +255,14 @@ CHECK=(--check "${BUILD_BIN}" "${BIN_DEST}")
 if [ "${LIVE}" = "1" ]; then CHECK+=(--live); fi
 # The numbered Dev guard before anything is replaced (docs/reference.md).
 python3 "${SCRIPT_DIR}/update-installed.py" "${CHECK[@]}"
+# An explicit local selection persists independently of the binary, so later
+# previews and the updater's service restarts keep it. Packages use the stock unit.
+LAUNCHER_CHANGE="$(python3 "${SCRIPT_DIR}/linux-launcher.py" --install "${PREFIX}")"
+if [ -n "${LAUNCHER_CHANGE}" ]; then CHANGED=1; fi
+LAUNCH_BIN="${BIN_DEST}"
+if [ -f "${PREFIX}/share/hgs/local-webkit.json" ]; then
+    LAUNCH_BIN="${PREFIX}/libexec/hgs-tray-launch"
+fi
 RELOAD=0
 mkdir -p "${PREFIX}/bin"
 if ! cmp -s "${BUILD_BIN}" "${BIN_DEST}" 2>/dev/null; then
@@ -322,10 +326,10 @@ else
     UNIT_DEST="${HOME}/.config/systemd/user/hgs-tray.service"
 fi
 mkdir -p "$(dirname "${UNIT_DEST}")"
-# The default unit stays byte-identical to the packaged %h form. Only a scratch
-# prefix needs a literal path, quoted and escaped as systemd requires.
-if [ "${SCRATCH}" = "1" ]; then
-    SYSTEMD_BIN_DEST="${BIN_DEST//\\/\\\\}"
+# The default unit stays byte-identical to the packaged %h form. Scratch and
+# opted-in local launches use a literal path, quoted and escaped for systemd.
+if [ "${SCRATCH}" = "1" ] || [ "${LAUNCH_BIN}" != "${BIN_DEST}" ]; then
+    SYSTEMD_BIN_DEST="${LAUNCH_BIN//\\/\\\\}"
     SYSTEMD_BIN_DEST="${SYSTEMD_BIN_DEST//\"/\\\"}"
     SYSTEMD_BIN_DEST="${SYSTEMD_BIN_DEST//%/%%}"
     NEW_UNIT=""
@@ -349,9 +353,19 @@ mkdir -p "${DESKTOP_DEST%/*}"
 # The launcher opens Sessions through the running instance; login start is only
 # through the service above, never another copy of this desktop file.
 NEW_DESKTOP=""
+DESKTOP_EXEC="${BIN_DEST} --sessions"
+if [ "${LAUNCH_BIN}" != "${BIN_DEST}" ]; then
+    # Desktop Entry values unescape once before Exec's quoted-argument parser.
+    DESKTOP_EXEC="$(python3 - "${LAUNCH_BIN}" <<'PY'
+import sys
+value = sys.argv[1].replace('\\', r'\\\\').replace('"', r'\\"').replace('`', r'\\`').replace('$', r'\\$').replace('%', '%%')
+print('"' + value + '" --sessions')
+PY
+)"
+fi
 while IFS= read -r line || [ -n "${line}" ]; do
     case "${line}" in
-        Exec=*) line="Exec=${BIN_DEST} --sessions" ;;
+        Exec=*) line="Exec=${DESKTOP_EXEC}" ;;
         Icon=*) line="Icon=${SYMBOLIC_DEST}" ;;
     esac
     NEW_DESKTOP+="${line}"$'\n'

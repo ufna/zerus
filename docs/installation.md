@@ -22,13 +22,14 @@ migration deliberately after saving your sessions. Never kill a live server or
 native agents as part of a Zerus GUI/package update.
 [Official tmux releases](https://github.com/tmux/tmux/releases).
 
-For the desktop: CMake, a C++17 compiler and Qt 6 with Widgets and Multimedia.
-Linux also needs KDE Frameworks 6 KStatusNotifierItem, KWindowSystem and KIdleTime,
-a system tray and user systemd for the standard autostart setup. On Linux, Qt
-WebEngine is optional: when it is installed, the build adds the embedded
-DeepSeek [Native UI](reference.md#deepseek); otherwise Native UI opens in your
-browser. On macOS, the installer uses Qt from Homebrew, and the desktop app
-requires macOS 14 or later.
+For the Linux desktop: Rust, Node.js/npm, GTK3, WebKitGTK 4.1, ALSA and
+GStreamer. The source installer and AUR packages build Zerus Next by default;
+standard autostart uses user systemd. `HGS_LINUX_GUI=qt` keeps the explicit
+Qt fallback until Linux acceptance and needs CMake, a C++17 compiler, Qt 6
+Widgets/Multimedia/SVG and KDE Frameworks KStatusNotifierItem, KWindowSystem
+and KIdleTime. Qt WebEngine is optional for that fallback's embedded DeepSeek
+[Native UI](reference.md#deepseek). On macOS, the Qt source-build path uses
+Homebrew Qt and requires macOS 14 or later.
 
 ## Local installation
 
@@ -64,9 +65,17 @@ fresh consent once; no permissions are reset automatically. Source builds link
 Homebrew Qt and are signed locally without the hardened runtime or notarization;
 use the published app for distribution. See [macOS signing](macos-distribution.md#local-source-builds).
 
-On Arch Linux, desktop dependencies include `cmake`, `qt6-base`, `qt6-tools`, `qt6-multimedia`, `qt6-svg`,
-`kstatusnotifieritem`, `kwindowsystem`, `kidletime` and C++ build tools; add
-`qt6-webengine` for the embedded Native UI.
+On Arch Linux, install the Next build and runtime dependencies before a source
+install (AUR recipes declare them automatically):
+
+```sh
+sudo pacman -S --needed base-devel rust nodejs npm python tmux openssh \
+  webkit2gtk-4.1 gtk3 alsa-lib libappindicator dbus gstreamer gst-plugins-base-libs \
+  gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav
+```
+
+GStreamer supplies the camera, H.264/AAC encoding and media playback plugins.
+See [Linux packages and source installation](linux-distribution.md).
 
 The desktop starts in English on every operating system. Settings > Appearance >
 Interface language offers an optional Russian preview; restart only Zerus to
@@ -77,6 +86,33 @@ Add `~/.local/bin` to `PATH`. The CLI installs to `~/.local/bin/hgs`; SSH calls
 use that exact path. The desktop installs to `~/.local/bin/hgs-tray` on Linux or
 `~/Applications/hgs-tray.app` on macOS. The installer configures autostart through
 systemd or launchd.
+
+For a local Linux Zerus Next source build, an explicit private WebKitGTK/GTK3
+stack can be selected at installation:
+
+```sh
+HGS_LINUX_GUI=client HGS_LINUX_WEBKIT_PREFIX=/absolute/private/prefix ./tray/install.sh
+```
+
+The prefix must contain `lib/libwebkit2gtk-4.1.so.0`, its JavaScriptCore library,
+GTK3 under `gtk/lib`, and the WebKit processes under `libexec/webkit2gtk-4.1`.
+The installer saves the selection in `~/.local/share/hgs/local-webkit.json`
+(`$HGS_INSTALL_PREFIX/share/hgs/local-webkit.json` for an isolated install).
+Later preview installs retain it without the variable. The local service and
+desktop entry use `~/.local/libexec/hgs-tray-launch`; it selects these libraries
+and processes only for Zerus Next, leaving the real `hgs-tray` binary available
+to the maintained updater and its rollback checks. If the stack disappears or
+is incomplete, the next launch uses system libraries. Qt and older Zerus Next
+rollback builds also use system libraries. Published packages continue using stock WebKitGTK.
+
+Run `HGS_LINUX_WEBKIT_PREFIX= ./tray/install.sh` to clear the selection. Changing
+the setting takes effect at the next GUI start; if the binary is unchanged, the
+installer leaves the current GUI running. A changed build still uses the normal
+draft-preserving update. The opt-in does not modify global library paths or
+the environment of native agents. The launcher records the original library
+variables; Zerus restores them when starting CLI commands, watches, Terminal
+clients, desktop terminals and external applications. WebKit's own subprocesses
+keep the private stack.
 
 `HGS_MOBILE_CONNECTOR=1 ./install.sh` also builds the Rust mobile connector
 (`services/mobile/connector`) into `~/.local/bin/zerus-mobile-connector`. Later

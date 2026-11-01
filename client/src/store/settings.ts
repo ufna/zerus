@@ -31,6 +31,8 @@ export const STORAGE_KEY = "zerus-client-settings";
 /** Overview's and Activity's column widths before the core store. */
 export const OVERVIEW_WIDTH_KEY = "zerus-client-overview-width";
 export const ACTIVITY_WIDTH_KEY = "zerus-client-activity-width";
+export const SESSIONS_WIDTH_KEY = "zerus-client-sessions-width";
+export const PROJECT_SPLIT_KEY = "zerus.projectFolderSplit";
 /** This viewer's copy of what the first paint needs (settings.json stays the truth). */
 export const HINT_KEY = "zerus-client-settings-hint";
 export const HINTED = ["workspace/theme", "client/darkSkin", "client/lightSkin", "workspace/contentScale"] as const;
@@ -137,6 +139,10 @@ export function takeLegacy(storage: SettingsStorage | undefined, withSettings: b
     if (Number.isFinite(width) && width > 0) moves["client/overviewWidth"] = Math.round(width);
     const column = Number(storage?.getItem(ACTIVITY_WIDTH_KEY));
     if (Number.isFinite(column) && column > 0) moves["workspace/activityWidth"] = Math.round(column);
+    for (const [old, key, min, max] of [[SESSIONS_WIDTH_KEY, "workspace/sessionsWidth", 270, 2400], [PROJECT_SPLIT_KEY, "workspace/projectFolderSplit", 160, 4096]] as const) {
+      const value = Number(storage?.getItem(old));
+      if (Number.isFinite(value) && value >= min) moves[key] = Math.round(Math.min(max, value));
+    }
   } catch {
     /* storage may be unavailable */
   }
@@ -147,6 +153,8 @@ export function takeLegacy(storage: SettingsStorage | undefined, withSettings: b
         if (withSettings) storage?.removeItem(STORAGE_KEY);
         storage?.removeItem(OVERVIEW_WIDTH_KEY);
         storage?.removeItem(ACTIVITY_WIDTH_KEY);
+        storage?.removeItem(SESSIONS_WIDTH_KEY);
+        storage?.removeItem(PROJECT_SPLIT_KEY);
       } catch {
         /* storage may be unavailable */
       }

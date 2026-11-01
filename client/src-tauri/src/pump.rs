@@ -364,6 +364,23 @@ impl Pump {
         self.lock().grouping.presentation_seeded()
     }
 
+    pub fn windows_folders_import_layout(&self) -> Result<Option<Layout>, &'static str> {
+        self.lock().grouping.windows_folders_import_layout()
+    }
+
+    pub fn seed_windows_folders(
+        &self,
+        seed: zerus_client_core::swarm::layout::WindowsFoldersSeed,
+        context: &zerus_client_core::swarm::layout::WindowsFoldersContext<'_>,
+    ) -> Result<bool, &'static str> {
+        let mut inner = self.lock();
+        let changed = inner.grouping.seed_windows_folders(seed, context)?;
+        if changed {
+            self.wake(inner);
+        }
+        Ok(changed)
+    }
+
     /// Only the worker reads Qt; merge against the current Next values under
     /// the pump lock and let the existing layout writer checkpoint the result.
     pub fn seed_presentation(

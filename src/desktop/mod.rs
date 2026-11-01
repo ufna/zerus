@@ -1,9 +1,12 @@
 //! Durable desktop service kernel. Pre-handoff it owns no fleet or effect writer.
 mod catalog_read;
+mod counts;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod custody;
 mod fanout;
 mod feed;
+#[allow(dead_code)] // Started by the active service lifecycle, never by a UI feed.
+mod fleet;
 mod frontend;
 mod handoff;
 mod import_evidence;
@@ -241,6 +244,22 @@ pub fn dispatch(config: &Config, target: &str, args: &[String], dry: bool) -> cl
 fn frame(epoch: &str, seq: u64, kind: &str, value: Value) -> Value {
     json!({"abi":ABI,"epoch":epoch,"seq":seq,"t":kind,"value":value})
 }
+fn attention_counts(store: &Store, epoch: &str, seq: u64, feed: &feed::Broker) -> Value {
+    let mut value = counts::projection(
+        &store.db,
+        epoch,
+        |computer| feed.available(computer),
+        feed.expected(),
+    )
+    .unwrap_or_else(|_| {
+        json!({"epoch":epoch,"scope":"shared_host_state","display_only":true,
+            "authority":false,"local_marks_included":false,
+            "aggregate":{"complete":false,"attention":null},"error":"counts_unavailable"})
+    });
+    value["projection_generation"] = store.generation.into();
+    value["revision"] = seq.into();
+    value
+}
 fn projection(
     location: &Location,
     store: &Store,
@@ -366,6 +385,7 @@ fn serve(location: Location) -> Result<()> {
                     &reads,
                 );
                 value["frontend_read_delivery"] = frontend.status();
+                value["attention_counts"] = attention_counts(&store, &epoch, seq, &feed);
                 let mut streaming = false;
                 let reply = if hello.abi != ABI || hello.configuration != location.configuration {
                     frame(
@@ -427,6 +447,8 @@ fn serve(location: Location) -> Result<()> {
                 let accepted = outcome.is_ok();
                 if let Ok(Some(change)) = outcome {
                     seq += 1;
+                    let mut change = change;
+                    change["attention_counts"] = attention_counts(&store, &epoch, seq, &feed);
                     fanout.publish(
                         protocol::encode(&frame(&epoch, seq, "catalog_changed", change))?.into(),
                     );
@@ -451,7 +473,7 @@ fn serve(location: Location) -> Result<()> {
                     &epoch,
                     seq,
                     "catalog_changed",
-                    json!({"display_only":true,"retired":true}),
+                    json!({"display_only":true,"retired":true,"attention_counts":attention_counts(&store,&epoch,seq,&feed)}),
                 ))?
                 .into(),
             );
@@ -478,6 +500,7 @@ fn serve(location: Location) -> Result<()> {
                 &reads,
             );
             value["frontend_read_delivery"] = frontend.status();
+            value["attention_counts"] = attention_counts(&store, &epoch, seq, &feed);
             fanout.publish(protocol::encode(&frame(&epoch, seq, "heartbeat", value))?.into());
             heartbeat = Instant::now() + HEARTBEAT;
         }

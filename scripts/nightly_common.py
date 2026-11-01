@@ -5,7 +5,8 @@ import re
 import tarfile
 
 from macos_release import macos_assets, require_sealed_cask, validate_macos_info
-from release_common import (LEGACY_BINARY_LIBRARIES, OPTIONAL_WEBENGINE, binary_library_names, metadata,
+from release_common import (BINARY_LIBRARIES, QT_BINARY_LIBRARIES, LEGACY_BINARY_LIBRARIES,
+                            OPTIONAL_WEBENGINE, binary_library_names, metadata,
                             retains_description_update, require, sha256)
 import windows_portable
 
@@ -33,10 +34,12 @@ def render_recipe(info, binary_hash):
               "@RELEASE_TAG@": info["release_tag"], "@BINARY_SHA256@": binary_hash,
               "@BINARY_LIBRARY_DEPENDS@": " ".join(f"'{name}>={floors[name]}'" for name in names)}
     text = (ROOT / "packaging/aur" / PACKAGE / "PKGBUILD.in").read_text()
-    if names == LEGACY_BINARY_LIBRARIES:
-        # The exact template those candidates were sealed with.
-        require(text.count(OPTIONAL_WEBENGINE) == 1, "Unexpected optional Qt WebEngine dependency.")
-        text = text.replace(OPTIONAL_WEBENGINE, "")
+    if names != BINARY_LIBRARIES:
+        # Retry the original immutable Qt recipe, without adopting Next codecs.
+        text = text.replace("'gst-plugins-base' 'gst-plugins-good' 'gst-plugins-bad' 'gst-plugins-ugly' 'gst-libav'\n         ", "")
+        if names == QT_BINARY_LIBRARIES:
+            text = text.replace("optdepends=('konsole: external KDE terminal integration'\n",
+                                "optdepends=('konsole: external KDE terminal integration'\n" + OPTIONAL_WEBENGINE)
     for key, value in values.items():
         text = text.replace(key, value)
     return text

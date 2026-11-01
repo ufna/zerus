@@ -8,7 +8,7 @@ import type { EditOutcome, Folder, Project } from "../../types";
 import * as organization from "../../store/organization";
 import { projectToShow, setProjectToShow } from "../../store/organization";
 import { projectsPage } from "../../store/projects";
-import { flag, setSetting, settingsLoaded } from "../../store/settings";
+import { flag, num, setSetting, settingsLoaded } from "../../store/settings";
 import { setMenu, type MenuEntry } from "../../store/ui";
 import { PROJECT_EDITING } from "./reasons";
 import { machineCards } from "../../store/machines";
@@ -71,12 +71,13 @@ export function ProjectsScreen() {
   const [sort, setSort] = createSignal<Sort>({ column: "name", ascending: true });
   const projects = createMemo(() => shownProjects(view(), allSwarm()));
   const project = () => projects().find((p) => p.id === selectedProject()) ?? projects().find((p) => p.accessible);
-  const [split, setSplit] = createSignal((() => {try {return Math.max(160, Math.min(window.innerHeight - 360, Number(localStorage.getItem("zerus.projectFolderSplit")) || 230));} catch {return 230;}})());
+  const [dragSplit, setSplit] = createSignal<number>();
+  const split = () => Math.max(160, Math.min(Math.max(160, window.innerHeight - 360), dragSplit() ?? num("workspace/projectFolderSplit")));
   let stopSplit: (() => void) | undefined;
   const startSplit = (event: PointerEvent) => {
     stopSplit?.(); const startY = event.clientY, start = split();
     const move = (next: PointerEvent) => setSplit(Math.max(160, Math.min(window.innerHeight - 360, start + next.clientY - startY)));
-    const end = () => {removeEventListener("pointermove", move); removeEventListener("pointerup", end); removeEventListener("pointercancel", end); stopSplit = undefined; try {localStorage.setItem("zerus.projectFolderSplit", String(split()));} catch { /* viewer convenience */ }};
+    const end = () => {removeEventListener("pointermove", move); removeEventListener("pointerup", end); removeEventListener("pointercancel", end); stopSplit = undefined; void setSetting("workspace/projectFolderSplit", split()); setSplit(undefined);};
     stopSplit = end; addEventListener("pointermove", move); addEventListener("pointerup", end); addEventListener("pointercancel", end);
   };
   onCleanup(() => stopSplit?.());

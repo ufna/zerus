@@ -302,18 +302,23 @@ class NightlyTests(unittest.TestCase):
         self.assertNotIn(common.OPTIONAL_WEBENGINE, recipe)
         nightly.validate_nightly(directory, COMMIT, 123, 7)
 
-    def test_current_nightly_lists_qt_webengine_only_as_optional(self):
+    def test_next_nightly_has_no_qt_and_previous_optional_recipe_is_retryable(self):
+        recipe = nightly.render_recipe(self.info, "0" * 64)
+        self.assertNotIn("qt6-", recipe)
+        self.assertIn("'webkit2gtk-4.1>=", recipe)
+        nightly.validate_nightly(self.candidate(), COMMIT, 123, 7)
+        self.info["binary_dependencies"] = {name: "1.2.3" for name in common.QT_BINARY_LIBRARIES}
         recipe = nightly.render_recipe(self.info, "0" * 64)
         self.assertIn(common.OPTIONAL_WEBENGINE, recipe)
-        self.assertNotIn("'qt6-webengine>=", recipe)
-        nightly.validate_nightly(self.candidate(), COMMIT, 123, 7)
+        self.assertNotIn("gst-plugins-good", recipe)
+        nightly.validate_nightly(self.candidate(name="previous-qt"), COMMIT, 123, 7)
 
     def test_moving_url_missing_floors_and_extra_files_are_rejected(self):
         directory = self.candidate()
         path = directory / "aur" / nightly.PACKAGE / ".SRCINFO"
         original = path.read_text()
         for replacement in (original.replace("nightly-123", "nightly"),
-                            original.replace("depends = qt6-base>=1.2.3", "depends = qt6-base")):
+                            original.replace("depends = webkit2gtk-4.1>=1.2.3", "depends = webkit2gtk-4.1")):
             path.write_text(replacement)
             common.finish_candidate(directory, nightly.PACKAGES)
             with self.assertRaises(ValueError):

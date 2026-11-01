@@ -12,6 +12,9 @@ mod actions;
 mod analytics;
 #[cfg(feature = "live")]
 mod approvals;
+#[path = "../../core/src/child_environment.rs"]
+#[allow(dead_code)]
+mod child_environment;
 mod cli;
 mod clipboard;
 mod commands;
@@ -29,6 +32,8 @@ mod display;
 #[cfg(feature = "live")]
 mod drops;
 mod exit_flush;
+#[cfg(feature = "live")]
+mod external_open;
 #[cfg(feature = "live")]
 mod files;
 mod identity;
@@ -97,6 +102,8 @@ mod voice;
 mod watchdog;
 #[cfg(feature = "live")]
 mod window_layer;
+#[cfg(feature = "live")]
+mod window_geometry;
 mod window_visibility;
 #[cfg(feature = "live")]
 mod worktree_cleanup;
@@ -654,7 +661,7 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                     let (open, reveal) = (app.handle().clone(), app.handle().clone());
                     composer::fetch::Opener {
                         open: std::sync::Arc::new(move |path: &std::path::Path| {
-                            open.opener().open_path(path.to_string_lossy(), None::<&str>).is_ok()
+                            crate::external_open::path(&open, path).is_ok()
                         }),
                         reveal: std::sync::Arc::new(move |path: &std::path::Path| {
                             reveal.opener().reveal_item_in_dir(path).is_ok()
@@ -1468,6 +1475,10 @@ pub fn create_main_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         }
     }
     let window = builder.build()?;
+    #[cfg(feature = "live")]
+    if let Some(store) = app.try_state::<settings::Store>() {
+        window_geometry::attach(&window, store.0.clone());
+    }
     if let Some(state) = app.try_state::<MainWindow>() {
         *state.0.lock().unwrap_or_else(|error| error.into_inner()) = Some(window.clone());
     }

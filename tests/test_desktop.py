@@ -546,7 +546,7 @@ class Desktop(unittest.TestCase):
             db.execute('PRAGMA user_version=1')
         database.chmod(0o600)
         process, status = self.serve()
-        self.assertEqual(status['schema'], 9)
+        self.assertEqual(status['schema'], 10)
         self.assertEqual(status['generation'], 8)
         self.assertEqual(status['configuration'], configuration)
         self.assertTrue(status['effect_journal']['revoked'])
@@ -556,10 +556,18 @@ class Desktop(unittest.TestCase):
         self.assertFalse(status['read_queue']['recovery_error'])
         self.stop(process)
         with closing(sqlite3.connect(database)) as db:
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 9)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 10)
             self.assertEqual(db.execute('SELECT rows,bytes FROM desktop_catalog_totals').fetchone(), (0, 0))
             self.assertEqual(db.execute('SELECT count(*) FROM desktop_catalog_sources').fetchone()[0], 0)
             self.assertEqual(db.execute('SELECT configuration FROM service').fetchone()[0], configuration)
+
+    @staticmethod
+    def remove_counts_schema(db):
+        for suffix in ('generation', 'insert', 'delete', 'update'):
+            db.execute(f'DROP TRIGGER desktop_counts_{suffix}')
+        db.execute('ALTER TABLE desktop_catalog_rows DROP COLUMN shared_flags')
+        for column in ('counts_ready', 'visible_sessions', 'attention_sessions'):
+            db.execute(f'ALTER TABLE desktop_catalog_generations DROP COLUMN {column}')
 
     def test_schema_five_metadata_is_charged_once_and_preserved(self):
         process, _ = self.serve()
@@ -576,10 +584,11 @@ class Desktop(unittest.TestCase):
             db.execute('DROP INDEX desktop_commands_pending')
             for table in ('desktop_producer_prepared', 'desktop_operation_custody', 'desktop_operation_attempts', 'desktop_operations', 'desktop_operation_totals'):
                 db.execute(f'DROP TABLE {table}')
+            self.remove_counts_schema(db)
             db.execute('PRAGMA user_version=5')
         for _ in range(2):
             process, status = self.serve()
-            self.assertEqual(status['schema'], 9)
+            self.assertEqual(status['schema'], 10)
             self.assertEqual(status['catalog_projection']['stored_bytes'], expected)
             self.assertEqual(status['catalog_projection']['stored_rows'], 0)
             self.stop(process)
@@ -596,6 +605,7 @@ class Desktop(unittest.TestCase):
             db.execute('DROP INDEX desktop_commands_pending')
             for table in ('desktop_producer_prepared', 'desktop_operation_custody', 'desktop_operation_attempts', 'desktop_operations', 'desktop_operation_totals'):
                 db.execute(f'DROP TABLE {table}')
+            self.remove_counts_schema(db)
             db.execute('PRAGMA user_version=6')
             db.execute('CREATE TABLE desktop_operation_totals (fixture TEXT)')
         self.failed_serve()
@@ -604,7 +614,7 @@ class Desktop(unittest.TestCase):
             self.assertEqual(db.execute("SELECT count(*) FROM sqlite_schema WHERE name='desktop_operations'").fetchone()[0], 0)
             db.execute('DROP TABLE desktop_operation_totals')
         process, status = self.serve()
-        self.assertEqual(status['schema'], 9)
+        self.assertEqual(status['schema'], 10)
         self.assertEqual({key:status['operation_queue'][key] for key in ('unsettled','undrained','admissions_paused','recovery_error')}, dict(unsettled=0, undrained=0, admissions_paused=True, recovery_error=False))
         self.assertFalse(status['writers_enabled'])
         self.stop(process)
@@ -617,6 +627,7 @@ class Desktop(unittest.TestCase):
             db.execute('DROP TABLE desktop_producer_prepared')
             db.execute('DROP TABLE desktop_operation_custody')
             db.execute('DROP INDEX desktop_commands_pending')
+            self.remove_counts_schema(db)
             db.execute('PRAGMA user_version=7')
             db.execute('CREATE INDEX desktop_commands_pending ON desktop_commands(request_id)')
         self.failed_serve()
@@ -626,7 +637,7 @@ class Desktop(unittest.TestCase):
             self.assertEqual(db.execute("SELECT count(*) FROM sqlite_schema WHERE name LIKE 'desktop_custody_%'").fetchone()[0], 0)
             db.execute('DROP INDEX desktop_commands_pending')
         process, status = self.serve()
-        self.assertEqual(status['schema'], 9)
+        self.assertEqual(status['schema'], 10)
         self.assertEqual(status['operation_queue']['undrained'], 0)
         self.assertTrue(status['operation_queue']['admissions_paused'])
         self.assertFalse((self.desktop / 'operation-custody').exists())
@@ -638,6 +649,7 @@ class Desktop(unittest.TestCase):
         database = self.desktop / 'state.sqlite3'
         with closing(sqlite3.connect(database)) as db, db:
             db.execute('DROP TABLE desktop_producer_prepared')
+            self.remove_counts_schema(db)
             db.execute('PRAGMA user_version=8')
             db.execute('CREATE TABLE desktop_producer_prepared (fixture TEXT)')
             db.execute("INSERT INTO desktop_producer_prepared VALUES('retained')")
@@ -647,11 +659,11 @@ class Desktop(unittest.TestCase):
             self.assertEqual(db.execute('SELECT fixture FROM desktop_producer_prepared').fetchone()[0], 'retained')
             db.execute('DROP TABLE desktop_producer_prepared')
         process, status = self.serve()
-        self.assertEqual(status['schema'], 9)
+        self.assertEqual(status['schema'], 10)
         self.assertFalse(status['writers_enabled'])
         self.stop(process)
         with closing(sqlite3.connect(database)) as db:
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 9)
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 10)
             self.assertEqual(db.execute('SELECT count(*) FROM desktop_producer_prepared').fetchone()[0], 0)
 
     def test_catalog_collection_progresses_without_a_frontend(self):
@@ -660,6 +672,7 @@ class Desktop(unittest.TestCase):
         with closing(sqlite3.connect(self.desktop / 'state.sqlite3')) as db, db:
             db.execute("INSERT INTO desktop_catalog_generations(computer,obsolete) VALUES('peer',1)")
             generation = db.execute('SELECT last_insert_rowid()').fetchone()[0]
+            db.create_function('desktop_shared_flags', 1, lambda raw: 0)
             db.executemany('INSERT INTO desktop_catalog_rows(generation,key,json,bytes) VALUES(?,?,?,?)',
                            ((generation, f'run:{n}', '{}', 64) for n in range(768)))
         _, status = self.serve()

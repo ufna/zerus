@@ -484,54 +484,52 @@ class PublicationTests(unittest.TestCase):
         current = text.replace("-3\n", "-3-x86_64\n")
         self.assertEqual(common.binary_dependencies(current), {name: "1:6.11.2" for name in common.BINARY_LIBRARIES})
         with self.assertRaisesRegex(ValueError, "Missing/ambiguous"):
-            common.binary_dependencies(text + "installed = qt6-base-6.11.2-4\n")
+            common.binary_dependencies(text + "installed = webkit2gtk-4.1-6.11.2-4\n")
         with self.assertRaisesRegex(ValueError, "Missing/ambiguous"):
             common.binary_dependencies("")
 
-    def test_qt_webengine_is_optional_but_legacy_candidates_still_validate(self):
-        self.assertNotIn("qt6-webengine", common.BINARY_LIBRARIES)
-        text = "".join(f"installed = {name}-6.11.2-1\n" for name in common.BINARY_LIBRARIES)
-        self.assertNotIn("qt6-webengine", common.binary_dependencies(text + "installed = qt6-webengine-6.11.2-1\n"))
+    def test_next_recipes_drop_qt_and_both_legacy_candidates_still_validate(self):
+        self.assertIn("webkit2gtk-4.1", common.BINARY_LIBRARIES)
+        self.assertIn("alsa-lib", common.BINARY_LIBRARIES)
+        self.assertNotIn("xdotool", common.BINARY_LIBRARIES)
+        self.assertFalse(any(name.startswith(("qt6-", "kstatus", "kwindows", "kidletime"))
+                             for name in common.BINARY_LIBRARIES))
         for name in ("zerus", "zerus-ade-bin"):
             recipe = (ROOT / "packaging/aur" / name / "PKGBUILD.in").read_text()
-            self.assertEqual(recipe.count(common.OPTIONAL_WEBENGINE), 1)
-            self.assertNotIn("'qt6-webengine'", recipe.split("optdepends=", 1)[0].split("makedepends=", 1)[0])
-        # Sealed before Qt WebEngine became optional: retrying it keeps working.
-        self.info["binary_dependencies"] = {name: "1.2.3" for name in common.LEGACY_BINARY_LIBRARIES}
-        directory = self.candidate()
-        path = directory / "aur/zerus-ade-bin/.SRCINFO"
-        path.write_text(path.read_text() + "\tdepends = qt6-webengine>=1.2.3\n")
-        common.finish_candidate(directory)
-        common.validate_candidate(directory, VERSION)
-        self.info["binary_dependencies"] = {name: "1.2.3" for name in common.BINARY_LIBRARIES if name != "qt6-svg"}
+            self.assertNotIn("qt6-", recipe)
+        for names in (common.QT_BINARY_LIBRARIES, common.LEGACY_BINARY_LIBRARIES):
+            self.info["binary_dependencies"] = {name: "1.2.3" for name in names}
+            directory = self.candidate(name="legacy-" + str(len(names)))
+            path = directory / "aur/zerus-ade-bin/.SRCINFO"
+            path.write_text(path.read_text() + "".join(f"\tdepends = {name}>=1.2.3\n" for name in names))
+            common.finish_candidate(directory)
+            common.validate_candidate(directory, VERSION)
         with self.assertRaisesRegex(ValueError, "build-library provenance"):
-            common.binary_library_names(self.info["binary_dependencies"])
+            common.binary_library_names({name: "1.2.3" for name in common.BINARY_LIBRARIES if name != "gtk3"})
 
     def test_binary_recipe_must_declare_library_version_floors(self):
         directory = self.candidate()
         path = directory / "aur/zerus-ade-bin/.SRCINFO"
-        path.write_text(path.read_text().replace("depends = qt6-base>=1.2.3", "depends = qt6-base"))
+        path.write_text(path.read_text().replace("depends = webkit2gtk-4.1>=1.2.3", "depends = webkit2gtk-4.1"))
         common.finish_candidate(directory)
         with self.assertRaisesRegex(ValueError, "version floors"):
             common.validate_candidate(directory, VERSION)
 
-    def test_binary_library_names_do_not_include_qt_backend_or_similar_packages(self):
+    def test_binary_library_names_match_exact_packages(self):
         text = "".join(f"installed = {name}-6.12.0-1-x86_64\n" for name in common.BINARY_LIBRARIES)
-        text += "installed = qt6-multimedia-ffmpeg-6.12.0-1-x86_64\n"
-        text += "installed = qt6-multimedia-gstreamer-6.12.0-1-x86_64\n"
-        text += "installed = qt6-base-debug-6.12.0-1-any\n"
+        text += "installed = gtk3-debug-6.12.0-1-any\ninstalled = qt6-base-6.12.0-1-x86_64\n"
         self.assertEqual(common.binary_dependencies(text), {name: "6.12.0" for name in common.BINARY_LIBRARIES})
-        with self.assertRaisesRegex(ValueError, "Missing/ambiguous.*qt6-multimedia"):
-            common.binary_dependencies(text.replace("installed = qt6-multimedia-6.12.0-1-x86_64\n", ""))
-        with self.assertRaisesRegex(ValueError, "Missing/ambiguous.*qt6-multimedia"):
-            common.binary_dependencies(text + "installed = qt6-multimedia-6.11.2-1-x86_64\n")
+        for malformed in (text.replace("installed = gtk3-6.12.0-1-x86_64\n", ""),
+                          text + "installed = gtk3-6.11.2-1-x86_64\n"):
+            with self.assertRaisesRegex(ValueError, "Missing/ambiguous.*gtk3"):
+                common.binary_dependencies(malformed)
 
     def test_binary_library_versions_and_releases_still_fail_closed(self):
         text = "".join(f"installed = {name}-1:6.12.0-2.1-any\n" for name in common.BINARY_LIBRARIES)
         self.assertEqual(common.binary_dependencies(text), {name: "1:6.12.0" for name in common.BINARY_LIBRARIES})
-        for replacement in ["qt6-base-6.12.0-invalid-any", "qt6-base-invalid-1-x86_64"]:
+        for replacement in ["gtk3-6.12.0-invalid-any", "gtk3-invalid-1-x86_64"]:
             with self.subTest(replacement=replacement), self.assertRaisesRegex(ValueError, "Unexpected"):
-                common.binary_dependencies(text.replace("qt6-base-1:6.12.0-2.1-any", replacement))
+                common.binary_dependencies(text.replace("gtk3-1:6.12.0-2.1-any", replacement))
 
     def test_only_successful_upstream_main_manual_candidate_is_accepted(self):
         run = {"path": ".github/workflows/release.yml", "event": "workflow_dispatch",
