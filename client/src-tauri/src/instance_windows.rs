@@ -173,7 +173,7 @@ fn listen(pipe: OwnedHandle, stop: Arc<AtomicBool>, sender: mpsc::SyncSender<Act
         let connected =
             unsafe { ConnectNamedPipe(pipe.as_raw_handle(), std::ptr::null_mut()) } != 0;
         if !connected && unsafe { GetLastError() } != ERROR_PIPE_CONNECTED {
-            std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(250));
             continue;
         }
         let end = Instant::now() + Duration::from_millis(200);

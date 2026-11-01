@@ -1,29 +1,31 @@
 //! Qt's Windows-only swarm catalog worker. Own process/job only: never an agent.
-use std::os::windows::{io::AsRawHandle, process::CommandExt};
+use std::os::windows::{
+    io::{AsRawHandle, OwnedHandle},
+    process::CommandExt,
+};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Condvar, Mutex,
-};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
-use windows_sys::Win32::System::{JobObjects::*, Threading::*};
+use std::time::Instant;
+use windows_sys::Win32::{
+    Foundation::*,
+    System::{JobObjects::*, Threading::*},
+};
 
 pub struct Worker {
-    stop: Arc<AtomicBool>,
-    wake: Arc<(Mutex<()>, Condvar)>,
+    stop: Arc<OwnedHandle>,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 impl Worker {
-    pub fn start(hgs: PathBuf) -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
-        let wake = Arc::new((Mutex::new(()), Condvar::new()));
+    pub fn start(hgs: PathBuf) -> std::io::Result<Self> {
+        let stop = Arc::new(super::owned(unsafe {
+            CreateEventW(std::ptr::null(), 1, 0, std::ptr::null())
+        })?);
         let stopped = stop.clone();
-        let notify = wake.clone();
         let thread = std::thread::spawn(move || {
             let mut delay = 0;
-            while !stopped.load(Ordering::Acquire) {
+            while unsafe { WaitForSingleObject(stopped.as_raw_handle(), 0) } == WAIT_TIMEOUT {
                 let job = match super::owned(unsafe {
                     CreateJobObjectW(std::ptr::null(), std::ptr::null())
                 }) {
@@ -89,30 +91,30 @@ impl Worker {
                             tail
                         })
                     });
-                    loop {
-                        match child.try_wait() {
-                            Ok(Some(status)) => {
-                                if !status.success() {
-                                    eprintln!("zerus-client: swarm worker exited: {status}");
-                                }
-                                break;
+                    // Both are original owned handles: no periodic process polling.
+                    let handles = [stopped.as_raw_handle(), child.as_raw_handle()];
+                    let outcome =
+                        unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, INFINITE) };
+                    if outcome == WAIT_OBJECT_0 {
+                        let _ = child.kill();
+                    } else if outcome != WAIT_OBJECT_0 + 1 {
+                        eprintln!(
+                            "zerus-client: swarm worker handle wait: {}",
+                            std::io::Error::last_os_error()
+                        );
+                        let _ = child.kill();
+                    }
+                    if unsafe { WaitForSingleObject(child.as_raw_handle(), 5000) } == WAIT_OBJECT_0
+                    {
+                        match child.wait() {
+                            Ok(status) if !status.success() => {
+                                eprintln!("zerus-client: swarm worker exited: {status}")
                             }
-                            Err(e) => {
-                                eprintln!("zerus-client: swarm worker wait: {e}");
-                                break;
-                            }
+                            Err(error) => eprintln!("zerus-client: swarm worker exit: {error}"),
                             _ => {}
                         }
-                        if stopped.load(Ordering::Acquire) {
-                            let _ = child.kill();
-                            let _ = child.wait();
-                            break;
-                        }
-                        let guard = notify
-                            .0
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        let _ = notify.1.wait_timeout(guard, Duration::from_millis(50));
+                    } else {
+                        eprintln!("zerus-client: swarm worker exit remains unconfirmed");
                     }
                     // Closing THIS job releases only its worker/ssh descendants.
                     drop(job);
@@ -129,30 +131,26 @@ impl Worker {
                 } else if let Err(error) = child {
                     eprintln!("zerus-client: cannot start swarm worker: {error}");
                 }
-                if stopped.load(Ordering::Acquire) {
+                if unsafe { WaitForSingleObject(stopped.as_raw_handle(), 0) } != WAIT_TIMEOUT {
                     return;
                 }
                 delay = crate::windows_shell::restart_delay(delay, start.elapsed());
-                let guard = notify
-                    .0
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let _ = notify
-                    .1
-                    .wait_timeout_while(guard, Duration::from_millis(delay), |_| {
-                        !stopped.load(Ordering::Acquire)
-                    });
+                if unsafe { WaitForSingleObject(stopped.as_raw_handle(), delay as u32) }
+                    != WAIT_TIMEOUT
+                {
+                    return;
+                }
             }
         });
-        Self {
+        Ok(Self {
             stop,
-            wake,
             thread: Mutex::new(Some(thread)),
-        }
+        })
     }
     pub fn stop(&self) {
-        self.stop.store(true, Ordering::Release);
-        self.wake.1.notify_all();
+        unsafe {
+            SetEvent(self.stop.as_raw_handle());
+        }
         if let Some(thread) = self
             .thread
             .lock()

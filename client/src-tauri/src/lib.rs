@@ -805,7 +805,10 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                     });
                     desk::start(app.handle(), &pump, dir.clone(), desk::load_windows_mode(&dir, conf.as_deref()), attention);
                     if switch && !replay {
-                        app.manage(platform::windows::worker::Worker::start(zerus_client_core::default_hgs()));
+                        match platform::windows::worker::Worker::start(zerus_client_core::default_hgs()) {
+                            Ok(worker) => { app.manage(worker); }
+                            Err(error) => eprintln!("zerus-client: cannot supervise swarm worker: {error}"),
+                        }
                     }
                 }
                 app.manage(updates::start(app.handle()));
