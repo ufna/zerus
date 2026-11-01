@@ -209,9 +209,11 @@ ID, minimum macOS, and `dmg: {asset, notarization_id}`) and `homebrew_casks`
 remain valid; all new signed builds require both formats. The `qt_version`
 field remains a semantic-version compatibility marker for existing Qt and Next
 feed parsers; it does not indicate a Qt dependency in Next.
-`SHA256SUMS` covers both assets, and validation requires the cask to equal its template
-in `packaging/homebrew/` with only the version, digest and, for a nightly, the
-immutable `nightly-RUN_ID` tag substituted.
+`SHA256SUMS` covers both assets. New casks use the templates in
+`packaging/homebrew/` with only the version, digest and, for a nightly, the
+immutable `nightly-RUN_ID` tag substituted. Sealed-candidate validation also
+accepts the exact reviewed pre-Next templates in `packaging/homebrew/previous/`
+so publication retries preserve the original candidate without rebuilding it.
 The cask continues to download the ZIP. Deploy DMG-aware `update_feed.py` on
 the website mirror before publishing the first DMG candidate: both macOS files
 remain on GitHub and are excluded from the existing desktop catalog artifact kinds.

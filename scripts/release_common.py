@@ -7,7 +7,7 @@ import re
 import subprocess
 import tarfile
 
-from macos_release import cask_for, macos_assets, require_template_cask, validate_macos_info
+from macos_release import cask_for, macos_assets, require_sealed_cask, validate_macos_info
 
 REPOSITORY = "ufna/zerus"
 PACKAGES = ("zerus", "zerus-ade-bin", "zerus-git")
@@ -165,7 +165,7 @@ def validate_candidate(directory, version, commit=None):
         casks = sorted(path.name for path in (directory / "homebrew").iterdir())
         cask = directory / "homebrew/zerus.rb"
         require(casks == ["zerus.rb"] and cask.is_file() and not cask.is_symlink(), "Unexpected Homebrew cask files.")
-        require_template_cask(cask.read_text(), version, sums[macos["asset"]])
+        require_sealed_cask(cask.read_text(), version, sums[macos["asset"]])
     expected_members = {f"aur/{package}/{name}" for package in PACKAGES for name in ("PKGBUILD", ".SRCINFO")}
     with tarfile.open(directory / f"zerus-{version}-aur.tar.gz", "r:gz") as archive:
         members = archive.getmembers()

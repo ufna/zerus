@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 import tarfile
 
-from macos_release import macos_assets, require_template_cask, validate_macos_info
+from macos_release import macos_assets, require_sealed_cask, validate_macos_info
 from release_common import (LEGACY_BINARY_LIBRARIES, OPTIONAL_WEBENGINE, binary_library_names, metadata,
                             retains_description_update, require, sha256)
 import windows_portable
@@ -101,7 +101,7 @@ def validate_nightly(directory, commit=None, run_id=None, run_number=None):
         cask = directory / "homebrew/zerus@nightly.rb"
         require(sorted(path.name for path in (directory / "homebrew").iterdir()) == [cask.name] and
                 cask.is_file() and not cask.is_symlink(), "Unexpected Homebrew cask files.")
-        require_template_cask(cask.read_text(), version, sums[macos["asset"]], "nightly", info["release_tag"])
+        require_sealed_cask(cask.read_text(), version, sums[macos["asset"]], "nightly", info["release_tag"])
     members_expected = {f"aur/{PACKAGE}/{name}" for name in ("PKGBUILD", ".SRCINFO")}
     with tarfile.open(directory / f"zerus-{version}-aur.tar.gz", "r:gz") as archive:
         members = archive.getmembers()
