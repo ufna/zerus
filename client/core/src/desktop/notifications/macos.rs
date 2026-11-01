@@ -15,6 +15,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(unix)]
+pub mod channel;
+
 const OUTPUTS: usize = 32;
 const WAIT: Duration = Duration::from_secs(10);
 
