@@ -23,13 +23,21 @@ const EVENTS: usize = 32;
 
 struct Shared {
     cancel: AtomicBool,
-    reply: Mutex<Option<Receipt>>,
+    reply: Mutex<Option<Finished>>,
+}
+#[derive(Clone)]
+struct Finished {
+    at: Instant,
+    receipt: Receipt,
 }
 impl Shared {
     fn finish(&self, receipt: Receipt) {
         if let Ok(mut slot) = self.reply.lock() {
             if slot.is_none() {
-                *slot = Some(receipt);
+                *slot = Some(Finished {
+                    at: Instant::now(),
+                    receipt,
+                });
             }
         }
     }
@@ -308,7 +316,29 @@ impl Outbox {
         for pending in &mut self.pending {
             if !pending.committed {
                 if pending.terminal.is_none() {
-                    if now >= pending.until {
+                    let released = Arc::strong_count(&pending.shared) == 1;
+                    let completed = if released {
+                        pending
+                            .shared
+                            .reply
+                            .lock()
+                            .ok()
+                            .and_then(|r| r.clone())
+                            .filter(|r| {
+                                r.at < pending.until
+                                    && pending
+                                        .command
+                                        .as_ref()
+                                        .is_some_and(|command| r.receipt.matches(command))
+                            })
+                    } else {
+                        None
+                    };
+                    if let Some(finished) = completed {
+                        // Scheduling/SQL latency is not a native timeout. The
+                        // timestamp comes from the original completion handle.
+                        pending.terminal = Some(finished.receipt);
+                    } else if now >= pending.until {
                         pending.shared.cancel.store(true, Ordering::Release);
                         pending.terminal = Some(Receipt {
                             binding: pending.binding.clone(),
@@ -316,27 +346,13 @@ impl Outbox {
                                 code: Uncertainty::Deadline,
                             },
                         });
-                    } else if Arc::strong_count(&pending.shared) == 1 {
-                        pending.terminal = Some(
-                            pending
-                                .shared
-                                .reply
-                                .lock()
-                                .ok()
-                                .and_then(|r| r.clone())
-                                .filter(|r| {
-                                    pending
-                                        .command
-                                        .as_ref()
-                                        .is_some_and(|command| r.matches(command))
-                                })
-                                .unwrap_or(Receipt {
-                                    binding: pending.binding.clone(),
-                                    outcome: Outcome::Unknown {
-                                        code: Uncertainty::HostLost,
-                                    },
-                                }),
-                        );
+                    } else if released {
+                        pending.terminal = Some(Receipt {
+                            binding: pending.binding.clone(),
+                            outcome: Outcome::Unknown {
+                                code: Uncertainty::HostLost,
+                            },
+                        });
                     }
                 }
                 if let Some(receipt) = &pending.terminal {

@@ -451,3 +451,28 @@ fn restoration_is_paged_at_a_fixed_highwater_and_never_replays_work() {
     assert!(f.outbox.restore_head(&f.store).is_err());
     assert!(f.outbox.restore_page(&f.store, 0, head).is_err());
 }
+
+#[test]
+fn an_on_time_original_completion_keeps_mapping_when_the_actor_polls_late() {
+    let mut f = Fixture::new();
+    let (request, dispatch) = f.queued();
+    let Outcome::Delivered { native_id } = delivered(dispatch.command()) else {
+        unreachable!()
+    };
+    let activation = Activation {
+        request_id: request.request_id.clone(),
+        token: dispatch.command().action.token().into(),
+        native_id,
+    };
+    let deadline = dispatch.deadline();
+    let outcome = delivered(dispatch.command());
+    dispatch.finish(outcome);
+    f.outbox
+        .poll(&mut f.store, deadline + Duration::from_secs(1));
+    assert_eq!(f.state(&request), "delivered");
+    assert!(f
+        .outbox
+        .current_activation(&f.store, &activation)
+        .unwrap()
+        .is_some());
+}

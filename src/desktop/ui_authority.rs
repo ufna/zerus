@@ -370,10 +370,7 @@ fn marked(bytes: &[u8]) -> bool {
             b"HGS_RUN_ID=",
             b"LD_PRELOAD=",
             b"LD_AUDIT=",
-            b"LD_LIBRARY_PATH=",
             b"DYLD_INSERT_LIBRARIES=",
-            b"DYLD_LIBRARY_PATH=",
-            b"DYLD_FRAMEWORK_PATH=",
             b"DYLD_FORCE_FLAT_NAMESPACE=",
         ]
         .iter()
@@ -644,10 +641,7 @@ mod tests {
         for key in [
             "LD_PRELOAD",
             "LD_AUDIT",
-            "LD_LIBRARY_PATH",
             "DYLD_INSERT_LIBRARIES",
-            "DYLD_LIBRARY_PATH",
-            "DYLD_FRAMEWORK_PATH",
             "DYLD_FORCE_FLAT_NAMESPACE",
         ] {
             assert!(marked(format!("{key}=\0").as_bytes()));
@@ -667,6 +661,15 @@ mod tests {
         ] {
             assert!(!tracer_absent(bytes));
         }
+    }
+
+    #[test]
+    fn maintained_launcher_search_paths_are_not_injection_primitives() {
+        let launcher=b"LD_LIBRARY_PATH=/opt/example/webkit/lib\0HGS_LINUX_WEBKIT_ORIGINAL_ENV={}\0DYLD_LIBRARY_PATH=/opt/example/lib\0DYLD_FRAMEWORK_PATH=/opt/example/Frameworks\0";
+        assert!(!marked(launcher));
+        let mut injected = launcher.to_vec();
+        injected.extend_from_slice(b"LD_PRELOAD=/opt/example/inject.so\0");
+        assert!(marked(&injected));
     }
 
     #[test]
