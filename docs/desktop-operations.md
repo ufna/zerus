@@ -181,10 +181,12 @@ The encoded receipt cap remains 16 KiB; original/reply caps remain 1 MiB/64 KiB.
 There is no G1 operation kind, actor, caller, I/O or current production admission.
 
 The separate [original launch-status contract](desktop-creation-launch-status.md)
-defines a proposed bounded target-side observation. It accounts for bootstrap
-identity reads as well as selected sources, keeps missing evidence unknown and
-leaves the current whole-session listing path unchanged. The command, capability
-marker and caller are not implemented or admitted by that contract.
+defines a bounded target-side observation with a standalone implementation
+candidate. It accounts for bootstrap identity and selected reads, positional OS
+arguments and conservative native call reservations, keeps missing evidence
+unknown and leaves the current whole-session listing path unchanged. Native
+qualification and exact implementation/proof reviews remain open. No current
+Operations caller, source admission or launch permission is added.
 
 The pure `task_message` policy names `TaskMessageRecovery`: the existing
 `--recover-only` command can reserve an uncertain canonical comment or reconcile
