@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import unittest
 import uuid
 import test_desktop as kernel
@@ -52,6 +53,11 @@ class WindowsFrontend(unittest.TestCase):
         results = [json.loads(line.removeprefix('FRONTEND_RESULT ')) for line in output.stdout.splitlines()
                    if line.startswith('FRONTEND_RESULT ')]
         self.assertEqual(len(results), 1, output.stdout[-4096:])
+        chains = [json.loads(line.removeprefix('FRONTEND_CHAIN ')) for line in output.stdout.splitlines()
+                  if line.startswith('FRONTEND_CHAIN ')]
+        self.assertEqual(len(chains), 1, output.stdout[-4096:])
+        self.assertLessEqual(len(chains[0]), 32)
+        print('FRONTEND_OBSERVED_CHAIN ' + json.dumps(dict(case=case, chain=chains[0])), file=sys.stderr)
         self.assertEqual(results[0]['request_id'], request_id)
         self.assertFalse(results[0]['accepted'])
         # Neither the positive authentication nor any negative fixture grants

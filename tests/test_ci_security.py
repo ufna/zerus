@@ -610,6 +610,8 @@ class WorkflowSecurityTests(unittest.TestCase):
         # Independent native stages still fail the job; no continue-on-error
         # can hide a failed ancestry test or prevent the pipe checks running.
         self.assertNotIn("continue-on-error", native)
+        self.assertIn('exit "$native_status"', script)
+        self.assertIn("|| native_status=1", script)
         for stage in ("core", "media", "tauri-clippy"):
             self.assertIn(f"run: bash scripts/ci/client-native.sh windows {stage}", native)
         self.assertIn("name: Windows shell tests and disposable app\n        if: ${{ !cancelled() }}", native)

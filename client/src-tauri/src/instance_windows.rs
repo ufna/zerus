@@ -461,6 +461,38 @@ mod tests {
             assert!(responder.configure_once("a".repeat(64)));
             responder
         }
+        fn report_chain() {
+            use zerus_client_core::desktop::windows::process::Original;
+            let until = Instant::now() + Duration::from_secs(2);
+            let mut pid = std::process::id();
+            let mut rows = Vec::new();
+            for _ in 0..32 {
+                if Instant::now() >= until {
+                    break;
+                }
+                match Original::open(pid) {
+                    Ok(original) => {
+                        let name = Path::new(&original.image)
+                            .file_name()
+                            .map(|v| v.to_string_lossy().chars().take(64).collect::<String>());
+                        let environment_readable =
+                            original.own.then(|| original.environment(until).is_ok());
+                        rows.push(serde_json::json!({"pid":pid,"birth":original.birth.to_string(),
+                            "parent":original.parent,"image":name,"own":original.own,
+                            "current":original.current(),"environment_readable":environment_readable}));
+                        if !original.own || original.parent == 0 {
+                            break;
+                        }
+                        pid = original.parent;
+                    }
+                    Err(error) => {
+                        rows.push(serde_json::json!({"pid":pid,"unavailable":error.to_string()}));
+                        break;
+                    }
+                }
+            }
+            println!("\nFRONTEND_CHAIN {}", serde_json::to_string(&rows).unwrap());
+        }
         /// Child-only fixture driven by the real private CLI integration test.
         /// It uses the production listener/cache/owned runner, creates no WebView
         /// and never enables a policy in the passive test service.
@@ -529,6 +561,7 @@ mod tests {
             else {
                 panic!("private canonical fixture claim")
             };
+            report_chain();
             let inv = zerus_client_core::Invocation {
                 args: vec!["desktop".into(), "frontend-request".into(), "--json".into()],
                 stdin: Some(serde_json::to_vec(&envelope).unwrap()),

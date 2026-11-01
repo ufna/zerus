@@ -528,7 +528,7 @@ impl Ancestry {
 mod tests {
     use super::*;
     use std::{
-        io::Write,
+        io::{Read, Write},
         os::windows::process::CommandExt,
         process::{Child, Command, Stdio},
         time::Duration,
@@ -540,19 +540,49 @@ mod tests {
             let _ = self.0.wait();
         }
     }
+    fn read_line(stdout: &mut impl Read) -> Vec<u8> {
+        let mut line = Vec::new();
+        for _ in 0..32 {
+            let mut byte = [0u8];
+            match stdout.read(&mut byte) {
+                Ok(1) => {
+                    line.push(byte[0]);
+                    if byte[0] == b'\n' {
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
+        line
+    }
     fn child() -> Held {
-        Held(
+        let mut child = Held(
             Command::new("cmd.exe")
                 .creation_flags(CREATE_NO_WINDOW)
-                .args(["/D", "/Q", "/C", "set /p HGS_TEST_WAIT="])
+                .args(["/D", "/Q", "/C", "echo START& set /p HGS_TEST_WAIT="])
                 .env_remove("HGS_SESSION")
                 .env_remove("HGS_RUN_ID")
                 .stdin(Stdio::piped())
-                .stdout(Stdio::null())
+                .stdout(Stdio::piped())
                 .stderr(Stdio::null())
                 .spawn()
                 .unwrap(),
-        )
+        );
+        let mut stdout = child.0.stdout.take().unwrap();
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        let reader = std::thread::spawn(move || {
+            let _ = send.send(read_line(&mut stdout));
+        });
+        let ready = receive.recv_timeout(Duration::from_secs(2));
+        if ready.is_err() {
+            drop(child);
+            reader.join().unwrap();
+            panic!("owned child did not become ready");
+        }
+        reader.join().unwrap();
+        assert!(ready.unwrap().ends_with(b"START\r\n"));
+        child
     }
     fn environment(text: &str) -> Vec<u16> {
         text.encode_utf16().chain([0, 0]).collect()
@@ -581,7 +611,10 @@ mod tests {
             original.birth.to_string()
         );
         let args = original.arguments().unwrap();
-        assert_eq!(&args[1..], ["/D", "/Q", "/C", "set /p HGS_TEST_WAIT="]);
+        assert_eq!(
+            &args[1..],
+            ["/D", "/Q", "/C", "echo START& set /p HGS_TEST_WAIT="]
+        );
         assert!(!agent(
             &original
                 .environment(Instant::now() + Duration::from_secs(2))
@@ -667,32 +700,41 @@ mod tests {
 
     #[test]
     fn native_environment_changed_after_admission_is_rechecked_at_use() {
-        use std::{io::Read, sync::mpsc, thread};
+        use std::{sync::mpsc, thread};
         let mut child=Held(Command::new("cmd.exe").creation_flags(CREATE_NO_WINDOW)
-            .args(["/D","/Q","/C","set /p HGS_TEST_WAIT=& set HGS_RUN_ID=late-tag& echo READY& set /p HGS_TEST_WAIT="])
+            .args(["/D","/Q","/C","echo START& set /p HGS_TEST_WAIT=& set HGS_RUN_ID=late-tag& echo READY& set /p HGS_TEST_WAIT="])
             .env_remove("HGS_SESSION").env_remove("HGS_RUN_ID")
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap());
-        let until = Instant::now() + Duration::from_secs(2);
-        let original = Original::open(child.0.id()).unwrap();
-        let admitted = Ancestry::inspect(child.0.id(), until).unwrap();
         let mut stdout = child.0.stdout.take().unwrap();
-        let (send, receive) = mpsc::sync_channel(1);
+        let (send, receive) = mpsc::sync_channel(2);
         let reader = thread::spawn(move || {
-            let mut line = Vec::new();
-            for _ in 0..32 {
-                let mut byte = [0u8];
-                match stdout.read(&mut byte) {
-                    Ok(1) => {
-                        line.push(byte[0]);
-                        if byte[0] == b'\n' {
-                            break;
-                        }
-                    }
-                    _ => break,
-                }
-            }
-            let _ = send.send(line);
+            let _ = send.send(read_line(&mut stdout));
+            let _ = send.send(read_line(&mut stdout));
         });
+        let started = receive.recv_timeout(Duration::from_secs(2));
+        if started.is_err() {
+            drop(child);
+            reader.join().unwrap();
+            panic!("owned child did not become ready");
+        }
+        if !started.unwrap().ends_with(b"START\r\n") {
+            drop(child);
+            reader.join().unwrap();
+            panic!("owned child sent an invalid readiness line");
+        }
+        let until = Instant::now() + Duration::from_secs(2);
+        // On refused evidence, close the owned child before joining its reader.
+        let evidence = Original::open(child.0.id()).and_then(|original| {
+            Ancestry::inspect(child.0.id(), until).map(|admitted| (original, admitted))
+        });
+        let (original, admitted) = match evidence {
+            Ok(evidence) => evidence,
+            Err(error) => {
+                drop(child);
+                reader.join().unwrap();
+                panic!("native ancestry admission refused: {error}");
+            }
+        };
         child
             .0
             .stdin

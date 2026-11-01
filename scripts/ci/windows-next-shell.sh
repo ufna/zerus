@@ -13,12 +13,13 @@ on_exit() {
     exit "$status"
 }
 trap on_exit EXIT
-python scripts/ci/windows-desktop-registration-tests.py
+native_status=0
+python scripts/ci/windows-desktop-registration-tests.py || native_status=1
 # The service/relay binary and native tests come from this exact checkout.
 cargo build --locked --bin hgs
-cargo test --locked desktop::ui_authority
+cargo test --locked desktop::ui_authority || native_status=1
 for selected in windows_shell::tests instance::tests platform::windows::startup::tests platform::windows::drawing::tests cli::tests lifecycle::tests window_layer::tests; do
-    cargo test --locked --manifest-path client/src-tauri/Cargo.toml --lib "$selected"
+    cargo test --locked --manifest-path client/src-tauri/Cargo.toml --lib "$selected" || native_status=1
 done
 cargo test --locked --manifest-path client/src-tauri/Cargo.toml --lib --no-run --message-format=json > "$CARGO_TARGET_DIR/windows-native-tests.jsonl"
 export HGS_TEST_BIN
@@ -37,14 +38,17 @@ if len(executables) != 1:
 print(executables[0])
 PYTHON
 )
-python -m unittest discover -s tests -p windows_frontend_auth.py -v
 npm --prefix client ci --ignore-scripts --no-audit --no-fund
 (cd client && npm run tauri -- build --debug --no-bundle)
 cargo build --locked --bin hgs
-python tests/test_windows_desktop_registration.py --hgs "$CARGO_TARGET_DIR/debug/hgs.exe"
 mkdir -p artifacts/zerus-next-windows-shell
 cp "$CARGO_TARGET_DIR/debug/hgs-tray.exe" "$CARGO_TARGET_DIR/debug/hgs.exe" artifacts/zerus-next-windows-shell/
 # Keep exact native fixture bytes/drivers for the same private real-PC checks.
 cp "$HGS_WINDOWS_FRONTEND_FIXTURE" artifacts/zerus-next-windows-shell/windows-frontend-tests.exe
 mkdir -p artifacts/zerus-next-windows-shell/native-tests
 cp tests/windows_frontend_auth.py tests/test_desktop.py artifacts/zerus-next-windows-shell/native-tests/
+# Run independent runtime suites after preserving exact compiled bytes.
+# Any failure remains the shell step's exit status and the job stays failed.
+python tests/test_windows_desktop_registration.py --hgs "$CARGO_TARGET_DIR/debug/hgs.exe" || native_status=1
+python -m unittest discover -s tests -p windows_frontend_auth.py -v || native_status=1
+exit "$native_status"
