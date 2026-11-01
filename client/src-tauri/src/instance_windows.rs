@@ -461,10 +461,9 @@ mod tests {
             assert!(responder.configure_once("a".repeat(64)));
             responder
         }
-        fn report_chain() {
+        fn report_chain(mut pid: u32) {
             use zerus_client_core::desktop::windows::process::Original;
             let until = Instant::now() + Duration::from_secs(2);
-            let mut pid = std::process::id();
             let mut rows = Vec::new();
             for _ in 0..32 {
                 if Instant::now() >= until {
@@ -511,6 +510,23 @@ mod tests {
             assert!(bytes.len() <= 4096);
             let control: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
             let mode = control["case"].as_str().unwrap().to_owned();
+            if mode == "observe" {
+                // Private test observation only. This PID never supplies a
+                // request peer, cached confirmation or mutation permit.
+                let pid = u32::try_from(control["pid"].as_u64().unwrap()).unwrap();
+                report_chain(pid);
+                let result = zerus_client_core::desktop::windows::process::Ancestry::inspect(
+                    pid,
+                    Instant::now() + Duration::from_secs(2),
+                );
+                println!(
+                    "\nFRONTEND_OBSERVATION {}",
+                    serde_json::json!({
+                    "diagnostic_only":true,"pid":pid,"admitted":result.is_ok(),
+                    "error":result.err().map(|e| e.to_string())})
+                );
+                return;
+            }
             let info = crate::cli::build_info(&crate::cli::BUILD);
             let responder = Arc::new(Responder::new(
                 "com.hgdev.hgs-tray".into(),
@@ -561,7 +577,7 @@ mod tests {
             else {
                 panic!("private canonical fixture claim")
             };
-            report_chain();
+            report_chain(std::process::id());
             let inv = zerus_client_core::Invocation {
                 args: vec!["desktop".into(), "frontend-request".into(), "--json".into()],
                 stdin: Some(serde_json::to_vec(&envelope).unwrap()),
