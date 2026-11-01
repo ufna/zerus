@@ -101,7 +101,7 @@ fn answers(question: &Value) -> Option<Value> {
     Some(json!([{"question_id":item["id"],"selected_option_ids":[grants[0]["id"]],"text":""}]))
 }
 
-fn open(root: &Path) -> Result<Connection> {
+pub(crate) fn open(root: &Path) -> Result<Connection> {
     platform::private_dir(root)?;
     if !platform::verify_private(root, platform::Private::Directory)? {
         return Err(bad("The approval journal folder must be private"));
@@ -145,7 +145,7 @@ fn open(root: &Path) -> Result<Connection> {
     Ok(db)
 }
 
-fn begin(db: &mut Connection, payload: &Value) -> Result<Value> {
+pub(crate) fn begin(db: &mut Connection, payload: &Value) -> Result<Value> {
     let host = string(payload, "host", 256)?;
     let session = string(payload, "session", 1024)?;
     let provider = string(payload, "provider", 64)?;
@@ -206,7 +206,7 @@ fn begin(db: &mut Connection, payload: &Value) -> Result<Value> {
     Ok(json!({"eligible":true,"fresh":inserted==1,"id":id,"request_id":request,"answers":answers}))
 }
 
-fn finish(db: &Connection, payload: &Value) -> Result<Value> {
+pub(crate) fn finish(db: &Connection, payload: &Value) -> Result<Value> {
     let id = payload["id"]
         .as_i64()
         .filter(|id| *id > 0)

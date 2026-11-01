@@ -49,6 +49,8 @@ URL and the checksum.
 | `serde_columnar_derive` | https://github.com/loro-dev/columnar/blob/06663cfc569c6c770b28688f015f8a87fc04e156/LICENSE | `a9af0e3a3ded007f9914a1125b736ec526d469105c6577e367e2a9ca4de39d6b` |
 | `tauri-plugin` | https://github.com/tauri-apps/tauri/blob/59b63ab500da9859f12d8888c3298bc29bba0b92/LICENSE-APACHE-2.0 | `0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594` |
 | `tauri-plugin` | https://github.com/tauri-apps/tauri/blob/59b63ab500da9859f12d8888c3298bc29bba0b92/LICENSE-MIT | `9dd42ea92cff2ede5cd477cbfcce051b2d0115c0ac7f368ee88cb545055dff1d` |
+| `unicode-casefold` | https://github.com/spdx/license-list-data/blob/v3.29.0/text/MIT.txt (see below) | `b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
+| `unicode-casefold` | https://github.com/spdx/license-list-data/blob/v3.29.0/text/Unicode-DFS-2016.txt (see below) | `1a33fc12a3abb0b3eb14db70e36ef1d0af51c93b1cc1f80f022c3bd406e9b874` |
 | `uniffi` | https://github.com/mozilla/uniffi-rs/blob/7bc621ee9d0d15371d792612707ba5ed4111f950/LICENSE | `1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5` |
 | `uniffi_bindgen` | https://github.com/mozilla/uniffi-rs/blob/7bc621ee9d0d15371d792612707ba5ed4111f950/LICENSE | `1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5` |
 | `uniffi_core` | https://github.com/mozilla/uniffi-rs/blob/7bc621ee9d0d15371d792612707ba5ed4111f950/LICENSE | `1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5` |
@@ -105,3 +107,14 @@ permission and warranty text matches Qt's `tray/vendor/qrcodegen/LICENSE`.
 
 `dasp_sample` 0.11.0 (voice/video capture) omits the notices from its crate.
 Both upstream license texts are kept at its `.cargo_vcs_info.json` revision.
+
+`unicode-casefold` 0.2.0 (the Windows desktop shell) has no license text in its
+published crate or archived upstream repository. Its published `Cargo.toml`
+declares "MIT/Apache-2.0" and names Chris Wong as author. Zerus uses the MIT
+option: `MIT.txt` is the same unchanged SPDX v3.29.0 text used for the objc2
+crates above, including its placeholder copyright line. `NOTICE.txt` preserves
+the author attribution and explains the source; no copyright year is invented.
+The crate's `src/tables.rs` identifies Unicode 9.0.0, generated from the Unicode
+Character Database's `CaseFolding.txt`, whose header credits Unicode, Inc. in
+2016. `Unicode-DFS-2016.txt` preserves that data license's complete copyright
+and permission notice from SPDX v3.29.0.
