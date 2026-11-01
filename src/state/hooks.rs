@@ -1301,7 +1301,7 @@ fn track(name: String, token: String, mut event: Value, started: &mut bool) -> R
         // A previous accepted restore/clear hook may have synced the identity but
         // failed archive cleanup. Finish that transaction before a later start
         // can replace its durable boundary; this never resends native input.
-        if !string(&record,"restore_archive_id").is_empty() && string(&record,"expected_id").is_empty() {
+        if clear_context::cleanup_pending(&record) || (!string(&record,"restore_archive_id").is_empty() && string(&record,"expected_id").is_empty()) {
             archive::confirm_restore(&mut record)?;
         }
         if !string(&record, "fork_parent_id").is_empty() && sid == string(&record, "fork_parent_id")
@@ -1353,7 +1353,9 @@ fn track(name: String, token: String, mut event: Value, started: &mut bool) -> R
                 "model_source_path",
                 "model_source_offset",
             ] {
-                record.as_object_mut().unwrap().remove(key);
+                if key != "clear_context_request" || !clear_context::cleanup_pending(&record) {
+                    record.as_object_mut().unwrap().remove(key);
+                }
             }
         }
         record.as_object_mut().unwrap().remove("expected_id");
@@ -1398,6 +1400,9 @@ fn track(name: String, token: String, mut event: Value, started: &mut bool) -> R
         }
     }
     let hint = agent_hint::start(&mut record, &event);
+    if changed_conversation && clear_context::cleanup_pending(&record) {
+        archive::reserve_clear_source(&record)?;
+    }
     write(&mut record)?;
     if kind == "SessionStart" && string(&event, "agent_id").is_empty() {
         archive::confirm_restore(&mut record)?;

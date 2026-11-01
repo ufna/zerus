@@ -168,6 +168,7 @@ pub(super) fn run(args: &[String]) -> Result<i32> {
             if replaces.as_deref().is_some_and(|run| run != string(&previous, "run_id")) {
                 return Err(format!("{name}: saved binding changed before a fresh start"));
             }
+            refuse_unsettled_clear(&previous)?;
             attempts::prepare_replacement(&previous, &pane, &token, fresh, requested.as_deref())?;
             replaced = Some(previous);
         } else if replaces.is_some() {
@@ -198,6 +199,7 @@ pub(super) fn run(args: &[String]) -> Result<i32> {
         agent_hint::inherit_fork(&mut record, fork_hint_revision.as_deref());
         if let Some(expected) = expected {
             let previous = read(&name)?;
+            refuse_unsettled_clear(&previous)?;
             if string(&previous, "conversation_id") != expected
                 || string(&previous, "agent") != agent
             {
@@ -650,6 +652,7 @@ fn print_resume(spec: &backend::LaunchSpec) {
 
 fn resume_archive(name: &str, id: &str, dry: bool, scope: Option<&session_action::Scope>) -> Result<i32> {
     let archived = archive::read_archive(name, id)?;
+    refuse_unsettled_clear(&archived)?;
     recipes::verify_history(&archived, true)?;
     if let Some(scope)=scope {scope.check(&archived)?;}
     {
@@ -664,6 +667,7 @@ fn resume_archive(name: &str, id: &str, dry: bool, scope: Option<&session_action
         return Err(format!("{name}: a live or saved session already uses this name; finish or archive it before restoring"));
     }
     let current_archive = archive::read_archive(name, id)?;
+    refuse_unsettled_clear(&current_archive)?;
     if let Some(scope)=scope {scope.check(&current_archive)?;}
     if current_archive["run_id"] != archived["run_id"]
         || current_archive["conversation_id"] != archived["conversation_id"]
@@ -758,6 +762,7 @@ pub(super) fn resume_scoped(names: &[String], dry: bool, scope: Option<&session_
                 "{name}: this session is archived; restore it using --archive ID"
             ));
         }
+        refuse_unsettled_clear(&record)?;
         recipes::verify_history(&record, true)?;
         let restore_id = nonempty_value(&record, "restore_archive_id");
         let new_run=uuid::Uuid::new_v4().to_string();
@@ -768,6 +773,7 @@ pub(super) fn resume_scoped(names: &[String], dry: bool, scope: Option<&session_
     for (name, spec, original_run, original_conversation,new_run) in recipes {
         let current_snapshot = live()?;
         let current = read(&name)?;
+        refuse_unsettled_clear(&current)?;
         if let Some(scope)=scope {scope.check(&current)?;}
         if let Some(id) = &requested {
             verify_requested(&current, &current_snapshot, id)?;
@@ -801,6 +807,7 @@ pub(super) fn fresh(args: &[String], dry: bool) -> Result<i32> {
     };
     archive::reconcile()?;
     let record = read(name)?;
+    refuse_unsettled_clear(&record)?;
     if !AGENTS.contains(&string(&record, "agent")) {
         return Err(format!("{name}: only Claude, Codex and Kimi sessions can start fresh"));
     }
@@ -815,6 +822,7 @@ pub(super) fn fresh(args: &[String], dry: bool) -> Result<i32> {
     )?;
     let _guard = lock(None)?;
     let current = read(name)?;
+    refuse_unsettled_clear(&current)?;
     if live()?.contains_key(name) {
         return Err(format!("{name}: the session is running; clear its context instead"));
     }
@@ -870,4 +878,14 @@ mod tests {
         assert_eq!(codex_daemon_flag(&launcher.to_string_lossy()), Ok(true));
         assert!(!marker.exists());
     }
+}
+
+/// Replacing a binding cannot drop an unfinished archive/Clear transaction.
+/// A resident old finalizer may have archived the successor with both anchors;
+/// current restore/resume/fresh must retain that record until exact settlement.
+fn refuse_unsettled_clear(record: &Value) -> Result<()> {
+    if clear_context::cleanup_pending(record) {
+        return Err("Restored Clear archive cleanup is unfinished; retain the binding for review".into());
+    }
+    Ok(())
 }
