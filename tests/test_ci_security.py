@@ -322,29 +322,18 @@ class WorkflowSecurityTests(unittest.TestCase):
         # Line endings are fixed before checking out the exact tested commit.
         self.assertLess(windows.index("core.autocrlf false"), windows.index("actions/checkout@"))
         self.assertIn("ref: ${{ needs.source.outputs.commit }}\n          persist-credentials: false", windows)
-        # One exact interpreter, and no Python package installed: Qt comes from
-        # the verified archives of its pin, and its cache key covers the pin and
-        # the installer.
-        self.assertIn("uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0\n"
-                      "        with:\n          python-version: '3.13.15'\n", windows)
-        self.assertNotIn("install-qt-action", windows)
+        self.assertIn("uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0", windows)
+        self.assertNotIn("install-qt", windows)
+        self.assertNotIn("windeployqt", windows)
+        self.assertNotIn("gui.sh", windows)
         self.assertNotIn("pip install", windows)
-        self.assertNotRegex(windows, r"\baqt\b")
-        qt = json.loads((ROOT / "packaging/windows/qt.json").read_text())
-        version, prefix = qt["qt_version"], qt["prefix"]
-        self.assertEqual(windows.count("scripts/install-qt-windows.py --output"), 1)
-        self.assertIn("        if: steps.qt-cache.outputs.cache-hit != 'true'\n"
-                      '        run: python scripts/install-qt-windows.py --output "$RUNNER_TEMP/Qt" </dev/null\n', windows)
-        # A restored cache is checked against the pin too, before the build uses it.
-        use = next(step for step in self.checks_steps("windows-desktop") if f"- name: Use Qt {version}\n" in step)
-        self.assertIn('python scripts/install-qt-windows.py --check "$RUNNER_TEMP/Qt" </dev/null\n', use)
-        self.assertIn(f'qt=$(cygpath -w "$RUNNER_TEMP/Qt/{prefix}")', use)
-        # Qt WebEngine is an optional Linux plugin; the Windows bundle never ships it.
-        self.assertNotIn("qtwebengine", windows)
-        self.assertNotIn("qtwebengine", json.dumps(qt))
-        self.assertIn(f"key: windows-qt-{version}-win64_msvc2022_64-${{{{ hashFiles('packaging/windows/qt.json', "
-                      "'scripts/install-qt-windows.py', 'scripts/qt_archives.py') }}", windows)
-        self.assertIn(f"key: windows-ccache-v1-${{{{ runner.arch }}}}-qt{version}-", windows)
+        self.assertIn("uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1", windows)
+        self.assertIn("package-manager-cache: false", windows)
+        self.assertIn("npm ci </dev/null", windows)
+        self.assertIn("npm run tauri -- build --ci --no-bundle --config src-tauri/tauri.windows.conf.json --features video </dev/null", windows)
+        self.assertIn("CARGO_BUILD_JOBS: 4", windows)
+        self.assertIn("timeout-minutes: 25", windows)
+        self.assertIn("--gui target/windows-next/release/hgs-tray.exe", windows)
         # A new stable Rust release must not fail an unchanged commit.
         self.assertIn("cargo +1.99.1 clippy --locked --all-targets -- -D warnings", windows)
         self.assertNotRegex(windows, r"(?m)^\s*cargo clippy")
@@ -353,7 +342,6 @@ class WorkflowSecurityTests(unittest.TestCase):
         for line in ("cargo test --locked </dev/null", "test_windows_client.py -v </dev/null",
                      "test_windows_lifecycle test_windows_hooks test_backend_contract </dev/null",
                      "test_windows_mobile_gateway.py -v </dev/null",
-                     "bash scripts/ci/gui.sh build </dev/null", "bash scripts/ci/gui.sh test </dev/null",
                      "--output artifacts/zerus-windows-x86_64.zip </dev/null",
                      "--run --selftest \\\n            </dev/null"):
             self.assertIn(line, windows)
@@ -894,7 +882,7 @@ class WorkflowSecurityTests(unittest.TestCase):
         for line in ("ZERUS_DEV_BUILD_NUMBER", "build-arch-package.sh", "makepkg", "arch-x86_64"):
             self.assertNotIn(line, desktop)
         self.assertIn("name: arch-desktop-results\n          path: artifacts/test-results\n", desktop)
-        for name in ("arch", "mac-desktop", "windows-desktop"):
+        for name in ("arch", "mac-desktop"):
             text = job(checks, name)
             with self.subTest(job=name):
                 build = text.index("scripts/ci/gui.sh build")
@@ -958,12 +946,11 @@ class WorkflowSecurityTests(unittest.TestCase):
                              re.search(rf"(?m)^          {line}: (.*)$", desktop)[1])
         # Qt is saved only after the desktop build has used the installation.
         windows = job(checks, "windows-desktop")
-        self.assertLess(windows.index("bash scripts/ci/gui.sh build"), windows.index("name: Save Qt 6.10.3"))
+        self.assertLess(windows.index("npm run tauri -- build"), windows.index("name: Save Rust cache"))
 
     def test_compiler_caches_refresh_every_saving_run_and_rust_caches_do_not(self):
         families = {"arch": "arch-ccache-v1-", "arch-package": "arch-package-ccache-v1-",
-                    "mac-desktop": "mac-desktop-ccache-v1-${{ runner.arch }}-",
-                    "windows-desktop": "windows-ccache-v1-${{ runner.arch }}-qt6.10.3-"}
+                    "mac-desktop": "mac-desktop-ccache-v1-${{ runner.arch }}-"}
         for name, family in families.items():
             text = job((ROOT / ".github/workflows/checks.yml").read_text(), name)
             restore, stats = self.checks_step(name, "ccache-restore"), self.checks_step(name, "ccache")
@@ -1000,6 +987,8 @@ class WorkflowSecurityTests(unittest.TestCase):
                 restore = self.checks_step(name, "rust-cache")
                 # Each cache follows the lock of what it builds.
                 lock = "services/mobile/connector/Cargo.lock" if name == "connector" else "Cargo.lock"
+                if name in ("windows-desktop", "windows-host"):
+                    lock = "Cargo.lock', 'client/core/Cargo.lock', 'client/media/Cargo.lock', 'client/src-tauri/Cargo.lock"
                 if name in ('cli-macos-debug', 'cli-macos-core'):
                     profile, other = ('debug', 'complete') if name.endswith('debug') else ('complete', 'debug')
                     prefix = f"{family}{identity}${{{{ hashFiles('{lock}') }}}}"
@@ -1014,8 +1003,7 @@ class WorkflowSecurityTests(unittest.TestCase):
                       "${{ hashFiles('Cargo.lock', 'services/mobile/connector/Cargo.lock', 'client/src-tauri/Cargo.lock', 'client/media/Cargo.lock', 'client/core/Cargo.lock') }}\n"
                       "          restore-keys: arch-cargo-v1-${{ steps.epoch.outputs.month }}-\n", cargo)
         for name, step_id in (("quick", "rust-cache"), ("cli", "rust-cache"), ("cli-macos-debug", "rust-cache"), ("cli-macos-core", "rust-cache"), ("windows-desktop", "rust-cache"),
-                              ("connector", "rust-cache"), ("arch-package", "cargo-cache"),
-                              ("windows-desktop", "qt-cache"), ("android", "gradle-cache")):
+                              ("connector", "rust-cache"), ("arch-package", "cargo-cache"), ("android", "gradle-cache")):
             with self.subTest(job=name, cache=step_id):
                 # Exact content keys: 200-800 MB entries are saved only when missing.
                 self.assertNotIn("run_id", self.checks_step(name, step_id))
@@ -1159,23 +1147,13 @@ class WorkflowSecurityTests(unittest.TestCase):
             self.assertIn(line, upload)
         self.assertIn("'windows-host': json.loads(os.environ['RUN_WINDOWS']),", job(checks, "gate"))
 
-    def test_windows_ccache_is_an_exact_release_verified_before_use(self):
+    def test_windows_next_build_does_not_download_qt_or_ccache(self):
         windows = job((ROOT / ".github/workflows/checks.yml").read_text(), "windows-desktop")
-        self.assertEqual(windows.count("ccache/releases/download"), 1)
+        self.assertNotIn("ccache", windows)
+        self.assertNotIn("install-qt-windows.py", windows)
         self.assertNotRegex(windows, r"\b(?:choco|winget|scoop)\b")
-        install = next(step for step in self.checks_steps("windows-desktop") if "ccache/releases/download" in step)
-        version = re.search(r"\n          curl -fsSLO https://github\.com/ccache/ccache/releases/download/"
-                            r"v(\d+\.\d+\.\d+)/ccache-\1-windows-x86_64\.zip\n", install)[1]
-        # MSVC caching is officially supported from ccache 4.13.
-        self.assertGreaterEqual(tuple(map(int, version.split("."))), (4, 13))
-        archive = re.escape(f"ccache-{version}-windows-x86_64.zip")
-        self.assertRegex(install, rf"\n          echo '[0-9a-f]{{64}}  {archive}' \| sha256sum --check --strict\n")
-        verified = install.index("sha256sum --check")
-        for later in (f"python -m zipfile -e ccache-{version}-windows-x86_64.zip .", '>> "$GITHUB_PATH"'):
-            self.assertLess(verified, install.index(later))
-        self.assertLess(install.index("curl -fsSLO"), verified)
-        self.assertLess(windows.index(install), windows.index("key: windows-ccache-v1-"))
-        self.assertLess(windows.index("key: windows-ccache-v1-"), windows.index("bash scripts/ci/gui.sh build"))
+        self.assertIn("client/src-tauri/Cargo.lock", windows)
+        self.assertIn("path: artifacts", windows)
 
     def test_quick_checks_scan_all_history_for_secrets_with_a_verified_gitleaks(self):
         checks = (ROOT / ".github/workflows/checks.yml").read_text()
@@ -1238,7 +1216,7 @@ class WorkflowSecurityTests(unittest.TestCase):
                     self.assertTrue(path.startswith(("/home/user/", "~/Library/Caches/", "${{ runner.temp }}/")), path)
         for name in ("arch", "arch-package"):
             self.assertIn("      CCACHE_DIR: /home/user/.cache/ccache\n", job(checks, name))
-        self.assertIn('echo "CCACHE_DIR=$(cygpath -w "$RUNNER_TEMP/ccache")" >> "$GITHUB_ENV"',
+        self.assertIn("CARGO_TARGET_DIR: ${{ github.workspace }}/target/windows-next",
                       job(checks, "windows-desktop"))
         # makepkg uses ccache only through a drop-in in the disposable package
         # container, after checking that it changes nothing but ccache.

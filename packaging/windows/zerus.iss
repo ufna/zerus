@@ -28,6 +28,9 @@
 #ifndef IconFile
   #error Define IconFile
 #endif
+#ifndef TauriDesktop
+  #error Define TauriDesktop
+#endif
 
 [Setup]
 ; Never change the AppId: upgrades and the uninstaller find earlier installs by it.
@@ -72,14 +75,27 @@ ChangesEnvironment=no
 [Files]
 Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+#if TauriDesktop
+[Tasks]
+Name: "login"; Description: "Start Zerus at login"; Flags: unchecked
+#endif
+
 [Icons]
 Name: "{autoprograms}\Zerus"; Filename: "{app}\hgs-tray.exe"; WorkingDir: "{app}"
 
 [Run]
+#if TauriDesktop
+Filename: "{app}\hgs-tray.exe"; Parameters: "--install-login-item"; Tasks: login; Flags: runhidden
+#endif
 Filename: "{app}\hgs-tray.exe"; Description: "Start Zerus"; Flags: nowait postinstall skipifsilent
 ; A self-update runs the installer silently with /RELAUNCH after the desktop
 ; app has exited; the new version starts once its files are in place.
 Filename: "{app}\hgs-tray.exe"; Flags: nowait; Check: Relaunch
+
+#if TauriDesktop
+[UninstallRun]
+Filename: "{app}\hgs-tray.exe"; Parameters: "--remove-login-item"; Flags: runhidden
+#endif
 
 [UninstallDelete]
 Type: dirifempty; Name: "{app}"
@@ -101,6 +117,48 @@ begin
   for I := 1 to ParamCount do
     if CompareText(ParamStr(I), '/RELAUNCH') = 0 then
       Result := True;
+end;
+
+{ WebView2 Evergreen is a shared Microsoft runtime. Detect only its documented
+  own/per-machine registration; never install, update or remove it silently.
+  https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution }
+function RuntimeVersion(const Version: String): Boolean;
+var
+  I, Dots, Digits: Integer;
+  Nonzero: Boolean;
+begin
+  Result := False;
+  if (Length(Version) = 0) or (Length(Version) > 64) then Exit;
+  Dots := 0;
+  Digits := 0;
+  Nonzero := False;
+  for I := 1 to Length(Version) do
+  begin
+    if Version[I] = '.' then
+    begin
+      if Digits = 0 then Exit;
+      Dots := Dots + 1;
+      Digits := 0;
+    end
+    else
+    begin
+      if (Version[I] < '0') or (Version[I] > '9') then Exit;
+      Digits := Digits + 1;
+      if Version[I] <> '0' then Nonzero := True;
+    end;
+  end;
+  Result := (Dots = 3) and (Digits > 0) and Nonzero;
+end;
+
+function WebView2Installed(): Boolean;
+var
+  Version: String;
+  Key: String;
+begin
+  Key := 'Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
+  Result := (RegQueryStringValue(HKCU, Key, 'pv', Version) and RuntimeVersion(Version));
+  if not Result then
+    Result := (RegQueryStringValue(HKLM32, Key, 'pv', Version) and RuntimeVersion(Version));
 end;
 
 { Whether Path itself, not what it may lead to, is a reparse point. }
@@ -176,6 +234,16 @@ var
   Link: String;
 begin
   Result := '';
+  #if TauriDesktop
+  if not WebView2Installed() then
+  begin
+    Result := 'Zerus Next requires Microsoft Edge WebView2 Evergreen Runtime. Install it from ' +
+      'https://developer.microsoft.com/microsoft-edge/webview2/#download-section and run Setup again. ' +
+      'No Zerus files were changed.';
+    Log(Result);
+    Exit;
+  end;
+  #endif
   Link := LinkedPath(ExpandConstant('{app}'));
   if Link = '' then
     Link := FindLink(ExpandConstant('{app}'));

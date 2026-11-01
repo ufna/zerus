@@ -174,7 +174,7 @@ class Packager(unittest.TestCase):
         definitions = dict(item[2:].split("=", 1) for item in command[2:-1])
         self.assertEqual(definitions, {"AppVersion": "0.45.0.r3.gabcdef0.n9", "NumericVersion": "0.45.0.9",
                                        "PayloadDir": str(Path("/payload")), "OutputDir": str(output.parent),
-                                       "OutputName": output.stem, "IconFile": str(packager.ICON)})
+                                       "OutputName": output.stem, "IconFile": str(packager.ICON), "TauriDesktop": "0"})
         required = set(re.findall(r"(?m)^#ifndef (\w+)$", ISS.read_text(encoding="utf-8")))
         self.assertEqual(required, set(definitions))
         self.assertTrue(packager.ICON.is_file())
@@ -243,7 +243,7 @@ class Script(unittest.TestCase):
 
     def test_it_touches_nothing_outside_its_folder_and_the_start_menu(self):
         sections = set(re.findall(r"(?m)^\[(\w+)\]$", self.text))
-        self.assertEqual(sections, {"Setup", "Files", "Icons", "Run", "UninstallDelete", "Code"})
+        self.assertEqual(sections, {"Setup", "Files", "Icons", "Run", "Tasks", "UninstallRun", "UninstallDelete", "Code"})
         body = self.text.split("[Setup]", 1)[1]
         for forbidden in ("{userprofile}", "{%USERPROFILE", "{localappdata}\\hgs", ".local", ".config",
                           "{commonpf}", "{sys}", "restartreplace", "uninsneveruninstall", "Registry",
@@ -304,7 +304,8 @@ class Script(unittest.TestCase):
 
     def test_only_a_silent_self_update_relaunches_the_app(self):
         runs = re.findall(r"(?m)^Filename: (.*)$", self.text.split("[Run]", 1)[1].split("\n[", 1)[0])
-        self.assertEqual(runs, ['"{app}\\hgs-tray.exe"; Description: "Start Zerus"; Flags: nowait postinstall skipifsilent',
+        self.assertEqual(runs, ['"{app}\\hgs-tray.exe"; Parameters: "--install-login-item"; Tasks: login; Flags: runhidden',
+                                '"{app}\\hgs-tray.exe"; Description: "Start Zerus"; Flags: nowait postinstall skipifsilent',
                                 '"{app}\\hgs-tray.exe"; Flags: nowait; Check: Relaunch'])
         self.assertIn("CompareText(ParamStr(I), '/RELAUNCH') = 0", self.text)
 
