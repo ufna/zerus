@@ -140,6 +140,20 @@ pub fn show_main(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     Ok(window)
 }
 
+/// Windows cannot construct WebView2 synchronously in a native event callback.
+/// The existing window-layer worker owns the first creation as well as its
+/// level and presentation. Other platforms keep their main-thread behavior.
+pub fn request_main(app: &AppHandle) -> Result<(), String> {
+    #[cfg(all(windows, feature = "live"))]
+    {
+        crate::window_layer::open(app)
+    }
+    #[cfg(not(all(windows, feature = "live")))]
+    show_main(app)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 pub fn hide_main(app: &AppHandle) {
     #[cfg(feature = "live")]
     crate::window_layer::hidden(app);

@@ -113,7 +113,7 @@ unsafe extern "system" fn procedure(hwnd: HWND, message: u32, w: WPARAM, l: LPAR
         if message == CALLBACK {
             match (l as u32) & 0xffff {
                 WM_LBUTTONUP | NIN_SELECT | KEY_SELECT => {
-                    let _ = crate::lifecycle::show_main(&state.app);
+                    let _ = crate::lifecycle::request_main(&state.app);
                 }
                 WM_RBUTTONUP | WM_CONTEXTMENU => show_menu(hwnd),
                 NIN_BALLOONUSERCLICK => {
@@ -179,7 +179,7 @@ fn show_menu(hwnd: HWND) {
 fn dispatch(app: &AppHandle, action: MenuAction) {
     match action {
         MenuAction::Open => {
-            let _ = crate::lifecycle::show_main(app);
+            let _ = crate::lifecycle::request_main(app);
         }
         MenuAction::Updates => crate::updates::open_page(app),
         MenuAction::Restart => crate::updates::open_page(app),
