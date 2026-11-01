@@ -123,6 +123,8 @@ jobs:
         run: python3 -m unittest test_windows_installer test_webview2_ci
       - name: Linux package staging contracts
         run: python3 -m unittest discover -s tests -p test_linux_packaging.py
+      - name: Linux desktop service registration contracts
+        run: python3 -m unittest discover -s tests -p test_linux_desktop_service.py
       - name: Workflow trust boundary checks
         run: python3 -m unittest discover -s tests -p test_ci_security.py
       - name: Scan the tree and all history for secrets

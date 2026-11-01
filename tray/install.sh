@@ -219,6 +219,18 @@ if [ "${SCRATCH}" = "1" ]; then LIVE=0; fi
 # until Linux acceptance: HGS_LINUX_GUI=qt ./tray/install.sh.
 GUI="${HGS_LINUX_GUI:-client}"
 case "${GUI}" in qt|client) ;; *) echo "HGS_LINUX_GUI must be qt or client" >&2; exit 1 ;; esac
+if [ "${GUI}" = "client" ] && [ "${LIVE}" = "1" ]; then
+    if [ -x "${PREFIX}/bin/hgs" ]; then
+        HGS_BIN="${PREFIX}/bin/hgs"
+    elif command -v hgs >/dev/null 2>&1; then
+        HGS_BIN="$(command -v hgs)"
+    else
+        echo "hgs-tray: install the hgs CLI first (./install.sh)." >&2
+        exit 1
+    fi
+    # Refuse an unsupported CLI or custom service before replacing the GUI.
+    python3 "${SCRIPT_DIR}/../scripts/install-linux-desktop-service.py" --hgs "${HGS_BIN}" --check
+fi
 
 # --- 1. build -----------------------------------------------------------------
 echo "[1/4] Building..."
@@ -387,6 +399,17 @@ fi
 if [ "${SCRATCH}" = "1" ]; then
     echo "[4/4] Scratch prefix ${PREFIX}: no service-manager action."
 else
+    if [ "${GUI}" = "client" ] && [ "${LIVE}" = "1" ]; then
+        SERVICE_HELPER="${PREFIX}/lib/zerus/install-linux-desktop-service.py"
+        if ! cmp -s "${SCRIPT_DIR}/../scripts/install-linux-desktop-service.py" "${SERVICE_HELPER}"; then
+            install -Dm755 "${SCRIPT_DIR}/../scripts/install-linux-desktop-service.py" "${SERVICE_HELPER}.new"
+            mv -f "${SERVICE_HELPER}.new" "${SERVICE_HELPER}"
+            CHANGED=1
+        fi
+        # The helper imports this login's environment before service creation.
+        # Unchanged backend code stays alive across a UI-only update.
+        python3 "${SERVICE_HELPER}" --hgs "${HGS_BIN}"
+    fi
     echo "[4/4] Reloading and enabling hgs-tray.service..."
     systemctl --user daemon-reload
     if [ "$(systemctl --user is-enabled hgs-tray.service 2>/dev/null || true)" != "enabled" ]; then

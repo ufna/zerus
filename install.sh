@@ -53,6 +53,15 @@ else
 fi
 if [ "$changed" -eq 1 ]; then echo "Installed hgs Rust CLI."; fi
 "$prefix/bin/hgs" --version
+# Only deliberate per-user source upgrades refresh an existing desktop service.
+# Package/staging/root/foreign configuration installs never touch user services.
+# The same helper owns registration, readiness and desktop-only restart policy;
+# a CLI-only install with no managed registration still creates no service.
+if [ "$(uname -s)" = "Linux" ] && [ "$(id -u)" -ne 0 ] && \
+   [ -z "${HGS_INSTALL_PREFIX:-}" ] && [ -z "${DESTDIR:-}" ] && \
+   [ -z "${HGS_CONFIG_DIR:-}" ] && [ -z "${HGS_STATE_DIR:-}" ]; then
+    python3 "$here/scripts/install-linux-desktop-service.py" refresh --hgs "$prefix/bin/hgs"
+fi
 # The Rust mobile connector builds hyper, rustls, ring and SQLite, so until
 # gateways run it a source install builds it only when asked
 # (HGS_MOBILE_CONNECTOR=1) or to update an installed copy; 0 always skips. Its

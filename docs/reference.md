@@ -3708,6 +3708,18 @@ does not loop on exit code 4 (system tray unavailable). Compare
 `systemctl --user status hgs-tray.service` and `journalctl --user -u
 hgs-tray.service` when startup fails.
 
+The separate `hgs-desktop.service` uses the selected CLI's rendered registration
+and readiness contract. `zerus-setup --desktop-service` registers it for an AUR
+installation; the Next source installer registers it directly. Current-login
+graphical variables are imported before the service starts. A session refresh
+restarts only this backend when needed, and UI-only upgrades preserve an
+unchanged backend. CLI source upgrades refresh an existing owned registration
+without creating a service for a headless CLI-only installation. Package
+upgrades perform no user-service actions. Readiness means the matching IPC
+endpoint is ready, not that background workers have started. See
+[Linux desktop background service](linux-distribution.md#desktop-background-service)
+for custom configurations, bare window managers and startup diagnostics.
+
 On macOS the installer uses Qt/Homebrew, builds and ad-hoc-signs an app bundle,
 and installs it under `~/Applications/hgs-tray.app` with
 `~/Library/LaunchAgents/com.hgdev.hgs-tray.plist`. A graphical login is required

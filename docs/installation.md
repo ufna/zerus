@@ -87,6 +87,18 @@ use that exact path. The desktop installs to `~/.local/bin/hgs-tray` on Linux or
 `~/Applications/hgs-tray.app` on macOS. The installer configures autostart through
 systemd or launchd.
 
+On Linux, a normal Next source install also registers `hgs-desktop.service`
+from the selected CLI's definition. For AUR packages, run
+`zerus-setup --desktop-service` as the desktop user. Startup imports the current
+graphical-session environment before creating the backend child; a headless
+registration waits for the next graphical login. UI-only updates keep an
+unchanged backend alive. Deliberate source CLI upgrades refresh only an already
+managed desktop registration; a CLI-only installation creates no new service.
+Pacman upgrades never change user services. See the
+[Linux background-service commands and bare-WM setup](linux-distribution.md#desktop-background-service).
+IPC readiness and background worker ownership are separate; registration alone
+does not enable background workers.
+
 For a local Linux Zerus Next source build, an explicit private WebKitGTK/GTK3
 stack can be selected at installation:
 

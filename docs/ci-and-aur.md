@@ -1472,6 +1472,17 @@ symlinks, and refuses root execution. An existing source installation needs an
 intentional migration: inspect and move aside conflicting executables before
 running it. Do not remove `~/.config/hgs` or agent/session state.
 
+The package also ships the desktop-service installer. Explicitly register the
+per-user backend with `zerus-setup --desktop-service`; it consumes the selected
+CLI's configuration-scoped definition and IPC readiness probe. It imports the
+current graphical login environment before service creation and enables
+`hgs-desktop.service` for `graphical-session.target`. IPC readiness does not
+enable background workers. Custom definitions and drop-ins are preserved.
+The default `zerus-setup` command still creates compatibility links only.
+Pacman install/upgrade hooks never register, start or restart user services;
+after a package backend upgrade, run the explicit service setup again. See
+[Linux desktop background service](linux-distribution.md#desktop-background-service).
+
 Old user unit files in `~/.config/systemd/user` can shadow packaged definitions;
 inspect `systemctl --user cat hgs-tray.service` and the worker units before
 switching. Back up old definitions deliberately. Enable background services only

@@ -310,6 +310,11 @@ class TrayUpdate(unittest.TestCase):
                 (tray / name).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(REPO / 'tray' / name, tray / name)
             shutil.copytree(REPO / 'tray/resources/icons', tray / 'resources/icons')
+            helper = self.root / 'scripts/install-linux-desktop-service.py'
+            helper.parent.mkdir(parents=True, exist_ok=True)
+            self.script(helper, f'#!{sys.executable}\nimport json, os, pathlib, sys\n'
+                        'with (pathlib.Path(os.environ["TRAY_FIXTURE"]) / "desktop-service.calls").open("a") as log:\n'
+                        '    log.write(json.dumps(sys.argv[1:]) + "\\n")\n')
             self.script(self.bin / 'uname', '#!/bin/sh\necho Linux\n')
             for tool in ('gtk-update-icon-cache', 'kbuildsycoca6'):
                 self.script(self.bin / tool, '#!/bin/sh\nexit 0\n')
@@ -375,6 +380,10 @@ class TrayUpdate(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("'client-1'", self.installed.read_text())
         self.assertTrue((self.root / 'systemctl').exists())
+        calls = [json.loads(line) for line in (self.root / 'desktop-service.calls').read_text().splitlines()]
+        self.assertEqual(calls[0][-1], '--check')
+        self.assertNotIn('--check', calls[-1])
+        self.assertEqual(calls[-1], ['--hgs', str(self.home / '.local/bin/hgs')])
 
     def test_client_install_without_gstreamer_keeps_media_only(self):
         install = self.client_installer(self.build('client-1'), gstreamer=False)
