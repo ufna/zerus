@@ -135,6 +135,8 @@ pub fn show_main(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     window.show()?;
     window.set_focus()?;
     sync_policy(app);
+    #[cfg(all(windows, feature = "live"))]
+    crate::platform::windows::tray::apply_badge(app);
     Ok(window)
 }
 
@@ -232,16 +234,18 @@ fn exit(app: &AppHandle) {
     }
     #[cfg(all(target_os = "macos", feature = "live"))]
     crate::platform::macos_menubar::clear_badge(app);
+    #[cfg(all(windows, feature = "live"))]
+    crate::platform::windows::tray::stop(app);
     // Settings, the organization, voice, composers and drafts reach the disk
     // while the socket still stands, as Qt's tray agent flushes before its
     // server goes.
     #[cfg(feature = "live")]
     crate::exit_work(app);
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     if let Some(state) = app.try_state::<crate::instance::InstanceState>() {
         state.release();
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     let _ = app;
 }
 

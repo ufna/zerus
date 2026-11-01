@@ -205,8 +205,7 @@ save them.
 | `client-native-` | Native desktop client | OS/arch, hash of `rustc +1.99.1 -Vv`, month, hashes of the three client lockfiles | Exact key missed; native checks passed | Monthly restart; Cargo registry and Git checkouts only, so multi-GB native target directories are never cached |
 | `arch-cargo-v1-` | Arch package | Month, hash of `Cargo.lock` and the connector's lock | Exact key missed; package built | Cargo registry only |
 | `android-gradle-v1-` | Android | Month, hash of the Gradle wrapper properties and `*.gradle.kts` | Exact key missed; tests and lint passed | Monthly restart; about 700 MB (`~/.gradle/caches` and `wrapper`) |
-| `windows-qt-6.10.3-` | Windows | Hash of the Qt pin and installer | Exact key missed; desktop build passed | The pinned Qt archives, no WebEngine |
-| `arch-ccache-v1-`, `arch-package-ccache-v1-`, `mac-desktop-ccache-v1-`, `windows-ccache-v1-` | Arch desktop, Arch package, macOS, Windows | Architecture (macOS, Windows), Qt release (Windows), run ID | Build passed with ccache misses | `CCACHE_MAXSIZE` 150, 100, 100 and 500 MB |
+| `arch-ccache-v1-`, `arch-package-ccache-v1-`, `mac-desktop-ccache-v1-` | Arch desktop, Arch package, macOS | Architecture (macOS), run ID | Build passed with ccache misses | `CCACHE_MAXSIZE` 150, 100 and 100 MB |
 
 The Windows real-agent job restores the `windows-cli-` family of the Windows
 desktop job for its release build and never saves it, so two jobs cannot race to
@@ -238,16 +237,6 @@ The Arch package job enables ccache for makepkg only through
 the image's default `BUILDENV` differs only in `ccache`. The published recipes and
 their `check()` are unchanged. The package build uses different compiler flags
 from the desktop build, so it has its own cache family.
-
-Windows installs the official ccache 4.14.1 x86_64 release. The job pins its
-SHA-256, which matches the archive signed with the ccache minisign key
-`RWQX7yXbBedVfI4PNx6FLdFXu9GHUFsr28s4BVGxm4BeybtnX3P06saF`. ccache officially
-supports MSVC since 4.13. Release builds have no `/Zi`, which ccache cannot
-cache; a build with debug information would need `/Z7` instead. Depend mode
-(`CCACHE_DEPEND`) takes the includes from Ninja's `/showIncludes` instead of
-running the preprocessor again. The job sets no `CCACHE_BASEDIR`: rewriting
-paths to relative ones would also change `__FILE__`, from which suites locate
-their fixtures, and the runner's workspace path is the same on every run.
 
 ### Manual checks
 
@@ -583,105 +572,64 @@ gives each step a synchronous anonymous pipe as stdin, and Windows OpenSSH never
 exits after using one (the fake client refuses it), so steps that start `hgs.exe`,
 `ssh` or the desktop app read stdin from `/dev/null`.
 
-Qt 6.10.3 for MSVC 2022 x64 with Qt Multimedia comes from the official archives
-pinned in `packaging/windows/qt.json`, which `scripts/install-qt-windows.py`
-installs with the shared standard-library installer `scripts/qt_archives.py`
-(also used for [macOS](macos-distribution.md#pinned-qt)). No PyPI package is
-installed for it. The pin lists what aqtinstall 3.3.0 installed for this build
-before: every archive of `qt.qt6.6103.win64_msvc2022_64` (`qtbase`, `qtsvg`,
-`qtdeclarative`, `qttools` with `windeployqt`, `qttranslations`,
-`d3dcompiler_47` and `opengl32sw`) and `qtmultimedia`, each with its URL path in
-the repository, its size, its SHA-256 and the directory its `Extract` operation
-in `Updates.xml` names. The installer downloads every archive (download.qt.io may
-redirect to a mirror), stops reading at the pinned size, checks the SHA-256 and
-lists the members with the runner image's 7-Zip before it extracts any archive.
-A member with an absolute, drive, parent, device or alternate-stream name, or a
-link, stops the installation; so does a link left in the extracted tree that
-resolves outside it. A failed download is retried twice, each failure logged;
-nothing unverified is kept. The result is aqtinstall's layout,
-`RUNNER_TEMP/Qt/6.10.3/msvc2022_64`. Of aqtinstall's fixups only `bin/qt.conf`
-(`Prefix=..`) is repeated: the official Qt is relocatable, the `qmake.exe`, `.prl`
-and `qconfig.pri` patches find nothing to change in 6.10.3, and `qtenv2.bat` is
-for interactive shells. Compared with an aqtinstall 3.3.0 installation of the
-same release (on Linux, 2026-10-15), all other 11807 entries matched, except
-for the line endings of `qconfig.pri`, which aqtinstall rewrites in text mode. On
-Windows that rewrite keeps the archive's CRLF in `qconfig.pri` but gave the LF
-`lib/*.prl` files CRLF, which only qmake reads; they now stay LF. The
-installer also writes `zerus-qt.json`, the archive list it installed, and the
-`Use Qt` step checks it with `--check`, so a restored cache must match the pin
-too.
+The Windows desktop is Zerus Next, built from the locked frontend and Tauri
+Rust package with `tauri.windows.conf.json` and the `video` feature. The output
+is `target/windows-next/release/hgs-tray.exe`, with the installed identity
+`com.hgdev.hgs-tray`. This job does not install Qt, run `windeployqt` or cache a
+Qt/C++ desktop build. Native Windows shell contracts also run in the dedicated
+client-native job.
 
-To update Qt, change the version, `prefix`, package names and directories in
-`qt.json`, then run `python scripts/install-qt-windows.py --lock`: it reads the
-archives and their `Extract` directories from the official `Updates.xml`,
-downloads each archive and records its size and digest once it matches the
-published `.sha256`. From Qt 6.11 each Windows architecture has a repository
-directory of its own (`desktop/qt6_6112/qt6_6112_msvc2022_64` rather than
-aqtinstall's expected `desktop/qt6_6112/qt6_6112`), which a package's `directory`
-names; the 6.11 base package adds `qtdoc`. Review the locked pin like the other
-pins and check `--output` locally (7-Zip on Linux works as well) before
-committing. The Qt directory is cached with `actions/cache` under a key that
-covers the Qt release, the pin and the installer. Like every cache, only trusted
-main checks save it; PR, manual and nightly runs restore it (see
-[build caches](#build-caches)). Such a run downloads Qt when no cache entry exists
-yet. Qt WebEngine is not installed: the embedded DeepSeek Native UI is an
-optional Linux plugin. The desktop build compiles through ccache.
+WebView2 Evergreen is a shared prerequisite. The app installer checks the
+Microsoft-documented user and machine registration and stops before changing
+Zerus files when it is missing. Winget declares `Microsoft.EdgeWebView2Runtime`
+as a dependency; portable users install it separately. Only the disposable
+Windows CI runner uses `scripts/ci/ensure-webview2.py`: it first checks for an
+existing runtime, otherwise downloads the official HTTPS bootstrapper within a
+4 MiB/time bound, verifies a valid Microsoft Authenticode signature, runs it
+with a fixed timeout and checks the registration again. It refuses owner and
+non-Windows environments and never removes the shared runtime. See Microsoft's
+[WebView2 distribution guidance](https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution).
 
-`scripts/ci/gui.sh` re-enters itself through `scripts/ci/msvc-env.py`, which
-locates Visual Studio with `vswhere` and applies `vcvars64.bat` (with its CMake
-and Ninja first on `PATH`) to that build only, then builds with Ninja and `cl` and
-runs every CTest suite offscreen.
+`scripts/package-windows.py` copies the exact tested `hgs.exe`, Tauri
+`hgs-tray.exe` and `zerus-mobile-connector.exe` into
+`zerus-windows-x86_64.zip`, preserving the top-level
+`zerus-windows-x86_64/hgs-tray.exe` path winget uses. It adds the app-local MSVC
+runtime from Visual Studio's default redistributable directory and the pinned
+ConPTY pair next to `hgs.exe`. No Qt runtime or plugins are deployed.
 
-`scripts/package-windows.py` bundles the exact tested `hgs.exe`, `hgs-tray.exe`
-and `zerus-mobile-connector.exe`
-into `zerus-windows-x86_64.zip` with one top-level `zerus-windows-x86_64/` folder:
+The zip carries the project, Codex and ConPTY notices, the host-target Rust
+notices for the CLI/connector and Tauri desktop (including its selected video
+feature), and the exact installed production frontend packages' license texts.
+Frontend collection uses the shared `client/scripts/collect-notices.py` and npm
+lockfile, excludes development tools except Vite's emitted preload runtime, and
+refuses missing notices or mismatched installed versions. `build-info.json`
+records `desktop:tauri`, `webview2_runtime:evergreen`, versions and exact source.
+The portable inspector still accepts immutable published Qt archives with their
+original layout and notices, so retries never rebuild or alter older releases.
 
-- `windeployqt` adds Qt, its plugins (including the SVG image and icon plugins
-  loaded at run time) and translations. It runs with `--no-opengl-sw`: the Mesa
-  software OpenGL fallback would need notices the zip does not carry. `--no-system-d3d-compiler` and `--no-system-dxc-compiler` keep
-  Microsoft's shader compilers out: Windows includes `D3DCompiler_47.dll`, and
-  the notices do not cover the Windows SDK's `dxcompiler.dll` and `dxil.dll`.
-  The ICU DLLs it copies from the build machine's System32 (a forwarder
-  to `icu.dll` on current Windows) are removed; `Qt6Core.dll` uses the system ICU.
-  The minimum is Windows 10 1903, which the desktop app's UTF-8 code page also
-  needs.
-- The app-local Visual C++ runtime DLLs come from the default redistributable
-  folder of the Visual Studio found by `vswhere`, never a hard-coded version.
-- `conpty.dll` and `OpenConsole.exe`, the pinned [ConPTY pair](#the-bundled-conpty-pair),
-  sit next to `hgs.exe`, so `hgs session-host install` from the extracted folder
-  stages them into the host image. `--conpty` names a folder from
-  `scripts/fetch-conpty.py`, whose files must match the pin; without it the
-  script fetches the pair itself.
-- `licenses/` holds the libvterm, md4c, Codex and ConPTY texts (the ConPTY license
-  and Windows Terminal's notices), the host-target Rust
-  dependency notices from `scripts/collect-licenses.py`, the per-module SPDX
-  documents shipped with Qt and, in `licenses/qt`, the texts from
-  `packaging/windows/licenses` (sources in its `README.md`). Packaging parses the
-  documents and fails when one names a standard license or exception without its
-  text there, or a `LicenseRef-` without extracted text in the documents.
-- `LICENSE`, `THIRD_PARTY_NOTICES.md`, a `README.txt` for Windows users and
-  `build-info.json` with the source commit, product, CLI and Qt versions.
+`scripts/check-windows-portable.py` checks safe regular-file names, the pinned
+ConPTY hashes, notices, manifest identity and the existing 512 MiB compressed /
+500 MB unpacked bounds. `--run --selftest` on Windows uses private temporary
+configuration and a minimal environment to check CLI/connector startup and the
+exact clean desktop `--build-info` identity. It stages the bundled ConPTY pair
+through `hgs.exe session-host install` without starting a host. New Tauri builds
+do not use Qt's old `--selftest` option.
 
-`scripts/check-windows-portable.py` then checks every entry (no absolute, parent,
-device, case-duplicate or symlink names, no ICU, software OpenGL or Direct3D
-shader compiler DLLs and no Qt WebEngine files), the required runtime and license texts, the manifest
-provenance and the limits: at most 512 MiB compressed, the release mirror's
-asset limit, and 500 MB unpacked, the bound applied to whole nightly candidates.
-`conpty.dll` and `OpenConsole.exe` must be the pinned builds, by size and SHA-256
-read in memory, and no file of either name may sit anywhere but next to
-`hgs.exe`; stable and nightly assembly and publication repeat these checks.
-With `--run --selftest` on Windows it extracts the zip and starts both
-executables with a minimal environment, without Qt or the bundle on `PATH`:
-`--version` of each, `hgs.exe ls --json --local` must report the control-only
-local computer, and `hgs-tray.exe --selftest` must find the `hgs.exe` next to
-it. Last, `hgs.exe session-host install` enables local sessions in the
-disposable profile and must stage the pinned pair into the host image; it starts
-no host. The job uploads the zip and logs as `windows-x86_64-<commit>` without
-recompressing them and keeps them for seven days (three for schedules). Qt
-WebEngine, which made earlier zips about 140 MB (345 MB unpacked), is not part of
-it. Only stable and nightly assembly use that zip. On main pushes the [Dev channel](public-distribution.md#verified-main-dev-channel)
-waits for this job like every other suite, so a Windows failure also holds back
-Dev, but Dev candidates carry no Windows build.
+CI builds the per-user Inno Setup installer from the tested zip without changing
+payload bytes. Installer survival tests install, upgrade and uninstall in their
+isolated fixture while preserving staged hosts and sessions. Login start is an
+unchecked installer choice and invokes the desktop's guarded login-item command;
+uninstall asks that command to remove only its own registration. Obsolete Qt
+files are removed only by the existing owned-app-folder upgrade sweep.
+Windows service registration/removal is reserved for the maintained G1 command
+from the Windows service lane. Explicit installer hooks currently log that it is
+pending; they create no ad-hoc scheduled task or claim active background duties.
+`hgs desktop registration --json` previews the shared definition/readiness interface.
+
+The job uploads the zip, installer and logs in `windows-x86_64-<commit>` for seven
+days (three for schedules). Stable/nightly assembly continues to use the tested
+zip unchanged; publishing the installer is separate work (.66.7.4). Windows Dev
+builds remain absent.
 
 #### The bundled ConPTY pair
 

@@ -17,15 +17,15 @@ pub struct Options {
 }
 
 impl Options {
-    /// Whether this start asks for the window. It picks the line a second
-    /// start forwards (`sessions` or `show`) and, in a build with a menu-bar
-    /// item (macOS), whether the window opens at start
-    /// (`lifecycle::window_at_start`); builds without one (Linux, Windows)
-    /// always open it. The switch bundle follows Qt's
-    /// `AppConfig::opensSessions` on macOS (only `--sessions`); other
-    /// identities ask unless started with `--background`.
+    /// Whether a start asks for the window or just the background shell.
+    /// The switch bundle starts hidden on macOS; Windows follows Qt and opens
+    /// normally unless --background was given. A second background start sends
+    /// only the non-visible `show` activation.
     pub fn opens_sessions(&self, switch: bool) -> bool {
-        self.sessions || (!switch && !self.background)
+        self.opens_sessions_on(switch, cfg!(windows))
+    }
+    pub fn opens_sessions_on(&self, switch: bool, windows: bool) -> bool {
+        self.sessions || ((!switch || windows) && !self.background)
     }
 }
 
@@ -35,6 +35,7 @@ pub enum Command {
     Help,
     Version,
     BuildInfo,
+    LoginItem { enabled: bool },
 }
 
 /// Qt options with a value that this client does not use.
@@ -50,6 +51,7 @@ const IGNORED_WITH_VALUE: [&str; 5] = [
 /// first help, version or error answers.
 pub fn parse(args: &[String]) -> Result<Command, String> {
     let mut options = Options::default();
+    let mut login_item = None;
     let mut index = 0;
     while index < args.len() {
         let arg = args[index].as_str();
@@ -59,6 +61,12 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
             "--build-info" => return Ok(Command::BuildInfo),
             "--sessions" => options.sessions = true,
             "--background" => options.background = true,
+            "--install-login-item" | "--remove-login-item" if cfg!(windows) => {
+                if login_item.is_some() {
+                    return Err("Give only one login-item command".into());
+                }
+                login_item = Some(arg == "--install-login-item");
+            }
             "--selftest" => return Err("--selftest is not available in this client".to_owned()),
             "--hgs" => {
                 let value = args
@@ -87,9 +95,14 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                 .to_owned(),
         );
     }
-    Ok(Command::Run(options))
+    Ok(
+        login_item.map_or(Command::Run(options), |enabled| Command::LoginItem {
+            enabled,
+        }),
+    )
 }
 
+#[cfg(not(windows))]
 pub fn usage() -> &'static str {
     "Usage: hgs-tray [options]\n\n\
      \x20 --hgs <path>          path to the hgs binary; found in PATH by default\n\
@@ -100,6 +113,11 @@ pub fn usage() -> &'static str {
      \x20 --build-info          embedded build/source identity as JSON and exit\n\n\
      Accepted for the Qt GUI's command line and not used: --local-poll, --peer-poll,\n\
      --terminal, --icon-color and --open-mode (each takes a value).\n"
+}
+
+#[cfg(windows)]
+pub fn usage() -> &'static str {
+    "Usage: hgs-tray [options]\n\n  --hgs <path>          path to the hgs binary\n  --sessions            open the Zerus window\n  --background          start in the notification area without a window\n  --install-login-item  opt in to starting in the background at login\n  --remove-login-item   remove this app's per-user login registration\n  -h, --help            this text\n  --version             installed release version and exit\n  --build-info          embedded build/source identity as JSON and exit\n\nAccepted Qt options: --local-poll, --peer-poll, --terminal, --icon-color, --open-mode (each takes a value).\n"
 }
 
 /// What `build.rs` embedded.
@@ -160,7 +178,7 @@ pub fn build_info(facts: &BuildFacts) -> Value {
 
 /// The build identity plus the running client's identity for the Linux updater.
 /// macOS reads these fields from the signed bundle's Info.plist instead.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub fn build_info_for(facts: &BuildFacts, identifier: &str) -> Value {
     let mut info = build_info(facts);
     info["CFBundleIdentifier"] = Value::from(identifier);
@@ -280,7 +298,7 @@ mod tests {
     fn the_switch_bundle_starts_in_the_menu_bar_like_qt() {
         let plain = Options::default();
         assert!(
-            !plain.opens_sessions(true),
+            !plain.opens_sessions_on(true, false),
             "Qt on macOS opens the window only with --sessions"
         );
         assert!(
@@ -297,6 +315,36 @@ mod tests {
             ..Options::default()
         }
         .opens_sessions(false));
+    }
+
+    #[test]
+    fn windows_opens_normally_but_duplicate_login_starts_stay_hidden() {
+        let plain = Options::default();
+        assert!(plain.opens_sessions_on(true, true));
+        let background = Options {
+            background: true,
+            ..plain
+        };
+        assert!(!background.opens_sessions_on(true, true));
+        assert!(!background.opens_sessions_on(false, true));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn login_registration_is_explicit_and_not_a_run() {
+        assert_eq!(
+            parse(&args(&[
+                "--install-login-item",
+                "--hgs",
+                "C:/Zerus/hgs.exe"
+            ])),
+            Ok(Command::LoginItem { enabled: true })
+        );
+        assert_eq!(
+            parse(&args(&["--remove-login-item"])),
+            Ok(Command::LoginItem { enabled: false })
+        );
+        assert!(parse(&args(&["--install-login-item", "--remove-login-item"])).is_err());
     }
 
     #[test]

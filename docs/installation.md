@@ -338,6 +338,10 @@ Requirements:
 
 - Windows 10 version 1903 or later, or Windows 11, on x86_64. Local sessions are
   tested on Windows 11 and on the Windows Server 2025 CI runners.
+- Zerus Next packages require the [Microsoft Edge WebView2 Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/).
+  Winget installs this dependency. For portable/manual installs, install it first
+  if absent; Microsoft Edge itself is not a substitute. Zerus does not remove
+  this shared runtime when uninstalled.
 - For remote machines, the OpenSSH client. `ssh -V` in PowerShell shows whether it
   is installed; otherwise add **OpenSSH Client** in Settings → Optional features.
 - For remote machines, at least one Linux or macOS machine with `hgs` installed at
@@ -370,6 +374,14 @@ Install and start:
    The Zerus window opens. Closing it keeps Zerus running in the notification
    area, where Windows 11 first hides a new icon behind the **^** arrow; run
    `hgs-tray.exe` again to bring the window back.
+   The per-user installer currently built and tested in CI from the same zip
+   checks this prerequisite and
+   offers **Start Zerus at login**, off by default. It preserves configuration,
+   drafts and native host images when upgrading. Its login choice applies only
+   to the desktop app; local agent hosting remains a separate opt-in. Public
+   installer publication is separate release work. Its desktop-service setup hook
+   awaits the maintained Windows G1 command; `hgs.exe desktop registration --json`
+   previews that service definition and readiness interface.
 4. To manage remote machines, add them in **Machines**. Accept a new host key once
    with **Open SSH terminal**, then use **Test connection**.
    **Install / update HGS…** builds `hgs` on the remote machine from a Zerus source
@@ -494,6 +506,12 @@ stops an idle session host without disabling anything.
   `hgs-tray.exe` in the Startup folder (`shell:startup`) and add a space and
   `--background` at the end of its **Target** field, so Zerus starts in the
   notification area without opening its window.
+  Zerus Next also supports an explicit per-user login registration:
+  `hgs-tray.exe --install-login-item` enables background startup and
+  `hgs-tray.exe --remove-login-item` removes it. Pass the same `--hgs` selector
+  when registering a custom CLI. It is never enabled automatically. Existing
+  Startup-folder shortcuts remain valid; duplicate background starts keep the
+  window hidden.
 - Without SSH connection sharing, every poll of every machine is a full SSH
   handshake: about 150 ms per machine on a LAN. The app lists this computer at
   most once every 15 seconds, or every 5 seconds with local sessions enabled.

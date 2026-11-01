@@ -118,6 +118,9 @@ jobs:
           "$RUNNER_TEMP/speech-http-venv/bin/python" -m unittest discover -s services/speech/tests -v
       - name: Release publication contract checks
         run: python3 -m unittest discover -s tests -p 'test_*publication.py'
+      - name: Windows installer and runtime prerequisite contracts
+        working-directory: tests
+        run: python3 -m unittest test_windows_installer test_webview2_ci
       - name: Linux package staging contracts
         run: python3 -m unittest discover -s tests -p test_linux_packaging.py
       - name: Workflow trust boundary checks
@@ -809,6 +812,18 @@ jobs:
           restore-keys: client-native-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.rustc }}-${{ steps.rust.outputs.epoch }}-
       - name: Core tests, media checks and Tauri clippy
         run: bash scripts/ci/client-native.sh windows
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: Windows shell tests and disposable app
+        run: bash scripts/ci/windows-next-shell.sh
+      - name: Retain disposable Windows shell
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: zerus-next-windows-shell
+          path: artifacts/zerus-next-windows-shell
+          retention-days: 3
+          if-no-files-found: error
       - name: Save native client Rust cache
         if: inputs.save_caches && steps.rust-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -1374,13 +1389,8 @@ jobs:
       # Line tables keep test backtraces readable and bound the cached target size.
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_INCREMENTAL: 0
+      CARGO_BUILD_JOBS: 4
       ZERUS_BUILD_JOBS: 4
-      # ccache caches MSVC compiles without /Zi, as in Release. Depend mode reads
-      # the includes from Ninja's /showIncludes instead of preprocessing again.
-      # No base_dir: it would make __FILE__ relative, and suites locate their
-      # fixtures from it; the runner's workspace path never changes anyway.
-      CCACHE_DEPEND: 1
-      CCACHE_MAXSIZE: 500M
     steps:
       # Before checkout: the runner's Git converts text files to CRLF by default,
       # which changes fixtures, scripts and embedded text.
@@ -1409,7 +1419,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: windows-cli-${{ runner.arch }}-${{ steps.rust.outputs.rustc }}-${{ steps.rust.outputs.epoch }}-${{ hashFiles('Cargo.lock') }}
+          key: windows-cli-${{ runner.arch }}-${{ steps.rust.outputs.rustc }}-${{ steps.rust.outputs.epoch }}-${{ hashFiles('Cargo.lock', 'client/core/Cargo.lock', 'client/media/Cargo.lock', 'client/src-tauri/Cargo.lock') }}
           restore-keys: windows-cli-${{ runner.arch }}-${{ steps.rust.outputs.rustc }}-${{ steps.rust.outputs.epoch }}-
       # The runner gives every step a synchronous pipe as stdin. Windows OpenSSH
       # (and the fake client, which refuses it) must never inherit it, so steps
@@ -1425,15 +1435,6 @@ jobs:
           cargo build --release --locked
           cargo build --locked --example fake_ssh
           cargo build --locked --example fake_agent
-      - name: Save Rust cache
-        if: inputs.save_caches && steps.rust-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
       - name: Windows mobile connector build and native filesystem contracts
         run: |
           cargo +1.99.1 clippy --locked --manifest-path services/mobile/connector/Cargo.toml --target-dir target --all-targets -- -D warnings
@@ -1490,86 +1491,45 @@ jobs:
           python scripts/ci/outside-job.py --custody-only --timeout 900 \
             --log artifacts/test-results/windows-mobile-gateway.log -- \
             python -m unittest discover -s tests -p test_windows_mobile_gateway.py -v </dev/null
-      # Only trusted main checks save it; PR, manual and candidate runs restore
-      # it. The key covers the Qt pin and the installer.
-      - name: Restore Qt 6.10.3 for MSVC
-        id: qt-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          path: ${{ runner.temp }}/Qt
-          key: windows-qt-6.10.3-win64_msvc2022_64-${{ hashFiles('packaging/windows/qt.json', 'scripts/install-qt-windows.py', 'scripts/qt_archives.py') }}
-      # The official archives pinned in packaging/windows/qt.json, each checked
-      # against its size and SHA-256 and listed before any is extracted, with the
-      # runner image's 7-Zip. No Python package is installed for it.
-      - name: Install the pinned Qt 6.10.3 for MSVC
-        if: steps.qt-cache.outputs.cache-hit != 'true'
-        run: python scripts/install-qt-windows.py --output "$RUNNER_TEMP/Qt" </dev/null
-      # A restored installation must also be the pinned one.
-      - name: Use Qt 6.10.3
-        run: |
-          python scripts/install-qt-windows.py --check "$RUNNER_TEMP/Qt" </dev/null
-          qt=$(cygpath -w "$RUNNER_TEMP/Qt/6.10.3/msvc2022_64")
-          test -f "$(cygpath -u "$qt")/bin/windeployqt.exe"
-          echo "QT_ROOT_DIR=$qt" >> "$GITHUB_ENV"
-      # The official ccache release, verified like the other downloaded tools
-      # (the digest matches its minisign-signed archive). gui.sh adds the
-      # compiler launcher when ccache is on PATH.
-      - name: Pinned ccache 4.14.1
-        run: |
-          cd "$(cygpath -u "$RUNNER_TEMP")"
-          curl -fsSLO https://github.com/ccache/ccache/releases/download/v4.14.1/ccache-4.14.1-windows-x86_64.zip
-          echo '6219f3865ca59aec41ee4b678df171d5d35855ecb2b6dbbbd20690b3a68af7b4  ccache-4.14.1-windows-x86_64.zip' | sha256sum --check --strict
-          python -m zipfile -e ccache-4.14.1-windows-x86_64.zip .
-          cygpath -w "$PWD/ccache-4.14.1-windows-x86_64" >> "$GITHUB_PATH"
-          echo "CCACHE_DIR=$(cygpath -w "$RUNNER_TEMP/ccache")" >> "$GITHUB_ENV"
-      - name: Restore ccache
-        id: ccache-restore
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/ccache
-          key: windows-ccache-v1-${{ runner.arch }}-qt6.10.3-${{ github.run_id }}
-          restore-keys: windows-ccache-v1-${{ runner.arch }}-qt6.10.3-
-      - name: Reset ccache statistics
-        id: ccache-start
-        run: |
-          ccache -z
-          echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"
-      - name: Desktop build
-        id: build
-        run: bash scripts/ci/gui.sh build </dev/null
-      - name: ccache statistics
-        id: ccache
-        if: ${{ !cancelled() }}
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install the locked Zerus Next frontend
+        timeout-minutes: 5
+        working-directory: client
+        run: npm ci </dev/null
+      - name: Build the Tauri Windows switch desktop
+        timeout-minutes: 25
+        working-directory: client
         env:
-          SAVE: ${{ inputs.save_caches && steps.build.outcome == 'success' }}
-          STARTED: ${{ steps.ccache-start.outputs.started }}
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target/windows-next
+          CARGO_BUILD_JOBS: 4
         run: |
-          ccache -sv
-          misses=$(ccache --print-stats | awk -F'\t' '$1 == "cache_miss" { print $2 + 0 }')
-          if [ "$SAVE" = true ] && [ "${misses:-0}" -gt 0 ]; then
-            ccache --evict-older-than "$(( $(date +%s) - STARTED + 60 ))s"
-            echo save=true >> "$GITHUB_OUTPUT"
-          fi
-      - name: Save ccache
-        if: inputs.save_caches && steps.ccache.outputs.save == 'true'
+          npm run tauri -- build --ci --no-bundle --config src-tauri/tauri.windows.conf.json --features video </dev/null \
+            2>&1 | tee ../artifacts/test-results/windows-next-build.log
+          test -f ../target/windows-next/release/hgs-tray.exe
+      - name: Save Rust cache
+        if: inputs.save_caches && steps.rust-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/ccache
-          key: ${{ steps.ccache-restore.outputs.cache-primary-key }}
-      # Saved only after the desktop build has used it, so an incomplete
-      # installation never becomes the exact-key entry every later run restores.
-      - name: Save Qt 6.10.3
-        if: inputs.save_caches && steps.qt-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/Qt
-          key: ${{ steps.qt-cache.outputs.cache-primary-key }}
-      - name: Offscreen Qt suites
-        run: bash scripts/ci/gui.sh test </dev/null
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
+      - name: Frontend runtime license notices
+        run: python client/scripts/collect-notices.py artifacts/windows-frontend-licenses </dev/null
+      # The app installer checks but never silently installs a shared runtime.
+      # Only this disposable CI runner may use the verified bootstrapper.
+      - name: WebView2 Evergreen prerequisite for Windows package tests
+        timeout-minutes: 6
+        run: python scripts/ci/ensure-webview2.py </dev/null
       - name: Portable zip from the tested executables
         run: |
-          python scripts/package-windows.py --cli target/release/hgs.exe --gui .ci-build/gui/hgs-tray.exe \
-            --connector target/release/zerus-mobile-connector.exe --conpty "$RUNNER_TEMP/conpty" --output artifacts/zerus-windows-x86_64.zip </dev/null 2>&1 | tee artifacts/test-results/package.log
+          python scripts/package-windows.py --cli target/release/hgs.exe --gui target/windows-next/release/hgs-tray.exe \
+            --connector target/release/zerus-mobile-connector.exe --frontend-licenses artifacts/windows-frontend-licenses \
+            --conpty "$RUNNER_TEMP/conpty" --output artifacts/zerus-windows-x86_64.zip </dev/null 2>&1 | tee artifacts/test-results/package.log
           python scripts/check-windows-portable.py artifacts/zerus-windows-x86_64.zip --run --selftest \
             </dev/null 2>&1 | tee artifacts/test-results/portable.log
       # The per-user installer (packaging/windows/zerus.iss) from that zip, with
@@ -1645,7 +1605,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: windows-cli-${{ runner.arch }}-${{ steps.rust.outputs.rustc }}-${{ steps.rust.outputs.epoch }}-${{ hashFiles('Cargo.lock') }}
+          key: windows-cli-${{ runner.arch }}-${{ steps.rust.outputs.rustc }}-${{ steps.rust.outputs.epoch }}-${{ hashFiles('Cargo.lock', 'client/core/Cargo.lock', 'client/media/Cargo.lock', 'client/src-tauri/Cargo.lock') }}
           restore-keys: windows-cli-${{ runner.arch }}-${{ steps.rust.outputs.rustc }}-${{ steps.rust.outputs.epoch }}-
       - run: cargo build --release --locked
       - name: Pinned ConPTY pair

@@ -700,7 +700,9 @@ impl Grouping {
         self.layout.presentation_seeded()
     }
 
-    pub fn windows_folders_import_layout(&self) -> Result<Option<super::layout::Layout>, &'static str> {
+    pub fn windows_folders_import_layout(
+        &self,
+    ) -> Result<Option<super::layout::Layout>, &'static str> {
         self.layout
             .windows_folders_import_pending()
             .map(|pending| pending.then(|| self.layout.clone()))

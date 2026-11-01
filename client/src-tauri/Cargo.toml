@@ -53,6 +53,7 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # The composer's continuations compare attachment digests (S3's `DraftMark`).
 sha2 = "0.10"
+semver = "1"
 # Verified update catalogs: rustls with the system trust store, no bundled-only roots.
 ureq = { version = "3.4", default-features = false, features = ["rustls", "platform-verifier"] }
 # The pure-Rust core (watch streams, catalog state, per-frame batches).
@@ -85,6 +86,10 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["s
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "WKPreferences", "WKWebViewConfiguration"] }
 # Attention notifications under the app's identity (platform/macos_notify.rs).
 objc2-user-notifications = { version = "0.3.2", default-features = false, features = ["std", "block2", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter"] }
+
+[target.'cfg(windows)'.dependencies]
+unicode-casefold = "0.2"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_Recovery", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

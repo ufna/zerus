@@ -228,7 +228,9 @@ pub fn terminal_settings(dir: &Path) -> zerus_client_core::terminal_launch::Sett
     };
     zerus_client_core::terminal_launch::Settings {
         template: value("terminal"),
-        open_mode: if cfg!(target_os = "macos") {
+        open_mode: if cfg!(windows) {
+            load_windows_mode(dir, conf.as_deref()).config().into()
+        } else if cfg!(target_os = "macos") {
             serde_json::to_value(load_mode(dir, conf.as_deref()))
                 .ok()
                 .and_then(|value| value.as_str().map(str::to_owned))
@@ -250,6 +252,25 @@ pub fn load_linux_mode(dir: &Path, tray_conf: Option<&str>) -> OpenMode {
             tray_conf
                 .and_then(|text| tray_conf_value(text, "open-mode"))
                 .and_then(|value| OpenMode::from_linux_config(&value))
+        })
+        .unwrap_or(OpenMode::Automatic)
+}
+
+/// Windows uses Qt's auto/tab/window/console/clipboard modes.
+pub fn load_windows_mode(dir: &Path, tray_conf: Option<&str>) -> OpenMode {
+    std::fs::read(dir.join(MODE_FILE))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Saved>(&bytes).ok())
+        .map(|saved| saved.open_mode)
+        .filter(|mode| OpenMode::WINDOWS.contains(mode))
+        .or_else(|| {
+            tray_conf
+                .and_then(|text| tray_conf_value(text, "open-mode"))
+                .and_then(|value| {
+                    OpenMode::WINDOWS
+                        .into_iter()
+                        .find(|mode| mode.config() == value.trim())
+                })
         })
         .unwrap_or(OpenMode::Automatic)
 }
@@ -872,7 +893,9 @@ fn deliver(app: &AppHandle, changes: Changes) {
     }
     #[cfg(target_os = "linux")]
     crate::platform::linux_notify::deliver(app, changes.cleared, changes.raised);
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(windows)]
+    crate::platform::windows::tray::deliver(app, changes.cleared, changes.raised);
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     let _ = (app, changes);
 }
 
@@ -898,7 +921,15 @@ fn publish(app: &AppHandle, desk: &Desk, mode: OpenMode) {
             crate::platform::macos_menubar::offer(&handle, face, tooltip, menu, badge)
         });
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(windows)]
+    crate::platform::windows::tray::offer(
+        app,
+        desk.face(),
+        crate::native_text::lines(&desk.tooltip()),
+        desk.menu(mode),
+        desk.badge(),
+    );
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     let _ = (app, desk, mode);
 }
 
@@ -1021,7 +1052,10 @@ pub fn tray_notify(title: &str, body: &str) {
 #[cfg(target_os = "linux")]
 pub use crate::platform::linux_tray::open_running;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+pub use crate::platform::windows::tray::open_running;
+
+#[cfg(not(any(target_os = "linux", windows)))]
 pub fn open_running(app: &AppHandle, computer: &ComputerId, name: &str) {
     let hgs = zerus_client_core::default_hgs();
     let command = shell::open_command(
@@ -1036,9 +1070,11 @@ pub fn open_running(app: &AppHandle, computer: &ComputerId, name: &str) {
         .map(|state| *lock(&state.mode))
         .unwrap_or_default();
     let opened = match mode {
-        OpenMode::Terminal | OpenMode::Automatic | OpenMode::Tab | OpenMode::Window => {
-            open_in_terminal(&command)
-        }
+        OpenMode::Terminal
+        | OpenMode::Automatic
+        | OpenMode::Tab
+        | OpenMode::Window
+        | OpenMode::Console => open_in_terminal(&command),
         OpenMode::Clipboard => {
             use tauri_plugin_clipboard_manager::ClipboardExt;
             shell::copyable(&command)
@@ -1119,7 +1155,7 @@ pub fn set_mode(app: &AppHandle, mode: OpenMode) {
     let _ = lock(&state.sender).send(DeskInput::Mode(mode));
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub fn current_mode(app: &AppHandle) -> OpenMode {
     app.try_state::<DeskState>()
         .map(|state| *lock(&state.mode))
@@ -1379,6 +1415,24 @@ mod tests {
             computer: id,
             status: ComputerStatus::Live,
         });
+    }
+
+    #[test]
+    fn windows_terminal_modes_use_saved_choice_then_qt_config() {
+        let dir = scratch("windows-modes");
+        assert_eq!(load_windows_mode(&dir, None), OpenMode::Automatic);
+        assert_eq!(
+            load_windows_mode(&dir, Some("open-mode=console\n")),
+            OpenMode::Console
+        );
+        save_mode(&dir, OpenMode::Tab).unwrap();
+        assert_eq!(
+            load_windows_mode(&dir, Some("open-mode=console\n")),
+            OpenMode::Tab
+        );
+        save_mode(&dir, OpenMode::Terminal).unwrap();
+        assert_eq!(load_windows_mode(&dir, None), OpenMode::Automatic);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

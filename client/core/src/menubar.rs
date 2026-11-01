@@ -254,11 +254,19 @@ pub enum OpenMode {
     Automatic,
     Tab,
     Window,
+    Console,
 }
 
 impl OpenMode {
     pub const ALL: [OpenMode; 2] = [OpenMode::Terminal, OpenMode::Clipboard];
     pub const LINUX: [OpenMode; 4] = [Self::Automatic, Self::Tab, Self::Window, Self::Clipboard];
+    pub const WINDOWS: [OpenMode; 5] = [
+        Self::Automatic,
+        Self::Tab,
+        Self::Window,
+        Self::Console,
+        Self::Clipboard,
+    ];
 
     /// Qt's labels (`TrayMenu.cpp:78-81`), catalog sources.
     pub fn label(self) -> &'static str {
@@ -268,6 +276,7 @@ impl OpenMode {
             Self::Automatic => crate::source!("Automatic"),
             Self::Tab => crate::source!("Tab"),
             Self::Window => crate::source!("Window"),
+            Self::Console => crate::source!("Console window"),
         }
     }
 
@@ -278,6 +287,7 @@ impl OpenMode {
             Self::Automatic => "auto",
             Self::Tab => "tab",
             Self::Window => "window",
+            Self::Console => "console",
         }
     }
 

@@ -54,19 +54,21 @@ GOAL_CRITERION = 'Все 13 trophy/156 состояний проверены, в
 GOAL_OPTIONS = {
     'manual': (
         ('auto', 'Switch to Never Ask and start',
-         'Best if you want Kimi Code to keep working while you are away. Tools are approved automatically, and questions are skipped.',
+         'Best if you want Kimi Code to keep working while you are away. Tools are approved automatically and '
+         'questions are skipped; only plans in Plan mode wait for your review.',
          'broader'),
         ('yolo', 'Switch to Ask When Needed and start',
-         'Tools and plan changes are approved automatically. Kimi Code may still ask you questions.', 'broader'),
+         'Tools are approved automatically. Kimi Code may still ask you questions.', 'broader'),
         ('manual', 'Start in Always Ask',
          'Keep approvals on. Kimi Code will ask before risky actions, so the goal may stop and wait for you.', 'once'),
         ('cancel', 'Do not start', 'Return to the input box with your goal command.', 'once')),
     'yolo': (
         ('auto', 'Switch to Never Ask and start',
-         'Best if you want Kimi Code to keep working while you are away. Tools are approved automatically, and questions are skipped.',
+         'Best if you want Kimi Code to keep working while you are away. Tools are approved automatically and '
+         'questions are skipped; only plans in Plan mode wait for your review.',
          'broader'),
         ('yolo', 'Keep Ask When Needed and start',
-         'Tools and plan changes stay approved automatically. Kimi Code may still ask you questions.', 'once'),
+         'Tools stay approved automatically. Kimi Code may still ask you questions.', 'once'),
         ('cancel', 'Do not start', 'Return to the input box with your goal command.', 'once')),
 }
 
