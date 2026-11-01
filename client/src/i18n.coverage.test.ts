@@ -59,7 +59,7 @@ const DYNAMIC_FILES: Record<string, string> = {
   "./ui/screens/settings/computer-invitations.ts": "its own notice constant",
   "./ui/screens/settings/connector-actions.ts": "the workspace enrollment notice constants",
   "./ui/screens/settings/legacy-relay.ts": "its own notice constant",
-  "./ui/screens/settings/Recovery.tsx": "its own help constant",
+  "./ui/screens/settings/Recovery.tsx": "its own help constant and recovery settings status/error prose",
   "./ui/screens/settings/Voice.tsx": "its own provider help table",
   "./ui/screens/settings/workspace-enrollment.ts": "its own notice constants",
   "./ui/screens/settings/WorkspacePanel.tsx": "the workspace enrollment notice constant",
