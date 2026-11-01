@@ -104,9 +104,9 @@ mod voice;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod watchdog;
 #[cfg(feature = "live")]
-mod window_layer;
-#[cfg(feature = "live")]
 mod window_geometry;
+#[cfg(feature = "live")]
+mod window_layer;
 mod window_visibility;
 #[cfg(any(windows, test))]
 mod windows_shell;
