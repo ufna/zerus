@@ -339,6 +339,7 @@ fn restore_and_restart_click_correlation_never_post_or_rebuild_a_binding() {
     let original = command(1);
     let envelope = Envelope::new(original.action.token(), &original.binding.request_id).unwrap();
     let mapping = Activation {
+        platform_context: None,
         request_id: envelope.correlation().into(),
         token: envelope.token().into(),
         native_id: NativeId::Macos {
@@ -394,6 +395,7 @@ fn cache_capacity_reserves_space_for_pending_native_posts_and_outputs_are_bounde
         .unwrap();
     for n in 0..MAPPINGS - 1 {
         let mapping = Activation {
+            platform_context: None,
             request_id: id(1000 + n),
             token: command.action.token().into(),
             native_id: NativeId::Macos {
@@ -412,6 +414,7 @@ fn cache_capacity_reserves_space_for_pending_native_posts_and_outputs_are_bounde
     }
     let envelope = Envelope::new(command.action.token(), &id(99999)).unwrap();
     let mapping = Activation {
+        platform_context: None,
         request_id: envelope.correlation().into(),
         token: envelope.token().into(),
         native_id: NativeId::Macos {
