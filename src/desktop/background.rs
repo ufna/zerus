@@ -3,7 +3,7 @@ use super::{
     delivery, details,
     fanout::Queue,
     feed, fleet, presence_worker,
-    store::{Location, Store},
+    store::{maintenance, Location, Store},
 };
 use crate::config::Config;
 use anyhow::{ensure, Result};
@@ -22,11 +22,13 @@ pub(super) struct Runtime {
     presence: Option<presence_worker::Runtime>,
     delivery: delivery::Runtime,
     details: details::Adapter,
+    maintenance: maintenance::Runtime,
 }
 
 impl Runtime {
     pub fn start(config: &Config, epoch: &str, broker: &mut feed::Broker) -> Result<Self> {
         let delivery = delivery::Runtime::start(config, epoch)?;
+        let maintenance = maintenance::Runtime::start(config, epoch)?;
         let producer = broker.claim_internal()?;
         match fleet::Runtime::start(config, epoch) {
             Ok(fleet) => Ok(Self {
@@ -35,6 +37,7 @@ impl Runtime {
                 presence: None,
                 delivery,
                 details: details::Adapter::new(epoch),
+                maintenance,
             }),
             Err(error) => {
                 producer.close();
@@ -71,6 +74,7 @@ impl Runtime {
             match broker.apply(store, &self.producer, &event.packet) {
                 Ok(change) => {
                     self.delivery.observe(store, &event);
+                    self.maintenance.observe(store, &event);
                     let fleet = &self.fleet;
                     self.details.observe(
                         &event,
@@ -84,6 +88,7 @@ impl Runtime {
                     }
                 }
                 Err(_) => {
+                    self.maintenance.reject(&event);
                     self.details.reject(&event, seq);
                     broker.invalidate(&self.producer, &event.packet);
                     self.fleet.reject(&event);
@@ -91,6 +96,7 @@ impl Runtime {
             }
         }
         self.delivery.poll(store);
+        self.maintenance.poll(store);
         (changes, consumed == POLL_EVENTS)
     }
 
@@ -103,7 +109,30 @@ impl Runtime {
         store: &mut Store,
         authority: super::ui_authority::Validated,
     ) -> Value {
-        self.delivery.frontend_request(store, authority)
+        if authority.operation() == "automatic_approvals" {
+            return self.delivery.frontend_request(store, authority);
+        }
+        let id = authority.id().to_owned();
+        let refused = |code| json!({"request_id":id,"accepted":false,"durable":false,"code":code});
+        match authority.into_request() {
+            Ok(zerus_client_core::desktop::ui_requests::Request::MaintenanceConfigure {
+                request_id,
+                update,
+                recovery,
+            }) => {
+                let value =
+                    serde_json::to_value(zerus_client_core::maintenance::Request::Configure {
+                        request_id,
+                        update: update.map(|v| *v),
+                        recovery: recovery.map(|v| *v),
+                    });
+                match value {
+                    Ok(value) => self.maintenance.request(store, &value),
+                    Err(_) => refused("maintenance_refused"),
+                }
+            }
+            _ => refused("frontend_identity_expired"),
+        }
     }
 
     pub fn details_open(&mut self, queue: &Arc<Queue>) -> Option<Value> {
@@ -121,6 +150,14 @@ impl Runtime {
 
     pub fn decorate(&self, value: &mut Value) {
         value["detail_subscriptions"] = self.details.status();
+        value["maintenance"] = self.maintenance.status();
+        value["components"]["maintenance"] = if value["maintenance"]["ready"] == true {
+            "running"
+        } else {
+            "unavailable"
+        }
+        .into();
+        value["lifecycle"]["background"]["maintenance"] = value["maintenance"].clone();
         let status = self.fleet.status();
         let ready = status["transport_ready"] == true;
         let code = match status["state"].as_str() {
@@ -152,6 +189,7 @@ impl Runtime {
         value["delivery_runtime"] = delivery.clone();
         value["ownership"] = if code == "drained"
             && delivery["drained"] == true
+            && self.maintenance.drained()
             && presence.as_ref().is_none_or(|p| p["drained"] == true)
         {
             "revoked"
@@ -177,6 +215,7 @@ impl Runtime {
         self.details.stop();
         self.producer.close();
         self.delivery.request_stop();
+        self.maintenance.request_stop();
         if let Some(presence) = &self.presence {
             presence.request_stop();
         }
@@ -185,7 +224,9 @@ impl Runtime {
         loop {
             let fleet_done = self.fleet.stop();
             self.delivery.poll(store);
+            self.maintenance.poll(store);
             let delivery_done = self.delivery.drained();
+            let maintenance_done = self.maintenance.drained();
             let presence_done = match self.presence.as_mut().map(presence_worker::Runtime::stop) {
                 None | Some(Ok(true)) => true,
                 Some(Ok(false)) => false,
@@ -194,7 +235,7 @@ impl Runtime {
                     true // join failed, but still finish draining the fleet
                 }
             };
-            if fleet_done && presence_done && delivery_done {
+            if fleet_done && presence_done && delivery_done && maintenance_done {
                 return failure.map_or(Ok(()), Err);
             }
             ensure!(

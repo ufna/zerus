@@ -556,6 +556,15 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                         } else if hello
                             .request
                             .as_ref()
+                            .is_some_and(|v| v["op"] == "maintenance_result")
+                        {
+                            store::maintenance::result_request(
+                                &store,
+                                hello.request.as_ref().unwrap(),
+                            )
+                        } else if hello
+                            .request
+                            .as_ref()
                             .is_some_and(|v| v["op"] == "delivery_result")
                         {
                             delivery::result_request(&store, hello.request.as_ref().unwrap())

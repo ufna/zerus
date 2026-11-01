@@ -6,6 +6,7 @@ use serde_json::{Map, Value};
 use std::{collections::BTreeMap, path::Path};
 
 pub const ABI: &str = "desktop-maintenance-v1";
+pub const HELP_MARKER: &str = "Desktop maintenance ABI: desktop-maintenance-v1";
 pub const CONFIG_LIMIT: usize = zerus_watch_protocol::CONTROL_LINE_BYTES - 4096;
 pub const POLICY_LIMIT: usize = CONFIG_LIMIT / 2;
 

@@ -1,7 +1,6 @@
 //! Periodic update discovery and recovery-policy replication. The background
 //! owner supplies activation and authenticated frontend routing; this module
 //! never registers a generic IPC operation, installs software or runs recovery.
-#![allow(dead_code)] // Wired by the background-owner follow-up, not at load time.
 #[path = "maintenance/io.rs"]
 mod io;
 #[path = "maintenance/state.rs"]
@@ -11,12 +10,12 @@ mod state;
 mod tests;
 
 use super::Store;
+#[cfg(unix)]
+use crate::platform;
 use crate::{
     config::Config,
     desktop::{feed, fleet},
 };
-#[cfg(unix)]
-use crate::platform;
 use anyhow::{ensure, Result};
 use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
@@ -37,6 +36,46 @@ use zerus_client_core::{
 };
 
 pub(crate) use state::migrate;
+
+/// A bounded read-only lookup remains available after revoke/passive startup.
+/// durable:true describes the ORIGINAL configuration, not a new query write.
+pub(crate) fn result_request(store: &Store, value: &Value) -> Value {
+    let id = value["request_id"].as_str().unwrap_or("");
+    let result = (|| -> Result<Value> {
+        ensure!(
+            serde_json::to_vec(value)?.len() <= dto::CONFIG_LIMIT,
+            "maintenance query too large"
+        );
+        let Request::Result {
+            request_id,
+            original_request_id,
+        } = serde_json::from_value(value.clone())?
+        else {
+            anyhow::bail!("not a maintenance result query");
+        };
+        ensure!(
+            canonical(&request_id) && canonical(&original_request_id),
+            "invalid query ID"
+        );
+        let stored = state::load(&store.db)?;
+        Ok(receipt(Some(&stored), &request_id, &original_request_id))
+    })();
+    result.unwrap_or_else(
+        |_| json!({"request_id":id,"accepted":false,"durable":false,"code":"maintenance_refused"}),
+    )
+}
+fn receipt(stored: Option<&state::Stored>, id: &str, original: &str) -> Value {
+    match stored.and_then(|s| s.receipts.get(original)) {
+        Some(receipt) => {
+            json!({"request_id":id,"original_request_id":original,"accepted":true,"durable":true,
+            "revision":receipt.revision,"recovery_save":receipt.recovery_save,"configured":true,
+            "current":stored.is_some_and(|s|s.revision==receipt.revision)})
+        }
+        None => {
+            json!({"request_id":id,"original_request_id":original,"accepted":false,"code":"unknown_request"})
+        }
+    }
+}
 const SLOTS: usize = 4;
 const CALLS: usize = zerus_desktop_catalog::MAX_SOURCES as usize;
 const FRESH: Duration = Duration::from_secs(30);
@@ -320,16 +359,7 @@ impl Runtime {
         }
     }
     fn receipt(&self, id: &str, original: &str) -> Value {
-        match self.stored.as_ref().and_then(|s| s.receipts.get(original)) {
-            Some(receipt) => {
-                json!({"request_id":id,"original_request_id":original,"accepted":true,"durable":true,
-                "revision":receipt.revision,"recovery_save":receipt.recovery_save,"configured":true,
-                "current":self.stored.as_ref().is_some_and(|s|s.revision==receipt.revision)})
-            }
-            None => {
-                json!({"request_id":id,"original_request_id":original,"accepted":false,"code":"unknown_request"})
-            }
-        }
+        receipt(self.stored.as_ref(), id, original)
     }
     /// Only AFTER a successful application of the original owned FleetEvent.
     pub fn observe(&mut self, store: &Store, event: &fleet::FleetEvent) {
@@ -338,6 +368,15 @@ impl Runtime {
             .scope()
             .is_some_and(|(computer, _)| computer.is_empty())
             && self.observe_inner(store, event).is_err()
+        {
+            self.invalidate();
+        }
+    }
+    pub fn reject(&mut self, event: &fleet::FleetEvent) {
+        if event
+            .packet
+            .scope()
+            .is_none_or(|(computer, _)| computer.is_empty())
         {
             self.invalidate();
         }
