@@ -47,7 +47,7 @@ impl Fake {
     }
     fn store(&self, epoch: &str) -> Store {
         let location = Location {
-            root: self.temp.path().join("state/desktop"),
+            root: self.temp.path().canonicalize().unwrap().join("state/desktop"),
             configuration: "a".repeat(64),
         };
         location.prepare().unwrap();
