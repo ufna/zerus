@@ -31,6 +31,8 @@ use std::{
 const LOG_BYTES: usize = 65536;
 const QUANTUM: usize = 16384;
 const START_WAIT: Duration = Duration::from_secs(10);
+const STOP_GRACE: Duration = Duration::from_secs(10);
+const MAX_FDS: libc::rlim_t = 1 << 20;
 static HOST_ACTIVE: AtomicBool = AtomicBool::new(false);
 struct Admission;
 impl Admission {
@@ -112,6 +114,8 @@ struct Status {
     stdout: Vec<u8>,
     stderr: Vec<u8>,
     log_overflow: bool,
+    log_dropped: u64,
+    unresponsive: bool,
 }
 
 pub(in crate::desktop) struct OwnedHost {
@@ -218,7 +222,8 @@ impl OwnedHost {
         json!({"transport_ready":s.ready,"restoring":!s.restored,"ready":s.ready && s.restored && !self.stop.load(Ordering::Acquire),"drained":self.worker.is_none() && !self.failed_join && s.drained,
             "fault":if self.failed_join {Some("notification_host_worker_panicked")}
                 else if !s.greeted && !s.drained && Instant::now() >= self.until {Some("notification_host_start_deadline")} else {s.fault},
-            "turns":s.turns,"exit_observed":s.exit.is_some(),"exit":s.exit,"stdout_bytes":s.stdout.len(),"stderr_bytes":s.stderr.len(),"log_overflow":s.log_overflow})
+            "code":if s.unresponsive {"notification_host_unresponsive"} else if s.drained {"drained"} else {"running_or_starting"},
+            "turns":s.turns,"exit_observed":s.exit.is_some(),"exit":s.exit,"stdout_bytes":s.stdout.len(),"stderr_bytes":s.stderr.len(),"log_overflow":s.log_overflow,"log_dropped_bytes":s.log_dropped})
     }
 }
 impl Drop for OwnedHost {
@@ -262,6 +267,14 @@ impl Original {
         // SAFETY: successful duplication above transfers this descriptor once.
         let lock = unsafe { File::from_raw_fd(fd) };
         drop(file); // Same flock/open description stays held by lock and fd3.
+        let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
+        // SAFETY: one live, correctly sized output value in the parent.
+        ensure!(
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } == 0
+                && limit.rlim_cur <= MAX_FDS,
+            "notification descriptor limit unavailable"
+        );
+        let close_until = limit.rlim_cur as libc::c_int;
         let (child, (control, stdout, stderr)) =
             platform::spawn_prepared_in_turn_before(until, || {
                 let (control, child_control) = UnixStream::pair()?;
@@ -290,6 +303,18 @@ impl Original {
                     command.pre_exec(move || {
                         if libc::dup2(lock_fd, 3) < 0 || libc::fcntl(3, libc::F_SETFD, 0) < 0 {
                             return Err(io::Error::last_os_error());
+                        }
+                        for fd in 4..close_until {
+                            let flags = libc::fcntl(fd, libc::F_GETFD);
+                            if flags < 0 {
+                                if io::Error::last_os_error().raw_os_error() != Some(libc::EBADF) {
+                                    return Err(io::Error::last_os_error());
+                                }
+                            } else if flags & libc::FD_CLOEXEC == 0 && libc::close(fd) < 0 {
+                                return Err(io::Error::last_os_error());
+                            }
+                            // Already-CLOEXEC descriptors (including Rust's
+                            // exec-error pipe) close at exec, not before it.
                         }
                         Ok(())
                     });
@@ -388,20 +413,20 @@ fn discard_turn(stream: &mut UnixStream, eof: &mut bool) {
         *eof = true;
     }
 }
-fn log_turn(stream: &mut UnixStream, prefix: &mut Vec<u8>, eof: &mut bool) -> Result<bool> {
+fn log_turn(stream: &mut UnixStream, prefix: &mut Vec<u8>, eof: &mut bool) -> Result<usize> {
     if *eof {
-        return Ok(false);
+        return Ok(0);
     }
     let mut bytes = [0; QUANTUM];
     match stream.read(&mut bytes) {
         Ok(0) => {
             *eof = true;
-            Ok(false)
+            Ok(0)
         }
         Ok(n) => {
             let kept = n.min(LOG_BYTES - prefix.len());
             prefix.extend_from_slice(&bytes[..kept]);
-            Ok(n > kept)
+            Ok(n - kept)
         }
         Err(e)
             if matches!(
@@ -409,10 +434,59 @@ fn log_turn(stream: &mut UnixStream, prefix: &mut Vec<u8>, eof: &mut bool) -> Re
                 io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
             ) =>
         {
-            Ok(false)
+            Ok(0)
         }
         Err(e) => Err(e.into()),
     }
+}
+
+fn wait_io(
+    original: &Original,
+    control: bool,
+    writing: bool,
+    stdout: bool,
+    stderr: bool,
+) -> io::Result<()> {
+    let mut fds = [
+        libc::pollfd {
+            fd: if control || writing {
+                original.control.as_raw_fd()
+            } else {
+                -1
+            },
+            events: (if control { libc::POLLIN } else { 0 })
+                | (if writing { libc::POLLOUT } else { 0 }),
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: if stdout {
+                original.stdout.as_raw_fd()
+            } else {
+                -1
+            },
+            events: libc::POLLIN,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: if stderr {
+                original.stderr.as_raw_fd()
+            } else {
+                -1
+            },
+            events: libc::POLLIN,
+            revents: 0,
+        },
+    ];
+    // Readable pipes wake immediately. The finite idle timeout also services
+    // original mpsc work/stop without a permanent 100 Hz polling loop.
+    let result = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 100) };
+    if result < 0 {
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
 struct Worker<N> {
@@ -450,6 +524,7 @@ fn drive(worker: Worker<impl Native>, mut original: Original) {
     let mut fault = None;
     let mut stopped = false;
     let mut stop_sent = false;
+    let mut stop_at = None;
     let mut exit = None;
     if native.revalidate(Some(&mut original.child)).is_err() {
         fault = Some("notification_child_refused");
@@ -471,6 +546,9 @@ fn drive(worker: Worker<impl Native>, mut original: Original) {
             ready = false;
             let _ = original.control.shutdown(Shutdown::Write);
             output = None;
+        }
+        if stop.load(Ordering::Acquire) && stop_at.is_none() {
+            stop_at = Some(now);
         }
         if output.is_none() && fault.is_none() && exit.is_none() {
             if stop.load(Ordering::Acquire) {
@@ -556,13 +634,18 @@ fn drive(worker: Worker<impl Native>, mut original: Original) {
                     abi,
                     application,
                     session: observed,
-                } if !ready
-                    && !stop.load(Ordering::Acquire)
-                    && abi == wire::ABI
+                } if abi == wire::ABI
                     && application == wire::APPLICATION
                     && observed == session =>
                 {
-                    ready = true;
+                    if stop_sent || stop.load(Ordering::Acquire) {
+                        // A genuine greeting may already be in the socket when
+                        // the parent requests Stop. It cannot reopen admission.
+                    } else if !ready {
+                        ready = true;
+                    } else {
+                        fault.get_or_insert("notification_protocol_failed");
+                    }
                 }
                 wire::FromHost::Receipt(receipt) => {
                     match pending.get_mut(&receipt.binding.request_id) {
@@ -621,9 +704,14 @@ fn drive(worker: Worker<impl Native>, mut original: Original) {
         s.turns = s.turns.saturating_add(1);
         let out = log_turn(&mut original.stdout, &mut s.stdout, &mut stdout_eof);
         let err = log_turn(&mut original.stderr, &mut s.stderr, &mut stderr_eof);
-        if out.as_ref().is_ok_and(|v| *v) || err.as_ref().is_ok_and(|v| *v) {
+        let dropped = out
+            .as_ref()
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(err.as_ref().copied().unwrap_or(0));
+        if dropped != 0 {
             s.log_overflow = true;
-            fault.get_or_insert("notification_log_limit");
+            s.log_dropped = s.log_dropped.saturating_add(dropped as u64);
         }
         if out.is_err() || err.is_err() {
             fault.get_or_insert("notification_log_unavailable");
@@ -642,6 +730,7 @@ fn drive(worker: Worker<impl Native>, mut original: Original) {
         s.restored = restored;
         s.fault = fault;
         s.exit = exit;
+        s.unresponsive = stop_at.is_some_and(|at: Instant| at.elapsed() >= STOP_GRACE);
         if exit.is_some() && control_eof && stdout_eof && stderr_eof {
             // Actual process exit and all original transport EOF release any
             // unknown command holds. Receipt outcome is never upgraded here.
@@ -655,10 +744,22 @@ fn drive(worker: Worker<impl Native>, mut original: Original) {
             pending.clear();
             s.ready = false;
             s.drained = true;
+            s.unresponsive = false;
             return;
         }
         drop(s);
-        thread::sleep(Duration::from_millis(10));
+        if (!input.contains(&b'\n') || callback.is_some())
+            && wait_io(
+                &original,
+                !control_eof && (callback.is_none() || fault.is_some()),
+                output.is_some(),
+                !stdout_eof,
+                !stderr_eof,
+            )
+            .is_err()
+        {
+            fault.get_or_insert("notification_poll_unavailable");
+        }
     }
 }
 
