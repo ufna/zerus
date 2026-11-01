@@ -193,6 +193,8 @@ export function sessionMenu(s: Session, folderStatus?: { request: ReturnType<typ
   const archived = s.state === "archived";
   const commands = runningCommandsEntry(s, () => computerFresh(s.computer), () => flag("processes/enabled"), () => { setSelectedKey(s.key); setDetailTab("processes"); });
   return [
+    // Keep attention actions first, with Mark before Mute.
+    ...(archived ? [] : [...(mark ? [mark] : []), ...(mute ? [mute] : []), { separator: true } as const]),
     { label: compactRows[s.key] ? tr("Expand session row") : tr("Compact session row"), icon: compactRows[s.key] ? "expand-row" : "compact-row", action: () => setRowCompact(s.key, !compactRows[s.key]) },
     { label: tr("Expand all collapsed"), icon: "expand-row", disabled: !hasCompactRows(), action: expandCompactRows },
     { separator: true },
@@ -202,7 +204,6 @@ export function sessionMenu(s: Session, folderStatus?: { request: ReturnType<typ
     folders.folder,
     { ...folders.shell, icon: "terminal" },
     cp.command,
-    ...(archived ? [] : [{ separator: true } as const, ...(mute ? [mute] : []), ...(mark ? [mark] : [])]),
     { separator: true },
     act.change,
     ...(fresh ? [fresh] : archived ? [] : [clearEntry(s)]),
