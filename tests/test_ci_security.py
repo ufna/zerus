@@ -588,6 +588,13 @@ class WorkflowSecurityTests(unittest.TestCase):
         for stage in ("macos:core", "macos:media", "macos:tauri-test", "macos:tauri-clippy"):
             self.assertIn(stage, script)
 
+    def test_macos_native_selection_checks_do_not_enable_signed_peer_fixtures(self):
+        script = (ROOT / "scripts/ci/client-native.sh").read_text()
+        self.assertIn('if [ "$platform" = macos ]; then', script)
+        self.assertIn('--features macos-native-peer macos_notify::peer::installation', script)
+        self.assertNotIn('--ignored', script)
+        self.assertNotIn('ZERUS_MAC_PEER_TEAM_REQUIREMENT=', script)
+
     def test_windows_shell_candidate_is_disposable_and_unprivileged(self):
         native = job((ROOT / ".github/workflows/checks.yml").read_text(), "client-native-windows")
         self.assertNotIn("secrets.", native)

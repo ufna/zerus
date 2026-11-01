@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 use std::io::{self, Write};
 use zerus_desktop_migration::canonical_uuid;
 
+pub mod macos;
+
 pub const ABI: &str = "desktop-notification-host-v1";
 pub const ENTRY: &str = "--desktop-notification-host";
 pub const APPLICATION: &str = "com.hgdev.hgs-tray";

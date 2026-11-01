@@ -1,9 +1,9 @@
 //! Negative/native and pure data checks only. No genuine self/pair positive.
 use super::*;
 
-struct Tree(PathBuf);
+pub(super) struct Tree(pub(super) PathBuf);
 impl Tree {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
             "hgs-pair-{}-{}",
             std::process::id(),
@@ -33,7 +33,7 @@ impl Drop for Tree {
         std::fs::remove_dir_all(self.0.parent().unwrap()).unwrap();
     }
 }
-fn fake_signature(bundle: &Path, app: bool) -> Signature {
+pub(super) fn fake_signature(bundle: &Path, app: bool) -> Signature {
     Signature {
         identifier: if app { APP_ID } else { "example.service" }.into(),
         team: "A".repeat(10), // Synthetic metadata; never native trust evidence.
