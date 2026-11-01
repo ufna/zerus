@@ -1,7 +1,6 @@
-//! Dormant own-bundle selection. No caller, worker, launch or native authority.
-//!
-//! Genuine running-self positive: not qualified; requires .25.2 genuine paired
-//! signing. This module's negative tests do not replace that gate.
+//! Read-only native paired-bundle selection and live code observations.
+//! These observations do not launch code or grant a service lease. Negative
+//! bare/ad-hoc tests are not evidence of a genuine signed runtime positive.
 use std::{
     ffi::c_void,
     os::unix::{fs::MetadataExt, net::UnixStream},
@@ -10,6 +9,9 @@ use std::{
 };
 
 use objc2::rc::autoreleasepool;
+
+mod service;
+pub use service::{select_for_service, ChildObservation, ServiceSelection};
 
 const APP_ID: &str = "com.hgdev.hgs-tray";
 const APPLE: &str = "anchor apple generic";
@@ -25,6 +27,7 @@ pub enum Refusal {
     Signature,
     SelfChanged,
     GenerationChanged,
+    Child,
     Peer(super::Refusal),
 }
 
@@ -200,6 +203,10 @@ fn pair(bundle: &Path, app: &Signature, service: &Signature) -> Result<(), Refus
 }
 
 fn snapshot() -> Result<Snapshot, Refusal> {
+    snapshot_from(None)
+}
+
+fn snapshot_from(service_bundle: Option<&Path>) -> Result<Snapshot, Refusal> {
     autoreleasepool(|_| {
         let own = self_code()?;
         let anchor = super::requirement(APPLE).map_err(|_| Refusal::Signature)?;
@@ -207,12 +214,20 @@ fn snapshot() -> Result<Snapshot, Refusal> {
         live_valid(&own, anchor.as_ptr())?;
         let info = information(own.ptr())?;
         let executable = info_path(&info)?;
-        let bundle = layout(&executable)?;
+        let bundle = if let Some(bundle) = service_bundle {
+            // Only the service factory supplies its maintained installed
+            // selection. No directory, PATH, plist or environment discovery.
+            layout(&bundle.join("Contents/MacOS/hgs"))?
+        } else {
+            layout(&executable)?
+        };
         let before = generation(&bundle)?;
         let app = static_signature(&bundle, anchor.as_ptr())?;
         let service = static_signature(&bundle.join("Contents/MacOS/hgs"), anchor.as_ptr())?;
         pair(&bundle, &app, &service)?;
-        let selected = if executable == app.executable {
+        let selected = if service_bundle.is_some() {
+            &service
+        } else if executable == app.executable {
             &app
         } else if executable == service.executable {
             &service
@@ -222,7 +237,11 @@ fn snapshot() -> Result<Snapshot, Refusal> {
         let exact = super::requirement(&selected.requirement).map_err(|_| Refusal::Signature)?;
         live_valid(&own, exact.as_ptr())?;
         let after_info = information(own.ptr())?;
-        if info_path(&after_info)? != executable || info_unique(&after_info)? != selected.unique {
+        if info_path(&after_info)? != executable
+            || info_unique(&after_info)? != selected.unique
+            || info_text(&after_info, unsafe { kSecCodeInfoIdentifier })? != selected.identifier
+            || info_text(&after_info, unsafe { kSecCodeInfoTeamIdentifier })? != selected.team
+        {
             return Err(Refusal::SelfChanged);
         }
         let after = generation(&bundle)?;

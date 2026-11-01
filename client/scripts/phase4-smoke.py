@@ -89,7 +89,12 @@ def main():
     parser.add_argument("--scratch", type=Path, required=True, help="a new directory; logs are kept here")
     parser.add_argument("--only", help="run one named phase4 step")
     parser.add_argument("--native-wheel", action="store_true", help="drive variable-scroll with trusted wheel events in its private Xvfb")
+    parser.add_argument("--static-wheel", action="store_true", help="no appends; separate wheel gestures with long idle pauses")
+    parser.add_argument("--renderer", choices=("shm", "dmabuf"), default="shm")
+    parser.add_argument("--static-shape", choices=("messages", "mixed", "expanded"), default="messages")
     args = parser.parse_args()
+    if args.static_wheel and not args.native_wheel:
+        parser.error("--static-wheel requires --native-wheel")
     if args.native_wheel and args.only != "variable-scroll":
         parser.error("--native-wheel requires --only variable-scroll")
     app = args.app.resolve()
@@ -136,9 +141,9 @@ def main():
         "XDG_RUNTIME_DIR": str(scratch / "runtime"), "TMPDIR": str(scratch / "tmp"),
         "XDG_CONFIG_HOME": str(scratch / "config"), "XDG_STATE_HOME": str(scratch / "state"),
         "TMUX_TMPDIR": str(scratch / "tmux"), "HGS_CONFIG_DIR": str(scratch / "config"), "HGS_STATE_DIR": str(scratch / "state"),
-        "WAYLAND_DISPLAY": "zerus-none", "GDK_BACKEND": "x11", "WEBKIT_DISABLE_DMABUF_RENDERER": "1", "ZERUS_CLIENT_HEADLESS": "1",
+        "WAYLAND_DISPLAY": "zerus-none", "GDK_BACKEND": "x11", "WEBKIT_DISABLE_DMABUF_RENDERER": "1" if args.renderer == "shm" else "0", "ZERUS_CLIENT_RENDERER": args.renderer, "ZERUS_CLIENT_HEADLESS": "1",
         "ZERUS_CLIENT_REPLAY": str(replay), "ZERUS_CLIENT_HGS": str(hgs),
-        "ZERUS_CLIENT_QUERY": "phase4-smoke=1" + ("&phase4-only=" + args.only if args.only else "") + ("&phase4-native-wheel=1&phase4-provider-window=1" if args.native_wheel else ""), "ZERUS_CLIENT_PERF": "smoke", "ZERUS_CLIENT_SMOKE_FILE": str(smoke_file),
+        "ZERUS_CLIENT_QUERY": "phase4-smoke=1" + ("&phase4-only=" + args.only if args.only else "") + ("&phase4-native-wheel=1" + ("&phase4-static-wheel=1&phase4-static-shape=" + args.static_shape if args.static_wheel else "&phase4-provider-window=1") if args.native_wheel else ""), "ZERUS_CLIENT_PERF": "smoke", "ZERUS_CLIENT_SMOKE_FILE": str(smoke_file),
         "ZERUS_CLIENT_SMOKE_NOW": "1793000100",
     }
     child = [str(app), "--sessions"]

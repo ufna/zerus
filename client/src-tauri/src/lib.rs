@@ -984,7 +984,7 @@ fn forward_activations(
                 if activation == instance::Activation::Sessions {
                     let target = app.clone();
                     let _ = app.run_on_main_thread(move || {
-                        if let Err(error) = lifecycle::show_main(&target) {
+                        if let Err(error) = lifecycle::request_main(&target) {
                             eprintln!("zerus-client: could not open the window: {error}");
                         }
                     });

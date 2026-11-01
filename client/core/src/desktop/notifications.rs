@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 use std::io::{self, Write};
 use zerus_desktop_migration::canonical_uuid;
 
+pub mod macos;
+
 pub const ABI: &str = "desktop-notification-host-v1";
 pub const ENTRY: &str = "--desktop-notification-host";
 pub const APPLICATION: &str = "com.hgdev.hgs-tray";
@@ -13,6 +15,7 @@ pub const FRAME_BYTES: usize = 64 << 10;
 pub const IN_FLIGHT: usize = 8;
 pub const MAPPINGS: usize = 8192;
 pub const TOKEN_BYTES: usize = 8192;
+pub const ACTIVATION_TOKEN_BYTES: usize = 4096;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -220,6 +223,12 @@ impl Receipt {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "platform", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PlatformContext {
+    Wayland { activation_token: String },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Activation {
     /// Original post request UUID, preserved as native callback correlation.
@@ -227,6 +236,29 @@ pub struct Activation {
     pub request_id: String,
     pub token: String,
     pub native_id: NativeId,
+    /// Ephemeral UI-open context, never notification identity or restoration
+    /// data. The adapter consumes the token paired with this native callback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform_context: Option<PlatformContext>,
+}
+impl Activation {
+    pub fn valid_for(&self, platform: Platform) -> bool {
+        canonical_uuid(&self.request_id)
+            && self.token.len() <= TOKEN_BYTES
+            && attention::target(&self.token).is_some()
+            && self.native_id.valid_for(platform, &self.token)
+            && self
+                .platform_context
+                .as_ref()
+                .is_none_or(|context| match context {
+                    PlatformContext::Wayland { activation_token } => {
+                        platform == Platform::Linux
+                            && !activation_token.is_empty()
+                            && activation_token.len() <= ACTIVATION_TOKEN_BYTES
+                            && !activation_token.chars().any(char::is_control)
+                    }
+                })
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -441,6 +473,45 @@ mod tests {
             id: 1
         }
         .valid_for(Platform::Linux, command.action.token()));
+    }
+    #[test]
+    fn wayland_context_is_optional_bounded_and_platform_specific() {
+        let command = command(1);
+        let value = Activation {
+            request_id: command.binding.request_id,
+            token: command.action.token().into(),
+            native_id: NativeId::Linux {
+                bus_id: "a".repeat(32),
+                owner: ":1.4".into(),
+                id: 7,
+            },
+            platform_context: None,
+        };
+        let raw = encode(&value).unwrap();
+        assert!(!std::str::from_utf8(&raw)
+            .unwrap()
+            .contains("platform_context"));
+        assert_eq!(decode::<Activation>(&raw).unwrap(), value);
+        let mut with_context = value;
+        with_context.platform_context = Some(PlatformContext::Wayland {
+            activation_token: "fixture-token".into(),
+        });
+        assert!(with_context.valid_for(Platform::Linux));
+        assert!(!with_context.valid_for(Platform::Macos));
+        assert_eq!(
+            decode::<Activation>(&encode(&with_context).unwrap()).unwrap(),
+            with_context
+        );
+        for token in [
+            String::new(),
+            "x".repeat(ACTIVATION_TOKEN_BYTES + 1),
+            "bad\ntoken".into(),
+        ] {
+            with_context.platform_context = Some(PlatformContext::Wayland {
+                activation_token: token,
+            });
+            assert!(!with_context.valid_for(Platform::Linux));
+        }
     }
     #[test]
     fn replay_and_old_contexts_never_reenter_the_host_after_completion() {

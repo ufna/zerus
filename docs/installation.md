@@ -524,6 +524,19 @@ stops an idle session host without disabling anything.
   when registering a custom CLI. It is never enabled automatically. Existing
   Startup-folder shortcuts remain valid; duplicate background starts keep the
   window hidden.
+- The separate `hgs desktop` service can be registered for the current user's
+  next interactive sign-in with `hgs.exe desktop registration install --json`.
+  Use `hgs.exe desktop registration status --json` to inspect it and
+  `hgs.exe desktop registration remove --json` to remove only its registration.
+  These commands never start or stop a running service or native agent. The
+  task uses `InteractiveToken` and least privilege, never SYSTEM or Session 0;
+  it runs the passive service with the selected configuration/state paths.
+  Registration does not grant background writer ownership or enable automatic
+  approvals. An explicit `HGS_EXECUTABLE` is preserved; otherwise installation
+  stages only the stable `%USERPROFILE%\.local\bin\hgs.exe`, without enabling
+  local sessions. A foreign or changed task is kept for manual review. If a
+  command reports an uncertain outcome, inspect `status` before trying again.
+  This service task is separate from the UI's Startup shortcut or Run value.
 - Without SSH connection sharing, every poll of every machine is a full SSH
   handshake: about 150 ms per machine on a LAN. The app lists this computer at
   most once every 15 seconds, or every 5 seconds with local sessions enabled.

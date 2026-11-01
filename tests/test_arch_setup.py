@@ -88,7 +88,8 @@ class ArchSetup(unittest.TestCase):
                 patch("os.geteuid", return_value=1000), \
                 patch("subprocess.run", return_value=SimpleNamespace(returncode=0)) as run:
             self.assertEqual(self.entrypoint(), 0)
-        self.assertEqual(run.call_args.args[0][1:], [str(tool), "install", "--hgs", "/opt/example/hgs selected",
+        # zerus-setup resolves --prefix; macOS temporary directories are symlinked.
+        self.assertEqual(run.call_args.args[0][1:], [str(tool.resolve()), "install", "--hgs", "/opt/example/hgs selected",
                                                    "--config-dir", "/data/example/config",
                                                    "--state-dir", "/data/example/state", "--no-start"])
         self.assertFalse((self.home / ".local").exists(), "service registration is separate from compatibility links")

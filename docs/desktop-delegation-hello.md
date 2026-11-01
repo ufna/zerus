@@ -88,3 +88,30 @@ names supplement the session/run markers: a renamed or reparented unmarked
 launcher cannot be identified from these checks. This is an application IPC
 check, not an OS isolation boundary against arbitrary same-user code. Restart
 ordering and a complete native positive-path regression remain cutover work.
+
+## Maintenance configuration
+
+`Desktop maintenance ABI: desktop-maintenance-v1` is required in addition to the
+frontend-request marker. The native sender uses
+`ui_requests::Request::maintenance_configure(request_id, Configuration)` with
+both `update` and `recovery` present (explicit null disables a subsystem).
+It uses the same original-child registration, request fingerprint, retained
+resources and fresh actor permit as approvals. Generic `desktop request` cannot
+configure timers or policy. Update identity must match the authenticated GUI's
+actual executable, version and source, never the CLI version. The native handler
+supplies that identity from its own build; callers cannot select another app.
+
+The service owns maintenance load, timers, original fleet observations and
+actual worker drain. Its closed `maintenance::Projection` appears as
+`value.maintenance` on existing watch hello/status/heartbeat frames and on
+`desktop status --json`. The UI keeps one subscriber; missing ABI/projection is
+unavailable, with no legacy timer fallback. No software installation or native
+notification is triggered by this lane.
+
+A generic read-only `maintenance_result` request contains a fresh `request_id`
+and the `original_request_id`. It works after revocation/passive restart without
+starting an executor. `durable:true` describes the original committed configure,
+not a new write by the query. Unknown recovery edits remain consumed and are
+never recreated by a timer or a result lookup. Approval and maintenance ordering
+are separate within one UI instance, so an automatic configuration cannot
+silently obsolete a human approval-setting change.

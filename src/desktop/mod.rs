@@ -1,4 +1,6 @@
 //! Durable desktop service kernel with explicit service-owned fleet activation.
+#[allow(dead_code)] // Discovery is bound to the original notification factory at cutover.
+mod attention;
 mod background;
 mod catalog_read;
 mod counts;
@@ -37,6 +39,8 @@ mod startup_stdio;
 mod store;
 mod transport;
 mod ui_authority;
+#[cfg(windows)]
+mod windows_registration;
 
 use crate::{cli, config::Config, platform};
 use anyhow::{ensure, Context, Result};
@@ -56,7 +60,7 @@ use std::{
 use store::{Location, Store};
 use transport::{Listener, Stream, TIMEOUT};
 
-const USAGE: &str = "usage: hgs desktop serve [--config-dir DIR --state-dir DIR] [--background] | status [--json] | startup --json | owner-status --json | watch --json | feed --json | request --json | registration --json | revoke --json [--request-id UUID] [--reason rollback] | import-evidence --json | import-status --json --import-id UUID";
+const USAGE: &str = "usage: hgs desktop serve [--config-dir DIR --state-dir DIR] [--background] | status [--json] | startup --json | owner-status --json | watch --json | feed --json | request --json | registration --json | registration install|remove|status --json (Windows) | revoke --json [--request-id UUID] [--reason rollback] | import-evidence --json | import-status --json --import-id UUID";
 const HEARTBEAT: Duration = Duration::from_secs(10);
 pub const STARTUP_REFUSED: i32 = 78;
 
@@ -155,6 +159,21 @@ pub fn dispatch(config: &Config, target: &str, args: &[String], dry: bool) -> cl
             ["registration", "--json"] => {
                 println!("{}", registration::preview(config, &location)?);
                 Ok(())
+            }
+            ["registration", operation @ ("install" | "remove" | "status"), "--json"] => {
+                #[cfg(windows)]
+                {
+                    println!(
+                        "{}",
+                        windows_registration::command(config, &location, operation)?
+                    );
+                    Ok(())
+                }
+                #[cfg(not(windows))]
+                {
+                    let _ = operation;
+                    anyhow::bail!("desktop registration install/remove/status is available only on Windows; use the maintained platform installer")
+                }
             }
             ["import-evidence", "--json"] => {
                 println!("{}", import_evidence::cli(&location)?);
@@ -536,6 +555,15 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                             )
                         }) {
                             reads.request(&store, &feed, &epoch, hello.request.as_ref().unwrap())
+                        } else if hello
+                            .request
+                            .as_ref()
+                            .is_some_and(|v| v["op"] == "maintenance_result")
+                        {
+                            store::maintenance::result_request(
+                                &store,
+                                hello.request.as_ref().unwrap(),
+                            )
                         } else if hello
                             .request
                             .as_ref()

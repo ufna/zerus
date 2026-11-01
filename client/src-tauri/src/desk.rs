@@ -853,7 +853,7 @@ fn apply(app: &AppHandle, outcome: Outcome) {
             #[cfg(target_os = "linux")]
             crate::platform::linux_tray::present(&handle, outcome.activation.as_deref());
             #[cfg(not(target_os = "linux"))]
-            if let Err(error) = crate::lifecycle::show_main(&handle) {
+            if let Err(error) = crate::lifecycle::request_main(&handle) {
                 eprintln!("zerus-client: could not open the window: {error}");
             }
         });
@@ -992,7 +992,7 @@ pub fn open_updates(app: &AppHandle) {
 fn open(app: &AppHandle, target: OpenSession) {
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
-        if let Err(error) = crate::lifecycle::show_main(&handle) {
+        if let Err(error) = crate::lifecycle::request_main(&handle) {
             eprintln!("zerus-client: could not open the window: {error}");
         }
         let send = |target: OpenSession| {

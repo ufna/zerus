@@ -14,7 +14,7 @@ impl Fixture {
     fn new() -> Self {
         let temp = tempfile::tempdir().unwrap();
         let location = Location {
-            root: temp.path().join("state/desktop"),
+            root: temp.path().canonicalize().unwrap().join("state/desktop"),
             configuration: "a".repeat(64),
         };
         location.prepare().unwrap();
@@ -210,6 +210,7 @@ fn callback_requires_delivered_exact_mapping_and_current_unwithdrawn_writer() {
         unreachable!()
     };
     let activation = Activation {
+        platform_context: None,
         request_id: dispatch.command().binding.request_id.clone(),
         token: dispatch.command().action.token().into(),
         native_id,
@@ -330,6 +331,7 @@ fn revocation_invalidates_current_clicks_before_native_close_completes() {
         unreachable!()
     };
     let activation = Activation {
+        platform_context: None,
         request_id: dispatch.command().binding.request_id.clone(),
         token: dispatch.command().action.token().into(),
         native_id,
@@ -358,6 +360,7 @@ fn delivered_mapping_survives_upgrade_without_a_second_post_or_host_ledger() {
         unreachable!()
     };
     let activation = Activation {
+        platform_context: None,
         request_id: old.request_id.clone(),
         token: dispatch.command().action.token().into(),
         native_id,
@@ -460,6 +463,7 @@ fn an_on_time_original_completion_keeps_mapping_when_the_actor_polls_late() {
         unreachable!()
     };
     let activation = Activation {
+        platform_context: None,
         request_id: request.request_id.clone(),
         token: dispatch.command().action.token().into(),
         native_id,
@@ -475,4 +479,160 @@ fn an_on_time_original_completion_keeps_mapping_when_the_actor_polls_late() {
         .current_activation(&f.store, &activation)
         .unwrap()
         .is_some());
+}
+
+fn activation(dispatch: &Dispatch) -> Activation {
+    let Outcome::Delivered { native_id } = delivered(dispatch.command()) else {
+        unreachable!()
+    };
+    Activation {
+        request_id: dispatch.command().binding.request_id.clone(),
+        token: dispatch.command().action.token().into(),
+        native_id,
+        platform_context: None,
+    }
+}
+
+#[test]
+fn early_close_waits_for_original_resources_and_cannot_be_restored() {
+    let mut f = Fixture::new();
+    let (request, dispatch) = f.queued();
+    let held = dispatch.resources();
+    let value = activation(&dispatch);
+    let outcome = delivered(dispatch.command());
+    dispatch.finish(outcome);
+    assert!(f.host.emit(Event::Closed(value.clone())));
+    assert!(f.outbox.poll(&mut f.store, Instant::now()).is_empty());
+    assert_eq!(f.state(&request), "reserved");
+    assert_eq!(f.outbox.status()["callbacks"], 1);
+    drop(held);
+    assert!(f.outbox.poll(&mut f.store, Instant::now()).is_empty());
+    assert_eq!(f.state(&request), "delivered");
+    assert_eq!(f.outbox.status()["callbacks"], 0);
+    assert!(f
+        .outbox
+        .current_activation(&f.store, &value)
+        .unwrap()
+        .is_none());
+    let head = f.outbox.restore_head(&f.store).unwrap();
+    assert!(f
+        .outbox
+        .restore_page(&f.store, 0, head)
+        .unwrap()
+        .mappings
+        .is_empty());
+}
+
+#[test]
+fn early_click_keeps_ephemeral_wayland_context_but_restoration_does_not() {
+    let mut f = Fixture::new();
+    f.outbox.session.platform = Platform::Linux;
+    f.host.platform = Platform::Linux;
+    let (request, dispatch) = f.queued();
+    let held = dispatch.resources();
+    let native_id = NativeId::Linux {
+        bus_id: "a".repeat(32),
+        owner: ":1.4".into(),
+        id: 7,
+    };
+    let value = Activation {
+        request_id: request.request_id.clone(),
+        token: dispatch.command().action.token().into(),
+        native_id: native_id.clone(),
+        platform_context: Some(wire::PlatformContext::Wayland {
+            activation_token: "fixture-activation".into(),
+        }),
+    };
+    dispatch.finish(Outcome::Delivered { native_id });
+    assert!(f.host.emit(Event::Clicked(value.clone())));
+    assert!(f.outbox.poll(&mut f.store, Instant::now()).is_empty());
+    drop(held);
+    assert_eq!(f.outbox.poll(&mut f.store, Instant::now()), vec![value]);
+    let head = f.outbox.restore_head(&f.store).unwrap();
+    let restored = f.outbox.restore_page(&f.store, 0, head).unwrap();
+    assert_eq!(restored.mappings.len(), 1);
+    assert!(restored.mappings[0].platform_context.is_none());
+    let raw: String = f
+        .store
+        .db
+        .query_row(
+            "SELECT receipt FROM desktop_attempts WHERE request_id=?1",
+            [&request.request_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(!raw.contains("fixture-activation"));
+}
+
+#[test]
+fn early_callback_is_discarded_after_unknown_without_retry_or_mapping() {
+    let mut f = Fixture::new();
+    let (request, dispatch) = f.queued();
+    let held = dispatch.resources();
+    let value = activation(&dispatch);
+    let until = dispatch.deadline();
+    let outcome = delivered(dispatch.command());
+    dispatch.finish(outcome);
+    assert!(f.host.emit(Event::Closed(value.clone())));
+    f.outbox.poll(&mut f.store, Instant::now());
+    assert_eq!(f.outbox.status()["callbacks"], 1);
+    f.outbox.poll(&mut f.store, until);
+    assert_eq!(f.state(&request), "unknown");
+    assert_eq!(f.outbox.status()["callbacks"], 0);
+    drop(held);
+    f.outbox.poll(&mut f.store, until);
+    assert!(f
+        .outbox
+        .current_activation(&f.store, &value)
+        .unwrap()
+        .is_none());
+    assert!(f.host.try_next().is_err());
+}
+
+#[test]
+fn a_failed_close_commit_retains_the_original_callback_for_sql_only_retry() {
+    let mut f = Fixture::new();
+    let (_, dispatch) = f.queued();
+    let value = activation(&dispatch);
+    let outcome = delivered(dispatch.command());
+    dispatch.finish(outcome);
+    f.store.db.execute_batch("CREATE TRIGGER refuse_close BEFORE UPDATE OF withdrawn ON desktop_intents BEGIN SELECT RAISE(FAIL,'fixture'); END;").unwrap();
+    assert!(f.host.emit(Event::Closed(value.clone())));
+    assert!(f.host.emit(Event::Clicked(value.clone())));
+    assert!(f.outbox.poll(&mut f.store, Instant::now()).is_empty());
+    assert_eq!(f.outbox.status()["callbacks"], 2);
+    f.store
+        .db
+        .execute_batch("DROP TRIGGER refuse_close")
+        .unwrap();
+    assert!(f.outbox.poll(&mut f.store, Instant::now()).is_empty());
+    assert_eq!(f.outbox.status()["callbacks"], 0);
+    assert!(f
+        .outbox
+        .current_activation(&f.store, &value)
+        .unwrap()
+        .is_none());
+    assert!(f.host.try_next().is_err());
+}
+
+#[test]
+fn deferred_and_channel_callbacks_share_one_budget_and_hold_drain() {
+    let mut f = Fixture::new();
+    let (_, dispatch) = f.queued();
+    let held = dispatch.resources();
+    let value = activation(&dispatch);
+    let outcome = delivered(dispatch.command());
+    dispatch.finish(outcome);
+    for _ in 0..EVENTS {
+        assert!(f.host.emit(Event::Closed(value.clone())));
+    }
+    assert!(!f.host.emit(Event::Closed(value.clone())));
+    f.outbox.poll(&mut f.store, Instant::now());
+    assert_eq!(f.outbox.status()["callbacks"], EVENTS);
+    assert!(!f.host.emit(Event::Closed(value)));
+    f.outbox.request_stop();
+    assert!(!f.outbox.operation_drained());
+    drop(held);
+    f.outbox.poll(&mut f.store, Instant::now());
+    assert!(f.outbox.operation_drained());
 }

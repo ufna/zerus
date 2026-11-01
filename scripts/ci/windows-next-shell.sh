@@ -13,13 +13,14 @@ on_exit() {
     exit "$status"
 }
 trap on_exit EXIT
+python scripts/ci/windows-desktop-registration-tests.py
 # The service/relay binary and native tests come from this exact checkout.
 cargo build --locked --bin hgs
 for selected in desktop::windows desktop::ui_requests; do
     cargo test --locked --manifest-path client/core/Cargo.toml --lib "$selected"
 done
 cargo test --locked desktop::ui_authority
-for selected in windows_shell::tests instance::tests platform::windows::startup::tests platform::windows::drawing::tests cli::tests lifecycle::tests; do
+for selected in windows_shell::tests instance::tests platform::windows::startup::tests platform::windows::drawing::tests cli::tests lifecycle::tests window_layer::tests; do
     cargo test --locked --manifest-path client/src-tauri/Cargo.toml --lib "$selected"
 done
 cargo test --locked --manifest-path client/src-tauri/Cargo.toml --lib --no-run --message-format=json > "$CARGO_TARGET_DIR/windows-native-tests.jsonl"
@@ -43,6 +44,7 @@ python -m unittest discover -s tests -p windows_frontend_auth.py -v
 npm --prefix client ci --ignore-scripts --no-audit --no-fund
 (cd client && npm run tauri -- build --debug --no-bundle)
 cargo build --locked --bin hgs
+python tests/test_windows_desktop_registration.py --hgs "$CARGO_TARGET_DIR/debug/hgs.exe"
 mkdir -p artifacts/zerus-next-windows-shell
 cp "$CARGO_TARGET_DIR/debug/hgs-tray.exe" "$CARGO_TARGET_DIR/debug/hgs.exe" artifacts/zerus-next-windows-shell/
 # Keep exact native fixture bytes/drivers for the same private real-PC checks.

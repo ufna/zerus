@@ -4,8 +4,9 @@ use super::store::Store;
 use anyhow::{ensure, Context, Result};
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc, Arc, Mutex,
 };
 use std::time::{Duration, Instant};
@@ -136,11 +137,21 @@ pub(super) enum Event {
     Clicked(Activation),
     Closed(Activation),
 }
+struct QueuedEvent {
+    event: Event,
+    count: Arc<AtomicUsize>,
+}
+impl Drop for QueuedEvent {
+    fn drop(&mut self) {
+        self.count.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 /// Created with Outbox, held only by the original native adapter/host bridge.
 /// This object is not deserializable and has no generic IPC constructor.
 pub(super) struct Endpoint {
     receive: mpsc::Receiver<Work>,
-    events: mpsc::SyncSender<Event>,
+    events: mpsc::SyncSender<QueuedEvent>,
+    event_count: Arc<AtomicUsize>,
     stopping: Arc<AtomicBool>,
     platform: wire::Platform,
 }
@@ -154,14 +165,28 @@ impl Endpoint {
     pub fn emit(&self, event: Event) -> bool {
         let (Event::Clicked(value) | Event::Closed(value)) = &event;
         if self.stopping()
-            || !zerus_desktop_migration::canonical_uuid(&value.request_id)
-            || value.token.len() > wire::TOKEN_BYTES
-            || attention::target(&value.token).is_none()
-            || !value.native_id.valid_for(self.platform, &value.token)
+            || !value.valid_for(self.platform)
+            || (matches!(event, Event::Closed(_)) && value.platform_context.is_some())
         {
             return false;
         }
-        self.events.try_send(event).is_ok()
+        // The same slot travels through the channel AND actor deferral. Moving
+        // an early callback off the channel must not double the event budget.
+        if self
+            .event_count
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < EVENTS).then_some(n + 1)
+            })
+            .is_err()
+        {
+            return false;
+        }
+        self.events
+            .try_send(QueuedEvent {
+                event,
+                count: self.event_count.clone(),
+            })
+            .is_ok()
     }
 }
 
@@ -187,7 +212,9 @@ pub(super) struct RestorePage {
 pub(super) struct Outbox {
     session: Session,
     send: mpsc::SyncSender<Work>,
-    events: mpsc::Receiver<Event>,
+    events: mpsc::Receiver<QueuedEvent>,
+    callbacks: VecDeque<QueuedEvent>,
+    event_count: Arc<AtomicUsize>,
     stopping: Arc<AtomicBool>,
     pending: Vec<Pending>,
     error: Option<&'static str>,
@@ -200,6 +227,7 @@ impl Outbox {
         ensure!(session.valid(), "invalid notification host session");
         let (send, receive) = mpsc::sync_channel(wire::IN_FLIGHT);
         let (events, event_receive) = mpsc::sync_channel(EVENTS);
+        let event_count = Arc::new(AtomicUsize::new(0));
         let stopping = Arc::new(AtomicBool::new(false));
         let platform = session.platform;
         Ok((
@@ -207,6 +235,8 @@ impl Outbox {
                 session,
                 send,
                 events: event_receive,
+                callbacks: VecDeque::new(),
+                event_count: event_count.clone(),
                 stopping: stopping.clone(),
                 pending: Vec::new(),
                 error: None,
@@ -214,10 +244,55 @@ impl Outbox {
             Endpoint {
                 receive,
                 events,
+                event_count,
                 stopping,
                 platform,
             },
         ))
+    }
+
+    /// Actor-only convenience: authority stays in this original private Session.
+    /// A new request ID is not a retry grant; reserve returns consumed edges.
+    pub fn offer_intent(
+        &mut self,
+        store: &mut Store,
+        intent_id: &str,
+        revision: u64,
+        now: Instant,
+    ) -> Result<Offered> {
+        self.require_current_writer(store)?;
+        self.offer(
+            store,
+            Reserve {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                intent_id: intent_id.into(),
+                revision,
+                epoch: self.session.writer_epoch.clone(),
+                service_epoch: self.session.service_epoch.clone(),
+                adapter: self.session.adapter.clone(),
+                lease: self.session.lease.clone(),
+                retry_of: None,
+            },
+            now,
+        )
+    }
+
+    pub fn available(&self) -> bool {
+        !self.stopping.load(Ordering::Acquire)
+            && self.error.is_none()
+            && self.pending.len() < wire::IN_FLIGHT
+    }
+
+    /// Revoke callbacks and cancel this original queued work. This does not
+    /// manufacture a native close receipt or release its retained resources.
+    pub fn retire_intent(&mut self, store: &mut Store, intent_id: &str) -> Result<()> {
+        ledger::withdraw(&mut store.db, intent_id, 1)?;
+        for pending in &self.pending {
+            if pending.binding.intent_id == intent_id {
+                pending.shared.cancel.store(true, Ordering::Release);
+            }
+        }
+        Ok(())
     }
 
     /// Called by the actor for an intent derived from its own committed fleet
@@ -378,34 +453,59 @@ impl Outbox {
             .retain(|p| !p.committed || Arc::strong_count(&p.shared) != 1);
         let mut clicks = Vec::new();
         for _ in 0..EVENTS {
-            let Ok(event) = self.events.try_recv() else {
+            let Ok(callback) = self.events.try_recv() else {
                 break;
             };
-            let (Event::Clicked(value) | Event::Closed(value)) = &event;
-            match self.current_activation(store, value) {
-                Ok(Some(_)) if matches!(event, Event::Clicked(_)) => clicks.push(value.clone()),
+            self.callbacks.push_back(callback);
+        }
+        // Visit every retained callback at most once per actor turn. Preserve
+        // FIFO ordering while the original native/SQL settlement is pending.
+        let mut blocked = BTreeSet::new();
+        for _ in 0..self.callbacks.len() {
+            let callback = self.callbacks.pop_front().expect("bounded callback queue");
+            let (Event::Clicked(value) | Event::Closed(value)) = &callback.event;
+            if blocked.contains(&value.request_id) || self.pending.iter().any(|pending| {
+                !pending.committed
+                    && pending.binding.request_id == value.request_id
+                    && pending.command.as_ref().is_some_and(|command| {
+                        matches!(&command.action, Action::Post { token, .. } if *token == value.token)
+                    })
+            }) {
+                blocked.insert(value.request_id.clone());
+                self.callbacks.push_back(callback);
+                continue;
+            }
+            let retry = match self.current_activation(store, value) {
+                Ok(Some(_)) if matches!(callback.event, Event::Clicked(_)) => {
+                    clicks.push(value.clone());
+                    false
+                }
                 Ok(Some(binding)) => {
                     if ledger::withdraw(&mut store.db, &binding.intent_id, binding.revision)
                         .is_err()
                     {
                         self.error = Some("notification_close_uncommitted");
+                        true
+                    } else {
+                        false
                     }
                 }
-                Ok(None) => (),
-                Err(_) => self.error = Some("notification_callback_unavailable"),
+                Ok(None) => false,
+                Err(_) => {
+                    self.error = Some("notification_callback_unavailable");
+                    true
+                }
+            };
+            if retry {
+                blocked.insert(value.request_id.clone());
+                self.callbacks.push_back(callback);
             }
         }
         clicks
     }
 
     fn current_activation(&self, store: &Store, value: &Activation) -> Result<Option<Binding>> {
-        if !zerus_desktop_migration::canonical_uuid(&value.request_id)
-            || value.token.len() > wire::TOKEN_BYTES
-            || attention::target(&value.token).is_none()
-            || !value
-                .native_id
-                .valid_for(self.session.platform, &value.token)
-        {
+        if !value.valid_for(self.session.platform) {
             return Ok(None);
         }
         // Callbacks carry the original post UUID, including after a service or
@@ -491,6 +591,82 @@ impl Outbox {
             |r| r.get(0),
         )?)
     }
+    /// Schema-14 live projection: cursor is an attention edge ID, not an
+    /// attempt sequence. The actor uses this after discovery is available;
+    /// unknown/delivered historical tombstones are never scanned or replayed.
+    pub fn restore_live_head(&self, store: &Store) -> Result<i64> {
+        self.require_current_writer(store)?;
+        Ok(store.db.query_row(
+            "SELECT COALESCE(MAX(id),0) FROM desktop_attention_edges WHERE live=1",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+    pub fn restore_live_page(
+        &self,
+        store: &Store,
+        after: i64,
+        through: i64,
+    ) -> Result<RestorePage> {
+        self.require_current_writer(store)?;
+        ensure!(
+            after >= 0 && through >= after,
+            "invalid live notification cursor"
+        );
+        let mut query=store.db.prepare("SELECT e.id,
+          CASE WHEN length(CAST(e.payload AS BLOB))<=?3 THEN e.payload END,
+          CASE WHEN length(CAST(a.receipt AS BLOB))<=?4 THEN a.receipt END,e.blocked
+          FROM desktop_attention_edges e LEFT JOIN desktop_attempts a ON a.seq=(
+            SELECT seq FROM desktop_attempts WHERE intent_id=e.intent AND state='delivered' ORDER BY seq DESC LIMIT 1)
+          WHERE e.live=1 AND e.id>?1 AND e.id<=?2 ORDER BY e.id LIMIT 16")?;
+        let rows = query
+            .query_map(
+                params![after, through, ledger::PAYLOAD_BYTES, ledger::RECEIPT_BYTES],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                        r.get::<_, bool>(3)?,
+                    ))
+                },
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let complete = rows.len() < 16 || rows.last().is_some_and(|r| r.0 == through);
+        let next = rows.last().map_or(through, |r| r.0);
+        let mut mappings = Vec::new();
+        for (_, payload, receipt, blocked) in rows {
+            if blocked {
+                continue;
+            }
+            let Some(receipt) = receipt else { continue };
+            let receipt: Receipt = serde_json::from_str(&receipt)?;
+            ensure!(receipt.binding.valid(), "invalid live notification binding");
+            let Outcome::Delivered { native_id } = receipt.outcome else {
+                continue;
+            };
+            let Action::Post { token, .. } =
+                serde_json::from_str(&payload.context("live notification payload unavailable")?)?
+            else {
+                continue;
+            };
+            let activation = Activation {
+                request_id: receipt.binding.request_id,
+                token,
+                native_id,
+                platform_context: None,
+            };
+            if self.current_activation(store, &activation)?.is_some() {
+                mappings.push(activation);
+            }
+        }
+        Ok(RestorePage {
+            after: next,
+            through,
+            complete,
+            mappings,
+        })
+    }
     /// Fixed highwater, sixteen indexed candidates per turn. This rebuilds
     /// callback routing after upgrade, without a whole journal read or resend.
     pub fn restore_page(&self, store: &Store, after: i64, through: i64) -> Result<RestorePage> {
@@ -544,6 +720,7 @@ impl Outbox {
                 request_id: receipt.binding.request_id,
                 token,
                 native_id,
+                platform_context: None,
             };
             if self.current_activation(store, &value)?.is_some() {
                 mappings.push(value);
@@ -579,10 +756,13 @@ impl Outbox {
     /// Operation resources only. The platform must also join its original host
     /// worker/child and callback/pipe resources before lifecycle drain succeeds.
     pub fn operation_drained(&self) -> bool {
-        self.stopping.load(Ordering::Acquire) && self.pending.is_empty()
+        self.stopping.load(Ordering::Acquire)
+            && self.pending.is_empty()
+            && self.event_count.load(Ordering::Acquire) == 0
     }
     pub fn status(&self) -> Value {
         json!({"abi":wire::ABI,"pending":self.pending.len(),"limit":wire::IN_FLIGHT,
+            "callbacks":self.event_count.load(Ordering::Acquire),"callback_limit":EVENTS,
             "stopping":self.stopping.load(Ordering::Acquire),"operation_drained":self.operation_drained(),
             "error":self.error})
     }
