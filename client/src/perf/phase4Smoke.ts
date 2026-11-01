@@ -404,8 +404,20 @@ async function variableScrollStep() {
     `Paragraph ${block}: a variable-height Markdown reply with **emphasis**, a [fixture link](https://example.org/) and enough words to wrap across the reading column.\n\n`
     + `1. First list entry with another line that wraps in the reading column.\n2. Second entry\n   - Nested entry ${index}\n\n`
     + "```rust\nfn fixture() {\n    let value = 42;\n    println!(\"{value}\");\n}\n```\n\n").join("");
+  const staticWheel = new URLSearchParams(location.search).get("phase4-static-wheel") === "1";
   const rolling = new URLSearchParams(location.search).get("phase4-provider-window") === "1";
-  const events = Array.from({ length: rolling ? 100 : 56 }, (_, index) => ({ seq: seq++, type: "AgentMessage", source: "claude_transcript", message_id: `variable-${index}`, at: 1793000000 + index, detail: markdown(index) }));
+  const shape = new URLSearchParams(location.search).get("phase4-static-shape") ?? "messages";
+  let events = Array.from({ length: rolling ? 100 : 56 }, (_, index) => ({ seq: seq++, type: "AgentMessage", source: "claude_transcript", message_id: `variable-${index}`, at: 1793000000 + index, detail: markdown(index) }));
+  if (staticWheel && shape !== "messages") {
+    events = []; seq = 1;
+    for (let index = 0; index < 72; index++) {
+      events.push({ seq: seq++, type: index % 2 ? "UserMessage" : "AgentMessage", source: "claude_transcript", message_id: `variable-${index}`, at: 1793000000 + index, detail: index % 2 ? `Short request ${index}` : markdown(index).repeat(1 + index % 3) + "\n\n| Column | Value |\n| --- | --- |\n| Layout | Variable height |\n" });
+      for (let tool = 0; tool < 6; tool++) {
+        events.push({ seq: seq++, type: "PreToolUse", source: "claude_hooks", message_id: `tool-${index}-${tool}`, at: 1793000000 + index, detail: `printf 'fixture ${index} ${tool}'\n` });
+        events.push({ seq: seq++, type: "PostToolUse", source: "claude_hooks", message_id: `result-${index}-${tool}`, at: 1793000000 + index, detail: `fixture output ${index} ${tool}\n` });
+      }
+    }
+  }
   let provider = rolling ? events.map(event => ({ ...event, seq: undefined })) : [];
   let providerIndex = provider.length;
   const publishProvider = () => activity.applyActivity([{ computer: target.computer, key: target.key, kind: "state", payload: { rev: 1_000_000 + providerIndex,
@@ -413,14 +425,33 @@ async function variableScrollStep() {
   activity.applyActivity([{ computer: target.computer, key: target.key, kind: "replace", payload: { events: rolling ? [] : events } }]);
   if (rolling) publishProvider();
   else activity.applyActivity([{ computer: target.computer, key: target.key, kind: "state", payload: { rev: Number.MAX_SAFE_INTEGER, value: { provider_messages: [], message_events: [], conversation_id: target.conversationId } } }]);
-  await until(() => document.querySelector(".act-col")?.getAttribute("style")?.includes("visible") === true && scroller.scrollHeight > 20000, 10000, "variable Markdown did not settle");
+  if (staticWheel && shape === "expanded") {
+    await sleep(0);
+    const buttons = [...scroller.querySelectorAll<HTMLButtonElement>(".act-tools-head")];
+    for (const button of buttons) button.click();
+    log(`phase4-expanded-fixture ${JSON.stringify({ buttons: buttons.length })}`);
+  }
+  await until(() => document.querySelector(".act-col")?.getAttribute("style")?.includes("visible") === true && scroller.scrollHeight > 20000, 10000, "variable Markdown did not settle").catch(error => { throw new Error(`${error.message}: ${JSON.stringify({ hidden: document.hidden, focused: document.hasFocus(), innerWidth, innerHeight, height: scroller.scrollHeight, viewport: scroller.clientHeight, top: scroller.scrollTop, column: document.querySelector(".act-col")?.getAttribute("style"), mounted: scroller.querySelectorAll(".act-virtual-row").length })}`); });
   await sleep(500);
   const original = scroller.scrollTo;
-  const writes: { top: number; active: boolean; stack?: string }[] = [];
+  const originalBy = scroller.scrollBy;
+  const originalIntoView = Element.prototype.scrollIntoView;
+  const originalFocus = HTMLElement.prototype.focus;
+  const topProperty = Object.getOwnPropertyDescriptor(Element.prototype, "scrollTop")!;
+  const writes: { method: string; top: number; before: number; max: number; at: number; active: boolean; stack?: string }[] = [];
+  const trace = (method: string, top: number) => {
+    const entry = { method, top, before: scroller.scrollTop, max: scroller.scrollHeight - scroller.clientHeight, at: performance.now(), active: performance.now() - lastWheel < 250, stack: new Error().stack };
+    writes.push(entry);
+    if (staticWheel) { log(`phase4-scroll-write ${JSON.stringify({ ...entry, stack: undefined })}`); log(`phase4-scroll-stack ${entry.stack?.slice(0, 450)}`); }
+  };
+  Object.defineProperty(scroller, "scrollTop", { configurable: true, get() { return topProperty.get!.call(scroller); }, set(top: number) { trace("scrollTop", top); topProperty.set!.call(scroller, top); } });
+  scroller.scrollBy = function (...args: Parameters<HTMLElement["scrollBy"]>) { trace("scrollBy", scroller.scrollTop); return originalBy.apply(scroller, args); } as HTMLElement["scrollBy"];
+  Element.prototype.scrollIntoView = function (...args) { if (this === scroller || scroller.contains(this)) trace("scrollIntoView", scroller.scrollTop); return originalIntoView.apply(this, args); };
+  HTMLElement.prototype.focus = function (...args) { if (this === scroller || scroller.contains(this)) trace("focus", scroller.scrollTop); return originalFocus.apply(this, args); };
   let lastWheel = -Infinity, backtracks = 0, samples = 0;
   scroller.scrollTo = function (this: HTMLElement, ...args: Parameters<HTMLElement["scrollTo"]>) {
     const values = args as unknown as [ScrollToOptions | number, number?];
-    writes.push({ top: typeof values[0] === "number" ? values[1] ?? 0 : values[0]?.top ?? 0, active: performance.now() - lastWheel < 250, stack: new Error().stack });
+    trace("scrollTo", typeof values[0] === "number" ? values[1] ?? 0 : values[0]?.top ?? 0);
     return original.apply(this, args);
   } as HTMLElement["scrollTo"];
   try {
@@ -432,6 +463,7 @@ async function variableScrollStep() {
     // Model compositor read-back arriving before its queued DOM scroll event.
     // The original native method is the input driver; only application writes
     // are traced. A concurrent provider update must keep that accepted position.
+    if (!staticWheel) {
     const accepted = scroller.scrollTop + 140;
     (original as (options: ScrollToOptions) => void).call(scroller, { top: accepted, behavior: "instant" });
     if (rolling) {
@@ -444,20 +476,27 @@ async function variableScrollStep() {
     log(`phase4-native-scroll-before-layout ${JSON.stringify({ accepted, immediately, writes: writes.slice(0, 4) })}`);
     if (Math.abs(immediately - accepted) > 1) throw new Error(`a layout callback reversed browser scrolling before its scroll event: ${accepted} -> ${immediately}`);
     writes.length = 0;
+    }
     if (new URLSearchParams(location.search).get("phase4-native-wheel") === "1") {
       let trusted = 0;
-      const wheel = (event: WheelEvent) => { lastWheel = performance.now(); if (event.isTrusted) trusted++; };
+      const deltas: unknown[] = [];
+      const wheel = (event: WheelEvent) => { lastWheel = performance.now(); if (event.isTrusted) trusted++; if (deltas.length < 8) deltas.push({ y: event.deltaY, mode: event.deltaMode }); };
       scroller.addEventListener("wheel", wheel, { capture: true });
       const rect = scroller.getBoundingClientRect();
-      log(`phase4-native-wheel-ready ${JSON.stringify({ x: Math.round(rect.left + rect.width * .7), y: Math.round(rect.top + rect.height * .5), top: scroller.scrollTop, max: scroller.scrollHeight - scroller.clientHeight, first: activityReadingRows(scroller).visible()[0] })}`);
+      log(`phase4-native-wheel-ready ${JSON.stringify({ staticWheel, x: Math.round(rect.left + rect.width * .7), y: Math.round(rect.top + rect.height * .5), top: scroller.scrollTop, max: scroller.scrollHeight - scroller.clientHeight, first: activityReadingRows(scroller).visible()[0] })}`);
       let previous = activityReadingRows(scroller).visible()[0];
+      const staticEvents = activity.events();
+      const initialHeight = scroller.scrollHeight;
+      let minHeight = initialHeight, maxHeight = initialHeight;
+      const positions: unknown[] = [];
       try {
-        for (let index = 0; index < 240; index++) {
-          if (!rolling && index % 19 === 0) {
+        const deadline = performance.now() + 22000;
+        for (let index = 0; staticWheel ? performance.now() < deadline : index < 240; index++) {
+          if (!staticWheel && !rolling && index % 19 === 0) {
             const changed = activity.events().map((event, row) => row < 2 ? { ...event, detail: markdown(row).repeat(1 + index % 3) } : event);
             activity.applyActivity([{ computer: target.computer, key: target.key, kind: "replace", payload: { events: changed } }]);
           }
-          if (index % 11 === 0) {
+          if (!staticWheel && index % 11 === 0) {
             if (rolling) {
               provider = [...provider.slice(1), { seq: undefined, type: "AgentMessage", source: "claude_transcript", message_id: `variable-${providerIndex++}`, at: 1793001000 + index, detail: markdown(index) }];
               publishProvider();
@@ -465,8 +504,13 @@ async function variableScrollStep() {
               events: [{ seq: seq++, type: "AgentMessage", source: "claude_transcript", message_id: `native-append-${index}`, at: 1793001000 + index, detail: markdown(index) }], cursor: seq - 1,
             } }]);
           }
-          await sleep(60);
+          if (staticWheel) await new Promise<void>(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
+          else await sleep(60);
+          if (staticWheel && activity.events() !== staticEvents) throw new Error("static fixture received an unexpected event-window update");
+          minHeight = Math.min(minHeight, scroller.scrollHeight); maxHeight = Math.max(maxHeight, scroller.scrollHeight);
           const current = activityReadingRows(scroller).visible()[0];
+          positions.push({ index, at: performance.now(), first: current, top: scroller.scrollTop, max: scroller.scrollHeight - scroller.clientHeight });
+          if (positions.length > 24) positions.shift();
           const rank = (key: string) => Number(key.match(/(?:variable-|item-s)([0-9]+)$/)?.[1] ?? NaN);
           if (previous && current && ((current.key === previous.key && current.offset > previous.offset + 1) || rank(current.key) < rank(previous.key))) {
             backtracks++; log(`phase4-native-backtrack ${JSON.stringify({ index, previous, current, top: scroller.scrollTop, max: scroller.scrollHeight - scroller.clientHeight })}`);
@@ -475,7 +519,10 @@ async function variableScrollStep() {
         }
       } finally { scroller.removeEventListener("wheel", wheel, { capture: true }); }
       const activeWrites = writes.filter(write => write.active);
-      log(`phase4-native-wheel ${JSON.stringify({ rolling, trusted, samples, backtracks, activeWrites: activeWrites.length, writes: writes.slice(0, 12), top: scroller.scrollTop })}`);
+      const heightDrift = Math.max(maxHeight - initialHeight, initialHeight - minHeight);
+      log(`phase4-static-geometry ${JSON.stringify({ shape, initialHeight, minHeight, maxHeight, heightDrift })}`);
+      log(`phase4-native-wheel ${JSON.stringify({ staticWheel, shape, rolling, trusted, deltas, samples, backtracks, activeWrites: activeWrites.length, writes: writes.slice(0, 12), top: scroller.scrollTop, max: scroller.scrollHeight - scroller.clientHeight, events: activity.events().length, firstSeq: activity.events()[0]?.seq, lastSeq: activity.events().at(-1)?.seq })}`);
+      if (staticWheel && heightDrift > 1) throw new Error(`static transcript changed its scroll range as rows remounted: ${JSON.stringify({ initialHeight, minHeight, maxHeight, heightDrift })}`);
       if (!trusted || backtracks || activeWrites.length) throw new Error(`native wheel-down snapback: ${JSON.stringify({ trusted, samples, backtracks, activeWrites: activeWrites.length, writes: writes.slice(0, 4) })}`);
       return;
     }
@@ -497,7 +544,9 @@ async function variableScrollStep() {
     log(`phase4-variable-scroll ${JSON.stringify({ samples, backtracks, activeWrites: activeWrites.length, writes: writes.slice(0, 12), top: scroller.scrollTop })}`);
     if (backtracks || activeWrites.length) throw new Error(`wheel-down snapback: ${JSON.stringify({ samples, backtracks, activeWrites: activeWrites.length, writes: writes.slice(0, 4) })}`);
   } finally {
-    scroller.scrollTo = original;
+    scroller.scrollTo = original; scroller.scrollBy = originalBy;
+    delete (scroller as unknown as { scrollTop?: number }).scrollTop;
+    Element.prototype.scrollIntoView = originalIntoView; HTMLElement.prototype.focus = originalFocus;
     activity.applyActivity([{ computer: target.computer, key: target.key, kind: "replace", payload: { events: savedEvents } },
       { computer: target.computer, key: target.key, kind: "state", payload: { rev: Number.MAX_SAFE_INTEGER, value: savedSummary } }]);
     await sleep(400);

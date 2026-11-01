@@ -115,6 +115,16 @@ export function activityFlow(items: readonly Pick<VirtualItem, "key" | "start" |
   return { padding: items[0]?.start ?? 0, margins, starts };
 }
 
+/** The explicit premeasure pass must complete even during initial placement.
+ * Virtualizer.measureElement defers to ResizeObserver while scrolling, which
+ * cannot measure rows removed immediately after this pass. */
+export function measureActivityRows(rows: Iterable<HTMLElement>, resize: (index: number, height: number) => void) {
+  for (const row of rows) {
+    const index = Number(row.dataset.index), height = row.getBoundingClientRect().height;
+    if (row.isConnected && Number.isInteger(index) && index >= 0 && Number.isFinite(height) && height > 0) resize(index, height);
+  }
+}
+
 export interface ActivityGeometryRow {
   index: number;
   key: string;

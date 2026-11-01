@@ -32,7 +32,7 @@ import { replyVisible } from "../../store/viewedReply";
 import { buildTranscript, createTranscriptProjection, VOICE_STATE_LABEL, voiceStateDetail, voiceStateIssue } from "./transcript";
 import { DELETE_TEXT, DELETE_TITLE, retryReason, routeInspect } from "./local-actions";
 import { markdownReady, markdownTree, type Inline, type MarkdownBlock } from "./markdown";
-import { activityAll, activityFlow, activityRange, activitySelectionIndexes, activitySelectionText, activityText, activityTexts, activityVirtualOffset, selectActivityAll, selectionCoversActivity } from "./activity-virtual";
+import { activityAll, activityFlow, activityRange, measureActivityRows, activitySelectionIndexes, activitySelectionText, activityText, activityTexts, activityVirtualOffset, selectActivityAll, selectionCoversActivity } from "./activity-virtual";
 import { openExternal, openSessionFile } from "./sessionFiles";
 import { SessionFileDialog } from "./SessionFileDialog";
 import { captionText, statusOf } from "./SessionCard";
@@ -879,7 +879,11 @@ export function ActivityView(props: { source?: ActivitySource }) {
     const target = source().target()?.id;
     const frame = requestAnimationFrame(() => {
       if (target !== source().target()?.id) return;
-      for (const row of scroller.querySelectorAll<HTMLElement>(".act-virtual-row")) virtualizer.measureElement(row);
+      // measureElement deliberately skips sync reads while the virtualizer
+      // considers the initial end-placement scroll active. Finish this explicit
+      // premeasure before dropping retained rows; otherwise its RO never sees
+      // offscreen nodes and estimates change the range on a later gesture.
+      measureActivityRows(scroller.querySelectorAll<HTMLElement>(".act-virtual-row"), virtualizer.resizeItem);
       setMeasuring([]);
       end.settle(); reading.changed();
     });
