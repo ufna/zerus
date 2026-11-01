@@ -298,6 +298,7 @@
   "Prompt cache": "Кэш промпта",
   "Quit": "Выйти",
   "Quit Zerus from its menu, move the new Zerus app into Applications and confirm replacing it, then open Zerus again. Your agents and tmux sessions keep running.": "Завершите Zerus из его меню, переместите новое приложение Zerus в «Программы» и подтвердите замену, затем снова откройте Zerus. Агенты и сессии tmux продолжат работу.",
+  "Read earlier activity": "Прочитать более раннюю историю",
   "Reading activity…": "Чтение активности…",
   "Reading earlier activity…": "Чтение более ранней активности…",
   "Reading the other project catalog": "Чтение другого каталога проектов",
