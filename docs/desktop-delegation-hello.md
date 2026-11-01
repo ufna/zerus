@@ -69,8 +69,26 @@ binding must all match. Bounded ancestry inspection refuses agent markers,
 agent executables and unavailable ancestry. Native serials prevent a delayed
 older setting from overtaking a newer one. A wire role, confirmation flag or
 nonce alone supplies no authority. Generic desktop requests cannot change this
-policy. Windows refuses this route until its native reply and ancestry adapters
-are implemented.
+policy.
+
+On Windows this request uses the existing per-user activation pipe, preserving
+its name/home hash, lifetime lock, own-SID DACL and remote-client refusal. The
+query remains 59 bytes (64-byte listener limit), with one JSON reply of at most
+4096 bytes including LF. The service obtains the actual server PID from the
+kernel and retains its process handle and creation-time identity; a JSON PID
+cannot substitute for that evidence. A full/slow connection has a bounded
+exchange and cannot keep the listener alive during shutdown. No extra pipe or
+probe-time helper is created.
+
+Windows ancestry retains the original process objects and checks at most 32
+same-user ancestors within the original two-second authorization deadline.
+Environment reads require the native pointer-width layout, verified against the
+Win32 environment API, and a double-NUL terminator within 64 KiB. Marker keys
+use Windows ordinal case comparison, including empty values. Process birth,
+image, parent and environment are checked before admission and again at use.
+A verified other-user boundary ends the walk; an exited/unreadable parent or a
+failed lookup yielding PID zero does not. Such a frontend remains unavailable.
+This does not change the separately unsupported Windows owner-status probe.
 
 Only the service actor commits policy and read intents, and responses claim
 `durable:true` only after that commit. The delivery worker observes successfully
@@ -83,7 +101,8 @@ with the same logical request UUID; do not fabricate a new delivery receipt.
 Policy mutation also requires an opaque actor-side permit at the delivery API;
 passing policy JSON to its generic request method refuses. Ancestry checks reject
 advertised loader-injection variables, and Linux requires a readable, zero
-`TracerPid`. Other-platform tracing checks remain platform work. Executable
+`TracerPid`; Windows requires a successful negative native debugger query.
+Other-platform tracing checks remain platform work. Executable
 names supplement the session/run markers: a renamed or reparented unmarked
 launcher cannot be identified from these checks. This is an application IPC
 check, not an OS isolation boundary against arbitrary same-user code. Restart

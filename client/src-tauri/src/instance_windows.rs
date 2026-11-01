@@ -633,6 +633,55 @@ mod tests {
             drop(claimed);
         }
         #[test]
+        fn a_client_not_reading_its_reply_cannot_pin_the_listener_on_shutdown() {
+            let root = Folder::new();
+            let name = format!("zerus-slow-request-{}", uuid::Uuid::new_v4());
+            let (sent, observed) = mpsc::sync_channel(1);
+            let reply: Reply = Arc::new(move |_, _| {
+                let _ = sent.try_send(());
+                Some(b"{}\n".to_vec())
+            });
+            let Claim::Claimed(claimed) =
+                claim_with_reply_at(&name, root.path(), Activation::Show, Some(reply))
+            else {
+                panic!("private claim")
+            };
+            let pipe = wide(&format!(r"\\.\pipe\{name}"));
+            let client = owned(unsafe {
+                CreateFileW(
+                    pipe.as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    0,
+                    std::ptr::null(),
+                    OPEN_EXISTING,
+                    SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+                    std::ptr::null_mut(),
+                )
+            })
+            .unwrap();
+            let query = desktop::ui_requests::query(&uuid::Uuid::new_v4().to_string()).unwrap();
+            let mut written = 0;
+            assert_ne!(
+                unsafe {
+                    WriteFile(
+                        client.as_raw_handle(),
+                        query.as_ptr(),
+                        query.len() as u32,
+                        &mut written,
+                        std::ptr::null_mut(),
+                    )
+                },
+                0
+            );
+            assert_eq!(written as usize, query.len());
+            observed.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert!(claimed.activations.try_recv().is_err());
+            let start = Instant::now();
+            drop(claimed);
+            assert!(start.elapsed() < Duration::from_secs(2));
+            drop(client);
+        }
+        #[test]
         fn malformed_truncated_and_oversize_cached_replies_never_activate_or_pin_listener() {
             for body in [b"{\"hello\":".to_vec(), vec![b'x'; 4097], b"{}\n".to_vec()] {
                 let root = Folder::new();

@@ -124,7 +124,10 @@ impl Original {
             limited
         };
         let value = if own {
-            Some(basic(process.as_raw_handle(), pid)?)
+            Some(
+                basic(process.as_raw_handle(), pid)
+                    .map_err(|e| context("read original parent", e))?,
+            )
         } else {
             None
         };
@@ -132,24 +135,36 @@ impl Original {
             pid,
             birth: before.parse().map_err(|_| io::ErrorKind::InvalidData)?,
             parent: value.map_or(0, |v| v.parent as u32),
-            image: image(process.as_raw_handle())?,
+            image: image(process.as_raw_handle()).map_err(|e| context("read original image", e))?,
             own,
             peb: value.map_or(0, |v| v.peb),
             sid,
             process,
         };
-        require(result.current())?;
+        result.check_current()?;
         Ok(result)
     }
     pub fn current(&self) -> bool {
-        (unsafe { WaitForSingleObject(self.process.as_raw_handle(), 0) }) == WAIT_TIMEOUT
-            && birth(self.process.as_raw_handle()).as_deref()
-                == Some(self.birth.to_string().as_str())
-            && image(self.process.as_raw_handle()).ok().as_ref() == Some(&self.image)
-            && user(self.process.as_raw_handle()).ok().as_ref() == Some(&self.sid)
-            && (!self.own
-                || basic(self.process.as_raw_handle(), self.pid)
-                    .is_ok_and(|v| v.parent == self.parent as usize && v.peb == self.peb))
+        self.check_current().is_ok()
+    }
+    fn check_current(&self) -> io::Result<()> {
+        let wait = unsafe { WaitForSingleObject(self.process.as_raw_handle(), 0) };
+        require(wait == WAIT_TIMEOUT).map_err(|e| context("original process is not live", e))?;
+        require(
+            birth(self.process.as_raw_handle()).as_deref() == Some(self.birth.to_string().as_str()),
+        )
+        .map_err(|e| context("original process birth changed", e))?;
+        require(image(self.process.as_raw_handle())? == self.image)
+            .map_err(|e| context("original process image changed", e))?;
+        require(user(self.process.as_raw_handle())? == self.sid)
+            .map_err(|e| context("original process SID changed", e))?;
+        if self.own {
+            let value = basic(self.process.as_raw_handle(), self.pid)
+                .map_err(|e| context("original process parent unavailable", e))?;
+            require(value.parent == self.parent as usize && value.peb == self.peb)
+                .map_err(|e| context("original process parent changed", e))?;
+        }
+        Ok(())
     }
     fn command_line(&self) -> io::Result<Vec<u16>> {
         require(self.own && self.current())?;
