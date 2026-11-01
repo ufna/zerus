@@ -13,6 +13,8 @@ mod frontend;
 mod handoff;
 mod import_evidence;
 mod lifecycle;
+#[allow(dead_code)] // Platform adapters attach this outbox in the next integration slice.
+mod notifications;
 #[allow(dead_code)]
 mod operations;
 mod owner;

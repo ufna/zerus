@@ -109,7 +109,11 @@ impl Identity {
                 run,
                 conversation,
             } => {
-                text(computer, 255)?;
+                // The desktop/watch protocol uses the empty alias for this
+                // computer. Remote aliases retain the original validation.
+                if !computer.is_empty() {
+                    text(computer, 255)?;
+                }
                 text(run, 1024)?;
                 text(conversation, 1024)?;
                 ensure!(
