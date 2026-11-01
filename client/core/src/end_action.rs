@@ -80,11 +80,27 @@ impl Captured {
     /// reservation and CLI's mutation-boundary identity checks still apply.
     pub fn matches(&self, value: &Value) -> bool {
         let text = |key: &str| value[key].as_str().unwrap_or("");
+        // Native inspections report runtime_state, while catalog rows carry
+        // state. A live Codex/Claude/Kimi inspection has no state field at all.
+        // Check an explicit state when supplied; otherwise the runtime proves
+        // live versus stopped (it does not distinguish paused from stopped).
+        let runtime = if self.state == "running" {
+            "live"
+        } else {
+            "stopped"
+        };
+        let explicit = value.get("state");
+        let lifecycle = explicit.is_none_or(|state| state.as_str() == Some(self.state.as_str()))
+            && value
+                .get("runtime_state")
+                .is_none_or(|state| state.as_str() == Some(runtime))
+            && (explicit.is_some() || text("runtime_state") == runtime)
+            && (self.state != "archived" || text("state") == "archived");
         self.valid()
             && text("name") == self.target.name
             && text("run_id") == self.target.run_id
             && text("conversation_id") == self.target.conversation_id
-            && text("state") == self.state
+            && lifecycle
             && text("archive_id") == self.archive_id().unwrap_or("")
     }
 

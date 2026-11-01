@@ -228,8 +228,8 @@ function TerminateDialog(props: { row: ActionRow; close: () => void }) {
       </div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>{tr("Cancel")}</button>
         <button type="button" class="btn solid-danger" onClick={submit}>{offer() ? remove() ? tr("Stop and remove folder") : tr("Stop and archive") : copy.confirm}</button>
+        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>{tr("Cancel")}</button>
       </div>
     </>
   );
@@ -251,8 +251,8 @@ function ForgetDialog(props: { row: ActionRow; bound: ForgetScope; close: () => 
       </div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>{tr("Cancel")}</button>
         <button type="button" class="btn solid-danger" onClick={() => { props.close(); void (archived ? forgetArchived(props.row) : forget(props.row, props.bound)); }}>{copy.confirm}</button>
+        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>{tr("Cancel")}</button>
       </div>
     </>
   );
@@ -276,8 +276,8 @@ function FreshDialog(props: { row: ActionRow; close: () => void }) {
       <div class="dlg-body"><div class="confirm-body" id="action-dlg-body" style={{ "white-space": "pre-line" }}>{copy.text}</div></div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>{tr("Cancel")}</button>
         <button type="button" class="btn solid-danger" onClick={confirm}>{copy.confirm}</button>
+        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>{tr("Cancel")}</button>
       </div>
     </>
   );
@@ -302,8 +302,8 @@ function BatchDialog(props: { copy: BatchConfirmation; answer: (confirmed: boole
       </div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>{tr("Cancel")}</button>
         <button type="button" class="btn solid-danger" onClick={() => { props.answer(true); props.close(); }}>{props.copy.confirm}</button>
+        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>{tr("Cancel")}</button>
       </div>
     </>
   );
