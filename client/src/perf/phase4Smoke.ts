@@ -10,6 +10,8 @@ import { questions } from "../store/questions";
 import { selectedKey, setDetailTab, setSelectedKey, subagentOpen } from "../store/ui";
 import { flag, setSetting } from "../store/settings";
 import type { Session } from "../ui/sessions/types";
+import { activityReadingRows } from "../ui/sessions/activity-anchor";
+import { activityGeometry, activityGeometryValid, activitySelectionText, activityVirtualOffset, type ActivityGeometryReport } from "../ui/sessions/activity-virtual";
 
 
 const API = "claude/sample-project/api-refactor";
@@ -106,6 +108,12 @@ function button(text: string, root: ParentNode = document): HTMLButtonElement {
   return found;
 }
 
+function menuAction(text: string): HTMLButtonElement {
+  const found = [...document.querySelectorAll<HTMLButtonElement>(".menu button")].find((candidate) => candidate.textContent?.trim().startsWith(text));
+  if (!found) throw new Error(`menu action not found: ${text}`);
+  return found;
+}
+
 async function terminalStep() {
   await select(API);
   setDetailTab("terminal");
@@ -199,6 +207,8 @@ async function sendFollowStep() {
   await until(atEnd, 3000, "the sent row did not return to the end");
   const disclosure = scroller.querySelector<HTMLButtonElement>(".act-tools-head");
   if (!disclosure) throw new Error("the follow check needs a tool disclosure");
+  const disclosureId = disclosure.closest<HTMLElement>(".act-tools")!.id;
+  const disclosureStart = parseFloat(disclosure.closest<HTMLElement>(".act-virtual-row")!.dataset.start ?? "0");
   disclosure.click();
   await until(atEnd, 3000, "content growth did not stay at the end after send");
   const range = document.createRange();
@@ -240,8 +250,19 @@ async function sendFollowStep() {
     scroller.scrollTo = originalScrollTo;
     selection.removeAllRanges();
   }
-  await until(() => atEnd() && disclosure.getAttribute("aria-expanded") === "false"
-    && scroller.textContent?.includes("Selection hold smoke 25") === true, 3000, "clearing the selection did not resume Activity follow");
+  await until(() => atEnd() && (!disclosure.isConnected || disclosure.getAttribute("aria-expanded") === "false")
+    && scroller.textContent?.includes("Selection hold smoke 25") === true, 3000, "clearing the selection did not resume Activity follow")
+    .catch((error) => {
+      throw new Error(`${error.message}: ${JSON.stringify({ atEnd: atEnd(), expanded: disclosure.getAttribute("aria-expanded"), disclosureConnected: disclosure.isConnected,
+        appended: scroller.textContent?.includes("Selection hold smoke 25"), top: scroller.scrollTop, height: scroller.scrollHeight, viewport: scroller.clientHeight,
+        placed: scroller.querySelector<HTMLDivElement>(".act-col")?.style.visibility, rows: scroller.querySelectorAll(".act-virtual-row").length })}`);
+    });
+  if (!disclosure.isConnected) {
+    scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -300, bubbles: true, cancelable: true }));
+    scroller.scrollTo({ top: disclosureStart, behavior: "instant" });
+    await until(() => document.getElementById(disclosureId)?.querySelector(".act-tools-head")?.getAttribute("aria-expanded") === "false",
+      3000, "the collapsed disclosure did not retain its state after virtual remounting");
+  }
   const again = document.createRange();
   again.selectNodeContents(scroller.querySelector(".act-msg")!);
   selection.addRange(again);
@@ -252,6 +273,323 @@ async function sendFollowStep() {
     return next?.querySelector<HTMLDivElement>(".act-col")?.style.visibility === "visible" && selection.isCollapsed
       && Math.abs(next.scrollHeight - next.scrollTop - next.clientHeight) < 2;
   }, 3000, "the old selection blocked the next session's first placement");
+}
+
+async function activityAnchorStep() {
+  await setSetting("workspace/reduceMotion", true, { persist: false });
+  await select(DOCS);
+  const scroller = document.querySelector<HTMLDivElement>(".act-scroll")!;
+  await until(() => scroller.querySelectorAll(".act-virtual-row").length > 0
+    && scroller.querySelector<HTMLElement>(".act-col")?.style.visibility === "visible", 10_000, "the measured Activity did not reveal");
+  const before = activity.events()[0]?.seq ?? 0;
+  await until(() => scroller.scrollTop > 0, 5000, "Activity did not reach its initial end position");
+  const animated = scroller.querySelector<HTMLElement>(".act-virtual-row")!;
+  await until(() => animated.getAnimations({ subtree: true }).length === 0, 3000, "the virtual row animation did not settle");
+  const row = scroller.querySelector<HTMLElement>(".act-virtual-row")!;
+  const start = parseFloat(row.dataset.start ?? "0");
+  const key = row.querySelector<HTMLElement>("[id^=item-]")!.id;
+  const formula = activityVirtualOffset(scroller, row.closest<HTMLElement>(".act-virtual")!, start), dom = activityReadingRows(scroller).offset(key);
+  if (scroller.scrollTop < 1000 || dom === undefined || Math.abs(formula - dom) >= 1) {
+    throw new Error(`the virtual measured formula disagrees with the DOM: ${JSON.stringify({ formula, dom, scrollTop: scroller.scrollTop })}`);
+  }
+  scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -300, bubbles: true, cancelable: true }));
+  scroller.scrollTo({ top: 0, behavior: "instant" });
+  await new Promise(requestAnimationFrame);
+  const marker = activityReadingRows(scroller).visible()[0];
+  if (!marker) throw new Error("the anchor check has no visible item");
+  const id = marker.key, top = marker.offset;
+  await until(() => (activity.events()[0]?.seq ?? before) < before, 10_000, "the older Activity page did not arrive");
+  await until(() => {
+    const offset = activityReadingRows(scroller).offset(id);
+    return offset !== undefined && Math.abs(offset - top) < 3;
+  }, 3000, "the older-page anchor did not settle")
+    .catch((error) => {
+      throw new Error(`${error.message}: ${JSON.stringify({ id, top, captured: marker.offset, currentTop: activityReadingRows(scroller).offset(id),
+        scrollTop: scroller.scrollTop, height: scroller.scrollHeight, rows: scroller.querySelectorAll(".act-virtual-row").length })}`);
+    });
+}
+
+async function readingAppendStep() {
+  const scroller = document.querySelector<HTMLDivElement>(".act-scroll")!;
+  document.querySelector<HTMLButtonElement>('button[aria-label^="Jump to latest activity"]')?.click();
+  await until(() => scroller.scrollTop > 1000, 5000, "Activity did not return to a deep reading position");
+  const before = scroller.scrollTop;
+  scroller.focus();
+  scroller.dispatchEvent(new KeyboardEvent("keydown", { key: "PageUp", bubbles: true, cancelable: true }));
+  // Untrusted keys do not scroll WebKit, so apply the Page Up viewport movement explicitly.
+  scroller.scrollBy({ top: -scroller.clientHeight, behavior: "instant" });
+  await until(() => scroller.scrollTop < before, 3000, "Page Up did not move Activity")
+    .catch((error) => {
+      throw new Error(`${error.message}: ${JSON.stringify({ before, after: scroller.scrollTop, active: document.activeElement?.className })}`);
+    });
+  const edge = () => scroller.getBoundingClientRect().top + scroller.clientTop;
+  await until(() => [...scroller.querySelectorAll<HTMLElement>(".act-virtual-row [id^=item-]")].some((item) => {
+    const rect = item.getBoundingClientRect();
+    return rect.bottom > edge() && rect.top < edge() + scroller.clientHeight;
+  }), 3000, "Page Up did not render a reading row");
+  const marker = [...scroller.querySelectorAll<HTMLElement>(".act-virtual-row [id^=item-]")].find((item) => {
+    const rect = item.getBoundingClientRect();
+    return rect.bottom > edge() && rect.top < edge() + scroller.clientHeight;
+  });
+  if (!marker) throw new Error("the append check has no visible reading row");
+  const id = marker.id, top = marker.getBoundingClientRect().top - edge();
+  const seq = Math.max(...activity.events().map((event) => event.seq ?? 0)) + 1;
+  const at = Math.max(...activity.events().map((event) => event.at ?? 0)) + 1;
+  activity.applyActivity([{ computer: "", key: "run:000003-run", kind: "events", payload: {
+    events: [{ seq, type: "Stop", source: "claude_transcript", detail: "append while reading smoke", at }], cursor: seq,
+  } }]);
+  await until(() => activity.events().some((event) => event.seq === seq), 1000, "the appended event did not arrive");
+  await until(() => {
+    const current = document.getElementById(id);
+    return !!current && Math.abs(current.getBoundingClientRect().top - edge() - top) < 1;
+  }, 3000, "an append moved the released reading anchor")
+    .catch((error) => {
+      const current = document.getElementById(id);
+      throw new Error(`${error.message}: ${JSON.stringify({ id, top, currentTop: current ? current.getBoundingClientRect().top - edge() : undefined,
+        scrollTop: scroller.scrollTop, height: scroller.scrollHeight, rows: scroller.querySelectorAll(".act-virtual-row").length })}`);
+    });
+}
+
+async function activeScrollStep() {
+  await select(DOCS);
+  const scroller = document.querySelector<HTMLDivElement>(".act-scroll")!;
+  await until(() => scroller.scrollTop > 1000, 5000, "the active scroll check did not start deep in Activity");
+  await sleep(300);
+  const original = scroller.scrollTo;
+  const writes: unknown[] = [];
+  let maxDrift = 0, frames = 0;
+  scroller.scrollTo = function (this: HTMLElement, ...args: Parameters<HTMLElement["scrollTo"]>) {
+    writes.push(args);
+    return original.apply(this, args);
+  } as HTMLElement["scrollTo"];
+  try {
+    scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -300, bubbles: true, cancelable: true }));
+    for (let index = 0; index < 48; index++) {
+      const top = scroller.scrollTop;
+      const before = activityReadingRows(scroller).visible();
+      const requested = Math.max(0, top - 16);
+      (original as (options: ScrollToOptions) => void).call(scroller, { top: requested, behavior: "instant" });
+      if (index % 8 === 0) {
+        const target = activity.target()!;
+        const seq = Math.max(0, ...activity.events().map((event) => event.seq ?? 0)) + 1;
+        activity.applyActivity([{ computer: target.computer, key: target.key, kind: "events", payload: {
+          events: [{ seq, type: "AgentMessage", source: "claude_transcript", detail: `Active scroll append ${index}`, at: 1793000200 + index }], cursor: seq,
+        } }]);
+      }
+      await new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+      const anchor = before.find((row) => activityReadingRows(scroller).offset(row.key) !== undefined);
+      if (!anchor) throw new Error("active scrolling lost every visible reading row");
+      const offset = activityReadingRows(scroller).offset(anchor.key)!;
+      // Compare pixels to the user's requested movement. Native anchoring may
+      // compensate scrollTop for a measured row above; app writes remain forbidden.
+      const drift = Math.abs(offset - (anchor.offset - (requested - top)));
+      maxDrift = Math.max(maxDrift, drift); frames++;
+      if (drift > 1) throw new Error(`an active virtual measurement shifted the reading row: ${JSON.stringify({ key: anchor.key, drift, index })}`);
+    }
+    if (writes.length) throw new Error(`Activity wrote scroll position during an active gesture: ${JSON.stringify(writes)}`);
+    log(`phase4-active-scroll ${JSON.stringify({ frames, maxDrift, writes: writes.length })}`);
+  } finally { scroller.scrollTo = original; }
+  await sleep(350);
+}
+
+async function selectAllCopyStep() {
+  const scroller = document.querySelector<HTMLDivElement>(".act-scroll")!;
+  document.querySelector<HTMLButtonElement>('button[aria-label^="Jump to latest activity"]')?.click();
+  const users = activity.events().filter((event) => event.type === "UserPromptSubmit" && event.detail);
+  const first = users[0]?.detail, last = users.at(-1)?.detail;
+  if (!first || !last) throw new Error("the copy check needs loaded user messages at both ends");
+  // Repeated passing notices coalesce on the bus, so count copies by their notice ids.
+  const copyIds = new Set<number>();
+  const copyNotices = () => {
+    for (const notice of notices()) if (notice.text === "The selected text is on the clipboard") copyIds.add(notice.id);
+    return copyIds.size;
+  };
+  const writes: string[] = [];
+  scroller.focus();
+  scroller.dispatchEvent(new KeyboardEvent("keydown", { key: "a", ctrlKey: true, bubbles: true, cancelable: true }));
+  const mounted = document.getSelection()?.toString() ?? "";
+  scroller.dispatchEvent(new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true, cancelable: true }));
+  await until(() => copyNotices() === 1, 3000, "Ctrl+C did not copy the transcript");
+  writes.push(activitySelectionText(scroller));
+  if (!writes[0].includes(first) || !writes[0].includes(last) || writes[0].length <= mounted.length) {
+    throw new Error(`Select All copied only the mounted window: ${JSON.stringify({ copied: writes[0].length, mounted: mounted.length })}`);
+  }
+  scroller.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 400, clientY: 300 }));
+  await until(() => !!document.querySelector(".menu"), 1000, "the Activity menu did not open");
+  menuAction("Select All").click();
+  const menuText = activitySelectionText(scroller);
+  scroller.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 400, clientY: 300 }));
+  await until(() => !!document.querySelector(".menu"), 1000, "the Activity menu did not reopen");
+  menuAction("Copy").click();
+  await until(() => copyNotices() === 2, 3000, "the Activity menu did not copy the transcript");
+  writes.push(menuText);
+  if (writes[1] !== writes[0]) throw new Error(`menu Copy and Ctrl+C returned different full transcripts: ${JSON.stringify({ keyboard: writes[0].length, menu: writes[1].length,
+    keyboardFirst: writes[0].includes(first), keyboardLast: writes[0].includes(last), menuFirst: writes[1].includes(first), menuLast: writes[1].includes(last) })}`);
+
+  const edge = scroller.getBoundingClientRect().top;
+  const message = [...scroller.querySelectorAll<HTMLElement>(".act-msg")].find((item) => {
+    const rect = item.getBoundingClientRect();
+    return rect.bottom > edge && rect.top < edge + scroller.clientHeight && !!item.textContent?.trim();
+  });
+  if (!message) throw new Error("the partial-copy check has no visible message");
+  const range = document.createRange();
+  range.selectNodeContents(message);
+  const selection = document.getSelection()!;
+  selection.removeAllRanges();
+  selection.addRange(range);
+  const partial = selection.toString();
+  const nativeCopy = scroller.dispatchEvent(new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true, cancelable: true }));
+  if (!nativeCopy) throw new Error("a partial selection was intercepted instead of using native copy");
+  await sleep(50);
+  if (copyNotices() !== 2) throw new Error("a partial selection used the custom clipboard path");
+  if (!partial || partial === writes[0]) throw new Error(`the partial selection did not replace Select All: ${JSON.stringify({ partial: partial.length, full: writes[0].length, connected: message.isConnected, visibility: getComputedStyle(message).visibility })}`);
+  scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -200, bubbles: true, cancelable: true }));
+  scroller.scrollBy({ top: -200, behavior: "instant" });
+  await sleep(100);
+  if (selection.toString() !== partial) throw new Error("scrolling unmounted a selected message");
+  selection.removeAllRanges();
+}
+
+async function mediaPlaybackStep() {
+  await select(API);
+  const scroller = document.querySelector<HTMLDivElement>(".act-scroll")!;
+  await until(() => !!document.querySelector(".act-msg.media"), 5000, "the playback media row did not appear");
+  const card = document.querySelector<HTMLElement>(".act-msg.media")!;
+  card.querySelector<HTMLButtonElement>('button[aria-label="Show transcript"]')?.click();
+  const play = card.querySelector<HTMLButtonElement>(".vp-btn")!;
+  const position = () => Number(card.querySelector(".vp-wave")!.getAttribute("aria-valuenow"));
+  play.click();
+  await until(() => position() > 0 && play.getAttribute("aria-pressed") === "true", 2000, "voice playback did not start");
+  const before = position();
+  scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -300, bubbles: true, cancelable: true }));
+  scroller.scrollTo({ top: 0, behavior: "instant" });
+  await sleep(350);
+  if (!card.isConnected || document.getElementById(card.id) !== card || play.getAttribute("aria-pressed") !== "true" || position() <= before) {
+    throw new Error(`scrolling stopped or reset the playing row: ${JSON.stringify({ before, after: position(), connected: card.isConnected, pressed: play.getAttribute("aria-pressed") })}`);
+  }
+  if (card.querySelector(".vm-text")?.textContent !== "media smoke transcript") throw new Error("scrolling closed the media transcript");
+  scroller.scrollTo({ top: scroller.scrollHeight, behavior: "instant" });
+  await until(() => {
+    const rect = card.getBoundingClientRect();
+    return card.isConnected && document.getElementById(card.id) === card && rect.top >= 0 && rect.bottom <= innerHeight;
+  }, 3000, "the playing row did not return to the viewport");
+  const stop = card.querySelector<HTMLButtonElement>(".vp-btn")!;
+  stop.click();
+  await until(() => stop.getAttribute("aria-pressed") === "false", 1000, "playback did not stop after the check")
+    .catch((error) => {
+      throw new Error(`${error.message}: ${JSON.stringify({ pressed: stop.getAttribute("aria-pressed"), position: position(), connected: card.isConnected })}`);
+    });
+}
+
+function watchActivityGeometry() {
+  let active = true, frames = 0, populated = 0, badFrames = 0, phase = "initial";
+  const violations: { phase: string; at: number; report: ActivityGeometryReport }[] = [];
+  const compact = (report: ActivityGeometryReport) => {
+    const overlap = report.overlaps[0];
+    return { rows: report.rows.length, visible: report.visible.length, gap: report.firstVisibleGap,
+      overlap: overlap && { above: overlap.above.index, below: overlap.below.index, pixels: overlap.pixels, virtualPixels: overlap.virtualPixels,
+        aboveTop: overlap.above.top, aboveBottom: overlap.above.bottom, belowTop: overlap.below.top,
+        starts: [overlap.above.start, overlap.below.start], domStarts: [overlap.above.domStart, overlap.below.domStart], heights: [overlap.above.height, overlap.below.height] } };
+  };
+  const sample = () => {
+    if (!active) return;
+    const scroller = document.querySelector<HTMLElement>(".act-scroll");
+    if (scroller?.querySelector<HTMLElement>(".act-col")?.style.visibility === "visible") {
+      const report = activityGeometry(scroller);
+      frames++;
+      if (report.rows.length && report.visible.length) populated++;
+      if (report.rows.length && !activityGeometryValid(report)) {
+        badFrames++;
+        if (violations.length < 8) {
+          violations.push({ phase, at: performance.now(), report });
+          log(`phase4-geometry-violation ${JSON.stringify({ phase, ...compact(report) })}`);
+        }
+      }
+    }
+    requestAnimationFrame(() => { setTimeout(sample, 0); });
+  };
+  requestAnimationFrame(() => { setTimeout(sample, 0); });
+  return {
+    mark(name: string) { phase = name; log(`phase4-geometry-stage ${name}`); },
+    stop() {
+      active = false;
+      log(`phase4-geometry-summary ${JSON.stringify({ frames, populated, badFrames })}`);
+      if (!populated) throw new Error("the geometry campaign captured no visible virtual rows");
+      if (badFrames) throw new Error(`Activity geometry failed on ${badFrames} frames: ${JSON.stringify({ phase: violations[0].phase, ...compact(violations[0].report) })}`);
+    },
+  };
+}
+
+async function activityGeometryStep() {
+  await setSetting("workspace/reduceMotion", true, { persist: false });
+  await select(DOCS);
+  await until(() => document.querySelectorAll(".act-virtual-row").length > 0, 10_000, "the geometry Activity did not mount");
+  const watch = watchActivityGeometry();
+  const nextFrames = async (count: number) => {
+    for (let index = 0; index < count; index++) await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  };
+  let restoreSize: { width: number; height: number } | undefined;
+  let loadedFont: FontFace | undefined;
+  try {
+    const target = activity.target()!;
+    let seq = Math.max(0, ...activity.events().map((event) => event.seq ?? 0)) + 1;
+    const at = Math.max(0, ...activity.events().map((event) => event.at ?? 0)) + 1;
+    for (let round = 0; round < 6; round++) {
+      watch.mark(`append-${round}`);
+      const peer = `Message from claude/sample-project/peer ${round}\n\nA long peer reply wraps across the reading column. `.repeat(18);
+      const agent = `Agent response ${round} follows the collapsed tool group with another multiline answer. `.repeat(16);
+      const events = [
+        { seq: seq++, type: "Stop", source: "hgs_wait", origin: "peer_message", sender: "claude/sample-project/peer", detail: peer, at: at + seq },
+        { seq: seq++, type: "PreToolUse", source: "claude_hooks", tool: "Bash", detail: `printf 'geometry ${round}'\n`, at: at + seq },
+        { seq: seq++, type: "PostToolUse", source: "claude_hooks", tool: "Bash", detail: `geometry ${round}\n`, at: at + seq },
+        { seq: seq++, type: "AgentMessage", source: "claude_transcript", detail: agent, at: at + seq },
+      ];
+      activity.applyActivity([{ computer: target.computer, key: target.key, kind: "events", payload: { events, cursor: seq - 1 } }]);
+      await nextFrames(3);
+    }
+    watch.mark("late-growth");
+    const changed = activity.events().map((event) => ({ ...event }));
+    const peer = [...changed].reverse().find((event) => event.origin === "peer_message");
+    if (!peer) throw new Error("the geometry campaign did not create a peer message");
+    peer.detail = `${peer.detail}\n\nLate wrapping growth after the row was measured. `.repeat(24);
+    activity.applyActivity([{ computer: target.computer, key: target.key, kind: "replace", payload: { events: changed } }]);
+    await nextFrames(6);
+
+    watch.mark("window-resize");
+    restoreSize = { width: innerWidth, height: innerHeight };
+    await invoke("perf_resize", { width: Math.max(760, restoreSize.width - 240), height: restoreSize.height });
+    await nextFrames(8);
+    await invoke("perf_resize", restoreSize);
+    restoreSize = undefined;
+    await nextFrames(8);
+
+    watch.mark("font-load");
+    loadedFont = await new FontFace("Activity Geometry Smoke", 'local("Noto Sans Mono")').load();
+    document.fonts.add(loadedFont);
+    const column = document.querySelector<HTMLElement>(".act-scroll .act-col")!;
+    column.style.fontFamily = '"Activity Geometry Smoke"';
+    await nextFrames(8);
+    column.style.fontFamily = "";
+    document.fonts.delete(loadedFont);
+    loadedFont = undefined;
+    await nextFrames(6);
+
+    watch.mark("cached-switch-away");
+    await select(PAGINATION);
+    await nextFrames(6);
+    watch.mark("cached-switch-back");
+    await select(DOCS);
+    await nextFrames(10);
+  } finally {
+    const column = document.querySelector<HTMLElement>(".act-scroll .act-col");
+    if (column) column.style.fontFamily = "";
+    if (loadedFont) document.fonts.delete(loadedFont);
+    try {
+      if (restoreSize) await invoke("perf_resize", restoreSize);
+    } finally {
+      watch.stop();
+    }
+  }
 }
 
 async function coldStep() {
@@ -364,9 +702,9 @@ async function approvalStep() {
   const card = document.querySelector(".qcard")!;
   await until(() => [...card.querySelectorAll("button")].some((candidate) => candidate.textContent?.trim() === "Approve once (3)"), 3000, "the review countdown did not start");
   if (!button("Approve once (3)", card).disabled) throw new Error("Approve once was enabled during the review");
-  await sleep(3200);
-  if (button("Approve once", card).disabled) throw new Error("Approve once stayed disabled after the review");
-  button("Approve once", card).click();
+  const approve = () => [...card.querySelectorAll<HTMLButtonElement>("button")].find((candidate) => candidate.textContent?.trim() === "Approve once");
+  await until(() => !!approve() && !approve()!.disabled, 5000, "Approve once stayed disabled after the review");
+  approve()!.click();
   const sent = await waitCall("answer", 2);
   const request = JSON.parse(sent[1].stdin) as AnswerRequest;
   if (request.answers.length !== 1 || request.answers[0].selected_option_ids.join(",") !== "allow") {
@@ -540,6 +878,12 @@ export async function phase4Smoke(allowed: boolean, smokeFile?: string) {
     ["subagent", subagentStep],
     ["hide-launch-status", hideLaunchStatusStep],
     ["unfocused-motion", unfocusedMotionStep],
+    ["activity-anchor", activityAnchorStep],
+    ["reading-append", readingAppendStep],
+    ["active-scroll", activeScrollStep],
+    ["select-all-copy", selectAllCopyStep],
+    ["media-playback", mediaPlaybackStep],
+    ["activity-geometry", activityGeometryStep],
   ];
   let current = "start";
   try {
