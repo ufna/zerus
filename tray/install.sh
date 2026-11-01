@@ -66,17 +66,10 @@ bundle_cdhash() {
 }
 
 # --- 0. which GUI -------------------------------------------------------------
-# The kind already installed stays (update-installed.py --installed-gui) unless
-# HGS_MAC_GUI chooses: qt for the Qt GUI, client for the Tauri client
-# (docs/macos-distribution.md#tauri-client-switch). A Mac without Zerus gets Qt.
-GUI="${HGS_MAC_GUI:-}"
-if [ -z "${GUI}" ]; then
-    GUI=qt
-    if [ -f "${SCRIPT_DIR}/update-installed.py" ] \
-        && [ "$(python3 "${SCRIPT_DIR}/update-installed.py" --installed-gui "${APP_DEST}" 2>/dev/null)" = "tauri" ]; then
-        GUI=client
-    fi
-fi
+# Fresh installs and upgrades build Zerus Next. HGS_MAC_GUI=qt remains an explicit
+# fallback until Mac acceptance; update-installed.py keeps Qt as the rollback copy
+# when switching to the client (docs/macos-distribution.md#tauri-client-switch).
+GUI="${HGS_MAC_GUI:-client}"
 case "${GUI}" in qt|client) ;; *) echo "HGS_MAC_GUI must be qt or client" >&2; exit 1 ;; esac
 
 # --- 1. build -----------------------------------------------------------------

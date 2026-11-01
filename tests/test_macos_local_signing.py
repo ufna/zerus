@@ -154,7 +154,7 @@ class LocalSigning(unittest.TestCase):
                 path.write_text("#!/bin/sh\n" + body + "\n")
                 path.chmod(0o755)
             for restart in ("0", "1"):
-                env = dict(os.environ, HOME=str(home), PATH=str(tools) + os.pathsep + os.environ["PATH"],
+                env = dict(os.environ, HOME=str(home), HGS_MAC_GUI="qt", PATH=str(tools) + os.pathsep + os.environ["PATH"],
                            HGS_TRAY_RESTART=restart, TMPDIR=str(stage_root))
                 result = subprocess.run(["bash", str(tray / "install.sh")], env=env, capture_output=True, text=True, timeout=15)
                 self.assertEqual(result.returncode, 17, result.stderr)

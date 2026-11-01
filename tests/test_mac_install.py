@@ -102,29 +102,52 @@ sys.exit(subprocess.run(['sh', '-c', command], input=data).returncode)
         commands = [line[len('remote '):] for line in (self.root / 'transport.log').read_text().splitlines()
                     if 'tray/install.sh' in line]
         self.assertEqual(len(commands), 1)
-        self.assertEqual(shlex.split(commands[0]), ['HGS_MACOS_SIGN_IDENTITY=' + selector, 'HGS_MAC_GUI=',
+        self.assertEqual(shlex.split(commands[0]), ['HGS_MACOS_SIGN_IDENTITY=' + selector, 'HGS_MAC_GUI=client',
                                                   'bash', '~/.local/src/hgs/tray/install.sh'])
         self.assertFalse((self.root / 'unexpected').exists())
+
+    def test_next_is_forwarded_by_default_and_qt_requires_an_explicit_choice(self):
+        for choice in (None, '', 'client', 'qt'):
+            with self.subTest(choice=choice):
+                (self.root / 'transport.log').unlink(missing_ok=True)
+                settings = {} if choice is None else {'HGS_MAC_GUI': choice}
+                result = self.run_install('fixture-mac', **settings)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                commands = [line[len('remote '):] for line in (self.root / 'transport.log').read_text().splitlines()
+                            if 'tray/install.sh' in line]
+                self.assertEqual(len(commands), 1)
+                self.assertEqual(shlex.split(commands[0]), ['HGS_MACOS_SIGN_IDENTITY=',
+                                                          'HGS_MAC_GUI=' + (choice or 'client'),
+                                                          'bash', '~/.local/src/hgs/tray/install.sh'])
 
     def test_the_client_sources_travel_and_the_gui_choice_is_forwarded(self):
         # Source folders are replaced, so a file deleted upstream is not built in.
         stale = self.home / '.local/src/hgs/client/src-tauri/capabilities/removed.json'
         stale.parent.mkdir(parents=True)
         stale.write_text('{}')
+        stale_native = self.home / '.local/src/hgs/crates/freedesktop-notify/src/removed.rs'
+        stale_native.parent.mkdir(parents=True)
+        stale_native.write_text('previous source')
         cache = self.home / '.local/src/hgs/client/src-tauri/target/kept'
         cache.parent.mkdir(parents=True)
         cache.write_text('build cache')
+        native_cache = self.home / '.local/src/hgs/crates/freedesktop-notify/target/kept'
+        native_cache.parent.mkdir(parents=True)
+        native_cache.write_text('build cache')
         result = self.run_install('fixture-mac', HGS_MAC_GUI='client')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(stale.exists())
+        self.assertFalse(stale_native.exists())
         self.assertTrue(cache.exists())
+        self.assertTrue(native_cache.exists())
         tray = [line.split() for line in (self.root / 'transport.log.tar').read_text().splitlines()
                 if 'tray' in line.split()]
         self.assertEqual(len(tray), 1)
         for expected in ('client', 'VERSION', 'DEV_VERSION', '--exclude=client/node_modules',
                          '--exclude=client/*/target', '--exclude=client/dist',
                          # client/core and client/src-tauri take it by path (../../crates).
-                         'crates/watch-protocol/Cargo.toml', 'crates/watch-protocol/src'):
+                         'crates/watch-protocol/Cargo.toml', 'crates/watch-protocol/src',
+                         'crates/freedesktop-notify/Cargo.toml', 'crates/freedesktop-notify/src'):
             self.assertIn(expected, tray[0])
         commands = [line for line in (self.root / 'transport.log').read_text().splitlines() if 'tray/install.sh' in line]
         self.assertIn("HGS_MAC_GUI='client'", commands[0])
@@ -301,20 +324,40 @@ class TrayInstallGui(unittest.TestCase):
         self.assertEqual((self.root / 'cargo.env').read_text().split(),
                          [str(self.root / 'client/src-tauri/target'), '2'])
 
-    def test_an_installed_client_stays_the_client_and_qt_stays_qt(self):
+    def installed_gui(self, kind):
+        if kind is None:
+            return
         app = self.home / 'Applications/hgs-tray.app/Contents'
-        app.mkdir(parents=True)
-        (app / 'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier': 'com.hgdev.hgs-tray', 'ZerusGUI': 'tauri'}))
-        self.install()
-        self.assertTrue(self.log.read_text().startswith('npm ci'))
-        self.log.unlink()
-        (app / 'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier': 'com.hgdev.hgs-tray'}))
-        self.install()
-        self.assertTrue(self.log.read_text().startswith('cmake'))
-        self.log.unlink()
-        self.install(HGS_MAC_GUI='qt')
-        self.assertTrue(self.log.read_text().startswith('cmake'))
-        self.assertEqual(self.install(HGS_MAC_GUI='other').returncode, 1)
+        app.mkdir(parents=True, exist_ok=True)
+        info = {'CFBundleIdentifier': 'com.hgdev.hgs-tray'}
+        if kind == 'tauri':
+            info['ZerusGUI'] = kind
+        (app / 'Info.plist').write_bytes(plistlib.dumps(info))
+
+    def test_fresh_and_upgrade_installs_default_to_the_client(self):
+        for kind in (None, 'qt', 'tauri'):
+            for choice in (None, ''):
+                with self.subTest(installed=kind, choice=choice):
+                    self.installed_gui(kind)
+                    self.log.unlink(missing_ok=True)
+                    settings = {} if choice is None else {'HGS_MAC_GUI': choice}
+                    result = self.install(**settings)
+                    self.assertEqual(result.returncode, 3, result.stderr)
+                    self.assertTrue(self.log.read_text().startswith('npm ci'))
+
+    def test_qt_remains_an_explicit_fallback_for_fresh_and_upgrade_installs(self):
+        for kind in (None, 'qt', 'tauri'):
+            with self.subTest(installed=kind):
+                self.installed_gui(kind)
+                self.log.unlink(missing_ok=True)
+                result = self.install(HGS_MAC_GUI='qt')
+                self.assertEqual(result.returncode, 3, result.stderr)
+                self.assertTrue(self.log.read_text().startswith('cmake'))
+
+    def test_an_invalid_gui_choice_refuses_before_building(self):
+        result = self.install(HGS_MAC_GUI='other')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertFalse(self.log.exists())
 
 
 class TrayInstallCache(unittest.TestCase):
@@ -344,7 +387,7 @@ class TrayInstallCache(unittest.TestCase):
             (tools / name).write_text(text)
             (tools / name).chmod(0o755)
         self.log = log
-        self.env = dict(os.environ, HOME=str(self.root / 'home'),
+        self.env = dict(os.environ, HOME=str(self.root / 'home'), HGS_MAC_GUI='qt',
                         PATH=str(tools) + os.pathsep + os.environ['PATH'])
 
     def configure(self, sdk):

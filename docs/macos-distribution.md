@@ -493,10 +493,10 @@ Numbered Dev installs need a clean checkout of the exact main commit, as for Qt:
 
 ```sh
 export ZERUS_DEV_BUILD_NUMBER=NUMBER_FROM_THIS_MAIN_PUSH
-HGS_MAC_GUI=client bash tray/install.sh
+bash tray/install.sh
 ```
 
-- **Choosing the GUI.** `HGS_MAC_GUI=client` chooses the client; later runs keep whichever GUI is installed (`HGS_MAC_GUI=qt` chooses Qt again). `mac-install.sh` ships the client sources and forwards `HGS_MAC_GUI`, but its tarball has no Git metadata and cannot make a numbered build.
+- **Choosing the GUI.** Fresh installs and upgrades use Zerus Next, including when Qt is installed. `HGS_MAC_GUI=client` selects it explicitly; `HGS_MAC_GUI=qt` selects the temporary Qt fallback until Mac acceptance. A later install without that override selects Next again. `mac-install.sh` ships the client sources and forwards the same choice, but its tarball has no Git metadata and cannot make a numbered build. The maintained updater keeps Qt as the rollback copy after the switch.
 - **The build.** It needs npm and Rust 1.99.1 on the Mac. With the `media` feature present, the build enables it. It always builds into `client/src-tauri/target`, whatever `CARGO_TARGET_DIR` says, since the installer takes the bundle from there, and the installer's job count bounds Cargo as it bounds the Qt build (`CARGO_BUILD_JOBS` overrides it).
 - **The updater at the switch.** `tray/update-installed.py`:
   1. quits Qt as its Quit action does, so Qt saves its drafts: SIGTERM, which current builds handle, or the quit Apple Event for an older one;
