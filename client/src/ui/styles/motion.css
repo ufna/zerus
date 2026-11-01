@@ -10,7 +10,7 @@
                               place): no endless motion at all, and entrances are
                               instant. In Qt the setting stops only the Zerus
                               mark; here it covers all endless motion.
-   data-page-hidden="1"       The window is hidden or minimised: everything pauses
+   data-page-hidden="1"       The window is hidden, minimised or unfocused: everything pauses
                               where it is, as the Qt widgets stop their timers in
                               hideEvent.
 
@@ -56,5 +56,5 @@
 :root[data-reduce-motion="1"] .icard-chev, :root[data-reduce-motion="1"] .col-edge::before,
 :root[data-reduce-motion="1"] .insp-resize > i, :root[data-reduce-motion="1"] .sp-resize > i { transition: none; }
 
-/* Hidden or minimised: nothing moves, and each animation resumes from where it stopped. */
+/* Hidden, minimised or unfocused: nothing moves, and each animation resumes from where it stopped. */
 :root[data-page-hidden="1"] *, :root[data-page-hidden="1"] *::before, :root[data-page-hidden="1"] *::after { animation-play-state: paused !important; }

@@ -1450,7 +1450,9 @@ Activity has events and scrolls, bounds each scenario at 60 s and the run at
 sessions off, with Reduce motion (both only tried, not stored), with the window
 hidden and with it minimised (`perf_away`; a bare Xvfb has no window manager, so
 there the window stays shown and the log says `minimized false`), each of the
-last two followed by one as displayed again.
+last two followed by one as displayed again. Motion also pauses on focus loss,
+which covers minimised Wayland windows that keep reporting a visible document;
+the away log and report record the animation state at each pause and resume.
 `ZERUS_CLIENT_PERF_LABEL` names the platform, `ZERUS_CLIENT_PERF_HZ`
 overrides the display rate (`display_hz`), `ZERUS_CLIENT_PERF_REPRESENTATIVE=0`
 marks Xvfb runs and `ZERUS_CLIENT_PERF_PREFERENCE=default` keeps WebKit's

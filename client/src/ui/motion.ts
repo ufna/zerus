@@ -1,13 +1,13 @@
 import { createRenderEffect, createRoot, createSignal } from "solid-js";
 import { flag } from "../store/settings";
-import { pageHidden } from "../store/visibility";
+import { motionPaused } from "../store/visibility";
 
 // The motion settings on the document root, where styles/motion.css stops or
 // pauses every endless animation:
 //
 //   data-animate-activity="0"  Animate working sessions is off
 //   data-reduce-motion="1"     Reduce motion is on, or the system asks for reduced motion
-//   data-page-hidden="1"       the window is hidden or minimised
+//   data-page-hidden="1"       the window is hidden, minimised or unfocused
 
 export interface MotionInputs {
   animateActivity: boolean;
@@ -57,7 +57,7 @@ export function startMotion(root: HTMLElement = document.documentElement) {
       animateActivity: flag("workspace/animateActivity"),
       reduceMotion: flag("workspace/reduceMotion"),
       systemReduced: systemReduced(),
-      hidden: pageHidden(),
+      hidden: motionPaused(),
     })));
   });
 }
