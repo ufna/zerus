@@ -33,6 +33,8 @@ trap 'rm -f "$binary_stage" "$shim_stage" ${connector_stage:+"$connector_stage"}
 install -m 0755 "$build_dir/release/hgs" "$binary_stage"
 install -m 0644 "$here/hgs_state.py" "$shim_stage"
 changed=0
+desktop_changed=0
+if [ -L "$prefix/bin/hgs" ] || ! cmp -s "$binary_stage" "$prefix/bin/hgs"; then desktop_changed=1; fi
 replace_if_changed() {
     if [ ! -L "$2" ] && cmp -s "$1" "$2"; then
         rm -f "$1"
@@ -99,6 +101,11 @@ if [ -z "${HGS_INSTALL_PREFIX:-}" ] && [ -z "${HGS_STATE_DIR:-}" ] && [ "$(uname
     session_args=()
     if [ "$changed" -eq 1 ]; then session_args+=(--restart); fi
     python3 "$here/scripts/install-macos-session-service.py" "$prefix/bin/hgs" "${session_args[@]}"
+fi
+if [ -z "${HGS_INSTALL_PREFIX:-}" ] && [ -z "${HGS_STATE_DIR:-}" ] && [ -z "${HGS_CONFIG_DIR:-}" ] && [ "$(uname -s)" = Darwin ]; then
+    desktop_args=()
+    if [ "$desktop_changed" -eq 1 ]; then desktop_args+=(--restart); fi
+    python3 "$here/scripts/install-macos-desktop-service.py" "$prefix/bin/hgs" "${desktop_args[@]}"
 fi
 if [ -z "${HGS_INSTALL_PREFIX:-}" ] && [ -z "${HGS_STATE_DIR:-}" ] && [ "${HGS_RECOVERY_SERVICE:-1}" != "0" ]; then
     worker_args=()

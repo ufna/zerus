@@ -33,6 +33,18 @@ PLIST_SRC="${SCRIPT_DIR}/packaging/${LABEL}.plist"
 PLIST_DEST="${HOME}/Library/LaunchAgents/${LABEL}.plist"
 RELOAD=0
 
+# The desktop backend is independent of GUI lifetime. Preflight its exact owned
+# registration before replacing the app; GUI-only updates retain a live backend.
+if [ -x "${HOME}/.local/bin/hgs" ]; then
+    HGS_BIN="${HOME}/.local/bin/hgs"
+elif command -v hgs >/dev/null 2>&1; then
+    HGS_BIN="$(command -v hgs)"
+else
+    echo 'hgs-tray: install the hgs CLI with ./install.sh or mac-install.sh first.' >&2
+    exit 1
+fi
+python3 "${SCRIPT_DIR}/../scripts/install-macos-desktop-service.py" "${HGS_BIN}" --check-only
+
 # Неинтерактивный ssh на мак приходит с голым PATH (/usr/bin:/bin:/usr/sbin:/sbin):
 # /opt/homebrew/bin туда добавляет только `brew shellenv` из профиля интерактивной
 # оболочки. Скрипт должен работать и по ssh, и из Терминала, поэтому инструмент ищем
@@ -154,16 +166,7 @@ echo "[3/4] Installing the LaunchAgent to ~/Library/LaunchAgents..."
 # путь к hgs подставляются здесь -- тем же приёмом, каким linux-ветка ниже правит Exec= в
 # .desktop. ~/.local/bin в PATH у launchd нет вовсе, так что --hgs обязателен: без него
 # трей не находит hgs и молча показывает пустой флот.
-if [ -x "${HOME}/.local/bin/hgs" ]; then
-    HGS_BIN="${HOME}/.local/bin/hgs"
-elif command -v hgs >/dev/null 2>&1; then
-    HGS_BIN="$(command -v hgs)"
-else
-    echo "hgs-tray: hgs not found -- neither ~/.local/bin/hgs nor in PATH." >&2
-    echo "  Install it from the workstation (./mac-install.sh [ssh-alias]) and retry:" >&2
-    echo "  without hgs the tray has nothing to show, so nothing is installed." >&2
-    exit 1
-fi
+python3 "${SCRIPT_DIR}/../scripts/install-macos-desktop-service.py" "${HGS_BIN}"
 # stderr агента (StandardErrorPath в plist): туда же, куда macOS складывает логи
 # пользовательских программ. Без файла launchd молча выбрасывает stderr, и зависание
 # главного потока (см. MainThreadWatchdog.h) не оставляет ни строчки.
