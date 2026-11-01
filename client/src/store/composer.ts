@@ -142,7 +142,7 @@ function handleSet() {
   };
 }
 
-export type ClearDriver = (session: SessionRef | undefined, control: ClearControl, execute: (reference: import("./endActionBusy").EndReference, key: string) => Promise<SendReply>, current: () => boolean) => Promise<SendReply | undefined>;
+export type ClearDriver = (session: SessionRef | undefined, control: ClearControl, execute: (reference: import("./endActionBusy").EndReference, key: string) => Promise<SendReply>) => Promise<SendReply | undefined>;
 export function createComposer(port: ComposerPort, timers: Timers = realTimers, images: Images = browserImages, notices: Notices = appNotices, sent: (key: string) => void = () => {}, delayClear?: ClearDriver) {
   const [view, setView] = createSignal<ComposerView | undefined>();
   const [text, setText] = createSignal("");
@@ -512,7 +512,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
       let r: SendReply;
       try {
         const execute = (delay?: import("./endActionBusy").EndReference) => port.clear(h, d.control.run, d.control.conversation, d.control.dismiss, delay);
-        const result = delayClear ? await delayClear(openedSession, d.control, (ref) => execute(ref), () => handle() === h) : await execute();
+        const result = delayClear ? await delayClear(openedSession, d.control, (ref) => execute(ref)) : await execute();
         if (!result) return;
         r = result;
       } catch (e) {
@@ -592,7 +592,7 @@ export const composer = createRoot(() => createComposer({
   send: bridge.sendMessage, push: (...args) => bridge.sendPush(...args), sendNow: (id) => bridge.queueSendNow(id), answer: bridge.sendAnswer, remove: bridge.composerRemove, undo: bridge.composerUndoRemove,
   allowRetry: bridge.composerAllowRetry, cancelSend: bridge.sendCancel, interrupted: bridge.sendInterrupted, clear: bridge.clearContext,
   refresh: bridge.composerRefresh, openAttachment: (path) => bridge.attachmentOpenDraft(path), localRetry: bridge.localRetry, localDelete: bridge.localDelete, localInspect: bridge.localInspect,
-}, realTimers, browserImages, appNotices, suggestions.dismiss, async (session, control, execute, current) => {
+}, realTimers, browserImages, appNotices, suggestions.dismiss, async (session, control, execute) => {
   const [{ endActions }, { catalog, rowId }, { captureEnd, sameEnd }] = await Promise.all([import("./endActions"), import("./catalog"), import("./endActionBusy")]);
   const row = session ? catalog.rows[rowId(session.computer, session.key)] : undefined;
   if (!row || row.runId !== control.run || row.conversationId !== control.conversation) return;
@@ -602,7 +602,7 @@ export const composer = createRoot(() => createComposer({
     if (reply.kind !== "notice") return reply;
     const changed = reply.error && reply.text === "The session state changed. Open its actions again.";
     noticeBus.notify(changed || !reply.error ? "info" : "error", changed ? tr("Clear cancelled: the session changed.") : reply.text, !changed && reply.error, key);
-  }, { current: () => current() && sameEnd(captured, catalog.rows[captured.key]) });
+  }, { current: () => sameEnd(captured, catalog.rows[captured.key]) });
 }));
 
 /**

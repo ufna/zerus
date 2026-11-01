@@ -2830,6 +2830,57 @@ impl Composers {
             };
             (ctx.key, target)
         };
+        self.finish_clear(key, target, dismiss, dispatch)
+    }
+
+    /// A delayed confirmation belongs to its captured session, independent of
+    /// the currently selected composer. Inspect its own current control again;
+    /// the dispatcher still checks the captured identity at the write boundary.
+    pub(crate) fn clear_captured_using(
+        &self,
+        captured: &zerus_client_core::end_action::Captured,
+        dispatch: impl FnOnce(Target, Action, String) -> Result<Outcome, String>,
+    ) -> SendReply {
+        let Action::ClearContext { dismiss_prompt } = captured.action else {
+            return SendReply::Busy;
+        };
+        if !captured.valid() {
+            return SendReply::Busy;
+        }
+        let session = SessionRef {
+            computer: captured.target.computer.clone(),
+            key: format!("run:{}", captured.target.run_id),
+            name: captured.target.name.clone(),
+            ..SessionRef::default()
+        };
+        let Some(control) = self.clear_control_for(session.clone()) else {
+            return SendReply::Busy;
+        };
+        let key = super::session_draft_key(&session);
+        {
+            let mut hub = self.lock();
+            if hub.closed
+                || hub.clearing.is_some()
+                || hub.composers.get(&key).is_some_and(|c| c.sending)
+                || !control.enabled
+                || control.run != captured.target.run_id
+                || control.conversation != captured.target.conversation_id
+                || control.dismiss != dismiss_prompt
+            {
+                return SendReply::Busy;
+            }
+            hub.clearing = Some(key.clone());
+        }
+        self.finish_clear(key, captured.target.clone(), dismiss_prompt, dispatch)
+    }
+
+    fn finish_clear(
+        &self,
+        key: String,
+        target: Target,
+        dismiss: bool,
+        dispatch: impl FnOnce(Target, Action, String) -> Result<Outcome, String>,
+    ) -> SendReply {
         self.changed();
         let action = Action::ClearContext {
             dismiss_prompt: dismiss,
@@ -2976,21 +3027,16 @@ pub async fn clear_context(
     let composers = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         if let Some((captured, claim)) = delayed {
-            composers.clear_context_using(
-                handle,
-                &run,
-                &conversation,
-                dismiss,
-                move |target, action, request_id| {
-                    if captured.target == target && captured.action == action {
-                        tauri::async_runtime::block_on(crate::actions::dispatch_delayed(
-                            &actions, captured, claim, machine, request_id,
-                        ))
-                    } else {
-                        Err(zerus_client_core::end_action::STATE_CHANGED.into())
-                    }
-                },
-            )
+            let confirmation = captured.clone();
+            composers.clear_captured_using(&confirmation, move |target, action, request_id| {
+                if captured.target == target && captured.action == action {
+                    tauri::async_runtime::block_on(crate::actions::dispatch_delayed(
+                        &actions, captured, claim, machine, request_id,
+                    ))
+                } else {
+                    Err(zerus_client_core::end_action::STATE_CHANGED.into())
+                }
+            })
         } else {
             composers.clear_context(handle, &run, &conversation, dismiss)
         }
@@ -6105,6 +6151,62 @@ mod continuations {
         *lock(&fake.listed) = false;
         assert!(c.clear_control_for(session()).is_none());
         assert_eq!(fake.inspects.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn confirmed_clear_survives_selection_but_refuses_changed_native_control() {
+        let root = dir("clear-captured");
+        let (c, fake) = send_hub(&root);
+        opened(&c, ready());
+        *lock(&fake.inspected) = Some(ready());
+        let captured = zerus_client_core::end_action::Captured {
+            target: Target {
+                computer: session().computer,
+                name: session().name,
+                run_id: "run-1".into(),
+                conversation_id: "conv-1".into(),
+            },
+            action: Action::ClearContext {
+                dismiss_prompt: false,
+            },
+            state: "running".into(),
+        };
+        c.open(None);
+        let mut calls = Vec::new();
+        let reply = c.clear_captured_using(&captured, |target, action, _| {
+            calls.push((target, action));
+            Ok(Outcome::Done {
+                receipt: json!({"status": "confirmed"}),
+                cleanup: None,
+            })
+        });
+        assert_eq!(reply, SendReply::Sending);
+        assert_eq!(calls, [(captured.target.clone(), captured.action.clone())]);
+        assert!(c.lock().clearing.is_none());
+
+        for details in [
+            json!({"run_id": "run-2", "conversation_id": "conv-1", "clear_context_supported": true}),
+            json!({"run_id": "run-1", "conversation_id": "conv-2", "clear_context_supported": true}),
+            json!({"run_id": "run-1", "conversation_id": "conv-1", "clear_context_supported": false}),
+        ] {
+            *lock(&fake.inspected) = Some(details);
+            assert_eq!(
+                c.clear_captured_using(&captured, |_, _, _| panic!("changed target dispatched")),
+                SendReply::Busy
+            );
+        }
+        *lock(&fake.inspected) = Some(ready());
+        *lock(&fake.online) = false;
+        assert_eq!(
+            c.clear_captured_using(&captured, |_, _, _| panic!("offline target dispatched")),
+            SendReply::Busy
+        );
+        *lock(&fake.online) = true;
+        c.lock().clearing = Some("another-session".into());
+        assert_eq!(
+            c.clear_captured_using(&captured, |_, _, _| panic!("concurrent reset dispatched")),
+            SendReply::Busy
+        );
     }
 
     #[test]

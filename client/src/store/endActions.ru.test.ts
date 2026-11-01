@@ -22,7 +22,7 @@ describe("end action toast in Russian", () => {
     const notice = bus.notices()[0];
     expect(notice.title).toBe("Архивация сессий: 5");
     expect(notice.text).toBe("a/1, a/2, a/3 и ещё 2\nПосле этого рабочая папка будет удалена.");
-    expect((notice.actions![0].label as () => string)()).toBe("Отменить (5)");
+    expect((notice.actions![0].label as () => string)()).toBe("Отменить (3)");
     await notice.actions![0].run(); await job;
     expect(bus.notices().at(-1)!.text).toBe("Архивация отменена");
   });

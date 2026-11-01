@@ -47,10 +47,10 @@ fn ends() -> Vec<Action> {
 }
 
 #[test]
-fn window_is_monotonic_one_use_and_never_releases_before_five_seconds() {
+fn window_is_monotonic_one_use_and_never_releases_before_three_seconds() {
     let at = Instant::now();
     let mut window = Window::new(at);
-    assert_eq!(window.remaining(at), UNDO_WINDOW);
+    assert_eq!(window.remaining(at), Duration::from_secs(3));
     assert!(!window.take_elapsed(at + UNDO_WINDOW - Duration::from_nanos(1)));
     assert!(window.take_elapsed(at + UNDO_WINDOW));
     assert!(!window.take_elapsed(at + Duration::from_secs(60)));

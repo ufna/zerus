@@ -1099,18 +1099,38 @@ describe("suggestion dismissal", () => {
 describe("Clear session grace integration", () => {
   it("closes confirmation, permits a send during grace and Undo calls no Clear writer", async () => {
     const f = fakes(), gate = held<SendReply | undefined>();
-    let current!: () => boolean;
     await createRoot(async (dispose) => {
-      const c = createComposer(f.port, f.timers, undefined, f.notify, undefined, async (session, control, _execute, unchanged) => {
-        expect(session?.name).toBe(SESSION.name); expect(control.run).toBe("run-1"); current = unchanged; return gate.call();
+      const c = createComposer(f.port, f.timers, undefined, f.notify, undefined, async (session, control) => {
+        expect(session?.name).toBe(SESSION.name); expect(control.run).toBe("run-1"); return gate.call();
       });
       await c.open(SESSION); c.openClear(); const job = c.confirmClear();
       expect(c.dialog()).toBeUndefined(); expect(c.locked()).toBe(false);
       c.input("message during grace", 20, 20); await c.send();
       expect(f.calls.some((line) => line.includes("message during grace"))).toBe(true);
-      c.apply(view({ text_epoch: 2 })); expect(current()).toBe(true);
+      c.apply(view({ text_epoch: 2 }));
       gate.answer(undefined); await job;
       expect(f.calls.some((line) => line.startsWith("clear "))).toBe(false);
+      dispose();
+    });
+  });
+});
+
+
+describe("confirmed Clear target", () => {
+  it("keeps the original clear after switching to another composer during Undo", async () => {
+    const f = fakes(), gate = held<void>();
+    await createRoot(async (dispose) => {
+      const c = createComposer(f.port, f.timers, undefined, f.notify, undefined, async (...args) => {
+        // Selection is not a target-validity condition for a confirmed action.
+        expect(args).toHaveLength(3);
+        await gate.call();
+        return args[2]({ id: "confirmed-clear", index: 0 }, "clear");
+      });
+      await c.open(SESSION); c.openClear(); const job = c.confirmClear();
+      c.apply(view({ handle: 2, key: "studio\nclaude/example/other", text: "other draft" }));
+      gate.answer(); await job;
+      expect(f.calls.filter((line) => line.startsWith("clear "))).toEqual(["clear run-1 conv-1 false"]);
+      expect(c.text()).toBe("other draft");
       dispose();
     });
   });
