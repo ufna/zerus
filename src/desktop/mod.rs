@@ -7,6 +7,7 @@ mod feed;
 mod frontend;
 mod handoff;
 mod import_evidence;
+mod lifecycle;
 #[allow(dead_code)]
 mod operations;
 mod owner;
@@ -252,6 +253,7 @@ fn projection(
 ) -> Value {
     json!({"abi":ABI,"version":env!("CARGO_PKG_VERSION"),"schema":store::SCHEMA,
         "configuration":location.configuration,"generation":store.generation,"epoch":epoch,
+        "lifecycle":lifecycle::status(&location.configuration,epoch,store.generation),
         "running":true,"ownership":"passive","writers_enabled":false,"handoff":"required",
         "upstreams":[],"complete":false,"subscribers":subscribers,"automatic_approvals":false,
         "pending":{"reads":store.read_status()["pending"],"posting":0,"approvals":0},"errors":[],"migration":migration,"effect_journal":store.effect_status(),"read_queue":store.read_status(),
@@ -626,6 +628,7 @@ fn exchange(location: &Location, op: &str, request: Option<Value>) -> Result<Opt
 }
 fn status(location: &Location) -> Result<Value> {
     Ok(exchange(location, "status", None)?.unwrap_or_else(|| json!({"abi":ABI,"running":false,"ownership":"unavailable","configuration":location.configuration,"writers_enabled":false,
+        "lifecycle":lifecycle::unavailable(&location.configuration),
         "frontend_read_delivery":frontend::inspect(&location.configuration)})))
 }
 fn watch(location: &Location) -> Result<()> {

@@ -4406,8 +4406,19 @@ guards and revocation protocol. The kernel writes no takeover marker. See the
 exact [migration contract](desktop-migration.md).
 
 `hgs desktop registration --json` previews the current platform's per-user
-definition and exact configuration identity. It creates no files, contacts no
-service manager and enables no writer. Its `operation:preview` identifies this
+registration and includes a `readiness` probe for that exact binary and
+configuration. Run its `argv` directly with the two supplied `HGS_CONFIG_DIR`
+and `HGS_STATE_DIR` values, then require the returned configuration to equal
+`expected_configuration`. `lifecycle.ipc_ready` means the private endpoint and
+store are ready; it does not mean background writers are active. The same
+`lifecycle` object supplies the actual service PID, epoch and generation, plus
+per-component readiness. Its epoch changes on service restart. The registration's
+`session` object describes the graphical login environment needed by platform
+installers; it is a requirement, not a claim that the environment is present.
+
+The preview also contains the per-user definition and exact configuration identity.
+It creates no files, contacts no service manager and enables no writer.
+Its `operation:preview` identifies this
 render-only operation; it makes no claim about OS registration. Maintained installer
 ownership checks and delegation are separate steps before using the definition.
 
