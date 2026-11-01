@@ -1,6 +1,8 @@
 """Installer ownership, configuration and graphical-session ordering."""
 import copy
 import importlib.util
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -9,6 +11,7 @@ import subprocess
 import tempfile
 import unittest
 import sys
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 installer = None
@@ -180,7 +183,7 @@ class LinuxDesktopService(unittest.TestCase):
         self.hgs.write_bytes(b"new CLI\n")
         self.env.pop("XDG_SESSION_TYPE")
         self.manager.calls.clear()
-        with self.assertRaisesRegex(installer.Refusal, "pending"):
+        with self.assertRaisesRegex(installer.PendingRestart, "pending"):
             self.instance().install(refresh=True)
         record = json.loads(self.destination.with_name(".hgs-desktop.zerus-registration.json").read_text())
         self.assertTrue(record["pending_restart"])
@@ -190,6 +193,35 @@ class LinuxDesktopService(unittest.TestCase):
         self.env["XDG_SESSION_TYPE"] = "wayland"
         self.instance().install(refresh=True)
         self.assertIn("restart", self.manager.actions())
+
+    def test_pending_refresh_has_a_distinct_cli_status(self):
+        error = io.StringIO()
+        with patch("sys.argv", ["installer", "refresh", "--hgs", str(self.hgs)]), \
+                patch.dict(os.environ, self.env, clear=True), \
+                patch.object(installer.os, "geteuid", return_value=1000), \
+                patch.object(installer, "read_file", return_value=b"managed"), \
+                patch.object(installer, "Installer") as selected, contextlib.redirect_stderr(error):
+            selected.return_value.install.side_effect = installer.PendingRestart("backend update is pending")
+            self.assertEqual(installer.main(), 3)
+        self.assertIn("Desktop service refresh pending", error.getvalue())
+
+    def test_unit_replacement_before_record_save_is_recoverable(self):
+        self.instance().install()
+        record_path = self.destination.with_name(".hgs-desktop.zerus-registration.json")
+        previous = record_path.read_bytes()
+        self.preview["definition"] += "# new owned renderer output\n"
+        attempt = self.instance()
+        self.manager.calls.clear()
+        with patch.object(attempt, "save", side_effect=OSError("interrupted record write")):
+            with self.assertRaisesRegex(OSError, "interrupted"):
+                attempt.install()
+        self.assertEqual(record_path.read_bytes(), previous)
+        self.assertEqual(self.destination.read_text(), self.preview["definition"])
+        self.assertNotIn("restart", self.manager.actions())
+        self.instance().install()
+        self.assertIn("restart", self.manager.actions())
+        self.assertEqual(json.loads(record_path.read_bytes())["definition_sha256"],
+                         installer.digest(self.destination.read_bytes()))
 
     def test_readiness_pid_mismatch_keeps_the_active_service(self):
         self.instance().install()
@@ -329,11 +361,27 @@ class CliRefreshHook(unittest.TestCase):
         shutil.copyfile(ROOT / "install.sh", self.repo / "install.sh")
         (self.repo / "hgs_state.py").write_text("# fixture shim\n")
         (self.repo / "scripts/install-linux-desktop-service.py").write_text(
-            'import os, pathlib, sys\npathlib.Path(os.environ["HOME"], "refresh-call").write_text(repr(sys.argv[1:]))\n')
+            'import json, os, pathlib, sys\n'
+            'home = pathlib.Path(os.environ["HOME"])\n'
+            '(home / "refresh-call").write_text(repr(sys.argv[1:]))\n'
+            'with (home / "install-order").open("a") as log: log.write(json.dumps(["refresh"]) + "\\n")\n'
+            'status = int(os.environ.get("FIXTURE_REFRESH_STATUS", "0"))\n'
+            'if status == 3:\n'
+            '    assert (home / ".local/bin/zerus-mobile-connector").is_file()\n'
+            '    print("Desktop service refresh pending: use the current graphical session", file=sys.stderr)\n'
+            'sys.exit(status)\n')
+        for worker in ("recovery", "swarm", "voice"):
+            (self.repo / f"scripts/install-{worker}-service.py").write_text(
+                'import json, os, pathlib, sys\n'
+                'with pathlib.Path(os.environ["HOME"], "install-order").open("a") as log:\n'
+                f'    log.write(json.dumps([{worker!r}, *sys.argv[1:]]) + "\\n")\n')
         fake = self.root / "bin"
         fake.mkdir()
         for name, body in {
-                "cargo": 'mkdir -p "$CARGO_TARGET_DIR/release"\nprintf \'#!/bin/sh\\necho hgs-fixture\\n\' > "$CARGO_TARGET_DIR/release/hgs"\n',
+                "cargo": 'mkdir -p "$CARGO_TARGET_DIR/release"\n'
+                         'case "$*" in *services/mobile/connector/Cargo.toml*) name=zerus-mobile-connector ;; *) name=hgs ;; esac\n'
+                         'printf \'#!/bin/sh\\necho %s-fixture\\n\' "$name" > "$CARGO_TARGET_DIR/release/$name"\n',
+                "systemctl": 'exit 1\n',
                 "uname": 'echo Linux\n', "id": 'echo "${FIXTURE_UID:-1000}"\n'}.items():
             script = fake / name
             script.write_text("#!/bin/sh\n" + body)
@@ -348,11 +396,23 @@ class CliRefreshHook(unittest.TestCase):
         result = subprocess.run(["bash", str(self.repo / "install.sh")], env=dict(self.env, **extra),
                                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
+        return result
 
     def test_deliberate_per_user_cli_upgrade_uses_the_same_refresh_helper(self):
         self.invoke()
         call = (self.home / "refresh-call").read_text()
         self.assertEqual(call, repr(["refresh", "--hgs", str(self.home / ".local/bin/hgs")]))
+
+    def test_headless_pending_refresh_finishes_connector_and_worker_restarts(self):
+        result = self.invoke(HGS_MOBILE_CONNECTOR="1", HGS_RECOVERY_SERVICE="1", HGS_SWARM_SERVICE="1",
+                             HGS_VOICE_SERVICE="1", FIXTURE_REFRESH_STATUS="3")
+        calls = [json.loads(line) for line in (self.home / "install-order").read_text().splitlines()]
+        self.assertEqual(calls, [[worker, str(self.home / ".local/bin/hgs"), "--restart"]
+                                for worker in ("recovery", "swarm", "voice")] + [["refresh"]])
+        self.assertIn("Desktop backend refresh pending", result.stdout)
+        self.assertIn("CLI, connector and worker installation completed", result.stdout)
+        self.assertIn("Desktop service refresh pending", result.stderr)
+        self.assertTrue((self.home / ".local/bin/zerus-mobile-connector").is_file())
 
     def test_staging_root_and_foreign_configurations_never_refresh(self):
         for extra in ({"HGS_INSTALL_PREFIX": str(self.root / "stage")}, {"DESTDIR": str(self.root / "package")},

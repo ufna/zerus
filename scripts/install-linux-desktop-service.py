@@ -25,6 +25,10 @@ class Refusal(Exception):
     pass
 
 
+class PendingRestart(Refusal):
+    """Registration is durable; restarting needs the current graphical login."""
+
+
 def require(condition, message):
     if not condition:
         raise Refusal(message)
@@ -243,7 +247,11 @@ class Installer:
                                 and all(c in "0123456789abcdef" for c in record[key])
                                 for key in ("binary_sha256", "definition_sha256")),
                         "invalid desktop registration record; kept")
-                require(raw is not None and digest(raw) == record["definition_sha256"],
+                # A crash after replacing our unit but before saving its new
+                # digest can leave the old record. Recover only this selected
+                # CLI's exact emitted definition under an otherwise valid owned
+                # record; arbitrary edits and other configurations still refuse.
+                require(raw is not None and (digest(raw) == record["definition_sha256"] or raw == self.definition),
                         "custom or missing desktop service definition kept")
                 return record
             except (KeyError, TypeError, ValueError):
@@ -323,8 +331,8 @@ class Installer:
             elif not active:
                 return "Managed desktop registration refreshed; inactive service kept stopped."
             if context is None:
-                require(not (active and record["pending_restart"]),
-                        "backend update is pending; run registration from the current graphical session")
+                if active and record["pending_restart"]:
+                    raise PendingRestart("backend update is pending; run registration from the current graphical session")
                 return "Desktop service registered for the next graphical login; IPC readiness was not established."
             needs_restart = active and (record["pending_restart"] or record["session"] != context)
             if context["XDG_SESSION_TYPE"] == "x11":
@@ -381,6 +389,9 @@ def main():
         print(Installer(args.hgs, env).install(check=args.check, no_start=args.no_start,
                                              session=args.action == "session", refresh=args.action == "refresh"))
         return 0
+    except PendingRestart as error:
+        print(f"Desktop service refresh pending: {error}", file=sys.stderr)
+        return 3
     except (Refusal, OSError, ValueError, subprocess.SubprocessError) as error:
         print(f"Desktop service registration refused: {error}", file=sys.stderr)
         return 1
