@@ -32,7 +32,7 @@ pub enum Refusal {
 }
 
 /// Expectations selected together from this process's own verified bundle.
-/// There is no path/requirement extraction, Clone, serde or caller input.
+/// There is no requirement extraction, Clone, serde or caller input.
 pub struct Selection {
     original: Snapshot,
 }
@@ -60,6 +60,20 @@ pub fn select_own() -> Result<Selection, Refusal> {
     snapshot().map(|original| Selection { original })
 }
 impl Selection {
+    /// CLI routing only, after actual running-self and sealed-pair verification.
+    /// A caller must not treat this path as a lease or native effect permission.
+    pub fn service_executable(&self) -> &Path {
+        &self.original.service.executable
+    }
+    /// Cheap CLI routing freshness after a connection's full select_own. This
+    /// does not repeat Security verification and is NOT native permission or a
+    /// substitute for observe_service/observe_app/full factory revalidation.
+    pub fn service_executable_if_unchanged(&self) -> Result<&Path, Refusal> {
+        if generation(&self.original.bundle)? != self.original.generation {
+            return Err(Refusal::GenerationChanged);
+        }
+        Ok(&self.original.service.executable)
+    }
     pub fn observe_service<'a>(
         &'a self,
         connection: &'a UnixStream,
@@ -108,10 +122,14 @@ struct Node {
     path: PathBuf,
     device: u64,
     inode: u64,
-    bytes: u64,
     mode: u32,
     uid: u32,
-    changed: (i64, i64),
+    content: Option<ContentStamp>,
+}
+#[derive(PartialEq, Eq)]
+struct ContentStamp {
+    bytes: u64,
+    changed: Option<(i64, i64)>,
     modified: (i64, i64),
 }
 
@@ -169,21 +187,34 @@ fn generation(bundle: &Path) -> Result<Vec<Node>, Refusal> {
             }
             // The fixed code/plist/seal leaves must be ordinary files, and
             // fixed directories must be directories. Never follow a link.
-            let file = matches!(
-                path.file_name().and_then(|x| x.to_str()),
-                Some("hgs" | "hgs-tray" | "Info.plist" | "CodeResources")
-            );
+            let file = [
+                "Contents/MacOS/hgs",
+                "Contents/MacOS/hgs-tray",
+                "Contents/Info.plist",
+                "Contents/_CodeSignature/CodeResources",
+            ]
+            .iter()
+            .any(|leaf| path == bundle.join(leaf));
             if file == m.is_dir() {
                 return Err(Refusal::UnsupportedLayout);
             }
             Ok(Node {
                 device: m.dev(),
                 inode: m.ino(),
-                bytes: m.len(),
                 mode: m.mode(),
                 uid: m.uid(),
-                changed: (m.ctime(), m.ctime_nsec()),
-                modified: (m.mtime(), m.mtime_nsec()),
+                // Parent directory churn is unrelated to this sealed pair.
+                // Preserve every ancestor's identity, ownership, mode and
+                // no-link checks, without recording its contents' timestamps.
+                content: path.starts_with(bundle).then(|| ContentStamp {
+                    bytes: m.len(),
+                    // LaunchServices may update lastuseddate xattrs when an
+                    // app is opened. Directory ctime is not sealed content.
+                    // The bundle's mtime/size still detect membership changes;
+                    // fixed code, plist and seal nodes keep their full stamps.
+                    changed: (path != bundle).then(|| (m.ctime(), m.ctime_nsec())),
+                    modified: (m.mtime(), m.mtime_nsec()),
+                }),
                 path,
             })
         })

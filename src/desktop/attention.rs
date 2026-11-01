@@ -53,6 +53,8 @@ pub struct Runtime {
     error: Option<String>,
     effect_after: i64,
     effect_through: i64,
+    #[cfg(test)]
+    clock: Option<Instant>,
 }
 impl Runtime {
     pub fn new(epoch: &str) -> Self {
@@ -68,7 +70,16 @@ impl Runtime {
             error: None,
             effect_after: 0,
             effect_through: 0,
+            #[cfg(test)]
+            clock: None,
         }
+    }
+    fn now(&self) -> Instant {
+        #[cfg(test)]
+        if let Some(now) = self.clock {
+            return now;
+        }
+        Instant::now()
     }
     /// Only the original service's authenticated configuration/focus admission
     /// calls these. Neither method is a desktop request or a native writer grant.
@@ -131,19 +142,20 @@ impl Runtime {
                 || self.sources.len() < catalog::MAX_SOURCES as usize,
             "attention source quota"
         );
+        let now = self.now();
         if let Some(source) = self
             .sources
             .get_mut(computer)
             .filter(|s| s.scope == mark.scope)
         {
-            source.at = Instant::now();
+            source.at = now;
         } else {
             self.reject(computer);
             self.sources.insert(
                 computer.into(),
                 Source {
                     scope: mark.scope,
-                    at: Instant::now(),
+                    at: now,
                     baseline: None,
                     baselined: false,
                     since: mark.revision.context("missing attention watermark")?,
@@ -165,11 +177,9 @@ impl Runtime {
         }
     }
     fn current(&self, store: &Store, scope: &changes::Scope) -> Result<bool> {
-        if !self
-            .sources
-            .get(&scope.source.computer)
-            .is_some_and(|s| s.scope == *scope && s.at.elapsed() <= FRESH)
-        {
+        if !self.sources.get(&scope.source.computer).is_some_and(|s| {
+            s.scope == *scope && self.now().saturating_duration_since(s.at) <= FRESH
+        }) {
             return Ok(false);
         }
         let mark = changes::watermark(&store.db, &scope.source.computer)?;
@@ -286,7 +296,7 @@ impl Runtime {
                     &value,
                     previous,
                     self.policy,
-                    self.foreground_until.is_some_and(|t| Instant::now() < t),
+                    self.foreground_until.is_some_and(|t| self.now() < t),
                     row.baseline || stale,
                 )?;
                 state::save(
@@ -426,7 +436,7 @@ impl Runtime {
                     scope.source.generation,
                     &scope.projection,
                 ))?;
-                if self.foreground_until.is_some_and(|t| Instant::now() < t)
+                if self.foreground_until.is_some_and(|t| self.now() < t)
                     || !edge.ready
                     || !self.policy.enabled
                     || edge.policy_revision != self.policy_revision
