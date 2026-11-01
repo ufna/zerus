@@ -20,7 +20,7 @@ import windows_installer
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "packaging" / "windows" / "zerus.iss"
-ICON = ROOT / "tray" / "resources" / "icons" / "hgs-zerus.ico"
+ICON = ROOT / "client" / "src-tauri" / "icons" / "icon.ico"
 
 
 def compiler(explicit):
@@ -36,7 +36,7 @@ def compiler(explicit):
     return Path(found)
 
 
-def command(iscc, payload, output, version):
+def command(iscc, payload, output, version, tauri=False):
     return [str(iscc), "/Q",
             f"/DAppVersion={version}",
             f"/DNumericVersion={windows_installer.numeric_version(version)}",
@@ -44,6 +44,7 @@ def command(iscc, payload, output, version):
             f"/DOutputDir={output.parent}",
             f"/DOutputName={output.stem}",
             f"/DIconFile={ICON}",
+            f"/DTauriDesktop={int(tauri)}",
             str(SCRIPT)]
 
 
@@ -62,7 +63,7 @@ def main():
     if args.stage_only:
         args.stage_only.mkdir(parents=True, exist_ok=True)
         record, expected = windows_installer.stage(args.zip, args.stage_only, args.version)
-        print(" ".join(command(Path("ISCC.exe"), args.stage_only.resolve(), output, record["version"])))
+        print(" ".join(command(Path("ISCC.exe"), args.stage_only.resolve(), output, record["version"], record.get("desktop") == "tauri")))
         print(f"Staged {len(expected)} files of Zerus {record['version']} in {args.stage_only}.")
         return
     iscc = compiler(args.iscc)
@@ -73,7 +74,7 @@ def main():
         # The version is checked against the zip before anything is staged or compiled,
         # and the installer carries the version its installation.json records.
         record, expected = windows_installer.stage(args.zip, payload, args.version)
-        subprocess.run(command(iscc, payload, output, record["version"]), check=True, stdin=subprocess.DEVNULL)
+        subprocess.run(command(iscc, payload, output, record["version"], record.get("desktop") == "tauri"), check=True, stdin=subprocess.DEVNULL)
     require(output.is_file(), f"Inno Setup wrote no {output}.")
     print(f"{output.name}: {output.stat().st_size} bytes, {len(expected)} files of Zerus {record['version']} "
           f"({record['source_commit']}).")
