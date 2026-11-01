@@ -306,6 +306,23 @@ impl Broker {
             self.error = true;
         }
     }
+
+    /// Immediately suppress a failed internal observation, even if the batch
+    /// ends before its queued Offline retirement can be applied. This only
+    /// invalidates the same producer/generation, never a replacement source.
+    pub(super) fn invalidate(&mut self, producer: &Producer, packet: &Packet) {
+        let Some((computer, generation)) = packet.scope() else {
+            return;
+        };
+        if let Some(entry) = self.sources.get_mut(computer) {
+            if entry.source.incarnation == producer.incarnation
+                && entry.source.generation == generation
+            {
+                entry.valid = false;
+                entry.complete = false;
+            }
+        }
+    }
     pub fn apply(
         &mut self,
         store: &mut Store,
