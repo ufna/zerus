@@ -13,7 +13,7 @@ REPOSITORY = "ufna/zerus"
 PACKAGES = ("zerus", "zerus-ade-bin", "zerus-git")
 BINARY_LIBRARIES = ("webkit2gtk-4.1", "javascriptcoregtk-4.1", "gtk3", "gdk-pixbuf2", "glib2", "cairo", "libsoup3",
                    "alsa-lib", "gstreamer", "gst-plugins-base-libs",
-                   "libappindicator", "librsvg", "xdotool", "dbus", "libgcc", "libstdc++", "glibc")
+                   "libappindicator", "dbus", "libgcc", "libstdc++", "glibc")
 # Previously published Qt packages remain immutable and retryable.
 QT_BINARY_LIBRARIES = ("qt6-base", "qt6-multimedia", "qt6-svg", "kstatusnotifieritem",
                        "kwindowsystem", "kidletime", "libgcc", "libstdc++", "glibc")

@@ -1431,24 +1431,25 @@ Generate `.SRCINFO` with `makepkg --printsrcinfo`; never edit it manually.
 
 | Class | Packages | Reason |
 | --- | --- | --- |
-| Desktop runtime | `qt6-base`, `qt6-multimedia`, `qt6-svg`, `kstatusnotifieritem`, `kwindowsystem`, `kidletime`, `hicolor-icon-theme` | Widgets, voice recording, SVG plugin, tray/window integration, idle detection and icons |
+| Desktop runtime | `webkit2gtk-4.1`, `javascriptcoregtk-4.1`, `gtk3`, `gdk-pixbuf2`, `glib2`, `cairo`, `libsoup3`, `libappindicator`, `dbus`, `hicolor-icon-theme` | Zerus Next webview, GTK integration, tray and icons |
+| Media runtime | `alsa-lib`, `gstreamer`, `gst-plugins-base-libs`, `gst-plugins-base`, `gst-plugins-good`, `gst-plugins-bad`, `gst-plugins-ugly`, `gst-libav` | Voice capture, camera/round video, H.264/AAC and playback |
 | CLI/runtime tools | `tmux>=3.7`, `openssh`, `python`, `curl`, `procps-ng`, `bash`, `tar` | Persistent sessions, remote access, compatibility helper, account HTTP, process inspection, installers and remote source transfer |
 | Native library runtime | `glibc`, `libgcc`, `libstdc++` | Dynamically linked CLI/desktop binaries |
-| Source build only | `rust`, `cmake`, `ninja`, `qt6-webengine`; additionally `git` for `zerus-git` | Locked Rust and production Qt builds, the native UI plugin; Git source/version discovery |
+| Source build only | `rust`, `nodejs`, `npm`; additionally `git` for `zerus-git` | Locked Rust client/CLI/connector and frontend builds; Git source/version discovery |
 | Standard build environment | `base-devel` | Required by Arch's makepkg/AUR build convention; its tools are not repeated in makedepends |
-| Optional features | `nodejs`, `npm`, `git`, `konsole`, `wl-clipboard`, `xclip`, `systemd`, `qt6-webengine` | Native agent installation/runtime, worktrees, external terminals, clipboard, user services/scopes and the embedded DeepSeek Native UI |
+| Optional features | `nodejs`, `npm`, `git`, `konsole`, `wl-clipboard`, `xclip`, `systemd` | Native agent installation/runtime, worktrees, external terminals, clipboard and user services/scopes |
 
-The binary package has no Rust/CMake/Ninja build dependencies. Its Qt/KDE, C/C++
-runtime and glibc dependency floors are generated from the **verified builder's
-`.BUILDINFO`**, not the publication runner. `release-info.json` records these
-versions. This prevents installing that binary against older libraries that may
-lack symbols; Arch users should keep a fully updated system. A fresh binary/ABI
-rebuild gets a new product version and immutable assets.
+Both source recipes build `client/` with
+`tauri build --no-bundle --config tauri.switch.linux.conf.json --features video`.
+The output remains `hgs-tray`. Binary packages need no Rust, Node.js/npm or Qt
+build toolchain. GTK/WebKit, media and C/C++ library floors come from the
+**verified builder's `.BUILDINFO`**, never the publication runner;
+`release-info.json` records them. Arch users should keep a fully updated system.
+A fresh binary/ABI rebuild gets a new product version and immutable assets.
 
-Node.js and npm are separate optional dependencies. Native agents are installed
-separately through Accounts or their upstream installers; agent executables,
-credentials and user configuration are never bundled. Systemd integration is
-optional and detected at runtime. Packaging never enables services.
+Node.js/npm are runtime options for separately installed agents. Credentials,
+agent executables and user configuration are never bundled. Systemd integration
+is detected at runtime; packaging never enables services.
 
 ### Package contents and compatibility
 
@@ -1457,10 +1458,9 @@ Each flavor installs the same ADE bundle:
 - `/usr/bin/hgs`, `/usr/bin/hgs-tray`, the `hgs_state.py` compatibility shim and
   the explicit `zerus-setup` migration helper, whose `--mobile-connector
   {protect,migrate,rollback}` runs `/usr/lib/zerus/install-mobile-connector-service.py`.
-- `/usr/lib/hgs-tray/plugins/libhgs-tray-native-ui.so`, the embedded DeepSeek
-  Native UI. It alone links Qt WebEngine and loads only when `qt6-webengine` is
-  installed; otherwise Native UI opens in the browser. `check-package.py`
-  requires it and rejects an `hgs-tray` that links Qt WebEngine itself.
+- Zerus Next's `hgs-tray`, with embedded frontend assets. `check-package.py`
+  requires the Next build identity and GTK/WebKit linkage, rejects Qt/KDE
+  linkage and rejects a packaged Qt native UI plugin.
 - `/usr/bin/zerus-mobile-connector`, the Rust mobile connector, and its user
   unit `zerus-mobile-connector.service` (`KillMode=process`, configuration
   `%E/hgs/mobile/connector.json`, skipped while that file is missing). The
@@ -1473,18 +1473,14 @@ Each flavor installs the same ADE bundle:
 - A desktop entry, existing application icons and system-provided **user** unit
   definitions for `hgs-tray`, `hgs-swarm` and `hgs-recovery`.
 - Documentation and a sample tmux configuration under `/usr/share/doc/zerus`.
-- Zerus MIT, vendored libvterm MIT and the exact host-target Cargo dependency
-  license texts of `hgs` and the mobile connector (both locks) under
-  `/usr/share/licenses/<package-name>`.
+- Zerus MIT, the Codex data notice, and the host-target Cargo dependency
+  notices for `hgs`, the mobile connector and the client with its shipped
+  media/video features under `/usr/share/licenses/<package-name>`.
 
-Qt and KDE libraries are dynamically linked system dependencies. Qt WebEngine is
-needed only by the native UI plugin. Upgrades keep an installed `qt6-webengine`:
-an optional dependency is not an orphan for `pacman -Qdt`. Candidates sealed
-before Qt WebEngine became optional still validate for publication retries.
-`qt6-svg` supplies the dynamically loaded SVG image plugin used by menu and
-combo-box arrows; a Qt test renders the actual bundled resources so a missing
-plugin fails CI. The current Arch Qt base package supplies its Wayland display
-plugin. [Arch Qt SVG package](https://archlinux.org/packages/extra/x86_64/qt6-svg/).
+The Arch desktop dynamically links system GTK3/WebKitGTK and GStreamer; packages
+ship no Qt/KDE runtime or native UI plugin. Existing sealed Qt candidates remain
+valid for publication retries without changing their original bytes. The Qt
+source installer remains an explicit fallback until Linux acceptance.
 The runtime also declares curl for native account HTTP requests and procps-ng
 for process inspection. Optional Node.js/npm enable agent installation from
 Accounts; Git enables repository/worktree features. Arch's Node.js package does
@@ -1493,12 +1489,11 @@ The package does not bundle their distributions, native agent executables,
 accounts, credentials or configuration. Package installation does not start or
 stop services, edit user homes or replace the user's tmux configuration.
 
-The product package version currently follows the desktop version: `VERSION`
-and `tray/CMakeLists.txt` are **0.42.0**. The independently versioned compatible
-CLI is **1.51.0**. CI rejects a product/desktop version mismatch; packaging
-records both versions in `build-info.json`, with the source commit when built
-from Git. For source-archive builds, the release manifest and archive SHA-256
-provide the commit provenance.
+The product package version follows `VERSION`; the client embeds it in
+`--build-info`. The compatible CLI has its own version in `Cargo.toml`.
+Packaging records both versions and the source commit in `build-info.json`
+when built from Git. For source-archive builds, the release manifest and archive
+SHA-256 provide commit provenance.
 Stable fixes use patch releases (`0.42.1`, `0.42.2`); feature releases use a new
 minor version. `DEV_VERSION` names the next planned stable release and trusted
 main CI embeds its growing sequence (`0.42.1-dev.215`). Android follows the same

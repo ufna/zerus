@@ -8,7 +8,7 @@ url='https://github.com/ufna/zerus'
 license=('MIT')
 depends=('webkit2gtk-4.1' 'javascriptcoregtk-4.1' 'gtk3' 'gdk-pixbuf2' 'glib2' 'cairo' 'libsoup3'
          'alsa-lib' 'gstreamer' 'gst-plugins-base-libs'
-         'libappindicator' 'librsvg' 'xdotool' 'dbus'
+         'libappindicator' 'dbus'
          'gst-plugins-base' 'gst-plugins-good' 'gst-plugins-bad' 'gst-plugins-ugly' 'gst-libav'
          'tmux>=3.7' 'openssh' 'python' 'curl' 'procps-ng' 'libgcc' 'libstdc++' 'glibc' 'hicolor-icon-theme' 'bash' 'tar')
 makedepends=('rust' 'nodejs' 'npm')

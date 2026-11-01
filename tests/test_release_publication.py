@@ -467,6 +467,7 @@ class PublicationTests(unittest.TestCase):
     def test_next_recipes_drop_qt_and_both_legacy_candidates_still_validate(self):
         self.assertIn("webkit2gtk-4.1", common.BINARY_LIBRARIES)
         self.assertIn("alsa-lib", common.BINARY_LIBRARIES)
+        self.assertNotIn("xdotool", common.BINARY_LIBRARIES)
         self.assertFalse(any(name.startswith(("qt6-", "kstatus", "kwindows", "kidletime"))
                              for name in common.BINARY_LIBRARIES))
         for name in ("zerus", "zerus-ade-bin"):
