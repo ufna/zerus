@@ -234,9 +234,12 @@ fn render(spec: &Spec, os: Os) -> Result<String> {
             let task = task_name(&spec.user_sid)?;
             let args = crate::host::spawn::command_line(&argv[1..])?;
             let sid = xml(&spec.user_sid);
+            // COM receives Unicode XML as a BSTR; a UTF-8 declaration would
+            // make its parser try to switch away from the supplied string.
+            // Omit the encoding so this also remains valid UTF-8 on disk.
             // Task Scheduler's restartType schema has a one-minute minimum.
             // https://learn.microsoft.com/en-us/windows/win32/taskschd/taskschedulerschema-interval-restarttype-element
-            format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!-- {MARKER}; configuration={} -->\n<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n<RegistrationInfo><URI>\\{task}</URI><Description>{MARKER}; configuration={}</Description></RegistrationInfo>\n<Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{sid}</UserId></LogonTrigger></Triggers>\n<Principals><Principal id=\"DesktopUser\"><UserId>{sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>\n<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><Enabled>true</Enabled><Hidden>true</Hidden><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure></Settings>\n<Actions Context=\"DesktopUser\"><Exec><Command>{}</Command><Arguments>{}</Arguments></Exec></Actions>\n</Task>\n",spec.configuration,spec.configuration,xml(&spec.binary),xml(&args))
+            format!("<?xml version=\"1.0\"?>\n<!-- {MARKER}; configuration={} -->\n<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n<RegistrationInfo><URI>\\{task}</URI><Description>{MARKER}; configuration={}</Description></RegistrationInfo>\n<Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{sid}</UserId></LogonTrigger></Triggers>\n<Principals><Principal id=\"DesktopUser\"><UserId>{sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>\n<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><Enabled>true</Enabled><Hidden>true</Hidden><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure></Settings>\n<Actions Context=\"DesktopUser\"><Exec><Command>{}</Command><Arguments>{}</Arguments></Exec></Actions>\n</Task>\n",spec.configuration,spec.configuration,xml(&spec.binary),xml(&args))
         },
     })
 }
@@ -290,6 +293,8 @@ mod tests {
         let spec = windows_spec();
         let task = render(&spec, Os::Windows).unwrap();
         assert!(task.contains("<Command>C:\\Program Files\\Example\\hgs.exe</Command>"));
+        assert!(task.starts_with("<?xml version=\"1.0\"?>"));
+        assert!(!task.contains("encoding="));
         assert!(task.contains("<RunLevel>LeastPrivilege</RunLevel>"));
         assert!(task.contains("<UserId>S-1-5-21-1000</UserId>"));
         assert!(task.contains("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>"));
