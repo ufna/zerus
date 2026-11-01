@@ -72,8 +72,8 @@ function DeleteDialog(props: Extract<OrgDialog, { kind: "delete" }>) {
       </div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn primary" data-initial autofocus onClick={close}>{tr("Cancel")}</button>
         <button type="button" class="btn solid-danger" disabled={!target()} onClick={() => dialogs.confirmDelete(target())}>{tr("Move sessions and delete")}</button>
+        <button type="button" class="btn primary" data-initial autofocus onClick={close}>{tr("Cancel")}</button>
       </div>
     </>
   );

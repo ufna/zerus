@@ -65,7 +65,7 @@
   .btn.primary:hover { background: var(--z-color-accent-hover); }
   .btn.danger { color: var(--z-color-danger); border-color: color-mix(in srgb, var(--z-color-danger) 45%, transparent); }
   .btn.danger:hover { background: var(--z-color-danger-bg); }
-  .btn.solid-danger { background: var(--z-color-danger); border-color: var(--z-color-danger); color: #fff; }
+  .btn.solid-danger { background: var(--z-color-danger); border-color: var(--z-color-danger); color: var(--z-color-danger-text); font-weight: 600; }
   .btn.ghost { border-color: transparent; background: transparent; }
   .btn.ghost:hover { background: var(--z-color-hover); }
   .btn.small { height: calc(var(--control-h) - 6px); padding: 0 8px; font-size: var(--fs-xs); }

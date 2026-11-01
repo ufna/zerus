@@ -168,6 +168,57 @@ fn metadata_reads_skip_history_and_refuse_every_changed_identity_without_a_repla
 }
 
 #[test]
+fn native_inspection_runtime_fields_do_not_require_a_catalog_state() {
+    let clear = capture(Action::ClearContext {
+        dismiss_prompt: false,
+    });
+    // The real native inspect shape: state is absent, not "running".
+    let live = json!({"name": clear.target.name, "run_id": clear.target.run_id,
+        "conversation_id": clear.target.conversation_id, "tracked": true,
+        "runtime_state": "live", "process_state": "running", "activity": "idle", "phase": "idle"});
+    assert!(clear.checked_inspection(exited(&live)).is_ok());
+    let mut changed = live.clone();
+    for (field, value) in [
+        ("runtime_state", json!("stopped")),
+        ("runtime_state", Value::Null),
+        ("runtime_state", json!("unknown")),
+        ("state", json!("paused")),
+        ("state", Value::Null),
+        ("run_id", json!("replacement")),
+        ("conversation_id", json!("replacement")),
+    ] {
+        changed[field] = value;
+        assert!(
+            clear.checked_inspection(exited(&changed)).is_err(),
+            "{field}"
+        );
+        changed = live.clone();
+    }
+    changed.as_object_mut().unwrap().remove("runtime_state");
+    assert!(clear.checked_inspection(exited(&changed)).is_err());
+    let mut stopped = live;
+    stopped["runtime_state"] = json!("stopped");
+    stopped["process_state"] = json!("exited");
+    for state in ["paused", "stopped"] {
+        let mut archived = capture(Action::Archive);
+        archived.state = state.into();
+        assert!(archived.checked_inspection(exited(&stopped)).is_ok());
+        stopped["state"] = json!(if state == "paused" {
+            "stopped"
+        } else {
+            "paused"
+        });
+        assert!(archived.checked_inspection(exited(&stopped)).is_err());
+        stopped.as_object_mut().unwrap().remove("state");
+    }
+    let archived = capture(Action::ForgetArchive {
+        archive_id: ARCHIVE.into(),
+    });
+    stopped["archive_id"] = json!(ARCHIVE);
+    assert!(archived.checked_inspection(exited(&stopped)).is_err());
+}
+
+#[test]
 fn end_calls_reuse_scoped_envelopes_and_never_name_only_mutations() {
     for action in ends() {
         let c = capture(action.clone());

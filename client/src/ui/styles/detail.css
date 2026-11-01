@@ -532,7 +532,13 @@
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .qcard-status.error { color: var(--z-color-danger); white-space: normal; }
 .wrap-pre { white-space: pre-wrap; }
-.session-file-path { overflow-wrap: anywhere; }
+dialog.session-file { width: min(520px, calc(100vw - 32px)); max-width: calc(100vw - 32px); }
+.session-file .dlg-body { display: grid; gap: 10px; padding-top: 6px; padding-bottom: 16px; }
+.session-file .dlg-detail { margin: 0; }
+.session-file-path-row { display: flex; align-items: flex-start; gap: 12px; padding: 10px; border: 1px solid var(--z-color-border); border-radius: var(--z-radius-md); background: var(--z-color-field); }
+.session-file-path { flex: 1; min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; font-family: var(--z-font-mono); font-size: var(--fs-sm); color: var(--z-color-text); user-select: text; }
+.session-file-path-row > .btn { flex: none; }
+.session-file-actions { justify-content: flex-end; flex-wrap: wrap; }
 .session-file-hint { white-space: pre-wrap; overflow-wrap: anywhere; }
 .act-reply-q { color: var(--z-color-muted); font-size: 10px; margin-bottom: 3px; }
 .act-reply-a { border: 1px solid var(--z-color-border); background: var(--z-color-code-bg); padding: 10px; border-radius: var(--z-radius-md); margin-bottom: 10px; }
