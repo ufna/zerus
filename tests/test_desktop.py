@@ -3,6 +3,7 @@
 No system manager, native agent, production state or tmux server is used.
 """
 from contextlib import closing
+import errno
 import hashlib
 import json
 import os
@@ -906,14 +907,23 @@ class Desktop(unittest.TestCase):
     @unittest.skipIf(os.name == 'nt', 'Unix socket transport')
     def test_truncated_oversize_and_mismatched_ipc_clients_are_refused(self):
         service, status = self.serve()
-        for payload in (b'{' + b'x' * 65536, b'{}', b'{"abi":"desktop-v0"}\n',
-                        json.dumps(dict(abi='desktop-v1', configuration='wrong', op='status')).encode() + b'\n'):
-            with socket.socket(socket.AF_UNIX) as client:
+        for label, payload in (
+                ('oversize', b'{' + b'x' * 65536),
+                ('truncated', b'{}'),
+                ('abi_mismatch', b'{"abi":"desktop-v0"}\n'),
+                ('configuration_mismatch', json.dumps(dict(abi='desktop-v1', configuration='wrong', op='status')).encode() + b'\n')):
+            with self.subTest(payload=label), socket.socket(socket.AF_UNIX) as client:
                 client.settimeout(4)
                 client.connect(str(self.desktop / 'service.sock'))
                 try:
                     client.sendall(payload)
-                    client.shutdown(socket.SHUT_WR)
+                    try:
+                        client.shutdown(socket.SHUT_WR)
+                    except OSError as error:
+                        # macOS may report a closed peer before half-close;
+                        # still read and validate any buffered error response.
+                        if error.errno != errno.ENOTCONN:
+                            raise
                     response = client.recv(4096)
                 except ConnectionResetError:
                     response = b''
