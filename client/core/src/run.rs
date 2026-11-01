@@ -478,6 +478,7 @@ fn run_inner(
     for key in remove {
         command.env_remove(key);
     }
+    crate::child_environment::restore(&mut command);
     command
         .env_remove("HGS_SESSION")
         .env_remove("HGS_RUN_ID")

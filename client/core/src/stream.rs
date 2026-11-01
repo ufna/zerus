@@ -173,7 +173,7 @@ pub enum Probe {
 /// `hgs [@alias] <args>` without an agent's attribution identity: the client
 /// acts for the person even when it was started from an agent's shell.
 pub(crate) fn hgs_command(hgs: &Path, computer: &ComputerId, args: &[&str]) -> Command {
-    let mut command = Command::new(hgs);
+    let mut command = crate::child_environment::command(hgs);
     if let Some(alias) = computer.alias() {
         command.arg(format!("@{alias}"));
     }

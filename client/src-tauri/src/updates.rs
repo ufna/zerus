@@ -1021,8 +1021,8 @@ const RESTART_SCRIPT: &str = "SECONDS=0; while kill -0 \"$1\" 2>/dev/null; do if
 
 #[cfg(target_os = "macos")]
 fn restart_helper(bundle: &Path, pid: u32) -> std::io::Result<()> {
-    use std::process::{Command, Stdio};
-    Command::new("/bin/sh")
+    use std::process::Stdio;
+    crate::child_environment::command("/bin/sh")
         .args([
             "-c",
             RESTART_SCRIPT,
@@ -1466,7 +1466,7 @@ mod tests {
             let script = RESTART_SCRIPT
                 .replace("-ge 120", "-ge 0")
                 .replace("exec /usr/bin/open", "exec /bin/echo");
-            let output = std::process::Command::new("/bin/sh")
+            let output = crate::child_environment::command("/bin/sh")
                 .args([
                     "-c",
                     &script,

@@ -305,7 +305,7 @@ class TrayUpdate(unittest.TestCase):
         """A copy of tray/install.sh whose cmake builds `build` and, given bytes, the native UI plugin."""
         tray = self.root / 'tray'
         if not tray.exists():
-            for name in ('install.sh', 'update-installed.py', 'packaging/hgs-tray.service', 'packaging/hgs-tray.desktop'):
+            for name in ('install.sh', 'update-installed.py', 'linux-launcher.py', 'packaging/hgs-tray.service', 'packaging/hgs-tray.desktop'):
                 (tray / name).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(REPO / 'tray' / name, tray / name)
             shutil.copytree(REPO / 'tray/resources/icons', tray / 'resources/icons')
@@ -373,6 +373,49 @@ class TrayUpdate(unittest.TestCase):
         self.assertIn('media only, without round video', result.stdout)
         calls = [json.loads(line) for line in (self.root / 'npm.json').read_text().splitlines()]
         self.assertEqual(calls[-1][-2:], ['--features', 'media'])
+
+    def test_local_webkit_selection_survives_preview_and_direct_updates(self):
+        stack = self.root / 'private webkit'
+        for name in ('gtk/lib/libgtk-3.so.0', 'gtk/lib/libgdk-3.so.0',
+                     'lib/libwebkit2gtk-4.1.so.0', 'lib/libjavascriptcoregtk-4.1.so.0',
+                     'libexec/webkit2gtk-4.1/WebKitWebProcess',
+                     'libexec/webkit2gtk-4.1/WebKitNetworkProcess',
+                     'libexec/webkit2gtk-4.1/WebKitGPUProcess'):
+            path = stack / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('fixture')
+            path.chmod(0o755)
+        install = self.client_installer(self.build('client-1'))
+        env = dict(self.env, HGS_LINUX_GUI='client', HGS_LINUX_WEBKIT_PREFIX=str(stack))
+        result = subprocess.run(['bash', str(install)], env=env, capture_output=True, text=True, timeout=90)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        setting = self.home / '.local/share/hgs/local-webkit.json'
+        saved = setting.read_bytes()
+        launch = self.home / '.local/libexec/hgs-tray-launch'
+        self.assertTrue(launch.is_file())
+        unit = self.home / '.config/systemd/user/hgs-tray.service'
+        desktop = self.home / '.local/share/applications/hgs-tray.desktop'
+        self.assertIn(f'ExecStart="{launch}"', unit.read_text())
+        self.assertIn(f'Exec="{launch}" --sessions', desktop.read_text())
+        self.assertIn("'client-1'", self.installed.read_text(), 'the GUI stays a real file')
+        # Later preview updates do not need to repeat the opt-in, even if its
+        # disk disappears. A direct updater call also keeps it and the routing.
+        env.pop('HGS_LINUX_WEBKIT_PREFIX')
+        env.pop('HGS_LINUX_GUI')
+        shutil.rmtree(stack)
+        install = self.client_installer(self.build('client-2'))
+        result = subprocess.run(['bash', str(install)], env=env, capture_output=True, text=True, timeout=90)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        result = self.update(self.build('client-3'))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(setting.read_bytes(), saved)
+        self.assertIn(f'ExecStart="{launch}"', unit.read_text())
+        result = subprocess.run(['bash', str(install)], env=dict(env, HGS_LINUX_WEBKIT_PREFIX=''),
+                                capture_output=True, text=True, timeout=90)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(setting.exists())
+        self.assertEqual(unit.read_bytes(), (REPO / 'tray/packaging/hgs-tray.service').read_bytes())
+        self.assertIn(f'Exec={self.installed} --sessions', desktop.read_text())
 
     def test_installer_places_and_removes_the_native_ui_plugin(self):
         installed = self.home / '.local/lib/hgs-tray/plugins/libhgs-tray-native-ui.so'
