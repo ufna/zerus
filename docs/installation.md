@@ -562,9 +562,15 @@ keys stay local.
 To install on a Mac from another machine:
 
 ```sh
-./mac-install.sh <ssh-alias>            # CLI and desktop
+./mac-install.sh <ssh-alias>            # CLI and Zerus Next
 ./mac-install.sh <ssh-alias> --no-tray  # CLI only
 ```
+
+Fresh installs and upgrades use Zerus Next, including upgrades from Qt.
+Until Mac acceptance, `HGS_MAC_GUI=qt ./mac-install.sh <ssh-alias>` selects
+the Qt fallback; use it on each install that should stay on Qt. Without the
+override, the next install selects Next again. The maintained GUI updater
+keeps the replaced Qt app as its rollback copy and preserves drafts.
 
 Desktop signing uses the Mac's existing keychain. An optional
 `HGS_MACOS_SIGN_IDENTITY` selector is forwarded to the remote installer; private
