@@ -7,7 +7,15 @@ stage="${2:-all}"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target/client-native}"
 
 core_tests() {
+    presence_tests
     cargo +1.99.1 test --locked --manifest-path client/core/Cargo.toml --no-fail-fast
+}
+
+presence_tests() {
+    rustup component add --toolchain 1.99.1 rustfmt
+    cargo +1.99.1 fmt --check --manifest-path crates/presence-sampler/Cargo.toml
+    cargo +1.99.1 clippy --locked --manifest-path crates/presence-sampler/Cargo.toml --all-targets -- -D warnings
+    cargo +1.99.1 test --locked --manifest-path crates/presence-sampler/Cargo.toml
 }
 
 media_check() {
@@ -24,6 +32,7 @@ tauri_clippy() {
 
 case "$platform:$stage" in
     linux:all)
+        presence_tests
         cargo +1.99.1 test --locked --manifest-path client/media/Cargo.toml --features video
         env -u DISPLAY WAYLAND_DISPLAY=zerus-none GDK_BACKEND=x11 WEBKIT_DISABLE_DMABUF_RENDERER=1 ZERUS_CLIENT_HEADLESS=1 \
             xvfb-run -a -s "-screen 0 1440x900x24" \
