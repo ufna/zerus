@@ -7,8 +7,10 @@
 //! from Qt's own store; Qt's store is never written, so a rollback finds Qt as
 //! it was. Loading, seeding and writing run on the store's own thread.
 
+pub mod geometry;
 mod imports;
 pub mod qt;
+mod qt_layout;
 pub mod repository;
 pub use imports::OrganizationImport;
 pub(crate) use imports::{family_metadata, valid_family_metadata};
@@ -66,8 +68,8 @@ const fn key(name: &'static str, kind: Kind) -> Key {
     }
 }
 
-/// A setting of the client's own that Qt does not have: its `client/`
-/// prefix keeps it apart from any key Qt adds later, and it is never seeded.
+/// A Next preference excluded from the original switch seed. Explicit new
+/// G3 families may import compatible Qt values through their own journal.
 const fn client(name: &'static str, kind: Kind) -> Key {
     Key {
         name,
@@ -255,6 +257,24 @@ pub const KEYS: &[Key] = &[
         },
     ),
     client("workspace/inspectorClosed", Kind::Text("[]")),
+    // New G3 families use the family journal, not the original switch seed.
+    client("client/windowGeometry", Kind::Text("")),
+    client(
+        "workspace/sessionsWidth",
+        Kind::Whole {
+            default: 310,
+            min: 270,
+            max: 2400,
+        },
+    ),
+    client(
+        "workspace/projectFolderSplit",
+        Kind::Whole {
+            default: 230,
+            min: 160,
+            max: 4096,
+        },
+    ),
 ];
 
 /// The setting called `name`: a listed key, a shortcut override, or one of

@@ -97,6 +97,8 @@ mod voice;
 mod watchdog;
 #[cfg(feature = "live")]
 mod window_layer;
+#[cfg(feature = "live")]
+mod window_geometry;
 mod window_visibility;
 #[cfg(feature = "live")]
 mod worktree_cleanup;
@@ -1468,6 +1470,10 @@ pub fn create_main_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         }
     }
     let window = builder.build()?;
+    #[cfg(feature = "live")]
+    if let Some(store) = app.try_state::<settings::Store>() {
+        window_geometry::attach(&window, store.0.clone());
+    }
     if let Some(state) = app.try_state::<MainWindow>() {
         *state.0.lock().unwrap_or_else(|error| error.into_inner()) = Some(window.clone());
     }

@@ -3,7 +3,7 @@ import { createStore } from "solid-js/store";
 import { catalog, computerFresh, orderedRows } from "./catalog";
 import { documentVisibility } from "./visibility";
 import { isActive, isWorking, needsAttention } from "./attention";
-import { settings, settingsReady, setSetting } from "./settings";
+import { settings, settingsReady, setSetting, num } from "./settings";
 import { createRowDensity, ROW_DENSITY_KEY } from "./rowDensity";
 import type { Session, Status } from "../ui/sessions/types";
 import type { FolderScope } from "../ui/sessions/scope-filters";
@@ -95,13 +95,14 @@ const syncClock = () => {
 syncClock();
 documentVisibility.onChange(syncClock);
 
-// Docked session list width (QSplitter default 310, minimum 270), remembered per viewer.
-const SESSIONS_WIDTH_KEY = "zerus-client-sessions-width";
-const savedWidth = (() => { try { return Number(localStorage.getItem(SESSIONS_WIDTH_KEY)) || 0; } catch { return 0; } })();
-export const [sessionsWidth, setSessionsWidthRaw] = createSignal(savedWidth >= 270 ? savedWidth : 310);
-export function setSessionsWidth(width: number) {
-  setSessionsWidthRaw(width);
-  try { localStorage.setItem(SESSIONS_WIDTH_KEY, String(width)); } catch { /* storage may be unavailable */ }
+// Qt's docked splitter and Next's former localStorage choice now share Settings.
+const [dragSessionsWidth, setDragSessionsWidth] = createSignal<number>();
+export const sessionsWidth = () => dragSessionsWidth() ?? num("workspace/sessionsWidth");
+export const setSessionsWidth = setDragSessionsWidth;
+export function commitSessionsWidth() {
+  const width = dragSessionsWidth();
+  setDragSessionsWidth(undefined);
+  if (width !== undefined) void setSetting("workspace/sessionsWidth", width);
 }
 
 /** Toasts go to the window's one notice bus (store/notices.ts). */
