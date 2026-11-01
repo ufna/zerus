@@ -247,6 +247,9 @@ impl Runtime {
     pub fn request(&mut self, store: &mut Store, value: &Value) -> Value {
         let id = value["request_id"].as_str().unwrap_or("");
         let refused = |code| json!({"request_id":id,"accepted":false,"durable":false,"code":code});
+        if value["op"] == "automatic_approvals" {
+            return refused("frontend_authentication_required");
+        }
         let Ok(request) = serde_json::from_value::<state::Request>(value.clone()) else {
             return refused("invalid_delivery_request");
         };
@@ -260,30 +263,48 @@ impl Runtime {
             state::Request::ReadIntent { request_id, mark } => {
                 state::enqueue(&mut store.db, &request_id, &mark.into(), now())
             }
-            state::Request::AutomaticApprovals {
-                request_id,
-                enabled,
-            } => {
-                let result = state::set_policy(&mut store.db, &request_id, enabled);
-                if result.is_err() {
-                    self.approval_error = Some("approval_policy_uncommitted");
-                    self.cancel_approvals();
-                } else {
-                    if matches!(
-                        self.approval_error,
-                        Some("approval_policy_uncommitted" | "approval_policy_unavailable")
-                    ) {
-                        self.approval_error = None;
-                    }
-                    self.refresh_policy(store);
-                }
-                result
-            }
             state::Request::DeliveryResult {
                 request_id,
                 original_request_id,
             } => state::result(&store.db, &request_id, &original_request_id),
         };
+        result.unwrap_or_else(|_| refused("delivery_store_refused"))
+    }
+
+    pub fn frontend_request(
+        &mut self,
+        store: &mut Store,
+        authority: super::ui_authority::Validated,
+    ) -> Value {
+        let request_id = authority.id().to_owned();
+        let refused =
+            |code| json!({"request_id":request_id,"accepted":false,"durable":false,"code":code});
+        let Ok(zerus_client_core::desktop::ui_requests::Request::AutomaticApprovals {
+            enabled,
+            ..
+        }) = authority.into_request()
+        else {
+            return refused("frontend_identity_expired");
+        };
+        if !state::canonical(&request_id) {
+            return refused("invalid_request_id");
+        }
+        if self.stopping {
+            return refused("delivery_stopping");
+        }
+        let result = state::set_policy(&mut store.db, &request_id, enabled);
+        if result.is_err() {
+            self.approval_error = Some("approval_policy_uncommitted");
+            self.cancel_approvals();
+        } else {
+            if matches!(
+                self.approval_error,
+                Some("approval_policy_uncommitted" | "approval_policy_unavailable")
+            ) {
+                self.approval_error = None;
+            }
+            self.refresh_policy(store);
+        }
         result.unwrap_or_else(|_| refused("delivery_store_refused"))
     }
 

@@ -72,10 +72,6 @@ pub(super) enum Request {
         request_id: String,
         mark: Mark,
     },
-    AutomaticApprovals {
-        request_id: String,
-        enabled: bool,
-    },
     DeliveryResult {
         request_id: String,
         original_request_id: String,
@@ -84,9 +80,9 @@ pub(super) enum Request {
 impl Request {
     pub fn id(&self) -> &str {
         match self {
-            Self::ReadIntent { request_id, .. }
-            | Self::AutomaticApprovals { request_id, .. }
-            | Self::DeliveryResult { request_id, .. } => request_id,
+            Self::ReadIntent { request_id, .. } | Self::DeliveryResult { request_id, .. } => {
+                request_id
+            }
         }
     }
 }
