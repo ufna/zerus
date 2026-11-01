@@ -22,7 +22,7 @@ class LoaderDiagnosticTests(unittest.TestCase):
             4 __std_find_trivial_1
 '''
         self.assertEqual(loader.imports(text), {
-            'KERNEL32.dll': ['GetLastError', 'WaitForSingleObject'],
+            'kernel32.dll': ['GetLastError', 'WaitForSingleObject'],
             'msvcp140.dll': ['__std_find_trivial_1'],
         })
 
@@ -31,6 +31,10 @@ class LoaderDiagnosticTests(unittest.TestCase):
     2 A 00002010 WaitForSingleObject
     3 B          GetCurrentProcess (forwarded to KERNELBASE.GetCurrentProcess)
 '''), {'GetLastError', 'WaitForSingleObject', 'GetCurrentProcess'})
+
+    def test_dll_case_aliases_do_not_create_colliding_json_keys(self):
+        self.assertEqual(loader.imports('    kernel32.dll\n      1 GetLastError\n    KERNEL32.dll\n      2 GetCurrentProcess\n'),
+                         {'kernel32.dll': ['GetLastError', 'GetCurrentProcess']})
 
     def test_unrecognized_output_supplies_no_missing_symbol_conclusion(self):
         self.assertEqual(loader.imports('tool unavailable\n'), {})

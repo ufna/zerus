@@ -5972,6 +5972,7 @@ dependencies = [
  "block2",
  "chrono",
  "dunce",
+ "embed-resource",
  "gtk",
  "libc",
  "objc2",

@@ -27,7 +27,8 @@ def imports(text):
     for line in text.splitlines():
         match = re.fullmatch(r"\s+([\w.-]+\.dll)\s*", line, re.IGNORECASE)
         if match:
-            current = match[1]
+            # DLL lookup is case-insensitive; keep JSON usable by PowerShell 5.
+            current = match[1].lower()
             result.setdefault(current, [])
         elif current and (match := re.fullmatch(r"\s+[0-9A-Fa-f]+\s+([A-Za-z_?][^\s]*)\s*", line)):
             result[current].append(match[1])
@@ -80,9 +81,13 @@ def diagnose(target, output):
         raise ValueError("Windows disposable GitHub CI only")
     output.mkdir(parents=True, exist_ok=True)
     capture = Capture(output)
-    report = {'source': os.environ.get('GITHUB_SHA'), 'path': os.environ.get('PATH'),
+    report = {'workflow_source': os.environ.get('GITHUB_SHA'), 'path': os.environ.get('PATH'),
               'interpretation': 'candidate export inspection, not an observed loader trace'}
     try:
+        code, source = capture.run(['git', 'rev-parse', 'HEAD'], 'checked-out-source')
+        if code or not re.fullmatch('[0-9a-f]{40}', source.strip()):
+            raise ValueError('Cannot bind the checked-out source')
+        report['source'] = source.strip()
         images = list((target / 'debug/deps').glob('zerus_client_lib-*.exe'))
         if len(images) != 1:
             raise ValueError(f"Expected one test image; found {len(images)}")
