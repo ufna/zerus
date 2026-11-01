@@ -117,7 +117,7 @@ fn execute(
     held: Option<&HandoffLock>,
     drain: impl FnOnce() -> Result<()>,
 ) -> Result<Value> {
-    execute_scoped(location, store, command, held, None, drain)
+    execute_scoped(location, store, command, held, None, |_| drain())
 }
 fn execute_scoped(
     location: &Location,
@@ -125,7 +125,7 @@ fn execute_scoped(
     command: &Command,
     held: Option<&HandoffLock>,
     runtime_epoch: Option<&str>,
-    drain: impl FnOnce() -> Result<()>,
+    drain: impl FnOnce(&mut Store) -> Result<()>,
 ) -> Result<Value> {
     ensure!(
         runtime_epoch.is_none_or(canonical_id),
@@ -185,7 +185,7 @@ fn execute_scoped(
         return receipt(location, command, &record);
     }
     ensure!(record.state == "prepared", "invalid revoke state");
-    step(drain(), "drain_not_settled")?;
+    step(drain(store), "drain_not_settled")?;
     ensure!(
         zerus_desktop_ledger::operations::totals(&store.db)?.undrained == 0,
         Declined("operation_resources_not_drained")
@@ -304,7 +304,7 @@ pub(super) fn request_with_runtime(
     store: &mut Store,
     value: &Value,
     runtime_epoch: &str,
-    drain: impl FnOnce() -> Result<()>,
+    drain: impl FnOnce(&mut Store) -> Result<()>,
 ) -> Value {
     let result = if value["op"] == "revoke_status" {
         #[derive(Deserialize)]
@@ -494,7 +494,7 @@ mod tests {
             &command,
             None,
             Some(&epoch),
-            || anyhow::bail!("fixture drain still pending"),
+            |_| anyhow::bail!("fixture drain still pending"),
         )
         .unwrap_err();
         assert_eq!(
@@ -520,7 +520,7 @@ mod tests {
             &command,
             None,
             Some(&first),
-            || Ok(()),
+            |_| Ok(()),
         )
         .unwrap();
         assert_eq!(receipt["writer_epoch"], first);
@@ -535,7 +535,7 @@ mod tests {
             &command,
             None,
             Some(&next),
-            || panic!("stale request must not stop replacement"),
+            |_| panic!("stale request must not stop replacement"),
         )
         .unwrap_err();
         assert_eq!(
@@ -554,7 +554,7 @@ mod tests {
             &mut f.store,
             &json!({"op":"revoke_status","request_id":id,"extra":true}),
             &epoch,
-            || panic!("query cannot drain"),
+            |_| panic!("query cannot drain"),
         );
         assert_eq!(result["revoked"], false);
         assert_eq!(result["accepted"], false);

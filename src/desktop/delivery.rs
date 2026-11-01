@@ -43,6 +43,22 @@ const SCAN: Duration = Duration::from_secs(1);
 const COOLDOWN: Duration = Duration::from_secs(5);
 const UNKNOWN: &str = "Answer delivery could not be confirmed. Check Activity or Terminal.";
 
+/// Receipt lookup is read-only and remains available after revoke/restart,
+/// without constructing a delivery executor or requiring a writer grant.
+pub(super) fn result_request(store: &Store, value: &Value) -> Value {
+    let id = value["request_id"].as_str().unwrap_or("");
+    let refused = |code| json!({"request_id":id,"accepted":false,"durable":false,"code":code});
+    let Ok(state::Request::DeliveryResult {
+        request_id,
+        original_request_id,
+    }) = serde_json::from_value(value.clone())
+    else {
+        return refused("invalid_delivery_request");
+    };
+    state::result(&store.db, &request_id, &original_request_id)
+        .unwrap_or_else(|_| refused("delivery_store_refused"))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Read,

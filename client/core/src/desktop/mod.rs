@@ -17,11 +17,12 @@ pub mod notifications;
 pub mod producer;
 pub mod profile;
 pub mod startup;
+pub mod ui_requests;
 
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
-pub use unix::{probe_at, probe_producer_at, same_user, temporary_dir_from};
+pub use unix::{probe_at, probe_producer_at, probe_ui_request_at, same_user, temporary_dir_from};
 
 pub const ABI: &str = "desktop-delegation-v1";
 pub const HELP_MARKER: &str = "Desktop owner ABI: desktop-delegation-v1";
@@ -106,6 +107,7 @@ pub struct Responder {
     replay: bool,
     configuration: OnceLock<String>,
     producer: Mutex<producer::Cached>,
+    ui_requests: ui_requests::Cache,
 }
 impl Responder {
     pub fn new(
@@ -123,12 +125,16 @@ impl Responder {
             replay,
             configuration: OnceLock::new(),
             producer: Mutex::default(),
+            ui_requests: ui_requests::Cache::default(),
         }
     }
     pub fn configure_once(&self, configuration: String) -> bool {
         digest(&configuration) && self.configuration.set(configuration).is_ok()
     }
     pub fn reply(&self, line_without_lf: &[u8]) -> Option<Vec<u8>> {
+        if let Some(attempt) = ui_requests::query_attempt(line_without_lf) {
+            return self.ui_reply(attempt);
+        }
         if let Some(nonce) = producer::query_nonce(line_without_lf) {
             return self.producer_reply(nonce, Instant::now());
         }
