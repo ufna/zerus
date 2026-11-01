@@ -45,31 +45,30 @@ See [DMG installation](installation.md#macos-dmg) for CLI and local-session setu
 
 | Path | Content |
 | --- | --- |
-| `Contents/MacOS/hgs-tray` | GUI; the executable keeps its name |
+| `Contents/MacOS/hgs-tray` | Zerus Next (Tauri); the executable keeps its name |
 | `Contents/MacOS/hgs` | CLI, linked by the cask into Homebrew's `bin` |
 | `Contents/MacOS/zerus-mobile-connector` | Rust mobile connector, signed with the other code; its LaunchAgent is opt-in through `zerus-setup --mobile-connector install` |
-| `Contents/Frameworks`, `Contents/PlugIns` | Qt frameworks and plugins deployed by `macdeployqt` |
 | `Contents/Resources/bin/zerus-setup` | Per-user setup, linked by the cask |
 | `Contents/Resources/setup` | `hgs_state.py`, the three LaunchAgent installers with their `launchd_agent.py` helper, the mobile connector's service installer and the tray LaunchAgent template |
-| `Contents/Resources/licenses` | Zerus, libvterm, md4c, Codex and Cargo notices; `qt/` holds LGPL-3.0, GPL-3.0, Qt's SPDX documents including Chromium components, and the Qt source location |
+| `Contents/Resources/licenses` | Zerus and Codex notices, CLI/connector Cargo notices in `rust/`, Tauri Cargo notices in `client-rust/`, and locked frontend notices in `frontend/` |
 
 The bundle ID stays `com.hgdev.hgs-tray`, so settings, drafts and LaunchAgent
 labels are shared with source installations. `CFBundleShortVersionString` is the
-product version; `ZerusReleaseVersion` holds the stable or nightly release version,
+product version; `ZerusReleaseVersion` holds the stable, nightly or numbered Dev release version,
 which the GUI compares to offer **Restart to finish update** after an upgrade, even
 between nightlies of one product version. `CFBundleName` is `Zerus` and
 `LSMinimumSystemVersion` is 14.0, the desktop deployment floor in
-`tray/CMakeLists.txt`. Every Mach-O file is arm64 only.
+`client/src-tauri/tauri.switch.conf.json`. Every Mach-O file is arm64 only.
 `scripts/check-macos-bundle.py` enforces the layout, notices, `Info.plist`
 identity, minimum macOS version and that every library reference resolves inside
-the bundle or the system.
+the bundle or the system. Public jobs use `--gui tauri --release RELEASE`, which
+checks the bundled CLI, connector and all three dependency-notice inventories
+and refuses Qt. Next uses the system WebKit and AVFoundation frameworks.
 
-The cask has no `postflight`, `uninstall quit:`, `uninstall launchctl:` or
-`auto_updates`: an upgrade must not quit the GUI or unload agents. `zap` removes
-only logs, saved window state and the five Zerus LaunchAgents, the mobile
-connector's included; never `connector.json` or the connector's journal in
-`~/.local/state/hgs/mobile-connector`, whose tombstones keep phone requests from
-running twice.
+The casks have no install/uninstall hooks or `zap` action: upgrades and removal
+never quit the GUI, unload agents or write to user homes. Per-user setup and
+removal stay explicit through `zerus-setup` and `zerus-setup --remove`. Existing
+settings, drafts, logs and connector journals remain on disk.
 
 `zerus-setup --mobile-connector install` writes the
 `com.hgdev.zerus-mobile-connector` LaunchAgent for the bundled connector
@@ -89,7 +88,10 @@ identifier and team satisfy. This was rehearsed on 2026-10-17 with a signed main
 build under a fixture label, on a Mac where Zerus already had that consent, and
 no prompt appeared (`zerus-nbzl.23`).
 
-## Pinned Qt
+## Legacy Qt bundles
+
+The release, Nightly and Dev bundle jobs build Zerus Next without Qt. The
+pinned Qt tooling below remains for legacy builds and their regression checks.
 
 `packaging/macos/qt.json` pins official Qt **6.11.2** (`qtbase`, `qtsvg`,
 `qtmultimedia`, `qttools`, `qtdeclarative`) by archive size and SHA-256. `qttools`
@@ -144,16 +146,17 @@ The same three stages remain required. Stable/Nightly start them after full
 verification. Dev overlaps only the credential-free bundle with its core gate;
 `macos-cask.yml` reuses that exact run's checked artifact and waits for both before
 signing. An unsigned version from another Dev run is refused before key import.
-The bundle packages the Release app already exercised by its pinned-Qt test build,
-so it no longer compiles the same GUI again with `BUILD_TESTING=OFF`:
+The unsigned job builds the Release Tauri switch app with voice and video, then
+packages that same output for all channels:
 
 1. **macOS bundle** (`macos-15`, no secrets) selects the release version (the
    product version, the nightly version computed exactly like
-   `prepare-nightly.py`, or `DEV_VERSION-dev.<CI run_number>`), installs the pinned Qt and runs
-   `scripts/ci/macos-bundle.sh`. It builds the CLI and GUI with a macOS 14.0 target,
-   runs every Qt suite against the bundled Qt, assembles the production bundle,
+   `prepare-nightly.py`, or `DEV_VERSION-dev.<CI run_number>`), installs the locked
+   npm toolchain and runs `scripts/ci/macos-bundle.sh`. It builds the CLI, connector
+   and Next with a macOS 14.0 target, runs frontend and Rust regression tests
+   (only numbered Dev may opt out), and assembles the production bundle,
    runs the bundle checks and self-tests and uploads `Zerus-unsigned.zip`.
-   Dev passes the same CI sequence to CMake. The unsigned, mounted and installed
+   Dev passes the same CI sequence to the Tauri build. The unsigned, mounted and installed
    apps report their embedded build identity through `--build-info`; validation
    requires the expected version, Dev sequence and clean source commit.
    Bundle and installation runners install `tmux` explicitly. Self-tests use a
@@ -200,10 +203,12 @@ that would need JIT.
 The Arch assembly job then adds the signed ZIP, DMG and rendered cask through
 `prepare-release.py --macos` (`homebrew/zerus.rb`) or `prepare-nightly.py --macos`
 (`homebrew/zerus@nightly.rb`). The candidate records release-info schema 2: every
-schema 1 field is unchanged, plus `macos` (asset, Qt version, Team ID, notarization
+schema 1 field is unchanged, plus `macos` (asset, legacy `qt_version`, Team ID, notarization
 ID, minimum macOS, and `dmg: {asset, notarization_id}`) and `homebrew_casks`
 (`["zerus"]` or `["zerus@nightly"]`). Older schema-2 releases without `dmg`
-remain valid; all new signed builds require both formats.
+remain valid; all new signed builds require both formats. The `qt_version`
+field remains a semantic-version compatibility marker for existing Qt and Next
+feed parsers; it does not indicate a Qt dependency in Next.
 `SHA256SUMS` covers both assets, and validation requires the cask to equal its template
 in `packaging/homebrew/` with only the version, digest and, for a nightly, the
 immutable `nightly-RUN_ID` tag substituted.
@@ -436,7 +441,7 @@ On the owner's decision of 2026-10-28, the Tauri client (`client/`) replaces the
 
 ### The switch bundle
 
-`client/scripts/switch-config.py` writes `client/src-tauri/target/switch.conf.json` from `client/src-tauri/tauri.switch.conf.json` and `VERSION`; `tauri build --config` with it produces `Zerus.app`:
+`client/scripts/switch-config.py` writes `client/src-tauri/target/switch.conf.json` from `client/src-tauri/tauri.switch.conf.json` and `VERSION`, plus a generated Info.plist with `ZerusReleaseVersion`. `--release` selects the distribution release; local numbered Dev builds derive it from `DEV_VERSION` and `ZERUS_DEV_BUILD_NUMBER`. The source template stays unchanged. `tauri build --config` with it produces `Zerus.app`:
 
 - **Identity.** It has the executable `hgs-tray` and the build identifier `com.hgdev.hgs-tray.local`; `tray/sign-local-macos.py` promotes its signed copy to `com.hgdev.hgs-tray`, as for Qt's raw bundles.
 - **Info.plist.** `Info.switch.plist` adds Qt's keys:

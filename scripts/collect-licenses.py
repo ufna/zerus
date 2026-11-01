@@ -17,6 +17,7 @@ def main():
     # Each locked Cargo project whose binary the distribution ships; the root
     # workspace (hgs) by default. Linux packages add the mobile connector.
     parser.add_argument("--manifest-path", type=Path, action="append", dest="manifests")
+    parser.add_argument("--features", default="", help="Cargo features enabled for these binaries")
     # The Android app ships a library built for each of its ABIs' Rust targets.
     parser.add_argument("--target", action="append", dest="targets",
                         help="a Rust target the binaries are built for; repeat for several [default: this host]")
@@ -26,6 +27,8 @@ def main():
     packages = {}
     for manifest in args.manifests or [None]:
         command = ["cargo", "metadata", "--locked", "--offline", "--format-version", "1"]
+        if args.features:
+            command += ["--features", args.features]
         for target in targets:
             command += ["--filter-platform", target]
         if manifest is not None:
@@ -42,6 +45,8 @@ def main():
                         "--prefix", "none", "--format", "{p}"]
                 if manifest is not None:
                     tree += ["--manifest-path", str(manifest)]
+                if args.features:
+                    tree += ["--features", args.features]
                 shipped |= {tuple(line.split()[:2]) for line in subprocess.check_output(tree, text=True).splitlines()
                             if line.strip()}
         for package in metadata["packages"]:

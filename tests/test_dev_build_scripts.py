@@ -125,13 +125,17 @@ class DevBuildScriptTests(unittest.TestCase):
         self.assertNotIn('--skipinteg', ARCH)
 
     def test_mac_keeps_bundle_dependencies_source_identity_and_selftest(self):
-        self.assertIn('build_testing=ON', MAC)
-        self.assertIn('if [ "$run_tests" = false ]; then build_testing=OFF; fi', MAC)
-        self.assertIn('"-DBUILD_TESTING=$build_testing"', MAC)
+        self.assertIn('npm exec -- tauri build', MAC)
+        self.assertIn('--bundles app --features video', MAC)
+        self.assertIn('--ci --no-sign -- --locked', MAC)
+        self.assertNotIn('cmake', MAC)
+        self.assertNotIn('ctest', MAC)
         regression = re.search(r'(?s)if \[ "\$run_tests" = true \]; then\n(.*?)\nelse\n.*?\nfi', MAC)[1]
-        self.assertIn('ctest --test-dir', regression)
+        self.assertIn('npm run check && npm test', regression)
+        self.assertIn('cargo test --locked --release --manifest-path client/core/Cargo.toml', regression)
+        self.assertIn('client/src-tauri/Cargo.toml --features video', regression)
         after = MAC.split(regression, 1)[1]
-        for required in ('python3 scripts/package-macos.py', '--connector services/mobile/connector/target/release/zerus-mobile-connector',
+        for required in ('python3 scripts/package-macos.py --gui tauri', '--connector target/release/zerus-mobile-connector',
                          'python3 scripts/check-macos-bundle.py', '--selftest --source-commit "$(git rev-parse HEAD)"',
                          'ditto -c -k --keepParent'):
             self.assertIn(required, after)

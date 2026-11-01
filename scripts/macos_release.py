@@ -9,6 +9,9 @@ ROOT = Path(__file__).resolve().parents[1]
 # Every channel installs the same Zerus.app; the casks conflict with each other.
 CASKS = {"stable": "zerus", "nightly": "zerus@nightly", "dev": "zerus@dev"}
 MINIMUM_SYSTEM = "14.0"
+# Both existing Qt and Next feed parsers require this semantic-version field.
+# In a Next candidate it is a compatibility marker, not a bundled dependency.
+LEGACY_QT_VERSION = "6.11.2"
 STABLE = re.compile(r"\d+\.\d+\.\d+")
 NIGHTLY = re.compile(r"\d+\.\d+\.\d+\.r\d+\.g[0-9a-f]{7}\.n(\d+)")
 DEV = re.compile(r"\d+\.\d+\.\d+-dev\.([1-9]\d*)")
