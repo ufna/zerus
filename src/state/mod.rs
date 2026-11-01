@@ -720,10 +720,51 @@ pub(crate) fn task_reply_receipt(name: &str, request: &Value) -> Result<Option<V
 /// Task routing uses saved identity metadata only: no provider inspection,
 /// history, process reconciliation or native API calls for each task row.
 pub(crate) fn task_bindings() -> Result<Vec<Value>> {
+    task_bindings_in(&root())
+}
+
+/// The record fields task routing reads (`tasks::sessions`).
+const TASK_BINDING_FIELDS: [&str; 6] = ["name", "run_id", "launch_id", "journal_name", "legacy_shadow", "rename_shadow"];
+
+/// A saved record reduced to [`TASK_BINDING_FIELDS`]. Every other field, such
+/// as up to 128 shell jobs with their full command texts, is skipped while
+/// parsing rather than built into a value.
+struct TaskBinding(serde_json::Map<String, Value>);
+
+impl<'de> serde::Deserialize<'de> for TaskBinding {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        struct Fields;
+        impl<'de> serde::de::Visitor<'de> for Fields {
+            type Value = TaskBinding;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a session record object")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> std::result::Result<TaskBinding, A::Error> {
+                let mut row = serde_json::Map::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    if TASK_BINDING_FIELDS.contains(&key.as_str()) {
+                        row.insert(key, map.next_value()?);
+                    } else {
+                        map.next_value::<serde::de::IgnoredAny>()?;
+                    }
+                }
+                Ok(TaskBinding(row))
+            }
+        }
+        deserializer.deserialize_map(Fields)
+    }
+}
+
+/// [`task_bindings`] below the state directory `root`. A record that cannot be
+/// read is reported and skipped; one removed meanwhile is skipped silently.
+/// One buffer, bounded by the session graph's record limit, serves every
+/// record: a record it indexes also routes tasks.
+pub(crate) fn task_bindings_in(root: &Path) -> Result<Vec<Value>> {
     use std::fs;
-    use std::io::Read;
+    let limit = session_graph::MAX_RECORD;
+    let mut bytes = Vec::new();
     let mut rows = Vec::new();
-    for directory in [root(), root().join("bindings"), root().join("dsh/bindings"), root().join("opencode/bindings")] {
+    for directory in [root.to_owned(), root.join("bindings"), root.join("dsh/bindings"), root.join("opencode/bindings")] {
         let entries = match fs::read_dir(directory) {
             Ok(entries) => entries,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
@@ -733,16 +774,30 @@ pub(crate) fn task_bindings() -> Result<Vec<Value>> {
             let path = entry.path();
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             if path.extension().is_none_or(|s| s != "json") || stem.len() != 64 || !stem.bytes().all(|c| c.is_ascii_hexdigit()) { continue; }
-            let row = (|| {
-                let mut bytes = Vec::new();
-                let file = crate::platform::no_follow(std::fs::OpenOptions::new().read(true)).open(&path).ok()?;
-                if !file.metadata().ok()?.is_file() { return None; }
-                file.take(1024 * 1024 + 1).read_to_end(&mut bytes).ok()?;
-                if bytes.len() > 1024 * 1024 { return None; }
-                let row: Value = serde_json::from_slice(&bytes).ok()?;
-                (row["rename_shadow"] != true && !string(&row, "name").is_empty() && !string(&row, "run_id").is_empty()).then_some(row)
+            let row = (|| -> Result<Option<Value>> {
+                let file = match crate::platform::no_follow(fs::OpenOptions::new().read(true)).open(&path) {
+                    Ok(file) => file,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                    Err(error) => return Err(error.to_string()),
+                };
+                let metadata = file.metadata().map_err(|e| e.to_string())?;
+                let too_large = || format!("larger than {} MiB", limit >> 20);
+                if !metadata.is_file() { return Err("not a regular file".into()); }
+                if metadata.len() > limit { return Err(too_large()); }
+                bytes.clear();
+                file.take(limit + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+                if bytes.len() as u64 > limit { return Err(too_large()); }
+                // Parser text may quote private record data; report its position only.
+                let TaskBinding(row) = serde_json::from_slice(&bytes)
+                    .map_err(|e| format!("invalid saved binding at line {} column {}", e.line(), e.column()))?;
+                let row = Value::Object(row);
+                Ok((row["rename_shadow"] != true && !string(&row, "name").is_empty() && !string(&row, "run_id").is_empty()).then_some(row))
             })();
-            if let Some(row) = row { rows.push(row); }
+            match row {
+                Ok(Some(row)) => rows.push(row),
+                Ok(None) => {}
+                Err(error) => eprintln!("hgs: cannot read {} for task routing: {error}", path.display()),
+            }
         }
     }
     Ok(rows)
@@ -955,6 +1010,38 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
         _ => return Err(format!("unknown state operation: {command}")),
     }
     Ok(0)
+}
+
+#[cfg(test)]
+mod task_binding_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn task_bindings_keep_routing_fields_of_any_reasonable_record() {
+        let state = tempfile::tempdir().unwrap();
+        let root = state.path();
+        let file = |n: u8| root.join(format!("{n:064x}.json"));
+        let jobs: serde_json::Map<String, Value> = (0..128)
+            .map(|i| (format!("main:call-{i}"), json!({"command": "y".repeat(12_000), "output": "z".repeat(4096)})))
+            .collect();
+        let large = json!({"version":1,"name":"codex/big","run_id":"run-big","launch_id":"launch-big","journal_name":"codex/first",
+            "legacy_shadow":{"name":"codex/older","run_id":"run-big"},"conversation_id":"conversation","shell_jobs":jobs});
+        fs::write(file(1), serde_json::to_vec(&large).unwrap()).unwrap();
+        assert!(fs::metadata(file(1)).unwrap().len() > 1024 * 1024);
+        // Damaged and absurdly large records are reported and skipped; other
+        // JSON files are not session records.
+        fs::write(file(2), br#"{"name":"codex/damaged","run_id":"#).unwrap();
+        fs::write(file(3), br#"["codex/listed","run-listed"]"#).unwrap();
+        fs::File::create(file(4)).unwrap().set_len(session_graph::MAX_RECORD + 1).unwrap();
+        fs::write(root.join("presence.json"), br#"{"name":"codex/other","run_id":"run-other"}"#).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(file(1), file(5)).unwrap();
+        let rows = task_bindings_in(root).unwrap();
+        assert_eq!(rows, vec![json!({"name":"codex/big","run_id":"run-big","launch_id":"launch-big","journal_name":"codex/first",
+            "legacy_shadow":{"name":"codex/older","run_id":"run-big"}})]);
+        assert_eq!(task_bindings_in(&root.join("missing")).unwrap(), Vec::<Value>::new());
+    }
 }
 
 #[cfg(all(test, not(unix)))]
