@@ -110,7 +110,8 @@ pub(super) fn summary(record: &Value, live_pane: bool, resumed: &Option<Result<(
     let changing = record.get("pausing").is_some() || record["resume_pending"] == true;
     let confirmed = !string(record, "conversation_id").is_empty();
     let recipe = record["base"].is_array() && (Path::new(string(record, "launch_dir")).is_dir() || super::worktree_lifecycle::restorable(record));
-    let restore_pending = !string(record, "restore_archive_id").is_empty();
+    let cleanup_pending = clear_context::cleanup_pending(record);
+    let restore_pending = !string(record, "restore_archive_id").is_empty() || cleanup_pending;
     let decisions = [
         (
             "pause",
@@ -121,9 +122,9 @@ pub(super) fn summary(record: &Value, live_pane: bool, resumed: &Option<Result<(
         ),
         (
             "resume",
-            !archived && !live_pane && !changing && confirmed && recipe,
+            !archived && !live_pane && !changing && confirmed && recipe && !cleanup_pending,
         ),
-        ("archive", !archived && !live_pane && !changing && confirmed),
+        ("archive", !archived && !live_pane && !changing && confirmed && !cleanup_pending),
         ("rename", !changing),
         (
             "fork",
@@ -132,7 +133,7 @@ pub(super) fn summary(record: &Value, live_pane: bool, resumed: &Option<Result<(
         ("terminate", !archived),
         (
             "restore",
-            archived && recipe && !record_path(string(record, "name")).exists(),
+            archived && recipe && !cleanup_pending && !record_path(string(record, "name")).exists(),
         ),
         ("forget", !changing && !restore_pending),
     ];

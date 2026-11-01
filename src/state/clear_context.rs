@@ -47,6 +47,16 @@ pub(super) fn observe_start(record: &mut Value, event: &Value) {
                 record["session_clear"]["restore_archive_id"] = request["restore_archive_id"].clone();
                 record["session_clear"]["restore_archive_run_id"] = request["restore_archive_run_id"].clone();
                 record["session_clear"]["restore_clear_request_id"] = request["request_id"].clone();
+                // Publish the successor and stop exposing the unconfirmed-restore
+                // marker in ONE active-record write. Resident pre-fix finalizers
+                // only understand that old marker. The original request remains
+                // their existing Clear refusal until finalization succeeds.
+                record["restore_archive_cleanup"] = json!({"phase":"committed",
+                    "run_id":record["run_id"],"conversation_id":next,
+                    "previous_conversation_id":previous,"archive_id":request["restore_archive_id"],
+                    "archive_run_id":request["restore_archive_run_id"],"request_id":request["request_id"]});
+                record["clear_context_request"]["restore_archive_cleanup_pending"] = json!(true);
+                record.as_object_mut().unwrap().remove("restore_archive_id");
             }
         }
     } else {
@@ -141,6 +151,7 @@ fn codex_reset_panel_below(screen: &str, cwd: &str, home: &Path) -> bool {
 // not materialize the new rollout yet. Observe only the complete reset panel
 // in the exact live empty composer; keep the native ID until its real hook.
 pub(super) fn observe_terminal(record: &mut Value) -> Result<bool> {
+    if cleanup_pending(record) { return Ok(false); }
     // A resume awaiting its deferred SessionStart has no hook-confirmed idle
     // state: its exact process must still own the restored conversation.
     let resumed = resume_clearable(record);
@@ -195,7 +206,7 @@ fn blocked(record: &Value) -> Option<String> {
     let error = string(record,"error");
     Some(if pause_active(record) { "Wait for the session to finish pausing".into() }
     else if !error.is_empty() { format!("The session reported an error: {}", journal::clipped(&json!(error),240)) }
-    else if !string(record,"restore_archive_id").is_empty() && string(record,"expected_id").is_empty() {
+    else if cleanup_pending(record) || (!string(record,"restore_archive_id").is_empty() && string(record,"expected_id").is_empty()) {
         "Wait for the restored archive cleanup before clearing again".into()
     }
     // A confirmed Codex clear keeps its request until the deferred SessionStart.
@@ -335,11 +346,19 @@ fn restore_request(record: &Value) -> Option<&Value> {
     .then_some(request)
 }
 
-/// The accepted native clear hook retained the exact original archive identity
-/// before removing its request. This is not authority from a previous ID alone.
+/// Presence is a refusal fence even if either half was lost or malformed.
+/// No one-sided marker supplies authority to delete an archive or start over.
+pub(super) fn cleanup_pending(record: &Value) -> bool {
+    record.get("restore_archive_cleanup").is_some()
+        || record.get("restore_archive_clear_source").is_some()
+        || record["clear_context_request"].get("restore_archive_cleanup_pending").is_some()
+}
+
+/// The accepted native hook retains its exact source and explicit request.
+/// Legacy 055 records remain readable; they are not newly written in that form.
 pub(super) fn restore_committed(record: &Value) -> bool {
     let clear = &record["session_clear"];
-    record["agent"] == "codex"
+    let boundary = record["agent"] == "codex"
         && string(record, "expected_id").is_empty()
         && clear["at"].as_f64().is_some_and(|at| at > 0.0)
         && clear["awaiting_session_start"] != true
@@ -350,10 +369,30 @@ pub(super) fn restore_committed(record: &Value) -> bool {
         && clear["conversation_id"] == record["conversation_id"]
         && !string(clear, "previous_conversation_id").is_empty()
         && clear["previous_conversation_id"] != record["conversation_id"]
-        && clear["restore_archive_id"] == record["restore_archive_id"]
-        && !string(record, "restore_archive_id").is_empty()
         && !string(clear, "restore_archive_run_id").is_empty()
-        && uuid::Uuid::parse_str(string(clear, "restore_clear_request_id")).is_ok()
+        && uuid::Uuid::parse_str(string(clear, "restore_clear_request_id")).is_ok();
+    if !boundary { return false; }
+    if !cleanup_pending(record) {
+        return !string(record, "restore_archive_id").is_empty()
+            && clear["restore_archive_id"] == record["restore_archive_id"];
+    }
+    let anchor = &record["restore_archive_cleanup"];
+    let request = &record["clear_context_request"];
+    string(record, "restore_archive_id").is_empty()
+        && anchor["phase"] == "committed"
+        && anchor["run_id"] == record["run_id"]
+        && anchor["conversation_id"] == record["conversation_id"]
+        && anchor["previous_conversation_id"] == clear["previous_conversation_id"]
+        && uuid::Uuid::parse_str(string(anchor, "archive_id")).is_ok()
+        && anchor["archive_id"] == clear["restore_archive_id"]
+        && anchor["archive_run_id"] == clear["restore_archive_run_id"]
+        && anchor["request_id"] == clear["restore_clear_request_id"]
+        && request["restore_archive_cleanup_pending"] == true
+        && request["request_id"] == anchor["request_id"]
+        && request["run_id"] == anchor["run_id"]
+        && request["conversation_id"] == anchor["previous_conversation_id"]
+        && request["restore_archive_id"] == anchor["archive_id"]
+        && request["restore_archive_run_id"] == anchor["archive_run_id"]
 }
 pub(super) fn restored_successor(record: &Value, archived: &Value) -> bool {
     let clear = &record["session_clear"];
