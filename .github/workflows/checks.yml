@@ -824,6 +824,14 @@ jobs:
           path: artifacts/zerus-next-windows-shell
           retention-days: 3
           if-no-files-found: error
+      - name: Retain Windows shell loader diagnostics
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-shell-loader
+          path: artifacts/windows-shell-loader
+          retention-days: 3
+          if-no-files-found: ignore
       - name: Save native client Rust cache
         if: inputs.save_caches && steps.rust-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
