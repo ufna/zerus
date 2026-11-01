@@ -259,6 +259,18 @@ impl Runtime {
                         view.ready = false;
                     }
                 }
+                // Carry the UI's existing historical shared-policy cache into
+                // the same core model. It grants no machine/source currentness.
+                let seed = config.recovery.as_ref().filter(|recovery| {
+                    edit.is_none()
+                        && !recovery.base.is_empty()
+                        && (next.policy.is_empty()
+                            || recovery::compare(&recovery.base, &next.policy)
+                                == std::cmp::Ordering::Greater)
+                });
+                if let Some(recovery) = seed {
+                    next.policy = recovery.base.clone();
+                }
                 next.configuration = Some(config);
                 // An edit is spent BEFORE dispatch. Restart retains unknown,
                 // never the form/operation, so a lost reply cannot replay it.
@@ -427,7 +439,7 @@ impl Runtime {
         }
         Ok(())
     }
-    /// No I/O or joins on this actor. Every result is fenced by configuration
+    /// No network/CLI I/O; only completed workers are joined here. Results are fenced by configuration
     /// revision and native-source origin, then committed here before projection.
     pub fn poll(&mut self, store: &mut Store) {
         if self.poll_inner(store).is_err() {

@@ -403,3 +403,18 @@ fn manual_policy_save_commits_result_on_actor_without_recovery_executor_operatio
     );
     assert_eq!(sets.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn historical_ui_policy_cache_is_carried_without_manufacturing_a_machine_card() {
+    let mut f = Fixture::new(no_io());
+    let cached = json!({"order":[3,"fixture"],"policy":{"enabled":false,"delays":[30,-1]}});
+    assert_eq!(
+        f.configure(Value::Null, json!({"policy":null,"base":cached}))["accepted"],
+        true
+    );
+    f.runtime.poll(&mut f.store);
+    assert_eq!(f.runtime.sync.envelope(), cached.as_object().unwrap());
+    assert!(!f.runtime.sync.known());
+    assert_eq!(f.runtime.status()["recovery"]["current_origin"], false);
+    assert!(f.runtime.jobs.is_empty());
+}

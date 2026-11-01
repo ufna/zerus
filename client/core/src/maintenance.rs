@@ -96,6 +96,16 @@ impl Configuration {
             return false;
         }
         if let Some(recovery) = &self.recovery {
+            if !recovery.base.is_empty()
+                && (!recovery.base.get("policy").is_some_and(Value::is_object)
+                    || !recovery
+                        .base
+                        .get("order")
+                        .and_then(Value::as_array)
+                        .is_some_and(|v| v.len() == 2))
+            {
+                return false;
+            }
             if serde_json::to_vec(&recovery.base).map_or(true, |v| v.len() > POLICY_LIMIT) {
                 return false;
             }
