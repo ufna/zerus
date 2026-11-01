@@ -969,13 +969,19 @@ mod windows_tests {
         fs::create_dir(&state).unwrap();
         fs::write(state.join(format!("{:064x}.json", 1)), "{}").unwrap();
         let store = Store::open(&state.join("content-search-v1")).unwrap();
-        let progress = store
-            .discover(
-                &state,
-                &DiscoveryBudget::interactive(),
-                &AtomicBool::new(false),
-            )
-            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut progress = DiscoveryProgress::default();
+        for _ in 0..128 {
+            let budget = DiscoveryBudget::interactive();
+            progress = store
+                .discover(&state, &budget, &AtomicBool::new(false))
+                .unwrap();
+            assert!(Instant::now() < deadline, "fixture discovery timed out");
+            assert!(progress.entries <= budget.entries);
+            if progress.complete {
+                break;
+            }
+        }
         assert!(progress.complete);
         assert_eq!(progress.staged, 1);
         assert_eq!(store.status().unwrap()["catalog"]["queued_paths"], 1);

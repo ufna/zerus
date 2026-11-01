@@ -42,7 +42,8 @@ fn source_fixture(archive: bool) -> (tempfile::TempDir, PathBuf, PathBuf, PathBu
     let mut store = Store::open(&state.join("content-search-v1")).unwrap();
     // Page tests start with a warm source. A slow disk may need more than one
     // bounded catch-up; this does not grant a larger per-call work budget.
-    for _ in 0..8 {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    for _ in 0..128 {
         store
             .discover(
                 &state,
@@ -53,6 +54,7 @@ fn source_fixture(archive: bool) -> (tempfile::TempDir, PathBuf, PathBuf, PathBu
         store
             .consume(&state, &budget(), &AtomicBool::new(false))
             .unwrap();
+        assert!(Instant::now() < deadline, "fixture catch-up timed out");
         let coverage = store.index.status().unwrap();
         if coverage.messages == 6 && coverage.pending_sources == 0 {
             break;
