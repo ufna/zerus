@@ -62,6 +62,7 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
         Desktop source feed ABI: desktop-source-feed-v1
         Desktop owner ABI: desktop-delegation-v1
         Desktop catalog ABI: desktop-catalog-v1
+        Desktop catalog changes ABI: desktop-catalog-changes-v1
        hgs mobile-peer --json         guarded direct-peer native request from JSON stdin
        hgs [@host] voice <session> --json  send and inspect persistent voice messages (JSON stdin; voice-video-v1)
        hgs [@host] speech --json      host speech providers and durable jobs (JSON stdin)

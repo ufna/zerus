@@ -433,7 +433,8 @@ impl Broker {
                 self.sources.remove(computer);
                 return Ok(Some(
                     json!({"computer":computer,"incarnation":producer.incarnation,
-                    "generation":generation,"removed":true,"complete":false,"display_only":true}),
+                    "generation":generation,"removed":true,"complete":false,"display_only":true,
+                    "changes_abi":super::catalog_read::CHANGES_ABI,"reset_required":true}),
                 ));
             }
             Packet::Keepalive {} => unreachable!(),
@@ -467,7 +468,16 @@ impl Broker {
         }
         let metadata = matches!(packet, Packet::Watch { frame, .. }
             if matches!(&frame.body, Body::Snapshot(s) if s.topic==watch::topic::CATALOG_META));
-        Ok((outcome != Applied::Unchanged || metadata).then(||json!({"computer":computer,"incarnation":producer.incarnation,"generation":generation,"complete":complete,"display_only":true})))
+        if outcome == Applied::Unchanged && !metadata {
+            return Ok(None);
+        }
+        let mark = catalog::changes::watermark(&store.db, computer)?;
+        Ok(Some(
+            json!({"computer":computer,"incarnation":producer.incarnation,"generation":generation,
+            "complete":complete,"display_only":true,"changes_abi":super::catalog_read::CHANGES_ABI,
+            "projection":mark.scope.projection,"revision":mark.revision.map(|r|r.to_string()),
+            "online":mark.online,"last_known":!complete,"reset_required":!complete}),
+        ))
     }
     pub fn retire(&mut self, store: &mut Store) -> Result<bool> {
         if self.producer.as_ref().is_none_or(|p| p.alive()) || Instant::now() < self.retry_at {

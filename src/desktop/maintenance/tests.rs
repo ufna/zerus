@@ -84,11 +84,15 @@ fn schema_twelve_is_singleton_and_migrates_an_existing_eleven() {
             .db
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        12
+        crate::desktop::store::SCHEMA
     );
     f.store
         .db
-        .execute_batch("DROP TABLE desktop_maintenance; PRAGMA user_version=11")
+        .execute_batch(
+            "DROP TABLE desktop_catalog_changes;
+            DROP TABLE desktop_catalog_change_views; DROP TABLE desktop_catalog_change_totals;
+            DROP TABLE desktop_maintenance; PRAGMA user_version=11",
+        )
         .unwrap();
     let location = f.location;
     drop(f.store);
