@@ -221,6 +221,12 @@ class MacDesktopService(unittest.TestCase):
         shim = source / "hgs_state.py"; shim.write_text("first shim")
         calls = self.root / "desktop-install.calls"
         (source / "scripts/install-macos-session-service.py").write_text("pass\n")
+        agents = self.home / "Library/LaunchAgents"; agents.mkdir(parents=True)
+        for label in ("com.hgdev.hgs-recovery", "com.hgdev.hgs-swarm", "com.hgdev.hgs-voice"):
+            (agents / (label + ".plist")).write_text("existing worker; never rewrite or restart")
+        for name in ("recovery", "swarm", "voice"):
+            (source / f"scripts/install-{name}-service.py").write_text(
+                "raise RuntimeError('existing worker was unexpectedly invoked')\n")
         (source / "scripts/install-macos-desktop-service.py").write_text(
             "import sys\nfrom pathlib import Path\nwith Path(" + repr(str(calls))
             + ").open('a') as log: log.write(' '.join(sys.argv[2:])+'\\n')\n")
@@ -234,7 +240,6 @@ class MacDesktopService(unittest.TestCase):
             path = tools / name; path.write_text(text); path.chmod(0o755)
         env = {"HOME": str(self.home), "PATH": str(tools) + ":/usr/bin:/bin",
                "CARGO_TARGET_DIR": str(self.root / "target"), "HGS_MOBILE_CONNECTOR": "0",
-               "HGS_RECOVERY_SERVICE": "0", "HGS_SWARM_SERVICE": "0", "HGS_VOICE_SERVICE": "0",
                "PYTHONDONTWRITEBYTECODE": "1"}
         for key in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME",
                     "XDG_RUNTIME_DIR", "TMPDIR", "TMUX_TMPDIR"):
@@ -246,6 +251,7 @@ class MacDesktopService(unittest.TestCase):
                 env=dict(env, FIXTURE_REVISION=revision), capture_output=True, text=True, timeout=20)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(calls.read_text().splitlines(), ["--restart", "", "--restart"])
+        self.assertTrue(all(path.read_text() == "existing worker; never rewrite or restart" for path in agents.iterdir()))
 
 
 if __name__ == "__main__":

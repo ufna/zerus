@@ -79,7 +79,8 @@ that background workers have started. Custom, linked or mismatched definitions
 are kept; `zerus-setup --remove` removes only the exact owned registration.
 
 Source `install.sh` reloads the owned desktop service when its CLI bytes
-change. `tray/install.sh` preflights it before the GUI swap and retains an
+change and keeps existing recovery, swarm and voice registrations running.
+`tray/install.sh` preflights it before the GUI swap and retains an
 unchanged active backend during GUI-only updates. The signed notification host
 keeps `com.hgdev.hgs-tray`; its service command interface and delivery integration
 are a separate change.
