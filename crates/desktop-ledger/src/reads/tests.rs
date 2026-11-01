@@ -414,3 +414,44 @@ fn invalid_marks_refuse_without_durable_admission() {
     let mut retry = Retry::default();
     assert_eq!(retry.finished(false, false, i64::MAX), i64::MAX);
 }
+
+#[test]
+fn native_source_filter_does_not_reserve_offline_hosts_or_break_fairness() {
+    let mut db = db();
+    active(&mut db);
+    for (n, host, name) in [
+        (10, "offline", "a"),
+        (11, "a", "a"),
+        (12, "a", "b"),
+        (13, "b", "a"),
+    ] {
+        put(&mut db, n, &mark(host, name));
+    }
+    assert!(reserve_for(&mut db, &id(2), &id(1), &id(20), 0, &[])
+        .unwrap()
+        .is_none());
+    let hosts = vec!["a".into(), "b".into()];
+    let chosen: Vec<_> = (21..24)
+        .map(|n| {
+            reserve_for(&mut db, &id(2), &id(1), &id(n), 0, &hosts)
+                .unwrap()
+                .unwrap()
+                .pending
+                .mark
+                .computer
+        })
+        .collect();
+    assert_eq!(chosen, ["a", "b", "a"]);
+    assert!(reserve_for(&mut db, &id(2), &id(1), &id(24), 0, &hosts)
+        .unwrap()
+        .is_none());
+    assert!(reserve_for(
+        &mut db,
+        &id(2),
+        &id(1),
+        &id(25),
+        0,
+        &["a".into(), "a".into()]
+    )
+    .is_err());
+}

@@ -3,6 +3,8 @@ mod catalog_read;
 mod counts;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod custody;
+#[allow(dead_code)] // Activation and writer handoff belong to the service lifecycle.
+mod delivery;
 mod fanout;
 mod feed;
 #[allow(dead_code)] // Started by the active service lifecycle, never by a UI feed.
