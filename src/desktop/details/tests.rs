@@ -47,7 +47,7 @@ impl Fixture {
         let temp = tempfile::tempdir().unwrap();
         let epoch = id();
         let location = Location {
-            root: temp.path().join("state/desktop"),
+            root: temp.path().canonicalize().unwrap().join("state/desktop"),
             configuration: "a".repeat(64),
         };
         location.prepare().unwrap();
