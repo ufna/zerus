@@ -906,6 +906,7 @@ export function ActivityView(props: { source?: ActivitySource }) {
     visible: () => activityReadingRows(scroller).visible(),
     offset: measuredOffset,
     adjust: (delta) => activityReadingRows(scroller).adjust(delta),
+    scrollTop: () => scroller.scrollTop,
   }, () => !end.active() && !preview(), animationFrames, () => !motion.active() && !selectionInside());
   const holdSelection = () => {
     if (selectionInside()) { setLayoutHeld(true); motion.selection(true); }

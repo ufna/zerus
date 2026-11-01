@@ -392,6 +392,118 @@ async function activeScrollStep() {
   await sleep(350);
 }
 
+/** Long Markdown, deferred measurements and appends during downward wheel
+ * gestures. A released reader must be able to advance through every row. */
+async function variableScrollStep() {
+  await select(DOCS);
+  const scroller = document.querySelector<HTMLDivElement>(".act-scroll")!;
+  const target = activity.target()!;
+  const savedEvents = activity.events(), savedSummary = activity.summary();
+  let seq = 1;
+  const markdown = (index: number) => `## Response ${index}\n\n` + Array.from({ length: 3 + index % 9 }, (_, block) =>
+    `Paragraph ${block}: a variable-height Markdown reply with **emphasis**, a [fixture link](https://example.org/) and enough words to wrap across the reading column.\n\n`
+    + `1. First list entry with another line that wraps in the reading column.\n2. Second entry\n   - Nested entry ${index}\n\n`
+    + "```rust\nfn fixture() {\n    let value = 42;\n    println!(\"{value}\");\n}\n```\n\n").join("");
+  const rolling = new URLSearchParams(location.search).get("phase4-provider-window") === "1";
+  const events = Array.from({ length: rolling ? 100 : 56 }, (_, index) => ({ seq: seq++, type: "AgentMessage", source: "claude_transcript", message_id: `variable-${index}`, at: 1793000000 + index, detail: markdown(index) }));
+  let provider = rolling ? events.map(event => ({ ...event, seq: undefined })) : [];
+  let providerIndex = provider.length;
+  const publishProvider = () => activity.applyActivity([{ computer: target.computer, key: target.key, kind: "state", payload: { rev: 1_000_000 + providerIndex,
+    value: { provider_messages: provider, message_events: [], conversation_id: target.conversationId } } }]);
+  activity.applyActivity([{ computer: target.computer, key: target.key, kind: "replace", payload: { events: rolling ? [] : events } }]);
+  if (rolling) publishProvider();
+  else activity.applyActivity([{ computer: target.computer, key: target.key, kind: "state", payload: { rev: Number.MAX_SAFE_INTEGER, value: { provider_messages: [], message_events: [], conversation_id: target.conversationId } } }]);
+  await until(() => document.querySelector(".act-col")?.getAttribute("style")?.includes("visible") === true && scroller.scrollHeight > 20000, 10000, "variable Markdown did not settle");
+  await sleep(500);
+  const original = scroller.scrollTo;
+  const writes: { top: number; active: boolean; stack?: string }[] = [];
+  let lastWheel = -Infinity, backtracks = 0, samples = 0;
+  scroller.scrollTo = function (this: HTMLElement, ...args: Parameters<HTMLElement["scrollTo"]>) {
+    const values = args as unknown as [ScrollToOptions | number, number?];
+    writes.push({ top: typeof values[0] === "number" ? values[1] ?? 0 : values[0]?.top ?? 0, active: performance.now() - lastWheel < 250, stack: new Error().stack });
+    return original.apply(this, args);
+  } as HTMLElement["scrollTo"];
+  try {
+    lastWheel = performance.now();
+    scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -10000, bubbles: true, cancelable: true }));
+    (original as (options: ScrollToOptions) => void).call(scroller, { top: rolling ? (scroller.scrollHeight - scroller.clientHeight) * .4 : 8000, behavior: "instant" });
+    await sleep(400);
+    writes.length = 0;
+    // Model compositor read-back arriving before its queued DOM scroll event.
+    // The original native method is the input driver; only application writes
+    // are traced. A concurrent provider update must keep that accepted position.
+    const accepted = scroller.scrollTop + 140;
+    (original as (options: ScrollToOptions) => void).call(scroller, { top: accepted, behavior: "instant" });
+    if (rolling) {
+      provider = [...provider]; providerIndex++;
+      publishProvider();
+    } else activity.applyActivity([{ computer: target.computer, key: target.key, kind: "events", payload: {
+      events: [{ seq: seq++, type: "AgentMessage", source: "claude_transcript", detail: markdown(0), at: 1793000999 }], cursor: seq - 1,
+    } }]);
+    const immediately = scroller.scrollTop;
+    log(`phase4-native-scroll-before-layout ${JSON.stringify({ accepted, immediately, writes: writes.slice(0, 4) })}`);
+    if (Math.abs(immediately - accepted) > 1) throw new Error(`a layout callback reversed browser scrolling before its scroll event: ${accepted} -> ${immediately}`);
+    writes.length = 0;
+    if (new URLSearchParams(location.search).get("phase4-native-wheel") === "1") {
+      let trusted = 0;
+      const wheel = (event: WheelEvent) => { lastWheel = performance.now(); if (event.isTrusted) trusted++; };
+      scroller.addEventListener("wheel", wheel, { capture: true });
+      const rect = scroller.getBoundingClientRect();
+      log(`phase4-native-wheel-ready ${JSON.stringify({ x: Math.round(rect.left + rect.width * .7), y: Math.round(rect.top + rect.height * .5), top: scroller.scrollTop, max: scroller.scrollHeight - scroller.clientHeight, first: activityReadingRows(scroller).visible()[0] })}`);
+      let previous = activityReadingRows(scroller).visible()[0];
+      try {
+        for (let index = 0; index < 240; index++) {
+          if (!rolling && index % 19 === 0) {
+            const changed = activity.events().map((event, row) => row < 2 ? { ...event, detail: markdown(row).repeat(1 + index % 3) } : event);
+            activity.applyActivity([{ computer: target.computer, key: target.key, kind: "replace", payload: { events: changed } }]);
+          }
+          if (index % 11 === 0) {
+            if (rolling) {
+              provider = [...provider.slice(1), { seq: undefined, type: "AgentMessage", source: "claude_transcript", message_id: `variable-${providerIndex++}`, at: 1793001000 + index, detail: markdown(index) }];
+              publishProvider();
+            } else activity.applyActivity([{ computer: target.computer, key: target.key, kind: "events", payload: {
+              events: [{ seq: seq++, type: "AgentMessage", source: "claude_transcript", message_id: `native-append-${index}`, at: 1793001000 + index, detail: markdown(index) }], cursor: seq - 1,
+            } }]);
+          }
+          await sleep(60);
+          const current = activityReadingRows(scroller).visible()[0];
+          const rank = (key: string) => Number(key.match(/(?:variable-|item-s)([0-9]+)$/)?.[1] ?? NaN);
+          if (previous && current && ((current.key === previous.key && current.offset > previous.offset + 1) || rank(current.key) < rank(previous.key))) {
+            backtracks++; log(`phase4-native-backtrack ${JSON.stringify({ index, previous, current, top: scroller.scrollTop, max: scroller.scrollHeight - scroller.clientHeight })}`);
+          }
+          previous = current; samples++;
+        }
+      } finally { scroller.removeEventListener("wheel", wheel, { capture: true }); }
+      const activeWrites = writes.filter(write => write.active);
+      log(`phase4-native-wheel ${JSON.stringify({ rolling, trusted, samples, backtracks, activeWrites: activeWrites.length, writes: writes.slice(0, 12), top: scroller.scrollTop })}`);
+      if (!trusted || backtracks || activeWrites.length) throw new Error(`native wheel-down snapback: ${JSON.stringify({ trusted, samples, backtracks, activeWrites: activeWrites.length, writes: writes.slice(0, 4) })}`);
+      return;
+    }
+    for (let index = 0; index < 90; index++) {
+      lastWheel = performance.now();
+      scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: 140, bubbles: true, cancelable: true }));
+      const requested = scroller.scrollTop + 140;
+      (original as (options: ScrollToOptions) => void).call(scroller, { top: requested, behavior: "instant" });
+      if (index % 9 === 0) activity.applyActivity([{ computer: target.computer, key: target.key, kind: "events", payload: {
+        events: [{ seq: seq++, type: "AgentMessage", source: "claude_transcript", message_id: `append-${index}`, at: 1793001000 + index, detail: markdown(index) }], cursor: seq - 1,
+      } }]);
+      await new Promise<void>(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
+      if (scroller.scrollTop < requested - 1) backtracks++;
+      samples++;
+      if (index % 7 === 0) await sleep(400);
+    }
+    await sleep(500);
+    const activeWrites = writes.filter(write => write.active);
+    log(`phase4-variable-scroll ${JSON.stringify({ samples, backtracks, activeWrites: activeWrites.length, writes: writes.slice(0, 12), top: scroller.scrollTop })}`);
+    if (backtracks || activeWrites.length) throw new Error(`wheel-down snapback: ${JSON.stringify({ samples, backtracks, activeWrites: activeWrites.length, writes: writes.slice(0, 4) })}`);
+  } finally {
+    scroller.scrollTo = original;
+    activity.applyActivity([{ computer: target.computer, key: target.key, kind: "replace", payload: { events: savedEvents } },
+      { computer: target.computer, key: target.key, kind: "state", payload: { rev: Number.MAX_SAFE_INTEGER, value: savedSummary } }]);
+    await sleep(400);
+  }
+}
+
 async function longSelectionCopyStep() {
   await select(DOCS);
   const scroller = document.querySelector<HTMLDivElement>(".act-scroll")!;
@@ -938,6 +1050,7 @@ export async function phase4Smoke(allowed: boolean, smokeFile?: string) {
     ["activity-anchor", activityAnchorStep],
     ["reading-append", readingAppendStep],
     ["active-scroll", activeScrollStep],
+    ["variable-scroll", variableScrollStep],
     ["long-selection-copy", longSelectionCopyStep],
     ["select-all-copy", selectAllCopyStep],
     ["media-playback", mediaPlaybackStep],
@@ -946,7 +1059,9 @@ export async function phase4Smoke(allowed: boolean, smokeFile?: string) {
   let current = "start";
   try {
     if (!smokeFile) throw new Error("ZERUS_CLIENT_SMOKE_FILE is not set");
-    for (const [name, run] of steps) {
+    const only = new URLSearchParams(location.search).get("phase4-only");
+    if (only && !steps.some(([name]) => name === only)) throw new Error("Unknown phase4 step");
+    for (const [name, run] of steps.filter(([name]) => !only || name === only)) {
       current = name;
       await run();
       log(`phase4-smoke ${name}: done`);
