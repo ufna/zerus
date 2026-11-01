@@ -54,7 +54,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 konsole = ["dep:dbus"]
 linux-native-notify = ["dep:zbus", "dep:async-io", "dep:futures-lite", "dep:tokio"]
 # Read-only live-code observations on an existing Mac connection, opt-in only.
-macos-native-peer = ["objc2-foundation/NSData"]
+macos-native-peer = ["objc2-foundation/NSData", "objc2-foundation/NSValue"]
 
 [[bin]]
 name = "fake-hgs-launcher"
