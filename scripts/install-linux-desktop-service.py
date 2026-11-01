@@ -251,15 +251,22 @@ class Installer:
         require(raw is None or raw == self.definition, "custom desktop service definition kept")
         return None
 
-    def probe(self):
+    def probe(self, timeout=10):
         probe = self.registration["readiness"]
-        value = json.loads(self.run(probe["argv"], dict(self.env, **probe["environment"])))
+        value = json.loads(self.run(probe["argv"], dict(self.env, **probe["environment"]), timeout=timeout))
         require(isinstance(value, dict), "invalid desktop readiness object")
         lifecycle = value.get("lifecycle", {})
         require(isinstance(lifecycle, dict) and lifecycle.get("abi") == ABI
                 and lifecycle.get("configuration") == self.configuration,
                 "desktop readiness ABI/configuration mismatch")
         require(type(lifecycle.get("ipc_ready")) is bool, "desktop readiness is not a boolean")
+        if lifecycle["ipc_ready"]:
+            require(lifecycle.get("phase") == "serving"
+                    and type(lifecycle.get("pid")) is int and lifecycle["pid"] > 0
+                    and type(lifecycle.get("generation")) is int and 0 < lifecycle["generation"] < 2 ** 64
+                    and isinstance(lifecycle.get("epoch"), str) and 0 < len(lifecycle["epoch"]) <= 128
+                    and not any(ord(c) < 32 for c in lifecycle["epoch"]),
+                    "desktop readiness has no valid live lifecycle identity")
         return lifecycle
 
     def save(self, record):
@@ -331,11 +338,12 @@ class Installer:
                 self.manager("restart" if active else "start", UNIT)
             deadline = time.monotonic() + 10
             while True:
-                lifecycle = self.probe()
+                remaining = deadline - time.monotonic()
+                require(remaining > 0, "desktop IPC is not ready; inspect hgs-desktop.service")
+                lifecycle = self.probe(timeout=remaining)
                 if lifecycle["ipc_ready"]:
                     break
-                require(time.monotonic() < deadline, "desktop IPC is not ready; inspect hgs-desktop.service")
-                time.sleep(0.2)
+                time.sleep(min(0.2, max(0, deadline - time.monotonic())))
             served = self.state()
             require(served.get("ActiveState") == "active" and served.get("MainPID") == str(lifecycle.get("pid")),
                     "readiness does not belong to the registered desktop service")

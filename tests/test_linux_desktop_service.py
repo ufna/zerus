@@ -27,7 +27,7 @@ class Manager:
         self.dropins = ""
         self.state_override = None
         self.lifecycle = {"abi": installer.ABI, "configuration": "a" * 64, "ipc_ready": True,
-                          "pid": 4321, "epoch": "original-epoch", "generation": 1,
+                          "phase": "serving", "pid": 4321, "epoch": "original-epoch", "generation": 1,
                           "background": {"attention": {"ready": False, "code": "not_started"}}}
 
     def run(self, args, env, timeout=10):
@@ -287,6 +287,15 @@ class LinuxDesktopService(unittest.TestCase):
             with self.assertRaises(installer.Refusal):
                 self.instance()
             self.preview = original
+
+    def test_ready_probe_requires_live_pid_epoch_and_generation(self):
+        for field, value in (("pid", True), ("epoch", ""), ("generation", None), ("phase", "unavailable")):
+            with self.subTest(field=field):
+                before = self.manager.lifecycle[field]
+                self.manager.lifecycle[field] = value
+                with self.assertRaisesRegex(installer.Refusal, "lifecycle identity"):
+                    self.instance().probe()
+                self.manager.lifecycle[field] = before
 
     def test_genuine_x11_clears_wayland_and_imports_its_display(self):
         self.env["XDG_SESSION_TYPE"] = "x11"
