@@ -219,8 +219,19 @@ pub(crate) async fn finish_service_exit(
     service: Arc<crate::desktop_service::Service>,
     finish: impl FnOnce(),
 ) {
-    if let Err(error) = service.join().await {
-        eprintln!("zerus-client: service shutdown: {error}");
+    finish_service_exit_with_deadline(service, finish, std::time::Duration::from_secs(5)).await;
+}
+
+#[cfg(feature = "live")]
+pub(crate) async fn finish_service_exit_with_deadline(
+    service: Arc<crate::desktop_service::Service>,
+    finish: impl FnOnce(),
+    wait: std::time::Duration,
+) {
+    match tokio::time::timeout(wait, service.join()).await {
+        Ok(Ok(())) => (),
+        Ok(Err(error)) => eprintln!("zerus-client: service shutdown: {error}"),
+        Err(_) => eprintln!("zerus-client: service shutdown exceeded the quit deadline"),
     }
     finish();
 }

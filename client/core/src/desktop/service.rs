@@ -3,6 +3,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+mod catalog;
+pub use catalog::{
+    CatalogIdentity, CatalogItem, CatalogPage, ChangeItem, ChangePage, Revision, CHANGES_ABI,
+    CHANGES_HELP,
+};
+
 pub const MODE_ENV: &str = "ZERUS_CLIENT_DESKTOP_SERVICE";
 pub const ABI: &str = "desktop-v1";
 pub const FRAME_BYTES: usize = zerus_watch_protocol::MAX_FRAME_BYTES + 4096;
@@ -280,61 +286,6 @@ fn checked_counts(value: &Value, epoch: &str) -> Result<Option<Value>, &'static 
 
 fn optional_count(value: &Value) -> bool {
     value.is_null() || value.as_u64().is_some()
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CatalogItem {
-    pub key: String,
-    pub row: Value,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CatalogPage {
-    pub request_id: String,
-    pub abi: String,
-    pub accepted: bool,
-    pub durable: bool,
-    pub epoch: String,
-    pub computer: String,
-    pub display_only: bool,
-    pub authority: bool,
-    pub complete: bool,
-    pub items: Vec<CatalogItem>,
-    pub next_cursor: Option<String>,
-}
-impl CatalogPage {
-    pub fn checked(
-        value: Value,
-        request_id: &str,
-        epoch: &str,
-        computer: &str,
-    ) -> Result<Self, &'static str> {
-        let page: Self = serde_json::from_value(value).map_err(|_| "invalid_catalog_page")?;
-        if page.request_id != request_id
-            || !zerus_desktop_migration::canonical_uuid(request_id)
-            || page.abi != "desktop-catalog-v1"
-            || !page.accepted
-            || page.durable
-            || page.epoch != epoch
-            || !zerus_desktop_migration::canonical_uuid(epoch)
-            || page.computer != computer
-            || !valid_computer(computer)
-            || !page.display_only
-            || page.authority
-            || page.items.len() > CATALOG_ROWS
-            || page
-                .next_cursor
-                .as_deref()
-                .is_some_and(|cursor| !zerus_desktop_migration::canonical_uuid(cursor))
-            || page
-                .items
-                .iter()
-                .any(|item| item.key.is_empty() || item.key.len() > 4096 || !item.row.is_object())
-        {
-            return Err("invalid_catalog_page");
-        }
-        Ok(page)
-    }
 }
 
 #[cfg(test)]
