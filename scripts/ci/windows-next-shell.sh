@@ -16,9 +16,6 @@ trap on_exit EXIT
 python scripts/ci/windows-desktop-registration-tests.py
 # The service/relay binary and native tests come from this exact checkout.
 cargo build --locked --bin hgs
-for selected in desktop::windows desktop::ui_requests; do
-    cargo test --locked --manifest-path client/core/Cargo.toml --lib "$selected"
-done
 cargo test --locked desktop::ui_authority
 for selected in windows_shell::tests instance::tests platform::windows::startup::tests platform::windows::drawing::tests cli::tests lifecycle::tests window_layer::tests; do
     cargo test --locked --manifest-path client/src-tauri/Cargo.toml --lib "$selected"

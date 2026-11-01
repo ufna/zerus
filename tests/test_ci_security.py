@@ -607,6 +607,12 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn("--debug --no-bundle", script)
         self.assertNotIn("--install-login-item", script)
         self.assertNotIn("--sessions", script)
+        # Independent native stages still fail the job; no continue-on-error
+        # can hide a failed ancestry test or prevent the pipe checks running.
+        self.assertNotIn("continue-on-error", native)
+        for stage in ("core", "media", "tauri-clippy"):
+            self.assertIn(f"run: bash scripts/ci/client-native.sh windows {stage}", native)
+        self.assertIn("name: Windows shell tests and disposable app\n        if: ${{ !cancelled() }}", native)
 
     def checks_steps(self, name):
         """One checks.yml job's steps, each with its indented body."""

@@ -61,16 +61,16 @@ case "$platform:$stage" in
         media_check
         tauri_clippy
         ;;
-    macos:core)
+    windows:core|macos:core)
         core_tests
         ;;
-    macos:media)
+    windows:media|macos:media)
         media_check
         ;;
     macos:tauri-test)
         tauri_tests
         ;;
-    macos:tauri-clippy)
+    windows:tauri-clippy|macos:tauri-clippy)
         tauri_clippy
         ;;
     *)

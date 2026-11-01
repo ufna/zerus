@@ -818,12 +818,20 @@ jobs:
             ~/.cargo/git
           key: client-native-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.rustc }}-${{ steps.rust.outputs.epoch }}-${{ hashFiles('client/core/Cargo.lock', 'client/media/Cargo.lock', 'client/src-tauri/Cargo.lock') }}
           restore-keys: client-native-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.rustc }}-${{ steps.rust.outputs.epoch }}-
-      - name: Core tests, media checks and Tauri clippy
-        run: bash scripts/ci/client-native.sh windows
+      - name: Core tests
+        run: bash scripts/ci/client-native.sh windows core
+      - name: Media checks
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci/client-native.sh windows media
+      - name: Tauri clippy
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci/client-native.sh windows tauri-clippy
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: ${{ !cancelled() }}
         with:
           node-version: '24'
       - name: Windows shell tests and disposable app
+        if: ${{ !cancelled() }}
         run: bash scripts/ci/windows-next-shell.sh
       - name: Retain disposable Windows shell
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
