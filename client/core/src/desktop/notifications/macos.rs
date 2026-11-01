@@ -274,6 +274,7 @@ impl Host {
                                 })
                             } else if observed.is_some_and(|value| value.accepted) {
                                 let mapping = Activation {
+                                    platform_context: None,
                                     request_id: pending.command.binding.request_id.clone(),
                                     token: pending.command.action.token().into(),
                                     native_id: NativeId::Macos {
@@ -353,6 +354,7 @@ impl Host {
         // Binding. Only the service actor resolves the actual delivered row.
         self.enqueue(Emission {
             frame: FromHost::Clicked(Activation {
+                platform_context: None,
                 request_id: envelope.correlation().into(),
                 token: envelope.token().into(),
                 native_id: NativeId::Macos {
@@ -370,8 +372,7 @@ impl Host {
         Ok(())
     }
     fn valid_activation(value: &Activation) -> bool {
-        Envelope::new(&value.token, &value.request_id).is_ok()
-            && value.native_id.valid_for(Platform::Macos, &value.token)
+        Envelope::new(&value.token, &value.request_id).is_ok() && value.valid_for(Platform::Macos)
     }
     fn mapping_slots(&self) -> usize {
         self.mappings.len()

@@ -4,8 +4,9 @@ use super::store::Store;
 use anyhow::{ensure, Context, Result};
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc, Arc, Mutex,
 };
 use std::time::{Duration, Instant};
@@ -136,11 +137,21 @@ pub(super) enum Event {
     Clicked(Activation),
     Closed(Activation),
 }
+struct QueuedEvent {
+    event: Event,
+    count: Arc<AtomicUsize>,
+}
+impl Drop for QueuedEvent {
+    fn drop(&mut self) {
+        self.count.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 /// Created with Outbox, held only by the original native adapter/host bridge.
 /// This object is not deserializable and has no generic IPC constructor.
 pub(super) struct Endpoint {
     receive: mpsc::Receiver<Work>,
-    events: mpsc::SyncSender<Event>,
+    events: mpsc::SyncSender<QueuedEvent>,
+    event_count: Arc<AtomicUsize>,
     stopping: Arc<AtomicBool>,
     platform: wire::Platform,
 }
@@ -154,14 +165,28 @@ impl Endpoint {
     pub fn emit(&self, event: Event) -> bool {
         let (Event::Clicked(value) | Event::Closed(value)) = &event;
         if self.stopping()
-            || !zerus_desktop_migration::canonical_uuid(&value.request_id)
-            || value.token.len() > wire::TOKEN_BYTES
-            || attention::target(&value.token).is_none()
-            || !value.native_id.valid_for(self.platform, &value.token)
+            || !value.valid_for(self.platform)
+            || (matches!(event, Event::Closed(_)) && value.platform_context.is_some())
         {
             return false;
         }
-        self.events.try_send(event).is_ok()
+        // The same slot travels through the channel AND actor deferral. Moving
+        // an early callback off the channel must not double the event budget.
+        if self
+            .event_count
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < EVENTS).then_some(n + 1)
+            })
+            .is_err()
+        {
+            return false;
+        }
+        self.events
+            .try_send(QueuedEvent {
+                event,
+                count: self.event_count.clone(),
+            })
+            .is_ok()
     }
 }
 
@@ -187,7 +212,9 @@ pub(super) struct RestorePage {
 pub(super) struct Outbox {
     session: Session,
     send: mpsc::SyncSender<Work>,
-    events: mpsc::Receiver<Event>,
+    events: mpsc::Receiver<QueuedEvent>,
+    callbacks: VecDeque<QueuedEvent>,
+    event_count: Arc<AtomicUsize>,
     stopping: Arc<AtomicBool>,
     pending: Vec<Pending>,
     error: Option<&'static str>,
@@ -200,6 +227,7 @@ impl Outbox {
         ensure!(session.valid(), "invalid notification host session");
         let (send, receive) = mpsc::sync_channel(wire::IN_FLIGHT);
         let (events, event_receive) = mpsc::sync_channel(EVENTS);
+        let event_count = Arc::new(AtomicUsize::new(0));
         let stopping = Arc::new(AtomicBool::new(false));
         let platform = session.platform;
         Ok((
@@ -207,6 +235,8 @@ impl Outbox {
                 session,
                 send,
                 events: event_receive,
+                callbacks: VecDeque::new(),
+                event_count: event_count.clone(),
                 stopping: stopping.clone(),
                 pending: Vec::new(),
                 error: None,
@@ -214,6 +244,7 @@ impl Outbox {
             Endpoint {
                 receive,
                 events,
+                event_count,
                 stopping,
                 platform,
             },
@@ -378,34 +409,59 @@ impl Outbox {
             .retain(|p| !p.committed || Arc::strong_count(&p.shared) != 1);
         let mut clicks = Vec::new();
         for _ in 0..EVENTS {
-            let Ok(event) = self.events.try_recv() else {
+            let Ok(callback) = self.events.try_recv() else {
                 break;
             };
-            let (Event::Clicked(value) | Event::Closed(value)) = &event;
-            match self.current_activation(store, value) {
-                Ok(Some(_)) if matches!(event, Event::Clicked(_)) => clicks.push(value.clone()),
+            self.callbacks.push_back(callback);
+        }
+        // Visit every retained callback at most once per actor turn. Preserve
+        // FIFO ordering while the original native/SQL settlement is pending.
+        let mut blocked = BTreeSet::new();
+        for _ in 0..self.callbacks.len() {
+            let callback = self.callbacks.pop_front().expect("bounded callback queue");
+            let (Event::Clicked(value) | Event::Closed(value)) = &callback.event;
+            if blocked.contains(&value.request_id) || self.pending.iter().any(|pending| {
+                !pending.committed
+                    && pending.binding.request_id == value.request_id
+                    && pending.command.as_ref().is_some_and(|command| {
+                        matches!(&command.action, Action::Post { token, .. } if *token == value.token)
+                    })
+            }) {
+                blocked.insert(value.request_id.clone());
+                self.callbacks.push_back(callback);
+                continue;
+            }
+            let retry = match self.current_activation(store, value) {
+                Ok(Some(_)) if matches!(callback.event, Event::Clicked(_)) => {
+                    clicks.push(value.clone());
+                    false
+                }
                 Ok(Some(binding)) => {
                     if ledger::withdraw(&mut store.db, &binding.intent_id, binding.revision)
                         .is_err()
                     {
                         self.error = Some("notification_close_uncommitted");
+                        true
+                    } else {
+                        false
                     }
                 }
-                Ok(None) => (),
-                Err(_) => self.error = Some("notification_callback_unavailable"),
+                Ok(None) => false,
+                Err(_) => {
+                    self.error = Some("notification_callback_unavailable");
+                    true
+                }
+            };
+            if retry {
+                blocked.insert(value.request_id.clone());
+                self.callbacks.push_back(callback);
             }
         }
         clicks
     }
 
     fn current_activation(&self, store: &Store, value: &Activation) -> Result<Option<Binding>> {
-        if !zerus_desktop_migration::canonical_uuid(&value.request_id)
-            || value.token.len() > wire::TOKEN_BYTES
-            || attention::target(&value.token).is_none()
-            || !value
-                .native_id
-                .valid_for(self.session.platform, &value.token)
-        {
+        if !value.valid_for(self.session.platform) {
             return Ok(None);
         }
         // Callbacks carry the original post UUID, including after a service or
@@ -544,6 +600,7 @@ impl Outbox {
                 request_id: receipt.binding.request_id,
                 token,
                 native_id,
+                platform_context: None,
             };
             if self.current_activation(store, &value)?.is_some() {
                 mappings.push(value);
@@ -579,10 +636,13 @@ impl Outbox {
     /// Operation resources only. The platform must also join its original host
     /// worker/child and callback/pipe resources before lifecycle drain succeeds.
     pub fn operation_drained(&self) -> bool {
-        self.stopping.load(Ordering::Acquire) && self.pending.is_empty()
+        self.stopping.load(Ordering::Acquire)
+            && self.pending.is_empty()
+            && self.event_count.load(Ordering::Acquire) == 0
     }
     pub fn status(&self) -> Value {
         json!({"abi":wire::ABI,"pending":self.pending.len(),"limit":wire::IN_FLIGHT,
+            "callbacks":self.event_count.load(Ordering::Acquire),"callback_limit":EVENTS,
             "stopping":self.stopping.load(Ordering::Acquire),"operation_drained":self.operation_drained(),
             "error":self.error})
     }
