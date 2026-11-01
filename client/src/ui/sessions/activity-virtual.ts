@@ -14,6 +14,24 @@ export function selectionCoversActivity(scroller: HTMLDivElement): boolean {
     && range.endContainer === col && range.endOffset === col.childNodes.length;
 }
 
+/** Keep the entire logical interval, including rows between distant endpoints. */
+export function activitySelectionIndexes(scroller: HTMLDivElement, count: number): number[] {
+  const selection = document.getSelection();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return [];
+  if (selectionCoversActivity(scroller)) return Array.from({ length: count }, (_, index) => index);
+  const range = selection.getRangeAt(0);
+  const indexOf = (node: Node): number | undefined => {
+    const element = node.nodeType === Node.ELEMENT_NODE ? node as Element : node.parentElement;
+    const row = element?.closest<HTMLElement>(".act-virtual-row");
+    const index = Number(row?.dataset.index);
+    return row && scroller.contains(row) && Number.isSafeInteger(index) && index >= 0 && index < count ? index : undefined;
+  };
+  const intersecting = [...scroller.querySelectorAll<HTMLElement>(".act-virtual-row")].filter((row) => range.intersectsNode(row));
+  const start = indexOf(range.startContainer) ?? (intersecting[0] ? indexOf(intersecting[0]) : undefined);
+  const end = indexOf(range.endContainer) ?? (intersecting.at(-1) ? indexOf(intersecting.at(-1)!) : undefined);
+  return start === undefined || end === undefined ? [] : Array.from({ length: Math.abs(end - start) + 1 }, (_, index) => Math.min(start, end) + index);
+}
+
 export function selectActivityAll(scroller: HTMLDivElement) {
   const col = scroller.querySelector(".act-col");
   if (!col) return;

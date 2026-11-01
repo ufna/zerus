@@ -13,7 +13,7 @@ import { posterUrl, visiblePoster } from "./video-poster";
 import { createVirtualizer, elementScroll, type Range } from "@tanstack/solid-virtual";
 import { notify } from "../../store/actions";
 import { previews } from "../../store/attachments";
-import { mediaPlayback, playingId, setPlayingId } from "../../store/mediaPlayback";
+import { mediaPlayback, retainedMediaId, setRetainedMediaId } from "../../store/mediaPlayback";
 import { pageHidden } from "../../store/visibility";
 import { recordingBlob } from "./voice-playback";
 import { cardTarget, createOpen, readCards } from "./attachment-card";
@@ -32,7 +32,7 @@ import { replyVisible } from "../../store/viewedReply";
 import { buildTranscript, createTranscriptProjection, VOICE_STATE_LABEL, voiceStateDetail, voiceStateIssue } from "./transcript";
 import { DELETE_TEXT, DELETE_TITLE, retryReason, routeInspect } from "./local-actions";
 import { markdownReady, markdownTree, type Inline, type MarkdownBlock } from "./markdown";
-import { activityAll, activityFlow, activityRange, activitySelectionText, activityText, activityTexts, activityVirtualOffset, selectActivityAll, selectionCoversActivity } from "./activity-virtual";
+import { activityAll, activityFlow, activityRange, activitySelectionIndexes, activitySelectionText, activityText, activityTexts, activityVirtualOffset, selectActivityAll, selectionCoversActivity } from "./activity-virtual";
 import { openExternal, openSessionFile } from "./sessionFiles";
 import { SessionFileDialog } from "./SessionFileDialog";
 import { captionText, statusOf } from "./SessionCard";
@@ -326,7 +326,7 @@ function MediaCard(props: { item: MediaMessage; scope?: AttachmentScope; sourceI
   let claim: ReturnType<typeof mediaPlayback.take> | undefined;
   let pendingSeek: number | undefined;
   const clear = () => {
-    if (claim?.current() && playingId() === it.id) setPlayingId(undefined);
+    if (claim?.current() && retainedMediaId() === it.id) setRetainedMediaId(undefined);
     claim?.release(); claim = undefined;
     player?.pause(); setPlaying(false); setLoading(false);
     if (player) { player.removeAttribute("src"); player.load(); }
@@ -342,7 +342,7 @@ function MediaCard(props: { item: MediaMessage; scope?: AttachmentScope; sourceI
     if (!current || loading()) return;
     if (!claim?.current()) claim = mediaPlayback.take(clear, () => { if (loading()) clear(); else player?.pause(); });
     const mine = claim;
-    setPlayingId(it.id);
+    setRetainedMediaId(it.id);
     if (seekTo !== undefined) { pendingSeek = seekTo; setPosition(seekTo); }
     setError("");
     try {
@@ -355,7 +355,7 @@ function MediaCard(props: { item: MediaMessage; scope?: AttachmentScope; sourceI
       }
       await Promise.resolve();
       if (mine.current() && target() === current && player) await player.play();
-    } catch (failure) { if (mine.current()) { setError(tr("Could not play recording: %1", String(failure))); setPlaying(false); if (playingId() === it.id) setPlayingId(undefined); } }
+    } catch (failure) { if (mine.current()) { setError(tr("Could not play recording: %1", String(failure))); setPlaying(false); if (retainedMediaId() === it.id) setRetainedMediaId(undefined); } }
     finally { if (mine.current()) setLoading(false); }
   };
   const pause = () => { player?.pause(); setPlaying(false); };
@@ -369,7 +369,7 @@ function MediaCard(props: { item: MediaMessage; scope?: AttachmentScope; sourceI
   const failed = (event: Event) => {
     if (!claim?.current() || !objectUrl) return;
     setPlaying(false); setLoading(false);
-    if (playingId() === it.id) setPlayingId(undefined);
+    if (retainedMediaId() === it.id) setRetainedMediaId(undefined);
     setError(tr("Could not play recording: %1", (event.currentTarget as HTMLMediaElement).error?.message || tr("Recording is unavailable.")));
   };
   const seek = (e: MouseEvent) => {
@@ -807,7 +807,7 @@ export function ActivityView(props: { source?: ActivitySource }) {
     return [selection.anchorNode, selection.focusNode].some((node) => !!node && scroller.contains(node));
   };
   const playingIndex = createMemo(() => {
-    const id = playingId();
+    const id = retainedMediaId();
     return id ? view.items.findIndex((item) => item.id === id) : -1;
   });
   const rangeExtractor = createMemo(() => {
@@ -944,8 +944,7 @@ export function ActivityView(props: { source?: ActivitySource }) {
     const selectionChanged = () => {
       if (!selectionCoversActivity(scroller)) activityAll.delete(scroller);
       const inside = selectionInside();
-      if (inside && !selectionIndexes().length) setSelectionIndexes(virtualItems().map((item) => item.index));
-      else if (!inside) setSelectionIndexes([]);
+      setSelectionIndexes(inside ? activitySelectionIndexes(scroller, view.items.length) : []);
       if (inside) setLayoutHeld(true);
       motion.selection(inside);
     };

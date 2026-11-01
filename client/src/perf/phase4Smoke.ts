@@ -392,6 +392,62 @@ async function activeScrollStep() {
   await sleep(350);
 }
 
+async function longSelectionCopyStep() {
+  await select(DOCS);
+  const scroller = document.querySelector<HTMLDivElement>(".act-scroll")!;
+  scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -300, bubbles: true, cancelable: true }));
+  scroller.scrollTo({ top: 0, behavior: "instant" });
+  await sleep(50);
+  const visible = () => [...scroller.querySelectorAll<HTMLElement>(".act-virtual-row")].filter((row) => {
+    const rect = row.getBoundingClientRect(), edge = scroller.getBoundingClientRect().top;
+    return rect.bottom > edge && rect.top < edge + scroller.clientHeight;
+  });
+  const first = visible()[0], start = Number(first?.dataset.index);
+  if (!first || !Number.isSafeInteger(start)) throw new Error("the long selection has no initial row");
+  const selection = document.getSelection()!;
+  first.dispatchEvent(new PointerEvent("pointerdown", { button: 0, bubbles: true, pointerType: "mouse" }));
+  selection.setBaseAndExtent(first, 0, first, first.childNodes.length);
+  const noticesBefore = new Set(notices().map((notice) => notice.id));
+  try {
+    await sleep(30);
+    let last = start;
+    for (let step = 0; step < 10; step++) {
+      scroller.scrollBy({ top: scroller.clientHeight * .8, behavior: "instant" });
+      await new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+      const end = visible().at(-1);
+      if (!end) throw new Error("the long drag lost its visible endpoint");
+      selection.setBaseAndExtent(first, 0, end, end.childNodes.length);
+      await sleep(30); // Deliver selectionchange before moving the virtual window again.
+      last = Number(end.dataset.index);
+      for (let index = start; index <= last; index++) {
+        if (!scroller.querySelector(`.act-virtual-row[data-index="${index}"]`)) {
+          throw new Error(`the long selection unmounted middle row ${index} of ${start}..${last}`);
+        }
+      }
+      if (last - start >= 28) break; // Well beyond both overscan windows.
+    }
+    if (last - start < 24) throw new Error(`the drag did not cross enough rows: ${start}..${last}`);
+    const expected = selection.toString();
+    if (expected.length < 500 || activitySelectionText(scroller) !== expected) throw new Error("the long partial selection lost its text");
+    if (!scroller.dispatchEvent(new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true, cancelable: true }))) {
+      throw new Error("the long partial selection intercepted native Ctrl+C");
+    }
+    scroller.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 400, clientY: 300 }));
+    await until(() => !!document.querySelector(".menu"), 1000, "the long-selection Copy menu did not open");
+    // Menu focus may collapse WebKit's live range; Activity captures the full
+    // selection when the context menu opens, before moving focus to its buttons.
+    menuAction("Copy").click();
+    // Rust's private-X11 native clipboard path reads back and verifies its write.
+    await until(() => notices().some((notice) => !noticesBefore.has(notice.id) && notice.text === "The selected text is on the clipboard"),
+      5000, "the long-selection clipboard write did not succeed");
+    log(`phase4-long-selection-copy ${JSON.stringify({ start, last, rows: last - start + 1, characters: expected.length })}`);
+  } finally {
+    selection.removeAllRanges();
+    window.dispatchEvent(new PointerEvent("pointerup", { button: 0, pointerType: "mouse" }));
+  }
+  await sleep(350);
+}
+
 async function selectAllCopyStep() {
   const scroller = document.querySelector<HTMLDivElement>(".act-scroll")!;
   document.querySelector<HTMLButtonElement>('button[aria-label^="Jump to latest activity"]')?.click();
@@ -399,9 +455,10 @@ async function selectAllCopyStep() {
   const first = users[0]?.detail, last = users.at(-1)?.detail;
   if (!first || !last) throw new Error("the copy check needs loaded user messages at both ends");
   // Repeated passing notices coalesce on the bus, so count copies by their notice ids.
+  const existingNotices = new Set(notices().map((notice) => notice.id));
   const copyIds = new Set<number>();
   const copyNotices = () => {
-    for (const notice of notices()) if (notice.text === "The selected text is on the clipboard") copyIds.add(notice.id);
+    for (const notice of notices()) if (!existingNotices.has(notice.id) && notice.text === "The selected text is on the clipboard") copyIds.add(notice.id);
     return copyIds.size;
   };
   const writes: string[] = [];
@@ -411,7 +468,7 @@ async function selectAllCopyStep() {
   scroller.dispatchEvent(new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true, cancelable: true }));
   await until(() => copyNotices() === 1, 3000, "Ctrl+C did not copy the transcript");
   writes.push(activitySelectionText(scroller));
-  if (!writes[0].includes(first) || !writes[0].includes(last) || writes[0].length <= mounted.length) {
+  if (!writes[0].includes(first) || !writes[0].includes(last)) {
     throw new Error(`Select All copied only the mounted window: ${JSON.stringify({ copied: writes[0].length, mounted: mounted.length })}`);
   }
   scroller.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 400, clientY: 300 }));
@@ -881,6 +938,7 @@ export async function phase4Smoke(allowed: boolean, smokeFile?: string) {
     ["activity-anchor", activityAnchorStep],
     ["reading-append", readingAppendStep],
     ["active-scroll", activeScrollStep],
+    ["long-selection-copy", longSelectionCopyStep],
     ["select-all-copy", selectAllCopyStep],
     ["media-playback", mediaPlaybackStep],
     ["activity-geometry", activityGeometryStep],

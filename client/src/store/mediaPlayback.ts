@@ -24,7 +24,8 @@ export function createPlaybackOwner() {
 }
 
 export const mediaPlayback = createPlaybackOwner();
-export const [playingId, setPlayingId] = createSignal<string>();
+// Retain one loaded recording through pauses so scrolling preserves its seek position.
+export const [retainedMediaId, setRetainedMediaId] = createSignal<string>();
 
 /** Qt's registered message players pause together, also before capture. */
 export function pauseMessagePlayback() {
