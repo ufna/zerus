@@ -3698,11 +3698,11 @@ never `HGS_TRAY_RESTART=0`.
 
 Linux installs the binary under `~/.local/bin`, a systemd user service under
 `~/.config/systemd/user` and a launcher under `~/.local/share/applications`.
-The launcher is not a second autostart entry. `HGS_LINUX_GUI=client` selects the
-Tauri client, later installs retain the selected GUI, and a fresh installation
-defaults to Qt. `HGS_INSTALL_PREFIX` redirects the binary, launch files and
+The launcher is not a second autostart entry. Fresh installs and upgrades default
+to Zerus Next; `HGS_LINUX_GUI=client` selects it explicitly.
+`HGS_LINUX_GUI=qt` keeps the Qt source-build fallback until Linux acceptance. `HGS_INSTALL_PREFIX` redirects the binary, launch files and
 updater state into a scratch prefix and performs no service-manager action; see
-[Linux source installation and the Tauri client switch](linux-distribution.md).
+[Linux packages and source installation](linux-distribution.md).
 The service belongs to `graphical-session.target`, restarts after crashes and
 does not loop on exit code 4 (system tray unavailable). Compare
 `systemctl --user status hgs-tray.service` and `journalctl --user -u

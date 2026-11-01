@@ -651,7 +651,8 @@ class WorkflowSecurityTests(unittest.TestCase):
         for recipe in ("packaging/aur/zerus-git/PKGBUILD", "packaging/aur/zerus/PKGBUILD.in"):
             with self.subTest(recipe=recipe):
                 text = (ROOT / recipe).read_text()
-                self.assertIn("\n    cmake --build build\n", text)
+                self.assertIn("npm exec -- tauri build --no-bundle", text)
+                self.assertIn("--features video -- --frozen", text)
                 self.assertNotIn("--parallel", text)
                 # The published recipes keep their check() and never use ccache.
                 self.assertIn("\ncheck() {\n", text)
@@ -998,7 +999,7 @@ class WorkflowSecurityTests(unittest.TestCase):
         cargo = self.checks_step("arch-package", "cargo-cache")
         # The package also builds the mobile connector, which has its own lock.
         self.assertIn("          key: arch-cargo-v1-${{ steps.epoch.outputs.month }}-"
-                      "${{ hashFiles('Cargo.lock', 'services/mobile/connector/Cargo.lock') }}\n"
+                      "${{ hashFiles('Cargo.lock', 'services/mobile/connector/Cargo.lock', 'client/src-tauri/Cargo.lock', 'client/media/Cargo.lock', 'client/core/Cargo.lock') }}\n"
                       "          restore-keys: arch-cargo-v1-${{ steps.epoch.outputs.month }}-\n", cargo)
         for name, step_id in (("quick", "rust-cache"), ("cli", "rust-cache"), ("cli-macos-debug", "rust-cache"), ("cli-macos-core", "rust-cache"), ("windows-desktop", "rust-cache"),
                               ("connector", "rust-cache"), ("arch-package", "cargo-cache"),
