@@ -159,6 +159,13 @@ fn original_envelope_and_all_callback_output_and_delegate_holds_survive_completi
     );
     drop(output);
     host.poll(&fake, now);
+    assert!(
+        !host.native_close_requested(),
+        "release output still owns transport work"
+    );
+    assert!(matches!(host.next_output().unwrap().frame,
+        FromHost::Released { binding } if binding == original.binding));
+    host.poll(&fake, now);
     assert!(host.native_close_requested());
     assert!(
         host.next_output().is_none(),
@@ -196,6 +203,45 @@ fn permission_denial_and_stop_before_post_never_issue_a_post() {
 }
 
 #[test]
+fn a_running_host_releases_one_command_only_after_native_and_receipt_output_drain() {
+    let (mut host, fake, now) = fixture();
+    let native = host.native_resources();
+    let original = command(1);
+    host.receive(ToHost::Command(original.clone()), &fake, now)
+        .unwrap();
+    let auth = fake.auth();
+    auth.complete(true);
+    drop(auth);
+    host.poll(&fake, now);
+    let (_, post) = fake.posted();
+    post.complete(true);
+    host.poll(&fake, now);
+    let output = receipt(&mut host);
+    host.poll(&fake, now);
+    assert!(host.next_output().is_none());
+    drop(post);
+    host.poll(&fake, now);
+    assert!(
+        host.next_output().is_none(),
+        "the original output still holds the command"
+    );
+    drop(output);
+    host.poll(&fake, now);
+    assert!(matches!(host.next_output().unwrap().frame,
+        FromHost::Released { binding } if binding == original.binding));
+    assert!(!host.stopping);
+    assert!(!host.native_close_requested());
+    assert_eq!(
+        Arc::strong_count(&native.0),
+        2,
+        "delegate and host stay alive"
+    );
+    host.receive(ToHost::Command(command(2)), &fake, now)
+        .unwrap();
+    assert_eq!(fake.auth.lock().unwrap().len(), 1);
+}
+
+#[test]
 fn deadline_is_unknown_and_late_copies_cannot_rewrite_or_replay_the_attempt() {
     let (mut host, fake, now) = fixture();
     let native = host.native_resources();
@@ -226,6 +272,10 @@ fn deadline_is_unknown_and_late_copies_cannot_rewrite_or_replay_the_attempt() {
     host.poll(&fake, now);
     assert!(!host.native_close_requested());
     drop(post);
+    host.poll(&fake, now);
+    assert!(!host.native_close_requested());
+    assert!(matches!(host.next_output().unwrap().frame,
+        FromHost::Released { binding } if binding == command(1).binding));
     host.poll(&fake, now);
     assert!(host.native_close_requested());
     drop(native);

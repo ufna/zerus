@@ -11,6 +11,8 @@ pub mod macos;
 pub const ABI: &str = "desktop-notification-host-v1";
 pub const ENTRY: &str = "--desktop-notification-host";
 pub const APPLICATION: &str = "com.hgdev.hgs-tray";
+/// Set in the sealed app plist only when its fixed host entry is implemented.
+pub const CAPABILITY_KEY: &str = "HGSDesktopNotificationHostABI";
 pub const FRAME_BYTES: usize = 64 << 10;
 pub const IN_FLIGHT: usize = 8;
 pub const MAPPINGS: usize = 8192;
@@ -288,6 +290,11 @@ pub enum FromHost {
         session: Session,
     },
     Receipt(Receipt),
+    /// The original receipt output and all command-local native captures have
+    /// actually drained. This is resource release, not a new effect result.
+    Released {
+        binding: Binding,
+    },
     Clicked(Activation),
     Closed(Activation),
     /// Sent only after every original command/callback and resource is drained.
