@@ -29,7 +29,7 @@ def main():
         if not separator or not names or Path(manifest) not in (args.manifests or []):
             parser.error("--manifest-features must name a supplied --manifest-path and nonempty features")
         features[Path(manifest)] = names
-    targets = args.targets or [next(line[6:] for line in subprocess.check_output(["rustc", "-vV"], text=True).splitlines()
+    targets = args.targets or [next(line[6:] for line in subprocess.check_output(["rustc", "-vV"], encoding="utf-8").splitlines()
                                     if line.startswith("host: "))]
     packages = {}
     for manifest in args.manifests or [None]:
@@ -40,7 +40,8 @@ def main():
             command += ["--manifest-path", str(manifest)]
         if manifest in features:
             command += ["--features", features[manifest]]
-        metadata = json.loads(subprocess.check_output(command, text=True))
+        # Cargo emits UTF-8 regardless of Windows' default ANSI code page.
+        metadata = json.loads(subprocess.check_output(command, encoding="utf-8"))
         resolved = {node["id"] for node in metadata["resolve"]["nodes"]}
         shipped = None
         if args.targets:
@@ -54,7 +55,7 @@ def main():
                     tree += ["--manifest-path", str(manifest)]
                 if manifest in features:
                     tree += ["--features", features[manifest]]
-                shipped |= {tuple(line.split()[:2]) for line in subprocess.check_output(tree, text=True).splitlines()
+                shipped |= {tuple(line.split()[:2]) for line in subprocess.check_output(tree, encoding="utf-8").splitlines()
                             if line.strip()}
         for package in metadata["packages"]:
             if package.get("source") and package["id"] in resolved and (
