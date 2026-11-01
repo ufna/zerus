@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
-use zerus_client_core::desktop::ui_requests::{Envelope, Reply};
+use zerus_client_core::desktop::ui_requests::{Envelope, Reply, Request};
 
 const ANCESTORS: usize = 32;
 const WAIT: Duration = Duration::from_secs(2);
@@ -110,8 +110,47 @@ pub(super) struct Authorized {
     instance: String,
     serial: u64,
 }
+/// Actor-side permit after the original peer was revalidated. It deliberately
+/// has no Clone/Deserialize or public constructor, even inside the request lane.
+pub(super) struct Validated(Request, Freshness);
+enum Freshness {
+    Native {
+        caller: Process,
+        frontend: Process,
+        until: Instant,
+    },
+    #[cfg(test)]
+    Fixture,
+}
+impl Validated {
+    pub fn id(&self) -> &str {
+        self.0.id()
+    }
+    pub fn into_request(self) -> Result<Request> {
+        match self.1 {
+            Freshness::Native {
+                caller,
+                frontend,
+                until,
+            } => ensure!(
+                Instant::now() < until && caller.current() && frontend.current(),
+                "frontend permit expired"
+            ),
+            #[cfg(test)]
+            Freshness::Fixture => (),
+        }
+        Ok(self.0)
+    }
+    #[cfg(test)]
+    pub fn fixture(value: &Value) -> Self {
+        Self(
+            serde_json::from_value(value.clone()).expect("synthetic native-policy fixture"),
+            Freshness::Fixture,
+        )
+    }
+}
 impl Authorized {
-    pub fn into_request(self, order: &mut Order) -> Result<Value> {
+    pub fn into_request(self, order: &mut Order) -> Result<Validated> {
         ensure!(
             Instant::now() < self.until && self.caller.current() && self.frontend.current(),
             "frontend request identity expired"
@@ -125,7 +164,14 @@ impl Authorized {
             self.serial,
             Instant::now(),
         )?;
-        Ok(serde_json::to_value(self.envelope.request)?)
+        Ok(Validated(
+            self.envelope.request,
+            Freshness::Native {
+                caller: self.caller,
+                frontend: self.frontend,
+                until: self.until,
+            },
+        ))
     }
 }
 
@@ -278,6 +324,8 @@ fn check_ancestry(pid: u32, until: Instant) -> Result<()> {
             return Ok(None);
         }
         let process = Process::read(pid)?;
+        #[cfg(target_os = "linux")]
+        untraced(pid)?;
         let tagged = agent_environment(pid)?;
         let name = Path::new(&process.executable)
             .file_name()
@@ -316,11 +364,51 @@ fn ancestry(
 
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn marked(bytes: &[u8]) -> bool {
-    bytes
-        .split(|b| *b == 0)
-        .any(|entry| entry.starts_with(b"HGS_SESSION=") || entry.starts_with(b"HGS_RUN_ID="))
+    bytes.split(|b| *b == 0).any(|entry| {
+        [
+            b"HGS_SESSION=".as_slice(),
+            b"HGS_RUN_ID=",
+            b"LD_PRELOAD=",
+            b"LD_AUDIT=",
+            b"LD_LIBRARY_PATH=",
+            b"DYLD_INSERT_LIBRARIES=",
+            b"DYLD_LIBRARY_PATH=",
+            b"DYLD_FRAMEWORK_PATH=",
+            b"DYLD_FORCE_FLAT_NAMESPACE=",
+        ]
+        .iter()
+        .any(|key| entry.starts_with(key))
+    })
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn tracer_absent(bytes: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    let mut fields = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("TracerPid:"));
+    fields
+        .next()
+        .is_some_and(|v| v.trim().parse::<u32>() == Ok(0))
+        && fields.next().is_none()
+}
+#[cfg(target_os = "linux")]
+fn untraced(pid: u32) -> Result<()> {
+    use std::{io::Read, os::unix::fs::OpenOptionsExt};
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(format!("/proc/{pid}/status"))?;
+    let mut bytes = Vec::new();
+    file.take(65537).read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() <= 65536 && tracer_absent(&bytes),
+        "traced frontend ancestry refused"
+    );
+    Ok(())
+}
 #[cfg(target_os = "linux")]
 fn same_user(pid: u32) -> Result<bool> {
     use std::os::unix::fs::MetadataExt;
@@ -501,6 +589,21 @@ mod tests {
     }
 
     #[test]
+    fn a_retained_permit_must_still_be_fresh_at_the_mutation_boundary() {
+        let (envelope, caller, frontend, _) = fixture();
+        let permit = Validated(
+            envelope.request,
+            Freshness::Native {
+                caller,
+                frontend,
+                until: Instant::now(),
+            },
+        );
+        // Expiration refuses before attempting any lookup of these fake PIDs.
+        assert!(permit.into_request().is_err());
+    }
+
+    #[test]
     fn a_child_without_markers_cannot_hide_a_marked_parent() {
         let end = Instant::now() + WAIT;
         let error = ancestry(8, end, |pid| match pid {
@@ -538,6 +641,32 @@ mod tests {
         assert!(marked(b"PATH=/bin\0HGS_SESSION=example\0"));
         assert!(marked(b"HGS_RUN_ID=\0"));
         assert!(!marked(b"X_HGS_SESSION=example\0HGS_SESSION_EXTRA=x\0"));
+        for key in [
+            "LD_PRELOAD",
+            "LD_AUDIT",
+            "LD_LIBRARY_PATH",
+            "DYLD_INSERT_LIBRARIES",
+            "DYLD_LIBRARY_PATH",
+            "DYLD_FRAMEWORK_PATH",
+            "DYLD_FORCE_FLAT_NAMESPACE",
+        ] {
+            assert!(marked(format!("{key}=\0").as_bytes()));
+            assert!(!marked(format!("EXTRA_{key}=value\0").as_bytes()));
+        }
+    }
+
+    #[test]
+    fn trace_status_is_required_and_not_inferred_from_a_missing_field() {
+        assert!(tracer_absent(b"Name:\texample\nTracerPid:\t0\n"));
+        for bytes in [
+            b"TracerPid: 123\n".as_slice(),
+            b"Name: example\n",
+            b"TracerPid: 0\nTracerPid: 0\n",
+            b"TracerPid: unknown\n",
+            b"TracerPid: 4294967296\n",
+        ] {
+            assert!(!tracer_absent(bytes));
+        }
     }
 
     #[test]

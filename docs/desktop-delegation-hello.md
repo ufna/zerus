@@ -79,3 +79,12 @@ Answer. Approval policy remains default-off and existing writer/handoff checks
 still precede delivery. `delivery_result` is an indexed read-only query available
 even while the service is passive after revocation. Retry an unknown interaction
 with the same logical request UUID; do not fabricate a new delivery receipt.
+
+Policy mutation also requires an opaque actor-side permit at the delivery API;
+passing policy JSON to its generic request method refuses. Ancestry checks reject
+advertised loader-injection variables, and Linux requires a readable, zero
+`TracerPid`. Other-platform tracing checks remain platform work. Executable
+names supplement the session/run markers: a renamed or reparented unmarked
+launcher cannot be identified from these checks. This is an application IPC
+check, not an OS isolation boundary against arbitrary same-user code. Restart
+ordering and a complete native positive-path regression remain cutover work.
