@@ -179,7 +179,7 @@ pub(super) fn launch_ready(name: &str, run_id: &str, conversation_id: &str) -> R
 /// A resume before its deferred SessionStart, verified as for its first message.
 pub(super) fn checked_resumed(name: &str, run_id: &str, conversation_id: &str) -> Result<Value> {
     let record = checked_input(name, run_id, conversation_id, true)?;
-    if !resume_input::clearable(&record) {
+    if !clear_context::resume_clearable(&record) {
         return Err("The agent is no longer waiting for its resumed conversation; refresh".into());
     }
     Ok(record)

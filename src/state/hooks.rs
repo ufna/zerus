@@ -1298,6 +1298,12 @@ fn track(name: String, token: String, mut event: Value, started: &mut bool) -> R
     let changed_conversation = kind == "SessionStart" && string(&event, "agent_id").is_empty()
         && sid != string(&record, "conversation_id");
     if kind == "SessionStart" && string(&event, "agent_id").is_empty() {
+        // A previous accepted restore/clear hook may have synced the identity but
+        // failed archive cleanup. Finish that transaction before a later start
+        // can replace its durable boundary; this never resends native input.
+        if !string(&record,"restore_archive_id").is_empty() && string(&record,"expected_id").is_empty() {
+            archive::confirm_restore(&mut record)?;
+        }
         if !string(&record, "fork_parent_id").is_empty() && sid == string(&record, "fork_parent_id")
         {
             record["error"] =
