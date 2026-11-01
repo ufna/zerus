@@ -5928,13 +5928,11 @@ mod continuations {
         ) else {
             panic!("no question")
         };
-        assert_eq!(question.title, "Start the session to send?");
+        assert_eq!(question.title.english(), "Start the session to send?");
+        let informative = question.informative.english();
         assert!(
-            question
-                .informative
-                .contains("full context (43% (85.3k/200k))."),
-            "{}",
-            question.informative
+            informative.contains("full context (43% (85.3k/200k)).\n\n"),
+            "{informative}"
         );
         assert_eq!(
             c.answer(

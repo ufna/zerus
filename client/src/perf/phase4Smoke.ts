@@ -664,7 +664,7 @@ async function startStep() {
   type("resume smoke");
   await composer.send();
   await until(() => document.querySelector("#composer-dlg-title")?.textContent === "Start the session to send?", 5000, "the start question did not open");
-  button("Resume and send", document.querySelector("dialog[open]")!).click();
+  button("Resume", document.querySelector("dialog[open]")!).click();
   await waitCall("resume", 1);
   await invoke("smoke_resume", { key: row.catalogKey });
   await until(() => !!composer.view()?.waiting || composer.view()?.local.some((row) => row.status === "sent") === true, 3000, "the waiting state did not appear");
