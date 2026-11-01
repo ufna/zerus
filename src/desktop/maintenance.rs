@@ -38,7 +38,7 @@ use zerus_client_core::{
 pub(crate) use state::migrate;
 const SLOTS: usize = 4;
 const CALLS: usize = zerus_desktop_catalog::MAX_SOURCES as usize;
-const FRESH: Duration = Duration::from_secs(15);
+const FRESH: Duration = Duration::from_secs(30);
 const TIMER: i64 = 15 * 60;
 struct Lease;
 #[derive(Clone)]
@@ -220,12 +220,20 @@ impl Runtime {
                     !self.stopping && self.error.is_none(),
                     "maintenance unavailable"
                 );
-                ensure!(old.receipts.len() < state::REQUESTS, "request history full");
+
                 let edit = config
                     .recovery
                     .as_mut()
                     .and_then(|c| c.policy.take().map(|form| (c.base.clone(), form)));
                 let policy = if let Some((base, form)) = &edit {
+                    ensure!(
+                        old.receipts
+                            .values()
+                            .filter(|r| r.recovery_save == "unknown")
+                            .count()
+                            < state::UNKNOWN_REQUESTS,
+                        "unsettled recovery edit history full"
+                    );
                     ensure!(
                         self.recovery_current(store) && self.sync.can_save() && !self.sync.busy(),
                         "policy not ready"
@@ -287,7 +295,7 @@ impl Runtime {
                         .into(),
                     },
                 );
-                state::save(&mut store.db, &next)?;
+                state::save(&mut store.db, &mut next)?;
                 for job in &self.jobs {
                     job.cancel.store(true, Ordering::Release);
                 }
@@ -432,7 +440,7 @@ impl Runtime {
                     );
                     let mut next = self.stored.as_ref().unwrap().clone();
                     next.policy = serde_json::from_str(&policy)?;
-                    state::save(&mut store.db, &next)?;
+                    state::save(&mut store.db, &mut next)?;
                     self.stored = Some(next);
                 }
             }
@@ -494,7 +502,7 @@ impl Runtime {
                     update.current_origin = update.ready;
                     let mut next = self.stored.as_ref().unwrap().clone();
                     next.updates.insert(config.channel.as_str().into(), *update);
-                    state::save(&mut store.db, &next)?;
+                    state::save(&mut store.db, &mut next)?;
                     self.stored = Some(next);
                 }
                 (Work::Recovery(call), Some(Answer::Recovery(result)))
@@ -517,7 +525,7 @@ impl Runtime {
                             }
                             .into();
                         }
-                        state::save(&mut store.db, &next)?;
+                        state::save(&mut store.db, &mut next)?;
                         self.stored = Some(next);
                     }
                 }
@@ -559,11 +567,13 @@ impl Runtime {
                     .updates
                     .entry(update.channel.as_str().into())
                     .or_default();
-                let interval = zerus_client_core::updates::automatic_interval(if cfg!(windows) {
-                    zerus_client_core::updates::Channel::Stable
-                } else {
-                    update.channel
-                }) as i64;
+                let interval = zerus_client_core::updates::automatic_interval(
+                    if zerus_client_core::updates::windows_build(&state.installation) {
+                        zerus_client_core::updates::Channel::Stable
+                    } else {
+                        update.channel
+                    },
+                ) as i64;
                 if state.last_attempt <= 0
                     || state.last_attempt > now
                     || now - state.last_attempt >= interval
@@ -573,7 +583,7 @@ impl Runtime {
                     state.automatic = true;
                     state.busy = false;
                     state.current_origin = false;
-                    state::save(&mut store.db, &next)?;
+                    state::save(&mut store.db, &mut next)?;
                     self.stored = Some(next);
                     self.launch(Work::Update(update))?;
                 }

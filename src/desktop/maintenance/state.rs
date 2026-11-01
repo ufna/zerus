@@ -1,4 +1,4 @@
-//! One bounded actor-owned row. Request reservations are never evicted or replayed.
+//! One bounded actor-owned row. Recent receipts expire; unknown edits never replay.
 use anyhow::{ensure, Result};
 use rusqlite::{Connection, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -8,6 +8,7 @@ use zerus_client_core::maintenance::{Configuration, UpdateProjection};
 
 pub(super) const LIMIT: usize = 2 * 1024 * 1024;
 pub(super) const REQUESTS: usize = 4096;
+pub(super) const UNKNOWN_REQUESTS: usize = 1024;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Receipt {
@@ -50,7 +51,20 @@ pub(super) fn load(db: &Connection) -> Result<Stored> {
     )?;
     let stored: Stored = serde_json::from_str(&value)?;
     ensure!(
-        stored.receipts.len() <= REQUESTS && stored.updates.len() <= 3,
+        stored.receipts.len() <= REQUESTS + UNKNOWN_REQUESTS
+            && stored
+                .receipts
+                .values()
+                .filter(|r| r.recovery_save == "unknown")
+                .count()
+                <= UNKNOWN_REQUESTS
+            && stored
+                .receipts
+                .values()
+                .filter(|r| r.recovery_save != "unknown")
+                .count()
+                <= REQUESTS
+            && stored.updates.len() <= 3,
         "invalid maintenance row"
     );
     ensure!(
@@ -70,9 +84,38 @@ pub(super) fn load(db: &Connection) -> Result<Stored> {
     );
     Ok(stored)
 }
-pub(super) fn save(db: &mut Connection, stored: &Stored) -> Result<()> {
+pub(super) fn save(db: &mut Connection, stored: &mut Stored) -> Result<()> {
+    // Ordinary metadata/preferences have a recency window, not a lifetime cap.
+    // Unknown edits keep their original reservation separately: their absence
+    // must never invite replay, and they cannot freeze ordinary GUI upgrades.
+    let mut completed: Vec<_> = stored
+        .receipts
+        .iter()
+        .filter(|(_, r)| r.recovery_save != "unknown")
+        .map(|(id, r)| (r.revision, id.clone()))
+        .collect();
+    completed.sort_unstable();
+    for (_, id) in completed
+        .iter()
+        .take(completed.len().saturating_sub(REQUESTS))
+    {
+        stored.receipts.remove(id);
+    }
     ensure!(
-        stored.receipts.len() <= REQUESTS && stored.updates.len() <= 3,
+        stored.receipts.len() <= REQUESTS + UNKNOWN_REQUESTS
+            && stored
+                .receipts
+                .values()
+                .filter(|r| r.recovery_save == "unknown")
+                .count()
+                <= UNKNOWN_REQUESTS
+            && stored
+                .receipts
+                .values()
+                .filter(|r| r.recovery_save != "unknown")
+                .count()
+                <= REQUESTS
+            && stored.updates.len() <= 3,
         "maintenance history full"
     );
     let value = serde_json::to_string(stored)?;
