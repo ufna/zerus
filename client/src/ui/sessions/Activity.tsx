@@ -538,8 +538,8 @@ function LocalDeleteDialog() {
       <div class="dlg-body"><div class="confirm-body" id="local-delete-body">{tr(DELETE_TEXT)}</div></div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn primary" data-initial onClick={cancel}>{tr("Cancel")}</button>
         <button type="button" class="btn solid-danger" onClick={confirm}>{tr("Delete")}</button>
+        <button type="button" class="btn primary" data-initial onClick={cancel}>{tr("Cancel")}</button>
       </div>
     </dialog>
   );

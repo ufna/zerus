@@ -13,7 +13,8 @@ export default function AccountCatalogDialog(props: { prompt: AccountPrompt; clo
     queueMicrotask(() => { const first=dialog.querySelector<HTMLElement>("[data-initial]");first?.focus();if(first instanceof HTMLInputElement)first.select(); });
   });
   onCleanup(() => { dialog.close(); if(view.origin.isConnected)view.origin.focus(); });
-  const submit=(event: Event) => { event.preventDefault(); if(!rename || label().trim())props.confirm(label().trim(),view.handle); };
+  const confirm=() => { if(!rename || label().trim())props.confirm(label().trim(),view.handle); };
+  const submit=(event: Event) => { event.preventDefault(); if(rename)confirm();else props.close(view.handle); };
   return <dialog ref={dialog} class="dlg" aria-labelledby="account-catalog-title" style={{width:rename ? "420px" : "460px"}}
     onCancel={(event)=>{event.preventDefault();props.close(view.handle);}} onClose={()=>props.close(view.handle)}>
     <form onSubmit={submit}>
@@ -32,8 +33,13 @@ export default function AccountCatalogDialog(props: { prompt: AccountPrompt; clo
         </Show>
       </div>
       <div class="dlg-foot"><span class="spacer" />
-        <button type="button" class="btn" data-initial={!rename ? "" : undefined} onClick={()=>props.close(view.handle)}>{tr("Cancel")}</button>
-        <button type="submit" class={rename ? "btn primary" : "btn solid-danger"} disabled={rename && !label().trim()}>{rename ? tr("Save") : tr("Remove from %1", view.machine)}</button>
+        <Show when={rename} fallback={<>
+          <button type="button" class="btn solid-danger" onClick={confirm}>{tr("Remove from %1", view.machine)}</button>
+          <button type="button" class="btn primary" data-initial autofocus onClick={()=>props.close(view.handle)}>{tr("Cancel")}</button>
+        </>}>
+          <button type="button" class="btn" onClick={()=>props.close(view.handle)}>{tr("Cancel")}</button>
+          <button type="submit" class="btn primary" disabled={!label().trim()}>{tr("Save")}</button>
+        </Show>
       </div>
     </form>
   </dialog>;

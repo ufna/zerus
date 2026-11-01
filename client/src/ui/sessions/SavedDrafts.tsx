@@ -119,8 +119,8 @@ function ReplaceDialog(props: { open: boolean; text: string; onCancel: () => voi
       <div class="dlg-body"><div class="confirm-body" id="replace-draft-body" style={{ "white-space": "pre-wrap" }}>{props.text}</div></div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn primary" data-initial onClick={props.onCancel}>{tr("Cancel")}</button>
         <button type="button" class="btn solid-danger" onClick={props.onConfirm}>{tr(TEXTS.replaceConfirm)}</button>
+        <button type="button" class="btn primary" data-initial onClick={props.onCancel}>{tr("Cancel")}</button>
       </div>
     </dialog>
   );
