@@ -244,7 +244,8 @@ class TrayInstallGui(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         for name in ('tray/install.sh', 'tray/update-installed.py', 'client/scripts/switch-config.py',
-                     'client/src-tauri/tauri.switch.conf.json', 'VERSION'):
+                     'client/src-tauri/tauri.switch.conf.json', 'client/src-tauri/Info.switch.plist',
+                     'VERSION', 'DEV_VERSION'):
             (self.root / name).parent.mkdir(parents=True, exist_ok=True)
             (self.root / name).write_bytes((REPO / name).read_bytes())
         tools = self.root / 'bin'
