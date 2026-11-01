@@ -1,3 +1,6 @@
+import { bus } from "./notices";
+import { tr } from "../i18n";
+import { desktopService } from "./desktopService";
 import { batch, createSignal } from "solid-js";
 import * as bridge from "../bridge";
 import type { AttentionSnapshot, Mark } from "../bridge";
@@ -152,7 +155,7 @@ function touch(c: Change, key: string) {
   else c.all = true;
 }
 
-export function createMarks(port: MarksPort = bridgePort, storage: MigratedStorage = browserStorage()) {
+export function createMarks(port: MarksPort = bridgePort, storage: MigratedStorage = browserStorage(), service = desktopService) {
   /** Both maps in write order, oldest first. */
   let marks = new Map<string, Mark>();
   let replies = new Map<string, string>();
@@ -445,7 +448,7 @@ export function createMarks(port: MarksPort = bridgePort, storage: MigratedStora
    * `sharing` names computers whose listed rows show shared read state.
    */
   function migrateLegacy(sharing: Set<string>, fresh: ReadMark[], c: Change) {
-    if (!loaded || !sharing.size) return;
+    if (service.enabled() || !loaded || !sharing.size) return;
     migrated ??= new Set(storage.load());
     const due = new Set([...sharing].filter((computer) => !migrated!.has(computer)));
     if (!due.size) return;
@@ -613,10 +616,75 @@ export function createMarks(port: MarksPort = bridgePort, storage: MigratedStora
    * a shared-read host, kept here for an older one) and acknowledges the
    * attention. False when the row changed.
    */
+  // Bounded user-intent fanout, not a background read-mark delivery worker.
+  // Dwell and menu repeats coalesce; at most two service RPCs run at once.
+  const serviceReadKeys = new Set<string>();
+  const serviceReadQueue: (() => Promise<void>)[] = [];
+  let serviceReadActive = 0;
+  function drainServiceReads() {
+    while (serviceReadActive < 2 && serviceReadQueue.length) {
+      serviceReadActive++;
+      void serviceReadQueue.shift()!().finally(() => { serviceReadActive--; drainServiceReads(); });
+    }
+  }
+  /** Service mode has no GUI read producer or optimistic acknowledgement. */
+  function serviceRead(selected: Session, attention: boolean): boolean {
+    // Catalog rows are reactive objects updated in place. Capture the exact
+    // reply/run before awaiting an actor receipt.
+    const s = { ...selected };
+    if (!service.ready("reads") || !s.sharedRead || !s.runId || !s.conversationId) return false;
+    const mark: ReadMark = { computer: s.computer, name: s.name, run_id: s.runId, conversation_id: s.conversationId,
+      reply_id: s.replyId || null, attention_signature: attention ? s.attentionSignature || null : null };
+    if (!mark.reply_id && !mark.attention_signature) return false;
+    const identity = JSON.stringify(mark);
+    if (serviceReadKeys.has(identity)) return false;
+    if (serviceReadKeys.size >= 128) {
+      bus.notify("error", tr("Too many read actions are pending. Wait for the background service and try again."), true, "desktop-service-read");
+      return false;
+    }
+    serviceReadKeys.add(identity);
+    serviceReadQueue.push(async () => {
+      try {
+        if (!service.ready("reads")) throw Error(tr("Background service unavailable. Retry to reconnect."));
+        const committed = await port.queueReadMarks([mark]);
+        if (!committed?.some(m => sameMark(m, mark))) return;
+        const current = matching(s);
+        if (!current || current.runId !== mark.run_id || current.replyId !== s.replyId || current.attentionSignature !== s.attentionSignature) return;
+        const c = change(), fresh: ReadMark[] = [];
+        enqueue(mark, fresh, c);
+        if (s.replyId) writeReply(replyKeyOf(s), s.replyId, c);
+        if (attention) writeMark(attentionKey(s), { review: false, acknowledged: s.fingerprint }, c);
+        // Actor commit permits the local overlay. Delivery and host observation
+        // remain separate; the catalog later settles this pending copy.
+        commit(c);
+      } catch (error) {
+        bus.notify("error", String(error), true, "desktop-service-read");
+      } finally { serviceReadKeys.delete(identity); }
+    });
+    drainServiceReads();
+    return true;
+  }
+
+  const sharedReadNeeded = (s: Session) => s.sharedRead && !!(
+    (s.replyId && s.readReplyId !== s.replyId) || (s.attentionSignature && s.readAttentionSignature !== s.attentionSignature)
+  );
+
+  /** A current row can be unread because the service is unavailable; that is
+   * distinct from an identity changing under an open menu. Older hosts keep
+   * their device-local read overlay and need no host writer at all. */
+  function markReadUnavailable(row: ActionRow): string | undefined {
+    if (!service.enabled()) return;
+    const s = matching(row);
+    if (!s || s.replyId !== row.replyId || s.fingerprint !== row.fingerprint || s.attentionSignature !== row.attentionSignature || !sharedReadNeeded(s)) return;
+    if (!s.runId || !s.conversationId) return tr("This host has no shared read state for this session.");
+    if (!service.ready("reads")) return tr("Read marks are unavailable until the background service is ready.");
+  }
+
   function markRead(row: ActionRow): boolean {
     const s = matching(row);
     if (!s || (s.replyId ?? "") !== (row.replyId ?? "") || s.fingerprint !== row.fingerprint
       || (s.attentionSignature ?? "") !== (row.attentionSignature ?? "")) return false;
+    if (service.enabled() && sharedReadNeeded(s)) return serviceRead(s, true);
     const before = readState(s);
     const c = change();
     const fresh: ReadMark[] = [];
@@ -643,6 +711,7 @@ export function createMarks(port: MarksPort = bridgePort, storage: MigratedStora
     const s = listed(new Set([computer])).find((s) => s.state !== "archived" && s.name === name
       && (s.conversationId ?? "") === conversation && (s.replyId ?? "") === reply && readState(s).unreadReply);
     if (!s) return false;
+    if (service.enabled() && s.sharedRead) return serviceRead(s, false);
     const c = change();
     const fresh: ReadMark[] = [];
     writeReply(replyKeyOf(s), reply, c);
@@ -735,6 +804,7 @@ export function createMarks(port: MarksPort = bridgePort, storage: MigratedStora
       const key = replyKeyOf(s);
       if (snapshot.get(key) !== s.replyId) continue;
       if (!s.sharedRead && replies.get(key) === s.replyId) continue;
+      if (service.enabled() && s.sharedRead) { if (serviceRead(s, false)) count++; continue; }
       writeReply(key, s.replyId!, c);
       queueRead(s, true, false, fresh, c);
       count++;
@@ -750,6 +820,7 @@ export function createMarks(port: MarksPort = bridgePort, storage: MigratedStora
     loadPending,
     observe,
     markRead,
+    markReadUnavailable,
     markReplyRead,
     markNeedsAttention,
     unreadReplies,
@@ -773,7 +844,7 @@ export type Marks = ReturnType<typeof createMarks>;
 
 /** The app's marks; the app catalog applies them. Tests build their own with `createMarks`. */
 export const marks = createMarks();
-export const { overlay, markRead, markReplyRead, markNeedsAttention, unreadReplies, markAllRead, loadPending } = marks;
+export const { overlay, markReadUnavailable, markRead, markReplyRead, markNeedsAttention, unreadReplies, markAllRead, loadPending } = marks;
 /** Hands a batch the catalog just applied to the marks (session.ts). */
 export const observeMarks = marks.observe;
 void marks.load();

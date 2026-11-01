@@ -45,6 +45,8 @@ struct Inner {
     grouping: Grouping,
     tap: Option<Tap>,
     terminations: terminations::Terminations,
+    service: Option<zerus_client_core::desktop::service::Snapshot>,
+    service_changed: bool,
 }
 
 /// Shared by the drain thread and the commands.
@@ -223,6 +225,9 @@ impl Pump {
         let (groups, grouping) = inner.grouping.take();
         batch.groups = groups;
         batch.grouping = grouping;
+        if std::mem::take(&mut inner.service_changed) {
+            batch.desktop_service = inner.service.clone();
+        }
         batch
     }
 
@@ -230,11 +235,75 @@ impl Pump {
     pub fn resend(&self) {
         let mut inner = self.lock();
         inner.grouping.resend();
+        inner.service_changed = inner.service.is_some();
         let changes = inner.mirror.changes();
         for change in changes {
             inner.coalescer.push(change);
         }
         self.wake(inner);
+    }
+
+    pub fn service(&self, snapshot: zerus_client_core::desktop::service::Snapshot) {
+        let mut inner = self.lock();
+        if inner.service.as_ref() == Some(&snapshot) {
+            return;
+        }
+        inner.service = Some(snapshot);
+        inner.service_changed = true;
+        self.wake(inner);
+    }
+
+    /// Membership only: do not clone another complete row snapshot while
+    /// bounded service pages flow through the existing mirror and coalescer.
+    pub fn service_catalog_finish(
+        &self,
+        computer: &ComputerId,
+        seen: &std::collections::BTreeSet<String>,
+    ) {
+        let missing: Vec<String> = self
+            .lock()
+            .mirror
+            .computers
+            .get(&computer.0)
+            .map(|rows| {
+                rows.rows
+                    .keys()
+                    .filter(|key| !seen.contains(*key))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        for key in missing {
+            self.push(Change::Remove {
+                computer: computer.clone(),
+                key,
+                reason: None,
+            });
+        }
+    }
+
+    pub fn drain_service(
+        &self,
+        changes: Receiver<crate::desktop_service::Data>,
+        observe: impl Fn(&Change) + Send + 'static,
+    ) -> std::thread::JoinHandle<()> {
+        let pump = self.clone();
+        std::thread::Builder::new()
+            .name("zerus-service-view".into())
+            .spawn(move || {
+                for data in changes {
+                    match data {
+                        crate::desktop_service::Data::Change(change) => {
+                            observe(&change);
+                            pump.push(*change);
+                        }
+                        crate::desktop_service::Data::Catalog(delivery) => {
+                            delivery.apply(&pump, &observe)
+                        }
+                    }
+                }
+            })
+            .expect("the service view thread starts")
     }
 
     /// The organization the list shows; `revision` changes whenever it does.

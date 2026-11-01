@@ -137,6 +137,9 @@ pub struct Batch {
     /// The ordered project headers and whether edits can run, when they changed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grouping: Option<GroupingOut>,
+    /// Present only for the default-off desktop-service frontend mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop_service: Option<crate::desktop::service::Snapshot>,
 }
 
 impl Batch {
@@ -152,6 +155,7 @@ impl Batch {
             && self.organizations.is_empty()
             && self.groups.is_empty()
             && self.grouping.is_none()
+            && self.desktop_service.is_none()
     }
 }
 

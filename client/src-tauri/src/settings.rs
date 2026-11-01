@@ -137,6 +137,11 @@ pub async fn settings_set(
     key: String,
     value: Value,
 ) -> Result<Value, String> {
+    if crate::desktop_service::mode() && key == "automaticApprovals/enabled" {
+        return Err(
+            "Automatic approval settings must be changed through the background service.".into(),
+        );
+    }
     let (value, revision) = if key == ALWAYS_ON_TOP {
         let on = value.as_bool().ok_or("Keep Above requires a boolean.")?;
         crate::window_layer::request(&app, on).await?

@@ -84,7 +84,7 @@ pub fn start(app: &AppHandle) -> Recovery {
         persist: Mutex::new(()),
         blocked: crate::actions::blocked(),
     });
-    if !inner.blocked {
+    if !inner.blocked && !crate::desktop_service::mode() {
         let (handle, service) = (app.clone(), Arc::clone(&inner));
         let periods = (REFRESH.as_secs() / FOLLOW.as_secs()).max(1);
         let started = std::thread::Builder::new()
