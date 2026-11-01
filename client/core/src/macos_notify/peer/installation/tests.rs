@@ -57,6 +57,24 @@ fn fake_snapshot(tree: &Tree) -> Snapshot {
 }
 
 #[test]
+fn routing_metadata_cache_refuses_a_changed_helper_without_rehashing_each_page() {
+    // Modelled verified snapshot: no native positive signature is claimed.
+    let tree = Tree::new();
+    let selection = Selection {
+        original: fake_snapshot(&tree),
+    };
+    let service = tree.0.join("Contents/MacOS/hgs");
+    for _ in 0..100 {
+        assert_eq!(
+            selection.service_executable_if_unchanged().unwrap(),
+            service
+        );
+    }
+    std::fs::write(&service, b"changed generation").unwrap();
+    assert!(selection.service_executable_if_unchanged().is_err());
+}
+
+#[test]
 fn only_exact_own_bundle_layouts_are_candidates_not_bare_or_source_paths() {
     for name in ["hgs", "hgs-tray"] {
         let p = PathBuf::from("/example/Example.app/Contents/MacOS").join(name);

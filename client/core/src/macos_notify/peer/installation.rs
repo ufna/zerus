@@ -65,6 +65,15 @@ impl Selection {
     pub fn service_executable(&self) -> &Path {
         &self.original.service.executable
     }
+    /// Cheap CLI routing freshness after a connection's full select_own. This
+    /// does not repeat Security verification and is NOT native permission or a
+    /// substitute for observe_service/observe_app/full factory revalidation.
+    pub fn service_executable_if_unchanged(&self) -> Result<&Path, Refusal> {
+        if generation(&self.original.bundle)? != self.original.generation {
+            return Err(Refusal::GenerationChanged);
+        }
+        Ok(&self.original.service.executable)
+    }
     pub fn observe_service<'a>(
         &'a self,
         connection: &'a UnixStream,

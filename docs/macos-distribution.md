@@ -84,7 +84,10 @@ removing it.
 Source `install.sh` reloads a PATH-backed desktop service when its CLI bytes
 change. An owned service with a separate runner keeps its registered backend;
 the CLI-only install refreshes its ordinary runner without selecting a different
-service image. Recovery, swarm and voice retain their existing installer/update rules.
+service image. After rollback to an existing unpaired app, a missing bundled CLI
+and absent pair record restore the ordinary stable-CLI registration. A remaining
+pair record, present-but-broken helper, missing app or link still refuses.
+Recovery, swarm and voice retain their existing installer/update rules.
 `tray/install.sh` preflights it before the GUI swap and retains an
 unchanged active backend during GUI-only updates. The signed notification host
 keeps `com.hgdev.hgs-tray`; its service command interface and delivery integration
@@ -423,6 +426,9 @@ an unchanged backend stays running. The GUI keeps its explicit `--hgs` stable
 CLI selection. The desktop-service client selects the bundled CLI only through
 fresh native running-self and sealed-pair verification; a purported pair that
 fails stays unavailable. Unpaired/source launches keep ordinary CLI discovery.
+The read-only service client verifies once per connection, then checks the fixed
+generation metadata before each CLI exchange; catalog pages do not rehash the
+whole app. Changed generations refuse until an explicit reconnect verifies again.
 The shared `desktop::relay::select` API also supplies the bundled service image
 for the authenticated frontend-request sender; that still-unavailable sender is
 a separate UI integration. The stable runner is not native authority.

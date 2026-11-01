@@ -10,22 +10,59 @@ const UNAVAILABLE: &str = "paired_desktop_cli_unavailable";
 /// an explicit ordinary-CLI override. Source/unpaired and other platforms retain
 /// the caller's ordinary selection. Recheck for each new service exchange.
 pub fn select(ordinary: &Path) -> Result<PathBuf, &'static str> {
-    #[cfg(target_os = "macos")]
-    {
-        let executable = std::env::current_exe().map_err(|_| UNAVAILABLE)?;
-        select_mac(&executable, ordinary, || {
+    let connection = Connection::select(ordinary)?;
+    connection.executable().map(Path::to_owned)
+}
+
+/// One service connection's CLI routing snapshot, never an effect permission.
+/// The expensive native signature/seal verification runs once at construction.
+/// Later pages compare the fixed generation metadata and refuse any drift.
+pub struct Connection {
+    executable: PathBuf,
+    #[cfg(all(target_os = "macos", feature = "macos-native-peer"))]
+    native: Option<crate::macos_notify::peer::installation::Selection>,
+}
+impl Connection {
+    pub fn select(ordinary: &Path) -> Result<Self, &'static str> {
+        #[cfg(target_os = "macos")]
+        {
+            let executable = std::env::current_exe().map_err(|_| UNAVAILABLE)?;
             #[cfg(feature = "macos-native-peer")]
-            {
-                crate::macos_notify::peer::installation::select_own()
-                    .map(|selection| selection.service_executable().to_owned())
-                    .map_err(|_| UNAVAILABLE)
-            }
-            #[cfg(not(feature = "macos-native-peer"))]
-            Err(UNAVAILABLE)
+            let mut native = None;
+            let selected = select_mac(&executable, ordinary, || {
+                #[cfg(feature = "macos-native-peer")]
+                {
+                    let selection = crate::macos_notify::peer::installation::select_own()
+                        .map_err(|_| UNAVAILABLE)?;
+                    let path = selection.service_executable().to_owned();
+                    native = Some(selection);
+                    Ok(path)
+                }
+                #[cfg(not(feature = "macos-native-peer"))]
+                Err(UNAVAILABLE)
+            })?;
+            Ok(Self {
+                executable: selected,
+                #[cfg(feature = "macos-native-peer")]
+                native,
+            })
+        }
+        #[cfg(not(target_os = "macos"))]
+        Ok(Self {
+            executable: ordinary.into(),
         })
     }
-    #[cfg(not(target_os = "macos"))]
-    Ok(ordinary.into())
+    /// Off the UI thread. Cheap routing freshness only: this cannot replace
+    /// the host factory's full native revalidation or peer/child checks.
+    pub fn executable(&self) -> Result<&Path, &'static str> {
+        #[cfg(all(target_os = "macos", feature = "macos-native-peer"))]
+        if let Some(native) = &self.native {
+            return native
+                .service_executable_if_unchanged()
+                .map_err(|_| UNAVAILABLE);
+        }
+        Ok(&self.executable)
+    }
 }
 
 #[cfg(any(test, target_os = "macos"))]

@@ -173,6 +173,27 @@ def ready(value, status, pid):
     return True
 
 
+def unpaired_rollback(binary):
+    """Recognize only an existing unpaired app at the old registered location."""
+    macos, contents, app = binary.parent, binary.parent.parent, binary.parent.parent.parent
+    if (binary.name != "hgs" or macos.name != "MacOS" or contents.name != "Contents"
+            or app.suffix != ".app" or os.path.lexists(binary)
+            or os.path.lexists(contents / "Resources/zerus-local-pair.json")):
+        return False
+    try:
+        for directory in (app, contents, macos):
+            ordinary(directory, directory=True)
+        ordinary(macos / "hgs-tray")
+        info = read_definition(contents / "Info.plist")
+        if info is None:
+            return False
+        info = plistlib.loads(info[0])
+        return (info.get("CFBundleIdentifier") == "com.hgdev.hgs-tray"
+                and info.get("CFBundleExecutable") == "hgs-tray")
+    except (OSError, ValueError, Refusal):
+        return False
+
+
 def install(binary, home, source, restart=False, check_only=False, remove=False,
             command=run, clock=time.monotonic, sleep=time.sleep, runner_hgs=None, refresh_runner=False):
     require(home.is_absolute(), "Desktop service HOME must be absolute.")
@@ -196,9 +217,16 @@ def install(binary, home, source, restart=False, check_only=False, remove=False,
         if old_runner is not None:
             require(isinstance(old_runner, str) and Path(old_runner).is_absolute(),
                     "The owned desktop runner selection is invalid; it was kept.")
-            return install(Path(previous_definition["ProgramArguments"][0]), home, source,
-                           check_only=check_only, remove=remove, command=command, clock=clock,
-                           sleep=sleep, runner_hgs=binary)
+            backend = Path(previous_definition["ProgramArguments"][0])
+            if not unpaired_rollback(backend):
+                ordinary(backend)
+                return install(backend, home, source,
+                               check_only=check_only, remove=remove, command=command, clock=clock,
+                               sleep=sleep, runner_hgs=binary)
+            # update-installed.py can restore an old Qt/unpaired app. Its
+            # missing helper is deliberate, so restore the ordinary registration
+            # just as tray/install.sh's Qt branch does. A remaining pair record,
+            # missing app, link or present-but-broken helper never takes this path.
     if runner_hgs is not None:
         runner_hgs = Path(os.path.abspath(runner_hgs))
         ordinary(runner_hgs)

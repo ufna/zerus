@@ -150,6 +150,48 @@ class MacDesktopService(unittest.TestCase):
             self.install(runner_hgs=runner)
         self.assertEqual(self.command.destination.read_bytes(), original)
 
+    def test_cli_refresh_repairs_a_paired_registration_after_unpaired_qt_rollback(self):
+        bundled = self.root / "hgs-tray.app/Contents/MacOS/hgs"
+        bundled.parent.mkdir(parents=True)
+        bundled.write_text("paired CLI"); bundled.chmod(0o755)
+        paired = Commands(self.home, bundled)
+        self.assertEqual(installer.install(bundled, self.home, {}, runner_hgs=self.binary,
+                                          command=paired), "ready")
+        # Model update-installed.py restoring the unpaired Qt app at the SAME
+        # location; the old registration remains until this CLI-only refresh.
+        bundled.unlink()
+        qt = bundled.with_name("hgs-tray"); qt.write_text("Qt rollback"); qt.chmod(0o755)
+        (bundled.parent.parent / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleIdentifier": "com.hgdev.hgs-tray", "CFBundleExecutable": "hgs-tray"}))
+        self.command.loaded = True
+        self.command.printed_argv = paired.argv
+        self.assertEqual(self.install(refresh_runner=True, restart=True), "ready")
+        restored = plistlib.loads(self.command.destination.read_bytes())
+        self.assertEqual(restored["ProgramArguments"], self.command.argv)
+        self.assertNotIn("EnvironmentVariables", restored)
+        self.assertEqual([args[1] for args in self.command.mutations()], ["bootout", "bootstrap"])
+        self.assertFalse(bundled.exists())
+        self.assertEqual(qt.read_text(), "Qt rollback")
+
+    def test_cli_refresh_never_repairs_a_pair_with_its_helper_missing(self):
+        bundled = self.root / "hgs-tray.app/Contents/MacOS/hgs"
+        bundled.parent.mkdir(parents=True)
+        bundled.write_text("paired CLI"); bundled.chmod(0o755)
+        paired = Commands(self.home, bundled)
+        installer.install(bundled, self.home, {}, runner_hgs=self.binary, command=paired)
+        bundled.unlink()
+        qt = bundled.with_name("hgs-tray"); qt.write_text("app"); qt.chmod(0o755)
+        contents = bundled.parent.parent
+        (contents / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleIdentifier": "com.hgdev.hgs-tray", "CFBundleExecutable": "hgs-tray"}))
+        (contents / "Resources").mkdir()
+        record = contents / "Resources/zerus-local-pair.json"; record.write_text("retained pair")
+        original = self.command.destination.read_bytes()
+        with self.assertRaises((installer.Refusal, OSError)):
+            self.install(refresh_runner=True, restart=True)
+        self.assertEqual(self.command.destination.read_bytes(), original)
+        self.assertEqual(self.command.mutations(), [])
+
     def test_backend_upgrade_reloads_only_the_owned_desktop_label(self):
         self.existing(); self.command.loaded = True
         self.assertEqual(self.install(restart=True), "ready")
