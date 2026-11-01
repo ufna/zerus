@@ -14,6 +14,7 @@ pub(super) fn sample() -> Sample {
     .map(|elapsed| Idle {
         elapsed,
         source: IdleSource::MacEventSource,
+        since_input: true,
     });
     let locked = CGSessionCopyCurrentDictionary().and_then(|dictionary| {
         // SAFETY: CGSessionCopyCurrentDictionary returns a CF dictionary of CF

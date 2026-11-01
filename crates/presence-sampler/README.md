@@ -7,6 +7,9 @@ service integration is a separate change.
 Keep one `Sampler` and call `sample()` from a background thread at least once
 every five seconds. Construction is lazy. `Sample.idle` and `Sample.locked` are
 independently optional: unavailable data must not become zero idle or unlocked.
+Before a writer interprets a short idle duration as presence it must also require
+`Idle.since_input`. An observation-only lower bound can establish absence once
+large enough, but a small value cannot establish recent input.
 Linux method replies time out after 500 ms; IPC setup and platform APIs are not
 hard real-time operations.
 

@@ -32,6 +32,11 @@ pub enum IdleSource {
 pub struct Idle {
     pub elapsed: Duration,
     pub source: IdleSource,
+    /// True only when this duration follows observed input (or an OS query of
+    /// the actual last input). False for a lower bound measured from monitor
+    /// startup/reconnect. A short false value must never establish presence;
+    /// a sufficiently long lower bound can still establish absence.
+    pub since_input: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

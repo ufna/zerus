@@ -42,18 +42,17 @@ impl LinuxSampler {
             }
             if let Some(source) = &mut self.wayland {
                 match source.sample() {
-                    Ok(value) => {
-                        idle = value.map(|elapsed| Idle {
-                            elapsed,
-                            source: IdleSource::WaylandInputLowerBound,
-                        })
-                    }
+                    Ok(value) => idle = value,
                     Err(()) => self.wayland = None,
                 }
             }
         } else {
             self.wayland = None;
         }
+        self.sample_bus(idle, is_wayland)
+    }
+
+    fn sample_bus(&mut self, mut idle: Option<Idle>, is_wayland: bool) -> Sample {
         let Some(bus) = &self.bus else {
             return Sample { idle, locked: None };
         };
@@ -63,7 +62,7 @@ impl LinuxSampler {
         }
         // A disconnected bus is retried on the next call; no old lock/idle value
         // is cached as if it were a fresh observation.
-        if locked.is_none() {
+        if bus.is_closed() {
             self.bus = None;
         }
         Sample { idle, locked }
@@ -119,6 +118,7 @@ fn dbus_idle(bus: &Connection, is_wayland: bool) -> Option<Idle> {
         return milliseconds(value).map(|elapsed| Idle {
             elapsed,
             source: IdleSource::Mutter,
+            since_input: true,
         });
     }
     // KDE's method is milliseconds, not the seconds some other screensavers
@@ -139,6 +139,7 @@ fn dbus_idle(bus: &Connection, is_wayland: bool) -> Option<Idle> {
     milliseconds(u64::from(value)).map(|elapsed| Idle {
         elapsed,
         source: IdleSource::KdeScreenSaver,
+        since_input: true,
     })
 }
 
@@ -234,6 +235,7 @@ mod tests {
             Some(Idle {
                 elapsed: Duration::from_millis(12345),
                 source: IdleSource::Mutter,
+                since_input: true,
             })
         );
     }
@@ -247,9 +249,39 @@ mod tests {
             Some(Idle {
                 elapsed: Duration::from_millis(4321),
                 source: IdleSource::KdeScreenSaver,
+                since_input: true,
             })
         );
         assert_eq!(dbus_idle(&bus, true), None);
+    }
+
+    #[test]
+    fn missing_screensaver_does_not_discard_a_healthy_bus() {
+        let (bus, server) = desktop(None, false);
+        server
+            .object_server()
+            .remove::<ScreenSaver, _>("/org/freedesktop/ScreenSaver")
+            .unwrap();
+        let mut sampler = LinuxSampler {
+            bus: Some(bus),
+            ..LinuxSampler::default()
+        };
+        for _ in 0..3 {
+            assert_eq!(sampler.sample_bus(None, true), Sample::default());
+            assert!(
+                sampler.bus.is_some(),
+                "unsupported method is not a transport failure"
+            );
+        }
+        server.close().unwrap();
+        for _ in 0..100 {
+            if sampler.bus.as_ref().unwrap().is_closed() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(sampler.sample_bus(None, true), Sample::default());
+        assert!(sampler.bus.is_none(), "a disconnected bus must be retried");
     }
 
     #[test]

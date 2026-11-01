@@ -113,7 +113,7 @@ fn pump(
     client: &mut InputIdle,
     display: &mut Display<Compositor>,
     state: &mut Compositor,
-) -> Option<Duration> {
+) -> Option<Idle> {
     display.dispatch_clients(state).unwrap();
     display.flush_clients().unwrap();
     client.sample().unwrap()
@@ -131,12 +131,19 @@ fn kde_input_protocol_startup_idle_resume_and_liveness() {
         .expect("v2 input subscription");
     notification.idled();
     let idle = pump(&mut client, &mut display, &mut compositor).unwrap();
-    assert!(idle >= THRESHOLD);
-    assert!(idle < Duration::from_secs(2));
+    assert!(idle.elapsed >= THRESHOLD);
+    assert!(!idle.since_input, "startup lower bound is not recent input");
+    assert!(idle.elapsed < Duration::from_secs(2));
     notification.resumed();
     assert_eq!(
         pump(&mut client, &mut display, &mut compositor),
-        Some(Duration::ZERO)
+        Some(estimate(Duration::ZERO, true))
+    );
+    notification.idled();
+    assert!(
+        pump(&mut client, &mut display, &mut compositor)
+            .unwrap()
+            .since_input
     );
     // A stalled compositor cannot keep reporting a fresh active seat forever.
     client.state.last_sync = Some(Instant::now() - SYNC_TIMEOUT - Duration::from_secs(1));
@@ -152,4 +159,21 @@ fn version_one_cannot_turn_an_idle_inhibitor_into_user_activity() {
         assert_eq!(pump(&mut client, &mut display, &mut compositor), None);
     }
     assert!(compositor.input_notification.is_none());
+}
+
+#[test]
+fn reconnecting_while_away_does_not_report_recent_input() {
+    for _ in 0..2 {
+        let (mut client, mut display, mut compositor) = pair(2);
+        for _ in 0..20 {
+            assert_eq!(pump(&mut client, &mut display, &mut compositor), None);
+        }
+        compositor.input_notification.as_ref().unwrap().idled();
+        let idle = pump(&mut client, &mut display, &mut compositor).unwrap();
+        assert!(idle.elapsed < Duration::from_secs(60));
+        assert!(
+            !idle.since_input,
+            "an away-threshold writer cannot call this presence"
+        );
+    }
 }

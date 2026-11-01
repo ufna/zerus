@@ -1,4 +1,4 @@
-use crate::MAX_IDLE;
+use crate::{Idle, IdleSource, MAX_IDLE};
 use std::collections::BTreeMap;
 use std::io::ErrorKind;
 use std::time::{Duration, Instant};
@@ -18,36 +18,40 @@ const SYNC_TIMEOUT: Duration = Duration::from_secs(5);
 enum InputClock {
     #[default]
     Starting,
-    Idle(Instant),
+    Idle(Instant, bool),
     Active,
 }
 
 impl InputClock {
     fn idled(&mut self, now: Instant) -> Result<(), ()> {
-        if matches!(self, Self::Idle(_)) {
+        if matches!(self, Self::Idle(_, _)) {
             return Err(());
         }
         // The compositor supplies no historical timestamp. This lower bound
         // starts at the event, not at sampler construction or each sample.
-        *self = Self::Idle(now.checked_sub(THRESHOLD).ok_or(())?);
+        let since_input = matches!(self, Self::Active);
+        *self = Self::Idle(now.checked_sub(THRESHOLD).ok_or(())?, since_input);
         Ok(())
     }
 
     fn resumed(&mut self) -> Result<(), ()> {
-        if !matches!(self, Self::Idle(_)) {
+        if !matches!(self, Self::Idle(_, _)) {
             return Err(());
         }
         *self = Self::Active;
         Ok(())
     }
 
-    fn minimum_idle(self, now: Instant) -> Option<Duration> {
+    fn minimum_idle(self, now: Instant) -> Option<Idle> {
         match self {
             Self::Starting => None,
             // Continued input does not send more resumed events. Until idled,
             // elapsed time since resumed must NOT accumulate as idle time.
-            Self::Active => Some(Duration::ZERO),
-            Self::Idle(since) => now.checked_duration_since(since).filter(|v| *v <= MAX_IDLE),
+            Self::Active => Some(estimate(Duration::ZERO, true)),
+            Self::Idle(since, since_input) => now
+                .checked_duration_since(since)
+                .filter(|v| *v <= MAX_IDLE)
+                .map(|elapsed| estimate(elapsed, since_input)),
         }
     }
 }
@@ -86,7 +90,7 @@ impl State {
         }
     }
 
-    fn sample(&self, now: Instant) -> Option<Duration> {
+    fn sample(&self, now: Instant) -> Option<Idle> {
         if self.invalid
             || self.notifier.is_none()
             || self
@@ -118,7 +122,7 @@ impl InputIdle {
         })
     }
 
-    pub fn sample(&mut self) -> Result<Option<Duration>, ()> {
+    pub fn sample(&mut self) -> Result<Option<Idle>, ()> {
         if self
             .state
             .sync_pending
@@ -160,11 +164,26 @@ impl InputIdle {
     }
 }
 
-fn minimum_idle(values: impl Iterator<Item = Option<Duration>>) -> Option<Duration> {
-    let mut minimum = None;
+fn estimate(elapsed: Duration, since_input: bool) -> Idle {
+    Idle {
+        elapsed,
+        source: IdleSource::WaylandInputLowerBound,
+        since_input,
+    }
+}
+
+fn minimum_idle(values: impl Iterator<Item = Option<Idle>>) -> Option<Idle> {
+    let mut minimum: Option<Idle> = None;
     for value in values {
         let value = value?;
-        minimum = Some(minimum.map_or(value, |previous: Duration| previous.min(value)));
+        minimum = Some(match minimum {
+            Some(previous) if previous.elapsed < value.elapsed => previous,
+            Some(previous) if previous.elapsed == value.elapsed => Idle {
+                since_input: previous.since_input && value.since_input,
+                ..previous
+            },
+            _ => value,
+        });
     }
     minimum
 }
@@ -269,7 +288,7 @@ mod tests {
         assert_eq!(clock.minimum_idle(now), None);
         assert_eq!(clock.resumed(), Err(()));
         clock.idled(now).unwrap();
-        assert_eq!(clock.minimum_idle(now), Some(THRESHOLD));
+        assert_eq!(clock.minimum_idle(now), Some(estimate(THRESHOLD, false)));
         assert_eq!(clock.idled(now), Err(()));
     }
 
@@ -280,32 +299,32 @@ mod tests {
         clock.idled(now).unwrap();
         assert_eq!(
             clock.minimum_idle(now + Duration::from_secs(30)),
-            Some(Duration::from_secs(31))
+            Some(estimate(Duration::from_secs(31), false))
         );
         assert_eq!(
             clock.minimum_idle(now + Duration::from_secs(60)),
-            Some(Duration::from_secs(61))
+            Some(estimate(Duration::from_secs(61), false))
         );
         clock.resumed().unwrap();
         assert_eq!(
             clock.minimum_idle(now + Duration::from_secs(60)),
-            Some(Duration::ZERO)
+            Some(estimate(Duration::ZERO, true))
         );
     }
 
     #[test]
     fn continued_typing_does_not_accumulate_idle_from_the_first_input() {
         let now = Instant::now();
-        let mut clock = InputClock::Idle(now);
+        let mut clock = InputClock::Idle(now, false);
         clock.resumed().unwrap();
         assert_eq!(
             clock.minimum_idle(now + Duration::from_secs(600)),
-            Some(Duration::ZERO)
+            Some(estimate(Duration::ZERO, true))
         );
         clock.idled(now + Duration::from_secs(600)).unwrap();
         assert_eq!(
             clock.minimum_idle(now + Duration::from_secs(600)),
-            Some(THRESHOLD)
+            Some(estimate(THRESHOLD, true))
         );
     }
 
@@ -319,18 +338,47 @@ mod tests {
     fn every_seat_must_be_known_and_the_most_recent_input_wins() {
         assert_eq!(minimum_idle([].into_iter()), None);
         assert_eq!(
-            minimum_idle([Some(Duration::from_secs(60)), None].into_iter()),
+            minimum_idle([Some(estimate(Duration::from_secs(60), false)), None].into_iter()),
             None
         );
         assert_eq!(
-            minimum_idle([Some(Duration::from_secs(60)), Some(Duration::ZERO)].into_iter()),
-            Some(Duration::ZERO)
+            minimum_idle(
+                [
+                    Some(estimate(Duration::from_secs(60), false)),
+                    Some(estimate(Duration::ZERO, true))
+                ]
+                .into_iter()
+            ),
+            Some(estimate(Duration::ZERO, true))
         );
         assert_eq!(
             minimum_idle(
-                [Some(Duration::from_secs(60)), Some(Duration::from_secs(15))].into_iter()
+                [
+                    Some(estimate(Duration::from_secs(60), false)),
+                    Some(estimate(Duration::from_secs(15), true))
+                ]
+                .into_iter()
             ),
-            Some(Duration::from_secs(15))
+            Some(estimate(Duration::from_secs(15), true))
+        );
+    }
+
+    #[test]
+    fn observation_only_seat_minimum_keeps_its_provenance() {
+        let startup = estimate(Duration::from_secs(1), false);
+        let input = estimate(Duration::from_secs(30), true);
+        assert_eq!(
+            minimum_idle([Some(input), Some(startup)].into_iter()),
+            Some(startup)
+        );
+        assert_eq!(
+            minimum_idle([Some(startup), Some(input)].into_iter()),
+            Some(startup)
+        );
+        assert!(
+            !minimum_idle([Some(startup), Some(estimate(startup.elapsed, true))].into_iter())
+                .unwrap()
+                .since_input
         );
     }
 }
