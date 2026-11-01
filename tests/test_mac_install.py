@@ -12,6 +12,15 @@ import unittest
 REPO = Path(__file__).resolve().parents[1]
 
 
+def desktop_preflight_fixture(root, tools):
+    """Build-only fixtures stop before signing; the desktop installer has its own contracts."""
+    scripts = root / "scripts"; scripts.mkdir(exist_ok=True)
+    (scripts / "install-macos-desktop-service.py").write_text(
+        "import sys\nassert sys.argv[-1] == '--check-only'\n")
+    (tools / "hgs").write_text("#!/bin/sh\nexit 0\n")
+    (tools / "hgs").chmod(0o755)
+
+
 class MacInstall(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='zerus-install-test-')
@@ -250,6 +259,7 @@ class TrayInstallGui(unittest.TestCase):
             (self.root / name).write_bytes((REPO / name).read_bytes())
         tools = self.root / 'bin'
         tools.mkdir()
+        desktop_preflight_fixture(self.root, tools)
         self.log = self.root / 'tools.log'
         for name, text in {
             'uname': '#!/bin/sh\necho Darwin\n',
@@ -321,6 +331,7 @@ class TrayInstallCache(unittest.TestCase):
         tools = self.root / 'bin'
         tools.mkdir()
         log = self.root / 'cmake.log'
+        desktop_preflight_fixture(self.root, tools)
         for name, text in {
             'uname': '#!/bin/sh\necho Darwin\n',
             'brew': '#!/bin/sh\necho /opt/fixture/qt\n',
