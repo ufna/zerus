@@ -75,6 +75,22 @@ impl Spec {
     }
 }
 
+fn task_name(sid: &str) -> Result<String> {
+    ensure!(
+        sid.len() <= 184
+            && sid.starts_with("S-1-")
+            && sid
+                .bytes()
+                .all(|c| c.is_ascii_digit() || matches!(c, b'S' | b'-'))
+            && !matches!(sid, "S-1-5-18" | "S-1-5-19" | "S-1-5-20")
+            && !sid.starts_with("S-1-5-80-"),
+        "desktop logon registration requires a user SID, never a system/service account"
+    );
+    // Task Scheduler's namespace is machine-wide, unlike a systemd user unit
+    // or LaunchAgent. Keep the logical service label while separating users.
+    Ok(format!("hgs-desktop-{sid}"))
+}
+
 /// The installed/invoked CLI path stays selected, even when it is a maintained
 /// symlink. Never point a registration at an incidental current working folder.
 pub fn preview(config: &Config, location: &Location) -> Result<Value> {
@@ -83,6 +99,27 @@ pub fn preview(config: &Config, location: &Location) -> Result<Value> {
         binary.is_absolute() && platform::executable(&binary),
         "the selected hgs CLI is not executable"
     );
+    preview_for_binary(config, location, binary)
+}
+
+/// Windows installation can stage the stable CLI without enabling local
+/// sessions. Planning/removing an owned registration also works if that CLI
+/// has already been removed; neither operation substitutes another selector.
+#[cfg(windows)]
+pub(super) fn windows_plan(config: &Config, location: &Location) -> Result<Value> {
+    if std::env::var_os("HGS_EXECUTABLE").is_some_and(|value| !value.is_empty()) {
+        return preview_for_binary(config, location, crate::cli::executable_path()?);
+    }
+    let path = crate::host::staging::Layout::new(&config.home, &config.dir).cli;
+    let path = if path.exists() {
+        platform::canonical(&path)?
+    } else {
+        path
+    };
+    preview_for_binary(config, location, path)
+}
+
+fn preview_for_binary(config: &Config, location: &Location, binary: PathBuf) -> Result<Value> {
     let config_dir = if config.dir.is_absolute() {
         config.dir.clone()
     } else {
@@ -137,12 +174,15 @@ pub fn preview(config: &Config, location: &Location) -> Result<Value> {
             directory.join("systemd/user/hgs-desktop.service"),
         )
     };
-    Ok(
-        json!({"schema":1,"operation":"preview","configuration":spec.configuration,"label":label,"destination":destination,
+    let mut value = json!({"schema":1,"operation":"preview","configuration":spec.configuration,"label":label,"destination":destination,
         "argv":spec.argv(os),"definition":render(&spec,os)?,
         "readiness":super::lifecycle::probe(&spec.binary,&spec.config,&spec.state,&spec.configuration),
-        "session":session_requirements(os)}),
-    )
+        "session":session_requirements(os)});
+    if matches!(os, Os::Windows) {
+        value["task_name"] = task_name(&spec.user_sid)?.into();
+        value["user_sid"] = spec.user_sid.into();
+    }
+    Ok(value)
 }
 
 fn session_requirements(os: Os) -> Value {
@@ -191,12 +231,12 @@ fn render(spec: &Spec, os: Os) -> Result<String> {
             // arguments. Refuse paths that could select another executable or
             // state directory after expansion.
             ensure!([&spec.binary, &spec.config, &spec.state].iter().all(|path| !path.contains('%')), "desktop task paths cannot contain environment-variable markers");
-            ensure!(spec.user_sid.starts_with("S-1-") && spec.user_sid.bytes().all(|c| c.is_ascii_digit() || matches!(c,b'S'|b'-')), "desktop logon task requires the current user's SID");
+            let task = task_name(&spec.user_sid)?;
             let args = crate::host::spawn::command_line(&argv[1..])?;
             let sid = xml(&spec.user_sid);
             // Task Scheduler's restartType schema has a one-minute minimum.
             // https://learn.microsoft.com/en-us/windows/win32/taskschd/taskschedulerschema-interval-restarttype-element
-            format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!-- {MARKER}; configuration={} -->\n<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n<RegistrationInfo><URI>\\hgs-desktop</URI></RegistrationInfo>\n<Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{sid}</UserId></LogonTrigger></Triggers>\n<Principals><Principal id=\"DesktopUser\"><UserId>{sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>\n<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><Enabled>true</Enabled><Hidden>true</Hidden><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure></Settings>\n<Actions Context=\"DesktopUser\"><Exec><Command>{}</Command><Arguments>{}</Arguments></Exec></Actions>\n</Task>\n",spec.configuration,xml(&spec.binary),xml(&args))
+            format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!-- {MARKER}; configuration={} -->\n<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n<RegistrationInfo><URI>\\{task}</URI><Description>{MARKER}; configuration={}</Description></RegistrationInfo>\n<Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{sid}</UserId></LogonTrigger></Triggers>\n<Principals><Principal id=\"DesktopUser\"><UserId>{sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>\n<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><Enabled>true</Enabled><Hidden>true</Hidden><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure></Settings>\n<Actions Context=\"DesktopUser\"><Exec><Command>{}</Command><Arguments>{}</Arguments></Exec></Actions>\n</Task>\n",spec.configuration,spec.configuration,xml(&spec.binary),xml(&args))
         },
     })
 }
@@ -256,6 +296,29 @@ mod tests {
         assert!(!task.contains("powershell"));
         assert!(task.contains("<Count>3</Count>"));
         assert!(task.contains("<Interval>PT1M</Interval>"));
+        assert!(task.contains("<URI>\\hgs-desktop-S-1-5-21-1000</URI>"));
+        assert!(task.contains(&format!(
+            "<Description>{MARKER}; configuration={}</Description>",
+            spec.configuration
+        )));
+        assert!(!task.contains("--background"));
+    }
+
+    #[test]
+    fn windows_task_names_separate_users_and_refuse_service_accounts() {
+        assert_ne!(
+            task_name("S-1-5-21-1000").unwrap(),
+            task_name("S-1-5-21-1001").unwrap()
+        );
+        for sid in [
+            "S-1-5-18",
+            "S-1-5-19",
+            "S-1-5-20",
+            "S-1-5-80-123",
+            "bad/../sid",
+        ] {
+            assert!(task_name(sid).is_err(), "{sid}");
+        }
     }
     #[test]
     fn session_contract_does_not_fall_back_to_a_machine_service() {
