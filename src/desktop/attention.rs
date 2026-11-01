@@ -164,6 +164,21 @@ impl Runtime {
             self.pending = None;
         }
     }
+    pub fn reject_event(&mut self, event: &fleet::FleetEvent) {
+        self.reject_packet(&event.packet);
+    }
+    fn reject_packet(&mut self, packet: &feed::Packet) {
+        if let Some((computer, _)) = packet.scope() {
+            self.reject(computer);
+        } else {
+            // An invalid unscoped packet cannot leave an old source eligible.
+            self.sources.clear();
+            self.pending = None;
+        }
+    }
+    pub fn work_pending(&self) -> bool {
+        self.pending.as_ref().is_some_and(|p| !p.rows.is_empty())
+    }
     fn current(&self, store: &Store, scope: &changes::Scope) -> Result<bool> {
         if !self
             .sources

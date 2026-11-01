@@ -224,6 +224,62 @@ fn unread_reply_waits_for_all_original_work_without_consuming_its_identity() {
         "existing policy treats unknown job count as no known background work"
     );
 }
+
+#[test]
+fn bounded_passive_backlog_requests_followup_and_rejection_removes_eligibility() {
+    for packet in [
+        feed::Packet::Offline {
+            computer: String::new(),
+            generation: 1,
+        },
+        feed::Packet::Keepalive {},
+    ] {
+        let mut f = Fixture::new();
+        let rows = (0..8)
+            .map(|n| {
+                let mut value = row();
+                value["name"] = format!("codex/example/{n}").into();
+                value["run_id"] = format!("run-{n}").into();
+                value["conversation_id"] = format!("conversation-{n}").into();
+                value["read"]["conversation_id"] = value["conversation_id"].clone();
+                value
+            })
+            .collect();
+        f.snapshot(rows);
+        f.runtime.poll(&mut f.store, None);
+        assert!(f.runtime.work_pending());
+        assert_eq!(f.runtime.status()["pending_rows"], 4);
+        assert_eq!(
+            f.intents(),
+            4,
+            "four rows were consumed as baseline history"
+        );
+        assert_eq!(
+            f.store
+                .db
+                .query_row("SELECT count(*) FROM desktop_attempts", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            f.store
+                .db
+                .query_row(
+                    "SELECT count(*) FROM desktop_intents WHERE blocked=0",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        f.runtime.reject_packet(&packet);
+        assert!(!f.runtime.work_pending());
+        assert_eq!(f.runtime.status()["sources"], 0);
+        assert!(f.host.try_next().is_err());
+    }
+}
+
 #[test]
 fn explicit_attention_precedes_reply_even_with_background_work() {
     let mut raw = row();
