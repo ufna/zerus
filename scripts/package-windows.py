@@ -156,7 +156,7 @@ def main():
             require((args.frontend_licenses / "inventory.json").is_file(), "Collect frontend dependency license texts first.")
             shutil.copytree(args.frontend_licenses, licenses / "frontend")
         else:
-            subprocess.run([sys.executable, str(ROOT / "scripts/collect-frontend-licenses.py"),
+            subprocess.run([sys.executable, str(ROOT / "client/scripts/collect-notices.py"),
                             str(licenses / "frontend")], cwd=ROOT, check=True)
         readme = (ROOT / "packaging/windows/README.txt").read_text(encoding="utf-8")
         for key in ("version", "cli_version", "source_commit"):

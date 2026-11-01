@@ -57,5 +57,6 @@ components. This distribution includes:
   (licenses\conpty-NOTICE.md). hgs.exe stages the pinned pair for local hosts.
 - Rust dependency notices for hgs and the connector (licenses\rust), and the
   Tauri desktop's selected Rust dependencies (licenses\rust\desktop).
-- Locked production frontend dependency notices (licenses\frontend).
+- Locked frontend runtime dependency notices, including Vite's emitted preload
+  helper (licenses\frontend).
 WebView2 Evergreen is installed separately under Microsoft's terms.

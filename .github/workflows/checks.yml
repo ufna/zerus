@@ -120,7 +120,7 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_*publication.py'
       - name: Windows installer and runtime prerequisite contracts
         working-directory: tests
-        run: python3 -m unittest test_windows_installer test_frontend_licenses test_webview2_ci
+        run: python3 -m unittest test_windows_installer test_webview2_ci
       - name: Linux package staging contracts
         run: python3 -m unittest discover -s tests -p test_linux_packaging.py
       - name: Workflow trust boundary checks
@@ -1518,6 +1518,8 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ steps.rust-cache.outputs.cache-primary-key }}
+      - name: Frontend runtime license notices
+        run: python client/scripts/collect-notices.py artifacts/windows-frontend-licenses </dev/null
       # The app installer checks but never silently installs a shared runtime.
       # Only this disposable CI runner may use the verified bootstrapper.
       - name: WebView2 Evergreen prerequisite for Windows package tests
@@ -1526,7 +1528,8 @@ jobs:
       - name: Portable zip from the tested executables
         run: |
           python scripts/package-windows.py --cli target/release/hgs.exe --gui target/windows-next/release/hgs-tray.exe \
-            --connector target/release/zerus-mobile-connector.exe --conpty "$RUNNER_TEMP/conpty" --output artifacts/zerus-windows-x86_64.zip </dev/null 2>&1 | tee artifacts/test-results/package.log
+            --connector target/release/zerus-mobile-connector.exe --frontend-licenses artifacts/windows-frontend-licenses \
+            --conpty "$RUNNER_TEMP/conpty" --output artifacts/zerus-windows-x86_64.zip </dev/null 2>&1 | tee artifacts/test-results/package.log
           python scripts/check-windows-portable.py artifacts/zerus-windows-x86_64.zip --run --selftest \
             </dev/null 2>&1 | tee artifacts/test-results/portable.log
       # The per-user installer (packaging/windows/zerus.iss) from that zip, with

@@ -8,6 +8,7 @@ cases replace the pinned digests (`pinned`); `ConptyPinTests` checks the real pi
 """
 import copy
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -483,6 +484,28 @@ class PackageTests(unittest.TestCase):
         report = self.run_script("check-windows-portable.py", str(output))
         self.assertEqual(report.returncode, 0, report.stderr)
         self.assertNotEqual(self.run_script("check-windows-portable.py", str(output), "--commit", "b" * 40).returncode, 0)
+
+    def test_shared_frontend_collector_keeps_vite_notice_in_the_windows_zip(self):
+        spec = importlib.util.spec_from_file_location("shared_notices", ROOT / "client/scripts/collect-notices.py")
+        collector = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(collector)
+        client = self.directory / "client"
+        vite = client / "node_modules/vite"
+        vite.mkdir(parents=True)
+        (client / "package-lock.json").write_text(json.dumps({"packages": {
+            "node_modules/vite": {"version": "8.3.4", "dev": True}}}))
+        (vite / "package.json").write_text(json.dumps(dict(name="vite", version="8.3.4", license="MIT")))
+        (vite / "LICENSE").write_text("Vite MIT runtime notice\n")
+        frontend = self.directory / "shared-notices"
+        collector.collect(client, frontend)
+        output = self.directory / "shared.zip"
+        result = self.package(output, **{"--frontend-licenses": frontend})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with zipfile.ZipFile(output) as archive:
+            self.assertEqual(archive.read(f"{portable.TOP}/licenses/frontend/vite-8.3.4/LICENSE"),
+                             b"Vite MIT runtime notice\n")
+            inventory = json.loads(archive.read(f"{portable.TOP}/licenses/frontend/inventory.json"))
+            self.assertEqual(inventory["packages"][0]["name"], "vite")
 
     def test_wrong_conpty_or_missing_runtime_and_notices_leave_no_bundle(self):
         for path in [self.conpty / "OpenConsole.exe", self.crt / "vcruntime140_1.dll",

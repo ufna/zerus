@@ -600,8 +600,9 @@ ConPTY pair next to `hgs.exe`. No Qt runtime or plugins are deployed.
 The zip carries the project, Codex and ConPTY notices, the host-target Rust
 notices for the CLI/connector and Tauri desktop (including its selected video
 feature), and the exact installed production frontend packages' license texts.
-Frontend collection uses the npm lockfile, excludes development tools and
-refuses missing, stale, linked or oversized notice inputs. `build-info.json`
+Frontend collection uses the shared `client/scripts/collect-notices.py` and npm
+lockfile, excludes development tools except Vite's emitted preload runtime, and
+refuses missing notices or mismatched installed versions. `build-info.json`
 records `desktop:tauri`, `webview2_runtime:evergreen`, versions and exact source.
 The portable inspector still accepts immutable published Qt archives with their
 original layout and notices, so retries never rebuild or alter older releases.

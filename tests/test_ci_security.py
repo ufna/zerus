@@ -1155,9 +1155,11 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn("client/src-tauri/Cargo.lock", windows)
         self.assertIn("path: artifacts", windows)
         self.assertIn("python scripts/ci/ensure-webview2.py </dev/null", windows)
+        self.assertIn("python client/scripts/collect-notices.py artifacts/windows-frontend-licenses </dev/null", windows)
+        self.assertIn("--frontend-licenses artifacts/windows-frontend-licenses", windows)
         self.assertLess(windows.index("ensure-webview2.py"), windows.index("check-windows-portable.py"))
         quick = job((ROOT / ".github/workflows/checks.yml").read_text(), "quick")
-        self.assertIn("python3 -m unittest test_windows_installer test_frontend_licenses test_webview2_ci", quick)
+        self.assertIn("python3 -m unittest test_windows_installer test_webview2_ci", quick)
 
     def test_quick_checks_scan_all_history_for_secrets_with_a_verified_gitleaks(self):
         checks = (ROOT / ".github/workflows/checks.yml").read_text()
