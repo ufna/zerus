@@ -76,11 +76,8 @@ impl Pool {
     }
 
     /// Reject without blocking the watch loop or losing the original token.
-    pub(super) fn run(&self, job: Job) -> Option<Job> {
-        match self.jobs.try_send(job) {
-            Ok(()) => None,
-            Err(mpsc::TrySendError::Full(job) | mpsc::TrySendError::Disconnected(job)) => Some(job),
-        }
+    pub(super) fn run(&self, job: Job) -> Result<(), mpsc::TrySendError<Job>> {
+        self.jobs.try_send(job)
     }
 }
 
@@ -253,6 +250,14 @@ impl Processes {
         due.iter().filter_map(|key| self.job(key, now)).collect()
     }
 
+    /// Queue pressure is not a read failure. Retry only the still-current job.
+    pub(super) fn defer(&mut self, job: Job, now: Instant) {
+        if let Some(session) = self.sessions.get_mut(&job.key).filter(|session| session.token == job.token) {
+            session.running = false;
+            session.due = Some(now + GAP);
+        }
+    }
+
     pub(super) fn done(&mut self, done: Done) -> Outcome {
         let Some(session) = self.sessions.get_mut(&done.key).filter(|session| session.token == done.token) else {
             return Outcome::Quiet;
@@ -327,15 +332,29 @@ mod tests {
     }
 
     #[test]
-    fn a_full_read_queue_returns_the_original_job_without_waiting() {
-        let (jobs, _receiver) = mpsc::sync_channel(1);
+    fn a_full_queue_defers_the_current_subscription_until_cancelled_jobs_drain() {
+        let start = Instant::now();
+        let (jobs, receiver) = mpsc::sync_channel(zerus_watch_protocol::PROCESSES_SUBSCRIPTIONS);
         let pool = Pool { jobs };
         let mut state = Processes::new();
-        let old = state.subscribe("run:r", "claude/example/a", Some("r".into()), None, Instant::now());
-        assert!(pool.run(old).is_none());
-        let next = state.subscribe("run:r", "claude/example/a", Some("r".into()), None, Instant::now());
-        let token = next.token;
-        assert_eq!(pool.run(next).unwrap().token, token);
+        for _ in 0..zerus_watch_protocol::PROCESSES_SUBSCRIPTIONS {
+            assert!(pool.run(state.subscribe("run:r", "claude/example/a", Some("r".into()), None, start)).is_ok());
+        }
+        let Err(mpsc::TrySendError::Full(job)) = pool.run(state.subscribe("run:r", "claude/example/a", Some("r".into()), None, start)) else { panic!("bounded queue is full") };
+        state.defer(job, start);
+        assert!(state.pulse(start + GAP / 2).is_empty());
+        for old in receiver.try_iter() {
+            let done = read(old, |_| panic!("a cancelled inventory must not read"));
+            assert!(done.value.is_none());
+            assert_eq!(state.done(done), Outcome::Quiet);
+        }
+        assert!(!state.pending());
+        let retry = state.pulse(start + GAP).pop().expect("retry before the normal interval");
+        assert!(pool.run(retry).is_ok());
+        assert_eq!(state.done(read(receiver.try_recv().unwrap(), |_| Ok(inventory("r", 3, 1.0)))), Outcome::Quiet);
+        let mut count = Value::Null;
+        state.flush(|_, value, _| { count = value["process_work"]["count"].clone(); true });
+        assert_eq!(count, 3);
     }
 
     #[test]

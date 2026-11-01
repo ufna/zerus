@@ -11,6 +11,9 @@ runtime is active. It contains `abi: desktop-details-v1`, the service `epoch`, a
 random `lease`, and fixed limits. The lease belongs to that original watch queue.
 It expires on EOF, queue overflow, revoke or service shutdown. There are at most
 eight subscribers, 64 demands per subscriber and 512 distinct target groups.
+Revoke and shutdown close the entire original background watch stream, including
+watchers with no detail demand. Clients treat that EOF as the expected end of the
+old epoch and reconnect through the normal lifecycle, not as detail-only failure.
 Existing native per-computer topic limits apply, capped at 16 Activity targets,
 16 process targets, 16 projects and one organization.
 
@@ -53,6 +56,10 @@ preserved. `detail_seq` is contiguous only within that exact lease/ID/source
 generation/revision. The outer desktop sequence is monotonic and may skip frames
 targeted to other subscribers. Native frame sequences also skip catalog and
 unselected topics; they are not a filtered-stream continuity counter.
+Detail/source and catalog publication have no cross-stream event-order contract:
+within one actor poll, a detail frame may precede a catalog change from an earlier
+native event. Consumers must not correlate their delivery order or outer sequence
+to infer a common snapshot or causal order across these streams.
 
 `detail_status` identifies the same route and reports starting, ready,
 incomplete, unsupported or ended state. Ready means the subscription control
@@ -83,15 +90,21 @@ it does not silently claim subscription or launch another source. Subscriber
 queue limits charge complete encoded bodies, including the envelope.
 
 Closed leases release all their demand; only the last interested subscriber
-unsubscribes a native target. The actor retains each original fleet ingress permit
-through successful broker application and queue admission. Failed broker apply
+unsubscribes a native target. A leave whose merged selector is unchanged preserves
+the remaining routes' revision, detail sequence and current snapshot; a join still
+rearms because the adapter does not cache topic contents. The actor retains each
+original fleet ingress permit through successful broker application and queue
+admission. Failed broker apply
 invalidates details and asks the original fleet to resnapshot. Revoke closes
 leases before the existing fleet shutdown; original worker/reader/connection and
 control admission accounting remains the drain boundary.
 
 Native detail pools also have finite pending read queues: 16 process jobs,
-16 task jobs and one organization job, using nonblocking admission. A rejected
-job follows its original token-checked error completion. This prevents repeated
-subscription replacement from accumulating cancelled reads behind a slow worker.
+eight task jobs and one organization job, using nonblocking admission. A full queue
+keeps the current subscription pending for its next one-second read window, without
+emitting a read error or waiting for the safety interval. Superseded jobs remain
+cancelled; a disconnected worker reports its original token-checked error. This
+prevents repeated subscription replacement from accumulating cancelled reads
+behind a slow worker.
 EOF, a queue close, Pong or a local status is not native cancellation or drain
 proof. Existing one-shot archived/user reads remain separate from subscriptions.

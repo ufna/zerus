@@ -84,11 +84,8 @@ impl Pool {
     }
 
     /// Reject without blocking the watch loop or losing the original token.
-    pub(super) fn run(&self, job: Job) -> Option<Job> {
-        match self.jobs.try_send(job) {
-            Ok(()) => None,
-            Err(mpsc::TrySendError::Full(job) | mpsc::TrySendError::Disconnected(job)) => Some(job),
-        }
+    pub(super) fn run(&self, job: Job) -> Result<(), mpsc::TrySendError<Job>> {
+        self.jobs.try_send(job)
     }
 }
 
@@ -142,6 +139,8 @@ pub(super) struct Organization {
     again: bool,
     started: Instant,
     due: Option<Instant>,
+    /// An initial read not yet admitted still has its original bootstrap choice.
+    retry_bootstrap: bool,
     files: Vec<PathBuf>,
     stamp: Option<u64>,
     /// The rows of the latest read, with their digests.
@@ -165,6 +164,7 @@ impl Organization {
             again: false,
             started: Instant::now(),
             due: None,
+            retry_bootstrap: false,
             files: Vec::new(),
             stamp: None,
             current: None,
@@ -197,6 +197,7 @@ impl Organization {
         let was = std::mem::take(&mut self.subscribed);
         self.cancelled.store(true, Ordering::SeqCst);
         self.running = false;
+        self.retry_bootstrap = false;
         self.current = None;
         self.sent = None;
         was
@@ -217,7 +218,20 @@ impl Organization {
             }
         }
         let due = self.due.is_some_and(|at| now >= at) || now >= self.started + SAFETY;
-        (!self.running && due).then(|| self.job(now, false))
+        if self.running || !due {
+            return None;
+        }
+        let bootstrap = std::mem::take(&mut self.retry_bootstrap);
+        Some(self.job(now, bootstrap))
+    }
+
+    /// Queue pressure is not a read failure. Retry only the still-current job.
+    pub(super) fn defer(&mut self, job: Job, now: Instant) {
+        if self.subscribed && job.token == self.token {
+            self.running = false;
+            self.due = Some(now + GAP);
+            self.retry_bootstrap = job.bootstrap;
+        }
     }
 
     /// Takes a finished read; an error is returned for the client.
@@ -364,14 +378,49 @@ mod tests {
     }
 
     #[test]
-    fn a_full_read_queue_returns_the_original_job_without_waiting() {
-        let (jobs, _receiver) = mpsc::sync_channel(1);
+    fn slow_read_and_two_resubscriptions_deliver_latest_rows_without_error() {
+        let start = Instant::now();
+        let (jobs, receiver) = mpsc::sync_channel::<Job>(1);
         let pool = Pool { jobs };
+        let (started, ready) = mpsc::sync_channel(1);
+        let (release, blocked) = mpsc::sync_channel(1);
+        let (finished, results) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut first = true;
+            while let Ok(job) = receiver.recv() {
+                let done = read(job, || {
+                    if first {
+                        started.send(()).unwrap();
+                        blocked.recv_timeout(SECOND * 5).unwrap();
+                    }
+                    Ok(snapshot(1, false))
+                });
+                first = false;
+                finished.send(done).unwrap();
+            }
+        });
         let mut state = Organization::new();
-        assert!(pool.run(state.subscribe(Vec::new(), 0, Instant::now())).is_none());
-        let next = state.subscribe(Vec::new(), 0, Instant::now());
-        let token = next.token;
-        assert_eq!(pool.run(next).unwrap().token, token);
+        assert!(pool.run(state.subscribe(Vec::new(), 0, start)).is_ok());
+        ready.recv_timeout(SECOND * 5).unwrap(); // The original read is actually running.
+        state.unsubscribe();
+        assert!(pool.run(state.subscribe(Vec::new(), 0, start)).is_ok());
+        state.unsubscribe();
+        let latest = state.subscribe(Vec::new(), 0, start);
+        let Err(mpsc::TrySendError::Full(job)) = pool.run(latest) else { panic!("the superseded job fills the slot") };
+        state.defer(job, start);
+        assert!(state.pulse(start + GAP / 2, |_| 0).is_none());
+        release.send(()).unwrap();
+        for _ in 0..2 {
+            assert_eq!(state.done(results.recv_timeout(SECOND * 5).unwrap()), None);
+        }
+        assert!(state.plan(1 << 20).is_none(), "stale completions cannot supply rows");
+        let retry = state.pulse(start + GAP, |_| 0).expect("retry before the safety interval");
+        assert!(retry.bootstrap, "no initial read was admitted for this subscription");
+        assert!(pool.run(retry).is_ok());
+        assert_eq!(state.done(results.recv_timeout(SECOND * 5).unwrap()), None);
+        assert!(matches!(state.plan(1 << 20), Some(Plan::Snapshot(_))));
+        drop(pool);
+        worker.join().unwrap();
     }
 
     #[test]

@@ -241,12 +241,24 @@ fn subscribers_share_one_target_and_last_disconnect_unsubscribes() {
     let fb = output(&qb);
     assert_eq!(fa[0]["value"]["id"], ia);
     assert_eq!(fb[0]["value"]["id"], ib);
+    let command_count = f.commands.len();
     qa.close();
     f.tick();
     assert_eq!(f.adapter.subscribers.len(), 1);
     assert_eq!(f.adapter.groups.len(), 1);
-    f.pong();
-    output(&qb);
+    assert_eq!(
+        f.commands.len(),
+        command_count,
+        "an unchanged merged view is not rearmed on leave"
+    );
+    assert!(
+        output(&qb).is_empty(),
+        "the remaining route keeps its revision and sequence"
+    );
+    f.native(events(2));
+    let next = output(&qb);
+    assert_eq!(next[0]["value"]["revision"], fb[0]["value"]["revision"]);
+    assert_eq!(next[0]["value"]["detail_seq"], 2);
     qb.close();
     f.tick();
     assert!(f.adapter.groups.is_empty());
@@ -255,6 +267,54 @@ fn subscribers_share_one_target_and_last_disconnect_unsubscribes() {
         &f.commands.last().unwrap()[..],
         [Control::Unsubscribe(_)]
     ));
+}
+#[test]
+fn unfollow_of_an_identical_demand_keeps_the_remaining_view_ready() {
+    let mut f = Fixture::new();
+    let (lease, queue) = f.open();
+    let a = id();
+    let b = id();
+    f.follow(&lease, &a, activity(None));
+    f.follow(&lease, &b, activity(None));
+    f.pong();
+    output(&queue);
+    f.native(events(1));
+    let before = output(&queue);
+    let count = f.commands.len();
+    f.request(&lease, json!({"op":"detail_unfollow","id":a}));
+    assert_eq!(f.commands.len(), count);
+    assert!(output(&queue).is_empty());
+    f.native(events(2));
+    let next = output(&queue);
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0]["value"]["id"], b);
+    assert_eq!(next[0]["value"]["revision"], before[0]["value"]["revision"]);
+    assert_eq!(next[0]["value"]["detail_seq"], 2);
+}
+#[test]
+fn a_shrunken_native_limit_is_incomplete_instead_of_unsupported() {
+    let mut f = Fixture::new();
+    let (lease, queue) = f.open();
+    for n in 0..2 {
+        f.follow(
+            &lease,
+            &id(),
+            json!({"topic":"tasks","project":format!("p{n}")}),
+        );
+    }
+    output(&queue);
+    f.generation += 1;
+    f.native_seq = 0;
+    let mut smaller = hello();
+    smaller["limits"]["tasks_subscriptions"] = json!(1);
+    f.native(smaller);
+    let statuses = output(&queue);
+    let limited: Vec<_> = statuses
+        .iter()
+        .filter(|s| s["value"]["code"] == "detail_topic_limit")
+        .collect();
+    assert_eq!(limited.len(), 1);
+    assert_eq!(limited[0]["value"]["state"], "incomplete");
 }
 #[test]
 fn backpressure_after_pong_never_releases_frames_before_subscribe_admission() {

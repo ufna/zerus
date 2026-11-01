@@ -269,10 +269,16 @@ impl Adapter {
         let online = self.sources.get(&key.computer).is_some_and(|s| s.online);
         let allowed = self.allowed(key);
         let token = uuid::Uuid::new_v4().to_string();
-        let mut phase = Phase::Idle(if online {
-            "unsupported_topic"
-        } else {
+        let mut phase = Phase::Idle(if !online {
             "source_offline"
+        } else if self
+            .sources
+            .get(&key.computer)
+            .is_some_and(|s| s.supports(&key.topic))
+        {
+            "detail_topic_limit"
+        } else {
+            "unsupported_topic"
         });
         if allowed {
             let old = Subscription {
@@ -316,6 +322,18 @@ impl Adapter {
             }
         }
         self.status_for(key, seq);
+    }
+    fn leave(&mut self, key: &Key, controls: &mut Controls<'_>, seq: &mut u64) {
+        let wanted = self.merged(key);
+        if self
+            .groups
+            .get(key)
+            .is_some_and(|g| wanted.as_ref() == Some(&g.wanted))
+        {
+            // Remaining consumers already hold this view; no new subscriber needs a snapshot.
+            return;
+        }
+        self.arm(key, controls, seq);
     }
     fn advance(&mut self, key: &Key, controls: &mut Controls<'_>, seq: &mut u64) {
         let Some(group) = self.groups.get_mut(key) else {
@@ -372,7 +390,7 @@ impl Adapter {
                 let keys: std::collections::BTreeSet<_> =
                     subscriber.demands.into_values().map(|d| d.key).collect();
                 for key in keys {
-                    self.arm(&key, controls, seq);
+                    self.leave(&key, controls, seq);
                 }
             }
         }
@@ -525,7 +543,7 @@ impl Adapter {
                     .demands
                     .remove(&id)
                 {
-                    self.arm(&old.key, controls, seq);
+                    self.leave(&old.key, controls, seq);
                 }
                 json!({"request_id":value["request_id"],"accepted":true,"lease":lease,"id":id,"state":"unfollowed","durable":false})
             }

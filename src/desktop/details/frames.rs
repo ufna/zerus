@@ -38,6 +38,9 @@ impl Source {
     pub fn limit(&self, topic: &str) -> usize {
         self.caps.get(topic).copied().unwrap_or(0)
     }
+    pub fn supports(&self, topic: &str) -> bool {
+        self.caps.contains_key(topic)
+    }
 }
 fn route(body: &Body) -> Option<(&str, Option<&str>)> {
     match body {
