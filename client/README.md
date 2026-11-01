@@ -175,7 +175,13 @@ Environment:
 | `ZERUS_CLIENT_QUERY` | URL parameters for the window, e.g. `select=claude/sample-project/api-refactor` opens that session and `page=settings` that screen |
 
 The service source validates lifecycle component readiness and reads bounded catalog
-pages through one subscriber. Shared host attention counts remain separate from
+pages through one subscriber. After the initial insertion walk, a serial
+`catalog_changes` reader catches up from its first revision, then reads only
+bounded upserts/tombstones. It preserves exact decimal revisions and projection
+identity, coalesces hints, and restarts a baseline on a gap, unknown cursor outcome
+or scope replacement. Only a fully consumed delta walk establishes membership;
+provisional/offline rows remain incomplete. Quit bounds the service join to five
+seconds after its draft flush. Shared host attention counts remain separate from
 this device's review marks; incomplete/null counts remain unknown. Read intents
 are acknowledged only after a durable actor receipt, retaining their request UUID
 through an uncertain result. Activity/process/task/organization subscriptions and

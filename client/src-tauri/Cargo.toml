@@ -19,7 +19,7 @@ default = ["live"]
 # Streams from `hgs watch` through zerus-client-core. Without it the app builds
 # with no data source and the frontend uses its built-in replay.
 # On Linux it talks to Konsole over D-Bus (libdbus) for terminal tabs.
-live = ["dep:qrcodegen", "dep:zerus-client-core", "zerus-client-core/konsole"]
+live = ["dep:qrcodegen", "dep:zerus-client-core", "zerus-client-core/konsole", "zerus-client-core/macos-native-peer"]
 # Voice messages: microphone capture through client/media (cpal). Linux
 # builds need the ALSA development package; nothing else does.
 media = ["live", "dep:zerus-client-media"]
