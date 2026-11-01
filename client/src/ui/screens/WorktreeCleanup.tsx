@@ -52,7 +52,7 @@ export default function WorktreeCleanup() {
         </div>
         <Show when={cleanup().cleaning ?? cleanup().busy}><progress aria-label={tr("Removing working folders")} /></Show>
       </div>
-      <div class="dlg-foot"><span class="bc-summary tabular" role="status">{summary()}<Show when={cleanup().unknown}><span class="warn bc-note">{tr("An unknown result will not be retried.")}</span></Show></span><span class="grow" /><button class="btn" autofocus disabled={cleanup().busy || anyCleanupRestore()} onClick={() => void keepCleanup()}>{tr("Keep folders")}</button><Show when={targets().length}><button class="btn solid-danger" disabled={cleanup().busy || anyCleanupRestore() || !consented()} onClick={() => void removeCleanup(consents())}>{tr("Remove %1 folders", targets().length)}</button></Show></div>
+      <div class="dlg-foot"><span class="bc-summary tabular" role="status">{summary()}<Show when={cleanup().unknown}><span class="warn bc-note">{tr("An unknown result will not be retried.")}</span></Show></span><span class="grow" /><Show when={targets().length}><button type="button" class="btn solid-danger" disabled={cleanup().busy || anyCleanupRestore() || !consented()} onClick={() => void removeCleanup(consents())}>{tr("Remove %1 folders", targets().length)}</button></Show><button type="button" class="btn primary" autofocus disabled={cleanup().busy || anyCleanupRestore()} onClick={() => void keepCleanup()}>{tr("Keep folders")}</button></div>
     </dialog>
     <Show when={inspect()}>{(row) => <CleanupInspection row={row()} close={() => setInspect(undefined)} />}</Show>
   </>;

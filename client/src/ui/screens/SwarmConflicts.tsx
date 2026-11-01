@@ -74,10 +74,10 @@ export default function SwarmConflicts(props: { view(): SwarmView | undefined; w
 }
 function Confirm(props: { text: string; origin: HTMLElement; busy(): boolean; close(): void; apply(): void }) {
   let dialog!: HTMLDialogElement;
-  onMount(() => { dialog.showModal(); queueMicrotask(() => dialog.querySelector<HTMLButtonElement>(".dlg-foot .btn")?.focus()); });
+  onMount(() => { dialog.showModal(); queueMicrotask(() => dialog.querySelector<HTMLButtonElement>(".dlg-foot [autofocus]")?.focus()); });
   onCleanup(() => { dialog.close(); queueMicrotask(() => { if (props.origin?.isConnected) props.origin.focus(); }); });
   return <dialog ref={dialog} class="dlg" style={{ width: "480px" }} aria-labelledby="swarm-confirm-title" onCancel={(e) => { e.preventDefault(); e.stopPropagation(); props.close(); }}>
     <div class="dlg-head"><Icon name="triangle-alert" size={18} class="accent" /><h2 id="swarm-confirm-title">{tr("Confirm catalog change")}</h2><span class="grow" /><button class="icon-btn" aria-label={tr("Close")} onClick={props.close}><Icon name="x" size={16} /></button></div>
-    <div class="dlg-body"><p class="confirm-body su-pre">{props.text}</p></div><div class="dlg-foot"><span class="grow" /><button class="btn" onClick={props.close}>{tr("Cancel")}</button><button class="btn solid-danger" disabled={props.busy()} onClick={props.apply}>{tr("Apply")}</button></div>
+    <div class="dlg-body"><p class="confirm-body su-pre">{props.text}</p></div><div class="dlg-foot"><span class="grow" /><button type="button" class="btn solid-danger" disabled={props.busy()} onClick={props.apply}>{tr("Apply")}</button><button type="button" class="btn primary" autofocus onClick={props.close}>{tr("Cancel")}</button></div>
   </dialog>;
 }

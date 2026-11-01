@@ -33,8 +33,8 @@ export default function WorktreeReviewDialog() {
       </div>
       <div class="dlg-foot"><span class="hint grow" role="status">{reading() ? tr("Reviewing worktrees on %1…", view()?.machine ?? worktreeReviewDialog()?.machine ?? "") : worktreeReviewError() || view()?.summary}<Show when={view()?.unknown}> {tr("An unknown result will not be retried.")}</Show></span>
         <button class="btn" disabled={reading() || busy() || !view() || !!view()?.rows.length && view()!.rows.every((r) => ["Removed", "Forgotten", "Unknown"].includes(r.state))} onClick={() => void checkWorktreesAgain()}>{tr("Review again")}</button>
-        <button class="btn" autofocus disabled={busy()} onClick={closeWorktreeReview}>{tr("Close")}</button>
-        <button class="btn danger" disabled={reading() || busy() || asking() || !chosen().length} onClick={(e) => void ask(e.currentTarget)}>{chosen().length > 1 ? tr("Remove %1 worktrees…", chosen().length) : tr("Remove selected…")}</button>
+        <button type="button" class="btn danger" disabled={reading() || busy() || asking() || !chosen().length} onClick={(e) => void ask(e.currentTarget)}>{chosen().length > 1 ? tr("Remove %1 worktrees…", chosen().length) : tr("Remove selected…")}</button>
+        <button type="button" class="btn primary" autofocus disabled={busy()} onClick={closeWorktreeReview}>{tr("Close")}</button>
       </div>
     </dialog>
     <Show when={confirmation()}>{(c) => <WorktreeConfirm value={c().value} title={title()} origin={c().origin} cancel={() => { setConfirmation(undefined); void cancelWorktreeConfirmation().catch(() => {}); }} confirm={async (consent) => { const id = c().value.id; setConfirmation(undefined); await confirmWorktreeRemoval(id, consent); }} />}</Show>
@@ -53,6 +53,6 @@ function WorktreeConfirm(props: { value: WorktreeConfirmation; title: string; or
         <Show when={c.ignored.length}><li style={{ "white-space": "pre-line" }}>{tr("Ignored files deleted with them:")} {c.ignored.join("\n") }.</li></Show><Show when={c.missing}><li>{tr("Missing folders: only Git's record is removed.")}</li></Show>
         <li>{c.branches.length ? tr("Merged branches deleted: %1.", c.branches.join(", ")) : tr("All branches are kept.")}</li><Show when={c.process_warning}><li>{c.process_warning}</li></Show><li>{tr("Each worktree is checked again before removal. This cannot be undone.")}</li>
       </ul><Show when={c.consent}><label class="check"><input type="checkbox" checked={consent()} onChange={(e) => setConsent(e.currentTarget.checked)} />{c.consent}</label></Show>
-    </div><div class="dlg-foot"><span class="grow" /><button class="btn" autofocus onClick={props.cancel}>{tr("Cancel")}</button><button class="btn solid-danger" disabled={!!c.consent && !consent()} onClick={() => void props.confirm(consent())}>{c.button}</button></div>
+    </div><div class="dlg-foot"><span class="grow" /><button type="button" class="btn solid-danger" disabled={!!c.consent && !consent()} onClick={() => void props.confirm(consent())}>{c.button}</button><button type="button" class="btn primary" autofocus onClick={props.cancel}>{tr("Cancel")}</button></div>
   </dialog>;
 }

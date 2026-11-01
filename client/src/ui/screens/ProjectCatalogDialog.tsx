@@ -25,11 +25,15 @@ export default function ProjectCatalogDialog(props: {
   const prompt = props.prompt;
   const [value, setValue] = createSignal(prompt.kind === "delete" ? prompt.selected : "");
   let dialog!: HTMLDialogElement;
-  const submit = (event: Event) => {
-    event.preventDefault();
+  const confirm = () => {
     if (!props.enabled) return;
     if (prompt.kind === "new" && catalogName(value())) props.create(value());
     else if (prompt.kind === "delete" && value()) props.remove(value());
+  };
+  const submit = (event: Event) => {
+    event.preventDefault();
+    if (prompt.kind === "delete") props.close();
+    else confirm();
   };
   onMount(() => {
     dialog.showModal();
@@ -58,9 +62,13 @@ export default function ProjectCatalogDialog(props: {
         </>}</Show>
       </div>
       <div class="dlg-foot"><span class="grow" />
-        <button type="button" class="btn" data-initial={prompt.kind === "delete" ? "" : undefined} onClick={props.close}>{tr("Cancel")}</button>
-        <button type="submit" class={prompt.kind === "delete" ? "btn solid-danger" : "btn primary"}
-          disabled={!props.enabled || (prompt.kind === "new" ? !catalogName(value()) : !value())}>{prompt.kind === "new" ? "OK" : tr("Move sessions and delete")}</button>
+        <Show when={prompt.kind === "delete"} fallback={<>
+          <button type="button" class="btn" onClick={props.close}>{tr("Cancel")}</button>
+          <button type="submit" class="btn primary" disabled={!props.enabled || !catalogName(value())}>OK</button>
+        </>}>
+          <button type="button" class="btn solid-danger" disabled={!props.enabled || !value()} onClick={confirm}>{tr("Move sessions and delete")}</button>
+          <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>{tr("Cancel")}</button>
+        </Show>
       </div>
     </form>
   </dialog>;

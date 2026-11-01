@@ -147,8 +147,8 @@ function VoiceDialogs(props: { voice: SessionVoice }) {
     <div class="dlg-body"><div class="confirm-body" style={{ "white-space": "pre-wrap" }}>{body()}</div></div>
     <div class="dlg-foot"><span class="spacer" />
       <Show when={voice.permission()} fallback={<>
-        <button type="button" class="btn primary" data-initial onClick={cancel}>{tr("Cancel")}</button>
         <button type="button" class={voice.ask()?.kind === "discard" ? "btn solid-danger" : "btn"} onClick={() => voice.confirm(true)}>{voice.ask()?.kind === "discard" ? tr("Discard recording") : tr("Send with full context")}</button>
+        <button type="button" class="btn primary" data-initial onClick={cancel}>{tr("Cancel")}</button>
       </>}>
         <Show when={permission()?.can_open}><button type="button" class="btn" onClick={() => {
           void bridge.voiceOpenSettings().then(() => voice.closePermission(), () => setPermission((old) => ({ can_open: old?.can_open ?? false, text: `${tr("Could not open system settings automatically.")}\n\n${old?.text ?? ""}` })));
