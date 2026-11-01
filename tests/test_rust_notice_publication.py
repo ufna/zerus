@@ -76,6 +76,24 @@ class RustNoticePublication(unittest.TestCase):
             self.collect()
         self.assertFalse(self.destination.exists())
 
+    def test_unicode_casefold_ships_the_fallback_and_unicode_data_notices(self):
+        metadata = json.loads(self.metadata)
+        package = metadata["packages"][0]
+        package.update(id="unicode-casefold@0.2.0", name="unicode-casefold", version="0.2.0",
+                       license="MIT/Apache-2.0")
+        metadata["resolve"]["nodes"] = [{"id": package["id"]}]
+        self.metadata = json.dumps(metadata, ensure_ascii=False).encode("utf-8")
+        (self.crate / "LICENSE").unlink()
+        self.collect()
+        shipped = self.destination / "unicode-casefold-0.2.0"
+        self.assertEqual(sorted(path.name for path in shipped.iterdir()),
+                         ["MIT.txt", "NOTICE.txt", "Unicode-DFS-2016.txt"])
+        for path in shipped.iterdir():
+            self.assertEqual(path.read_bytes(),
+                             (ROOT / "packaging/rust-licenses/unicode-casefold" / path.name).read_bytes())
+        self.assertIn("Chris Wong", (shipped / "NOTICE.txt").read_text(encoding="utf-8"))
+        self.assertIn("1991-2016 Unicode", (shipped / "Unicode-DFS-2016.txt").read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()
