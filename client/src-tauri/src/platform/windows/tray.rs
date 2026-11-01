@@ -30,6 +30,9 @@ pub struct WindowsShell {
 }
 struct State {
     app: AppHandle,
+    // Native shell calls can dispatch nonqueued messages reentrantly while
+    // Inner is locked. Ordinary window messages must not acquire that lock.
+    taskbar_created: u32,
     inner: Mutex<Inner>,
 }
 struct Inner {
@@ -41,7 +44,6 @@ struct Inner {
     tooltip: String,
     badge: Option<String>,
     current_notice: crate::windows_shell::NoticeClicks,
-    taskbar_created: u32,
 }
 impl Drop for Inner {
     fn drop(&mut self) {
@@ -103,12 +105,7 @@ unsafe extern "system" fn procedure(hwnd: HWND, message: u32, w: WPARAM, l: LPAR
         return unsafe { DefWindowProcW(hwnd, message, w, l) };
     }
     if let Some(state) = state(hwnd) {
-        let restarted = state
-            .inner
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .taskbar_created;
-        if message == restarted {
+        if state.taskbar_created != 0 && message == state.taskbar_created {
             let inner = state.inner.lock().unwrap_or_else(PoisonError::into_inner);
             icon(hwnd, &inner, true);
             return 0;
@@ -361,10 +358,10 @@ pub fn install(app: &AppHandle, conf: Option<&str>) -> io::Result<()> {
         tooltip: "Zerus".into(),
         badge: None,
         current_notice: Default::default(),
-        taskbar_created: unsafe { RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()) },
     };
     let raw = Box::into_raw(Box::new(State {
         app: app.clone(),
+        taskbar_created: unsafe { RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()) },
         inner: Mutex::new(inner),
     }));
     let hwnd = unsafe {
