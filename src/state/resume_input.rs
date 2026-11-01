@@ -510,8 +510,8 @@ pub(super) fn ready(record: &Value) -> Result<()> {
 
 /// A pending resume that may also clear or pause before its deferred
 /// SessionStart once `idle` verifies it. A sent message may already have
-/// started a turn, and an archive restore commits only on the hook that names
-/// its exact conversation (archive::confirm_restore).
+/// started a turn. The shared pause path excludes archive restores; Clear has
+/// a separately scoped restore transaction in clear_context.
 pub(super) fn clearable(record: &Value) -> bool {
     pending(record)
         && string(record, "restore_archive_id").is_empty()
