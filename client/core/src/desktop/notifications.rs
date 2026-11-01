@@ -70,15 +70,26 @@ impl Binding {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "platform", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeId {
-    Linux { owner: String, id: u32 },
-    Macos { request_id: String },
-    Windows { tag: String, group: String },
+    Linux {
+        bus_id: String,
+        owner: String,
+        id: u32,
+    },
+    Macos {
+        request_id: String,
+    },
+    Windows {
+        tag: String,
+        group: String,
+    },
 }
 impl NativeId {
     pub fn valid_for(&self, platform: Platform, token: &str) -> bool {
         match (self, platform) {
-            (Self::Linux { owner, id }, Platform::Linux) => {
+            (Self::Linux { bus_id, owner, id }, Platform::Linux) => {
                 *id != 0
+                    && bus_id.len() == 32
+                    && bus_id.bytes().all(|b| b.is_ascii_hexdigit())
                     && owner.len() <= 255
                     && owner.starts_with(':')
                     && owner.len() > 1
@@ -419,11 +430,13 @@ mod tests {
         };
         assert!(!receipt.matches(&command));
         assert!(!NativeId::Linux {
+            bus_id: "a".repeat(32),
             owner: ":1.4".into(),
             id: 0
         }
         .valid_for(Platform::Linux, command.action.token()));
         assert!(!NativeId::Linux {
+            bus_id: "a".repeat(32),
             owner: "org.example.Service".into(),
             id: 1
         }

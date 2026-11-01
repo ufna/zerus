@@ -409,6 +409,28 @@ fn restoration_is_paged_at_a_fixed_highwater_and_never_replays_work() {
         dispatch.finish(outcome);
         f.outbox.poll(&mut f.store, Instant::now());
     }
+    let badge = ledger::put_intent(
+        &mut f.store.db,
+        &Identity {
+            kind: Kind::Badge,
+            target: Target::Device {
+                configuration: f.outbox.session.configuration.clone(),
+            },
+            edge: id(),
+        },
+        1,
+        &json!({"badge":3}),
+    )
+    .unwrap();
+    let request = f.request(&badge);
+    assert!(ledger::reserve(&mut f.store.db, &request).unwrap().fresh);
+    ledger::finish(
+        &mut f.store.db,
+        &request,
+        State::Delivered,
+        &json!({"badge":3}),
+    )
+    .unwrap();
     let head = f.outbox.restore_head(&f.store).unwrap();
     let first = f.outbox.restore_page(&f.store, 0, head).unwrap();
     assert_eq!(first.mappings.len(), 16);

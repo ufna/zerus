@@ -483,17 +483,31 @@ impl Outbox {
             after >= 0 && through >= after,
             "invalid notification restoration cursor"
         );
-        let mut query=store.db.prepare("SELECT seq,CASE WHEN length(CAST(receipt AS BLOB))<=?3 THEN receipt END
+        let mut query=store.db.prepare("SELECT seq,CASE WHEN length(CAST(receipt AS BLOB))<=?3 THEN receipt END,substr(intent_id,1,65)
             FROM desktop_attempts WHERE state='delivered' AND seq>?1 AND seq<=?2 ORDER BY seq LIMIT 16")?;
         let rows = query
             .query_map(params![after, through, ledger::RECEIPT_BYTES], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let complete = rows.len() < 16 || rows.last().is_some_and(|r| r.0 == through);
         let next = rows.last().map_or(through, |r| r.0);
         let mut mappings = Vec::new();
-        for (_, raw) in rows {
+        for (_, raw, intent_id) in rows {
+            let (identity,payload):(Option<String>,Option<String>)=store.db.query_row("SELECT
+                CASE WHEN length(CAST(identity AS BLOB))<=4096 THEN identity END,
+                CASE WHEN length(CAST(payload AS BLOB))<=?2 THEN payload END FROM desktop_intents WHERE id=?1",
+                params![intent_id,ledger::PAYLOAD_BYTES],|r|Ok((r.get(0)?,r.get(1)?)))?;
+            let identity: Identity = serde_json::from_str(
+                &identity.context("notification restoration identity unavailable")?,
+            )?;
+            if identity.kind != Kind::Post {
+                continue;
+            }
             let receipt: Receipt = serde_json::from_str(
                 &raw.context("notification restoration receipt unavailable")?,
             )?;
@@ -504,8 +518,6 @@ impl Outbox {
             let Outcome::Delivered { native_id } = receipt.outcome else {
                 continue;
             };
-            let payload:Option<String>=store.db.query_row("SELECT CASE WHEN length(CAST(payload AS BLOB))<=?2 THEN payload END FROM desktop_intents WHERE id=?1",
-                params![receipt.binding.intent_id,ledger::PAYLOAD_BYTES],|r|r.get(0))?;
             let action: Action = serde_json::from_str(
                 &payload.context("notification restoration payload unavailable")?,
             )?;
