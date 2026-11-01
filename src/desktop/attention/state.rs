@@ -41,9 +41,10 @@ pub(super) fn migrate(db: &Connection) -> Result<()> {
     Ok(())
 }
 /// A baseline reads live rows in bounded pages, not a historical snapshot.
-/// A key changed after its starting watermark belongs to the delta walk, even
-/// if the newer value is first encountered on a later baseline page. Retention
-/// loss invalidates the interval instead of treating an absent journal row as
+/// A key changed after its starting watermark is eligible for delta catchup
+/// if that conversation already has saved Tracker state. The caller baselines
+/// a never-seen conversation before allowing its later observations to post.
+/// Retention loss invalidates the interval instead of treating an absent journal row as
 /// proof that the catalog value existed at the baseline's start.
 pub(super) enum BaselineKey {
     Unchanged,
@@ -75,6 +76,15 @@ fn text(row: &rusqlite::Row<'_>, index: usize, cap: usize) -> rusqlite::Result<S
         return Err(rusqlite::Error::InvalidQuery);
     }
     Ok(value.to_owned())
+}
+/// An empty saved Tracker is still a known first observation. Absence and an
+/// empty map must not collapse into the same baseline-catchup decision.
+pub(super) fn has_previous(db: &Connection, session: &str) -> Result<bool> {
+    Ok(db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM desktop_attention_sessions WHERE id=?1)",
+        [session],
+        |r| r.get(0),
+    )?)
 }
 pub(super) fn previous(db: &Connection, session: &str) -> Result<Map<String, Value>> {
     let raw = db

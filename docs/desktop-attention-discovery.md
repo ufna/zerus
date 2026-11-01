@@ -14,13 +14,18 @@ and refreshes foreground suppression, which expires after five seconds. These
 Rust calls are not generic IPC settings or writer permissions.
 
 The initial catalog snapshot and retention-gap replacements consume old edges.
-Subsequent work follows indexed catalog deltas. A key changed after a
-baseline's start watermark is skipped by that walk and processed by the delta
-walk; a key-first journal index bounds the lookup. Journal retention loss
+Subsequent work follows indexed catalog deltas. A changed baseline key is
+skipped for the delta walk only if its conversation has saved Tracker state;
+a key-first journal index bounds the lookup. An empty saved Tracker counts as
+known state. Without a prior record or a before-image, its first observed value
+is consumed as baseline. A new edge first encountered on an unread startup page
+can therefore be consumed during this bounded first-baseline window; the service
+prefers that omission to posting an old unread edge as if it were new. Later
+observations of that conversation catch up normally. Journal retention loss
 restarts a baseline before any unproven row can be consumed. Foreground refresh
-only suppresses observations while active and never restarts a baseline. One actor turn processes at most
-four rows and eight dirty effects. The temporary page has at most 128 rows and
-1 MiB; only the 64 computer cursors remain resident. Each row passes through the
+only suppresses observations while active and never restarts a baseline. One
+actor turn processes at most four rows and eight dirty effects. The temporary
+page has at most 128 rows and 1 MiB; only the 64 computer cursors remain resident. Each row passes through the
 shared attention Tracker, preserving Mute, suppressed baselines, optional
 questions and reply deferral for background jobs, subagents and independent
 agent waits. Unknown/offline observations cannot grant a current source.

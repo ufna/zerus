@@ -912,7 +912,7 @@ fn focus_refresh_never_restarts_a_multi_page_baseline_or_loses_a_later_reply() {
 }
 
 #[test]
-fn initial_baseline_skips_newer_keys_on_both_queued_and_unread_pages() {
+fn initial_baseline_consumes_first_observation_before_admitting_later_replies() {
     for position in [100, 199] {
         let mut f = Fixture::new();
         f.runtime.set_policy(enabled());
@@ -924,7 +924,20 @@ fn initial_baseline_skips_newer_keys_on_both_queued_and_unread_pages() {
         changed["reply_id"] = json!(format!("new-{position}"));
         f.delta(changed);
         f.ticks(400);
-        assert_single_reply(&mut f, &format!("new-{position}"));
+        if position == 100 {
+            // The queued page still has the old start value, so it can first
+            // consume reply-1 and then admit the delta's genuinely new reply.
+            assert_single_reply(&mut f, &format!("new-{position}"));
+        } else {
+            // No before-image exists for this unread page. Conservatively
+            // consume its first value; do not invent an empty start-state.
+            assert!(f.host.try_next().is_err());
+            let mut after = rows[position].clone();
+            after["reply_id"] = json!("after-first-observation");
+            f.delta(after);
+            f.ticks(10);
+            assert_single_reply(&mut f, "after-first-observation");
+        }
     }
 }
 
@@ -987,7 +1000,7 @@ fn losing_journal_coverage_mid_baseline_resets_before_consuming_an_unproven_row(
     assert!(f.runtime.pending.is_none());
     // The lost interval is consumed, but a later edge is still observed.
     f.tick();
-    let mut changed = rows[199].clone();
+    let mut changed = rows[0].clone();
     changed["reply_id"] = json!("new-after-reset");
     f.delta(changed);
     f.ticks(400);
@@ -1113,4 +1126,86 @@ fn twenty_thousand_row_delta_stream_reports_expression_index_cost() {
             elapsed.as_secs_f64()
         );
     }
+}
+
+#[test]
+fn initial_baseline_unrelated_field_change_does_not_post_an_old_unread_reply() {
+    let mut f = Fixture::new();
+    f.runtime.set_policy(enabled());
+    let rows = fleet_rows(200);
+    f.snapshot(rows.clone());
+    f.tick();
+    let mut unrelated = rows[150].clone();
+    unrelated["created"] = json!(2);
+    f.delta(unrelated);
+    f.ticks(400);
+    assert!(f.host.try_next().is_err());
+    assert_eq!(
+        f.store
+            .db
+            .query_row("SELECT count(*) FROM desktop_attempts", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+#[test]
+fn initial_baseline_unrelated_field_change_does_not_post_old_native_attention() {
+    let mut f = Fixture::new();
+    f.runtime.set_policy(enabled());
+    let mut rows = fleet_rows(200);
+    rows[150]["reply_id"] = Value::Null;
+    rows[150]["phase"] = json!("approval");
+    rows[150]["attention_id"] = json!("old-permission");
+    rows[150]["activity"] = json!("waiting");
+    f.snapshot(rows.clone());
+    f.tick();
+    let mut unrelated = rows[150].clone();
+    unrelated["created"] = json!(2);
+    f.delta(unrelated);
+    f.ticks(400);
+    assert!(f.host.try_next().is_err());
+    assert_eq!(
+        f.store
+            .db
+            .query_row("SELECT count(*) FROM desktop_attempts", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+#[test]
+fn known_policy_baseline_unrelated_change_keeps_the_old_reply_consumed() {
+    let mut f = Fixture::new();
+    let rows = fleet_rows(200);
+    f.snapshot(rows.clone());
+    f.ticks(100);
+    f.runtime.set_policy(enabled());
+    f.tick();
+    let mut unrelated = rows[150].clone();
+    unrelated["created"] = json!(2);
+    f.delta(unrelated);
+    f.ticks(400);
+    assert!(f.host.try_next().is_err());
+}
+#[test]
+fn an_empty_saved_tracker_is_known_state_and_allows_new_delta_edges() {
+    let mut f = Fixture::new();
+    let mut rows = fleet_rows(200);
+    for raw in &mut rows {
+        raw["reply_id"] = Value::Null;
+        raw.as_object_mut().unwrap().remove("optional_questions");
+    }
+    f.snapshot(rows.clone());
+    f.ticks(100);
+    let session = state::session("", &rows[150]).unwrap();
+    assert!(state::has_previous(&f.store.db, &session).unwrap());
+    assert!(state::previous(&f.store.db, &session).unwrap().is_empty());
+    f.runtime.set_policy(enabled());
+    f.tick();
+    let mut changed = rows[150].clone();
+    changed["reply_id"] = json!("first-new-reply");
+    f.delta(changed);
+    f.ticks(400);
+    assert_single_reply(&mut f, "first-new-reply");
 }

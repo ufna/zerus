@@ -203,10 +203,11 @@ impl Runtime {
                 self.pending = None;
                 break;
             };
+            let mut changed_during_baseline = false;
             if row.baseline {
                 let since = self.sources[&scope.source.computer].since;
                 match state::baseline_key(&store.db, &scope, since, &row.key)? {
-                    state::BaselineKey::Changed => continue,
+                    state::BaselineKey::Changed => changed_during_baseline = true,
                     state::BaselineKey::Gap => {
                         let watermark = changes::watermark(&store.db, &scope.source.computer)?;
                         let source = self.sources.get_mut(&scope.source.computer).unwrap();
@@ -237,6 +238,14 @@ impl Runtime {
                     continue;
                 }
                 let computer = &scope.source.computer;
+                let session = state::session(computer, &value)?;
+                // Catch up a known conversation through deltas. An unseen
+                // conversation has no start-state from which to distinguish
+                // its old unread edges from new ones: consume its first value
+                // as baseline, even if a late page already sees an update.
+                if changed_during_baseline && state::has_previous(&store.db, &session)? {
+                    continue;
+                }
                 let label = state::label(&store.db, computer)?;
                 let current_key = state::current_key(
                     &store.db,
@@ -265,7 +274,6 @@ impl Runtime {
                 {
                     continue;
                 }
-                let session = state::session(computer, &value)?;
                 let previous = state::previous(&store.db, &session)?;
                 // A retained delta can be superseded before this actor turn.
                 // Consume it as historical data, never post from it. The next
