@@ -654,6 +654,7 @@ impl Outbox {
                 request_id: receipt.binding.request_id,
                 token,
                 native_id,
+                platform_context: None,
             };
             if self.current_activation(store, &activation)?.is_some() {
                 mappings.push(activation);
