@@ -1822,7 +1822,10 @@ native usage. The saved native identity changes only on the real hook, and an
 unconfirmed command does not reset counters.
 A stopped session offers **Start fresh…** instead, with the same confirmation, and
 keeps **Send** available: it offers **Resume and send** with the full saved context,
-**Resume, compact and send**, or **Start fresh and send**. The compact option waits
+**Resume, compact and send**, or **Start fresh and send**. Zerus Next names the
+same choices **Resume**, **Compact and resume** and **Start fresh** under its
+"Start the session to send?" title, with **Cancel** last as the default; its
+dialog actions wrap onto further rows rather than leaving a narrow dialog. The compact option waits
 for the restored conversation to accept input, then runs native compaction and
 delivers the unchanged message only after confirmed success. A failed start, an
 unexpected conversation or three minutes without readiness cancel that send and

@@ -441,7 +441,7 @@ describe("composer store", () => {
   });
 
   it("an open question locks the editor and keeps the epoch: closing it unlocks", async () => {
-    const f = fakes({ kind: "start", token: 3, question: { title: "Start the session to send?", text: "", informative: "", options: [] } });
+    const f = fakes({ kind: "start", token: 3, question: { title: { source: "Start the session to send?" }, text: { source: "" }, informative: { source: "" }, options: [] } });
     await createRoot(async () => {
       const c = createComposer(f.port, f.timers);
       c.apply(view());
@@ -657,7 +657,7 @@ describe("composer store", () => {
   });
 
   it("the editor stays locked while an answer is on its way", async () => {
-    const f = fakes({ kind: "start", token: 12, question: { title: "Start the session to send?", text: "", informative: "", options: [] } });
+    const f = fakes({ kind: "start", token: 12, question: { title: { source: "Start the session to send?" }, text: { source: "" }, informative: { source: "" }, options: [] } });
     const answer = held<SendReply>();
     const port: ComposerPort = { ...f.port, answer: (token, a) => { f.calls.push(`answer ${token} ${JSON.stringify(a)}`); return answer.call(); } };
     await createRoot(async () => {
