@@ -12,6 +12,10 @@ on:
         description: Commit, branch or refs/pull/NUMBER/head to test (blank uses selected workflow branch)
         type: string
         default: ''
+      registration_launcher_diagnostic:
+        description: Isolated hosted fresh-account launcher diagnostic (no ordinary matrix)
+        type: boolean
+        default: false
       run_linux:
         description: Run full Linux CLI integration tests and release build
         type: boolean
@@ -75,6 +79,50 @@ concurrency:
   cancel-in-progress: ${{ !(github.repository == 'ufna/zerus' && github.ref == 'refs/heads/main' && github.event_name == 'push' && github.event.repository.private == false && vars.DEV_UPDATES_ENABLED == 'true') }}
 
 jobs:
+  registration-launcher-diagnostic:
+    name: Hosted registration launcher (${{ matrix.profile }})
+    if: github.repository == 'ufna/zerus' && github.event_name == 'workflow_dispatch' && inputs.registration_launcher_diagnostic && inputs.run_windows
+    runs-on: windows-2025
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    cache-mode: read
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [no-load, load, precreated]
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_BUILD_JOBS: 4
+      CARGO_INCREMENTAL: 0
+      RUSTUP_TOOLCHAIN: 1.99.1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - name: Build this source's release CLI
+        run: |
+          mkdir -p artifacts/test-results
+          rustup toolchain install 1.99.1 --profile minimal
+          cargo build --release --locked --bin hgs
+      - name: Original credentialed standard-user launch
+        shell: powershell
+        timeout-minutes: 5
+        env:
+          PROFILE_CASE: ${{ matrix.profile }}
+        run: |
+          & scripts/ci/windows-registration-native-user.ps1 -Hgs target/release/hgs.exe -ProfileCase $env:PROFILE_CASE -Stage (Join-Path $env:ProgramData ('ZerusLauncherDiagnostic-' + [Guid]::NewGuid().ToString('N')))
+      - name: Retain bounded original launcher records
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-launcher-${{ matrix.profile }}-${{ github.sha }}
+          path: artifacts/test-results
+          if-no-files-found: warn
+          retention-days: 7
   automatic:
     name: Trusted main checks
     if: >-
@@ -93,6 +141,7 @@ jobs:
   review:
     name: PR and manual checks
     if: >-
+      !inputs.registration_launcher_diagnostic &&
       !(github.repository == 'ufna/zerus' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule') && (!inputs.ref || inputs.ref == github.sha))
     cache-mode: read
     uses: ./.github/workflows/checks.yml
@@ -118,7 +167,7 @@ jobs:
     uses: ./.github/workflows/ci-dev-qualification.yml
   gate:
     name: CI gate
-    if: always() && (github.event.repository.private == false || github.event_name == 'workflow_dispatch')
+    if: always() && !inputs.registration_launcher_diagnostic && (github.event.repository.private == false || github.event_name == 'workflow_dispatch')
     needs: [automatic, review, qualification]
     runs-on: ubuntu-24.04
     timeout-minutes: 5

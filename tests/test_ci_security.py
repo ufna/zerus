@@ -232,7 +232,7 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertEqual(re.search(r'(?m)^cache-mode: (.*)$', workflow)[1], 'none')
 
     def selected(self, name, event, ref="refs/heads/main", test_ref="", repository="ufna/zerus",
-                 enabled="", private=False, cancelled=False):
+                 enabled="", private=False, cancelled=False, diagnostic=False, windows=False):
         # Evaluate the checked-in condition with synthetic event identities.
         expression = field(job(self.ci, name), "if")
         expression = expression.replace("&&", " and ").replace("||", " or ")
@@ -242,7 +242,7 @@ class WorkflowSecurityTests(unittest.TestCase):
             "always": lambda: True, "cancelled": lambda: cancelled,
             "github": SimpleNamespace(repository=repository, ref=ref, event_name=event, sha="a" * 40,
                                       event=SimpleNamespace(repository=SimpleNamespace(private=private))),
-            "inputs": SimpleNamespace(ref=test_ref),
+            "inputs": SimpleNamespace(ref=test_ref, registration_launcher_diagnostic=diagnostic, run_windows=windows),
             "vars": SimpleNamespace(DEV_UPDATES_ENABLED=enabled),
         }))
 
@@ -275,6 +275,31 @@ class WorkflowSecurityTests(unittest.TestCase):
                          {'cli-macos-native': 'none', 'cli-macos': 'none'})
         self.assertNotRegex(job(checks, 'cli-macos-debug'), r'(?m)^    cache-mode:')
         self.assertNotRegex(checks, r"(?m)^\s*cache-mode: write$")
+
+    def test_registration_launcher_diagnostic_is_manual_read_only_and_separate(self):
+        for event, requested, windows, repo, expected in [
+            ('workflow_dispatch', True, True, 'ufna/zerus', True),
+            ('workflow_dispatch', False, True, 'ufna/zerus', False),
+            ('workflow_dispatch', True, False, 'ufna/zerus', False),
+            ('workflow_dispatch', True, True, 'example/zerus', False),
+            ('push', True, True, 'ufna/zerus', False),
+            ('pull_request', True, True, 'ufna/zerus', False),
+        ]:
+            with self.subTest(event=event, requested=requested, windows=windows, repo=repo):
+                self.assertEqual(self.selected('registration-launcher-diagnostic',event,
+                                              repository=repo, diagnostic=requested, windows=windows),expected)
+        self.assertFalse(self.selected('review','workflow_dispatch',diagnostic=True,windows=True))
+        self.assertFalse(self.selected('gate','workflow_dispatch',diagnostic=True,windows=True))
+        self.assertTrue(self.selected('review','workflow_dispatch',diagnostic=False,windows=True))
+        self.assertTrue(self.selected('gate','workflow_dispatch',diagnostic=False,windows=True))
+        diagnostic=job(self.ci,'registration-launcher-diagnostic')
+        self.assertEqual(field(diagnostic,'runs-on'),'windows-2025')
+        self.assertEqual(field(diagnostic,'cache-mode'),'read')
+        self.assertIn('contents: read',diagnostic)
+        self.assertIn('profile: [no-load, load, precreated]',diagnostic)
+        self.assertIn('cargo build --release --locked --bin hgs',diagnostic)
+        self.assertNotRegex(diagnostic,r'(?m)^\s*(secrets|environment):')
+        self.assertNotRegex(diagnostic,r'(?m)^\s*(contents|actions|id-token): write')
 
     def test_final_gate_rejects_failure_cancellation_and_all_skipped(self):
         gate = job(self.ci, "gate")

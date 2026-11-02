@@ -1,12 +1,13 @@
 param(
     [ValidateSet('Controller', 'Child')][string]$Mode = 'Controller',
     [Parameter(Mandatory=$true)][string]$Stage,
-    [string]$Hgs
+    [string]$Hgs,
+    [ValidateSet('load','no-load','precreated')][string]$ProfileCase = 'load'
 )
 # Disposable hosted Windows only. The candidate builds its own release image.
-# Register/remove only this new ordinary user's passive task; never Run/Stop/End.
+# Diagnostic only: read version/task status; never install, Run, Stop or End.
 # PowerShell is a test controller only. hgs's OS-registration child is native.
-$Layout = 'native-release'
+$Layout = 'hosted-' + $ProfileCase
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 if ($Mode -eq 'Controller' -and ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted')) {
@@ -23,6 +24,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.ServiceProcess;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
 public static class RegistrationCapture {
@@ -35,6 +37,20 @@ public static class RegistrationCapture {
                 count += n;
             }
             throw new InvalidDataException("capture exceeded 64 KiB");
+        });
+    }
+    [DllImport("userenv.dll", CharSet=CharSet.Unicode)]
+    private static extern int CreateProfile(string sid, string user, StringBuilder path, uint capacity);
+    public static Task<string> PrecreateProfile(string sid, string user, string phases) {
+        return Task.Run(() => {
+            if (!sid.StartsWith("S-1-5-21-") || !System.Text.RegularExpressions.Regex.IsMatch(user, "^zr[0-9a-f]{12}$"))
+                throw new InvalidOperationException("Only the original synthetic account may get a profile");
+            File.AppendAllText(phases, "create_profile_enter\n");
+            var path = new StringBuilder(32768);
+            int code = CreateProfile(sid, user, path, 32768);
+            File.AppendAllText(phases, "create_profile_return " + code.ToString("X8") + "\n");
+            if (code < 0) Marshal.ThrowExceptionForHR(code);
+            return path.ToString();
         });
     }
     public static Task<bool> ReadyLogonService(string phases) {
@@ -110,7 +126,7 @@ if ($Mode -ne 'Controller') {
     $env:HGS_DESKTOP_REGISTRATION_TRACE = '1'
     # Read loops retain at most 64 KiB each, even if a failed child keeps writing.
     [void][Reflection.Assembly]::Load([IO.File]::ReadAllBytes([IO.Path]::Combine($Stage, 'capture.dll')))
-    foreach ($arguments in @('--version', 'desktop registration status --json', 'desktop registration install --json', 'desktop registration install --json', 'desktop registration remove --json', 'desktop registration status --json')) {
+    foreach ($arguments in @('--version', 'desktop registration status --json')) {
         $child = [Diagnostics.Process]::new()
         $child.StartInfo.FileName = [IO.Path]::Combine($Stage, 'hgs.exe')
         $child.StartInfo.Arguments = $arguments
@@ -158,11 +174,7 @@ if ($Mode -ne 'Controller') {
         if ($call.exit -ne 0) { throw 'Original release command failed; preserve fixture' }
         if ($arguments -ne '--version') {
             $value = $reportJson.DeserializeObject($call.stdout)
-            $installed = $arguments -eq 'desktop registration install --json'
-            if ($value.registered -ne $installed) { throw 'Unexpected exact own-task registration state' }
-            if ($installed -and ($value.started -ne $false -or $value.stopped -ne $false -or $value.task_state -ne 3)) { throw 'Passive task must remain ready, never started' }
-            if ($installed -and $report.calls.Count -eq 3 -and $value.changed -ne $true) { throw 'Fresh native installation must change its absent task' }
-            if ($installed -and $report.calls.Count -eq 4 -and $value.changed -ne $false) { throw 'Repeated install must not replace its task' }
+            if ($value.registered -ne $false -or $value.changed -ne $false) { throw 'Diagnostic must remain read-only and unregistered' }
         }
     }
     $report.complete = $true
@@ -205,17 +217,19 @@ try {
         throw 'Release image copy differs'
     }
     $program = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $scriptPath = (Join-Path $Stage 'fixture.ps1').Replace("'", "''")
     $stageLiteral = $Stage.Replace("'", "''")
     # Fixed owned source loader, like the maintained policy corpus. This does
     # not change any execution-policy setting for the new account or machine.
-    $entry = "& ([ScriptBlock]::Create([IO.File]::ReadAllText('$scriptPath'))) -Mode Child -Stage '$stageLiteral'"
+    $entry = "`$s='$stageLiteral'; & ([ScriptBlock]::Create([IO.File]::ReadAllText(`$s+'\fixture.ps1'))) -Mode Child -ProfileCase '$ProfileCase' -Stage `$s"
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($entry))
     if ($encoded.Length -ge 30000) { throw 'Fixture entry exceeds command-line bound' }
     $arguments = '-NoLogo -NoProfile -NonInteractive -EncodedCommand ' + $encoded
     # .NET uses CreateProcessWithLogonW for this actual new local account.
     # Leave EnvironmentVariables untouched: the OS builds its profile environment.
-    if (($program.Length + $arguments.Length + 3) -ge 1024) { throw 'Credentialed launch exceeds its native bound' }
+    $commandChars=$program.Length+$arguments.Length+3 # quotes around exe, one space; excludes terminating NUL
+    $commandReport=[ordered]@{profile_case=$ProfileCase;command_chars=$commandChars;terminating_nul=1;encoded_chars=$encoded.Length;limit=1024;within_bound=(($commandChars+1) -le 1024)}
+    Write-Report (Join-Path $env:GITHUB_WORKSPACE ('artifacts/test-results/registration-' + $Layout + '-command-line.json')) $commandReport
+    if (($commandChars+1) -gt 1024) { throw 'Credentialed launch exceeds its native bound' }
     $outer = [Diagnostics.Process]::new()
     $outer.StartInfo.FileName = $program
     $outer.StartInfo.Arguments = $arguments
@@ -225,7 +239,7 @@ try {
     $outer.StartInfo.UserName = $userName
     $outer.StartInfo.Domain = $env:COMPUTERNAME
     $outer.StartInfo.Password = $secure
-    $outer.StartInfo.LoadUserProfile = $true
+    $outer.StartInfo.LoadUserProfile = $ProfileCase -ne 'no-load'
     $outer.StartInfo.RedirectStandardInput = $true
     $outer.StartInfo.RedirectStandardOutput = $true
     $outer.StartInfo.RedirectStandardError = $true
@@ -245,7 +259,22 @@ try {
         $serviceReport.elapsed_ms=$serviceWatch.ElapsedMilliseconds
         Write-Report $serviceReportPath $serviceReport
     }
-    $launch = [ordered]@{ phase='spawn'; physical_wait=$false }
+    if ($ProfileCase -eq 'precreated') {
+        $profileReport=[ordered]@{created=$false;elapsed_ms=0}
+        $profileWatch=[Diagnostics.Stopwatch]::StartNew()
+        $profileReportPath=Join-Path $env:GITHUB_WORKSPACE ('artifacts/test-results/registration-' + $Layout + '-precreated.json')
+        Write-Report $profileReportPath $profileReport
+        $creating=[RegistrationCapture]::PrecreateProfile($ownedUser.SID.Value,$userName,(Join-Path $Stage 'profile-phases.txt'))
+        try {
+            if (-not $creating.Wait(30000)) { throw 'Original profile creation is pending; preserve fixture' }
+            $profileReport.created=$true
+            $profileReport.path=$creating.Result
+        } finally {
+            $profileReport.elapsed_ms=$profileWatch.ElapsedMilliseconds
+            Write-Report $profileReportPath $profileReport
+        }
+    }
+    $launch = [ordered]@{ phase='spawn'; physical_wait=$false; command_chars=$commandChars; encoded_chars=$encoded.Length; load_user_profile=$outer.StartInfo.LoadUserProfile; profile_case=$ProfileCase }
     $launchPath = Join-Path $env:GITHUB_WORKSPACE ('artifacts/test-results/registration-' + $Layout + '-launch.json')
     Write-Report $launchPath $launch
     $starting = [RegistrationCapture]::Start($outer, (Join-Path $Stage 'launch-native-phases.txt'))
@@ -297,13 +326,13 @@ try {
         [IO.File]::WriteAllText((Join-Path $env:GITHUB_WORKSPACE ('artifacts/test-results/registration-' + $Layout + '-standard-user.json')), $text)
         Write-Output $text
         $result = $text | ConvertFrom-Json
-        $complete = $result.complete -eq $true -and $result.sid -eq $ownedUser.SID.Value -and $result.administrator_sid_present -eq $false -and $result.calls.Count -eq 6 -and $launch.physical_wait -and $launch.exit -eq 0
+        $complete = $result.complete -eq $true -and $result.sid -eq $ownedUser.SID.Value -and $result.administrator_sid_present -eq $false -and $result.calls.Count -eq 2 -and $launch.physical_wait -and $launch.exit -eq 0
     }
     if (-not $complete) { throw 'Standard-user native release lifecycle failed; retained only on disposable VM' }
 } finally {
     # Retain the ORIGINAL child evidence even when credentialed Start itself
     # never returned. Its absence is not evidence that the child never ran.
-    foreach ($entry in @(@('logon-service-phases.txt',1024), @('launch-native-phases.txt',1024), @('child-phases.txt',1024), @('result.json',200000))) {
+    foreach ($entry in @(@('profile-phases.txt',1024), @('logon-service-phases.txt',1024), @('launch-native-phases.txt',1024), @('child-phases.txt',1024), @('result.json',200000))) {
         $path = Join-Path $Stage $entry[0]
         if ([IO.File]::Exists($path)) {
             $file=[IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
@@ -333,7 +362,7 @@ try {
         if ($profile) { $profile | Remove-CimInstance }
         Remove-LocalUser -SID $ownedUser.SID
         Remove-Item -LiteralPath $Stage -Recurse
-        Write-Output 'Standard-user account, profile and stage removed; owned passive task absent'
+        Write-Output 'Standard-user account, profile and stage removed; read-only diagnostic task absent'
     } else {
         Write-Output "Incomplete fixture preserved on disposable VM only: $Stage; no product effects replayed"
     }
