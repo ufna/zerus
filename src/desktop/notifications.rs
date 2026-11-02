@@ -28,6 +28,7 @@ const QUEUED: u8 = 0;
 const STARTED: u8 = 1;
 const CANCELLED: u8 = 2;
 
+pub(super) mod activation;
 pub(super) mod attachment;
 #[cfg(unix)]
 pub(super) mod host;

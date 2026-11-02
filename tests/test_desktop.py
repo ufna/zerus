@@ -512,6 +512,21 @@ class Desktop(unittest.TestCase):
         self.assertNotEqual(absent['configuration'], live['configuration'])
         self.assertFalse((self.root / 'unexpected-tool').exists())
 
+    def test_activation_payload_is_unavailable_to_generic_and_unregistered_children(self):
+        self.serve()
+        request_id = str(uuid.uuid4())
+        request = dict(op='activation_wait', request_id=request_id)
+        generic = self.cli('desktop', 'request', '--json', data=request)
+        self.assertFalse(generic['accepted'])
+        envelope = dict(abi='desktop-ui-request-v1', attempt=str(uuid.uuid4()), request=request)
+        child = self.cli('desktop', 'frontend-request', '--json', data=envelope)
+        self.assertEqual(child['request_id'], request_id)
+        self.assertFalse(child['accepted'])
+        self.assertEqual(child['code'], 'frontend_authentication_refused')
+        self.assertNotIn('activation', child)
+        help_result = subprocess.run([str(HGS), '--help'], env=self.env, capture_output=True, text=True, timeout=5)
+        self.assertIn('Desktop activation ABI: desktop-activation-v1', help_result.stdout)
+
     def test_queries_and_effect_refusal_have_exact_request_ids(self):
         self.serve()
         request_id = str(uuid.uuid4())

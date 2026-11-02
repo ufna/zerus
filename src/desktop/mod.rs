@@ -514,6 +514,18 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                         let result = match (authority, &mut background) {
                             (Some(authority), Some(runtime)) => {
                                 match authority.into_request(&mut frontend_order) {
+                                    Ok(request) if request.operation() == "activation_wait" => {
+                                        match runtime.activation_wait(request, queue.clone()) {
+                                            Ok(()) => {
+                                                streaming = true;
+                                                Value::Null
+                                            }
+                                            Err(_) => frontend_refused(
+                                                hello.request.as_ref(),
+                                                "activation_receiver_unavailable",
+                                            ),
+                                        }
+                                    }
                                     Ok(request) => runtime.frontend_request(&mut store, request),
                                     Err(_) => frontend_refused(
                                         hello.request.as_ref(),
@@ -601,7 +613,9 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                             json!({"code":"unsupported_operation"}),
                         )
                     };
-                    queue.offer(protocol::encode(&reply)?.into());
+                    if !reply["value"].is_null() {
+                        queue.offer(protocol::encode(&reply)?.into());
+                    }
                     if !streaming {
                         queue.close();
                     }
@@ -651,16 +665,16 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
             if feed.retire(&mut store).unwrap_or(false) {
                 seq += 1;
                 fanout.publish(
-                protocol::encode(&frame(
-                    &epoch,
-                    seq,
-                    "catalog_changed",
-                    json!({"display_only":true,"retired":true,"reset_required":true,
+                    protocol::encode(&frame(
+                        &epoch,
+                        seq,
+                        "catalog_changed",
+                        json!({"display_only":true,"retired":true,"reset_required":true,
                         "changes_abi":catalog_read::CHANGES_ABI,
                         "attention_counts":attention_counts(&store,&epoch,seq,&feed)}),
-                ))?
-                .into(),
-            );
+                    ))?
+                    .into(),
+                );
             }
             if Instant::now() >= collect_at {
                 let delay = if store.collect_catalog() {
@@ -760,7 +774,12 @@ fn client(
     if hello.op == "feed" {
         return feed::client(stream, reader, hello, send, stopped, ingress);
     }
-    let watching = hello.op == "watch";
+    let watching = hello.op == "watch"
+        || (hello.op == "frontend_request"
+            && hello
+                .request
+                .as_ref()
+                .is_some_and(|v| v["request"]["op"] == "activation_wait"));
     let authority = if hello.op == "frontend_request"
         && hello.abi == ABI
         && hello.configuration == location.configuration
@@ -859,13 +878,21 @@ fn exchange(location: &Location, op: &str, request: Option<Value>) -> Result<Opt
     let revoking = request
         .as_ref()
         .is_some_and(|value| matches!(value["op"].as_str(), Some("revoke" | "revoke_status")));
+    let activation_wait = op == "frontend_request"
+        && request
+            .as_ref()
+            .is_some_and(|v| v["request"]["op"] == "activation_wait");
     let Some(stream) = connection(location, op, request)? else {
         return Ok(None);
     };
     // Revocation includes a bounded SQLite busy wait and durable filesystem I/O.
     // A timeout remains an unknown result, never permission to start Qt.
     if revoking || op == "frontend_request" {
-        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+        stream.set_read_timeout(Some(if activation_wait {
+            zerus_client_core::desktop::activation::CLIENT_WAIT
+        } else {
+            Duration::from_secs(10)
+        }))?;
     }
     let bytes = protocol::line(&mut BufReader::new(stream), protocol::FRAME_BYTES)?
         .context("desktop service disconnected")?;

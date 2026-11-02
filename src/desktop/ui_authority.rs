@@ -152,6 +152,49 @@ impl Validated {
         )
     }
 }
+/// A read-only activation receiver bound to the original authenticated child.
+/// It cannot authorize policy mutations and cannot be decoded from JSON.
+pub(super) struct ActivationReceiver {
+    freshness: Freshness,
+    until: Instant,
+}
+impl ActivationReceiver {
+    pub fn current(&self) -> bool {
+        Instant::now() < self.until
+            && match &self.freshness {
+                Freshness::Native {
+                    caller, frontend, ..
+                } => caller.current() && frontend.current(),
+                #[cfg(test)]
+                Freshness::Fixture => true,
+            }
+    }
+}
+impl Validated {
+    pub fn activation_wait(self) -> Result<(String, ActivationReceiver)> {
+        let Self(request, freshness) = self;
+        let current = match &freshness {
+            Freshness::Native {
+                caller,
+                frontend,
+                until,
+            } => Instant::now() < *until && caller.current() && frontend.current(),
+            #[cfg(test)]
+            Freshness::Fixture => true,
+        };
+        ensure!(current, "frontend permit expired");
+        let Request::ActivationWait { request_id } = request else {
+            anyhow::bail!("not an activation receiver")
+        };
+        Ok((
+            request_id,
+            ActivationReceiver {
+                freshness,
+                until: Instant::now() + zerus_client_core::desktop::activation::PEER_WAIT,
+            },
+        ))
+    }
+}
 impl Authorized {
     pub fn into_request(self, order: &mut Order) -> Result<Validated> {
         ensure!(
