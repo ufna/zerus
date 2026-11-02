@@ -34,6 +34,9 @@ public static class RegistrationCapture {
             throw new InvalidDataException("capture exceeded 64 KiB");
         });
     }
+    public static Task<bool> Start(Process child) {
+        return Task.Run(() => child.Start());
+    }
     public static Task Stop(Process child) {
         // A native termination request can itself stall. Keep it off the
         // caller deadline and retain the original Process until a real wait.
@@ -146,7 +149,6 @@ if ([IO.Path]::GetFileName($source) -ne 'hgs.exe' -or [IO.Path]::GetFileName([IO
 }
 $nonce = [Guid]::NewGuid().ToString('N')
 $userName = 'zr' + $nonce.Substring(0, 12)
-$taskName = 'ZerusRegistrationCI-' + $nonce
 $Stage = [IO.Path]::GetFullPath($Stage)
 if (Test-Path $Stage) { throw 'Fixture stage must not exist' }
 [void][IO.Directory]::CreateDirectory($Stage)
@@ -157,7 +159,7 @@ $passwordBytes = New-Object byte[] 32
 $password = [Convert]::ToBase64String($passwordBytes) + '!aA1'
 $secure = ConvertTo-SecureString $password -AsPlainText -Force
 $ownedUser = $null
-$ownedTask = $false
+$outer = $null
 $complete = $false
 try {
     # Compile the bounded reader once under the warm controller. The fresh
@@ -204,28 +206,65 @@ try {
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($entry))
     if ($encoded.Length -ge 30000) { throw 'Fixture entry exceeds command-line bound' }
     $arguments = '-NoLogo -NoProfile -NonInteractive -EncodedCommand ' + $encoded
-    $action = New-ScheduledTaskAction -Execute $program -Argument $arguments -WorkingDirectory $Stage
-    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 1)
-    # No trigger; exactly one explicit run. Password stays in controller memory
-    # and Task Scheduler's credential store until this exact task is removed.
-    Register-ScheduledTask -TaskName $taskName -Action $action -Settings $settings -User "$env:COMPUTERNAME\$userName" -Password $password -RunLevel Limited | Out-Null
-    $ownedTask = $true
+    # .NET uses CreateProcessWithLogonW for this actual new local account.
+    # Leave EnvironmentVariables untouched: the OS builds its profile environment.
+    if (($program.Length + $arguments.Length + 3) -ge 1024) { throw 'Credentialed launch exceeds its native bound' }
+    $outer = [Diagnostics.Process]::new()
+    $outer.StartInfo.FileName = $program
+    $outer.StartInfo.Arguments = $arguments
+    $outer.StartInfo.WorkingDirectory = $Stage
+    $outer.StartInfo.UseShellExecute = $false
+    $outer.StartInfo.CreateNoWindow = $true
+    $outer.StartInfo.UserName = $userName
+    $outer.StartInfo.Domain = $env:COMPUTERNAME
+    $outer.StartInfo.Password = $secure
+    $outer.StartInfo.LoadUserProfile = $true
+    $outer.StartInfo.RedirectStandardInput = $true
+    $outer.StartInfo.RedirectStandardOutput = $true
+    $outer.StartInfo.RedirectStandardError = $true
+    # The raw admin control loaded the same reader assembly. The app-local
+    # controller has no admin control, so load its owned bytes explicitly.
+    if ($Layout -eq 'app-local') {
+        [void][Reflection.Assembly]::Load([IO.File]::ReadAllBytes($capturePath))
+    }
+    $launch = [ordered]@{ phase='spawn'; physical_wait=$false }
+    $launchPath = Join-Path $env:GITHUB_WORKSPACE ('artifacts/test-results/registration-' + $Layout + '-launch.json')
+    Write-Report $launchPath $launch
+    $starting = [RegistrationCapture]::Start($outer)
+    if (-not $starting.Wait(20000)) {
+        $launch.phase = 'spawn-pending'
+        Write-Report $launchPath $launch
+        throw 'Credentialed original launch is pending; preserve fixture'
+    }
+    if (-not $starting.Result) { throw 'Credentialed original launch refused' }
+    $originalHandle = $outer.Handle
+    $launch.pid = $outer.Id
+    $launch.birth = $outer.StartTime.ToUniversalTime().ToFileTimeUtc().ToString()
+    $launch.phase = 'started'
+    Write-Report $launchPath $launch
     $password = $null
     $secure = $null
-    Start-ScheduledTask -TaskName $taskName
-    $deadline = [DateTime]::UtcNow.AddSeconds(65)
-    do {
-        Start-Sleep -Milliseconds 250
-        $task = Get-ScheduledTask -TaskName $taskName
-        $info = Get-ScheduledTaskInfo -TaskName $taskName
-    } while (($info.LastRunTime.Year -lt 2000 -or $task.State -eq 'Running') -and [DateTime]::UtcNow -lt $deadline)
-    $launch = [ordered]@{
-        state = [string]$task.State
-        logon_type = [string]$task.Principal.LogonType
-        last_run = $info.LastRunTime.ToUniversalTime().ToString('o')
-        last_result = [uint32]$info.LastTaskResult
-        result_present = [IO.File]::Exists((Join-Path $Stage 'result.json'))
+    $outer.StandardInput.Close()
+    $outerOut = [RegistrationCapture]::Read($outer.StandardOutput.BaseStream)
+    $outerErr = [RegistrationCapture]::Read($outer.StandardError.BaseStream)
+    if (-not $outer.WaitForExit(65000)) {
+        $stop = [RegistrationCapture]::Stop($outer)
+        try { [void]$stop.Wait(2000) } catch { }
+        $launch.phase = 'timeout-or-termination-pending'
+        Write-Report $launchPath $launch
+        throw 'Original wrapper deadline reached; preserve fixture'
     }
+    $launch.physical_wait = $true
+    $launch.exit = $outer.ExitCode
+    $launch.phase = 'exited'
+    if (-not [Threading.Tasks.Task]::WaitAll(@($outerOut, $outerErr), 2000)) {
+        Write-Report $launchPath $launch
+        throw 'Original wrapper capture remains pending'
+    }
+    $launch.stdout = $outerOut.GetAwaiter().GetResult()
+    $launch.stderr = $outerErr.GetAwaiter().GetResult()
+    $outer.Dispose()
+    $launch.result_present = [IO.File]::Exists((Join-Path $Stage 'result.json'))
     $phasePath = Join-Path $Stage 'child-phases.txt'
     if ([IO.File]::Exists($phasePath)) {
         if ((Get-Item $phasePath).Length -gt 1024) { throw 'Fixture phase bound exceeded' }
@@ -240,7 +279,7 @@ try {
         [IO.File]::WriteAllText((Join-Path $env:GITHUB_WORKSPACE ('artifacts/test-results/registration-' + $Layout + '-standard-user.json')), $text)
         Write-Output $text
         $result = $text | ConvertFrom-Json
-        $complete = $result.complete -eq $true -and $result.sid -eq $ownedUser.SID.Value -and $result.administrator_sid_present -eq $false -and $result.calls.Count -eq 2 -and $task.State -ne 'Running' -and $info.LastTaskResult -eq 0
+        $complete = $result.complete -eq $true -and $result.sid -eq $ownedUser.SID.Value -and $result.administrator_sid_present -eq $false -and $result.calls.Count -eq 2 -and $launch.physical_wait -and $launch.exit -eq 0
     }
     if (-not $complete) { throw 'Standard-user release comparison failed; retained only on disposable VM' }
 } finally {
@@ -250,12 +289,6 @@ try {
         if ($text.Length -gt 200000) { throw 'Admin fixture result exceeds bound' }
         [IO.File]::WriteAllText((Join-Path $env:GITHUB_WORKSPACE 'artifacts/test-results/registration-release-admin.json'), $text)
         Write-Output $text
-    }
-    # Remove only our exact triggerless task; never stop or adopt another task.
-    if ($ownedTask) {
-        $actual = Get-ScheduledTask -TaskName $taskName
-        if ($actual.Actions.Execute -ne $program -or $actual.Actions.Arguments -ne $arguments) { throw 'Fixture task changed; preserve account and stage' }
-        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
     }
     if ($complete) {
         $profileDeadline = [DateTime]::UtcNow.AddSeconds(5)
@@ -268,7 +301,7 @@ try {
         if ($profile) { $profile | Remove-CimInstance }
         Remove-LocalUser -SID $ownedUser.SID
         Remove-Item -LiteralPath $Stage -Recurse
-        Write-Output 'Standard-user account, profile, task and stage removed'
+        Write-Output 'Standard-user account, profile and stage removed; no task was registered'
     } else {
         Write-Output "Incomplete fixture preserved on disposable VM only: $Stage; no product effects replayed"
     }
