@@ -380,3 +380,18 @@ fn input_bounds_and_changed_revision_payload_fail_before_reservation() {
     req.request_id = "not-a-uuid".into();
     assert!(reserve(&mut db, &req).is_err());
 }
+
+#[test]
+fn canonical_intent_lookup_is_read_only_and_matches_original_insert() {
+    let mut db = database();
+    let post = identity("lookup");
+    let before = db.total_changes();
+    let key = intent_id(&post).unwrap();
+    assert_eq!(db.total_changes(), before);
+    assert_eq!(put_intent(&mut db, &post, 1, &json!({})).unwrap(), key);
+    let mut withdrawal = post.clone();
+    withdrawal.kind = Kind::Withdrawal;
+    assert_ne!(intent_id(&withdrawal).unwrap(), key);
+    withdrawal.edge.clear();
+    assert!(intent_id(&withdrawal).is_err());
+}

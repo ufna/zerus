@@ -190,16 +190,19 @@ impl Mappings {
         }
     }
     fn restore(&mut self, values: Vec<Activation>) -> bool {
-        if values.iter().any(|v| {
-            !v.valid_for(Platform::Linux)
-                || v.platform_context.is_some()
-                || self.id(&v.native_id).is_none()
-        }) {
+        if values
+            .iter()
+            .any(|v| !v.valid_for(Platform::Linux) || v.platform_context.is_some())
+        {
             return false;
         }
         let mut page = BTreeMap::new();
         for value in values {
-            let id = self.id(&value.native_id).unwrap();
+            // An earlier bus or unique daemon owner cannot call back or be
+            // withdrawn here. Keep it gone, never redirect its numeric ID.
+            let Some(id) = self.id(&value.native_id) else {
+                continue;
+            };
             if self.rows.get(&id).is_some_and(|old| old != &value)
                 || page.get(&id).is_some_and(|old| old != &value)
             {

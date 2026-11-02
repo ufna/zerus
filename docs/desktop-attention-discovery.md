@@ -71,3 +71,25 @@ It does not scan retired attempt history or resend notifications.
 A non-retryable offer or SQL failure stops discovery and is explicit in status
 (`stopped_on_error`, `error_retryable: false`). Repairing a writer underneath the
 runtime does not replay its failed offer; lifecycle recovery remains explicit.
+
+## Platform attachment
+
+`notifications::attachment::Runtime` owns the original outbox and selected
+platform runtime. Its constructor takes the original service owner resource;
+that resource also remains in the original endpoint and command callbacks.
+Mac selection is supplied as the opaque native selection made off actor, and
+Linux takes an explicit Unix bus address. This component does not change the
+background registration, policy admission or client switch.
+
+Before allowing discovery effects, attachment restores at most sixteen indexed
+candidates per turn, then waits for the platform's original restoration
+acknowledgement or ordered FIFO completion. A second fixed-highwater walk over
+the dirty index recovers retired delivered mappings that still need their first
+withdrawal after a crash. These mappings authorize cleanup only: the normal
+callback guard still refuses withdrawn intents. A consumed withdrawal is never
+restored for replay, and ephemeral Wayland tokens are never recovered from disk.
+Policy retirement then uses the same retained host. Stop requires both original
+operation resources to settle and the actual platform worker to join; an
+abandoned undrained attachment keeps its original owner held rather than permit
+replacement. The returned activations still need the service-owned authenticated
+frontend handoff; this component adds no generic click request or UI launcher.
