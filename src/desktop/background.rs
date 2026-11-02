@@ -1,6 +1,6 @@
 //! Service-owned upstream lifetime. The actor applies every original event.
 use super::{
-    delivery, details,
+    attention, delivery, details,
     fanout::Queue,
     feed, fleet, presence_worker,
     store::{maintenance, Location, Store},
@@ -23,6 +23,7 @@ pub(super) struct Runtime {
     delivery: delivery::Runtime,
     details: details::Adapter,
     maintenance: maintenance::Runtime,
+    attention: attention::Runtime,
 }
 
 impl Runtime {
@@ -38,6 +39,7 @@ impl Runtime {
                 delivery,
                 details: details::Adapter::new(epoch),
                 maintenance,
+                attention: attention::Runtime::new(epoch),
             }),
             Err(error) => {
                 producer.close();
@@ -75,6 +77,9 @@ impl Runtime {
                 Ok(change) => {
                     self.delivery.observe(store, &event);
                     self.maintenance.observe(store, &event);
+                    if self.attention.enabled() {
+                        self.attention.observe(store, &event);
+                    }
                     let fleet = &self.fleet;
                     self.details.observe(
                         &event,
@@ -89,6 +94,7 @@ impl Runtime {
                 }
                 Err(_) => {
                     self.maintenance.reject(&event);
+                    self.attention.reject_event(&event);
                     self.details.reject(&event, seq);
                     broker.invalidate(&self.producer, &event.packet);
                     self.fleet.reject(&event);
@@ -97,7 +103,15 @@ impl Runtime {
         }
         self.delivery.poll(store);
         self.maintenance.poll(store);
-        (changes, consumed == POLL_EVENTS)
+        // Disabled discovery must not accumulate permanent edge/baseline rows.
+        // Enabling resets the baseline before later observations may post.
+        if self.attention.enabled() {
+            self.attention.poll(store, None);
+        }
+        (
+            changes,
+            consumed == POLL_EVENTS || self.attention.work_pending(),
+        )
     }
 
     pub fn delivery_request(&mut self, store: &mut Store, value: &Value) -> Value {
@@ -112,27 +126,7 @@ impl Runtime {
         if authority.operation() == "automatic_approvals" {
             return self.delivery.frontend_request(store, authority);
         }
-        let id = authority.id().to_owned();
-        let refused = |code| json!({"request_id":id,"accepted":false,"durable":false,"code":code});
-        match authority.into_request() {
-            Ok(zerus_client_core::desktop::ui_requests::Request::MaintenanceConfigure {
-                request_id,
-                update,
-                recovery,
-            }) => {
-                let value =
-                    serde_json::to_value(zerus_client_core::maintenance::Request::Configure {
-                        request_id,
-                        update: update.map(|v| *v),
-                        recovery: recovery.map(|v| *v),
-                    });
-                match value {
-                    Ok(value) => self.maintenance.request(store, &value),
-                    Err(_) => refused("maintenance_refused"),
-                }
-            }
-            _ => refused("frontend_identity_expired"),
-        }
+        self.maintenance.frontend_request(store, authority)
     }
 
     pub fn details_open(&mut self, queue: &Arc<Queue>) -> Option<Value> {
@@ -150,6 +144,10 @@ impl Runtime {
 
     pub fn decorate(&self, value: &mut Value) {
         value["detail_subscriptions"] = self.details.status();
+        value["attention_discovery"] = self.attention.status();
+        value["lifecycle"]["background"]["attention"] = json!({
+            "ready":false,"drained":self.attention.drained(),"code":if self.attention.drained() {"drained"} else {"discovery_only"},
+            "status":value["attention_discovery"]});
         value["maintenance"] = self.maintenance.status();
         value["components"]["maintenance"] = if value["maintenance"]["ready"] == true {
             "running"
@@ -190,6 +188,7 @@ impl Runtime {
         value["ownership"] = if code == "drained"
             && delivery["drained"] == true
             && self.maintenance.drained()
+            && self.attention.drained()
             && presence.as_ref().is_none_or(|p| p["drained"] == true)
         {
             "revoked"
@@ -216,6 +215,7 @@ impl Runtime {
         self.producer.close();
         self.delivery.request_stop();
         self.maintenance.request_stop();
+        self.attention.request_stop();
         if let Some(presence) = &self.presence {
             presence.request_stop();
         }
@@ -227,6 +227,7 @@ impl Runtime {
             self.maintenance.poll(store);
             let delivery_done = self.delivery.drained();
             let maintenance_done = self.maintenance.drained();
+            let attention_done = self.attention.drained();
             let presence_done = match self.presence.as_mut().map(presence_worker::Runtime::stop) {
                 None | Some(Ok(true)) => true,
                 Some(Ok(false)) => false,
@@ -235,7 +236,7 @@ impl Runtime {
                     true // join failed, but still finish draining the fleet
                 }
             };
-            if fleet_done && presence_done && delivery_done && maintenance_done {
+            if fleet_done && presence_done && delivery_done && maintenance_done && attention_done {
                 return failure.map_or(Ok(()), Err);
             }
             ensure!(

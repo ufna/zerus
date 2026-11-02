@@ -96,19 +96,35 @@ function Invoke-RegistrationOperation($request,$scheduler,[string]$sid) {
     return [ordered]@{schema=1;operation=$request.operation;task_name=$plan.task_name;configuration=$plan.configuration;registered=($null -ne $task);task_state=$taskState;changed=$changed}
 }
 
+# Consume a byte-bounded UTF-8 request from the owned standard-input stream.
+# Console.In is a console-host text reader; the helper protocol is raw bytes.
+function Read-RegistrationRequest([IO.Stream]$stream) {
+    $bytes=[IO.MemoryStream]::new()
+    try {
+        $buffer=[byte[]]::new(4096)
+        while ($true) {
+            $available=[int][Math]::Min(4096L,65537L-$bytes.Length)
+            $read=$stream.Read($buffer,0,$available)
+            if ($read -eq 0) { break }
+            Require-Registration (($bytes.Length+$read) -le 65536) 'Registration input exceeds its byte bound.'
+            $bytes.Write($buffer,0,$read)
+        }
+        Require-Registration ($bytes.Length -gt 0) 'Registration input is empty.'
+        $request=([Text.UTF8Encoding]::new($false,$true)).GetString($bytes.ToArray())|ConvertFrom-Json
+        Require-Registration ($null -ne $request -and $request.GetType().FullName -ceq 'System.Management.Automation.PSCustomObject') 'Registration input must be a JSON object.'
+        return $request
+    } finally { $bytes.Dispose() }
+}
+
 function Invoke-RegistrationMain {
     $ErrorActionPreference='Stop'
     $ProgressPreference='SilentlyContinue'
-    [Console]::InputEncoding=[Text.UTF8Encoding]::new($false,$true)
     [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false,$true)
     $mutex=$null;$held=$false
     try {
-        $inputText=[Text.StringBuilder]::new()
-        while (($next=[Console]::In.Read()) -ge 0) {
-            Require-Registration ($inputText.Length -lt 65536) 'Registration input exceeds its bound.'
-            [void]$inputText.Append([char]$next)
-        }
-        $request=$inputText.ToString()|ConvertFrom-Json
+        $inputStream=[Console]::OpenStandardInput()
+        try { $request=Read-RegistrationRequest $inputStream }
+        finally { $inputStream.Dispose() }
         $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
         $mutex=[Threading.Mutex]::new($false,('Global\hgs-desktop-registration-'+$sid))
         $held=$mutex.WaitOne(2000)

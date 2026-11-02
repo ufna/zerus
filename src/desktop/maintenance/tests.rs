@@ -62,6 +62,39 @@ fn no_io() -> Runner {
 }
 
 #[test]
+fn mutation_consumes_a_native_permit_and_rejects_a_different_operation() {
+    use crate::desktop::ui_authority::Validated;
+    let mut f = Fixture::new(no_io());
+    let stored = |store: &Store| {
+        store
+            .db
+            .query_row::<String, _, _>(
+                "SELECT value FROM desktop_maintenance WHERE id=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let before = stored(&f.store);
+    let approval = json!({"op":"automatic_approvals","request_id":id(),"enabled":true});
+    let refused = f
+        .runtime
+        .frontend_request(&mut f.store, Validated::fixture(&approval));
+    assert_eq!(refused["request_id"], approval["request_id"]);
+    assert_eq!(refused["durable"], false);
+    assert_eq!(refused["accepted"], false);
+    assert_eq!(stored(&f.store), before);
+    let request =
+        json!({"op":"maintenance_configure","request_id":id(),"update":null,"recovery":null});
+    let accepted = f
+        .runtime
+        .frontend_request(&mut f.store, Validated::fixture(&request));
+    assert_eq!(accepted["request_id"], request["request_id"]);
+    assert_eq!(accepted["accepted"], true);
+    assert_eq!(accepted["durable"], true);
+}
+
+#[test]
 fn original_result_is_readable_while_passive_without_an_executor_or_write() {
     let mut f = Fixture::new(no_io());
     let original = f.configure(Value::Null, Value::Null);

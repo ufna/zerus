@@ -184,10 +184,15 @@ provisional/offline rows remain incomplete. Quit bounds the service join to five
 seconds after its draft flush. Shared host attention counts remain separate from
 this device's review marks; incomplete/null counts remain unknown. Read intents
 are acknowledged only after a durable actor receipt, retaining their request UUID
-through an uncertain result. Activity/process/task/organization subscriptions and
-the authenticated automatic-approval settings route remain explicitly unavailable
-until their service adapters are integrated. The current automatic updater is also
-a remaining service dependency. Keep this switch off for normal installations;
+through an uncertain result. Activity, processes, project tasks and organization use
+the existing subscriber's bounded detail lease. Each view retains its exact consumer
+identity and validates the route generation, revision and contiguous detail sequence;
+native frame sequences may skip. Native Gap frames retain the subscription and
+allow the next snapshot to replace its staged data. Genuine route inconsistencies
+retire only that view before bounded rearming; unknown follow outcomes stay
+unavailable until explicit Retry, with no GUI watcher or request replay. The authenticated
+automatic-approval settings route remains a separate integration dependency.
+Keep this switch off for normal installations;
 this source is not a complete UI-only cutover.
 
 A build without the `live` feature (`--no-default-features`) has no data source;

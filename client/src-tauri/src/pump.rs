@@ -300,6 +300,9 @@ impl Pump {
                         crate::desktop_service::Data::Catalog(delivery) => {
                             delivery.apply(&pump, &observe)
                         }
+                        crate::desktop_service::Data::Detail(delivery) => {
+                            delivery.apply(&pump, &observe)
+                        }
                     }
                 }
             })

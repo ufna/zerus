@@ -467,7 +467,13 @@ fn logs_keep_a_bounded_prefix_and_still_observe_original_eof() {
     assert!(eof);
 }
 
-fn empty_host_fixture() -> (tempfile::TempDir, Location, wire::Session, Endpoint) {
+fn empty_host_fixture() -> (
+    tempfile::TempDir,
+    Location,
+    wire::Session,
+    super::super::Outbox,
+    Endpoint,
+) {
     let temp = tempfile::tempdir().unwrap();
     let location = Location {
         root: temp.path().join("state/desktop"),
@@ -483,14 +489,58 @@ fn empty_host_fixture() -> (tempfile::TempDir, Location, wire::Session, Endpoint
         lease: id(),
         platform: wire::Platform::Macos,
     };
-    let (_, endpoint) = super::super::Outbox::new(session.clone()).unwrap();
-    (temp, location, session, endpoint)
+    let (outbox, endpoint) = super::super::Outbox::new(session.clone()).unwrap();
+    (temp, location, session, outbox, endpoint)
+}
+
+#[test]
+fn restore_burst_drains_without_an_idle_wait_per_mapping() {
+    let _serial = DRIVER_TEST.lock().unwrap_or_else(|e| e.into_inner());
+    let (_temp, location, session, _outbox, endpoint) = empty_host_fixture();
+    let mut host = launch(
+        &location,
+        session,
+        endpoint,
+        Arc::new(AtomicUsize::new(0)),
+        false,
+        None,
+    );
+    wait(|| host.status()["transport_ready"] == true);
+    // Exclude child startup and descriptor preparation. Restore intentionally
+    // receives no acknowledgement from the real private fixture child.
+    let start = Instant::now();
+    for _ in 0..30 {
+        let token = zerus_client_core::attention::encode_token(
+            json!({"host":"peer.example","name":"fixture","run":"fixture-run","conversation":"fixture-conversation","notice":id()})
+                .as_object()
+                .unwrap(),
+        );
+        let mapping = wire::Activation {
+            request_id: id(),
+            native_id: wire::NativeId::Macos {
+                request_id: zerus_client_core::attention::request_id(&token),
+            },
+            token,
+            platform_context: None,
+        };
+        wait(|| host.restore(mapping.clone()));
+    }
+    host.finish_restoration();
+    wait(|| host.status()["ready"] == true);
+    let elapsed = start.elapsed();
+    host.request_stop();
+    wait(|| host.poll_drained());
+    assert!(host.status()["fault"].is_null(), "{}", host.status());
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "restore burst: {elapsed:?}"
+    );
 }
 
 #[test]
 fn ready_racing_an_immediate_stop_does_not_reopen_or_fault_the_host() {
     let _serial = DRIVER_TEST.lock().unwrap_or_else(|e| e.into_inner());
-    let (_temp, location, session, endpoint) = empty_host_fixture();
+    let (_temp, location, session, _outbox, endpoint) = empty_host_fixture();
     let mut host = launch(
         &location,
         session,
@@ -508,7 +558,7 @@ fn ready_racing_an_immediate_stop_does_not_reopen_or_fault_the_host() {
 #[test]
 fn foreign_fd_cleanup_preserves_the_exec_error_pipe() {
     let _serial = DRIVER_TEST.lock().unwrap_or_else(|e| e.into_inner());
-    let (temp, location, session, endpoint) = empty_host_fixture();
+    let (temp, location, session, _outbox, endpoint) = empty_host_fixture();
     let mut host = OwnedHost::start(
         FixtureNative {
             image: temp.path().join("missing-image"),
