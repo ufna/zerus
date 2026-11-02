@@ -21,6 +21,6 @@ done
 npm --prefix client ci --ignore-scripts --no-audit --no-fund
 (cd client && npm run tauri -- build --debug --no-bundle)
 cargo build --locked --bin hgs
-python tests/test_windows_desktop_registration.py --hgs "$CARGO_TARGET_DIR/debug/hgs.exe"
+HGS_DESKTOP_REGISTRATION_TRACE=1 python tests/test_windows_desktop_registration.py --hgs "$CARGO_TARGET_DIR/debug/hgs.exe"
 mkdir -p artifacts/zerus-next-windows-shell
 cp "$CARGO_TARGET_DIR/debug/hgs-tray.exe" "$CARGO_TARGET_DIR/debug/hgs.exe" artifacts/zerus-next-windows-shell/

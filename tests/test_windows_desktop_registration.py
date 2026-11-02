@@ -26,6 +26,8 @@ class WindowsDesktopRegistration(unittest.TestCase):
                    TEMP=str(root / 'tmp'), TMP=str(root / 'tmp'),
                    HGS_CONFIG_DIR=str(root / 'config'), HGS_STATE_DIR=str(root / 'state'),
                    HGS_SELF='windows-registration-fixture', HGS_PEERS='')
+        if os.environ.get('HGS_DESKTOP_REGISTRATION_TRACE') == '1':
+            env['HGS_DESKTOP_REGISTRATION_TRACE'] = '1'
         for name in ('roaming', 'local', 'tmp', 'config'):
             (root / name).mkdir()
 

@@ -398,3 +398,5 @@ mod tests {
         assert!(render(&input, Os::Windows).is_ok());
     }
 }
+#[cfg(any(windows, test))]
+pub(super) mod trace;
