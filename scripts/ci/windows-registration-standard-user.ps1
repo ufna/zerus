@@ -10,41 +10,13 @@ $ProgressPreference = 'SilentlyContinue'
 if ($Mode -eq 'Controller' -and ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted')) {
     throw 'This account-creation fixture requires a disposable GitHub-hosted runner'
 }
-
-function Write-Report($Path, $Value) {
-    [IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+if ($Mode -ne 'Controller') {
+    $script:PSModuleAutoLoadingPreference = 'None'
+    $phasePath = [IO.Path]::Combine($Stage, 'child-phases.txt')
+    [IO.File]::WriteAllText($phasePath, "script_start`n")
 }
 
-if ($Mode -ne 'Controller') {
-    # The task supplies a real new standard-user token, not an unelevated admin.
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $administratorSidPresent = @($identity.Groups | Where-Object Value -eq 'S-1-5-32-544').Count -ne 0
-    $report = [ordered]@{
-        layout = $Layout
-        sid = $identity.User.Value
-        administrator_sid_present = $administratorSidPresent
-        session = [Diagnostics.Process]::GetCurrentProcess().SessionId
-        calls = @()
-        complete = $false
-    }
-    $reportPath = Join-Path $Stage 'result.json'
-    Write-Report $reportPath $report
-    if ($administratorSidPresent -ne ($Mode -eq 'Admin')) { throw 'Unexpected account privilege class' }
-    # Keep Windows' actual account profile. Only Zerus roots and temporary files
-    # are private, matching the cold installer acceptance environment.
-    foreach ($name in @('home', 'config', 'state', 'tmp')) {
-        [void][IO.Directory]::CreateDirectory((Join-Path $Stage $name))
-    }
-    $env:HOME = Join-Path $Stage 'home'
-    $env:HGS_CONFIG_DIR = Join-Path $Stage 'config'
-    $env:HGS_STATE_DIR = Join-Path $Stage 'state'
-    $env:TEMP = Join-Path $Stage 'tmp'
-    $env:TMP = $env:TEMP
-    $env:HGS_SELF = 'windows-registration-standard-fixture'
-    $env:HGS_PEERS = ''
-    $env:HGS_DESKTOP_REGISTRATION_TRACE = '1'
-    # Read loops retain at most 64 KiB each, even if a failed child keeps writing.
-    Add-Type -TypeDefinition @'
+$captureSource = @'
 using System;
 using System.Diagnostics;
 using System.IO;
@@ -69,9 +41,52 @@ public static class RegistrationCapture {
     }
 }
 '@
+
+$serializerAssembly = [Reflection.Assembly]::Load('System.Web.Extensions, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35')
+$reportJson = [Activator]::CreateInstance($serializerAssembly.GetType('System.Web.Script.Serialization.JavaScriptSerializer', $true))
+$reportJson.MaxJsonLength = 262144
+
+function Write-Report($Path, $Value) {
+    [IO.File]::WriteAllText($Path, $reportJson.Serialize($Value), [Text.UTF8Encoding]::new($false))
+}
+
+if ($Mode -ne 'Controller') {
+    [IO.File]::AppendAllText($phasePath, "serializer_ready`n")
+    # The task supplies a real new standard-user token, not an unelevated admin.
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $administratorSidPresent = $false
+    foreach ($group in $identity.Groups) {
+        if ($group.Value -eq 'S-1-5-32-544') { $administratorSidPresent = $true }
+    }
+    $report = [ordered]@{
+        layout = $Layout
+        sid = $identity.User.Value
+        administrator_sid_present = $administratorSidPresent
+        session = [Diagnostics.Process]::GetCurrentProcess().SessionId
+        calls = @()
+        complete = $false
+    }
+    $reportPath = [IO.Path]::Combine($Stage, 'result.json')
+    Write-Report $reportPath $report
+    if ($administratorSidPresent -ne ($Mode -eq 'Admin')) { throw 'Unexpected account privilege class' }
+    # Keep Windows' actual account profile. Only Zerus roots and temporary files
+    # are private, matching the cold installer acceptance environment.
+    foreach ($name in @('home', 'config', 'state', 'tmp')) {
+        [void][IO.Directory]::CreateDirectory(([IO.Path]::Combine($Stage, $name)))
+    }
+    $env:HOME = [IO.Path]::Combine($Stage, 'home')
+    $env:HGS_CONFIG_DIR = [IO.Path]::Combine($Stage, 'config')
+    $env:HGS_STATE_DIR = [IO.Path]::Combine($Stage, 'state')
+    $env:TEMP = [IO.Path]::Combine($Stage, 'tmp')
+    $env:TMP = $env:TEMP
+    $env:HGS_SELF = 'windows-registration-standard-fixture'
+    $env:HGS_PEERS = ''
+    $env:HGS_DESKTOP_REGISTRATION_TRACE = '1'
+    # Read loops retain at most 64 KiB each, even if a failed child keeps writing.
+    [void][Reflection.Assembly]::Load([IO.File]::ReadAllBytes([IO.Path]::Combine($Stage, 'capture.dll')))
     foreach ($arguments in @('--version', 'desktop registration status --json')) {
         $child = [Diagnostics.Process]::new()
-        $child.StartInfo.FileName = Join-Path $Stage 'hgs.exe'
+        $child.StartInfo.FileName = [IO.Path]::Combine($Stage, 'hgs.exe')
         $child.StartInfo.Arguments = $arguments
         $child.StartInfo.UseShellExecute = $false
         $child.StartInfo.CreateNoWindow = $true
@@ -82,6 +97,7 @@ public static class RegistrationCapture {
         $report.calls += $call
         Write-Report $reportPath $report
         $watch = [Diagnostics.Stopwatch]::StartNew()
+        [IO.File]::AppendAllText($phasePath, "hgs_spawn`n")
         [void]$child.Start()
         # Opening the ORIGINAL Process handle fixes PID reuse before recording.
         $originalHandle = $child.Handle
@@ -99,6 +115,7 @@ public static class RegistrationCapture {
             Write-Report $reportPath $report
             throw 'Original release child exceeded the fixed test deadline; preserve fixture'
         }
+        [IO.File]::AppendAllText($phasePath, "hgs_exit`n")
         $call.physical_wait = $true
         $call.exit = $child.ExitCode
         $call.elapsed_ms = $watch.ElapsedMilliseconds
@@ -114,7 +131,7 @@ public static class RegistrationCapture {
         $child.Dispose()
         if ($call.exit -ne 0) { throw 'Original release command failed; preserve fixture' }
         if ($arguments -ne '--version') {
-            $value = $call.stdout | ConvertFrom-Json
+            $value = $reportJson.DeserializeObject($call.stdout)
             if ($value.registered -ne $false) { throw 'Fresh fixture must have no registration' }
         }
     }
@@ -143,12 +160,17 @@ $ownedUser = $null
 $ownedTask = $false
 $complete = $false
 try {
+    # Compile the bounded reader once under the warm controller. The fresh
+    # account loads bytes only; no Add-Type/JSON/path cmdlet autoloading.
+    $capturePath = Join-Path $Stage 'capture.dll'
+    Add-Type -TypeDefinition $captureSource -OutputAssembly $capturePath
     # Same RELEASE image and command wrapper under the existing admin runner,
     # before the actual standard-account comparison. Both records stay separate.
     if ($Layout -eq 'raw') {
         $adminStage = Join-Path $Stage 'admin-control'
         [void][IO.Directory]::CreateDirectory($adminStage)
         Copy-Item $source (Join-Path $adminStage 'hgs.exe')
+        Copy-Item $capturePath (Join-Path $adminStage 'capture.dll')
         & $PSCommandPath -Mode Admin -Stage $adminStage -Layout $Layout
     }
     $ownedUser = New-LocalUser -Name $userName -Password $secure -Description 'Disposable Zerus CI fixture' -AccountNeverExpires
@@ -174,7 +196,14 @@ try {
         throw 'Release image copy differs'
     }
     $program = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $arguments = '-NoLogo -NoProfile -NonInteractive -File "' + (Join-Path $Stage 'fixture.ps1') + '" -Mode Child -Layout ' + $Layout + ' -Stage "' + $Stage + '"'
+    $scriptPath = (Join-Path $Stage 'fixture.ps1').Replace("'", "''")
+    $stageLiteral = $Stage.Replace("'", "''")
+    # Fixed owned source loader, like the maintained policy corpus. This does
+    # not change any execution-policy setting for the new account or machine.
+    $entry = "& ([ScriptBlock]::Create([IO.File]::ReadAllText('$scriptPath'))) -Mode Child -Layout $Layout -Stage '$stageLiteral'"
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($entry))
+    if ($encoded.Length -ge 30000) { throw 'Fixture entry exceeds command-line bound' }
+    $arguments = '-NoLogo -NoProfile -NonInteractive -EncodedCommand ' + $encoded
     $action = New-ScheduledTaskAction -Execute $program -Argument $arguments -WorkingDirectory $Stage
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 1)
     # No trigger; exactly one explicit run. Password stays in controller memory
@@ -190,6 +219,20 @@ try {
         $task = Get-ScheduledTask -TaskName $taskName
         $info = Get-ScheduledTaskInfo -TaskName $taskName
     } while (($info.LastRunTime.Year -lt 2000 -or $task.State -eq 'Running') -and [DateTime]::UtcNow -lt $deadline)
+    $launch = [ordered]@{
+        state = [string]$task.State
+        logon_type = [string]$task.Principal.LogonType
+        last_run = $info.LastRunTime.ToUniversalTime().ToString('o')
+        last_result = [uint32]$info.LastTaskResult
+        result_present = [IO.File]::Exists((Join-Path $Stage 'result.json'))
+    }
+    $phasePath = Join-Path $Stage 'child-phases.txt'
+    if ([IO.File]::Exists($phasePath)) {
+        if ((Get-Item $phasePath).Length -gt 1024) { throw 'Fixture phase bound exceeded' }
+        $launch.phases = [IO.File]::ReadAllText($phasePath)
+    }
+    Write-Report (Join-Path $env:GITHUB_WORKSPACE ('artifacts/test-results/registration-' + $Layout + '-launch.json')) $launch
+    Write-Output ($reportJson.Serialize($launch))
     $path = Join-Path $Stage 'result.json'
     if (Test-Path $path) {
         $text = [IO.File]::ReadAllText($path)
