@@ -190,7 +190,7 @@ pub(super) struct Authorized {
     instance: String,
     serial: u64,
     #[cfg(windows)]
-    windows: Option<WindowsFreshness>,
+    windows: Option<Box<WindowsFreshness>>,
 }
 /// Actor-side permit after the original peer was revalidated. It deliberately
 /// has no Clone/Deserialize or public constructor, even inside the request lane.
@@ -201,7 +201,7 @@ enum Freshness {
         frontend: Process,
         until: Instant,
         #[cfg(windows)]
-        windows: Option<WindowsFreshness>,
+        windows: Option<Box<WindowsFreshness>>,
     },
     #[cfg(test)]
     Fixture,
@@ -344,7 +344,7 @@ pub(super) fn authenticate(location: &Scope, peer_pid: u32, value: &Value) -> Re
         instance: reply.hello.instance_epoch,
         serial: reply.request.serial,
         #[cfg(windows)]
-        windows: Some(windows),
+        windows: Some(Box::new(windows)),
     })
 }
 
