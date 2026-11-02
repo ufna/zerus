@@ -86,15 +86,22 @@ Environment reads require the native pointer-width layout, verified against the
 Win32 environment API, and a double-NUL terminator within 64 KiB. Marker keys
 use Windows ordinal case comparison, including empty values. Process birth,
 image, parent and environment are checked before admission and again at use.
-The walk checks same-user ancestry, matching Unix's boundary at another user
-and its kernel reparenting after a launcher exits. Windows retains the old
-parent PID instead: a missing/exited parent or a candidate created at or after
-the child's creation FILETIME ends the walk as departed. A query-only
-`OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` returning `ERROR_ACCESS_DENIED`,
-or a different token user SID, ends it as foreign-principal. Creation times come
-from retained original handles; a later-created candidate is never inspected as
-an ancestor. These are parent-only boundaries, never a caller/GUI liveness
-exception or authority from roles, names, PIDs or caller JSON.
+The walk checks same-user ancestry and ends at a different token user SID.
+Windows retains the old parent PID after a launcher exits: a missing/exited
+parent or a candidate created at or after the child's creation FILETIME ends the
+walk as departed. A query-only
+`OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` returning `ERROR_ACCESS_DENIED`
+also ends the walk.
+
+Access denial does not prove a different principal. A same-user process can
+protect its own process object with a restrictive DACL; an OWNER RIGHTS ACE can
+even remove `READ_CONTROL`. Both access denial and the departed-parent boundary
+(the Windows analogue of a Unix double fork) address unintentional agent
+descent. Deliberate same-user code remains outside this application IPC check.
+
+Creation times come from retained original handles; a later-created candidate
+is never inspected as an ancestor. These are parent-only boundaries, never a
+caller/GUI liveness exception or authority from roles, names, PIDs or caller JSON.
 
 Readable same-user agent names/markers, other open/query errors, changed
 identity, the ancestor cap and the original deadline still refuse. Held parent
