@@ -1,6 +1,7 @@
 import { createSignal } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import type { DesktopService } from "../types";
+import { tr } from "../i18n";
 
 /** Presence of this projection is the startup mode. It never grants writer authority. */
 export function createDesktopService() {
@@ -26,6 +27,7 @@ export function createServiceApprovalIntent(
     if (result?.request_id === request.id && result.op === "automatic_approvals"
       && result.accepted === false && result.durable === false && result.pending !== true) {
       setUncertain(undefined);
+      if (result.code === "frontend_request_not_applied") throw Error(tr("The previous change was not applied."));
       throw Error("Automatic approval settings are unavailable with this background service connection.");
     }
     if (result?.request_id !== request.id || result.op !== "automatic_approvals" || result.accepted !== true

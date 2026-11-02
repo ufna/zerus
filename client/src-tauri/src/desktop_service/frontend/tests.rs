@@ -167,6 +167,15 @@ fn maintenance_config_commit_does_not_settle_an_unknown_recovery_save() {
     let (result, complete) = checked(&request, result, false).unwrap();
     assert!(!complete);
     assert_eq!(result["pending"], true);
+    assert_eq!(result["recovery_edit"], true);
+    assert_eq!(
+        unknown(&request, "frontend_request_unconfirmed")["recovery_edit"],
+        true
+    );
+    assert_eq!(
+        refused(&request, "frontend_request_not_applied")["recovery_edit"],
+        true
+    );
 }
 #[test]
 fn the_actual_version_suffix_alone_defines_the_gui_dev_number() {
