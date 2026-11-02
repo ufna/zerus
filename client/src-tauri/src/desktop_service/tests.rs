@@ -1,7 +1,7 @@
 use super::*;
 use std::{fs, path::Path, time::Instant};
 
-pub(super) struct Fixture(PathBuf);
+pub(super) struct Fixture(pub(super) PathBuf);
 impl Fixture {
     pub(super) fn new(config: Value) -> Self {
         use std::os::unix::fs::DirBuilderExt;
@@ -16,7 +16,7 @@ impl Fixture {
         fs::write(root.join("fixture.json"), config.to_string()).unwrap();
         Self(root)
     }
-    fn calls(&self) -> Vec<Value> {
+    pub(super) fn calls(&self) -> Vec<Value> {
         fs::read_to_string(self.0.join("calls"))
             .unwrap_or_default()
             .lines()
@@ -24,6 +24,13 @@ impl Fixture {
             .collect()
     }
     pub(super) fn start(&self, allowed: bool) -> (Arc<Service>, crate::pump::Pump) {
+        self.start_with_responder(allowed, None)
+    }
+    pub(super) fn start_with_responder(
+        &self,
+        allowed: bool,
+        responder: Option<Arc<zerus_client_core::desktop::Responder>>,
+    ) -> (Arc<Service>, crate::pump::Pump) {
         let pump = crate::pump::Pump::default();
         let (sink, rx) = std::sync::mpsc::sync_channel(256);
         let drain = pump.drain_service(rx, |_| {});
@@ -33,7 +40,7 @@ impl Fixture {
             sink,
             allowed,
             drain,
-            None,
+            responder,
             vec![],
         );
         (service, pump)
@@ -324,7 +331,7 @@ fn startup_switch_selects_only_the_service_source_and_closes_legacy_read_admissi
 fn approval_seam_is_an_explicit_refusal_without_a_generic_cli_policy_call() {
     tauri::async_runtime::block_on(async {
         let id = uuid::Uuid::new_v4().to_string();
-        let result = desktop_service_automatic_approvals(id.clone(), true)
+        let result = frontend::approval_command(None, id.clone(), true)
             .await
             .unwrap();
         assert_eq!(result["request_id"], id);
@@ -893,6 +900,45 @@ fn missing_detail_abi_settles_activity_as_unavailable_without_a_fallback() {
             .calls()
             .iter()
             .any(|c| c["value"]["op"] == "detail_follow"));
+        service.join().await.unwrap();
+    });
+}
+
+#[test]
+fn temporary_rpc_admission_pressure_retries_follow_without_halting_the_view() {
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        let fixture = Fixture::new(json!({"details":true}));
+        let (service, pump) = fixture.start(true);
+        eventually("metadata and catalog bootstrap drained", || {
+            service.snapshot().details_available
+                && pump
+                    .machine(&ComputerId::local())
+                    .is_some_and(|machine| machine.ok == Some(true))
+                && service.shared.rpc.snapshot().is_ok_and(|s| s.admitted == 0)
+        })
+        .await;
+        let held: Vec<_> = (0..4)
+            .map(|_| service.shared.rpc.admit(Role::Fleet).unwrap())
+            .collect();
+        service
+            .follow_detail("", detail_spec("activity", None))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(!fixture
+            .calls()
+            .iter()
+            .any(|c| c["value"]["op"] == "detail_follow"));
+        drop(held);
+        eventually("one admitted follow after pressure clears", || {
+            fixture
+                .calls()
+                .iter()
+                .any(|c| c["value"]["op"] == "detail_follow")
+        })
+        .await;
+        assert!(service.snapshot().connected);
+        assert_eq!(watch_calls(&fixture.calls()), 1);
         service.join().await.unwrap();
     });
 }

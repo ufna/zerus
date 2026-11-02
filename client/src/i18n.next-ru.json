@@ -566,5 +566,6 @@
   "worktree %1": "рабочее дерево %1",
   "~%1 GB estimated": "~%1 ГБ по оценке",
   "✓ %1": "✓ %1",
-  "Activity is unavailable from the desktop service. Retry to reconnect.": "Активность недоступна в фоновой службе. Повторите подключение."
+  "Activity is unavailable from the desktop service. Retry to reconnect.": "Активность недоступна в фоновой службе. Повторите подключение.",
+  "The previous approval setting is unconfirmed.": "Предыдущее изменение автоматических разрешений не подтверждено."
 }
