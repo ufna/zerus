@@ -1,4 +1,4 @@
-import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, createEffect, createSignal, on as observe, onCleanup, onMount } from "solid-js";
 import { createStore, reconcile, unwrap } from "solid-js/store";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -7,6 +7,9 @@ import { setPage } from "../../../store/ui";
 import { Check, Group, Lines, SectionHead, Select, Status } from "./ui";
 import { saveOutcome } from "./recovery-wait";
 import { tr, trNoop } from "../../../i18n";
+import { desktopService } from "../../../store/desktopService";
+import { maintenanceIntent, type RecoveryForm } from "../../../store/maintenance";
+import { MaintenanceStatus } from "./MaintenanceStatus";
 
 // Settings > Automatic recovery (tray/src/RecoverySettings.h) as the
 // approved mockup lays it out (design/webui/src/screens/settings/Recovery.tsx).
@@ -17,7 +20,7 @@ import { tr, trNoop } from "../../../i18n";
 /** `known`: this computer's machine card has arrived; until then the
  *  service reads nothing and the page offers nothing. */
 interface RecoveryView { status: string; error: string; busy: boolean; can_save: boolean; known: boolean; has_machines: boolean; has_policy: boolean; saves: number }
-interface Form { enabled: boolean; rules: Record<string, boolean>; session_limit_mode: string; delays: Record<string, string> }
+type Form = RecoveryForm;
 
 const RULES = [
   { id: "service", label: trNoop("Overload / server unavailable") },
@@ -38,6 +41,8 @@ export function RecoverySection() {
   const [loaded, setLoaded] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [message, setMessage] = createSignal("");
+  const [serviceSaveId, setServiceSaveId] = createSignal<string>();
+  const servicePending = () => desktopService.enabled() && (maintenanceIntent.busy() || maintenanceIntent.blocked());
   // The form holds edits the policy has not taken yet; the policy it was
   // loaded from (Qt's base), which Save is checked against; and the answered
   // saves when ours was sent, so its answer is told from a read's.
@@ -49,7 +54,7 @@ export function RecoverySection() {
     const answer = await invoke<{ form: Form | null; base: Record<string, unknown> | null }>("recovery_load")
       .catch(() => ({ form: null, base: null }));
     // An edit made while the policy was read keeps the form and its base.
-    if (dirty || saving() || !answer.form || !answer.base) return;
+    if (dirty || saving() || servicePending() || !answer.form || !answer.base) return;
     setForm(reconcile(answer.form));
     base = answer.base;
     setLoaded(true);
@@ -66,9 +71,18 @@ export function RecoverySection() {
     }
     if (!dirty && !saving()) void load();
   };
-  const edit = (change: () => void) => { dirty = true; change(); };
+  const edit = (change: () => void) => { dirty = true; if (desktopService.enabled()) setMessage(""); change(); };
   const save = async () => {
     if (!base) return;
+    if (desktopService.enabled()) {
+      setMessage("");
+      const previous = maintenanceIntent.pending()?.id;
+      const sent = maintenanceIntent.submit({ policy: unwrap(form), base });
+      const current = maintenanceIntent.pending()?.id;
+      if (current && current !== previous) setServiceSaveId(current);
+      await sent.catch(() => { if (!maintenanceIntent.blocked()) setServiceSaveId(undefined); });
+      return;
+    }
     savesBefore = view()?.saves ?? 0;
     const answer = await invoke<{ view: RecoveryView; message: string | null; sent: boolean }>("recovery_save", { form: unwrap(form), base })
       .catch((error) => { setMessage(String(error)); return undefined; });
@@ -79,6 +93,15 @@ export function RecoverySection() {
     // The answer may already have arrived as an event: read it again.
     apply(await invoke<RecoveryView>("recovery_view"));
   };
+  createEffect(observe(maintenanceIntent.result, (result) => {
+    // Aggregate save counters or another view's intent cannot acknowledge ours.
+    if (desktopService.enabled() && result?.id === serviceSaveId() && result?.recoveryEdit && result.state === "applied") {
+      setServiceSaveId(undefined);
+      dirty = false;
+      setMessage("Saved.");
+      void load();
+    }
+  }));
   // Reload keeps the message line, as Qt's does.
   const reload = async () => {
     dirty = false;
@@ -98,7 +121,7 @@ export function RecoverySection() {
     read();
   });
 
-  const usable = () => loaded() && !!view()?.has_machines;
+  const usable = () => loaded() && !!view()?.has_machines && !servicePending();
   const on = () => usable() && form.enabled;
   const statusKind = () => {
     const v = view();
@@ -143,9 +166,10 @@ export function RecoverySection() {
       </Show>
       <Show when={!message() && view()?.error}>{(error) => <Status kind="error">{tr(error())}</Status>}</Show>
       <Show when={message()}>{(text) => <Status kind={text() === "Saved." ? "ok" : "error"}>{tr(text())}</Status>}</Show>
+      <Show when={desktopService.enabled()}><MaintenanceStatus apply={!view()?.has_machines} /></Show>
       <div class="set-actions">
         <button type="button" class="btn primary" disabled={!usable() || !view()?.can_save || saving()} onClick={() => void save()}>{tr("Save recovery settings")}</button>
-        <button type="button" class="btn" onClick={() => void reload()}>{tr("Reload")}</button>
+        <button type="button" class="btn" disabled={servicePending()} onClick={() => void reload()}>{tr("Reload")}</button>
       </div>
     </>
   );

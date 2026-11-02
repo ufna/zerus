@@ -7,6 +7,9 @@ import { Actions, Group, Lines, Row, SectionHead, Select, Status, ToggleRow } fr
 import { lastCheckedText } from "./updates-time";
 import { tr, trNoop } from "../../../i18n";
 import { trText } from "../../../text";
+import { desktopService } from "../../../store/desktopService";
+import { maintenanceIntent } from "../../../store/maintenance";
+import { MaintenanceStatus } from "./MaintenanceStatus";
 
 function failed(error: unknown) {
   toast("Updates", String(error), "error", true);
@@ -72,6 +75,8 @@ export function UpdatesSection() {
   const open = (target: "release" | "download" | "instructions") => {
     void updateCommands.open(target).catch(failed);
   };
+  const changing = () => desktopService.enabled() && (maintenanceIntent.busy() || maintenanceIntent.blocked());
+  const change = (save: () => Promise<void>) => desktopService.enabled() ? maintenanceIntent.submit(undefined, save) : save();
   return (
     <>
       <SectionHead title={trNoop("Updates")} />
@@ -98,14 +103,17 @@ export function UpdatesSection() {
 
       <Group title={trNoop("Update checks")}>
         <ToggleRow label={trNoop("Check for updates automatically")} checked={updates().automatic}
+          disabled={changing()}
           hint={trNoop("Available updates appear in the tray and workspace, with a system notification.")}
-          onChange={(on) => { void updateCommands.setAutomatic(on).catch(failed); }} />
+          onChange={(on) => { void change(() => updateCommands.setAutomatic(on)).catch(failed); }} />
         <Row label={trNoop("Release channel")} for="updates-channel">
           <Select id="updates-channel" label={trNoop("Release channel")} value={updates().channel}
+            disabled={changing()}
             options={[{ value: "stable", label: trNoop("Stable") }, { value: "nightly", label: trNoop("Nightly") }, { value: "dev", label: trNoop("Dev") }]}
-            onChange={(channel) => { void updateCommands.setChannel(channel as UpdateChannel).catch(failed); }} />
+            onChange={(channel) => { void change(() => updateCommands.setChannel(channel as UpdateChannel)).catch(failed); }} />
           <button type="button" class="btn" disabled={updates().busy} onClick={() => { void updateCommands.check().catch(failed); }}>{tr("Check now")}</button>
         </Row>
+        <Show when={desktopService.enabled()}><MaintenanceStatus apply /></Show>
       </Group>
 
       <Group>

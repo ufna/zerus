@@ -174,6 +174,11 @@ enum Request {
     Channel(Channel),
     Automatic(bool),
     Projection,
+    Preferences {
+        channel: Option<Channel>,
+        automatic: Option<bool>,
+        done: tokio::sync::oneshot::Sender<()>,
+    },
 }
 
 fn lock<T>(state: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -325,6 +330,27 @@ impl Updates {
     fn send(&self, request: Request) {
         let _ = self.0.sender.send(request);
     }
+    async fn preferences(
+        &self,
+        channel: Option<Channel>,
+        automatic: Option<bool>,
+    ) -> Result<(), String> {
+        let (done, acknowledged) = tokio::sync::oneshot::channel();
+        let unavailable =
+            || zerus_client_core::source!("Could not save update preferences.").to_owned();
+        self.0
+            .sender
+            .send(Request::Preferences {
+                channel,
+                automatic,
+                done,
+            })
+            .map_err(|_| unavailable())?;
+        tokio::time::timeout(COMMAND_TIMEOUT, acknowledged)
+            .await
+            .map_err(|_| unavailable())?
+            .map_err(|_| unavailable())
+    }
 
     fn changed(&self) {
         (self.0.hooks.changed)(self.view());
@@ -410,6 +436,14 @@ impl Updates {
             channel: state.channel,
             automatic: state.automatic,
         }
+    }
+    pub(crate) async fn configuration_for_intent(
+        &self,
+    ) -> Result<zerus_client_core::maintenance::UpdateConfiguration, String> {
+        // Also fence a prior preference request whose caller timed out. A
+        // later explicit Apply must not submit the old queued preference pair.
+        self.preferences(None, None).await?;
+        Ok(self.native_configuration())
     }
     /// Called off GUI by the validated service stream. Never waits for a lock
     /// or I/O: one bounded pending projection and one coalesced worker wake.
@@ -807,6 +841,21 @@ impl Updates {
                 Ok(Request::Channel(channel)) => self.set_channel(channel),
                 Ok(Request::Automatic(enabled)) => self.set_automatic(enabled),
                 Ok(Request::Projection) => self.consume_projection(),
+                Ok(Request::Preferences {
+                    channel,
+                    automatic,
+                    done,
+                }) => {
+                    if let Some(channel) = channel {
+                        self.set_channel(channel);
+                    }
+                    if let Some(on) = automatic {
+                        self.set_automatic(on);
+                    }
+                    // The following full native Configure may now read the
+                    // installed preferences, after startup detection too.
+                    let _ = done.send(());
+                }
                 Err(RecvTimeoutError::Timeout) => {
                     self.refresh_restart();
                     self.check_automatic();
@@ -1157,17 +1206,31 @@ pub fn updates_check(updates: TauriState<'_, Updates>) {
 }
 
 #[tauri::command]
-pub fn updates_set_channel(updates: TauriState<'_, Updates>, channel: Channel) {
+pub async fn updates_set_channel(
+    updates: TauriState<'_, Updates>,
+    channel: Channel,
+) -> Result<(), String> {
+    if updates.0.service_mode {
+        return updates.preferences(Some(channel), None).await;
+    }
     updates.invalidate();
     updates.send(Request::Channel(channel));
+    Ok(())
 }
 
 #[tauri::command]
-pub fn updates_set_automatic(updates: TauriState<'_, Updates>, on: bool) {
+pub async fn updates_set_automatic(
+    updates: TauriState<'_, Updates>,
+    on: bool,
+) -> Result<(), String> {
+    if updates.0.service_mode {
+        return updates.preferences(None, Some(on)).await;
+    }
     if !on {
         updates.invalidate();
     }
     updates.send(Request::Automatic(on));
+    Ok(())
 }
 
 #[tauri::command]
@@ -1770,6 +1833,49 @@ mod tests {
         fixture.service.send(Request::Check(false));
         until(&fixture, |view| !view.busy && view.available);
         assert!(fixture.notices.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn service_preferences_ack_waits_for_startup_and_the_complete_native_preference_pair() {
+        let mut fixture = service_fixture(Arc::new(|_| panic!("no automatic GUI fetch")));
+        let (entered, started) = mpsc::sync_channel(1);
+        let (release, proceed) = mpsc::sync_channel(1);
+        let proceed = Mutex::new(proceed);
+        Arc::get_mut(&mut fixture.service.0).unwrap().hooks.detect = Arc::new(move |_| {
+            entered.send(()).unwrap();
+            lock(&proceed).recv_timeout(Duration::from_secs(5)).unwrap();
+            Installation {
+                kind: "source".into(),
+                ..Installation::default()
+            }
+        });
+        fixture.start();
+        started.recv_timeout(Duration::from_secs(5)).unwrap();
+        tauri::async_runtime::block_on(async {
+            let preferences = async {
+                fixture
+                    .service
+                    .preferences(Some(Channel::Nightly), Some(false))
+                    .await?;
+                fixture.service.configuration_for_intent().await
+            };
+            tokio::pin!(preferences);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), &mut preferences)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                fixture.service.native_configuration().channel,
+                Channel::Stable
+            );
+            release.send(()).unwrap();
+            let native = preferences.await.unwrap();
+            assert_eq!(native.channel, Channel::Nightly);
+            assert!(!native.automatic);
+            assert_eq!(fixture.settings.text("updates/channel"), "nightly");
+            assert!(!fixture.settings.flag("updates/automatic"));
+            assert!(fixture.notices.lock().unwrap().is_empty());
+        });
     }
     #[test]
     fn service_projection_updates_existing_model_with_native_gui_build() {
