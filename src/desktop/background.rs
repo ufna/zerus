@@ -112,27 +112,7 @@ impl Runtime {
         if authority.operation() == "automatic_approvals" {
             return self.delivery.frontend_request(store, authority);
         }
-        let id = authority.id().to_owned();
-        let refused = |code| json!({"request_id":id,"accepted":false,"durable":false,"code":code});
-        match authority.into_request() {
-            Ok(zerus_client_core::desktop::ui_requests::Request::MaintenanceConfigure {
-                request_id,
-                update,
-                recovery,
-            }) => {
-                let value =
-                    serde_json::to_value(zerus_client_core::maintenance::Request::Configure {
-                        request_id,
-                        update: update.map(|v| *v),
-                        recovery: recovery.map(|v| *v),
-                    });
-                match value {
-                    Ok(value) => self.maintenance.request(store, &value),
-                    Err(_) => refused("maintenance_refused"),
-                }
-            }
-            _ => refused("frontend_identity_expired"),
-        }
+        self.maintenance.frontend_request(store, authority)
     }
 
     pub fn details_open(&mut self, queue: &Arc<Queue>) -> Option<Value> {
