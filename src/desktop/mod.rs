@@ -488,6 +488,7 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                         value["background_start"] = json!({"admitted":false,"code":"explicit_handoff_required","durably_blocked":true});
                     }
                     let mut streaming = false;
+                    let mut activation_waiting = false;
                     let reply = if hello.abi != ABI || hello.configuration != location.configuration
                     {
                         frame(
@@ -518,6 +519,7 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                                         match runtime.activation_wait(request, queue.clone()) {
                                             Ok(()) => {
                                                 streaming = true;
+                                                activation_waiting = true;
                                                 Value::Null
                                             }
                                             Err(_) => frontend_refused(
@@ -613,7 +615,7 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                             json!({"code":"unsupported_operation"}),
                         )
                     };
-                    if !reply["value"].is_null() {
+                    if !activation_waiting {
                         queue.offer(protocol::encode(&reply)?.into());
                     }
                     if !streaming {
