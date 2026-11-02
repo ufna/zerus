@@ -108,27 +108,23 @@ function Invoke-RegistrationOperation($request,$scheduler,[string]$sid) {
     return [ordered]@{schema=1;operation=$request.operation;task_name=$plan.task_name;configuration=$plan.configuration;registered=($null -ne $task);task_state=$taskState;changed=$changed}
 }
 
-# Consume a byte-bounded UTF-8 request from the owned standard-input stream.
-# Console.In is a console-host text reader; the helper protocol is raw bytes.
-function Read-RegistrationRequest([IO.Stream]$stream) {
-    $bytes=[IO.MemoryStream]::new()
-    try {
-        $buffer=[byte[]]::new(4096)
-        while ($true) {
-            $available=[int][Math]::Min(4096L,65537L-$bytes.Length)
-            $read=$stream.Read($buffer,0,$available)
-            if ($read -eq 0) { break }
-            Require-Registration (($bytes.Length+$read) -le 65536) 'Registration input exceeds its byte bound.'
-            $bytes.Write($buffer,0,$read)
-        }
-        Require-Registration ($bytes.Length -gt 0) 'Registration input is empty.'
-        $request=([Text.UTF8Encoding]::new($false,$true)).GetString($bytes.ToArray())|ConvertFrom-Json
-        Require-Registration ($null -ne $request -and $request.GetType().FullName -ceq 'System.Management.Automation.PSCustomObject') 'Registration input must be a JSON object.'
-        return $request
-    } finally { $bytes.Dispose() }
+# The fixed encoded invocation supplies the exact byte length, independently of
+# pipe EOF (which an inherited write handle can delay). Never read a second frame.
+function Read-RegistrationRequest([IO.Stream]$stream,[int]$length) {
+    Require-Registration ($length -gt 0 -and $length -le 65536) 'Invalid registration input length.'
+    $bytes=[byte[]]::new($length);$offset=0
+    while ($offset -lt $length) {
+        $read=$stream.Read($bytes,$offset,[Math]::Min(4096,$length-$offset))
+        Require-Registration ($read -gt 0) 'Registration input is truncated.'
+        $offset+=$read
+    }
+    if ($stream.CanSeek) { Require-Registration ($stream.Position -eq $stream.Length) 'Extra registration input.' }
+    $request=([Text.UTF8Encoding]::new($false,$true)).GetString($bytes)|ConvertFrom-Json
+    Require-Registration ($null -ne $request -and $request.GetType().FullName -ceq 'System.Management.Automation.PSCustomObject') 'Registration input must be a JSON object.'
+    return $request
 }
 
-function Invoke-RegistrationMain {
+function Invoke-RegistrationMain([int]$length) {
     $script:rc=[Diagnostics.Stopwatch]::StartNew();Trace-Registration main
     $ErrorActionPreference='Stop'
     $ProgressPreference='SilentlyContinue'
@@ -136,7 +132,7 @@ function Invoke-RegistrationMain {
     $mutex=$null;$held=$false
     try {
         $inputStream=[Console]::OpenStandardInput()
-        try { $request=Read-RegistrationRequest $inputStream }
+        try { $request=Read-RegistrationRequest $inputStream $length }
         finally { $inputStream.Dispose() }
         Trace-Registration input
         $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value

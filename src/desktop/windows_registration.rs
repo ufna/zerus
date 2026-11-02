@@ -37,7 +37,7 @@ fn invocation(operation: &str, plan: &Value) -> Result<Invocation> {
         request.len() <= CAP,
         "desktop registration request exceeds its bound"
     );
-    let script = format!("{SCRIPT}\nInvoke-RegistrationMain\n");
+    let script = format!("{SCRIPT}\nInvoke-RegistrationMain {}\n", request.len());
     let encoded = STANDARD.encode(
         script
             .encode_utf16()
@@ -164,6 +164,21 @@ mod tests {
         assert!(!call.args.iter().any(|arg| arg.contains("CLI & tools")));
         let body: Value = serde_json::from_slice(call.stdin.as_ref().unwrap()).unwrap();
         assert_eq!(body["plan"], plan);
+        let script = String::from_utf16(
+            &STANDARD
+                .decode(&call.args[4])
+                .unwrap()
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        assert!(script.ends_with(&format!(
+            "Invoke-RegistrationMain {}\n",
+            call.stdin.as_ref().unwrap().len()
+        )));
         assert_eq!(call.timeout, Duration::from_secs(15));
         assert!(invocation("start", &plan).is_err());
         assert!(invocation("install", &json!({"oversize":"x".repeat(CAP)})).is_err());
