@@ -14,6 +14,11 @@ const RULES: [&str; 2] = [
 ];
 const RAW: usize = 16;
 const IDLE: Duration = Duration::from_millis(100);
+enum Batch {
+    Complete,
+    Blocked,
+    Stopped,
+}
 struct Notify(mpsc::SyncSender<()>);
 impl Wake for Notify {
     fn wake(self: Arc<Self>) {
@@ -159,6 +164,8 @@ struct Bus {
     identity: Option<Namespace>,
     lookup: Option<Lookup>,
     checked: usize,
+    #[cfg(test)]
+    batch_pause: Option<BatchPause>,
 }
 impl Bus {
     fn connect(
@@ -196,6 +203,8 @@ impl Bus {
             identity: None,
             lookup: None,
             checked: 0,
+            #[cfg(test)]
+            batch_pause: None,
         })
     }
     fn drive<T>(
@@ -330,20 +339,32 @@ impl Bus {
         endpoint: &Endpoint,
         until: Instant,
         cancelled: impl Fn() -> bool,
-    ) -> Result<bool, ()> {
-        if self.driver.events.is_empty() {
-            return Ok(true);
-        }
+    ) -> Result<Batch, ()> {
         if !self.watched_namespace(&mappings.namespace) {
             return Err(());
         }
+        if cancelled() {
+            return Ok(Batch::Stopped);
+        }
+        if self.driver.events.is_empty() {
+            return Ok(Batch::Complete);
+        }
         if self.checked != 0 {
-            return Ok(self.queued(mappings, endpoint, false, self.checked));
+            return Ok(if self.queued(mappings, endpoint, false, self.checked) {
+                Batch::Complete
+            } else {
+                Batch::Blocked
+            });
         }
         let mut lookup = self
             .lookup
             .take()
             .unwrap_or_else(|| Box::pin(Self::lookup(self.connection.clone())));
+        #[cfg(test)]
+        if let Some(pause) = self.batch_pause.take() {
+            pause.reached.send(()).unwrap();
+            pause.resume.recv_timeout(WAIT).unwrap();
+        }
         loop {
             match self.drive(until, &cancelled, lookup.as_mut()) {
                 Ok(Ok(current))
@@ -351,7 +372,16 @@ impl Bus {
                         && self.watched_namespace(&mappings.namespace) =>
                 {
                     self.checked = self.driver.events.len();
-                    return Ok(self.queued(mappings, endpoint, false, self.checked));
+                    return Ok(if self.queued(mappings, endpoint, false, self.checked) {
+                        Batch::Complete
+                    } else {
+                        Batch::Blocked
+                    });
+                }
+                Err(()) if cancelled() && self.watched_namespace(&mappings.namespace) => {
+                    // Stopping cancels this read-only lookup, not the original
+                    // connection's normal RemoveMatch/Closed drain.
+                    return Ok(Batch::Stopped);
                 }
                 Err(())
                     if self.driver.backpressured && self.watched_namespace(&mappings.namespace) =>
@@ -363,10 +393,62 @@ impl Bus {
                         // Actor backpressure is not a namespace timeout. Keep
                         // this one original lookup and signal for a later turn.
                         self.lookup = Some(lookup);
-                        return Ok(false);
+                        return Ok(Batch::Blocked);
                     }
                 }
                 _ => return Err(()),
+            }
+        }
+    }
+    fn drive_effect<T>(
+        &mut self,
+        mappings: &mut Mappings,
+        endpoint: &Endpoint,
+        until: Instant,
+        cancelled: impl Fn() -> bool,
+        posting: bool,
+        work: impl Future<Output = T>,
+    ) -> Result<T, ()> {
+        let mut work = pin!(work);
+        loop {
+            match self.drive(until, &cancelled, work.as_mut()) {
+                Err(())
+                    if !cancelled()
+                        && self.driver.backpressured
+                        && self.watched_namespace(&mappings.namespace) =>
+                {
+                    for _ in 0..CALLBACKS {
+                        let Some(signal) = self.driver.events.front() else {
+                            break;
+                        };
+                        let id = match signal {
+                            Signal::ActivationToken { id, .. }
+                            | Signal::ActionInvoked { id, .. }
+                            | Signal::NotificationClosed { id, .. } => id,
+                        };
+                        // A post's unknown ID may have closed BEFORE its reply.
+                        // Keep that signal for adoption; never discard it just
+                        // to reach the reply or grow the bounded queue. A full
+                        // uncorrelated queue remains conservatively Unknown.
+                        if posting && !mappings.rows.contains_key(id) {
+                            return Err(());
+                        }
+                        if !mappings.signal(signal, endpoint) {
+                            self.driver
+                                .receive
+                                .recv_timeout(
+                                    IDLE.min(until.saturating_duration_since(Instant::now())),
+                                )
+                                .ok();
+                            break;
+                        }
+                        self.driver.events.pop_front();
+                        self.checked = self.checked.saturating_sub(1);
+                    }
+                    // Continue polling the SAME effect future. No native call
+                    // is reissued, and its original resources/deadline remain.
+                }
+                result => return result,
             }
         }
     }
@@ -535,6 +617,11 @@ pub(super) fn run(
     let mut restoring = true;
     while !cancelled() && good {
         match controls.try_recv() {
+            #[cfg(test)]
+            Ok(Control::PauseBatch(pause, reply)) => {
+                bus.batch_pause = Some(pause);
+                reply.send(()).unwrap();
+            }
             Ok(Control::Restore(values, reply)) => {
                 let current =
                     bus.batch_namespace(&mappings.namespace, Instant::now() + WAIT, cancelled);
@@ -558,11 +645,12 @@ pub(super) fn run(
         }
         if !bus.driver.events.is_empty() {
             match bus.route_batch(&mut mappings, &endpoint, Instant::now() + WAIT, cancelled) {
-                Ok(false) => {
+                Ok(Batch::Blocked) => {
                     bus.driver.receive.recv_timeout(IDLE).ok();
                     continue;
                 }
-                Ok(true) => (),
+                Ok(Batch::Stopped) => break,
+                Ok(Batch::Complete) => (),
                 Err(()) => {
                     good = false;
                     break;
@@ -589,7 +677,7 @@ pub(super) fn run(
                     } else {
                         let connection = bus.connection.clone();
                         let owner =
-                            zbus::names::UniqueName::try_from(mappings.namespace.owner.as_str())
+                            zbus::names::UniqueName::try_from(mappings.namespace.owner.clone())
                                 .unwrap();
                         match &command.action {
                             Action::Post { title, body, .. } => {
@@ -600,9 +688,12 @@ pub(super) fn run(
                                 } else {
                                     let escaped =
                                         zerus_client_core::linux_notify::escape_body(body);
-                                    match bus.drive(
+                                    match bus.drive_effect(
+                                        &mut mappings,
+                                        &endpoint,
                                         until,
                                         stop,
+                                        true,
                                         native::notify_async(&connection, owner, title, &escaped),
                                     ) {
                                         Ok(Ok(reply))
@@ -646,9 +737,12 @@ pub(super) fn run(
                                     // The actor already tombstoned this original withdrawal.
                                     mappings.rows.remove(&id);
                                     mappings.tokens.remove(&id);
-                                    match bus.drive(
+                                    match bus.drive_effect(
+                                        &mut mappings,
+                                        &endpoint,
                                         until,
                                         stop,
+                                        false,
                                         native::close_notification_async(&connection, owner, id),
                                     ) {
                                         Ok(Ok(reply))
@@ -681,6 +775,8 @@ pub(super) fn run(
                     // while its input/output/callback charge is still retained.
                     // The actor can defer an early event until this exact post
                     // commits; it cannot be turned into a new post or binding.
+                    // A stopped batch preserves good for the normal Closed
+                    // drain; only an actual namespace/transport error taints it.
                     if good {
                         good &= bus
                             .route_batch(&mut mappings, &endpoint, until, stop)

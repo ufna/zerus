@@ -211,6 +211,22 @@ struct Fake {
     closed: mpsc::SyncSender<u32>,
     mode: Arc<AtomicU8>,
 }
+impl Fake {
+    async fn closed_range(&self, connection: &zbus::Connection, start: u32, end: u32) {
+        for id in start..end {
+            connection
+                .emit_signal(
+                    None::<&str>,
+                    native_path(),
+                    zerus_freedesktop_notify::SERVICE,
+                    "NotificationClosed",
+                    &(id, 2_u32),
+                )
+                .await
+                .unwrap();
+        }
+    }
+}
 #[zbus::interface(name = "org.freedesktop.Notifications")]
 impl Fake {
     #[allow(clippy::too_many_arguments)]
@@ -231,6 +247,12 @@ impl Fake {
             1 => Err(zbus::fdo::Error::Failed("fixture error".into())),
             2 => Ok(0),
             5 => Ok(self.next.fetch_add(1, Ordering::AcqRel)),
+            6 => {
+                let id = self.next.fetch_add(1, Ordering::AcqRel);
+                self.closed_range(connection, id.saturating_sub(64), id)
+                    .await;
+                Ok(id)
+            }
             3 => {
                 connection
                     .emit_signal(
@@ -249,6 +271,11 @@ impl Fake {
     }
     async fn close_notification(&self, id: u32, #[zbus(connection)] connection: &zbus::Connection) {
         self.closed.try_send(id).unwrap();
+        if self.mode.load(Ordering::Acquire) == 7 {
+            let end = self.next.load(Ordering::Acquire);
+            self.closed_range(connection, end.saturating_sub(64), end)
+                .await;
+        }
         connection
             .emit_signal(
                 None::<&str>,
@@ -427,10 +454,19 @@ impl Harness {
     }
     fn mappings(&self) -> Vec<Activation> {
         let head = self.outbox.restore_head(&self.store).unwrap();
-        self.outbox
-            .restore_page(&self.store, 0, head)
-            .unwrap()
-            .mappings
+        assert!(head <= 256, "private fixture attempt bound");
+        let mut after = 0;
+        let mut values = Vec::new();
+        for _ in 0..16 {
+            let page = self.outbox.restore_page(&self.store, after, head).unwrap();
+            values.extend(page.mappings);
+            if page.complete {
+                return values;
+            }
+            assert!(page.after > after);
+            after = page.after;
+        }
+        panic!("private fixture restoration page bound");
     }
     fn stop(&mut self, runtime: &mut Runtime) {
         self.outbox.request_stop();
@@ -454,11 +490,30 @@ impl Harness {
             }
         }
     }
+    fn pause_batch(runtime: &Runtime) -> (mpsc::Receiver<()>, mpsc::SyncSender<()>) {
+        let (reached, observed) = mpsc::sync_channel(1);
+        let (resume, paused) = mpsc::sync_channel(1);
+        let (reply, installed) = mpsc::sync_channel(1);
+        runtime
+            .control
+            .try_send(Control::PauseBatch(
+                BatchPause {
+                    reached,
+                    resume: paused,
+                },
+                reply,
+            ))
+            .ok()
+            .unwrap();
+        installed.recv_timeout(WAIT).unwrap();
+        (observed, resume)
+    }
     fn live(&self) -> usize {
         self.store
             .db
             .query_row(
-                "SELECT COUNT(*) FROM desktop_intents WHERE withdrawn=0",
+                "SELECT COUNT(*) FROM desktop_intents
+                 WHERE withdrawn=0 AND json_extract(identity,'$.kind')='post'",
                 [],
                 |row| row.get(0),
             )
@@ -513,9 +568,108 @@ fn stop_drains_more_than_one_raw_queue_of_closed_signals_before_clean_join() {
     let mut runtime = h.start(&bus.address);
     Harness::activate(&runtime);
     h.shown(&server, 64);
+    let (in_batch, resume) = Harness::pause_batch(&runtime);
     server.close_burst(64);
+    in_batch.recv_timeout(WAIT).unwrap();
+    // Stop after the batch captured its lookup, before its first drive. This
+    // forces the cancellation path rather than relying on thread scheduling.
+    h.outbox.request_stop();
+    runtime.request_stop();
+    resume.send(()).unwrap();
     h.stop(&mut runtime);
     assert_eq!(h.live(), 0);
+}
+
+#[test]
+fn stop_during_the_post_command_batch_preserves_its_receipt_and_closed_drain() {
+    let bus = bus::Bus::new();
+    let server = Server::new(&bus);
+    server.mode.store(3, Ordering::Release);
+    let mut h = Harness::new();
+    let mut runtime = h.start(&bus.address);
+    Harness::activate(&runtime);
+    let (in_batch, resume) = Harness::pause_batch(&runtime);
+    let request = h.post();
+    server.called.recv_timeout(WAIT).unwrap();
+    in_batch.recv_timeout(WAIT).unwrap();
+    assert!(
+        h.outbox.pending[0].shared.reply.lock().unwrap().is_none(),
+        "pause must precede the original post receipt, in its post-command batch"
+    );
+    h.outbox.request_stop();
+    runtime.request_stop();
+    resume.send(()).unwrap();
+    h.stop(&mut runtime);
+    assert_eq!(h.state(&request), "delivered");
+    assert_eq!(h.live(), 0);
+}
+
+#[test]
+fn mapped_callback_bursts_preserve_the_original_notify_and_close_futures() {
+    let bus = bus::Bus::new();
+    let server = Server::new(&bus);
+    server.mode.store(5, Ordering::Release);
+    let mut h = Harness::new();
+    let mut runtime = h.start(&bus.address);
+    Harness::activate(&runtime);
+    h.shown(&server, 64);
+    // The original Notify emits 64 mapped callbacks BEFORE its one reply.
+    server.mode.store(6, Ordering::Release);
+    let post = h.post();
+    server.called.recv_timeout(WAIT).unwrap();
+    h.settle(&post, "delivered");
+    until(|| {
+        h.outbox.poll(&mut h.store, Instant::now());
+        h.live() == 1
+    });
+    let original = h.mappings().remove(0);
+    assert_eq!(original.request_id, post.request_id);
+    assert!(matches!(
+        &original.native_id,
+        NativeId::Linux { id: 65, .. }
+    ));
+    assert!(
+        server.called.try_recv().is_err(),
+        "Notify must not be replayed"
+    );
+
+    server.mode.store(5, Ordering::Release);
+    h.shown(&server, 64);
+    server.mode.store(7, Ordering::Release);
+    ledger::withdraw(&mut h.store.db, &post.intent_id, post.revision).unwrap();
+    let close = h.offer(
+        Action::Withdraw {
+            token: original.token,
+            native_id: original.native_id,
+        },
+        Kind::Withdrawal,
+    );
+    assert_eq!(server.closed.recv_timeout(WAIT).unwrap(), 65);
+    h.settle(&close, "delivered");
+    until(|| {
+        h.outbox.poll(&mut h.store, Instant::now());
+        h.live() == 0
+    });
+    assert!(
+        server.closed.try_recv().is_err(),
+        "Close must not be replayed"
+    );
+    // With no current mappings, the same full burst cannot be correlated with
+    // the new post before its reply. It remains Unknown without replay.
+    server.mode.store(6, Ordering::Release);
+    let unknown = h.post();
+    server.called.recv_timeout(WAIT).unwrap();
+    h.settle(&unknown, "unknown");
+    assert!(h.mappings().is_empty());
+    assert!(matches!(
+        h.outbox
+            .offer(&mut h.store, unknown, Instant::now())
+            .unwrap(),
+        Offered::Existing(_)
+    ));
+    assert!(server.called.try_recv().is_err());
+    assert_eq!(runtime.status()["ready"], true);
+    h.stop(&mut runtime);
 }
 
 #[test]

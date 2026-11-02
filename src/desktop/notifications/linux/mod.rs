@@ -19,9 +19,16 @@ mod worker;
 
 const WAIT: Duration = Duration::from_secs(5);
 const CALLBACKS: usize = 32;
+#[cfg(test)]
+struct BatchPause {
+    reached: mpsc::SyncSender<()>,
+    resume: mpsc::Receiver<()>,
+}
 enum Control {
     Restore(Vec<Activation>, mpsc::SyncSender<bool>),
     Finish(mpsc::SyncSender<bool>),
+    #[cfg(test)]
+    PauseBatch(BatchPause, mpsc::SyncSender<()>),
 }
 struct Shared {
     stop: AtomicBool,
