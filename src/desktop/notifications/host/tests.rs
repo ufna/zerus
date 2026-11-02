@@ -219,7 +219,7 @@ fn exercise_driver(chatty: bool, churn: bool) {
     let _serial = DRIVER_TEST.lock().unwrap_or_else(|e| e.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let location = Location {
-        root: temp.path().join("state/desktop"),
+        root: temp.path().canonicalize().unwrap().join("state/desktop"),
         configuration: "a".repeat(64),
     };
     location.prepare().unwrap();
@@ -476,7 +476,7 @@ fn empty_host_fixture() -> (
 ) {
     let temp = tempfile::tempdir().unwrap();
     let location = Location {
-        root: temp.path().join("state/desktop"),
+        root: temp.path().canonicalize().unwrap().join("state/desktop"),
         configuration: "a".repeat(64),
     };
     location.prepare().unwrap();
