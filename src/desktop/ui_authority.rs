@@ -7,12 +7,21 @@ use crate::{config::Config, platform};
 use anyhow::{ensure, Context, Result};
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 use zerus_client_core::desktop::ui_requests::{Envelope, Reply, Request};
 
+#[cfg(any(not(windows), test))]
+use std::collections::BTreeSet;
+#[cfg(windows)]
+use zerus_client_core::desktop::windows::{
+    process::{Ancestry, Original},
+    Peer,
+};
+
+#[cfg(any(not(windows), test))]
 const ANCESTORS: usize = 32;
 const WAIT: Duration = Duration::from_secs(2);
 
@@ -29,10 +38,20 @@ impl std::ops::Deref for Scope {
 impl Scope {
     pub fn new(config: &Config, location: &Location) -> Self {
         let home = Path::new(&config.home);
+        #[cfg(not(windows))]
         let mut frontend_images = vec![home.join(".local/bin/hgs-tray")];
+        #[cfg(windows)]
+        let mut frontend_images = vec![std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join("AppData/Local"))
+            .join("Programs/Zerus/hgs-tray.exe")];
         if let Ok(cli) = std::env::current_exe() {
             if let Some(folder) = cli.parent() {
-                frontend_images.push(folder.join("hgs-tray"));
+                frontend_images.push(folder.join(if cfg!(windows) {
+                    "hgs-tray.exe"
+                } else {
+                    "hgs-tray"
+                }));
             }
             #[cfg(target_os = "macos")]
             if let Some(bundle) = cli
@@ -76,8 +95,27 @@ struct Process {
     pid: u32,
     identity: platform::ProcessIdentity,
     executable: String,
+    #[cfg(windows)]
+    original: Option<std::sync::Arc<Original>>,
 }
 impl Process {
+    #[cfg(windows)]
+    fn read(pid: u32) -> Result<Self> {
+        let original = std::sync::Arc::new(Original::open(pid)?);
+        ensure!(original.own, "frontend belongs to another user");
+        Ok(Self {
+            pid,
+            identity: platform::ProcessIdentity {
+                parent: original.parent,
+                group: None,
+                birth: original.birth.to_string(),
+                started: (original.birth as f64 - 116444736000000000f64) / 10000000f64,
+            },
+            executable: original.image.clone(),
+            original: Some(original),
+        })
+    }
+    #[cfg(not(windows))]
     fn read(pid: u32) -> Result<Self> {
         let identity =
             platform::process_identity(pid).context("frontend process identity unavailable")?;
@@ -94,9 +132,51 @@ impl Process {
             executable,
         })
     }
+    #[cfg(windows)]
+    fn current(&self) -> bool {
+        self.original
+            .as_ref()
+            .is_some_and(|original| original.current())
+    }
+    #[cfg(not(windows))]
     fn current(&self) -> bool {
         platform::process_identity(self.pid).as_ref() == Some(&self.identity)
             && platform::describe(self.pid).is_some_and(|p| p.executable == self.executable)
+    }
+    #[cfg(windows)]
+    fn arguments(&self) -> Result<Vec<String>> {
+        Ok(self
+            .original
+            .as_ref()
+            .context("original frontend process unavailable")?
+            .arguments()?)
+    }
+    #[cfg(not(windows))]
+    fn arguments(&self) -> Result<Vec<String>> {
+        platform::describe(self.pid)
+            .and_then(|p| p.argv)
+            .context("frontend argv unavailable")
+    }
+}
+
+#[cfg(windows)]
+struct WindowsFreshness {
+    canonical: Peer,
+    ancestry: Ancestry,
+}
+#[cfg(windows)]
+impl WindowsFreshness {
+    fn check(&self, until: Instant) -> Result<()> {
+        ensure!(
+            self.canonical.current() && Instant::now() < until,
+            "canonical frontend expired"
+        );
+        self.ancestry.validate(until)?;
+        ensure!(
+            self.canonical.current() && Instant::now() < until,
+            "canonical frontend expired"
+        );
+        Ok(())
     }
 }
 
@@ -109,6 +189,8 @@ pub(super) struct Authorized {
     until: Instant,
     instance: String,
     serial: u64,
+    #[cfg(windows)]
+    windows: Option<Box<WindowsFreshness>>,
 }
 /// Actor-side permit after the original peer was revalidated. It deliberately
 /// has no Clone/Deserialize or public constructor, even inside the request lane.
@@ -118,6 +200,8 @@ enum Freshness {
         caller: Process,
         frontend: Process,
         until: Instant,
+        #[cfg(windows)]
+        windows: Option<Box<WindowsFreshness>>,
     },
     #[cfg(test)]
     Fixture,
@@ -135,10 +219,19 @@ impl Validated {
                 caller,
                 frontend,
                 until,
-            } => ensure!(
-                Instant::now() < until && caller.current() && frontend.current(),
-                "frontend permit expired"
-            ),
+                #[cfg(windows)]
+                windows,
+            } => {
+                ensure!(
+                    Instant::now() < until && caller.current() && frontend.current(),
+                    "frontend permit expired"
+                );
+                #[cfg(windows)]
+                windows
+                    .as_ref()
+                    .context("original Windows evidence missing")?
+                    .check(until)?;
+            }
             #[cfg(test)]
             Freshness::Fixture => (),
         }
@@ -201,6 +294,11 @@ impl Authorized {
             Instant::now() < self.until && self.caller.current() && self.frontend.current(),
             "frontend request identity expired"
         );
+        #[cfg(windows)]
+        self.windows
+            .as_ref()
+            .context("original Windows evidence missing")?
+            .check(self.until)?;
         order.observe(
             (
                 self.frontend.pid,
@@ -217,6 +315,8 @@ impl Authorized {
                 caller: self.caller,
                 frontend: self.frontend,
                 until: self.until,
+                #[cfg(windows)]
+                windows: self.windows,
             },
         ))
     }
@@ -235,16 +335,19 @@ pub(super) fn authenticate(location: &Scope, peer_pid: u32, value: &Value) -> Re
         platform::file_identity(Path::new(&caller.executable)) == Some(selected),
         "frontend relay is not the selected hgs"
     );
-    let argv = platform::describe(peer_pid)
-        .and_then(|p| p.argv)
-        .context("frontend relay argv unavailable")?;
+    let argv = caller.arguments()?;
     ensure!(
         argv.get(1..)
             .is_some_and(|a| a == ["desktop", "frontend-request", "--json"]),
         "unexpected frontend relay"
     );
-    let (frontend_pid, reply) =
-        probe(location, &envelope.attempt).context("canonical frontend evidence unavailable")?;
+    let Canonical {
+        pid: frontend_pid,
+        reply,
+        #[cfg(windows)]
+        peer,
+    } = probe(location, &envelope.attempt, until)
+        .context("canonical frontend evidence unavailable")?;
     let frontend = Process::read(frontend_pid)?;
     ensure!(
         location.selected_frontend(Path::new(&frontend.executable)),
@@ -257,7 +360,21 @@ pub(super) fn authenticate(location: &Scope, peer_pid: u32, value: &Value) -> Re
         &reply,
         &location.configuration,
     )?;
+    #[cfg(not(windows))]
     check_ancestry(peer_pid, until)?;
+    #[cfg(windows)]
+    let windows = {
+        ensure!(
+            peer.current() && peer.birth == frontend.identity.birth,
+            "canonical process was replaced"
+        );
+        let windows = WindowsFreshness {
+            canonical: peer,
+            ancestry: Ancestry::inspect(peer_pid, until)?,
+        };
+        windows.check(until)?;
+        windows
+    };
     ensure!(
         Instant::now() < until && caller.current() && frontend.current(),
         "frontend changed during authentication"
@@ -269,6 +386,8 @@ pub(super) fn authenticate(location: &Scope, peer_pid: u32, value: &Value) -> Re
         until,
         instance: reply.hello.instance_epoch,
         serial: reply.request.serial,
+        #[cfg(windows)]
+        windows: Some(Box::new(windows)),
     })
 }
 
@@ -391,21 +510,43 @@ impl Order {
     }
 }
 
+struct Canonical {
+    pid: u32,
+    reply: Reply,
+    #[cfg(windows)]
+    peer: Peer,
+}
 #[cfg(unix)]
-fn probe(location: &Location, attempt: &str) -> Option<(u32, Reply)> {
-    zerus_client_core::desktop::probe_ui_request_at(
+fn probe(location: &Location, attempt: &str, _until: Instant) -> Option<Canonical> {
+    let (pid, reply) = zerus_client_core::desktop::probe_ui_request_at(
         &owner::instance_path(),
         attempt,
         &location.configuration,
-    )
+    )?;
+    Some(Canonical { pid, reply })
 }
-#[cfg(not(unix))]
-fn probe(_: &Location, _: &str) -> Option<(u32, Reply)> {
-    // The Windows canonical activation pipe still only accepts show/sessions.
-    // Until its bounded reply adapter lands, policy authentication is refused.
+#[cfg(windows)]
+fn probe(location: &Location, attempt: &str, until: Instant) -> Option<Canonical> {
+    let name =
+        zerus_client_core::desktop::windows::activation_name("hgs-tray", &std::env::home_dir()?);
+    let (peer, reply) = zerus_client_core::desktop::windows::probe_ui_request_at(
+        &name,
+        attempt,
+        &location.configuration,
+        until,
+    )?;
+    Some(Canonical {
+        pid: peer.pid,
+        peer,
+        reply,
+    })
+}
+#[cfg(not(any(unix, windows)))]
+fn probe(_: &Location, _: &str, _: Instant) -> Option<Canonical> {
     None
 }
 
+#[cfg(not(windows))]
 fn check_ancestry(pid: u32, until: Instant) -> Result<()> {
     ancestry(pid, until, |pid| {
         if !same_user(pid)? {
@@ -430,6 +571,7 @@ fn check_ancestry(pid: u32, until: Instant) -> Result<()> {
     })
 }
 
+#[cfg(any(not(windows), test))]
 fn ancestry(
     mut pid: u32,
     until: Instant,
@@ -571,11 +713,11 @@ fn agent_environment(pid: u32) -> Result<bool> {
     Ok(marked(rest))
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn same_user(_: u32) -> Result<bool> {
     anyhow::bail!("frontend ancestry is unavailable on this platform")
 }
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn agent_environment(_: u32) -> Result<bool> {
     anyhow::bail!("frontend ancestry is unavailable on this platform")
 }
@@ -609,6 +751,8 @@ mod tests {
                 started: 100.0,
             },
             executable: "/opt/example/zerus-client".into(),
+            #[cfg(windows)]
+            original: None,
         };
         let caller = Process {
             pid: 8,
@@ -619,6 +763,8 @@ mod tests {
                 started: 101.0,
             },
             executable: "/opt/example/hgs".into(),
+            #[cfg(windows)]
+            original: None,
         };
         let reply = Reply {
             hello: Hello {
@@ -682,6 +828,8 @@ mod tests {
                 caller,
                 frontend,
                 until: Instant::now(),
+                #[cfg(windows)]
+                windows: None,
             },
         );
         // Expiration refuses before attempting any lookup of these fake PIDs.

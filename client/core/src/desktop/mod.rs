@@ -26,6 +26,8 @@ pub mod ui_requests;
 mod unix;
 #[cfg(unix)]
 pub use unix::{probe_at, probe_producer_at, probe_ui_request_at, same_user, temporary_dir_from};
+#[cfg(windows)]
+pub mod windows;
 
 pub const ABI: &str = "desktop-delegation-v1";
 pub const HELP_MARKER: &str = "Desktop owner ABI: desktop-delegation-v1";

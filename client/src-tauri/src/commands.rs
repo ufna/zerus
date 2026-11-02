@@ -67,7 +67,7 @@ impl AppState {
         self.live.desktop_service()
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub fn set_desktop_responder(&self, responder: Arc<zerus_client_core::desktop::Responder>) {
         let _ = self.live.desktop_responder.set(responder);
     }
