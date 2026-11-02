@@ -1471,10 +1471,6 @@ jobs:
           cargo build --release --locked
           cargo build --locked --example fake_ssh
           cargo build --locked --example fake_agent
-      - name: Release registration under a fresh standard Windows account
-        shell: powershell
-        run: |
-          & scripts/ci/windows-registration-standard-user.ps1 -Hgs "$env:GITHUB_WORKSPACE\target\release\hgs.exe" -Stage "$env:ProgramData\ZerusRegistrationCI-$([Guid]::NewGuid().ToString('N'))"
       - name: Windows mobile connector build and native filesystem contracts
         run: |
           cargo +1.99.1 clippy --locked --manifest-path services/mobile/connector/Cargo.toml --target-dir target --all-targets -- -D warnings

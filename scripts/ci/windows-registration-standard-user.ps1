@@ -1,7 +1,8 @@
 param(
     [ValidateSet('Controller', 'Child', 'Admin')][string]$Mode = 'Controller',
     [Parameter(Mandatory=$true)][string]$Stage,
-    [string]$Hgs
+    [string]$Hgs,
+    [ValidateSet('raw', 'app-local')][string]$Layout = 'raw'
 )
 # Disposable hosted Windows only. No service, logon item or product task is run.
 $ErrorActionPreference = 'Stop'
@@ -19,6 +20,7 @@ if ($Mode -ne 'Controller') {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $administratorSidPresent = @($identity.Groups | Where-Object Value -eq 'S-1-5-32-544').Count -ne 0
     $report = [ordered]@{
+        layout = $Layout
         sid = $identity.User.Value
         administrator_sid_present = $administratorSidPresent
         session = [Diagnostics.Process]::GetCurrentProcess().SessionId
@@ -143,22 +145,36 @@ $complete = $false
 try {
     # Same RELEASE image and command wrapper under the existing admin runner,
     # before the actual standard-account comparison. Both records stay separate.
-    $adminStage = Join-Path $Stage 'admin-control'
-    [void][IO.Directory]::CreateDirectory($adminStage)
-    Copy-Item $source (Join-Path $adminStage 'hgs.exe')
-    & $PSCommandPath -Mode Admin -Stage $adminStage
+    if ($Layout -eq 'raw') {
+        $adminStage = Join-Path $Stage 'admin-control'
+        [void][IO.Directory]::CreateDirectory($adminStage)
+        Copy-Item $source (Join-Path $adminStage 'hgs.exe')
+        & $PSCommandPath -Mode Admin -Stage $adminStage -Layout $Layout
+    }
     $ownedUser = New-LocalUser -Name $userName -Password $secure -Description 'Disposable Zerus CI fixture' -AccountNeverExpires
     # Explicit ordinary Users membership; never add an administrator membership.
     Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $ownedUser
     & icacls.exe $Stage /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' "*$($ownedUser.SID.Value):(OI)(CI)M" | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Private account ACL setup failed' }
     Copy-Item $source (Join-Path $Stage 'hgs.exe')
+    if ($Layout -eq 'app-local') {
+        # Exact PC package sidecars, already independently hash-checked by the
+        # fixed artifact preparer. Record copied bytes, never use a system DLL.
+        foreach ($name in @('vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll')) {
+            $original = Join-Path ([IO.Path]::GetDirectoryName($source)) $name
+            $destination = Join-Path $Stage $name
+            $expected = (Get-FileHash $original -Algorithm SHA256).Hash
+            Copy-Item $original $destination
+            if ((Get-FileHash $destination -Algorithm SHA256).Hash -cne $expected) { throw 'CRT copy differs' }
+            Write-Output "App-local $name SHA256 $($expected.ToLowerInvariant())"
+        }
+    }
     Copy-Item $PSCommandPath (Join-Path $Stage 'fixture.ps1')
     if ((Get-FileHash (Join-Path $Stage 'hgs.exe') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $digest) {
         throw 'Release image copy differs'
     }
     $program = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $arguments = '-NoLogo -NoProfile -NonInteractive -File "' + (Join-Path $Stage 'fixture.ps1') + '" -Mode Child -Stage "' + $Stage + '"'
+    $arguments = '-NoLogo -NoProfile -NonInteractive -File "' + (Join-Path $Stage 'fixture.ps1') + '" -Mode Child -Layout ' + $Layout + ' -Stage "' + $Stage + '"'
     $action = New-ScheduledTaskAction -Execute $program -Argument $arguments -WorkingDirectory $Stage
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 1)
     # No trigger; exactly one explicit run. Password stays in controller memory
@@ -178,7 +194,7 @@ try {
     if (Test-Path $path) {
         $text = [IO.File]::ReadAllText($path)
         if ($text.Length -gt 200000) { throw 'Fixture result exceeds bound' }
-        [IO.File]::WriteAllText((Join-Path $env:GITHUB_WORKSPACE 'artifacts/test-results/registration-standard-user.json'), $text)
+        [IO.File]::WriteAllText((Join-Path $env:GITHUB_WORKSPACE ('artifacts/test-results/registration-' + $Layout + '-standard-user.json')), $text)
         Write-Output $text
         $result = $text | ConvertFrom-Json
         $complete = $result.complete -eq $true -and $result.sid -eq $ownedUser.SID.Value -and $result.administrator_sid_present -eq $false -and $result.calls.Count -eq 2 -and $task.State -ne 'Running' -and $info.LastTaskResult -eq 0
