@@ -81,5 +81,21 @@ describe("service approval intents", () => {
     await expect(reloaded.submit(true)).rejects.toThrow("unconfirmed");
     expect(send).toHaveBeenCalledOnce();
   });
+  it("allows turning approvals off after native confirmed-exit receipt lookup proves the first request was not applied", async () => {
+    let sequence = 0;
+    const send = vi.fn(async (request_id: string, enabled: boolean) => {
+      if (request_id === "request-1") throw Error("service restarting");
+      return { request_id, enabled, op: "automatic_approvals", accepted: true, durable: true };
+    });
+    const read = vi.fn(async () => ({ request_id: "request-1", op: "automatic_approvals", accepted: false, durable: false, pending: false, code: "frontend_request_not_applied" }));
+    const intent = createServiceApprovalIntent(send, () => `request-${++sequence}`, read);
+    await expect(intent.submit(true)).rejects.toThrow("service restarting");
+    await expect(intent.submit(false)).rejects.toThrow("unconfirmed");
+    await expect(intent.check()).rejects.toThrow("unavailable");
+    expect(intent.pending()).toBeUndefined();
+    await intent.submit(false);
+    expect(send.mock.calls).toEqual([["request-1", true], ["request-2", false]]);
+    expect(read).toHaveBeenCalledOnce();
+  });
 
 });

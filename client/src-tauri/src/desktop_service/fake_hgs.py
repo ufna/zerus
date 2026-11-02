@@ -153,6 +153,8 @@ if args == ['--help']:
 elif args == ['desktop', 'frontend-request', '--json']:
     request = value['request']
     assert value['abi'] == 'desktop-ui-request-v1'
+    if config.get('frontend_unreachable') and not (root / 'service-back').exists():
+        raise SystemExit('fixture service unavailable before mutation')
     with socket.socket(socket.AF_UNIX) as stream:
         stream.settimeout(2)
         stream.connect(str(root / 'native-cache.sock'))
@@ -244,6 +246,8 @@ elif args == ['desktop', 'watch', '--json']:
         sys.stdin.read()  # Detaches only when the owning subscriber closes stdin.
 elif args == ['desktop', 'request', '--json']:
     op, request_id = value['op'], value['request_id']
+    if op in ['delivery_result', 'maintenance_result'] and config.get('lookup_unavailable') and not (root / 'lookup-back').exists():
+        raise SystemExit('fixture lookup transport unavailable')
     common = {'request_id': request_id, 'accepted': True, 'durable': False, 'abi': 'desktop-catalog-v1',
               'changes_abi': abi, 'epoch': epoch, 'computer': value.get('computer', ''), 'incarnation': 1,
               'generation': 1, 'projection': projection, 'display_only': True, 'authority': False,

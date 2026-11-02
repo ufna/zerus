@@ -46,6 +46,7 @@ struct Entry {
     token: u64,
     running: bool,
     complete: bool,
+    original_exit_confirmed: bool,
     result: Option<Value>,
 }
 enum Begin {
@@ -57,7 +58,12 @@ struct Reservation {
     request: Request,
     token: u64,
     lookup: bool,
+    original_exit_confirmed: bool,
     armed: bool,
+}
+enum Receipt {
+    Present(Value),
+    Absent,
 }
 impl Frontend {
     fn begin(&self, operation: Operation, requested: Option<Request>) -> Begin {
@@ -90,6 +96,7 @@ impl Frontend {
                     request: old.request.clone(),
                     token: old.token,
                     lookup: true,
+                    original_exit_confirmed: old.original_exit_confirmed,
                     armed: true,
                 });
             }
@@ -108,6 +115,7 @@ impl Frontend {
                 token,
                 running: true,
                 complete: false,
+                original_exit_confirmed: false,
                 result: None,
             },
         );
@@ -116,6 +124,7 @@ impl Frontend {
             request,
             token,
             lookup: false,
+            original_exit_confirmed: false,
             armed: true,
         })
     }
@@ -134,6 +143,12 @@ impl Frontend {
     }
 }
 impl Reservation {
+    fn record_original_exit(&mut self, result: &Result<Vec<u8>, OwnedError>) {
+        // Called only after the original spawn hook returned a Child. All
+        // runner outcomes except ExitUnverified confirm that child's exit,
+        // including failures with output pipes still held by a descendant.
+        self.original_exit_confirmed = !matches!(result, Err(OwnedError::ExitUnverified));
+    }
     fn finish(mut self, value: Value, complete: bool) -> Value {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(entry) = state
@@ -143,6 +158,7 @@ impl Reservation {
         {
             entry.running = false;
             entry.complete = complete;
+            entry.original_exit_confirmed |= self.original_exit_confirmed;
             entry.result = Some(value.clone());
         }
         self.armed = false;
@@ -162,6 +178,7 @@ impl Drop for Reservation {
         {
             entry.running = false;
             entry.complete = false;
+            entry.original_exit_confirmed |= self.original_exit_confirmed;
             entry.result = Some(unknown(&self.request, "frontend_request_unconfirmed"));
         }
     }
@@ -408,10 +425,14 @@ fn help(
     }
     Ok(())
 }
-fn execute(shared: &Shared, reservation: Reservation, resources: Arc<dyn Send + Sync>) -> Value {
+fn execute(
+    shared: &Shared,
+    mut reservation: Reservation,
+    resources: Arc<dyn Send + Sync>,
+) -> Value {
     let operation = Operation::of(&reservation.request);
     let mut dispatched = false;
-    let result = (|| -> Result<Value, &'static str> {
+    let result = (|| -> Result<Receipt, &'static str> {
         if !shared.allowed || shared.stopped.load(Ordering::Acquire) {
             return Err("frontend_route_unavailable");
         }
@@ -480,23 +501,19 @@ fn execute(shared: &Shared, reservation: Reservation, resources: Arc<dyn Send + 
             held,
         );
         dispatched = spawned.load(Ordering::Acquire);
+        if dispatched {
+            reservation.record_original_exit(&bytes);
+        }
         let bytes = bytes.map_err(|error| match error {
             OwnedError::StartFailed => "frontend_start_failed",
             _ => "frontend_request_unconfirmed",
         })?;
-        serde_json::from_slice(&bytes).map_err(|_| "invalid_frontend_response")
+        serde_json::from_slice(&bytes)
+            .map(Receipt::Present)
+            .map_err(|_| "invalid_frontend_response")
     })();
     match result {
-        Ok(value) => {
-            if let Some((value, complete)) =
-                checked(&reservation.request, value, reservation.lookup)
-            {
-                reservation.finish(value, complete)
-            } else {
-                let value = unknown(&reservation.request, "frontend_receipt_unconfirmed");
-                reservation.finish(value, false)
-            }
-        }
+        Ok(receipt) => finish_receipt(reservation, receipt),
         Err(code) => {
             let complete = !reservation.lookup && !dispatched;
             let value = if complete {
@@ -508,12 +525,36 @@ fn execute(shared: &Shared, reservation: Reservation, resources: Arc<dyn Send + 
         }
     }
 }
+fn finish_receipt(reservation: Reservation, receipt: Receipt) -> Value {
+    let resolved = match receipt {
+        Receipt::Present(value) => checked(&reservation.request, value, reservation.lookup),
+        Receipt::Absent if reservation.lookup && reservation.original_exit_confirmed => {
+            // The service rechecks the exact caller's birth/liveness at the
+            // mutation boundary and commits its receipt in that transaction.
+            // After original-child exit, a verified absent receipt cannot be
+            // followed by a late application of this envelope. A new intent
+            // may be submitted; the original logical ID is never resubmitted.
+            Some((
+                refused(&reservation.request, "frontend_request_not_applied"),
+                true,
+            ))
+        }
+        Receipt::Absent => None,
+    };
+    let (value, complete) = resolved.unwrap_or_else(|| {
+        (
+            unknown(&reservation.request, "frontend_receipt_unconfirmed"),
+            false,
+        )
+    });
+    reservation.finish(value, complete)
+}
 fn lookup(
     shared: &Shared,
     relay: &relay::Connection,
     request: &Request,
     resources: Arc<dyn Send + Sync>,
-) -> Result<Value, &'static str> {
+) -> Result<Receipt, &'static str> {
     let id = uuid::Uuid::new_v4().to_string();
     let operation = if Operation::of(request) == Operation::AutomaticApprovals {
         "delivery_result"
@@ -531,25 +572,38 @@ fn lookup(
         resources,
     )?;
     let value: Value = serde_json::from_slice(&bytes).map_err(|_| "invalid_frontend_response")?;
+    lookup_receipt(request, &id, value)
+}
+fn lookup_receipt(request: &Request, id: &str, value: Value) -> Result<Receipt, &'static str> {
     if value["request_id"] != id || value["original_request_id"] != request.id() {
         return Err("invalid_frontend_response");
     }
-    if operation == "delivery_result" {
-        if value["op"] != operation
+    if Operation::of(request) == Operation::AutomaticApprovals {
+        if value["op"] != "delivery_result"
             || value["accepted"] != true
             || value["durable"] != false
-            || value["found"] != true
         {
             return Err("frontend_receipt_unconfirmed");
         }
-        Ok(value["result"].clone())
+        match value["found"].as_bool() {
+            Some(true) => Ok(Receipt::Present(value["result"].clone())),
+            Some(false) if value["result"].is_null() => Ok(Receipt::Absent),
+            _ => Err("frontend_receipt_unconfirmed"),
+        }
     } else {
+        if value["accepted"] == false
+            && value["code"] == "unknown_request"
+            && value.get("durable").is_none_or(|durable| *durable == false)
+            && value["configured"] != true
+        {
+            return Ok(Receipt::Absent);
+        }
         if value["accepted"] != true || value["durable"] != true {
             return Err("frontend_receipt_unconfirmed");
         }
         let mut value = value;
         value["request_id"] = json!(request.id());
-        Ok(value)
+        Ok(Receipt::Present(value))
     }
 }
 fn checked(request: &Request, mut value: Value, lookup: bool) -> Option<(Value, bool)> {

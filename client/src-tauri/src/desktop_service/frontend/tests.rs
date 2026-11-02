@@ -55,6 +55,99 @@ fn a_durable_receipt_releases_the_operation_and_the_same_uuid_never_replays() {
     ));
 }
 #[test]
+fn missing_receipts_release_only_intents_whose_original_child_exit_was_confirmed() {
+    let outcomes = [
+        Ok(vec![]),
+        Err(OwnedError::ChildFailed),
+        Err(OwnedError::Incomplete),
+        Err(OwnedError::TimedOut),
+        Err(OwnedError::WriteFailed),
+        Err(OwnedError::OutputTooLarge),
+        Err(OwnedError::Cancelled),
+        Err(OwnedError::ExitUnverified),
+    ];
+    for outcome in outcomes {
+        let state = Frontend::default();
+        let request = approval(true);
+        let Begin::Work(mut original) =
+            state.begin(Operation::AutomaticApprovals, Some(request.clone()))
+        else {
+            panic!("original reservation")
+        };
+        original.record_original_exit(&outcome);
+        // Even a worker interrupted after the exchange retains the exit proof.
+        drop(original);
+        let Begin::Work(query) = state.begin(Operation::AutomaticApprovals, None) else {
+            panic!("receipt query")
+        };
+        assert!(query.lookup);
+        let confirmed = outcome != Err(OwnedError::ExitUnverified);
+        assert_eq!(query.original_exit_confirmed, confirmed);
+        let result = finish_receipt(query, Receipt::Absent);
+        assert_eq!(result["pending"], !confirmed);
+        let next = approval(false);
+        if confirmed {
+            assert_eq!(result["code"], "frontend_request_not_applied");
+            let Begin::Immediate(cached) =
+                state.begin(Operation::AutomaticApprovals, Some(request))
+            else {
+                panic!("original ID must stay refused, never sent again")
+            };
+            assert_eq!(cached, result);
+            assert!(matches!(
+                state.begin(Operation::AutomaticApprovals, Some(next)),
+                Begin::Work(_)
+            ));
+        } else {
+            let Begin::Immediate(blocked) = state.begin(Operation::AutomaticApprovals, Some(next))
+            else {
+                panic!("an unverified original exit cannot admit another writer")
+            };
+            assert_eq!(blocked["code"], "previous_frontend_request_unconfirmed");
+        }
+    }
+}
+#[test]
+fn absent_receipts_require_an_exact_successful_original_id_lookup() {
+    let approval = approval(true);
+    let maintenance = Request::maintenance_configure(
+        uuid::Uuid::new_v4().to_string(),
+        maintenance::Configuration {
+            update: None,
+            recovery: None,
+        },
+    );
+    let query = uuid::Uuid::new_v4().to_string();
+    for request in [approval, maintenance] {
+        let absent = if Operation::of(&request) == Operation::AutomaticApprovals {
+            json!({"request_id":query,"original_request_id":request.id(),"op":"delivery_result","accepted":true,"durable":false,"found":false,"result":null})
+        } else {
+            json!({"request_id":query,"original_request_id":request.id(),"accepted":false,"code":"unknown_request"})
+        };
+        assert!(matches!(
+            lookup_receipt(&request, &query, absent.clone()),
+            Ok(Receipt::Absent)
+        ));
+        for (field, wrong) in [
+            ("request_id", json!(uuid::Uuid::new_v4().to_string())),
+            (
+                "original_request_id",
+                json!(uuid::Uuid::new_v4().to_string()),
+            ),
+            ("durable", json!(true)),
+            if Operation::of(&request) == Operation::AutomaticApprovals {
+                ("result", json!({"accepted":true,"durable":true}))
+            } else {
+                ("configured", json!(true))
+            },
+        ] {
+            let mut invalid = absent.clone();
+            invalid[field] = wrong;
+            assert!(lookup_receipt(&request, &query, invalid).is_err());
+        }
+    }
+}
+#[test]
 fn maintenance_config_commit_does_not_settle_an_unknown_recovery_save() {
     let request = Request::MaintenanceConfigure {
         request_id: uuid::Uuid::new_v4().to_string(),
@@ -213,9 +306,12 @@ mod native {
                 "maintenance",
                 "maintenance-unknown",
                 "retained-pipe",
+                "not-applied",
+                "maintenance-not-applied",
             ] {
                 let is_maintenance = case.starts_with("maintenance");
-                let config = json!({"ready":true,"frontend_uncertain":matches!(case,"unknown"|"maintenance-unknown"),"frontend_abi":case!="missing-abi","frontend_retain":case=="retained-pipe"});
+                let not_applied = case.ends_with("not-applied");
+                let config = json!({"ready":true,"frontend_uncertain":matches!(case,"unknown"|"maintenance-unknown"),"frontend_abi":case!="missing-abi","frontend_retain":case=="retained-pipe", "frontend_unreachable":not_applied,"lookup_unavailable":not_applied});
                 let fixture = Fixture::new(config);
                 let responder = responder();
                 let _cache = CacheServer::start(&fixture.0, responder.clone());
@@ -247,7 +343,83 @@ mod native {
                 } else {
                     service.automatic_approvals(id.clone(), true).await.unwrap()
                 };
-                if case == "missing-abi" {
+                if not_applied {
+                    let operation = if is_maintenance {
+                        Operation::MaintenanceConfigure
+                    } else {
+                        Operation::AutomaticApprovals
+                    };
+                    assert_eq!(
+                        receipt["pending"], true,
+                        "a spawned failed relay is initially uncertain"
+                    );
+                    let unavailable = service.frontend_result(operation).await;
+                    assert_eq!(
+                        unavailable["pending"], true,
+                        "a failed lookup proves no absence"
+                    );
+                    std::fs::write(fixture.0.join("lookup-back"), []).unwrap();
+                    let absent = service.frontend_result(operation).await;
+                    assert_eq!(absent["request_id"], id);
+                    assert_eq!(absent["accepted"], false);
+                    assert_eq!(absent["durable"], false);
+                    assert_eq!(
+                        absent["pending"], false,
+                        "confirmed relay exit and no receipt settles refusal"
+                    );
+                    assert_eq!(absent["code"], "frontend_request_not_applied");
+                    // A retry of the same logical ID returns that refusal, never another send.
+                    let cached = if is_maintenance {
+                        service.frontend_result(operation).await
+                    } else {
+                        service.automatic_approvals(id.clone(), true).await.unwrap()
+                    };
+                    assert_eq!(cached, absent);
+                    std::fs::write(fixture.0.join("service-back"), []).unwrap();
+                    let next_id = uuid::Uuid::new_v4().to_string();
+                    let opposite = if is_maintenance {
+                        service
+                            .maintenance_configure(
+                                next_id.clone(),
+                                maintenance::Configuration {
+                                    update: None,
+                                    recovery: None,
+                                },
+                                "com.hgdev.hgs-tray".into(),
+                            )
+                            .await
+                            .unwrap()
+                    } else {
+                        service
+                            .automatic_approvals(next_id.clone(), false)
+                            .await
+                            .unwrap()
+                    };
+                    assert_eq!(opposite["request_id"], next_id);
+                    assert_eq!(
+                        opposite["durable"], true,
+                        "a fresh intent is admitted after definitive refusal"
+                    );
+                    assert_eq!(opposite["pending"], false);
+                    if !is_maintenance {
+                        assert_eq!(opposite["enabled"], false);
+                    }
+                    let sends: Vec<_> = fixture
+                        .calls()
+                        .into_iter()
+                        .filter(|call| {
+                            call["args"] == json!(["desktop", "frontend-request", "--json"])
+                        })
+                        .collect();
+                    assert_eq!(sends.len(), 2);
+                    assert_eq!(
+                        sends
+                            .iter()
+                            .filter(|c| c["value"]["request"]["request_id"] == id)
+                            .count(),
+                        1
+                    );
+                } else if case == "missing-abi" {
                     assert_eq!(receipt["accepted"], false);
                     assert_eq!(receipt["code"], "incompatible_frontend_cli");
                     assert!(!fixture.calls().iter().any(
