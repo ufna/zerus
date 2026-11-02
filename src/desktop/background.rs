@@ -2,7 +2,9 @@
 use super::{
     attention, delivery, details,
     fanout::Queue,
-    feed, fleet, presence_worker,
+    feed, fleet,
+    notifications::activation,
+    presence_worker,
     store::{maintenance, Location, Store},
 };
 use crate::config::Config;
@@ -24,10 +26,12 @@ pub(super) struct Runtime {
     details: details::Adapter,
     maintenance: maintenance::Runtime,
     attention: attention::Runtime,
+    activations: activation::Router,
 }
 
 impl Runtime {
     pub fn start(config: &Config, epoch: &str, broker: &mut feed::Broker) -> Result<Self> {
+        let location = Location::new(config)?;
         let delivery = delivery::Runtime::start(config, epoch)?;
         let maintenance = maintenance::Runtime::start(config, epoch)?;
         let producer = broker.claim_internal()?;
@@ -40,6 +44,7 @@ impl Runtime {
                 details: details::Adapter::new(epoch),
                 maintenance,
                 attention: attention::Runtime::new(epoch),
+                activations: activation::Router::new(&location.configuration, epoch),
             }),
             Err(error) => {
                 producer.close();
@@ -103,6 +108,7 @@ impl Runtime {
         }
         self.delivery.poll(store);
         self.maintenance.poll(store);
+        self.activations.poll(store, None, seq);
         // Disabled discovery must not accumulate permanent edge/baseline rows.
         // Enabling resets the baseline before later observations may post.
         if self.attention.enabled() || self.attention.retiring() {
@@ -116,6 +122,14 @@ impl Runtime {
 
     pub fn delivery_request(&mut self, store: &mut Store, value: &Value) -> Value {
         self.delivery.request(store, value)
+    }
+
+    pub fn activation_wait(
+        &mut self,
+        authority: super::ui_authority::Validated,
+        queue: Arc<Queue>,
+    ) -> Result<()> {
+        self.activations.wait(authority, queue)
     }
 
     pub fn frontend_request(
@@ -145,6 +159,7 @@ impl Runtime {
     pub fn decorate(&self, value: &mut Value) {
         value["detail_subscriptions"] = self.details.status();
         value["attention_discovery"] = self.attention.status();
+        value["activation_transport"] = self.activations.status();
         value["lifecycle"]["background"]["attention"] = json!({
             "ready":false,"drained":self.attention.drained(),"code":if self.attention.drained() {"drained"} else {"discovery_only"},
             "status":value["attention_discovery"]});
@@ -211,6 +226,7 @@ impl Runtime {
     }
 
     pub fn drain(&mut self, store: &mut Store, timeout: Duration) -> Result<()> {
+        self.activations.stop();
         self.details.stop();
         self.producer.close();
         self.delivery.request_stop();

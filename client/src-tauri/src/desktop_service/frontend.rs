@@ -17,18 +17,22 @@ const MAINTENANCE_UNAVAILABLE: &str =
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum Operation {
+    #[serde(skip)] // The ephemeral consumer is separate from durable policy requests.
+    ActivationWait,
     AutomaticApprovals,
     MaintenanceConfigure,
 }
 impl Operation {
     fn of(request: &Request) -> Self {
         match request {
+            Request::ActivationWait { .. } => Self::ActivationWait,
             Request::AutomaticApprovals { .. } => Self::AutomaticApprovals,
             Request::MaintenanceConfigure { .. } => Self::MaintenanceConfigure,
         }
     }
     fn name(self) -> &'static str {
         match self {
+            Self::ActivationWait => "activation_wait",
             Self::AutomaticApprovals => "automatic_approvals",
             Self::MaintenanceConfigure => "maintenance_configure",
         }
@@ -648,6 +652,7 @@ fn checked(request: &Request, mut value: Value, lookup: bool) -> Option<(Value, 
         return None;
     }
     let complete = match request {
+        Request::ActivationWait { .. } => return None, // Separate ephemeral consumer, never a durable policy receipt.
         Request::AutomaticApprovals { enabled, .. } => {
             if value["op"] != "automatic_approvals" || value["enabled"] != *enabled {
                 return None;

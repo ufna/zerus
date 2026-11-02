@@ -93,3 +93,38 @@ operation resources to settle and the actual platform worker to join; an
 abandoned undrained attachment keeps its original owner held rather than permit
 replacement. The returned activations still need the service-owned authenticated
 frontend handoff; this component adds no generic click request or UI launcher.
+
+## Authenticated activation handoff
+
+The native frontend consumer checks both `Desktop frontend request ABI:
+desktop-ui-request-v1` and `Desktop activation ABI: desktop-activation-v1`, then
+uses the existing registered original-child `desktop frontend-request --json`
+route with `Request::ActivationWait { request_id }`. It registers the fresh
+Envelope and binds the original Child before stdin, retaining the registration,
+child and pipe resources through completion. This is a separate ephemeral
+consumer, not the durable policy-request state machine. One wait lasts at most
+15 seconds; the selected CLI reads for at most 25 seconds and the owned runner
+must retain its ordinary 30-second maximum. One canonical frontend may wait at
+a time. Generic requests, agent ancestry and unregistered children cannot take
+activation payloads; ordinary watch frames contain no click target.
+
+The response value is the closed `desktop::activation::Reply`, bound to the
+original wait UUID, selected configuration and current service epoch. Its
+optional `Open` contains a distinct click UUID, original post UUID, exact
+computer/run/conversation target, original token and optional ephemeral Wayland
+context. `None` means idle, not readiness or an ownership grant. The service
+rechecks the original Delivered mapping at handoff, so intervening withdrawal or
+revocation refuses it. The queue has at most 32 clicks, expires them after 30
+seconds, and never persists context. A disconnected/uncertain handoff is not
+replayed automatically; the next wait is a new read and another native click is
+a distinct event.
+
+The service's `Router::closed_frontend` consumes a fresh canonical instance
+observation made off actor. Only `Absent`, with no authenticated waiting
+receiver, can produce the opaque one-use `Launch` for the selected installed
+frontend mechanics. Unknown, live and legacy observations do not launch.
+Linux owns the exact-target GUI consumer and launch implementation: the Wayland
+token goes only into that child environment as `XDG_ACTIVATION_TOKEN`, never
+process-global state, argv or disk. The parent lifecycle still owns callback
+attachment, selected image launch, policy and final cutover; the transport alone
+does not activate any of them.
