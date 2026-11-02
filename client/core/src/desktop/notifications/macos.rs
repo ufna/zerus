@@ -191,13 +191,22 @@ impl Host {
                     admission.err()
                 };
                 if let Some(code) = refused {
+                    if self.output.len() > OUTPUTS - 2 {
+                        return Err("notification_output_capacity");
+                    }
                     let receipt = Receipt {
                         binding: command.binding,
                         outcome: Outcome::Refused { code },
                     };
                     self.guard.complete(&receipt);
+                    self.enqueue(Emission {
+                        frame: FromHost::Receipt(receipt.clone()),
+                        _hold: None,
+                    })?;
                     return self.enqueue(Emission {
-                        frame: FromHost::Receipt(receipt),
+                        frame: FromHost::Released {
+                            binding: receipt.binding,
+                        },
                         _hold: None,
                     });
                 }
@@ -321,8 +330,19 @@ impl Host {
                 }
             }
         }
-        self.pending
-            .retain(|pending| !pending.sent || !pending.drained());
+        self.pending.retain(|pending| {
+            if pending.sent && pending.drained() && self.output.len() < OUTPUTS {
+                self.output.push_back(Emission {
+                    frame: FromHost::Released {
+                        binding: pending.command.binding.clone(),
+                    },
+                    _hold: None,
+                });
+                false
+            } else {
+                true
+            }
+        });
         if self.stopping
             && self.pending.is_empty()
             && self.output.is_empty()

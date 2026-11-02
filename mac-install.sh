@@ -152,4 +152,4 @@ tar czf - -C "$here" --exclude='tray/build' --exclude='tray/.cache' \
 # PATH неинтерактивного ssh на маке — без Homebrew; cmake/brew tray/install.sh ищет сам
 # (find_tool в его маковской ветке). Signing uses the Mac's existing keychain;
 # an optional exact identity selector travels as one literal environment value.
-ssh -o BatchMode=yes "$host" "HGS_MACOS_SIGN_IDENTITY=$(shq "${HGS_MACOS_SIGN_IDENTITY:-}") HGS_MAC_GUI=$(shq "${HGS_MAC_GUI:-client}") bash ~/.local/src/hgs/tray/install.sh"
+ssh -o BatchMode=yes "$host" "HGS_MAC_CLI_BUILD=~/.local/src/hgs/.rust-build/target/release/hgs HGS_MACOS_SIGN_IDENTITY=$(shq "${HGS_MACOS_SIGN_IDENTITY:-}") HGS_MAC_GUI=$(shq "${HGS_MAC_GUI:-client}") bash ~/.local/src/hgs/tray/install.sh"

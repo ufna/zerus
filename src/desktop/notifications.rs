@@ -25,6 +25,9 @@ pub(super) mod linux;
 pub const COMMAND_WAIT: Duration = Duration::from_secs(10);
 const EVENTS: usize = 32;
 
+#[cfg(unix)]
+pub(super) mod host;
+
 struct Shared {
     cancel: AtomicBool,
     reply: Mutex<Option<Finished>>,
@@ -167,7 +170,9 @@ impl Endpoint {
     }
     pub fn emit(&self, event: Event) -> bool {
         let (Event::Clicked(value) | Event::Closed(value)) = &event;
-        if self.stopping()
+        // Closing an already admitted notification may complete during host
+        // shutdown. Keep that exact tombstone drainable; never open a late UI.
+        if (self.stopping() && !matches!(event, Event::Closed(_)))
             || !value.valid_for(self.platform)
             || (matches!(event, Event::Closed(_)) && value.platform_context.is_some())
         {

@@ -138,7 +138,7 @@ fi
 
 # Desktop refusals must not interrupt the existing workers' update path.
 if [ -z "${HGS_INSTALL_PREFIX:-}" ] && [ -z "${HGS_STATE_DIR:-}" ] && [ -z "${HGS_CONFIG_DIR:-}" ] && [ "$(uname -s)" = Darwin ]; then
-    desktop_args=()
+    desktop_args=(--refresh-runner)
     if [ "$desktop_changed" -eq 1 ]; then desktop_args+=(--restart); fi
     python3 "$here/scripts/install-macos-desktop-service.py" "$prefix/bin/hgs" ${desktop_args[@]+"${desktop_args[@]}"}
 fi
