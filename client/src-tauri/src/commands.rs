@@ -296,10 +296,7 @@ mod live {
                 .as_ref()
             {
                 Some(Source::Fleet(fleet)) => fleet.reconnect(&ComputerId::from(computer)),
-                Some(Source::Service(service)) => {
-                    service.retry();
-                    true
-                }
+                Some(Source::Service(service)) => service.reconnect(computer),
                 Some(Source::Replay(_)) | None => false,
             }
         }
