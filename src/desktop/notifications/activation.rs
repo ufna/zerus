@@ -196,6 +196,14 @@ impl Router {
                 platform_context: pending.value.platform_context,
             };
             ensure!(open.valid(), "activation target invalid");
+            if let Some(wait) = &self.waiting {
+                // A running frontend must pass its full original proof at
+                // handoff, even when the periodic poll check was cached.
+                ensure!(
+                    !wait.queue.closed() && wait.peer.handoff_current(),
+                    "activation receiver changed"
+                );
+            }
             return Ok(Some(open));
         }
         Ok(None)

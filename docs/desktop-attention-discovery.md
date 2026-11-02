@@ -114,7 +114,9 @@ optional `Open` contains a distinct click UUID, original post UUID, exact
 computer/run/conversation target, original token and optional ephemeral Wayland
 context. `None` means idle, not readiness or an ownership grant. The service
 rechecks the original Delivered mapping at handoff, so intervening withdrawal or
-revocation refuses it. The queue has at most 32 clicks, expires them after 30
+revocation refuses it. Each actor turn checks held-process and canonical-peer
+liveness. Full retained ancestry validation is limited to once per 500 ms while
+waiting, and is always repeated immediately before handing a click to a waiting frontend. The queue has at most 32 clicks, expires them after 30
 seconds, and never persists context. A disconnected/uncertain handoff is not
 replayed automatically; the next wait is a new read and another native click is
 a distinct event.
