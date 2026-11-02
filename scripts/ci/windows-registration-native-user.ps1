@@ -217,10 +217,11 @@ try {
         throw 'Release image copy differs'
     }
     $program = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $scriptPath = (Join-Path $Stage 'fixture.ps1').Replace("'", "''")
     $stageLiteral = $Stage.Replace("'", "''")
     # Fixed owned source loader, like the maintained policy corpus. This does
     # not change any execution-policy setting for the new account or machine.
-    $entry = "`$s='$stageLiteral'; & ([ScriptBlock]::Create([IO.File]::ReadAllText(`$s+'\fixture.ps1'))) -Mode Child -ProfileCase '$ProfileCase' -Stage `$s"
+    $entry = "& ([ScriptBlock]::Create([IO.File]::ReadAllText('$scriptPath'))) -Mode Child -ProfileCase '$ProfileCase' -Stage '$stageLiteral'"
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($entry))
     if ($encoded.Length -ge 30000) { throw 'Fixture entry exceeds command-line bound' }
     $arguments = '-NoLogo -NoProfile -NonInteractive -EncodedCommand ' + $encoded
