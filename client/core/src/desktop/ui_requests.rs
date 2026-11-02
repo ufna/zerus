@@ -1,6 +1,7 @@
 //! Per-invocation native frontend evidence. A nonce or JSON role is not an
 //! authority: the service must also bind its kernel peer to this original child.
-//! Only the native confirmation handler prepares/registers these requests.
+//! Native policy handlers and the read-only activation consumer prepare/register
+//! these closed requests; policy changes still require their confirmation UI.
 use super::{Hello, Responder};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -21,6 +22,9 @@ pub const LIFETIME: Duration = Duration::from_secs(10);
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
+    ActivationWait {
+        request_id: String,
+    },
     AutomaticApprovals {
         request_id: String,
         enabled: bool,
@@ -51,19 +55,21 @@ impl Request {
     }
     pub fn id(&self) -> &str {
         match self {
-            Self::AutomaticApprovals { request_id, .. }
+            Self::ActivationWait { request_id }
+            | Self::AutomaticApprovals { request_id, .. }
             | Self::MaintenanceConfigure { request_id, .. } => request_id,
         }
     }
     pub fn operation(&self) -> &'static str {
         match self {
+            Self::ActivationWait { .. } => "activation_wait",
             Self::AutomaticApprovals { .. } => "automatic_approvals",
             Self::MaintenanceConfigure { .. } => "maintenance_configure",
         }
     }
     fn valid(&self) -> bool {
         match self {
-            Self::AutomaticApprovals { .. } => true,
+            Self::ActivationWait { .. } | Self::AutomaticApprovals { .. } => true,
             Self::MaintenanceConfigure {
                 update, recovery, ..
             } => crate::maintenance::Configuration {

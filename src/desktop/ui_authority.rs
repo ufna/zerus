@@ -1,4 +1,4 @@
-//! Approval policy requests are issued by an original native UI child, never
+//! Frontend requests are issued by an original native UI child, never
 //! by the generic CLI request lane or by a JSON role/confirmation flag.
 #[cfg(unix)]
 use super::owner;
@@ -243,6 +243,74 @@ impl Validated {
             serde_json::from_value(value.clone()).expect("synthetic native-policy fixture"),
             Freshness::Fixture,
         )
+    }
+}
+/// A read-only activation receiver bound to the original authenticated child.
+/// It cannot authorize policy mutations and cannot be decoded from JSON.
+pub(super) struct ActivationReceiver {
+    freshness: Freshness,
+    until: Instant,
+}
+impl Freshness {
+    // Read-only receiver checks retain the original evidence but use their own
+    // bounded deadline. This never alters the mutation permit's `until`.
+    fn activation_current(&self, until: Instant) -> bool {
+        if Instant::now() >= until {
+            return false;
+        }
+        match self {
+            Freshness::Native {
+                caller,
+                frontend,
+                #[cfg(windows)]
+                windows,
+                ..
+            } => {
+                if !caller.current() || !frontend.current() {
+                    return false;
+                }
+                #[cfg(windows)]
+                if windows
+                    .as_ref()
+                    .is_none_or(|proof| proof.check(until).is_err())
+                {
+                    return false;
+                }
+                Instant::now() < until
+            }
+            #[cfg(test)]
+            Freshness::Fixture => true,
+        }
+    }
+}
+impl ActivationReceiver {
+    pub fn current(&self) -> bool {
+        self.freshness
+            .activation_current(self.until.min(Instant::now() + WAIT))
+    }
+}
+impl Validated {
+    pub fn activation_wait(self) -> Result<(String, ActivationReceiver)> {
+        let Self(request, freshness) = self;
+        let original_until = match &freshness {
+            Freshness::Native { until, .. } => *until,
+            #[cfg(test)]
+            Freshness::Fixture => Instant::now() + WAIT,
+        };
+        ensure!(
+            freshness.activation_current(original_until),
+            "frontend permit expired"
+        );
+        let Request::ActivationWait { request_id } = request else {
+            anyhow::bail!("not an activation receiver")
+        };
+        Ok((
+            request_id,
+            ActivationReceiver {
+                freshness,
+                until: Instant::now() + zerus_client_core::desktop::activation::PEER_WAIT,
+            },
+        ))
     }
 }
 impl Authorized {
@@ -1014,5 +1082,57 @@ mod tests {
         assert!(scope.selected_frontend(&installed));
         assert!(!scope.selected_frontend(&other));
         assert!(!scope.selected_frontend(&temp.path().join("missing/hgs-tray")));
+    }
+}
+
+#[cfg(test)]
+mod activation_freshness_tests {
+    use super::*;
+    fn request() -> Request {
+        Request::ActivationWait {
+            request_id: uuid::Uuid::new_v4().to_string(),
+        }
+    }
+    #[test]
+    fn an_expired_receiver_stays_expired() {
+        let receiver = ActivationReceiver {
+            freshness: Freshness::Fixture,
+            until: Instant::now() - WAIT,
+        };
+        assert!(!receiver.current());
+    }
+    #[cfg(not(windows))]
+    #[test]
+    fn receiver_admission_does_not_extend_the_original_mutation_expiry() {
+        let caller = Process::read(std::process::id()).unwrap();
+        let frontend = Process::read(std::process::id()).unwrap();
+        assert!(caller.current() && frontend.current());
+        let freshness = Freshness::Native {
+            caller,
+            frontend,
+            until: Instant::now() - WAIT,
+        };
+        assert!(Validated(request(), freshness).activation_wait().is_err());
+    }
+    #[cfg(windows)]
+    #[test]
+    fn live_processes_without_original_windows_evidence_cannot_receive_clicks() {
+        let live = || {
+            let caller = Process::read(std::process::id()).unwrap();
+            let frontend = Process::read(std::process::id()).unwrap();
+            assert!(caller.current() && frontend.current());
+            Freshness::Native {
+                caller,
+                frontend,
+                until: Instant::now() + WAIT,
+                windows: None,
+            }
+        };
+        assert!(Validated(request(), live()).activation_wait().is_err());
+        let receiver = ActivationReceiver {
+            freshness: live(),
+            until: Instant::now() + zerus_client_core::desktop::activation::PEER_WAIT,
+        };
+        assert!(!receiver.current());
     }
 }
