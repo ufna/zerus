@@ -1,0 +1,401 @@
+#!/usr/bin/env python3
+"""Register this user's configuration-scoped hgs desktop service on Linux."""
+import argparse
+import configparser
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import selectors
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+
+UNIT = "hgs-desktop.service"
+ABI = "desktop-lifecycle-v1"
+LIMIT = 65536
+GRAPHICAL = "graphical-session.target"
+
+
+class Refusal(Exception):
+    pass
+
+
+class PendingRestart(Refusal):
+    """Registration is durable; restarting needs the current graphical login."""
+
+
+def require(condition, message):
+    if not condition:
+        raise Refusal(message)
+
+
+def command(argv, env, timeout=10):
+    """Bound both output streams and time; never signal a process group."""
+    child = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, close_fds=True)
+    streams = selectors.DefaultSelector()
+    result = {"out": bytearray(), "err": bytearray()}
+    deadline = time.monotonic() + timeout
+    try:
+        streams.register(child.stdout, selectors.EVENT_READ, "out")
+        streams.register(child.stderr, selectors.EVENT_READ, "err")
+        while streams.get_map():
+            remaining = deadline - time.monotonic()
+            require(remaining > 0, f"command timed out: {argv[0]}")
+            for key, _ in streams.select(remaining):
+                chunk = os.read(key.fd, 4096)
+                if not chunk:
+                    streams.unregister(key.fileobj)
+                else:
+                    result[key.data].extend(chunk)
+                    require(sum(map(len, result.values())) <= LIMIT, "command output exceeded 64 KiB")
+        code = child.wait(timeout=max(0.01, deadline - time.monotonic()))
+        out, error = (result[name].decode("utf-8", errors="replace") for name in ("out", "err"))
+        require(code == 0, error.strip() or f"command failed ({code}): {argv[0]}")
+        return out
+    except subprocess.TimeoutExpired:
+        raise Refusal(f"command timed out: {argv[0]}") from None
+    finally:
+        streams.close()
+        if child.poll() is None:
+            child.kill()  # Only the original CLI/systemctl child created above.
+            child.wait(timeout=2)
+        child.stdout.close()
+        child.stderr.close()
+
+
+def read_file(path):
+    """Keep custom files and symlinks; all installer records are single-link."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd, "rb") as source:
+        info = os.fstat(source.fileno())
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid() and info.st_nlink == 1,
+                f"not a private user-owned regular file: {path}")
+        require(not info.st_mode & 0o022, f"file is writable by another user: {path}")
+        raw = source.read(LIMIT + 1)
+        require(len(raw) <= LIMIT, f"file exceeds 64 KiB: {path}")
+        return raw
+
+
+def write_file(path, raw):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".hgs-desktop-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            output.write(raw)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def digest(raw):
+    return hashlib.sha256(raw).hexdigest()
+
+
+def binary_digest(path):
+    with open(path, "rb") as source:
+        before = os.fstat(source.fileno())
+        require(stat.S_ISREG(before.st_mode) and before.st_size <= 512 * 1024 * 1024,
+                "selected CLI is not a bounded regular executable")
+        checksum = hashlib.sha256()
+        remaining = before.st_size
+        while remaining:
+            chunk = source.read(min(1024 * 1024, remaining))
+            require(chunk, "selected CLI changed during inspection")
+            checksum.update(chunk)
+            remaining -= len(chunk)
+        require(not source.read(1), "selected CLI grew during inspection")
+        value = checksum.hexdigest()
+        after = os.fstat(source.fileno())
+    current = os.stat(path)
+    identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
+    require(identity(before) == identity(after) == identity(current), "selected CLI changed during inspection")
+    return value
+
+
+def unit_quote(value):
+    return '"' + value.replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%').replace('$', '$$') + '"'
+
+
+def destination_for(env):
+    root = Path(env.get("XDG_CONFIG_HOME") or str(Path(env["HOME"]) / ".config"))
+    require(root.is_absolute(), "XDG_CONFIG_HOME must be absolute")
+    return root / "systemd/user" / UNIT
+
+
+def registration(hgs, env, run=command):
+    require("hgs desktop registration --json" in run([hgs, "--help"], env),
+            "selected hgs does not support desktop registration; update the CLI first")
+    try:
+        value = json.loads(run([hgs, "desktop", "registration", "--json"], env))
+        probe = value["readiness"]
+        scope = probe["environment"]
+        args = [hgs, "desktop", "serve", "--config-dir", scope["HGS_CONFIG_DIR"],
+                "--state-dir", scope["HGS_STATE_DIR"]]
+        configuration = value["configuration"]
+        require(value["schema"] == 1 and value["label"] == UNIT and len(configuration) == 64
+                and all(c in "0123456789abcdef" for c in configuration), "unsupported registration identity")
+        require(value["argv"] == args and probe["argv"] == [hgs, "desktop", "status", "--json"],
+                "registration must preserve the selected local CLI and exact command")
+        require(set(scope) == {"HGS_CONFIG_DIR", "HGS_STATE_DIR"}
+                and all(isinstance(p, str) and Path(p).is_absolute() and not any(ord(c) < 32 for c in p)
+                        for p in scope.values()), "registration configuration paths are invalid")
+        require(probe["abi"] == ABI and probe["expected_configuration"] == configuration
+                and probe["configuration_field"] == "lifecycle.configuration"
+                and probe["ready_field"] == "lifecycle.ipc_ready"
+                and probe["epoch_field"] == "lifecycle.epoch"
+                and probe["generation_field"] == "lifecycle.generation", "unsupported desktop readiness contract")
+        destination = destination_for(env)
+        require(Path(value["destination"]) == destination, "registration names another user's unit destination")
+        definition = value["definition"]
+        require(isinstance(definition, str) and len(definition.encode()) <= LIMIT
+                and definition.startswith(f"# Zerus desktop registration v1; configuration={configuration}\n"),
+                "registration definition has no matching ownership marker")
+        parsed = configparser.ConfigParser(interpolation=None)
+        parsed.read_string(definition)
+        require(parsed["Service"]["ExecStart"] == " ".join(map(unit_quote, args))
+                and parsed["Service"]["KillMode"] == "process"
+                and parsed["Service"]["Restart"] == "on-failure"
+                and parsed["Service"]["RestartPreventExitStatus"] == "78"
+                and parsed["Unit"]["After"] == GRAPHICAL and parsed["Unit"]["PartOf"] == GRAPHICAL
+                and parsed["Install"]["WantedBy"] == GRAPHICAL,
+                "desktop unit must retain its command, graphical ordering and process-only stop policy")
+        require(value["session"]["kind"] == "graphical_user"
+                and value["session"]["import_from"] == "current_login_session", "not a graphical user registration")
+        return value
+    except (KeyError, TypeError, ValueError, configparser.Error) as error:
+        raise Refusal(f"invalid desktop registration: {error}") from None
+
+
+def graphics(env):
+    """No guessed display, autolaunch bus, or Xwayland idle substitution."""
+    kind = env.get("XDG_SESSION_TYPE")
+    if kind not in ("wayland", "x11"):
+        return None
+    names = ["XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "XDG_SESSION_TYPE"]
+    names += ["WAYLAND_DISPLAY"] if kind == "wayland" else ["DISPLAY"]
+    require(all(env.get(name) for name in names), "graphical session environment is incomplete; run from the current login session")
+    values = {name: env[name] for name in names}
+    if kind == "x11" and env.get("XAUTHORITY"):
+        values["XAUTHORITY"] = env["XAUTHORITY"]
+    if env.get("XDG_SESSION_ID"):
+        values["XDG_SESSION_ID"] = env["XDG_SESSION_ID"]
+    require(all(len(value) <= 4096 and not any(ord(c) < 32 for c in value) for value in values.values()),
+            "invalid graphical session environment")
+    runtime = Path(values["XDG_RUNTIME_DIR"])
+    info = runtime.stat()
+    require(runtime.is_absolute() and stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid()
+            and stat.S_IMODE(info.st_mode) == 0o700, "XDG_RUNTIME_DIR must be this user's private runtime directory")
+    require(values["DBUS_SESSION_BUS_ADDRESS"].startswith("unix:"), "use the current local session D-Bus address")
+    return values
+
+
+class Installer:
+    def __init__(self, hgs, env=None, run=command):
+        self.env = dict(os.environ if env is None else env)
+        self.run = run
+        self.hgs = os.path.abspath(hgs)
+        require(os.access(self.hgs, os.X_OK), "selected hgs is not executable")
+        self.registration = registration(self.hgs, self.env, self.run)
+        self.destination = Path(self.registration["destination"])
+        self.record_path = self.destination.with_name(".hgs-desktop.zerus-registration.json")
+        self.definition = self.registration["definition"].encode()
+        self.configuration = self.registration["configuration"]
+        self.binary = binary_digest(self.hgs)
+
+    def manager(self, *args):
+        return self.run(["systemctl", "--user", *args], self.env)
+
+    def state(self):
+        raw = self.manager("show", UNIT, "--property=LoadState,ActiveState,MainPID,FragmentPath,DropInPaths", "--no-pager")
+        value = dict(line.split("=", 1) for line in raw.splitlines() if "=" in line)
+        require(not value.get("DropInPaths"), "custom desktop service drop-ins kept; review them before registration")
+        require(value.get("LoadState") in ("loaded", "not-found")
+                and value.get("ActiveState") in ("active", "inactive", "failed"),
+                "desktop service manager state is transitional or unavailable; kept")
+        fragment = value.get("FragmentPath", "")
+        require(not fragment or fragment == str(self.destination), "a custom desktop service definition is already selected; kept")
+        return value
+
+    def ownership(self):
+        raw, previous = read_file(self.destination), read_file(self.record_path)
+        if previous is not None:
+            try:
+                record = json.loads(previous)
+                require(type(record["schema"]) is int and record["schema"] == 1
+                        and record["configuration"] == self.configuration,
+                        "existing desktop registration belongs to another configuration; kept")
+                require(type(record["pending_restart"]) is bool
+                        and (record["session"] is None or isinstance(record["session"], dict))
+                        and all(isinstance(record[key], str) and len(record[key]) == 64
+                                and all(c in "0123456789abcdef" for c in record[key])
+                                for key in ("binary_sha256", "definition_sha256")),
+                        "invalid desktop registration record; kept")
+                # A crash after replacing our unit but before saving its new
+                # digest can leave the old record. Recover only this selected
+                # CLI's exact emitted definition under an otherwise valid owned
+                # record; arbitrary edits and other configurations still refuse.
+                require(raw is not None and (digest(raw) == record["definition_sha256"] or raw == self.definition),
+                        "custom or missing desktop service definition kept")
+                return record
+            except (KeyError, TypeError, ValueError):
+                raise Refusal("invalid desktop registration record; kept") from None
+        require(raw is None or raw == self.definition, "custom desktop service definition kept")
+        return None
+
+    def probe(self, timeout=10):
+        probe = self.registration["readiness"]
+        value = json.loads(self.run(probe["argv"], dict(self.env, **probe["environment"]), timeout=timeout))
+        require(isinstance(value, dict), "invalid desktop readiness object")
+        lifecycle = value.get("lifecycle", {})
+        require(isinstance(lifecycle, dict) and lifecycle.get("abi") == ABI
+                and lifecycle.get("configuration") == self.configuration,
+                "desktop readiness ABI/configuration mismatch")
+        require(type(lifecycle.get("ipc_ready")) is bool, "desktop readiness is not a boolean")
+        if lifecycle["ipc_ready"]:
+            require(lifecycle.get("phase") == "serving"
+                    and type(lifecycle.get("pid")) is int and lifecycle["pid"] > 0
+                    and type(lifecycle.get("generation")) is int and 0 < lifecycle["generation"] < 2 ** 64
+                    and isinstance(lifecycle.get("epoch"), str) and 0 < len(lifecycle["epoch"]) <= 128
+                    and not any(ord(c) < 32 for c in lifecycle["epoch"]),
+                    "desktop readiness has no valid live lifecycle identity")
+        return lifecycle
+
+    def save(self, record):
+        write_file(self.record_path, (json.dumps(record, indent=2) + "\n").encode())
+
+    def install(self, *, check=False, no_start=False, session=False, refresh=False):
+        previous = self.ownership()
+        if refresh and previous is None:
+            return "No managed desktop registration; CLI-only installation kept without a new service."
+        state = self.state()
+        if check:
+            return "Desktop service registration is valid."
+        self.destination.parent.mkdir(parents=True, exist_ok=True)
+        parent = self.destination.parent.stat()
+        require(parent.st_uid == os.geteuid() and not parent.st_mode & 0o022,
+                "desktop unit directory is writable by another user; kept")
+        lock = self.destination.with_name(".hgs-desktop.registration.lock")
+        fd = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        try:
+            info = os.fstat(fd)
+            require(info.st_uid == os.geteuid() and info.st_nlink == 1 and stat.S_ISREG(info.st_mode)
+                    and stat.S_IMODE(info.st_mode) == 0o600,
+                    "desktop installer lock is not a private owned file")
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            previous = self.ownership()
+            state = self.state()
+            if refresh:
+                require(previous is not None, "managed registration disappeared; kept")
+                if (previous["binary_sha256"] == self.binary
+                        and previous["definition_sha256"] == digest(self.definition)
+                        and not previous["pending_restart"]):
+                    return "Desktop backend unchanged; existing service kept."
+            active = state.get("ActiveState") == "active"
+            if active:
+                require(read_file(self.destination) is not None,
+                        "active desktop service has no owned definition; kept for inspection")
+                current = self.probe()
+                require(current.get("ipc_ready") is True, "active desktop service is unavailable; kept for inspection")
+                require(str(current.get("pid")) == state.get("MainPID"), "desktop service PID/readiness mismatch; kept")
+            context = None if no_start or (refresh and not active) else graphics(self.env)
+            changed = previous is None or previous.get("binary_sha256") != self.binary or previous.get("definition_sha256") != digest(self.definition)
+            record = {"schema": 1, "configuration": self.configuration, "definition_sha256": digest(self.definition),
+                      "binary_sha256": self.binary, "pending_restart": bool(active and (changed or previous.get("pending_restart", False))),
+                      "session": previous.get("session") if previous else None}
+            if session:
+                require(previous is not None, "register the desktop service before starting its session")
+            if read_file(self.destination) != self.definition:
+                write_file(self.destination, self.definition)
+            self.save(record)
+            self.manager("daemon-reload")
+            self.state()  # Refuse any newly loaded custom fragment or drop-in.
+            if not refresh:
+                self.manager("enable", UNIT)
+            elif not active:
+                return "Managed desktop registration refreshed; inactive service kept stopped."
+            if context is None:
+                if active and record["pending_restart"]:
+                    raise PendingRestart("backend update is pending; run registration from the current graphical session")
+                return "Desktop service registered for the next graphical login; IPC readiness was not established."
+            needs_restart = active and (record["pending_restart"] or record["session"] != context)
+            if context["XDG_SESSION_TYPE"] == "x11":
+                self.manager("unset-environment", "WAYLAND_DISPLAY")
+            # Import only these explicit session keys; never GUI-specific loader
+            # paths or arbitrary HGS_* variables into the shared user manager.
+            self.manager("import-environment", *sorted(context))
+            if not active or needs_restart:
+                record["pending_restart"] = True
+                self.save(record)
+                self.manager("restart" if active else "start", UNIT)
+            deadline = time.monotonic() + 10
+            while True:
+                remaining = deadline - time.monotonic()
+                require(remaining > 0, "desktop IPC is not ready; inspect hgs-desktop.service")
+                lifecycle = self.probe(timeout=remaining)
+                if lifecycle["ipc_ready"]:
+                    break
+                time.sleep(min(0.2, max(0, deadline - time.monotonic())))
+            served = self.state()
+            require(served.get("ActiveState") == "active" and served.get("MainPID") == str(lifecycle.get("pid")),
+                    "readiness does not belong to the registered desktop service")
+            require(binary_digest(self.hgs) == self.binary, "CLI changed during service activation; inspect before retrying")
+            record.update(session=context, pending_restart=False)
+            self.save(record)
+            return "Desktop service IPC ready. Background workers have their separate lifecycle status."
+        finally:
+            os.close(fd)  # No explicit unlock; no descriptor is exported to a child.
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=("install", "session", "refresh"), nargs="?", default="install")
+    parser.add_argument("--hgs", default=shutil.which("hgs"))
+    parser.add_argument("--config-dir")
+    parser.add_argument("--state-dir")
+    parser.add_argument("--check", action="store_true", help="validate ownership/registration without changing anything")
+    parser.add_argument("--no-start", action="store_true", help="register for the next graphical login without starting/restarting")
+    args = parser.parse_args()
+    try:
+        require(sys.platform.startswith("linux") and os.geteuid() != 0, "run as the Linux desktop user, without sudo")
+        require(args.hgs, "selected hgs not found; pass --hgs PATH")
+        env = dict(os.environ)
+        for name, value in [("HGS_CONFIG_DIR", args.config_dir), ("HGS_STATE_DIR", args.state_dir)]:
+            if value is not None:
+                require(Path(value).is_absolute(), "desktop configuration paths must be absolute")
+                env[name] = value
+        # A deliberate CLI upgrade must not discover/adopt a service merely
+        # because the new CLI can render one. No manager or CLI probe if absent.
+        record = destination_for(env).with_name(".hgs-desktop.zerus-registration.json")
+        if args.action == "refresh" and read_file(record) is None:
+            print("No managed desktop registration; CLI-only installation kept without a new service.")
+            return 0
+        print(Installer(args.hgs, env).install(check=args.check, no_start=args.no_start,
+                                             session=args.action == "session", refresh=args.action == "refresh"))
+        return 0
+    except PendingRestart as error:
+        print(f"Desktop service refresh pending: {error}", file=sys.stderr)
+        return 3
+    except (Refusal, OSError, ValueError, subprocess.SubprocessError) as error:
+        print(f"Desktop service registration refused: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

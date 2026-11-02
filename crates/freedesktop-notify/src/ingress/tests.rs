@@ -1,3 +1,4 @@
+use super::test_bus as bus;
 use super::*;
 use std::future::Future;
 use std::io::{Read, Write};
@@ -361,7 +362,7 @@ fn actual_sdk_external_wrong_guid_refuses_before_begin_and_hello() {
 
 #[test]
 fn actual_private_bus_preserves_external_identity_and_expected_guid() {
-    let bus = crate::platform::linux_test_bus::Bus::new();
+    let bus = bus::Bus::new();
     async_io::block_on(async {
         let (socket, gate) = connect(bus.address.clone()).await.unwrap();
         assert_eq!(
@@ -466,7 +467,7 @@ fn real_bus_saturates_one_shared16_queue_with_boundary_frames_and_drains_both_re
     use std::pin::{pin, Pin};
     use std::time::Instant;
     use zbus::export::futures_core::Stream;
-    let bus = crate::platform::linux_test_bus::Bus::new();
+    let bus = bus::Bus::new();
     let sender = bus.connect();
     let (socket, ingress) = async_io::block_on(connect(bus.address.clone())).unwrap();
     let connection = async_io::block_on(

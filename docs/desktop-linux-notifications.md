@@ -684,3 +684,27 @@ This synchronous dormant slice does not attach filesystem custody to startup B
 or qualify kernel completion, physical heap, power-loss durability, current G1
 source/writer scope, negative permission consumption, native effects or a role
 handoff. The ordinary schema1 writer, codecs and pure transitions remain unchanged.
+
+### Desktop-service adapter
+
+The service component lives in `src/desktop/notifications/linux/`. Its caller
+supplies the original Outbox Endpoint, Session and explicit Unix bus address.
+Startup runs off the actor; acknowledged read-only restore pages and
+`finish_restoration` precede consumption of any new Endpoint work. Restoration
+never sends Notify or CloseNotification. Each operation and callback checks the
+current bus ID and pinned unique daemon owner. A changed namespace stays
+unavailable; it never redirects an old native ID to a replacement daemon.
+
+One original connection and executor carry the existing Freedesktop packet,
+plain-text escaping, bounded routing and ephemeral Wayland activation context.
+Shutdown stops new work, drains exact Closed callbacks across acknowledged match
+removal, destroys the raw receiver, closes that same connection and joins the
+original worker. Late clicks do not open UI, and repeated stop requests do not
+renew the cleanup deadline. Native errors, zero IDs and late replies remain
+Unknown without replay. The actor separately drains its operation/callback queue.
+
+The byte gate is shared privately from
+`crates/freedesktop-notify/src/ingress.rs`; neither caller gains a public lifecycle
+flag setter. The earlier dormant UI reservation table applies to that UI graph,
+not to the service's routing maps or SDK heap. This component does not attach the
+production factory, change the service switch or qualify a whole-profile heap.

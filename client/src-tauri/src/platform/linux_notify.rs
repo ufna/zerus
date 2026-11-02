@@ -10,12 +10,12 @@ use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
-use zbus::blocking::{Connection, MessageIterator, Proxy};
-use zbus::zvariant::Value;
+use zbus::blocking::{Connection, MessageIterator};
 use zerus_client_core::attention::Notice;
 use zerus_client_core::linux_notify::{
     decode_saved, escape_body, Namespace, Saved, FILE_LIMIT, LIMIT,
 };
+use zerus_freedesktop_notify::{decode_signal, Signal, PATH, SERVICE};
 
 // Dormant resource prerequisite; the installed schema1 constructor is unchanged.
 pub(crate) mod startup;
@@ -24,8 +24,6 @@ pub(crate) mod startup;
 #[allow(dead_code)]
 mod storage;
 
-const SERVICE: &str = "org.freedesktop.Notifications";
-const PATH: &str = "/org/freedesktop/Notifications";
 pub const FILE: &str = "linux-notifications.json";
 type Sink = Arc<dyn Fn(Event) + Send + Sync>;
 type QtSeed = Box<dyn FnOnce() -> Result<Option<Saved>, String> + Send>;
@@ -314,8 +312,8 @@ fn close(connection: &Connection, namespace: &Namespace, id: u32) {
     {
         return;
     }
-    if let Ok(proxy) = Proxy::new(connection, namespace.owner.as_str(), PATH, SERVICE) {
-        let _ = proxy.call::<_, _, ()>("CloseNotification", &(id,));
+    if let Ok(owner) = namespace.owner.as_str().try_into() {
+        let _ = zerus_freedesktop_notify::close_notification(connection, owner, id);
     }
 }
 
@@ -526,24 +524,11 @@ fn post(shared: &Shared, connection: &Connection, nonce: u64, notice: Notice) {
         }
     }
     let result = (|| {
-        let proxy = Proxy::new(connection, current.owner.as_str(), PATH, SERVICE)?;
-        let hints = BTreeMap::from([
-            ("desktop-entry", Value::from("hgs-tray")),
-            ("urgency", Value::from(1_u8)),
-            ("category", Value::from("im.received")),
-        ]);
-        proxy.call::<_, _, u32>(
-            "Notify",
-            &(
-                "Zerus",
-                0_u32,
-                "hgs-zerus-swarm-symbolic",
-                notice.title.as_str(),
-                escape_body(&notice.body),
-                vec!["default", "Open session", "open-session", "Open session"],
-                hints,
-                -1_i32,
-            ),
+        zerus_freedesktop_notify::notify(
+            connection,
+            current.owner.as_str().try_into()?,
+            notice.title.as_str(),
+            &escape_body(&notice.body),
         )
     })();
     let mut state = lock(&shared.state);
@@ -617,37 +602,40 @@ fn signal(shared: &Shared, connection: &Connection, message: &zbus::Message) {
         return;
     }
     let mut event = None;
-    match header.member().map(|member| member.as_str()) {
-        Some("ActivationToken") => {
-            if let Ok((id, token)) = message.body().deserialize::<(u32, String)>() {
-                if state.saved.tokens.contains_key(&id) {
-                    state.activation.insert(id, token);
+    let Some(signal) = state
+        .saved
+        .owner
+        .as_str()
+        .try_into()
+        .ok()
+        .and_then(|owner| decode_signal(message, &owner))
+    else {
+        return;
+    };
+    match signal {
+        Signal::ActivationToken { id, token } => {
+            if state.saved.tokens.contains_key(&id) {
+                state.activation.insert(id, token);
+            }
+        }
+        Signal::ActionInvoked { id, action } => {
+            if action == "default" || action == "open-session" {
+                if let Some(token) = state.saved.tokens.get(&id).cloned() {
+                    let activation = state.activation.remove(&id).unwrap_or_default();
+                    event = Some(Event::Activated { token, activation });
                 }
             }
         }
-        Some("ActionInvoked") => {
-            if let Ok((id, action)) = message.body().deserialize::<(u32, String)>() {
-                if action == "default" || action == "open-session" {
-                    if let Some(token) = state.saved.tokens.get(&id).cloned() {
-                        let activation = state.activation.remove(&id).unwrap_or_default();
-                        event = Some(Event::Activated { token, activation });
-                    }
+        Signal::NotificationClosed { id, reason } => {
+            // Plasma's expired banner remains clickable in notification history.
+            if reason != 1 {
+                state.saved.tokens.remove(&id);
+                state.activation.remove(&id);
+                if let Err(error) = persist(&shared.path, &state.saved) {
+                    event = Some(Event::Uncertain(error));
                 }
             }
         }
-        Some("NotificationClosed") => {
-            if let Ok((id, reason)) = message.body().deserialize::<(u32, u32)>() {
-                // Plasma's expired banner remains clickable in notification history.
-                if reason != 1 {
-                    state.saved.tokens.remove(&id);
-                    state.activation.remove(&id);
-                    if let Err(error) = persist(&shared.path, &state.saved) {
-                        event = Some(Event::Uncertain(error));
-                    }
-                }
-            }
-        }
-        _ => {}
     }
     drop(state);
     if let Some(event) = event {

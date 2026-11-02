@@ -13,6 +13,9 @@ export type ComputerId = string;
  * are null; times are seconds since the Unix epoch.
  */
 export interface ViewRow {
+  /** This device's retained pre-cutover queue, not host acknowledgement. */
+  local_read_reply?: boolean;
+  local_read_attention?: boolean;
   name: string;
   launch_id?: string | null;
   title?: string;
@@ -152,7 +155,24 @@ export type EditOutcome = (
   | { outcome: "kept"; detail: string }
   | { outcome: "refused"; detail: string }) & { project?: string; folder?: string };
 
+/** Desktop service presentation has separate provenance from device-local marks. */
+export interface DesktopService {
+  connected: boolean;
+  epoch: string | null;
+  generation: number | null;
+  background: Record<string, { ready: boolean; code: string }>;
+  attention_counts: null | {
+    epoch: string; scope: "shared_host_state"; display_only: true; authority: false; local_marks_included: false;
+    aggregate: { complete: boolean; total: number | null; attention: number | null; known_total: number; known_attention: number };
+    computers: { computer: string; complete: boolean; online: boolean; total: number | null; attention: number | null }[];
+  };
+  automatic_approvals: boolean | null;
+  details_available: boolean;
+  code: string;
+}
+
 export interface Batch {
+  desktop_service?: DesktopService;
   upserts: RowOut[];
   removes: KeyOut[];
   replaces: ReplaceOut[];
@@ -228,7 +248,7 @@ export const emptyBatch = (): Batch => ({ upserts: [], removes: [], replaces: []
 /** A batch with nothing to apply. A composer view or a draft key set is content: Rust sends each once. */
 export const isEmptyBatch = (b: Batch) =>
   !b.upserts.length && !b.removes.length && !b.replaces.length && !b.computers.length && !b.machines?.length && !b.activity.length
-  && !b.tasks?.length && !b.groups?.length && !b.grouping && !b.processes_view && !b.composer && !b.draft_keys && !b.composer_events?.length;
+  && !b.desktop_service && !b.tasks?.length && !b.groups?.length && !b.grouping && !b.processes_view && !b.composer && !b.draft_keys && !b.composer_events?.length;
 
 /** One Activity event as `inspect` returns it; unknown fields are kept. */
 export interface ActivityEvent {
@@ -720,8 +740,8 @@ export type ColdAction = "send" | "compact" | "clear";
 export interface ColdChoice { action: ColdAction; label: string; enabled: boolean; tooltip: string }
 export interface ColdPrompt { title: string; text: string; informative: string; choices: ColdChoice[] }
 export type StartChoice = "resume" | "resume_compact" | "fresh";
-export interface StartOption { choice: StartChoice; label: string; enabled: boolean; tooltip: string }
-export interface StartQuestion { title: string; text: string; informative: string; options: StartOption[] }
+export interface StartOption { choice: StartChoice; label: Text; enabled: boolean; tooltip: Text | null }
+export interface StartQuestion { title: Text; text: Text; informative: Text; options: StartOption[] }
 export type SendReply =
   | { kind: "sending" } | { kind: "busy" } | { kind: "blocked"; reason: string } | { kind: "notice"; text: string; error: boolean }
   | { kind: "cold"; token: number; prompt: ColdPrompt } | { kind: "clear_context"; token: number } | { kind: "start"; token: number; question: StartQuestion };

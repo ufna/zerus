@@ -10,11 +10,13 @@ const MAX_BODY_CHARS: usize = 16_000;
 const NARROW: &str =
     "Kimi's approval does not show this whole request; enlarge Terminal or answer there";
 const INVALID: &str = "Zerus cannot verify this CreateGoal request. Answer it in Terminal.";
-const AUTO_DESCRIPTION: &str = "Best if you want Kimi Code to keep working while you are away. Tools are approved automatically, and questions are skipped.";
+// Kimi Code 2.4.1 goalStartOptions (goal-start-permission-prompt.ts), shown
+// verbatim by its CreateGoal ApprovalPanel.
+const AUTO_DESCRIPTION: &str = "Best if you want Kimi Code to keep working while you are away. Tools are approved automatically and questions are skipped; only plans in Plan mode wait for your review.";
 const YOLO_SWITCH_DESCRIPTION: &str =
-    "Tools and plan changes are approved automatically. Kimi Code may still ask you questions.";
+    "Tools are approved automatically. Kimi Code may still ask you questions.";
 const YOLO_KEEP_DESCRIPTION: &str =
-    "Tools and plan changes stay approved automatically. Kimi Code may still ask you questions.";
+    "Tools stay approved automatically. Kimi Code may still ask you questions.";
 const MANUAL_DESCRIPTION: &str = "Keep approvals on. Kimi Code will ask before risky actions, so the goal may stop and wait for you.";
 const CANCEL_DESCRIPTION: &str = "Return to the input box with your goal command.";
 
@@ -738,6 +740,32 @@ mod tests {
                 read(&clipped_screen, &event["request"]).unwrap_err(),
                 NARROW
             );
+        }
+    }
+
+    #[test]
+    fn kimi_2_4_1_goal_panel_matches_exactly() {
+        // Kimi Code 2.4.1's own 78x24 approval panel, captured by the native CI fixture.
+        const SCREEN: &str = include_str!("../../tests/fixtures/kimi-goal-2.4.1-manual-78x24.txt");
+        let mut event = request("manual");
+        event["request"]["display"]["objective"] =
+            json!("Завершить проверку отдельного intrinsic слоя и новой публикации без production");
+        event["request"]["display"]["completionCriterion"] =
+            json!("Все 13 trophy/156 состояний проверены, включая g2★0, без двойного учёта");
+        assert!(complete(SCREEN) && !clipped(SCREEN));
+        assert_eq!(read(SCREEN, &event["request"]), Ok(()));
+        for older in [
+            SCREEN.replace(
+                "automatically and questions",
+                "automatically, and questions",
+            ),
+            SCREEN.replace(
+                "  Tools are approved",
+                "  Tools and plan changes are approved",
+            ),
+            SCREEN.replace("goal command.", "goal command"),
+        ] {
+            assert!(read(&older, &event["request"]).is_err(), "{older}");
         }
     }
 

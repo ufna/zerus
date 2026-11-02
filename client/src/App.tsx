@@ -1,3 +1,5 @@
+import { DesktopServiceStatus } from "./ui/components/DesktopServiceStatus";
+import { desktopService } from "./store/desktopService";
 import { CleanupChip } from "./ui/screens/CleanupChip";
 import { worktreeReviewDialog } from "./store/worktreeCleanup";
 import { cleanupDialog } from "./store/terminationCleanup";
@@ -152,7 +154,8 @@ export function App(props: { mode: () => BridgeMode | "starting" }) {
   return (
     <div class="app" classList={{ "rail-labeled": skin().layout.rail === "labeled" }}>
       <Rail />
-      <main class="page">
+      <main class="page" classList={{ "with-service-status": desktopService.enabled() }}>
+        <DesktopServiceStatus />
         <Switch>
           <Match when={page() === "sessions"}>
             <div class="sessions-page" classList={{ "layout-right": skin().layout["sessions-pane"] === "right" }}>

@@ -93,9 +93,23 @@ fn record(store: &Store, id: &str) -> Result<Option<Record>> {
     Ok(store.db.query_row("SELECT substr(fingerprint,1,65),substr(reason,1,33),substr(writer_epoch,1,37),substr(state,1,16),substr(result,1,4097) FROM desktop_commands WHERE request_id=?1",[id],|r|Ok(Record {fingerprint:r.get(0)?,reason:r.get(1)?,writer_epoch:r.get(2)?,state:r.get(3)?,result:r.get(4)?})).optional()?)
 }
 
+/// A requested background mode is not a new handoff. Every retained revoke,
+/// including an interrupted one, blocks restart. Historical handoff state also
+/// requires explicit reconciliation; a login must not reinterpret it as consent.
+pub(super) fn background_permitted(location: &Location, store: &Store) -> Result<bool> {
+    let lock = location.handoff_lock()?;
+    let marker = handoff::marker(location, &lock)?;
+    let revoked: bool = store.db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM desktop_commands LIMIT 1)",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(!revoked && marker.is_none())
+}
+
 /// The drain callback runs only after policy revocation commits. Current kernel
-/// callers have no effect workers. Any future dispatcher must cancel its lease
-/// and join/settle owned workers here before marker/checkpoint success is possible.
+/// callers drain their owned runtime here. Effect dispatchers must also cancel
+/// their leases and settle owned workers before marker/checkpoint success.
 fn execute(
     location: &Location,
     store: &mut Store,
@@ -103,6 +117,20 @@ fn execute(
     held: Option<&HandoffLock>,
     drain: impl FnOnce() -> Result<()>,
 ) -> Result<Value> {
+    execute_scoped(location, store, command, held, None, |_| drain())
+}
+fn execute_scoped(
+    location: &Location,
+    store: &mut Store,
+    command: &Command,
+    held: Option<&HandoffLock>,
+    runtime_epoch: Option<&str>,
+    drain: impl FnOnce(&mut Store) -> Result<()>,
+) -> Result<Value> {
+    ensure!(
+        runtime_epoch.is_none_or(canonical_id),
+        "invalid runtime epoch"
+    );
     command.validate()?;
     let acquired = if held.is_none() {
         Some(step(location.handoff_lock(), "handoff_unavailable")?)
@@ -112,7 +140,9 @@ fn execute(
     let lock = held.or(acquired.as_ref()).context("missing handoff lock")?;
     lock.verify(location)?;
     let marker = step(handoff::marker(location, lock), "unsupported_handoff")?;
-    let current_epoch = marker.as_ref().map(|m| m.writer_epoch.clone());
+    let current_epoch = runtime_epoch
+        .map(str::to_owned)
+        .or_else(|| marker.as_ref().map(|m| m.writer_epoch.clone()));
     let fingerprint = command.fingerprint(location);
     let prior = step(record(store, &command.request_id), "audit_unavailable")?;
     let record = if let Some(record) = prior {
@@ -155,7 +185,7 @@ fn execute(
         return receipt(location, command, &record);
     }
     ensure!(record.state == "prepared", "invalid revoke state");
-    step(drain(), "drain_not_settled")?;
+    step(drain(store), "drain_not_settled")?;
     ensure!(
         zerus_desktop_ledger::operations::totals(&store.db)?.undrained == 0,
         Declined("operation_resources_not_drained")
@@ -227,6 +257,18 @@ fn receipt(location: &Location, command: &Command, record: &Record) -> Result<Va
 /// An indexed, read-only lookup. A pending reservation remains pending until
 /// the exact command is explicitly reconciled; a query never drains or writes.
 fn query(location: &Location, store: &Store, id: &str) -> Result<Value> {
+    query_scoped(location, store, id, None)
+}
+fn query_scoped(
+    location: &Location,
+    store: &Store,
+    id: &str,
+    runtime_epoch: Option<&str>,
+) -> Result<Value> {
+    ensure!(
+        runtime_epoch.is_none_or(canonical_id),
+        "invalid runtime epoch"
+    );
     let record = record(store, id)?.context(Declined("request_not_found"))?;
     let command = Command {
         op: "revoke".into(),
@@ -240,7 +282,10 @@ fn query(location: &Location, store: &Store, id: &str) -> Result<Value> {
     let lock = step(location.handoff_lock(), "handoff_unavailable")?;
     let marker = step(handoff::marker(location, &lock), "unsupported_handoff")?;
     ensure!(
-        record.writer_epoch == marker.as_ref().map(|m| m.writer_epoch.clone()),
+        record.writer_epoch
+            == runtime_epoch
+                .map(str::to_owned)
+                .or_else(|| marker.as_ref().map(|m| m.writer_epoch.clone())),
         Declined("writer_epoch_changed")
     );
     ensure!(
@@ -252,6 +297,51 @@ fn query(location: &Location, store: &Store, id: &str) -> Result<Value> {
     );
     ensure!(record.state == "settled", Declined("revocation_pending"));
     receipt(location, &command, &record)
+}
+
+pub(super) fn request_with_runtime(
+    location: &Location,
+    store: &mut Store,
+    value: &Value,
+    runtime_epoch: &str,
+    drain: impl FnOnce(&mut Store) -> Result<()>,
+) -> Value {
+    let result = if value["op"] == "revoke_status" {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Query {
+            op: String,
+            request_id: String,
+        }
+        match serde_json::from_value::<Query>(value.clone()) {
+            Ok(query) if query.op == "revoke_status" && canonical_id(&query.request_id) => {
+                query_scoped(location, store, &query.request_id, Some(runtime_epoch))
+            }
+            _ => Err(anyhow::anyhow!("invalid revoke query")),
+        }
+    } else if let Ok(command) = serde_json::from_value::<Command>(value.clone()) {
+        execute_scoped(location, store, &command, None, Some(runtime_epoch), drain)
+    } else {
+        Err(anyhow::anyhow!("invalid revoke request"))
+    };
+    result.unwrap_or_else(|error| {
+        let accepted = serde_json::from_value::<Command>(value.clone())
+            .ok()
+            .filter(|command| command.validate().is_ok())
+            .and_then(|command| {
+                record(store, &command.request_id)
+                    .ok()
+                    .flatten()
+                    .map(|record| {
+                        record.fingerprint == command.fingerprint(location)
+                            && record.writer_epoch.as_deref() == Some(runtime_epoch)
+                    })
+            })
+            .unwrap_or(false);
+        json!({"request_id":value.get("request_id"),
+        "accepted":accepted,"durable":accepted,"revoked":false,"checkpointed":false,
+        "code":error.downcast_ref::<Declined>().map(|e|e.0).unwrap_or("revocation_not_settled")})
+    })
 }
 
 pub fn request(location: &Location, store: &mut Store, value: &Value) -> Value {
@@ -391,6 +481,84 @@ pub fn offline(location: &Location, command: &Command) -> Result<Value> {
 mod tests {
     use super::*;
     use zerus_desktop_migration::{canonical, Handoff, Phase, HANDOFF_FILE};
+
+    #[test]
+    fn even_an_interrupted_revoke_blocks_background_restart() {
+        let mut f = Fixture::new();
+        assert!(background_permitted(&f.location, &f.store).unwrap());
+        let command = f.command();
+        let epoch = f.epoch.clone();
+        let error = execute_scoped(
+            &f.location,
+            &mut f.store,
+            &command,
+            None,
+            Some(&epoch),
+            |_| anyhow::bail!("fixture drain still pending"),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<Declined>().unwrap().0,
+            "drain_not_settled"
+        );
+        assert!(!background_permitted(&f.location, &f.store).unwrap());
+        let next = uuid::Uuid::new_v4().to_string();
+        drop(f.store);
+        let reopened = Store::open(&f.location, &next).unwrap();
+        assert!(!background_permitted(&f.location, &reopened).unwrap());
+    }
+
+    #[test]
+    fn runtime_revoke_receipt_cannot_drain_a_replacement_service() {
+        let mut f = Fixture::new();
+        let command = f.command();
+        let first = uuid::Uuid::new_v4().to_string();
+        let next = uuid::Uuid::new_v4().to_string();
+        let receipt = execute_scoped(
+            &f.location,
+            &mut f.store,
+            &command,
+            None,
+            Some(&first),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(receipt["writer_epoch"], first);
+        assert_eq!(
+            query_scoped(&f.location, &f.store, command.id(), Some(&first)).unwrap(),
+            receipt
+        );
+        assert!(query_scoped(&f.location, &f.store, command.id(), Some(&next)).is_err());
+        let error = execute_scoped(
+            &f.location,
+            &mut f.store,
+            &command,
+            None,
+            Some(&next),
+            |_| panic!("stale request must not stop replacement"),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<Declined>().unwrap().0,
+            "writer_epoch_changed"
+        );
+    }
+
+    #[test]
+    fn runtime_query_keeps_the_closed_request_shape() {
+        let mut f = Fixture::new();
+        let id = uuid::Uuid::new_v4().to_string();
+        let epoch = f.epoch.clone();
+        let result = request_with_runtime(
+            &f.location,
+            &mut f.store,
+            &json!({"op":"revoke_status","request_id":id,"extra":true}),
+            &epoch,
+            |_| panic!("query cannot drain"),
+        );
+        assert_eq!(result["revoked"], false);
+        assert_eq!(result["accepted"], false);
+    }
     struct Fixture {
         _temp: tempfile::TempDir,
         location: Location,

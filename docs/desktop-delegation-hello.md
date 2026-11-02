@@ -50,3 +50,106 @@ this command has no polling loop or retained cache.
 Windows currently reports unsupported/unknown. Its permanent instance lock and
 native ownership protocol need their separate runtime qualification. No Unix
 probe result substitutes for that proof.
+
+## Native frontend policy requests
+
+The selected CLI advertises `Desktop frontend request ABI: desktop-ui-request-v1`.
+After its confirmation UI, Next prepares a closed `AutomaticApprovals` request
+with a stable request UUID and a fresh attempt UUID. Its native responder reserves
+one of eight short-lived slots. The maintained runner binds the original `Child`
+before sending the envelope to `hgs desktop frontend-request --json`, and retains
+the registration with the child and all pipes. An expired registration supplies
+no evidence and cannot release a still-retained resource slot.
+
+The instance listener answers the fixed `desktop-ui-request-v1 ATTEMPT` query
+from that cache. The service matches the socket peer's PID, birth, selected CLI
+image and direct frontend parent to the actual canonical instance peer and its
+installed frontend image. Configuration, request fingerprint and original child
+binding must all match. Bounded ancestry inspection refuses agent markers,
+agent executables and unavailable ancestry. Native serials prevent a delayed
+older setting from overtaking a newer one. A wire role, confirmation flag or
+nonce alone supplies no authority. Generic desktop requests cannot change this
+policy.
+
+On Windows this request uses the existing per-user activation pipe, preserving
+its name/home hash, lifetime lock, own-SID DACL and remote-client refusal. The
+query remains 59 bytes (64-byte listener limit), with one JSON reply of at most
+4096 bytes including LF. The service obtains the actual server PID from the
+kernel and retains its process handle and creation-time identity; a JSON PID
+cannot substitute for that evidence. A full/slow connection has a bounded
+exchange and cannot keep the listener alive during shutdown. No extra pipe or
+probe-time helper is created.
+
+Windows ancestry retains the original process objects and checks at most 32
+same-user ancestors within the original two-second authorization deadline.
+Environment reads require the native pointer-width layout, verified against the
+Win32 environment API, and a double-NUL terminator within 64 KiB. Marker keys
+use Windows ordinal case comparison, including empty values. Process birth,
+image, parent and environment are checked before admission and again at use.
+The walk checks same-user ancestry and ends at a different token user SID.
+Windows retains the old parent PID after a launcher exits: a missing/exited
+parent or a candidate created at or after the child's creation FILETIME ends the
+walk as departed. A query-only
+`OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` returning `ERROR_ACCESS_DENIED`
+also ends the walk.
+
+Access denial does not prove a different principal. A same-user process can
+protect its own process object with a restrictive DACL; an OWNER RIGHTS ACE can
+even remove `READ_CONTROL`. Both access denial and the departed-parent boundary
+(the Windows analogue of a Unix double fork) address unintentional agent
+descent. Deliberate same-user code remains outside this application IPC check.
+
+Creation times come from retained original handles; a later-created candidate
+is never inspected as an ancestor. These are parent-only boundaries, never a
+caller/GUI liveness exception or authority from roles, names, PIDs or caller JSON.
+
+Readable same-user agent names/markers, other open/query errors, changed
+identity, the ancestor cap and the original deadline still refuse. Held parent
+proofs and the original same-user chain are rechecked at use. No failed
+Toolhelp lookup is converted to a clean PID-zero root. This does not change the
+separately unsupported Windows owner-status probe.
+
+Only the service actor commits policy and read intents, and responses claim
+`durable:true` only after that commit. The delivery worker observes successfully
+applied service-owned fleet events; passive UI projections cannot authorize an
+Answer. Approval policy remains default-off and existing writer/handoff checks
+still precede delivery. `delivery_result` is an indexed read-only query available
+even while the service is passive after revocation. Retry an unknown interaction
+with the same logical request UUID; do not fabricate a new delivery receipt.
+
+Policy mutation also requires an opaque actor-side permit at the delivery API;
+passing policy JSON to its generic request method refuses. Ancestry checks reject
+advertised loader-injection variables, and Linux requires a readable, zero
+`TracerPid`; Windows requires a successful negative native debugger query.
+Other-platform tracing checks remain platform work. Executable
+names supplement the session/run markers: a renamed or reparented unmarked
+launcher cannot be identified from these checks. This is an application IPC
+check, not an OS isolation boundary against arbitrary same-user code. Restart
+ordering and a complete native positive-path regression remain cutover work.
+
+## Maintenance configuration
+
+`Desktop maintenance ABI: desktop-maintenance-v1` is required in addition to the
+frontend-request marker. The native sender uses
+`ui_requests::Request::maintenance_configure(request_id, Configuration)` with
+both `update` and `recovery` present (explicit null disables a subsystem).
+It uses the same original-child registration, request fingerprint, retained
+resources and fresh actor permit as approvals. Generic `desktop request` cannot
+configure timers or policy. Update identity must match the authenticated GUI's
+actual executable, version and source, never the CLI version. The native handler
+supplies that identity from its own build; callers cannot select another app.
+
+The service owns maintenance load, timers, original fleet observations and
+actual worker drain. Its closed `maintenance::Projection` appears as
+`value.maintenance` on existing watch hello/status/heartbeat frames and on
+`desktop status --json`. The UI keeps one subscriber; missing ABI/projection is
+unavailable, with no legacy timer fallback. No software installation or native
+notification is triggered by this lane.
+
+A generic read-only `maintenance_result` request contains a fresh `request_id`
+and the `original_request_id`. It works after revocation/passive restart without
+starting an executor. `durable:true` describes the original committed configure,
+not a new write by the query. Unknown recovery edits remain consumed and are
+never recreated by a timer or a result lookup. Approval and maintenance ordering
+are separate within one UI instance, so an automatic configuration cannot
+silently obsolete a human approval-setting change.

@@ -15,7 +15,7 @@ mod automatic;
 pub struct Approvals {
     supported: Arc<AtomicBool>,
     blocked: bool,
-    _worker: automatic::Worker,
+    _worker: Option<automatic::Worker>,
 }
 
 pub fn start(
@@ -25,7 +25,8 @@ pub fn start(
 ) -> Approvals {
     let supported = Arc::new(AtomicBool::new(false));
     Approvals {
-        _worker: automatic::Worker::start(pump, actions, settings, supported.clone()),
+        _worker: (!crate::desktop_service::mode())
+            .then(|| automatic::Worker::start(pump, actions, settings, supported.clone())),
         supported,
         blocked: crate::actions::blocked(),
     }
@@ -37,6 +38,11 @@ async fn read(
     operation: Operation,
     data: serde_json::Value,
 ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    if crate::desktop_service::mode() {
+        return Err(
+            "The approval journal is unavailable with this background service connection.".into(),
+        );
+    }
     if approvals.blocked {
         return Err("The automatic approval journal is not read in a replay.".into());
     }

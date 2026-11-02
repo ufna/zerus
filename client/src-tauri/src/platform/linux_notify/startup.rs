@@ -14,6 +14,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use zerus_client_core::desktop::drain::{Charge, Role};
 
+#[path = "../../../../../crates/freedesktop-notify/src/ingress.rs"]
 mod ingress;
 #[cfg(test)]
 mod tests;

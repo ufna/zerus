@@ -7,12 +7,16 @@ import re
 import subprocess
 import tarfile
 
-from macos_release import cask_for, macos_assets, require_template_cask, validate_macos_info
+from macos_release import cask_for, macos_assets, require_sealed_cask, validate_macos_info
 
 REPOSITORY = "ufna/zerus"
 PACKAGES = ("zerus", "zerus-ade-bin", "zerus-git")
-BINARY_LIBRARIES = ("qt6-base", "qt6-multimedia", "qt6-svg", "kstatusnotifieritem",
-                   "kwindowsystem", "kidletime", "libgcc", "libstdc++", "glibc")
+BINARY_LIBRARIES = ("webkit2gtk-4.1", "gtk3", "gdk-pixbuf2", "glib2", "cairo", "libsoup3",
+                   "alsa-lib", "gstreamer", "gst-plugins-base-libs",
+                   "libappindicator", "dbus", "libgcc", "libstdc++", "glibc")
+# Previously published Qt packages remain immutable and retryable.
+QT_BINARY_LIBRARIES = ("qt6-base", "qt6-multimedia", "qt6-svg", "kstatusnotifieritem",
+                       "kwindowsystem", "kidletime", "libgcc", "libstdc++", "glibc")
 # Candidates sealed before Qt WebEngine became optional (zerus-abnk, 2026-10-13)
 # required it, and their recipes lacked its optional-dependency line. Retrying
 # their publication must keep working unchanged.
@@ -61,7 +65,7 @@ def metadata(text):
 
 def binary_library_names(floors):
     """The ordered build libraries of a sealed candidate's floors: current or legacy."""
-    for names in (BINARY_LIBRARIES, LEGACY_BINARY_LIBRARIES):
+    for names in (BINARY_LIBRARIES, QT_BINARY_LIBRARIES, LEGACY_BINARY_LIBRARIES):
         if set(floors) == set(names):
             return names
     raise ValueError("Missing binary build-library provenance.")
@@ -165,7 +169,7 @@ def validate_candidate(directory, version, commit=None):
         casks = sorted(path.name for path in (directory / "homebrew").iterdir())
         cask = directory / "homebrew/zerus.rb"
         require(casks == ["zerus.rb"] and cask.is_file() and not cask.is_symlink(), "Unexpected Homebrew cask files.")
-        require_template_cask(cask.read_text(), version, sums[macos["asset"]])
+        require_sealed_cask(cask.read_text(), version, sums[macos["asset"]])
     expected_members = {f"aur/{package}/{name}" for package in PACKAGES for name in ("PKGBUILD", ".SRCINFO")}
     with tarfile.open(directory / f"zerus-{version}-aur.tar.gz", "r:gz") as archive:
         members = archive.getmembers()

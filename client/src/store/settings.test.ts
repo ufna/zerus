@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  ACTIVITY_WIDTH_KEY, DEFAULTS, HINT_KEY, OVERVIEW_WIDTH_KEY, STORAGE_KEY, createSettings, readHint, sameType,
+  ACTIVITY_WIDTH_KEY, PROJECT_SPLIT_KEY, SESSIONS_WIDTH_KEY, DEFAULTS, HINT_KEY, OVERVIEW_WIDTH_KEY, STORAGE_KEY, createSettings, readHint, sameType,
   storageBackend, takeLegacy, writeHint, type Saved, type SettingValue, type Settings, type SettingsBackend,
   type SettingsStorage,
 } from "./settings";
@@ -304,6 +304,21 @@ describe("the one-time moves", () => {
     await store.ready;
     expect(storage.data).toEqual({});
     expect(store.settings["workspace/activityWidth"]).toBe(1100);
+  });
+
+  it("moves Next split choices ahead of the Qt seed and retains them on failure", async () => {
+    const storage = memoryStorage({ [PROJECT_SPLIT_KEY]: "360", [SESSIONS_WIDTH_KEY]: "420" });
+    const legacy = takeLegacy(storage, true);
+    expect(legacy.moves).toEqual({ "workspace/projectFolderSplit": 360, "workspace/sessionsWidth": 420 });
+    const core = fakeCore({ "workspace/projectFolderSplit": 280, "workspace/sessionsWidth": 310 });
+    const store = createSettings(core.backend, { legacy });
+    await flush();
+    expect(storage.data[PROJECT_SPLIT_KEY]).toBe("360");
+    for (const save of core.saves) save.answer();
+    await store.ready;
+    expect(store.settings["workspace/projectFolderSplit"]).toBe(360);
+    expect(store.settings["workspace/sessionsWidth"]).toBe(420);
+    expect(storage.data).toEqual({});
   });
 
   it("keep the old values when a save is refused", async () => {

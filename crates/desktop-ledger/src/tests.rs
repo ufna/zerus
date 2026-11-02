@@ -34,6 +34,22 @@ fn identity(edge: &str) -> Identity {
         edge: edge.into(),
     }
 }
+
+#[test]
+fn local_computer_alias_is_distinct_from_a_named_peer() {
+    let mut db = database();
+    let remote = put_intent(&mut db, &identity("edge"), 1, &json!({})).unwrap();
+    let mut local = identity("edge");
+    if let Target::Session { computer, .. } = &mut local.target {
+        computer.clear();
+    }
+    let local_id = put_intent(&mut db, &local, 1, &json!({})).unwrap();
+    assert_ne!(local_id, remote);
+    if let Target::Session { computer, .. } = &mut local.target {
+        *computer = "invalid\npeer".into();
+    }
+    assert!(put_intent(&mut db, &local, 1, &json!({})).is_err());
+}
 fn request(intent: &str, n: u32) -> Reserve {
     Reserve {
         request_id: id(n + 10),
@@ -363,4 +379,19 @@ fn input_bounds_and_changed_revision_payload_fail_before_reservation() {
     req.revision = 1;
     req.request_id = "not-a-uuid".into();
     assert!(reserve(&mut db, &req).is_err());
+}
+
+#[test]
+fn canonical_intent_lookup_is_read_only_and_matches_original_insert() {
+    let mut db = database();
+    let post = identity("lookup");
+    let before = db.total_changes();
+    let key = intent_id(&post).unwrap();
+    assert_eq!(db.total_changes(), before);
+    assert_eq!(put_intent(&mut db, &post, 1, &json!({})).unwrap(), key);
+    let mut withdrawal = post.clone();
+    withdrawal.kind = Kind::Withdrawal;
+    assert_ne!(intent_id(&withdrawal).unwrap(), key);
+    withdrawal.edge.clear();
+    assert!(intent_id(&withdrawal).is_err());
 }

@@ -15,13 +15,13 @@ use std::sync::{Arc, Mutex, PoisonError};
 use zerus_client_core::attention::{Delivery, DeliveryStep, Notice};
 
 pub(crate) mod accounting;
+pub(crate) mod completion;
 pub(crate) mod owners;
 pub(crate) mod retiring;
 use accounting::{Completion, Resources};
 pub(crate) use accounting::{Control, Refused as AccountingRefused};
 
-/// A completion, called once on any thread.
-pub type Done<T> = Box<dyn FnOnce(T) + Send>;
+pub use completion::Done;
 
 /// The system's notification center (`UNUserNotificationCenter`), as the
 /// notifier uses it.

@@ -35,7 +35,7 @@ import {
   selectedKey, setSelectedKey, setExpandedChildren, expandedChildren,
   setCompactRows, compactRows, expandCompactRows, hasCompactRows, stateFilter, setStateFilter, search, setSearch, stripMode, setStripMode,
   setMenu, machineFilter, setMachineFilter, projectFilter, setProjectFilter, accountFilterSet, setAccountFilter, folderFilter, setPage,
-  multi, setMulti, peek, setPeek, setSubagentOpen, sessionsWidth, setSessionsWidth, menu, subagentOpen,
+  multi, setMulti, peek, setPeek, setSubagentOpen, sessionsWidth, setSessionsWidth, commitSessionsWidth, menu, subagentOpen,
   revealing, setRevealing, setDetailTab,
   type StateFilter, type MenuEntry,
 } from "../../store/ui";
@@ -633,9 +633,10 @@ export function ResizeHandle() {
       const dx = (m.clientX - startX) * (right ? -1 : 1);
       setSessionsWidth(Math.round(Math.max(270, Math.min(innerWidth - 56 - 520, startW + dx))));
     };
-    const up = () => { setDragging(false); el.removeEventListener("pointermove", move); el.removeEventListener("pointerup", up); };
+    const up = () => { commitSessionsWidth(); setDragging(false); el.removeEventListener("pointermove", move); el.removeEventListener("pointerup", up); el.removeEventListener("pointercancel", up); };
     el.addEventListener("pointermove", move);
     el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", up);
   };
   return <div class="sp-resize" classList={{ dragging: dragging() }} tabindex="-1" role="separator" aria-orientation="vertical" aria-label={tr("Session list width")} onPointerDown={down}><i /></div>;
 }

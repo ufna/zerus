@@ -135,7 +135,23 @@ pub fn show_main(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     window.show()?;
     window.set_focus()?;
     sync_policy(app);
+    #[cfg(all(windows, feature = "live"))]
+    crate::platform::windows::tray::apply_badge(app);
     Ok(window)
+}
+
+/// Windows cannot construct WebView2 synchronously in a native event callback.
+/// The existing window-layer worker owns the first creation as well as its
+/// level and presentation. Other platforms keep their main-thread behavior.
+pub fn request_main(app: &AppHandle) -> Result<(), String> {
+    #[cfg(all(windows, feature = "live"))]
+    {
+        crate::window_layer::open(app)
+    }
+    #[cfg(not(all(windows, feature = "live")))]
+    show_main(app)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 pub fn hide_main(app: &AppHandle) {
@@ -232,16 +248,18 @@ fn exit(app: &AppHandle) {
     }
     #[cfg(all(target_os = "macos", feature = "live"))]
     crate::platform::macos_menubar::clear_badge(app);
+    #[cfg(all(windows, feature = "live"))]
+    crate::platform::windows::tray::stop(app);
     // Settings, the organization, voice, composers and drafts reach the disk
     // while the socket still stands, as Qt's tray agent flushes before its
     // server goes.
     #[cfg(feature = "live")]
     crate::exit_work(app);
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     if let Some(state) = app.try_state::<crate::instance::InstanceState>() {
         state.release();
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     let _ = app;
 }
 

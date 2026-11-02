@@ -18,6 +18,59 @@ use zerus_client_core::linux_notify::{
 const HOST: &str = "aaaaaaaa-1111-4111-8111-111111111111";
 const BUS: &str = "00112233445566778899aabbccddeeff";
 const OWNERS: [Owner; 2] = [Owner::AgentAttention, Owner::SoftwareUpdate];
+
+// A parallel test's fork can inherit our CLOEXEC root until that child execs.
+// Dropping our File then does NOT release the shared OFD lock. Run immediate
+// close/reopen assertions after exec in a single-test child, with no concurrent
+// spawns, rather than weakening the adapter's lock or retrying its refusals.
+fn private_lock_case(case: &'static str) -> bool {
+    const MARKER: &str = "ZERUS_STORAGE_LOCK_CASE";
+    if std::env::var(MARKER).as_deref() == Ok(case) {
+        return true;
+    }
+    let _tree = crate::PROCESS_TREE
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let scratch = Scratch::new();
+    let root = scratch.path.clone();
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+    child
+        .args(["--exact", case, "--nocapture", "--test-threads=1"])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("LANG", "C.UTF-8")
+        .env(MARKER, case)
+        .stdin(std::process::Stdio::null());
+    for key in [
+        "HOME",
+        "HGS_CONFIG_DIR",
+        "HGS_STATE_DIR",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_RUNTIME_DIR",
+        "TMPDIR",
+        "TMUX_TMPDIR",
+    ] {
+        child.env(key, &root);
+    }
+    let mut child = child.spawn().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(status.success(), "private lock case {case}: {status}");
+            return false;
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("private lock case {case} timed out");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 struct Scratch {
     path: PathBuf,
     keep: bool,
@@ -183,6 +236,9 @@ fn selected_private_load_keeps_raw_hashes_and_single_absent_or_present_legacy() 
 }
 #[test]
 fn independent_descriptions_contend_and_duplicates_explicitly_do_not() {
+    if !private_lock_case("platform::linux_notify::storage::tests::independent_descriptions_contend_and_duplicates_explicitly_do_not") {
+        return;
+    }
     let scratch = Scratch::new();
     let file = scratch.open();
     let alias = file.try_clone().unwrap();
@@ -199,7 +255,7 @@ fn independent_descriptions_contend_and_duplicates_explicitly_do_not() {
         "Drop must not explicitly unlock an alias"
     );
     drop(alias);
-    assert!(scratch.load().is_ok());
+    scratch.load().unwrap();
 }
 #[test]
 fn unsafe_roots_and_unavailable_anchor_refuse_without_a_fallback() {
@@ -364,6 +420,9 @@ fn all_retained_positive_states_recompute_collisions_without_an_invalidation_fil
 }
 #[test]
 fn actual_barrier_and_result_are_private_exact_and_only_the_live_chain_continues() {
+    if !private_lock_case("platform::linux_notify::storage::tests::actual_barrier_and_result_are_private_exact_and_only_the_live_chain_continues") {
+        return;
+    }
     for owner in OWNERS {
         let scratch = Scratch::new();
         let other = scratch.raw(1 - selected(owner));
@@ -399,7 +458,7 @@ fn actual_barrier_and_result_are_private_exact_and_only_the_live_chain_continues
             0o600
         );
         drop(store);
-        assert!(scratch.load().is_ok());
+        scratch.load().unwrap();
     }
 }
 #[test]

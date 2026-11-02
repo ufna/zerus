@@ -25,6 +25,7 @@ import { headerClearSlot, sessionIdentity } from "./actions-ui";
 import { actionEntries, copyEntries, freshActionEntry } from "./ActionDialogs";
 import { snapshotOf } from "./actions-ui";
 import { markEntry } from "./mark-entries";
+import { followViewedReplies } from "./viewed-reply";
 import { Composer } from "./Composer";
 import { ComposerDialogs } from "./ComposerDialogs";
 import { QuestionCard } from "./QuestionCard";
@@ -219,6 +220,8 @@ createRoot(() => createEffect(() => { if (!tabs().find((t) => t.id === detailTab
 
 export function SessionDetail() {
   followProjectTasks();
+  // A reply shown in Activity or Terminal for a second is read (Qt's checkViewedReply).
+  followViewedReplies();
   const [available, setAvailable] = createSignal(900);
   const measure = (el: HTMLDivElement) => {
     const observer = new ResizeObserver(() => setAvailable(el.clientWidth)); observer.observe(el);

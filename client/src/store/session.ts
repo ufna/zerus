@@ -1,3 +1,4 @@
+import { desktopService } from "./desktopService";
 import { batch, createEffect, createRoot, createSignal, on, untrack } from "solid-js";
 import { activityPort, composerTab, inspectSubagentActivity, processesFollow, processesShown, windowVisibility } from "../bridge";
 import { applyBatch, catalog, computerFresh, computerOffline, onReplaced, orderedRows, setDraftKeys } from "./catalog";
@@ -14,7 +15,7 @@ import { createSubagentActivity } from "./subagentActivity";
 import { archive } from "./archive";
 import { applyGrouping } from "./organization";
 import { activityReadOnly } from "./activitySource";
-import { compactRows, detailTab, page, selected, selectedKey, setCompactRows, setDetailTab, setSelectedKey, subagentOpen } from "./ui";
+import { compactRows, detailTab, page, selected, selectedKey, setCompactRows, setDetailTab, setReadSelectionKey, setSelectedKey, subagentOpen } from "./ui";
 import { startScreens } from "./screens";
 import { documentVisibility } from "./visibility";
 import { processes, trackFollow, trackShown } from "./processes";
@@ -62,6 +63,7 @@ export const subagentActivity = createRoot(() => {
 /** Applies one batch from the bridge: its rows and their grouping are one reactive update. */
 export function receive(b: Batch) {
   batch(() => {
+    if (b.desktop_service) desktopService.apply(b.desktop_service);
     applyBatch(b);
     applyGrouping(b);
     archive.applyGroups(b.groups ?? []);
@@ -84,6 +86,9 @@ function composerEvent(e: ComposerEvent) {
 }
 
 createRoot(() => {
+  // Another selection lets the row whose reply was just read leave the
+  // filtered list (Qt's selectSession and selectCreation clear m_readSelectionKey).
+  createEffect(on(selectedKey, () => { setReadSelectionKey(undefined); }, { defer: true }));
   createEffect(on(() => {
     const s = selected();
     return s ? `${s.key}\n${s.name}` : undefined;

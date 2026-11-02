@@ -3,23 +3,26 @@
 import argparse
 import base64
 import copy
+import io
 import json
 import os
 from pathlib import Path
 import shutil
 import signal
 import subprocess
+import sys
+import wave
 
 
 CLIENT = Path(__file__).resolve().parent.parent
 PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 
 
-def fixture_config():
+def fixture_config(replay_path=None):
     catalog = {}
     states = {}
     events = {}
-    for line in (CLIENT / "fixtures/replay.ndjson").read_text(encoding="utf-8").splitlines():
+    for line in (replay_path or CLIENT / "fixtures/replay.ndjson").read_text(encoding="utf-8").splitlines():
         frame = json.loads(line)
         if frame.get("t") == "snapshot" and frame.get("topic") == "catalog":
             for item in frame["items"]:
@@ -84,7 +87,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app", type=Path, default=CLIENT / "src-tauri/target/release/zerus-client")
     parser.add_argument("--scratch", type=Path, required=True, help="a new directory; logs are kept here")
+    parser.add_argument("--only", help="run one named phase4 step")
+    parser.add_argument("--native-wheel", action="store_true", help="drive variable-scroll with trusted wheel events in its private Xvfb")
+    parser.add_argument("--static-wheel", action="store_true", help="no appends; separate wheel gestures with long idle pauses")
+    parser.add_argument("--renderer", choices=("shm", "dmabuf"), default="shm")
+    parser.add_argument("--static-shape", choices=("messages", "mixed", "expanded"), default="messages")
     args = parser.parse_args()
+    if args.static_wheel and not args.native_wheel:
+        parser.error("--static-wheel requires --native-wheel")
+    if args.native_wheel and args.only != "variable-scroll":
+        parser.error("--native-wheel requires --only variable-scroll")
     app = args.app.resolve()
     scratch = args.scratch.resolve()
     if not app.is_file():
@@ -100,7 +112,26 @@ def main():
     hgs = scratch / "hgs"
     shutil.copy2(CLIENT / "src-tauri/tests/support/fake_hgs_phase4.py", hgs)
     hgs.chmod(0o755)
-    (scratch / "config.json").write_text(json.dumps(fixture_config(), separators=(",", ":")), encoding="utf-8")
+    frames = [json.loads(line) for line in (CLIENT / "fixtures/replay.ndjson").read_text(encoding="utf-8").splitlines()]
+    activity_events = [event for frame in frames if frame.get("topic") == "activity" for event in frame.get("events", [])]
+    media = {"seq": max(event["seq"] for event in activity_events) + 1, "type": "UserPromptSubmit", "source": "hgs_voice",
+             "message_id": "m-media-smoke", "voice": {"id": "m-media-smoke", "state": "submitted",
+             "audio": {"duration_ms": 60000, "waveform": [128] * 64, "request_id": "req-media-smoke", "index": 0},
+             "transcript": "media smoke transcript"}, "at": max(event.get("at", 0) for event in activity_events) + 1}
+    frames.append({"v": 1, "seq": max(frame["seq"] for frame in frames) + 1,
+                   "t": "events", "topic": "activity", "key": "run:000001-run", "events": [media], "cursor": media["seq"]})
+    replay = scratch / "replay.ndjson"
+    replay.write_text("".join(json.dumps(frame, separators=(",", ":")) + "\n" for frame in frames), encoding="utf-8")
+    config = fixture_config(replay)
+    audio = io.BytesIO()
+    with wave.open(audio, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(8000)
+        wav.writeframes(bytes(16000))  # Silent fixture: never play a tone on the host.
+    config["attachments"]["req-media-smoke"] = {"name": "media-smoke.wav", "mime": "audio/wav",
+                                                "data_base64": base64.b64encode(audio.getvalue()).decode("ascii")}
+    (scratch / "config.json").write_text(json.dumps(config, separators=(",", ":")), encoding="utf-8")
     smoke_file = scratch / "smoke-notes.txt"
     smoke_file.write_text('{"orders":[1,2,3]}\n', encoding="utf-8")
 
@@ -110,12 +141,15 @@ def main():
         "XDG_RUNTIME_DIR": str(scratch / "runtime"), "TMPDIR": str(scratch / "tmp"),
         "XDG_CONFIG_HOME": str(scratch / "config"), "XDG_STATE_HOME": str(scratch / "state"),
         "TMUX_TMPDIR": str(scratch / "tmux"), "HGS_CONFIG_DIR": str(scratch / "config"), "HGS_STATE_DIR": str(scratch / "state"),
-        "WAYLAND_DISPLAY": "zerus-none", "GDK_BACKEND": "x11", "WEBKIT_DISABLE_DMABUF_RENDERER": "1", "ZERUS_CLIENT_HEADLESS": "1",
-        "ZERUS_CLIENT_REPLAY": str(CLIENT / "fixtures/replay.ndjson"), "ZERUS_CLIENT_HGS": str(hgs),
-        "ZERUS_CLIENT_QUERY": "phase4-smoke=1", "ZERUS_CLIENT_PERF": "smoke", "ZERUS_CLIENT_SMOKE_FILE": str(smoke_file),
+        "WAYLAND_DISPLAY": "zerus-none", "GDK_BACKEND": "x11", "WEBKIT_DISABLE_DMABUF_RENDERER": "1" if args.renderer == "shm" else "0", "ZERUS_CLIENT_RENDERER": args.renderer, "ZERUS_CLIENT_HEADLESS": "1",
+        "ZERUS_CLIENT_REPLAY": str(replay), "ZERUS_CLIENT_HGS": str(hgs),
+        "ZERUS_CLIENT_QUERY": "phase4-smoke=1" + ("&phase4-only=" + args.only if args.only else "") + ("&phase4-native-wheel=1" + ("&phase4-static-wheel=1&phase4-static-shape=" + args.static_shape if args.static_wheel else "&phase4-provider-window=1") if args.native_wheel else ""), "ZERUS_CLIENT_PERF": "smoke", "ZERUS_CLIENT_SMOKE_FILE": str(smoke_file),
         "ZERUS_CLIENT_SMOKE_NOW": "1793000100",
     }
-    command = ["dbus-run-session", "--", "xvfb-run", "-a", "-s", "-screen 0 1440x900x24", str(app), "--sessions"]
+    child = [str(app), "--sessions"]
+    if args.native_wheel:
+        child = [sys.executable, str(CLIENT / "scripts/phase4-wheel-driver.py"), *child]
+    command = ["dbus-run-session", "--", "xvfb-run", "-a", "-s", "-screen 0 1440x900x24", *child]
     app_log = scratch / "app.log"
     print("GDK_BACKEND=x11 WAYLAND_DISPLAY=zerus-none DISPLAY=<unset>", flush=True)
     with app_log.open("w", encoding="utf-8") as output:

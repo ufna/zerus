@@ -107,7 +107,7 @@ pub fn open_url(url: &str) -> std::io::Result<()> {
     } else {
         "xdg-open"
     };
-    let mut child = std::process::Command::new(program)
+    let mut child = crate::child_environment::command(program)
         .arg(url)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -137,6 +137,11 @@ pub async fn settings_set(
     key: String,
     value: Value,
 ) -> Result<Value, String> {
+    if crate::desktop_service::mode() && key == "automaticApprovals/enabled" {
+        return Err(
+            "Automatic approval settings must be changed through the background service.".into(),
+        );
+    }
     let (value, revision) = if key == ALWAYS_ON_TOP {
         let on = value.as_bool().ok_or("Keep Above requires a boolean.")?;
         crate::window_layer::request(&app, on).await?

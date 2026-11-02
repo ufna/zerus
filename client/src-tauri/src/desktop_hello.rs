@@ -1,7 +1,9 @@
 //! Background setup for the canonical instance's read-only delegation hello.
 //! The socket callback uses cached identity only; there is no probe-time child.
 use std::sync::Arc;
-use zerus_client_core::desktop::{self, Build, Responder};
+#[cfg(unix)]
+use zerus_client_core::desktop;
+use zerus_client_core::desktop::{Build, Responder};
 
 pub fn prepare(identity: &crate::identity::Identity) -> (crate::instance::Reply, Arc<Responder>) {
     let info = crate::cli::build_info(&crate::cli::BUILD);
@@ -18,19 +20,26 @@ pub fn prepare(identity: &crate::identity::Identity) -> (crate::instance::Reply,
     ));
     let cached = Arc::clone(&responder);
     let reply: crate::instance::Reply = Arc::new(move |stream, line| {
-        desktop::same_user(stream)
-            .then(|| cached.reply(line))
-            .flatten()
+        #[cfg(unix)]
+        let same = desktop::same_user(stream);
+        #[cfg(windows)]
+        let same = crate::instance::same_user(stream);
+        same.then(|| cached.reply(line)).flatten()
     });
     (reply, responder)
 }
 
 /// Only the process that claimed the canonical socket calls this, before any
 /// writers or GUI actor exist. Replay and other bundle identities stay isolated.
+#[cfg(unix)]
 pub fn hold(
     production: bool,
     responder: &Arc<Responder>,
 ) -> Result<Option<desktop::startup::Bootstrap>, desktop::startup::Refused> {
+    if crate::desktop_service::mode() {
+        // A consumer keeps its canonical identity but never claims GUI writer startup.
+        return Ok(None);
+    }
     if !production || std::env::var_os("ZERUS_CLIENT_REPLAY").is_some_and(|v| !v.is_empty()) {
         return Ok(None);
     }
@@ -62,6 +71,7 @@ pub fn hold(
 /// Request release after setup registered its writers, then retain and actually
 /// join the original helper worker off the GUI actor. No late/unknown result can
 /// publish configuration or make this instance eligible for producer binding.
+#[cfg(unix)]
 pub fn finish(mut held: desktop::startup::Bootstrap, responder: Arc<Responder>) {
     if held.release().is_err() {
         eprintln!(

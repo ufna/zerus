@@ -120,7 +120,7 @@ jobs:
           path: artifacts/macos-signed
       - name: Arch packaging dependencies
         run: |
-          pacman -Syu --noconfirm --needed base-devel git python qt6-base qt6-webengine qt6-multimedia qt6-svg kstatusnotifieritem kwindowsystem kidletime tmux openssh curl procps-ng hicolor-icon-theme namcap desktop-file-utils
+          pacman -Syu --noconfirm --needed base-devel git python webkit2gtk-4.1 gtk3 alsa-lib gstreamer gst-plugins-base-libs libappindicator dbus gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav tmux openssh curl procps-ng hicolor-icon-theme namcap desktop-file-utils
           useradd -m user
           chown -R user:user "$GITHUB_WORKSPACE"
       - name: Assemble and check exact verified nightly

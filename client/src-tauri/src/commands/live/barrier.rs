@@ -28,6 +28,11 @@ impl Live {
         }
         #[cfg(unix)]
         {
+            if crate::desktop_service::mode() {
+                // This dormant legacy barrier has no authority to certify a
+                // service subscriber's joined transport and callbacks.
+                return Err(Refused::Unavailable);
+            }
             let charge = self
                 .barrier
                 .admit(Role::Fleet)

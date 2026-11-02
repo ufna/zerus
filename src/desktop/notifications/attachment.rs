@@ -1,0 +1,373 @@
+//! Actor attachment to an original platform handle. Selection/admission belongs
+//! to the lifecycle; no generic request or ambient path search starts a host.
+#![allow(dead_code)] // Activated by the explicit service handoff/policy integration.
+use super::{Activation, Endpoint, Outbox, RestorePage, Session};
+use crate::desktop::{
+    attention,
+    store::{Location, Store},
+};
+use anyhow::{ensure, Result};
+use serde_json::{json, Value};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::time::Instant;
+
+static ACTIVE: AtomicBool = AtomicBool::new(false);
+struct Admission;
+impl Admission {
+    fn acquire() -> Result<Self> {
+        ensure!(
+            ACTIVE
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok(),
+            "notification attachment still owned"
+        );
+        Ok(Self)
+    }
+}
+impl Drop for Admission {
+    fn drop(&mut self) {
+        ACTIVE.store(false, Ordering::Release);
+    }
+}
+struct Lifetime {
+    _owner: Arc<dyn Send + Sync>,
+    _admission: Admission,
+}
+
+/// Constructed only from maintained selection. Mac native selection is done
+/// off actor before passing its opaque result here; an address is data only.
+pub(in crate::desktop) enum Selection {
+    #[cfg(target_os = "linux")]
+    Linux { address: String },
+    #[cfg(target_os = "macos")]
+    Macos(super::host::SelectedHost),
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    Unavailable,
+}
+
+pub(in crate::desktop) trait Host {
+    /// Retry the SAME page until true. It never invokes a posting API.
+    fn restore(&mut self, page: &[Activation]) -> Result<bool>;
+    fn finish(&mut self) -> Result<bool>;
+    fn ready(&self) -> Result<bool>;
+    fn stop(&self);
+    fn drained(&mut self) -> bool;
+    fn status(&self) -> Value;
+}
+
+pub(in crate::desktop) struct NativeHost(NativeKind);
+enum NativeKind {
+    #[cfg(target_os = "linux")]
+    Linux {
+        runtime: super::linux::Runtime,
+        acknowledgement: Option<super::linux::Acknowledgement>,
+    },
+    #[cfg(target_os = "macos")]
+    Macos {
+        runtime: super::host::OwnedHost,
+        offset: usize,
+        finished: bool,
+    },
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    Unavailable,
+}
+impl Host for NativeHost {
+    fn restore(&mut self, page: &[Activation]) -> Result<bool> {
+        match &mut self.0 {
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            NativeKind::Unavailable => {
+                let _ = page;
+                anyhow::bail!("notification platform unavailable")
+            }
+            #[cfg(target_os = "linux")]
+            NativeKind::Linux {
+                runtime,
+                acknowledgement,
+            } => {
+                if let Some(ack) = acknowledgement {
+                    return match ack.poll() {
+                        None => Ok(false),
+                        Some(ok) => {
+                            *acknowledgement = None;
+                            ensure!(ok, "notification restore refused");
+                            Ok(true)
+                        }
+                    };
+                }
+                if page.is_empty() {
+                    return Ok(true);
+                }
+                *acknowledgement = runtime.restore(page.to_vec());
+                Ok(false)
+            }
+            #[cfg(target_os = "macos")]
+            NativeKind::Macos {
+                runtime, offset, ..
+            } => {
+                while *offset < page.len() {
+                    if !runtime.restore(page[*offset].clone()) {
+                        return Ok(false);
+                    }
+                    *offset += 1;
+                }
+                *offset = 0;
+                Ok(true)
+            }
+        }
+    }
+    fn finish(&mut self) -> Result<bool> {
+        match &mut self.0 {
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            NativeKind::Unavailable => anyhow::bail!("notification platform unavailable"),
+            #[cfg(target_os = "linux")]
+            NativeKind::Linux {
+                runtime,
+                acknowledgement,
+            } => {
+                if let Some(ack) = acknowledgement {
+                    return match ack.poll() {
+                        None => Ok(false),
+                        Some(ok) => {
+                            *acknowledgement = None;
+                            ensure!(ok, "notification finish refused");
+                            Ok(true)
+                        }
+                    };
+                }
+                *acknowledgement = runtime.finish_restoration();
+                Ok(false)
+            }
+            #[cfg(target_os = "macos")]
+            NativeKind::Macos {
+                runtime, finished, ..
+            } => {
+                if !*finished {
+                    runtime.finish_restoration();
+                    *finished = true;
+                }
+                // The original FIFO writes every Restore before new commands.
+                Ok(runtime.status()["ready"] == true)
+            }
+        }
+    }
+    fn ready(&self) -> Result<bool> {
+        let status = self.status();
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        ensure!(
+            status["supported"] == true,
+            "notification platform unavailable"
+        );
+        #[cfg(target_os = "linux")]
+        ensure!(status["error"] != true, "notification host failed");
+        #[cfg(target_os = "macos")]
+        if let Some(code) = status["fault"].as_str() {
+            ensure!(
+                code == "notification_status_busy",
+                "notification host failed"
+            );
+        }
+        Ok(status["ready"] == true)
+    }
+    fn stop(&self) {
+        match &self.0 {
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            NativeKind::Unavailable => (),
+            #[cfg(target_os = "linux")]
+            NativeKind::Linux { runtime, .. } => runtime.request_stop(),
+            #[cfg(target_os = "macos")]
+            NativeKind::Macos { runtime, .. } => runtime.request_stop(),
+        }
+    }
+    fn drained(&mut self) -> bool {
+        match &mut self.0 {
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            NativeKind::Unavailable => true,
+            #[cfg(target_os = "linux")]
+            NativeKind::Linux { runtime, .. } => runtime.drained(),
+            #[cfg(target_os = "macos")]
+            NativeKind::Macos { runtime, .. } => runtime.poll_drained(),
+        }
+    }
+    fn status(&self) -> Value {
+        match &self.0 {
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            NativeKind::Unavailable => json!({"supported":false,"ready":false}),
+            #[cfg(target_os = "linux")]
+            NativeKind::Linux { runtime, .. } => runtime.status(),
+            #[cfg(target_os = "macos")]
+            NativeKind::Macos { runtime, .. } => runtime.status(),
+        }
+    }
+}
+
+pub(in crate::desktop) struct Runtime<H: Host = NativeHost> {
+    outbox: Outbox,
+    host: H,
+    owner: Option<Arc<dyn Send + Sync>>,
+    after: i64,
+    through: i64,
+    cleanup_through: i64,
+    cleanup: bool,
+    page: Option<RestorePage>,
+    restored: bool,
+    finishing: bool,
+    stopping: bool,
+    drained: bool,
+    error: Option<String>,
+}
+impl Runtime<NativeHost> {
+    pub fn start(
+        location: &Location,
+        store: &Store,
+        session: Session,
+        selection: Selection,
+        owner: Arc<dyn Send + Sync>,
+    ) -> Result<Self> {
+        let lifetime: Arc<dyn Send + Sync> = Arc::new(Lifetime {
+            _owner: owner,
+            _admission: Admission::acquire()?,
+        });
+        Self::with_factory(
+            store,
+            session,
+            lifetime,
+            |session, endpoint| match selection {
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                Selection::Unavailable => {
+                    let _ = (location, session, endpoint);
+                    anyhow::bail!("notification platform unavailable")
+                }
+                #[cfg(target_os = "linux")]
+                Selection::Linux { address } => {
+                    let _ = location;
+                    Ok(NativeHost(NativeKind::Linux {
+                        runtime: super::linux::Runtime::start(session, endpoint, address)?,
+                        acknowledgement: None,
+                    }))
+                }
+                #[cfg(target_os = "macos")]
+                Selection::Macos(selected) => Ok(NativeHost(NativeKind::Macos {
+                    runtime: selected.launch(location, session, endpoint)?,
+                    offset: 0,
+                    finished: false,
+                })),
+            },
+        )
+    }
+}
+impl<H: Host> Runtime<H> {
+    fn with_factory(
+        store: &Store,
+        session: Session,
+        owner: Arc<dyn Send + Sync>,
+        factory: impl FnOnce(Session, Endpoint) -> Result<H>,
+    ) -> Result<Self> {
+        let (outbox, endpoint) = Outbox::new_owned(session.clone(), owner.clone())?;
+        // Fallible store checks precede a possible returned platform worker.
+        let through = outbox.restore_live_head(store)?;
+        let cleanup_through = outbox.restore_cleanup_head(store)?;
+        let host = factory(session, endpoint)?;
+        Ok(Self {
+            outbox,
+            host,
+            owner: Some(owner),
+            after: 0,
+            through,
+            cleanup_through,
+            cleanup: false,
+            page: None,
+            restored: false,
+            finishing: false,
+            stopping: false,
+            drained: false,
+            error: None,
+        })
+    }
+    pub fn poll(
+        &mut self,
+        store: &mut Store,
+        attention: &mut attention::Runtime,
+    ) -> Vec<Activation> {
+        let activations = self.outbox.poll(store, Instant::now());
+        if self.stopping {
+            self.drained = self.host.drained() && self.outbox.operation_drained();
+            return activations;
+        }
+        if let Err(error) = self.turn(store, attention) {
+            self.error = Some(format!("{error:#}").chars().take(256).collect());
+            self.request_stop();
+        }
+        activations
+    }
+    fn turn(&mut self, store: &mut Store, attention: &mut attention::Runtime) -> Result<()> {
+        let ready = self.host.ready()?;
+        if !self.restored {
+            if self.finishing {
+                self.restored = self.host.finish()?;
+                return Ok(());
+            }
+            if self.page.is_none() {
+                self.page = Some(if self.cleanup {
+                    self.outbox
+                        .restore_cleanup_page(store, self.after, self.cleanup_through)?
+                } else {
+                    self.outbox
+                        .restore_live_page(store, self.after, self.through)?
+                });
+            }
+            let page = self.page.as_ref().unwrap();
+            if !self.host.restore(&page.mappings)? {
+                return Ok(());
+            }
+            self.after = page.after;
+            let complete = page.complete;
+            self.page = None;
+            if complete {
+                if self.cleanup {
+                    self.finishing = true;
+                    self.restored = self.host.finish()?;
+                } else {
+                    self.cleanup = true;
+                    self.after = 0;
+                }
+            }
+            return Ok(());
+        }
+        if ready {
+            attention.poll(store, Some(&mut self.outbox));
+        }
+        Ok(())
+    }
+    pub fn request_stop(&mut self) {
+        self.stopping = true;
+        self.outbox.request_stop();
+        self.host.stop();
+    }
+    pub fn drained(&self) -> bool {
+        self.drained
+    }
+    pub fn status(&self) -> Value {
+        json!({"restored":self.restored,"restore_after":self.after,"restore_through":self.through,"cleanup":self.cleanup,"cleanup_through":self.cleanup_through,
+            "stopping":self.stopping,"drained":self.drained,"error":self.error,
+            "outbox":self.outbox.status(),"host":self.host.status()})
+    }
+}
+impl<H: Host> Drop for Runtime<H> {
+    fn drop(&mut self) {
+        self.request_stop();
+        self.drained = self.drained || (self.host.drained() && self.outbox.operation_drained());
+        if !self.drained {
+            // Abandonment proves no drain. Preserve the original owner and
+            // admission for process lifetime rather than permit replacement.
+            if let Some(owner) = self.owner.take() {
+                std::mem::forget(owner);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

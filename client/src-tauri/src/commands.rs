@@ -63,6 +63,23 @@ impl AppState {
         self.live.start()
     }
 
+    pub fn desktop_service(&self) -> Option<std::sync::Arc<crate::desktop_service::Service>> {
+        self.live.desktop_service()
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    pub fn set_desktop_responder(&self, responder: Arc<zerus_client_core::desktop::Responder>) {
+        let _ = self.live.desktop_responder.set(responder);
+    }
+
+    #[allow(dead_code)] // .66.3.36 registers its maintenance projection after that adapter lands.
+    pub fn register_service_projection(
+        &self,
+        observer: crate::desktop_service::Projection,
+    ) -> Result<(), String> {
+        self.live.register_service_projection(observer)
+    }
+
     /// The peers this computer's listing names; None before a listing named
     /// them, and for a replay.
     pub fn peers(&self) -> Option<std::collections::BTreeSet<String>> {
@@ -140,6 +157,7 @@ mod live {
     enum Source {
         Fleet(Fleet),
         Replay(Replay),
+        Service(Arc<crate::desktop_service::Service>),
     }
 
     pub struct Live {
@@ -147,6 +165,8 @@ mod live {
         source: Mutex<Option<Source>>,
         pub organization: OnceLock<Organization>,
         pub creations: OnceLock<crate::creations::CreationHost>,
+        pub(super) desktop_responder: OnceLock<Arc<zerus_client_core::desktop::Responder>>,
+        service_projections: Mutex<Vec<crate::desktop_service::Projection>>,
         tasks_project: Mutex<Option<String>>,
         controls: zerus_client_core::desktop::drain::Gate,
         resources: zerus_client_core::desktop::drain::Gate,
@@ -162,6 +182,8 @@ mod live {
                 source: Mutex::new(None),
                 organization: OnceLock::new(),
                 creations: OnceLock::new(),
+                desktop_responder: OnceLock::new(),
+                service_projections: Mutex::new(Vec::new()),
                 tasks_project: Mutex::new(None),
                 controls: Gate::new(64).unwrap(),
                 resources: Gate::new(1).unwrap(),
@@ -171,6 +193,25 @@ mod live {
         }
     }
     impl Live {
+        #[allow(dead_code)] // Reserved setup hook for the .66.3.36 maintenance consumer.
+        pub(super) fn register_service_projection(
+            &self,
+            observer: crate::desktop_service::Projection,
+        ) -> Result<(), String> {
+            let source = self.source.lock().unwrap_or_else(PoisonError::into_inner);
+            if source.is_some() {
+                return Err("Service projections must be registered before startup.".into());
+            }
+            let mut projections = self
+                .service_projections
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if projections.len() >= 8 {
+                return Err("Too many service projections.".into());
+            }
+            projections.push(observer);
+            Ok(())
+        }
         fn admit(&self) -> Result<zerus_client_core::desktop::drain::Charge, String> {
             self.controls
                 .admit(zerus_client_core::desktop::drain::Role::Fleet)
@@ -208,21 +249,39 @@ mod live {
                 return Err("Invalid task project.".into());
             }
             let source = self.source.lock().unwrap_or_else(PoisonError::into_inner);
-            let Some(Source::Fleet(fleet)) = source.as_ref() else {
-                return Err("Tasks need a live hgs event stream.".into());
-            };
             let mut current = self
                 .tasks_project
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            if let Some(old) = current.take() {
-                fleet.unfollow_tasks(&ComputerId::local(), &old);
-            }
-            if let Some(next) = project {
-                fleet
-                    .follow_tasks(&ComputerId::local(), &next)
-                    .map_err(|e| e.to_string())?;
-                *current = Some(next);
+            match source.as_ref() {
+                Some(Source::Fleet(fleet)) => {
+                    if let Some(old) = current.take() {
+                        fleet.unfollow_tasks(&ComputerId::local(), &old);
+                    }
+                    if let Some(next) = project {
+                        fleet
+                            .follow_tasks(&ComputerId::local(), &next)
+                            .map_err(|e| e.to_string())?;
+                        *current = Some(next);
+                    }
+                }
+                Some(Source::Service(service)) => {
+                    if let Some(old) = current.take() {
+                        service.unfollow_detail("", zerus_watch_protocol::topic::TASKS, &old);
+                    }
+                    if let Some(next) = project {
+                        service.follow_detail(
+                            "",
+                            zerus_watch_protocol::Subscription {
+                                topic: zerus_watch_protocol::topic::TASKS.into(),
+                                project: Some(next.clone()),
+                                ..Default::default()
+                            },
+                        )?;
+                        *current = Some(next);
+                    }
+                }
+                _ => return Err("Tasks need a live hgs event stream.".into()),
             }
             Ok(())
         }
@@ -237,6 +296,10 @@ mod live {
                 .as_ref()
             {
                 Some(Source::Fleet(fleet)) => fleet.reconnect(&ComputerId::from(computer)),
+                Some(Source::Service(service)) => {
+                    service.retry();
+                    true
+                }
                 Some(Source::Replay(_)) | None => false,
             }
         }
@@ -263,7 +326,10 @@ mod live {
             let _admission = self.admit()?;
             let organization = self.organization.get().cloned();
             let creations = self.creations.get().cloned();
-            if let Some(organization) = &organization {
+            if let Some(organization) = organization
+                .as_ref()
+                .filter(|_| !crate::desktop_service::mode())
+            {
                 let live = Arc::downgrade(self);
                 organization
                     .set_initial_source(Arc::new(move || live.upgrade()?.organization_snapshot()));
@@ -274,8 +340,50 @@ mod live {
                 return Ok(match running {
                     Source::Fleet(_) => "live",
                     Source::Replay(_) => "replay",
+                    Source::Service(_) => "service",
                 }
                 .into());
+            }
+            if crate::desktop_service::mode() {
+                let (sink, changes) = mpsc::sync_channel(256);
+                let pump = self.pump.clone();
+                let observe = organization.clone();
+                let drain = pump.drain_service(changes, move |change| {
+                    if let Some(organization) = &observe {
+                        organization.observe(change);
+                    }
+                });
+                let allowed = replay.is_none()
+                    || std::env::var_os("ZERUS_CLIENT_HGS").is_some_and(|value| !value.is_empty());
+                let service = crate::desktop_service::Service::start(
+                    hgs(),
+                    pump,
+                    sink,
+                    allowed,
+                    drain,
+                    self.desktop_responder.get().cloned(),
+                    self.service_projections
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .clone(),
+                );
+                if let Some(organization) = &organization {
+                    // The observer runs under detail admission. Its source
+                    // callback must not re-enter Live.source or that admission.
+                    let weak = Arc::downgrade(&service);
+                    organization.set_initial_source(Arc::new(move || {
+                        weak.upgrade()?.organization_snapshot()
+                    }));
+                    service.follow_detail(
+                        "",
+                        zerus_watch_protocol::Subscription {
+                            topic: zerus_watch_protocol::topic::ORGANIZATION.into(),
+                            ..Default::default()
+                        },
+                    )?;
+                }
+                *source = Some(Source::Service(service));
+                return Ok("service".into());
             }
             let resources: Arc<dyn Send + Sync> = Arc::new(
                 self.resources
@@ -331,6 +439,18 @@ mod live {
             Ok(mode.into())
         }
 
+        pub fn desktop_service(&self) -> Option<Arc<crate::desktop_service::Service>> {
+            match self
+                .source
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+            {
+                Some(Source::Service(service)) => Some(service.clone()),
+                _ => None,
+            }
+        }
+
         /// The base and versions of this computer's latest organization state.
         fn organization_snapshot(&self) -> Option<OrganizationSnapshot> {
             match self
@@ -341,6 +461,7 @@ mod live {
             {
                 Source::Fleet(fleet) => fleet.organization_snapshot(&ComputerId::local()),
                 Source::Replay(replay) => replay.organization_snapshot(),
+                Source::Service(service) => service.organization_snapshot(),
             }
         }
 
@@ -398,6 +519,21 @@ mod live {
                         .map_err(|error| error.to_string())?
                 }
                 Some(Source::Replay(replay)) => replay.follow(&computer, &key, after, tail),
+                Some(Source::Service(service)) => {
+                    if session.key() != key {
+                        return Err(FollowError::KeyMismatch.to_string());
+                    }
+                    service.follow_detail(
+                        &computer,
+                        zerus_watch_protocol::Subscription {
+                            topic: zerus_watch_protocol::topic::ACTIVITY.into(),
+                            session: Some(session),
+                            after,
+                            tail: after.is_none().then_some(tail),
+                            ..Default::default()
+                        },
+                    )?;
+                }
                 None => return Err("not started".into()),
             }
             Ok(())
@@ -451,6 +587,26 @@ mod live {
                     replay.follow_processes(&target.computer, &target.key);
                     Ok(())
                 }
+                Some(Source::Service(service)) => {
+                    let session = SessionRef {
+                        name: target.name.clone(),
+                        run_id: (!target.run_id.is_empty()).then(|| target.run_id.clone()),
+                        conversation_id: (!target.conversation_id.is_empty())
+                            .then(|| target.conversation_id.clone()),
+                    };
+                    if session.key() != target.key {
+                        return Err(FollowError::KeyMismatch.to_string());
+                    }
+                    service.follow_detail(
+                        &target.computer,
+                        zerus_watch_protocol::Subscription {
+                            topic: zerus_watch_protocol::topic::PROCESSES.into(),
+                            session: Some(session),
+                            interval_ms: Some(10_000),
+                            ..Default::default()
+                        },
+                    )
+                }
                 None => Err("not started".into()),
             }
         }
@@ -471,6 +627,9 @@ mod live {
                     .set_processes_interval(&ComputerId(target.computer.clone()), &target.key, ms)
                     .map_err(|error| error.to_string()),
                 Some(Source::Replay(_)) => Ok(()),
+                Some(Source::Service(service)) => {
+                    service.processes_update(&target.computer, &target.key, Some(ms))
+                }
                 None => Err("not started".into()),
             }
         }
@@ -487,6 +646,9 @@ mod live {
                     .refresh_processes(&ComputerId(target.computer.clone()), &target.key)
                     .map_err(|error| error.to_string()),
                 Some(Source::Replay(_)) => Ok(()),
+                Some(Source::Service(service)) => {
+                    service.processes_update(&target.computer, &target.key, None)
+                }
                 None => Err("not started".into()),
             }
         }
@@ -506,6 +668,11 @@ mod live {
                 Some(Source::Replay(replay)) => {
                     replay.unfollow_processes(&target.computer, &target.key);
                 }
+                Some(Source::Service(service)) => service.unfollow_detail(
+                    &target.computer,
+                    zerus_watch_protocol::topic::PROCESSES,
+                    &target.key,
+                ),
                 None => {}
             }
         }
@@ -523,6 +690,9 @@ mod live {
                     fleet.unfollow(&ComputerId(computer), &key);
                 }
                 Some(Source::Replay(replay)) => replay.unfollow(&computer, &key),
+                Some(Source::Service(service)) => {
+                    service.unfollow_detail(&computer, zerus_watch_protocol::topic::ACTIVITY, &key)
+                }
                 None => return Err("not started".into()),
             }
             Ok(())
@@ -620,6 +790,9 @@ pub async fn next_batch(
         // The host's rows settle pending read marks, whether they arrive as
         // single upserts or inside a computer's snapshot.
         actions.observe(&batch);
+        if crate::desktop_service::mode() {
+            actions.overlay_retained_reads(&mut batch);
+        }
         // The followed session's Activity state and its row feed the
         // composer's block reason, before its view is taken.
         composers.observe(&batch);
@@ -921,6 +1094,22 @@ pub fn perf_away(
         eprintln!("zerus-client perf: could not bring the window back: {error}");
     }
     Ok(serde_json::json!({ "how": how, "minimized": minimized, "sample": sample }))
+}
+
+#[tauri::command(async, rename_all = "snake_case")]
+pub fn perf_resize(app: tauri::AppHandle, width: u32, height: u32) -> Result<(), String> {
+    if !perf_mode() {
+        return Err("not a measurement run (ZERUS_CLIENT_PERF is not set)".into());
+    }
+    let window = crate::main_window(&app).ok_or("The main window is unavailable")?;
+    window
+        .set_size(tauri::LogicalSize::new(
+            width.clamp(640, 3840),
+            height.clamp(480, 2160),
+        ))
+        .map_err(|error| error.to_string())?;
+    crate::window_visibility::sync_webview(&window);
+    Ok(())
 }
 
 /// RSS and CPU of the client's process tree (the app and its webview

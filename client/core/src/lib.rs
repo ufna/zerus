@@ -16,6 +16,7 @@ pub mod attention;
 pub mod attention_store;
 pub mod batch;
 pub mod cache;
+pub mod child_environment;
 #[cfg(windows)]
 mod conpty;
 pub mod content_search;
@@ -37,6 +38,7 @@ pub mod local_messages;
 pub mod machine;
 pub mod machine_connections;
 pub mod macos_notify;
+pub mod maintenance;
 pub mod marks;
 pub mod menubar;
 pub mod migration;
@@ -205,6 +207,13 @@ pub enum ActivityUpdate {
     Event { id: String, rev: u64, event: Value },
     /// The session's latest inspection summary, with provider messages merged.
     State { value: Value, rev: u64 },
+    /// Read transport readiness. This never declares native work finished or
+    /// replaces the last known transcript; a new route resets state revisions.
+    Connection {
+        ready: bool,
+        pending: bool,
+        code: String,
+    },
     /// The subscription ended (the session left the catalog or changed run).
     Ended,
 }

@@ -3,6 +3,7 @@ import { Icon } from "../lib/icons";
 import { composer, type Dialog } from "../../store/composer";
 import type { ClearControl, ColdPrompt, StartQuestion } from "../../types";
 import { tr } from "../../i18n";
+import { trText } from "../../text";
 
 // The composer's questions, each a modal over the shared dialog styles
 // (ActionDialogs.tsx): "Continue with a cold cache?" (SessionsWindow.cpp
@@ -31,19 +32,20 @@ function ColdDialog(props: { prompt: ColdPrompt }) {
   );
 }
 
+/** The core's prose, translated here: the session name and context usage stay verbatim. */
 function StartDialog(props: { question: StartQuestion }) {
   return (
     <>
-      <div class="dlg-head"><Icon name="circle-question-mark" size={18} class="accent" /><h2 id="composer-dlg-title">{props.question.title}</h2></div>
+      <div class="dlg-head"><Icon name="circle-question-mark" size={18} class="accent" /><h2 id="composer-dlg-title">{trText(props.question.title)}</h2></div>
       <div class="dlg-body">
-        <div class="confirm-body" id="composer-dlg-body" style={{ "white-space": "pre-wrap" }}>{props.question.text}</div>
-        <Show when={props.question.informative}><div class="dlg-detail" style={{ "white-space": "pre-wrap" }}>{props.question.informative}</div></Show>
+        <div class="confirm-body" id="composer-dlg-body" style={{ "white-space": "pre-wrap" }}>{trText(props.question.text)}</div>
+        <Show when={props.question.informative.source}><div class="dlg-detail" style={{ "white-space": "pre-wrap" }}>{trText(props.question.informative)}</div></Show>
       </div>
       <div class="dlg-foot">
         <span class="spacer" />
         <For each={props.question.options}>{(option) => (
-          <button type="button" class="btn" disabled={!option.enabled} title={option.tooltip || undefined}
-            onClick={() => { void composer.answer({ kind: "start", choice: option.choice }); }}>{option.label}</button>
+          <button type="button" class="btn" disabled={!option.enabled} title={option.tooltip ? trText(option.tooltip) : undefined}
+            onClick={() => { void composer.answer({ kind: "start", choice: option.choice }); }}>{trText(option.label)}</button>
         )}</For>
         <button type="button" class="btn primary" data-initial onClick={() => composer.closeDialog()}>{tr("Cancel")}</button>
       </div>

@@ -109,7 +109,11 @@ impl Identity {
                 run,
                 conversation,
             } => {
-                text(computer, 255)?;
+                // The desktop/watch protocol uses the empty alias for this
+                // computer. Remote aliases retain the original validation.
+                if !computer.is_empty() {
+                    text(computer, 255)?;
+                }
                 text(run, 1024)?;
                 text(conversation, 1024)?;
                 ensure!(
@@ -133,6 +137,11 @@ impl Identity {
         }
         json(self, 4096)
     }
+}
+
+/// Canonical lookup key without creating or changing a durable intent.
+pub fn intent_id(identity: &Identity) -> Result<String> {
+    Ok(hash(identity.encoded()?.as_bytes()))
 }
 
 /// Baselines/imports may be stored while passive. This records intent only and

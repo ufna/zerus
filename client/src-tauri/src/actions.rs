@@ -255,6 +255,21 @@ pub struct Actions {
 }
 
 impl Actions {
+    pub fn disarm_read_delivery(&self) -> Result<(), String> {
+        use zerus_client_core::desktop::drain::Observation;
+        let marks = self.mark_admissions.close();
+        let delivery = self.read_delivery.stop();
+        let now = std::time::Instant::now();
+        if marks.wait_until(now) != Observation::Idle
+            || delivery.wait_until(now) != Observation::Idle
+        {
+            return Err(
+                "Read delivery has not stopped; the background service cannot be connected yet."
+                    .into(),
+            );
+        }
+        Ok(())
+    }
     /// `marks_path` is the read-marks file; a missing one gives no marks.
     pub fn new(marks_path: PathBuf) -> Self {
         let wake = crate::readsync::Wake::default();
@@ -491,6 +506,23 @@ impl Actions {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .pending()
+    }
+    /// The service-mode webview gets just the retained marks matching this
+    /// bounded batch, not a second mirror of the complete legacy read queue.
+    pub(crate) fn overlay_retained_reads(&self, batch: &mut Batch) {
+        let marks = self.marks.lock().unwrap_or_else(PoisonError::into_inner);
+        if marks.is_empty() {
+            return;
+        }
+        for out in batch
+            .upserts
+            .iter_mut()
+            .chain(batch.replaces.iter_mut().flat_map(|r| r.rows.iter_mut()))
+        {
+            let (reply, attention) = marks.local_overlay(&out.computer.0, &out.row);
+            out.row.local_read_reply = reply;
+            out.row.local_read_attention = attention;
+        }
     }
 
     /// The session's lane, None while an action runs in it.
@@ -1059,6 +1091,9 @@ pub async fn dispatch_as(
     action: Action,
     request_id: String,
 ) -> Result<Outcome, String> {
+    if crate::desktop_service::mode() && matches!(action, Action::MarkRead { .. }) {
+        return Err("Read marks are unavailable until the background service is ready.".into());
+    }
     if blocked() {
         return Ok(failed(REPLAY_NEEDS_HGS));
     }
@@ -1763,6 +1798,11 @@ pub fn copy_command(computer: String, name: String, archive_id: Option<String>) 
 /// Read marks the host has not shown yet, for the store to apply optimistically.
 #[tauri::command]
 pub fn pending_read_marks(state: State<'_, Actions>) -> Vec<ReadMark> {
+    if crate::desktop_service::mode() {
+        // Service rows get indexed retained overlays at next_batch instead of
+        // mirroring the complete frozen queue into the webview a second time.
+        return Vec::new();
+    }
     state
         .marks
         .lock()
@@ -1780,6 +1820,9 @@ pub fn queue_read_marks(
     state: State<'_, Actions>,
     marks: Vec<ReadMark>,
 ) -> Result<Vec<ReadMark>, String> {
+    if crate::desktop_service::mode() {
+        return Err("Use the background service read-intent route.".into());
+    }
     state.queue_marks(marks)
 }
 
@@ -1810,6 +1853,57 @@ pub fn update_attention_marks(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retained_queue_overlays_remain_read_only_after_gui_writer_admission_closes() {
+        let path = std::env::temp_dir().join(format!(
+            "zerus-retained-overlay-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        let actions = Actions::new(path.clone());
+        let mark = ReadMark {
+            computer: "peer".into(),
+            name: "codex/example/one".into(),
+            run_id: "run-1".into(),
+            conversation_id: "conv-1".into(),
+            reply_id: Some("reply-1".into()),
+            attention_signature: Some("attention-1".into()),
+        };
+        actions.add_mark_for_test(mark.clone());
+        let before = std::fs::read(&path).unwrap();
+        actions.disarm_read_delivery().unwrap();
+        let mut batch = Batch {
+            upserts: vec![zerus_client_core::RowOut {
+                computer: ComputerId("peer".into()),
+                key: "one".into(),
+                row: ViewRow {
+                    name: mark.name.clone(),
+                    run_id: Some(mark.run_id.clone()),
+                    conversation_id: Some(mark.conversation_id.clone()),
+                    reply_id: mark.reply_id.clone(),
+                    attention_signature: mark.attention_signature.clone(),
+                    shared_read: true,
+                    ..ViewRow::default()
+                },
+            }],
+            ..Batch::default()
+        };
+        actions.overlay_retained_reads(&mut batch);
+        assert!(batch.upserts[0].row.local_read_reply);
+        assert!(batch.upserts[0].row.local_read_attention);
+        assert!(
+            batch.upserts[0].row.read_reply_id.is_none(),
+            "host acknowledgement is untouched"
+        );
+        assert!(
+            actions.queue_marks(vec![mark.clone()]).is_err(),
+            "the legacy writer remains closed"
+        );
+        actions.observe(&batch);
+        actions.flush_marks();
+        assert_eq!(actions.pending_marks(), vec![mark]);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let _ = std::fs::remove_file(path);
+    }
 
     #[test]
     fn shared_batch_claim_never_activates_two_writers_or_clears_the_next_write_fact() {

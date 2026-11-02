@@ -32,6 +32,17 @@ fresh session name; `--new -n review` uses your label and rejects an occupied na
 Arguments after `--` go to the agent or project wrapper. Arbitrary terminal commands
 can run through `hgs`; native lifecycle and Activity functions require an adapter.
 
+Inside a session's own terminal (tmux on Linux and macOS, the session host on
+Windows), `hgs` never attaches or switches that terminal, so an agent starts other
+sessions detached. `hgs claude /path/to/project --new -n review -d` starts the new
+session beside the current one and prints `hgs: started NAME`, as `fork -d` and
+`resume -d` do; `hgs guide launch` gives agents the full form with `--launch-id`.
+A launch without `-d` and `hgs a` are refused there with exit 2 (`already inside
+tmux session NAME; use --new -d or open a new tab`; Windows names no tmux). The new
+session gets its own session and run identity, never the caller's. Its account
+comes from the launch (`--account ID` or the computer's default for that agent);
+the account profile that the calling session runs under is not passed on.
+
 ### Session references
 
 **Copy session reference** in the desktop session context menu copies a
@@ -1811,7 +1822,10 @@ native usage. The saved native identity changes only on the real hook, and an
 unconfirmed command does not reset counters.
 A stopped session offers **Start fresh…** instead, with the same confirmation, and
 keeps **Send** available: it offers **Resume and send** with the full saved context,
-**Resume, compact and send**, or **Start fresh and send**. The compact option waits
+**Resume, compact and send**, or **Start fresh and send**. Zerus Next names the
+same choices **Resume**, **Compact and resume** and **Start fresh** under its
+"Start the session to send?" title, with **Cancel** last as the default; its
+dialog actions wrap onto further rows rather than leaving a narrow dialog. The compact option waits
 for the restored conversation to accept input, then runs native compaction and
 delivers the unchanged message only after confirmed success. A failed start, an
 unexpected conversation or three minutes without readiness cancel that send and
@@ -3687,15 +3701,27 @@ never `HGS_TRAY_RESTART=0`.
 
 Linux installs the binary under `~/.local/bin`, a systemd user service under
 `~/.config/systemd/user` and a launcher under `~/.local/share/applications`.
-The launcher is not a second autostart entry. `HGS_LINUX_GUI=client` selects the
-Tauri client, later installs retain the selected GUI, and a fresh installation
-defaults to Qt. `HGS_INSTALL_PREFIX` redirects the binary, launch files and
+The launcher is not a second autostart entry. Fresh installs and upgrades default
+to Zerus Next; `HGS_LINUX_GUI=client` selects it explicitly.
+`HGS_LINUX_GUI=qt` keeps the Qt source-build fallback until Linux acceptance. `HGS_INSTALL_PREFIX` redirects the binary, launch files and
 updater state into a scratch prefix and performs no service-manager action; see
-[Linux source installation and the Tauri client switch](linux-distribution.md).
+[Linux packages and source installation](linux-distribution.md).
 The service belongs to `graphical-session.target`, restarts after crashes and
 does not loop on exit code 4 (system tray unavailable). Compare
 `systemctl --user status hgs-tray.service` and `journalctl --user -u
 hgs-tray.service` when startup fails.
+
+The separate `hgs-desktop.service` uses the selected CLI's rendered registration
+and readiness contract. `zerus-setup --desktop-service` registers it for an AUR
+installation; the Next source installer registers it directly. Current-login
+graphical variables are imported before the service starts. A session refresh
+restarts only this backend when needed, and UI-only upgrades preserve an
+unchanged backend. CLI source upgrades refresh an existing owned registration
+without creating a service for a headless CLI-only installation. Package
+upgrades perform no user-service actions. Readiness means the matching IPC
+endpoint is ready, not that background workers have started. See
+[Linux desktop background service](linux-distribution.md#desktop-background-service)
+for custom configurations, bare window managers and startup diagnostics.
 
 On macOS the installer uses Qt/Homebrew, builds and ad-hoc-signs an app bundle,
 and installs it under `~/Applications/hgs-tray.app` with
@@ -4262,6 +4288,39 @@ hgs desktop status --json
 hgs desktop watch --json
 ```
 
+`hgs desktop serve --background` explicitly starts the service-owned bounded
+fleet runtime. The actor applies its watch packets and publishes catalog/count
+updates through the same endpoint. It keeps each original event's ingress permit
+through the database transaction; UI-supplied feed packets cannot enter the owned
+observation path. Failed frames invalidate their exact source until resnapshot.
+The existing plain `serve` and emitted registrations stay passive during the
+UI cutover. Generic approval policy requests remain refused; read, approval and
+posting workers are integrated separately.
+
+Background mode also owns one presence sampler/writer outside the actor. It
+samples every two seconds and uses the existing `desktop-presence.json` format.
+It writes on a 30-second heartbeat, a lock change or a return from at least
+120 seconds idle to active; steady samples do not each sync a file. Readers
+already age the recorded idle value between writes.
+The worker retains the same scoped lock used by `hgs presence set` until its
+last sample/write has returned and it has joined. A concurrent legacy writer is
+refused. Unknown idle or lock input never defaults to zero/unlocked or refreshes
+the previous record. Wayland durations measured only since observation began
+are also withheld until actual resumed input is observed. Thus a service restart
+does not turn an hour-away owner into a recently active owner. Existing records
+expire normally after 120 seconds without valid samples. Status distinguishes
+published, unknown-input, write-error and incomplete-shutdown states.
+
+Revoking background mode stops and drains its own streams before returning a
+checkpointed receipt. These receipts bind the service incarnation; an old revoke
+cannot stop a replacement instance. Any retained revoke (even interrupted) or
+historical handoff state also prevents background startup after login/restart:
+the endpoint stays passive with `background_start.code=explicit_handoff_required`.
+Passing `--background` again never clears that block. A new explicit handoff is
+part of the coordinated UI cutover, not an automatic service restart.
+Incomplete shutdown is reported as an error,
+never as drained. Native agents, tmux and unrelated services are not stopped.
+
 The existing `hgs presence set --json` payload and success output remain
 compatible. Its writes now hold a scoped `desktop-presence.lock`. Before any
 handoff, a passive service leaves that legacy producer available. A supported
@@ -4274,11 +4333,11 @@ listings read at most 4 KiB of a private regular leaf; malformed, oversized or
 special files provide no presence evidence.
 
 The private `desktop-v1` service kernel is local to one user and canonical
-configuration/state identity. It is **passive until the writer handoff is
-implemented**: it starts no fleet readers, presence/read workers, notifications
-or automatic approvals. It does not register itself with an OS service manager.
-Existing desktop clients retain their current owners. This kernel alone does
-not establish Qt retirement or native platform acceptance.
+configuration/state identity. Plain `serve` is passive; explicit background mode
+owns the fleet readers and presence writer described above. Read workers,
+notifications and automatic approvals remain inactive pending their integration.
+Maintained installers register the service with the OS manager. Desktop client
+cutover and native posting are separate changes.
 
 `status` is read-only and never starts a service or creates state. Its JSON
 reports `running`, `ownership`, `configuration`, executable `version`, schema,
@@ -4364,6 +4423,26 @@ Unary answers do not advance the broadcast watermark. A new epoch invalidates
 subscriptions; it never authorizes replay. EOF on a watch's stdin detaches that
 client. Control requests use a separate connection, not the display stream.
 
+Status, watch hello/heartbeat and `catalog_changed` include `attention_counts`.
+Its `shared_host_state` scope uses the existing session projection, shared read
+marks and shared mute settings; `local_marks_included:false` means device-local
+Review later and acknowledgement overlays are still separate. These presentation
+counts confer no posting, read or approval authority. Per-computer entries carry
+source incarnation/generation, online and complete flags. The aggregate reports
+unknown attention as null while any expected computer is incomplete or offline;
+`known_attention` is explicitly partial. The service epoch, projection generation
+and revision bind counts to the same subscriber stream. A restart invalidates
+coverage and catalog cursors, preserving only last-known display rows.
+
+The fleet runtime seam reuses the existing watch-v1 source supervisors: at most
+64 computer workers, four concurrent connection attempts and 16 MiB/1,024 ingress
+items, with permits retained through actor application. There are no per-session
+workers. Reconnect uses the existing 5/15/60/300-second backoff and resets source
+generation; gaps trigger a complete resnapshot. Removed aliases retire their
+exact projection and use the normal bounded collector. Slow UI subscribers never
+hold source ingress. The active service lifecycle starts and drains this runtime;
+the passive kernel and UI feed cannot activate it.
+
 `hgs desktop request --json` reads a JSON object from stdin with `op` and a
 canonical UUID `request_id`. `ping` returns an exact-ID, read-only `pong` with
 `durable:false`.
@@ -4395,8 +4474,19 @@ guards and revocation protocol. The kernel writes no takeover marker. See the
 exact [migration contract](desktop-migration.md).
 
 `hgs desktop registration --json` previews the current platform's per-user
-definition and exact configuration identity. It creates no files, contacts no
-service manager and enables no writer. Its `operation:preview` identifies this
+registration and includes a `readiness` probe for that exact binary and
+configuration. Run its `argv` directly with the two supplied `HGS_CONFIG_DIR`
+and `HGS_STATE_DIR` values, then require the returned configuration to equal
+`expected_configuration`. `lifecycle.ipc_ready` means the private endpoint and
+store are ready; it does not mean background writers are active. The same
+`lifecycle` object supplies the actual service PID, epoch and generation, plus
+per-component readiness. Its epoch changes on service restart. The registration's
+`session` object describes the graphical login environment needed by platform
+installers; it is a requirement, not a claim that the environment is present.
+
+The preview also contains the per-user definition and exact configuration identity.
+It creates no files, contacts no service manager and enables no writer.
+Its `operation:preview` identifies this
 render-only operation; it makes no claim about OS registration. Maintained installer
 ownership checks and delegation are separate steps before using the definition.
 
@@ -4412,7 +4502,14 @@ configurations automatically. Windows definitions use the current SID,
 restarts one minute apart (the [Task Scheduler schema minimum](https://learn.microsoft.com/en-us/windows/win32/taskschd/taskschedulerschema-interval-restarttype-element)).
 Paths with environment-variable markers are refused on Windows because Task
 Scheduler expands them even inside quoted arguments. Linux permits three starts
-within five minutes and does not restart a startup refusal (exit 78). macOS adds
+within five minutes and does not restart a startup refusal (exit 78). The Linux
+unit is ordered after and is part of `graphical-session.target`, and is enabled
+for that target rather than `default.target`. Plasma and GNOME establish this
+session after importing the graphical environment into the user manager. Bare
+window managers without that integration must arrange a session target that
+pulls in `graphical-session.target`, or import their session environment and
+manually enable/start `hgs-desktop.service` for that login. Direct manual start
+of `graphical-session.target` itself can be refused by systemd. macOS adds
 the private `--launchd` argument to the exact registered form: permanent startup
 refusals print a diagnostic and exit successfully, so
 [`SuccessfulExit=false`](https://github.com/apple-oss-distributions/launchd/blob/main/man/launchd.plist.5)

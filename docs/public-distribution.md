@@ -387,8 +387,9 @@ Stable releases also reach the Windows Package Manager community repository as
 (`scripts/winget_manifest.py`, schema 1.12.0) to `microsoft/winget-pkgs` from the
 `winget-pkgs` fork of the token's account. The manifest installs the immutable
 GitHub asset as a portable zip whose `zerus-windows-x86_64` folder winget puts on
-`PATH` (`ArchiveBinariesDependOnPath`), because `hgs-tray.exe` loads Qt and the
-app-local runtime from that folder; keep the zip's top folder and executable names.
+`PATH` (`ArchiveBinariesDependOnPath`), keeping the adjacent CLI, connector and
+app-local runtime together. Zerus Next manifests declare the separately installed
+`Microsoft.EdgeWebView2Runtime` dependency. Keep the zip's top folder and executable names.
 A winget installation has no Start menu entry; start it with `hgs-tray`. Nightly and
 Dev builds are not published to winget. A version already in `winget-pkgs`, or
 already proposed there by anyone, is never proposed again, so rerunning the failed

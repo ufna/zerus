@@ -61,15 +61,42 @@ pub fn run_limited(
     parent_env: &[(&str, &str)],
     stdout_cap: usize,
 ) -> Result<Exit, TooLarge> {
-    match run_inner(
-        hgs,
+    limited(hgs, inv, parent_env, stdout_cap, Pipes::default())
+}
+
+/// Console-free Windows child for noninteractive system helpers. This changes
+/// only process creation: the same input, output, timeout and error rules apply.
+#[cfg(windows)]
+pub fn run_hidden_limited(
+    program: &Path,
+    inv: &Invocation,
+    parent_env: &[(&str, &str)],
+    stdout_cap: usize,
+) -> Result<Exit, TooLarge> {
+    use std::os::windows::process::CommandExt;
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+    limited(
+        program,
         inv,
         parent_env,
-        &[],
         stdout_cap,
-        None,
-        Pipes::default(),
-    ) {
+        Pipes {
+            spawn: Some(Box::new(|command| {
+                command.creation_flags(CREATE_NO_WINDOW).spawn()
+            })),
+            ..Pipes::default()
+        },
+    )
+}
+
+fn limited(
+    program: &Path,
+    inv: &Invocation,
+    parent_env: &[(&str, &str)],
+    stdout_cap: usize,
+    pipes: Pipes,
+) -> Result<Exit, TooLarge> {
+    match run_inner(program, inv, parent_env, &[], stdout_cap, None, pipes) {
         Ok(exit) => Ok(exit),
         Err(Stopped::TooLarge(too_large)) => Err(too_large),
         // Nothing sets a flag when there is none.
@@ -478,6 +505,7 @@ fn run_inner(
     for key in remove {
         command.env_remove(key);
     }
+    crate::child_environment::restore(&mut command);
     command
         .env_remove("HGS_SESSION")
         .env_remove("HGS_RUN_ID")
@@ -913,5 +941,51 @@ mod stream_tests {
         assert_eq!(exit, Exit::TimedOut);
         assert!(began.elapsed() < Duration::from_secs(3));
         assert!(completed.recv_timeout(Duration::from_secs(2)).unwrap());
+    }
+}
+
+#[cfg(all(test, windows))]
+mod hidden_tests {
+    use super::*;
+    use base64::{engine::general_purpose::STANDARD, Engine};
+
+    #[test]
+    fn a_hidden_helper_has_no_console_and_receives_exact_input_through_eof() {
+        let program = std::env::var_os("SystemRoot")
+            .map(std::path::PathBuf::from)
+            .expect("Windows has SystemRoot")
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let script = r#"$ErrorActionPreference='Stop'
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false,$true)
+Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class QuietHelper { [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); }'
+[Console]::WriteLine(('{0}:{1}' -f [QuietHelper]::GetConsoleWindow().ToInt64(),([IO.StreamReader]::new([Console]::OpenStandardInput(),[Text.UTF8Encoding]::new($false,$true))).ReadToEnd()))
+"#;
+        let call = Invocation {
+            args: vec![
+                "-NoLogo".into(),
+                "-NoProfile".into(),
+                "-NonInteractive".into(),
+                "-EncodedCommand".into(),
+                STANDARD.encode(
+                    script
+                        .encode_utf16()
+                        .flat_map(u16::to_le_bytes)
+                        .collect::<Vec<_>>(),
+                ),
+            ],
+            stdin: Some(b"exact helper input".to_vec()),
+            timeout: Duration::from_secs(15),
+            request_id: None,
+        };
+        let result = run_hidden_limited(&program, &call, &[], 1024).unwrap();
+        match result {
+            Exit::Code {
+                code: 0, stdout, ..
+            } => assert_eq!(
+                String::from_utf8(stdout).unwrap().trim_end(),
+                "0:exact helper input"
+            ),
+            other => panic!("{other:?}"),
+        }
     }
 }

@@ -248,6 +248,23 @@ pub fn spawn_in_turn(command: &mut Command) -> io::Result<Child> {
     let _turn = spawn_turn();
     command.spawn()
 }
+/// Descriptor creation and spawn share the same turn on macOS, where setting
+/// close-on-exec after socket/pipe creation would otherwise race another spawn.
+/// Preserve the original deadline across turn contention and preparation.
+pub fn spawn_prepared_in_turn_before<T>(
+    until: std::time::Instant,
+    prepare: impl FnOnce() -> io::Result<(Command, T)>,
+) -> io::Result<(Child, T)> {
+    let _turn = spawn_turn();
+    if std::time::Instant::now() >= until {
+        return Err(io::ErrorKind::TimedOut.into());
+    }
+    let (mut command, resources) = prepare()?;
+    if std::time::Instant::now() >= until {
+        return Err(io::ErrorKind::TimedOut.into());
+    }
+    Ok((command.spawn()?, resources))
+}
 /// `Command::status` through `spawn`.
 pub fn status(command: &mut Command) -> io::Result<ExitStatus> {
     command.status()

@@ -210,7 +210,6 @@ fn open_linux(
 ) -> Result<(), String> {
     use std::sync::Arc;
     use tauri::webview::{NewWindowResponse, WebviewBuilder};
-    use tauri_plugin_opener::OpenerExt;
     let ui = app.state::<NativeUi>().inner().clone();
     if !ui.current(&request, generation) {
         return Err(super::CHANGED.into());
@@ -307,7 +306,7 @@ fn open_linux(
                 if !ui.current(&request, generation) || !active(&app, &label) {
                     return;
                 }
-                let _ = app.opener().open_url(url.as_str(), None::<&str>);
+                let _ = crate::external_open::url(&app, url.as_str());
             });
         }),
     };

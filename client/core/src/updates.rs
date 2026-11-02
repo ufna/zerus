@@ -64,7 +64,8 @@ pub struct Feed {
     pub macos_dmg_url: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Installation {
     pub kind: String,
     pub package: String,

@@ -169,9 +169,60 @@ Environment:
 | Variable | Effect |
 | --- | --- |
 | `ZERUS_CLIENT_HGS` | The `hgs` to run (default: the first `hgs` on `PATH`, then in `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin`, since an app started from Finder or a launcher gets a short `PATH`) |
+| `ZERUS_CLIENT_DESKTOP_SERVICE` | Exact value `1` selects the experimental desktop-service source at startup (default off). No legacy Fleet, read delivery, automatic approval, notification or recovery-sync worker starts in that mode; unavailable service stays unavailable. This does not activate the service. |
 | `ZERUS_CLIENT_REPLAY` | Replay synthetic watch streams instead of running `hgs`: a path list (`:` on Unix), the first file is this computer, `alias=file` entries are peers, e.g. `fixtures/replay.ndjson:mac=fixtures/replay-mac.ndjson` |
 | `ZERUS_CLIENT_REPLAY_INTERVAL_MS` | The pause per `heartbeat` frame of a replay (default 900) |
 | `ZERUS_CLIENT_QUERY` | URL parameters for the window, e.g. `select=claude/sample-project/api-refactor` opens that session and `page=settings` that screen |
+
+The service source validates lifecycle component readiness and reads bounded catalog
+pages through one subscriber. After the initial insertion walk, a serial
+`catalog_changes` reader catches up from its first revision, then reads only
+bounded upserts/tombstones. It preserves exact decimal revisions and projection
+identity, coalesces hints, and restarts a baseline on a gap, unknown cursor outcome
+or scope replacement. Only a fully consumed delta walk establishes membership;
+provisional/offline rows remain incomplete. Quit bounds the service join to five
+seconds after its draft flush. Shared host attention counts remain separate from
+this device's review marks; incomplete/null counts remain unknown. An unavailable
+or invalid count projection does not disconnect a valid lifecycle or catalog.
+Catalog bootstrap uses the bounded, epoch-bound runtime source roster instead
+of the counts' computer list. Retained pre-cutover read marks are projected by
+indexed exact-identity lookups into outgoing rows as device-local flags; the host
+acknowledgement fields and shared counts remain unchanged. The GUI read-delivery
+gate stays closed, and the webview does not mirror that entire legacy queue. Read intents
+are acknowledged only after a durable actor receipt, retaining their request UUID
+through an uncertain result. Activity, processes, project tasks and organization use
+the existing subscriber's bounded detail lease. Each view retains its exact consumer
+identity and validates the route generation, revision and contiguous detail sequence;
+native frame sequences may skip. Native Gap frames retain the subscription and
+allow the next snapshot to replace its staged data. Genuine route inconsistencies
+retire only that view before bounded rearming; unknown follow outcomes stay
+unavailable until explicit Retry, with no GUI watcher or request replay. An explicit
+Retry resets that view's recovery budget; temporary control admission pressure uses
+bounded retries before reporting it unavailable.
+
+After the existing automatic-approval confirmation, the native sender uses the
+dedicated authenticated `desktop frontend-request` route. It registers the original
+child before writing stdin and retains that registration through child and pipe
+drain. On a verified Mac installation it selects the paired bundled `hgs`; a failed
+pair has no ordinary CLI fallback. One outstanding request per operation retains
+its UUID through an uncertain result. **Check result** reads the original receipt
+and never resubmits it. If the original relay's exit is confirmed and that lookup
+proves no receipt exists, the request settles as not applied and a fresh intent
+can be submitted. An unverified exit or failed lookup remains pending.
+Maintenance has a native command using the shared full
+configuration type, with both update and recovery explicit; it replaces GUI identity
+with the running application's executable and build. An unknown recovery save
+remains pending. Updates and Recovery use one shared maintenance intent: update
+preference changes wait for the native preference worker before submitting both
+subsystems, and Recovery Save snapshots its form/base and retains update preferences.
+Only that Save's exact receipt acknowledges the edit; unrelated save counters do
+not. Opening a page only reads status and any existing receipt. **Apply background
+settings** explicitly sends current preferences and connects shared recovery policy
+synchronization when no configuration has been supplied yet. Manual **Check now**
+stays in the UI update worker. No generic request can change approval policy or
+maintenance configuration.
+Keep this switch off for normal installations;
+this source is not a complete UI-only cutover.
 
 A build without the `live` feature (`--no-default-features`) has no data source;
 the frontend then uses its built-in replay.
@@ -652,6 +703,25 @@ hidden sessions included, except sessions marked for review; at 0 the entry is
 disabled. A run marks those replies read and shows "1 reply marked as read."
 or "N replies marked as read."
 
+### Viewed reply
+
+As Qt's `checkViewedReply`, the selected session's unread reply is read once
+it stayed in view for a second (`src/store/viewedReply.ts`, checked every
+400 ms while the window shows). The window must be shown, not minimised and
+focused, the Sessions page current and no modal dialog or popup open; a
+subagent's Activity, an archived row and a computer that is not online never
+count. The followed inspection must have succeeded and name the row's
+conversation and reply. Activity must be within 30 px of its end, show no
+search result or deferred layout, and have the reply's row start in the
+viewport (when that row is not rendered: an empty final Stop of an idle
+session, or loaded events at or past the reply). Terminal must be connected,
+at its bottom and not blank. Any change of the session, conversation or reply
+starts the second again. Only that reply is read (`markReplyRead`): the
+attention and Review later stay, and a read mark is queued as for Mark as
+read. Nothing scrolls. The open row then stays under Needs attention and
+Active until another row is selected, as it does after Mark as read and Mark
+all as read.
+
 ### Copy actions
 
 The copy entries build text locally or ask `hgs` for it and put it on the
@@ -1124,6 +1194,15 @@ Run the smoke with a new scratch directory (choose another name on a rerun):
 python3 scripts/phase4-smoke.py --scratch "$PWD/target/phase4-smoke-run"
 ```
 
+Use `--only variable-scroll` for the long Markdown/append regression. On Linux,
+add `--native-wheel` to replay the queued-scroll/layout ordering and drive
+trusted wheel input while the provider window rotates. Its XTest driver verifies
+that the display server is the original sibling Xvfb owned by `xvfb-run`.
+Use `--static-wheel --static-shape mixed` with those flags for separate gestures
+and 900 ms pauses without event-window changes. This also checks that remounting
+static rows does not change their scroll range. `--renderer shm|dmabuf` selects
+the Linux renderer configuration; Xvfb does not qualify hardware DMA-BUF.
+
 The runner supplies the release binary, replay and fake, isolates `HOME`,
 `XDG_DATA_HOME` and `XDG_CACHE_HOME`, and forces the safe headless environment:
 no `DISPLAY`, a nonexistent `WAYLAND_DISPLAY`, `GDK_BACKEND=x11`,
@@ -1431,7 +1510,10 @@ Activity has events and scrolls, bounds each scenario at 60 s and the run at
 sessions off, with Reduce motion (both only tried, not stored), with the window
 hidden and with it minimised (`perf_away`; a bare Xvfb has no window manager, so
 there the window stays shown and the log says `minimized false`), each of the
-last two followed by one as displayed again.
+last two followed by one as displayed again. On Linux, endless motion also pauses
+on toplevel focus loss, covering minimised Wayland windows that keep reporting a visible document;
+visible one-shot entrances still complete, including new questions and toasts.
+the away log and report record the animation state at each pause and resume.
 `ZERUS_CLIENT_PERF_LABEL` names the platform, `ZERUS_CLIENT_PERF_HZ`
 overrides the display rate (`display_hz`), `ZERUS_CLIENT_PERF_REPRESENTATIVE=0`
 marks Xvfb runs and `ZERUS_CLIENT_PERF_PREFERENCE=default` keeps WebKit's

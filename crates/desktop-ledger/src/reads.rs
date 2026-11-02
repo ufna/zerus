@@ -232,6 +232,39 @@ pub fn reserve(
     id: &str,
     now: i64,
 ) -> Result<Option<Delivery>> {
+    reserve_sources(db, epoch, service_epoch, id, now, None)
+}
+
+/// Limit fair admission to the caller's current service-fleet sources. This is
+/// only a filter; it neither creates writer authority nor authenticates a host.
+pub fn reserve_for(
+    db: &mut Connection,
+    epoch: &str,
+    service_epoch: &str,
+    id: &str,
+    now: i64,
+    computers: &[String],
+) -> Result<Option<Delivery>> {
+    ensure!(computers.len() <= 64, "read source limit");
+    let mut seen = std::collections::BTreeSet::new();
+    for computer in computers {
+        if !computer.is_empty() {
+            text(computer, 255)?;
+        }
+        ensure!(seen.insert(computer), "duplicate read source");
+    }
+    let sources = serde_json::to_string(computers)?;
+    reserve_sources(db, epoch, service_epoch, id, now, Some(&sources))
+}
+
+fn reserve_sources(
+    db: &mut Connection,
+    epoch: &str,
+    service_epoch: &str,
+    id: &str,
+    now: i64,
+    sources: Option<&str>,
+) -> Result<Option<Delivery>> {
     uuid(epoch)?;
     uuid(service_epoch)?;
     uuid(id)?;
@@ -262,8 +295,14 @@ pub fn reserve(
     }
     let mut computer = None;
     for busy in 0..MAX_IN_FLIGHT as i64 {
-        computer = tx.query_row("SELECT computer FROM desktop_read_hosts WHERE in_flight=?1 AND next_due<=?2 ORDER BY next_due,computer LIMIT 1",
-            params![busy, now], |r| r.get::<_, String>(0)).optional()?;
+        computer = match sources {
+            Some(sources) => tx.query_row("SELECT h.computer FROM json_each(?3) j
+                JOIN desktop_read_hosts h ON h.computer=j.value
+                WHERE h.in_flight=?1 AND h.next_due<=?2 ORDER BY h.next_due,h.computer LIMIT 1",
+                params![busy, now, sources], |r|r.get::<_,String>(0)).optional()?,
+            None => tx.query_row("SELECT computer FROM desktop_read_hosts WHERE in_flight=?1 AND next_due<=?2 ORDER BY next_due,computer LIMIT 1",
+                params![busy, now], |r| r.get::<_, String>(0)).optional()?,
+        };
         if computer.is_some() {
             break;
         }
@@ -378,6 +417,7 @@ pub struct Snapshot<'a> {
     pub read_reply: Option<&'a str>,
     pub read_signature: Option<&'a str>,
 }
+
 pub fn observe(db: &mut Connection, expected: &Pending, snapshot: &Snapshot<'_>) -> Result<bool> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let stored = tx.query_row("SELECT seq,revision,mark FROM desktop_reads WHERE seq=?1 AND revision=?2 AND settled=0",

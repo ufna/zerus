@@ -1,3 +1,4 @@
+import { DesktopServiceStatus } from "../../components/DesktopServiceStatus";
 import { createSignal, onMount } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { inTauri } from "../../../bridge";
@@ -42,6 +43,7 @@ export function AboutSection() {
       <SectionHead title={trNoop("About")} />
       <p class="selectable">{zerus()}</p>
       <p class="selectable">{cli()}</p>
+      <DesktopServiceStatus counts />
       <div>
         <button class="btn" title="https://github.com/ufna/zerus" aria-label={tr("Open Zerus repository on GitHub")}
           onClick={() => { if (inTauri()) void invoke("open_repository").catch(() => {}); }}>
