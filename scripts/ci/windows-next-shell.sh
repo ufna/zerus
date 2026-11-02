@@ -15,6 +15,7 @@ on_exit() {
 trap on_exit EXIT
 native_status=0
 python scripts/ci/windows-desktop-registration-tests.py || native_status=1
+cargo test --locked --manifest-path crates/presence-sampler/Cargo.toml || native_status=1
 # The service/relay binary and native tests come from this exact checkout.
 cargo build --locked --bin hgs
 cargo test --locked desktop::ui_authority || native_status=1

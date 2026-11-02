@@ -150,6 +150,8 @@ fn catalog_invalidation_and_disconnect_do_not_admit_effects() {
 fn page() -> Value {
     json!({"request_id":REQUEST,"abi":"desktop-catalog-v1","accepted":true,"durable":false,
         "epoch":EPOCH,"computer":"peer","display_only":true,"authority":false,"complete":false,
+        "changes_abi":CHANGES_ABI,"incarnation":1,"generation":1,"projection":"0123456789abcdef0123456789abcdef",
+        "start_revision":null,"revision":"0","online":false,"last_known":true,"stale":false,
         "items":[{"key":"run:example","row":{"name":"claude/example/session"}}],"next_cursor":null})
 }
 #[test]
@@ -190,4 +192,76 @@ fn read_commit_requires_the_original_identity_operation_and_durable_actor_receip
         bad[key] = value;
         assert!(!read_committed(&bad, REQUEST));
     }
+}
+
+#[test]
+fn catalog_revisions_are_canonical_exact_strings_beyond_javascript_precision() {
+    let parse = |s: &str| serde_json::from_value::<Revision>(json!(s));
+    assert!(parse("9").unwrap() < parse("10").unwrap());
+    assert!(parse("9007199254740992").unwrap() < parse("9007199254740993").unwrap());
+    assert_eq!(
+        serde_json::to_value(parse("9007199254740993").unwrap()).unwrap(),
+        json!("9007199254740993")
+    );
+    for value in [
+        json!(0),
+        json!("01"),
+        json!("-1"),
+        json!("+1"),
+        json!(" 1"),
+        json!("9223372036854775808"),
+    ] {
+        assert!(serde_json::from_value::<Revision>(value).is_err());
+    }
+}
+fn changes_page() -> Value {
+    let mut p = page();
+    p["online"] = json!(true);
+    p["last_known"] = json!(false);
+    p["complete"] = json!(true);
+    p["since_revision"] = json!("9007199254740992");
+    p["through_revision"] = json!("9007199254740994");
+    p["revision"] = json!("9007199254740994");
+    p["items"] = json!([{"op":"upsert","key":"run:example","revision":"9007199254740993","row":{}},
+        {"op":"remove","key":"run:other","revision":"9007199254740994","row":null}]);
+    p
+}
+#[test]
+fn changes_pages_preserve_partial_cursors_without_claiming_walk_completion() {
+    let mut p = changes_page();
+    p["next_cursor"] = json!(REQUEST);
+    let checked = ChangePage::checked(p, REQUEST, EPOCH, "peer").unwrap();
+    assert!(checked.complete);
+    assert!(checked.next_cursor.is_some());
+    assert_eq!(checked.items.len(), 2);
+    for (key, value) in [
+        ("changes_abi", json!("wrong")),
+        ("durable", json!(true)),
+        ("authority", json!(true)),
+        ("online", json!(false)),
+        ("last_known", json!(true)),
+        ("projection", json!("A".repeat(32))),
+        ("through_revision", json!("9007199254740991")),
+        ("revision", json!("9007199254740993")),
+        ("stale", json!(true)),
+    ] {
+        let mut p = changes_page();
+        p[key] = value;
+        assert!(
+            ChangePage::checked(p, REQUEST, EPOCH, "peer").is_err(),
+            "{key}"
+        );
+    }
+    for (key, value) in [
+        ("revision", json!("9007199254740992")),
+        ("op", json!("replace")),
+        ("row", Value::Null),
+    ] {
+        let mut p = changes_page();
+        p["items"][0][key] = value;
+        assert!(ChangePage::checked(p, REQUEST, EPOCH, "peer").is_err());
+    }
+    let mut p = changes_page();
+    p["items"] = json!(vec![p["items"][0].clone(); CATALOG_ROWS + 1]);
+    assert!(ChangePage::checked(p, REQUEST, EPOCH, "peer").is_err());
 }

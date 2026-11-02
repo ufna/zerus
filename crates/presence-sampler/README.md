@@ -27,6 +27,12 @@ hard real-time operations.
   console-session dictionary, matching the previous Qt sources. Lock and fast
   user switching are distinguished; missing/invalid session data stays unknown.
   It does not install an event tap or read keyboard/mouse event contents.
+* Windows 10/11 uses `GetLastInputInfo` in this process's active interactive
+  session and `WTSSessionInfoEx` for its lock state. Session 0, disconnected
+  sessions and failed queries stay unknown. After the 32-bit input counter can
+  have wrapped, an initial age is only a lower bound until a new input timestamp
+  is observed. Regressing input timestamps do not establish recent presence.
+  It does not install an input hook, retain user names or read input contents.
 * Other platforms return unknown until their platform backend is implemented.
 
 Tests use private D-Bus peer connections, an in-process Wayland compositor, and

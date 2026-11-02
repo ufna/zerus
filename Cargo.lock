@@ -3381,6 +3381,7 @@ dependencies = [
  "objc2-core-graphics",
  "wayland-client",
  "wayland-protocols",
+ "windows-sys 0.61.2",
  "zbus",
 ]
 

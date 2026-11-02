@@ -43,9 +43,11 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let temp = tempfile::tempdir().unwrap();
+        Self::from_temp(tempfile::tempdir().unwrap())
+    }
+    fn from_temp(temp: tempfile::TempDir) -> Self {
         let location = Location {
-            root: temp.path().join("state/desktop"),
+            root: temp.path().canonicalize().unwrap().join("state/desktop"),
             configuration: "a".repeat(64),
         };
         location.prepare().unwrap();
@@ -69,16 +71,32 @@ impl Fixture {
             incarnation: 1,
             generation: 1,
         };
+        let mut runtime = Runtime::new(&epoch);
+        // The catalog receives no real heartbeat while these synchronous SQL
+        // fixtures walk pages. Test logical time explicitly; slow filesystems
+        // and unrelated parallel tests must not silently expire the source.
+        runtime.clock = Some(Instant::now());
         Self {
             _temp: temp,
             store,
             outbox,
             host,
-            runtime: Runtime::new(&epoch),
+            runtime,
             source,
             seq: 0,
             cursor: 0,
         }
+    }
+    fn advance(&mut self, by: Duration) {
+        *self.runtime.clock.as_mut().unwrap() += by;
+    }
+    fn focus(&mut self) {
+        let now = self.runtime.now();
+        self.runtime.suppress_foreground(now);
+    }
+    fn expire_focus(&mut self) {
+        self.focus();
+        self.advance(FOCUS_TTL + Duration::from_secs(1));
     }
     fn save(&mut self, raw: &Value, baseline: bool) {
         let session = state::session("", raw).unwrap();
@@ -648,7 +666,7 @@ fn expired_original_observation_and_retention_gap_cannot_authorize_a_post() {
     f.snapshot(vec![initial]);
     f.ticks(4);
     f.delta(row());
-    f.runtime.sources.get_mut("").unwrap().at = Instant::now() - FRESH - Duration::from_secs(1);
+    f.advance(FRESH + Duration::from_secs(1));
     f.ticks(4);
     assert!(f.host.try_next().is_err());
     // A fresh owned callback can restore source eligibility, but starts from a
@@ -892,7 +910,7 @@ fn focus_refresh_never_restarts_a_multi_page_baseline_or_loses_a_later_reply() {
     f.snapshot(rows.clone());
     let revision = f.runtime.policy_revision;
     for _ in 0..100 {
-        f.runtime.suppress_foreground(Instant::now());
+        f.focus();
         f.tick();
         assert_eq!(f.runtime.policy_revision, revision);
     }
@@ -900,8 +918,7 @@ fn focus_refresh_never_restarts_a_multi_page_baseline_or_loses_a_later_reply() {
         f.runtime.sources[""].baselined,
         "focus must allow the original walk to finish"
     );
-    f.runtime
-        .suppress_foreground(Instant::now() - FOCUS_TTL - Duration::from_secs(1));
+    f.expire_focus();
     f.tick();
     assert!(f.runtime.sources[""].baselined);
     let mut changed = rows[199].clone();
@@ -1014,14 +1031,13 @@ fn a_reply_observed_while_focused_stays_consumed_after_focus_expires() {
     let rows = fleet_rows(200);
     f.snapshot(rows.clone());
     f.ticks(100);
-    f.runtime.suppress_foreground(Instant::now());
+    f.focus();
     let mut changed = rows[199].clone();
     changed["reply_id"] = json!("seen-focused");
     f.delta(changed.clone());
     f.ticks(10);
     assert!(f.host.try_next().is_err());
-    f.runtime
-        .suppress_foreground(Instant::now() - FOCUS_TTL - Duration::from_secs(1));
+    f.expire_focus();
     f.delta(changed.clone());
     f.ticks(10);
     assert!(f.host.try_next().is_err());
@@ -1208,4 +1224,37 @@ fn an_empty_saved_tracker_is_known_state_and_allows_new_delta_edges() {
     f.delta(changed);
     f.ticks(400);
     assert_single_reply(&mut f, "first-new-reply");
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_temp_parent_is_resolved_before_opening_private_sqlite() {
+    let real = tempfile::tempdir().unwrap();
+    let links = tempfile::tempdir().unwrap();
+    let alias = links.path().join("temp-alias");
+    std::os::unix::fs::symlink(real.path(), &alias).unwrap();
+    let temp = tempfile::Builder::new()
+        .prefix("attention-")
+        .tempdir_in(&alias)
+        .unwrap();
+    assert!(temp.path().starts_with(&alias));
+    let f = Fixture::from_temp(temp);
+    let path = std::path::Path::new(f.store.db.path().unwrap());
+    assert!(path.starts_with(real.path().canonicalize().unwrap()));
+    assert_eq!(path, path.canonicalize().unwrap());
+}
+
+#[test]
+fn foreground_ttl_expires_at_the_logical_deadline_without_sleeping() {
+    let mut f = Fixture::new();
+    f.runtime.set_policy(enabled());
+    let mut initial = row();
+    initial["reply_id"] = Value::Null;
+    f.snapshot(vec![initial]);
+    f.ticks(4);
+    f.focus();
+    f.advance(FOCUS_TTL);
+    f.delta(row());
+    f.ticks(4);
+    assert_single_reply(&mut f, "reply-1");
 }

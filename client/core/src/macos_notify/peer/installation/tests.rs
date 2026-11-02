@@ -57,6 +57,107 @@ fn fake_snapshot(tree: &Tree) -> Snapshot {
 }
 
 #[test]
+fn routing_metadata_cache_refuses_a_changed_helper_without_rehashing_each_page() {
+    // Modelled verified snapshot: no native positive signature is claimed.
+    let tree = Tree::new();
+    let selection = Selection {
+        original: fake_snapshot(&tree),
+    };
+    let service = tree.0.join("Contents/MacOS/hgs");
+    for _ in 0..100 {
+        assert_eq!(
+            selection.service_executable_if_unchanged().unwrap(),
+            service
+        );
+    }
+    std::fs::write(&service, b"changed generation").unwrap();
+    assert!(selection.service_executable_if_unchanged().is_err());
+}
+
+#[test]
+fn ancestor_churn_keeps_routing_and_full_snapshot_comparison_current() {
+    // Actual filesystem changes, modelled already-verified signatures. This
+    // exercises the same generation comparison used by full revalidate(),
+    // without claiming a genuine running-self/service positive in libtest.
+    let tree = Tree::new();
+    let before = fake_snapshot(&tree);
+    let selection = Selection {
+        original: fake_snapshot(&tree),
+    };
+    for directory in [
+        tree.0.parent().unwrap(),
+        tree.0.parent().unwrap().parent().unwrap(),
+    ] {
+        let name = tree
+            .0
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let source = directory.join(format!("{name}-churn"));
+        let renamed = directory.join(format!("{name}-renamed"));
+        std::fs::write(&source, b"unrelated atomic update").unwrap();
+        assert!(selection.service_executable_if_unchanged().is_ok());
+        assert!(same_generation(&before, &fake_snapshot(&tree)).is_ok());
+        std::fs::rename(&source, &renamed).unwrap();
+        assert!(selection.service_executable_if_unchanged().is_ok());
+        assert!(same_generation(&before, &fake_snapshot(&tree)).is_ok());
+        std::fs::remove_file(&renamed).unwrap();
+    }
+    std::fs::write(tree.0.join("Contents/MacOS/hgs"), b"changed helper").unwrap();
+    assert!(selection.service_executable_if_unchanged().is_err());
+    assert!(same_generation(&before, &fake_snapshot(&tree)).is_err());
+}
+
+#[test]
+fn bundle_last_used_xattr_does_not_change_the_generation() {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+    let tree = Tree::new();
+    let before = fake_snapshot(&tree);
+    let selection = Selection {
+        original: fake_snapshot(&tree),
+    };
+    let path = CString::new(tree.0.as_os_str().as_bytes()).unwrap();
+    let name = CString::new("com.apple.lastuseddate#PS").unwrap();
+    let value = [0u8; 16];
+    // SAFETY: fixed bounded owned scratch path/name/value; no installed app,
+    // LaunchServices, signing, permissions or owner GUI is contacted.
+    assert_eq!(
+        unsafe {
+            libc::setxattr(
+                path.as_ptr(),
+                name.as_ptr(),
+                value.as_ptr().cast(),
+                value.len(),
+                0,
+                0,
+            )
+        },
+        0
+    );
+    assert!(selection.service_executable_if_unchanged().is_ok());
+    assert!(same_generation(&before, &fake_snapshot(&tree)).is_ok());
+}
+
+#[test]
+fn replaced_ancestor_still_invalidates_the_same_bundle() {
+    let tree = Tree::new();
+    let selection = Selection {
+        original: fake_snapshot(&tree),
+    };
+    let parent = tree.0.parent().unwrap();
+    let moved = parent.with_extension("old");
+    assert!(!moved.exists());
+    std::fs::rename(parent, &moved).unwrap();
+    std::fs::create_dir(parent).unwrap();
+    std::fs::rename(moved.join("Example.app"), &tree.0).unwrap();
+    std::fs::remove_dir(&moved).unwrap();
+    assert!(selection.service_executable_if_unchanged().is_err());
+}
+
+#[test]
 fn only_exact_own_bundle_layouts_are_candidates_not_bare_or_source_paths() {
     for name in ["hgs", "hgs-tray"] {
         let p = PathBuf::from("/example/Example.app/Contents/MacOS").join(name);

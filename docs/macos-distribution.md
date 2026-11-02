@@ -81,8 +81,13 @@ service label identifies an owned registration even when its old CLI path or def
 installer checks a loaded job against that old argv before replacing or
 removing it.
 
-Source `install.sh` reloads the owned desktop service when its CLI bytes
-change. Recovery, swarm and voice retain their existing installer/update rules.
+Source `install.sh` reloads a PATH-backed desktop service when its CLI bytes
+change. An owned service with a separate runner keeps its registered backend;
+the CLI-only install refreshes its ordinary runner without selecting a different
+service image. After rollback to an existing unpaired app, a missing bundled CLI
+and absent pair record restore the ordinary stable-CLI registration. A remaining
+pair record, present-but-broken helper, missing app or link still refuses.
+Recovery, swarm and voice retain their existing installer/update rules.
 `tray/install.sh` preflights it before the GUI swap and retains an
 unchanged active backend during GUI-only updates. The signed notification host
 keeps `com.hgdev.hgs-tray`; its service command interface and delivery integration
@@ -352,15 +357,12 @@ checkout with retained Cargo and CMake build directories keeps subsequent
 iterations incremental. Use the CI sequence of that exact main push as
 `ZERUS_DEV_BUILD_NUMBER`; do not wait for its result.
 
-From that clean checkout on the Mac, configure the GUI without test targets,
-then use the maintained installers:
+From that clean checkout on the Mac, use the maintained installers. The default
+GUI is Zerus Next; Node/npm and Rust must be installed:
 
 ```sh
 export ZERUS_DEV_BUILD_NUMBER=NUMBER_FROM_THIS_MAIN_PUSH
 export HGS_MOBILE_CONNECTOR=0
-cmake -S tray -B tray/build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
-  -DZERUS_DEV_BUILD_NUMBER="$ZERUS_DEV_BUILD_NUMBER" \
-  -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
 bash install.sh
 bash tray/install.sh
 ```
@@ -387,8 +389,9 @@ a local evaluation build, not a public update channel or a main publication.
 Before returning the checkout to main, clear `ZERUS_LOCAL_PREVIEW_LABEL` and set
 the exact main CI sequence again. Build labels must never hide dirty sources.
 
-`tray/install.sh` copies the raw bundle to a disposable staging directory and
-signs that copy through `tray/sign-local-macos.py` before replacing or restarting
+For Next, `tray/install.sh` prepares a disposable app/CLI pair through
+`tray/prepare-local-macos.py`, then signs it through `tray/sign-local-macos.py`
+before replacing or restarting
 the installed application. Only after selecting a compatible certificate does the helper promote
 the staged copy to the installed `com.hgdev.hgs-tray` identifier; failed preparation
 restores the local identifier and the installer removes its temporary copy.
@@ -397,6 +400,45 @@ application-signing identity already in the local keychain; it never imports or
 unlocks credentials and never falls back to ad hoc signing. `mac-install.sh`
 uses the destination Mac's keychain and forwards the optional
 `HGS_MACOS_SIGN_IDENTITY` exact certificate name or SHA-1 selector.
+
+The paired copy contains exactly the app and `Contents/MacOS/hgs`. The signer
+signs the CLI first with identifier `hgs`, then seals it and
+`Contents/Resources/zerus-local-pair.json` into the app. The record contains the
+unsigned build artifact's SHA-256 and the signed CLI's SHA-256. Both signatures
+must be genuine Apple application signatures from the same team, with stable
+designated requirements; both retain mutual continuity with an existing pair.
+Unexpected nested Mach-O files, links and special files refuse preparation.
+The signer's default single-executable mode remains available for the explicit
+`HGS_MAC_GUI=qt` fallback.
+
+The independent `~/.local/bin/hgs` remains the ordinary CLI for agents, hooks and
+session recipes. Before building or replacing the GUI, the installer requires
+its bytes to equal the root build artifact. A mismatch asks you to run
+`./install.sh` (or `mac-install.sh`) from the same checkout first. A custom Cargo
+output can be selected with `HGS_MAC_CLI_BUILD=/absolute/path/to/release/hgs`;
+`mac-install.sh` passes its retained native artifact explicitly. Signing changes
+only the private bundle copy, never that artifact or the stable CLI.
+
+After the app swap, the owned desktop LaunchAgent selects the signed bundled
+CLI as its executable and sets `HGS_EXECUTABLE` to the independent stable CLI
+for ordinary descendants. A changed backend reloads only this desktop service;
+an unchanged backend stays running. The GUI keeps its explicit `--hgs` stable
+CLI selection. The desktop-service client selects the bundled CLI only through
+fresh native running-self and sealed-pair verification; a purported pair that
+fails stays unavailable. Unpaired/source launches keep ordinary CLI discovery.
+The read-only service client verifies once per connection, then checks the fixed
+generation metadata before each CLI exchange; catalog pages do not rehash the
+whole app. Changed generations refuse until an explicit reconnect verifies again.
+Ancestors are compared by identity, mode and ownership, so unrelated home-folder
+updates do not invalidate the app. The bundle directory's ctime is excluded
+because last-used xattrs change it; code, plist and seal files keep full stamps.
+The shared `desktop::relay::select` API also supplies the bundled service image
+for the authenticated frontend-request sender; that still-unavailable sender is
+a separate UI integration. The stable runner is not native authority.
+Native host entry/cutover is a separate
+change: pairing alone enables neither notifications nor a new permission.
+`update-installed.py` still saves drafts, checks native processes and keeps one
+rollback app; an old Qt copy continues to use the stable CLI.
 
 When a certificate-signed app is already installed, selection follows its team
 and signing class. A local rebuild of the published app therefore needs a
