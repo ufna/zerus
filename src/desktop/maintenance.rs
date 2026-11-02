@@ -210,9 +210,35 @@ impl Runtime {
         }
         Ok(())
     }
-    /// Call ONLY from the authenticated native frontend route. A body, build
-    /// identity or ready flag is configuration data, never authentication.
-    pub fn request(&mut self, store: &mut Store, value: &Value) -> Value {
+    /// Consume the original native permit at the mutation boundary. Bodies,
+    /// build identities and ready flags cannot construct this authority.
+    pub fn frontend_request(
+        &mut self,
+        store: &mut Store,
+        authority: crate::desktop::ui_authority::Validated,
+    ) -> Value {
+        let id = authority.id().to_owned();
+        let refused = |code| json!({"request_id":id,"accepted":false,"durable":false,"code":code});
+        match authority.into_request() {
+            Ok(zerus_client_core::desktop::ui_requests::Request::MaintenanceConfigure {
+                request_id,
+                update,
+                recovery,
+            }) => {
+                let value = serde_json::to_value(Request::Configure {
+                    request_id,
+                    update: update.map(|v| *v),
+                    recovery: recovery.map(|v| *v),
+                });
+                match value {
+                    Ok(value) => self.request(store, &value),
+                    Err(_) => refused("maintenance_refused"),
+                }
+            }
+            _ => refused("frontend_identity_expired"),
+        }
+    }
+    fn request(&mut self, store: &mut Store, value: &Value) -> Value {
         let id = value
             .get("request_id")
             .and_then(Value::as_str)

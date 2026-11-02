@@ -281,6 +281,7 @@ fn validate(
         ensure!(
             update.gui.bundle_id == reply.hello.application
                 && update.gui.app_version == reply.hello.build.version
+                && Some(update.gui.dev_number) == dev_number(&reply.hello.build.version)
                 && update.gui.source_commit == reply.hello.build.source_commit
                 && platform::file_identity(Path::new(&update.gui.executable)).is_some_and(
                     |id| Some(id) == platform::file_identity(Path::new(&frontend.executable))
@@ -289,6 +290,16 @@ fn validate(
         );
     }
     Ok(())
+}
+
+fn dev_number(version: &str) -> Option<u64> {
+    match version.split_once('-').map(|(_, prerelease)| prerelease) {
+        Some(prerelease) if prerelease.starts_with("dev.") => prerelease[4..]
+            .parse::<u64>()
+            .ok()
+            .filter(|number| *number > 0 && number.to_string() == prerelease[4..]),
+        _ => Some(0),
+    }
 }
 
 type Instance = (u32, String, String);
@@ -659,7 +670,7 @@ mod tests {
         };
         reply.request.fingerprint = envelope.request.fingerprint();
         assert!(validate(&envelope, &caller, &frontend, &reply, &"a".repeat(64)).is_ok());
-        for field in 0..3 {
+        for field in 0..4 {
             let mut wrong = envelope.clone();
             let Request::MaintenanceConfigure {
                 update: Some(update),
@@ -671,6 +682,7 @@ mod tests {
             match field {
                 0 => update.gui.app_version = "another build".into(),
                 1 => update.gui.source_commit = "b".repeat(40),
+                2 => update.gui.dev_number = 42,
                 _ => {
                     update.gui.executable = temp
                         .path()
@@ -682,6 +694,51 @@ mod tests {
             }
             reply.request.fingerprint = wrong.request.fingerprint();
             assert!(validate(&wrong, &caller, &frontend, &reply, &"a".repeat(64)).is_err());
+        }
+        reply.hello.build.version = "1.0.0-dev.42".into();
+        let Request::MaintenanceConfigure {
+            update: Some(update),
+            ..
+        } = &mut envelope.request
+        else {
+            unreachable!()
+        };
+        update
+            .gui
+            .app_version
+            .clone_from(&reply.hello.build.version);
+        for number in [0, 41, 42, 43] {
+            let Request::MaintenanceConfigure {
+                update: Some(update),
+                ..
+            } = &mut envelope.request
+            else {
+                unreachable!()
+            };
+            update.gui.dev_number = number;
+            reply.request.fingerprint = envelope.request.fingerprint();
+            assert_eq!(
+                validate(&envelope, &caller, &frontend, &reply, &"a".repeat(64)).is_ok(),
+                number == 42
+            );
+        }
+    }
+
+    #[test]
+    fn dev_number_uses_only_the_bound_version_suffix() {
+        assert_eq!(dev_number("1.0.0"), Some(0));
+        assert_eq!(dev_number("1.0.0-preview.fixture.abcdef0"), Some(0));
+        assert_eq!(dev_number("0.48.0-preview.local-dev.1a2b3c4"), Some(0));
+        assert_eq!(dev_number("0.48.0-preview.local-dev.1234567"), Some(0));
+        assert_eq!(dev_number("1.0.0-dev.42"), Some(42));
+        for version in [
+            "1.0.0-dev.",
+            "1.0.0-dev.0",
+            "1.0.0-dev.042",
+            "1.0.0-dev.+42",
+            "1.0.0-dev.18446744073709551616",
+        ] {
+            assert_eq!(dev_number(version), None, "{version}");
         }
     }
 
