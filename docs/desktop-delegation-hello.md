@@ -86,9 +86,21 @@ Environment reads require the native pointer-width layout, verified against the
 Win32 environment API, and a double-NUL terminator within 64 KiB. Marker keys
 use Windows ordinal case comparison, including empty values. Process birth,
 image, parent and environment are checked before admission and again at use.
-A verified other-user boundary ends the walk; an exited/unreadable parent or a
-failed lookup yielding PID zero does not. Such a frontend remains unavailable.
-This does not change the separately unsupported Windows owner-status probe.
+The walk checks same-user ancestry, matching Unix's boundary at another user
+and its kernel reparenting after a launcher exits. Windows retains the old
+parent PID instead: a missing/exited parent or a candidate created at or after
+the child's creation FILETIME ends the walk as departed. A query-only
+`OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` returning `ERROR_ACCESS_DENIED`,
+or a different token user SID, ends it as foreign-principal. Creation times come
+from retained original handles; a later-created candidate is never inspected as
+an ancestor. These are parent-only boundaries, never a caller/GUI liveness
+exception or authority from roles, names, PIDs or caller JSON.
+
+Readable same-user agent names/markers, other open/query errors, changed
+identity, the ancestor cap and the original deadline still refuse. Held parent
+proofs and the original same-user chain are rechecked at use. No failed
+Toolhelp lookup is converted to a clean PID-zero root. This does not change the
+separately unsupported Windows owner-status probe.
 
 Only the service actor commits policy and read intents, and responses claim
 `durable:true` only after that commit. The delivery worker observes successfully

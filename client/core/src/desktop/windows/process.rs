@@ -123,6 +123,21 @@ impl Original {
         } else {
             limited
         };
+        Self::from_handle(
+            pid,
+            process,
+            before.parse().map_err(|_| io::ErrorKind::InvalidData)?,
+            sid,
+            own,
+        )
+    }
+    fn from_handle(
+        pid: u32,
+        process: OwnedHandle,
+        created: u64,
+        sid: Vec<u8>,
+        own: bool,
+    ) -> io::Result<Self> {
         let value = if own {
             Some(
                 basic(process.as_raw_handle(), pid)
@@ -133,7 +148,7 @@ impl Original {
         };
         let result = Self {
             pid,
-            birth: before.parse().map_err(|_| io::ErrorKind::InvalidData)?,
+            birth: created,
             parent: value.map_or(0, |v| v.parent as u32),
             image: image(process.as_raw_handle()).map_err(|e| context("read original image", e))?,
             own,
@@ -463,56 +478,209 @@ fn agent(environment: &[u16]) -> io::Result<bool> {
     }
     Ok(false)
 }
+/// A minimal parent observation pins the kernel object. Creation identity is
+/// checked before SID/image/environment inspection so a reused PID is never
+/// adopted as the original ancestor.
+struct ParentStamp {
+    process: OwnedHandle,
+    pid: u32,
+    created: u64,
+}
+impl ParentStamp {
+    fn read(pid: u32, process: OwnedHandle) -> io::Result<Self> {
+        require(unsafe { GetProcessId(process.as_raw_handle()) } == pid)?;
+        let created = birth(process.as_raw_handle())
+            .ok_or_else(io::Error::last_os_error)?
+            .parse()
+            .map_err(|_| io::ErrorKind::InvalidData)?;
+        Ok(Self {
+            process,
+            pid,
+            created,
+        })
+    }
+    fn unchanged(&self) -> bool {
+        (unsafe { GetProcessId(self.process.as_raw_handle()) }) == self.pid
+            && birth(self.process.as_raw_handle()).as_deref()
+                == Some(self.created.to_string().as_str())
+    }
+    fn exit_code(&self) -> io::Result<u32> {
+        let mut value = 0;
+        if unsafe { GetExitCodeProcess(self.process.as_raw_handle(), &mut value) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(value)
+    }
+}
+enum Boundary {
+    Missing,
+    Denied,
+    Reused(ParentStamp),
+    Exited(ParentStamp),
+    Signaled(ParentStamp),
+    Foreign(ParentStamp, Vec<u8>),
+}
+enum Parent {
+    Same(Original),
+    End(Boundary),
+}
+fn parent_open_error(error: io::Error) -> io::Result<Boundary> {
+    match error.raw_os_error().map(|v| v as u32) {
+        // The PID comes only from the held child's successful native query;
+        // with this fixed access mask an invalid PID has no live process.
+        Some(ERROR_INVALID_PARAMETER) => Ok(Boundary::Missing),
+        // Owner-approved Unix parity: query-only access denial ends the
+        // same-user walk. This is not a role/name/PID or caller-JSON allowlist.
+        Some(ERROR_ACCESS_DENIED) => Ok(Boundary::Denied),
+        _ => Err(error),
+    }
+}
+fn parent(pid: u32, child_birth: u64, until: Instant) -> io::Result<Parent> {
+    require(Instant::now() < until)?;
+    let process = match owned(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) }) {
+        Ok(process) => process,
+        Err(error) => return parent_open_error(error).map(Parent::End),
+    };
+    let observed = ParentStamp::read(pid, process)?;
+    if observed.created >= child_birth {
+        return Ok(Parent::End(Boundary::Reused(observed)));
+    }
+    // An exit value other than STILL_ACTIVE proves departure. A process may
+    // exit with 259, so that value alone never proves liveness: same-user
+    // parents also require the original synchronization handle below.
+    if observed.exit_code()? != STILL_ACTIVE as u32 {
+        return Ok(Parent::End(Boundary::Exited(observed)));
+    }
+    let sid = user(observed.process.as_raw_handle())?;
+    if sid != user(unsafe { GetCurrentProcess() })? {
+        return Ok(Parent::End(Boundary::Foreign(observed, sid)));
+    }
+    let full = match owned(unsafe {
+        OpenProcess(
+            PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_SYNCHRONIZE,
+            0,
+            pid,
+        )
+    }) {
+        Ok(full) => full,
+        Err(error) => {
+            // A same-user VM/query failure is not a foreign-principal proof.
+            // Only an independently observed exit can end this race cleanly.
+            return if observed.exit_code()? != STILL_ACTIVE as u32 {
+                Ok(Parent::End(Boundary::Exited(observed)))
+            } else {
+                Err(error)
+            };
+        }
+    };
+    let full = ParentStamp::read(pid, full)?;
+    require(
+        full.created == observed.created
+            && observed.unchanged()
+            && user(full.process.as_raw_handle())? == sid,
+    )?;
+    match unsafe { WaitForSingleObject(full.process.as_raw_handle(), 0) } {
+        WAIT_OBJECT_0 => Ok(Parent::End(Boundary::Signaled(full))),
+        WAIT_TIMEOUT => {
+            let result = Original::from_handle(pid, full.process, full.created, sid, true);
+            match result {
+                Ok(original) => Ok(Parent::Same(original)),
+                Err(_) if observed.exit_code()? != STILL_ACTIVE as u32 => {
+                    Ok(Parent::End(Boundary::Exited(observed)))
+                }
+                Err(error) => Err(error),
+            }
+        }
+        _ => Err(io::Error::last_os_error()),
+    }
+}
+impl Boundary {
+    fn validate(&self, child: &Original, until: Instant) -> io::Result<()> {
+        require(child.current() && Instant::now() < until)?;
+        match self {
+            Self::Missing | Self::Denied => {
+                // No original parent handle exists for these two outcomes.
+                // Re-query the held child's exact parent, without adopting a
+                // newly readable same-user process into the accepted chain.
+                require(matches!(
+                    parent(child.parent, child.birth, until)?,
+                    Parent::End(_)
+                ))?;
+            }
+            Self::Reused(value) => require(
+                value.pid == child.parent && value.unchanged() && value.created >= child.birth,
+            )?,
+            Self::Exited(value) => require(
+                value.pid == child.parent
+                    && value.unchanged()
+                    && value.created < child.birth
+                    && value.exit_code()? != STILL_ACTIVE as u32,
+            )?,
+            Self::Signaled(value) => require(
+                value.pid == child.parent
+                    && value.unchanged()
+                    && value.created < child.birth
+                    && unsafe { WaitForSingleObject(value.process.as_raw_handle(), 0) }
+                        == WAIT_OBJECT_0,
+            )?,
+            Self::Foreign(value, sid) => require(
+                value.pid == child.parent
+                    && value.unchanged()
+                    && value.created < child.birth
+                    && user(value.process.as_raw_handle())? == *sid
+                    && *sid != user(unsafe { GetCurrentProcess() })?,
+            )?,
+        }
+        require(Instant::now() < until)
+    }
+}
 pub struct Ancestry {
     chain: Vec<Arc<Original>>,
-    boundary: Original,
+    boundary: Boundary,
 }
 impl Ancestry {
     pub fn inspect(pid: u32, until: Instant) -> io::Result<Self> {
         require(Instant::now() < until)?;
         let mut current =
             Original::open(pid).map_err(|e| context("initial ancestor metadata", e))?;
+        require(current.own)?;
         let mut chain: Vec<Arc<Original>> = Vec::new();
         loop {
             require(
                 Instant::now() < until
+                    && current.own
                     && current.current()
+                    && chain.len() < LIMIT
                     && !chain.iter().any(|p| p.pid == current.pid),
             )?;
-            if let Some(child) = chain.last() {
-                require(current.birth <= child.birth)?;
-            }
-            if !current.own {
-                let result = Self {
-                    chain,
-                    boundary: current,
-                };
-                result.validate(until)?;
-                return Ok(result);
-            }
-            require(chain.len() < LIMIT && current.parent != 0)?;
             let name = std::path::Path::new(&current.image)
                 .file_name()
                 .and_then(|s| s.to_str())
-                .ok_or(io::ErrorKind::InvalidData)?
-                .to_owned();
+                .ok_or(io::ErrorKind::InvalidData)?;
             let environment = current
                 .environment(until)
                 .map_err(|e| context(&format!("ancestor environment at hop {}", chain.len()), e))?;
-            if agent_name(&name)? || agent(&environment)? {
+            if agent_name(name)? || agent(&environment)? {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     "agent-descended frontend request refused",
                 ));
             }
-            let parent = current.parent;
+            let candidate = parent(current.parent, current.birth, until)?;
             chain.push(Arc::new(current));
-            current = Original::open(parent)
-                .map_err(|e| context(&format!("ancestor metadata at hop {}", chain.len()), e))?;
+            match candidate {
+                Parent::Same(original) => current = original,
+                Parent::End(boundary) => {
+                    let result = Self { chain, boundary };
+                    result.validate(until)?;
+                    return Ok(result);
+                }
+            }
         }
     }
     pub fn validate(&self, until: Instant) -> io::Result<()> {
-        require(!self.boundary.own && self.boundary.current() && Instant::now() < until)?;
+        let child = self.chain.last().ok_or(io::ErrorKind::InvalidData)?;
+        self.boundary.validate(child, until)?;
         for original in &self.chain {
             require(
                 Instant::now() < until
@@ -520,7 +688,7 @@ impl Ancestry {
                     && !agent(&original.environment(until)?)?,
             )?;
         }
-        require(Instant::now() < until)
+        self.boundary.validate(child, until)
     }
 }
 
@@ -583,6 +751,197 @@ mod tests {
         reader.join().unwrap();
         assert!(ready.unwrap().ends_with(b"START\r\n"));
         child
+    }
+    #[test]
+    fn native_agent_parent_fixture() {
+        let Some(mode) = std::env::var_os("ZERUS_ANCESTRY_FIXTURE") else {
+            return;
+        };
+        let child = child();
+        let until = Instant::now() + Duration::from_secs(2);
+        let original = Original::open(child.0.id()).unwrap();
+        assert!(
+            !agent(&original.environment(until).unwrap()).unwrap(),
+            "the child must have stripped the markers"
+        );
+        assert!(matches!(mode.to_str(), Some("name" | "tag")));
+        let error = match Ancestry::inspect(child.0.id(), until) {
+            Err(error) => error,
+            Ok(_) => panic!("a readable same-user agent ancestor was admitted"),
+        };
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("agent-descended"));
+    }
+    struct FixtureDirectory(std::path::PathBuf);
+    impl FixtureDirectory {
+        fn new() -> Self {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path =
+                std::env::temp_dir().join(format!("zerus-ancestry-{}-{nonce}", std::process::id()));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for FixtureDirectory {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+    fn run_agent_fixture(named: bool) {
+        let directory = FixtureDirectory::new();
+        let source = std::env::current_exe().unwrap();
+        let program = if named {
+            let copy = directory.0.join("codex.exe");
+            std::fs::copy(source, &copy).unwrap();
+            copy
+        } else {
+            source
+        };
+        let mut command = Command::new(program);
+        command
+            .creation_flags(CREATE_NO_WINDOW)
+            .args([
+                "--exact",
+                "desktop::windows::process::tests::native_agent_parent_fixture",
+                "--nocapture",
+            ])
+            .env_remove("HGS_SESSION")
+            .env_remove("HGS_RUN_ID")
+            .env("ZERUS_ANCESTRY_FIXTURE", if named { "name" } else { "tag" })
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if !named {
+            command.env("hGs_RuN_Id", "");
+        }
+        let mut fixture = Held(command.spawn().unwrap());
+        let until = Instant::now() + Duration::from_secs(6);
+        loop {
+            if fixture.0.try_wait().unwrap().is_some() {
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "owned agent fixture exceeded its deadline"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let status = fixture.0.wait().unwrap();
+        let mut output = String::new();
+        fixture
+            .0
+            .stdout
+            .take()
+            .unwrap()
+            .take(8192)
+            .read_to_string(&mut output)
+            .unwrap();
+        fixture
+            .0
+            .stderr
+            .take()
+            .unwrap()
+            .take(8192)
+            .read_to_string(&mut output)
+            .unwrap();
+        drop(fixture);
+        assert!(status.success(), "{output}");
+    }
+    #[test]
+    fn native_readable_same_user_agent_name_and_stripped_child_marker_are_refused() {
+        run_agent_fixture(true);
+        run_agent_fixture(false);
+    }
+    #[test]
+    fn parent_open_denial_is_distinct_from_other_query_errors() {
+        assert!(matches!(
+            parent_open_error(io::Error::from_raw_os_error(ERROR_ACCESS_DENIED as i32)).unwrap(),
+            Boundary::Denied
+        ));
+        assert!(matches!(
+            parent_open_error(io::Error::from_raw_os_error(ERROR_INVALID_PARAMETER as i32))
+                .unwrap(),
+            Boundary::Missing
+        ));
+        for code in [ERROR_INVALID_HANDLE, ERROR_GEN_FAILURE, ERROR_NOT_SUPPORTED] {
+            assert_eq!(
+                parent_open_error(io::Error::from_raw_os_error(code as i32))
+                    .err()
+                    .unwrap()
+                    .raw_os_error(),
+                Some(code as i32)
+            );
+        }
+        let child = child();
+        let restricted =
+            owned(unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, child.0.id()) }).unwrap();
+        assert!(
+            ParentStamp::read(child.0.id(), restricted).is_err(),
+            "a successful open followed by a denied query is not a foreign boundary"
+        );
+    }
+    #[test]
+    fn native_later_created_parent_pid_is_retired_before_environment_inspection() {
+        let older = child();
+        let original = Original::open(older.0.id()).unwrap();
+        let mut command = Command::new("cmd.exe");
+        command
+            .creation_flags(CREATE_NO_WINDOW)
+            .args(["/D", "/Q", "/C", "set /p HGS_TEST_WAIT="])
+            .env("HGS_RUN_ID", "native-fixture")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        for index in 0..3 {
+            command.env(format!("ZERUS_FIXTURE_PAD{index}"), "λ".repeat(20000));
+        }
+        let candidate = Held(command.spawn().unwrap());
+        let found = parent(
+            candidate.0.id(),
+            original.birth,
+            Instant::now() + Duration::from_secs(2),
+        )
+        .unwrap();
+        let Parent::End(Boundary::Reused(stamp)) = found else {
+            panic!("later-created process was inspected as an ancestor");
+        };
+        assert!(stamp.created >= original.birth && stamp.unchanged());
+        assert_eq!(
+            birth(candidate.0.as_raw_handle()).unwrap(),
+            stamp.created.to_string()
+        );
+    }
+    #[test]
+    fn native_departed_parent_keeps_its_original_handle_identity() {
+        let mut departed = child();
+        let created = birth(departed.0.as_raw_handle()).unwrap();
+        departed
+            .0
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"done\n")
+            .unwrap();
+        departed.0.wait().unwrap();
+        let newer = child();
+        let child_birth = Original::open(newer.0.id()).unwrap().birth;
+        let found = parent(
+            departed.0.id(),
+            child_birth,
+            Instant::now() + Duration::from_secs(2),
+        )
+        .unwrap();
+        match found {
+            Parent::End(Boundary::Exited(stamp) | Boundary::Signaled(stamp)) => {
+                assert_eq!(stamp.created.to_string(), created);
+                assert!(stamp.unchanged() && stamp.created < child_birth);
+            }
+            Parent::End(Boundary::Missing) => (),
+            _ => panic!("departed process was adopted as a live same-user parent"),
+        }
     }
     fn environment(text: &str) -> Vec<u16> {
         text.encode_utf16().chain([0, 0]).collect()
@@ -647,7 +1006,7 @@ mod tests {
         assert!(Original::open(0).is_err());
     }
     #[test]
-    fn native_clean_ancestry_requires_a_real_verified_other_user_boundary() {
+    fn native_clean_ancestry_ends_only_at_the_approved_unix_parity_boundaries() {
         let chain = Ancestry::inspect(std::process::id(), Instant::now() + Duration::from_secs(2))
             .unwrap_or_else(|error| {
                 let until = Instant::now() + Duration::from_secs(2);
@@ -678,7 +1037,10 @@ mod tests {
                 }
                 panic!("clean native ancestry refused: {error}");
             });
-        assert!(!chain.boundary.own);
+        assert!(chain
+            .chain
+            .iter()
+            .all(|ancestor| ancestor.own && ancestor.current()));
         assert!(!chain.chain.is_empty());
         assert!(chain.chain.len() <= LIMIT);
         chain
