@@ -43,6 +43,9 @@ zerus-presence-sampler = { path = "crates/presence-sampler" }
 zerus-content-search = { path = "crates/content-search" }
 zerus-client-core = { path = "client/core", default-features = false }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+zerus-client-core = { path = "client/core", default-features = false, features = ["macos-native-peer"] }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Wdk_System_Threading",

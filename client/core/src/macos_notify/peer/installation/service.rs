@@ -35,6 +35,30 @@ impl std::fmt::Debug for ChildObservation<'_> {
 }
 
 impl ServiceSelection {
+    /// A sealed data capability refuses old apps BEFORE launching an unknown
+    /// entry flag. It grants no channel, writer lease or posting authority.
+    pub fn supports_notification_host(&self) -> Result<bool, Refusal> {
+        use std::io::Read;
+        self.revalidate()?;
+        let file = std::fs::File::open(self.original.bundle.join("Contents/Info.plist"))
+            .map_err(|_| Refusal::Metadata)?;
+        let mut bytes = Vec::new();
+        file.take(65537)
+            .read_to_end(&mut bytes)
+            .map_err(|_| Refusal::Metadata)?;
+        if bytes.len() > 65536 {
+            return Err(Refusal::Metadata);
+        }
+        let plist = plist::Value::from_reader(std::io::Cursor::new(bytes))
+            .map_err(|_| Refusal::Metadata)?;
+        let supported = plist
+            .as_dictionary()
+            .and_then(|d| d.get(crate::desktop::notifications::CAPABILITY_KEY))
+            .and_then(plist::Value::as_string)
+            == Some(crate::desktop::notifications::ABI);
+        self.revalidate()?;
+        Ok(supported)
+    }
     /// Only the exact native-validated selection's executable, for the factory.
     /// This path alone is not authority; revalidate before each queued dispatch.
     pub fn host_executable(&self) -> &Path {
