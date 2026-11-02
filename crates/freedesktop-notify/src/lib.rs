@@ -14,6 +14,33 @@ use zbus::zvariant::Value;
 pub const SERVICE: &str = "org.freedesktop.Notifications";
 pub const PATH: &str = "/org/freedesktop/Notifications";
 
+type Parameters<'a> = (
+    &'static str,
+    u32,
+    &'static str,
+    &'a str,
+    &'a str,
+    Vec<&'static str>,
+    BTreeMap<&'static str, Value<'static>>,
+    i32,
+);
+fn parameters<'a>(title: &'a str, body_markup: &'a str) -> Parameters<'a> {
+    (
+        "Zerus",
+        0,
+        "hgs-zerus-swarm-symbolic",
+        title,
+        body_markup,
+        vec!["default", "Open session", "open-session", "Open session"],
+        BTreeMap::from([
+            ("desktop-entry", Value::from("hgs-tray")),
+            ("urgency", Value::from(1_u8)),
+            ("category", Value::from("im.received")),
+        ]),
+        -1,
+    )
+}
+
 /// Issue one call to the selected daemon. A zero ID or an error is returned
 /// unchanged: only the caller's original reservation can settle its outcome.
 pub fn notify(
@@ -23,24 +50,7 @@ pub fn notify(
     body_markup: &str,
 ) -> zbus::Result<u32> {
     let proxy = Proxy::new(connection, owner, PATH, SERVICE)?;
-    let hints = BTreeMap::from([
-        ("desktop-entry", Value::from("hgs-tray")),
-        ("urgency", Value::from(1_u8)),
-        ("category", Value::from("im.received")),
-    ]);
-    proxy.call(
-        "Notify",
-        &(
-            "Zerus",
-            0_u32,
-            "hgs-zerus-swarm-symbolic",
-            title,
-            body_markup,
-            vec!["default", "Open session", "open-session", "Open session"],
-            hints,
-            -1_i32,
-        ),
-    )
+    proxy.call("Notify", &parameters(title, body_markup))
 }
 
 /// Close only on the supplied unique daemon. Namespace/currentness checks and
@@ -51,6 +61,44 @@ pub fn close_notification(
     id: u32,
 ) -> zbus::Result<()> {
     Proxy::new(connection, owner, PATH, SERVICE)?.call("CloseNotification", &(id,))
+}
+
+/// The same wire call for a caller that drives its original connection's
+/// executor itself. The raw reply preserves its sender for the caller to
+/// validate before decoding. No socket, executor, task or retry is created here.
+pub async fn notify_async(
+    connection: &zbus::Connection,
+    owner: UniqueName<'_>,
+    title: &str,
+    body_markup: &str,
+) -> zbus::Result<zbus::Message> {
+    connection
+        .call_method(
+            Some(owner),
+            PATH,
+            Some(SERVICE),
+            "Notify",
+            &parameters(title, body_markup),
+        )
+        .await
+}
+
+/// Async form of CloseNotification, with the same caller-owned lifetime and
+/// namespace requirements as the blocking form.
+pub async fn close_notification_async(
+    connection: &zbus::Connection,
+    owner: UniqueName<'_>,
+    id: u32,
+) -> zbus::Result<zbus::Message> {
+    connection
+        .call_method(
+            Some(owner),
+            PATH,
+            Some(SERVICE),
+            "CloseNotification",
+            &(id,),
+        )
+        .await
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -87,3 +135,8 @@ pub fn decode_signal(message: &zbus::Message, owner: &UniqueName<'_>) -> Option<
         _ => None,
     }
 }
+
+// The original workers include this source privately. The shared crate also
+// runs its socket/auth/frame controls in the ordinary private test job.
+#[cfg(test)]
+mod ingress;

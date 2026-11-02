@@ -1,4 +1,7 @@
-//! E2: enumerated wire/Vec/text/private storage ONLY, never total SDK heap.
+//! Private byte gate shared by the original UI and service workers.
+//! This file is included as a private module; lifecycle flags stay inside
+//! each original worker, with no public setter or connection export.
+//! The original UI E2 accounting is enumerated byte storage, not total heap.
 //! F=64KiB, fields=4KiB, cumulative auth=16KiB. Reserve 2MiB under the
 //! original NativePosting group: 24F + 422144 = 1995008 <= 2097152.
 //! Decoded Value/Signature/QuickFields/diagnostics, allocator/queue metadata,
@@ -13,8 +16,13 @@ use std::sync::{
 use zbus::connection::socket::{BoxedSplit, ReadHalf, Split, WriteHalf};
 use zbus::export::async_trait::async_trait;
 
+#[path = "ingress/frame.rs"]
 mod frame;
 #[cfg(test)]
+#[path = "ingress/test_bus.rs"]
+pub(super) mod test_bus;
+#[cfg(test)]
+#[path = "ingress/tests.rs"]
 mod tests;
 pub(super) const FRAME: usize = 65536;
 pub(super) const FIELDS: usize = 4096;
@@ -25,7 +33,7 @@ pub(super) const RESERVATION: usize = 2097152;
 #[derive(Default)]
 pub(super) struct Ingress {
     failed: AtomicBool,
-    // Only the original worker may record successful teardown of both readers
+    // Only the original worker may record successful teardown of all raw readers
     // and every removal, while its original cleanup deadline is still live.
     pub(super) removals_acked: AtomicBool,
     close_started: AtomicBool,
