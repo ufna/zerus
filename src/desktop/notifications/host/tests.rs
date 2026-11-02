@@ -444,11 +444,18 @@ fn framing_retains_coalesced_messages_and_refuses_a_partial_eof() {
     );
     write.write_all(b"{").unwrap();
     drop(write);
-    assert!(read_frame(&mut read, &mut input, &mut eof)
-        .unwrap()
-        .is_none());
-    assert!(read_frame(&mut read, &mut input, &mut eof).is_err());
-    assert!(eof);
+    // Nonblocking reads may observe the byte, WouldBlock/Interrupted and EOF
+    // on different turns. Assert the partial-frame error at actual EOF.
+    wait(|| {
+        let result = read_frame(&mut read, &mut input, &mut eof);
+        if eof {
+            assert!(result.is_err());
+            true
+        } else {
+            assert!(result.unwrap().is_none());
+            false
+        }
+    });
 }
 
 #[test]
