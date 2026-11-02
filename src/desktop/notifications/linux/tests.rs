@@ -62,7 +62,32 @@ fn mapping_restoration_is_read_only_exact_and_never_replaces_an_id() {
     if let NativeId::Linux { bus_id, .. } = &mut changed.native_id {
         *bus_id = "b".repeat(32);
     }
+    assert!(map.restore(vec![changed.clone()]));
+    assert_eq!(map.rows[&42], value);
+    if let NativeId::Linux { bus_id, owner, .. } = &mut changed.native_id {
+        *bus_id = namespace().bus_id;
+        *owner = ":1.99".into();
+    }
+    assert!(map.restore(vec![changed.clone()]));
+    let mut context = changed.clone();
+    context.platform_context = Some(PlatformContext::Wayland {
+        activation_token: "not-persisted".into(),
+    });
+    assert!(!map.restore(vec![context]));
+    let mut platform = changed.clone();
+    platform.native_id = NativeId::Windows {
+        tag: "fixture".into(),
+        group: "fixture".into(),
+    };
+    assert!(!map.restore(vec![platform]));
+    let mut zero = changed.clone();
+    if let NativeId::Linux { id, .. } = &mut zero.native_id {
+        *id = 0;
+    }
+    assert!(!map.restore(vec![zero]));
+    changed.request_id = "malformed".into();
     assert!(!map.restore(vec![changed]));
+    assert_eq!(map.rows[&42], value);
     assert!(matches!(map.adopt(&command, 42), Outcome::Unknown { .. }));
     assert!(matches!(map.adopt(&command, 0), Outcome::Unknown { .. }));
 }
@@ -931,4 +956,74 @@ fn actual_stop_drains_ordered_closed_callbacks_but_never_opens_a_late_click() {
         .unwrap()
         .is_none());
     assert!(h.outbox.operation_drained());
+}
+
+#[test]
+fn attachment_after_daemon_replacement_skips_old_live_and_cleanup_mappings() {
+    use super::super::attachment;
+    for retired in [false, true] {
+        let bus = bus::Bus::new();
+        let old = Server::new(&bus);
+        let mut h = Harness::new();
+        let mut runtime = h.start(&bus.address);
+        Harness::activate(&runtime);
+        let request = h.post();
+        old.called.recv_timeout(WAIT).unwrap();
+        h.settle(&request, "delivered");
+        h.store.db.execute("INSERT INTO desktop_attention_edges(logical,session,intent,identity,payload,blocked,bytes)
+            SELECT 'fixture','fixture',id,identity,payload,0,0 FROM desktop_intents WHERE id=?1",[&request.intent_id]).unwrap();
+        h.stop(&mut runtime);
+        if retired {
+            ledger::withdraw(&mut h.store.db, &request.intent_id, 1).unwrap();
+            h.store
+                .db
+                .execute(
+                    "UPDATE desktop_attention_edges SET live=0,blocked=1,dirty=1",
+                    [],
+                )
+                .unwrap();
+        }
+        old.connection
+            .release_name(zerus_freedesktop_notify::SERVICE)
+            .unwrap();
+        let replacement = Server::new(&bus);
+        let location = Location {
+            root: h._root.path().canonicalize().unwrap().join("state/desktop"),
+            configuration: h.outbox.session.configuration.clone(),
+        };
+        let mut session = h.outbox.session.clone();
+        session.adapter = uuid::Uuid::new_v4().to_string();
+        session.host_epoch = uuid::Uuid::new_v4().to_string();
+        session.lease = uuid::Uuid::new_v4().to_string();
+        let mut attached = attachment::Runtime::start(
+            &location,
+            &h.store,
+            session,
+            attachment::Selection::Linux {
+                address: bus.address.clone(),
+            },
+            Arc::new(()),
+        )
+        .unwrap();
+        let mut attention =
+            crate::desktop::attention::Runtime::new(&h.outbox.session.service_epoch);
+        until(|| {
+            attached.poll(&mut h.store, &mut attention);
+            attached.status()["restored"] == true && attached.status()["host"]["ready"] == true
+        });
+        assert!(
+            replacement.called.try_recv().is_err(),
+            "no replay on the new daemon"
+        );
+        assert!(
+            replacement.closed.try_recv().is_err(),
+            "no old ID redirected to the new daemon"
+        );
+        attached.request_stop();
+        until(|| {
+            attached.poll(&mut h.store, &mut attention);
+            attached.drained()
+        });
+        assert!(replacement.closed.try_recv().is_err());
+    }
 }

@@ -1,5 +1,3 @@
-# Functions only: hgs appends Invoke-RegistrationMain to its fixed encoded
-# command. Tests can exercise the policy with an in-memory scheduler instead.
 function Require-Registration([bool]$condition,[string]$message) {
     if (-not $condition) { throw $message }
 }
@@ -85,8 +83,6 @@ function Invoke-RegistrationOperation($request,$scheduler,[string]$sid) {
         'install' {
             if ($null -eq $task) {
                 $sddl='O:'+ $sid +'D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;'+$sid+')'
-                # TASK_CREATE | TASK_IGNORE_REGISTRATION_TRIGGERS: never
-                # replace a task which appeared after the ownership check.
                 [void]$folder.RegisterTask($plan.task_name,$plan.definition,34,$sid,$null,3,$sddl)
                 $task=Get-DesktopTask $folder $plan.task_name
                 Require-Registration ($null -ne $task) 'Created task could not be read back; inspect registration status before retrying.'
@@ -96,8 +92,6 @@ function Invoke-RegistrationOperation($request,$scheduler,[string]$sid) {
         }
         'remove' {
             if ($null -ne $task) {
-                # Delete the registration only. Never call Run, Stop, or End:
-                # existing service/native processes are outside this command.
                 [void]$folder.DeleteTask($plan.task_name,0)
                 Require-Registration ($null -eq (Get-DesktopTask $folder $plan.task_name)) 'Removed task is still present; inspect status before retrying.'
                 $task=$null;$changed=$true
@@ -119,7 +113,10 @@ function Read-RegistrationRequest([IO.Stream]$stream,[int]$length) {
         $offset+=$read
     }
     if ($stream.CanSeek) { Require-Registration ($stream.Position -eq $stream.Length) 'Extra registration input.' }
-    $request=([Text.UTF8Encoding]::new($false,$true)).GetString($bytes)|ConvertFrom-Json
+    Trace-Registration bytes
+    $text=([Text.UTF8Encoding]::new($false,$true)).GetString($bytes)
+    Trace-Registration decoded
+    $request=$text|ConvertFrom-Json
     Require-Registration ($null -ne $request -and $request.GetType().FullName -ceq 'System.Management.Automation.PSCustomObject') 'Registration input must be a JSON object.'
     return $request
 }
@@ -128,10 +125,10 @@ function Invoke-RegistrationMain([int]$length) {
     $script:rc=[Diagnostics.Stopwatch]::StartNew();Trace-Registration main
     $ErrorActionPreference='Stop'
     $ProgressPreference='SilentlyContinue'
-    [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false,$true)
+    [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false,$true);Trace-Registration encoding
     $mutex=$null;$held=$false
     try {
-        $inputStream=[Console]::OpenStandardInput()
+        $inputStream=[Console]::OpenStandardInput();Trace-Registration opened
         try { $request=Read-RegistrationRequest $inputStream $length }
         finally { $inputStream.Dispose() }
         Trace-Registration input

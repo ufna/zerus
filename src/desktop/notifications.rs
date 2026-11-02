@@ -32,6 +32,8 @@ pub(super) mod activation;
 pub(super) mod attachment;
 #[cfg(unix)]
 pub(super) mod host;
+#[cfg(any(windows, test))]
+pub(super) mod windows;
 
 struct Shared {
     cancel: AtomicBool,

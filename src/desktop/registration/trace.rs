@@ -6,6 +6,10 @@ use std::{io::Read, time::Instant};
 const CAP: usize = 4096;
 const PHASES: &[&str] = &[
     "main",
+    "encoding",
+    "opened",
+    "bytes",
+    "decoded",
     "input",
     "sid",
     "mutex",

@@ -52,6 +52,16 @@ zerus-freedesktop-notify = { path = "crates/freedesktop-notify" }
 zerus-client-core = { path = "client/core", default-features = false, features = ["macos-native-peer"] }
 
 [target.'cfg(windows)'.dependencies]
+windows-core = "0.62.2"
+windows = { version = "0.62.2", features = [
+    "Data_Xml_Dom",
+    "Foundation",
+    "UI_Notifications",
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_WinRT",
+    "Win32_UI_Notifications",
+] }
 windows-sys = { version = "0.61", features = [
     "Wdk_System_Threading",
     "Wdk_Storage_FileSystem",
@@ -68,6 +78,8 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_LibraryLoader",
     "Win32_System_Pipes",
     "Win32_System_RemoteDesktop",
+    "Win32_System_Registry",
+    "Win32_System_StationsAndDesktops",
     "Win32_System_RestartManager",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
