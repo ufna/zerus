@@ -28,12 +28,14 @@ const QUEUED: u8 = 0;
 const STARTED: u8 = 1;
 const CANCELLED: u8 = 2;
 
+pub(super) mod attachment;
 #[cfg(unix)]
 pub(super) mod host;
 
 struct Shared {
     cancel: AtomicBool,
     admission: AtomicU8,
+    _owner: Option<Arc<dyn Send + Sync>>,
     reply: Mutex<Option<Finished>>,
 }
 #[derive(Clone)]
@@ -176,6 +178,7 @@ pub(super) struct Endpoint {
     event_count: Arc<AtomicUsize>,
     stopping: Arc<AtomicBool>,
     platform: wire::Platform,
+    _owner: Option<Arc<dyn Send + Sync>>,
 }
 impl Endpoint {
     pub fn try_next(&self) -> std::result::Result<Work, mpsc::TryRecvError> {
@@ -242,12 +245,24 @@ pub(super) struct Outbox {
     stopping: Arc<AtomicBool>,
     pending: Vec<Pending>,
     error: Option<&'static str>,
+    owner: Option<Arc<dyn Send + Sync>>,
 }
 impl Outbox {
     /// No native constructor, OS call, writer grant or delivery happens here.
     /// The platform lifecycle binds Endpoint to its original owned host and
     /// retains/joins that host independently of operation_drained().
     pub fn new(session: Session) -> Result<(Self, Endpoint)> {
+        Self::with_owner(session, None)
+    }
+    /// The actor supplies its ORIGINAL service lifetime hold. Keep it in the
+    /// native endpoint and each original command, beyond Rust handle loss.
+    pub fn new_owned(session: Session, owner: Arc<dyn Send + Sync>) -> Result<(Self, Endpoint)> {
+        Self::with_owner(session, Some(owner))
+    }
+    fn with_owner(
+        session: Session,
+        owner: Option<Arc<dyn Send + Sync>>,
+    ) -> Result<(Self, Endpoint)> {
         ensure!(session.valid(), "invalid notification host session");
         let (send, receive) = mpsc::sync_channel(wire::IN_FLIGHT);
         let (events, event_receive) = mpsc::sync_channel(EVENTS);
@@ -264,6 +279,7 @@ impl Outbox {
                 stopping: stopping.clone(),
                 pending: Vec::new(),
                 error: None,
+                owner: owner.clone(),
             },
             Endpoint {
                 receive,
@@ -271,6 +287,7 @@ impl Outbox {
                 event_count,
                 stopping,
                 platform,
+                _owner: owner,
             },
         ))
     }
@@ -380,6 +397,7 @@ impl Outbox {
         let shared = Arc::new(Shared {
             cancel: AtomicBool::new(false),
             admission: AtomicU8::new(QUEUED),
+            _owner: self.owner.clone(),
             reply: Mutex::new(None),
         });
         let until = now + COMMAND_WAIT;
@@ -456,8 +474,16 @@ impl Outbox {
                         pending.shared.cancel.store(true, Ordering::Release);
                         pending.terminal = Some(Receipt {
                             binding: pending.binding.clone(),
-                            outcome: Outcome::Unknown {
-                                code: Uncertainty::Deadline,
+                            outcome: if pending.shared.admission.load(Ordering::Acquire)
+                                == CANCELLED
+                            {
+                                Outcome::Refused {
+                                    code: Refusal::Cancelled,
+                                }
+                            } else {
+                                Outcome::Unknown {
+                                    code: Uncertainty::Deadline,
+                                }
                             },
                         });
                     } else if released {
@@ -544,6 +570,16 @@ impl Outbox {
     }
 
     fn current_activation(&self, store: &Store, value: &Activation) -> Result<Option<Binding>> {
+        self.activation_binding(store, value, false)
+    }
+    // Cleanup restoration may retain a withdrawn mapping for native removal.
+    // The callback path above always requires the original intent to be live.
+    fn activation_binding(
+        &self,
+        store: &Store,
+        value: &Activation,
+        cleanup: bool,
+    ) -> Result<Option<Binding>> {
         if !value.valid_for(self.session.platform) {
             return Ok(None);
         }
@@ -570,14 +606,15 @@ impl Outbox {
              substr(a.epoch,1,37),substr(a.adapter,1,37),substr(a.lease,1,37)
              FROM desktop_attempts a JOIN desktop_intents i ON i.id=a.intent_id
              JOIN desktop_writer w ON w.id=1 WHERE a.request_id=?1 AND a.state='delivered'
-             AND i.revision=a.revision AND i.withdrawn=0 AND i.blocked=0
+             AND i.revision=a.revision AND (i.withdrawn=0 OR ?6) AND i.blocked=0
              AND w.revoked=0 AND w.service_epoch=?2 AND w.epoch=?3",
                 params![
                     value.request_id,
                     self.session.service_epoch,
                     self.session.writer_epoch,
                     ledger::PAYLOAD_BYTES,
-                    ledger::RECEIPT_BYTES
+                    ledger::RECEIPT_BYTES,
+                    cleanup
                 ],
                 |r| {
                     Ok((
@@ -696,6 +733,106 @@ impl Outbox {
                 platform_context: None,
             };
             if self.current_activation(store, &activation)?.is_some() {
+                mappings.push(activation);
+            }
+        }
+        Ok(RestorePage {
+            after: next,
+            through,
+            complete,
+            mappings,
+        })
+    }
+    /// Retired mappings still awaiting their first native withdrawal must be
+    /// restored for cleanup after a crash. They never regain click authority.
+    pub fn restore_cleanup_head(&self, store: &Store) -> Result<i64> {
+        self.require_current_writer(store)?;
+        Ok(store.db.query_row(
+            "SELECT COALESCE(MAX(id),0) FROM desktop_attention_edges WHERE dirty=1",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+    pub fn restore_cleanup_page(
+        &self,
+        store: &Store,
+        after: i64,
+        through: i64,
+    ) -> Result<RestorePage> {
+        self.require_current_writer(store)?;
+        ensure!(
+            after >= 0 && through >= after,
+            "invalid cleanup notification cursor"
+        );
+        // Limit indexed candidates BEFORE filtering or looking up attempts.
+        let mut query = store.db.prepare("SELECT e.id,e.live,e.blocked,
+          CASE WHEN length(CAST(e.identity AS BLOB))<=4096 THEN e.identity END,
+          CASE WHEN length(CAST(e.payload AS BLOB))<=?3 THEN e.payload END,
+          CASE WHEN length(CAST(a.receipt AS BLOB))<=?4 THEN a.receipt END
+          FROM (SELECT * FROM desktop_attention_edges WHERE dirty=1 AND id>?1 AND id<=?2 ORDER BY id LIMIT 16) e
+          LEFT JOIN desktop_attempts a ON a.seq=(SELECT seq FROM desktop_attempts
+            WHERE intent_id=e.intent AND state='delivered' ORDER BY seq DESC LIMIT 1)
+          ORDER BY e.id")?;
+        let rows = query
+            .query_map(
+                params![after, through, ledger::PAYLOAD_BYTES, ledger::RECEIPT_BYTES],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, bool>(1)?,
+                        r.get::<_, bool>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                        r.get::<_, Option<String>>(4)?,
+                        r.get::<_, Option<String>>(5)?,
+                    ))
+                },
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let complete = rows.len() < 16 || rows.last().is_some_and(|r| r.0 == through);
+        let next = rows.last().map_or(through, |r| r.0);
+        let mut mappings = Vec::new();
+        for (_, live, blocked, identity, payload, receipt) in rows {
+            if live && !blocked {
+                continue;
+            }
+            let Some(receipt) = receipt else { continue };
+            let receipt: Receipt = serde_json::from_str(&receipt)?;
+            ensure!(
+                receipt.binding.valid(),
+                "invalid cleanup notification binding"
+            );
+            let Outcome::Delivered { native_id } = receipt.outcome else {
+                continue;
+            };
+            let mut identity: Identity =
+                serde_json::from_str(&identity.context("cleanup identity unavailable")?)?;
+            ensure!(
+                identity.kind == Kind::Post
+                    && ledger::intent_id(&identity)? == receipt.binding.intent_id,
+                "cleanup identity mismatch"
+            );
+            identity.kind = Kind::Withdrawal;
+            let withdrawal = ledger::intent_id(&identity)?;
+            let consumed: bool = store.db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM desktop_attempts WHERE intent_id=?1 LIMIT 1)",
+                [withdrawal],
+                |r| r.get(0),
+            )?;
+            if consumed {
+                continue;
+            } // Never replay any previous withdrawal.
+            let Action::Post { token, .. } =
+                serde_json::from_str(&payload.context("cleanup payload unavailable")?)?
+            else {
+                continue;
+            };
+            let activation = Activation {
+                request_id: receipt.binding.request_id,
+                token,
+                native_id,
+                platform_context: None,
+            };
+            if self.activation_binding(store, &activation, true)?.is_some() {
                 mappings.push(activation);
             }
         }

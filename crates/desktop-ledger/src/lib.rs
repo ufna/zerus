@@ -139,6 +139,11 @@ impl Identity {
     }
 }
 
+/// Canonical lookup key without creating or changing a durable intent.
+pub fn intent_id(identity: &Identity) -> Result<String> {
+    Ok(hash(identity.encoded()?.as_bytes()))
+}
+
 /// Baselines/imports may be stored while passive. This records intent only and
 /// cannot deliver it. A withdrawn edge is terminal; a new edge needs a new ID.
 pub fn put_intent(

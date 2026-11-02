@@ -636,3 +636,69 @@ fn deferred_and_channel_callbacks_share_one_budget_and_hold_drain() {
     f.outbox.poll(&mut f.store, Instant::now());
     assert!(f.outbox.operation_drained());
 }
+
+#[test]
+fn cancelled_unpulled_work_has_a_definitive_refusal_at_deadline() {
+    let mut f = Fixture::new();
+    let intent = f.intent();
+    let now = Instant::now();
+    f.outbox
+        .offer_intent(&mut f.store, &intent, 1, now)
+        .unwrap();
+    f.outbox.retire_intent(&mut f.store, &intent).unwrap();
+    f.outbox.poll(&mut f.store, now + COMMAND_WAIT);
+    let (state, receipt): (String, String) = f
+        .store
+        .db
+        .query_row(
+            "SELECT state,receipt FROM desktop_attempts WHERE intent_id=?1",
+            [&intent],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(state, "refused");
+    let receipt: Receipt = serde_json::from_str(&receipt).unwrap();
+    assert_eq!(
+        receipt.outcome,
+        Outcome::Refused {
+            code: Refusal::Cancelled
+        }
+    );
+    assert!(
+        !f.outbox.operations_idle(),
+        "original queued work still holds resources"
+    );
+    assert!(f.host.try_next().unwrap().begin().is_none());
+    f.outbox.poll(&mut f.store, now + COMMAND_WAIT);
+    assert!(f.outbox.operations_idle());
+}
+
+#[test]
+fn original_owner_lock_survives_endpoint_and_outbox_drop_until_callback_release() {
+    let mut f = Fixture::new();
+    let location = Location {
+        root: f._temp.path().canonicalize().unwrap().join("state/desktop"),
+        configuration: f.outbox.session.configuration.clone(),
+    };
+    let owner = Arc::new(location.lock().unwrap());
+    let (mut outbox, endpoint) =
+        Outbox::new_owned(f.outbox.session.clone(), owner.clone()).unwrap();
+    let intent = f.intent();
+    outbox
+        .offer_intent(&mut f.store, &intent, 1, Instant::now())
+        .unwrap();
+    let dispatch = endpoint.try_next().unwrap().begin().unwrap();
+    let resources = dispatch.resources();
+    dispatch.finish(Outcome::Unknown {
+        code: Uncertainty::HostLost,
+    });
+    drop(owner);
+    drop(endpoint);
+    drop(outbox);
+    assert!(
+        location.existing_lock().is_err(),
+        "original callback still pins actual owner.lock"
+    );
+    drop(resources);
+    assert!(location.existing_lock().unwrap().is_some());
+}
