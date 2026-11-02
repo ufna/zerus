@@ -141,14 +141,6 @@ fn detail_gap_wrong_target_and_unannounced_revision_refuse_without_completion() 
             ),
             "detail_target_changed",
         ),
-        (
-            "frame",
-            native(
-                4,
-                json!({"t":"gap","topic":"processes","key":"run:run","reason":"overflow"}),
-            ),
-            "detail_source_gap",
-        ),
     ] {
         let mut route = route("processes");
         ready(&mut route);
@@ -243,4 +235,28 @@ fn closed_selectors_reject_unbounded_or_ambiguous_demands_and_bad_aliases() {
     for alias in ["@peer", "-flag", "two words"] {
         assert!(Key::new(alias, &base).is_err());
     }
+}
+
+#[test]
+fn native_gap_discards_only_staging_and_the_next_snapshot_replaces_the_tail() {
+    let mut route = route("activity");
+    ready(&mut route);
+    let first = native(
+        8,
+        json!({"t":"snapshot","topic":"activity","key":"run:run","page":0,"last":false,"cursor":4,"items":[{"seq":3}]}),
+    );
+    assert!(route.apply("detail", &value(1, first)).unwrap().is_empty());
+    let gap = native(
+        20,
+        json!({"t":"gap","topic":"activity","key":"run:run","reason":"overflow"}),
+    );
+    assert!(route.apply("detail", &value(2, gap)).unwrap().is_empty());
+    let last = native(
+        50,
+        json!({"t":"snapshot","topic":"activity","key":"run:run","page":0,"last":true,"cursor":9,"items":[{"seq":9}]}),
+    );
+    let out = route.apply("detail", &value(3, last)).unwrap();
+    assert!(
+        matches!(&out[0],Change::Activity {update:ActivityUpdate::Replace {events,cursor:9},..} if events==&vec![json!({"seq":9})])
+    );
 }

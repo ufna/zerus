@@ -14,7 +14,7 @@ mod tests;
 pub(super) struct Hub {
     lease: Option<Lease>,
     routes: BTreeMap<Key, Entry>,
-    retiring: BTreeSet<String>,
+    retiring: BTreeMap<String, Retirement>,
     sources: BTreeMap<String, Source>,
     next_source: u64,
 }
@@ -23,6 +23,12 @@ struct Entry {
     pending: bool,
     sent: bool,
     refresh: bool,
+    halted: bool,
+    recoveries: u8,
+}
+struct Retirement {
+    pending: bool,
+    recovery: Option<(Key, bool)>,
 }
 struct Source {
     generation: u64,
@@ -41,7 +47,7 @@ impl Hub {
         {
             return Ok(());
         }
-        if self.routes.len() + self.retiring.len() >= protocol::DEMANDS {
+        if self.capacity() >= protocol::DEMANDS {
             return Err("The desktop service detail subscription limit was reached.".into());
         }
         self.unfollow(&key);
@@ -54,6 +60,8 @@ impl Hub {
                 pending: true,
                 sent: false,
                 refresh: false,
+                halted: false,
+                recoveries: 0,
             },
         );
         Ok(())
@@ -64,8 +72,87 @@ impl Hub {
             .remove(key)
             .filter(|old| old.sent && self.lease.is_some())
         {
-            self.retiring.insert(old.route.id);
+            self.retiring.entry(old.route.id).or_insert(Retirement {
+                pending: true,
+                recovery: None,
+            });
         }
+    }
+    fn capacity(&self) -> usize {
+        self.routes.len()
+            + self
+                .retiring
+                .keys()
+                .filter(|id| !self.routes.values().any(|entry| entry.route.id == **id))
+                .count()
+    }
+    fn recover(
+        &mut self,
+        key: &Key,
+        id: &str,
+        code: &str,
+        retry: bool,
+    ) -> Result<Option<(Target, Vec<Change>)>, &'static str> {
+        let Some(entry) = self
+            .routes
+            .get_mut(key)
+            .filter(|entry| entry.route.id == id && !entry.halted)
+        else {
+            return Ok(None);
+        };
+        entry.recoveries = entry.recoveries.saturating_add(1);
+        entry.halted = true;
+        entry.pending = false;
+        entry.refresh = false;
+        let change = entry.route.unavailable(code)?;
+        self.retiring.insert(
+            id.into(),
+            Retirement {
+                pending: true,
+                recovery: Some((key.clone(), retry && entry.recoveries <= 2)),
+            },
+        );
+        Ok(Some((
+            Target::Route {
+                key: key.clone(),
+                id: id.into(),
+                version: entry.route.version(),
+                stamp: entry.route.stamp(),
+            },
+            vec![change],
+        )))
+    }
+    fn retired(&mut self, id: &str) -> Result<Option<(Target, Vec<Change>)>, &'static str> {
+        if let Some((key, retry)) = self.retiring.remove(id).and_then(|record| record.recovery) {
+            if let Some(entry) = self
+                .routes
+                .get_mut(&key)
+                .filter(|entry| entry.route.id == id && entry.halted)
+            {
+                let code = entry.route.code().to_owned();
+                entry.route = Route::new(
+                    &key.computer,
+                    uuid::Uuid::new_v4().to_string(),
+                    entry.route.subscription.clone(),
+                )?;
+                entry.pending = retry;
+                entry.sent = false;
+                entry.halted = !retry;
+                if !retry {
+                    let change = entry.route.unavailable(&code)?;
+                    return Ok(Some((
+                        Target::Route {
+                            key,
+                            id: entry.route.id.clone(),
+                            version: entry.route.version(),
+                            stamp: entry.route.stamp(),
+                        },
+                        vec![change],
+                    )));
+                }
+            }
+        }
+        Ok(None)
     }
     pub(super) fn disconnect(&mut self) -> Vec<Change> {
         self.lease = None;
@@ -83,6 +170,8 @@ impl Hub {
             entry.pending = true;
             entry.sent = false;
             entry.refresh = false;
+            entry.halted = false;
+            entry.recoveries = 0;
             changes.push(entry.route.connection(false, "service_unavailable"));
         }
         changes
@@ -119,10 +208,15 @@ impl Hub {
     }
     fn next(&mut self) -> Option<(Lease, Work)> {
         let lease = self.lease.clone()?;
-        if let Some(id) = self.retiring.pop_first() {
-            return Some((lease, Work::Unfollow(id)));
+        if let Some((id, record)) = self.retiring.iter_mut().find(|(_, record)| record.pending) {
+            record.pending = false;
+            return Some((lease, Work::Unfollow(id.clone())));
         }
-        if let Some(entry) = self.routes.values_mut().find(|entry| entry.pending) {
+        if let Some(entry) = self
+            .routes
+            .values_mut()
+            .find(|entry| entry.pending && !entry.halted)
+        {
             entry.pending = false;
             entry.sent = true;
             return Some((
@@ -280,7 +374,7 @@ impl Service {
             hub.follow(computer, spec)?;
             let entry = &hub.routes[&key];
             (!entry.sent).then(|| {
-                if hub.lease.is_some() {
+                if hub.lease.is_some() && !entry.halted {
                     entry.route.waiting()
                 } else {
                     entry.route.connection(false, "details_unavailable")
@@ -325,6 +419,9 @@ impl Service {
             .routes
             .get_mut(&target)
             .ok_or("The processes subscription is unavailable.")?;
+        if entry.halted {
+            return Err("The processes subscription is unavailable. Retry to reconnect.".into());
+        }
         if let Some(ms) = interval {
             if !(1000..=600_000).contains(&ms) {
                 return Err("Invalid processes interval.".into());
@@ -447,25 +544,38 @@ pub(super) async fn frame(
                 changes,
             ))
         } else {
-            let Some(entry) = hub
+            let Some(key) = hub
                 .routes
-                .values_mut()
-                .find(|entry| value["id"] == entry.route.id)
+                .iter()
+                .find(|(_, entry)| value["id"] == entry.route.id)
+                .map(|(key, _)| key.clone())
             else {
                 return Ok(());
             };
-            let changes = entry.route.apply(kind, value)?;
-            let generation = entry.route.version().map_or(0, |v| v.generation);
-            let computer = entry.route.key.computer.clone();
-            let gate = Target::Route {
-                key: entry.route.key.clone(),
-                id: entry.route.id.clone(),
-                version: entry.route.version(),
-                stamp: entry.route.stamp(),
-            };
-            hub.source(&computer, generation)?;
-            shared.details_changed.notify_one();
-            Some((lease, gate, changes))
+            let entry = hub.routes.get_mut(&key).expect("known route");
+            if entry.halted {
+                return Ok(());
+            }
+            let id = entry.route.id.clone();
+            match entry.route.apply(kind, value) {
+                Ok(changes) => {
+                    let generation = entry.route.version().map_or(0, |v| v.generation);
+                    let gate = Target::Route {
+                        key: key.clone(),
+                        id,
+                        version: entry.route.version(),
+                        stamp: entry.route.stamp(),
+                    };
+                    hub.source(&key.computer, generation)?;
+                    shared.details_changed.notify_one();
+                    Some((lease, gate, changes))
+                }
+                Err(code) => {
+                    let recovered = hub.recover(&key, &id, code, true)?;
+                    shared.details_changed.notify_one();
+                    recovered.map(|(gate, changes)| (lease, gate, changes))
+                }
+            }
         }
     };
     if let Some((lease, gate, changes)) = delivery {
@@ -522,7 +632,13 @@ pub(super) async fn run(shared: Arc<Shared>, stop: Arc<AtomicBool>) -> Result<()
                 value["part"] = json!(part);
             }
         }
-        let response = request(&shared, value, stop.clone()).await?;
+        let response = match request(&shared, value, stop.clone()).await {
+            Ok(value) => value,
+            Err(code) => {
+                failed(&shared, &stop, &lease, &work, code).await?;
+                continue;
+            }
+        };
         if response["request_id"] != id {
             return Err("invalid_detail_response");
         }
@@ -561,9 +677,17 @@ pub(super) async fn run(shared: Arc<Shared>, stop: Arc<AtomicBool>) -> Result<()
                 }
                 continue;
             }
-            // Failed retirement closes this lease so abandoned demand cannot
-            // consume an unbounded succession of server-side slots.
-            return Err("detail_retirement_unconfirmed");
+            // Unknown retirement keeps its admission charged until a new
+            // lease. It cannot accumulate hidden abandoned demands.
+            failed(
+                &shared,
+                &stop,
+                &lease,
+                &work,
+                "detail_retirement_unconfirmed",
+            )
+            .await?;
+            continue;
         }
         if response["lease"] != lease.lease || response["durable"] != false {
             return Err("invalid_detail_response");
@@ -623,13 +747,70 @@ pub(super) async fn run(shared: Arc<Shared>, stop: Arc<AtomicBool>) -> Result<()
                 )
                 .await?;
             }
-            Work::Follow { id, .. } | Work::Unfollow(id) => {
+            Work::Follow { id, .. } => {
                 if response["id"] != id {
                     return Err("invalid_detail_response");
                 }
-                // Watch status is authoritative for this route. A delayed
-                // follow response must never downgrade a newer ready status.
+                // Watch status is authoritative; a late response cannot
+                // downgrade a newer ready status.
+            }
+            Work::Unfollow(id) => {
+                if response["id"] != id {
+                    return Err("invalid_detail_response");
+                }
+                let delivery = {
+                    let mut hub = shared
+                        .details
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    if hub.lease.as_ref() != Some(&lease) {
+                        continue;
+                    }
+                    hub.retired(&id)?
+                };
+                if let Some((gate, changes)) = delivery {
+                    deliver(&shared, &stop, lease, gate, changes).await?;
+                }
+                shared.details_changed.notify_one();
             }
         }
     }
+}
+
+async fn failed(
+    shared: &Arc<Shared>,
+    stop: &Arc<AtomicBool>,
+    lease: &Lease,
+    work: &Work,
+    code: &str,
+) -> Result<(), &'static str> {
+    let delivery = {
+        let mut hub = shared
+            .details
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if hub.lease.as_ref() != Some(lease) {
+            return Ok(());
+        }
+        match work {
+            // The result of a follow is unknown. Retire its original ID but
+            // leave this view unavailable until explicit Retry, without replay.
+            Work::Follow { key, id, .. } => hub.recover(key, id, code, false)?,
+            Work::Unfollow(id) => {
+                if let Some(record) = hub.retiring.get_mut(id) {
+                    record.pending = false;
+                    if let Some((_, retry)) = &mut record.recovery {
+                        *retry = false;
+                    }
+                }
+                None
+            }
+            Work::Source { .. } => None,
+        }
+    };
+    if let Some((gate, changes)) = delivery {
+        deliver(shared, stop, lease.clone(), gate, changes).await?;
+    }
+    shared.details_changed.notify_one();
+    Ok(())
 }

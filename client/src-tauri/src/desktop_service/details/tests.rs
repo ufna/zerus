@@ -39,6 +39,11 @@ fn desired_and_retiring_routes_share_a_fixed_bound_and_eof_retires_every_old_id(
         "retirement still owns admission"
     );
     assert!(matches!(hub.next(),Some((_,Work::Unfollow(id))) if id==old));
+    assert!(
+        hub.follow("", spec(protocol::DEMANDS)).is_err(),
+        "in-flight retirement is still charged"
+    );
+    hub.retired(&old).unwrap();
     hub.follow("", spec(protocol::DEMANDS)).unwrap();
     let before: Vec<_> = hub
         .routes
@@ -134,4 +139,27 @@ fn queued_detail_and_metadata_cannot_reappear_after_retirement_or_replacement() 
         }
         service.join().await.unwrap();
     });
+}
+
+#[test]
+fn recovery_at_capacity_retires_before_rearming_and_has_a_finite_budget() {
+    let mut hub = Hub {
+        lease: Some(lease()),
+        ..Default::default()
+    };
+    for n in 0..protocol::DEMANDS {
+        hub.follow("", spec(n)).unwrap();
+    }
+    let key = hub.routes.keys().next().unwrap().clone();
+    for attempt in 1..=3 {
+        let id = hub.routes[&key].route.id.clone();
+        hub.recover(&key, &id, "detail_sequence_gap", true).unwrap();
+        assert_eq!(hub.capacity(), protocol::DEMANDS);
+        assert!(hub.routes[&key].halted);
+        assert!(matches!(hub.next(),Some((_,Work::Unfollow(old))) if old==id));
+        hub.retired(&id).unwrap();
+        assert_ne!(hub.routes[&key].route.id, id);
+        assert_eq!(hub.routes[&key].pending, attempt <= 2);
+        assert_eq!(hub.routes[&key].halted, attempt > 2);
+    }
 }

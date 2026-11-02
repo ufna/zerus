@@ -101,10 +101,15 @@ def detail_follow():
                 'organization': {'projects': []}}
         bodies.append({'t': 'snapshot', 'topic': topic, 'page': 0, 'last': True, 'cursor': 0,
                        'items': [{'key': 'organization', 'row': full}]})
+    if config.get('native_gap') and topic == 'activity':
+        bodies.extend([{'t': 'gap', 'topic': topic, 'key': key, 'reason': 'overflow'},
+                       {'t': 'snapshot', 'topic': topic, 'key': key, 'page': 0, 'last': True,
+                        'cursor': 200, 'items': [{'seq': 200, 'type': 'Stop', 'detail': 'new tail'}]}])
     for i, body in enumerate(bodies):
         route['detail_seq'] += 1
         events.append(['detail', dict(route, frame=dict(body, v=1, seq=10 + i * 71))])
-    if config.get('detail_gap') and topic == 'activity':
+    if config.get('detail_gap') and topic == 'activity' and not (root / 'sequence-gap-sent').exists():
+        (root / 'sequence-gap-sent').touch()
         broken = dict(route, detail_seq=route['detail_seq'] + 2, frame=dict(bodies[-1], v=1, seq=999))
         events.append(['detail', broken])
     path.write_text(json.dumps(route))
@@ -192,6 +197,9 @@ elif args == ['desktop', 'request', '--json']:
               'generation': 1, 'projection': projection, 'display_only': True, 'authority': False,
               'complete': True, 'online': True, 'last_known': False, 'stale': False, 'next_cursor': None}
     if op == 'detail_follow':
+        if config.get('follow_timeout') and value['subscription']['topic'] == 'activity':
+            (root / 'follow-held').touch()
+            time.sleep(15)
         if config.get('detail_refused'):
             print(json.dumps({'request_id': request_id, 'accepted': False, 'code': 'unsupported_topic'}))
         else:

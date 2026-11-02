@@ -169,6 +169,21 @@ impl Route {
     pub fn stamp(&self) -> u64 {
         self.stamp
     }
+    pub fn code(&self) -> &str {
+        &self.code
+    }
+    /// Invalidate only this view. Queued data loses its admission; this is not
+    /// a native end and does not change any other route or computer.
+    pub fn unavailable(&mut self, code: &str) -> Result<Change, &'static str> {
+        self.stamp = self
+            .stamp
+            .checked_add(1)
+            .ok_or("detail_revision_exhausted")?;
+        self.state = "incomplete".into();
+        self.code = code.into();
+        self.reset();
+        Ok(self.connection(false, code))
+    }
     pub fn organization_snapshot(&self) -> Option<OrganizationSnapshot> {
         (self.state == "ready")
             .then(|| self.projection.organization().snapshot())
@@ -303,9 +318,6 @@ impl Route {
             || (key.is_none() && topic != topic::ORGANIZATION)
         {
             return Err("detail_target_changed");
-        }
-        if matches!(&frame.body, Body::Gap(_)) {
-            return Err("detail_source_gap");
         }
         self.seq = seq;
         Ok(self

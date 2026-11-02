@@ -702,7 +702,7 @@ fn older_activity_and_changed_process_interval_retire_ids_but_refresh_reuses_dem
     });
 }
 #[test]
-fn detail_sequence_gap_preserves_last_known_rows_and_requires_explicit_retry() {
+fn detail_sequence_gap_recovers_only_its_route_and_keeps_catalog_and_processes_live() {
     let _process = crate::PROCESS_TREE.read().unwrap();
     tauri::async_runtime::block_on(async {
         let fixture = Fixture::new(json!({"details":true,"detail_gap":true}));
@@ -710,15 +710,88 @@ fn detail_sequence_gap_preserves_last_known_rows_and_requires_explicit_retry() {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let observe = seen.clone();
         pump.tap(Box::new(move |c| observe.lock().unwrap().push(c.clone())));
-        eventually("initial catalog", || pump.row("", "row").is_some()).await;
+        service
+            .follow_detail("", detail_spec("processes", None))
+            .unwrap();
+        eventually("live catalog and healthy process route", || {
+            pump.row("", "row").is_some()
+                && seen.lock().unwrap().iter().any(|c| {
+                    matches!(
+                        c,
+                        Change::Processes {
+                            update: zerus_client_core::ProcessesUpdate::State { .. },
+                            ..
+                        }
+                    )
+                })
+        })
+        .await;
+        seen.lock().unwrap().clear();
         service
             .follow_detail("", detail_spec("activity", None))
             .unwrap();
-        eventually("detail sequence refused", || {
-            service.snapshot().code == "detail_sequence_gap"
+        eventually("only Activity rearmed", || {
+            fixture
+                .calls()
+                .iter()
+                .filter(|c| {
+                    c["value"]["op"] == "detail_follow"
+                        && c["value"]["subscription"]["topic"] == "activity"
+                })
+                .count()
+                == 2
         })
         .await;
+        service.processes_update("", "run:run", None).unwrap();
+        eventually("healthy process route still delivers",||seen.lock().unwrap().iter().any(|c|
+            matches!(c,Change::Processes {update:zerus_client_core::ProcessesUpdate::State {value:_,rev},..} if *rev>1))).await;
+        assert!(service.snapshot().connected);
         assert!(pump.row("", "row").is_some());
+        assert_eq!(watch_calls(&fixture.calls()), 1);
+        assert!(seen
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|c| !matches!(c,Change::Computer {status,..} if *status!=ComputerStatus::Live)));
+        let calls = fixture.calls();
+        let follows: Vec<_> = calls
+            .iter()
+            .filter(|c| {
+                c["value"]["op"] == "detail_follow"
+                    && c["value"]["subscription"]["topic"] == "activity"
+            })
+            .collect();
+        assert_ne!(follows[0]["value"]["id"], follows[1]["value"]["id"]);
+        assert!(calls.iter().any(|c| c["value"]["op"] == "detail_unfollow"
+            && c["value"]["id"] == follows[0]["value"]["id"]));
+        service.join().await.unwrap();
+    });
+}
+
+#[test]
+fn native_activity_gap_keeps_its_subscription_and_delivers_the_replacement_tail() {
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        let fixture = Fixture::new(json!({"details":true,"native_gap":true}));
+        let (service, pump) = fixture.start(true);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let observe = seen.clone();
+        pump.tap(Box::new(move |c| observe.lock().unwrap().push(c.clone())));
+        service
+            .follow_detail("", detail_spec("activity", None))
+            .unwrap();
+        eventually("new native tail after Gap",||seen.lock().unwrap().iter().any(|c|
+            matches!(c,Change::Activity {update:zerus_client_core::ActivityUpdate::Replace {events,cursor:200},..} if events.len()==1 && events[0]["seq"]==200))).await;
+        assert!(service.snapshot().connected);
+        assert_eq!(watch_calls(&fixture.calls()), 1);
+        assert_eq!(
+            fixture
+                .calls()
+                .iter()
+                .filter(|c| c["value"]["op"] == "detail_follow")
+                .count(),
+            1
+        );
         assert!(!seen.lock().unwrap().iter().any(|c| matches!(
             c,
             Change::Activity {
@@ -726,10 +799,58 @@ fn detail_sequence_gap_preserves_last_known_rows_and_requires_explicit_retry() {
                 ..
             }
         )));
-        assert_eq!(watch_calls(&fixture.calls()), 1);
         service.join().await.unwrap();
     });
 }
+
+#[test]
+fn timed_out_follow_leaves_only_that_view_unavailable_and_does_not_replay_it() {
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        let fixture = Fixture::new(json!({"details":true,"follow_timeout":true}));
+        let (service, pump) = fixture.start(true);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let observe = seen.clone();
+        pump.tap(Box::new(move |c| observe.lock().unwrap().push(c.clone())));
+        service
+            .follow_detail("", detail_spec("processes", None))
+            .unwrap();
+        eventually("healthy process state", || {
+            seen.lock().unwrap().iter().any(|c| {
+                matches!(
+                    c,
+                    Change::Processes {
+                        update: zerus_client_core::ProcessesUpdate::State { .. },
+                        ..
+                    }
+                )
+            })
+        })
+        .await;
+        service
+            .follow_detail("", detail_spec("activity", None))
+            .unwrap();
+        eventually("timed out view reports unavailable",||seen.lock().unwrap().iter().any(|c|
+            matches!(c,Change::Activity {update:zerus_client_core::ActivityUpdate::Connection {ready:false,pending:false,code},..} if code=="service_request_unconfirmed"))).await;
+        service.processes_update("", "run:run", None).unwrap();
+        eventually("healthy route still refreshes",||seen.lock().unwrap().iter().any(|c|
+            matches!(c,Change::Processes {update:zerus_client_core::ProcessesUpdate::State {rev,..},..} if *rev>1))).await;
+        assert!(service.snapshot().connected);
+        assert!(pump.row("", "row").is_some());
+        assert_eq!(watch_calls(&fixture.calls()), 1);
+        assert_eq!(
+            fixture
+                .calls()
+                .iter()
+                .filter(|c| c["value"]["op"] == "detail_follow"
+                    && c["value"]["subscription"]["topic"] == "activity")
+                .count(),
+            1
+        );
+        service.join().await.unwrap();
+    });
+}
+
 #[test]
 fn refused_detail_demand_is_visible_without_disconnecting_other_views() {
     let _process = crate::PROCESS_TREE.read().unwrap();
