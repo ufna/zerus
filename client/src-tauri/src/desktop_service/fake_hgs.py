@@ -54,13 +54,16 @@ def status():
         counts['computers'][0]['computer'] = config['counts_computer']
     background = {name: {'ready': config.get('ready', False), 'code': 'fixture'}
                   for name in ['fleet', 'presence', 'reads', 'attention', 'approvals']}
+    sources = [{'computer': '', 'incarnation': 1, 'generation': 1,
+                'status': 'live' if online else 'reconnecting', 'accepting': online}]
+    if config.get('peer_failure'):
+        sources.append(dict(sources[0], computer='broken', incarnation=2))
     return {'abi': 'desktop-v1', 'configuration': 'a' * 64, 'epoch': epoch, 'generation': 1,
             'lifecycle': {'abi': 'desktop-lifecycle-v1', 'phase': 'serving', 'ipc_ready': True,
                           'configuration': 'a' * 64, 'epoch': epoch, 'generation': 1, 'background': background},
             'attention_counts': counts, 'automatic_approvals': False, 'catalog_reads': {'changes_abi': abi},
             'background_runtime': {'epoch': epoch, 'display_only': True, 'authority': False, 'state': 'running',
-                                   'computers': [{'computer': '', 'incarnation': 1, 'generation': 1,
-                                                  'status': 'live' if online else 'reconnecting', 'accepting': online}]},
+                                   'computers': sources},
             'detail_subscriptions': {'abi': 'desktop-details-v1', 'stopping': False} if config.get('details') else None}
 
 
@@ -140,8 +143,8 @@ def frame(seq, kind, body):
     print(json.dumps({'abi': 'desktop-v1', 'epoch': epoch, 'seq': seq, 't': kind, 'value': body}), flush=True)
 
 
-def hint(seq, revision, selected=projection):
-    frame(seq, 'catalog_changed', {'computer': '', 'incarnation': 1, 'generation': 1,
+def hint(seq, revision, selected=projection, computer=''):
+    frame(seq, 'catalog_changed', {'computer': computer, 'incarnation': 2 if computer else 1, 'generation': 1,
           'projection': selected, 'revision': revision, 'online': True, 'last_known': False,
           'complete': True, 'reset_required': False, 'changes_abi': abi, 'attention_counts': status()['attention_counts']})
 
@@ -258,6 +261,16 @@ elif args == ['desktop', 'watch', '--json']:
     if config.get('large'):
         wait(root / 'initial-complete')
         hint(1, '3')
+    if config.get('peer_failure'):
+        wait(root / 'peer-hints')
+        hint(1, '1')
+        for seq in range(2, 6):
+            hint(seq, str(seq), computer='broken')
+        repeated = status()
+        repeated['generation'] = repeated['lifecycle']['generation'] = 2
+        frame(6, 'status', repeated)
+        wait(root / 'peer-scope-recovered')
+        hint(7, '0', selected='b' * 32, computer='broken')
     if config.get('details'):
         seq = 100
         seen = set()
@@ -280,6 +293,10 @@ elif args == ['desktop', 'request', '--json']:
               'changes_abi': abi, 'epoch': epoch, 'computer': value.get('computer', ''), 'incarnation': 1,
               'generation': 1, 'projection': projection, 'display_only': True, 'authority': False,
               'complete': True, 'online': True, 'last_known': False, 'stale': False, 'next_cursor': None}
+    if config.get('peer_failure') and value.get('computer') == 'broken':
+        common['incarnation'] = 2
+        if (root / 'peer-scope-recovered').exists():
+            common['projection'] = 'b' * 32
     if op == 'detail_follow':
         if config.get('follow_timeout') and value['subscription']['topic'] == 'activity':
             (root / 'follow-held').touch()
@@ -328,6 +345,13 @@ elif args == ['desktop', 'request', '--json']:
         number = counter('delta-number')
         page = dict(common, projection=value['projection'], since_revision=value['since_revision'],
                     through_revision=value['since_revision'], revision=value['since_revision'], items=[])
+        if config.get('peer_failure'):
+            if value['computer'] == 'broken':
+                if not any((root / path).exists() for path in ['peer-recovered', 'peer-scope-recovered']):
+                    page = {'request_id': request_id, 'accepted': False, 'durable': False,
+                            'code': 'catalog_changes_gap', 'reset_required': True}
+            elif (root / 'peer-hints').exists():
+                page.update(through_revision='1', revision='1', items=[change('after-peer', '1')])
         if config.get('counts_transition') and (root / 'drop-counts').exists():
             page.update(through_revision='1', revision='1', items=[change('after-counts', '1')])
         if config.get('dirty_walk'):

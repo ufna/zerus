@@ -56,7 +56,26 @@ struct Dirty {
     heads: BTreeMap<String, Revision>,
     progress: BTreeMap<String, Revision>,
     pending: BTreeSet<String>,
+    halted: BTreeSet<String>,
+    running: Option<String>,
     next: u64,
+}
+impl Dirty {
+    fn restart(&mut self, computer: &str) -> Result<Option<SourceVersion>, &'static str> {
+        let Some(source) = self.sources.get_mut(computer) else {
+            return Ok(None);
+        };
+        self.next = self
+            .next
+            .checked_add(1)
+            .ok_or("source_generation_exhausted")?;
+        source.serial = self.next;
+        self.heads.remove(computer);
+        self.progress.remove(computer);
+        self.halted.remove(computer);
+        self.pending.insert(computer.into());
+        Ok(Some(source.clone()))
+    }
 }
 
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -292,6 +311,51 @@ impl Service {
             }
         });
     }
+    /// Nudge a non-live catalog, preserving healthy and already-pending reads.
+    /// The local Refresh entry point also reaches halted peers: service mode
+    /// has no legacy GUI peer listing for the tray/UI Refresh loops to visit.
+    pub fn reconnect(&self, computer: &str) -> bool {
+        if self.shared.stopped.load(Ordering::Acquire) {
+            return false;
+        }
+        let snapshot = self
+            .shared
+            .snapshot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !snapshot.connected {
+            drop(snapshot);
+            if !computer.is_empty() {
+                return false;
+            }
+            self.retry();
+            return true;
+        }
+        let mut dirty = self
+            .shared
+            .dirty
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let targets: Vec<_> = dirty
+            .sources
+            .keys()
+            .filter(|target| {
+                (computer.is_empty() || target.as_str() == computer)
+                    && !dirty.progress.contains_key(*target)
+                    && !dirty.pending.contains(*target)
+                    && dirty.running.as_ref() != Some(*target)
+            })
+            .cloned()
+            .collect();
+        let mut changed = false;
+        for target in targets {
+            changed |= matches!(dirty.restart(&target), Ok(Some(_)));
+        }
+        if changed {
+            self.shared.changed.notify_one();
+        }
+        changed
+    }
     pub async fn read_marks(
         &self,
         marks: Vec<zerus_client_core::readmarks::ReadMark>,
@@ -497,13 +561,18 @@ impl Shared {
         if !dirty.sources.contains_key(computer) && dirty.sources.len() >= SOURCES {
             return Err("source_capacity");
         }
-        let replaced = reset
-            || dirty.sources.get(computer).is_none_or(|old| {
-                old.incarnation != source.incarnation
-                    || old.generation != source.generation
-                    || old.online != source.online
-                    || (old.projection.is_some() && old.projection != source.projection)
-            });
+        let scope_changed = dirty.sources.get(computer).is_none_or(|old| {
+            old.incarnation != source.incarnation
+                || old.generation != source.generation
+                || old.online != source.online
+                || (old.projection.is_some() && old.projection != source.projection)
+        });
+        // Repeated hints (including incomplete/reset-required hints) cannot
+        // spend another retry budget for the same failed source scope.
+        if !scope_changed && dirty.halted.contains(computer) {
+            return Ok(false);
+        }
+        let replaced = reset || scope_changed;
         if replaced {
             dirty.next = dirty
                 .next
@@ -512,6 +581,7 @@ impl Shared {
             source.serial = dirty.next;
             dirty.heads.remove(computer);
             dirty.progress.remove(computer);
+            dirty.halted.remove(computer);
         } else {
             source.serial = dirty.sources[computer].serial;
         }
@@ -555,6 +625,8 @@ impl Shared {
         dirty.progress.clear();
         dirty.sources.clear();
         dirty.pending.clear();
+        dirty.halted.clear();
+        dirty.running = None;
         computers
     }
 }
@@ -855,7 +927,7 @@ async fn connection(
                             }
                             service::Update::Catalog { computer, removed } => {
                                 if removed {
-                                    { let mut dirty = shared.dirty.lock().unwrap_or_else(PoisonError::into_inner); dirty.progress.remove(&computer); dirty.heads.remove(&computer); dirty.sources.remove(&computer); dirty.pending.remove(&computer); }
+                                    { let mut dirty = shared.dirty.lock().unwrap_or_else(PoisonError::into_inner); dirty.progress.remove(&computer); dirty.heads.remove(&computer); dirty.sources.remove(&computer); dirty.pending.remove(&computer); dirty.halted.remove(&computer); }
                                     emit(&shared, Change::Computer { computer: ComputerId(computer.clone()), status: ComputerStatus::Ended }, &stop).await?;
                                     emit(&shared, Change::Replace { computer: ComputerId(computer), rows: vec![] }, &stop).await?;
                                 } else if shared.catalog_hint(&computer, SourceVersion::from(&frame["value"]),
