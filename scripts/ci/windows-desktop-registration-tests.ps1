@@ -93,7 +93,28 @@ Check 'trace survives a retained read/write file and logging failure is nonfatal
 
 function Parse-RequestBytes([byte[]]$data) {
     $stream=[IO.MemoryStream]::new($data,$false)
-    try { return Read-RegistrationRequest $stream } finally { $stream.Dispose() }
+    try { return Read-RegistrationRequest $stream $data.Length } finally { $stream.Dispose() }
+}
+Add-Type -TypeDefinition @'
+using System; using System.IO;
+public sealed class NoEofStream : MemoryStream {
+ public NoEofStream(byte[] bytes):base(bytes,false){}
+ public override int Read(byte[] b,int o,int n) {
+  if(Position==Length)throw new IOException("Reader waited for EOF");
+  return base.Read(b,o,Math.Min(n,3));
+ }
+}
+'@
+Check 'exact frame completes without EOF even across short reads' {
+$data=[Text.Encoding]::UTF8.GetBytes('{"ok":true}')
+$stream=[NoEofStream]::new($data)
+try { Assert ((Read-RegistrationRequest $stream $data.Length).ok) } finally { $stream.Dispose() }
+}
+Check 'short extra and invalid declared lengths refuse' {
+foreach($length in @(-1,0,65537,1,20)) {
+    $stream=[IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes('{"ok":true}'),$false)
+    try { Refuses {Read-RegistrationRequest $stream $length} } finally {$stream.Dispose()}
+}
 }
 Check 'UTF-8 input retains multibyte text' {
     $json='{"text":"'+[char]0x20ac+'"}'

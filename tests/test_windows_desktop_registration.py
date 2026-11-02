@@ -1,4 +1,5 @@
 """Disposable Windows CI: actual own-user task, never start/stop a service."""
+import base64
 import hashlib
 import json
 import os
@@ -18,6 +19,39 @@ if '--hgs' in sys.argv:
 
 @unittest.skipUnless(os.name == 'nt' and HGS is not None, 'explicit disposable Windows CLI required')
 class WindowsDesktopRegistration(unittest.TestCase):
+    def test_fixed_input_frame_finishes_while_the_writer_stays_open(self):
+        source = Path(__file__).resolve().parents[1] / 'src/desktop/windows_registration.ps1'
+        script = str(source).replace("'", "''")
+        body = json.dumps({'schema': 1, 'text': 'framed request'}).encode('utf-8')
+        script = (". ([ScriptBlock]::Create([IO.File]::ReadAllText('" + script + "')))\n"
+                  "$s=[Console]::OpenStandardInput();"
+                  "try { $v=Read-RegistrationRequest $s " + str(len(body)) + ";"
+                  "[Console]::WriteLine(($v|ConvertTo-Json -Compress)) } finally {$s.Dispose()}")
+        program = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
+        process = subprocess.Popen([str(program), '-NoLogo', '-NoProfile', '-NonInteractive',
+                                    '-EncodedCommand', base64.b64encode(script.encode('utf-16le')).decode('ascii')],
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   creationflags=subprocess.CREATE_NO_WINDOW)
+        try:
+            process.stdin.write(body)
+            process.stdin.flush()
+            # Deliberately keep the ORIGINAL writer open, with no EOF. A timed
+            # out reader fails this test; the 15s product limit is unchanged.
+            self.assertEqual(process.wait(timeout=15), 0)
+            self.assertFalse(process.stdin.closed)
+            output = process.stdout.read(65537)
+            error = process.stderr.read(65537)
+            self.assertLessEqual(len(output), 65536)
+            self.assertEqual(error, b'')
+            self.assertEqual(json.loads(output), json.loads(body))
+        finally:
+            process.stdin.close()
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+            process.stdout.close()
+            process.stderr.close()
+
     def test_own_interactive_logon_task_without_starting_service_or_enabling_sessions(self):
         root = Path(tempfile.mkdtemp(prefix='zerus-desktop-logon-'))
         env = {key: os.environ[key] for key in ('SystemRoot', 'WINDIR', 'COMSPEC') if key in os.environ}
