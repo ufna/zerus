@@ -78,11 +78,12 @@ unless testing the final install. Do not touch unrelated desktop/apps/settings.
 | [ ] One-time import | Check actual legacy registry/INI preferences, folder mapping, geometry, drafts and attention seed. Restart and rollback/forward: no source writes, reimport or automatic policy inheritance. | G3 `.66.5.2.1`, `.66.5.3/.10`, [#870](https://github.com/ufna/zerus/pull/870) |
 | [ ] Service registration/readiness | Check opt-in registration in the interactive user session, never LocalSystem/Session 0; verify named-pipe identity and independent background readiness with UI closed. Remove temporary logon entries. | `.66.3.27.3`, `.66.3.31`, [#912](https://github.com/ufna/zerus/pull/912); fixes-u/desktop-u |
 | [x] Standard-user passive registration | Install, status, idempotent reinstall and removal passed on an existing non-administrator console token; see the evidence below. Actual login triggering and service readiness remain in the preceding unchecked row. | `.66.8.1`, [#912](https://github.com/ufna/zerus/pull/912) review follow-up; fixes-u |
+| [x] Windows frontend native authentication subchecks | Native process/ancestry and request-evidence checks, six canonical-pipe cases and a separate departed-launcher GUI ancestry probe passed; see the scoped evidence below. This does not check off a durable policy change or whole UI parity. | `.66.3.37`, [#931](https://github.com/ufna/zerus/pull/931), [#955](https://github.com/ufna/zerus/pull/955); fleet-c |
 | [ ] Notifications/clicks | In the real desktop, receive one service-owned toast/badge, click to exact session, reject stale clicks and check lock/idle state without manipulating unrelated apps. | `.66.3.30`, `.66.6.15`, [#907](https://github.com/ufna/zerus/pull/907) ledger, [#914](https://github.com/ufna/zerus/pull/914) discovery; fixes-u |
 | [ ] Tray/lifecycle | Check tray/menu, background/second-instance routing, WebView2 window, draft-safe exit and opt-in login start; remove temporary startup values and shortcuts. | [#874](https://github.com/ufna/zerus/pull/874), `.66.6.15` |
 | [ ] Terminal | Check PowerShell/Windows Terminal/ConPTY paths with spaces/non-ASCII, exact session selection, resize/paste and live-session continuity. Exercise supported operations only; unsupported remote paths must refuse clearly. | `.52`, `.66.6.15`, Windows native contracts; fixes-u |
 | [ ] Voice/video | Verify actual supported capture/preview/transcription/cancel paths and privacy consent; unsupported paths refuse visibly. An unavailable release-required inventory capability blocks acceptance rather than counting as a skip. | G2 `.66.4.5`, inventory voice/media rows |
-| [ ] UI/durable parity | Run the complete inventory responsibility walk, especially tasks, folder mapping and bounded details; approvals remain default-off and generic/agent toggles refuse. UI-only mode has no competing GUI Fleet. | G1–G4/G7, `.66.3.31/.32/.35/.37/.38` |
+| [ ] UI/durable parity | Run the complete inventory responsibility walk, especially tasks, folder mapping and bounded details. Verify an actual confirmed frontend request through a ready service to its durable result/query; approvals remain default-off and generic/agent toggles refuse. UI-only mode has no competing GUI Fleet. | G1–G4/G7, `.66.3.31/.32/.35/.37/.38` |
 | [ ] Qt rollback | Before deletion, restore last Qt using the maintained rollback/install route only after settled service revoke. Verify original state and live sessions, then return to Next. Remove test staging/registrations only after owned processes exit. | `.66.3.31`, `.66.7.3`; desktop-u/fleet-c |
 
 ### Recorded Windows registration subcheck — 2026-11-02
@@ -109,6 +110,41 @@ or generation. This covers passive registration only. Login triggering, service
 start/readiness, background work, presence, notifications and GUI remain pending.
 The separate CI first-status 15-second timeout remains a failed CI result;
 this PC subcheck does not make that workflow green.
+
+### Recorded Windows frontend authentication subchecks — 2026-11-02
+
+fleet-c supplied retained reports for source
+`7c0c7c043c55d194bc66a897bf980228541eaa81`, CI run
+[41375310707](https://github.com/ufna/zerus/actions/runs/41375310707), native job
+`125054215361`, artifact `13111379237`. The recorded CI core suite passed 1213
+tests with three existing ignored tests, and all six frontend cases passed;
+the native job still failed the separate known 15-second registration-status
+check. This is not an overall green CI result.
+
+The exact artifact's private va-kids run used console session 1, native 64-bit
+processes and a token reporting `effectiveAdministrator=false`. Its retained
+report passes 11 process checks, six request-evidence checks and six frontend
+cases. These cover same-user agent names/markers, stale birth/configuration/
+fingerprint and over-limit environments. The canonical-pipe fixture uses the
+production listener/cache and original-child runner: its positive case returns
+`desktop_background_unavailable` with `accepted:false` after authentication;
+negative cases return `frontend_authentication_refused`. Policy and writers
+remain false in both service-status observations.
+
+The caller/helper/SYSTEM ancestry reached a query-only access-denied boundary
+(error 5); that does not prove a different SID, as clarified in #955. A separate
+read-only native adapter probe admitted the genuine GUI after its original
+launcher exited, while the original GUI remained live and responsive. It did
+not issue a request or mutation permit for that GUI. The retained cleanup report
+confirms child waits, an empty owned job, task absence and removal of 60 private
+stage/profile entries; fleet-c reported original-child exit and final wait 0.
+
+No additional standalone `.66.3.37` native adapter/evidence case is identified
+by these reports and its current contract. The existing UI/durable-parity row
+still needs the actual confirmed UI-to-ready-service commit/result round trip
+under `.66.3.31/.32`; the authentication fixture stops before that effect.
+Real logon, notifications, media, agent-preserving upgrades and whole UI parity
+remain pending in their own rows. Packaging receipts are separate evidence.
 
 The notification checks require the service's actual lifecycle/adapter wiring,
 not only the merged ledger, discovery or host primitives. Exercise old unread
