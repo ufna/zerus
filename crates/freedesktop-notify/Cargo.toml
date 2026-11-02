@@ -11,5 +11,8 @@ publish = false
 zbus = { version = "5.19", features = ["blocking-api"] }
 
 [dev-dependencies]
+async-io = "2.6"
+futures-lite = "2.6"
+libc = "0.2"
+uuid = { version = "1", features = ["v4"] }
 serde = { version = "1", features = ["derive"] }
-tempfile = "3"
