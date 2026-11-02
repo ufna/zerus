@@ -2,7 +2,7 @@ use super::super::{Offered, Outbox};
 use super::ingress::test_bus as bus;
 use super::*;
 use crate::desktop::store::{Location, Store};
-use std::sync::atomic::AtomicU8;
+use std::sync::atomic::{AtomicU32, AtomicU8};
 use zerus_desktop_ledger::{self as ledger, Identity, Kind, Reserve, Target};
 
 fn session() -> Session {
@@ -75,7 +75,7 @@ fn callback_context_is_ephemeral_and_closed_removes_the_exact_mapping() {
     let command = command(s);
     map.adopt(&command, 42);
     assert!(map.signal(
-        Signal::ActivationToken {
+        &Signal::ActivationToken {
             id: 42,
             token: "wayland-activation".into()
         },
@@ -83,7 +83,7 @@ fn callback_context_is_ephemeral_and_closed_removes_the_exact_mapping() {
     ));
     assert!(map.rows[&42].platform_context.is_none());
     assert!(map.signal(
-        Signal::ActionInvoked {
+        &Signal::ActionInvoked {
             id: 42,
             action: "default".into()
         },
@@ -93,12 +93,12 @@ fn callback_context_is_ephemeral_and_closed_removes_the_exact_mapping() {
     assert!(matches!(&clicked.event, Event::Clicked(v)
         if matches!(&v.platform_context,Some(PlatformContext::Wayland { activation_token }) if activation_token=="wayland-activation")));
     assert!(map.tokens.is_empty());
-    assert!(map.signal(Signal::NotificationClosed { id: 42, reason: 2 }, &endpoint));
+    assert!(map.signal(&Signal::NotificationClosed { id: 42, reason: 2 }, &endpoint));
     assert!(map.rows.is_empty());
     let closed = outbox.events.try_recv().unwrap();
     assert!(matches!(&closed.event, Event::Closed(v) if v.platform_context.is_none()));
     assert!(map.signal(
-        Signal::ActionInvoked {
+        &Signal::ActionInvoked {
             id: 42,
             action: "default".into()
         },
@@ -177,14 +177,14 @@ fn unsupported_action_consumes_its_ephemeral_token_without_a_click() {
     let mut mappings = Mappings::new(namespace());
     mappings.adopt(&command(s), 42);
     assert!(mappings.signal(
-        Signal::ActivationToken {
+        &Signal::ActivationToken {
             id: 42,
             token: "one-use".into()
         },
         &endpoint
     ));
     assert!(mappings.signal(
-        Signal::ActionInvoked {
+        &Signal::ActionInvoked {
             id: 42,
             action: "unsupported".into()
         },
@@ -194,6 +194,7 @@ fn unsupported_action_consumes_its_ephemeral_token_without_a_click() {
     assert!(outbox.events.try_recv().is_err());
 }
 
+#[track_caller]
 fn until(mut check: impl FnMut() -> bool) {
     let deadline = Instant::now() + WAIT + Duration::from_secs(1);
     while !check() {
@@ -205,6 +206,7 @@ fn until(mut check: impl FnMut() -> bool) {
     }
 }
 struct Fake {
+    next: AtomicU32,
     called: mpsc::SyncSender<String>,
     closed: mpsc::SyncSender<u32>,
     mode: Arc<AtomicU8>,
@@ -228,6 +230,7 @@ impl Fake {
         match self.mode.load(Ordering::Acquire) {
             1 => Err(zbus::fdo::Error::Failed("fixture error".into())),
             2 => Ok(0),
+            5 => Ok(self.next.fetch_add(1, Ordering::AcqRel)),
             3 => {
                 connection
                     .emit_signal(
@@ -279,6 +282,7 @@ impl Server {
             .serve_at(
                 native_path(),
                 Fake {
+                    next: AtomicU32::new(1),
                     called,
                     closed,
                     mode: mode.clone(),
@@ -314,6 +318,19 @@ impl Server {
                 &(id, "default"),
             )
             .unwrap();
+    }
+    fn close_burst(&self, count: u32) {
+        for id in 1..=count {
+            self.connection
+                .emit_signal(
+                    None::<&str>,
+                    native_path(),
+                    zerus_freedesktop_notify::SERVICE,
+                    "NotificationClosed",
+                    &(id, 2_u32),
+                )
+                .unwrap();
+        }
     }
 }
 struct Harness {
@@ -423,6 +440,143 @@ impl Harness {
             runtime.drained() && self.outbox.operation_drained()
         });
     }
+    fn shown(&mut self, server: &Server, count: u32) {
+        // Exercise real original requests in the existing eight-command bound.
+        for base in (0..count).step_by(wire::IN_FLIGHT) {
+            let requests: Vec<_> = (0..(count - base).min(wire::IN_FLIGHT as u32))
+                .map(|_| self.post())
+                .collect();
+            for _ in &requests {
+                server.called.recv_timeout(WAIT).unwrap();
+            }
+            for request in requests {
+                self.settle(&request, "delivered");
+            }
+        }
+    }
+    fn live(&self) -> usize {
+        self.store
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM desktop_intents WHERE withdrawn=0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+}
+
+#[test]
+fn a_large_clear_all_burst_backpressures_the_actor_and_keeps_the_adapter_ready() {
+    let bus = bus::Bus::new();
+    let server = Server::new(&bus);
+    server.mode.store(5, Ordering::Release);
+    let mut h = Harness::new();
+    let mut runtime = h.start(&bus.address);
+    Harness::activate(&runtime);
+    h.shown(&server, 128);
+    server.close_burst(128);
+    // Deliberately stop polling the actor until its fixed 32 permits fill.
+    until(|| {
+        h.outbox.event_count.load(Ordering::Acquire) == 32
+            || runtime.shared.failed.load(Ordering::Acquire)
+    });
+    std::thread::sleep(WAIT + Duration::from_millis(200));
+    assert!(!runtime.shared.failed.load(Ordering::Acquire));
+    assert_eq!(runtime.status()["ready"], true);
+    let deadline = Instant::now() + WAIT;
+    while h.live() != 0 {
+        h.outbox.poll(&mut h.store, Instant::now());
+        assert!(
+            Instant::now() < deadline,
+            "burst settlement: live={}, actor={}, runtime={}",
+            h.live(),
+            h.outbox.status(),
+            runtime.status()
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(h.outbox.status()["callbacks"], 0);
+    let next = h.post();
+    server.called.recv_timeout(WAIT).unwrap();
+    h.settle(&next, "delivered");
+    assert_eq!(runtime.status()["ready"], true);
+    h.stop(&mut runtime);
+}
+
+#[test]
+fn stop_drains_more_than_one_raw_queue_of_closed_signals_before_clean_join() {
+    let bus = bus::Bus::new();
+    let server = Server::new(&bus);
+    server.mode.store(5, Ordering::Release);
+    let mut h = Harness::new();
+    let mut runtime = h.start(&bus.address);
+    Harness::activate(&runtime);
+    h.shown(&server, 64);
+    server.close_burst(64);
+    h.stop(&mut runtime);
+    assert_eq!(h.live(), 0);
+}
+
+#[test]
+fn malformed_or_excess_activation_context_is_optional_and_emit_retries_keep_identity() {
+    let s = session();
+    let (outbox, endpoint) = Outbox::new(s.clone()).unwrap();
+    let mut mappings = Mappings::new(namespace());
+    let command = command(s);
+    for id in 1..=34 {
+        mappings.adopt(&command, id);
+    }
+    for id in 1..=32 {
+        assert!(mappings.signal(
+            &Signal::ActivationToken {
+                id,
+                token: "valid".into()
+            },
+            &endpoint
+        ));
+    }
+    assert!(mappings.signal(
+        &Signal::ActivationToken {
+            id: 33,
+            token: "extra".into()
+        },
+        &endpoint
+    ));
+    assert!(!mappings.tokens.contains_key(&33));
+    for token in [
+        String::new(),
+        "bad\ncontext".into(),
+        "x".repeat(wire::ACTIVATION_TOKEN_BYTES + 1),
+    ] {
+        assert!(mappings.signal(&Signal::ActivationToken { id: 1, token }, &endpoint));
+        assert!(!mappings.tokens.contains_key(&1));
+    }
+    // Fill the real actor queue with clicks, then refuse both a click and Closed.
+    for _ in 0..32 {
+        assert!(mappings.signal(
+            &Signal::ActionInvoked {
+                id: 2,
+                action: "default".into()
+            },
+            &endpoint
+        ));
+    }
+    let closed = Signal::NotificationClosed { id: 3, reason: 2 };
+    let clicked = Signal::ActionInvoked {
+        id: 4,
+        action: "default".into(),
+    };
+    assert!(!mappings.signal(&closed, &endpoint));
+    assert!(!mappings.signal(&clicked, &endpoint));
+    assert!(mappings.rows.contains_key(&3));
+    assert!(mappings.tokens.contains_key(&4));
+    drop(outbox.events.try_recv().unwrap());
+    assert!(mappings.signal(&closed, &endpoint));
+    assert!(!mappings.rows.contains_key(&3));
+    drop(outbox.events.try_recv().unwrap());
+    assert!(mappings.signal(&clicked, &endpoint));
+    assert!(!mappings.tokens.contains_key(&4));
 }
 
 #[test]

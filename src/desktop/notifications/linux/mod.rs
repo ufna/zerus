@@ -234,42 +234,55 @@ impl Mappings {
             .and_then(|id| self.rows.get(&id))
             .is_some_and(|v| v.token == token)
     }
-    fn signal(&mut self, signal: Signal, endpoint: &Endpoint) -> bool {
+    fn signal(&mut self, signal: &Signal, endpoint: &Endpoint) -> bool {
         match signal {
             Signal::ActivationToken { id, token } => {
-                if !self.rows.contains_key(&id) {
+                if !self.rows.contains_key(id) {
                     return true;
                 }
                 if token.is_empty()
                     || token.len() > wire::ACTIVATION_TOKEN_BYTES
                     || token.chars().any(char::is_control)
+                    || !self.tokens.contains_key(id) && self.tokens.len() == CALLBACKS
                 {
-                    return false;
+                    // Context is optional. Never retain an earlier token for
+                    // this click or fail the host because context is unusable.
+                    self.tokens.remove(id);
+                    return true;
                 }
-                if !self.tokens.contains_key(&id) && self.tokens.len() == CALLBACKS {
-                    return false;
-                }
-                self.tokens.insert(id, token);
+                self.tokens.insert(*id, token.clone());
                 true
             }
             Signal::ActionInvoked { id, action } => {
-                let context = self.tokens.remove(&id);
-                if action != "default" && action != "open-session" {
+                if endpoint.stopping() || action != "default" && action != "open-session" {
+                    self.tokens.remove(id);
                     return true;
                 }
-                let Some(value) = self.rows.get(&id) else {
+                let Some(value) = self.rows.get(id) else {
                     return true;
                 };
                 let mut value = value.clone();
-                value.platform_context =
-                    context.map(|activation_token| PlatformContext::Wayland { activation_token });
-                endpoint.emit(Event::Clicked(value))
+                value.platform_context = self
+                    .tokens
+                    .get(id)
+                    .cloned()
+                    .map(|activation_token| PlatformContext::Wayland { activation_token });
+                if !endpoint.emit(Event::Clicked(value)) {
+                    return false;
+                }
+                self.tokens.remove(id);
+                true
             }
             Signal::NotificationClosed { id, .. } => {
-                self.tokens.remove(&id);
-                self.rows
-                    .remove(&id)
-                    .is_none_or(|value| endpoint.emit(Event::Closed(value)))
+                let Some(value) = self.rows.get(id) else {
+                    return true;
+                };
+                if !endpoint.emit(Event::Closed(value.clone())) {
+                    return false;
+                }
+                self.tokens.remove(id);
+                self.rows.remove(id);
+                true
             }
         }
     }

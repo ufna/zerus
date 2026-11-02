@@ -1,6 +1,6 @@
 use super::*;
 use std::future::Future;
-use std::pin::pin;
+use std::pin::{pin, Pin};
 use std::task::{Context, Poll, Wake, Waker};
 use zbus::export::futures_core::Stream;
 use zbus::{Connection, Executor, MessageStream};
@@ -13,6 +13,7 @@ const RULES: [&str; 2] = [
     "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.freedesktop.Notifications'",
 ];
 const RAW: usize = 16;
+const IDLE: Duration = Duration::from_millis(100);
 struct Notify(mpsc::SyncSender<()>);
 impl Wake for Notify {
     fn wake(self: Arc<Self>) {
@@ -28,6 +29,7 @@ struct Driver {
     events: std::collections::VecDeque<Signal>,
     owner: Option<String>,
     broken: bool,
+    backpressured: bool,
 }
 impl Driver {
     fn new() -> Self {
@@ -38,6 +40,7 @@ impl Driver {
             events: std::collections::VecDeque::new(),
             owner: None,
             broken: false,
+            backpressured: false,
         }
     }
     fn message(&mut self, message: zbus::Message) {
@@ -70,12 +73,28 @@ impl Driver {
             return;
         };
         if let Some(signal) = native::decode_signal(&message, &owner) {
+            debug_assert!(self.events.len() < CALLBACKS);
+            self.events.push_back(signal);
+        }
+    }
+    /// Stop before polling when decoded storage is full. The original SDK
+    /// receiver and daemon provide backpressure; no signal is discarded.
+    fn read_ready(&mut self, reader: &mut MessageStream, cx: &mut Context<'_>) -> Result<bool, ()> {
+        for _ in 0..RAW {
             if self.events.len() == CALLBACKS {
-                self.broken = true;
-            } else {
-                self.events.push_back(signal);
+                self.backpressured = true;
+                return Ok(false);
+            }
+            match pin!(&mut *reader).poll_next(cx) {
+                Poll::Ready(Some(Ok(message))) => self.message(message),
+                Poll::Ready(_) => {
+                    self.broken = true;
+                    return Err(());
+                }
+                Poll::Pending => return Ok(true),
             }
         }
+        Ok(false)
     }
     fn drive<T>(
         &mut self,
@@ -86,6 +105,7 @@ impl Driver {
         work: impl Future<Output = T>,
     ) -> std::result::Result<T, ()> {
         let mut work = pin!(work);
+        self.backpressured = false;
         loop {
             if cancelled() || Instant::now() >= deadline || self.broken && reader.is_some() {
                 return Err(());
@@ -99,33 +119,36 @@ impl Driver {
                     Ok(result)
                 };
             }
-            if let Some(executor) = executor {
-                for _ in 0..16 {
-                    if pin!(executor.tick()).poll(&mut context).is_pending() {
-                        break;
-                    }
+            let mut progressed = false;
+            // Retain the pending tick THROUGH the wait. Dropping it first
+            // unregisters the executor wake and turns socket IO into polling.
+            let mut tick = pin!(executor.map(Executor::tick));
+            for _ in 0..16 {
+                let Some(next) = tick.as_mut().as_pin_mut() else {
+                    break;
+                };
+                if next.poll(&mut context).is_pending() {
+                    break;
                 }
+                progressed = true;
+                tick.set(executor.map(Executor::tick));
             }
             if let Some(reader) = reader.as_mut() {
-                for _ in 0..RAW {
-                    match pin!(&mut **reader).poll_next(&mut context) {
-                        Poll::Ready(Some(Ok(message))) => self.message(message),
-                        Poll::Ready(_) => {
-                            self.broken = true;
-                            return Err(());
-                        }
-                        Poll::Pending => break,
-                    }
+                progressed |= !self.read_ready(reader, &mut context)?;
+                if self.backpressured {
+                    return Err(());
                 }
             }
-            let _ = self.receive.recv_timeout(
-                deadline
-                    .saturating_duration_since(Instant::now())
-                    .min(Duration::from_millis(10)),
-            );
+            if progressed {
+                continue;
+            }
+            let _ = self
+                .receive
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()).min(IDLE));
         }
     }
 }
+type Lookup = Pin<Box<dyn Future<Output = Result<Namespace, ()>> + Send>>;
 struct Bus {
     connection: Connection,
     executor: Executor<'static>,
@@ -133,6 +156,9 @@ struct Bus {
     gate: Arc<ingress::Ingress>,
     driver: Driver,
     matched: usize,
+    identity: Option<Namespace>,
+    lookup: Option<Lookup>,
+    checked: usize,
 }
 impl Bus {
     fn connect(
@@ -167,6 +193,9 @@ impl Bus {
             gate,
             driver,
             matched: 0,
+            identity: None,
+            lookup: None,
+            checked: 0,
         })
     }
     fn drive<T>(
@@ -212,39 +241,134 @@ impl Bus {
         deadline: Instant,
         cancelled: impl Fn() -> bool,
     ) -> std::result::Result<Namespace, ()> {
-        let connection = self.connection.clone();
-        let lookup = async {
-            let bus = connection
-                .call_method(Some(BUS), BUS_PATH, Some(BUS), "GetId", &())
-                .await
-                .map_err(|_| ())?;
-            let owner = connection
-                .call_method(
-                    Some(BUS),
-                    BUS_PATH,
-                    Some(BUS),
-                    "GetNameOwner",
-                    &(native::SERVICE,),
-                )
-                .await
-                .map_err(|_| ())?;
-            if [bus.header(), owner.header()]
-                .iter()
-                .any(|h| h.sender().map(|s| s.as_str()) != Some(BUS))
+        self.drive(deadline, cancelled, Self::lookup(self.connection.clone()))?
+    }
+    async fn lookup(connection: Connection) -> Result<Namespace, ()> {
+        let bus = connection
+            .call_method(Some(BUS), BUS_PATH, Some(BUS), "GetId", &())
+            .await
+            .map_err(|_| ())?;
+        let owner = connection
+            .call_method(
+                Some(BUS),
+                BUS_PATH,
+                Some(BUS),
+                "GetNameOwner",
+                &(native::SERVICE,),
+            )
+            .await
+            .map_err(|_| ())?;
+        if [bus.header(), owner.header()]
+            .iter()
+            .any(|h| h.sender().map(|s| s.as_str()) != Some(BUS))
+        {
+            return Err(());
+        }
+        let bus_id: String = bus.body().deserialize().map_err(|_| ())?;
+        let owner: String = owner.body().deserialize().map_err(|_| ())?;
+        if bus_id.len() != 32
+            || !bus_id.bytes().all(|b| b.is_ascii_hexdigit())
+            || zbus::names::UniqueName::try_from(owner.as_str()).is_err()
+        {
+            return Err(());
+        }
+        Ok(Namespace { bus_id, owner })
+    }
+    fn bind(&mut self, namespace: &Namespace) {
+        self.driver.owner = Some(namespace.owner.clone());
+        self.identity = Some(namespace.clone());
+    }
+    fn watched_namespace(&self, expected: &Namespace) -> bool {
+        // This authenticated socket never reconnects. Its bus ID is fixed;
+        // ordered bus-only NameOwnerChanged messages fence the pinned owner.
+        self.identity.as_ref() == Some(expected)
+            && self.driver.owner.as_deref() == Some(expected.owner.as_str())
+            && !self.connection.is_closed()
+            && !self.driver.broken
+            && !self.gate.refused()
+    }
+    fn batch_namespace(
+        &mut self,
+        expected: &Namespace,
+        until: Instant,
+        cancelled: impl Fn() -> bool,
+    ) -> bool {
+        match self.namespace(until, cancelled) {
+            Ok(current) => current == *expected && self.watched_namespace(expected),
+            // A reply can be behind a signal burst on the SAME socket. Keep
+            // bounded input flowing using its authenticated ordered loss watch;
+            // never open a second connection or grow storage to reach a reply.
+            Err(()) if self.driver.backpressured => self.watched_namespace(expected),
+            Err(()) => false,
+        }
+    }
+    fn queued(
+        &mut self,
+        mappings: &mut Mappings,
+        endpoint: &Endpoint,
+        closed_only: bool,
+        limit: usize,
+    ) -> bool {
+        let count = self.driver.events.len().min(limit);
+        for _ in 0..count {
+            let Some(signal) = self.driver.events.front() else {
+                break;
+            };
+            if (!closed_only || matches!(signal, Signal::NotificationClosed { .. }))
+                && !mappings.signal(signal, endpoint)
             {
-                return Err(());
+                return false;
             }
-            let bus_id: String = bus.body().deserialize().map_err(|_| ())?;
-            let owner: String = owner.body().deserialize().map_err(|_| ())?;
-            if bus_id.len() != 32
-                || !bus_id.bytes().all(|b| b.is_ascii_hexdigit())
-                || zbus::names::UniqueName::try_from(owner.as_str()).is_err()
-            {
-                return Err(());
+            self.driver.events.pop_front();
+            self.checked = self.checked.saturating_sub(1);
+        }
+        true
+    }
+    fn route_batch(
+        &mut self,
+        mappings: &mut Mappings,
+        endpoint: &Endpoint,
+        until: Instant,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<bool, ()> {
+        if self.driver.events.is_empty() {
+            return Ok(true);
+        }
+        if !self.watched_namespace(&mappings.namespace) {
+            return Err(());
+        }
+        if self.checked != 0 {
+            return Ok(self.queued(mappings, endpoint, false, self.checked));
+        }
+        let mut lookup = self
+            .lookup
+            .take()
+            .unwrap_or_else(|| Box::pin(Self::lookup(self.connection.clone())));
+        loop {
+            match self.drive(until, &cancelled, lookup.as_mut()) {
+                Ok(Ok(current))
+                    if current == mappings.namespace
+                        && self.watched_namespace(&mappings.namespace) =>
+                {
+                    self.checked = self.driver.events.len();
+                    return Ok(self.queued(mappings, endpoint, false, self.checked));
+                }
+                Err(())
+                    if self.driver.backpressured && self.watched_namespace(&mappings.namespace) =>
+                {
+                    // Keep the SAME lookup alive while its reply is behind
+                    // bounded signals. Retrying a blocked emit must not send
+                    // another RPC or accumulate cancelled lookup replies.
+                    if !self.queued(mappings, endpoint, false, CALLBACKS) {
+                        // Actor backpressure is not a namespace timeout. Keep
+                        // this one original lookup and signal for a later turn.
+                        self.lookup = Some(lookup);
+                        return Ok(false);
+                    }
+                }
+                _ => return Err(()),
             }
-            Ok(Namespace { bus_id, owner })
-        };
-        self.drive(deadline, cancelled, lookup)?
+        }
     }
     fn close(
         mut self,
@@ -254,46 +378,91 @@ impl Bus {
         deadline: Instant,
     ) -> bool {
         let mut good = was_good && self.matched == RULES.len();
-        // Keep the original raw reader while RemoveMatch replies form the
-        // ordered bus boundary. Drain exact Closed callbacks through that
-        // boundary under the current writer; stopping never opens UI clicks.
-        let removed = self.matches(false, deadline, || false);
-        good &= removed && Instant::now() < deadline;
-        if good {
-            let wake = self.driver.wake.clone();
-            let mut context = Context::from_waker(&wake);
-            if let Some(reader) = &mut self.reader {
-                for _ in 0..RAW {
-                    match pin!(&mut *reader).poll_next(&mut context) {
-                        Poll::Ready(Some(Ok(message))) => self.driver.message(message),
-                        Poll::Pending => break,
-                        Poll::Ready(_) => {
+        // Cancel only a read-only lookup. No native operation is replayed;
+        // its pending reply still drains on the same original connection.
+        drop(self.lookup.take());
+        // Keep each ORIGINAL RemoveMatch future alive across backpressure. A
+        // full actor queue cannot cause a second removal or a lost callback.
+        for rule in RULES.iter().take(self.matched) {
+            let connection = self.connection.clone();
+            let call = async {
+                let reply = connection
+                    .call_method(Some(BUS), BUS_PATH, Some(BUS), "RemoveMatch", &(rule,))
+                    .await?;
+                if !reply_from(&reply, BUS) {
+                    return Err(zbus::Error::ExcessData);
+                }
+                reply.body().deserialize::<()>()
+            };
+            let mut call = pin!(call);
+            loop {
+                match self.drive(deadline, || false, call.as_mut()) {
+                    Ok(Ok(())) => break,
+                    Err(()) if self.driver.backpressured && good => {
+                        let Some(map) = mappings.as_deref_mut() else {
+                            good = false;
+                            break;
+                        };
+                        if !self.watched_namespace(&map.namespace) {
                             good = false;
                             break;
                         }
+                        if !self.queued(map, endpoint, true, CALLBACKS) {
+                            self.driver
+                                .receive
+                                .recv_timeout(
+                                    IDLE.min(deadline.saturating_duration_since(Instant::now())),
+                                )
+                                .ok();
+                        }
+                    }
+                    _ => {
+                        good = false;
+                        break;
                     }
                 }
-            }
-            while good && !self.driver.broken {
-                let Some(signal) = self.driver.events.pop_front() else {
-                    break;
-                };
-                if !matches!(signal, Signal::NotificationClosed { .. }) {
-                    continue;
-                }
-                let Some(mappings) = mappings.as_deref_mut() else {
+                if Instant::now() >= deadline {
                     good = false;
                     break;
-                };
-                good &=
-                    self.namespace(deadline, || false).ok().as_ref() == Some(&mappings.namespace);
-                if good {
-                    good &= mappings.signal(signal, endpoint);
+                }
+            }
+            if !good {
+                break;
+            }
+        }
+        // RemoveMatch replies form the ordered bus boundary. Drain ALL queued
+        // raw messages until Pending, retaining refused actor emits for retry.
+        while good && Instant::now() < deadline {
+            let Some(map) = mappings.as_deref_mut() else {
+                good = false;
+                break;
+            };
+            if !self.watched_namespace(&map.namespace) {
+                good = false;
+                break;
+            }
+            if !self.queued(map, endpoint, true, CALLBACKS) {
+                self.driver
+                    .receive
+                    .recv_timeout(IDLE.min(deadline.saturating_duration_since(Instant::now())))
+                    .ok();
+                continue;
+            }
+            let wake = self.driver.wake.clone();
+            let mut cx = Context::from_waker(&wake);
+            match self
+                .reader
+                .as_mut()
+                .map(|r| self.driver.read_ready(r, &mut cx))
+            {
+                Some(Ok(true)) if self.driver.events.is_empty() => break,
+                Some(Ok(_)) => (),
+                _ => {
+                    good = false;
+                    break;
                 }
             }
         }
-        // Every raw receiver and buffered event is actually destroyed before
-        // arming the private local-close EOF exception. No public setter exists.
         drop(self.reader.take());
         self.driver.events.clear();
         good &= !self.driver.broken && Instant::now() < deadline;
@@ -319,8 +488,6 @@ impl Bus {
         });
         good &= self.drive(deadline, || false, finished).is_ok();
         good && self.executor.is_empty() && !self.gate.refused()
-        // This return destroys the SAME connection, executor, captures and
-        // waker/channel. Runtime still requires the original thread join.
     }
 }
 
@@ -335,7 +502,7 @@ pub(super) fn test_close_with_queued_callbacks(
     let mut bus = Bus::connect(address, setup, || false).unwrap();
     assert!(bus.matches(true, setup, || false));
     let namespace = bus.namespace(setup, || false).unwrap();
-    bus.driver.owner = Some(namespace.owner.clone());
+    bus.bind(&namespace);
     let mut mappings = Mappings::new(namespace);
     assert!(mappings.restore(vec![value]));
     emit();
@@ -363,22 +530,22 @@ pub(super) fn run(
         shared.failed.store(true, Ordering::Release);
         return bus.close(false, None, &endpoint, shared.cleanup_deadline());
     };
-    bus.driver.owner = Some(namespace.owner.clone());
+    bus.bind(&namespace);
     let mut mappings = Mappings::new(namespace);
     let mut restoring = true;
     while !cancelled() && good {
         match controls.try_recv() {
             Ok(Control::Restore(values, reply)) => {
-                let current = bus.namespace(Instant::now() + WAIT, cancelled).ok();
-                let accepted = restoring
-                    && current.as_ref() == Some(&mappings.namespace)
-                    && mappings.restore(values);
+                let current =
+                    bus.batch_namespace(&mappings.namespace, Instant::now() + WAIT, cancelled);
+                let accepted = restoring && current && mappings.restore(values);
                 let _ = reply.try_send(accepted);
                 good &= accepted;
             }
             Ok(Control::Finish(reply)) => {
-                let current = bus.namespace(Instant::now() + WAIT, cancelled).ok();
-                let accepted = restoring && current.as_ref() == Some(&mappings.namespace);
+                let current =
+                    bus.batch_namespace(&mappings.namespace, Instant::now() + WAIT, cancelled);
+                let accepted = restoring && current;
                 if accepted {
                     restoring = false;
                     shared.ready.store(true, Ordering::Release);
@@ -389,18 +556,18 @@ pub(super) fn run(
             Err(mpsc::TryRecvError::Disconnected) => break,
             Err(mpsc::TryRecvError::Empty) => (),
         }
-        if let Some(signal) = bus.driver.events.pop_front() {
-            // A signal's bus generation AND unique daemon owner are checked
-            // freshly. Neither a numeric ID nor a restored token is authority.
-            good &= bus
-                .namespace(Instant::now() + WAIT, cancelled)
-                .ok()
-                .as_ref()
-                == Some(&mappings.namespace);
-            if good {
-                good &= mappings.signal(signal, &endpoint);
+        if !bus.driver.events.is_empty() {
+            match bus.route_batch(&mut mappings, &endpoint, Instant::now() + WAIT, cancelled) {
+                Ok(false) => {
+                    bus.driver.receive.recv_timeout(IDLE).ok();
+                    continue;
+                }
+                Ok(true) => (),
+                Err(()) => {
+                    good = false;
+                    break;
+                }
             }
-            continue;
         }
         if !restoring {
             match endpoint.try_next() {
@@ -514,15 +681,10 @@ pub(super) fn run(
                     // while its input/output/callback charge is still retained.
                     // The actor can defer an early event until this exact post
                     // commits; it cannot be turned into a new post or binding.
-                    while good {
-                        let Some(signal) = bus.driver.events.pop_front() else {
-                            break;
-                        };
-                        good &=
-                            bus.namespace(until, stop).ok().as_ref() == Some(&mappings.namespace);
-                        if good {
-                            good &= mappings.signal(signal, &endpoint);
-                        }
+                    if good {
+                        good &= bus
+                            .route_batch(&mut mappings, &endpoint, until, stop)
+                            .is_ok();
                     }
                     // The original native future and its captures have returned
                     // or been destroyed before the per-command charge is freed.
@@ -535,7 +697,7 @@ pub(super) fn run(
             }
         }
         let _ = bus.drive(
-            Instant::now() + Duration::from_millis(10),
+            Instant::now() + IDLE,
             cancelled,
             std::future::pending::<()>(),
         );
