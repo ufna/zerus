@@ -26,6 +26,13 @@ mod tasks;
 mod watch;
 
 fn main() {
+    // COM cold activation cannot load config, create jobs or acquire ownership.
+    #[cfg(windows)]
+    if let Some(code) =
+        desktop::windows_notification_activation(std::env::args().nth(1).as_deref())
+    {
+        std::process::exit(code);
+    }
     if std::env::args().nth(1).as_deref() == Some("--macos-session-service") {
         std::process::exit(macos_session::serve());
     }
