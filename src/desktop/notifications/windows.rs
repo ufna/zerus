@@ -15,6 +15,7 @@ mod callbacks;
 #[cfg(windows)]
 mod native;
 pub(in crate::desktop) mod runtime;
+pub(in crate::desktop) mod registration;
 
 /// Fixed cold activation is deliberately passive; the root lifecycle parser
 /// owns routing here and cannot promote it to a service-owner launch.
