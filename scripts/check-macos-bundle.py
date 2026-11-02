@@ -17,7 +17,6 @@ import sys
 import tempfile
 
 from macos_stapler import run_stapler
-from macos_notices import QT_NOTICES, notice_findings, ffmpeg_findings, ffmpeg_provenance
 
 BUNDLE_ID = "com.hgdev.hgs-tray"
 MINIMUM_SYSTEM = "14.0"
@@ -28,31 +27,7 @@ MACH_O = {b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xce\xfa\xed\xfe", b"\xfe\
           b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"}
 CONNECTOR = "Contents/MacOS/zerus-mobile-connector"
 EXECUTABLES = ["Contents/MacOS/hgs-tray", "Contents/MacOS/hgs", CONNECTOR, "Contents/Resources/bin/zerus-setup"]
-REQUIRED_FILES = [
-    "Contents/Info.plist", *EXECUTABLES,
-    "Contents/Resources/setup/hgs_state.py",
-    "Contents/Resources/setup/install-macos-session-service.py",
-    "Contents/Resources/setup/install-macos-desktop-service.py",
-    "Contents/Resources/setup/install-recovery-service.py",
-    "Contents/Resources/setup/install-swarm-service.py",
-    "Contents/Resources/setup/launchd_agent.py",
-    "Contents/Resources/setup/install-mobile-connector-service.py",
-    "Contents/Resources/setup/com.hgdev.hgs-tray.plist",
-    "Contents/Resources/doc/README.md",
-    "Contents/Resources/doc/tmux.conf",
-    "Contents/Resources/licenses/LICENSE",
-    "Contents/Resources/licenses/THIRD_PARTY_NOTICES.md",
-    "Contents/Resources/licenses/libvterm-LICENSE",
-    "Contents/Resources/licenses/md4c-LICENSE",
-    "Contents/Resources/licenses/qrcodegen-LICENSE",
-    "Contents/Resources/licenses/codex-LICENSE.txt",
-    "Contents/Resources/licenses/rust/inventory.json",
-    "Contents/Resources/licenses/qt/LGPL-3.0.txt",
-    "Contents/Resources/licenses/qt/GPL-3.0.txt",
-    "Contents/Resources/licenses/qt/SOURCE.md",
-    "Contents/Resources/licenses/qt/FFMPEG-SOURCE.json",
-    *[f"Contents/Resources/licenses/qt/{module}.spdx.json" for module in QT_NOTICES],
-]
+
 NAME = re.compile(r"^\s*name (.*) \(offset \d+\)$")
 RPATH = re.compile(r"^\s*path (.*) \(offset \d+\)$")
 
@@ -144,22 +119,14 @@ def is_mach_o(path):
         return stream.read(4) in MACH_O
 
 
-def bundle_findings(bundle, version, release=None, gui="qt"):
+def bundle_findings(bundle, version, release=None, gui="tauri"):
     info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
-    if gui == "tauri":
-        findings = tauri_plist_findings(info, version, release or version)
-        required = TAURI_RELEASE_REQUIRED
-        for name in ("rust", "client-rust", "frontend"):
-            findings += inventory_findings(bundle / "Contents/Resources/licenses" / name)
-    else:
-        findings = plist_findings(info, version, release)
-        required = REQUIRED_FILES
-        findings += notice_findings(bundle / "Contents/Resources/licenses/qt")
-        provenance = ffmpeg_provenance()
-        findings += ffmpeg_findings(bundle, provenance)
-        manifest = bundle / "Contents/Resources/licenses/qt/FFMPEG-SOURCE.json"
-        if manifest.is_file() and json.loads(manifest.read_text()) != provenance:
-            findings.append("FFMPEG-SOURCE.json differs from the reviewed source/configuration tuple")
+    if gui != "tauri":
+        raise ValueError("only Zerus Next bundles can be newly packaged")
+    findings = tauri_plist_findings(info, version, release or version)
+    required = TAURI_RELEASE_REQUIRED
+    for name in ("rust", "client-rust", "frontend"):
+        findings += inventory_findings(bundle / "Contents/Resources/licenses" / name)
     findings += [f"missing {name}" for name in required if not (bundle / name).is_file()]
     findings += [f"not executable: {name}" for name in EXECUTABLES
                  if (bundle / name).is_file() and not os.access(bundle / name, os.X_OK)]
@@ -209,8 +176,15 @@ TAURI_REQUIRED = [
     "Contents/Resources/Assets.car",
 ]
 TAURI_RELEASE_REQUIRED = list(dict.fromkeys([
-    *[name for name in REQUIRED_FILES if "/licenses/qt/" not in name and
-      not name.endswith(("libvterm-LICENSE", "md4c-LICENSE", "qrcodegen-LICENSE"))],
+    *EXECUTABLES,
+    "Contents/Resources/setup/hgs_state.py",
+    *[f"Contents/Resources/setup/{name}" for name in
+      ("install-macos-session-service.py", "install-macos-desktop-service.py",
+       "install-recovery-service.py", "install-swarm-service.py", "launchd_agent.py",
+       "install-mobile-connector-service.py")],
+    "Contents/Resources/doc/README.md", "Contents/Resources/doc/tmux.conf",
+    "Contents/Resources/licenses/LICENSE", "Contents/Resources/licenses/THIRD_PARTY_NOTICES.md",
+    "Contents/Resources/licenses/codex-LICENSE.txt", "Contents/Resources/licenses/rust/inventory.json",
     *TAURI_REQUIRED,
     "Contents/Resources/licenses/client-rust/inventory.json",
     "Contents/Resources/licenses/frontend/inventory.json",
@@ -379,7 +353,7 @@ def main():
     parser.add_argument("--selftest", action="store_true", help="also run the self-tests: the bundled CLI and GUI ones (qt), "
                         "or --version and --build-info (tauri)")
     parser.add_argument("--team-id", help="require a notarized Developer ID signature from this team")
-    parser.add_argument("--gui", choices=("qt", "tauri"), default="qt", help="the Qt release bundle or the Tauri switch bundle")
+    parser.add_argument("--gui", choices=("tauri",), default="tauri", help="the Zerus Next bundle")
     args = parser.parse_args()
     if args.gui == "tauri":
         findings = tauri_bundle_findings(args.bundle, args.version, args.release)
