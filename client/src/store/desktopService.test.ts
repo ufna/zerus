@@ -91,7 +91,7 @@ describe("service approval intents", () => {
     const intent = createServiceApprovalIntent(send, () => `request-${++sequence}`, read);
     await expect(intent.submit(true)).rejects.toThrow("service restarting");
     await expect(intent.submit(false)).rejects.toThrow("unconfirmed");
-    await expect(intent.check()).rejects.toThrow("unavailable");
+    await expect(intent.check()).rejects.toThrow("The previous change was not applied.");
     expect(intent.pending()).toBeUndefined();
     await intent.submit(false);
     expect(send.mock.calls).toEqual([["request-1", true], ["request-2", false]]);

@@ -11,6 +11,8 @@ use zerus_client_core::{
     run::{self, OwnedError},
     Invocation,
 };
+const MAINTENANCE_UNAVAILABLE: &str =
+    zerus_client_core::source!("Maintenance settings are unavailable from the desktop service.");
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
@@ -184,13 +186,21 @@ impl Drop for Reservation {
     }
 }
 fn refused(request: &Request, code: &str) -> Value {
-    json!({"request_id":request.id(),"op":request.operation(),"accepted":false,"durable":false,"pending":false,"code":code})
+    let mut value = json!({"request_id":request.id(),"op":request.operation(),"accepted":false,"durable":false,"pending":false,"code":code});
+    recovery_edit(request, &mut value);
+    value
+}
+fn recovery_edit(request: &Request, value: &mut Value) {
+    if let Request::MaintenanceConfigure { recovery, .. } = request {
+        value["recovery_edit"] = json!(recovery.as_ref().is_some_and(|c| c.policy.is_some()));
+    }
 }
 fn unknown(request: &Request, code: &str) -> Value {
     let mut result = json!({"request_id":request.id(),"op":request.operation(),"accepted":null,"durable":false,"pending":true,"code":code});
     if let Request::AutomaticApprovals { enabled, .. } = request {
         result["enabled"] = json!(enabled);
     }
+    recovery_edit(request, &mut result);
     result
 }
 fn canonical(id: &str) -> bool {
@@ -591,6 +601,10 @@ fn lookup_receipt(request: &Request, id: &str, value: Value) -> Result<Receipt, 
             _ => Err("frontend_receipt_unconfirmed"),
         }
     } else {
+        // Normal maintenance receipts retain the latest 4096 IDs. This
+        // canonical frontend admits no further Configure while its original
+        // is unconfirmed, so its own traffic cannot evict that receipt before
+        // lookup. Unknown recovery edits have a separate never-evicted bucket.
         if value["accepted"] == false
             && value["code"] == "unknown_request"
             && value.get("durable").is_none_or(|durable| *durable == false)
@@ -661,7 +675,29 @@ fn checked(request: &Request, mut value: Value, lookup: bool) -> Option<(Value, 
     };
     value["op"] = json!(request.operation());
     value["pending"] = json!(!complete);
+    recovery_edit(request, &mut value);
     Some((value, complete))
+}
+
+/// Both native subsystems, with no one-shot edit. Opening a page reads this
+/// value; only an explicit Configure submits it to the authenticated sender.
+#[tauri::command]
+pub async fn desktop_service_maintenance_configuration(
+    source: tauri::State<'_, crate::commands::AppState>,
+    updates: tauri::State<'_, crate::updates::Updates>,
+    recovery: tauri::State<'_, crate::recovery::Recovery>,
+) -> Result<maintenance::Configuration, String> {
+    if !mode() || source.desktop_service().is_none() {
+        return Err(MAINTENANCE_UNAVAILABLE.into());
+    }
+    let configuration = maintenance::Configuration {
+        update: Some(updates.configuration_for_intent().await?),
+        recovery: Some(recovery.native_configuration()),
+    };
+    configuration
+        .valid()
+        .then_some(configuration)
+        .ok_or_else(|| MAINTENANCE_UNAVAILABLE.into())
 }
 
 #[tauri::command(rename_all = "snake_case")]

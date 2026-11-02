@@ -58,10 +58,10 @@ impl Inner {
         };
         let current = projected.ready && projected.current_origin;
         json!({"status":projected.status,"error":projected.error,"busy":current && projected.busy,
-            "can_save":false,"known":current && projected.known,"has_machines":current && projected.has_machines,
+            "can_save":current && projected.can_save,"known":current && projected.known,"has_machines":current && projected.has_machines,
             "has_policy":projected.has_policy,"saves":projected.saves})
-        // Save remains unavailable until the authenticated native route lands;
-        // a read-only watch projection never enables a mutation itself.
+        // This only enables the form. The authenticated native sender and
+        // service mutation boundary still admit the actual Save intent.
     }
     fn envelope(&self) -> Map<String, Value> {
         if !self.service_mode {
@@ -82,6 +82,19 @@ impl Inner {
         let _turn = self.persist.lock().unwrap_or_else(PoisonError::into_inner);
         let newest = Value::Object(self.sync().envelope().clone()).to_string();
         let _ = store.0.set(SHARED_POLICY_KEY, json!(newest));
+    }
+}
+
+impl Recovery {
+    pub(crate) fn native_configuration(
+        &self,
+    ) -> zerus_client_core::maintenance::RecoveryConfiguration {
+        let mut base = self.0.envelope();
+        if base.is_empty() {
+            // Historical cache only: the actor establishes machine currentness.
+            base = self.0.sync().envelope().clone();
+        }
+        zerus_client_core::maintenance::RecoveryConfiguration { policy: None, base }
     }
 }
 
@@ -375,8 +388,8 @@ mod tests {
         assert_eq!(inner.view()["known"], true);
         assert_eq!(
             inner.view()["can_save"],
-            false,
-            "watch readiness cannot authorize save"
+            true,
+            "readiness enables the form, not the native mutation boundary"
         );
         assert_eq!(inner.envelope(), projection.envelope);
         assert!(
@@ -386,5 +399,34 @@ mod tests {
         *inner.projection.lock().unwrap() = None;
         assert_eq!(inner.view()["known"], false);
         assert!(inner.envelope().is_empty());
+    }
+    #[test]
+    fn native_configuration_preserves_the_policy_cache_without_replaying_an_edit() {
+        let cached = json!({"order":[3,"fixture"],"policy":{"enabled":false}});
+        let recovery = Recovery(Arc::new(Inner {
+            sync: Mutex::new(RecoverySync::new(&cached.to_string())),
+            persist: Mutex::new(()),
+            blocked: false,
+            service_mode: true,
+            projection: Mutex::new(None),
+        }));
+        let seed = recovery.native_configuration();
+        assert!(seed.policy.is_none());
+        assert_eq!(seed.base, cached.as_object().unwrap().clone());
+        let current = json!({"order":[4,"fixture"],"policy":{"enabled":true}});
+        *recovery.0.projection.lock().unwrap() =
+            Some(zerus_client_core::maintenance::RecoveryProjection {
+                envelope: current.as_object().unwrap().clone(),
+                ..zerus_client_core::maintenance::RecoveryProjection::default()
+            });
+        assert_eq!(
+            recovery.native_configuration().base,
+            current.as_object().unwrap().clone()
+        );
+        assert!(
+            !recovery.0.sync().known(),
+            "historical data never establishes a current machine"
+        );
+        assert_eq!(recovery.0.view()["can_save"], false);
     }
 }

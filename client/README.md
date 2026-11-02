@@ -206,8 +206,15 @@ can be submitted. An unverified exit or failed lookup remains pending.
 Maintenance has a native command using the shared full
 configuration type, with both update and recovery explicit; it replaces GUI identity
 with the running application's executable and build. An unknown recovery save
-remains pending. Maintenance preference call sites still need that native command;
-no generic request can change approval policy or maintenance configuration.
+remains pending. Updates and Recovery use one shared maintenance intent: update
+preference changes wait for the native preference worker before submitting both
+subsystems, and Recovery Save snapshots its form/base and retains update preferences.
+Only that Save's exact receipt acknowledges the edit; unrelated save counters do
+not. Opening a page only reads status and any existing receipt. **Apply background
+settings** explicitly sends current preferences and connects shared recovery policy
+synchronization when no configuration has been supplied yet. Manual **Check now**
+stays in the UI update worker. No generic request can change approval policy or
+maintenance configuration.
 Keep this switch off for normal installations;
 this source is not a complete UI-only cutover.
 
