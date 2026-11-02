@@ -1,4 +1,4 @@
-# Pure policy controls: no real Task Scheduler, registry, service or process.
+# Policy and owned trace-file controls: no real Task Scheduler, registry, service or process.
 param([string]$RegistrationSource=(Join-Path $PSScriptRoot '../../src/desktop/windows_registration.ps1'))
 $ErrorActionPreference='Stop'
 . ([ScriptBlock]::Create([IO.File]::ReadAllText($RegistrationSource)))
@@ -73,6 +73,23 @@ function Call-Policy($scheduler,[string]$operation,$plan=(New-Plan)) {
 function Check([string]$name,[scriptblock]$body){& $body;$script:count++;Write-Output ('PASS '+$name)}
 function Assert([bool]$ok){if(-not $ok){throw 'Control assertion failed'}}
 function Refuses([scriptblock]$body){$failed=$false;try{& $body|Out-Null}catch{$failed=$true};Assert $failed}
+
+Check 'trace survives a retained read/write file and logging failure is nonfatal' {
+    $p=[IO.Path]::GetTempFileName();$held=$null;$previous=$env:HGS_DESKTOP_REGISTRATION_TRACE_FILE
+    try {
+        $held=[IO.File]::Open($p,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+        $env:HGS_DESKTOP_REGISTRATION_TRACE_FILE=$p;$script:rc=[Diagnostics.Stopwatch]::StartNew()
+        Trace-Registration main
+        $bytes=[byte[]]::new(64);$n=$held.Read($bytes,0,$bytes.Length)
+        Assert ([Text.Encoding]::UTF8.GetString($bytes,0,$n) -cmatch '^main [0-9]+\n$')
+        $env:HGS_DESKTOP_REGISTRATION_TRACE_FILE=Join-Path $p 'invalid'
+        Trace-Registration input
+    } finally {
+        $env:HGS_DESKTOP_REGISTRATION_TRACE_FILE=$previous
+        if($null -ne $held){$held.Dispose()}
+        Remove-Item -LiteralPath $p
+    }
+}
 
 function Parse-RequestBytes([byte[]]$data) {
     $stream=[IO.MemoryStream]::new($data,$false)

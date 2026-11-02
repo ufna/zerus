@@ -3,11 +3,22 @@
 function Require-Registration([bool]$condition,[string]$message) {
     if (-not $condition) { throw $message }
 }
+function Trace-Registration($p) {
+    if ($env:HGS_DESKTOP_REGISTRATION_TRACE_FILE) {
+        try {
+            $b=[Text.Encoding]::UTF8.GetBytes($p+' '+$script:rc.ElapsedMilliseconds+"`n")
+            $f=[IO.File]::Open($env:HGS_DESKTOP_REGISTRATION_TRACE_FILE,6,2,7)
+            try { $f.Write($b,0,$b.Length) } finally { $f.Dispose() }
+        } catch {}
+    }
+}
 
 function Get-DesktopTask($folder,[string]$name) {
-    try { return $folder.GetTask($name) }
+    Trace-Registration task
+    try { $v=$folder.GetTask($name);Trace-Registration found;return $v }
     catch {
         $exception=$_.Exception
+        Trace-Registration task_error
         for ($i=0;$i -lt 4 -and $null -ne $exception.InnerException;$i++) { $exception=$exception.InnerException }
         if ($exception.HResult -eq -2147024894) { return $null } # ERROR_FILE_NOT_FOUND only
         throw
@@ -63,6 +74,7 @@ function Invoke-RegistrationOperation($request,$scheduler,[string]$sid) {
     Require-Registration ($plan.argv.Count -eq 7 -and $plan.argv[1] -ceq 'desktop' -and $plan.argv[2] -ceq 'serve' -and $plan.argv[3] -ceq '--config-dir' -and $plan.argv[5] -ceq '--state-dir') 'Only the passive desktop command may be registered.'
     Require-Registration ($plan.session.kind -ceq 'interactive_user' -and $plan.session.allow_session_zero -eq $false) 'Registration requires an interactive user session.'
     $folder=$scheduler.GetFolder('\')
+    Trace-Registration folder
     $task=Get-DesktopTask $folder $plan.task_name
     if ($null -ne $task) { Assert-DesktopTask $task $plan $sid }
     if ($null -eq $task -and $request.operation -cin @('check','install')) {
@@ -117,6 +129,7 @@ function Read-RegistrationRequest([IO.Stream]$stream) {
 }
 
 function Invoke-RegistrationMain {
+    $script:rc=[Diagnostics.Stopwatch]::StartNew();Trace-Registration main
     $ErrorActionPreference='Stop'
     $ProgressPreference='SilentlyContinue'
     [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false,$true)
@@ -125,13 +138,19 @@ function Invoke-RegistrationMain {
         $inputStream=[Console]::OpenStandardInput()
         try { $request=Read-RegistrationRequest $inputStream }
         finally { $inputStream.Dispose() }
+        Trace-Registration input
         $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        Trace-Registration sid
         $mutex=[Threading.Mutex]::new($false,('Global\hgs-desktop-registration-'+$sid))
         $held=$mutex.WaitOne(2000)
         Require-Registration $held 'Another desktop registration operation is in progress.'
+        Trace-Registration mutex
         $scheduler=New-Object -ComObject 'Schedule.Service'
+        Trace-Registration created
         [void]$scheduler.Connect()
+        Trace-Registration connected
         $result=Invoke-RegistrationOperation $request $scheduler $sid
+        Trace-Registration done
         [Console]::WriteLine(($result|ConvertTo-Json -Compress -Depth 5))
     } catch {
         [Console]::WriteLine((@{schema=1;error=$_.Exception.Message}|ConvertTo-Json -Compress))
