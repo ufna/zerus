@@ -40,11 +40,25 @@ struct Source {
 impl Hub {
     fn follow(&mut self, computer: &str, spec: Subscription) -> Result<(), String> {
         let key = Key::new(computer, &spec).map_err(str::to_owned)?;
-        if self
+        if let Some(entry) = self
             .routes
-            .get(&key)
-            .is_some_and(|old| old.route.subscription == spec)
+            .get_mut(&key)
+            .filter(|old| old.route.subscription == spec)
         {
+            if entry.halted {
+                entry.recoveries = 0;
+                if let Some(retirement) = self.retiring.get_mut(&entry.route.id) {
+                    retirement.pending = true;
+                    retirement.recovery = Some((key, true));
+                } else {
+                    entry.route = Route::new(computer, uuid::Uuid::new_v4().to_string(), spec)
+                        .map_err(str::to_owned)?;
+                    entry.halted = false;
+                    entry.pending = true;
+                    entry.sent = false;
+                    entry.refresh = false;
+                }
+            }
             return Ok(());
         }
         if self.capacity() >= protocol::DEMANDS {
@@ -632,7 +646,7 @@ pub(super) async fn run(shared: Arc<Shared>, stop: Arc<AtomicBool>) -> Result<()
                 value["part"] = json!(part);
             }
         }
-        let response = match request(&shared, value, stop.clone()).await {
+        let response = match control_request(&shared, value, &work, stop.clone()).await {
             Ok(value) => value,
             Err(code) => {
                 failed(&shared, &stop, &lease, &work, code).await?;
@@ -774,6 +788,43 @@ pub(super) async fn run(shared: Arc<Shared>, stop: Arc<AtomicBool>) -> Result<()
                 shared.details_changed.notify_one();
             }
         }
+    }
+}
+
+async fn control_request(
+    shared: &Arc<Shared>,
+    value: Value,
+    work: &Work,
+    stop: Arc<AtomicBool>,
+) -> Result<Value, &'static str> {
+    loop {
+        let result = request(shared, value.clone(), stop.clone()).await;
+        if result.as_ref().err() != Some(&"service_transport_busy") {
+            return result;
+        }
+        let retry = {
+            let mut hub = shared
+                .details
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            match work {
+                Work::Follow { key, id, .. } => hub
+                    .routes
+                    .get_mut(key)
+                    .filter(|entry| entry.route.id == *id && !entry.halted && entry.recoveries < 2)
+                    .map(|entry| {
+                        entry.recoveries += 1;
+                        entry.recoveries
+                    }),
+                _ => None,
+            }
+        };
+        let Some(attempt) = retry else {
+            return result;
+        };
+        // Admission failed before a helper existed; this is not an uncertain
+        // request replay. Keep the original ID and spend the existing budget.
+        tokio::time::sleep(Duration::from_millis(100 * u64::from(attempt))).await;
     }
 }
 

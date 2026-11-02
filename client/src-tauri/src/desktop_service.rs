@@ -32,6 +32,7 @@ const CATALOG_KEYS: usize = 1_000_000;
 mod catalog;
 use catalog::catalog_loop;
 mod details;
+pub mod frontend;
 
 /// Registered at setup before start_source. Some contains a verified service
 /// watch frame; None invalidates the prior projection. Callbacks must not block.
@@ -203,6 +204,7 @@ struct Shared {
     details: Mutex<details::Hub>,
     details_changed: Notify,
     organization: Mutex<Option<zerus_client_core::OrganizationSnapshot>>,
+    frontend: frontend::Frontend,
     projections: Vec<Projection>,
 }
 
@@ -246,6 +248,7 @@ impl Service {
             details: Mutex::new(details::Hub::default()),
             details_changed: Notify::new(),
             organization: Mutex::new(None),
+            frontend: frontend::Frontend::default(),
             projections,
         });
         let (control, receiver) = watch::channel(Control::Retry(0));
@@ -642,7 +645,10 @@ async fn request(
     stop: Arc<AtomicBool>,
 ) -> Result<Value, &'static str> {
     // This lane never acquires frontend approval-setting authority.
-    if value["op"] == "automatic_approvals" {
+    if matches!(
+        value["op"].as_str(),
+        Some("automatic_approvals" | "maintenance_configure")
+    ) {
         return Err("frontend_route_required");
     }
     let input = serde_json::to_string(&value).map_err(|_| "invalid_service_request")?;
@@ -921,19 +927,19 @@ pub async fn desktop_service_read_marks(
     service.read_marks(marks).await
 }
 
-/// Reserved for the authenticated native frontend API. No generic policy route.
+/// The existing confirmation calls the dedicated native frontend route.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn desktop_service_automatic_approvals(
+    source: tauri::State<'_, crate::commands::AppState>,
     request_id: String,
     enabled: bool,
 ) -> Result<Value, String> {
-    if !uuid::Uuid::parse_str(&request_id).is_ok_and(|id| id.to_string() == request_id) {
-        return Err("Invalid approval request identity.".into());
-    }
-    let _ = enabled;
-    Ok(
-        json!({"request_id":request_id,"op":"automatic_approvals","accepted":false,"durable":false,"code":"frontend_route_unavailable"}),
+    frontend::approval_command(
+        source.desktop_service().filter(|_| mode()),
+        request_id,
+        enabled,
     )
+    .await
 }
 
 #[cfg(all(test, unix))]

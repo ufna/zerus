@@ -60,9 +60,26 @@ describe("service approval intents", () => {
       await expect(intent.submit(true)).rejects.toThrow("not confirmed");
       expect(intent.pending()?.id).toBe("request-1");
     }
-    const send = vi.fn(async (request_id: string) => ({ request_id, accepted: false, durable: false }));
+    const send = vi.fn(async (request_id: string) => ({ request_id, op: "automatic_approvals", accepted: false, durable: false }));
     const intent = createServiceApprovalIntent(send, () => "request-1");
     await expect(intent.submit(true)).rejects.toThrow("unavailable");
     expect(intent.pending()).toBeUndefined();
   });
+  it("checks the original receipt without sending again and restores uncertainty after a page reload", async () => {
+    const send = vi.fn(async () => { throw Error("lost response"); });
+    const read = vi.fn(async () => ({ request_id: "request-1", op: "automatic_approvals", enabled: true, accepted: true, durable: true, pending: false }));
+    const intent = createServiceApprovalIntent(send, () => "request-1", read);
+    await expect(intent.submit(true)).rejects.toThrow("lost response");
+    await intent.check();
+    expect(send).toHaveBeenCalledOnce();
+    expect(read).toHaveBeenCalledOnce();
+    expect(intent.pending()).toBeUndefined();
+    const missing = vi.fn(async () => ({ request_id: "native-original", op: "automatic_approvals", enabled: false, accepted: null, durable: false, pending: true }));
+    const reloaded = createServiceApprovalIntent(send, () => "fresh-id", missing);
+    await expect(reloaded.check()).rejects.toThrow("not confirmed");
+    expect(reloaded.pending()).toEqual({ id: "native-original", enabled: false });
+    await expect(reloaded.submit(true)).rejects.toThrow("unconfirmed");
+    expect(send).toHaveBeenCalledOnce();
+  });
+
 });

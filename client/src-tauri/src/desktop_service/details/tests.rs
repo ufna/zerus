@@ -162,4 +162,9 @@ fn recovery_at_capacity_retires_before_rearming_and_has_a_finite_budget() {
         assert_eq!(hub.routes[&key].pending, attempt <= 2);
         assert_eq!(hub.routes[&key].halted, attempt > 2);
     }
+    let old_id = hub.routes[&key].route.id.clone();
+    hub.follow("", spec(0)).unwrap();
+    assert!(!hub.routes[&key].halted && hub.routes[&key].pending);
+    assert_eq!(hub.routes[&key].recoveries, 0);
+    assert_ne!(hub.routes[&key].route.id, old_id);
 }

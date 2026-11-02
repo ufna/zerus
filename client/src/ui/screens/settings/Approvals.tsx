@@ -31,7 +31,11 @@ export function ApprovalsSection() {
   const firstPage = () => { if (inTauri()) journal.firstPage(); };
   let debounce: ReturnType<typeof setTimeout> | undefined;
   const edited = () => { clearTimeout(debounce); debounce = setTimeout(firstPage, 300); };
-  onMount(firstPage);
+  onMount(() => {
+    firstPage();
+    // Reads native pending/committed identity; it cannot submit another intent.
+    if (inTauri() && desktopService.enabled()) void serviceApprovalIntent.check().catch(() => {});
+  });
   onCleanup(() => clearTimeout(debounce));
   const page = () => state().page;
   const loading = () => state().loading;
@@ -41,9 +45,16 @@ export function ApprovalsSection() {
       <SectionHead title={trNoop("Automatic approvals")} />
       <Group class="appr-toggle">
         <div class="set-row"><div class="set-row-text"><label class="set-label danger" for="appr-on">{tr("Automatically approve tool requests (dangerous)")}</label></div>
-          <div class="set-row-control"><Switch id="appr-on" checked={desktopService.enabled() ? desktopService.state()?.automatic_approvals === true : flag(APPROVALS_KEY)} label={trNoop("Automatically approve tool requests (dangerous)")} disabled={optIn.busy() || (desktopService.enabled() && (!desktopService.ready("approvals") || desktopService.state()?.automatic_approvals == null))}
+          <div class="set-row-control"><Switch id="appr-on" checked={desktopService.enabled() ? desktopService.state()?.automatic_approvals === true : flag(APPROVALS_KEY)} label={trNoop("Automatically approve tool requests (dangerous)")} disabled={optIn.busy() || (desktopService.enabled() && (!desktopService.ready("approvals") || desktopService.state()?.automatic_approvals == null || !!serviceApprovalIntent.pending()))}
             onChange={(on) => optIn.request(on, document.getElementById("appr-on") ?? document.activeElement as HTMLElement)} /></div></div>
         <Show when={desktopService.enabled()}><p class="set-group-hint">{tr("Automatic approvals are owned by the background service and may continue while this window is closed.")}</p></Show>
+        <Show when={desktopService.enabled() && serviceApprovalIntent.pending()}>
+          <Actions>
+            <span class="muted">{tr("The previous approval setting is unconfirmed.")}</span>
+            <button type="button" class="btn small" disabled={optIn.busy() || serviceApprovalIntent.checking()}
+              onClick={() => void serviceApprovalIntent.check().catch(error => bus.notify("error", String(error), true))}>{tr("Check result")}</button>
+          </Actions>
+        </Show>
         <div class="notice danger"><Icon name="triangle-alert" size={14} /><span>{tr(APPROVALS_WARNING)}</span></div>
         <p class="set-group-hint">{APPROVALS_HINT}</p>
       </Group>
