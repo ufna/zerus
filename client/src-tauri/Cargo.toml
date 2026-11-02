@@ -80,9 +80,12 @@ async-io = "2.6"
 # page rendering follow the display rate (platform/macos.rs), and the menu-bar
 # tile, its tracking notices and the Dock badge (platform/macos_menubar.rs).
 [target.'cfg(target_os = "macos")'.dependencies]
+# The fixed headless SDK entry is independent of the GUI's live-data feature.
+# Every Mac build understands it, including a minimal replay UI build.
+zerus-client-core = { path = "../core", features = ["macos-native-peer"] }
 block2 = "0.6.2"
 objc2 = { version = "0.6.4", features = ["exception"] }
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "NSAppearance", "NSApplication", "NSAttributedString", "NSBezierPath", "NSBitmapImageRep", "NSColor", "NSDockTile", "NSFont", "NSGraphics", "NSGraphicsContext", "NSImageRep", "NSMenu", "NSResponder", "NSStringDrawing"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "NSAppearance", "NSApplication", "NSAttributedString", "NSBezierPath", "NSBitmapImageRep", "NSColor", "NSDockTile", "NSFont", "NSGraphics", "NSGraphicsContext", "NSImageRep", "NSMenu", "NSResponder", "NSRunningApplication", "NSStringDrawing"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSArray", "NSAttributedString", "NSBundle", "NSData", "NSDate", "NSDictionary", "NSDistributedNotificationCenter", "NSError", "NSGeometry", "NSNotification", "NSObjCRuntime", "NSOperation", "NSRunLoop", "NSString", "NSProcessInfo", "NSTimer", "NSUserDefaults"] }
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "WKPreferences", "WKWebViewConfiguration"] }
 # Attention notifications under the app's identity (platform/macos_notify.rs).
