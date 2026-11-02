@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('Controller', 'Child')][string]$Mode = 'Controller',
+    [ValidateSet('Controller', 'Child', 'Admin')][string]$Mode = 'Controller',
     [Parameter(Mandatory=$true)][string]$Stage,
     [string]$Hgs
 )
@@ -14,7 +14,7 @@ function Write-Report($Path, $Value) {
     [IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
 }
 
-if ($Mode -eq 'Child') {
+if ($Mode -ne 'Controller') {
     # The task supplies a real new standard-user token, not an unelevated admin.
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $administratorSidPresent = @($identity.Groups | Where-Object Value -eq 'S-1-5-32-544').Count -ne 0
@@ -25,9 +25,9 @@ if ($Mode -eq 'Child') {
         calls = @()
         complete = $false
     }
-    $reportPath = Join-Path $Stage 'standard-user.json'
+    $reportPath = Join-Path $Stage 'result.json'
     Write-Report $reportPath $report
-    if ($administratorSidPresent) { throw 'The test account unexpectedly has the Administrators SID' }
+    if ($administratorSidPresent -ne ($Mode -eq 'Admin')) { throw 'Unexpected account privilege class' }
     # Keep Windows' actual account profile. Only Zerus roots and temporary files
     # are private, matching the cold installer acceptance environment.
     foreach ($name in @('home', 'config', 'state', 'tmp')) {
@@ -118,7 +118,7 @@ public static class RegistrationCapture {
     }
     $report.complete = $true
     Write-Report $reportPath $report
-    exit 0
+    return
 }
 
 $source = (Resolve-Path $Hgs).Path
@@ -131,6 +131,8 @@ $taskName = 'ZerusRegistrationCI-' + $nonce
 $Stage = [IO.Path]::GetFullPath($Stage)
 if (Test-Path $Stage) { throw 'Fixture stage must not exist' }
 [void][IO.Directory]::CreateDirectory($Stage)
+$digest = (Get-FileHash $source -Algorithm SHA256).Hash.ToLowerInvariant()
+Write-Output "Registration RELEASE image SHA256 $digest"
 $passwordBytes = New-Object byte[] 32
 [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($passwordBytes)
 $password = [Convert]::ToBase64String($passwordBytes) + '!aA1'
@@ -139,6 +141,12 @@ $ownedUser = $null
 $ownedTask = $false
 $complete = $false
 try {
+    # Same RELEASE image and command wrapper under the existing admin runner,
+    # before the actual standard-account comparison. Both records stay separate.
+    $adminStage = Join-Path $Stage 'admin-control'
+    [void][IO.Directory]::CreateDirectory($adminStage)
+    Copy-Item $source (Join-Path $adminStage 'hgs.exe')
+    & $PSCommandPath -Mode Admin -Stage $adminStage
     $ownedUser = New-LocalUser -Name $userName -Password $secure -Description 'Disposable Zerus CI fixture' -AccountNeverExpires
     # Explicit ordinary Users membership; never add an administrator membership.
     Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $ownedUser
@@ -146,11 +154,9 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Private account ACL setup failed' }
     Copy-Item $source (Join-Path $Stage 'hgs.exe')
     Copy-Item $PSCommandPath (Join-Path $Stage 'fixture.ps1')
-    $digest = (Get-FileHash $source -Algorithm SHA256).Hash.ToLowerInvariant()
     if ((Get-FileHash (Join-Path $Stage 'hgs.exe') -Algorithm SHA256).Hash.ToLowerInvariant() -ne $digest) {
         throw 'Release image copy differs'
     }
-    Write-Output "Standard-user RELEASE image SHA256 $digest"
     $program = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $arguments = '-NoLogo -NoProfile -NonInteractive -File "' + (Join-Path $Stage 'fixture.ps1') + '" -Mode Child -Stage "' + $Stage + '"'
     $action = New-ScheduledTaskAction -Execute $program -Argument $arguments -WorkingDirectory $Stage
@@ -168,7 +174,7 @@ try {
         $task = Get-ScheduledTask -TaskName $taskName
         $info = Get-ScheduledTaskInfo -TaskName $taskName
     } while (($info.LastRunTime.Year -lt 2000 -or $task.State -eq 'Running') -and [DateTime]::UtcNow -lt $deadline)
-    $path = Join-Path $Stage 'standard-user.json'
+    $path = Join-Path $Stage 'result.json'
     if (Test-Path $path) {
         $text = [IO.File]::ReadAllText($path)
         if ($text.Length -gt 200000) { throw 'Fixture result exceeds bound' }
@@ -179,6 +185,13 @@ try {
     }
     if (-not $complete) { throw 'Standard-user release comparison failed; retained only on disposable VM' }
 } finally {
+    $adminReport = Join-Path $Stage 'admin-control/result.json'
+    if (Test-Path $adminReport) {
+        $text = [IO.File]::ReadAllText($adminReport)
+        if ($text.Length -gt 200000) { throw 'Admin fixture result exceeds bound' }
+        [IO.File]::WriteAllText((Join-Path $env:GITHUB_WORKSPACE 'artifacts/test-results/registration-release-admin.json'), $text)
+        Write-Output $text
+    }
     # Remove only our exact triggerless task; never stop or adopt another task.
     if ($ownedTask) {
         $actual = Get-ScheduledTask -TaskName $taskName
