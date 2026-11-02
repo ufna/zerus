@@ -390,9 +390,17 @@ so renaming a Stable installer cannot create a Nightly candidate.
 
 `windows_installer.portable_sha256` must match the declared ZIP's sealed digest.
 An installer without that ZIP, an unexpected name or a changed pair refuses.
-Older ZIP-only candidates remain retryable unchanged. Like the ZIP, setup stays
-on GitHub and outside the v1 feed and mirror downloads. Deploy the updated
-`update_feed.py` before the first installer-bearing release; an older mirror
+Older ZIP-only candidates remain retryable unchanged. When manually re-preparing
+an older tag whose CI predates installer build metadata, use that tag's assembly
+scripts and omit both `--windows-installer` and `--windows-installer-info` to keep
+its ZIP-only asset family. Installer-aware re-preparation instead requires a new
+Windows verification/build with matching installer metadata for the exact source
+and release version; do not fabricate metadata for an old setup or rename it.
+Retrying an already sealed candidate needs neither re-preparation nor a new build.
+
+Like the ZIP, setup stays on GitHub and outside the v1 feed and mirror downloads.
+After explicit owner approval, deploy the updated `update_feed.py` before the
+first installer-bearing release; an older mirror
 rejects this additional sealed asset and retains its previous catalog. Winget
 continues to consume the portable ZIP and its existing layout.
 
