@@ -6,8 +6,11 @@ service lifecycle owns activation, writer admission, native host and shutdown.
 The discovery component creates none of them.
 
 The actor calls `new(epoch)`, `observe(store, event)`, then
-`poll(store, Option<&mut Outbox>)`. Baseline and policy-off observations progress
-without a native host. `reject(computer)` invalidates a rejected source;
+`poll(store, Option<&mut Outbox>)` only while the policy is enabled. Disabled
+discovery skips both observation and polling, retaining no reply backlog or new
+attention storage. Enabling resets the baseline; a fresh owned observation
+consumes current history before later edges may post. An enabled baseline can
+progress without a native host. `reject(computer)` invalidates a rejected source;
 `request_stop`, `drained` and `status` fit the service lifecycle. The original
 service supplies `Policy { enabled, optional_questions }` (both default false)
 and refreshes foreground suppression, which expires after five seconds. These
