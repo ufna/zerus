@@ -2,14 +2,17 @@
 //! Existing GUI delivery still owns policy; this module performs only SDK calls.
 use std::ptr::NonNull;
 
+use crate::platform::macos_notification_request::{request, withdraw};
 use block2::RcBlock;
-use objc2::{rc::Retained, runtime::Bool};
-use objc2_foundation::{ns_string, NSArray, NSDictionary, NSError, NSString};
+#[cfg(test)]
+use objc2::rc::Retained;
+use objc2::runtime::Bool;
+#[cfg(test)]
+use objc2_foundation::ns_string;
+use objc2_foundation::NSError;
 use objc2_user_notifications::{
-    UNAuthorizationOptions, UNAuthorizationStatus, UNMutableNotificationContent,
-    UNNotificationRequest, UNNotificationSettings, UNNotificationSound, UNUserNotificationCenter,
+    UNAuthorizationOptions, UNAuthorizationStatus, UNNotificationSettings, UNUserNotificationCenter,
 };
-use zerus_client_core::attention;
 
 use crate::notifier::{
     completion::{once, take},
@@ -72,37 +75,14 @@ impl Center for System {
     }
 
     fn add(&self, token: &str, title: &str, body: &str, done: Done<Option<String>>) {
-        let content = UNMutableNotificationContent::new();
-        content.setTitle(&NSString::from_str(title));
-        content.setBody(&NSString::from_str(body));
-        content.setSound(Some(&UNNotificationSound::defaultSound()));
-        let value = NSString::from_str(token);
-        let info = NSDictionary::<NSString, NSString>::from_slices(
-            &[ns_string!("hgsAttentionToken")],
-            &[&*value],
-        );
-        // SAFETY: a dictionary of strings is a valid userInfo; the cast only
-        // drops its element types.
-        unsafe {
-            let info: Retained<NSDictionary> = Retained::cast_unchecked(info);
-            content.setUserInfo(&info);
-        }
-        let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
-            &NSString::from_str(&attention::request_id(token)),
-            &content,
-            None,
-        );
+        let request = request(token, None, title, body);
         let reply = error_reply(done);
         UNUserNotificationCenter::currentNotificationCenter()
             .addNotificationRequest_withCompletionHandler(&request, Some(&reply));
     }
 
     fn remove(&self, token: &str) {
-        let center = UNUserNotificationCenter::currentNotificationCenter();
-        let ids =
-            NSArray::from_retained_slice(&[NSString::from_str(&attention::request_id(token))]);
-        center.removePendingNotificationRequestsWithIdentifiers(&ids);
-        center.removeDeliveredNotificationsWithIdentifiers(&ids);
+        withdraw(token);
     }
 }
 

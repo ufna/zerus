@@ -55,6 +55,8 @@ mod native_text;
 pub mod native_ui;
 #[cfg(feature = "live")]
 mod newsession;
+#[cfg(target_os = "macos")]
+pub mod notification_host;
 #[cfg(feature = "live")]
 mod notifier;
 #[cfg(feature = "live")]

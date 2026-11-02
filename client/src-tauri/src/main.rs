@@ -2,6 +2,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    // The service's fixed inherited socket/owner entry precedes renderer,
+    // Tauri context, instance claims and every ordinary GUI/writer setup.
+    #[cfg(target_os = "macos")]
+    if std::env::args_os()
+        .skip(1)
+        .any(|argument| argument == zerus_client_core::desktop::notifications::ENTRY)
+    {
+        std::process::exit(zerus_client_lib::notification_host::run());
+    }
     // A launch's console window on Windows: this program started with
     // `--console-run` runs the program in it and ends with its exit code.
     #[cfg(all(windows, feature = "live"))]
