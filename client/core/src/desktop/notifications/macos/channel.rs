@@ -270,10 +270,11 @@ mod tests {
         assert!(!channel.write_turn().unwrap());
         host.poll(&center, now);
         assert!(host.next_output().is_none());
-        channel.close();
+        // macOS refuses SO_RCVTIMEO with EINVAL once the peer has closed.
         service
             .set_read_timeout(Some(std::time::Duration::from_secs(2)))
             .unwrap();
+        channel.close();
         let mut drained = Vec::new();
         service.read_to_end(&mut drained).unwrap();
         assert!(!drained.is_empty());
