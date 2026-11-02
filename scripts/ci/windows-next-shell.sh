@@ -46,6 +46,14 @@ mkdir -p artifacts/zerus-next-windows-shell
 cp "$CARGO_TARGET_DIR/debug/hgs-tray.exe" "$CARGO_TARGET_DIR/debug/hgs.exe" artifacts/zerus-next-windows-shell/
 # Keep exact native fixture bytes/drivers for the same private real-PC checks.
 cp "$HGS_WINDOWS_FRONTEND_FIXTURE" artifacts/zerus-next-windows-shell/windows-frontend-tests.exe
+python - "$CARGO_TARGET_DIR" <<'PYTHON'
+from pathlib import Path
+import shutil, sys
+images = list((Path(sys.argv[1]) / 'debug/deps').glob('zerus_client_core-*.exe'))
+if len(images) != 1 or images[0].stat().st_size > 256 << 20:
+    raise SystemExit('one bounded exact core test executable required')
+shutil.copyfile(images[0], 'artifacts/zerus-next-windows-shell/windows-core-tests.exe')
+PYTHON
 mkdir -p artifacts/zerus-next-windows-shell/native-tests
 cp tests/windows_frontend_auth.py tests/test_desktop.py artifacts/zerus-next-windows-shell/native-tests/
 # Run independent runtime suites after preserving exact compiled bytes.
