@@ -462,8 +462,9 @@ fn twenty_thousand_rows_need_only_one_three_key_delta_after_the_baseline() {
     tauri::async_runtime::block_on(async {
         let fixture = Fixture::new(json!({"large":20000}));
         let (service, pump) = fixture.start(true);
-        // The bounded serial walk spawns one isolated CLI per page.
-        let deadline = Instant::now() + Duration::from_secs(30);
+        // The bounded serial walk spawns one isolated CLI per page; 158 spawns
+        // took over 30 s on a hosted macOS runner.
+        let deadline = Instant::now() + Duration::from_secs(120);
         while pump.row("", "new").is_none() {
             assert!(Instant::now() < deadline);
             tokio::time::sleep(Duration::from_millis(10)).await;
