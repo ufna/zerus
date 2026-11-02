@@ -23,7 +23,7 @@ class WindowsDesktopRegistration(unittest.TestCase):
         source = Path(__file__).resolve().parents[1] / 'src/desktop/windows_registration.ps1'
         script = str(source).replace("'", "''")
         body = json.dumps({'schema': 1, 'text': 'framed request'}).encode('utf-8')
-        script = (". ([ScriptBlock]::Create([IO.File]::ReadAllText('" + script + "')))\n"
+        script = ("$ProgressPreference='SilentlyContinue';. ([ScriptBlock]::Create([IO.File]::ReadAllText('" + script + "')))\n"
                   "$s=[Console]::OpenStandardInput();"
                   "try { $v=Read-RegistrationRequest $s " + str(len(body)) + ";"
                   "[Console]::WriteLine(($v|ConvertTo-Json -Compress)) } finally {$s.Dispose()}")
