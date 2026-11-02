@@ -1124,7 +1124,13 @@ fn repeated_catalog_failure_retires_only_its_peer_until_manual_retry_or_a_new_sc
             // The serial walker has processed its pending work; no time-based
             // assertion can accidentally pass before the final peer hint.
             eventually("pending work drained without another peer RPC", || {
-                service.shared.dirty.lock().unwrap().pending.is_empty()
+                let drained = {
+                    let dirty = service.shared.dirty.lock().unwrap();
+                    dirty.pending.is_empty()
+                        && dirty.progress.get("")
+                            == Some(&Revision::try_from("1".to_owned()).unwrap())
+                };
+                drained
                     && service
                         .shared
                         .rpc
@@ -1147,7 +1153,10 @@ fn repeated_catalog_failure_retires_only_its_peer_until_manual_retry_or_a_new_sc
                 fs::write(fixture.0.join("peer-scope-recovered"), []).unwrap();
             } else {
                 fs::write(fixture.0.join("peer-recovered"), []).unwrap();
-                assert!(service.reconnect("broken"));
+                // Retry now and both native tray Refresh paths call local
+                // reconnect first; service mode has no GUI peer listing.
+                assert!(service.reconnect(""));
+                assert!(!service.reconnect(""), "pending Refresh is not restarted");
             }
             eventually("only recovered peer finishes a new baseline", || {
                 pump.row("broken", "cached").is_none()
@@ -1162,6 +1171,13 @@ fn repeated_catalog_failure_retires_only_its_peer_until_manual_retry_or_a_new_sc
             .await;
             assert!(pump.row("", "after-peer").is_some());
             assert!(service.snapshot().connected);
+            assert!(!service.reconnect(""), "Refresh leaves live catalogs alone");
+            assert!(!service.reconnect("not-listed"));
+            assert!(statuses
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(computer, status)| !computer.is_local() || *status == ComputerStatus::Live));
             assert_eq!(
                 watch_calls(&fixture.calls()),
                 1,

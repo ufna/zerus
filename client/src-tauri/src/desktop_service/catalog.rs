@@ -31,6 +31,7 @@ pub(super) async fn catalog_loop(
                 .or_else(|| dirty.pending.first().cloned());
             next.and_then(|computer| {
                 dirty.pending.remove(&computer);
+                dirty.running = Some(computer.clone());
                 dirty.sources.get(&computer).cloned().map(|source| {
                     let since = dirty.progress.get(&computer).copied();
                     (computer, source, since)
@@ -52,7 +53,7 @@ pub(super) async fn catalog_loop(
                 .epoch
                 .clone()
                 .ok_or("service_unavailable")?;
-            match walk(
+            let result = walk(
                 &shared,
                 &computer,
                 source.clone(),
@@ -60,8 +61,13 @@ pub(super) async fn catalog_loop(
                 since,
                 stop.clone(),
             )
-            .await
-            {
+            .await;
+            shared
+                .dirty
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .running = None;
+            match result {
                 Ok(()) => {
                     failures.remove(&computer);
                 }

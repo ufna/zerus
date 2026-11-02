@@ -57,6 +57,7 @@ struct Dirty {
     progress: BTreeMap<String, Revision>,
     pending: BTreeSet<String>,
     halted: BTreeSet<String>,
+    running: Option<String>,
     next: u64,
 }
 impl Dirty {
@@ -310,8 +311,9 @@ impl Service {
             }
         });
     }
-    /// Refresh one catalog without replacing the healthy shared subscription.
-    /// A disconnected service still needs the existing explicit global Retry.
+    /// Nudge a non-live catalog, preserving healthy and already-pending reads.
+    /// The local Refresh entry point also reaches halted peers: service mode
+    /// has no legacy GUI peer listing for the tray/UI Refresh loops to visit.
     pub fn reconnect(&self, computer: &str) -> bool {
         if self.shared.stopped.load(Ordering::Acquire) {
             return false;
@@ -323,6 +325,9 @@ impl Service {
             .unwrap_or_else(PoisonError::into_inner);
         if !snapshot.connected {
             drop(snapshot);
+            if !computer.is_empty() {
+                return false;
+            }
             self.retry();
             return true;
         }
@@ -331,11 +336,25 @@ impl Service {
             .dirty
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if !matches!(dirty.restart(computer), Ok(Some(_))) {
-            return false;
+        let targets: Vec<_> = dirty
+            .sources
+            .keys()
+            .filter(|target| {
+                (computer.is_empty() || target.as_str() == computer)
+                    && !dirty.progress.contains_key(*target)
+                    && !dirty.pending.contains(*target)
+                    && dirty.running.as_ref() != Some(*target)
+            })
+            .cloned()
+            .collect();
+        let mut changed = false;
+        for target in targets {
+            changed |= matches!(dirty.restart(&target), Ok(Some(_)));
         }
-        self.shared.changed.notify_one();
-        true
+        if changed {
+            self.shared.changed.notify_one();
+        }
+        changed
     }
     pub async fn read_marks(
         &self,
@@ -607,6 +626,7 @@ impl Shared {
         dirty.sources.clear();
         dirty.pending.clear();
         dirty.halted.clear();
+        dirty.running = None;
         computers
     }
 }
