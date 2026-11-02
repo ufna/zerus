@@ -293,12 +293,12 @@ fn validate(
 }
 
 fn dev_number(version: &str) -> Option<u64> {
-    match version.rsplit_once("-dev.") {
-        Some((_, suffix)) => suffix
+    match version.split_once('-').map(|(_, prerelease)| prerelease) {
+        Some(prerelease) if prerelease.starts_with("dev.") => prerelease[4..]
             .parse::<u64>()
             .ok()
-            .filter(|number| *number > 0 && number.to_string() == suffix),
-        None => Some(0),
+            .filter(|number| *number > 0 && number.to_string() == prerelease[4..]),
+        _ => Some(0),
     }
 }
 
@@ -728,6 +728,8 @@ mod tests {
     fn dev_number_uses_only_the_bound_version_suffix() {
         assert_eq!(dev_number("1.0.0"), Some(0));
         assert_eq!(dev_number("1.0.0-preview.fixture.abcdef0"), Some(0));
+        assert_eq!(dev_number("0.48.0-preview.local-dev.1a2b3c4"), Some(0));
+        assert_eq!(dev_number("0.48.0-preview.local-dev.1234567"), Some(0));
         assert_eq!(dev_number("1.0.0-dev.42"), Some(42));
         for version in [
             "1.0.0-dev.",
