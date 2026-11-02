@@ -1,10 +1,9 @@
 #![cfg(target_os = "linux")]
 
 use std::collections::BTreeMap;
-use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{mpsc, Arc};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use zbus::blocking::Connection;
 use zbus::names::UniqueName;
 use zbus::zvariant::OwnedValue;
@@ -12,52 +11,9 @@ use zerus_freedesktop_notify::{close_notification, decode_signal, notify, Signal
 
 const WAIT: Duration = Duration::from_secs(5);
 
-struct Bus {
-    child: Child,
-    address: String,
-    _directory: tempfile::TempDir,
-}
-impl Bus {
-    fn new() -> Self {
-        let directory = tempfile::tempdir().unwrap();
-        let address = format!("unix:path={}/bus", directory.path().display());
-        let child = Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--address", &address])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        let mut bus = Self {
-            child,
-            address,
-            _directory: directory,
-        };
-        let deadline = Instant::now() + WAIT;
-        while !bus._directory.path().join("bus").exists() {
-            assert!(
-                bus.child.try_wait().unwrap().is_none(),
-                "private bus exited"
-            );
-            assert!(Instant::now() < deadline, "private bus startup deadline");
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        bus
-    }
-    fn connect(&self) -> Connection {
-        zbus::blocking::connection::Builder::address(self.address.as_str())
-            .unwrap()
-            .method_timeout(WAIT)
-            .build()
-            .unwrap()
-    }
-}
-impl Drop for Bus {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        self.child.wait().unwrap();
-    }
-}
+#[path = "../src/ingress/test_bus.rs"]
+mod bus;
+use bus::Bus;
 
 #[derive(Debug)]
 struct Call {
@@ -191,6 +147,67 @@ fn notify_keeps_the_existing_app_identity_actions_and_wire_values() {
     );
     assert_eq!(call.timeout, -1);
     assert!(server.calls.try_recv().is_err());
+}
+
+#[test]
+fn async_methods_keep_the_same_packet_and_never_retry_zero_or_errors() {
+    use zerus_freedesktop_notify::{close_notification_async, notify_async};
+    let bus = Bus::new();
+    let server = Server::new(&bus);
+    let client = bus.connect();
+    assert_eq!(
+        futures_lite::future::block_on(notify_async(
+            client.inner(),
+            server.owner(),
+            "Session",
+            "&lt;body&gt;"
+        ))
+        .unwrap()
+        .body()
+        .deserialize::<u32>()
+        .unwrap(),
+        42
+    );
+    let call = server.calls.recv_timeout(WAIT).unwrap();
+    assert_eq!(call.app, "Zerus");
+    assert_eq!(call.replaces, 0);
+    assert_eq!(call.body, "&lt;body&gt;");
+    assert_eq!(
+        call.actions,
+        ["default", "Open session", "open-session", "Open session"]
+    );
+    assert_eq!(
+        <&str>::try_from(&call.hints["desktop-entry"]).unwrap(),
+        "hgs-tray"
+    );
+    assert_eq!(u8::try_from(&call.hints["urgency"]).unwrap(), 1);
+    assert_eq!(
+        <&str>::try_from(&call.hints["category"]).unwrap(),
+        "im.received"
+    );
+    assert_eq!(call.timeout, -1);
+    futures_lite::future::block_on(close_notification_async(client.inner(), server.owner(), 42))
+        .unwrap()
+        .body()
+        .deserialize::<()>()
+        .unwrap();
+    assert_eq!(server.closes.recv_timeout(WAIT).unwrap(), 42);
+    for outcome in [1, 2, 3] {
+        server.outcome.store(outcome, Ordering::Relaxed);
+        let result = futures_lite::future::block_on(notify_async(
+            client.inner(),
+            server.owner(),
+            "Session",
+            "body",
+        ));
+        if outcome == 3 {
+            assert_eq!(result.unwrap().body().deserialize::<u32>().unwrap(), 0);
+        } else {
+            assert!(result.is_err());
+        }
+        server.calls.recv_timeout(WAIT).unwrap();
+        assert!(server.calls.try_recv().is_err());
+    }
 }
 
 #[test]

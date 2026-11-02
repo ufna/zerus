@@ -1029,6 +1029,7 @@ version = "1.56.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
+ "async-io",
  "base64 0.22.1",
  "cc",
  "chrono",
@@ -1051,11 +1052,13 @@ dependencies = [
  "ureq",
  "uuid",
  "windows-sys 0.61.2",
+ "zbus",
  "zerus-client-core",
  "zerus-content-search",
  "zerus-desktop-catalog",
  "zerus-desktop-ledger",
  "zerus-desktop-migration",
+ "zerus-freedesktop-notify",
  "zerus-presence-sampler",
  "zerus-replica",
  "zerus-watch-protocol",
@@ -3364,6 +3367,13 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "zerus-freedesktop-notify"
+version = "0.1.0"
+dependencies = [
+ "zbus",
 ]
 
 [[package]]

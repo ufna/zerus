@@ -66,6 +66,7 @@ sources=(Cargo.toml Cargo.lock build.rs .cargo src scripts install.sh hgs hgs_st
   crates/desktop-ledger/Cargo.toml crates/desktop-ledger/src
   crates/desktop-migration/Cargo.toml crates/desktop-migration/src
   crates/desktop-read-policy/Cargo.toml crates/desktop-read-policy/src
+  crates/freedesktop-notify/Cargo.toml crates/freedesktop-notify/src
   crates/presence-sampler/Cargo.toml crates/presence-sampler/src)
 tar czf - -C "$here" "${sources[@]}" \
   | ssh -o BatchMode=yes "$host" "cd ~/.local/src/hgs/.rust-build && rm -rf ${sources[*]} && tar xzf -"

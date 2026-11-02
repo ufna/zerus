@@ -661,6 +661,7 @@ version = "1.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
 dependencies = [
+ "getrandom",
  "js-sys",
  "serde_core",
  "wasm-bindgen",
@@ -809,8 +810,11 @@ dependencies = [
 name = "zerus-freedesktop-notify"
 version = "0.1.0"
 dependencies = [
+ "async-io",
+ "futures-lite",
+ "libc",
  "serde",
- "tempfile",
+ "uuid",
  "zbus",
 ]
 
