@@ -207,6 +207,13 @@ pub enum ActivityUpdate {
     Event { id: String, rev: u64, event: Value },
     /// The session's latest inspection summary, with provider messages merged.
     State { value: Value, rev: u64 },
+    /// Read transport readiness. This never declares native work finished or
+    /// replaces the last known transcript; a new route resets state revisions.
+    Connection {
+        ready: bool,
+        pending: bool,
+        code: String,
+    },
     /// The subscription ended (the session left the catalog or changed run).
     Ended,
 }

@@ -1,4 +1,5 @@
 import { batch, createSignal } from "solid-js";
+import { tr } from "../i18n";
 import type { ActivityEvent, ActivityOut, ComputerId } from "../types";
 
 // The followed session's Activity: its events (oldest first, one per journal
@@ -198,6 +199,20 @@ export function createActivity(port: ActivityPort) {
             if (rev < stateRev) break;
             stateRev = rev;
             setSummary(p.value);
+            break;
+          }
+          case "connection": {
+            const p = (out.payload ?? {}) as { ready?: boolean; pending?: boolean; code?: string };
+            // Transport replacement can restart native state revisions. Keep
+            // the last transcript visible until its native snapshot arrives.
+            stateRev = -1;
+            if (!p.pending) setError(p.ready ? undefined : tr("Activity is unavailable from the desktop service. Retry to reconnect."));
+            if (!p.ready && !p.pending) {
+              setLoaded(true);
+              clearTimeout(olderTimer);
+              olderFrom = undefined;
+              setLoadingOlder(false);
+            }
             break;
           }
           case "ended":
