@@ -1,37 +1,116 @@
 //! Negative/native and pure data checks only. No genuine self/pair positive.
 use super::*;
+use std::{
+    os::unix::fs::DirBuilderExt,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
-pub(super) struct Tree(pub(super) PathBuf);
+pub(super) struct Tree(pub(super) PathBuf, PathBuf);
 impl Tree {
     pub(super) fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "hgs-pair-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let bundle = root.join("Example.app");
-        std::fs::create_dir_all(bundle.join("Contents/MacOS")).unwrap();
-        std::fs::create_dir_all(bundle.join("Contents/_CodeSignature")).unwrap();
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        Self::from_candidates(|| {
+            std::env::temp_dir().join(format!(
+                "hgs-pair-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ))
+        })
+    }
+
+    fn from_candidates(mut candidate: impl FnMut() -> PathBuf) -> Self {
+        for _ in 0..128 {
+            let root = candidate();
+            match std::fs::DirBuilder::new().mode(0o700).create(&root) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create private pair fixture: {error}"),
+            }
+            // Reserve the root exclusively BEFORE creating any descendants.
+            // Equal clock samples or stale names must never share a fixture.
+            let root = std::fs::canonicalize(root).unwrap();
+            let tree = Self(root.join("Example.app"), root);
+            tree.populate();
+            return tree;
+        }
+        panic!("private pair fixture namespace exhausted");
+    }
+
+    fn populate(&self) {
+        std::fs::create_dir_all(self.0.join("Contents/MacOS")).unwrap();
+        std::fs::create_dir_all(self.0.join("Contents/_CodeSignature")).unwrap();
         for name in [
             "MacOS/hgs",
             "MacOS/hgs-tray",
             "Info.plist",
             "_CodeSignature/CodeResources",
         ] {
-            std::fs::write(bundle.join("Contents").join(name), b"synthetic, not signed").unwrap();
+            std::fs::write(self.0.join("Contents").join(name), b"synthetic, not signed").unwrap();
         }
-        // The selector intentionally rejects aliases; this synthetic tree is
-        // our private fixture, so bind it to its real path before checking it.
-        Self(std::fs::canonicalize(bundle).unwrap())
     }
 }
 impl Drop for Tree {
     fn drop(&mut self) {
-        std::fs::remove_dir_all(self.0.parent().unwrap()).unwrap();
+        std::fs::remove_dir_all(&self.1).unwrap();
     }
+}
+
+#[test]
+fn occupied_fixture_candidate_is_skipped_without_reusing_or_deleting_it() {
+    let original = Tree::new();
+    let fresh = original.1.with_extension("collision-control");
+    assert!(!fresh.exists());
+    let mut attempts = 0;
+    let other = Tree::from_candidates(|| {
+        attempts += 1;
+        if attempts == 1 {
+            original.1.clone()
+        } else {
+            fresh.clone()
+        }
+    });
+    assert_eq!(attempts, 2);
+    assert_eq!(other.1, fresh);
+    drop(other);
+    assert!(!fresh.exists());
+    assert!(original.0.join("Contents/MacOS/hgs").is_file());
+}
+
+#[test]
+fn concurrent_fixtures_have_distinct_roots_and_independent_cleanup() {
+    use std::{
+        collections::HashSet,
+        sync::{Arc, Barrier},
+    };
+    let start = Arc::new(Barrier::new(16));
+    let workers: Vec<_> = (0..16)
+        .map(|_| {
+            let start = start.clone();
+            std::thread::spawn(move || {
+                start.wait();
+                Tree::new()
+            })
+        })
+        .collect();
+    let mut trees: Vec<_> = workers
+        .into_iter()
+        .map(|worker| worker.join().unwrap())
+        .collect();
+    assert_eq!(
+        trees
+            .iter()
+            .map(|tree| &tree.1)
+            .collect::<HashSet<_>>()
+            .len(),
+        16
+    );
+    let first = trees.pop().unwrap();
+    let root = first.1.clone();
+    drop(first);
+    assert!(!root.exists());
+    assert!(trees
+        .iter()
+        .all(|tree| tree.0.join("Contents/MacOS/hgs").is_file()));
 }
 pub(super) fn fake_signature(bundle: &Path, app: bool) -> Signature {
     Signature {
