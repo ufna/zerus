@@ -1,6 +1,7 @@
 //! Per-invocation native frontend evidence. A nonce or JSON role is not an
 //! authority: the service must also bind its kernel peer to this original child.
-//! Only the native confirmation handler prepares/registers these requests.
+//! Native policy handlers and the read-only activation consumer prepare/register
+//! these closed requests; policy changes still require their confirmation UI.
 use super::{Hello, Responder};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

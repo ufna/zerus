@@ -1,4 +1,4 @@
-//! Approval policy requests are issued by an original native UI child, never
+//! Frontend requests are issued by an original native UI child, never
 //! by the generic CLI request lane or by a JSON role/confirmation flag.
 #[cfg(unix)]
 use super::owner;
