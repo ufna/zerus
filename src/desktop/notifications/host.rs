@@ -347,9 +347,9 @@ fn writing(value: &wire::ToHost) -> Result<Writing> {
         offset: 0,
     })
 }
-fn write_turn(stream: &mut UnixStream, value: &mut Option<Writing>) -> io::Result<()> {
+fn write_turn(stream: &mut UnixStream, value: &mut Option<Writing>) -> io::Result<bool> {
     let Some(frame) = value else {
-        return Ok(());
+        return Ok(false);
     };
     let end = frame.bytes.len().min(frame.offset + QUANTUM);
     match stream.write(&frame.bytes[frame.offset..end]) {
@@ -359,7 +359,7 @@ fn write_turn(stream: &mut UnixStream, value: &mut Option<Writing>) -> io::Resul
             if frame.offset == frame.bytes.len() {
                 *value = None;
             }
-            Ok(())
+            Ok(true)
         }
         Err(e)
             if matches!(
@@ -367,7 +367,7 @@ fn write_turn(stream: &mut UnixStream, value: &mut Option<Writing>) -> io::Resul
                 io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
             ) =>
         {
-            Ok(())
+            Ok(false)
         }
         Err(e) => Err(e),
     }
@@ -530,6 +530,7 @@ fn drive(worker: Worker<impl Native>, mut original: Original) {
         fault = Some("notification_child_refused");
     }
     loop {
+        let mut progressed = false;
         let now = Instant::now();
         if (!ready && now >= until)
             || pending
@@ -561,6 +562,7 @@ fn drive(worker: Worker<impl Native>, mut original: Original) {
                 }
             } else if ready {
                 if let Ok(mapping) = restores.try_recv() {
+                    progressed = true;
                     output = writing(&wire::ToHost::Restore {
                         session: session.clone(),
                         mapping,
@@ -569,6 +571,7 @@ fn drive(worker: Worker<impl Native>, mut original: Original) {
                 } else if restore_done.load(Ordering::Acquire) && pending.len() < wire::IN_FLIGHT {
                     restored = true;
                     if let Ok(work) = endpoint.try_next() {
+                        progressed = true;
                         if let Some(dispatch) = work.begin() {
                             if dispatch.command().binding.session != session
                                 || native.revalidate(Some(&mut original.child)).is_err()
@@ -612,14 +615,18 @@ fn drive(worker: Worker<impl Native>, mut original: Original) {
                 }
             }
         }
-        if write_turn(&mut original.control, &mut output).is_err() {
-            fault.get_or_insert("notification_transport_failed");
+        match write_turn(&mut original.control, &mut output) {
+            Ok(written) => progressed |= written,
+            Err(_) => {
+                fault.get_or_insert("notification_transport_failed");
+            }
         }
         if fault.is_some() {
             callback = None;
             input.clear();
             discard_turn(&mut original.control, &mut control_eof);
         } else if callback.is_none() {
+            let before = (input.len(), control_eof);
             match read_frame(&mut original.control, &mut input, &mut control_eof) {
                 Ok(frame) => callback = frame,
                 Err(_) => {
@@ -627,6 +634,7 @@ fn drive(worker: Worker<impl Native>, mut original: Original) {
                     input.clear();
                 }
             }
+            progressed |= before != (input.len(), control_eof);
         }
         if let Some(frame) = callback.take() {
             match frame {
@@ -693,6 +701,9 @@ fn drive(worker: Worker<impl Native>, mut original: Original) {
                     fault.get_or_insert("notification_protocol_failed");
                 }
             }
+            // A callback retained against a full actor queue is not progress:
+            // keep the idle wait until that original queue can accept it.
+            progressed |= callback.is_none();
         }
         if control_eof && !stopped {
             fault.get_or_insert("notification_channel_closed");
@@ -748,7 +759,10 @@ fn drive(worker: Worker<impl Native>, mut original: Original) {
             return;
         }
         drop(s);
-        if (!input.contains(&b'\n') || callback.is_some())
+        // Restore has no reply. Drain ready mpsc/socket work back-to-back,
+        // reserving the finite poll wait for a turn that made no progress.
+        if !progressed
+            && (!input.contains(&b'\n') || callback.is_some())
             && wait_io(
                 &original,
                 !control_eof && (callback.is_none() || fault.is_some()),
