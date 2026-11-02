@@ -373,6 +373,14 @@ class Desktop(unittest.TestCase):
         self.assertEqual(current['maintenance']['abi'], 'desktop-maintenance-v1')
         self.assertIsNone(current['maintenance']['configuration'])
         self.assertFalse(current['maintenance']['updates']['busy'])
+        self.assertFalse(current['attention_discovery']['enabled'])
+        self.assertFalse(current['attention_discovery']['optional_questions'])
+        self.assertFalse(current['attention_discovery']['stopping'])
+        self.assertEqual(current['attention_discovery']['sources'], 0)
+        self.assertEqual(current['attention_discovery']['pending_rows'], 0)
+        with closing(sqlite3.connect(self.desktop / 'state.sqlite3')) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM desktop_attention_edges').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT count(*) FROM desktop_intents').fetchone()[0], 0)
         text = subprocess.run([str(HGS), 'desktop', 'status'], env=self.env,
                               capture_output=True, text=True, timeout=10)
         self.assertEqual(text.returncode, 0, text.stderr)
@@ -391,6 +399,8 @@ class Desktop(unittest.TestCase):
         self.assertTrue(stopped['background_runtime']['drained'])
         self.assertEqual(stopped['ownership'], 'revoked')
         self.assertFalse(stopped['maintenance']['ready'])
+        self.assertTrue(stopped['attention_discovery']['stopping'])
+        self.assertEqual(stopped['attention_discovery']['pending_rows'], 0)
         self.assertTrue(stopped['lifecycle']['background']['presence']['drained'])
         self.assertFalse(stopped['writers_enabled'])
         self.cli('presence', 'set', '--json', data={'idle_seconds': 0, 'locked': False})

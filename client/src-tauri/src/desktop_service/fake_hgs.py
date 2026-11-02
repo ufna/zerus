@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Isolated desktop-v1 fixture; never launches a real CLI, service or agent."""
 import json
+import hashlib
+import socket
+import struct
 import os
+import select
 from pathlib import Path
 import sys
 import time
@@ -9,12 +13,12 @@ import uuid
 
 root = Path(os.path.abspath(__file__)).parent
 config = json.loads((root / 'fixture.json').read_text())
-epoch = '00000000-0000-4000-8000-000000000001'
+epoch = (root / 'runtime-epoch').read_text() if (root / 'runtime-epoch').exists() else '00000000-0000-4000-8000-000000000001'
 cursor = '00000000-0000-4000-8000-000000000002'
 projection = 'a' * 32
 abi = 'desktop-catalog-changes-v1'
 args = sys.argv[1:]
-value = json.loads(sys.stdin.readline()) if args[:2] == ['desktop', 'request'] else {}
+value = json.loads(sys.stdin.readline()) if args[:2] in [['desktop', 'request'], ['desktop', 'frontend-request']] else {}
 with (root / 'calls').open('a') as log:
     log.write(json.dumps({'args': args, 'value': value}) + '\n')
 
@@ -45,7 +49,80 @@ def status():
     return {'abi': 'desktop-v1', 'configuration': 'a' * 64, 'epoch': epoch, 'generation': 1,
             'lifecycle': {'abi': 'desktop-lifecycle-v1', 'phase': 'serving', 'ipc_ready': True,
                           'configuration': 'a' * 64, 'epoch': epoch, 'generation': 1, 'background': background},
-            'attention_counts': counts, 'automatic_approvals': False, 'catalog_reads': {'changes_abi': abi}}
+            'attention_counts': counts, 'automatic_approvals': False, 'catalog_reads': {'changes_abi': abi},
+            'detail_subscriptions': {'abi': 'desktop-details-v1', 'stopping': False} if config.get('details') else None}
+
+
+def native_hello():
+    return {'machine_id': '00000000-0000-4000-8000-000000000009', 'host': 'untrusted-caption',
+            'hgs_version': 'fixture', 'stream': epoch, 'heartbeat_ms': 10000, 'max_frame_bytes': 1048576,
+            'topics': ['activity', 'processes', 'tasks', 'organization'],
+            'limits': {'activity_subscriptions': 16, 'page_bytes': 1048576, 'queue_bytes': 1048576,
+                       'activity_tail': 100, 'activity_read': 100, 'control_line_bytes': 8192}}
+
+
+def detail_follow():
+    route_id = value['id']
+    spec = value['subscription']
+    key = ('run:' + spec['session']['run_id']) if 'session' in spec else spec.get('project', '')
+    path = root / ('route-' + route_id)
+    previous = json.loads(path.read_text()) if path.exists() else None
+    revision_path = root / 'detail-revision'
+    revision = previous['revision'] if previous else (int(revision_path.read_text()) + 1 if revision_path.exists() else 1)
+    revision_path.write_text(str(revision))
+    route = {'lease': '00000000-0000-4000-8000-000000000003', 'id': route_id,
+             'computer': value['computer'], 'generation': 1, 'revision': revision,
+             'detail_seq': previous['detail_seq'] if previous else 0}
+    events = []
+    if not previous:
+        for state in ['starting', 'ready']:
+            events.append(['detail_status', dict(route, state=state, code=state, complete=False)])
+    topic = spec['topic']
+    bodies = []
+    if topic == 'activity':
+        if spec.get('after') is not None:
+            bodies.append({'t': 'events', 'topic': topic, 'key': key, 'cursor': 101,
+                           'events': [{'seq': 1, 'type': 'UserPrompt', 'detail': 'older'}]})
+        else:
+            bodies.extend([{'t': 'snapshot', 'topic': topic, 'key': key, 'page': 0, 'last': False,
+                            'cursor': 101, 'items': [{'seq': 100, 'type': 'UserPrompt', 'detail': 'first'}]},
+                           {'t': 'snapshot', 'topic': topic, 'key': key, 'page': 1, 'last': True,
+                            'cursor': 101, 'items': [{'seq': 101, 'type': 'Stop', 'detail': 'reply'}]}])
+        bodies.append({'t': 'state', 'topic': topic, 'key': key, 'rev': 1,
+                       'value': {'name': spec['session']['name'], 'run_id': spec['session']['run_id'],
+                                 'conversation_id': spec['session'].get('conversation_id'),
+                                 'message_events': [{'seq': 3, 'detail': 'all-day message', 'type': 'UserPrompt'}]}})
+    elif topic == 'processes':
+        bodies.append({'t': 'state', 'topic': topic, 'key': key, 'rev': route['detail_seq'] + 1,
+                       'value': {'processes': {'items': [], 'active_count': 0}, 'process_work': None}})
+    elif topic == 'tasks':
+        bodies.append({'t': 'snapshot', 'topic': topic, 'key': key, 'page': 0, 'last': True,
+                       'cursor': 0, 'items': [{'id': 'task'}],
+                       'value': {'project': {'id': key}, 'damaged': [], 'digest': 'task-digest'}})
+    elif topic == 'organization':
+        full = {'node_id': native_hello()['machine_id'], 'swarm_id': 'swarm', 'digest': 'org-digest',
+                'organization': {'projects': []}}
+        bodies.append({'t': 'snapshot', 'topic': topic, 'page': 0, 'last': True, 'cursor': 0,
+                       'items': [{'key': 'organization', 'row': full}]})
+    if config.get('native_gap') and topic == 'activity':
+        bodies.extend([{'t': 'gap', 'topic': topic, 'key': key, 'reason': 'overflow'},
+                       {'t': 'snapshot', 'topic': topic, 'key': key, 'page': 0, 'last': True,
+                        'cursor': 200, 'items': [{'seq': 200, 'type': 'Stop', 'detail': 'new tail'}]}])
+    for i, body in enumerate(bodies):
+        route['detail_seq'] += 1
+        events.append(['detail', dict(route, frame=dict(body, v=1, seq=10 + i * 71))])
+    if config.get('detail_gap') and topic == 'activity' and not (root / 'sequence-gap-sent').exists():
+        (root / 'sequence-gap-sent').touch()
+        broken = dict(route, detail_seq=route['detail_seq'] + 2, frame=dict(bodies[-1], v=1, seq=999))
+        events.append(['detail', broken])
+    path.write_text(json.dumps(route))
+    pending = root / ('pending-' + str(time.monotonic_ns()) + '-' + value['request_id'])
+    temporary = pending.with_suffix('.tmp')
+    temporary.write_text(json.dumps(events))
+    temporary.rename(pending)
+    return {'request_id': value['request_id'], 'accepted': True, 'durable': False,
+            'lease': route['lease'], 'id': route_id, 'generation': 1, 'revision': revision,
+            'state': 'starting', 'code': 'awaiting_fence'}
 
 
 def frame(seq, kind, body):
@@ -69,10 +146,68 @@ def change(key, revision, remove=False):
 
 if args == ['--help']:
     print('Desktop service ABI: desktop-v1\nDesktop catalog changes ABI: ' + abi if config.get('supported', True) else 'Older fixture CLI')
+    if config.get('frontend_abi', True):
+        print('Desktop frontend request ABI: desktop-ui-request-v1')
+    if config.get('maintenance_abi', True):
+        print('Desktop maintenance ABI: desktop-maintenance-v1')
+elif args == ['desktop', 'frontend-request', '--json']:
+    request = value['request']
+    assert value['abi'] == 'desktop-ui-request-v1'
+    if config.get('frontend_unreachable') and not (root / 'service-back').exists():
+        raise SystemExit('fixture service unavailable before mutation')
+    with socket.socket(socket.AF_UNIX) as stream:
+        stream.settimeout(2)
+        stream.connect(str(root / 'native-cache.sock'))
+        pid, uid, _ = struct.unpack('3i', stream.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+        assert pid == os.getppid() and uid == os.getuid()
+        stream.sendall(('desktop-ui-request-v1 ' + value['attempt'] + '\n').encode())
+        reply = json.loads(stream.makefile('rb').readline(4097))
+    evidence = reply['request']
+    assert reply['hello']['nonce'] == value['attempt']
+    assert evidence['child_pid'] == os.getpid() and evidence['attempt'] == value['attempt']
+    assert evidence['request_id'] == request['request_id']
+    fingerprint = hashlib.sha256(json.dumps(request, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
+    assert evidence['fingerprint'] == fingerprint
+    (root / 'original-child-bound').touch()
+    if config.get('frontend_hold'):
+        wait(root / 'release-frontend')
+    if config.get('frontend_refuse'):
+        print(json.dumps({'request_id': request['request_id'], 'accepted': False, 'durable': False,
+                          'code': 'frontend_authentication_refused'}))
+    else:
+        if request['op'] == 'automatic_approvals':
+            receipt = {'request_id': request['request_id'], 'op': request['op'], 'enabled': request['enabled'],
+                       'accepted': True, 'durable': True, 'revision': 1}
+        else:
+            gui = request.get('update', {}).get('gui') if request.get('update') else None
+            if gui:
+                assert gui['app_version'] == reply['hello']['build']['version']
+                assert gui['source_commit'] == reply['hello']['build']['source_commit']
+                assert Path(gui['executable']).resolve() == Path(os.readlink('/proc/' + str(os.getppid()) + '/exe')).resolve()
+            receipt = {'request_id': request['request_id'], 'original_request_id': request['request_id'],
+                       'accepted': True, 'durable': True, 'configured': True, 'revision': 1, 'recovery_save': 'not_requested'}
+        (root / ('receipt-' + request['request_id'])).write_text(json.dumps(receipt))
+        if config.get('frontend_uncertain'):
+            raise SystemExit('fixture lost its reply after actor commit')
+        if config.get('frontend_retain') and os.fork() == 0:
+            # The original owned CLI exits; only this private fixture holds
+            # its inherited output pipes. Release by file, never by a PID kill.
+            until = time.monotonic() + 10
+            while not (root / 'release-retainer').exists() and time.monotonic() < until:
+                time.sleep(.005)
+            os._exit(0)
+        print(json.dumps(receipt))
 elif args == ['desktop', 'status', '--json']:
     print(json.dumps(status()))
 elif args == ['desktop', 'watch', '--json']:
-    frame(0, 'hello', status())
+    initial = status()
+    if config.get('details'):
+        initial['details'] = {'abi': 'desktop-details-v1', 'epoch': epoch,
+                              'lease': '00000000-0000-4000-8000-000000000003',
+                              'limits': {'demands_per_subscriber': 64}}
+    frame(0, 'hello', initial)
+    if config.get('details'):
+        frame(7, 'status', status())  # No replacement lease on ordinary status.
     if config.get('dirty_walk'):
         wait(root / 'page-started')
         hint(1, '2')
@@ -95,14 +230,48 @@ elif args == ['desktop', 'watch', '--json']:
     if config.get('large'):
         wait(root / 'initial-complete')
         hint(1, '3')
-    sys.stdin.read()  # Detaches only when the owning subscriber closes stdin.
+    if config.get('details'):
+        seq = 100
+        seen = set()
+        while not select.select([sys.stdin], [], [], .005)[0]:
+            for path in sorted(root.glob('pending-*')):
+                if path.suffix == '.tmp' or path.name in seen:
+                    continue
+                seen.add(path.name)
+                for kind, body in json.loads(path.read_text()):
+                    seq += 7  # Outer targeted sequences are monotone, not contiguous.
+                    frame(seq, kind, body)
+        sys.stdin.read()
+    else:
+        sys.stdin.read()  # Detaches only when the owning subscriber closes stdin.
 elif args == ['desktop', 'request', '--json']:
     op, request_id = value['op'], value['request_id']
+    if op in ['delivery_result', 'maintenance_result'] and config.get('lookup_unavailable') and not (root / 'lookup-back').exists():
+        raise SystemExit('fixture lookup transport unavailable')
     common = {'request_id': request_id, 'accepted': True, 'durable': False, 'abi': 'desktop-catalog-v1',
               'changes_abi': abi, 'epoch': epoch, 'computer': value.get('computer', ''), 'incarnation': 1,
               'generation': 1, 'projection': projection, 'display_only': True, 'authority': False,
               'complete': True, 'online': True, 'last_known': False, 'stale': False, 'next_cursor': None}
-    if op == 'catalog_page':
+    if op == 'detail_follow':
+        if config.get('follow_timeout') and value['subscription']['topic'] == 'activity':
+            (root / 'follow-held').touch()
+            time.sleep(15)
+        if config.get('detail_refused'):
+            print(json.dumps({'request_id': request_id, 'accepted': False, 'code': 'unsupported_topic'}))
+        else:
+            print(json.dumps(detail_follow()))
+    elif op == 'detail_unfollow':
+        print(json.dumps({'request_id': request_id, 'accepted': True, 'durable': False,
+                          'lease': value['lease'], 'id': value['id'], 'state': 'unfollowed'}))
+    elif op == 'detail_source':
+        metadata = native_hello() if value['part'] == 'hello' else {'host': 'metadata-caption', 'ok': True,
+                    'machine_id': '00000000-0000-4000-8000-000000000099', 'peers': [],
+                    'metrics': {'platform': 'linux'}}
+        print(json.dumps({'request_id': request_id, 'accepted': True, 'durable': False,
+                          'lease': value['lease'], 'computer': value['computer'],
+                          'generation': value['generation'], 'part': value['part'],
+                          'native': True, 'online': True, 'complete': True, 'value': metadata}))
+    elif op == 'catalog_page':
         number = counter('page-number')
         page = dict(common, start_revision='0', revision='0', items=[row('row')])
         if config.get('dirty_walk'):
@@ -176,6 +345,18 @@ elif args == ['desktop', 'request', '--json']:
         confirmed = path.exists()
         path.touch()
         print(json.dumps({'request_id': request_id, 'accepted': True, 'durable': confirmed, 'op': op}))
+    elif op == 'delivery_result' and (root / ('receipt-' + value['original_request_id'])).exists():
+        receipt = json.loads((root / ('receipt-' + value['original_request_id'])).read_text())
+        print(json.dumps({'request_id': request_id, 'op': op, 'original_request_id': value['original_request_id'],
+                          'accepted': True, 'durable': False, 'found': True, 'result': receipt}))
+    elif op == 'maintenance_result':
+        receipt_path = root / ('receipt-' + value['original_request_id'])
+        if receipt_path.exists():
+            receipt = json.loads(receipt_path.read_text())
+            receipt['request_id'] = request_id
+            print(json.dumps(receipt))
+        else:
+            print(json.dumps({'request_id': request_id, 'original_request_id': value['original_request_id'], 'accepted': False, 'code': 'unknown_request'}))
     elif op == 'delivery_result':
         print(json.dumps({'request_id': request_id, 'accepted': True, 'durable': False, 'op': op,
                           'original_request_id': value['original_request_id'], 'found': False, 'result': None}))

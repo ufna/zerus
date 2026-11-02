@@ -1,4 +1,4 @@
-# Pure policy controls: no real Task Scheduler, registry, service or process.
+# Policy and owned trace-file controls: no real Task Scheduler, registry, service or process.
 param([string]$RegistrationSource=(Join-Path $PSScriptRoot '../../src/desktop/windows_registration.ps1'))
 $ErrorActionPreference='Stop'
 . ([ScriptBlock]::Create([IO.File]::ReadAllText($RegistrationSource)))
@@ -73,6 +73,45 @@ function Call-Policy($scheduler,[string]$operation,$plan=(New-Plan)) {
 function Check([string]$name,[scriptblock]$body){& $body;$script:count++;Write-Output ('PASS '+$name)}
 function Assert([bool]$ok){if(-not $ok){throw 'Control assertion failed'}}
 function Refuses([scriptblock]$body){$failed=$false;try{& $body|Out-Null}catch{$failed=$true};Assert $failed}
+
+Check 'trace survives a retained read/write file and logging failure is nonfatal' {
+    $p=[IO.Path]::GetTempFileName();$held=$null;$previous=$env:HGS_DESKTOP_REGISTRATION_TRACE_FILE
+    try {
+        $held=[IO.File]::Open($p,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+        $env:HGS_DESKTOP_REGISTRATION_TRACE_FILE=$p;$script:rc=[Diagnostics.Stopwatch]::StartNew()
+        Trace-Registration main
+        $bytes=[byte[]]::new(64);$n=$held.Read($bytes,0,$bytes.Length)
+        Assert ([Text.Encoding]::UTF8.GetString($bytes,0,$n) -cmatch '^main [0-9]+\n$')
+        $env:HGS_DESKTOP_REGISTRATION_TRACE_FILE=Join-Path $p 'invalid'
+        Trace-Registration input
+    } finally {
+        $env:HGS_DESKTOP_REGISTRATION_TRACE_FILE=$previous
+        if($null -ne $held){$held.Dispose()}
+        Remove-Item -LiteralPath $p
+    }
+}
+
+function Parse-RequestBytes([byte[]]$data) {
+    $stream=[IO.MemoryStream]::new($data,$false)
+    try { return Read-RegistrationRequest $stream } finally { $stream.Dispose() }
+}
+Check 'UTF-8 input retains multibyte text' {
+    $json='{"text":"'+[char]0x20ac+'"}'
+    Assert ((Parse-RequestBytes ([Text.Encoding]::UTF8.GetBytes($json))).text -ceq [string][char]0x20ac)
+}
+Check 'exactly 64KiB input is accepted' {
+    $json='{"text":"'+('x'*(65536-11))+'"}'
+    Assert ((Parse-RequestBytes ([Text.Encoding]::UTF8.GetBytes($json))).text.Length -eq (65536-11))
+}
+Check 'UTF-8 byte cap refuses multibyte overflow below character cap' {
+    $json='{"text":"'+([string][char]0x20ac)*22000+'"}'
+    Assert ($json.Length -lt 65536)
+    Refuses {Parse-RequestBytes ([Text.Encoding]::UTF8.GetBytes($json))}
+}
+Check 'invalid UTF-8 is refused without replacement' {Refuses {Parse-RequestBytes ([byte[]]@(255))}}
+Check 'empty malformed and non-object input is refused' {
+    foreach($json in @('','{','null','[]','true','5')) { Refuses {Parse-RequestBytes ([Text.Encoding]::UTF8.GetBytes($json))} }
+}
 
 Check 'absent status is read-only' {$s=[FixtureScheduler]::new();$r=Call-Policy $s status;Assert (-not $r.registered -and $s.Folder.Creates -eq 0 -and $s.Folder.Deletes -eq 0)}
 Check 'install is create-only interactive and does not run a task' {$s=[FixtureScheduler]::new();$r=Call-Policy $s install;Assert ($r.registered -and $r.changed -and $s.Folder.Flags -eq 34 -and $s.Folder.Creates -eq 1)}

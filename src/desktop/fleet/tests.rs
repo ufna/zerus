@@ -92,7 +92,8 @@ fn next(runtime: &mut Runtime) -> FleetEvent {
     }
 }
 fn stop(runtime: &mut Runtime) {
-    let until = Instant::now() + Duration::from_secs(5);
+    // The same bound as an event: a loaded macOS runner can take over 5 s.
+    let until = Instant::now() + Duration::from_secs(15);
     while !runtime.stop() {
         assert!(
             Instant::now() < until,

@@ -31,6 +31,8 @@ const CATALOG_KEYS: usize = 1_000_000;
 
 mod catalog;
 use catalog::catalog_loop;
+mod details;
+pub mod frontend;
 
 /// Registered at setup before start_source. Some contains a verified service
 /// watch frame; None invalidates the prior projection. Callbacks must not block.
@@ -97,6 +99,7 @@ impl SourceVersion {
 pub enum Data {
     Change(Box<Change>),
     Catalog(CatalogDelivery),
+    Detail(details::Delivery),
 }
 
 /// Recheck identity at the view drain, not just when an RPC finishes. Frames
@@ -198,6 +201,10 @@ struct Shared {
     cancellation: Mutex<Option<Arc<AtomicBool>>>,
     responder: Option<Arc<zerus_client_core::desktop::Responder>>,
     reads: Mutex<BTreeMap<String, ReadIntent>>,
+    details: Mutex<details::Hub>,
+    details_changed: Notify,
+    organization: Mutex<Option<zerus_client_core::OrganizationSnapshot>>,
+    frontend: frontend::Frontend,
     projections: Vec<Projection>,
 }
 
@@ -238,6 +245,10 @@ impl Service {
             cancellation: Mutex::new(None),
             responder,
             reads: Mutex::new(BTreeMap::new()),
+            details: Mutex::new(details::Hub::default()),
+            details_changed: Notify::new(),
+            organization: Mutex::new(None),
+            frontend: frontend::Frontend::default(),
             projections,
         });
         let (control, receiver) = watch::channel(Control::Retry(0));
@@ -634,7 +645,10 @@ async fn request(
     stop: Arc<AtomicBool>,
 ) -> Result<Value, &'static str> {
     // This lane never acquires frontend approval-setting authority.
-    if value["op"] == "automatic_approvals" {
+    if matches!(
+        value["op"].as_str(),
+        Some("automatic_approvals" | "maintenance_configure")
+    ) {
         return Err("frontend_route_required");
     }
     let input = serde_json::to_string(&value).map_err(|_| "invalid_service_request")?;
@@ -700,6 +714,18 @@ async fn run(shared: Arc<Shared>, mut control: watch::Receiver<Control>) {
         *shared.relay.lock().unwrap_or_else(PoisonError::into_inner) = None;
         stop.store(true, Ordering::Release);
         let computers = shared.invalidate();
+        let changes = shared
+            .details
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .disconnect();
+        *shared
+            .organization
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+        for change in changes {
+            let _ = emit(&shared, change, &AtomicBool::new(false)).await;
+        }
         shared.unavailable(result.err().unwrap_or("service_unavailable"));
         for computer in computers {
             let _ = emit(
@@ -780,6 +806,10 @@ async fn connection(
         tauri::async_runtime::spawn(
             async move { catalog_loop(catalog_shared, catalog_stop).await },
         );
+    let detail_shared = shared.clone();
+    let detail_stop = stop.clone();
+    let mut detail_worker =
+        tauri::async_runtime::spawn(async move { details::run(detail_shared, detail_stop).await });
     let mut last_frame = tokio::time::Instant::now();
     let result = async {
         loop {
@@ -788,6 +818,7 @@ async fn connection(
                 _ = control.changed() => return Err("service_reconnecting"),
                 _ = tokio::time::sleep_until(last_frame + Duration::from_secs(30)) => return Err("service_stale"),
                 value = &mut catalogs => return value.map_err(|_| "catalog_unavailable")?,
+                value = &mut detail_worker => return value.map_err(|_| "details_unavailable")?,
                 count = stdout.read(&mut out) => {
                     let count = count.map_err(|_| "service_unavailable")?;
                     if count == 0 { return Err("service_unavailable"); }
@@ -798,6 +829,7 @@ async fn connection(
                         let frame: Value = serde_json::from_slice(&buffer).map_err(|_| "invalid_service_frame")?;
                         buffer.clear();
                         let update = state.frame(&frame)?;
+                        details::frame(&shared,&frame,&stop).await?;
                         for projection in &shared.projections { projection(Some(&frame)); }
                         last_frame = tokio::time::Instant::now();
                         shared.publish(state.snapshot().clone());
@@ -808,6 +840,8 @@ async fn connection(
                                         if let Some(name) = computer["computer"].as_str() {
                                             let known = shared.dirty.lock().unwrap_or_else(PoisonError::into_inner).sources.contains_key(name);
                                             if !known { shared.dirty(name, SourceVersion::from(computer))?; }
+                                            shared.details.lock().unwrap_or_else(PoisonError::into_inner).source(name,computer["generation"].as_u64().unwrap_or(0))?;
+                                            shared.details_changed.notify_one();
                                         }
                                     }
                                 }
@@ -837,6 +871,7 @@ async fn connection(
     }.await;
     stop.store(true, Ordering::Release);
     shared.changed.notify_one();
+    shared.details_changed.notify_one();
     drop(stdin);
     // Only this owned local proxy is stopped; the desktop service and native agents remain untouched.
     if child.kill().await.is_err() && child.wait().await.is_err() {
@@ -844,10 +879,16 @@ async fn connection(
         if !catalogs.inner().is_finished() {
             let _ = catalogs.await;
         }
+        if !detail_worker.inner().is_finished() {
+            let _ = detail_worker.await;
+        }
         return Err("service_transport_unverified");
     }
     if !catalogs.inner().is_finished() {
         let _ = catalogs.await;
+    }
+    if !detail_worker.inner().is_finished() {
+        let _ = detail_worker.await;
     }
     result
 }
@@ -886,19 +927,19 @@ pub async fn desktop_service_read_marks(
     service.read_marks(marks).await
 }
 
-/// Reserved for the authenticated native frontend API. No generic policy route.
+/// The existing confirmation calls the dedicated native frontend route.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn desktop_service_automatic_approvals(
+    source: tauri::State<'_, crate::commands::AppState>,
     request_id: String,
     enabled: bool,
 ) -> Result<Value, String> {
-    if !uuid::Uuid::parse_str(&request_id).is_ok_and(|id| id.to_string() == request_id) {
-        return Err("Invalid approval request identity.".into());
-    }
-    let _ = enabled;
-    Ok(
-        json!({"request_id":request_id,"op":"automatic_approvals","accepted":false,"durable":false,"code":"frontend_route_unavailable"}),
+    frontend::approval_command(
+        source.desktop_service().filter(|_| mode()),
+        request_id,
+        enabled,
     )
+    .await
 }
 
 #[cfg(all(test, unix))]

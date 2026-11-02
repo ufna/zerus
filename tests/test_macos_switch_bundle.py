@@ -71,12 +71,22 @@ class SwitchBundle(unittest.TestCase):
         self.assertEqual(SWITCH_INFO["CFBundleName"], "Zerus")
         self.assertIs(SWITCH_INFO["LSUIElement"], True)
         self.assertEqual(SWITCH_INFO["ZerusGUI"], "tauri")
+        protocol = (ROOT / "client/core/src/desktop/notifications.rs").read_text()
+        abi = re.search(r'pub const ABI: &str = "([^"]+)";', protocol).group(1)
+        self.assertEqual(SWITCH_INFO["HGSDesktopNotificationHostABI"], abi)
         for key in ("NSMicrophoneUsageDescription", "NSCameraUsageDescription", "CFBundleIconName", "CFBundleDevelopmentRegion"):
             self.assertEqual(SWITCH_INFO[key], QT_INFO[key], key)
         package = (ROOT / "scripts/package-macos.py").read_text()
         self.assertIn(SWITCH_INFO["NSAppleEventsUsageDescription"], package)
         self.assertEqual(json.loads((ROOT / "client/src-tauri/tauri.conf.json").read_text())["identifier"], "dev.zerus.next",
                          "the dev app keeps its own identity")
+
+    def test_native_entry_precedes_renderer_and_is_not_tied_to_gui_live_data(self):
+        main = (ROOT / "client/src-tauri/src/main.rs").read_text()
+        self.assertLess(main.index("notification_host::run()"), main.index("renderer::choose()"))
+        manifest = (ROOT / "client/src-tauri/Cargo.toml").read_text()
+        native = manifest.split('[target.\'cfg(target_os = "macos")\'.dependencies]', 1)[1].split('\n[', 1)[0]
+        self.assertIn('zerus-client-core = { path = "../core", features = ["macos-native-peer"] }', native)
 
     def bundle(self, root, **changes):
         app = Path(root) / "Zerus.app"

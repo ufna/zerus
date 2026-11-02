@@ -17,6 +17,49 @@ function setup() {
 }
 
 describe("activity store", () => {
+  it("retains last-known activity across service loss and accepts restarted native revisions", () => {
+    createRoot((dispose) => {
+      const { store } = setup();
+      store.follow(target);
+      store.applyActivity([out("replace", { events: [ev(100)], cursor: 100 }),
+        out("state", { value: { message: "last known" }, rev: 90 })]);
+      store.loadOlder();
+      expect(store.loadingOlder()).toBe(true);
+      store.applyActivity([out("connection", { ready: false, code: "source_offline" })]);
+      expect(store.error()).toBeTruthy();
+      expect(store.loaded()).toBe(true);
+      expect(store.loadingOlder()).toBe(false);
+      expect(store.olderDone()).toBe(false);
+      expect(store.ended()).toBe(false);
+      expect(store.events().map(e => e.seq)).toEqual([100]);
+      expect(store.summary()).toEqual({ message: "last known" });
+      store.applyActivity([out("connection", { ready: true, code: "subscribed" }),
+        out("state", { value: { message: "new source" }, rev: 1 })]);
+      expect(store.error()).toBeUndefined();
+      expect(store.summary()).toEqual({ message: "new source" });
+      expect(store.events().map(e => e.seq)).toEqual([100]);
+      dispose();
+    });
+  });
+
+  it("keeps an older read pending through the service subscription fence", () => {
+    createRoot((dispose) => {
+      const { store } = setup();
+      store.follow(target);
+      store.applyActivity([out("replace", { events: [ev(100)], cursor: 100 })]);
+      store.loadOlder();
+      store.applyActivity([out("connection", { ready: false, pending: true, code: "awaiting_fence" }),
+        out("connection", { ready: true, pending: false, code: "subscribed" })]);
+      expect(store.loadingOlder()).toBe(true);
+      expect(store.error()).toBeUndefined();
+      expect(store.olderDone()).toBe(false);
+      store.applyActivity([out("events", { events: [ev(1)], cursor: 100 })]);
+      expect(store.loadingOlder()).toBe(false);
+      expect(store.events().map(e => e.seq)).toEqual([1, 100]);
+      dispose();
+    });
+  });
+
   it("follows with the tail, merges events by seq and ignores other sessions", () => {
     createRoot((dispose) => {
       const { store, calls } = setup();

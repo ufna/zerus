@@ -58,6 +58,8 @@ mod native_text;
 pub mod native_ui;
 #[cfg(feature = "live")]
 mod newsession;
+#[cfg(target_os = "macos")]
+pub mod notification_host;
 #[cfg(feature = "live")]
 mod notifier;
 #[cfg(feature = "live")]
@@ -1173,6 +1175,8 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         desktop_service::desktop_service_retry,
         desktop_service::desktop_service_read_marks,
         desktop_service::desktop_service_automatic_approvals,
+        desktop_service::frontend::desktop_service_maintenance_configure,
+        desktop_service::frontend::desktop_service_frontend_result,
         commands::build_info,
         commands::voice_support,
         renderer::renderer_frame,

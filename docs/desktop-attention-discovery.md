@@ -6,8 +6,20 @@ service lifecycle owns activation, writer admission, native host and shutdown.
 The discovery component creates none of them.
 
 The actor calls `new(epoch)`, `observe(store, event)`, then
-`poll(store, Option<&mut Outbox>)`. Baseline and policy-off observations progress
-without a native host. `reject(computer)` invalidates a rejected source;
+`poll(store, Option<&mut Outbox>)` while enabled or retiring. Initially disabled
+discovery skips both observation and polling, retaining no reply backlog or new
+attention storage. Disabling an enabled policy schedules an indexed, fixed-highwater
+retirement walk of at most eight existing live edges per turn. The original outbox
+revokes their callbacks/queued posts and reserves exact native withdrawals after
+the original post receipt and resources settle. Retirement needs that outbox;
+without it, status remains `retiring` and no native effect is inferred. Idle means
+the original operations and callbacks settled, with the same host kept connected;
+it is separate from host stop/join. Unknown outcomes are retained without replay.
+The lifecycle calls `request_retirement()` when resuming its durable policy-off
+state after restart. Re-enabling waits for retirement before restarting discovery.
+Enabling resets the baseline; a fresh owned observation
+consumes current history before later edges may post. An enabled baseline can
+progress without a native host. `reject(computer)` invalidates a rejected source;
 `request_stop`, `drained` and `status` fit the service lifecycle. The original
 service supplies `Policy { enabled, optional_questions }` (both default false)
 and refreshes foreground suppression, which expires after five seconds. These

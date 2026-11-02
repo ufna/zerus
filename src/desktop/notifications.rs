@@ -6,7 +6,7 @@ use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
     mpsc, Arc, Mutex,
 };
 use std::time::{Duration, Instant};
@@ -21,9 +21,16 @@ use zerus_desktop_ledger::{self as ledger, Attempt, Identity, Kind, Reserve, Sta
 
 pub const COMMAND_WAIT: Duration = Duration::from_secs(10);
 const EVENTS: usize = 32;
+const QUEUED: u8 = 0;
+const STARTED: u8 = 1;
+const CANCELLED: u8 = 2;
+
+#[cfg(unix)]
+pub(super) mod host;
 
 struct Shared {
     cancel: AtomicBool,
+    admission: AtomicU8,
     reply: Mutex<Option<Finished>>,
 }
 #[derive(Clone)]
@@ -32,6 +39,11 @@ struct Finished {
     receipt: Receipt,
 }
 impl Shared {
+    fn cancel_queued(&self) {
+        let _ =
+            self.admission
+                .compare_exchange(QUEUED, CANCELLED, Ordering::AcqRel, Ordering::Acquire);
+    }
     fn finish(&self, receipt: Receipt) {
         if let Ok(mut slot) = self.reply.lock() {
             if slot.is_none() {
@@ -53,7 +65,14 @@ pub(super) struct Work {
 }
 impl Work {
     pub fn begin(mut self) -> Option<Dispatch> {
-        if self.shared.cancel.load(Ordering::Acquire) || Instant::now() >= self.until {
+        if self.shared.cancel.load(Ordering::Acquire)
+            || Instant::now() >= self.until
+            || self
+                .shared
+                .admission
+                .compare_exchange(QUEUED, STARTED, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
             return None;
         }
         Some(Dispatch {
@@ -164,7 +183,9 @@ impl Endpoint {
     }
     pub fn emit(&self, event: Event) -> bool {
         let (Event::Clicked(value) | Event::Closed(value)) = &event;
-        if self.stopping()
+        // Closing an already admitted notification may complete during host
+        // shutdown. Keep that exact tombstone drainable; never open a late UI.
+        if (self.stopping() && !matches!(event, Event::Closed(_)))
             || !value.valid_for(self.platform)
             || (matches!(event, Event::Closed(_)) && value.platform_context.is_some())
         {
@@ -289,10 +310,24 @@ impl Outbox {
         ledger::withdraw(&mut store.db, intent_id, 1)?;
         for pending in &self.pending {
             if pending.binding.intent_id == intent_id {
-                pending.shared.cancel.store(true, Ordering::Release);
+                pending.shared.cancel_queued();
             }
         }
         Ok(())
+    }
+
+    /// Bound the policy-off race independently of the live-edge walk. Work
+    /// already begun retains its receipt/resources and is withdrawn afterward.
+    pub fn cancel_queued_posts(&self) {
+        for pending in &self.pending {
+            if pending
+                .command
+                .as_ref()
+                .is_some_and(|c| matches!(c.action, Action::Post { .. }))
+            {
+                pending.shared.cancel_queued();
+            }
+        }
     }
 
     /// Called by the actor for an intent derived from its own committed fleet
@@ -341,6 +376,7 @@ impl Outbox {
         })();
         let shared = Arc::new(Shared {
             cancel: AtomicBool::new(false),
+            admission: AtomicU8::new(QUEUED),
             reply: Mutex::new(None),
         });
         let until = now + COMMAND_WAIT;
@@ -756,9 +792,12 @@ impl Outbox {
     /// Operation resources only. The platform must also join its original host
     /// worker/child and callback/pipe resources before lifecycle drain succeeds.
     pub fn operation_drained(&self) -> bool {
-        self.stopping.load(Ordering::Acquire)
-            && self.pending.is_empty()
-            && self.event_count.load(Ordering::Acquire) == 0
+        self.stopping.load(Ordering::Acquire) && self.operations_idle()
+    }
+    /// No outstanding original operations/callbacks. This does not stop, join
+    /// or release the platform host, which can remain connected while idle.
+    pub fn operations_idle(&self) -> bool {
+        self.pending.is_empty() && self.event_count.load(Ordering::Acquire) == 0
     }
     pub fn status(&self) -> Value {
         json!({"abi":wire::ABI,"pending":self.pending.len(),"limit":wire::IN_FLIGHT,

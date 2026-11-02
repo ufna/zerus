@@ -184,10 +184,31 @@ provisional/offline rows remain incomplete. Quit bounds the service join to five
 seconds after its draft flush. Shared host attention counts remain separate from
 this device's review marks; incomplete/null counts remain unknown. Read intents
 are acknowledged only after a durable actor receipt, retaining their request UUID
-through an uncertain result. Activity/process/task/organization subscriptions and
-the authenticated automatic-approval settings route remain explicitly unavailable
-until their service adapters are integrated. The current automatic updater is also
-a remaining service dependency. Keep this switch off for normal installations;
+through an uncertain result. Activity, processes, project tasks and organization use
+the existing subscriber's bounded detail lease. Each view retains its exact consumer
+identity and validates the route generation, revision and contiguous detail sequence;
+native frame sequences may skip. Native Gap frames retain the subscription and
+allow the next snapshot to replace its staged data. Genuine route inconsistencies
+retire only that view before bounded rearming; unknown follow outcomes stay
+unavailable until explicit Retry, with no GUI watcher or request replay. An explicit
+Retry resets that view's recovery budget; temporary control admission pressure uses
+bounded retries before reporting it unavailable.
+
+After the existing automatic-approval confirmation, the native sender uses the
+dedicated authenticated `desktop frontend-request` route. It registers the original
+child before writing stdin and retains that registration through child and pipe
+drain. On a verified Mac installation it selects the paired bundled `hgs`; a failed
+pair has no ordinary CLI fallback. One outstanding request per operation retains
+its UUID through an uncertain result. **Check result** reads the original receipt
+and never resubmits it. If the original relay's exit is confirmed and that lookup
+proves no receipt exists, the request settles as not applied and a fresh intent
+can be submitted. An unverified exit or failed lookup remains pending.
+Maintenance has a native command using the shared full
+configuration type, with both update and recovery explicit; it replaces GUI identity
+with the running application's executable and build. An unknown recovery save
+remains pending. Maintenance preference call sites still need that native command;
+no generic request can change approval policy or maintenance configuration.
+Keep this switch off for normal installations;
 this source is not a complete UI-only cutover.
 
 A build without the `live` feature (`--no-default-features`) has no data source;

@@ -41,6 +41,11 @@ struct Pending {
     scope: changes::Scope,
     rows: VecDeque<Row>,
 }
+#[derive(Default)]
+struct Retirement {
+    after: i64,
+    through: Option<i64>,
+}
 pub struct Runtime {
     epoch: String,
     policy: Policy,
@@ -53,6 +58,7 @@ pub struct Runtime {
     error: Option<String>,
     effect_after: i64,
     effect_through: i64,
+    retirement: Option<Retirement>,
     #[cfg(test)]
     clock: Option<Instant>,
 }
@@ -70,6 +76,7 @@ impl Runtime {
             error: None,
             effect_after: 0,
             effect_through: 0,
+            retirement: None,
             #[cfg(test)]
             clock: None,
         }
@@ -85,9 +92,24 @@ impl Runtime {
     /// calls these. Neither method is a desktop request or a native writer grant.
     pub fn set_policy(&mut self, policy: Policy) {
         if self.policy != policy {
+            if self.policy.enabled && !policy.enabled {
+                self.request_retirement();
+            }
             self.policy = policy;
             self.reset_policy();
         }
+    }
+    pub fn enabled(&self) -> bool {
+        self.policy.enabled
+    }
+    /// The lifecycle also calls this when resuming a durable policy-off change
+    /// after restart. It grants no post or native withdrawal by itself.
+    pub fn request_retirement(&mut self) {
+        self.retirement.get_or_insert_with(Retirement::default);
+        self.pending = None;
+    }
+    pub fn retiring(&self) -> bool {
+        self.retirement.is_some()
     }
     fn reset_policy(&mut self) {
         let Some(revision) = self.policy_revision.checked_add(1) else {
@@ -115,7 +137,7 @@ impl Runtime {
         }
     }
     fn observe_packet(&mut self, store: &Store, packet: &feed::Packet) -> Result<()> {
-        if self.stopping || self.error.is_some() {
+        if !self.enabled() || self.stopping || self.error.is_some() {
             return Ok(());
         }
         let Some((computer, generation)) = packet.scope() else {
@@ -176,6 +198,21 @@ impl Runtime {
             self.pending = None;
         }
     }
+    pub fn reject_event(&mut self, event: &fleet::FleetEvent) {
+        self.reject_packet(&event.packet);
+    }
+    fn reject_packet(&mut self, packet: &feed::Packet) {
+        if let Some((computer, _)) = packet.scope() {
+            self.reject(computer);
+        } else {
+            // An invalid unscoped packet cannot leave an old source eligible.
+            self.sources.clear();
+            self.pending = None;
+        }
+    }
+    pub fn work_pending(&self) -> bool {
+        self.pending.as_ref().is_some_and(|p| !p.rows.is_empty())
+    }
     fn current(&self, store: &Store, scope: &changes::Scope) -> Result<bool> {
         if !self.sources.get(&scope.source.computer).is_some_and(|s| {
             s.scope == *scope && self.now().saturating_duration_since(s.at) <= FRESH
@@ -190,6 +227,15 @@ impl Runtime {
     }
     pub fn poll(&mut self, store: &mut Store, outbox: Option<&mut Outbox>) {
         if self.stopping || self.error.is_some() {
+            return;
+        }
+        if self.retiring() {
+            if let Some(outbox) = outbox {
+                self.poll_retirement(store, outbox);
+            }
+            return;
+        }
+        if !self.enabled() {
             return;
         }
         if let Err(error) = self.turn(store, outbox) {
@@ -324,7 +370,7 @@ impl Runtime {
         // At most eight indexed live/dirty edges, independently of the number
         // of retained historical attempts. No automatic refusal/unknown retry.
         if let Some(outbox) = outbox {
-            self.effects(store, outbox)?;
+            self.effects(store, outbox, false)?;
         }
         Ok(())
     }
@@ -390,7 +436,40 @@ impl Runtime {
         self.pending = Some(Pending { scope, rows });
         Ok(())
     }
-    fn effects(&mut self, store: &mut Store, outbox: &mut Outbox) -> Result<()> {
+    fn poll_retirement(&mut self, store: &mut Store, outbox: &mut Outbox) {
+        outbox.cancel_queued_posts();
+        let Some(mut retirement) = self.retirement.take() else {
+            return;
+        };
+        let result = (|| -> Result<bool> {
+            let through = *retirement.through.get_or_insert(state::head(&store.db)?);
+            let rows =
+                state::retirement_page(&store.db, retirement.after, through, EFFECTS_PER_TURN)?;
+            for (id, intent) in &rows {
+                // Revoke callbacks and original queued posts before changing
+                // the edge. An already-started post keeps its receipt/resources.
+                outbox.retire_intent(store, intent)?;
+                state::retire(&store.db, *id)?;
+                retirement.after = *id;
+            }
+            if rows.is_empty() {
+                retirement.after = through;
+            }
+            self.effects(store, outbox, true)?;
+            Ok(retirement.after == through
+                && !state::has_dirty(&store.db)?
+                && outbox.operations_idle())
+        })();
+        match result {
+            Ok(true) => (), // Keep the original host connected and idle.
+            Ok(false) => self.retirement = Some(retirement),
+            Err(error) => {
+                self.retirement = Some(retirement);
+                self.fail(error);
+            }
+        }
+    }
+    fn effects(&mut self, store: &mut Store, outbox: &mut Outbox, retiring: bool) -> Result<()> {
         if !outbox.available() {
             return Ok(());
         }
@@ -420,7 +499,7 @@ impl Runtime {
                     }
                     state::Withdrawal::Absent => {}
                 }
-            } else {
+            } else if !retiring {
                 // An original source must still be current and its live row
                 // present. A restart never dispatches cached historical work.
                 let Some(scope) = self.sources.get(&edge.computer).map(|s| s.scope.clone()) else {
@@ -486,6 +565,6 @@ impl Runtime {
         self.stopping && self.pending.is_none()
     }
     pub fn status(&self) -> Value {
-        json!({"sources":self.sources.len(),"pending_rows":self.pending.as_ref().map_or(0,|p|p.rows.len()),"enabled":self.policy.enabled,"optional_questions":self.policy.optional_questions,"stopping":self.stopping,"error":self.error,"stopped_on_error":self.error.is_some(),"error_retryable":self.error.as_ref().map(|_|false),"source_limit":catalog::MAX_SOURCES,"rows_per_turn":ROWS_PER_TURN,"effects_per_turn":EFFECTS_PER_TURN})
+        json!({"sources":self.sources.len(),"pending_rows":self.pending.as_ref().map_or(0,|p|p.rows.len()),"enabled":self.policy.enabled,"optional_questions":self.policy.optional_questions,"retiring":self.retiring(),"stopping":self.stopping,"error":self.error,"stopped_on_error":self.error.is_some(),"error_retryable":self.error.as_ref().map(|_|false),"source_limit":catalog::MAX_SOURCES,"rows_per_turn":ROWS_PER_TURN,"effects_per_turn":EFFECTS_PER_TURN})
     }
 }

@@ -641,6 +641,41 @@ impl CatalogState {
         self.hello.as_ref()
     }
 
+    /// Indexed service bootstrap parts are original source metadata, not
+    /// invented watch frames or a catalog snapshot. They carry no sequence.
+    pub fn source_metadata(
+        &mut self,
+        computer: &ComputerId,
+        part: &str,
+        value: Value,
+    ) -> Result<Vec<Change>, &'static str> {
+        match part {
+            "hello" => {
+                let hello: Hello =
+                    serde_json::from_value(value).map_err(|_| "invalid_source_hello")?;
+                let mut machine = self.machine.clone().unwrap_or_default();
+                if !hello.host.is_empty() {
+                    machine.host = Some(hello.host.clone());
+                }
+                machine.machine_id = hello
+                    .machine_id
+                    .clone()
+                    .filter(|id| crate::creation::canonical_uuid(id));
+                self.hello = Some(hello);
+                if self.machine.as_ref() == Some(&machine) {
+                    return Ok(vec![]);
+                }
+                self.machine = Some(machine.clone());
+                Ok(vec![Change::Machine {
+                    computer: computer.clone(),
+                    machine,
+                }])
+            }
+            "meta" if value.is_object() => Ok(self.set_meta(computer, value).into_iter().collect()),
+            _ => Err("invalid_source_metadata"),
+        }
+    }
+
     /// A new stream attempt starts (a probe or a spawn).
     pub fn begin(&mut self) {
         self.failed = false;

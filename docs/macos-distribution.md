@@ -89,9 +89,18 @@ and absent pair record restore the ordinary stable-CLI registration. A remaining
 pair record, present-but-broken helper, missing app or link still refuses.
 Recovery, swarm and voice retain their existing installer/update rules.
 `tray/install.sh` preflights it before the GUI swap and retains an
-unchanged active backend during GUI-only updates. The signed notification host
-keeps `com.hgdev.hgs-tray`; its service command interface and delivery integration
-are a separate change.
+unchanged active backend during GUI-only updates.
+
+The signed app's fixed `--desktop-notification-host` entry keeps
+`com.hgdev.hgs-tray` without a window, Dock tile or ordinary GUI instance.
+Its sealed `HGSDesktopNotificationHostABI` capability lets the desktop service
+refuse older apps before attempting that entry. This is an internal entry:
+it requires the factory's inherited connected socket and private owner lock,
+then verifies its own paired bundle and the actual service peer before reading
+commands. A command-line invocation cannot establish that ownership. Native
+completion blocks and outgoing receipts retain the original work until their
+actual teardown; a timeout never starts a replacement host. Service activation
+and signed native delivery acceptance remain separate from shipping this entry.
 
 A custom or foreign `com.hgdev.hgs-desktop.plist` makes this preflight refuse
 the GUI update before replacing the app. Review or migrate that definition

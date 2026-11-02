@@ -1,4 +1,5 @@
 //! Explicit per-user Task Scheduler registration, never a service start/stop.
+use super::registration::trace;
 use super::{registration, store::Location};
 use crate::config::Config;
 use anyhow::{bail, ensure, Context, Result};
@@ -63,8 +64,21 @@ fn invocation(operation: &str, plan: &Value) -> Result<Invocation> {
 
 fn exchange(operation: &str, plan: &Value) -> Result<Value> {
     let invocation = invocation(operation, plan)?;
-    let result = zerus_client_core::run_limited(&powershell()?, &invocation, &[], CAP)
-        .map_err(|_| anyhow::anyhow!("desktop registration helper output exceeded its bound; inspect status before retrying"))?;
+    let program = powershell()?;
+    let trace = trace::Trace::new();
+    // Never forward a caller-supplied trace path to the helper.
+    let environment = [(
+        "HGS_DESKTOP_REGISTRATION_TRACE_FILE",
+        trace.path().unwrap_or(""),
+    )];
+    let result =
+        zerus_client_core::run::run_hidden_limited(&program, &invocation, &environment, CAP);
+    trace.finish();
+    let result = result.map_err(|_| {
+        anyhow::anyhow!(
+            "desktop registration helper output exceeded its bound; inspect status before retrying"
+        )
+    })?;
     let value = match result {
         Exit::Code {
             code: 0, stdout, ..
