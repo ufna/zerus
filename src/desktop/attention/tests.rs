@@ -226,7 +226,7 @@ fn unread_reply_waits_for_all_original_work_without_consuming_its_identity() {
 }
 
 #[test]
-fn bounded_passive_backlog_requests_followup_and_rejection_removes_eligibility() {
+fn bounded_hostless_backlog_requests_followup_and_rejection_removes_eligibility() {
     for packet in [
         feed::Packet::Offline {
             computer: String::new(),
@@ -235,6 +235,7 @@ fn bounded_passive_backlog_requests_followup_and_rejection_removes_eligibility()
         feed::Packet::Keepalive {},
     ] {
         let mut f = Fixture::new();
+        f.runtime.set_policy(enabled());
         let rows = (0..8)
             .map(|n| {
                 let mut value = row();
@@ -604,6 +605,7 @@ fn terminal_receipt_is_retained_before_exact_native_withdrawal_and_callback_tomb
 #[test]
 fn actor_turn_and_resident_pending_rows_stay_bounded() {
     let mut f = Fixture::new();
+    f.runtime.set_policy(enabled());
     let mut rows = Vec::new();
     for i in 0..20 {
         let mut r = row();
@@ -622,13 +624,13 @@ fn actor_turn_and_resident_pending_rows_stay_bounded() {
 }
 
 #[test]
-fn no_host_still_consumes_policy_off_baseline_before_host_and_policy_appear() {
+fn disabled_history_is_baselined_when_policy_enables_before_host_arrives() {
     let mut f = Fixture::new();
     f.snapshot(vec![row()]);
     for _ in 0..4 {
         f.runtime.poll(&mut f.store, None);
     }
-    assert_eq!(f.intents(), 1);
+    assert_eq!(f.intents(), 0);
     assert_eq!(
         f.store
             .db
@@ -638,13 +640,66 @@ fn no_host_still_consumes_policy_off_baseline_before_host_and_policy_appear() {
         0
     );
     f.runtime.set_policy(enabled());
+    f.delta(row());
     f.ticks(4);
+    assert_eq!(f.intents(), 1);
     assert!(f.host.try_next().is_err());
     let mut next = row();
     next["reply_id"] = json!("new-reply");
     f.delta(next);
     f.ticks(4);
     assert!(f.host.try_next().unwrap().begin().is_some());
+}
+
+#[test]
+fn disabled_replies_do_not_grow_storage_and_enabling_baselines_current_history() {
+    for was_enabled in [false, true] {
+        let mut f = Fixture::new();
+        if was_enabled {
+            f.runtime.set_policy(enabled());
+        }
+        f.snapshot(vec![row()]);
+        f.ticks(4);
+        f.runtime.set_policy(Policy::default());
+        let counts = |store: &Store| {
+            store.db.query_row(
+                "SELECT (SELECT count(*) FROM desktop_attention_edges), (SELECT count(*) FROM desktop_intents), (SELECT count(*) FROM desktop_attempts), (SELECT count(*) FROM desktop_attention_sessions), edge_bytes, state_bytes FROM desktop_attention_totals WHERE id=1",
+                [],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?, r.get::<_, i64>(5)?)),
+            ).unwrap()
+        };
+        let before = if was_enabled {
+            counts(&f.store)
+        } else {
+            (0, 0, 0, 0, 0, 0)
+        };
+        let mut latest = row();
+        for n in 0..50 {
+            latest["reply_id"] = json!(format!("disabled-reply-{n}"));
+            f.delta(latest.clone());
+            for _ in 0..4 {
+                f.runtime.poll(&mut f.store, None);
+            }
+        }
+        assert_eq!(counts(&f.store), before);
+        assert!(!f.runtime.work_pending());
+        assert!(f.runtime.error.is_none());
+        assert!(f.host.try_next().is_err());
+
+        f.runtime.set_policy(enabled());
+        // A fresh owned observation starts the new policy's baseline. None of
+        // the disabled interval becomes a notification backlog.
+        f.delta(latest);
+        f.ticks(4);
+        assert!(f.host.try_next().is_err());
+        let mut next = row();
+        next["reply_id"] = json!("after-enable");
+        f.delta(next);
+        f.ticks(4);
+        let dispatch = f.host.try_next().unwrap().begin().unwrap();
+        let target = attention::target(dispatch.command().action.token()).unwrap();
+        assert_eq!(target["reply"], "after-enable");
+    }
 }
 #[test]
 fn host_arrival_revalidates_the_live_row_and_cannot_post_a_superseded_reply() {
@@ -1000,10 +1055,12 @@ fn initial_baseline_consumes_first_observation_before_admitting_later_replies() 
 #[test]
 fn policy_baseline_preserves_a_later_page_reply_newer_than_its_start_revision() {
     let mut f = Fixture::new();
+    f.runtime.set_policy(enabled());
     let rows = fleet_rows(200);
     f.snapshot(rows.clone());
     f.ticks(100);
     assert!(f.runtime.sources[""].baselined);
+    f.runtime.set_policy(Policy::default());
     f.runtime.set_policy(enabled());
     f.tick();
     let mut changed = rows[199].clone();
@@ -1233,9 +1290,11 @@ fn initial_baseline_unrelated_field_change_does_not_post_old_native_attention() 
 #[test]
 fn known_policy_baseline_unrelated_change_keeps_the_old_reply_consumed() {
     let mut f = Fixture::new();
+    f.runtime.set_policy(enabled());
     let rows = fleet_rows(200);
     f.snapshot(rows.clone());
     f.ticks(100);
+    f.runtime.set_policy(Policy::default());
     f.runtime.set_policy(enabled());
     f.tick();
     let mut unrelated = rows[150].clone();
@@ -1247,6 +1306,7 @@ fn known_policy_baseline_unrelated_change_keeps_the_old_reply_consumed() {
 #[test]
 fn an_empty_saved_tracker_is_known_state_and_allows_new_delta_edges() {
     let mut f = Fixture::new();
+    f.runtime.set_policy(enabled());
     let mut rows = fleet_rows(200);
     for raw in &mut rows {
         raw["reply_id"] = Value::Null;
@@ -1257,6 +1317,7 @@ fn an_empty_saved_tracker_is_known_state_and_allows_new_delta_edges() {
     let session = state::session("", &rows[150]).unwrap();
     assert!(state::has_previous(&f.store.db, &session).unwrap());
     assert!(state::previous(&f.store.db, &session).unwrap().is_empty());
+    f.runtime.set_policy(Policy::default());
     f.runtime.set_policy(enabled());
     f.tick();
     let mut changed = rows[150].clone();

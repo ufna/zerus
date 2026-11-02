@@ -78,6 +78,9 @@ impl Runtime {
             self.reset_policy();
         }
     }
+    pub fn enabled(&self) -> bool {
+        self.policy.enabled
+    }
     fn reset_policy(&mut self) {
         let Some(revision) = self.policy_revision.checked_add(1) else {
             self.fail(anyhow::anyhow!("attention policy revisions exhausted"));
@@ -104,7 +107,7 @@ impl Runtime {
         }
     }
     fn observe_packet(&mut self, store: &Store, packet: &feed::Packet) -> Result<()> {
-        if self.stopping || self.error.is_some() {
+        if !self.enabled() || self.stopping || self.error.is_some() {
             return Ok(());
         }
         let Some((computer, generation)) = packet.scope() else {
@@ -194,7 +197,7 @@ impl Runtime {
             && mark.scope.source.service_epoch == self.epoch)
     }
     pub fn poll(&mut self, store: &mut Store, outbox: Option<&mut Outbox>) {
-        if self.stopping || self.error.is_some() {
+        if !self.enabled() || self.stopping || self.error.is_some() {
             return;
         }
         if let Err(error) = self.turn(store, outbox) {

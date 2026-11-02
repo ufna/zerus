@@ -77,7 +77,9 @@ impl Runtime {
                 Ok(change) => {
                     self.delivery.observe(store, &event);
                     self.maintenance.observe(store, &event);
-                    self.attention.observe(store, &event);
+                    if self.attention.enabled() {
+                        self.attention.observe(store, &event);
+                    }
                     let fleet = &self.fleet;
                     self.details.observe(
                         &event,
@@ -101,9 +103,11 @@ impl Runtime {
         }
         self.delivery.poll(store);
         self.maintenance.poll(store);
-        // Baselines progress even with no native host. Policy stays disabled
-        // until a later authenticated configuration/attachment slice.
-        self.attention.poll(store, None);
+        // Disabled discovery must not accumulate permanent edge/baseline rows.
+        // Enabling resets the baseline before later observations may post.
+        if self.attention.enabled() {
+            self.attention.poll(store, None);
+        }
         (
             changes,
             consumed == POLL_EVENTS || self.attention.work_pending(),
