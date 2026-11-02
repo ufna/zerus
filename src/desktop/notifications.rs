@@ -30,6 +30,8 @@ const CANCELLED: u8 = 2;
 
 #[cfg(unix)]
 pub(super) mod host;
+#[cfg(any(windows, test))]
+pub(super) mod windows;
 
 struct Shared {
     cancel: AtomicBool,
