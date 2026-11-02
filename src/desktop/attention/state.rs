@@ -475,3 +475,36 @@ pub(super) fn head(db: &Connection) -> Result<i64> {
         |r| r.get(0),
     )?)
 }
+
+pub(super) fn retirement_page(
+    db: &Connection,
+    after: i64,
+    through: i64,
+    limit: usize,
+) -> Result<Vec<(i64, String)>> {
+    // Page the live index directly: one turn reads at most limit rows,
+    // independently of the retained non-live history.
+    let mut query = db.prepare(
+        "SELECT id,intent FROM desktop_attention_edges WHERE live=1 AND id>?1 AND id<=?2 ORDER BY id LIMIT ?3",
+    )?;
+    let rows = query
+        .query_map(params![after, through, limit as i64], |r| {
+            Ok((r.get(0)?, text(r, 1, 64)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+pub(super) fn retire(db: &Connection, id: i64) -> Result<()> {
+    db.execute(
+        "UPDATE desktop_attention_edges SET live=0,blocked=1,dirty=1 WHERE id=?1",
+        [id],
+    )?;
+    Ok(())
+}
+pub(super) fn has_dirty(db: &Connection) -> Result<bool> {
+    Ok(db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM desktop_attention_edges WHERE dirty=1 LIMIT 1)",
+        [],
+        |r| r.get(0),
+    )?)
+}

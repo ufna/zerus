@@ -14,6 +14,232 @@ use zerus_watch_protocol::{Body, CatalogItem, Delta, Frame, Hello, Snapshot};
 fn id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
+
+fn retire_ticks(f: &mut Fixture, n: usize) {
+    for _ in 0..n {
+        f.outbox.poll(&mut f.store, Instant::now());
+        f.tick();
+    }
+}
+fn settle_retirement(f: &mut Fixture) {
+    for _ in 0..1024 {
+        if !f.runtime.retiring() {
+            return;
+        }
+        retire_ticks(f, 1);
+    }
+    panic!("retirement did not settle: {}", f.runtime.status());
+}
+
+#[test]
+fn policy_off_waits_for_original_post_and_withdrawal_resources_before_idle() {
+    let mut f = Fixture::new();
+    f.runtime.set_policy(enabled());
+    f.save(&row(), false);
+    let intent: String = f
+        .store
+        .db
+        .query_row("SELECT id FROM desktop_intents", [], |r| r.get(0))
+        .unwrap();
+    f.outbox
+        .offer_intent(&mut f.store, &intent, 1, Instant::now())
+        .unwrap();
+    let post = f.host.try_next().unwrap().begin().unwrap();
+    let token = post.command().action.token().to_owned();
+    let native_id = NativeId::Macos {
+        request_id: attention::request_id(&token),
+    };
+    let post_hold = post.resources();
+    f.runtime.set_policy(Policy::default());
+    retire_ticks(&mut f, 2);
+    assert!(
+        !post.cancelled(),
+        "an admitted native command keeps its receipt channel"
+    );
+    post.finish(Outcome::Delivered {
+        native_id: native_id.clone(),
+    });
+    retire_ticks(&mut f, 2);
+    assert!(f.runtime.retiring());
+    assert!(!ledger::current(&f.store.db, &intent, 1).unwrap());
+    assert!(
+        f.host.try_next().is_err(),
+        "wait for the original post receipt/resources"
+    );
+    drop(post_hold);
+    retire_ticks(&mut f, 2);
+    let withdrawal = f.host.try_next().unwrap().begin().unwrap();
+    assert!(
+        matches!(&withdrawal.command().action, Action::Withdraw {token: t,native_id: n} if *t==token && *n==native_id)
+    );
+    let withdrawal_hold = withdrawal.resources();
+    withdrawal.finish(Outcome::Delivered { native_id });
+    retire_ticks(&mut f, 2);
+    assert!(f.runtime.retiring());
+    assert!(!f.outbox.operations_idle());
+    drop(withdrawal_hold);
+    retire_ticks(&mut f, 2);
+    assert!(!f.runtime.retiring());
+    assert!(f.outbox.operations_idle());
+    assert!(
+        !f.host.stopping(),
+        "policy-off retains the same connected host"
+    );
+    assert!(f.host.try_next().is_err());
+    assert_eq!(
+        f.store
+            .db
+            .query_row("SELECT count(*) FROM desktop_attempts", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    f.runtime.set_policy(enabled());
+    f.snapshot(vec![row()]);
+    f.ticks(4);
+    assert!(
+        f.host.try_next().is_err(),
+        "reenabling cannot resurrect the retired edge"
+    );
+}
+
+#[test]
+fn policy_off_does_not_replay_an_unknown_post() {
+    let mut f = Fixture::new();
+    f.runtime.set_policy(enabled());
+    f.save(&row(), false);
+    let intent: String = f
+        .store
+        .db
+        .query_row("SELECT id FROM desktop_intents", [], |r| r.get(0))
+        .unwrap();
+    f.outbox
+        .offer_intent(&mut f.store, &intent, 1, Instant::now())
+        .unwrap();
+    f.host
+        .try_next()
+        .unwrap()
+        .begin()
+        .unwrap()
+        .finish(Outcome::Unknown {
+            code: zerus_client_core::desktop::notifications::Uncertainty::HostLost,
+        });
+    f.runtime.set_policy(Policy::default());
+    retire_ticks(&mut f, 4);
+    assert!(!f.runtime.retiring());
+    assert!(f.host.try_next().is_err());
+    assert_eq!(
+        f.store
+            .db
+            .query_row("SELECT count(*) FROM desktop_attempts", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    f.runtime.set_policy(enabled());
+    f.snapshot(vec![row()]);
+    f.ticks(4);
+    assert!(f.host.try_next().is_err());
+}
+
+#[test]
+fn retirement_pages_are_bounded_and_can_resume_from_existing_live_edges() {
+    let mut f = Fixture::new();
+    f.runtime.set_policy(enabled());
+    for n in 0..20 {
+        let mut raw = row();
+        raw["conversation_id"] = json!(format!("conversation-{n}"));
+        raw["run_id"] = json!(format!("run-{n}"));
+        f.save(&raw, false);
+    }
+    f.runtime.set_policy(Policy::default());
+    retire_ticks(&mut f, 1);
+    assert_eq!(
+        f.store
+            .db
+            .query_row(
+                "SELECT count(*) FROM desktop_attention_edges WHERE live=1",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        20 - EFFECTS_PER_TURN as i64
+    );
+    // A restarted component can resume from the existing ledger, without a new
+    // intent or inferred post retry. The lifecycle supplies its durable off state.
+    f.runtime = Runtime::new(&f.source.service_epoch);
+    f.runtime.request_retirement();
+    retire_ticks(&mut f, 16);
+    assert!(!f.runtime.retiring());
+    assert_eq!(
+        f.store
+            .db
+            .query_row(
+                "SELECT count(*) FROM desktop_attention_edges WHERE live=1",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        f.store
+            .db
+            .query_row("SELECT count(*) FROM desktop_attempts", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(f.intents(), 20);
+    assert!(f.host.try_next().is_err());
+}
+
+#[test]
+fn policy_off_cancels_queued_posts_before_the_live_walk_reaches_their_edge() {
+    let mut f = Fixture::new();
+    f.runtime.set_policy(enabled());
+    for n in 0..20 {
+        let mut raw = row();
+        raw["conversation_id"] = json!(format!("conversation-{n}"));
+        raw["run_id"] = json!(format!("run-{n}"));
+        f.save(&raw, false);
+    }
+    let intent: String = f
+        .store
+        .db
+        .query_row(
+            "SELECT intent FROM desktop_attention_edges ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    f.outbox
+        .offer_intent(&mut f.store, &intent, 1, Instant::now())
+        .unwrap();
+    f.runtime.set_policy(Policy::default());
+    retire_ticks(&mut f, 1);
+    assert!(
+        ledger::current(&f.store.db, &intent, 1).unwrap(),
+        "the bounded walk has not reached the final edge"
+    );
+    assert!(
+        f.host.try_next().unwrap().begin().is_none(),
+        "queued admission is already cancelled"
+    );
+    settle_retirement(&mut f);
+    assert_eq!(
+        f.store
+            .db
+            .query_row(
+                "SELECT state FROM desktop_attempts WHERE intent_id=?1",
+                [&intent],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap(),
+        "refused"
+    );
+    assert!(!ledger::current(&f.store.db, &intent, 1).unwrap());
+}
 fn enabled() -> Policy {
     Policy {
         enabled: true,
@@ -1079,6 +1305,7 @@ fn policy_baseline_preserves_a_later_page_reply_newer_than_its_start_revision() 
     assert!(f.runtime.sources[""].baselined);
     f.runtime.set_policy(Policy::default());
     f.runtime.set_policy(enabled());
+    settle_retirement(&mut f);
     f.tick();
     let mut changed = rows[199].clone();
     changed["reply_id"] = json!("after-policy");
@@ -1335,6 +1562,7 @@ fn an_empty_saved_tracker_is_known_state_and_allows_new_delta_edges() {
     assert!(state::previous(&f.store.db, &session).unwrap().is_empty());
     f.runtime.set_policy(Policy::default());
     f.runtime.set_policy(enabled());
+    settle_retirement(&mut f);
     f.tick();
     let mut changed = rows[150].clone();
     changed["reply_id"] = json!("first-new-reply");

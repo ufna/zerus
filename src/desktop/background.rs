@@ -105,7 +105,7 @@ impl Runtime {
         self.maintenance.poll(store);
         // Disabled discovery must not accumulate permanent edge/baseline rows.
         // Enabling resets the baseline before later observations may post.
-        if self.attention.enabled() {
+        if self.attention.enabled() || self.attention.retiring() {
             self.attention.poll(store, None);
         }
         (
