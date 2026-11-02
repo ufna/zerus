@@ -835,14 +835,21 @@ async fn connection(
                         shared.publish(state.snapshot().clone());
                         match update {
                             service::Update::Status => {
-                                if let Some(computers) = state.snapshot().attention_counts.as_ref().and_then(|counts| counts["computers"].as_array()) {
+                                if let Some(computers) = state.sources() {
                                     for computer in computers {
-                                        if let Some(name) = computer["computer"].as_str() {
-                                            let known = shared.dirty.lock().unwrap_or_else(PoisonError::into_inner).sources.contains_key(name);
-                                            if !known { shared.dirty(name, SourceVersion::from(computer))?; }
-                                            shared.details.lock().unwrap_or_else(PoisonError::into_inner).source(name,computer["generation"].as_u64().unwrap_or(0))?;
-                                            shared.details_changed.notify_one();
+                                        // Generation zero has not greeted the service yet.
+                                        if computer.generation == 0 { continue; }
+                                        let name = &computer.computer;
+                                        let known = shared.dirty.lock().unwrap_or_else(PoisonError::into_inner).sources.contains_key(name);
+                                        if !known {
+                                            shared.dirty(name, SourceVersion {incarnation:computer.incarnation,generation:computer.generation,
+                                                online:computer.online,..SourceVersion::default()})?;
                                         }
+                                        // This roster discovers sources. Catalog hints/pages
+                                        // bind their scope and coverage; transport readiness
+                                        // alone cannot repeatedly re-baseline cached rows.
+                                        shared.details.lock().unwrap_or_else(PoisonError::into_inner).source(name,computer.generation)?;
+                                        shared.details_changed.notify_one();
                                     }
                                 }
                             }

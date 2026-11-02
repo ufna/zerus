@@ -943,3 +943,124 @@ fn temporary_rpc_admission_pressure_retries_follow_without_halting_the_view() {
         service.join().await.unwrap();
     });
 }
+#[test]
+fn service_source_roster_bootstraps_catalogs_independently_of_shared_counts() {
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        for config in [
+            json!({"counts_degraded":true}),
+            json!({"counts_null":true}),
+            json!({"counts_computer":"counts-only"}),
+        ] {
+            let fixture = Fixture::new(config);
+            let (service, pump) = fixture.start(true);
+            eventually(
+                "catalog delivered from the independent source roster",
+                || pump.row("", "row").is_some(),
+            )
+            .await;
+            assert!(service.snapshot().connected);
+            assert_eq!(watch_calls(&fixture.calls()), 1);
+            assert!(fixture
+                .calls()
+                .iter()
+                .filter(|call| call["value"]["op"] == "catalog_page")
+                .all(|call| call["value"]["computer"] == ""));
+            service.join().await.unwrap();
+        }
+    });
+}
+#[test]
+fn count_failures_during_status_and_catalog_hints_keep_the_current_catalog_and_transport_live() {
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        let fixture = Fixture::new(json!({"counts_transition":true}));
+        let (service, pump) = fixture.start(true);
+        eventually("baseline applied", || {
+            pump.row("", "row").is_some()
+                && service
+                    .shared
+                    .dirty
+                    .lock()
+                    .unwrap()
+                    .progress
+                    .contains_key("")
+        })
+        .await;
+        let _ = pump.take(Duration::ZERO);
+        fs::write(fixture.0.join("drop-counts"), []).unwrap();
+        eventually("contiguous delta after degraded counts", || {
+            pump.row("", "after-counts").is_some()
+        })
+        .await;
+        assert!(service.snapshot().connected);
+        assert!(service.snapshot().attention_counts.is_none());
+        let batch = pump.take(Duration::ZERO);
+        assert!(batch
+            .computers
+            .iter()
+            .all(|computer| !matches!(computer.status.as_str(), "reconnecting" | "probing")));
+        fs::write(fixture.0.join("restore-counts"), []).unwrap();
+        eventually("count projection recovers", || {
+            service.snapshot().attention_counts.is_some()
+        })
+        .await;
+        assert_eq!(watch_calls(&fixture.calls()), 1);
+        assert_eq!(
+            fixture
+                .calls()
+                .iter()
+                .filter(|call| call["value"]["op"] == "catalog_page")
+                .count(),
+            1
+        );
+        service.join().await.unwrap();
+    });
+}
+#[test]
+fn runtime_transport_readiness_does_not_rewalk_a_last_known_catalog_on_every_status() {
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        let fixture = Fixture::new(json!({"coverage_offline":true}));
+        let (service, pump) = fixture.start(true);
+        eventually("last-known baseline finished", || {
+            pump.row("", "row").is_some()
+                && service
+                    .shared
+                    .rpc
+                    .snapshot()
+                    .is_ok_and(|rpc| rpc.admitted == 0)
+                && !service.shared.dirty.lock().unwrap().pending.contains("")
+        })
+        .await;
+        let before = service.shared.dirty.lock().unwrap().sources[""].clone();
+        assert!(
+            !before.online,
+            "catalog coverage, rather than transport, supplies currentness"
+        );
+        let pages = fixture
+            .calls()
+            .iter()
+            .filter(|call| call["value"]["op"] == "catalog_page")
+            .count();
+        fs::write(fixture.0.join("repeat-status"), []).unwrap();
+        eventually("both runtime status frames processed", || {
+            service.snapshot().generation == Some(3)
+        })
+        .await;
+        assert!(
+            service.shared.dirty.lock().unwrap().sources[""] == before,
+            "runtime transport metadata cannot restart the last-known catalog"
+        );
+        assert_eq!(
+            fixture
+                .calls()
+                .iter()
+                .filter(|call| call["value"]["op"] == "catalog_page")
+                .count(),
+            pages
+        );
+        assert!(service.snapshot().connected);
+        service.join().await.unwrap();
+    });
+}
