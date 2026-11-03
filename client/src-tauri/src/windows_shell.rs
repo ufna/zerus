@@ -320,16 +320,142 @@ mod tests {
             (include_str!("window_layer.rs"), "window_layer.rs"),
             (include_str!("lifecycle.rs"), "lifecycle.rs"),
         ] {
-            for (at, _) in source.match_indices(".set_focus()") {
-                let before = &source[..at];
-                let gate = before.rfind("#[cfg(").map(|i| &before[i..]);
-                assert!(
-                    gate.is_some_and(|gate| gate.starts_with("#[cfg(not(windows))]")
-                        || gate.starts_with("#[cfg(target_os = \"macos\")]")),
-                    "{file}: set_focus reachable on Windows"
-                );
-            }
+            assert_eq!(
+                focus_calls_on_windows(source),
+                Vec::<usize>::new(),
+                "{file}: set_focus reachable on Windows"
+            );
         }
+    }
+    /// Comments and string/char literals become spaces at the same offsets.
+    fn code_only(source: &str) -> Vec<u8> {
+        let mut code = source.as_bytes().to_vec();
+        let mut at = 0;
+
+        while at < code.len() {
+            let rest = &source.as_bytes()[at..];
+            let word = at > 0 && {
+                let b = source.as_bytes()[at - 1];
+                b.is_ascii_alphanumeric() || b == b'_'
+            };
+            let end = if rest.starts_with(b"//") {
+                rest.iter()
+                    .position(|b| *b == b'\n')
+                    .map_or(code.len(), |n| at + n)
+            } else if rest.starts_with(b"/*") {
+                source[at..].find("*/").map_or(code.len(), |n| at + n + 2)
+            } else if rest[0] == b'r'
+                && !word
+                && rest[1..].iter().find(|b| **b != b'#') == Some(&b'"')
+            {
+                let hashes = rest[1..].iter().take_while(|b| **b == b'#').count();
+                let close = format!("\"{}", "#".repeat(hashes));
+                let body = at + 2 + hashes;
+                source[body..]
+                    .find(&close)
+                    .map_or(code.len(), |n| body + n + close.len())
+            } else if rest[0] == b'"' {
+                let mut n = at + 1;
+                while n < code.len() && source.as_bytes()[n] != b'"' {
+                    n += if source.as_bytes()[n] == b'\\' { 2 } else { 1 };
+                }
+                n + 1
+            } else if rest[0] == b'\'' {
+                // A char literal, never a lifetime such as 'static.
+                let inner = &source[at + 1..];
+                let width = match inner.strip_prefix('\\') {
+                    Some(escaped) => escaped.find('\'').map(|n| n + 1),
+                    None => inner.chars().next().map(char::len_utf8),
+                };
+                match width {
+                    Some(w) if inner[w..].starts_with('\'') => at + 1 + w + 1,
+                    _ => at + 1,
+                }
+            } else {
+                at + 1
+            };
+            if end > at + 1 {
+                let to = end.min(code.len());
+                code[at..to].fill(b' ');
+            }
+            at = end.max(at + 1);
+        }
+        code
+    }
+    /// Offsets of `.set_focus()` calls a Windows build compiles: neither the
+    /// call's own statement nor any enclosing block or item is gated off
+    /// Windows by a `#[cfg(...)]` written in front of it.
+    fn focus_calls_on_windows(source: &str) -> Vec<usize> {
+        let code = code_only(source);
+        let text = std::str::from_utf8(&code).unwrap();
+        let head = |at: usize| {
+            let start = code[..at]
+                .iter()
+                .rposition(|b| matches!(b, b';' | b'{' | b'}'))
+                .map_or(0, |i| i + 1);
+            &text[start..at]
+        };
+        let off_windows = |head: &str| {
+            head.match_indices("#[cfg(").any(|(i, _)| {
+                let attr = &head[i..];
+                let attr = &attr[..attr.find(")]").unwrap_or(attr.len())];
+                attr.contains("not(windows)")
+                    || (!attr.contains("windows")
+                        && (attr.contains("target_os") || attr.contains("unix")))
+            })
+        };
+        text.match_indices(".set_focus()")
+            .map(|(at, _)| at)
+            .filter(|&at| {
+                let mut heads = vec![head(at)];
+                let mut depth = 0usize;
+                for i in (0..at).rev() {
+                    match code[i] {
+                        b'}' => depth += 1,
+                        b'{' if depth == 0 => heads.push(head(i)),
+                        b'{' => depth -= 1,
+                        _ => {}
+                    }
+                }
+                !heads.into_iter().any(off_windows)
+            })
+            .collect()
+    }
+    #[test]
+    fn the_focus_guard_follows_cfg_scope_not_the_nearest_attribute() {
+        let calls = |source: &str| focus_calls_on_windows(source).len();
+        // The reviewer's mutation: the call moved just outside the gated block.
+        assert_eq!(
+            calls("fn p(w: W) {\n    #[cfg(not(windows))]\n    {\n        let _ = w.show();\n    }\n    let _ = w.set_focus();\n}\n"),
+            1
+        );
+        assert_eq!(
+            calls("fn p(w: W) {\n    #[cfg(not(windows))]\n    {\n        let _ = w.set_focus();\n    }\n}\n"),
+            0
+        );
+        assert_eq!(
+            calls(
+                "fn p(w: W) -> R {\n    #[cfg(not(windows))]\n    w.set_focus()?;\n    Ok(())\n}\n"
+            ),
+            0
+        );
+        assert_eq!(
+            calls("#[cfg(target_os = \"macos\")]\nfn reopen(w: W) {\n    if x {\n        let _ = w.set_focus();\n    }\n}\n"),
+            0
+        );
+        assert_eq!(
+            calls("fn p(w: W) {\n    #[cfg(windows)]\n    {\n        let _ = w.set_focus();\n    }\n}\n"),
+            1
+        );
+        // Braces and calls inside strings or comments neither close a scope nor count.
+        assert_eq!(
+            calls("fn p(w: W) {\n    #[cfg(not(windows))]\n    {\n        let _ = \"}\"; // }\n        let _ = '}';\n    }\n    let _ = w.set_focus();\n}\n"),
+            1
+        );
+        assert_eq!(
+            calls("fn p<'a>(w: &'a W) {\n    // w.set_focus()\n    let _ = r#\"w.set_focus()\"#;\n}\n"),
+            0
+        );
     }
     #[test]
     fn windows_text_limits_preserve_unicode_and_termination() {
