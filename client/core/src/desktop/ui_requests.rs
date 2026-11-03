@@ -22,6 +22,13 @@ pub const LIFETIME: Duration = Duration::from_secs(10);
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
+    CreationClone {
+        intent: Box<super::creation_clone::Intent>,
+    },
+    NotificationControl {
+        scope: super::notification_control::Scope,
+        control: super::notification_control::Command,
+    },
     DesktopOwnership {
         request_id: String,
         action: super::ownership::Action,
@@ -38,6 +45,10 @@ pub enum Request {
     AutomaticApprovals {
         request_id: String,
         enabled: bool,
+    },
+    CacheMaintenance {
+        request_id: String,
+        command: Box<super::cache_maintenance::Command>,
     },
     MaintenanceConfigure {
         request_id: String,
@@ -65,24 +76,32 @@ impl Request {
     }
     pub fn id(&self) -> &str {
         match self {
+            Self::CreationClone { intent } => &intent.clone_request_id,
+            Self::NotificationControl { control, .. } => control.request_id(),
             Self::ActivationWait { request_id }
             | Self::DesktopOwnership { request_id, .. }
             | Self::ImportPendingReads { request_id, .. }
             | Self::AutomaticApprovals { request_id, .. }
+            | Self::CacheMaintenance { request_id, .. }
             | Self::MaintenanceConfigure { request_id, .. } => request_id,
         }
     }
     pub fn operation(&self) -> &'static str {
         match self {
+            Self::CreationClone { .. } => "creation_clone",
+            Self::NotificationControl { control, .. } => control.operation(),
             Self::DesktopOwnership { .. } => "desktop_ownership",
             Self::ImportPendingReads { .. } => "import_pending_reads",
             Self::ActivationWait { .. } => "activation_wait",
             Self::AutomaticApprovals { .. } => "automatic_approvals",
+            Self::CacheMaintenance { .. } => "cache_maintenance",
             Self::MaintenanceConfigure { .. } => "maintenance_configure",
         }
     }
     fn valid(&self) -> bool {
         match self {
+            Self::CreationClone { intent } => intent.as_ref().clone().verify().is_ok(),
+            Self::NotificationControl { scope, control } => scope.valid() && control.valid(),
             Self::DesktopOwnership {
                 journal, revision, ..
             } => {
@@ -92,6 +111,10 @@ impl Request {
             }
             Self::ImportPendingReads { page, .. } => page.valid(),
             Self::ActivationWait { .. } | Self::AutomaticApprovals { .. } => true,
+            Self::CacheMaintenance {
+                request_id,
+                command,
+            } => command.valid(request_id),
             Self::MaintenanceConfigure {
                 update, recovery, ..
             } => crate::maintenance::Configuration {
@@ -134,11 +157,13 @@ pub struct Evidence {
     pub child_pid: u32,
     pub child_birth: String,
     pub serial: u64,
-    /// Cached native startup mode, emitted only for ownership intents. It is
+    /// Cached native startup mode, emitted for ownership/cache intents. It is
     /// not an input field on Request and is checked by the service's original
     /// kernel-peer/cached-child proof before any ownership mutation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ownership_mode: Option<super::ownership::Mode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification: Option<super::notification_control::NativeControl>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -164,6 +189,7 @@ struct Slot {
     child: Mutex<Option<(u32, String)>>,
     serial: u64,
     ownership_mode: Option<super::ownership::Mode>,
+    notification: Option<super::notification_control::NativeControl>,
 }
 
 #[derive(Default)]
@@ -178,10 +204,19 @@ impl Cache {
     pub fn prepare(&self, envelope: Envelope) -> io::Result<Registration> {
         self.prepare_with_mode(envelope, None)
     }
+    #[cfg(test)]
     fn prepare_with_mode(
         &self,
         envelope: Envelope,
         ownership_mode: Option<super::ownership::Mode>,
+    ) -> io::Result<Registration> {
+        self.prepare_with_native(envelope, ownership_mode, None)
+    }
+    fn prepare_with_native(
+        &self,
+        envelope: Envelope,
+        ownership_mode: Option<super::ownership::Mode>,
+        notification: Option<super::notification_control::NativeControl>,
     ) -> io::Result<Registration> {
         if !envelope.valid() {
             return Err(io::ErrorKind::InvalidInput.into());
@@ -190,8 +225,32 @@ impl Cache {
             if ownership_mode != Some(action.mode()) {
                 return Err(io::ErrorKind::PermissionDenied.into());
             }
+        } else if matches!(
+            envelope.request,
+            Request::CacheMaintenance { .. } | Request::CreationClone { .. }
+        ) {
+            if ownership_mode != Some(super::ownership::Mode::Service) {
+                return Err(io::ErrorKind::PermissionDenied.into());
+            }
         } else if ownership_mode.is_some() {
             return Err(io::ErrorKind::InvalidInput.into());
+        }
+        match (&envelope.request, &notification) {
+            (Request::NotificationControl { scope, control }, Some(native))
+                if native.scope == *scope
+                    && native.mode == super::ownership::Mode::Service
+                    && match control {
+                        super::notification_control::Command::Configure { .. } => {
+                            native.focus.is_none()
+                        }
+                        super::notification_control::Command::Focus { .. } => {
+                            native.focus.as_ref().is_some_and(|v| v.valid())
+                        }
+                    } => {}
+            (Request::NotificationControl { .. }, _) | (_, Some(_)) => {
+                return Err(io::ErrorKind::PermissionDenied.into())
+            }
+            _ => (),
         }
         let mut state = self.0.lock().map_err(|_| io::ErrorKind::Other)?;
         // Expiration revokes evidence but does not recycle a live resource slot.
@@ -208,6 +267,7 @@ impl Cache {
             child: Mutex::new(None),
             serial: state.serial,
             ownership_mode,
+            notification,
         });
         state
             .slots
@@ -232,6 +292,7 @@ impl Cache {
             child_birth,
             serial: slot.serial,
             ownership_mode: slot.ownership_mode,
+            notification: slot.notification.clone(),
         })
     }
 }
@@ -246,6 +307,9 @@ impl Registration {
     }
     pub fn resources(&self) -> Arc<dyn Send + Sync> {
         self.0.clone()
+    }
+    pub fn notification_evidence(&self) -> Option<&super::notification_control::NativeControl> {
+        self.0.notification.as_ref()
     }
     pub fn bind_original(&self, child: &Child) -> bool {
         let Some(birth) = child_birth(child) else {
@@ -283,6 +347,21 @@ impl Responder {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         let mode = match &request {
+            Request::CacheMaintenance { .. } => {
+                let mode = self.ownership_mode.get().copied();
+                if mode != Some(super::ownership::Mode::Service) {
+                    return Err(io::ErrorKind::PermissionDenied.into());
+                }
+                mode
+            }
+            Request::CreationClone { intent } => {
+                if self.ownership_mode.get() != Some(&super::ownership::Mode::Service)
+                    || self.configuration.get() != Some(&intent.scope.configuration)
+                {
+                    return Err(io::ErrorKind::PermissionDenied.into());
+                }
+                Some(super::ownership::Mode::Service)
+            }
             Request::DesktopOwnership { action, .. } => {
                 let mode = self.ownership_mode.get().copied();
                 if mode != Some(action.mode()) {
@@ -292,18 +371,44 @@ impl Responder {
             }
             _ => None,
         };
-        self.ui_requests.prepare_with_mode(
+        let notification = if let Request::NotificationControl { scope, control } = &request {
+            if self.ownership_mode.get() != Some(&super::ownership::Mode::Service) {
+                return Err(io::ErrorKind::PermissionDenied.into());
+            }
+            Some(
+                self.notification_focus
+                    .evidence(
+                        scope,
+                        matches!(control, super::notification_control::Command::Focus { .. }),
+                    )
+                    .ok_or(io::ErrorKind::NotConnected)?,
+            )
+        } else {
+            None
+        };
+        self.ui_requests.prepare_with_native(
             Envelope {
                 abi: ABI.into(),
                 attempt,
                 request,
             },
             mode,
+            notification,
         )
     }
 
     pub(super) fn ui_reply(&self, attempt: &str) -> Option<Vec<u8>> {
         let request = self.ui_requests.evidence(attempt)?;
+        if let Some(native) = &request.notification {
+            if self
+                .notification_focus
+                .evidence(&native.scope, native.focus.is_some())
+                .as_ref()
+                != Some(native)
+            {
+                return None; // Revoke stale evidence, never recycle its resource charge.
+            }
+        }
         let mut bytes = serde_json::to_vec(&Reply {
             hello: self.hello(attempt),
             request,
@@ -412,6 +517,119 @@ mod tests {
     }
 
     #[test]
+    fn stale_native_focus_queries_refuse_without_releasing_original_slot_resources() {
+        use crate::desktop::{
+            notification_control::{Command as Control, FocusState, Scope},
+            ownership::Mode,
+            Build,
+        };
+        let responder = Responder::new(
+            "com.hgdev.hgs-tray".into(),
+            Build {
+                version: "1.2.3".into(),
+                source_commit: "a".repeat(40),
+                source_dirty: Some(false),
+            },
+            id(80),
+            true,
+            false,
+        );
+        assert!(responder.configure_once("a".repeat(64)));
+        assert!(responder.configure_ownership_mode_once(Mode::Service));
+        let scope = Scope {
+            configuration: "a".repeat(64),
+            service_epoch: id(81),
+        };
+        let connection = responder.notification_connect(scope.clone()).unwrap();
+        connection.observe(FocusState::Foreground).unwrap();
+        let mut held = Vec::new();
+        for n in 0..LIMIT {
+            let envelope = Envelope {
+                abi: ABI.into(),
+                attempt: id(n),
+                request: Request::NotificationControl {
+                    scope: scope.clone(),
+                    control: Control::Focus {
+                        request_id: id(100 + n),
+                    },
+                },
+            };
+            let native = responder.notification_focus.evidence(&scope, true).unwrap();
+            let slot = responder
+                .ui_requests
+                .prepare_with_native(envelope, None, Some(native))
+                .unwrap();
+            *slot.0.child.lock().unwrap() = Some((23, "synthetic-birth".into()));
+            assert_eq!(
+                slot.notification_evidence().unwrap().focus,
+                connection.snapshot()
+            );
+            assert!(responder.ui_reply(&id(n)).is_some());
+            held.push(slot.resources());
+        }
+        connection.observe(FocusState::Background).unwrap();
+        for n in 0..LIMIT {
+            assert!(responder.ui_reply(&id(n)).is_none());
+        }
+        let envelope = Envelope {
+            abi: ABI.into(),
+            attempt: id(99),
+            request: Request::NotificationControl {
+                scope: scope.clone(),
+                control: Control::Focus {
+                    request_id: id(199),
+                },
+            },
+        };
+        let prepare = || {
+            responder.ui_requests.prepare_with_native(
+                envelope.clone(),
+                None,
+                responder.notification_focus.evidence(&scope, true),
+            )
+        };
+        assert_eq!(prepare().err().unwrap().kind(), io::ErrorKind::WouldBlock);
+        held.clear();
+        let slot = prepare().unwrap();
+        *slot.0.child.lock().unwrap() = Some((24, "synthetic-birth".into()));
+        assert!(responder.ui_reply(&id(99)).is_some());
+        connection.invalidate();
+        assert!(responder.ui_reply(&id(99)).is_none());
+    }
+
+    #[test]
+    fn cache_requires_the_original_native_service_mode() {
+        use crate::desktop::{
+            cache_maintenance::{Command, Timing},
+            ownership::Mode,
+        };
+        let cache = Cache::default();
+        let mut value = envelope(1);
+        value.request = Request::CacheMaintenance {
+            request_id: id(101),
+            command: Box::new(Command::Prepare {
+                operation_id: id(102),
+                configuration: "a".repeat(64),
+                root: "/srv/example/cache".into(),
+                limit: 1,
+                revision: 0,
+                timing: Timing::Immediate,
+                policy_change: true,
+            }),
+        };
+        assert!(cache.prepare(value.clone()).is_err());
+        assert!(cache
+            .prepare_with_mode(value.clone(), Some(Mode::Native))
+            .is_err());
+        let slot = cache.prepare_with_mode(value, Some(Mode::Service)).unwrap();
+        *slot.0.child.lock().unwrap() = Some((24, "synthetic-birth".into()));
+        assert_eq!(
+            cache.evidence(&id(1)).unwrap().ownership_mode,
+            Some(Mode::Service)
+        );
+    }
+
+    #[test]
     fn ownership_mode_is_bound_to_the_native_slot_and_ordinary_evidence_stays_compatible() {
         use crate::desktop::ownership::{Action, Mode};
         let cache = Cache::default();
@@ -435,6 +653,31 @@ mod tests {
         *ordinary.0.child.lock().unwrap() = Some((24, "synthetic-birth".into()));
         let value = serde_json::to_value(cache.evidence(&id(2)).unwrap()).unwrap();
         assert!(value.get("ownership_mode").is_none());
+    }
+
+    #[test]
+    fn creation_evidence_requires_cached_service_mode_and_exact_native_checkpoint() {
+        use crate::desktop::ownership::Mode;
+        let cache = Cache::default();
+        let mut value = envelope(1);
+        value.request = Request::CreationClone {
+            intent: Box::new(crate::desktop::creation_clone::test_intent()),
+        };
+        assert!(cache.prepare(value.clone()).is_err());
+        assert!(cache
+            .prepare_with_mode(value.clone(), Some(Mode::Native))
+            .is_err());
+        let slot = cache.prepare_with_mode(value, Some(Mode::Service)).unwrap();
+        *slot.0.child.lock().unwrap() = Some((23, "synthetic-birth".into()));
+        let evidence = cache.evidence(&id(1)).unwrap();
+        assert_eq!(evidence.ownership_mode, Some(Mode::Service));
+        assert_eq!(evidence.request_id, slot.envelope().request.id());
+        assert_eq!(evidence.fingerprint, slot.envelope().request.fingerprint());
+        for field in ["mode", "confirmed", "role", "execution_consent"] {
+            let mut request = serde_json::to_value(&slot.envelope().request).unwrap();
+            request[field] = true.into();
+            assert!(serde_json::from_value::<Request>(request).is_err());
+        }
     }
 
     #[test]

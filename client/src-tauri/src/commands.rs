@@ -14,6 +14,9 @@ use std::sync::Arc;
 use serde_json::Value;
 use tauri::State;
 
+#[cfg(feature = "live")]
+pub(crate) type NotificationProjection = Box<dyn FnOnce(&Value) + Send>;
+
 #[derive(Default)]
 pub struct AppState {
     #[cfg(feature = "live")]
@@ -67,6 +70,27 @@ impl AppState {
     pub(crate) fn set_pending_read_source(&self, actions: crate::actions::Actions) {
         let _ = self.live.pending_read_source.set(actions);
     }
+    pub(crate) fn register_notification_controls(
+        &self,
+        setup: crate::desktop_notification_controls::Setup,
+    ) {
+        let _ = self.live.notification_controls.set(setup);
+    }
+    pub(crate) fn set_retained_import_source(
+        &self,
+        inputs: crate::desktop_service::retained_import::Inputs,
+    ) {
+        let _ = self.live.retained_import_source.set(inputs);
+    }
+
+    pub(crate) fn creation_capture(
+        &self,
+    ) -> Option<Arc<zerus_client_core::migration::preload::Capture>> {
+        self.live
+            .retained_import_source
+            .get()
+            .map(|inputs| inputs.creations.clone())
+    }
 
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub fn set_desktop_responder(&self, responder: Arc<zerus_client_core::desktop::Responder>) {
@@ -108,15 +132,13 @@ impl AppState {
         let _ = self.live.creations.set(host);
     }
 
-    /// Applies the preferences the host confirmed for a Mute or Unmute to the
-    /// session's row at once, for the window and the menu bar alike
-    /// (`FleetState::applyNotificationPreferences`). A replay has no hosts.
-    pub fn apply_notifications(
+    /// Captures the selected source before Mute/Unmute I/O. Only its checked
+    /// receipt can update the window and menu bar (`FleetState::applyNotificationPreferences`).
+    pub(crate) fn notification_projection(
         &self,
-        target: &zerus_client_core::actions::Target,
-        preferences: &Value,
-    ) {
-        self.live.apply_notifications(target, preferences);
+        target: zerus_client_core::actions::Target,
+    ) -> NotificationProjection {
+        self.live.notification_projection(target)
     }
 
     /// Applies the resumed run to the replay after the fake accepted Resume.
@@ -150,6 +172,10 @@ impl AppState {
 }
 
 #[cfg(feature = "live")]
+#[cfg(all(test, unix))]
+pub(crate) use live::Live as TestLive;
+
+#[cfg(feature = "live")]
 mod live {
     use std::collections::BTreeSet;
     use std::sync::{mpsc, Arc, Mutex, OnceLock, PoisonError};
@@ -177,6 +203,9 @@ mod live {
         pub creations: OnceLock<crate::creations::CreationHost>,
         pub(super) desktop_responder: OnceLock<Arc<zerus_client_core::desktop::Responder>>,
         pub(super) pending_read_source: OnceLock<crate::actions::Actions>,
+        pub(super) notification_controls: OnceLock<crate::desktop_notification_controls::Setup>,
+        pub(super) retained_import_source:
+            OnceLock<crate::desktop_service::retained_import::Inputs>,
         service_projections: Mutex<Vec<crate::desktop_service::Projection>>,
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         service_activation: OnceLock<crate::desktop_service::activation::Sink>,
@@ -197,7 +226,9 @@ mod live {
                 creations: OnceLock::new(),
                 desktop_responder: OnceLock::new(),
                 pending_read_source: OnceLock::new(),
+                retained_import_source: OnceLock::new(),
                 service_projections: Mutex::new(Vec::new()),
+                notification_controls: OnceLock::new(),
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 service_activation: OnceLock::new(),
                 tasks_project: Mutex::new(None),
@@ -209,6 +240,38 @@ mod live {
         }
     }
     impl Live {
+        #[cfg(all(test, unix))]
+        pub(crate) fn test_service(
+            service: Arc<crate::desktop_service::Service>,
+            pump: Pump,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                pump,
+                source: Mutex::new(Some(Source::Service(service))),
+                ..Self::default()
+            })
+        }
+
+        pub(crate) fn notification_projection(
+            self: &Arc<Self>,
+            target: zerus_client_core::actions::Target,
+        ) -> super::NotificationProjection {
+            let (native, scope) = match self
+                .source
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+            {
+                Some(Source::Fleet(_)) => (true, None),
+                Some(Source::Service(service)) => (false, service.notification_receipt(&target)),
+                _ => (false, None),
+            };
+            let live = self.clone();
+            Box::new(move |preferences| {
+                live.apply_notifications(&target, preferences, native, scope.as_ref())
+            })
+        }
+
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         pub(super) fn register_service_activation(
             &self,
@@ -368,6 +431,30 @@ mod live {
                     .map(std::path::PathBuf::from),
             )
         }
+
+        pub(crate) fn service_drain(
+            &self,
+            changes: mpsc::Receiver<crate::desktop_service::Data>,
+        ) -> std::thread::JoinHandle<()> {
+            let organization = self.organization.get().cloned();
+            let creations = self.creations.get().cloned();
+            let after = creations.clone();
+            self.pump.drain_service_with_after(
+                changes,
+                move |change| {
+                    if let Some(organization) = &organization {
+                        organization.observe(change);
+                    }
+                    creations.is_some() && crate::creations::CreationHost::observes(change)
+                },
+                move || {
+                    if let Some(creations) = &after {
+                        creations.catalog_changed();
+                    }
+                },
+            )
+        }
+
         fn start_from(
             self: &Arc<Self>,
             hgs: impl FnOnce() -> std::path::PathBuf,
@@ -397,12 +484,7 @@ mod live {
             if crate::desktop_service::mode() {
                 let (sink, changes) = mpsc::sync_channel(256);
                 let pump = self.pump.clone();
-                let observe = organization.clone();
-                let drain = pump.drain_service(changes, move |change| {
-                    if let Some(organization) = &observe {
-                        organization.observe(change);
-                    }
-                });
+                let drain = self.service_drain(changes);
                 let allowed = replay.is_none()
                     || std::env::var_os("ZERUS_CLIENT_HGS").is_some_and(|value| !value.is_empty());
                 let service = crate::desktop_service::Service::start_observed(
@@ -413,6 +495,8 @@ mod live {
                     drain,
                     self.desktop_responder.get().cloned(),
                     crate::desktop_service::Observers {
+                        notification_controls: self.notification_controls.get().cloned(),
+                        retained_sources: self.retained_import_source.get().cloned(),
                         projections: self
                             .service_projections
                             .lock()
@@ -603,15 +687,25 @@ mod live {
             &self,
             target: &zerus_client_core::actions::Target,
             preferences: &serde_json::Value,
+            native: bool,
+            scope: Option<&crate::desktop_service::NotificationReceipt>,
         ) {
             let Ok(_admission) = self.admit() else { return };
-            if let Some(Source::Fleet(fleet)) = self
+            match self
                 .source
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .as_ref()
             {
-                fleet.apply_notifications(target, preferences.clone());
+                Some(Source::Fleet(fleet)) if native => {
+                    fleet.apply_notifications(target, preferences.clone());
+                }
+                Some(Source::Service(service)) => {
+                    if let Some(scope) = scope {
+                        service.apply_notification_preferences(scope, target, preferences);
+                    }
+                }
+                _ => {}
             }
         }
 

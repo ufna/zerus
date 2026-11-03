@@ -1,20 +1,83 @@
 use super::*;
 use std::{fs, path::Path, time::Instant};
 
-pub(super) struct Fixture(pub(super) PathBuf);
+mod notification_receipts;
+mod restart;
+mod silent_watch;
+
+pub(super) struct Fixture(pub(super) PathBuf, pub(super) Arc<AtomicBool>);
+
+struct ReleaseFixtureGate(PathBuf);
+impl Drop for ReleaseFixtureGate {
+    fn drop(&mut self) {
+        let _ = fs::write(&self.0, []);
+    }
+}
+
+struct ReleaseView(std::sync::mpsc::Sender<()>);
+impl Drop for ReleaseView {
+    fn drop(&mut self) {
+        // Release on assertions/unwind too; the callback cannot outlive its
+        // test owner or expire before a descheduled test can signal it.
+        let _ = self.0.send(());
+    }
+}
+
+fn injected_delay(variable: &str) -> Duration {
+    let milliseconds = std::env::var(variable)
+        .ok()
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .expect("fixture delay must be milliseconds")
+        })
+        .unwrap_or(0);
+    assert!(milliseconds <= 90_000, "fixture delay exceeds its bound");
+    Duration::from_millis(milliseconds)
+}
+
+pub(super) fn private_root(parent: &Path) -> PathBuf {
+    use std::os::unix::{ffi::OsStrExt, fs::DirBuilderExt};
+    // Darwin's sun_path has 104 bytes, including the terminating NUL. Hosted
+    // runners can supply a TMPDIR too long even for our shortest socket leaf.
+    let parent = if parent
+        .join("hgs-svc-0000000000000000")
+        .join("native-cache.sock")
+        .as_os_str()
+        .as_bytes()
+        .len()
+        < 104
+    {
+        parent
+    } else if cfg!(target_os = "macos") {
+        Path::new("/private/tmp")
+    } else {
+        Path::new("/tmp")
+    };
+    for _ in 0..128 {
+        let root = parent.join(format!(
+            "hgs-svc-{}",
+            &uuid::Uuid::new_v4().simple().to_string()[..16]
+        ));
+        match fs::DirBuilder::new().mode(0o700).create(&root) {
+            Ok(()) => return root,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => panic!("private service fixture: {error}"),
+        }
+    }
+    panic!("private service fixture candidates exhausted");
+}
+
 impl Fixture {
     pub(super) fn new(config: Value) -> Self {
-        use std::os::unix::fs::DirBuilderExt;
-        let root =
-            std::env::temp_dir().join(format!("zerus-client-service-{}", uuid::Uuid::new_v4()));
-        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+        let root = private_root(&std::env::temp_dir());
         std::os::unix::fs::symlink(
             Path::new(env!("CARGO_MANIFEST_DIR")).join("src/desktop_service/fake_hgs.py"),
             root.join("hgs"),
         )
         .unwrap();
         fs::write(root.join("fixture.json"), config.to_string()).unwrap();
-        Self(root)
+        Self(root, Arc::new(AtomicBool::new(false)))
     }
     pub(super) fn calls(&self) -> Vec<Value> {
         fs::read_to_string(self.0.join("calls"))
@@ -31,7 +94,14 @@ impl Fixture {
         allowed: bool,
         responder: Option<Arc<zerus_client_core::desktop::Responder>>,
     ) -> (Arc<Service>, crate::pump::Pump) {
-        let pump = crate::pump::Pump::default();
+        self.start_with_pump(allowed, crate::pump::Pump::default(), responder)
+    }
+    fn start_with_pump(
+        &self,
+        allowed: bool,
+        pump: crate::pump::Pump,
+        responder: Option<Arc<zerus_client_core::desktop::Responder>>,
+    ) -> (Arc<Service>, crate::pump::Pump) {
         let (sink, rx) = std::sync::mpsc::sync_channel(256);
         let drain = pump.drain_service(rx, |_| {});
         let service = Service::start(
@@ -43,21 +113,79 @@ impl Fixture {
             responder,
             vec![],
         );
+        std::thread::sleep(injected_delay("ZERUS_TEST_SERVICE_START_RETURN_DELAY_MS"));
         (service, pump)
     }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
+        if self.1.load(Ordering::Acquire) {
+            eprintln!(
+                "private service fixture retained for unconfirmed child: {}",
+                self.0.display()
+            );
+            return;
+        }
         let _ = fs::remove_dir_all(&self.0);
     }
 }
+
+#[test]
+fn a_long_temp_parent_still_gets_a_private_bindable_socket_root() {
+    use std::os::unix::{fs::PermissionsExt, net::UnixListener};
+    let outer = Fixture::new(json!({}));
+    let long_parent = outer.0.join("a".repeat(100));
+    fs::create_dir(&long_parent).unwrap();
+    let root = Fixture(private_root(&long_parent), Arc::new(AtomicBool::new(false)));
+    assert!(!root.0.starts_with(&long_parent));
+    assert_eq!(
+        fs::metadata(&root.0).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    let _listener = UnixListener::bind(root.0.join("native-cache.sock")).unwrap();
+    assert!(long_parent.is_dir(), "the supplied parent is never removed");
+}
+
 pub(super) async fn eventually(label: &str, check: impl Fn() -> bool) {
     // A loaded hosted macOS runner missed 10 s for an initial live baseline.
-    let until = Instant::now() + Duration::from_secs(30);
+    eventually_within(label, Duration::from_secs(30), check).await;
+}
+async fn eventually_within(label: &str, wait: Duration, check: impl Fn() -> bool) {
+    let until = Instant::now() + wait;
+    let mut pause = Some(injected_delay("ZERUS_TEST_SERVICE_POLL_DELAY_MS"));
     while !check() {
-        assert!(Instant::now() < until, "{label}");
+        // Model descheduling after an unsuccessful observation. The service
+        // workers and their product deadlines continue normally meanwhile.
+        if let Some(delay) = pause.take() {
+            std::thread::sleep(delay);
+        }
+        if Instant::now() >= until {
+            // The test may have been descheduled after its false sample.
+            // Use a fresh observation before declaring the fixture timed out.
+            assert!(check(), "{label}");
+            return;
+        }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
+}
+
+#[test]
+fn readiness_gets_a_fresh_observation_at_the_fixture_deadline() {
+    let observed = std::cell::Cell::new(false);
+    tauri::async_runtime::block_on(eventually_within("fresh sample", Duration::ZERO, || {
+        observed.replace(true)
+    }));
+    assert!(observed.get());
+}
+
+#[test]
+#[should_panic(expected = "fixture still unavailable")]
+fn an_unready_fixture_remains_bounded() {
+    tauri::async_runtime::block_on(eventually_within(
+        "fixture still unavailable",
+        Duration::ZERO,
+        || false,
+    ));
 }
 fn watch_calls(calls: &[Value]) -> usize {
     calls
@@ -107,7 +235,7 @@ fn incompatible_cli_stays_unavailable_until_one_explicit_retry_without_fallback(
 fn dirty_walk_finishes_its_cursor_and_coalesces_one_refresh_without_deleting_rows() {
     let _process = crate::PROCESS_TREE.read().unwrap();
     tauri::async_runtime::block_on(async {
-        let fixture = Fixture::new(json!({"dirty_walk":true}));
+        let fixture = Fixture::new(json!({"dirty_walk":true,"relay_finalize_delay_ms":300}));
         let (service, pump) = fixture.start(true);
         pump.push(Change::Upsert {
             computer: ComputerId::local(),
@@ -525,17 +653,38 @@ fn exit_waits_for_the_owned_proxy_and_blocked_view_callback_before_finishing() {
         let fixture = Fixture::new(json!({}));
         let pump = crate::pump::Pump::default();
         let (sink, rx) = std::sync::mpsc::sync_channel(256);
+        let view_input = sink.clone();
         let (entered, observed) = std::sync::mpsc::channel();
         let (release, resume) = std::sync::mpsc::channel();
-        let first = AtomicBool::new(true);
+        let release = ReleaseView(release);
         let drain = pump.drain_service(rx, move |change| {
-            if matches!(change, Change::Upsert { .. }) && first.swap(false, Ordering::AcqRel) {
+            if matches!(change, Change::Upsert { key, .. } if key == "blocked-view-fixture") {
                 entered.send(()).unwrap();
-                // A loaded runner may starve the test task; the release still arrives.
-                resume.recv_timeout(Duration::from_secs(60)).unwrap();
+                let _ = resume.recv();
             }
         });
-        let service = Service::start(fixture.0.join("hgs"), pump, sink, true, drain, None, vec![]);
+        let service = Service::start(
+            fixture.0.join("hgs"),
+            pump.clone(),
+            sink,
+            true,
+            drain,
+            None,
+            vec![],
+        );
+        eventually("baseline before blocked view", || {
+            pump.row("", "row").is_some()
+        })
+        .await;
+        // Delay the view itself, outside a catalog's held admission locks.
+        view_input
+            .send(Data::Change(Box::new(Change::Upsert {
+                computer: ComputerId::local(),
+                key: "blocked-view-fixture".into(),
+                row: zerus_client_core::ViewRow::default(),
+            })))
+            .unwrap();
+        drop(view_input);
         eventually("view callback entered", || observed.try_recv().is_ok()).await;
         let finished = Arc::new(AtomicBool::new(false));
         let ended = finished.clone();
@@ -546,7 +695,7 @@ fn exit_waits_for_the_owned_proxy_and_blocked_view_callback_before_finishing() {
         tokio::time::sleep(Duration::from_millis(30)).await;
         assert!(!finished.load(Ordering::Acquire));
         assert!(!exiting.inner().is_finished());
-        release.send(()).unwrap();
+        drop(release);
         exiting.await.unwrap();
         assert!(finished.load(Ordering::Acquire));
     });
@@ -557,7 +706,9 @@ fn full_projection_replacement_rebaselines_even_with_unchanged_native_generation
     let _process = crate::PROCESS_TREE.read().unwrap();
     tauri::async_runtime::block_on(async {
         for stage in ["early", "late"] {
-            let fixture = Fixture::new(json!({"replace_projection":stage}));
+            let fixture = Fixture::new(
+                json!({"replace_projection":stage,"projection_publication_gate":true}),
+            );
             let (service, pump) = fixture.start(true);
             // Writing a hint to stdout is not evidence the client consumed it.
             // Retain the old cursor page until the replacement is bound under
@@ -607,7 +758,9 @@ fn full_projection_replacement_rebaselines_even_with_unchanged_native_generation
 fn projection_replacement_after_cursor_exhaustion_needs_no_close() {
     let _process = crate::PROCESS_TREE.read().unwrap();
     tauri::async_runtime::block_on(async {
-        let fixture = Fixture::new(json!({"replace_projection":"exhausted"}));
+        let fixture = Fixture::new(
+            json!({"replace_projection":"exhausted","projection_publication_gate":true}),
+        );
         let (service, pump) = fixture.start(true);
         let through = Revision::try_from("1".to_owned()).unwrap();
         eventually("old cursor consumed and walk finished before hint", || {
@@ -646,10 +799,74 @@ fn retention_gap_and_unknown_cursor_outcome_restart_from_a_fresh_baseline() {
     let _process = crate::PROCESS_TREE.read().unwrap();
     tauri::async_runtime::block_on(async {
         for failure in ["gap", "unknown", "changed_through"] {
-            let fixture = Fixture::new(json!({"failure":failure}));
-            let (service, pump) = fixture.start(true);
+            let fixture = Fixture::new(
+                json!({"failure":failure,"relay_finalize_delay_ms":300,"relay_finalize_number":2,
+                    "recovered_response_pause_ms":if failure == "changed_through" {2000} else {0}}),
+            );
+            let _release = ReleaseFixtureGate(fixture.0.join("release-recovered-response"));
+            let (service, pump, view_release) = if failure == "changed_through" {
+                let pump = crate::pump::Pump::default();
+                let (sink, rx) = std::sync::mpsc::sync_channel(256);
+                let (release, released) = std::sync::mpsc::channel();
+                let first = AtomicBool::new(true);
+                let drain = pump.drain_service(rx, move |_| {
+                    if first.swap(false, Ordering::AcqRel) {
+                        assert!(released.recv_timeout(Duration::from_secs(30)).is_ok());
+                    }
+                });
+                // Hold dispatch before any catalog delivery, outside admission
+                // locks. The failed generation's queued row is then stale.
+                sink.send(Data::Change(Box::new(Change::Computer {
+                    computer: ComputerId::local(),
+                    status: ComputerStatus::Probing,
+                })))
+                .unwrap();
+                let service = Service::start(
+                    fixture.0.join("hgs"),
+                    pump.clone(),
+                    sink,
+                    true,
+                    drain,
+                    None,
+                    vec![],
+                );
+                (service, pump, Some(ReleaseView(release)))
+            } else {
+                let (service, pump) = fixture.start(true);
+                (service, pump, None)
+            };
+            if view_release.is_some() {
+                eventually("recovered baseline flushed while view is queued", || {
+                    fixture.0.join("recovered-baseline-flushed").exists()
+                })
+                .await;
+                assert!(pump.row("", "row").is_none());
+                assert!(!service
+                    .shared
+                    .dirty
+                    .lock()
+                    .unwrap()
+                    .progress
+                    .contains_key(""));
+                assert_eq!(
+                    fixture
+                        .calls()
+                        .iter()
+                        .filter(|c| c["value"]["op"] == "catalog_changes")
+                        .count(),
+                    2
+                );
+            }
+            drop(view_release);
+            let through = Revision::try_from("5".to_owned()).unwrap();
             eventually("fresh baseline caught up", || {
-                pump.row("", "recovered").is_some() && pump.row("", "row").is_none()
+                let settled = {
+                    let dirty = service.shared.dirty.lock().unwrap();
+                    dirty.progress.get("") == Some(&through)
+                        && dirty.running.is_none()
+                        && dirty.pending.is_empty()
+                };
+                settled && pump.row("", "recovered").is_some() && pump.row("", "row").is_none()
             })
             .await;
             service.join().await.unwrap();
@@ -743,23 +960,235 @@ fn twenty_thousand_rows_need_only_one_three_key_delta_after_the_baseline() {
     });
 }
 #[test]
+fn a_resumed_run_in_one_service_revision_keeps_the_native_replaced_reason() {
+    // zerus-uutz: the service journal keeps only each key's final row. One
+    // revision is one native frame, so its own upserts say which removed
+    // names are listed again; they arrive first, even across change pages.
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        let fixture = Fixture::new(json!({"resume_delta":true}));
+        let pump = crate::pump::Pump::default();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let observe = seen.clone();
+        pump.tap(Box::new(move |change| match change {
+            Change::Upsert { key, .. } => observe.lock().unwrap().push((key.clone(), "upsert")),
+            Change::Remove { key, reason, .. } => observe.lock().unwrap().push((
+                key.clone(),
+                if reason.as_deref() == Some("replaced") {
+                    "replaced"
+                } else if reason.is_none() {
+                    "removed"
+                } else {
+                    "other"
+                },
+            )),
+            _ => {}
+        }));
+        let (service, pump) = fixture.start_with_pump(true, pump, None);
+        eventually("resumed run and its ended neighbor", || {
+            pump.row("", "run:1-new").is_some()
+                && pump.row("", "run:0-old").is_none()
+                && pump.row("", "run:9-ended").is_none()
+        })
+        .await;
+        service.join().await.unwrap();
+        let seen = seen.lock().unwrap().clone();
+        let expected = [
+            ("run:0-old", "upsert"),
+            ("run:9-ended", "upsert"),
+            ("run:1-new", "upsert"),
+            ("run:0-old", "replaced"),
+            ("run:9-ended", "removed"),
+        ];
+        assert_eq!(
+            seen,
+            expected.map(|(key, kind)| (key.to_owned(), kind)).to_vec()
+        );
+        assert_eq!(
+            fixture
+                .calls()
+                .iter()
+                .filter(|c| c["value"]["op"] == "catalog_changes")
+                .count(),
+            3,
+            "the replaced key and its successor arrive on separate pages"
+        );
+    });
+}
+#[test]
+fn a_journaled_native_reason_keeps_a_paged_start_fresh_replaced() {
+    // zerus-ic13: the successor is in another revision and conversation, so
+    // only the service's journaled native reason can say `replaced`.
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        let fixture = Fixture::new(json!({"paged_fresh":true}));
+        let pump = crate::pump::Pump::default();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let observe = seen.clone();
+        pump.tap(Box::new(move |change| match change {
+            Change::Upsert { key, .. } => observe.lock().unwrap().push((key.clone(), None)),
+            Change::Remove { key, reason, .. } => observe
+                .lock()
+                .unwrap()
+                .push((key.clone(), Some(reason.clone()))),
+            _ => {}
+        }));
+        let (service, pump) = fixture.start_with_pump(true, pump, None);
+        eventually("fresh run after its paged removal", || {
+            pump.row("", "run:1-new").is_some() && pump.row("", "run:0-old").is_none()
+        })
+        .await;
+        service.join().await.unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                ("run:0-old".to_owned(), None),
+                ("run:0-old".to_owned(), Some(Some("replaced".to_owned()))),
+                ("run:1-new".to_owned(), None),
+            ]
+        );
+    });
+}
+#[test]
+fn an_online_resnapshot_keeps_a_live_computer_live_and_asks_no_refused_changes() {
+    // zerus-bkbb: an online source restaging its snapshot (a native overflow
+    // resync) is no connection change. Probing or Reconnecting here repaints
+    // every row of the computer as offline and back: the list-wide blink.
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        let fixture = Fixture::new(json!({"online_resync":true}));
+        let pump = crate::pump::Pump::default();
+        let statuses = Arc::new(Mutex::new(Vec::new()));
+        let observe = statuses.clone();
+        pump.tap(Box::new(move |change| {
+            if let Change::Computer { computer, status } = change {
+                if computer.is_local() {
+                    observe.lock().unwrap().push(*status);
+                }
+            }
+        }));
+        let (service, pump) = fixture.start_with_pump(true, pump, None);
+        eventually("initial live baseline", || {
+            pump.live("") && pump.row("", "row").is_some()
+        })
+        .await;
+        statuses.lock().unwrap().clear();
+        fs::write(fixture.0.join("release-staging"), []).unwrap();
+        eventually("staging view walked", || {
+            fixture.0.join("staging-page").exists()
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(pump.live(""), "{:?}", statuses.lock().unwrap());
+        assert!(
+            pump.row("", "row").is_some(),
+            "staging keeps last-known rows"
+        );
+        fs::write(fixture.0.join("release-resync"), []).unwrap();
+        eventually("completed snapshot's membership", || {
+            pump.row("", "replacement").is_some() && pump.row("", "row").is_none()
+        })
+        .await;
+        service.join().await.unwrap();
+        let statuses = statuses.lock().unwrap().clone();
+        assert!(!statuses.is_empty(), "no walk finished");
+        assert!(
+            statuses
+                .iter()
+                .all(|status| *status == ComputerStatus::Live),
+            "{statuses:?}"
+        );
+        assert!(
+            !fixture.0.join("changes-while-staging").exists(),
+            "a staging view has no change range to ask for"
+        );
+    });
+}
+#[test]
+fn a_live_computer_whose_source_goes_offline_still_probes_then_reconnects() {
+    // zerus-bkbb: only a source that stays online keeps a Live computer Live
+    // through its re-baseline. An offline hint is a real connection change.
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        let fixture = Fixture::new(json!({"offline_hint":true}));
+        let pump = crate::pump::Pump::default();
+        let statuses = Arc::new(Mutex::new(Vec::new()));
+        let observe = statuses.clone();
+        pump.tap(Box::new(move |change| {
+            if let Change::Computer { computer, status } = change {
+                if computer.is_local() {
+                    observe.lock().unwrap().push(*status);
+                }
+            }
+        }));
+        let (service, pump) = fixture.start_with_pump(true, pump, None);
+        eventually("initial live baseline", || {
+            pump.live("") && pump.row("", "row").is_some()
+        })
+        .await;
+        statuses.lock().unwrap().clear();
+        fs::write(fixture.0.join("release-offline"), []).unwrap();
+        // The hint's Probing and the walk's first Reconnecting race; the
+        // walk's Finish follows its page RPC and settles the status.
+        eventually("offline baseline finished", || {
+            fixture.0.join("offline-page").exists()
+                && statuses.lock().unwrap().last()
+                    == Some(&ComputerStatus::Reconnecting { attempt: 0 })
+        })
+        .await;
+        service.join().await.unwrap();
+        let statuses = statuses.lock().unwrap().clone();
+        let probing = statuses.iter().position(|s| *s == ComputerStatus::Probing);
+        assert!(
+            probing.is_some_and(|i| i + 1 < statuses.len()),
+            "{statuses:?}"
+        );
+        assert!(!statuses.contains(&ComputerStatus::Live), "{statuses:?}");
+        assert!(!pump.online(""));
+        assert!(
+            pump.row("", "row").is_some(),
+            "offline keeps last-known rows"
+        );
+    });
+}
+#[test]
 fn stuck_view_callback_cannot_hold_the_quit_completion_past_its_deadline() {
     let _process = crate::PROCESS_TREE.read().unwrap();
     tauri::async_runtime::block_on(async {
         let fixture = Fixture::new(json!({}));
         let pump = crate::pump::Pump::default();
         let (sink, rx) = std::sync::mpsc::sync_channel(256);
+        let view_input = sink.clone();
         let (entered, observed) = std::sync::mpsc::channel();
         let (release, resume) = std::sync::mpsc::channel();
-        let first = AtomicBool::new(true);
+        let release = ReleaseView(release);
         let drain = pump.drain_service(rx, move |change| {
-            if matches!(change, Change::Upsert { .. }) && first.swap(false, Ordering::AcqRel) {
+            if matches!(change, Change::Upsert { key, .. } if key == "blocked-view-fixture") {
                 entered.send(()).unwrap();
-                // A loaded runner may starve the test task; the release still arrives.
-                resume.recv_timeout(Duration::from_secs(60)).unwrap();
+                let _ = resume.recv();
             }
         });
-        let service = Service::start(fixture.0.join("hgs"), pump, sink, true, drain, None, vec![]);
+        let service = Service::start(
+            fixture.0.join("hgs"),
+            pump.clone(),
+            sink,
+            true,
+            drain,
+            None,
+            vec![],
+        );
+        eventually("baseline before blocked quit view", || {
+            pump.row("", "row").is_some()
+        })
+        .await;
+        view_input
+            .send(Data::Change(Box::new(Change::Upsert {
+                computer: ComputerId::local(),
+                key: "blocked-view-fixture".into(),
+                row: zerus_client_core::ViewRow::default(),
+            })))
+            .unwrap();
+        drop(view_input);
         eventually("blocked callback", || observed.try_recv().is_ok()).await;
         let finished = AtomicBool::new(false);
         let started = Instant::now();
@@ -771,7 +1200,8 @@ fn stuck_view_callback_cannot_hold_the_quit_completion_past_its_deadline() {
         .await;
         assert!(finished.load(Ordering::Acquire));
         assert!(started.elapsed() < Duration::from_secs(1));
-        release.send(()).unwrap();
+        std::thread::sleep(injected_delay("ZERUS_TEST_SERVICE_RELEASE_DELAY_MS"));
+        drop(release);
         service.join().await.unwrap();
     });
 }
@@ -780,8 +1210,10 @@ fn stuck_view_callback_cannot_hold_the_quit_completion_past_its_deadline() {
 fn hint_driven_delta_walks_never_take_an_already_live_computer_offline() {
     let _process = crate::PROCESS_TREE.read().unwrap();
     tauri::async_runtime::block_on(async {
-        let fixture = Fixture::new(json!({"delta_live":true}));
-        let (service, pump) = fixture.start(true);
+        let fixture = Fixture::new(
+            json!({"delta_live":true,"relay_finalize_delay_ms":300,"relay_finalize_number":2}),
+        );
+        let pump = crate::pump::Pump::default();
         let statuses = Arc::new(Mutex::new(Vec::new()));
         let observe = statuses.clone();
         pump.tap(Box::new(move |change| {
@@ -791,6 +1223,8 @@ fn hint_driven_delta_walks_never_take_an_already_live_computer_offline() {
                 }
             }
         }));
+        // Install the one-shot Live observer before startup can finish.
+        let (service, pump) = fixture.start_with_pump(true, pump, None);
         eventually("initial live baseline", || {
             statuses.lock().unwrap().contains(&ComputerStatus::Live)
         })
@@ -844,6 +1278,117 @@ fn detail_spec(topic: &str, after: Option<i64>) -> zerus_watch_protocol::Subscri
         interval_ms: (topic == "processes").then_some(10_000),
         ..Default::default()
     }
+}
+
+#[test]
+fn pending_local_identity_does_not_hold_catalog_rpc_or_delay_peer_rows() {
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        let fixture = Fixture::new(json!({"details":true,"source_held":true,"project_peer":true}));
+        let (service, pump) = fixture.start(true);
+        eventually("peer catalog is independent of local identity", || {
+            pump.row("studio", "row").is_some()
+        })
+        .await;
+        assert!(pump.row("", "row").is_none());
+        assert!(!fixture
+            .calls()
+            .iter()
+            .any(|call| call["value"]["op"] == "catalog_page" && call["value"]["computer"] == ""));
+        fs::write(fixture.0.join("source-identity-ready"), []).unwrap();
+        eventually("late local identity wakes its catalog", || {
+            pump.row("", "row").is_some()
+        })
+        .await;
+        assert_eq!(pump.row("", "row").unwrap().machine, "untrusted-caption");
+        service.join().await.unwrap();
+    });
+}
+
+#[test]
+fn transient_source_metadata_failures_recover_local_catalog_without_refresh() {
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        for failure in ["transport", "refused", "native", "offline", "null"] {
+            let fixture = Fixture::new(
+                json!({"details":true,"source_warming":true,"source_failure":failure}),
+            );
+            let (service, pump) = fixture.start(true);
+            eventually("local metadata recovers without Refresh", || {
+                pump.row("", "row").is_some()
+            })
+            .await;
+            assert_eq!(
+                pump.row("", "row").unwrap().machine,
+                "untrusted-caption",
+                "{failure}"
+            );
+            assert!(fixture.calls().iter().filter(|c| c["value"]["op"] == "detail_source" && c["value"]["part"] == "hello").count() >= 2, "{failure}");
+            service.join().await.unwrap();
+        }
+    });
+}
+
+#[test]
+fn service_catalog_rows_use_native_host_and_peer_alias_for_project_membership() {
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        let fixture = Fixture::new(json!({"details":true,"project_peer":true,
+            "organization":{"default_project":"ungrouped","projects":[
+                {"id":"alpha","name":"Alpha","sessions":["untrusted-caption\ncodex/example/row"]},
+                {"id":"beta","name":"Beta","sessions":["studio\ncodex/example/row"]},
+                {"id":"ungrouped","name":"Inbox","sessions":[]}]}}));
+        let pump = crate::pump::Pump::default();
+        let grouped = pump.clone();
+        let (sink, rx) = std::sync::mpsc::sync_channel(256);
+        let drain = pump.drain_service(rx, move |change| {
+            if let Change::Organization {
+                update:
+                    zerus_client_core::OrganizationUpdate::State {
+                        value, membership, ..
+                    },
+                ..
+            } = change
+            {
+                grouped.present(
+                    &value["organization"],
+                    membership.clone(),
+                    1,
+                    zerus_client_core::swarm::grouping::SyncView::default(),
+                );
+            }
+        });
+        let service = Service::start(
+            fixture.0.join("hgs"),
+            pump.clone(),
+            sink,
+            true,
+            drain,
+            None,
+            vec![],
+        );
+        service
+            .follow_detail("", detail_spec("organization", None))
+            .unwrap();
+        eventually("local and peer rows reach their projects", || {
+            pump.members_of("alpha")
+                .iter()
+                .map(|(member, _)| member.as_str())
+                .collect::<Vec<_>>()
+                == vec!["untrusted-caption\ncodex/example/row"]
+                && pump
+                    .members_of("beta")
+                    .iter()
+                    .map(|(member, _)| member.as_str())
+                    .collect::<Vec<_>>()
+                    == vec!["studio\ncodex/example/row"]
+        })
+        .await;
+        assert_eq!(pump.row("", "row").unwrap().machine, "untrusted-caption");
+        assert_eq!(pump.row("studio", "row").unwrap().machine, "studio");
+        assert_ne!(pump.row("", "row").unwrap().machine, "metadata-caption");
+        service.join().await.unwrap();
+    });
 }
 #[test]
 fn one_service_lease_delivers_native_activity_processes_tasks_and_organization() {
@@ -967,7 +1512,8 @@ fn older_activity_and_changed_process_interval_retire_ids_but_refresh_reuses_dem
 fn detail_sequence_gap_recovers_only_its_route_and_keeps_catalog_and_processes_live() {
     let _process = crate::PROCESS_TREE.read().unwrap();
     tauri::async_runtime::block_on(async {
-        let fixture = Fixture::new(json!({"details":true,"detail_gap":true}));
+        let fixture =
+            Fixture::new(json!({"details":true,"detail_gap":true,"relay_finalize_delay_ms":300}));
         let (service, pump) = fixture.start(true);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let observe = seen.clone();
@@ -1198,6 +1744,120 @@ fn temporary_rpc_admission_pressure_retries_follow_without_halting_the_view() {
     });
 }
 #[test]
+fn service_catalog_completion_populates_the_tray_like_the_gui_with_device_attention() {
+    use zerus_client_core::menubar::{Desk, DeviceMarks, Entry, Face, OpenMode};
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        let fixture = Fixture::new(json!({"details":true,"project_peer":true}));
+        let pump = crate::pump::Pump::default();
+        let desk = Arc::new(Mutex::new(Desk::default()));
+        let marks = DeviceMarks::new(
+            BTreeMap::from([(
+                zerus_client_core::marks::attention_key("", "codex", "codex/example/row", 0, ""),
+                zerus_client_core::marks::Mark {
+                    review: true,
+                    acknowledged: String::new(),
+                },
+            )]),
+            BTreeMap::new(),
+            vec![],
+        );
+        desk.lock().unwrap().set_marks(marks);
+        let tapped = desk.clone();
+        // Exactly the production tray path; no webview, native fleet, second
+        // row snapshot or shared-only aggregate count supplies the tray.
+        pump.tap(Box::new(move |change| {
+            if crate::desk::menu_bar_change(change) {
+                tapped.lock().unwrap().observe(change);
+            }
+        }));
+        let (service, pump) = fixture.start_with_pump(true, pump, None);
+        eventually("both GUI service catalogs are current", || {
+            pump.online("")
+                && pump.online("studio")
+                && pump.row("", "row").is_some()
+                && pump.row("studio", "row").is_some()
+        })
+        .await;
+        {
+            let mut desk = desk.lock().unwrap();
+            assert_eq!(desk.total(), 2);
+            assert_eq!(desk.attention(), 1, "the device's review mark is included");
+            assert_eq!(desk.face(), Face::counts(2, 1, false));
+            assert_eq!(desk.badge().as_deref(), Some("1"));
+            assert_eq!(
+                desk.tooltip()
+                    .iter()
+                    .map(|text| text.english())
+                    .collect::<Vec<_>>(),
+                [
+                    "1 needs attention, 2 sessions total",
+                    "1 here",
+                    "1 on studio"
+                ]
+            );
+            let menu = desk.menu(OpenMode::Automatic);
+            assert_eq!(
+                menu.iter()
+                    .filter(|entry| matches!(entry, Entry::Session { .. }))
+                    .count(),
+                2
+            );
+            assert!(!menu.iter().any(
+                |entry| matches!(entry,Entry::Label(text) if text.english().contains("polling"))
+            ));
+            assert!(desk.computers()[&ComputerId::from("studio")].fresh());
+            desk.set_marks(DeviceMarks::default());
+            assert_eq!(desk.face(), Face::counts(2, 0, false));
+            assert!(desk.badge().is_none());
+        }
+        service.join().await.unwrap();
+    });
+}
+
+#[test]
+fn catalog_finish_wakes_consumers_after_publishing_the_live_mirror() {
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        let fixture = Fixture::new(json!({"details":true}));
+        let pump = crate::pump::Pump::default();
+        let (sink, rx) = std::sync::mpsc::sync_channel(256);
+        let reader = pump.clone();
+        let live = Arc::new(AtomicBool::new(false));
+        let seen = live.clone();
+        let drain = pump.drain_service_with_after(
+            rx,
+            |change| {
+                matches!(
+                    change,
+                    Change::Computer {
+                        status: ComputerStatus::Live,
+                        ..
+                    }
+                )
+            },
+            move || {
+                let batch = reader.take(Duration::ZERO);
+                if batch
+                    .computers
+                    .iter()
+                    .any(|c| c.computer.0.is_empty() && c.status == "live")
+                    && reader.row("", "row").is_some()
+                {
+                    seen.store(true, Ordering::Release);
+                }
+            },
+        );
+        let service = Service::start(fixture.0.join("hgs"), pump, sink, true, drain, None, vec![]);
+        eventually("the applied catalog finish wakes consumers", || {
+            live.load(Ordering::Acquire)
+        })
+        .await;
+        service.join().await.unwrap();
+    });
+}
+
+#[test]
 fn service_source_roster_bootstraps_catalogs_independently_of_shared_counts() {
     let _process = crate::PROCESS_TREE.read().unwrap();
     tauri::async_runtime::block_on(async {
@@ -1228,7 +1888,7 @@ fn service_source_roster_bootstraps_catalogs_independently_of_shared_counts() {
 fn count_failures_during_status_and_catalog_hints_keep_the_current_catalog_and_transport_live() {
     let _process = crate::PROCESS_TREE.read().unwrap();
     tauri::async_runtime::block_on(async {
-        let fixture = Fixture::new(json!({"counts_transition":true}));
+        let fixture = Fixture::new(json!({"counts_transition":true,"relay_finalize_delay_ms":300}));
         let (service, pump) = fixture.start(true);
         eventually("baseline applied", || {
             pump.row("", "row").is_some()
@@ -1325,7 +1985,7 @@ fn repeated_catalog_failure_retires_only_its_peer_until_manual_retry_or_a_new_sc
     tauri::async_runtime::block_on(async {
         for scope_change in [false, true] {
             let fixture = Fixture::new(json!({"peer_failure":true}));
-            let (service, pump) = fixture.start(true);
+            let pump = crate::pump::Pump::default();
             pump.push(Change::Upsert {
                 computer: ComputerId::from("broken"),
                 key: "cached".into(),
@@ -1338,6 +1998,8 @@ fn repeated_catalog_failure_retires_only_its_peer_until_manual_retry_or_a_new_sc
                     observed.lock().unwrap().push((computer.clone(), *status));
                 }
             }));
+            // Install the one-shot halt observer and cached row before startup.
+            let (service, pump) = fixture.start_with_pump(true, pump, None);
             eventually("only broken catalog exhausted its two walks", || {
                 statuses.lock().unwrap().contains(&(
                     ComputerId::from("broken"),

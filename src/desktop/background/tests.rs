@@ -2,71 +2,188 @@ use super::*;
 use crate::desktop::{notifications::preparation, ownership};
 use std::sync::mpsc;
 
+struct Fixture {
+    _temp: tempfile::TempDir,
+    image: std::path::PathBuf,
+    location: Location,
+    store: Store,
+    owner: Arc<platform::FileLock>,
+    broker: feed::Broker,
+    runtime: Runtime,
+}
+impl Fixture {
+    fn new() -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let config = Config {
+            home: root.to_str().unwrap().into(),
+            dir: root.join("config"),
+            state: root.join("state"),
+            selves: vec![],
+            peers: vec![],
+            base_peers: vec![],
+            peers_from_environment: false,
+            machines: Default::default(),
+            tab: false,
+            tab_colors: String::new(),
+        };
+        std::fs::create_dir_all(&config.dir).unwrap();
+        let location = Location::new(&config).unwrap();
+        location.prepare().unwrap();
+        let epoch = uuid::Uuid::new_v4().to_string();
+        let store = Store::open(&location, &epoch).unwrap();
+        let image = temp.path().join("hgs-tray");
+        std::fs::write(&image, b"owned fixture image").unwrap();
+        let origin = ownership::Origin::capture(
+            &image,
+            zerus_client_core::desktop::Build {
+                version: "1.2.3".into(),
+                source_commit: "a".repeat(40),
+                source_dirty: Some(false),
+            },
+        )
+        .unwrap();
+        store
+            .db
+            .execute(
+                "UPDATE desktop_ownership SET state='service',owner_epoch=?1,origin=?2 WHERE id=1",
+                rusqlite::params![
+                    uuid::Uuid::new_v4().to_string(),
+                    serde_json::to_string(&origin).unwrap()
+                ],
+            )
+            .unwrap();
+        let owner = Arc::new(location.lock().unwrap());
+        let mut broker = feed::Broker::new(&epoch);
+        let runtime = Runtime {
+            fleet: fleet::Runtime::empty_for_test(&epoch),
+            producer: broker.claim_internal().unwrap(),
+            presence: None,
+            delivery: delivery::Runtime::start(&config, &epoch).unwrap(),
+            details: details::Adapter::new(&epoch),
+            maintenance: maintenance::Runtime::start(&config, &epoch).unwrap(),
+            cache: crate::desktop::cache_maintenance::Runtime::new(
+                &location,
+                &epoch,
+                owner.clone(),
+            ),
+            attention: attention::Runtime::new(&epoch),
+            activations: activation::Router::new(&location.configuration, &epoch),
+            drained: false,
+            stopping: false,
+            notifications: notification_service::Runtime::new(
+                &config,
+                &location,
+                &epoch,
+                owner.clone(),
+            ),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            creation: crate::desktop::creation_clone::Runtime::new(&config, &epoch, owner.clone())
+                .unwrap(),
+        };
+        Self {
+            _temp: temp,
+            image,
+            location,
+            store,
+            owner,
+            broker,
+            runtime,
+        }
+    }
+}
+
+#[test]
+fn uncaptured_notification_writer_revokes_the_durable_epoch_and_can_hold_the_same_receipt() {
+    let mut f = Fixture::new();
+    let service: String = f
+        .store
+        .db
+        .query_row("SELECT epoch FROM service WHERE id=1", [], |row| row.get(0))
+        .unwrap();
+    let writer = uuid::Uuid::new_v4().to_string();
+    zerus_desktop_ledger::authorize(&mut f.store.db, &writer, &service).unwrap();
+    // A restart revokes admission but preserves the original durable writer.
+    // No notification grant/host has been captured by this fresh Runtime.
+    zerus_desktop_ledger::begin_service(&mut f.store.db, &service).unwrap();
+    assert!(f.runtime.notifications.writer_epoch().is_none());
+    let id = uuid::Uuid::new_v4().to_string();
+    let captured = f.runtime.captured_writer_epoch();
+    let reply = crate::desktop::revoke::request_with_runtime(
+        &f.location,
+        &mut f.store,
+        &json!({"op":"revoke","request_id":id,"reason":"rollback"}),
+        &service,
+        captured.as_deref(),
+        None,
+        |store| f.runtime.drain(store, Duration::from_secs(2)),
+    );
+    assert!(
+        f.runtime.drained(),
+        "original resources must actually drain before assertion"
+    );
+    assert_eq!(reply["checkpointed"], true, "{reply}");
+    let held =
+        crate::desktop::revoke::hold::acquire_for_test(&f.location, &id).unwrap_or_else(|error| {
+            panic!("same original settled receipt must acquire its hold: {error:#}")
+        });
+    assert_eq!(reply["request_id"], id);
+    assert_eq!(reply["writer_epoch"], writer);
+    drop(held);
+}
+
+#[test]
+fn failed_notification_authorize_never_publishes_an_uncommitted_writer() {
+    let _serial = preparation::TEST_SERIAL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut f = Fixture::new();
+    assert!(ownership::grant(&f.store, &f.location.configuration)
+        .unwrap()
+        .is_some());
+    f.store.db.execute_batch("CREATE TRIGGER r9_authorize_failure BEFORE UPDATE OF epoch ON desktop_writer BEGIN SELECT RAISE(ABORT,'fixture authorize failure'); END;").unwrap();
+    let (release, blocked) = mpsc::channel();
+    let admission = f
+        .runtime
+        .notifications
+        .begin_blocked_for_test(&mut f.store, blocked);
+    let published = f.runtime.notifications.writer_epoch().map(str::to_owned);
+    let _ = release.send(());
+    f.runtime
+        .drain(&mut f.store, Duration::from_secs(2))
+        .unwrap();
+    assert!(
+        admission.is_err(),
+        "fixture must exercise failed ledger authorization"
+    );
+    assert!(
+        published.is_none(),
+        "a failed authorize is not a captured writer"
+    );
+    let epoch: Option<String> = f
+        .store
+        .db
+        .query_row("SELECT epoch FROM desktop_writer WHERE id=1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert!(epoch.is_none());
+}
+
 #[test]
 fn slow_replacement_keeps_draining_on_actor_turns_without_a_client_retry() {
     let _serial = preparation::TEST_SERIAL
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
-    let config = Config {
-        home: root.to_str().unwrap().into(),
-        dir: root.join("config"),
-        state: root.join("state"),
-        selves: vec![],
-        peers: vec![],
-        base_peers: vec![],
-        peers_from_environment: false,
-        machines: Default::default(),
-        tab: false,
-        tab_colors: String::new(),
-    };
-    std::fs::create_dir_all(&config.dir).unwrap();
-    let location = Location::new(&config).unwrap();
-    location.prepare().unwrap();
-    let epoch = uuid::Uuid::new_v4().to_string();
-    let mut store = Store::open(&location, &epoch).unwrap();
-    let image = temp.path().join("hgs-tray");
-    std::fs::write(&image, b"owned fixture image").unwrap();
-    let origin = ownership::Origin::capture(
-        &image,
-        zerus_client_core::desktop::Build {
-            version: "1.2.3".into(),
-            source_commit: "a".repeat(40),
-            source_dirty: Some(false),
-        },
-    )
-    .unwrap();
-    store
-        .db
-        .execute(
-            "UPDATE desktop_ownership SET state='service',owner_epoch=?1,origin=?2 WHERE id=1",
-            rusqlite::params![
-                uuid::Uuid::new_v4().to_string(),
-                serde_json::to_string(&origin).unwrap()
-            ],
-        )
-        .unwrap();
-    let owner = Arc::new(location.lock().unwrap());
-    let mut broker = feed::Broker::new(&epoch);
-    let mut runtime = Runtime {
-        fleet: fleet::Runtime::empty_for_test(&epoch),
-        producer: broker.claim_internal().unwrap(),
-        presence: None,
-        delivery: delivery::Runtime::start(&config, &epoch).unwrap(),
-        details: details::Adapter::new(&epoch),
-        maintenance: maintenance::Runtime::start(&config, &epoch).unwrap(),
-        attention: attention::Runtime::new(&epoch),
-        activations: activation::Router::new(&location.configuration, &epoch),
-        drained: false,
-        stopping: false,
-        notifications: notification_service::Runtime::new(
-            &config,
-            &location,
-            &epoch,
-            owner.clone(),
-        ),
-    };
+    let Fixture {
+        _temp,
+        image,
+        location,
+        mut store,
+        owner,
+        mut broker,
+        mut runtime,
+    } = Fixture::new();
     let (release, resume) = mpsc::sync_channel(1);
     runtime.notifications.block_selection_for_test(resume);
     assert!(runtime.drain(&mut store, Duration::ZERO).is_err());
@@ -100,4 +217,40 @@ fn slow_replacement_keeps_draining_on_actor_turns_without_a_client_retry() {
     drop(runtime);
     drop(owner);
     assert!(location.lock().is_ok());
+}
+
+#[test]
+fn a_cache_stop_database_error_still_stops_every_other_component() {
+    let _serial = preparation::TEST_SERIAL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut f = Fixture::new();
+    f.runtime.start_presence(&f.location).unwrap();
+    f.store.db.execute_batch("PRAGMA query_only=ON;").unwrap();
+    let error = f.runtime.drain(&mut f.store, Duration::ZERO).unwrap_err();
+    assert_eq!(
+        error
+            .downcast_ref::<rusqlite::Error>()
+            .and_then(|e| e.sqlite_error_code()),
+        Some(rusqlite::ErrorCode::ReadOnly),
+        "{error:#}"
+    );
+    assert!(f.runtime.stopping);
+    assert!(
+        !f.runtime.drained(),
+        "stop admission is not a join or SQL drain"
+    );
+    assert_eq!(f.runtime.cache.status()["stopping"], true);
+    assert_eq!(f.runtime.notifications.status()["stopping"], true);
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    assert_eq!(f.runtime.creation.status()["code"], "draining");
+    let presence = f.runtime.presence.as_ref().unwrap();
+    assert_eq!(presence.status()["code"], "draining");
+    // Restore only this fixture connection. Subsequent original actor polling
+    // must join actual workers before the runtime can report drained.
+    f.store.db.execute_batch("PRAGMA query_only=OFF;").unwrap();
+    f.runtime
+        .drain(&mut f.store, Duration::from_secs(3))
+        .unwrap();
+    assert!(f.runtime.drained());
 }

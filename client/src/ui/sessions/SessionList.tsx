@@ -13,6 +13,7 @@ import {
 } from "./SessionCard";
 import { agentKind, catalog, computerFresh, computerOffline } from "../../store/catalog";
 import { visibleUnreadReply } from "../../store/attention";
+import { optionalQuestionCount } from "./optional-questions";
 import { runningCommandsEntry } from "../../store/processes";
 import { flag } from "../../store/settings";
 import { archiveCount, archiveTip } from "../../store/archive";
@@ -82,12 +83,43 @@ const openMenu = (e: MouseEvent, items: MenuEntry[], sessionKey?: string) => {
 // Card <-> compact row. The swap is instant in Qt; here it morphs in 220 ms so
 // the title never jumps: the card's height eases to the new size, the title and
 // badges glide from their old place (FLIP, transform only), the detail lines
-// fade, and the rows below slide with the same timing.
+// fade, and the rows below slide with the same timing (FLIP on the independent
+// translate property, so the virtualizer's own transform stays free).
+// No morph animation finishes by itself (zerus-bkbb). An accelerated animation
+// that leaves its active phase, even one filling forwards, hands its layer back
+// to the last committed (pre-morph) transform until the next main-thread
+// commit, and vblank-paced 144 Hz WebKitGTK presented that frame: the row and
+// every row below at their expanded places. Each animation runs its motion and
+// then holds the end value while still active; endMorph cancels them all on the
+// main thread, in one commit with the final style. Offset keyframes with a
+// cubic-bezier easing keep to the Safari 16 / macOS 14.0 WKWebView floor (CSS
+// linear() needs Safari 17.2).
 const MORPH = { duration: 220, easing: "cubic-bezier(.33, 1, .68, 1)" } as const;
+/** How long every morph animation stays active: well past endMorph. */
+const HOLD = 1000;
 const FLIP = [".sc-title", ".sbadge", ".agent-badge", ".sc-mute"];
 const DETAIL_LINES = ".sc-l2, .sc-l3, .sc-foot";
-const [morphing, setMorphing] = createSignal(false);
 let morphTimer: number | undefined;
+let held: Animation[] = [];
+/** The rows' glides, retargeted (not stacked) when another morph starts. */
+let glides: Animation[] = [];
+/** Faded copies of a collapsing card's detail lines, removed by endMorph. */
+let fading: HTMLElement[] = [];
+
+/** `from` until `start` ms, eased to `to` over `span` ms, then `to` while active. */
+function hold(el: Element, from: Keyframe, to: Keyframe, start = 0, span: number = MORPH.duration, easing: string = MORPH.easing): Animation {
+  const head: Keyframe[] = start > 0 ? [{ ...from, offset: 0 }, { ...from, offset: start / HOLD, easing }] : [{ ...from, offset: 0, easing }];
+  return el.animate([...head, { ...to, offset: (start + span) / HOLD }, { ...to, offset: 1 }], { duration: HOLD, fill: "both" });
+}
+
+function endMorph() {
+  for (const a of [...held, ...glides]) a.cancel();
+  for (const g of fading) g.remove();
+  held = [];
+  glides = [];
+  fading = [];
+  for (const card of document.querySelectorAll(".sp-scroll .scard.morph")) card.classList.remove("morph");
+}
 
 function setRowCompact(key: string, compact: boolean) {
   if (!!compactRows[key] === compact) return;
@@ -97,54 +129,67 @@ function setRowCompact(key: string, compact: boolean) {
   const before = FLIP.map((sel) => row.querySelector(sel)?.getBoundingClientRect());
   const from = card.getBoundingClientRect().height;
   const ghosts = compact ? [...card.querySelectorAll<HTMLElement>(DETAIL_LINES)].map((n) => n.cloneNode(true) as HTMLElement) : [];
+  // Where every row is seen now, an earlier glide included; then that glide
+  // gives way so the new one starts from the same place.
+  const seen = new Map([...document.querySelectorAll<HTMLElement>(".sp-scroll .vrow")].map((el) => [el, el.getBoundingClientRect().top]));
+  for (const a of glides) a.cancel();
+  glides = [];
   clearTimeout(morphTimer);
-  setMorphing(true);
-  setCompactRows(key, compact); // Solid updates the row synchronously.
+  setCompactRows(key, compact); // Solid updates the rows synchronously.
+  for (const [el, top] of seen) {
+    const dy = top - el.getBoundingClientRect().top;
+    if (el.isConnected && Math.abs(dy) > 0.5) glides.push(hold(el, { translate: `0 ${dy}px` }, { translate: "0 0" }));
+  }
   const next = row.querySelector<HTMLElement>(".scard");
   if (next) {
     const to = next.getBoundingClientRect().height;
     next.classList.add("morph");
-    next.animate([{ height: `${from}px` }, { height: `${to}px` }], MORPH).finished.catch(() => {}).finally(() => next.classList.remove("morph"));
+    held.push(hold(next, { height: `${from}px` }, { height: `${to}px` }));
     FLIP.forEach((sel, i) => {
       const el = row.querySelector<HTMLElement>(sel), a = before[i];
       if (!el || !a) return;
       const b = el.getBoundingClientRect();
-      if (a.left !== b.left || a.top !== b.top) el.animate([{ transform: `translate(${a.left - b.left}px, ${a.top - b.top}px)` }, { transform: "none" }], MORPH);
+      if (a.left !== b.left || a.top !== b.top) held.push(hold(el, { transform: `translate(${a.left - b.left}px, ${a.top - b.top}px)` }, { transform: "none" }));
     });
     if (compact) {
       for (const g of ghosts) {
         g.setAttribute("aria-hidden", "true");
         g.style.pointerEvents = "none";
         next.append(g);
-        g.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 120, easing: "ease-out", fill: "forwards" }).finished.catch(() => {}).finally(() => g.remove());
+        held.push(hold(g, { opacity: 1 }, { opacity: 0 }, 0, 120, "ease-out"));
+        fading.push(g);
       }
     } else {
-      next.querySelectorAll<HTMLElement>(DETAIL_LINES).forEach((n) => n.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, delay: 60, easing: "ease-out", fill: "backwards" }));
+      next.querySelectorAll<HTMLElement>(DETAIL_LINES).forEach((n) => held.push(hold(n, { opacity: 0 }, { opacity: 1 }, 60, 160, "ease-out")));
     }
   }
-  morphTimer = window.setTimeout(() => setMorphing(false), MORPH.duration + 40);
+  morphTimer = window.setTimeout(endMorph, MORPH.duration + 40);
 }
 
-let clearRead: { id: string; checking: boolean; control?: ClearControl } | undefined;
+type ClearRead = { id: string; checking: boolean; control?: ClearControl; pending?: Promise<void> };
+let clearRead: ClearRead | undefined;
 const [clearRevision, setClearRevision] = createSignal(0);
+const clearReadIdentity = (s: Session) => `${s.key}\n${s.runId}\n${s.conversationId}\n${s.state}\n${!computerOffline(s.computer)}`;
 
 function clearReadFor(s: Session) {
   clearRevision();
   const online = !computerOffline(s.computer);
-  const id = `${s.key}\n${s.runId}\n${s.conversationId}\n${s.state}\n${online}`;
+  const id = clearReadIdentity(s);
   if (clearRead?.id !== id || (!clearRead.checking && !clearRead.control)) {
     clearRead = { id, checking: true };
     if (!catalog.rows[s.key] || !online) {
       clearRead = { id, checking: false };
     } else {
       const session: SessionRef = { computer: s.computer, key: s.catalogKey, name: s.name, archive_id: s.archiveId ?? null };
-      void composerClearControl(session).then((control) => {
+      const read = clearRead;
+      read.pending = composerClearControl(session).then((control) => {
+        read.checking = false;
+        read.control = control ?? undefined;
         if (clearRead?.id !== id) return;
-        clearRead = { id, checking: false, control: control ?? undefined };
         setClearRevision((n) => n + 1);
       }).catch(() => {
+        read.checking = false;
         if (clearRead?.id !== id) return;
-        clearRead = { id, checking: false };
         setClearRevision((n) => n + 1);
       });
     }
@@ -157,9 +202,9 @@ function clearReadFor(s: Session) {
  * uses the composer's control. An unselected row gets its own inspection and
  * Qt's checking tooltip, then selects and opens the same guarded dialog.
  */
-function clearEntry(s: Session): MenuEntry {
+function clearEntry(s: Session, prepared?: ClearRead): MenuEntry {
   const selected = s.key === selectedKey() && !subagentOpen() && !!composer.view()?.clear;
-  const read = selected ? undefined : clearReadFor(s);
+  const read = selected ? undefined : prepared ?? clearReadFor(s);
   const control = selected ? composer.view()?.clear : read?.control;
   return {
     label: tr("Clear session…"), icon: "clear",
@@ -180,7 +225,7 @@ function clearEntry(s: Session): MenuEntry {
   };
 }
 
-export function sessionMenu(s: Session, folderStatus?: { request: ReturnType<typeof folderRequest>; status: FolderStatus }, forkDetails?: import("../../types").Details): MenuEntry[] {
+export function sessionMenu(s: Session, folderStatus?: { request: ReturnType<typeof folderRequest>; status: FolderStatus }, forkDetails?: import("../../types").Details, preparedClear?: ClearRead): MenuEntry[] {
   // The selected row's menu reads the same details as the header (Qt's m_details).
   const details = s.key === selectedKey() && !subagentOpen() ? detailsFor(s, !computerOffline(s.computer), followedFor(s.key)) : undefined;
   const act = actionEntries(s, undefined, { context: true });
@@ -206,7 +251,7 @@ export function sessionMenu(s: Session, folderStatus?: { request: ReturnType<typ
     cp.command,
     { separator: true },
     act.change,
-    ...(fresh ? [fresh] : archived ? [] : [clearEntry(s)]),
+    ...(fresh ? [fresh] : archived ? [] : [clearEntry(s, preparedClear)]),
     act.rename,
     forkEntry(s, forkDetails ?? details),
     ...(act.archive ? [act.archive] : []),
@@ -224,23 +269,24 @@ export function sessionMenu(s: Session, folderStatus?: { request: ReturnType<typ
 function openSessionMenu(e: MouseEvent, s: Session) {
   const details = s.key === selectedKey() && !subagentOpen() ? detailsFor(s, !computerOffline(s.computer), followedFor(s.key)) : undefined;
   const request = folderRequest(s, details);
-  let items = sessionMenu(s);
-  let folderStatus: { request: ReturnType<typeof folderRequest>; status: FolderStatus } | undefined;
-  let forkDetails = details;
-  openMenu(e, items, s.key);
-  const refresh = () => {
-    const shown = menu();
-    if (shown?.items !== items) return;
-    items = sessionMenu(s, folderStatus, forkDetails);
-    setMenu({ ...shown, items });
-  };
-  void sessionFolderStatus(request.target.computer, request.directory).then((status) => {
-    folderStatus = { request, status }; refresh();
-  }).catch(() => { /* Keep explicit unavailable states, with no automatic retry. */ });
-  // An explicitly opened nonselected row reads capability once, as Qt's
-  // contextForkSession. The exact open-menu identity drops late replies.
-  if (!details && !computerOffline(s.computer)) void inspectSession({ computer: s.computer, name: s.name, run_id: s.runId ?? "", conversation_id: s.conversationId ?? "" }, s.archiveId ?? null)
-    .then((value) => { forkDetails = value ?? undefined; refresh(); }).catch(() => {});
+  const items = sessionMenu(s), read = clearRead?.id === clearReadIdentity(s) ? clearRead : undefined;
+  let folderStatus: { request: ReturnType<typeof folderRequest>; status: FolderStatus } | undefined, forkDetails = details;
+  let update: ReturnType<typeof setMenu>;
+  const snapshot = () => sessionMenu(s, folderStatus, forkDetails, read);
+  const refresh = () => update?.(snapshot());
+  // Local reads can finish before the bounded opening; slower replies update
+  // the same slots through this opening's revision guard, without refocusing.
+  const folders = sessionFolderStatus(request.target.computer, request.directory).catch(() => undefined).then((status) => {
+    folderStatus = status ? { request, status } : undefined; refresh();
+  });
+  const fork = !details && !computerOffline(s.computer)
+    ? inspectSession({ computer: s.computer, name: s.name, run_id: s.runId ?? "", conversation_id: s.conversationId ?? "" }, s.archiveId ?? null).catch(() => undefined)
+    : Promise.resolve(details);
+  const inspected = fork.then((value) => { forkDetails = value ?? undefined; refresh(); });
+  const cleared = read?.pending?.then(refresh);
+  e.preventDefault();
+  e.stopPropagation();
+  update = setMenu({ x: e.clientX, y: e.clientY, items, sessionKey: s.key }, Promise.all([folders, inspected, cleared]).then(snapshot));
 }
 
 /** A context target is independent of the open conversation and selection. */
@@ -442,15 +488,48 @@ function useRows(strip: boolean) {
   return { ref, rows, virtualizer, byId, keys, startOf, offsets, heights, heightOf: (id: string) => { const i = rows().findIndex((r) => r.id === id); return heights()[i] ?? 94; } };
 }
 
-/** Slides the full panel out from under the strip (transform only). */
+/** The panel slide in flight, and the timer that ends it. */
+let sliding: { animation: Animation; timer: number } | undefined;
+/** Every slide request takes the next number; a queued opening runs only
+ * while its number is still the latest (see slideOpenLater). */
+let slideRequest = 0;
+
+/**
+ * Slides the full panel out from under the strip (transform only). Like the
+ * row morph, the slide never ends by itself (zerus-attm): vblank-paced 144 Hz
+ * WebKitGTK presented the pre-slide layer for one frame when it did, a closed
+ * panel flashing back open. It holds its end until OPEN_MS + 40, then is
+ * cancelled with `done` (which hides a closed panel) in the same task. A new
+ * slide replaces the one in flight; that one's `done` is not run.
+ */
 function slide(el: HTMLElement | undefined, width: number, opening: boolean, done?: () => void) {
+  slideRequest++;
+  if (sliding) {
+    clearTimeout(sliding.timer);
+    sliding.animation.cancel();
+    sliding = undefined;
+  }
   if (!el || motionReduced()) { done?.(); return; }
-  const hidden = `translateX(${-(width - STRIP_WIDTH)}px)`;
-  const a = el.animate(
-    opening ? [{ transform: hidden, opacity: 0.6 }, { transform: "translateX(0)", opacity: 1 }] : [{ transform: "translateX(0)", opacity: 1 }, { transform: hidden, opacity: 0 }],
-    { duration: OPEN_MS, easing: OUT_CUBIC },
-  );
-  a.onfinish = () => done?.();
+  const hidden = { transform: `translateX(${-(width - STRIP_WIDTH)}px)`, opacity: opening ? 0.6 : 0 };
+  const shown = { transform: "translateX(0)", opacity: 1 };
+  const animation = opening ? hold(el, hidden, shown, 0, OPEN_MS, OUT_CUBIC) : hold(el, shown, hidden, 0, OPEN_MS, OUT_CUBIC);
+  const timer = window.setTimeout(() => {
+    if (sliding?.animation !== animation) return;
+    sliding = undefined;
+    animation.cancel();
+    done?.();
+  }, OPEN_MS + 40);
+  sliding = { animation, timer };
+}
+
+/**
+ * Opens the panel in the next frame, once it is shown. A newer slide request
+ * before then (a close in the same turn, say) supersedes it: it never runs,
+ * so it cannot cancel that close and leave the panel open (#1158 review).
+ */
+function slideOpenLater(el: () => HTMLElement | undefined, width: () => number) {
+  const request = ++slideRequest;
+  requestAnimationFrame(() => { if (request === slideRequest) slide(el(), width(), true); });
 }
 
 export function SessionList() {
@@ -491,13 +570,13 @@ export function SessionList() {
       setPeek(false);
       setStripMode(false);
       setPanelVisible(true);
-      requestAnimationFrame(() => slide(panel, sessionsWidth(), true));
+      slideOpenLater(() => panel, sessionsWidth);
     }
   };
   // Peek: the full panel lies over the conversation; the strip stays put.
   createEffect(on(peek, (open, was) => {
     if (!stripMode() || open === was) return;
-    if (open) { setPanelVisible(true); requestAnimationFrame(() => slide(panel, sessionsWidth(), true)); }
+    if (open) { setPanelVisible(true); slideOpenLater(() => panel, sessionsWidth); }
     else slide(panel, sessionsWidth(), false, () => { if (!peek() && stripMode()) setPanelVisible(false); });
   }, { defer: true }));
 
@@ -597,7 +676,7 @@ export function SessionList() {
         <Show when={stateFilter() === "archived"}><ArchiveBar contentSearch={!!search().trim()} /></Show>
         <Show when={search().trim()} fallback={<>
           <Show when={catalog.order.length > 0 || creationCount() > 0 || stateFilter() === "archived"} fallback={<ListPlaceholder />}>
-            <div class="sp-scroll" classList={{ morphing: morphing(), organizing: !!dragItem() }} ref={list.ref} tabindex="0" onKeyDown={onKey} role="tree"
+            <div class="sp-scroll" classList={{ organizing: !!dragItem() }} ref={list.ref} tabindex="0" onKeyDown={onKey} role="tree"
               onDragOver={(e) => organizeOver(e, list)} onDrop={(e) => organizeDrop(e)} onDragLeave={(e) => { if (!(e.currentTarget as Element).contains(e.relatedTarget as Node)) setDrop(undefined); }}
               aria-label={tr("Agent sessions; Ctrl-click to select several; drag to organize, left/right to collapse or expand a group")}>
               <Show when={list.rows().length} fallback={<NoMatches />}>
@@ -846,9 +925,10 @@ function StripBand(props: { row: Extract<Row, { type: "header" }> }) {
 /** A square tile: status and provider marks, name on up to two lines, state; the frame carries the state colour. */
 function StripTile(props: { row: Extract<Row, { type: "card" }> }) {
   const s = () => props.row.session;
+  const optionalCount = () => optionalQuestionCount(s(), computerFresh(s().computer));
   const kind = () => badgeKind(s());
   const frame = () => (emphasis(s()) === "draft" ? "draft" : kind() === "muted-attention" || kind() === "muted-unread" ? "muted" : kind() === "unread" ? "attention" : kind());
-  const tip = () => [`${s().name}: ${statusCaption(s())}`, s().summary, `${folderOf(s())}${s().branch ? ` / ${s().branch}` : ""} on ${s().machine}`, s().git ? gitTooltip(s()) : "", s().optionalQuestions ? `${s().optionalQuestions} optional question(s) waiting` : ""].filter(Boolean).join("\n");
+  const tip = () => [`${s().name}: ${statusCaption(s())}`, s().summary, `${folderOf(s())}${s().branch ? ` / ${s().branch}` : ""} on ${s().machine}`, s().git ? gitTooltip(s()) : "", optionalCount() ? `${optionalCount()} optional question(s) waiting` : ""].filter(Boolean).join("\n");
   return (
     <button class="strip-tile" classList={{ selected: selectedKey() === s().key, "context-target": visibleMenu()?.sessionKey === s().key }} data-frame={frame()} title={tip()} onClick={() => selectSession(s().key)}
       onContextMenu={(e) => sessionContextMenu(e, s())}>
@@ -861,7 +941,7 @@ function StripTile(props: { row: Extract<Row, { type: "card" }> }) {
           <Show when={s().muted}><Icon name="mute" size={14} class="st-mute" /></Show>
           <span class="st-provider">
             <AgentBadge agent={s().agent} narrow />
-            <Show when={s().optionalQuestions}><i class="st-question" classList={{ muted: !!s().muted }}>?</i></Show>
+            <Show when={optionalCount()}><i class="st-question" classList={{ muted: !!s().muted }}>?</i></Show>
           </span>
         </span>
         <span class="st-name">{s().title}</span>

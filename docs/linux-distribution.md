@@ -84,11 +84,80 @@ blocked.
 
 Readiness must match the selected CLI's lifecycle ABI and configuration, with
 `lifecycle.ipc_ready=true` and the systemd main PID. This establishes IPC
-readiness only. The current registration still runs passive `desktop serve`;
-each background component reports its separate status and is not enabled by
-registration alone. Inspect `hgs desktop status --json` and
+readiness only. Fresh registration runs passive `desktop serve`; an explicit,
+reversible background selection is described below. Each background component
+reports its separate status. Inspect `hgs desktop status --json` and
 `journalctl --user -u hgs-desktop.service` when startup fails. No native agent,
 tmux server, recovery, voice or mobile service is stopped by this helper.
+
+### Select the desktop service mode
+
+Use Zerus Next's maintained service-mode startup and authenticated **Grant**
+against the passive service first. After a retained revoke, use its explicit
+**Rearm** instead; changing the unit never clears a revoke. The GUI and service
+must select the same configuration. The installer cannot grant ownership.
+
+From a foreground terminal **outside Zerus**, in the current graphical login:
+
+```sh
+# Source checkout; packaged installations ship the same helper in lib/zerus.
+python3 scripts/install-linux-desktop-service.py install --hgs "$(command -v hgs)" --mode background --json
+python3 scripts/install-linux-desktop-service.py status --hgs "$(command -v hgs)" --json
+```
+
+The helper requires the actual current native ownership grant and checks the
+original caller's process ancestry. Agent callers, including terminals launched
+inside Zerus that carry `HGS_SESSION`/`HGS_RUN_ID`, are refused. The other supported
+caller is the installed frontend's native Settings action. Missing or changed
+grant, custom units/drop-ins, incomplete graphical environment and unknown
+caller identity refuse without enabling background mode. No GUI is restarted.
+
+Selection changes only the owned `hgs-desktop.service`, adding `--background`
+and restarting that service through `systemctl --user`. `status` reports
+`selected_mode`, `running_mode`, `pending_restart` and any pending transition;
+`hgs desktop status --json` reports `lifecycle.mode` independently of component
+readiness. A selected background mode does not prove every worker is ready.
+Normal installer/session refreshes and CLI upgrades preserve the selected mode;
+omitting `--mode` never changes it. `--no-start` and headless staging cannot
+perform an explicit mode transition.
+
+To return to passive service registration:
+
+```sh
+python3 scripts/install-linux-desktop-service.py install --hgs "$(command -v hgs)" --mode passive --json
+```
+
+This first checks the selected CLI's `desktop-revoke-hold-v1` help marker,
+records one original rollback revoke UUID, and requires its exact durable,
+checkpointed revoke (including runtime/resource drain). It then retains the
+original native hold child through unit replacement, the desktop-only restart
+and passive readiness. Every manager step checks that child before and after.
+Only stdin EOF releases the exclusion; the matching release frame, actual child
+exit and both output pipes must settle before the transition completes. See
+[the native hold contract](desktop-revoke-hold.md).
+
+A lost or unsettled result retains the original transition; inspect `status`
+and repeat **the same passive transition**, which retains its UUID. An
+unfinished rollback blocks background selection and ordinary refresh. If a new
+authenticated Grant/Rearm won before the hold, the old UUID correctly refuses.
+The same record can remain if the helper stopped after saving the transition
+but before the original revoke took effect; the existing Service grant can
+still be current. In either case, the owner can explicitly cancel only that
+pending registration record:
+
+```sh
+python3 scripts/install-linux-desktop-service.py cancel-rollback --hgs "$(command -v hgs)" --request-id ORIGINAL_UUID --json
+```
+
+Cancellation requires the same native caller check and a verified current
+Service grant. It changes no unit, selected mode, native receipt, revoke or
+manager state, and records `last_cancelled_rollback_request_id`. A later
+`install --mode passive` is a new explicit owner intent with a new UUID; no
+unknown operation is automatically replayed. Never delete records or the
+database to recover. Returning to background requires a fresh authenticated
+frontend Rearm. The [Mac helper](macos-distribution.md#explicit-desktop-service-mode)
+provides the corresponding LaunchAgent route. Windows mode switching remains
+separate work; all fresh registration defaults are passive.
 
 ## Qualify in a scratch prefix
 

@@ -5983,6 +5983,7 @@ version = "0.1.0"
 dependencies = [
  "async-io",
  "block2",
+ "cc",
  "chrono",
  "dunce",
  "embed-resource",
@@ -5998,6 +5999,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "socket2",
  "tauri",
  "tauri-build",
  "tauri-plugin-clipboard-manager",
@@ -6033,6 +6035,7 @@ dependencies = [
  "socket2",
  "time",
  "unicode-casefold",
+ "uuid",
  "windows-sys 0.61.2",
  "zerus-desktop-migration",
  "zerus-desktop-read-policy",

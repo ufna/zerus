@@ -64,6 +64,8 @@ zerus-client-media = { path = "../media", optional = true }
 # so drafts reach the disk.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+# Bound activation connect as well as write when an exiting GUI stops accepting.
+socket2 = "0.6"
 
 # Linux: the refresh rate of the window's monitor (display.rs); the same gtk as tauri's.
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -96,9 +98,14 @@ unicode-casefold = "0.2"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_Recovery", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [build-dependencies]
+cc = "1"
 tauri-build = { version = "2", features = [] }
 # The manifest must also reach the library's Windows unit-test executable.
 embed-resource = "3"
+
+[dev-dependencies]
+# The subscriber's silence deadline is tested without thirty wall-clock seconds.
+tokio = { version = "1", default-features = false, features = ["test-util"] }
 
 # Dependencies optimised once keep the debug app responsive.
 [profile.dev.package."*"]

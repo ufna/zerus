@@ -1,4 +1,5 @@
 use super::*;
+use std::cell::Cell;
 
 struct Fixture {
     temp: tempfile::TempDir,
@@ -7,6 +8,7 @@ struct Fixture {
     record: Value,
     binding: PathBuf,
     path: PathBuf,
+    expired_slices: Cell<usize>,
 }
 impl Fixture {
     fn new() -> Self {
@@ -36,18 +38,26 @@ impl Fixture {
             record,
             binding,
             path,
+            expired_slices: Cell::new(0),
         }
     }
     fn store(&self) -> Store {
         Store::open(&self.state.join("content-search-v1")).unwrap()
     }
     fn budget(&self, records: usize) -> Budget {
+        let expired = self.expired_slices.get();
+        self.expired_slices.set(expired.saturating_sub(1));
         Budget {
             files: 32,
             directory_entries: 2000,
             records,
             bytes: 4 << 20,
-            deadline: Instant::now() + Duration::from_secs(1),
+            deadline: Instant::now()
+                + if expired == 0 {
+                    Duration::from_secs(1)
+                } else {
+                    Duration::ZERO
+                },
         }
     }
     fn event(id: usize, text: &str, phase: &str) -> String {
@@ -71,6 +81,50 @@ impl Fixture {
                 &AtomicBool::new(false),
             )
             .unwrap()
+    }
+    fn consume_records(&self, store: &mut Store, per_slice: usize, expected: usize) -> Progress {
+        let mut consumed = 0;
+        for _ in 0..32 {
+            let budget = self.budget(per_slice);
+            let progress = store
+                .step(
+                    &self.state,
+                    std::slice::from_ref(&self.identity),
+                    &budget,
+                    &AtomicBool::new(false),
+                )
+                .unwrap();
+            assert!(progress.errors.is_empty(), "{:?}", progress.errors);
+            assert!(progress.records <= per_slice);
+            assert!(progress.files <= budget.files && progress.bytes <= budget.bytes);
+            consumed += progress.records;
+            if consumed >= expected {
+                // Return the first consumed prefix, even when its indexed
+                // contents are wrong. Never wait for the expected query hits.
+                assert_eq!(
+                    consumed, expected,
+                    "fixture crossed the exact record checkpoint"
+                );
+                return progress;
+            }
+            assert!(
+                progress.stopped || Instant::now() >= budget.deadline,
+                "completed fixture slice consumed {consumed} records, expected {expected}"
+            );
+        }
+        panic!("fixture record checkpoint did not finish within 32 bounded slices");
+    }
+    fn cursor(&self, store: &Store) -> Cursor {
+        let raw: String = store
+            .index
+            .connection()
+            .query_row(
+                "SELECT cursor FROM input_cursors WHERE source=?",
+                [self.identity.target().key().unwrap()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        serde_json::from_str(&raw).unwrap()
     }
     fn prepare_until(
         &self,
@@ -96,22 +150,214 @@ impl Fixture {
 }
 
 #[test]
+fn record_checkpoint_keeps_the_first_consumed_prefix_after_expired_slices() {
+    let fixture = Fixture::new();
+    let mut store = fixture.store();
+    let first = Fixture::event(1, "different public text", "final");
+    fixture.append(&first);
+    fixture.append(&Fixture::event(2, "needle later", "final"));
+
+    // The old one-step assertion fails on this legal zero-record yield.
+    fixture.expired_slices.set(1);
+    let yielded = fixture.step(&mut store, 1);
+    assert_eq!(yielded.records, 0);
+    assert!(yielded.stopped);
+    let cursors: usize = store
+        .index
+        .connection()
+        .query_row("SELECT COUNT(*) FROM input_cursors", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(cursors, 0);
+
+    fixture.expired_slices.set(2);
+    fixture.consume_records(&mut store, 1, 1);
+    assert_eq!(fixture.cursor(&store).offset, first.len() as u64);
+    // A completed wrong query result must not be retried into the next record.
+    assert!(store
+        .index
+        .query("needle", 100, None)
+        .unwrap()
+        .hits
+        .is_empty());
+}
+
+#[test]
+fn large_shell_job_bindings_stay_searchable_and_are_reverified() {
+    for archive in [false, true] {
+        let mut fixture = Fixture::new();
+        if archive {
+            fixture.identity.archive_id = uuid::Uuid::new_v4().to_string();
+            fixture.record["archive_id"] = json!(fixture.identity.archive_id);
+            fixture.record["archived_at"] = json!(42);
+            fs::create_dir(fixture.state.join("archives")).unwrap();
+            fixture.binding = fixture
+                .state
+                .join("archives")
+                .join(format!("{}.json", fixture.identity.archive_id));
+        }
+        fixture.record["shell_jobs"] =
+            json!({"old-command":{"command":"private-shell-command ".repeat(70_000)}});
+        fs::write(&fixture.binding, fixture.record.to_string()).unwrap();
+        assert!(fs::metadata(&fixture.binding).unwrap().len() > RECORD_BYTES as u64);
+        fixture.append(&Fixture::event(1, "public large binding needle", "final"));
+        let mut store = fixture.store();
+        fixture.consume_records(&mut store, 128, 1);
+        let page = store
+            .publish(
+                &fixture.state,
+                "needle",
+                50,
+                None,
+                &fixture.budget(128),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        assert_eq!(
+            page["results"].as_array().unwrap().len(),
+            1,
+            "{archive}: {page}"
+        );
+        assert!(page["proof"]["bytes"].as_u64().unwrap() <= (4 << 20));
+        assert!(store
+            .index
+            .query("private-shell-command", 50, None)
+            .unwrap()
+            .hits
+            .is_empty());
+
+        // A new input pass and publication each re-read metadata, even when
+        // the prior pass cached this large binding for its sweep/ingestion.
+        fixture.append(&Fixture::event(2, "another public needle", "final"));
+        fixture.consume_records(&mut store, 128, 1);
+        assert_eq!(store.index.query("needle", 50, None).unwrap().hits.len(), 2);
+        // Ingestion keeps it pending. A publication budget that cannot fit it
+        // even on a fresh page reports it unavailable without retiring it.
+        let mut small = fixture.budget(128);
+        small.bytes = RECORD_BYTES;
+        let deferred = store
+            .step(
+                &fixture.state,
+                std::slice::from_ref(&fixture.identity),
+                &small,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        assert!(deferred.stopped && deferred.errors.is_empty());
+        assert!(deferred.bytes <= small.bytes);
+        let deferred = store
+            .publish(
+                &fixture.state,
+                "needle",
+                50,
+                None,
+                &small,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        assert!(deferred["results"].as_array().unwrap().is_empty());
+        assert_eq!(deferred["unavailable_sessions"], 1);
+        assert!(deferred["next_cursor"].is_null());
+        let resumed = store
+            .publish(
+                &fixture.state,
+                "needle",
+                50,
+                None,
+                &fixture.budget(128),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        assert_eq!(resumed["results"].as_array().unwrap().len(), 2);
+        fixture.record["run_id"] = json!("replaced-run");
+        fs::write(&fixture.binding, fixture.record.to_string()).unwrap();
+        let page = store
+            .publish(
+                &fixture.state,
+                "needle",
+                50,
+                None,
+                &fixture.budget(128),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        assert!(page["results"].as_array().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn sweep_keeps_a_source_active_when_only_the_remaining_slice_is_too_small() {
+    let mut fixture = Fixture::new();
+    fixture.record["shell_jobs"] = json!({"command":"private-shell-command ".repeat(70_000)});
+    fs::write(&fixture.binding, fixture.record.to_string()).unwrap();
+    fixture.append(&Fixture::event(1, "public needle", "final"));
+    let mut store = fixture.store();
+    fixture.consume_records(&mut store, 128, 1);
+    store
+        .index
+        .connection()
+        .execute("DELETE FROM meta WHERE key='source_sweep'", [])
+        .unwrap();
+    let mut progress = Progress {
+        bytes: 3 << 20,
+        ..Progress::default()
+    };
+    store
+        .sweep(
+            &fixture.state,
+            &fixture.budget(128),
+            &mut progress,
+            &AtomicBool::new(false),
+            &mut metadata::Reader::default(),
+        )
+        .unwrap();
+    assert_eq!(progress.bytes, 3 << 20);
+    assert_eq!(progress.files, 1);
+    assert_eq!(store.index.query("needle", 50, None).unwrap().hits.len(), 1);
+    let active: bool = store
+        .index
+        .connection()
+        .query_row("SELECT active FROM sources", [], |row| row.get(0))
+        .unwrap();
+    assert!(active);
+}
+
+#[test]
+#[should_panic(expected = "fixture record checkpoint did not finish within 32 bounded slices")]
+fn record_checkpoint_does_not_retry_expired_slices_without_a_bound() {
+    let fixture = Fixture::new();
+    let mut store = fixture.store();
+    fixture.append(&Fixture::event(1, "needle later", "final"));
+    fixture.expired_slices.set(32);
+    fixture.consume_records(&mut store, 1, 1);
+}
+
+#[test]
 fn source_resumes_committed_offsets_and_indexes_only_public_text() {
     let fixture = Fixture::new();
     let mut store = fixture.store();
     fixture.append(&Fixture::event(1, "needle first", "final"));
     fixture.append(&Fixture::event(2, "PRIVATE_REASONING_TOKEN", "analysis"));
     fixture.append(&Fixture::event(3, "needle second", "final"));
-    let first = fixture.step(&mut store, 1);
+    fixture.expired_slices.set(2);
+    let first = fixture.consume_records(&mut store, 1, 1);
     assert_eq!(first.records, 1);
     assert!(first.files <= 32);
     assert!(first.bytes <= 4 << 20);
     assert_eq!(
+        fixture.cursor(&store).offset,
+        Fixture::event(1, "needle first", "final").len() as u64
+    );
+    assert_eq!(
         store.index.query("needle", 100, None).unwrap().hits.len(),
         1
     );
-    let second = fixture.step(&mut store, 128);
+    fixture.expired_slices.set(1);
+    let second = fixture.consume_records(&mut store, 128, 2);
     assert!(second.errors.is_empty());
+    assert_eq!(
+        fixture.cursor(&store).offset,
+        fs::metadata(&fixture.path).unwrap().len()
+    );
     assert_eq!(
         store.index.query("needle", 100, None).unwrap().hits.len(),
         2
@@ -123,7 +369,12 @@ fn source_resumes_committed_offsets_and_indexes_only_public_text() {
         .hits
         .is_empty());
     fixture.append(&Fixture::event(4, "needle third", "final"));
-    fixture.step(&mut store, 128);
+    fixture.expired_slices.set(1);
+    fixture.consume_records(&mut store, 128, 1);
+    assert_eq!(
+        fixture.cursor(&store).offset,
+        fs::metadata(&fixture.path).unwrap().len()
+    );
     assert_eq!(
         store.index.query("needle", 100, None).unwrap().hits.len(),
         3
@@ -324,17 +575,23 @@ fn journal_pages_use_exact_conversation_and_resume_the_sequence() {
         ],
     )
     .unwrap();
-    fixture.step(&mut store, 1);
+    fixture.expired_slices.set(1);
+    fixture.consume_records(&mut store, 1, 1);
+    assert_eq!(fixture.cursor(&store).seq, 1);
     assert_eq!(
         store.index.query("needle", 100, None).unwrap().hits.len(),
         1
     );
-    fixture.step(&mut store, 1);
+    fixture.expired_slices.set(2);
+    fixture.consume_records(&mut store, 1, 1);
+    assert_eq!(fixture.cursor(&store).seq, 2);
     assert_eq!(
         store.index.query("needle", 100, None).unwrap().hits.len(),
         2
     );
-    fixture.step(&mut store, 128);
+    fixture.expired_slices.set(1);
+    fixture.consume_records(&mut store, 128, 1);
+    assert_eq!(fixture.cursor(&store).seq, 3);
     assert_eq!(
         store.index.query("needle", 100, None).unwrap().hits.len(),
         3

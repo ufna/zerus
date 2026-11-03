@@ -34,6 +34,7 @@ pub(in crate::desktop) struct Runtime {
     recovering: bool,
     retry_at: Option<Instant>,
     failures: usize,
+    preferences: zerus_client_core::desktop::notification_control::Preferences,
     #[cfg(all(test, target_os = "linux"))]
     test_bus: Option<String>,
     #[cfg(target_os = "linux")]
@@ -77,6 +78,7 @@ impl Runtime {
             recovering: false,
             retry_at: None,
             failures: 0,
+            preferences: Default::default(),
             #[cfg(all(test, target_os = "linux"))]
             test_bus: None,
             #[cfg(target_os = "linux")]
@@ -85,6 +87,26 @@ impl Runtime {
     }
     pub fn handoff(&self) -> Option<Arc<HandoffLock>> {
         self.owner.as_ref().map(|o| o.handoff())
+    }
+    pub fn set_preferences(
+        &mut self,
+        preferences: zerus_client_core::desktop::notification_control::Preferences,
+    ) {
+        self.preferences = preferences;
+    }
+    /// Actor-only loan of this original owner, not a serialized role/lease or
+    /// a new writer grant. Its strong resource count also fences actual drain.
+    pub fn publication_owner(&self, store: &Store) -> Result<Option<Arc<preparation::Owner>>> {
+        if self.stopping || self.drained || self.recovering {
+            return Ok(None);
+        }
+        let Some(grant) = &self.grant else {
+            return Ok(None);
+        };
+        if !grant.current(store)? {
+            return Ok(None);
+        }
+        Ok(self.owner.clone())
     }
     pub fn writer_epoch(&self) -> Option<&str> {
         self.grant.as_ref().map(ownership::Grant::writer_epoch)
@@ -126,23 +148,19 @@ impl Runtime {
         )?;
         self.owner = preparation.owner();
         self.preparing = Some(preparation);
-        self.grant = Some(grant);
         // Both original OS exclusions are now held. The notification SDK is
         // independent of read/approval readiness; failure to select a native
         // host cannot revoke their separately configured service work.
         ensure!(
-            zerus_desktop_ledger::operations::totals(&store.db)?.undrained == 0,
+            store.operation_undrained()? == 0,
             "original operation resources remain owned"
         );
-        ensure!(
-            self.grant.as_ref().unwrap().current(store)?,
-            "notification grant changed"
-        );
-        zerus_desktop_ledger::authorize(
-            &mut store.db,
-            self.grant.as_ref().unwrap().writer_epoch(),
-            &self.epoch,
-        )?;
+        ensure!(grant.current(store)?, "notification grant changed");
+        zerus_desktop_ledger::authorize(&mut store.db, grant.writer_epoch(), &self.epoch)?;
+        // Publish only an epoch actually committed to the durable writer.
+        // A failed admission must retain its physical preparation without
+        // lending an uncommitted grant to revocation or publication.
+        self.grant = Some(grant);
         Ok(())
     }
     fn attach(&mut self, store: &Store, prepared: preparation::Prepared) -> Result<()> {
@@ -217,7 +235,7 @@ impl Runtime {
             if self.stopping || native.admitting() && !self.recovering {
                 attention.set_policy(attention::Policy {
                     enabled: !self.stopping,
-                    optional_questions: false,
+                    optional_questions: !self.stopping && self.preferences.optional_questions,
                 });
             }
             let callbacks = native.poll(store, attention);
@@ -349,6 +367,8 @@ impl Runtime {
     }
     pub fn request_stop(&mut self) {
         self.stopping = true;
+        self.recovering = false;
+        self.error = None;
         self.retry_at = None;
         #[cfg(target_os = "linux")]
         self.closed.stop();
@@ -385,6 +405,17 @@ impl Runtime {
 
 #[cfg(test)]
 impl Runtime {
+    pub(in crate::desktop) fn begin_blocked_for_test(
+        &mut self,
+        store: &mut Store,
+        release: std::sync::mpsc::Receiver<()>,
+    ) -> Result<()> {
+        self.begin_with(store, |_, location, _, service| {
+            Ok(preparation::Preparation::blocked_for_test(
+                service, location, release,
+            ))
+        })
+    }
     #[cfg(target_os = "linux")]
     pub(in crate::desktop) fn begin_on_test_bus(&mut self, store: &mut Store, address: String) {
         self.test_bus = Some(address.clone());

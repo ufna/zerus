@@ -162,6 +162,11 @@ impl Original {
     pub fn current(&self) -> bool {
         self.check_current().is_ok()
     }
+    /// Physical exit of this retained process handle. A failed currentness
+    /// check (including unreadable metadata) does not establish process exit.
+    pub fn exited(&self) -> bool {
+        unsafe { WaitForSingleObject(self.process.as_raw_handle(), 0) == WAIT_OBJECT_0 }
+    }
     fn check_current(&self) -> io::Result<()> {
         let wait = unsafe { WaitForSingleObject(self.process.as_raw_handle(), 0) };
         require(wait == WAIT_TIMEOUT).map_err(|e| context("original process is not live", e))?;
@@ -639,6 +644,12 @@ pub struct Ancestry {
     boundary: Boundary,
 }
 impl Ancestry {
+    /// Borrow the actual retained ancestors, excluding the inspected process.
+    /// Selection still requires validate(); these references grant no role.
+    pub fn ancestors(&self) -> impl Iterator<Item = &Original> {
+        self.chain.iter().skip(1).map(Arc::as_ref)
+    }
+
     pub fn inspect(pid: u32, until: Instant) -> io::Result<Self> {
         require(Instant::now() < until)?;
         let mut current =
@@ -679,9 +690,29 @@ impl Ancestry {
         }
     }
     pub fn validate(&self, until: Instant) -> io::Result<()> {
-        let child = self.chain.last().ok_or(io::ErrorKind::InvalidData)?;
+        self.validate_chain(&self.chain, until)
+    }
+
+    /// A read-only hint may outlive its original relay. Retain the same
+    /// inspected objects, but require the exact original direct parent and
+    /// revalidate every ancestor from that parent. Mutation admission continues
+    /// to use validate(), including the original relay's liveness.
+    pub fn validate_parent(&self, parent: &Original, until: Instant) -> io::Result<()> {
+        let (relay, ancestors) = self.chain.split_first().ok_or(io::ErrorKind::InvalidData)?;
+        let retained = ancestors.first().ok_or(io::ErrorKind::InvalidData)?;
+        require(
+            relay.parent == parent.pid
+                && retained.pid == parent.pid
+                && retained.birth == parent.birth
+                && parent.current(),
+        )?;
+        self.validate_chain(ancestors, until)
+    }
+
+    fn validate_chain(&self, chain: &[Arc<Original>], until: Instant) -> io::Result<()> {
+        let child = chain.last().ok_or(io::ErrorKind::InvalidData)?;
         self.boundary.validate(child, until)?;
-        for original in &self.chain {
+        for original in chain {
             require(
                 Instant::now() < until
                     && original.current()
@@ -751,6 +782,44 @@ mod tests {
         reader.join().unwrap();
         assert!(ready.unwrap().ends_with(b"START\r\n"));
         child
+    }
+    #[test]
+    fn retained_ancestor_view_excludes_the_inspected_child_and_preserves_its_actual_parent() {
+        let child = child();
+        let until = Instant::now() + Duration::from_secs(2);
+        let proof = Ancestry::inspect(child.0.id(), until).unwrap();
+        let parent = Original::open(std::process::id()).unwrap();
+        assert!(proof
+            .ancestors()
+            .all(|original| original.pid != child.0.id()));
+        let first = proof.ancestors().next().unwrap();
+        assert_eq!((first.pid, first.birth), (parent.pid, parent.birth));
+        proof.validate(until).unwrap();
+        drop(child);
+        assert!(proof
+            .validate(Instant::now() + Duration::from_secs(2))
+            .is_err());
+    }
+    #[test]
+    fn original_exit_is_not_inferred_from_a_failed_identity_check() {
+        let mut child = child();
+        let mut original = Original::open(child.0.id()).unwrap();
+        assert!(original.current());
+        assert!(!original.exited());
+        original.image.push_str(".changed");
+        assert!(!original.current());
+        assert!(!original.exited(), "identity refusal is not process exit");
+        child.0.stdin.take().unwrap().write_all(b"exit\n").unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        while child.0.try_wait().unwrap().is_none() {
+            assert!(
+                Instant::now() < until,
+                "original private child did not exit"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        child.0.wait().unwrap();
+        assert!(original.exited());
     }
     #[test]
     fn native_agent_parent_fixture() {
@@ -1008,6 +1077,39 @@ mod tests {
             .environment(Instant::now() + Duration::from_secs(2))
             .is_err());
         assert!(Original::open(0).is_err());
+    }
+    #[test]
+    fn native_parent_hint_proof_keeps_original_ancestors_after_only_the_relay_exits() {
+        let mut relay = child();
+        let parent = Original::open(std::process::id()).unwrap();
+        let proof =
+            Ancestry::inspect(relay.0.id(), Instant::now() + Duration::from_secs(2)).unwrap();
+        let wrong_parent = child();
+        let wrong = Original::open(wrong_parent.0.id()).unwrap();
+        assert!(proof
+            .validate_parent(&wrong, Instant::now() + Duration::from_secs(2))
+            .is_err());
+        // Exit/reap only the original fixture relay. The hint's retained parent
+        // and ancestry still exist; a mutation permit must fail on that exit.
+        relay
+            .0
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"continue\n")
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if relay.0.try_wait().unwrap().is_some() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "original relay did not exit");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let until = Instant::now() + Duration::from_secs(2);
+        assert!(proof.validate(until).is_err());
+        proof.validate_parent(&parent, until).unwrap();
+        assert!(proof.validate_parent(&parent, Instant::now()).is_err());
     }
     #[test]
     fn native_clean_ancestry_ends_only_at_the_approved_unix_parity_boundaries() {

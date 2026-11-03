@@ -3,9 +3,12 @@ mod approval_audit;
 #[allow(dead_code)] // Discovery is bound to the original notification factory at cutover.
 mod attention;
 mod background;
+mod cache_effects;
+mod cache_maintenance;
 mod catalog_read;
 mod catalog_relay;
 mod counts;
+mod creation_clone;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod custody;
 mod delivery;
@@ -17,6 +20,7 @@ mod frontend;
 mod handoff;
 mod import_evidence;
 mod lifecycle;
+mod notification_controls;
 #[allow(dead_code)] // Platform adapters attach this outbox in the next integration slice.
 mod notifications;
 #[allow(dead_code)]
@@ -37,6 +41,8 @@ mod producer_session;
 mod protocol;
 mod registration;
 mod revoke;
+#[cfg(any(windows, test))]
+pub(crate) mod startup_diagnostic;
 #[allow(dead_code)]
 mod startup_exclusion;
 mod startup_stdio;
@@ -66,7 +72,17 @@ use std::{
 use store::{Location, Store};
 use transport::{Listener, Stream, TIMEOUT};
 
-const USAGE: &str = "usage: hgs desktop serve [--config-dir DIR --state-dir DIR] [--background] | status [--json] | startup --json | owner-status --json | ownership-status --json | ownership-result --json | watch --json | feed --json | request --json | catalog-relay --json | registration --json | registration install|remove|status --json (Windows) | notification-registration install|status --json | notification-registration remove --json --request-id UUID (Windows) | revoke --json [--request-id UUID] [--reason rollback] | import-evidence --json | import-status --json --import-id UUID";
+// Native token regression uses the actual Store/guards without exposing them
+// to another production caller or adding a mock ownership verdict.
+#[cfg(all(windows, test))]
+pub(crate) mod creation_test {
+    pub(crate) use super::store::{Location, Store};
+    pub(crate) fn database_files(location: &Location) -> anyhow::Result<()> {
+        super::store::database_files(location)
+    }
+}
+
+const USAGE: &str = "usage: hgs desktop serve [--config-dir DIR --state-dir DIR] [--background] | status [--json] | startup --json | owner-status --json | ownership-status --json | ownership-result --json | watch --json | feed --json | request --json | catalog-relay --json | registration --json [--background] | registration install|remove|status --json (Windows) | registration install --mode background|passive --json (Windows) | registration cancel-rollback --json --request-id UUID (Windows) | notification-registration install|status --json | notification-registration remove --json --request-id UUID (Windows) | revoke --json [--request-id UUID] [--reason rollback] | import-evidence --json | import-status --json --import-id UUID";
 const HEARTBEAT: Duration = Duration::from_secs(10);
 pub const STARTUP_REFUSED: i32 = 78;
 
@@ -177,6 +193,43 @@ pub fn dispatch(config: &Config, target: &str, args: &[String], dry: bool) -> cl
                 println!("{}", registration::preview(config, &location)?);
                 Ok(())
             }
+            ["revoke-hold", "--json", "--request-id", id] => {
+                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+                {
+                    revoke::hold::cli(config, &location, id)
+                }
+                #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+                {
+                    let _ = id;
+                    anyhow::bail!(
+                        "desktop revoke hold is supported on Linux, macOS and Windows only"
+                    )
+                }
+            }
+            ["registration", "--json", "--background"] => {
+                ensure!(
+                    cfg!(any(target_os = "linux", target_os = "macos", windows)),
+                    "background registration is supported on Linux, macOS and Windows"
+                );
+                println!("{}", registration::preview_mode(config, &location, true)?);
+                Ok(())
+            }
+            ["registration", "mode-check", "--json"] => {
+                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+                {
+                    let scope = ui_authority::Scope::new(config, &location);
+                    let source = ui_authority::registration::caller(&scope)?;
+                    println!(
+                        "{}",
+                        json!({"schema":1,"configuration":location.configuration,"admitted":true,"source":source})
+                    );
+                    Ok(())
+                }
+                #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+                anyhow::bail!(
+                    "desktop registration mode checks are supported on Linux, macOS and Windows only"
+                )
+            }
             ["registration", operation @ ("install" | "remove" | "status"), "--json"] => {
                 #[cfg(windows)]
                 {
@@ -189,7 +242,41 @@ pub fn dispatch(config: &Config, target: &str, args: &[String], dry: bool) -> cl
                 #[cfg(not(windows))]
                 {
                     let _ = operation;
-                    anyhow::bail!("desktop registration install/remove/status is available only on Windows; use the maintained platform installer")
+                    anyhow::bail!(
+                        "desktop registration install/remove/status is available only on Windows; use the maintained platform installer"
+                    )
+                }
+            }
+            ["registration", "install", "--mode", mode, "--json"] => {
+                #[cfg(windows)]
+                {
+                    println!(
+                        "{}",
+                        windows_registration::mode_command(config, &location, mode)?
+                    );
+                    Ok(())
+                }
+                #[cfg(not(windows))]
+                {
+                    let _ = mode;
+                    anyhow::bail!("Use the maintained platform installer to select desktop mode.")
+                }
+            }
+            ["registration", "cancel-rollback", "--json", "--request-id", id] => {
+                #[cfg(windows)]
+                {
+                    println!(
+                        "{}",
+                        windows_registration::cancel_rollback(config, &location, id)?
+                    );
+                    Ok(())
+                }
+                #[cfg(not(windows))]
+                {
+                    let _ = id;
+                    anyhow::bail!(
+                        "Use the maintained platform installer to cancel rollback metadata."
+                    )
                 }
             }
             ["notification-registration", rest @ ..] => {
@@ -318,9 +405,12 @@ pub fn dispatch(config: &Config, target: &str, args: &[String], dry: bool) -> cl
                     && result["handoff"] == "none"
                     && result["revoked"] == true
                     && result["nothing_written"] == true;
-                ensure!((settled || absent) && result["request_id"] == command.id()
+                ensure!(
+                    (settled || absent)
+                        && result["request_id"] == command.id()
                         && result["configuration"] == location.configuration,
-                    "desktop revocation is not settled; keep Qt stopped and inspect the same request_id");
+                    "desktop revocation is not settled; keep Qt stopped and inspect the same request_id"
+                );
                 Ok(())
             }
             ["catalog-relay", "--json"] => catalog_relay::run(&location),
@@ -416,6 +506,8 @@ fn projection(
 }
 
 enum Event {
+    ApprovalAudit(Hello, mpsc::SyncSender<approval_audit::worker::Reply>),
+    ImportOwner(String, mpsc::SyncSender<import_evidence::held::Loan>),
     Command(Hello, Arc<Queue>, Option<Box<ui_authority::Authorized>>),
     FeedOpen(Hello, mpsc::SyncSender<feed::Opened>),
     FeedData(feed::Data),
@@ -430,18 +522,26 @@ impl Drop for Permit {
 
 fn serve(config: &Config, location: Location, background_mode: bool) -> Result<()> {
     let (_signals, owner, listener, epoch, mut store) = (|| -> Result<_> {
-        let signals = platform::ShutdownGuard::install()?;
+        #[cfg(windows)]
+        crate::host::token::private_creation::prepare()
+            .context("select exact-user desktop creation owner")?;
+        let signals =
+            platform::ShutdownGuard::install().context("install desktop shutdown handler")?;
         // This dedicated service process has no workers yet. Make socket creation
         // private too, so a concurrent status probe never sees the pre-chmod mode.
         #[cfg(unix)]
         unsafe {
             libc::umask(0o077);
         }
-        location.prepare()?;
-        let lock = Arc::new(location.lock()?);
-        let listener = Arc::new(Listener::bind(&location)?);
+        location
+            .prepare()
+            .context("prepare private desktop folders")?;
+        let lock = Arc::new(location.lock().context("acquire desktop owner lock")?);
         let epoch = uuid::Uuid::new_v4().to_string();
-        let store = Store::open(&location, &epoch)?;
+        let store = Store::open(&location, &epoch).context("open desktop store")?;
+        // A status deadline must not start while startup still owns the actor
+        // for migrations/recovery. Publish only once that work has completed.
+        let listener = Arc::new(Listener::bind(&location).context("bind desktop listener")?);
         Ok((signals, lock, listener, epoch, store))
     })()
     .context(StartupRefused)?;
@@ -449,7 +549,14 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
     let active = Arc::new(AtomicUsize::new(0));
     let mut feed = feed::Broker::new(&epoch);
     let mut reads = catalog_read::Reader::default();
-    let mut audit = approval_audit::Reader::new(config, &location, &epoch);
+    let audit = Arc::new(approval_audit::worker::Worker::new(
+        config,
+        &location,
+        &epoch,
+        stopped.clone(),
+    ));
+    let mut notification_controls =
+        notification_controls::Runtime::new(&store, &location.configuration, &epoch)?;
     let mut frontend = frontend::Cache::default();
     let mut background: Option<background::Runtime> = None;
     let mut frontend_order = ui_authority::Order::default();
@@ -572,6 +679,10 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
             let mut full_batch = false;
             if let Some(runtime) = &mut background {
                 let previous = seq;
+                runtime.notification_controls(
+                    notification_controls.preferences(),
+                    notification_controls.foreground_until(),
+                );
                 let (changes, full) = runtime.poll(&mut store, &mut feed, &mut seq);
                 full_batch = full || previous != seq;
                 for mut change in changes {
@@ -589,6 +700,32 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
             } else {
                 Duration::from_millis(200)
             }) {
+                Ok(Event::ImportOwner(configuration, reply)) => {
+                    seq += 1;
+                    let owner = if configuration == location.configuration {
+                        background
+                            .as_ref()
+                            .map(|runtime| runtime.publication_owner(&store))
+                            .unwrap_or(Ok(None))
+                    } else {
+                        Ok(None)
+                    };
+                    // The initially empty one-shot never blocks the actor. A
+                    // dropped caller/shutdown drops the original owner loan.
+                    // This actor never claims the stage. A failed owner query
+                    // is a definite no-job outcome for this request, not an
+                    // unknown filesystem publication.
+                    let _ = reply.try_send(import_evidence::held::Loan {
+                        owner: owner.unwrap_or(None),
+                        epoch: epoch.clone(),
+                        seq,
+                    });
+                }
+                Ok(Event::ApprovalAudit(hello, reply)) => {
+                    // Only bounded validation/admission occurs here. The same
+                    // original client worker owns query I/O and transport cleanup.
+                    let _ = reply.try_send(audit.admit(hello, owner.clone(), seq));
+                }
                 Ok(Event::Command(hello, queue, authority)) => {
                     let mut value = projection(
                         &location,
@@ -600,6 +737,13 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                         &reads,
                     );
                     value["frontend_read_delivery"] = frontend.status();
+                    value["notification_controls"] = notification_controls.projection(&store);
+                    value["lifecycle"]["mode"] = if background_mode {
+                        "background"
+                    } else {
+                        "passive"
+                    }
+                    .into();
                     value["attention_counts"] = attention_counts(&store, &epoch, seq, &feed);
                     if let Some(runtime) = &background {
                         runtime.decorate(&mut value);
@@ -678,6 +822,22 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                                 }
                             }
                             (Some(authority), _)
+                                if matches!(
+                                    authority.operation(),
+                                    "notification_preferences" | "notification_focus"
+                                ) =>
+                            {
+                                match authority.into_request(&mut frontend_order) {
+                                    Ok(permit) => {
+                                        notification_controls.frontend(&mut store, permit)
+                                    }
+                                    Err(_) => frontend_refused(
+                                        hello.request.as_ref(),
+                                        "frontend_identity_expired",
+                                    ),
+                                }
+                            }
+                            (Some(authority), _)
                                 if authority.operation() == "import_pending_reads" =>
                             {
                                 match authority.into_request(&mut frontend_order) {
@@ -731,6 +891,26 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                         let result = if hello.request.as_ref().is_some_and(|v| {
                             matches!(
                                 v["op"].as_str(),
+                                Some("cache_maintenance_result" | "cache_maintenance_policy")
+                            )
+                        }) {
+                            cache_maintenance::query(
+                                &store,
+                                &location.configuration,
+                                hello.request.as_ref().unwrap(),
+                            )
+                        } else if hello
+                            .request
+                            .as_ref()
+                            .is_some_and(|v| v["op"] == "cache_maintenance")
+                        {
+                            frontend_refused(
+                                hello.request.as_ref(),
+                                "frontend_authentication_required",
+                            )
+                        } else if hello.request.as_ref().is_some_and(|v| {
+                            matches!(
+                                v["op"].as_str(),
                                 Some("detail_follow" | "detail_unfollow" | "detail_source")
                             )
                         }) {
@@ -744,6 +924,21 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                                     json!({"request_id":hello.request.as_ref().unwrap()["request_id"],"accepted":false,"code":"details_unavailable"})
                                 }
                             }
+                        } else if hello
+                            .request
+                            .as_ref()
+                            .is_some_and(|v| v["op"] == "creation_clone_result")
+                        {
+                            creation_clone::query(&store, hello.request.as_ref().unwrap())
+                        } else if hello
+                            .request
+                            .as_ref()
+                            .is_some_and(|v| v["op"] == "creation_clone")
+                        {
+                            frontend_refused(
+                                hello.request.as_ref(),
+                                "frontend_authentication_required",
+                            )
                         } else if hello.request.as_ref().is_some_and(|v| {
                             matches!(
                                 v["op"].as_str(),
@@ -754,10 +949,31 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                         } else if hello.request.as_ref().is_some_and(|v| {
                             matches!(
                                 v["op"].as_str(),
+                                Some(
+                                    "notification_preferences_status"
+                                        | "notification_preferences_result"
+                                )
+                            )
+                        }) {
+                            notification_controls.request(&store, hello.request.as_ref().unwrap())
+                        } else if hello
+                            .request
+                            .as_ref()
+                            .is_some_and(|v| v["op"] == "notification_control")
+                        {
+                            frontend_refused(
+                                hello.request.as_ref(),
+                                "frontend_authentication_required",
+                            )
+                        } else if hello.request.as_ref().is_some_and(|v| {
+                            matches!(
+                                v["op"].as_str(),
                                 Some("approval_audit_list" | "approval_audit_detail")
                             )
                         }) {
-                            audit.request(hello.request.as_ref().unwrap())
+                            // Native client dispatch routes these through the
+                            // original bounded I/O worker before this generic lane.
+                            audit.unavailable(hello.request.as_ref().unwrap())
                         } else if hello
                             .request
                             .as_ref()
@@ -812,12 +1028,13 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                                 Some("revoke" | "revoke_status")
                             ) {
                                 let handoff = runtime.handoff();
-                                let revoke_epoch = runtime.revocation_epoch(&epoch);
+                                let captured_writer = runtime.captured_writer_epoch();
                                 let result = revoke::request_with_runtime(
                                     &location,
                                     &mut store,
                                     request_value,
-                                    &revoke_epoch,
+                                    &epoch,
+                                    captured_writer.as_deref(),
                                     handoff.as_deref(),
                                     |store| runtime.drain(store, Duration::from_millis(750)),
                                 );
@@ -938,6 +1155,13 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                     &reads,
                 );
                 value["frontend_read_delivery"] = frontend.status();
+                value["notification_controls"] = notification_controls.projection(&store);
+                value["lifecycle"]["mode"] = if background_mode {
+                    "background"
+                } else {
+                    "passive"
+                }
+                .into();
                 value["attention_counts"] = attention_counts(&store, &epoch, seq, &feed);
                 if let Some(runtime) = &background {
                     runtime.decorate(&mut value);
@@ -1010,7 +1234,17 @@ fn client(
     #[cfg(windows)]
     transport::authenticate(&stream)?;
     let hello: Hello = serde_json::from_slice(&bytes).context("invalid desktop hello")?;
+    if hello.op == import_evidence::held::OP {
+        // The finalizer's Session owns the only original connection handle;
+        // its stream cleanup precedes release of the runtime Owner loan.
+        drop(reader);
+        return import_evidence::held::client(stream, hello, send, stopped, location);
+    }
     ensure!(!stopped.load(Ordering::SeqCst), "desktop is stopping");
+    if approval_audit::worker::recognizes(&hello) {
+        drop(reader);
+        return approval_audit::worker::client(stream, hello, send);
+    }
     if hello.op == "feed" {
         return feed::client(stream, reader, hello, send, stopped, ingress);
     }
@@ -1127,7 +1361,9 @@ fn exchange(location: &Location, op: &str, request: Option<Value>) -> Result<Opt
     };
     // Revocation includes a bounded SQLite busy wait and durable filesystem I/O.
     // A timeout remains an unknown result, never permission to start Qt.
-    if revoking || op == "frontend_request" {
+    if op == import_evidence::held::OP {
+        stream.set_read_timeout(Some(import_evidence::TOTAL))?;
+    } else if revoking || op == "frontend_request" {
         stream.set_read_timeout(Some(if activation_wait {
             zerus_client_core::desktop::activation::CLIENT_WAIT
         } else {

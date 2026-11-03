@@ -51,15 +51,41 @@ impl Activation {
 
 pub struct Listening {
     stop: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
+    threads: Vec<JoinHandle<()>>,
     _lock: File,
+    _canonical: Option<Canonical>,
 }
 impl Drop for Listening {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        if let Some(thread) = self.thread.take() {
+        for thread in self.threads.drain(..) {
             let _ = thread.join();
         }
+    }
+}
+
+/// Global kernel namespace + token SID, independent of profile/environment,
+/// config, TEMP and Windows logon session. The object's existence is the
+/// exclusion, not mutex ownership by a thread; a crash closes the last handle.
+struct Canonical {
+    _handle: OwnedHandle,
+    pipe: String,
+}
+impl Canonical {
+    fn name(sid: &str) -> String {
+        format!("com.hgdev.hgs-tray.gui-{sid}")
+    }
+    fn acquire(pipe: String) -> io::Result<Option<Self>> {
+        let security = Security::user_only()?;
+        let attrs = security.attributes();
+        let name = wide(&format!(r"Global\{pipe}"));
+        let raw = unsafe { CreateMutexW(&attrs, 0, name.as_ptr()) };
+        let existed = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+        let handle = owned(raw)?;
+        Ok((!existed).then_some(Self {
+            _handle: handle,
+            pipe,
+        }))
     }
 }
 pub struct Claimed {
@@ -69,12 +95,22 @@ pub struct Claimed {
 pub enum Claim {
     Claimed(Claimed),
     Forwarded,
+    Duplicate(&'static str),
     Failed(String),
 }
 pub struct InstanceState(pub Mutex<Option<Listening>>);
 impl InstanceState {
     pub fn release(&self) {
-        drop(self.0.lock().unwrap_or_else(PoisonError::into_inner).take());
+        if let Some(mut listening) = self.0.lock().unwrap_or_else(PoisonError::into_inner).take() {
+            let canonical = listening._canonical.is_some();
+            // Final GUI teardown can precede actual process exit. Keep the
+            // canonical kernel handle until the OS closes it at exit.
+            std::mem::forget(listening._canonical.take());
+            drop(listening);
+            if canonical {
+                crate::startup_log::record("quitting", "listeners_closed_owner_retained", None);
+            }
+        }
     }
 }
 
@@ -333,7 +369,52 @@ pub fn claim(
     _label: Option<&str>,
     activation: Activation,
     reply: Option<Reply>,
+    admitted: impl FnOnce(),
 ) -> Claim {
+    let canonical = if name == "hgs-tray" {
+        let sid = match own_sid() {
+            Ok(sid) => sid,
+            Err(error) => {
+                let failed = Claim::Failed(error.to_string());
+                crate::startup_log::guard(&failed);
+                return failed;
+            }
+        };
+        Some(Canonical::name(&sid))
+    } else {
+        None
+    };
+    claim_in(name, activation, reply, canonical, admitted)
+}
+
+fn claim_in(
+    name: &str,
+    activation: Activation,
+    reply: Option<Reply>,
+    canonical: Option<String>,
+    admitted: impl FnOnce(),
+) -> Claim {
+    let result = claim_inner(name, activation, reply, canonical, admitted);
+    crate::startup_log::guard(&result);
+    result
+}
+fn claim_inner(
+    name: &str,
+    activation: Activation,
+    reply: Option<Reply>,
+    canonical: Option<String>,
+    admitted: impl FnOnce(),
+) -> Claim {
+    let canonical = if let Some(pipe) = canonical {
+        match canonical_claim_observed(pipe, activation, || {}) {
+            Ok(CanonicalClaim::Owner(guard)) => Some(guard),
+            Ok(CanonicalClaim::Forwarded) => return Claim::Forwarded,
+            Ok(CanonicalClaim::Busy) => return Claim::Duplicate("canonical_owner_unresponsive"),
+            Err(error) => return Claim::Failed(error.to_string()),
+        }
+    } else {
+        None
+    };
     let home = crate::identity::home_dir();
     if home.as_os_str().is_empty() {
         return Claim::Failed("The Windows profile directory is unavailable".into());
@@ -343,17 +424,54 @@ pub fn claim(
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| home.join("AppData/Local"))
         .join("hgdev/hgs-tray");
-    claim_with_reply_at(&name, &directory, activation, reply)
+    claim_guarded(&name, &directory, activation, reply, canonical, admitted)
+}
+
+enum CanonicalClaim {
+    Owner(Canonical),
+    Forwarded,
+    Busy,
+}
+fn canonical_claim_observed(
+    pipe: String,
+    activation: Activation,
+    mut busy: impl FnMut(),
+) -> io::Result<CanonicalClaim> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if let Some(guard) = Canonical::acquire(pipe.clone())? {
+            return Ok(CanonicalClaim::Owner(guard));
+        }
+        busy();
+        if forward(&pipe, activation) {
+            return Ok(CanonicalClaim::Forwarded);
+        }
+        if Instant::now() >= deadline {
+            return Ok(CanonicalClaim::Busy);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 #[cfg(test)]
 fn claim_at(name: &str, directory: &Path, activation: Activation) -> Claim {
     claim_with_reply_at(name, directory, activation, None)
 }
+#[cfg(test)]
 fn claim_with_reply_at(
     name: &str,
     directory: &Path,
     activation: Activation,
     reply: Option<Reply>,
+) -> Claim {
+    claim_guarded(name, directory, activation, reply, None, || {})
+}
+fn claim_guarded(
+    name: &str,
+    directory: &Path,
+    activation: Activation,
+    reply: Option<Reply>,
+    canonical: Option<Canonical>,
+    admitted: impl FnOnce(),
 ) -> Claim {
     // Also recognizes an already-running Qt GUI using this activation protocol.
     if forward(name, activation) {
@@ -372,8 +490,11 @@ fn claim_with_reply_at(
     {
         Ok(lock) => lock,
         Err(e) if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32) => {
-            let _ = forward(name, activation);
-            return Claim::Forwarded;
+            return if forward(name, activation) {
+                Claim::Forwarded
+            } else {
+                Claim::Duplicate("profile_owner_unresponsive")
+            };
         }
         Err(e) => return Claim::Failed(e.to_string()),
     };
@@ -387,24 +508,39 @@ fn claim_with_reply_at(
         Ok(s) => s,
         Err(e) => return Claim::Failed(e.to_string()),
     };
-    let pipe = create_pipe(name, &security);
-    let (tx, rx) = mpsc::sync_channel(32);
-    let stop = Arc::new(AtomicBool::new(false));
-    let thread = match pipe {
-        Ok(pipe) => {
-            let stopped = stop.clone();
-            Some(std::thread::spawn(move || listen(pipe, stopped, tx, reply)))
-        }
-        Err(e) => {
-            eprintln!("zerus-client: cannot listen for a second Windows instance: {e}");
-            None
-        }
+    let pipe = match create_pipe(name, &security) {
+        Ok(pipe) => pipe,
+        Err(error) => return Claim::Failed(error.to_string()),
     };
+    let canonical_pipe = match canonical
+        .as_ref()
+        .map(|guard| create_pipe(&guard.pipe, &security))
+        .transpose()
+    {
+        Ok(pipe) => pipe,
+        Err(error) => return Claim::Failed(error.to_string()),
+    };
+    let (tx, rx) = mpsc::sync_channel(32);
+    admitted();
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut threads = Vec::new();
+    if let Some(pipe) = canonical_pipe {
+        let stopped = stop.clone();
+        let sender = tx.clone();
+        // Public activation only. Authenticated desktop requests stay bound
+        // to their original profile's compatibility pipe.
+        threads.push(std::thread::spawn(move || {
+            listen(pipe, stopped, sender, None)
+        }));
+    }
+    let stopped = stop.clone();
+    threads.push(std::thread::spawn(move || listen(pipe, stopped, tx, reply)));
     Claim::Claimed(Claimed {
         listening: Listening {
             stop,
-            thread,
+            threads,
             _lock: lock,
+            _canonical: canonical,
         },
         activations: rx,
     })
@@ -413,6 +549,10 @@ fn claim_with_reply_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod canonical_tests {
+        use super::*;
+        include!("instance_windows_tests.rs");
+    }
     #[cfg(feature = "live")]
     mod evidence {
         use super::*;
@@ -510,6 +650,75 @@ mod tests {
             assert!(bytes.len() <= 4096);
             let control: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
             let mode = control["case"].as_str().unwrap().to_owned();
+            if matches!(mode.as_str(), "mode_check" | "mode_switch" | "mode_cancel") {
+                report_chain(std::process::id());
+                let mut args = vec![
+                    "desktop".into(),
+                    "registration".into(),
+                    "mode-check".into(),
+                    "--json".into(),
+                ];
+                if mode == "mode_switch" {
+                    let desired = control["desired"].as_str().unwrap();
+                    assert!(matches!(desired, "background" | "passive"));
+                    args = vec![
+                        "desktop".into(),
+                        "registration".into(),
+                        "install".into(),
+                        "--mode".into(),
+                        desired.into(),
+                        "--json".into(),
+                    ];
+                } else if mode == "mode_cancel" {
+                    let id = control["request_id"].as_str().unwrap();
+                    assert!(uuid::Uuid::parse_str(id).is_ok());
+                    args = vec![
+                        "desktop".into(),
+                        "registration".into(),
+                        "cancel-rollback".into(),
+                        "--json".into(),
+                        "--request-id".into(),
+                        id.into(),
+                    ];
+                }
+                let invocation = zerus_client_core::Invocation {
+                    args,
+                    stdin: None,
+                    timeout: Duration::from_secs(if mode == "mode_check" { 8 } else { 30 }),
+                    request_id: None,
+                };
+                let environment: Vec<_> = std::env::vars()
+                    .filter(|(key, _)| {
+                        !key.eq_ignore_ascii_case("HGS_SESSION")
+                            && !key.eq_ignore_ascii_case("HGS_RUN_ID")
+                    })
+                    .collect();
+                let environment: Vec<_> = environment
+                    .iter()
+                    .map(|(key, value)| (key.as_str(), value.as_str()))
+                    .collect();
+                let result = zerus_client_core::run::run_hidden_limited(
+                    Path::new(control["cli"].as_str().unwrap()),
+                    &invocation,
+                    &environment,
+                    65536,
+                )
+                .unwrap();
+                let zerus_client_core::actions::Exit::Code {
+                    code,
+                    stdout,
+                    stderr,
+                } = result
+                else {
+                    panic!("original mode-check fixture child did not settle")
+                };
+                println!(
+                    "\nMODE_CALLER_RESULT {}",
+                    serde_json::json!({"code":code,
+                    "stdout":String::from_utf8(stdout).unwrap(),"stderr":stderr})
+                );
+                return;
+            }
             if mode == "observe" {
                 // Private test observation only. This PID never supplies a
                 // request peer, cached confirmation or mutation permit.
@@ -545,9 +754,24 @@ mod tests {
             } else {
                 configuration.into()
             }));
-            let request = Request::AutomaticApprovals {
-                request_id: control["request_id"].as_str().unwrap().into(),
-                enabled: mode == "enable",
+            let request = if matches!(mode.as_str(), "ownership_grant" | "ownership_rearm") {
+                use zerus_client_core::desktop::ownership::{Action, Mode};
+                assert!(responder.configure_ownership_mode_once(Mode::Service));
+                Request::DesktopOwnership {
+                    request_id: control["request_id"].as_str().unwrap().into(),
+                    action: if mode == "ownership_grant" {
+                        Action::Grant
+                    } else {
+                        Action::Rearm
+                    },
+                    journal: Some(control["journal"].as_str().unwrap().into()),
+                    revision: control["revision"].as_u64().unwrap(),
+                }
+            } else {
+                Request::AutomaticApprovals {
+                    request_id: control["request_id"].as_str().unwrap().into(),
+                    enabled: mode == "enable",
+                }
             };
             let registration = responder
                 .prepare_ui_request(uuid::Uuid::new_v4().to_string(), request)
@@ -573,8 +797,17 @@ mod tests {
                     Some(bytes)
                 }
             });
-            let Claim::Claimed(claimed) = claim("hgs-tray", None, Activation::Show, Some(reply))
-            else {
+            // This fixture tests the authenticated profile pipe, not GUI
+            // admission. Never touch the login user's canonical GUI guard.
+            let home = crate::identity::home_dir();
+            let directory = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap())
+                .join("hgdev/hgs-tray");
+            let Claim::Claimed(claimed) = claim_with_reply_at(
+                &key("hgs-tray", &home),
+                &directory,
+                Activation::Show,
+                Some(reply),
+            ) else {
                 panic!("private canonical fixture claim")
             };
             report_chain(std::process::id());

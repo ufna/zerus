@@ -52,6 +52,236 @@ complete these routes or the native checks with Next closed. Keep this row pendi
 until the coordinator's maintained owner route verifies readiness, presentation,
 click routing, stale/withdrawn refusal and Wayland behavior.
 
+### Recorded Arch passive cutover subchecks — 2026-11-02
+
+The admitted main-account run used the existing canonical source installation
+`a1023d4142d1efcffada146d9d1ad68f9596e6a6`, not the Qt-deletion draft.
+webkit-c held the display lock for its 18:53–19:01:45 MSK client checks;
+migrate-u performed the nondisplay checks. The coordinator verified restoration
+and closed the window. **These are scoped subchecks; every Linux platform
+checkbox above remains pending.**
+
+| Subcheck | Result | Actual evidence and limit |
+|---|---|---|
+| Installed identity and dependencies | PASS, existing source install | GUI/CLI image hashes match the installed provenance for `a1023d4`; GUI reports Tauri and `com.hgdev.hgs-tray`. Direct ELF dependencies and the resolved `ldd` closure contain no Qt/KF/WebEngine or missing libraries. This was not a clean install or a package transaction. |
+| Existing service registration and IPC | PASS, passive scope | The maintained installer `--check` succeeds. The owned user unit has no drop-ins; its selected image/configuration/PID and actual Wayland, runtime-directory and session-bus environment agree. The same service serves schema 15 with IPC ready. This does not establish background readiness. |
+| Custom-unit refusal | PENDING | No owner unit or drop-in was changed to manufacture a negative case. |
+| Service-mode startup, explicit Rearm and restart | PASS, passive scope | Startup respected the native/rearm fence. The explicit UI Resume obtained service ownership at revision 13; normal Quit retained it, and a fresh service-mode GUI obtained its original Grant at revision 14. The UI remained unavailable with zero Fleet source rows and no GUI Fleet fallback; no background runtime started. |
+| Native restore | PASS, passive prior runtime | Normal native startup found its original accepted, durable `native_takeover` receipt with `native_ready` and revoked/checkpointed/drained fields. Ownership returned to native revision 15 with current identity. This is not evidence that an active notification or delivery runtime drained. |
+| Existing drafts and sampled process continuity | PASS, sampled scope | webkit-c retained byte-identical contents for 37 nonempty draft files and unchanged original PID/birth identities for 24 sampled agent/tmux processes through Quit/restart/native restore. This is not an all-process census or a Qt-upgrade result. |
+| Existing preference import | PASS, handled-family subcheck | Nine schema-1 preference families are handled, three with zero source keys; no family is quarantined. All nine recorded source hashes match the current Qt file. Its bytes, mtime and file identity, all nine family records and the original seed are unchanged after cutover/restart/restore; layout presentation metadata is present. No reseed or source write was performed. |
+| Current approval policy and generic agent refusal | PASS, passive subcheck | The existing policy stayed OFF. A generic agent-shell OFF request was refused with `handoff_required`. This proves that passive refusal only, not active frontend authentication, ENABLE delivery or a clean default-OFF origin. |
+| Active background readiness and UI-closed duties | BLOCKED: `.66.3.27.5` | The registered command is `hgs desktop serve` without `--background`; no maintained switch starts the active runtime. Ownership Grant/Rearm alone does not start it. Fleet, presence and read delivery therefore remain untested while the UI is closed. |
+| Frozen transfer, raw host read and active approval delivery | BLOCKED: `.66.3.27.5` | No synthetic target or genuine mark was created. No transfer or exact-target raw host acknowledgement was inferred from the overlay, queue, IPC or ownership receipt. No approval ENABLE was submitted. |
+| Service banner/click, active withdrawal and Qt rollback | BLOCKED: `.66.3.27.5` | No notification, active withdrawal/drain, Qt rollout or rollback was performed. |
+| Optional-question preference and foreground suppression | KNOWN GAP: `.66.3.30.11.13` | The typed transport is not merged. These cases were excluded without failing unrelated passive subchecks. |
+| Clean/default state and complete migration acceptance | PENDING | Existing owner state was never cleared or reseeded. Clean install, original default OFF, malformed-source recovery, last-Qt upgrade and rollback/forward idempotence remain unproved. |
+
+The GUI returned through its maintained launcher with the same installed image
+and native startup mode; the temporary mode flag was absent from both GUI and
+manager. The desktop service retained its original PID and definition, remained
+passive and IPC-ready, and kept approvals OFF. No install, service restart, unit
+edit, notification, or agent/tmux/DeepSeek signal was performed. Opened test
+windows were closed and webkit-c released the display lock. The coordinator then
+resumed the rollout watcher; later replacements are outside this recorded run.
+
+Selected nondisplay evidence is retained privately by migrate-u under
+`.ci-build/migrate-u/arch-installed-acceptance-a1023d4/` (under 100 KiB at close).
+webkit-c's bounded commands, receipts, draft/process comparisons and restoration
+are in `.ci-build/installed-cutover-20261102/ledger.json` (8,110 bytes) and adjacent
+selected records. Exact private identities stay there; this document contains no
+message bodies or owner settings dump.
+
+### Recorded second Arch active-service window — 2026-11-03
+
+Tracked by `zerus-5wmh.66.8.3`. The owner rescheduled this window and performed
+the maintained foreground mode switches. Physical checks used the existing
+source installation `5e4427f6792e4d0b9315e470cf23f85e69a8aa65`, reporting Tauri,
+`com.hgdev.hgs-tray` and `0.47.1-preview.design-polish.5e4427f`, with
+`sourceDirty:false`. The earlier `926b046b35f96594e2581a31ebce000a2bda84ab`
+preflight was read-only and superseded before effects; its observations do not
+qualify the later installation. **This window remains incomplete; every platform
+acceptance checkbox is unchanged.** It was not a package qualification, last-Qt
+upgrade, Qt type rollback or Qt removal.
+
+| Subcheck | Result | Actual evidence and limit |
+|---|---|---|
+| Installed identity | PASS, existing source install | Selected CLI/GUI hashes and running image identities matched the exact `5e4427f6` installation before effects; the restored Native GUI used the same installed image. No clean install or package transaction was tested. |
+| Maintained background selection and readiness | PASS, active runtime scope | The owner's foreground maintained helper selected background successfully. Actual service status showed `background_service`, writers enabled, two live Fleet sources, presence `published`, reads ready, and the Linux attention host ready with its attachment restored and outbox pending zero. Automatic approvals stayed OFF. These are readiness observations, not a delivered read, banner or click. |
+| Service GUI restart/reconnect | FAILED: `zerus-yqie` | Automatic reconnect failed after restart. The owner's manual Retry connected. This failed subcheck remains assigned to menu-c; a manual connection does not qualify automatic recovery or last-known catalog behavior. |
+| Service session/project grouping | FAILED: `zerus-gpz3` | After Retry, the owner observed all 47 sessions in Inbox. Source diagnosis found service baseline/delta rows projected with an empty `row.machine`, while Native mode fills the local host or configured peer alias used by membership keys. The coordinator independently confirmed authoritative shared projects and memberships intact; no project deletion occurred. The fix and rerun belong to menu-c. |
+| Retained Qt/Settings report | WARNING: `.66.5.11` | The retained Qt file's mode 0644 and the checkpoint's `0o077` refusal provide a sufficient source/metadata cause for the report warning; its detailed native error code was not directly observed. This independent best-effort Staged report neither gates the live connection nor imports or deletes live projects. No source permissions were changed to bypass it; complete G3 acceptance remains pending. |
+| Owner Quit and maintained passive restoration | PASS, original helper transition | After owner-confirmed normal Quit, the original GUI invocation exited successfully. The same maintained helper completed passive restoration using its retained original `ARCH_G6_ROLLBACK_ID`, with no pending transition/restart. A post-restart lookup of that original revoke returned `writer_epoch_changed`; it was retained as a refusal, never upgraded into a successful receipt or replayed. |
+| Fresh Native restoration | PASS, scoped restoration | Current status showed passive mode, no background runtime, writers disabled and no service owner epoch. The prior ABSENT startup flag was restored before one maintained Native GUI launch. A fresh authenticated `ARCH_G6_NATIVE_TAKEOVER_ID` was accepted and durable, with `native_ready`, revoked/checkpointed/drained, current Native revision 50 and current identity. This separate fresh takeover does not change the earlier revoke lookup's result. |
+| Managed draft files and sampled processes | PASS, sampled continuity | All 174 managed regular nonempty Qt/Next draft-file hashes were unchanged, with none added, missing or changed. All 24 sampled original process birth identities and images were unchanged. This does not prove unsent-content semantics or an all-process census. The retained Qt source hash was unchanged from the regression probe. |
+| Native project presentation after restore | PENDING, owner observation | The actual Native GUI was restored at the exact installed `5e4427f6` image with the service-mode environment absent. The owner's visual confirmation of project presentation was still pending when this ledger was prepared. |
+| Remaining delivery/native/platform cases | INCOMPLETE | No deliberate Post/banner/click, synthetic read mark, exact-target host ACK or approval ENABLE was submitted. Terminal, voice/video, destructive-review refusal, complete migration, Qt rollback and package acceptance were not qualified by this window. G6 requires a rerun after the reviewed menu-c fixes and the remaining native cases. |
+
+Root made no project/source edits or source-permission changes during the
+physical window. Approvals remained OFF. Normal GUI Quit and the maintained
+service transitions did not restart or signal the sampled agents, tmux or a
+DeepSeek host. The shared display lock is released; the owner
+visual observation above remains pending. These later active results do not
+rewrite the scope or blockers of the historical 2026-11-02 passive run.
+
+Evidence is retained privately under `.ci-build/g6-arch-5e4427f6/`; historical
+read-only preflight records remain under `.ci-build/g6-arch-926b046b/`. Private
+request UUIDs and process identities remain in those records; the stable labels
+above identify their roles without publishing their values. Installed image
+SHA-256 values were:
+
+- CLI: `c2b2171f6e0f2049c3efda22e10583963b699f3d5abfafcd5b42497fe12cfe2d`.
+- GUI: `b898362d3411f0f986d4a0bf63668b574eda35a37a17e52a306b8c21f73cee3e`.
+
+The following SHA-256 values identify exact retained evidence bytes, not their
+contents or an additional acceptance result:
+
+| Private evidence filename | SHA-256 |
+|---|---|
+| `preflight-images.json` | `965879d4cee152e98eed02d9c8fad99a186f2bf8b017da13c65e87fffee6b288` |
+| `status-after-background-switch.json` | `381dc2ad67b45234414cc514cdd32cefb4625ef29e0d1569e0792f1802819393` |
+| `restore-helper-status.json` | `d227af53388e58563f3e6a34a459ed67ce8a6d50739f8fc512e6d457ede55bc8` |
+| `restore-original-revoke-status.json` | `3987cd50bf5f58753a68a4daa060b8911802e5b18cce08cf32b7caa29fd4a1c7` |
+| `native-restored-takeover-receipt.json` | `4f558744a11d0731cda4907b74a47c002b202292b49d3e2168dd534b6d497c0c` |
+| `native-restore-continuity-summary.json` | `c351b54aad72fdcc547c6cddf858f6354bd0ff3ed7610fc79c9a3f596b533151` |
+
+### Recorded Arch reconnect/grouping retry — 2026-11-03
+
+This separate retry belongs to `zerus-5wmh.66.8.3` and product task
+`T-i0p1w7`. Physical checks used the exact installed source
+`5c11005546fc8bd0c6a2224acb81eacb5a21e0d9`, including
+[#1124](https://github.com/ufna/zerus/pull/1124) and
+[#1128](https://github.com/ufna/zerus/pull/1128). **The reconnect and project
+presentation retry passed; broader G6 remains open and all platform checkboxes
+are unchanged.**
+The preceding `5e4427f6` failures and its pending historical observation are
+unchanged; the results below apply to this new installed source only.
+
+| Subcheck | Result | Actual evidence and limit |
+|---|---|---|
+| Installed identity and controlled GUI start | PASS, source-install scope | Selected CLI/GUI hashes matched installed provenance for `5c110055`, with clean source identity. The coordinator paused the rollout watcher; the original display lock was held. Owner-confirmed normal Quit ended the prior GUI with exit 0. The prior ABSENT startup flag was saved, only the service-mode flag was set to `1`, and one maintained service-mode GUI was started with its original process birth and unit invocation pinned. |
+| Ownership after owner Resume | PASS, scoped Grant/current identity | After one owner Resume, the fresh lookup of `ARCH_G6_RETRY_GRANT_ID` found an accepted, durable `grant` result at revision 56. Its lookup retained `definitive:false`; the accompanying current snapshot independently showed Service revision 56, current identity and `rearm_required:false`. This Grant request is not relabeled as a Rearm request. |
+| Maintained background switch and automatic reconnect | PASS, owner-confirmed retry | The owner's foreground Konsole call to the maintained helper succeeded for the same configuration: selected/running background mode, IPC ready, no pending transition/restart. After the service restart, the same original GUI automatically reconnected without Retry. The owner confirmed all 47 sessions and their projects in place. This qualifies the observed restart path for `zerus-yqie` and grouping path for `zerus-gpz3`, not every recovery case. |
+| Background runtime and native frontend | PASS, readiness scope | Final status at service generation 66 and new service epoch `ARCH_G6_RETRY_SERVICE_EPOCH` showed writers enabled, local and Mac Fleet sources live, presence writer active, reads ready, automatic approvals OFF/disabled, and the Linux attention host ready with its attachment restored and outbox pending zero. The same original GUI's frontend observation remained `live_next` with its unchanged `ARCH_G6_RETRY_FRONTEND_INSTANCE`; the observer's `authority:false` did not grant mutation permission. This is readiness evidence, not notification or exact-target read-delivery acceptance. |
+| Initial passive view and migration warning | OBSERVED / WARNING, G3 remains open | Before a live baseline, the fresh passive GUI initially showed a zero/skeleton view; this did not establish deletion. The retained migration-review notice associated with the Qt 0644 source remained visible. [#1133](https://github.com/ufna/zerus/pull/1133) was not installed in the attested `5c110055` run. The independent report warning does not overturn the later owner-confirmed project placement. |
+| Duplicate new-session placeholder | SEPARATE BUG: `zerus-zckh` | A duplicate placeholder for a newly created session was reported separately to menu-c. Root did not create or exercise a new session to test it; this ledger does not qualify its fix. |
+| End state requested by owner | PASS, background intentionally retained | The owner requested staying in background mode. The manager flag therefore deliberately remains `1`, changed from its prior ABSENT state; the registered service remains background. The maintained updater through the existing GUI unit preserves that startup mode and service selection. No passive or Native restoration was performed in this successful retry. The window END was reported and the original display lock released normally; documentation follow-up does not hold rollout or the watcher. |
+| Remaining native/platform acceptance | INCOMPLETE | No deliberate Post/click, approval ENABLE, synthetic read mark or raw host ACK was submitted. Qt type rollback/removal and package qualification were not performed. Full G3, delivery/click, terminal, voice/video, destructive-review and broader G6 cases remain open. |
+
+Selected records are retained privately under `.ci-build/g6-arch-5c110055/`.
+Stable role labels above replace private request UUIDs, service epochs and
+process identities; no private project/session names or contents are published.
+The installed image SHA-256 values were:
+
+- CLI: `16227b68f443b23677ec9580e192c22d3036825f4795dd1eacddc2290b68d1a1`.
+- GUI: `ddc8305714ffc78abbb6f8ba2d90f33a8aadbfa3dd535b0983baca1bdbf96f34`.
+
+These SHA-256 values identify the exact retained evidence bytes:
+
+| Private evidence filename | SHA-256 |
+|---|---|
+| `step5-verification-summary.json` | `f7356171d048182b00b0f76b99df4c2795e583f980974d16d35eb739d616df91` |
+| `preflight-images.json` | `0b0ee2de6af18a8ca10431a54f62072d690ba53e8e047e14d0b0b5cc801d5b43` |
+| `status-final-background.json` | `01675ec8c0887c5ede212134dca01db126316d23b51b61b34f132ee69298cd69` |
+| `grant-after-resume-result.json` | `d29d6b74f1b20b224d5e530ae22eebf80ce86e767b60a36cec4a3f385be1bb3f` |
+
+### Remaining G3 source work at this run
+
+The whole `.66.5` migration is still incomplete. The preference/organization and
+Windows-folder callers are merged through [#870](https://github.com/ufna/zerus/pull/870).
+The separate active Next pending-read transfer is wired by
+[#973](https://github.com/ufna/zerus/pull/973),
+[#992](https://github.com/ufna/zerus/pull/992) and
+[#999](https://github.com/ufna/zerus/pull/999).
+The remaining Qt/interim source adapters and `migration::Bundle`/`Publisher`
+still lack production discovery/capture/publication callers: their presence and
+tests do not produce a complete private import/quarantine record.
+
+migrate-u owns this remaining work with desktop-u's handoff seam: discover the
+managed sources, freeze and freshly recheck their actual writers/snapshots, then
+publish bounded immutable evidence using the existing adapters and publisher.
+Preserve original identities and unknown/partial state without replay. This is
+several focused source PRs (`.66.5.2.1`, `.66.5.2`, `.66.5.4`), and blocks the
+complete one-time-import and upgrade acceptance rows. The completed service
+read/approval implementation `.66.3.29` is separate; its closure does not close
+G3 or installed acceptance.
+
+### Historical creation source capture
+
+In service mode, the original Next creation worker captures its managed
+`creations.json` before its first **service-mode** load, recovery normalization
+or journal write. A native-mode run still loads its journal without this capture.
+The fixed private `creation-preload-v1` slot contains the durable capture UUID,
+original source object/stamp/hash, exact bytes and a read-back receipt. Raw input
+is limited to 8 MiB and the existing schema-1 decoder's 128 operations; metadata
+leaves are limited to 64 KiB. Nothing lists other source files or starts a second
+queue. The original worker proceeds only after the complete capture is synced,
+read back and rechecked. A verified missing source is not-applicable, not an
+empty imported journal.
+
+Unsupported, oversized, unreadable or changed input keeps that original legacy
+owner paused, including Hide/Show/Stop and writes. Its redacted
+`retained_source_import.creations_capture` status is visible beside the
+independent Qt/Settings report; normal service Retry wakes that same worker.
+Failed/partial files remain for review, with the original capture UUID; Retry
+never overwrites a partial slot or adopts a newer source version. Connection,
+Grant, watch/catalog, ownership Resume and the separate G2 actor stay available.
+Do not clear the slot to manufacture a successful report.
+
+On Unix the capture resolves the managed data folder once and pins that canonical
+object for capture and the original legacy journal load/writes; symlinks through
+home, `$XDG_DATA_HOME` and `.local/share` are supported.
+The existing data folder must be owned by the user; a group-writable mode such as
+0775 is preserved. The archive slot must remain user-owned and private (0700),
+and source/archive leaves remain private, owned, single-link and no-follow. A
+`creation_source_private_slot` refusal asks to check archive availability and
+restore its private permissions before Retry; `creation_source_data_directory`
+asks to check the managed data folder's availability and ownership.
+`creation_source_unavailable` asks to check private file access/ownership (0600
+on Unix) and review retained partial files before Retry. No permission
+or source repair happens automatically.
+
+These are endpoint identity rechecks, not an exclusive namespace hold. Deliberate
+same-user rename-and-back between checks is outside this protection. Other users
+in a shared writable data-directory group can rename the archive slot away, just
+as they can the live journal; private leaves and rechecks do not make 0775 a
+hostile-writer exclusion guarantee. Missing/replaced data remains unavailable and
+never grants current coverage or effect authority.
+
+After capture, normal live journal writes may resume. The archive is explicitly
+historical pre-load data: a later source recheck validates the retained private
+snapshot's native identity and raw hash, not today's mutable journal. It is not
+Drained, current-source completeness, worker ownership or execution consent.
+This exception does not relax the Qt/Settings source leases. The separate
+creation report binds this exact capture ID once to the paired canonical service
+configuration. It publishes the unchanged creation source and
+an explicit historical provenance source through the existing Staged publisher;
+its own `creations-retained-import-v1.json` retains the configuration, snapshot
+reference, attempt and expected receipt. It never uses the Qt/Settings journal's
+hash fields. Attempts/unknown results keep their original ID and are lookup-only.
+A complete exact negative permits explicit Retry of the same record after fresh
+snapshot validation. A confirmed local callback failure before the final record
+write has its own durable `before_record` state: no final record was sent, so
+explicit Retry may prepare that same identity again without inventing a receipt.
+Missing, partial or lost child output never establishes this state. New records
+use journal version 2, which also keeps `recorded_attempt`: before its final frame,
+an attempt's callback durably records its receipt and `recorded_attempt`, under
+the native lock and against that attempt's exact stored hash. An Attempted record
+whose `recorded_attempt` is below its attempt, like a version 1 Attempted record
+without a receipt, therefore proves that no final frame was sent, even after a
+second metadata failure. Only an explicit Retry recovers it. It first looks up the
+original ID: a matching record settles as published, and any other answer stays
+lookup-only. It then revalidates the same snapshot and configuration, and fences
+the record to `before_record` at the same attempt before reserving the next. The
+fence changes the record's hash, so a still-pending original callback can no
+longer record or send. A recorded gate, Unknown and every ambiguous state stay
+lookup-only; a changed snapshot is quarantined. The native
+metadata lock is explicitly unlocked before close, so a forked child's inherited
+descriptor cannot prolong it. Retained SDK/helper/pipe resources
+keep the shared report admission charged until actual completion. Publication
+runs off the UI/legacy worker and never gates Grant, watch/catalog or Resume.
+Capture/report success alone does not complete G3 or installed acceptance.
+
 ## macOS
 
 Use the signed/notarized Next bundle/cask and the maintained local installer for
@@ -228,6 +458,85 @@ refresh or Linux exit 3 (PendingRestart) is not readiness. Unix has no
 `desktop registration install/remove/status` command; those are Windows-only.
 Never hand-start a second `desktop serve` as a repair.
 
+### Linux background registration opt-in
+
+The passive actor accepts the service-mode GUI's authenticated Grant/Rearm and
+journals it without starting background workers. Complete that handoff first;
+do not infer it from readiness. Then, from the owner's foreground terminal
+**outside Zerus** in the current graphical login, use the maintained helper:
+
+```bash
+: "${DESKTOP_HELPER:?installed lib/zerus/install-linux-desktop-service.py from this candidate}"
+python3 "$DESKTOP_HELPER" install --hgs "$SERVICE_HGS" \
+  --config-dir "$CFG" --state-dir "$STATE" --mode background --json
+python3 "$DESKTOP_HELPER" status --hgs "$SERVICE_HGS" \
+  --config-dir "$CFG" --state-dir "$STATE" --json
+desktop_cli status --json
+```
+
+Require the exact configuration and selected/running background mode separately
+from fleet/presence/read/notification readiness. Missing/stale native Grant or
+retained revoke refuses; perform authenticated frontend Rearm rather than
+clearing files or launching a second service. Agent ancestry and `HGS_SESSION`/
+`HGS_RUN_ID` refuse even if the environment is stripped in a child. The future
+native Settings control uses this same helper contract; an agent cannot perform
+the acceptance mode switch on the owner's behalf. Default install is passive;
+normal refreshes preserve selection. Mac uses its own maintained route below;
+Windows switching remains separate work. Linux results do not qualify them.
+
+For Linux passive rollback, use `install --mode passive --json` with the same
+selections **before** the GUI rollback. It durably retains one revoke UUID and
+requires the original checkpointed drain before changing/restarting only
+`hgs-desktop.service`. Record `last_revoke_request_id` on success. On uncertainty,
+`status.transition.request_id` is the original ID; inspect it and resume only
+that same passive transition. The native `desktop-revoke-hold-v1` child remains
+held through the manager change and passive readiness; its matching release,
+actual exit and pipe drain precede completion. Do not substitute a new revoke
+UUID or return to background while it is pending. If a new authenticated Rearm
+won before acquisition, use the documented explicit
+[`cancel-rollback --request-id ORIGINAL_UUID`](linux-distribution.md#select-the-desktop-service-mode)
+record-only recovery, then choose a new passive intent explicitly. Cancellation
+requires a current Service grant and changes no native revoke, unit or manager.
+The helper never restarts the GUI or agents.
+
+### Mac background registration opt-in
+
+Complete the actual service-mode GUI's authenticated Grant/Rearm against the
+passive actor first. From the coordinator's genuine non-agent foreground
+Terminal context in the current Aqua login, use the installed paired selections:
+
+```bash
+: "${APP:?canonical installed paired app}" "${RUNNER_HGS:?independent installed runner}"
+MAC_DESKTOP_HELPER="$APP/Contents/Resources/setup/install-macos-desktop-service.py"
+python3 "$MAC_DESKTOP_HELPER" "$SERVICE_HGS" --runner-hgs "$RUNNER_HGS" \
+  --config-dir "$CFG" --state-dir "$STATE" --mode background --json
+python3 "$MAC_DESKTOP_HELPER" "$SERVICE_HGS" \
+  --config-dir "$CFG" --state-dir "$STATE" --status --json
+desktop_cli status --json
+```
+
+Require the signed bundled service image and independent runner to stay selected,
+and verify selected/running background mode separately from each component's
+readiness. A private pty, stripped markers, SSH agent context or launchd-submit
+does not replace the native caller/ancestor check. Missing/stale Grant, retained
+revoke, no Aqua or a custom plist refuses; do not repair it by changing files or
+starting another service. Only the owned desktop LaunchAgent reloads; neither
+GUI nor agents restart. Normal GUI installs and CLI-only refresh preserve mode.
+
+Before GUI rollback, use this helper with the same selections and `--mode
+passive --json`. It retains one original revoke UUID and requires its exact
+checkpointed runtime/resource drain and the original native hold through
+bootout/rewrite/bootstrap and passive readiness. Require the matching release,
+actual child exit and both pipe EOFs before transition completion. Record
+`last_revoke_request_id`; on uncertainty, inspect `--status --json` and resume
+only its original passive transition. Authenticated Rearm is required before
+returning to background. No file clearing or new UUID substitutes for settlement.
+If a newer Grant won before acquisition, or the original revoke never took
+effect, the owner may use the Mac helper's `--cancel-rollback --request-id
+ORIGINAL_UUID --json` only with a verified current Service grant. This cancels
+registration metadata, with no manager/native ownership action; a later mode
+choice is a separate explicit intent. See the [Mac mode contract](macos-distribution.md#explicit-desktop-service-mode).
+
 ### Client cases
 
 Use fresh synthetic targets on the owner's main account. Record original exact
@@ -264,15 +573,16 @@ an unbounded full listing or the GUI's local overlay.
 
 ### Revoke and rollback commands
 
-Generate and retain one canonical `REVOKE_ID` in the private run record before
-submitting it. The lookup uses that same original ID; it does not repeat revoke.
+On Linux/macOS, use the appropriate maintained `--mode passive` command above
+and retain its original revoke ID. A read-only lookup uses that same original
+ID; it does not repeat revoke. Never create a second revoke while the helper
+has a pending original transition.
 The GUI rollback path is its actual installed path, not a staged copy.
 
 ```bash
-: "${REVOKE_ID:?saved original UUID}" "${INSTALLED_GUI:?actual installed GUI}"
-desktop_cli revoke --json --request-id "$REVOKE_ID" --reason rollback
-
-# Only if the first result was uncertain, read its original receipt:
+: "${INSTALLED_GUI:?actual installed GUI}"
+# Only if the helper result was uncertain, read its original receipt:
+: "${REVOKE_ID:?original ID from the helper transition}"
 printf '{"op":"revoke_status","request_id":"%s"}\n' "$REVOKE_ID" |
   env HGS_CONFIG_DIR="$CFG" HGS_STATE_DIR="$STATE" "$SERVICE_HGS" desktop request --json
 

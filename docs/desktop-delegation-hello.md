@@ -133,6 +133,13 @@ rotates on a new-image authenticated Grant or explicit Rearm. The service proces
 epoch stays separate. Losing only image identity still permits background work
 but refuses closed-UI launch until the new canonical frontend grants.
 
+A fresh same-origin Grant while already in Service refreshes its durable receipt
+and revision without draining or replacing the runtime, rotating ownership or
+renewing an effect writer. Original operations keep their exact leases, bindings
+and resource custody even while undrained. A new-owner Grant or explicit Rearm
+still requires actual original resource drainage; a stop request alone is not
+completion. Refresh still requires current scope and final native proof.
+
 A replacement drain that exceeds the request's bounded wait keeps the SAME
 stop-requested runtime. Normal actor turns continue its original joins without
 a client retry. Only after actual drain can an already admitted background
@@ -185,6 +192,12 @@ agent executables and unavailable ancestry. Native serials prevent a delayed
 older setting from overtaking a newer one. A wire role, confirmation flag or
 nonce alone supplies no authority. Generic desktop requests cannot change this
 policy.
+
+Ordering lanes are mapped exhaustively from the closed native request type,
+including the read-only `ActivationWait` request. Activation reads have their own
+serial lane and pass the same original two-second admission check before a
+bounded receiver can be installed; ownership and policy requests cannot obsolete
+an unrelated read. Unknown wire operations are refused before native admission.
 
 On Windows this request uses the existing per-user activation pipe, preserving
 its name/home hash, lifetime lock, own-SID DACL and remote-client refusal. The

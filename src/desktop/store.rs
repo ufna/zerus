@@ -12,7 +12,7 @@ use zerus_desktop_migration::{canonical, configuration, HANDOFF_LOCK};
 #[path = "maintenance.rs"]
 pub(crate) mod maintenance;
 
-pub const SCHEMA: i64 = 15;
+pub const SCHEMA: i64 = super::catalog_read::SCHEMA;
 pub struct HandoffLock {
     _lock: platform::FileLock,
     root: PathBuf,
@@ -101,6 +101,22 @@ impl Location {
             root: self.root.clone(),
             configuration: self.configuration.clone(),
         })
+    }
+    /// Distinguish an actual flock contender from path/identity/open failures.
+    /// Neither branch creates authority or repairs an existing state path.
+    #[cfg_attr(windows, allow(dead_code))] // Also used by G3's cross-platform import transport.
+    pub(super) fn try_handoff_lock(&self) -> Result<Option<HandoffLock>> {
+        self.check_existing()?;
+        let file = private_file(&self.root.join(HANDOFF_LOCK), true)?;
+        match fs2::FileExt::try_lock_exclusive(&file) {
+            Ok(()) => Ok(Some(HandoffLock {
+                _lock: platform::FileLock::held(file),
+                root: self.root.clone(),
+                configuration: self.configuration.clone(),
+            })),
+            Err(error) if platform::lock_contended(&error) => Ok(None),
+            Err(error) => Err(error).context("desktop handoff lock failed"),
+        }
     }
     /// A Mac host can outlive its service while original native callback copies
     /// drain. Its FD3 holds this separate flock; owner.lock absence is not drain.
@@ -214,7 +230,31 @@ pub(super) fn writer_active(location: &Location) -> Result<Option<bool>> {
             "unsettled producer preparation requires reconciliation before legacy presence"
         );
     }
-    Ok(Some(revoked == 0))
+    Ok(Some(revoked == 0 || operation_undrained(&db)? != 0))
+}
+
+/// Every admitted effect kind participates in takeover/revoke exclusion. A new
+/// per-kind ledger must never disappear behind task-only resource totals.
+pub(super) fn operation_undrained(db: &Connection) -> Result<u64> {
+    let version: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    let task = if version >= 7 {
+        zerus_desktop_ledger::operations::totals(db)?.undrained
+    } else {
+        0
+    };
+    let clones = if version >= super::creation_clone::SCHEMA {
+        super::creation_clone::undrained(db)?
+    } else {
+        0
+    };
+    let cache = if version >= super::cache_maintenance::SCHEMA {
+        zerus_desktop_ledger::operations::cache::undrained(db)?
+    } else {
+        0
+    };
+    task.checked_add(clones)
+        .and_then(|count| count.checked_add(cache))
+        .context("operation resource total overflow")
 }
 
 pub struct Store {
@@ -223,9 +263,12 @@ pub struct Store {
     recovery_error: bool,
     read_recovery_error: bool,
     operation_recovery_error: bool,
+    creation_recovery_error: bool,
     catalog_collection_error: bool,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     custody: super::custody::Recovery,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    creation_custody: super::creation_clone::Recovery,
 }
 impl Store {
     pub fn open(location: &Location, epoch: &str) -> Result<Self> {
@@ -361,6 +404,47 @@ impl Store {
             tx.execute_batch("PRAGMA user_version=15;")?;
             tx.commit()?;
         }
+        if version < 16 {
+            let tx = db.transaction()?;
+            super::notification_controls::migrate(&tx)?;
+            tx.execute_batch("PRAGMA user_version=16;")?;
+            tx.commit()?;
+        }
+        if version < super::creation_clone::SCHEMA {
+            let tx = db.transaction()?;
+            super::creation_clone::migrate(&tx)?;
+            tx.pragma_update(None, "user_version", super::creation_clone::SCHEMA)?;
+            tx.commit()?;
+        }
+        if version < super::cache_maintenance::SCHEMA {
+            let tx = db.transaction()?;
+            super::cache_maintenance::migrate(&tx)?;
+            tx.pragma_update(None, "user_version", super::cache_maintenance::SCHEMA)?;
+            tx.commit()?;
+        }
+        if version < super::cache_effects::SCHEMA {
+            let tx = db.transaction()?;
+            super::cache_effects::migrate(&tx)?;
+            tx.pragma_update(None, "user_version", super::cache_effects::SCHEMA)?;
+            tx.commit()?;
+        }
+        if version < super::attention::SCHEMA {
+            let tx = db.transaction()?;
+            super::attention::migrate_retention(&tx)?;
+            tx.pragma_update(None, "user_version", super::attention::SCHEMA)?;
+            tx.commit()?;
+        }
+        if version < super::catalog_read::SCHEMA {
+            let tx = db.transaction()?;
+            zerus_desktop_catalog::changes::migrate_reasons(&tx)?;
+            tx.pragma_update(None, "user_version", super::catalog_read::SCHEMA)?;
+            tx.commit()?;
+        }
+        // Opening Store follows acquisition of the real exclusive serve owner.
+        // Cache workers are in-process and retain it through all actual I/O.
+        let tx = db.transaction()?;
+        zerus_desktop_ledger::operations::cache::recover(&tx)?;
+        tx.commit()?;
         zerus_desktop_catalog::begin_service(&mut db, epoch)?;
         // No marker or previous policy re-enables a worker after restart.
         zerus_desktop_ledger::begin_service(&mut db, epoch)?;
@@ -373,6 +457,7 @@ impl Store {
         .is_err();
         let operation_recovery_error =
             zerus_desktop_ledger::operations::recover_batch(&mut db, epoch).is_err();
+        let creation_recovery_error = super::creation_clone::startup(&mut db).is_err();
         let tx = db.transaction()?;
         tx.execute(
             "UPDATE service SET generation=generation+1, epoch=?1 WHERE id=1",
@@ -389,9 +474,12 @@ impl Store {
             recovery_error: false,
             read_recovery_error,
             operation_recovery_error,
+            creation_recovery_error,
             catalog_collection_error: false,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             custody: super::custody::Recovery::default(),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            creation_custody: super::creation_clone::Recovery::default(),
         })
     }
     pub fn checkpoint(&self) -> Result<()> {
@@ -423,16 +511,38 @@ impl Store {
         status
     }
     pub fn operation_status(&self) -> serde_json::Value {
-        let mut status = match zerus_desktop_ledger::operations::totals(&self.db) {
-            Ok(totals) => {
-                serde_json::json!({"unsettled":totals.unsettled,"undrained":totals.undrained,
-                "admissions_paused":true,"recovery_error":self.operation_recovery_error})
+        let clone = super::creation_clone::summary(&self.db);
+        let mut status = match zerus_desktop_ledger::operations::totals(&self.db).and_then(
+            |totals| {
+                Ok((
+                    totals,
+                    operation_undrained(&self.db)?,
+                    clone
+                        .as_ref()
+                        .map_err(|_| anyhow::anyhow!("creation summary unavailable"))?,
+                ))
+            },
+        ) {
+            Ok((totals, undrained, clone)) => {
+                serde_json::json!({"unsettled":totals.unsettled+clone["unsettled"].as_u64().unwrap_or(0),"undrained":undrained,
+                "kinds":{"task_start_reconcile":{"unsettled":totals.unsettled,"undrained":totals.undrained},"creation_clone":clone},
+                "admissions_paused":true,"recovery_error":self.operation_recovery_error || self.creation_recovery_error})
             }
             Err(_) => {
                 serde_json::json!({"unsettled":null,"undrained":null,"admissions_paused":true,
-                "error":"operation_store_unavailable","recovery_error":self.operation_recovery_error})
+                "error":"operation_store_unavailable","recovery_error":self.operation_recovery_error || self.creation_recovery_error})
             }
         };
+        match super::cache_maintenance::undrained(self) {
+            Ok(count) => {
+                status["cache_undrained"] = count.into();
+            }
+            Err(_) => {
+                status["cache_undrained"] = serde_json::Value::Null;
+                status["undrained"] = serde_json::Value::Null;
+                status["error"] = "cache_store_unavailable".into();
+            }
+        }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             status["resource_custody"] = self.custody.status();
@@ -456,12 +566,32 @@ impl Store {
             status["resource_custody"]["revoke_request_id"] = request.into();
             status["resource_custody"]["remediation"] = super::revoke::OPERATION_REMEDIATION.into();
         }
+        if clone
+            .as_ref()
+            .ok()
+            .is_some_and(|v| v["undrained"].as_u64().is_some_and(|n| n > 0))
+        {
+            let task = status["resource_custody"].take();
+            status["resource_custody"] = serde_json::json!({"state":"retained","creation_clone":clone.ok(),
+                "task_start_reconcile":task,"remediation":super::revoke::OPERATION_REMEDIATION});
+        }
         status
+    }
+    pub fn operation_undrained(&self) -> Result<u64> {
+        operation_undrained(&self.db)
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub fn creation_recovery_ok(&self) -> bool {
+        !self.creation_recovery_error
     }
     pub fn recover_operation_custody(&mut self, location: &Location) {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if self.custody.tick(location, &mut self.db).is_err() {
             self.operation_recovery_error = true;
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if self.creation_custody.tick(location, &mut self.db).is_err() {
+            self.creation_recovery_error = true;
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let _ = location;

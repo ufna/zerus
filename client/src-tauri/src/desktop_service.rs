@@ -1,4 +1,4 @@
-//! One read-only desktop subscriber. No daemon launch, legacy fallback or writer admission.
+//! One owned desktop subscriber and closed native intents. No daemon launch or legacy fallback.
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -35,17 +35,24 @@ pub(crate) mod activation;
 #[derive(Default)]
 pub(crate) struct Observers {
     pub projections: Vec<Projection>,
+    pub notification_controls: Option<crate::desktop_notification_controls::Setup>,
+    pub retained_sources: Option<retained_import::Inputs>,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub activation: Option<activation::Sink>,
 }
 
 pub(crate) mod audit;
+mod cache;
 mod catalog;
 mod catalog_relay;
+pub(crate) mod creation_clone;
 use catalog::catalog_loop;
 mod details;
 pub mod frontend;
+pub(crate) mod notification_controls;
 mod read_import;
+mod reconnect;
+pub(crate) mod retained_import;
 
 /// Registered at setup before start_source. Some contains a verified service
 /// watch frame; None invalidates the prior projection. Callbacks must not block.
@@ -134,6 +141,24 @@ pub enum Data {
     Detail(details::Delivery),
 }
 
+/// Display provenance for a per-session receipt, never writer authority.
+/// Cache projection/cursor retirement does not change the original source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct NotificationScope {
+    computer: String,
+    configuration: String,
+    epoch: String,
+    incarnation: u64,
+    generation: u64,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct NotificationReceipt {
+    pub(crate) scope: NotificationScope,
+    pub(crate) key: String,
+    pub(crate) provider: String,
+}
+
 /// Recheck identity at the view drain, not just when an RPC finishes. Frames
 /// already queued before a removal, reconnect or new generation cannot reappear.
 pub struct CatalogDelivery {
@@ -146,6 +171,13 @@ pub struct CatalogDelivery {
 }
 enum CatalogValue {
     Row(Box<Change>),
+    /// A delta removal after its revision's upserts. One revision is one
+    /// native catalog frame, whose removal is `replaced` when that frame lists
+    /// the session's name again (`listed`); the journal drops the reason.
+    Removal {
+        key: String,
+        listed: Arc<BTreeSet<String>>,
+    },
     Finish {
         through: Option<Revision>,
         keys: Option<BTreeSet<String>>,
@@ -171,10 +203,42 @@ impl CatalogDelivery {
         {
             return;
         }
+        if let Some(configuration) = shared
+            .configuration
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+        {
+            pump.notification_scope(
+                &self.computer,
+                NotificationScope {
+                    computer: self.computer.clone(),
+                    configuration,
+                    epoch: self.epoch.clone(),
+                    incarnation: self.source.incarnation,
+                    generation: self.source.generation,
+                },
+            );
+        }
         match self.value {
             CatalogValue::Row(change) => {
                 observe(&change);
                 pump.push(*change);
+            }
+            CatalogValue::Removal { key, listed } => {
+                // The serial drain's mirror holds exactly the rows delivered
+                // before this removal, so the removed run's name is current.
+                let reason = pump
+                    .row(&self.computer, &key)
+                    .filter(|old| listed.contains(&old.name))
+                    .map(|_| "replaced".to_owned());
+                let change = Change::Remove {
+                    computer: ComputerId(self.computer),
+                    key,
+                    reason,
+                };
+                observe(&change);
+                pump.push(change);
             }
             CatalogValue::Finish {
                 through,
@@ -202,17 +266,22 @@ impl CatalogDelivery {
                 if let (Some(keys), Some(_)) = (keys, through) {
                     pump.service_catalog_finish(&computer, &keys);
                 }
-                pump.push(Change::Computer {
+                // A contiguous delta range remains live even when a newer head
+                // needs another catch-up. Pending display changes do not mean
+                // this computer lost its connection, and neither does a still
+                // staging view of an online source that was already Live: its
+                // completion hint re-baselines it (zerus-bkbb).
+                let live = through.is_some() || (self.source.online && pump.live(&computer.0));
+                let change = Change::Computer {
                     computer,
-                    // A contiguous delta range remains live even when a newer
-                    // head needs another catch-up. Pending display changes do
-                    // not mean this computer lost its connection.
-                    status: if through.is_some() {
+                    status: if live {
                         ComputerStatus::Live
                     } else {
                         ComputerStatus::Reconnecting { attempt: 0 }
                     },
-                });
+                };
+                observe(&change);
+                pump.push(change);
                 let _ = done.send(());
             }
         }
@@ -220,6 +289,9 @@ impl CatalogDelivery {
 }
 
 struct Shared {
+    creation_rpc: Gate,
+    notification_controls: Arc<crate::desktop_notification_controls::Controller>,
+    notification_supported: AtomicBool,
     ownership: Arc<crate::desktop_ownership::Controller>,
     ownership_supported: AtomicBool,
     hgs: PathBuf,
@@ -235,6 +307,8 @@ struct Shared {
     dirty: Mutex<Dirty>,
     changed: Notify,
     rpc: Gate,
+    cache_rpc: Gate,
+    cache: Mutex<Option<cache::Pending>>,
     // Long activation reads never consume fleet/details admission capacity.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     activation_rpc: Gate,
@@ -254,6 +328,7 @@ struct Shared {
     organization: Mutex<Option<zerus_client_core::OrganizationSnapshot>>,
     frontend: frontend::Frontend,
     read_import: Mutex<read_import::State>,
+    retained_import: Option<Arc<retained_import::Report>>,
     projections: Vec<Projection>,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     activation: Option<activation::Sink>,
@@ -273,6 +348,89 @@ pub struct Service {
 }
 
 impl Service {
+    pub(crate) fn notification_receipt(
+        &self,
+        target: &zerus_client_core::actions::Target,
+    ) -> Option<NotificationReceipt> {
+        let scope = self.notification_scope(&target.computer)?;
+        self.shared.pump.notification_receipt(scope, target)
+    }
+
+    pub(crate) fn notification_scope(&self, computer: &str) -> Option<NotificationScope> {
+        if self.shared.stopped.load(Ordering::Acquire) {
+            return None;
+        }
+        let snapshot = self
+            .shared
+            .snapshot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !snapshot.connected {
+            return None;
+        }
+        let dirty = self
+            .shared
+            .dirty
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let source = dirty.sources.get(computer).filter(|source| source.online)?;
+        Some(NotificationScope {
+            computer: computer.into(),
+            configuration: self
+                .shared
+                .configuration
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()?,
+            epoch: snapshot.epoch.clone()?,
+            incarnation: source.incarnation,
+            generation: source.generation,
+        })
+    }
+
+    pub(crate) fn apply_notification_preferences(
+        &self,
+        expected: &NotificationReceipt,
+        target: &zerus_client_core::actions::Target,
+        preferences: &Value,
+    ) {
+        let scope = &expected.scope;
+        if self.shared.stopped.load(Ordering::Acquire) || scope.computer != target.computer {
+            return;
+        }
+        // Hold the same scope admission as catalog delivery through Pump publish.
+        let snapshot = self
+            .shared
+            .snapshot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let dirty = self
+            .shared
+            .dirty
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !snapshot.connected
+            || snapshot.epoch.as_ref() != Some(&scope.epoch)
+            || self
+                .shared
+                .configuration
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                != Some(&scope.configuration)
+            || !dirty.sources.get(&target.computer).is_some_and(|source| {
+                source.online
+                    && source.incarnation == scope.incarnation
+                    && source.generation == scope.generation
+            })
+        {
+            return;
+        }
+        self.shared
+            .pump
+            .apply_notification_preferences(expected, target, preferences);
+    }
+
     #[cfg(all(test, unix))]
     pub fn start(
         hgs: PathBuf,
@@ -292,6 +450,8 @@ impl Service {
             responder,
             Observers {
                 projections,
+                notification_controls: None,
+                retained_sources: None,
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 activation: None,
             },
@@ -312,6 +472,11 @@ impl Service {
             zerus_client_core::desktop::ownership::Mode::Service,
         );
         let shared = Arc::new(Shared {
+            creation_rpc: Gate::new(1).unwrap(),
+            notification_controls: crate::desktop_notification_controls::Controller::new(
+                observers.notification_controls,
+            ),
+            notification_supported: AtomicBool::new(false),
             ownership,
             ownership_supported: AtomicBool::new(false),
             hgs,
@@ -323,6 +488,8 @@ impl Service {
             dirty: Mutex::new(Dirty::default()),
             changed: Notify::new(),
             rpc: Gate::new(4).unwrap(),
+            cache_rpc: Gate::new(1).unwrap(),
+            cache: Mutex::new(None),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             activation_rpc: Gate::new(1).unwrap(),
             #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
@@ -343,10 +510,26 @@ impl Service {
             organization: Mutex::new(None),
             frontend: frontend::Frontend::default(),
             read_import: Mutex::new(read_import::State::default()),
+            retained_import: observers.retained_sources.map(retained_import::Report::new),
             projections: observers.projections,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             activation: observers.activation,
         });
+        let weak = Arc::downgrade(&shared);
+        shared.notification_controls.hook(Arc::new(move || {
+            if let Some(shared) = weak.upgrade() {
+                shared.publish_notification_controls();
+            }
+        }));
+        if let Some(report) = &shared.retained_import {
+            let weak = Arc::downgrade(&shared);
+            report.hook_creations(Arc::new(move || {
+                if let Some(shared) = weak.upgrade() {
+                    shared.publish_retained_import();
+                    retained_import::creations::schedule_current(&shared);
+                }
+            }));
+        }
         let (control, receiver) = watch::channel(Control::Retry(0));
         let (finished, join) = oneshot::channel();
         let service = Arc::new(Self {
@@ -370,6 +553,36 @@ impl Service {
             .clone()
     }
     pub(crate) async fn ownership_rearm(self: &Arc<Self>) -> crate::desktop_ownership::View {
+        if self.shared.retained_import.is_some() {
+            let relay = self
+                .shared
+                .relay
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
+            let configuration = self
+                .shared
+                .configuration
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
+            let cancel = self
+                .shared
+                .cancellation
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
+            match (relay, configuration, cancel) {
+                (Some(relay), Some(configuration), Some(cancel)) => {
+                    retained_import::before_grant(&self.shared, relay, configuration, cancel, true)
+                        .await
+                }
+                _ => retained_import::record_error(
+                    &self.shared,
+                    "retained_import_connection_unavailable",
+                ),
+            }
+        }
         let view = self
             .shared
             .ownership
@@ -379,15 +592,20 @@ impl Service {
                 None,
             )
             .await;
-        self.shared.publish_ownership();
+        self.shared
+            .publish_ownership(crate::desktop_ownership::Phase::Rearm)
+            .await;
         if self.shared.ownership.granted() {
-            self.retry();
+            // Rearm already made its one explicit report attempt above.
+            self.retry_connection();
         }
         view
     }
     pub(crate) async fn ownership_result(&self) -> crate::desktop_ownership::View {
         let view = self.shared.ownership.request(None, None, None).await;
-        self.shared.publish_ownership();
+        self.shared
+            .publish_ownership(crate::desktop_ownership::Phase::Result)
+            .await;
         view
     }
     /// Settings choices only: offline and generation-zero computers remain
@@ -400,6 +618,12 @@ impl Service {
             .clone()
     }
     pub fn retry(&self) {
+        if let Some(report) = &self.shared.retained_import {
+            report.request_retry();
+        }
+        self.retry_connection();
+    }
+    fn retry_connection(&self) {
         if self.shared.stopped.load(Ordering::Acquire) {
             return;
         }
@@ -575,8 +799,9 @@ impl Service {
         Ok(committed)
     }
     pub fn stop(&self) {
-        self.shared.ownership.stop();
         self.shared.stopped.store(true, Ordering::Release);
+        self.shared.notification_controls.close();
+        self.shared.ownership.stop();
         self.shared.audit_help.clear();
         if let Some(cancel) = self
             .shared
@@ -593,6 +818,11 @@ impl Service {
             .unwrap_or_else(PoisonError::into_inner)
             .take();
         self.shared.rpc.close();
+        self.shared.cache_rpc.close();
+        self.shared.creation_rpc.close();
+        if let Some(report) = &self.shared.retained_import {
+            report.close();
+        }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         self.shared.activation_rpc.close();
         let _ = self.control.send(Control::Stop);
@@ -618,16 +848,37 @@ impl Service {
             join_view(drain, RPC_WAIT).await?;
         }
         let closed = self.shared.rpc.close();
+        let cache_closed = self.shared.cache_rpc.close();
+        let creation_closed = self.shared.creation_rpc.close();
         let ownership_closed = self.shared.ownership.close();
+        let notification_closed = self.shared.notification_controls.close();
+        let retained_closed = self
+            .shared
+            .retained_import
+            .as_ref()
+            .map(|report| report.close())
+            .unwrap_or_default();
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         let activation_closed = self.shared.activation_rpc.close();
         let drained = tauri::async_runtime::spawn_blocking(move || {
             let until = std::time::Instant::now() + RPC_WAIT;
             let drained =
                 closed.wait_until(until) == zerus_client_core::desktop::drain::Observation::Idle;
+            let drained = (cache_closed.wait_until(until)
+                == zerus_client_core::desktop::drain::Observation::Idle)
+                && drained;
+            let drained = (creation_closed.wait_until(until)
+                == zerus_client_core::desktop::drain::Observation::Idle)
+                && drained;
             let drained = (ownership_closed.wait_until(until)
                 == zerus_client_core::desktop::drain::Observation::Idle)
                 && drained;
+            let drained = (notification_closed.wait_until(until)
+                == zerus_client_core::desktop::drain::Observation::Idle)
+                && drained;
+            let drained = retained_closed.iter().all(|closed| {
+                closed.wait_until(until) == zerus_client_core::desktop::drain::Observation::Idle
+            }) && drained;
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             let drained = (activation_closed.wait_until(until)
                 == zerus_client_core::desktop::drain::Observation::Idle)
@@ -662,6 +913,12 @@ impl Drop for Service {
 }
 
 impl Shared {
+    fn publish_retained_import(&self) {
+        let report = self.retained_import.as_ref().map(|report| report.status());
+        let mut snapshot = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
+        snapshot.retained_source_import = report;
+        self.pump.service(snapshot.clone());
+    }
     fn observe_peer_choices(&self, state: &service::State, value: &Value) {
         // A runtime draining its sources is not a peer-membership removal.
         // The parser already checked configuration/epoch and the <=64 roster.
@@ -689,13 +946,33 @@ impl Shared {
             );
         }
     }
-    fn publish_ownership(&self) {
-        let view = serde_json::to_value(self.ownership.view()).ok();
+    async fn publish_ownership(&self, phase: crate::desktop_ownership::Phase) {
+        let owner = self.ownership.clone();
+        let view = tauri::async_runtime::spawn_blocking(move || owner.record_view(phase))
+            .await
+            .unwrap_or_else(|_| self.ownership.view());
+        let view = serde_json::to_value(view).ok();
         let mut current = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
         current.notification_ownership = view;
         self.pump.service(current.clone());
     }
+    fn publish_notification_controls(&self) {
+        if self.stopped.load(Ordering::Acquire) {
+            return;
+        }
+        let value = self
+            .notification_controls
+            .view()
+            .and_then(|v| serde_json::to_value(v).ok());
+        let mut current = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
+        current.notification_preferences = value;
+        self.pump.service(current.clone());
+    }
     fn publish(&self, mut snapshot: Snapshot) {
+        snapshot.notification_preferences = self
+            .notification_controls
+            .view()
+            .and_then(|v| serde_json::to_value(v).ok());
         snapshot.notification_ownership = serde_json::to_value(self.ownership.view()).ok();
         snapshot.pending_read_import = Some(
             self.read_import
@@ -703,16 +980,19 @@ impl Shared {
                 .unwrap_or_else(PoisonError::into_inner)
                 .status(),
         );
+        snapshot.retained_source_import =
+            self.retained_import.as_ref().map(|report| report.status());
         let mut current = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
         *current = snapshot.clone();
         self.pump.service(snapshot);
     }
-    fn unavailable(&self, code: &str) {
+    fn unavailable(&self, code: &str, reconnecting: bool) {
         for projection in &self.projections {
             projection(None);
         }
         self.publish(Snapshot {
             code: code.into(),
+            reconnecting,
             ..Snapshot::default()
         });
     }
@@ -920,7 +1200,7 @@ async fn request(
     // This lane never acquires frontend approval-setting authority.
     if matches!(
         value["op"].as_str(),
-        Some("automatic_approvals" | "maintenance_configure")
+        Some("automatic_approvals" | "maintenance_configure" | "cache_maintenance")
     ) {
         return Err("frontend_route_required");
     }
@@ -940,6 +1220,17 @@ async fn request(
 
 async fn preflight(shared: &Arc<Shared>, stop: Arc<AtomicBool>) -> Result<String, &'static str> {
     let help = command(shared, vec!["--help".into()], None, stop.clone()).await?;
+    shared.notification_supported.store(
+        std::str::from_utf8(&help).ok().is_some_and(|text| {
+            [
+                zerus_client_core::desktop::notification_control::HELP_MARKER,
+                zerus_client_core::desktop::ui_requests::HELP_MARKER,
+            ]
+            .iter()
+            .all(|marker| text.lines().any(|line| line.trim() == *marker))
+        }),
+        Ordering::Release,
+    );
     shared.ownership_supported.store(
         std::str::from_utf8(&help).ok().is_some_and(|text| {
             [
@@ -968,6 +1259,11 @@ async fn preflight(shared: &Arc<Shared>, stop: Arc<AtomicBool>) -> Result<String
     )
     .await?;
     let value: Value = serde_json::from_slice(&bytes).map_err(|_| "invalid_service_response")?;
+    // A successful status CLI can report an absent socket. Its unavailable
+    // response has no capability table; this is not a protocol incompatibility.
+    if value["running"] == false {
+        return Err("service_unavailable");
+    }
     let configuration = value["configuration"]
         .as_str()
         .filter(|value| zerus_client_core::desktop::digest(value))
@@ -990,6 +1286,8 @@ async fn preflight(shared: &Arc<Shared>, stop: Arc<AtomicBool>) -> Result<String
 }
 
 async fn run(shared: Arc<Shared>, mut control: watch::Receiver<Control>) {
+    let mut backoff = reconnect::Backoff::default();
+    let mut automatic = false;
     loop {
         let requested = *control.borrow_and_update();
         if requested == Control::Stop || shared.stopped.load(Ordering::Acquire) {
@@ -1000,14 +1298,25 @@ async fn run(shared: Arc<Shared>, mut control: watch::Receiver<Control>) {
             .cancellation
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(stop.clone());
-        let result = connection(shared.clone(), &mut control, stop.clone()).await;
-        if !shared.stopped.load(Ordering::Acquire)
-            && shared.ownership_supported.load(Ordering::Acquire)
-        {
-            // A revoked stream can end while the passive authenticated endpoint
-            // remains available. Read its status; never auto-rearm at EOF.
-            shared.ownership.request(None, None, None).await;
-        }
+        let mut greeted = None;
+        let result = connection(
+            shared.clone(),
+            &mut control,
+            stop.clone(),
+            automatic,
+            &mut greeted,
+        )
+        .await;
+        let code = result.err().unwrap_or("service_unavailable");
+        let retry = backoff
+            .next(
+                code,
+                greeted.is_some_and(|at: tokio::time::Instant| {
+                    at.elapsed() >= Duration::from_secs(30)
+                }),
+            )
+            .map(|delay| tokio::time::Instant::now() + delay);
+        shared.notification_controls.disconnect();
         *shared.relay.lock().unwrap_or_else(PoisonError::into_inner) = None;
         stop.store(true, Ordering::Release);
         shared.audit_help.clear();
@@ -1024,7 +1333,7 @@ async fn run(shared: Arc<Shared>, mut control: watch::Receiver<Control>) {
         for change in changes {
             let _ = emit(&shared, change, &AtomicBool::new(false)).await;
         }
-        shared.unavailable(result.err().unwrap_or("service_unavailable"));
+        shared.unavailable(code, retry.is_some());
         for computer in computers {
             let _ = emit(
                 &shared,
@@ -1036,15 +1345,42 @@ async fn run(shared: Arc<Shared>, mut control: watch::Receiver<Control>) {
             )
             .await;
         }
+        if !shared.stopped.load(Ordering::Acquire)
+            && shared.ownership_supported.load(Ordering::Acquire)
+        {
+            // A revoked stream can end while the passive authenticated endpoint
+            // remains available. Read its status; never auto-rearm at EOF.
+            shared.ownership.request(None, None, None).await;
+        }
+        shared
+            .publish_ownership(crate::desktop_ownership::Phase::ConnectionClosed)
+            .await;
         if *control.borrow() == Control::Stop {
             break;
         }
-        // Retry is explicit and reuses this one worker after its children join.
+        // Reuse this one worker only after its original children have joined.
+        // Explicit Retry interrupts the delay and retains its existing intents.
         if *control.borrow() != requested {
+            automatic = false;
+            backoff.reset();
             continue;
         }
-        if control.changed().await.is_err() {
-            break;
+        if let Some(retry_at) = retry {
+            tokio::select! {
+                biased;
+                changed = control.changed() => {
+                    if changed.is_err() { break; }
+                    automatic = false;
+                    backoff.reset();
+                }
+                _ = tokio::time::sleep_until(retry_at) => automatic = true,
+            }
+        } else {
+            if control.changed().await.is_err() {
+                break;
+            }
+            automatic = false;
+            backoff.reset();
         }
     }
 }
@@ -1053,7 +1389,12 @@ async fn connection(
     shared: Arc<Shared>,
     control: &mut watch::Receiver<Control>,
     stop: Arc<AtomicBool>,
+    automatic: bool,
+    greeted: &mut Option<tokio::time::Instant>,
 ) -> Result<(), &'static str> {
+    shared
+        .publish_ownership(crate::desktop_ownership::Phase::Connecting)
+        .await;
     let ordinary = shared.hgs.clone();
     let relay = Arc::new(
         tauri::async_runtime::spawn_blocking(move || {
@@ -1067,15 +1408,40 @@ async fn connection(
     }
     *shared.relay.lock().unwrap_or_else(PoisonError::into_inner) = Some(relay.clone());
     let configuration = preflight(&shared, stop.clone()).await?;
+    if !automatic {
+        let explicit = shared
+            .retained_import
+            .as_ref()
+            .is_some_and(|report| report.take_retry());
+        retained_import::before_grant(
+            &shared,
+            relay.clone(),
+            configuration.clone(),
+            stop.clone(),
+            explicit,
+        )
+        .await;
+    }
     if shared.ownership_supported.load(Ordering::Acquire) {
-        shared
-            .ownership
-            .startup_grant(configuration.clone(), stop.clone())
-            .await;
+        if automatic {
+            // Reopening a read stream is never a new Grant/Rearm or replay of
+            // a retained migration, approval, send or other native intent.
+            shared
+                .ownership
+                .request(None, Some(configuration.clone()), Some(stop.clone()))
+                .await;
+        } else {
+            shared
+                .ownership
+                .startup_grant(configuration.clone(), stop.clone())
+                .await;
+        }
     } else {
         shared.ownership.unsupported();
     }
-    shared.publish_ownership();
+    shared
+        .publish_ownership(crate::desktop_ownership::Phase::StartupGrant)
+        .await;
     if shared.stopped.load(Ordering::Acquire) || stop.load(Ordering::Acquire) {
         return Err("stopped");
     }
@@ -1134,10 +1500,13 @@ async fn connection(
             configuration.clone(),
         );
         tauri::async_runtime::spawn(async move {
-            recover_grant(shared, configuration, stop, cancelled).await;
+            if !automatic {
+                recover_grant(shared, configuration, stop, cancelled).await;
+            }
         })
     };
     let mut last_frame = tokio::time::Instant::now();
+    let mut notification_worker = None;
     let result = async {
         loop {
             tokio::select! {
@@ -1156,10 +1525,33 @@ async fn connection(
                         let frame: Value = serde_json::from_slice(&buffer).map_err(|_| "invalid_service_frame")?;
                         buffer.clear();
                         let update = state.frame(&frame)?;
+                        if frame["t"] == "hello" { *greeted = Some(tokio::time::Instant::now()); }
                         details::frame(&shared,&frame,&stop).await?;
                         for projection in &shared.projections { projection(Some(&frame)); }
                         last_frame = tokio::time::Instant::now();
                         shared.publish(state.snapshot().clone());
+                        retained_import::creations::schedule_current(&shared);
+                        if frame["t"] == "hello" && notification_worker.is_none()
+                            && shared.notification_supported.load(Ordering::Acquire)
+                            && shared.notification_controls.enabled() {
+                            if let Some(epoch) = state.snapshot().epoch.clone() {
+                                let relay = shared.relay.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                                if let Some(relay) = relay {
+                                    let owner = shared.notification_controls.clone();
+                                    let responder = shared.responder.clone();
+                                    let cancelled = stop.clone();
+                                    let supported = shared.notification_supported.load(Ordering::Acquire);
+                                    let scope = zerus_client_core::desktop::notification_control::Scope {
+                                        configuration: configuration.clone(), service_epoch: epoch,
+                                    };
+                                    notification_worker = Some(tauri::async_runtime::spawn(async move {
+                                        if let Some(session) = owner.connect(scope, relay, responder, cancelled, supported).await {
+                                            notification_controls::run(owner, session).await;
+                                        }
+                                    }));
+                                }
+                            }
+                        }
                         match update {
                             service::Update::Status => {
                                 shared.observe_peer_choices(&state, &frame["value"]);
@@ -1176,7 +1568,7 @@ async fn connection(
                                         // This roster discovers sources. Catalog hints/pages
                                         // bind their scope and coverage; transport readiness
                                         // alone cannot repeatedly re-baseline cached rows.
-                                        shared.details.lock().unwrap_or_else(PoisonError::into_inner).source(name,computer.generation)?;
+                                        shared.details.lock().unwrap_or_else(PoisonError::into_inner).source_state(name,computer.generation,computer.online)?;
                                         shared.details_changed.notify_one();
                                     }
                                 }
@@ -1186,9 +1578,16 @@ async fn connection(
                                     { let mut dirty = shared.dirty.lock().unwrap_or_else(PoisonError::into_inner); dirty.progress.remove(&computer); dirty.heads.remove(&computer); dirty.sources.remove(&computer); dirty.pending.remove(&computer); dirty.halted.remove(&computer); }
                                     emit(&shared, Change::Computer { computer: ComputerId(computer.clone()), status: ComputerStatus::Ended }, &stop).await?;
                                     emit(&shared, Change::Replace { computer: ComputerId(computer), rows: vec![] }, &stop).await?;
-                                } else if shared.catalog_hint(&computer, SourceVersion::from(&frame["value"]),
-                                    serde_json::from_value(frame["value"]["revision"].clone()).map_err(|_| "invalid_catalog_revision")?, frame["value"]["reset_required"] == true)? {
-                                    emit(&shared, Change::Computer { computer: ComputerId(computer), status: ComputerStatus::Probing }, &stop).await?;
+                                } else {
+                                    let source = SourceVersion::from(&frame["value"]);
+                                    // A rebuilt view of a source that stays online (a native
+                                    // resnapshot) is no connection change: a Live computer keeps
+                                    // Live while it re-baselines, so its rows never blink (zerus-bkbb).
+                                    let refresh = source.online && shared.pump.live(&computer);
+                                    if shared.catalog_hint(&computer, source,
+                                        serde_json::from_value(frame["value"]["revision"].clone()).map_err(|_| "invalid_catalog_revision")?, frame["value"]["reset_required"] == true)? && !refresh {
+                                        emit(&shared, Change::Computer { computer: ComputerId(computer), status: ComputerStatus::Probing }, &stop).await?;
+                                    }
                                 }
                             }
                             service::Update::Other => (),
@@ -1205,11 +1604,15 @@ async fn connection(
         }
     }.await;
     stop.store(true, Ordering::Release);
+    shared.notification_controls.disconnect();
     grant_cancel.notify_waiters();
     shared.changed.notify_one();
     shared.details_changed.notify_one();
     drop(stdin);
     let _ = grant_worker.await;
+    if let Some(worker) = notification_worker {
+        let _ = worker.await;
+    }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     let _ = activation_worker.await;
     // Only this owned local proxy is stopped; the desktop service and native agents remain untouched.
@@ -1269,7 +1672,9 @@ async fn recover_grant(
                 Some(stop.clone()),
             )
             .await;
-        shared.publish_ownership();
+        shared
+            .publish_ownership(crate::desktop_ownership::Phase::RetryGrant)
+            .await;
         step = (step + 1).min(DELAYS.len() - 1);
     }
 }

@@ -37,12 +37,20 @@ pub struct Component {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
+    /// Native original-intent presentation only, never accepted from Root input.
+    #[serde(skip_deserializing)]
+    pub notification_preferences: Option<Value>,
     /// Native ownership controller presentation only, never a writer permit.
     #[serde(skip_deserializing)]
     pub notification_ownership: Option<Value>,
     /// Native-client transfer state, attached locally; never a service writer grant.
     pub pending_read_import: Option<Value>,
+    /// Native managed-source report progress only. Never deserialized authority.
+    #[serde(skip_deserializing)]
+    pub retained_source_import: Option<Value>,
     pub connected: bool,
+    #[serde(default)]
+    pub reconnecting: bool,
     pub epoch: Option<String>,
     pub generation: Option<u64>,
     pub background: BTreeMap<String, Component>,
@@ -55,9 +63,12 @@ pub struct Snapshot {
 impl Default for Snapshot {
     fn default() -> Self {
         Self {
+            notification_preferences: None,
             notification_ownership: None,
             pending_read_import: None,
+            retained_source_import: None,
             connected: false,
+            reconnecting: false,
             epoch: None,
             generation: None,
             background: BTreeMap::new(),
@@ -123,6 +134,7 @@ impl State {
     }
     pub fn disconnect(&mut self, code: &str) {
         self.snapshot = Snapshot {
+            notification_preferences: None,
             code: code.into(),
             ..Snapshot::default()
         };
@@ -166,7 +178,9 @@ impl State {
             return Err("stale_service_generation");
         }
         let mut background = BTreeMap::new();
-        for name in COMPONENTS {
+        // Cache maintenance is independently configured; it must not make the
+        // existing five-component background readiness depend on cache policy.
+        for name in COMPONENTS.into_iter().chain(["cache_maintenance"]) {
             let component = &lifecycle["background"][name];
             let code = component["code"]
                 .as_str()
@@ -186,8 +200,11 @@ impl State {
         self.sources = checked_sources(&value["background_runtime"], epoch);
         self.snapshot = Snapshot {
             notification_ownership: None,
+            notification_preferences: None,
             connected: true,
+            reconnecting: false,
             pending_read_import: None,
+            retained_source_import: None,
             epoch: Some(epoch.into()),
             generation: Some(generation),
             background,

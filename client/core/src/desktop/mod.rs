@@ -14,6 +14,8 @@ use zerus_desktop_migration::canonical_uuid;
 
 pub mod activation;
 pub mod approval_audit;
+pub mod cache_maintenance;
+pub mod creation_clone;
 pub mod drain;
 pub mod notification_control;
 pub mod notifications;
@@ -118,6 +120,7 @@ pub struct Responder {
     ownership_mode: OnceLock<ownership::Mode>,
     producer: Mutex<producer::Cached>,
     ui_requests: ui_requests::Cache,
+    notification_focus: notification_control::native::Cache,
 }
 impl Responder {
     /// Cached identity data only; no I/O, worker permission or writer grant.
@@ -141,6 +144,7 @@ impl Responder {
             ownership_mode: OnceLock::new(),
             producer: Mutex::default(),
             ui_requests: ui_requests::Cache::default(),
+            notification_focus: notification_control::native::Cache::default(),
         }
     }
     pub fn configure_once(&self, configuration: String) -> bool {
