@@ -299,6 +299,7 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn('profile: [no-load, load, precreated]',diagnostic)
         self.assertIn('cargo build --release --locked --bin hgs',diagnostic)
         self.assertNotRegex(diagnostic,r'(?m)^\s*(secrets|environment):')
+        self.assertNotRegex(diagnostic,r'(?i)\$\{\{[^}]*\bsecrets\b')
         self.assertNotRegex(diagnostic,r'(?m)^\s*(contents|actions|id-token): write')
 
     def test_final_gate_rejects_failure_cancellation_and_all_skipped(self):
