@@ -371,23 +371,71 @@ fn grown_binding_beyond_the_publication_budget_does_not_fence_later_hits() {
         .unwrap();
     show("indexed, first page", &page);
     let mut record: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    record["shell_jobs"] = json!({"big":{"command":"x".repeat(9 << 20)}});
-    fs::write(&path, record.to_string()).unwrap();
-    record["name"] = json!("codex/example/other");
-    record["run_id"] = json!("fixture-other-run");
-    record.as_object_mut().unwrap().remove("shell_jobs");
+    let mut other = record.clone();
+    other["name"] = json!("codex/example/other");
+    other["run_id"] = json!("fixture-other-run");
     fs::write(
         state.join(format!("{:x}.json", Sha256::digest(b"codex/example/other"))),
-        record.to_string(),
+        other.to_string(),
     )
     .unwrap();
+    // Publication verifies existing hits; it cannot index this second binding.
+    // Finish fixture ingestion before growth can leave the first path pending.
+    discover(&store, &state);
+    consume_until(&mut store, &state, |s| totals(s).0 == 0);
+    let key = record_target(&other).key().unwrap();
+    let source: (bool, bool, bool) = store
+        .index
+        .connection()
+        .query_row(
+            "SELECT active,complete,unavailable FROM sources WHERE id=?",
+            [&key],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(source, (true, true, false));
+    let cursor: String = store
+        .index
+        .connection()
+        .query_row(
+            "SELECT cursor FROM input_cursors WHERE source=?",
+            [&key],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let cursor: Cursor = serde_json::from_str(&cursor).unwrap();
+    assert_eq!(
+        cursor.offset,
+        fs::metadata(other["transcript"].as_str().unwrap())
+            .unwrap()
+            .len()
+    );
+    assert_eq!(
+        store.index.query("needle", 50, None).unwrap().hits.len(),
+        12
+    );
+    record["shell_jobs"] = json!({"big":{"command":"x".repeat(9 << 20)}});
+    fs::write(&path, record.to_string()).unwrap();
     eprintln!("grown binding bytes={}", fs::metadata(&path).unwrap().len());
     // As read() does for a first page: discovery, one interactive consume, publish.
     discover(&store, &state);
-    let consumed = store.consume(&state, &Budget::interactive(), &AtomicBool::new(false));
+    // A healthy binding must remain reachable even when this correctly bounded
+    // catch-up slice is spent in a commit before it visits a queued path.
+    let first_commit = AtomicBool::new(true);
+    store.index.connection().commit_hook(Some(move || {
+        if first_commit.swap(false, Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        false
+    }));
+    let interactive = Budget::interactive();
+    let consumed = store.consume(&state, &interactive, &AtomicBool::new(false));
+    store.index.connection().commit_hook(None::<fn() -> bool>);
+    let consumed = consumed.unwrap();
+    assert!(Instant::now() >= interactive.deadline);
     eprintln!(
-        "interactive consume ok={} pending={:?}",
-        consumed.is_ok(),
+        "interactive consume progress={} pending={:?}",
+        serde_json::to_value(consumed).unwrap(),
         totals(&store)
     );
     let mut cursor: Option<String> = None;
