@@ -1,6 +1,8 @@
 use super::*;
 use std::{collections::BTreeMap, fs, io::Write, path::Path};
 
+pub(super) mod probe;
+
 struct OwnedChild(Option<platform::Spawned>);
 impl Drop for OwnedChild {
     fn drop(&mut self) {
@@ -190,8 +192,14 @@ fn owned_worker_child() {
 }
 #[test]
 fn restart_and_unknown_cleanup_retain_only_the_original_worker_and_service_owner() {
+    if probe::run() {
+        return;
+    }
     let root = tempfile::tempdir().unwrap();
-    let config = config(root.path());
+    restart_case(root.path(), None);
+}
+fn restart_case(root: &Path, trace: Option<&Arc<probe::Trace>>) {
+    let config = config(root);
     fs::create_dir_all(config.dir.join("swarm")).unwrap();
     // This diagnostic marker must never become termination authority.
     fs::write(
@@ -199,13 +207,23 @@ fn restart_and_unknown_cleanup_retain_only_the_original_worker_and_service_owner
         json!({"pid":std::process::id(),"version":"0.0.0"}).to_string(),
     )
     .unwrap();
-    let file = fs::File::create(root.path().join("owner.lock")).unwrap();
+    let file = fs::File::create(root.join("owner.lock")).unwrap();
     fs2::FileExt::try_lock_exclusive(&file).unwrap();
     let owner = Arc::new(platform::FileLock::held(file));
     let mut runtime = Runtime::new(&config, owner.clone());
-    let marker = root.path().join("started");
+    if let Some(trace) = trace {
+        trace.attach(&runtime, &owner);
+        *runtime.shared.probe.lock().unwrap() = Some(trace.clone());
+    }
+    let shared = runtime.shared.clone();
+    let marker = root.join("started");
     runtime.start(Launch::Fixture(marker.clone())).unwrap();
-    until(|| runtime.status()["starts"] == 1 && marker.exists(), 10);
+    if let Some(trace) = trace {
+        trace.thread(&runtime);
+    }
+    probe::phase(&shared, "initial_ready", || {
+        until(|| runtime.status()["starts"] == 1 && marker.exists(), 10);
+    });
     let first = runtime.status()["pid"].as_u64().unwrap() as u32;
     let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, first) };
     assert!(!handle.is_null());
@@ -215,17 +233,19 @@ fn restart_and_unknown_cleanup_retain_only_the_original_worker_and_service_owner
         WAIT_TIMEOUT
     );
     assert_eq!(runtime.restart()["accepted"], true);
-    until(
-        || {
-            runtime.status()["starts"] == 2
-                && fs::read_to_string(&marker)
-                    .unwrap_or_default()
-                    .lines()
-                    .count()
-                    == 2
-        },
-        10,
-    );
+    probe::phase(&shared, "restarted_ready", || {
+        until(
+            || {
+                runtime.status()["starts"] == 2
+                    && fs::read_to_string(&marker)
+                        .unwrap_or_default()
+                        .lines()
+                        .count()
+                        == 2
+            },
+            10,
+        )
+    });
     assert_eq!(
         unsafe { WaitForSingleObject(original.as_raw_handle(), 0) },
         WAIT_OBJECT_0
@@ -239,14 +259,16 @@ fn restart_and_unknown_cleanup_retain_only_the_original_worker_and_service_owner
     // refund custody, admit another worker or complete the actor's drain.
     runtime.shared.hold_cleanup.store(true, Ordering::Release);
     runtime.request_stop();
-    until(|| runtime.status()["cleanup_unknown"] == true, 8);
+    probe::phase(&shared, "cleanup_unknown_notice", || {
+        until(|| runtime.status()["cleanup_unknown"] == true, 8)
+    });
     assert!(!runtime.drained());
     assert!(!runtime.confirmed_drained());
     assert_eq!(runtime.restart()["accepted"], false);
     assert_eq!(runtime.status()["starts"], 2);
     assert!(Arc::strong_count(&owner) >= 3);
     runtime.shared.hold_cleanup.store(false, Ordering::Release);
-    until(|| runtime.drained(), 3);
+    probe::phase(&shared, "final_drain", || until(|| runtime.drained(), 3));
     assert!(runtime.confirmed_drained());
     assert_eq!(runtime.status()["cleanup_unknown"], false);
     assert_eq!(runtime.status()["pid"], Value::Null);

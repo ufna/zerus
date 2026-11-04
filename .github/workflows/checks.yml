@@ -1525,6 +1525,9 @@ jobs:
       # (and the fake client, which refuses it) must never inherit it, so steps
       # that start hgs, ssh or the desktop app read from /dev/null.
       - name: Rust client tests, Rust 1.99 lints and release build
+        env:
+          ZERUS_SWARM_PROBE_RUNS: '32'
+          ZERUS_SWARM_PROBE_OUTPUT: ${{ github.workspace }}/artifacts/test-results/swarm-settle-probe.jsonl
         run: |
           mkdir -p artifacts/test-results
           cargo test --locked </dev/null 2>&1 | tee artifacts/test-results/rust.log
