@@ -267,8 +267,9 @@ impl Observed {
 /// Releasing a WinRT object after RoUninitialize faults the process
 /// (0xC0000005), so this order is the contract (zerus-1an7q).
 fn release_then_uninitialize<T>(owned: &mut Option<T>, uninitialize: impl FnOnce()) {
-    drop(owned.take());
+    // MUTANT (zerus-1an7q evidence, never merge): the original order.
     uninitialize();
+    drop(owned.take());
 }
 
 pub(super) struct Backend {
