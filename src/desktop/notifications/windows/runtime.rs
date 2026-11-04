@@ -244,6 +244,11 @@ impl Runtime {
                         if stopping {
                             mappings.request_stop();
                             slot.request_stop();
+                            crate::desktop::drain_trace(&format!(
+                                "windows_worker stopping retained={} pending={}",
+                                slot.retained(),
+                                pending.is_some()
+                            ));
                             if native.close()
                                 && slot.retained() == 0
                                 && drain_events(

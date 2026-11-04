@@ -541,6 +541,25 @@ impl Runtime {
     /// Used both by the bounded takeover wait and subsequent actor turns. A
     /// slow replacement continues draining without another frontend request.
     fn poll_drain(&mut self, store: &mut Store) -> Result<bool> {
+        let result = self.poll_drain_inner(store);
+        #[cfg(windows)]
+        {
+            let line = format!(
+                "poll_drain drained={} delivery={} maintenance={} cache={} attention={} notifications={} swarm={} result={:?}",
+                self.drained,
+                self.delivery.drained(),
+                self.maintenance.drained(),
+                self.cache.drained(),
+                self.attention.drained(),
+                self.notifications.drained(),
+                self.swarm.drained(),
+                result.as_ref().map_err(|e| format!("{e:#}"))
+            );
+            crate::desktop::drain_trace(&line);
+        }
+        result
+    }
+    fn poll_drain_inner(&mut self, store: &mut Store) -> Result<bool> {
         let fleet_done = self.fleet.stop();
         self.delivery.poll(store);
         self.maintenance.poll(store);

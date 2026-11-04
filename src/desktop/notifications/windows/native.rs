@@ -307,10 +307,17 @@ impl Backend {
     }
     fn shutdown(&mut self) -> bool {
         self.slot.request_stop();
-        if self.registration.revoke().is_err() {
+        if let Err(error) = self.registration.revoke() {
+            crate::desktop::drain_trace(&format!("backend_shutdown revoke_error={error:?}"));
             return false;
         }
         self.observed.retain(|_, value| !value.detach());
+        crate::desktop::drain_trace(&format!(
+            "backend_shutdown observed={} retained={} apartment={}",
+            self.observed.len(),
+            self.slot.retained(),
+            self.apartment
+        ));
         if !self.observed.is_empty() || self.slot.retained() != 0 {
             return false;
         }

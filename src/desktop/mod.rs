@@ -117,6 +117,30 @@ pub(crate) fn windows_notification_activation(first: Option<&str>) -> Option<i32
 }
 
 #[cfg(windows)]
+/// zerus-1an7q diagnostic branch only: append a timestamped line to
+/// %TEMP%\zerus-drain-trace.log when it changes. Never merged.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn drain_trace(line: &str) {
+    use std::io::Write;
+    static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if *last == line {
+        return;
+    }
+    *last = line.to_owned();
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(std::env::temp_dir().join("zerus-drain-trace.log"))
+    {
+        let _ = writeln!(file, "{millis} pid={} {line}", std::process::id());
+    }
+}
+
 pub(crate) fn windows_registration_entry(args: &[String]) -> Option<i32> {
     windows_registration::entry(args)
 }

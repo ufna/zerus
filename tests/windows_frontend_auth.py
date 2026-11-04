@@ -909,6 +909,65 @@ class WindowsTaskMode(unittest.TestCase):
         self.assertIsNone(observed['error'], observed)
         self.assertEqual(self.toast_registry(), toast['original'])
 
+    def diagnosed_rollback(self):
+        """zerus-1an7q diagnostic branch only: timestamped status samples and
+        the service's change-only drain trace through the rollback."""
+        import threading
+        traces = {Path(tempfile.gettempdir()) / 'zerus-drain-trace.log',
+                  Path(os.environ['USERPROFILE']) / 'AppData' / 'Local' / 'Temp' / 'zerus-drain-trace.log'}
+        for trace in traces:
+            trace.unlink(missing_ok=True)
+        samples, stop = [], threading.Event()
+
+        def sample(label):
+            started = time.time()
+            try:
+                result = subprocess.run([str(self.cli_image), 'desktop', 'status', '--json'], env=self.env,
+                                        capture_output=True, text=True, encoding='utf-8', timeout=8)
+                value = json.loads(result.stdout) if result.returncode == 0 else None
+            except Exception as error:  # noqa: BLE001 - diagnostics only
+                value, result = None, error
+            entry = dict(label=label, at=round(started, 3), took=round(time.time() - started, 3))
+            if value:
+                lifecycle = value.get('lifecycle') or {}
+                background = lifecycle.get('background') or {}
+                entry.update(running=value.get('running'), pid=lifecycle.get('pid'), mode=lifecycle.get('mode'),
+                             ownership=value.get('ownership'), attention=background.get('attention'),
+                             delivery=(background.get('delivery') or {}).get('drained'),
+                             fleet=(background.get('fleet') or {}).get('code'),
+                             presence=(background.get('presence') or {}).get('code'))
+            else:
+                entry['unavailable'] = str(result)[:300]
+            samples.append(entry)
+
+        def poll():
+            while not stop.is_set():
+                sample('during')
+                stop.wait(0.5)
+        sample('before')
+        poller = threading.Thread(target=poll, daemon=True)
+        poller.start()
+        started = time.time()
+        rollback = self.mode('passive')
+        finished = time.time()
+        stop.set()
+        poller.join(timeout=15)
+        for _ in range(10):
+            sample('after')
+            time.sleep(1)
+        print('DRAIN_DIAG_ROLLBACK ' + json.dumps(dict(started=round(started, 3), finished=round(finished, 3),
+              ok=rollback.get('ok'), code=rollback.get('code'), error=rollback.get('error'),
+              phase=(rollback.get('pending_transition') or {}).get('phase'))), file=sys.stderr)
+        for entry in samples:
+            print('DRAIN_DIAG_STATUS ' + json.dumps(entry)[:4000], file=sys.stderr)
+        for trace in traces:
+            if trace.exists():
+                lines = trace.read_text(encoding='utf-8', errors='replace').splitlines()
+                print(f'DRAIN_DIAG_TRACE {trace} lines={len(lines)}', file=sys.stderr)
+                for line in lines[-400:]:
+                    print('DRAIN_DIAG_LINE ' + line[:600], file=sys.stderr)
+        return rollback
+
     def first_background_choice_from_plain_passive(self):
         """zerus-yfbd.1: the first explicit background choice, with the
         caller's retained UUID, through the actual installed-frontend caller."""
@@ -1690,7 +1749,7 @@ $later=@{guid=$guid;pid=$q.Id;birth=$q.StartTime.ToFileTimeUtc()};
             self.assertEqual(refresh['selected_mode'], 'background')
             self.assertEqual(self.cli('desktop', 'status', '--json')['lifecycle']['pid'], before)
             self.assertIsNone(shell.poll())
-            rollback = self.mode('passive')
+            rollback = self.diagnosed_rollback()
             self.assertTrue(rollback['ok'], rollback)
             self.latest = rollback['instance']
             self.pin_original(self.latest)  # Keep this OLD PID unavailable for reuse through review.
