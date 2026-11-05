@@ -180,18 +180,23 @@ impl Installation {
 /// or fallback selector takes part. It matches the registered command path
 /// and arguments; it is not a content or Grant proof.
 fn selected_command(config: &Config) -> Result<(String, String), &'static str> {
-    let image =
+    // MUTANT (zerus-mgw2v evidence, never merge): the HOME-derived selector.
+    let location = Location::new(config).map_err(|_| "configuration_unavailable")?;
+    let plan = crate::desktop::registration::windows_plan(config, &location)
+        .map_err(|_| "selected_cli_unavailable")?;
+    let cli = plan["argv"][0].as_str().ok_or("selected_cli_unavailable")?.to_owned();
+    let here =
         platform::canonical(std::env::current_exe().map_err(|_| "selected_cli_unavailable")?)
             .map_err(|_| "selected_cli_unavailable")?;
-    let image = image.to_str().ok_or("selected_cli_unavailable")?.to_owned();
-    let (config_dir, state_dir) = crate::desktop::registration::definition_directories(config)
-        .map_err(|_| "configuration_unavailable")?;
+    if platform::canonical(std::path::Path::new(&cli)).ok().as_ref() != Some(&here) {
+        return Err("selected_cli_changed");
+    }
     let command = super::registration::expected_command(
-        &image,
-        config_dir.to_str().ok_or("configuration_unavailable")?,
-        state_dir.to_str().ok_or("configuration_unavailable")?,
+        &cli,
+        plan["argv"][4].as_str().ok_or("configuration_unavailable")?,
+        plan["argv"][6].as_str().ok_or("configuration_unavailable")?,
     )?;
-    Ok((image, command))
+    Ok((cli, command))
 }
 
 fn escape(value: &str) -> String {
