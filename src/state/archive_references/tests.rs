@@ -64,7 +64,35 @@ fn run(case: &str) {
     if let Some(system) = std::env::var_os("SystemRoot") {
         command.env("SystemRoot", system);
     }
-    let output = if case.starts_with("native-") {
+    let output = if cfg!(windows) && (case == "writers" || case == "sharing-self-holder") {
+        // Restart Manager observations are test-only and may wait in Windows.
+        // Use file-backed output and retain one exact child until actual exit.
+        use std::{io::Read, process::Stdio};
+        let out_path = directory.path().join("stdout");
+        let err_path = directory.path().join("stderr");
+        command.stdout(Stdio::from(fs::File::create(&out_path).unwrap()));
+        command.stderr(Stdio::from(fs::File::create(&err_path).unwrap()));
+        let mut child = command.spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() { break status; }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                let mut text = String::new();
+                fs::File::open(&err_path).unwrap().take(65536).read_to_string(&mut text).unwrap();
+                panic!("writers: owner diagnostic did not settle: {text}");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let read = |path| {
+            let mut bytes = Vec::new();
+            fs::File::open(path).unwrap().take(65537).read_to_end(&mut bytes).unwrap();
+            assert!(bytes.len() <= 65536);
+            bytes
+        };
+        std::process::Output { status, stdout: read(out_path), stderr: read(err_path) }
+    } else if case.starts_with("native-") {
         use std::process::Stdio;
         let marker = directory.path().join("entered");
         command
@@ -126,6 +154,12 @@ fn ordinary_writes_rewrites_and_removal_keep_reference_coverage_current() {
         run("writers");
     }
 }
+#[cfg(windows)]
+#[test]
+fn known_original_holder_is_reported_by_the_private_sharing_probe() {
+    run("sharing-self-holder");
+}
+
 #[test]
 fn a_changed_relevant_body_is_never_overwritten_by_a_preloaded_record() {
     run("changed");
@@ -454,6 +488,10 @@ fn isolated_reference_probe() {
                     "the global restore index must not inherit scoped search omissions"
                 );
             }
+        }
+        #[cfg(windows)]
+        "sharing-self-holder" => {
+            diagnostic::known_holder(&root().join("known-sharing-holder.json"));
         }
         "writers" => {
             original["name"] = json!("codex/p/renamed");

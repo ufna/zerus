@@ -17,10 +17,15 @@ mod updates;
 const FILES: usize = 5000;
 const BYTES: usize = 32 * 1024 * 1024;
 const RECORD: usize = 1024 * 1024;
+#[cfg(test)]
+mod diagnostic;
+
 const META: usize = 64 * 1024;
 const INVALID: &str = "Archive reference coverage is unavailable; keep the folder for review";
 
 fn fail(error: impl std::fmt::Display) -> String {
+    #[cfg(test)]
+    diagnostic::failure(&error.to_string());
     format!("{INVALID}: {error}")
 }
 fn live(until: Instant) -> Result<()> {
@@ -217,9 +222,17 @@ fn capture(path: &Path) -> Result<(Metadata, Version)> {
     let id = path.file_stem().and_then(|v| v.to_str()).ok_or(INVALID)?;
     // Bind the compact row to bytes from the SAME opened native file, not a
     // stamp taken after an earlier pathname read. Writers hold the state lock.
+    #[cfg(test)]
+    diagnostic::stage("archive_open", &[path]);
     let file = open(path)?;
+    #[cfg(test)]
+    diagnostic::stage("archive_version", &[path]);
     let expected = version(&file)?;
+    #[cfg(test)]
+    diagnostic::stage("archive_read", &[path]);
     let actual = read_record(&file, id, &expected)?;
+    #[cfg(test)]
+    diagnostic::stage("archive_reopen", &[path]);
     if file_version(path)? != expected {
         return Err(INVALID.into());
     }
@@ -278,7 +291,12 @@ pub(super) fn note(path: &Path, record: &Value) {
         updates::write(&metadata, &stamp)
     };
     #[cfg(test)]
-    LAST_NOTE_ERROR.with(|slot| *slot.borrow_mut() = run().err());
+    {
+        diagnostic::begin();
+        let result = run();
+        diagnostic::end();
+        LAST_NOTE_ERROR.with(|slot| *slot.borrow_mut() = result.err());
+    }
     #[cfg(not(test))]
     let _ = run();
 }

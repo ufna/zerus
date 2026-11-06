@@ -32,6 +32,8 @@ fn directory(create: bool) -> Result<Directory> {
                 Err(std::io::Error::last_os_error())
             }
         };
+        #[cfg(all(test, windows))]
+        diagnostic::stage("update_mkdir", &[&path]);
         #[cfg(windows)]
         let result = fs::create_dir(&path);
         if let Err(error) = result {
@@ -114,6 +116,8 @@ pub(super) fn write(metadata: &Metadata, stamp: &Version) -> Result<()> {
         use std::os::windows::fs::OpenOptionsExt;
         let from = directory.path.join(staging);
         let to = directory.path.join(name);
+        #[cfg(test)]
+        diagnostic::stage("update_create_staging", &[&from]);
         let mut file = crate::platform::refuse_link(
             fs::OpenOptions::new()
                 .write(true)
@@ -122,10 +126,18 @@ pub(super) fn write(metadata: &Metadata, stamp: &Version) -> Result<()> {
         )
         .open(&from)
         .map_err(fail)?;
+        #[cfg(test)]
+        diagnostic::stage("update_write_and_sync", &[&from]);
         let result = file.write_all(&bytes).and_then(|()| file.sync_all());
         drop(file);
+        #[cfg(test)]
+        if result.is_ok() {
+            diagnostic::stage("update_rename", &[&from, &to]);
+        }
         let result = result.and_then(|()| fs::rename(&from, &to));
         if let Err(error) = result {
+            #[cfg(test)]
+            diagnostic::failure(&error.to_string());
             let _ = fs::remove_file(from);
             return Err(fail(error));
         }
