@@ -68,6 +68,8 @@ fn run(case: &str) {
         // Restart Manager observations are test-only and may wait in Windows.
         // Use file-backed output and retain one exact child until actual exit.
         use std::{io::Read, process::Stdio};
+        #[cfg(windows)]
+        let _trace = (case == "writers").then(|| diagnostic::Trace::start(directory.path()));
         let out_path = directory.path().join("stdout");
         let err_path = directory.path().join("stderr");
         command.stdout(Stdio::from(fs::File::create(&out_path).unwrap()));
@@ -494,6 +496,8 @@ fn isolated_reference_probe() {
             diagnostic::known_holder(&root().join("known-sharing-holder.json"));
         }
         "writers" => {
+            #[cfg(windows)]
+            diagnostic::rename_controls(&root());
             original["name"] = json!("codex/p/renamed");
             original["cwd"] = json!(root().join("elsewhere"));
             original["launch_dir"] = original["cwd"].clone();

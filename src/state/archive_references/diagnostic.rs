@@ -147,3 +147,141 @@ pub(super) fn known_holder(path: &Path) {
         "the native query must name this exact original holder: {pids:?}"
     );
 }
+
+#[cfg(windows)]
+pub(super) fn rename_controls(root: &Path) {
+    use crate::state::repositories::directory::Directory;
+    use std::{
+        fs,
+        io::Write,
+        os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
+    };
+    use windows_sys::Win32::{
+        Foundation::{GetHandleInformation, HANDLE},
+        Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_READ},
+    };
+    for (label, pinned, delete_shared, keep_live) in [
+        ("bare_closed_exclusive", false, false, false),
+        ("pinned_closed_exclusive", true, false, false),
+        ("pinned_live_delete_shared", true, true, true),
+        ("pinned_closed_delete_shared", true, true, false),
+    ] {
+        let path = root.join(label);
+        fs::create_dir(&path).unwrap();
+        let _pins = pinned.then(|| {
+            (
+                Directory::open(root).unwrap(),
+                Directory::open(&path).unwrap(),
+            )
+        });
+        let from = path.join(".receipt.json.stage");
+        let to = path.join("receipt.json");
+        fs::write(&to, b"old receipt").unwrap();
+        fs::remove_file(&to).unwrap();
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .share_mode(if delete_shared {
+                FILE_SHARE_READ | FILE_SHARE_DELETE
+            } else {
+                0
+            })
+            .open(&from)
+            .unwrap();
+        file.write_all(b"new receipt").unwrap();
+        file.sync_all().unwrap();
+        let handle = file.as_raw_handle() as HANDLE;
+        let mut held = Some(file);
+        if !keep_live {
+            drop(held.take());
+        }
+        let mut flags = 0;
+        let valid = unsafe { GetHandleInformation(handle, &mut flags) };
+        let handle_error = if valid == 0 {
+            std::io::Error::last_os_error().raw_os_error()
+        } else {
+            None
+        };
+        let result = fs::rename(&from, &to);
+        eprintln!("archive_rename_control case={label} pid={} original_handle_valid={valid} handle_error={handle_error:?} result={result:?}", std::process::id());
+        drop(held);
+    }
+}
+
+#[cfg(windows)]
+pub(super) struct Trace {
+    root: PathBuf,
+    session: String,
+    started: bool,
+}
+#[cfg(windows)]
+impl Trace {
+    pub(super) fn start(root: &Path) -> Self {
+        let mut trace = Self {
+            root: root.join("file-trace"),
+            session: format!("hgs-archive-{}", uuid::Uuid::new_v4()),
+            started: false,
+        };
+        std::fs::create_dir(&trace.root).unwrap();
+        trace.started = trace.run("start");
+        trace
+    }
+    fn run(&self, mode: &str) -> bool {
+        use std::{
+            fs,
+            io::Read,
+            process::{Command, Stdio},
+            time::{Duration, Instant},
+        };
+        let stdout = self.root.join(format!("{mode}.out"));
+        let stderr = self.root.join(format!("{mode}.err"));
+        let mut child = Command::new("python")
+            .arg(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/support/archive_reference_file_trace.py"),
+            )
+            .args([mode, "--session", &self.session, "--root"])
+            .arg(&self.root)
+            .arg("--scope")
+            .arg(self.root.parent().unwrap())
+            .stdin(Stdio::null())
+            .stdout(fs::File::create(&stdout).unwrap())
+            .stderr(fs::File::create(&stderr).unwrap())
+            .spawn()
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(35);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= until {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                eprintln!(
+                    "archive_file_trace mode={mode} unavailable=timeout session={}",
+                    self.session
+                );
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        for path in [stdout, stderr] {
+            let mut text = String::new();
+            fs::File::open(path)
+                .unwrap()
+                .take(256 * 1024)
+                .read_to_string(&mut text)
+                .unwrap();
+            eprintln!("{text}");
+        }
+        status.success()
+    }
+}
+#[cfg(windows)]
+impl Drop for Trace {
+    fn drop(&mut self) {
+        if self.started {
+            self.run("stop");
+        }
+    }
+}
