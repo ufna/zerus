@@ -256,6 +256,10 @@ fn store(db: &Connection, metadata: &Metadata, expected: &Version) -> Result<()>
     }
     Ok(())
 }
+#[cfg(test)]
+std::thread_local! {
+    static LAST_NOTE_ERROR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
 /// Cache maintenance cannot change the archive writer's outcome. Failure leaves
 /// coverage stale, so a later cleanup refuses until ordinary reconciliation.
 pub(super) fn note(path: &Path, record: &Value) {
@@ -273,6 +277,9 @@ pub(super) fn note(path: &Path, record: &Value) {
         }
         updates::write(&metadata, &stamp)
     };
+    #[cfg(test)]
+    LAST_NOTE_ERROR.with(|slot| *slot.borrow_mut() = run().err());
+    #[cfg(not(test))]
     let _ = run();
 }
 pub(super) fn forget(path: &Path) {

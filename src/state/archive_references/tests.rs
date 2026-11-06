@@ -118,7 +118,13 @@ fn every_matching_archive_is_selected_with_legacy_and_label_routing_preserved() 
 }
 #[test]
 fn ordinary_writes_rewrites_and_removal_keep_reference_coverage_current() {
-    run("writers");
+    #[cfg(windows)]
+    let repetitions = 8;
+    #[cfg(not(windows))]
+    let repetitions = 1;
+    for _ in 0..repetitions {
+        run("writers");
+    }
 }
 #[test]
 fn a_changed_relevant_body_is_never_overwritten_by_a_preloaded_record() {
@@ -454,7 +460,17 @@ fn isolated_reference_probe() {
             original["cwd"] = json!(root().join("elsewhere"));
             original["launch_dir"] = original["cwd"].clone();
             atomic_record(&path, &mut original).unwrap();
-            assert_eq!(metadata().unwrap()[0]["name"], original["name"]);
+            let rows = metadata().unwrap_or_else(|error| {
+                let note = LAST_NOTE_ERROR.with(|slot| slot.borrow().clone());
+                let private = crate::platform::verify_private(
+                    &root().join("archive-reference-writes-v1"),
+                    crate::platform::Private::Directory,
+                );
+                let pending = updates::read(id).map(|row| row.map(|(stamp, _, _)| stamp));
+                let actual = file_version(&path);
+                panic!("writer coverage: {error}; note={note:?}; update_directory_private={private:?}; pending={pending:?}; actual={actual:?}");
+            });
+            assert_eq!(rows[0]["name"], original["name"]);
             let files = fs::read_dir(root().join("archive-reference-writes-v1"))
                 .unwrap()
                 .map(|entry| entry.unwrap().path())
