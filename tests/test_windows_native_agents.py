@@ -71,6 +71,7 @@ import uuid
 import model_api_fixture as api
 import test_windows_host as host
 from codex_resume_diagnostics import ResumeDiagnostics
+from terminal_key_diagnostics import Trace, navigation_probe, selected_slot
 
 TESTS = Path(__file__).resolve().parent
 EXE = ".exe" if os.name == "nt" else ""
@@ -843,25 +844,130 @@ class NativeWindowsClaude(NativeAgent, host.HostCase):
     def test_terminal_answers_end_the_hook(self):
         name = self.launch("terminal")
         approved = self.project / api.BASH_FILE
+        # One-off diagnostic branch: observe the original key, never retry it.
+        # Host success below is a queue acknowledgement, not proof of native
+        # consumption. Take host metadata before asking for the approval so it
+        # does not introduce an extra RPC between the card and its first key.
+        host_report = self.status().get('host', {})
+        trace = Trace()
+        evidence = dict(test=self.id(), host={key: host_report.get(key) for key in ('pid', 'created')},
+                        host_observed=time.monotonic(),
+                        events=trace.events, after_probe=None)
+
+        def observe(original, card, worker, deadline):
+            def query(*args):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('original observation deadline')
+                result = subprocess.run([str(self.hgs_exe), *args], env=self.env, cwd=self.work,
+                                        stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                        encoding='utf-8', errors='replace', timeout=min(2, remaining),
+                                        creationflags=host.HIDDEN)
+                if result.returncode:
+                    raise RuntimeError(result.stderr[-512:])
+                return json.loads(result.stdout)
+
+            started = time.monotonic()
+            sample = dict(same_prompt=False, selection=None, capture_begin=started)
+            try:
+                fields = ('run_id', 'pane', 'pid', 'process_start', 'conversation_id')
+                current_record = self.record(name)
+                if any(current_record.get(key) != original.get(key) for key in fields):
+                    return dict(sample, reason='original binding changed')
+                sample['worker_alive'] = self.alive(*worker)
+                if not sample['worker_alive']:
+                    return dict(sample, reason='original worker ended')
+                state = query('inspect', name)
+                current = next((q for q in state.get('pending_questions', [])
+                                if q.get('question_id') == card.get('question_id')
+                                and q.get('question_hash') == card.get('question_hash')
+                                and q.get('source') == card.get('source')
+                                and q.get('answer_transport') == card.get('answer_transport')
+                                and q.get('panel_verified') and q.get('can_answer')), None)
+                if current is None:
+                    return dict(sample, reason='original verified panel changed')
+                screen = query('__host', 'call', json.dumps(dict(
+                    op='capture', target=dict(pane=original['pane']), styled=False)))['ok']['text']
+                current_record = self.record(name)
+                if any(current_record.get(key) != original.get(key) for key in fields):
+                    return dict(sample, reason='binding changed during capture')
+                sample.update(same_prompt=True, selection=selected_slot(screen), screen=screen[-8192:],
+                              capture_end=time.monotonic(), phase=state.get('phase'))
+                return sample
+            except Exception as error:  # diagnostics never substitute a success
+                return dict(sample, reason=type(error).__name__ + ': ' + str(error)[:256],
+                            capture_end=time.monotonic())
+
+        def navigation(key, deadline, original):
+            assert key in ('Down', 'Up')
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('no navigation after the original deadline')
+            result = subprocess.run([str(self.hgs_exe), '__host', 'backend', json.dumps(dict(
+                op='send', pane=original['pane'], keys=[dict(named=key)]))], env=self.env, cwd=self.work,
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8',
+                errors='replace', timeout=min(2, remaining), creationflags=host.HIDDEN)
+            if result.returncode:
+                raise RuntimeError(result.stderr[-512:])
+
         # Claude tells the hook nothing of a Terminal Yes: the run's end closes it.
-        for key, check in (("Enter", approved.is_file),
-                           ("Escape", lambda: "What should Claude do instead?" in self.capture(name))):
-            card = self.hook_card(name, api.BASH)
-            worker = self.worker()
-            carded = time.monotonic()
-            self.keys(name, {"named": key})
-            # zerus-dy5u: an intermittent Enter without effect; the failure
-            # must tell a key sent before the panel from one that was lost.
-            sent = f"panel_verified={card.get('panel_verified')}, sent {time.monotonic() - carded:.3f} s after the card"
-            self.until(f"Terminal's {key} ({sent})", check)
-            self.until(f"the hook to end after {key}", lambda: not self.alive(*worker))
-            self.until("no pending card", lambda: not self.inspect(name).get("pending_questions"))
-            self.refused(name, card, self.choose(card, "No"))
-            self.assertEqual(self.channels("answer.json") + self.channels("claimed.json")
-                             + self.channels("emitted.json"), [])
-            if key == "Enter":
-                self.until("the end of the turn", lambda: self.turn_ended(name, 0))
+        try:
+            for key, check in (("Enter", approved.is_file),
+                               ("Escape", lambda: "What should Claude do instead?" in self.capture(name))):
+                card = self.hook_card(name, api.BASH)
+                card_observed = time.monotonic()
+                worker = self.worker()
+                carded = time.monotonic()
+                deadline = carded + WAIT
+                original = self.record(name)
+                trace.add('original_card', key=key, worker=list(worker),
+                          card_observed=card_observed, worker_observed=carded,
+                          binding={field: original.get(field) for field in
+                                   ('run_id', 'pane', 'pid', 'process_start', 'conversation_id')},
+                          question={field: card.get(field) for field in
+                                    ('question_id', 'question_hash', 'panel_verified', 'source')})
+                trace.add('key_request', key=key)
+                self.keys(name, {"named": key})  # exactly one original Enter
+                trace.add('key_queued', key=key)
+                sent = f"panel_verified={card.get('panel_verified')}, sent {time.monotonic() - carded:.3f} s after the card"
+                if key == 'Enter':
+                    # Observe only after the key. Never delay it for a fresh
+                    # snapshot, or extend the existing 120-second bound.
+                    first = observe(original, card, worker, deadline)
+                    trace.add('after_enter', **first)
+                    # Give the already-sent key a bounded observation window;
+                    # this is after Enter, never a readiness sleep before it.
+                    settled = min(deadline, carded + 1)
+                    while not approved.is_file() and time.monotonic() < settled:
+                        time.sleep(min(.05, max(0, settled - time.monotonic())))
+                    if not approved.is_file() and first.get('same_prompt'):
+                        try:
+                            navigation_probe(trace, lambda stop: observe(original, card, worker, stop),
+                                             lambda arrow, stop: navigation(arrow, stop, original),
+                                             approved.is_file, deadline)
+                        except Exception as error:
+                            trace.add('probe_error', error=str(error)[:256])
+                evidence['after_probe'] = observe(original, card, worker, deadline)
+                self.until(f"Terminal's {key} ({sent})", check,
+                           timeout=max(0, deadline - time.monotonic()))
+                self.until(f"the hook to end after {key}", lambda: not self.alive(*worker))
+                self.until("no pending card", lambda: not self.inspect(name).get("pending_questions"))
+                self.refused(name, card, self.choose(card, "No"))
+                self.assertEqual(self.channels("answer.json") + self.channels("claimed.json")
+                                 + self.channels("emitted.json"), [])
+                if key == "Enter":
+                    self.until("the end of the turn", lambda: self.turn_ended(name, 0))
+        finally:
+            evidence['finished_monotonic'] = time.monotonic()
+            evidence['approved_file_present'] = approved.is_file()
+            print('ZERUS_CLAUDE_TERMINAL_EVIDENCE=' + json.dumps(evidence, ensure_ascii=False), flush=True)
         self.assertFalse(self.channels("retracted.json"))
+
+    # Four independent profiles/original prompts in this one diagnostic run;
+    # every case tears down its own agent/host. No approval is replayed.
+    test_terminal_answers_end_the_hook_diagnostic_2 = test_terminal_answers_end_the_hook
+    test_terminal_answers_end_the_hook_diagnostic_3 = test_terminal_answers_end_the_hook
+    test_terminal_answers_end_the_hook_diagnostic_4 = test_terminal_answers_end_the_hook
 
     def test_a_killed_hook_leaves_the_approval_to_the_verified_screen(self):
         name = self.launch("killed")
