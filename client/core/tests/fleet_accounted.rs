@@ -1,7 +1,6 @@
 //! Fleet retirement with actual private helpers, never an upstream source.
 // The desktop starts the accounted Fleet only on Unix (src-tauri commands.rs);
 // Windows keeps `Fleet::start`, whose stream EOF is covered in tests/fleet.rs.
-#![cfg(unix)]
 mod common;
 use common::{catalog, eventually, hello, meta, status_of, FakeHgs, Seen};
 use serde_json::json;
@@ -31,6 +30,33 @@ fn accounted_local_and_peer_keep_frames_controls_and_eof() {
             "peer":{"runs":[[{"lines":[hello("peer"),catalog(&[])]},{"serve":true}]]}
         }),
     );
+    #[cfg(windows)]
+    struct EofTrace(std::path::PathBuf);
+    #[cfg(windows)]
+    impl Drop for EofTrace {
+        fn drop(&mut self) {
+            let log = std::fs::read(self.0.join("log.ndjson")).unwrap_or_default();
+            eprintln!(
+                "original fake log: {}",
+                String::from_utf8_lossy(&log[..log.len().min(16384)])
+            );
+            if let Ok(files) = std::fs::read_dir(&self.0) {
+                for entry in files
+                    .flatten()
+                    .filter(|entry| entry.file_name().to_string_lossy().starts_with("eof-"))
+                    .take(16)
+                {
+                    let bytes = std::fs::read(entry.path()).unwrap_or_default();
+                    eprintln!(
+                        "original EOF observer: {}",
+                        String::from_utf8_lossy(&bytes[..bytes.len().min(4096)])
+                    );
+                }
+            }
+        }
+    }
+    #[cfg(windows)]
+    let _trace = EofTrace(fake.dir.clone());
     let gate = Gate::new(1).unwrap();
     let (tx, rx) = mpsc::channel();
     let fleet = Fleet::start_accounted(

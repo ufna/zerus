@@ -40,10 +40,22 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MARKER = "Event stream ABI: watch-v1"
+EOF_TRACE_ID = f"{os.getpid()}-{time.monotonic_ns()}"
+
+
+def eof_trace(phase, entry):
+    # Private fixture observation only: distinguish native EOF from delayed
+    # serialization in the shared log. Never a process-stop authority.
+    path = os.path.join(HERE, f"eof-{phase}-{EOF_TRACE_ID}.json")
+    with open(path, "x", encoding="utf-8") as handle:
+        json.dump({"phase": phase, "host": entry["host"], "at": time.time()}, handle)
 
 
 def log(entry):
     entry["at"] = time.time()
+    observe = os.name == "nt" and entry.get("eof") is True
+    if observe:
+        eof_trace("read", entry)
     line = json.dumps(entry) + "\n"
     # Several fake processes append at once. Windows emulates append mode with a
     # seek and a write, so concurrent entries can overwrite each other: hold an
@@ -57,6 +69,8 @@ def log(entry):
             import fcntl
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:
+            if observe:
+                eof_trace("locked", entry)
             with open(os.path.join(HERE, "log.ndjson"), "a", encoding="utf-8") as handle:
                 handle.write(line)
                 handle.flush()
