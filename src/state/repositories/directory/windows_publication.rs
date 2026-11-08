@@ -16,12 +16,24 @@ use windows_sys::{
     },
 };
 
+#[cfg(test)]
+thread_local! {
+    static PHASE: std::cell::Cell<&'static str> = const { std::cell::Cell::new("not_entered") };
+}
+macro_rules! phase {
+    ($name:literal) => {
+        #[cfg(test)]
+        PHASE.with(|phase| phase.set($name));
+    };
+}
+
 pub(super) fn publish(
     directory: &Directory,
     name: &str,
     bytes: &[u8],
     replace: bool,
 ) -> Result<File> {
+    phase!("validate_name");
     // A bounded single native component; never accept a path, stream, device
     // prefix or a Win32 trailing-dot/space alias for the published name.
     if name.is_empty()
@@ -32,6 +44,7 @@ pub(super) fn publish(
     {
         return Err("Invalid file name".into());
     }
+    phase!("verify_parent_before_create");
     directory.verify()?;
     let staging = directory
         .path
@@ -40,6 +53,7 @@ pub(super) fn publish(
     // unlink a guessed name after a potentially completed publication.
     // All flags are combined in ONE custom_flags call. A second setter would
     // replace the no-reparse/write-through flags instead of adding to them.
+    phase!("create_source");
     let mut file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -49,27 +63,37 @@ pub(super) fn publish(
         .share_mode(FILE_SHARE_READ)
         .open(&staging)
         .map_err(|e| e.to_string())?;
+    phase!("source_privacy");
     if !crate::platform::verify_private_file(&file).map_err(|e| e.to_string())? {
         return Err("The new file must be private, regular and singly linked".into());
     }
+    phase!("write_source");
     file.write_all(bytes).map_err(|e| e.to_string())?;
+    phase!("flush_source");
     file.sync_all().map_err(|e| e.to_string())?;
+    phase!("verify_parent_before_rename");
     directory.verify()?;
     // SAFETY: this SAME CREATE_NEW handle is synchronous, has DELETE access,
     // and denies other writers/deleters throughout the native rename.
+    phase!("native_rename");
     unsafe { rename(&file, name, replace) }.map_err(|e| e.to_string())?;
     // Flush the renamed original, not a path-selected replacement. On NTFS
     // write-through also requests metadata flushing. This is not a directory
     // fsync claim for arbitrary filesystems/hardware; see the rollback guide.
+    phase!("flush_renamed_source");
     file.sync_all().map_err(|e| e.to_string())?;
+    phase!("verify_parent_after_rename");
     directory.verify()?;
+    phase!("open_named_result");
     let named = directory.read_private(name)?;
+    phase!("compare_original_identity");
     if crate::platform::FileIdentity::of(&file).map_err(|e| e.to_string())?
         != crate::platform::FileIdentity::of(&named).map_err(|e| e.to_string())?
     {
         return Err("The published original file changed".into());
     }
     // Return the original handle, never adopt the path-selected check above.
+    phase!("complete");
     Ok(file)
 }
 
