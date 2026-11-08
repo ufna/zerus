@@ -1,6 +1,10 @@
 //! Owned synthetic diagnostic parts only. Consuming a Directory here never
 //! yields replacement authority or a reconstructible Captured proof.
 #![cfg(all(test, windows))]
+#[cfg(all(test, windows))]
+#[path = "capture_diagnostic/staged_probe.rs"]
+pub(in crate::state) mod staged_probe;
+
 use super::Directory;
 use crate::platform::persist_diagnostic::{handle_info, HandleInfo, Object};
 use serde::Serialize;

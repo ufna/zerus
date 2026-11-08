@@ -218,6 +218,164 @@ struct Event {
     error: Option<i32>,
     snapshot: Snapshot,
 }
+// BEGIN PORTABLE STAGED ENTRY — exact module and its controls can be extracted.
+mod staged_entry {
+    use serde::Serialize;
+    use std::{io, path::Path, time::Instant};
+    pub(super) fn target_matches(expected: &Path, actual: &Path) -> bool {
+        expected == actual
+    }
+    /// No source handle, bytes or mutable source is exposed to the entry callback.
+    pub(crate) type EntryCallback = Box<dyn FnMut(Instant) -> io::Result<EntryDecision>>;
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum EntryDecision {
+        Complete,
+        Incomplete,
+    }
+    #[derive(Clone, Debug, Default, Serialize)]
+    pub(super) struct EntryReport {
+        pub(super) attempted: bool,
+        pub(super) complete: bool,
+        pub(super) failure: Option<&'static str>,
+        pub(super) error_code: Option<i32>,
+        pub(super) deadline_expired: bool,
+    }
+    // Pure callback driver: also extracted for controls that perform no Windows I/O.
+    pub(super) fn invoke_entry(
+        mut callback: Option<EntryCallback>,
+        verified: bool,
+        entries: usize,
+        until: Instant,
+    ) -> EntryReport {
+        let mut entry = EntryReport {
+            deadline_expired: Instant::now() >= until,
+            ..EntryReport::default()
+        };
+        if !verified || entries != 1 {
+            entry.failure = Some("source_not_verified_or_not_single_entry");
+            return entry;
+        }
+        if Instant::now() >= until {
+            entry.failure = Some("entry_deadline");
+            entry.deadline_expired = true;
+            return entry;
+        }
+        let Some(mut callback) = callback.take() else {
+            entry.failure = Some("entry_callback_already_consumed");
+            return entry;
+        };
+        entry.attempted = true;
+        // An entry callback is diagnostic only. Its unwind must not replace the
+        // result/control flow of the original ordinary producer.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(until)));
+        entry.deadline_expired = Instant::now() >= until;
+        match result {
+            Ok(Ok(EntryDecision::Complete)) if !entry.deadline_expired => entry.complete = true,
+            Ok(Ok(_)) => entry.failure = Some("entry_incomplete_or_expired"),
+            Ok(Err(error)) => {
+                entry.failure = Some("entry_error");
+                entry.error_code = error.raw_os_error();
+            }
+            Err(_) => entry.failure = Some("entry_panicked"),
+        }
+        entry
+    }
+
+    #[cfg(test)]
+    mod controls {
+        use super::*;
+        use std::{cell::Cell, rc::Rc, time::Duration};
+        #[test]
+        fn entry_target_is_exact_not_a_label_or_neighbor() {
+            assert!(target_matches(
+                Path::new("fixture/run.json"),
+                Path::new("fixture/run.json")
+            ));
+            assert!(!target_matches(
+                Path::new("fixture/run.json"),
+                Path::new("neighbor/run.json")
+            ));
+        }
+        #[test]
+        fn verified_single_entry_runs_once_with_the_original_deadline() {
+            let calls = Rc::new(Cell::new(0));
+            let used = calls.clone();
+            let until = Instant::now() + Duration::from_secs(1);
+            let callback: EntryCallback = Box::new(move |same| {
+                assert_eq!(same, until);
+                used.set(used.get() + 1);
+                Ok(EntryDecision::Complete)
+            });
+            let result = invoke_entry(Some(callback), true, 1, until);
+            assert!(result.complete);
+            assert_eq!(calls.get(), 1);
+            assert!(!invoke_entry(None, true, 1, until).complete);
+        }
+        #[test]
+        fn unverified_repeated_or_expired_entry_never_invokes_callback() {
+            for (verified, entries, expired) in
+                [(false, 1, false), (true, 2, false), (true, 1, true)]
+            {
+                let calls = Rc::new(Cell::new(0));
+                let used = calls.clone();
+                let until = if expired {
+                    Instant::now() - Duration::from_secs(1)
+                } else {
+                    Instant::now() + Duration::from_secs(1)
+                };
+                let result = invoke_entry(
+                    Some(Box::new(move |_| {
+                        used.set(1);
+                        Ok(EntryDecision::Complete)
+                    })),
+                    verified,
+                    entries,
+                    until,
+                );
+                assert!(!result.complete);
+                assert_eq!(calls.get(), 0);
+            }
+        }
+        #[test]
+        fn errors_incomplete_and_panics_are_contained_as_incomplete() {
+            for mode in 0..3 {
+                let result = invoke_entry(
+                    Some(Box::new(move |_| match mode {
+                        0 => Err(io::Error::from_raw_os_error(5)),
+                        1 => Ok(EntryDecision::Incomplete),
+                        _ => panic!("private entry fixture"),
+                    })),
+                    true,
+                    1,
+                    Instant::now() + Duration::from_secs(1),
+                );
+                assert!(!result.complete);
+                assert!(result.failure.is_some());
+            }
+        }
+        #[test]
+        fn expired_during_callback_never_completes() {
+            let until = Instant::now() + Duration::from_millis(1);
+            let result = invoke_entry(
+                Some(Box::new(move |_| {
+                    while Instant::now() < until {
+                        std::hint::spin_loop();
+                    }
+                    Ok(EntryDecision::Complete)
+                })),
+                true,
+                1,
+                until,
+            );
+            assert!(!result.complete);
+            assert!(result.deadline_expired);
+        }
+    }
+}
+// END PORTABLE STAGED ENTRY
+use staged_entry::{invoke_entry, EntryReport};
+pub(crate) use staged_entry::{EntryCallback, EntryDecision};
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub(crate) struct Report {
     entries: usize,
@@ -227,6 +385,8 @@ pub(crate) struct Report {
     released: bool,
     success: bool,
     success_before_deadline: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    entry: Option<EntryReport>,
 }
 impl Report {
     pub fn positive(&self) -> bool {
@@ -236,6 +396,7 @@ impl Report {
             && self.released
             && self.success
             && self.success_before_deadline
+            && self.entry.as_ref().is_none_or(|entry| entry.complete)
     }
 }
 struct Hook {
@@ -243,6 +404,7 @@ struct Hook {
     expected: Vec<u8>,
     report: Report,
     release: Option<Box<dyn FnMut(Instant) -> io::Result<()>>>,
+    entry: Option<EntryCallback>,
 }
 thread_local! { static ACTIVE: RefCell<Option<Rc<RefCell<Hook>>>> = const { RefCell::new(None) }; }
 pub(crate) struct Scope {
@@ -262,6 +424,7 @@ impl Scope {
             expected,
             report: Report::default(),
             release,
+            entry: None,
         }));
         ACTIVE.with(|cell| {
             if cell.borrow().is_some() {
@@ -271,6 +434,22 @@ impl Scope {
             Ok(())
         })?;
         Ok(Self { hook })
+    }
+    /// A distinct opt-in factory; the original install/default path has no
+    /// entry callback, no entry queries and no extra serialized report field.
+    pub fn install_staged(
+        target: PathBuf,
+        expected: Vec<u8>,
+        release: Option<Box<dyn FnMut(Instant) -> io::Result<()>>>,
+        entry: EntryCallback,
+    ) -> io::Result<Self> {
+        let scope = Self::install(target, expected, release)?;
+        {
+            let mut hook = scope.hook.borrow_mut();
+            hook.entry = Some(entry);
+            hook.report.entry = Some(EntryReport::default());
+        }
+        Ok(scope)
     }
     pub fn report(&self) -> Report {
         self.hook.borrow().report.clone()
@@ -301,7 +480,7 @@ impl Session {
         let hook = ACTIVE.with(|cell| {
             cell.borrow()
                 .as_ref()
-                .filter(|x| x.borrow().target == target)
+                .filter(|x| staged_entry::target_matches(&x.borrow().target, target))
                 .cloned()
         });
         let mut this = Self {
@@ -318,7 +497,41 @@ impl Session {
             }
         }
         this.baseline = this.observe(source.as_file(), "entry", None, until);
+        this.run_entry();
         this
+    }
+    fn run_entry(&mut self) {
+        let Some(hook) = &self.hook else {
+            return;
+        };
+        let (callback, entries, original_failure) = {
+            let mut h = hook.borrow_mut();
+            if h.report.entry.is_none() {
+                return;
+            }
+            // Old install returns before any entry work. Latch incomplete
+            // before callback; failed source observation never gets a rebase.
+            let original_failure = h.report.invalid.clone();
+            h.report
+                .invalid
+                .get_or_insert("staged entry incomplete".into());
+            h.report.entry = Some(EntryReport::default());
+            (h.entry.take(), h.report.entries, original_failure)
+        };
+        let entry = invoke_entry(
+            callback,
+            self.baseline.is_some() && original_failure.is_none(),
+            entries,
+            self.until,
+        );
+        let mut h = hook.borrow_mut();
+        if entry.complete {
+            h.report.invalid = None;
+        } else {
+            h.report.invalid = original_failure
+                .or_else(|| Some(entry.failure.unwrap_or("staged entry incomplete").into()));
+        }
+        h.report.entry = Some(entry);
     }
     fn invalidate(&self, reason: impl Into<String>) {
         if let Some(hook) = &self.hook {
@@ -341,11 +554,19 @@ impl Session {
             if h.report.invalid.is_some() {
                 return None;
             }
+            if h.report.entry.is_some() && (until != self.until || Instant::now() >= until) {
+                h.report.invalid = Some("deadline before staged source observation".into());
+                return None;
+            }
             h.report.invalid = Some("observation did not complete".into());
             h.expected.clone()
         };
         let result = snapshot(file, &expected);
         let mut h = hook.borrow_mut();
+        if h.report.entry.is_some() && (until != self.until || Instant::now() >= until) {
+            h.report.invalid = Some("deadline after staged source restoration".into());
+            return None;
+        }
         match result {
             Ok(value)
                 if until == self.until
@@ -485,5 +706,35 @@ mod tests {
         }));
         assert!(outcome.is_err());
         assert_eq!(original.stream_position().unwrap(), 2);
+    }
+}
+
+#[cfg(test)]
+mod staged_scope_compatibility {
+    use super::*;
+    #[test]
+    fn default_scope_has_no_entry_work_or_serialized_entry_field() {
+        let scope = Scope::install(PathBuf::from("fixture/report-only"), vec![], None).unwrap();
+        assert!(scope.hook.borrow().entry.is_none());
+        assert_eq!(
+            serde_json::to_string(&scope.report()).unwrap(),
+            r#"{"entries":0,"events":[],"invalid":null,"first_error":null,"released":false,"success":false,"success_before_deadline":false}"#
+        );
+    }
+    #[test]
+    fn legacy_positive_guard_keeps_its_previous_meaning_without_entry() {
+        let report = Report {
+            entries: 1,
+            first_error: Some(32),
+            released: true,
+            success: true,
+            success_before_deadline: true,
+            ..Report::default()
+        };
+        assert!(report.positive());
+        assert!(serde_json::to_value(&report)
+            .unwrap()
+            .get("entry")
+            .is_none());
     }
 }

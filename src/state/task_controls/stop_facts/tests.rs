@@ -1,4 +1,8 @@
 use super::*;
+#[cfg(windows)]
+#[path = "tests/staged_atomic_diagnostic.rs"]
+mod staged_atomic_diagnostic;
+
 use std::{fs, fs::OpenOptions, path::PathBuf};
 
 fn id(n: u64) -> String {
