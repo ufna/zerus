@@ -212,3 +212,211 @@ fn unexpected_links_special_files_and_replaced_writer_refuse() {
     let _replacement = writer(dir.path());
     assert!(Publisher::open_enabled(dir.path(), &guard, &executor(), true).is_err());
 }
+
+#[test]
+fn captured_stop_evidence_rechecks_retained_bytes_without_acquiring_the_native_writer() {
+    let dir = fixture();
+    let guard = writer(dir.path());
+    let publisher = Publisher::open_enabled(dir.path(), &guard, &executor(), true).unwrap();
+    publisher.publish(&fact(2)).unwrap();
+    let captured = publisher.capture().unwrap();
+    drop(guard);
+    assert_eq!(captured.facts(), &[fact(2)]);
+    assert_eq!(captured.executor(), &executor());
+    // Rechecking is a bounded read, not a second native exclusion. A future
+    // writer holding that exclusion cannot deadlock the actor's transaction.
+    let held = writer(dir.path());
+    captured.verify().unwrap();
+    drop(held);
+    let record = dir.path().join("run.json");
+    storage::atomic(&record, r#"{"state":"live"}"#).unwrap();
+    captured.verify().unwrap(); // rollback/run-record rewrites cannot erase it
+    let file = path(dir.path(), &executor());
+    let original = fs::read(&file).unwrap();
+    let mut changed = original.clone();
+    let at = changed.iter().position(|b| *b == b'2').unwrap();
+    changed[at] = b'3';
+    fs::write(&file, &changed).unwrap(); // same-size in-place change
+    assert!(captured.verify().is_err());
+    assert_eq!(fs::read(file).unwrap(), changed);
+}
+
+#[test]
+fn removed_oversized_replaced_or_overflowed_capture_refuses_for_review_without_repair() {
+    for mode in ["removed", "oversized", "replaced", "overflow", "writer"] {
+        let dir = fixture();
+        let guard = writer(dir.path());
+        let publisher = Publisher::open_enabled(dir.path(), &guard, &executor(), true).unwrap();
+        publisher.publish(&fact(2)).unwrap();
+        if mode == "overflow" {
+            for n in 3..=66 {
+                publisher.publish(&fact(n)).unwrap();
+            }
+        }
+        let captured = publisher.capture().unwrap();
+        drop(guard);
+        let file = path(dir.path(), &executor());
+        match mode {
+            "removed" => fs::remove_file(&file).unwrap(),
+            "oversized" => fs::write(&file, vec![b' '; BYTES + 1]).unwrap(),
+            "replaced" => {
+                let bytes = fs::read(&file).unwrap();
+                fs::rename(&file, file.with_extension("kept")).unwrap();
+                platform::private_open(OpenOptions::new().write(true).create_new(true))
+                    .open(&file)
+                    .unwrap();
+                fs::write(&file, bytes).unwrap();
+            }
+            "writer" => {
+                fs::rename(dir.path().join(".lock"), dir.path().join(".old-lock")).unwrap();
+                drop(writer(dir.path()));
+            }
+            _ => (),
+        }
+        let bytes = fs::read(&file).ok();
+        assert!(captured.verify().is_err(), "{mode}");
+        assert_eq!(
+            fs::read(&file).ok(),
+            bytes,
+            "{mode}: recheck must not repair"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_captured_fact_replaced_with_a_link_is_never_followed() {
+    let dir = fixture();
+    let guard = writer(dir.path());
+    let publisher = Publisher::open_enabled(dir.path(), &guard, &executor(), true).unwrap();
+    let captured = publisher.capture().unwrap();
+    drop(guard);
+    let file = path(dir.path(), &executor());
+    let kept = dir.path().join("keep");
+    fs::write(&kept, b"untouched").unwrap();
+    fs::remove_file(&file).unwrap();
+    std::os::unix::fs::symlink(&kept, &file).unwrap();
+    assert!(captured.verify().is_err());
+    assert_eq!(fs::read(&kept).unwrap(), b"untouched");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn review_a_recreated_native_fact_object_never_passes_as_the_original_capture() {
+    use std::io::Write;
+    let dir = tempfile::tempdir_in(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target"))
+        .unwrap();
+    platform::restrict_dir(dir.path()).unwrap();
+    let guard = writer(dir.path());
+    let publisher = Publisher::open_enabled(dir.path(), &guard, &executor(), true).unwrap();
+    publisher.publish(&fact(2)).unwrap();
+    let captured = publisher.capture().unwrap();
+    drop(guard);
+    let file = path(dir.path(), &executor());
+    let original = fs::read(&file).unwrap();
+    let modified = fs::metadata(&file).unwrap().modified().unwrap();
+    let mut reused = None;
+    fs::remove_file(&file).unwrap();
+    for n in 1..=4096 {
+        let mut replacement =
+            platform::private_open(OpenOptions::new().read(true).write(true).create_new(true))
+                .open(&file)
+                .unwrap();
+        replacement.write_all(&original).unwrap();
+        replacement
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        if platform::FileIdentity::of(&replacement).unwrap() == captured.identity {
+            reused = Some(n);
+            break;
+        }
+        drop(replacement);
+        fs::rename(&file, file.with_extension(format!("kept-{n}"))).unwrap();
+    }
+    eprintln!("private original-identity recycling: {reused:?}");
+    assert!(
+        captured.verify().is_err(),
+        "a deleted and recreated native fact object passed the original captured-object check"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn review_a_recreated_writer_object_never_passes_as_the_original_capture_writer() {
+    use std::io::Write;
+    let dir = tempfile::tempdir_in(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target"))
+        .unwrap();
+    platform::restrict_dir(dir.path()).unwrap();
+    let guard = writer(dir.path());
+    let publisher = Publisher::open_enabled(dir.path(), &guard, &executor(), true).unwrap();
+    publisher.publish(&fact(2)).unwrap();
+    let captured = publisher.capture().unwrap();
+    drop(guard);
+    let lock = dir.path().join(".lock");
+    let modified = fs::metadata(&lock).unwrap().modified().unwrap();
+    fs::remove_file(&lock).unwrap();
+    let mut reused = None;
+    for n in 1..=4096 {
+        let mut replacement =
+            platform::private_open(OpenOptions::new().read(true).write(true).create_new(true))
+                .open(&lock)
+                .unwrap();
+        replacement.write_all(b"").unwrap();
+        replacement
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        if platform::FileIdentity::of(&replacement).unwrap() == captured.writer {
+            reused = Some(n);
+            break;
+        }
+        drop(replacement);
+        if n != 4096 {
+            fs::rename(&lock, dir.path().join(format!("kept-writer-{n}"))).unwrap();
+        }
+    }
+    eprintln!("private original-writer identity recycling: {reused:?}");
+    let _new_writer = platform::FileLock::exclusive(
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock)
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        captured.verify().is_err(),
+        "a different native writer file passed the original captured-writer check"
+    );
+}
+
+#[test]
+fn retaining_captured_objects_releases_the_native_exclusion_for_another_writer() {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+    let dir = fixture();
+    let guard = writer(dir.path());
+    let publisher = Publisher::open_enabled(dir.path(), &guard, &executor(), true).unwrap();
+    publisher.publish(&fact(2)).unwrap();
+    let captured = publisher.capture().unwrap();
+    drop(guard);
+
+    let root = dir.path().to_path_buf();
+    let (acquired, ready) = mpsc::sync_channel(1);
+    let (release, released) = mpsc::sync_channel(1);
+    let next = std::thread::spawn(move || -> Result<()> {
+        let next = crate::state::task_controls::writer::test_open(
+            &root,
+            Instant::now() + Duration::from_secs(5),
+        )?;
+        acquired.send(()).map_err(err)?;
+        released.recv_timeout(Duration::from_secs(5)).map_err(err)?;
+        next.verify()
+    });
+    ready.recv_timeout(Duration::from_secs(5)).unwrap();
+    // Import's read-only recheck must succeed while a different native writer
+    // holds the original exclusion. No native lock may be taken under the DB.
+    captured.verify().unwrap();
+    release.send(()).unwrap();
+    next.join().unwrap().unwrap();
+    captured.verify().unwrap();
+}
