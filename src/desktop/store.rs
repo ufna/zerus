@@ -366,6 +366,9 @@ impl Store {
         // The read-only connection and every statement above have dropped.
         // Backup's raw DB/WAL handles also all close before the RW open below.
         if let Some(original) = original {
+            #[cfg(windows)]
+            original.prepare(previous).context("preserve desktop rollback backup before schema 35; keep the backup for review and see docs/desktop-schema-35-rollback.md")?;
+            #[cfg(not(windows))]
             original
                 .prepare(previous)
                 .context("preserve desktop rollback backup before schema 35")?;
