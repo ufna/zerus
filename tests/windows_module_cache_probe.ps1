@@ -30,7 +30,7 @@ w 'module-census' ([string]::Join('|',[string[]]@($roots.Count,$dirs,$modules,$u
 $failed=$false
 try{
 w 'entry' ([Diagnostics.Stopwatch]::Frequency)
-w 'edition' $PSVersionTable.PSEdition;w 'version' $PSVersionTable.PSVersion.ToString()
+w 'edition' $PSVersionTable.PSEdition;w 'version' ($PSVersionTable.PSVersion.ToString())
 w 'module-path-count' (($env:PSModulePath -split [IO.Path]::PathSeparator).Count)
 $raw=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__PAYLOAD__'))
 $mode=$env:MODULE_PROBE_MODE
@@ -53,7 +53,7 @@ for($i=0;$i -lt $expected.Count;$i++){
 if($value[$i] -isnot [string] -or -not[string]::Equals($value[$i],$expected[$i],[StringComparison]::Ordinal)){throw 'argument mismatch'}
 }
 w 'verified' $value.Count
-}catch{w 'error-type' $_.Exception.GetType().FullName;$failed=$true}
+}catch{w 'error-type' ($_.Exception.GetType().FullName);$failed=$true}
 try{
 census
 if($env:MODULE_CACHE_PROOF -eq '1'){
@@ -63,6 +63,6 @@ $wait=[Diagnostics.Stopwatch]::StartNew()
 while(((-not[IO.File]::Exists($env:PSModuleAnalysisCachePath))-or([IO.FileInfo]::new($env:PSModuleAnalysisCachePath).Length -eq 0))-and$wait.ElapsedMilliseconds -lt 10000){[Threading.Thread]::Sleep(20)}
 w 'cache-observed' ([IO.File]::Exists($env:PSModuleAnalysisCachePath));w 'cache-observation-ms' $wait.ElapsedMilliseconds
 }
-}catch{w 'observation-error-type' $_.Exception.GetType().FullName;$failed=$true}
+}catch{w 'observation-error-type' ($_.Exception.GetType().FullName);$failed=$true}
 w 'done' (-not$failed)
 if($failed){exit 1};exit 0
