@@ -381,6 +381,7 @@ mod tests {
                 let modules=std::path::Path::new(&shell).parent().unwrap().join("Modules");
                 let system_modules=std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join(r"System32\WindowsPowerShell\v1.0\Modules");
                 command.env("PSModulePath",std::env::join_paths([modules,system_modules]).unwrap());
+                command.env("ZERUS_TEST_PROJECT_LAUNCH_EVIDENCE",format!("{shell};expected_exit={expected}"));
                 for name in ["HOME","USERPROFILE","APPDATA","LOCALAPPDATA","TEMP","TMP","HGS_CONFIG_DIR","HGS_STATE_DIR"] {
                     let path=root.path().join(name);std::fs::create_dir_all(&path).unwrap();command.env(name,path);
                 }

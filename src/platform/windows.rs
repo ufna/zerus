@@ -2001,6 +2001,45 @@ mod process {
         let [out, err] = outputs;
         result.map(|status| (status, out.unwrap_or_default(), err.unwrap_or_default()))
     }
+    #[cfg(test)]
+    fn emit_output_until_probe(value: serde_json::Value) {
+        // Direct stderr also retains a successful diagnostic case in libtest's log.
+        let line = format!("ZERUS_PROJECT_LAUNCH_EVIDENCE {value}\n");
+        let _ = std::io::Write::write_all(&mut std::io::stderr().lock(), line.as_bytes());
+    }
+
+    #[cfg(test)]
+    fn output_until_probe(
+        label: Option<&str>,
+        stage: &str,
+        before_cleanup: Option<i32>,
+        cleanup: Option<i32>,
+        stdout: &mut fs::File,
+        stderr: &mut fs::File,
+    ) {
+        let Some(label) = label else { return };
+        fn snapshot(file: &mut fs::File) -> serde_json::Value {
+            let mut bytes = Vec::new();
+            match file
+                .seek(SeekFrom::Start(0))
+                .and_then(|_| file.take(65_537).read_to_end(&mut bytes))
+            {
+                Ok(_) => {
+                    let truncated = bytes.len() > 65_536;
+                    bytes.truncate(65_536);
+                    serde_json::json!({"text": String::from_utf8_lossy(&bytes), "truncated": truncated})
+                }
+                Err(error) => serde_json::json!({"error": error.to_string()}),
+            }
+        }
+        emit_output_until_probe(serde_json::json!({
+            "label": label, "stage": stage,
+            "native_exit_before_cleanup": before_cleanup,
+            "exit_after_original_cleanup": cleanup,
+            "stdout": snapshot(stdout), "stderr": snapshot(stderr),
+        }));
+    }
+
     /// `Command::output` with a time limit and closed input, in a job of its own
     /// (see `spawn_group`). Output goes to regular files, so a child writing much
     /// before it exits never blocks on a pipe and no reader thread outlives the
@@ -2009,26 +2048,65 @@ mod process {
         command: &mut Command,
         duration: Duration,
     ) -> std::result::Result<Output, RunError> {
+        #[cfg(test)]
+        let diagnostic = command.get_envs().find_map(|(key, value)| {
+            if key == "ZERUS_TEST_PROJECT_LAUNCH_EVIDENCE" {
+                value.map(|v| v.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        });
         let mut stdout = tempfile::tempfile().map_err(RunError::Io)?;
         let mut stderr = tempfile::tempfile().map_err(RunError::Io)?;
         command.stdout(Stdio::from(stdout.try_clone().map_err(RunError::Io)?));
         command.stderr(Stdio::from(stderr.try_clone().map_err(RunError::Io)?));
         command.stdin(Stdio::null());
         let mut child = spawn_group(command).map_err(RunError::Spawn)?;
+        #[cfg(test)]
+        if let Some(label) = &diagnostic {
+            emit_output_until_probe(serde_json::json!({"label": label, "stage": "spawned",
+                "original_pid": child.id(), "deadline_ms": duration.as_millis()}));
+        }
         let deadline = Instant::now() + duration;
         let status = loop {
             if let Some(status) = child.try_wait().map_err(RunError::Io)? {
                 break status;
             }
             if Instant::now() >= deadline {
+                #[cfg(test)]
+                let before_cleanup = diagnostic
+                    .as_ref()
+                    .and_then(|_| child.try_wait().ok().flatten())
+                    .and_then(|status| status.code());
                 child.terminate();
                 let _ = child.kill();
+                #[cfg(test)]
+                let cleanup = child.wait();
+                #[cfg(not(test))]
                 let _ = child.wait();
+                #[cfg(test)]
+                output_until_probe(
+                    diagnostic.as_deref(),
+                    "deadline",
+                    before_cleanup,
+                    cleanup.ok().and_then(|status| status.code()),
+                    &mut stdout,
+                    &mut stderr,
+                );
                 return Err(RunError::Stopped);
             }
             thread::sleep(Duration::from_millis(25));
         };
         drop(child);
+        #[cfg(test)]
+        output_until_probe(
+            diagnostic.as_deref(),
+            "completed",
+            status.code(),
+            None,
+            &mut stdout,
+            &mut stderr,
+        );
         stdout.seek(SeekFrom::Start(0)).map_err(RunError::Io)?;
         stderr.seek(SeekFrom::Start(0)).map_err(RunError::Io)?;
         let mut output = Output {
