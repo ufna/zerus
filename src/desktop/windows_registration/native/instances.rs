@@ -12,6 +12,7 @@ use std::{
 use zerus_client_core::desktop::windows::process::Original;
 
 mod image;
+mod stop_readback;
 
 fn task(folder: &ITaskFolder, plan: &Plan, wanted: &Shape) -> Result<IRegisteredTask> {
     let task = unsafe { folder.GetTask(&BSTR::from(&plan.name)) }?;
@@ -424,14 +425,36 @@ impl Running {
         );
         self.service.check()
     }
-    pub(super) fn stop(&mut self, fence: &mut impl FnMut() -> Result<()>) -> Result<()> {
+    pub(super) fn stop(
+        &mut self,
+        native: &Native,
+        plan: &Plan,
+        wanted: &Shape,
+        until: Instant,
+        fence: &mut impl FnMut() -> Result<()>,
+    ) -> Result<()> {
         fence()?;
         self.check()?;
         fence()?;
         // Mark before calling COM: a failed/unknown result is never replayed.
         self.stopped = true;
-        unsafe { self.instance.Stop() }
-            .context("Original task stop result is unknown; inspect the pending transition.")?;
+        if let Err(error) = unsafe { self.instance.Stop() } {
+            // Only THIS Stop HRESULT permits one readback. An empty filtered
+            // list or the error alone never proves the original has exited.
+            stop_readback::confirm(error.code().0, until, fence, || {
+                let selected = definition_current(native, plan, wanted, until)?;
+                let before = unsafe { selected.State() }?.0;
+                let visible = instances(native, &selected, until)?;
+                let after = unsafe { selected.State() }?.0;
+                Ok(stop_readback::Observation {
+                    before,
+                    after,
+                    matching: visible.len(),
+                    original_exited: self.service.process.exited(),
+                })
+            })
+            .with_context(|| format!("Original task stop result is unknown ({error}); inspect the pending transition."))?;
+        }
         fence()
     }
     pub(super) fn exited(
@@ -532,7 +555,7 @@ pub(super) fn stop_original(
         original,
         fence,
         |original, fence| check_original_selection(native, plan, wanted, original, until, fence),
-        |original, fence| original.stop(fence),
+        |original, fence| original.stop(native, plan, wanted, until, fence),
     )
 }
 

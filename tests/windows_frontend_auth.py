@@ -396,7 +396,12 @@ class DriftReplacementIdentity(unittest.TestCase):
                      and os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted',
                      'Task-mode fixture requires a disposable hosted Windows runner')
 class WindowsTaskMode(unittest.TestCase):
+    unsettled_fixture = None
+
     def setUp(self):
+        if type(self).unsettled_fixture is not None:
+            self.skipTest('NOT RUN: a preceding task fixture could not prove cleanup: '
+                          + type(self).unsettled_fixture)
         self.root = Path(tempfile.mkdtemp(prefix='zerus-task-mode-')).resolve()
         self.cli_image = self.root / 'portable' / 'hgs.exe'
         self.cli_image.parent.mkdir()
@@ -419,17 +424,66 @@ class WindowsTaskMode(unittest.TestCase):
                         HGS_STATE_DIR=str(self.state), HGS_PEERS='')
         self.task = None
         self.installed = False
-        self.latest = None
         self.held_originals = []
+        self.latest = None
         self.addCleanup(self.close_originals)
+        # Runs even after an assertion fails. A retained live/unknown task is
+        # not another test's configuration, nor permission to repeat Stop.
+        self.addCleanup(self.cleanup_registration)
+
+    @property
+    def latest(self):
+        return self._latest
+
+    @latest.setter
+    def latest(self, original):
+        if original is not None:
+            self.pin_original(original)
+        self._latest = original
+
+    def cleanup_registration(self):
+        try:
+            if self.task is not None:
+                status = self.cli('desktop', 'registration', 'status', '--json')
+                self.assertEqual(status['task_name'], self.task, status)
+                # Original handles pinned while each known instance was live;
+                # no PID lookup or replacement adoption during cleanup.
+                for _, handle, original in self.held_originals:
+                    metadata = windows_process_metadata(original['pid'], handle)
+                    self.assertEqual(metadata.get('birth'), original['birth'], metadata)
+                    self.assertTrue(metadata.get('exited'), metadata)
+                if status['registered']:
+                    observed = self.observe()
+                    self.assertEqual(observed['state'], 3, observed)
+                    self.assertEqual(observed['instances'], [], observed)
+                    self.assertFalse(self.cli('desktop', 'status', '--json')['running'])
+                    stable = self.observe()
+                    self.assertEqual(stable['state'], 3, stable)
+                    self.assertEqual(stable['instances'], [], stable)
+                    # The maintained remover freshly verifies the private
+                    # configuration, task shape, SID and ACL under its lock.
+                    removed = self.cli('desktop', 'registration', 'remove', '--json')
+                    self.assertFalse(removed['registered'], removed)
+                self.installed = False
+            self.close_originals()
+            if self.root.exists():
+                shutil.rmtree(self.root)
+        except Exception as error:
+            type(self).unsettled_fixture = self._testMethodName + ': ' + type(error).__name__
+            print('TASK_MODE_CLEANUP_UNCONFIRMED ' + type(self).unsettled_fixture,
+                  file=sys.stderr)
+            raise
 
     def close_originals(self):
-        for dll, handle in self.held_originals:
+        for dll, handle, _ in self.held_originals:
             dll.CloseHandle(handle)
         self.held_originals.clear()
 
     def pin_original(self, original):
         """Read-only kernel lifetime pin; never a stop/adoption capability."""
+        if any((seen['pid'], seen['birth']) == (original['pid'], original['birth'])
+               for _, _, seen in self.held_originals):
+            return
         import ctypes as c
         from ctypes import wintypes as w
         dll = c.WinDLL('kernel32', use_last_error=True)
@@ -438,7 +492,7 @@ class WindowsTaskMode(unittest.TestCase):
         dll.CloseHandle.argtypes = (w.HANDLE,)
         handle = dll.OpenProcess(0x1000 | 0x100000, False, original['pid'])
         self.assertTrue(handle, c.get_last_error())
-        self.held_originals.append((dll, handle))
+        self.held_originals.append((dll, handle, dict(original)))
         metadata = windows_process_metadata(original['pid'], handle)
         self.assertEqual(metadata['birth'], original['birth'], metadata)
         self.assertFalse(metadata['exited'], metadata)
@@ -1802,9 +1856,7 @@ $later=@{guid=$guid;pid=$q.Id;birth=$q.StartTime.ToFileTimeUtc()};
             self.close_originals()
             clean = True
         finally:
-            if clean:
-                shutil.rmtree(self.root)
-            else:
+            if not clean:
                 print('REFRESH_PRIVATE_ROOT_RETAINED ' + str(self.root), file=sys.stderr)
                 if self.installed:
                     try:
@@ -1896,9 +1948,7 @@ $later=@{guid=$guid;pid=$q.Id;birth=$q.StartTime.ToFileTimeUtc()};
             self.installed = False
             clean = True
         finally:
-            if clean:
-                shutil.rmtree(self.root)
-            elif self.installed:
+            if not clean and self.installed:
                 # An uncertain instance is never killed or adopted here; the
                 # disposable runner is the final boundary.
                 print('MODE_TASK_DRIFT_OBSERVATION ' + json.dumps(self.observe()), file=sys.stderr)
@@ -2041,9 +2091,7 @@ $later=@{guid=$guid;pid=$q.Id;birth=$q.StartTime.ToFileTimeUtc()};
         finally:
             shell.stdin.write(b'done\n'); shell.stdin.close()
             shell.wait(timeout=5)
-            if clean:
-                shutil.rmtree(self.root)
-            else:
+            if not clean:
                 # An uncertain original instance is never killed or adopted.
                 # Preserve its exact paths; disposable VM teardown is the final
                 # boundary. The failed test remains failed/unqualified.

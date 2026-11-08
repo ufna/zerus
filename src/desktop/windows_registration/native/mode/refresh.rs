@@ -527,7 +527,7 @@ impl journal::engine::Session for OriginalSession<'_> {
             },
             |original, check| {
                 self.timing.mark("stop.call.begin", until, None);
-                let result = original.stop(check);
+                let result = original.stop(native, plan, &wanted(plan)?, until, check);
                 self.timing.mark("stop.call.end", until, None);
                 result
             },

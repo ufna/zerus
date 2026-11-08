@@ -91,6 +91,9 @@ mod windows_registration_policy;
 #[cfg(all(test, not(windows)))]
 #[path = "windows_registration/native/mode/stop.rs"]
 mod windows_mode_stop;
+#[cfg(all(test, not(windows)))]
+#[path = "windows_registration/native/instances/stop_readback.rs"]
+mod windows_stop_readback;
 
 use crate::{cli, config::Config, platform};
 use anyhow::{ensure, Context, Result};
