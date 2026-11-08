@@ -163,6 +163,10 @@ pub fn ssh_capture(args: &[String]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+// Exact ordinary-producer diagnostics only. No observer exists in production.
+#[cfg(all(test, windows))]
+pub(crate) mod persist_diagnostic;
+
 /// Replace `path` with a fully written temporary file. Windows refuses the rename
 /// while a scanner or reader briefly holds the destination; retry that for a
 /// bounded time. Unix renames at once.
@@ -173,18 +177,30 @@ pub fn persist(
     let path = path.as_ref();
     let mut delay = std::time::Duration::from_millis(10);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    #[cfg(all(test, windows))]
+    let mut diagnostic = persist_diagnostic::Session::enter(&temporary, path, deadline);
     loop {
         match temporary.persist(path) {
-            Ok(file) => return Ok(file),
+            Ok(file) => {
+                #[cfg(all(test, windows))]
+                diagnostic.succeeded(&file, deadline);
+                return Ok(file);
+            }
             Err(error)
                 if transient_replace_error(&error.error)
                     && std::time::Instant::now() < deadline =>
             {
+                #[cfg(all(test, windows))]
+                diagnostic.failed(&error, deadline);
                 temporary = error.file;
                 std::thread::sleep(delay);
                 delay = (delay * 2).min(std::time::Duration::from_millis(200));
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                #[cfg(all(test, windows))]
+                diagnostic.failed(&error, deadline);
+                return Err(error);
+            }
         }
     }
 }

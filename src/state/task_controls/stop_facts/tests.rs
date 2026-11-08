@@ -256,22 +256,53 @@ fn removed_oversized_replaced_or_overflowed_capture_refuses_for_review_without_r
         let captured = publisher.capture().unwrap();
         drop(guard);
         let file = path(dir.path(), &executor());
+        #[cfg(windows)]
+        let mut moved = None;
         match mode {
             "removed" => fs::remove_file(&file).unwrap(),
             "oversized" => fs::write(&file, vec![b' '; BYTES + 1]).unwrap(),
             "replaced" => {
                 let bytes = fs::read(&file).unwrap();
+                #[cfg(not(windows))]
                 fs::rename(&file, file.with_extension("kept")).unwrap();
+                #[cfg(windows)]
+                {
+                    let destination = file.with_extension("kept");
+                    moved = Some(
+                        captured
+                            .directory
+                            .move_private_for_fault(
+                                &captured.fact_file,
+                                &captured.name,
+                                destination.file_name().unwrap().to_str().unwrap(),
+                            )
+                            .unwrap(),
+                    );
+                }
                 platform::private_open(OpenOptions::new().write(true).create_new(true))
                     .open(&file)
                     .unwrap();
                 fs::write(&file, bytes).unwrap();
             }
             "writer" => {
+                #[cfg(not(windows))]
                 fs::rename(dir.path().join(".lock"), dir.path().join(".old-lock")).unwrap();
+                #[cfg(windows)]
+                {
+                    moved = Some(
+                        captured
+                            .root
+                            .move_private_for_fault(&captured.writer_file, ".lock", ".old-lock")
+                            .unwrap(),
+                    );
+                }
                 drop(writer(dir.path()));
             }
             _ => (),
+        }
+        #[cfg(windows)]
+        if let Some(token) = &moved {
+            token.verify_replacement().unwrap();
         }
         let bytes = fs::read(&file).ok();
         assert!(captured.verify().is_err(), "{mode}");
@@ -280,6 +311,10 @@ fn removed_oversized_replaced_or_overflowed_capture_refuses_for_review_without_r
             bytes,
             "{mode}: recheck must not repair"
         );
+        #[cfg(windows)]
+        if let Some(token) = &moved {
+            token.verify_replacement().unwrap();
+        }
     }
 }
 
@@ -420,3 +455,7 @@ fn retaining_captured_objects_releases_the_native_exclusion_for_another_writer()
     next.join().unwrap().unwrap();
     captured.verify().unwrap();
 }
+
+#[cfg(windows)]
+#[path = "tests/ordinary_atomic_diagnostic.rs"]
+mod ordinary_atomic_diagnostic;
