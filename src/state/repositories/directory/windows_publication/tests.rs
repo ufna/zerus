@@ -168,9 +168,173 @@ fn retained_reader_replacement_reports_the_actual_native_boundary() {
         assert_eq!(std::fs::read(directory.path.join(&name)).unwrap(), expected);
         if role == "no_delete_reader" {
             assert!(result.is_err());
+            assert_eq!(phase, "guard_target");
+        } else {
+            assert!(result.is_ok(), "{role}: {result:?}");
+            if role == "actual_private_reader" {
+                let mut old = &reader;
+                let mut bytes = Vec::new();
+                old.read_to_end(&mut bytes).unwrap();
+                assert_eq!(bytes, b"original snapshot");
+            }
         }
         // Explicitly later than the replacement and every observation above.
         drop(result);
         drop(reader);
     }
+}
+
+#[test]
+fn a_no_delete_reader_refuses_then_the_same_source_replaces_after_it_closes() {
+    let temp = private_root();
+    let path = crate::platform::canonical(temp.path()).unwrap();
+    let directory = Directory::open(&path).unwrap();
+    directory.write_new("receipt", b"original").unwrap();
+    let reader = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(path.join("receipt"))
+        .unwrap();
+    // This SAME original source is used before/after the refusal. It has the
+    // production access, no-reparse/write-through and sharing state.
+    let mut source = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .access_mode(GENERIC_READ | GENERIC_WRITE | DELETE | SYNCHRONIZE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH)
+        .share_mode(FILE_SHARE_READ)
+        .open(path.join("controlled-source"))
+        .unwrap();
+    source.write_all(b"replacement").unwrap();
+    source.sync_all().unwrap();
+    let identity = crate::platform::FileIdentity::of(&source).unwrap();
+    assert!(Target::open(&directory, "receipt").is_err());
+    assert_eq!(std::fs::read(path.join("receipt")).unwrap(), b"original");
+    directory.verify().unwrap();
+    drop(reader);
+    let guard = Target::open(&directory, "receipt").unwrap().unwrap();
+    guard.verify(&directory, "receipt").unwrap();
+    unsafe { rename(&source, "receipt", true) }.unwrap();
+    source.sync_all().unwrap();
+    assert_eq!(
+        crate::platform::FileIdentity::of(&source).unwrap(),
+        identity
+    );
+    assert_eq!(std::fs::read(path.join("receipt")).unwrap(), b"replacement");
+    directory.verify().unwrap();
+    drop(guard);
+}
+
+#[test]
+fn missing_target_never_replaces_an_appearing_target() {
+    let temp = private_root();
+    let path = crate::platform::canonical(temp.path()).unwrap();
+    let directory = Directory::open(&path).unwrap();
+    BEFORE_RENAME.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(|directory, name| {
+            directory.write_new(name, b"appearing original").unwrap();
+        }))
+    });
+    assert!(directory
+        .replace_file("receipt", b"not authorized to replace the appearing file")
+        .is_err());
+    assert_eq!(
+        std::fs::read(path.join("receipt")).unwrap(),
+        b"appearing original"
+    );
+    directory.verify().unwrap();
+    directory.replace_file("fresh", b"observed absent").unwrap();
+    assert_eq!(
+        std::fs::read(path.join("fresh")).unwrap(),
+        b"observed absent"
+    );
+}
+
+#[test]
+fn observed_target_substitution_refuses_without_overwriting_the_new_object() {
+    let temp = private_root();
+    let path = crate::platform::canonical(temp.path()).unwrap();
+    let directory = Directory::open(&path).unwrap();
+    directory.write_new("receipt", b"original").unwrap();
+    let reader = directory.read_private("receipt").unwrap();
+    BEFORE_RENAME.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(|directory, name| {
+            let foreign = directory
+                .write_new_file("private-substitution", b"different target")
+                .unwrap();
+            // Fault injection deliberately bypasses the original caller's writer
+            // exclusion in this private fixture. The public operation must notice.
+            unsafe { rename(&foreign, name, true) }.unwrap();
+        }))
+    });
+    assert!(directory
+        .replace_file("receipt", b"must not overwrite substitution")
+        .is_err());
+    assert_eq!(
+        std::fs::read(path.join("receipt")).unwrap(),
+        b"different target"
+    );
+    let mut original = Vec::new();
+    (&reader).read_to_end(&mut original).unwrap();
+    assert_eq!(original, b"original");
+    directory.verify().unwrap();
+}
+
+#[test]
+fn readonly_directory_and_multiply_linked_targets_refuse() {
+    let temp = private_root();
+    let path = crate::platform::canonical(temp.path()).unwrap();
+    let directory = Directory::open(&path).unwrap();
+    directory.write_new("readonly", b"kept").unwrap();
+    let permissions = std::fs::metadata(path.join("readonly"))
+        .unwrap()
+        .permissions();
+    let mut readonly = permissions.clone();
+    readonly.set_readonly(true);
+    std::fs::set_permissions(path.join("readonly"), readonly).unwrap();
+    let refused = directory.replace_file("readonly", b"must not ignore readonly");
+    std::fs::set_permissions(path.join("readonly"), permissions).unwrap();
+    assert!(refused.is_err());
+    assert_eq!(std::fs::read(path.join("readonly")).unwrap(), b"kept");
+    std::fs::create_dir(path.join("folder")).unwrap();
+    assert!(directory
+        .replace_file("folder", b"not a regular file")
+        .is_err());
+    directory
+        .write_new("linked", b"both original links")
+        .unwrap();
+    std::fs::hard_link(path.join("linked"), path.join("other-link")).unwrap();
+    assert!(directory
+        .replace_file("linked", b"not singly linked")
+        .is_err());
+    assert_eq!(
+        std::fs::read(path.join("linked")).unwrap(),
+        b"both original links"
+    );
+    assert_eq!(
+        std::fs::read(path.join("other-link")).unwrap(),
+        b"both original links"
+    );
+    directory.verify().unwrap();
+}
+
+#[test]
+fn unsupported_ex_refuses_without_a_fallback_or_new_publication_change() {
+    let temp = private_root();
+    let path = crate::platform::canonical(temp.path()).unwrap();
+    let directory = Directory::open(&path).unwrap();
+    directory.write_new("receipt", b"original").unwrap();
+    let reader = directory.read_private("receipt").unwrap();
+    UNSUPPORTED_EX.with(|flag| flag.set(true));
+    let refused = directory.replace_file("receipt", b"uncertain unsupported replacement");
+    let new = directory.write_new("new", b"original NOREPLACE still works");
+    UNSUPPORTED_EX.with(|flag| flag.set(false));
+    assert!(refused.unwrap_err().contains("50"));
+    new.unwrap();
+    assert_eq!(std::fs::read(path.join("receipt")).unwrap(), b"original");
+    let mut original = Vec::new();
+    (&reader).read_to_end(&mut original).unwrap();
+    assert_eq!(original, b"original");
+    directory.verify().unwrap();
 }
