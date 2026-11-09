@@ -221,6 +221,7 @@ fn unexpected_links_special_files_and_replaced_writer_refuse() {
     assert!(Publisher::open_enabled(dir.path(), &guard, &executor(), true).is_err());
 }
 
+#[cfg(not(windows))]
 #[test]
 fn captured_stop_evidence_rechecks_retained_bytes_without_acquiring_the_native_writer() {
     let dir = fixture();
@@ -247,6 +248,85 @@ fn captured_stop_evidence_rechecks_retained_bytes_without_acquiring_the_native_w
     fs::write(&file, &changed).unwrap(); // same-size in-place change
     assert!(captured.verify().is_err());
     assert_eq!(fs::read(file).unwrap(), changed);
+}
+
+#[cfg(windows)]
+#[test]
+fn captured_stop_evidence_rechecks_retained_bytes_without_acquiring_the_native_writer() {
+    let parent = platform::canonical(std::env::temp_dir()).unwrap();
+    let dir = tempfile::tempdir_in(parent).unwrap();
+    platform::private_dir(dir.path()).unwrap();
+    platform::restrict_dir(dir.path()).unwrap();
+    // Existing-only native ownership needs an empty original lock object.
+    // This fixture handle is unlocked and closes before the first owner mint.
+    drop(
+        platform::private_open(OpenOptions::new().create_new(true).read(true).write(true))
+            .open(dir.path().join(".lock"))
+            .unwrap(),
+    );
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let owned = crate::state::task_controls::writer::test_open(dir.path(), until).unwrap();
+    let publisher = Publisher::open_enabled(
+        owned.root().unwrap(),
+        owned.guard().unwrap(),
+        &executor(),
+        true,
+    )
+    .unwrap();
+    publisher.publish(&fact(2)).unwrap();
+    drop(publisher);
+    let captured = crate::state::task_controls::capture_stops(owned, &executor()).unwrap();
+    {
+        let lease = captured.lease(&executor()).unwrap();
+        lease
+            .read_scoped(|scope, facts| {
+                assert_eq!(facts, &[fact(2)]);
+                assert_eq!(scope, &executor());
+            })
+            .unwrap();
+        lease.final_check().unwrap();
+    }
+    // The same second plain writer can coexist with the strict read lease.
+    // Reading never reacquires that exclusion or lends it to a transaction.
+    let held = writer(dir.path());
+    let lease = captured.lease(&executor()).unwrap();
+    lease
+        .read_scoped(|scope, facts| {
+            assert_eq!(facts, &[fact(2)]);
+            assert_eq!(scope, &executor());
+        })
+        .unwrap();
+    lease.final_check().unwrap();
+    drop(lease);
+    drop(held);
+    let lock_bytes = fs::read(dir.path().join(".lock")).unwrap();
+    let record = dir.path().join("run.json");
+    storage::atomic(&record, r#"{"state":"live"}"#).unwrap();
+    let lease = captured.lease(&executor()).unwrap();
+    lease
+        .read_scoped(|scope, facts| {
+            assert_eq!(facts, &[fact(2)]);
+            assert_eq!(scope, &executor());
+        })
+        .unwrap();
+    lease.final_check().unwrap();
+    drop(lease);
+    assert_eq!(fs::read(dir.path().join(".lock")).unwrap(), lock_bytes);
+    let file = path(dir.path(), &executor());
+    let original = fs::read(&file).unwrap();
+    let mut changed = original.clone();
+    let at = changed.iter().position(|b| *b == b'2').unwrap();
+    changed[at] = b'3';
+    fs::write(&file, &changed).unwrap(); // same-size in-place change
+    assert!(captured.lease(&executor()).is_err());
+    assert_eq!(fs::read(file).unwrap(), changed);
+    captured.retire();
+    capture_coexistence::record(
+        capture_coexistence::ReportCase::SelectedOriginal,
+        capture_coexistence::ReportOutcome::Verified,
+        capture_coexistence::ReportReason::Complete,
+    )
+    .unwrap();
 }
 
 #[test]

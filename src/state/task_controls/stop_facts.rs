@@ -14,6 +14,82 @@ mod coexistence;
 type Result<T> = std::result::Result<T, String>;
 const BYTES: usize = 256 << 10;
 
+/// Inactive selected support. Between leases this owns only original data
+/// custody; it has no current facts getter or actor/proof conversion.
+#[cfg(windows)]
+pub(in crate::state) struct SelectedCapture(coexistence::Seal);
+
+/// Retain this exact capability for the whole logical read and final check.
+/// Returned copies remain data; transaction/COMMIT integration is separate.
+#[cfg(windows)]
+pub(in crate::state) struct SelectedLease<'a>(coexistence::CurrentLease<'a>);
+
+#[cfg(windows)]
+#[must_use = "Failed original custody must be explicitly retired"]
+pub(in crate::state) struct CaptureFailed(coexistence::Failed);
+
+#[cfg(windows)]
+impl std::fmt::Debug for CaptureFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CaptureFailed")
+            .field("stage", &self.0.stage())
+            .field("reason", &self.0.detail())
+            .finish()
+    }
+}
+
+#[cfg(windows)]
+impl CaptureFailed {
+    pub(in crate::state) fn retire(self) {
+        self.0.retire();
+    }
+}
+
+#[cfg(windows)]
+impl SelectedCapture {
+    pub(in crate::state) fn lease(
+        &self,
+        executor: &Executor,
+    ) -> std::result::Result<SelectedLease<'_>, &'static str> {
+        self.0
+            .lease(executor)
+            .map(SelectedLease)
+            .map_err(|_| "The selected Stop capture no longer matches its current scope")
+    }
+
+    pub(in crate::state) fn retire(self) {
+        self.0.retire();
+    }
+}
+
+#[cfg(windows)]
+impl SelectedLease<'_> {
+    pub(in crate::state) fn read_scoped<T>(
+        &self,
+        read: impl FnOnce(&Executor, &[Fact]) -> T,
+    ) -> std::result::Result<T, &'static str> {
+        self.0
+            .read_scoped(read)
+            .map_err(|_| "The selected Stop lease refused its complete read or final check")
+    }
+
+    pub(in crate::state) fn final_check(&self) -> std::result::Result<(), &'static str> {
+        self.0
+            .final_check()
+            .map_err(|_| "The selected Stop lease refused its final check")
+    }
+}
+
+#[cfg(windows)]
+pub(super) fn capture_owned(
+    owned: super::writer::Writer,
+    executor: &Executor,
+) -> std::result::Result<SelectedCapture, CaptureFailed> {
+    coexistence::from_owned(owned, executor.clone())
+        .map(SelectedCapture)
+        .map_err(CaptureFailed)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Source {

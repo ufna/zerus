@@ -1,7 +1,8 @@
-//! Dormant candidate, not Captured or an actor/effect proof. No default factory
-//! selects this type. Outside CurrentLease it holds only data/object custody.
+//! Inactive selected-capture support and legacy candidate data custody. This
+//! is not Captured or an actor/effect proof; the runtime gate stays off.
+//! Outside CurrentLease it holds only data/object custody.
 #![cfg(windows)]
-#![allow(dead_code)] // Separate unused candidate, never a global lint allowance.
+#![allow(dead_code)] // Inactive support only, never a global lint allowance.
 use super::*;
 use crate::state::{
     repositories::directory::{stop_capture, Directory},
@@ -325,6 +326,13 @@ pub(super) struct Seal {
     custody: Custody,
     failed: Cell<bool>,
 }
+/// Selected handoff: take the SAME already-owned original Writer and its
+/// stored budget. No root, later Instant, new mint or released assertion.
+pub(super) fn from_owned(owned: Writer, expected: Executor) -> std::result::Result<Seal, Failed> {
+    let until = owned.deadline();
+    build(owned, expected, until, false, 0)
+}
+
 /// Closed pending owner: create the native Writer with this SAME deadline,
 /// then move it by value into custody. No caller can pair an opaque Writer
 /// with a later deadline after its private original budget has been erased.
@@ -456,13 +464,25 @@ impl CurrentLease<'_> {
     /// the final recheck. The returned value is data only, never an actor or
     /// transaction receipt; commit integration is explicitly a later leaf.
     pub fn read<T>(&self, read: impl FnOnce(&[Fact]) -> T) -> std::result::Result<T, Stage> {
+        self.read_scoped(|_, facts| read(facts))
+    }
+    /// Both references are original snapshot DATA, never an Actor grant.
+    /// The current namespace lease and original deadline span the complete
+    /// callback and final recheck, with the existing failure/panic poisoning.
+    pub fn read_scoped<T>(
+        &self,
+        read: impl FnOnce(&Executor, &[Fact]) -> T,
+    ) -> std::result::Result<T, Stage> {
         let snapshot = self
             .owner
             .custody
             .snapshot
             .as_ref()
             .ok_or(Stage::Snapshot)?;
-        let result = checked_read(|| self.check(), || read(&snapshot.facts));
+        let result = checked_read(
+            || self.check(),
+            || read(&snapshot.executor, &snapshot.facts),
+        );
         if result.is_err() {
             self.failed.set(true);
             self.owner.failed.set(true);
