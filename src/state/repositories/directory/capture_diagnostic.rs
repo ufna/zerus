@@ -5,6 +5,10 @@
 #[path = "capture_diagnostic/staged_probe.rs"]
 pub(in crate::state) mod staged_probe;
 
+#[cfg(all(test, windows))]
+#[path = "capture_diagnostic/legacy_reference.rs"]
+pub(in crate::state) mod legacy_reference;
+
 use super::Directory;
 use crate::platform::persist_diagnostic::{handle_info, HandleInfo, Object};
 use serde::Serialize;
