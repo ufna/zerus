@@ -6,6 +6,10 @@ use std::fs::{File, OpenOptions};
 #[path = "directory/windows_publication.rs"]
 mod windows_publication;
 
+#[cfg(windows)]
+#[path = "directory/stop_capture.rs"]
+pub(in crate::state) mod stop_capture;
+
 #[cfg(all(test, windows))]
 #[path = "directory/capture_diagnostic.rs"]
 pub(in crate::state) mod capture_diagnostic;

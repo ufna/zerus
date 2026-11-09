@@ -7,6 +7,10 @@ use sha2::{Digest, Sha256};
 use std::{fs::File, io::Read, path::Path};
 use zerus_desktop_ledger::task_controls::{Executor, EXECUTOR_HOLDS, TASK_CONTROLS};
 
+#[cfg(windows)]
+#[path = "stop_facts/coexistence.rs"]
+mod coexistence;
+
 type Result<T> = std::result::Result<T, String>;
 const BYTES: usize = 256 << 10;
 

@@ -1,5 +1,9 @@
 use super::*;
 #[cfg(windows)]
+#[path = "tests/capture_coexistence.rs"]
+mod capture_coexistence;
+
+#[cfg(windows)]
 #[path = "tests/staged_atomic_diagnostic.rs"]
 mod staged_atomic_diagnostic;
 
