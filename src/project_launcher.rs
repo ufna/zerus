@@ -397,7 +397,22 @@ mod tests {
                 for name in ["HOME","USERPROFILE","APPDATA","LOCALAPPDATA","TEMP","TMP","HGS_CONFIG_DIR","HGS_STATE_DIR"] {
                     let path=root.path().join(name);std::fs::create_dir_all(&path).unwrap();command.env(name,path);
                 }
-                let output=crate::platform::output_until(&mut command,Duration::from_secs(20)).unwrap();
+                // Diagnostic only (temporary): a bound larger than the flaky
+                // 20 s makes the true cold-start time observable for the CI
+                // artifact; the contract assertions below are unchanged.
+                let started=std::time::Instant::now();
+                let result=crate::platform::output_until(&mut command,Duration::from_secs(120));
+                let elapsed=started.elapsed();
+                {
+                    use std::io::Write;
+                    let dir=std::path::Path::new("artifacts/test-results");
+                    let _=std::fs::create_dir_all(dir);
+                    if let Ok(mut file)=std::fs::OpenOptions::new().create(true).append(true).open(dir.join("powershell-timing.txt")) {
+                        let outcome=match &result {Ok(output)=>format!("status={:?}",output.status.code()),Err(error)=>format!("error={error:?}")};
+                        let _=writeln!(file,"shell={shell} expected={expected} elapsed={:.3}s {outcome}",elapsed.as_secs_f64());
+                    }
+                }
+                let output=result.unwrap();
                 assert_eq!(output.status.code(),Some(expected),"{shell}: {}",String::from_utf8_lossy(&output.stderr));
                 if expected==7 {let value:serde_json::Value=serde_json::from_slice(&std::fs::read(&result).unwrap()).unwrap();assert_eq!(value["args"],serde_json::json!(values));assert_eq!(value["cleared"],true);}
             }
