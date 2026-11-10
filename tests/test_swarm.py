@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -158,6 +159,48 @@ class Swarm(unittest.TestCase):
 
     def tasks(self, node):
         return sorted(t['text'] for t in self.task(node, 'list', '--project', 'a')['tasks'])
+
+    def start_worker(self, node):
+        env = dict(self.env, HGS_CONFIG_DIR=str(self.root / node), HGS_STATE_DIR=str(self.root / node / 'state'))
+        # The worker leads its own process group so the test can stop it the
+        # way a service unit stop would: everything it started, not only the
+        # worker itself (zerus-bef51).
+        return subprocess.Popen([str(HGS), 'swarm', 'worker'], env=env,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                start_new_session=True)
+
+    def stop_worker(self, worker):
+        """Stop a worker through its real stop path and join every process it
+        started. A worker round syncs members through ssh/hgs child processes
+        that write into the fixture directory; SIGTERM to the worker alone
+        leaves those children writing while TemporaryDirectory cleanup runs,
+        which fails with ENOTEMPTY (zerus-bef51). Signal the whole group, as
+        a service unit stop does, and wait until every member is gone."""
+        try:
+            os.killpg(worker.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            worker.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            # A service stop that outlives its grace period is killed.
+            try:
+                os.killpg(worker.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            worker.communicate()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(worker.pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(.05)
+        try:
+            os.killpg(worker.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        self.fail('swarm worker processes survived their stop')
 
     def exchanges(self, alias=''):
         calls = self.root / 'calls'
@@ -505,8 +548,7 @@ class Swarm(unittest.TestCase):
     def test_worker_syncs_without_a_gui_or_reverse_connection(self):
         self.join('a', 'b')
         self.assertEqual(self.call('b', 'get')['peers'], {})
-        env = dict(self.env, HGS_CONFIG_DIR=str(self.root / 'a'), HGS_STATE_DIR=str(self.root / 'a/state'))
-        worker = subprocess.Popen([str(HGS), 'swarm', 'worker'], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        worker = self.start_worker('a')
         try:
             before = self.call('a', 'get'); desired = copy.deepcopy(before['organization'])
             next(p for p in desired['projects'] if p['id'] == 'a')['name'] = 'Changed with GUI closed'
@@ -520,7 +562,7 @@ class Swarm(unittest.TestCase):
             else:
                 self.fail('headless worker did not replicate the change')
         finally:
-            worker.terminate(); worker.communicate(timeout=5)
+            self.stop_worker(worker)
 
     def test_worker_is_reported_and_isolated_directories_never_restart_services(self):
         # Service-manager fakes record any attempt; hgs puts HOME/.local/bin first on PATH.
@@ -545,19 +587,19 @@ class Swarm(unittest.TestCase):
         # HGS_CONFIG_DIR is not the directory the service uses.
         self.assertFalse((self.root / 'service-calls').exists())
         self.assertFalse((swarm / 'worker-restart.json').exists())
-        env = dict(self.env, HGS_CONFIG_DIR=str(self.root / 'a'), HGS_STATE_DIR=str(self.root / 'a/state'))
-        worker = subprocess.Popen([str(HGS), 'swarm', 'worker'], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        worker = self.start_worker('a')
         try:
             deadline = time.monotonic() + 10
             while self.call('a', 'get')['worker'] != {'running': True, 'current': True} and time.monotonic() < deadline:
                 time.sleep(.1)
             self.assertEqual(self.call('a', 'get')['worker'], {'running': True, 'current': True})
             marker = json.loads((swarm / 'worker.json').read_text())
+            env = dict(self.env, HGS_CONFIG_DIR=str(self.root / 'a'), HGS_STATE_DIR=str(self.root / 'a/state'))
             version = subprocess.run([str(HGS), '--version'], env=env, text=True, capture_output=True, check=True).stdout.split()[1]
             self.assertEqual((marker['version'], marker['pid']), (version, worker.pid))
             self.assertLessEqual(abs(marker['started_at'] - time.time()), 60)
         finally:
-            worker.terminate(); worker.communicate(timeout=5)
+            self.stop_worker(worker)
         self.assertEqual(self.call('a', 'get')['worker'], {'running': False, 'current': False})
         self.assertFalse((self.root / 'service-calls').exists())
 
@@ -1130,8 +1172,7 @@ class Swarm(unittest.TestCase):
     def test_the_worker_sends_a_new_task_within_seconds(self):
         self.join('a', 'b'); self.join('b', 'a')
         self.call('a', 'sync'); self.call('b', 'sync')
-        env = dict(self.env, HGS_CONFIG_DIR=str(self.root / 'a'), HGS_STATE_DIR=str(self.root / 'a/state'))
-        worker = subprocess.Popen([str(HGS), 'swarm', 'worker'], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        worker = self.start_worker('a')
         try:
             # Its first round is over; the next scheduled one is 30 s away.
             synced = self.call('a', 'get')['peers']['b']['last_sync']
@@ -1144,7 +1185,7 @@ class Swarm(unittest.TestCase):
                 time.sleep(.2)
             self.assertEqual(self.tasks('b'), ['Add rate limiting'])
         finally:
-            worker.terminate(); worker.communicate(timeout=5)
+            self.stop_worker(worker)
 
     def test_a_task_store_that_cannot_be_read_never_stops_the_catalog(self):
         self.join('a', 'b'); self.join('b', 'a')
