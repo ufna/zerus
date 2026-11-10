@@ -1126,6 +1126,7 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
         "account" => crate::accounts::dispatch(&config, args, dry),
         "project" => project(&config, args, dry),
         "task" => crate::tasks::dispatch(&config, args, dry),
+        "team" => crate::teams::dispatch(&config, args, dry),
         _ => launch(&config, command, args, &client, dry),
     }
 }

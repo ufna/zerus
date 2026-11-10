@@ -1063,6 +1063,7 @@ dependencies = [
  "zerus-freedesktop-notify",
  "zerus-presence-sampler",
  "zerus-replica",
+ "zerus-team-plan",
  "zerus-watch-protocol",
 ]
 
@@ -3461,6 +3462,14 @@ dependencies = [
  "serde_json",
  "sha2",
  "uuid",
+]
+
+[[package]]
+name = "zerus-team-plan"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

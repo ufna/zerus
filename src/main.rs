@@ -29,6 +29,7 @@ mod state;
 mod status;
 mod swarm;
 mod tasks;
+mod teams;
 #[cfg(all(test, unix))]
 mod test_process;
 mod watch;
