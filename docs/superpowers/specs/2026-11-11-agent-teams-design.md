@@ -1,0 +1,656 @@
+# Agent Teams on Zerus tasks
+
+Draft for owner review, 2026-11-11. Engineering epic: `zerus-63rru`.
+
+## Origin and credit
+
+Agent Teams were designed and first built by WhiteWh in the `WhiteWh/zerus`
+fork. Pull request #322 is its first version; the fork's `whitewh/main` at
+`ca4cc4481` is the reference this design reads from. This specification keeps
+the concepts, the working process and the desktop views of that work, and
+builds the runtime on Zerus tasks and the desktop service. Imported files keep
+WhiteWh as their Git author; the rules are in
+[Authorship](#authorship-and-credit).
+
+## Outcome
+
+A person describes a goal. A lead agent turns it into a plan: phases of tasks
+with dependencies, each task for a member with a role. The person approves the
+plan. Zerus launches the member sessions, hands every ready task to a free
+member, brings reports back to the lead and merges accepted work into one
+integration branch. The person is asked only for what they kept for
+themselves.
+
+The feature is done for its second milestone when all of this holds on one
+computer:
+
+- a lead and three members finish a plan of 10 to 20 tasks after plan approval
+  without the person, apart from items the person reserved;
+- no task prompt or message is delivered twice, including across a restart of
+  the desktop service;
+- every decision has a journal entry naming who made it;
+- a session that is in no team behaves exactly as it does today.
+
+## Owner decisions
+
+Recorded 2026-11-11.
+
+| # | Decision |
+|---|---|
+| D1 | Teams come into upstream. For teams, phases and the task graph this replaces the "Orchestration" row of the owner constraints in `2026-10-27-tauri-web-ui-design.md` |
+| D2 | The main points are taken as they are in the fork now. Work then continues on Zerus's own code, and later contributions by the author are made against that code |
+| D3 | The author's credit is kept |
+| D4 | Teams are built on Zerus tasks |
+| D5 | The lead agent may accept results, answer members' permission requests, restart members and merge accepted work into the integration branch |
+| D6 | Work happens on a branch. Subagents implement it under one coordinating session |
+
+The same row of that specification also excludes iron rules, cache hold and
+the designer. They were not discussed and stay excluded.
+
+## What is carried over
+
+These points are taken as the fork designed them.
+
+- A team is a lead and members with roles. Each member has its own agent,
+  account and computer.
+- The lead plans alone before any member exists, proposes the members, and
+  the person creates the team as a separate step (see Life cycle).
+- A plan is phases of tasks. A task has hard or soft dependencies, an assignee
+  or a role, a write set (the files it may change), acceptance criteria and an
+  estimate (see Data model).
+- A phase is a draft until it is approved. A barrier phase waits for every
+  earlier phase. A phase is accepted by the lead (soft gate) or by the person
+  (hard gate). Phases run in Standard or Free mode.
+- The scheduling rule, the order of hand-outs and the caps (see Scheduling
+  and hand-out).
+- An intent is recorded before anything is sent, and an unconfirmed delivery
+  is never sent again.
+- A report reaches the lead only after its pipeline stages (review, test) have
+  passed.
+- Findings are tasks with a severity. Crit joins the running phase and blocks
+  its acceptance; Minor goes to a later phase and blocks nothing.
+- Everything the person must decide is a card in one list, "Waiting for you".
+  The person answers in place and is never asked to type a phrase.
+- The lead's own changes to an approved plan are logged and can be reverted
+  until the work they touch has started.
+- The Team tab shows one plan as Graph, Board, Layers, Lanes and Profile.
+- The planning rules given to the lead, and the default timers.
+
+## What changes, and why
+
+| In the fork | Here | Reason |
+|---|---|---|
+| Its own task, attempt and report (`hgs team report`) | A Zerus task, a Zerus execution attempt, `hgs task report-attempt` | One task protocol for agents, one board, the delivery guarantees that already exist |
+| `hgs team worker`, a detached process with a 3 s tick | A teams actor in the desktop service, driven by the watch stream | The service already owns fleet state, delivery, resume and answers |
+| The owner is a caller without session markers | The desktop UI authority, and the verified Person authority of `zerus-cg5h.4.11` when it lands | Environment variables do not authenticate |
+| A member is matched by computer and session name | By session identity | Session names are labels |
+| The merge queue works in the team folder with hooks off and rolls back with `reset --hard` | The integration branch advances by a compare-and-swap ref update; no checkout is written | The primary checkout and the person's branches are never touched |
+| Zerus writes folder trust before launching a member | Startup trust stays with the person | Existing rule |
+| An unanswered prompt is denied or given its recommended option after 10 minutes | It goes to the person | No rule answers for anyone |
+| A crashed member is restarted automatically, three times an hour | The lead decides (D5) | A stop is never undone by a timer |
+| Urgent messages interrupt a turn; context is compacted or cleared automatically | Not taken | A session is changed only by an explicit act of the person or the lead |
+| Session states that replace `Background` | Not taken | The status contract is unchanged |
+| Zerus runs shell lines declared in the repository (test and run templates) | A stage is a task that a member agent runs | Zerus executes nothing from the repository itself |
+| CodeLore memory by default | A plain digest of the team's own state | A project memory is a separate product decision |
+| Shared folder and build broker | Later (see Folders, branches and integration) | Every session already defaults to its own worktree |
+| Team state in one store, a whole team decoded per call | Rows, indexes, bounded pages | Session and task counts reach tens of thousands |
+
+## Vocabulary
+
+| Term | Meaning |
+|---|---|
+| Team | A lead, its members, one plan and the settings that say what the lead may decide |
+| Lead | The session that plans and decides. It writes no feature code |
+| Member | A child session of the lead with a role |
+| Plan | Phases, and the plan nodes inside them |
+| Plan node | One task of the plan with its dependencies, role and write set. After approval it points at a Zerus task |
+| Task | A Zerus task (`hgs task`). A team has no task type of its own |
+| Attempt | A Zerus execution attempt of that task |
+| Write set | Files or folders a task may change |
+| Integration branch | The branch that collects accepted work |
+| Delegation | A decision the person lets the lead make |
+| Waiting for you | The list of cards only the person can answer |
+| Home | The computer where the team's lead runs. The team store and the teams actor live there |
+
+In the desktop the word "Team" already names a parent session with its child
+sessions. An agent team is the same thing with a plan: the lead is the parent
+and the members are its children. No second meaning is introduced.
+
+## Architecture
+
+```
+ person ── desktop UI ── (UI authority) ──┐
+                                          ▼
+ lead agent ── hgs team ──────────► team store ◄──── teams actor (desktop service)
+     ▲                                  │                  │ reads the watch stream
+     │ doorbell                         │ plan nodes       │ (catalog, tasks)
+     │ (guarded send)                   ▼ point at         │
+ member agents ── hgs task ───────► Zerus tasks ◄──────────┤ effects, each through an
+     (start, report-attempt)        (replicated)           │ existing owner:
+                                                           │   session creation
+                                                           │   task attempt writer
+                                                           │   deferred send
+                                                           │   deferred answer + approval journal
+                                                           │   session resume
+                                                           └─► integration branch (ref update)
+```
+
+Each unit has one purpose and a narrow interface.
+
+| Unit | Location | Purpose | Depends on |
+|---|---|---|---|
+| Plan kernel | `crates/team-plan` (new) | Plan types, validation, readiness, hand-out order, layers, critical path, write-set overlap. Pure: no I/O, time is an argument | nothing |
+| Team store | `src/teams/store` | One SQLite file with versioned schema: teams, members, phases, nodes, dependencies, decisions, lead inbox, owner cards, journal | SQLite helpers |
+| Operations | `src/teams/ops` | One function per operation: authority check, validation, one transaction with a revision check, one journal entry. An operation never touches a session | kernel, store |
+| Teams actor | `src/desktop/teams` | Reacts to store revisions and watch events, asks the kernel what is due, performs effects through existing actors, records intent before and outcome after | kernel, store, service actors |
+| Integration | `src/teams/integrate` | Reads reported commits, merges with Git plumbing, advances the integration ref | Git |
+| CLI | `src/teams/cli` | `hgs team ...`, sharing actor resolution with `hgs task` | operations |
+| Guides | `src/agent_guide/team.md`, `team-lead.md` | What a member and a lead are told | none |
+| Client core | `client/core/src/teams` | Typed projections (list, team, graph, waiting, new team) and actions | store reads |
+| Frontend | `client/src/ui/teams`, `client/src/store/teams*.ts` | New team, Team tab, Waiting for you | client core |
+
+The kernel is the only place that decides what may run. The actor is the only
+place that causes effects in sessions. Operations and the kernel can be tested
+without a session; the actor is tested with fake effect ports and then with
+real agents in isolation.
+
+## Teams and Zerus tasks
+
+A team task is a Zerus task. The plan adds structure around it and stores that
+structure in the team store, keyed by project ID and task UUID. The replicated
+task schema is not raised.
+
+| Concern | Where it lives |
+|---|---|
+| Title, prompt, acceptance criteria, attachments | The task |
+| History, attempts, reports, discussion | The task |
+| Stage | The task |
+| Phase, dependencies, role or assignee, write set, estimate, severity | The plan node |
+| Who decided, integration commit, holds | The plan node |
+
+**Drafts are not tasks.** While a phase is a draft, its nodes hold their own
+title and text. Approving the phase creates one task per node in To do, in
+plan order, and stores the UUID in the node. The project board therefore shows
+approved work only.
+
+**Stages keep their meaning.**
+
+| Plan view | Task stage | Moved by |
+|---|---|---|
+| Draft | no task yet | phase approval |
+| Pending | To do | hand-out |
+| In progress | In progress | the attempt writer |
+| Reported | In review | the member's `report-attempt` |
+| Accepted | Done | the lead (soft gate) or the person |
+| Returned | In progress again | reopen to the same member |
+| Cancelled | cancelled | the lead or the person |
+
+**Existing commands do the work.** A hand-out is the attempt writer that
+`hgs task send` uses, addressed to the member's session. A return is the
+existing reopen message. A reassignment is cancel, back to To do, and a new
+hand-out; the attempt generation rejects a late report from the old member.
+
+**The link.** At creation a team task gets one optional key, `team`, in its
+field map: the team ID and the home computer. Readers that do not know the key
+ignore it and sync carries it, so older builds and phones are unaffected. With
+it, `hgs task` on any computer can show the team and refuse the three actions
+that would bypass the plan: sending a team task, handing it off and moving it
+to Done. On the home computer the refusal applies to every agent except the
+team's lead; on another computer it applies to every agent. A person can still do all
+of them from the task board; the teams actor records the override and
+re-plans. This key changes `crates/replica` and needs a check-in with that
+crate's owner before it is written.
+
+**Limits already in the project apply.** Hand-outs are recorded with the lead
+as their actor, so the project's `agents_other` and `agent_limit` settings
+admit or refuse them as they do for any agent. A refusal becomes a card in
+Waiting for you; it is never bypassed.
+
+## Data model
+
+Only load-bearing fields are listed. Every record has a revision; every
+mutation carries an idempotent request ID.
+
+- **Team**: ID, project, name, goal, home computer, status, lead member,
+  settings, integration branch, base commit.
+- **Settings**: delegations (see Authority and delegation), caps, timers, phase approval
+  (review or auto), default phase acceptance (lead or person).
+- **Member**: ID, role, agent kind, account, computer, state (not created,
+  active, paused, removed), session identity (computer UUID, session ID,
+  launch ID, last run and conversation), worktree path and ownership nonce,
+  restart history.
+- **Phase**: number, order, title, mode (standard, free), approval, state
+  (draft, approved, awaiting acceptance, done, rejected), acceptance (lead,
+  person), barrier flag.
+- **Plan node**: ID, phase, task UUID (empty while a draft), draft title and
+  text, dependencies (node, hard or soft), assignee or role, write set,
+  estimate in minutes, kind (task, check, stage), severity (none, crit,
+  minor), origin node, hold, decided by (lead, person), integration commit.
+- **Decision**: a binding answer attached to nodes, shown in their hand-outs.
+- **Lead inbox item**: something the lead must decide (report, question,
+  permission request, stopped member, conflict), with its state.
+- **Owner card**: something the person must decide (plan or phase approval,
+  phase acceptance, proposal, escalation, refused limit).
+- **Journal event**: sequence number, time, actor, kind, references, bounded
+  text.
+
+Bounds, taken from the fork unless noted: 6 members besides the lead, 50 tasks
+in a phase (the planning rule aims at 20 to 25), 500 tasks in a team, 3 open
+questions per attempt. The journal is read in pages by sequence number; when a
+team is finished its journal moves to an archive table, and a live team's
+journal has a hard cap with the oldest entries archived first. A team is never
+decoded as a whole: views read the rows they show.
+
+The store is a private file, created when the first team is created, with its
+own `user_version`. It adds no leaf to the desktop store, so it does not bind
+anyone's ability to run an older `hgs`.
+
+## Life cycle
+
+Team status: Draft, Planning, Running, Paused, Finished, Archived, and Stopped.
+
+1. **New team.** The person gives a goal, a project folder, and the lead's
+   agent and account, and may attach a plan file. **Start planning** creates
+   the draft and launches only the lead, through the same creation path as New
+   session (its own worktree by default). No member, worktree or branch for
+   members exists yet.
+2. **Planning.** The lead reads the project, asks what it needs, proposes the
+   members and submits the plan as a draft. Validation answers at once with
+   exact errors: unknown member or role, dependency cycle, missing criteria,
+   overlapping write sets without a dependency, a phase over its cap.
+3. **Create team.** The person reviews members and folders and confirms. Zerus
+   launches every member now, each as a child session of the lead in its own
+   generated worktree, and creates the integration branch. Launching all
+   members here keeps startup trust prompts to one sitting while the person is
+   present.
+4. **Approve.** The person approves the first phase. Its tasks are created and
+   the team is Running.
+5. **Running and Paused.** The lead or the person pauses and resumes the team
+   or one member. A pause stops hand-outs; it sends nothing to a session.
+6. **Finish.** A team finishes only by an explicit `finish`, when every task
+   is decided and no Crit is open. The integration branch holds the result.
+   Landing it on the base branch or pushing it is the person's own step.
+7. **Stop** cancels every unfinished task. **Archive** follows Finish or Stop.
+   Both are the person's.
+
+A further phase is a draft from the lead. It is approved by the person, or
+automatically when the person turned on **Auto-accept drafts** for the team.
+
+## Scheduling and hand-out
+
+The kernel says a task is ready when all of these hold:
+
+1. its phase is approved, no earlier phase awaits the person's acceptance, and
+   a barrier phase has no unfinished earlier phase;
+2. the task is in To do and has no hold;
+3. every hard dependency is Done and merged into the integration branch; every
+   soft dependency has started; a cancelled dependency releases;
+4. no open task has an overlapping write set;
+5. a member is free for it.
+
+A member is free when its session is live and idle (not working, not
+`Background`, no pending request), it has no open attempt, the task index
+shows no other task in progress for that session, and it is not paused. The
+plan's assignee comes first. For a role task the first free member with that
+role takes it; an assignee that cannot take a task that is not pinned gives it
+to a free member of the same role.
+
+Order: tasks with the most transitive dependants first, then plan order.
+
+The hand-out, performed by the teams actor:
+
+1. record the intent (node, member, request ID) in the journal;
+2. call the attempt writer once with that request ID, as the lead;
+3. settle from the writer's own outcome: submitted, refused, cutting over or
+   uncertain.
+
+A refusal returns the task to Pending and the member is tried again later. An
+uncertain outcome is never retried: it becomes a lead inbox item, and the lead
+may settle it by reassigning, which opens a new attempt generation.
+
+The task prompt carries, after the task's own text: team, role and goal;
+criteria; the reports of its dependencies, bounded (2000 characters each, 6000
+in total); binding decisions; the base commit and the branch to create; the
+write set; and the exact acknowledgement and report commands of the task
+protocol.
+
+Until `zerus-cg5h.4.8` delivers per-executor queues, the actor guarantees one
+open task per member itself. When the queue exists, step 2 enqueues instead.
+This is the only seam between the two, and the actor adds no second way to
+deliver a task into a session.
+
+## Reports and decisions
+
+1. The member reports with the `report-attempt` command pinned in its prompt.
+   The task moves to In review by the existing rules.
+2. The actor sees the change, reads the member's branch head without writing
+   (the reported commit), notes uncommitted changes if any, and files a lead
+   inbox item.
+3. The actor rings the lead: one guarded send saying how many items wait.
+   Doorbells are coalesced (at most one every 120 s). The inbox is the durable
+   state; a doorbell only points at it, so an uncertain doorbell is not sent
+   again and the next change rings a new one.
+4. The lead reads the inbox and decides: **accept**, **return** with a reason,
+   **reassign**, **hold** or **cancel**.
+5. Accept runs integration (see Folders, branches and integration). When the merge is clean the task is
+   Done. When it conflicts, the task returns to its member with the conflict
+   list and the new base.
+6. Return reopens the task to the same member with the reason.
+
+A member whose turn ended without a report is noticed after 120 s and becomes
+an inbox item ("ended without a report"). A hand-out that has not started
+after 180 s is another. An undecided report reminds the lead after 15 minutes
+and reaches the person after 60. A lead whose inbox has waited 20 minutes
+while it does nothing produces an owner card.
+
+Pipelines (third milestone): a role may have stages. A stage is a task of kind
+`stage` for a reviewer or QA member, created when the implementer reports. A
+stage verdict is pass or return; return sends the findings to the implementer
+without the lead. After the last stage, or after three rounds, the report
+reaches the lead.
+
+## Authority and delegation
+
+| Actor | How it is known | May do |
+|---|---|---|
+| Person | The desktop UI authority (`src/desktop/ui_authority`); for the CLI, the verified Person authority of `zerus-cg5h.4.11` when it exists | Everything; alone: create, approve, change settings and delegations, accept a hard-gate phase, stop, archive, land or push, answer startup trust and persistent permission changes, remove a member or a worktree |
+| Lead | The team's lead session, verified the way `hgs task` verifies an agent (live run and process ancestry) | Plan inside the approved goal, hand-out decisions, accept, return, reassign, hold, cancel, answer members, restart a stopped member, pause and resume, propose cards, request finish |
+| Member | A member session of the team, verified the same way | Acknowledge and report its own attempt, ask the lead, read its own context |
+| Any other session | none | Read |
+
+Until `zerus-cg5h.4.11` lands, a person-only operation from the CLI is
+accepted only when the call has no session markers and no live session agent
+among its process ancestors, and its journal entry records that origin. This
+is an interim rule and is named as such in the output.
+
+**Delegations (D5).** All four are on for a new team; the person can turn each
+off for a team at any time.
+
+- **Accept results.** The lead moves a team task to Done. In a hard-gate phase
+  the phase then waits for the person.
+- **Answer members.** A member's question to the lead is ordinary team work.
+  For a member's native permission request the lead may give a one-time allow
+  or a deny. The actor checks the exact run, conversation, question and hash,
+  reserves the entry in the approval journal before delivery, delivers through
+  the deferred-answer actor, and finishes the entry from that actor's receipt.
+  An unknown delivery is never repeated. The journal entry names the lead as
+  the decider. Options that persist a permission are not offered to the lead.
+  Providers the approval journal does not admit today stay with the person.
+- **Restart members.** When a member's agent has exited or its session is
+  stopped, the lead may ask Zerus to resume that exact conversation and send a
+  short brief of where the task stands. The original task prompt is never
+  replayed. A member the person stopped is not restarted by the lead.
+- **Merge accepted work.** Accept triggers integration.
+
+With accounts in bypass mode, which is the default for Claude, Codex and Kimi,
+members rarely ask for permission at all; the delegation matters for accounts
+in provider or default mode.
+
+Not delegated: startup folder trust, sign-in, persistent permission changes,
+anything destructive, and landing outside the integration branch.
+
+Attention follows the existing supervised-child contract: a member is a
+supervised child of the lead, so its ordinary questions are quiet and show as
+**Asking** on the lead's Team toggle. A member's permission request is
+person-only today. Under the "answer members" delegation it becomes the
+lead's, which needs one new host-reported flag and the matching change in the
+desktop, Android, iOS and the shared fixture. This ships in the third
+milestone as one aligned change.
+
+## Folders, branches and integration
+
+- Every member works in its own generated worktree, created by the existing
+  path with its ownership record. Worktree maintenance needs no new rule: a
+  live or paused member session protects its folder, and after the team is
+  archived the ordinary rules apply.
+- At Create team Zerus creates the integration branch from the base commit. It
+  is a branch only. It is never checked out, so advancing it cannot disturb a
+  working tree.
+- Each task gets a branch. The hand-out names the base commit (the integration
+  tip) and the branch; the member's agent creates it. Zerus writes nothing in
+  a member's folder.
+- On accept, integration: verify the reported commit descends from the stated
+  base; compute the merge with `git merge-tree --write-tree`; when it is
+  clean, create the merge commit and advance the integration ref with a
+  compare-and-swap on its old value. If the ref moved, compute again. If the
+  merge conflicts, nothing is written and the task returns to its member.
+- Integration never runs `reset`, never writes the primary checkout or any
+  other branch, and never pushes.
+- Because these merges are made with plumbing, commit hooks do not run on
+  them; the member's own commits ran the hooks in its worktree. A repository
+  that requires signed commits gets signed merges, and a signing step that
+  needs the person stops integration with an owner card.
+- Git older than 2.38 lacks the merge command used here. Teams then run with
+  integration off, and say so.
+
+**Shared folder.** The fork also lets all members work in one folder, for
+projects where a second checkout is too expensive or the folder is not a Git
+repository. That mode needs a build broker and test isolation. It is not in
+the first four milestones. The write set is in the plan from the start, so the
+mode can be added without changing the plan model.
+
+## Runtime
+
+- The teams actor is part of the desktop service on the team's home computer.
+  It follows the service's actor pattern: admission, a fixed plan, the
+  original CLI child and its custody, and "restart never continues an
+  operation". After a restart it reads the journal: an intent with a recorded
+  outcome is settled; an intent without one is unknown and becomes an inbox
+  item.
+- It is driven by events: the store's revision and the local watch stream
+  (catalog rows for member sessions, the tasks topic for team projects). The
+  tasks topic allows eight projects per stream; beyond that the actor reads
+  the affected team's tasks in one bounded page when a catalog row changes. A
+  slow safety check runs once a minute. Nothing polls every few seconds.
+- With the desktop service not running, `hgs team` still records the lead's
+  operations and answers reads; nothing is handed out, and status says so.
+- **Preview switch.** Teams are off by default behind one per-computer
+  setting. With it off, `hgs team` answers `teams_inactive`, the desktop shows
+  no entry point, no store file exists and no code path of an ordinary session
+  changes.
+- First milestones are single-computer: the team, its lead and its members are
+  on the home computer, and the Team tab is shown by that computer's desktop.
+  Viewing from another computer and remote members come in the fourth
+  milestone through a `teams` watch topic and the existing peer command path.
+- Phones are unchanged. Team tasks appear as ordinary tasks.
+
+## CLI and agent guidance
+
+`hgs team` uses subcommands, prose on stdin and `--json` for structured
+output, like `hgs task`. Plans go in as JSON on stdin and are answered with
+validation results.
+
+| Who | Commands |
+|---|---|
+| Person (the desktop uses the same operations) | `create`, `start-planning`, `members`, `approve`, `reject`, `accept-phase`, `send-back-phase`, `settings`, `pause`, `resume`, `stop`, `finish`, `archive`, `decide` (a card) |
+| Lead | `propose-members`, `plan draft`, `plan edit`, `status`, `status --digest`, `inbox`, `accept`, `return`, `reassign`, `hold`, `release`, `cancel`, `spawn` (a finding), `reply`, `answer`, `restart`, `pause`, `resume`, `propose`, `finish` |
+| Member | `current`, `ask` |
+
+Members report with `hgs task`. The start-of-session text about Zerus tasks
+stays true for them, so the two guides never contradict each other.
+
+Guide pages: `hgs guide team` for a member and `hgs guide team-lead` for the
+lead, each short enough to read in one call. The lead's planning rules are the
+fork's, carried over: 20 to 25 tasks in a phase; hard dependencies only where
+needed and none across phases (use a barrier); shared foundations first; a
+reviewer never writes what it reviews; QA never implements; task text is
+self-contained; the lead never builds, tests or merges a member's work by
+hand.
+
+## Desktop
+
+**Data.** Team views arrive the way task views do: a keyed list in the
+per-frame batch (`list`, `waiting`, `team:<id>`, `graph:<id>`, `new:<id>`),
+latest value per key. The desktop follows one team at a time and stops
+following it when the tab is hidden. Actions return done, failed, uncertain or
+confirm, and an uncertain action is never repeated automatically.
+
+**Screens.**
+
+- **New team**: a lazy dialog opened from the rail and the command table.
+- **Team tab** on the lead's session detail: team bar, member cards, and the
+  plan as Board and Graph, with the task card and the phase header. Layers,
+  Lanes and Profile follow in the fourth milestone.
+- **Waiting for you**: a rail entry with a count, listing owner cards and the
+  person-only requests of team sessions.
+- **Sessions list**: members nest under their lead through the existing
+  parent and child grouping, with its Asking and Needs you counters. No new
+  grouping is added.
+
+**Reuse of the fork's views.** The plan views do not depend on the fork's
+store, so they move with little change. The table covers the first two
+milestones; line counts are estimates from reading, not from a build.
+
+| Treatment | Files | About |
+|---|---|---|
+| Imported unchanged | `planLayout.ts`, `plan.ts`, `planTasks.ts`, `phaseHeader.ts`, `team-model.ts`, `members.ts`, `roles.ts`, `sideLists.ts`, `NewTeamFooter.tsx`, `NewTeamGuide.tsx`, `newTeamFollow.ts`, `teamConfirm.ts`, `TeamConfirmDialog.tsx`, `teamLayout.ts`, `newteam.css`, with their tests | 2,900 lines |
+| Imported, then adapted | `PlanView.tsx`, `plan-panels.tsx`, `planModes.ts`, `TeamActions.tsx`, `actions.ts`, `decisions.ts`, `Waiting.tsx`, `ProposalCards.tsx`, `team-bar.tsx`, `MemberCard.tsx`, `NewTeam.tsx`, the Teams stores, `plan.css`, `teams.css`, the Teams types | 4,500 lines kept |
+| Written new | Team tab shell, New team page, client core projections and actions, Tauri commands | 2,000 lines |
+| Not taken in these milestones | Lanes, heat, Profile, feed, swap, designer, catalog, the 3 s poller and its readers | — |
+
+The Graph draws cards as positioned elements and edges as inline SVG, with the
+fork's own layout and no new dependency.
+
+**Conventions.** Strings go through the i18n catalogs with Russian in the
+supplement file (about 950 strings for the first two milestones). Teams views
+load lazily and the entry bundle stays under its 500,000 byte limit. The fork's
+`.team-badge` class collides with an existing one and is renamed on import.
+Eleven skin tokens the plan views need are added to the skins. The scroll map
+that never shrinks and the per-team local storage key are replaced by bounded
+settings.
+
+## Project rules
+
+| Rule | Effect of this design |
+|---|---|
+| Git is never initialized automatically | Unchanged. A team needs an existing repository for worktrees and integration |
+| Worktrees appear only after an explicit start | Kept. The lead's at Start planning, the members' at Create team |
+| Destructive actions need confirmation | Kept. Stop, archive and member removal are the person's, confirmed in the desktop core |
+| Automatic tool approvals are a separate opt-in, off by default | Unchanged. The lead's answers are a different, team-scoped delegation (D5) with the same journal, identity and no-replay rules |
+| Startup trust and persistent permission changes stay manual | Kept |
+| "Only the person accepts Done" (agent guide) | Changed for team tasks by D5: the team's lead may accept. The guide and the reference are updated |
+| An unknown delivery is never replayed | Kept for hand-outs, doorbells, answers and resumes |
+| `Background` status contract | Unchanged. A member in `Background` is busy |
+| Native agents are never restarted or killed as part of an update | Unchanged. A member is resumed only when the lead asks and only after its agent exited |
+| Bounded pages, indexed queries, background I/O | Kept: rows and pages, no whole-team reads, bounded batches |
+| Session names are labels | Kept: identity only |
+| The UI never separates values with dots | Kept; the imported views already pass the check |
+
+## Authorship and credit
+
+- The reference is pinned: `WhiteWh/zerus` at `ca4cc4481`.
+- A file taken unchanged is committed with WhiteWh as its Git author, the
+  importing session as committer, and a message naming the source commit and
+  paths. Where the fork's history of that file includes another author, that
+  author is added as co-author.
+- A file that is imported and then adapted is two commits: the import as
+  above, then the adaptation.
+- New code that follows the fork's design for an area carries a
+  `Co-authored-by` trailer for WhiteWh.
+- From the Rust side the candidates for import are the plan graph kernel
+  (cycles, layers, dependants, hand-out order), the critical-path function,
+  the estimate medians and the write-set overlap helpers, with their tests.
+  The dispatcher, the operations, the commands and the store are not imported:
+  they cannot be separated from the fork's own modules.
+- The specification, the user guide and the reference name the origin.
+- When the first milestone is merged, PR #322 gets the `partially-adopted`
+  label and a comment saying exactly what was adopted, as `CONTRIBUTING.md`
+  asks. That step is the owner's to approve.
+
+## Delivery
+
+**Branch.** Work is collected on `integrate/teams`. Each work package has its
+own branch and worktree from it. A milestone goes to `main` as one pull
+request when it works end to end and passes the local gate, with the preview
+switch off by default.
+
+**Milestones.**
+
+| # | Name | Contains | Done when |
+|---|---|---|---|
+| M1 | Plan | Plan kernel, team store, planning operations, `hgs team` for planning, tasks created at approval, client core, New team, Team tab with Board and Graph, Waiting for you with approvals | With the switch on, a lead plans, the person approves and the tasks are on the project board; with it off, nothing differs from today |
+| M2 | Run | Member launch, teams actor, hand-out, reports, lead decisions, integration branch, restart, pause, finish, escalations | The four outcome conditions at the top hold |
+| M3 | Autonomy | Answers to members' permission requests with the attention change on all clients, hard and soft gates, Auto-accept drafts, Free phases, findings, pipelines, stalled lead, digest | A team runs a multi-phase plan overnight and every decision is in the journal |
+| M4 | Insight and reach | Layers, Lanes, Profile, estimates; `teams` watch topic, viewing from other computers, remote members; phone attention; `hgs test affected` as a standalone command | A team with a member on a second computer is watched from a third |
+| M5 | Later | Shared folder with build broker, designer and catalog, sub-teams, budgets, memory extensions | Decided separately |
+
+This specification is detailed enough to plan M1 and M2. Each milestone gets
+its own implementation plan, and M3 and M4 get a short design addendum first.
+
+**Work packages of M1.** Contracts come first so the others can run in
+parallel.
+
+| # | Package | Owns | After |
+|---|---|---|---|
+| 1 | Contracts: plan types, wire shapes, shared fixtures, error codes, preview switch | `crates/team-plan` types, `fixtures/teams` | — |
+| 2 | Plan kernel: import and adapt the graph kernel; validation, readiness, overlap | `crates/team-plan` logic | 1 |
+| 3 | Team store and planning operations | `src/teams/store`, `src/teams/ops` | 1 |
+| 4 | CLI, actor resolution, planning guide pages | `src/teams/cli`, `src/agent_guide` | 3 |
+| 5 | Tasks at approval, the `team` key, refusals in `hgs task` | `crates/replica` (small), `src/tasks` (small) | 3, replica check-in |
+| 6 | Client core: projections, actions, batch key, commands | `client/core/src/teams`, `client/src-tauri` | 1 |
+| 7 | Frontend: import the plan views; Team tab, Board, Graph, task card, phase header | `client/src/ui/teams` | 1, 6 |
+| 8 | Frontend: New team, Waiting for you | `client/src/ui/teams`, rail and app shell | 6 |
+| 9 | Guide, reference, credit, the Tauri specification row | `docs` | 4 |
+
+**Work packages of M2** in outline: member launch and identity; the teams
+actor with fake effect ports; hand-out through the attempt writer; lead inbox
+and decisions; integration; restart, pause, stop and finish; member cards and
+actions in the desktop; isolated real-agent coverage.
+
+**How subagents work.** The coordinating session owns this specification, the
+contracts, `integrate/teams`, reviews and merges. For each package: one
+implementer in its own worktree, tests first; then an independent reviewer
+that is given the diff and the relevant section, not the implementer's
+summary; then fixes; then the coordinator merges. Subagents commit locally and
+never push. They do not use the Mac or the Windows computer unless granted for
+that task, keep build output inside their worktree, and at most three heavy
+builds run at once on the shared computer. Every report includes the raw test
+log.
+
+**Checks.** Unit tests for the kernel and operations; fake-port tests for the
+actor, including a restart at every step of a hand-out; fixtures shared by
+client core and frontend; the local gate that mirrors CI before a milestone
+pull request; and, for the behaviours that touch a native agent (hand-out,
+delegated answer, resume), isolated real-agent contract tests on the latest
+release of each supported agent.
+
+**Coordination.** The per-executor queue, task controls and Person authority
+(`zerus-cg5h.4.7`, `.4.8`, `.4.9`, `.4.11`) belong to another stream. Before
+M2 starts, the seam described under Scheduling and hand-out is agreed with that stream's coordinator.
+Teams do not change those modules.
+
+## Risks
+
+| Risk | Handling |
+|---|---|
+| The task queue stream changes the attempt writer while M2 builds on it | One seam, agreed first; M1 does not depend on it |
+| An agent's sandbox blocks `hgs team` writes | Operations write the way `hgs task` does; verified with each supported agent in M1 |
+| The `team` key in the task field map | Check-in with the replica owner; M1 works on the home computer without it if it is refused |
+| The attention change for delegated answers spans four clients | One aligned change in M3 with the shared fixture first |
+| Entry bundle size | Lazy views; the size check runs on every client package |
+| Plumbing merges skip hooks | Stated in the guide; signing honoured; integration can be turned off per team |
+| The fork keeps moving | The reference is pinned; later changes are reviewed as contributions against this code |
+
+## Open questions for the owner
+
+1. **Startup trust.** It stays with the person, and members are launched at
+   Create team so the prompts come in one sitting. Should the lead instead be
+   allowed to confirm trust for worktrees Zerus created from the team's own
+   repository?
+2. **Preview switch.** A per-computer setting, off by default, lets a
+   milestone be tried on an ordinary main build. The alternative is a
+   compile-time gate like task controls, which needs a separate build to try.
+   This design uses the setting.
+3. **Single computer first.** M1 to M3 show a team only on its home computer.
+   Is that acceptable until M4?
+
+## Documents to update as milestones land
+
+- `CLAUDE.md` and `AGENTS.md`: the team exception to person-only acceptance,
+  and the lead's delegations next to the automatic-approval rule.
+- `src/agent_guide/tasks.md`: the acceptance line.
+- `docs/reference.md`: a Teams section; the supervised-child attention text in
+  M3.
+- `docs/superpowers/specs/2026-10-27-tauri-web-ui-design.md`: the
+  "Orchestration" row, pointing here.
+- A user guide for teams, based on the fork's guide, in English and Russian.
