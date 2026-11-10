@@ -54,6 +54,7 @@ Recorded 2026-11-11.
 | D11 | The queue team comes first and planning from a goal second |
 | D12 | Until Teams are finished they sit behind a setting on each computer, off by default |
 | D13 | A team is shown only on its home computer until viewing from other computers is built |
+| D14 | A role names its agent and either one account or "the freest account of that agent", in the designer and in the New team form |
 
 The same row of that specification also excludes iron rules and cache hold.
 They were not discussed and stay excluded.
@@ -118,7 +119,7 @@ These points are taken as the fork designed them.
 |---|---|
 | Team | A lead, its members, their work (a plan, a queue or both) and the settings that say what the lead may decide |
 | Template | A reusable description of a team: roles, roster, pipelines and settings |
-| Role | What a member is for, with its instructions, agent kind and default pipeline |
+| Role | What a member is for, with its instructions, agent kind, account choice and default pipeline |
 | Pipeline | The stages a task passes between a member's report and its acceptance |
 | Stage | A review or a test done by a member of a named role, as a task of its own |
 | Queue | The team's open phase, which takes tasks sent one by one |
@@ -244,8 +245,9 @@ mutation carries an idempotent request ID.
 - **Team**: ID, project, name, goal, home computer, status, lead member,
   settings, integration branch, base commit, and its copy of the template it
   was created from (roles, roster, pipelines).
-- **Role**: name, instructions, agent kind, account label, model and effort,
-  default pipeline, context between tasks (keep or fresh).
+- **Role**: name, instructions, agent kind, account choice (named or
+  freest), model and effort, default pipeline, context between tasks (keep or
+  fresh).
 - **Pipeline**: name, stages (kind, role), maximum rounds, acceptance (lead,
   person, automatic), and whether it ends in a land stage.
 - **Settings**: delegations (see Authority and delegation), caps, timers, phase approval
@@ -291,14 +293,15 @@ of the New team form.
 
 A template holds:
 
-- **Roles.** For each: name, the role's instructions, agent kind, an optional
-  account label, model and effort where the agent accepts them, the pipeline
-  its tasks use by default, and whether a member keeps its conversation
-  between tasks or starts each task fresh.
+- **Roles.** For each: name, the role's instructions, agent kind, the account
+  choice (one named account, or the freest account of that agent), model and
+  effort where the agent accepts them, the pipeline its tasks use by default,
+  and whether a member keeps its conversation between tasks or starts each
+  task fresh.
 - **Roster.** Seats: a role, how many members, and whether the seat is
   optional.
-- **Lead.** Agent kind, an optional account label, and rules added to the
-  lead's guide.
+- **Lead.** Agent kind, the same account choice, and rules added to the lead's
+  guide.
 - **Pipelines.** Named lists of stages with the way a result is accepted (see
   Pipelines), and which one is the default.
 - **Work.** Whether the team has a queue, how tasks enter it (directly or
@@ -307,9 +310,27 @@ A template holds:
   whether landing is allowed.
 
 A template never holds a project, a folder, a goal, a session or anything
-secret. Accounts belong to a computer, so a template names an agent kind and
-at most an account label. The New team form resolves them to accounts on the
-home computer and asks for the ones it cannot resolve.
+secret. Accounts belong to a computer, so a named account is resolved on the
+home computer by the New team form, which asks for the ones it cannot find.
+
+**Choosing an account.** "The freest account" is decided when a member is
+launched, from the usage windows that `hgs account inspect` already reports
+for each account (used percent and reset time per window).
+
+- Only signed-in accounts of the role's agent on the member's computer count.
+- An account with any window fully used is out until that window resets.
+- Among the rest, the one whose tightest window has the most left wins.
+- When several members are placed at once, an account already given to a
+  member of this team loses a tie, so the load spreads.
+- An account that reports no windows (an API key with a balance, for
+  example) is used when no account with known room exists.
+- If nothing is available, the member is not launched and the card says when
+  the nearest window resets.
+
+The New team form shows which account each seat got before the person
+confirms, and the person can change it. The choice is recorded in the
+journal. It is made at launch only: a running conversation is never moved to
+another account.
 
 **The catalog.** Roles, pipelines and templates live in a catalog, as in the
 fork: a template's seats name roles from it. The built-in catalog ships with
