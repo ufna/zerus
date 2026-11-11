@@ -176,6 +176,7 @@ pub(crate) mod sql {
     pub const SETTLE: &str = "UPDATE key_clear_teams SET pending=0 WHERE team=?1 AND pending=1 AND NOT EXISTS(SELECT 1 FROM node_identity i WHERE i.team=?1 AND NOT EXISTS(SELECT 1 FROM task_observations o WHERE o.team=i.team AND o.node=i.id AND o.released) AND NOT EXISTS(SELECT 1 FROM key_clears k WHERE k.team=i.team AND k.node=i.id) LIMIT 1)";
     pub const LATE: &str =
         "SELECT card FROM late_sessions WHERE team=?1 AND member=?2 AND launch=?3";
+    pub const REFUSALS: &str = "SELECT node,reason FROM key_clears WHERE team=?1 AND state='refused' AND node>?2 ORDER BY node LIMIT ?3";
     pub const WAITING: &str =
         "SELECT EXISTS(SELECT 1 FROM inbox WHERE team=?1 AND state='open' AND seq>?2)";
 }
@@ -275,6 +276,16 @@ impl Store {
     /// Leave the pending set once no node of the team lacks a final record.
     pub fn settle_keyed(&self, team: &str) -> Result<bool> {
         self.read(|db| settle(db, team))
+    }
+    /// The task keys the team-clear child refused, with their reasons, for
+    /// the team's status: final for the service, kept for the person.
+    pub fn key_refusals(&self, team: &str, after: u32, page: u32) -> Result<Vec<(u32, String)>> {
+        let page = limit(page)?;
+        self.read(|db| {
+            rows(db, sql::REFUSALS, params![team, after, page], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+        })
     }
     /// The card a late launch's provenance opened, if it was recorded.
     pub fn late_session(&self, team: &str, member: &str, launch: &str) -> Result<Option<u64>> {

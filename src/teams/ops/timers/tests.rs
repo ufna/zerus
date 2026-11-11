@@ -276,3 +276,19 @@ fn only_the_service_fires_a_timer() {
         refused(at(&mut h, &actor, op, T0 + 30 * MINUTE), code::NOT_ALLOWED);
     }
 }
+
+#[test]
+fn a_task_in_review_before_its_report_is_recorded_did_not_end_without_one() {
+    let mut h = Harness::new();
+    h.bind("lead");
+    h.bind("m1");
+    let node = h.add(&person(), 1);
+    h.submit(node, "m1");
+    h.observe(node, TaskStage::InReview);
+    let op = timer(TimerKind::NoReport, node, 1, 0, T0);
+    refused(
+        at(&mut h, &service(), op, T0 + 10 * MINUTE),
+        code::INVALID_STATE,
+    );
+    assert!(items(&h, "no_report").is_empty());
+}

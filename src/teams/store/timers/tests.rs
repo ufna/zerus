@@ -105,6 +105,7 @@ fn every_timer_read_searches_an_index() {
         ("KEYED_PAGE", sql::KEYED_PAGE),
         ("SETTLE", sql::SETTLE),
         ("LATE", sql::LATE),
+        ("REFUSALS", sql::REFUSALS),
         ("WAITING", sql::WAITING),
     ] {
         let plan = explain(db(&h), sql);

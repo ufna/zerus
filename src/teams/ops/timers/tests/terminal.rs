@@ -102,6 +102,11 @@ fn cleared_and_refused_are_final_and_the_team_leaves_the_pending_set() {
         ),
     )
     .unwrap();
+    let refusals = h.store.key_refusals(TEAM, 0, 200).unwrap();
+    assert_eq!(
+        refusals,
+        vec![(nodes[1], "The task moved to another team".to_owned())]
+    );
     h.run(&service(), clear(nodes[2], KeyClearState::Cleared, ""))
         .unwrap();
     assert_eq!(h.store.keyed_teams("", 10).unwrap().len(), 1);

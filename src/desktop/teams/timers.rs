@@ -103,8 +103,10 @@ impl Timers {
         now: i64,
     ) -> Result<()> {
         store.refresh()?;
-        clear::step(store, effects, &mut self.keys, now)?;
-        late::step(store, ledger, effects, &mut self.late, now)
+        // Each page is independent: a fault in one never starves the other.
+        let keys = clear::step(store, effects, &mut self.keys, now);
+        let late = late::step(store, ledger, effects, &mut self.late, now);
+        keys.and(late)
     }
 }
 /// The roster within the caps' bound, read in pages.
