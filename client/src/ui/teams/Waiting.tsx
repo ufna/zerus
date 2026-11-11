@@ -17,6 +17,7 @@ export function WaitingCard(props: {
   busy: boolean;
   onDecide: (item: WaitingItem, decision: string) => void;
   onOpenTeam: (item: WaitingItem) => void;
+  onOpenTask?: (item: WaitingItem) => void;
 }) {
   return (
     <article class="waiting-card" data-waiting={props.item.id} data-kind={props.item.kind}>
@@ -37,6 +38,10 @@ export function WaitingCard(props: {
               onClick={() => props.onDecide(props.item, choice.decision)}>{choice.text}</button>
           )}
         </For>
+        <Show when={props.item.node !== null}>
+          <button type="button" class="btn small" disabled={props.busy} data-open-task
+            onClick={() => props.onOpenTask?.(props.item)}>{tr("Open task")}</button>
+        </Show>
       </div>
     </article>
   );
@@ -50,14 +55,17 @@ export function WaitingList(props: {
   busy: boolean;
   onDecide: (item: WaitingItem, decision: string) => void;
   onOpenTeam: (item: WaitingItem) => void;
+  onOpenTask?: (item: WaitingItem) => void;
   onPage: (cursor: string) => void;
 }) {
   return (
     <section class="waiting-list" aria-label={tr("Waiting for you")} data-waiting-list>
-      <Show when={props.view.items.length} fallback={<div class="team-empty dim">{tr("Nothing waits for you.")}</div>}>
+      <Show when={props.view.items.length} fallback={
+        <div class="empty team-empty"><Icon name="list-todo" size={24} /><h3>{tr("Nothing waits for you.")}</h3><p>{tr("Decisions that only you can make appear here.")}</p></div>
+      }>
         <For each={props.view.items}>
           {(item) => <WaitingCard item={item} teamName={props.teamNames.get(item.team) ?? ""} now={props.now} busy={props.busy}
-            onDecide={props.onDecide} onOpenTeam={props.onOpenTeam} />}
+            onDecide={props.onDecide} onOpenTeam={props.onOpenTeam} onOpenTask={props.onOpenTask} />}
         </For>
       </Show>
       <Show when={props.view.next}>

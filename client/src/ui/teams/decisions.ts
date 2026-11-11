@@ -23,7 +23,7 @@ export function waitingKindLabel(item: Pick<WaitingItem, "kind">): string {
     case "permission_escalated": return tr("Permission");
     case "task_waits_owner": return tr("Held task");
     case "team_paused": return tr("Team paused");
-    case "phase_acceptance": return tr("Phase acceptance");
+    case "pipeline_acceptance": return tr("Phase acceptance");
     case "lead_stalled": return tr("Lead stalled");
     default: return item.kind;
   }
@@ -44,17 +44,18 @@ export function waitingKindIcon(kind: string): string {
   }
 }
 
-/** The decisions the card offers; `integration` names both answers, the rest
- * acknowledge the card. Package 10 owns the kinds beyond these; its decision
- * words are added in this one table. */
+/** The decisions the card offers. A verdict kind (`integration`,
+ * `pipeline_acceptance`) takes exactly approve or reject; every other kind is
+ * closed by any non-empty word, so it is an acknowledgement and not a verdict.
+ * Package 10 owns the kinds beyond these; its words are added in this table. */
 export function waitingDecisions(item: Pick<WaitingItem, "kind">): WaitingDecision[] {
-  if (item.kind === "integration") {
+  if (item.kind === "integration" || item.kind === "pipeline_acceptance") {
     return [
       { decision: "approve", text: tr("Approve") },
       { decision: "reject", text: tr("Reject"), danger: true },
     ];
   }
-  return [{ decision: "done", text: tr("Done") }];
+  return [{ decision: "acknowledged", text: tr("Acknowledge") }];
 }
 
 /** The card's age in words, from its creation time. */

@@ -12,6 +12,7 @@ import { stageLine } from "./task-line";
 import { TextInput } from "../lib/TextField";
 import { Icon } from "../lib/icons";
 import type { MemberView, TaskView } from "./types";
+import { openTeamNode, setOpenTeamNode } from "./openNode";
 import "../styles/teams.css";
 
 // The Team tab (the fork's TeamWorkspace, adapted to M1): the team bar, the
@@ -37,6 +38,11 @@ export function TeamWorkspace(props: {
   onAddTask: () => void;
 }) {
   const [selectedNode, setSelectedNode] = createSignal<number | null>(null);
+  // Waiting for you's Open task: the node it names is selected once.
+  createEffect(() => {
+    const wanted = openTeamNode();
+    if (wanted && wanted.team === props.view.bar.id) { setSelectedNode(wanted.node); setOpenTeamNode(null); }
+  });
   const [asking, setAsking] = createSignal<TaskButton | null>(null);
   const [reason, setReason] = createSignal("");
   const groups = createMemo(() => {

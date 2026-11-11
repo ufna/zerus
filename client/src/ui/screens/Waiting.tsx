@@ -8,6 +8,7 @@ import { teams, type WaitingItem } from "../../store/teams";
 import { WaitingList } from "../teams/Waiting";
 import { TeamConfirmDialog } from "../teams/TeamConfirmDialog";
 import { TeamUncertain } from "../teams/TeamTab";
+import { setOpenTeamNode } from "../teams/openNode";
 import { sessionIdentity } from "./tasks-ui";
 import { teamRequests, type RequestRow, type TeamRequest } from "./waiting-requests";
 import "../styles/teams.css";
@@ -67,6 +68,16 @@ export function WaitingScreen() {
       else if (outcome.outcome === "pending") setNotice(tr("The decision waits for the team."));
     } finally { setBusy(false); }
   };
+  /** Open task: the team's Team tab on its lead session, with the node selected
+   * so the decision on its reported work is made on the board, not here. */
+  const openTask = (item: WaitingItem) => {
+    if (item.node === null) return;
+    const summary = teams.list()?.teams.find((candidate) => candidate.id === item.team);
+    const row = summary ? orderedRows().find((candidate) => identity(candidate) === identity(summary.lead_session)) : undefined;
+    if (!row) { setNotice(tr("The team's lead session is not on the session list.")); return; }
+    setOpenTeamNode({ team: item.team, node: item.node });
+    setPage("sessions"); setSelectedKey(row.key); setDetailTab("team");
+  };
   const openRequest = (request: TeamRequest) => {
     setPage("sessions"); setSelectedKey(request.key); setDetailTab("activity");
   };
@@ -76,18 +87,18 @@ export function WaitingScreen() {
         <h1>{tr("Waiting for you")}</h1>
         <span class="dim">{tr("Cards only you can answer, oldest first.")}</span>
       </header>
-      <Show when={notice()}><div class="team-notice" role="alert">{notice()}</div></Show>
+      <Show when={notice()}><div class="notice danger team-notice" role="alert"><Icon name="triangle-alert" size={16} /><span>{notice()}</span></div></Show>
       <Show when={teams.failure()}>
         {(failure) => (
           <Show when={failure().key === "waiting"}>
-            <div class="team-notice" role="alert">{tr("Waiting could not be read: %1", failure().message)}</div>
+            <div class="notice danger team-notice" role="alert"><Icon name="triangle-alert" size={16} /><span>{tr("Waiting could not be read: %1", failure().message)}</span></div>
           </Show>
         )}
       </Show>
       <Show when={view()} fallback={<div class="team-empty dim">{tr("Reading what waits for you…")}</div>}>
         {(shown) => (
           <WaitingList view={shown()} teamNames={names()} now={now()} busy={busy()}
-            onDecide={(item, decision) => void decide(item, decision)} onOpenTeam={openTeam}
+            onDecide={(item, decision) => void decide(item, decision)} onOpenTeam={openTeam} onOpenTask={openTask}
             onPage={(cursor) => void teams.pageWaiting(cursor)} />
         )}
       </Show>

@@ -44,7 +44,7 @@ const waitingFixture: WaitingView = {
   items: [
     { id: `${TEAM_A}:3`, team: TEAM_A, card: 3, kind: "note", node: null, text: "Tell the team the release moved to Monday.", state: "open", by: "local", created_ms: Date.now() - 6 * 60_000 },
     { id: `${TEAM_B}:4`, team: TEAM_B, card: 4, kind: "integration", node: 2, text: "Accept the merge of Task 2 into the integration branch?", state: "open", by: "local", created_ms: Date.now() - 3 * 3_600_000 },
-    { id: `${TEAM_A}:5`, team: TEAM_A, card: 5, kind: "task_waits_owner", node: 1, text: "Task 1 waits for your decision on its reported work.", state: "open", by: "lead", created_ms: Date.now() - 2 * 86_400_000 },
+    { id: `${TEAM_A}:5`, team: TEAM_A, card: 5, kind: "task_waits_owner", node: 1, text: "Task 1 is reported; its work is decided on the team's board.", state: "open", by: "lead", created_ms: Date.now() - 2 * 86_400_000 },
   ],
   next: "fixture-waiting-next",
 };
@@ -129,7 +129,7 @@ function App() {
       </Section>
       <Section title="Waiting for you: nothing waits" note="The empty page and the read failure share the same notice.">
         <WaitingList view={{ items: [], next: null }} teamNames={teamNames} now={Date.now()} busy={false} onDecide={() => {}} onOpenTeam={() => {}} onPage={() => {}} />
-        <div class="team-notice">Waiting could not be read: The computer is offline.</div>
+        <div class="notice danger team-notice" role="alert"><Icon name="triangle-alert" size={16} /><span>Waiting could not be read: The computer is offline.</span></div>
       </Section>
     </Show>
     <Show when={show("send")}>
@@ -151,7 +151,7 @@ function App() {
         </div>
       </Section>
       <Section title="Send to team on a task card: the refusal" note="A queue's own reason is shown as the notice, in its words.">
-        <div class="tk-panel"><div class="team-notice">The queue is full. Task 1 waits for the lead.</div>
+        <div class="tk-panel"><div class="notice danger team-notice" role="alert"><Icon name="triangle-alert" size={16} /><span>The queue is full. Task 1 waits for the lead.</span></div>
           <article class="tk-card st-backlog" data-task="fixture-refused">
             <span class="tk-glyph st-backlog" aria-hidden="true" />
             <div class="tk-card-main"><div class="tk-card-title">Fix the flaky upload test</div><div class="tk-meta"><span class="mono tk-id">a02</span><span class="tk-target ell">Any session</span></div></div>
