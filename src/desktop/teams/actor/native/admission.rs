@@ -36,6 +36,13 @@ impl Native {
                 decision.ok_or_else(|| problem("Finishing permit is missing"))?,
             )?;
         }
+        if let Some(member) = member {
+            if !super::super::availability::free(&self.config, &self.epoch, &team.id, member)? {
+                return Err(problem(
+                    "Member is no longer live and idle in the exact current run",
+                ));
+            }
+        }
         Ok(store)
     }
     fn admit_delivery(

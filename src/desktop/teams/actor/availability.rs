@@ -29,7 +29,7 @@ pub(super) fn free(config: &Config, epoch: &str, team: &str, member: &Member) ->
     } else {
         value["run_id"] == run
     };
-    Ok(identity && idle(&value))
+    Ok(identity && value["run_id"] == run && idle(&value))
 }
 /// Part C prefers the completed resumed-binding receipt here. That fact
 /// chooses a run only; the fleet and task-index checks still prove it free.

@@ -43,7 +43,7 @@ fn git(dir: &Path, empty: &Path, args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap().trim().to_owned()
 }
 pub(super) fn native(h: &Harness) -> native::Native {
-    native::Native {
+    let n = native::Native {
         config: crate::config::Config {
             home: String::new(),
             dir: h.temp.path().join("config"),
@@ -59,7 +59,9 @@ pub(super) fn native(h: &Harness) -> native::Native {
         machine: h.store.team(TEAM).unwrap().unwrap().home,
         epoch: "fixture".into(),
         stop: Arc::new(AtomicBool::new(false)),
-    }
+    };
+    fleet::seed(h, &n);
+    n
 }
 struct Owned {
     wt: PathBuf,
@@ -537,3 +539,5 @@ fn pause_between_handout_intent_and_delivery_records_refusal_without_an_assignee
 }
 
 mod admission_r2;
+
+mod fleet;

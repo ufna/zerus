@@ -161,7 +161,9 @@ fn configure<T>(
         .env("HGS_CONFIG_DIR", &config.dir)
         .env("HGS_STATE_DIR", &config.state);
     let guard = admit().map_err(|_| std::io::Error::from(std::io::ErrorKind::PermissionDenied))?;
-    // Non-store facts are checked last while the store fence is held.
+    // The caller reads its in-process fleet facts inside this admission.
+    // Recheck stop and the Teams switch last while that fence is still held;
+    // child-based occupancy reads belong before admission, outside spawn_turn.
     if stop.load(Ordering::Acquire) || !crate::teams::enabled(&config.state) {
         return Err(std::io::ErrorKind::Interrupted.into());
     }

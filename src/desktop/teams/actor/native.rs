@@ -83,6 +83,9 @@ impl Native {
         let Some(task) = node.task.as_ref() else {
             return Ended::NotStarted;
         };
+        if member.is_some_and(|member| !matches!(self.unoccupied(member), Ok(true))) {
+            return Ended::NotStarted;
+        }
         let args = task_arguments(task, action);
         let input = if let Some(m) = member {
             json!({"schema":1,"id":id,"team":team.id,"node":node.id,"member":m.id})

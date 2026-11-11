@@ -35,6 +35,9 @@ impl ports::Ports for HoldAtDelivery {
     }
     fn deliver(&mut self, t: &Team, n: &Node, m: &Member, id: &str) -> ops::HandoutOutcome {
         self.calls += 1;
+        if self.mode.starts_with("fleet ") {
+            super::fleet::change(&self.native, self.mode);
+        }
         let operation = match self.mode {
             "hold" => Some(Operation::Hold { node: n.id }),
             "new hard dependency" => {
@@ -98,6 +101,12 @@ fn review08_r2_hold_between_handout_intent_and_spawn() {
         "cancel",
         "assignee",
         "role",
+        "fleet busy",
+        "fleet pending",
+        "fleet background",
+        "fleet unknown",
+        "fleet epoch",
+        "fleet run",
     ] {
         let mut h = Harness::empty();
         let mut create = crate::teams::ops::tests::create();
