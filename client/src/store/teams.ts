@@ -95,6 +95,8 @@ export interface TeamsTransport {
   catalog(): Promise<unknown>;
   saveTemplate(template: TeamCatalogTemplate): Promise<void>;
   project(path: string): Promise<unknown>;
+  /** Turns this computer's Teams preview on or off (`hgs team preview`). */
+  preview(on: boolean): Promise<unknown>;
 }
 
 /** The failure an action call itself can raise before any outcome: a refusal to run it. */
@@ -116,6 +118,7 @@ export function tauriTeams(): TeamsTransport {
     async catalog() { live(); return invoke<unknown>("teams_catalog"); },
     async saveTemplate(template) { live(); await invoke("teams_template_save", { template }); },
     async project(path) { live(); return invoke<unknown>("teams_project", { path }); },
+    async preview(on) { live(); return invoke<unknown>("teams_preview", { on }); },
   };
 }
 
@@ -136,6 +139,13 @@ export interface SessionIdentity { machine?: string | null; launchId?: string | 
 /** What the current list says about a session's team; an incomplete list says
  * `unknown`, never `none`. */
 export interface TeamOfSession { state: "lead" | "none" | "unknown"; team?: string }
+
+/** The preview switch's answer: a refusal keeps hgs's own reason, and an
+ * unknown result changes nothing on screen except a notice. */
+export type PreviewOutcome =
+  | { outcome: "done" }
+  | { outcome: "failed"; detail: string }
+  | { outcome: "uncertain"; detail: string };
 
 /** One action whose result the desktop does not know: it leaves only by Check
  * with its own request id or by Dismiss. */
@@ -378,6 +388,25 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
     setCatalog(catalog() ? { ...catalog()!, templates: [...catalog()!.templates.filter((t) => t.id !== template.id), template] } : catalog());
   }
 
+  /** A refusal carries hgs's own `code: message`; anything else is unknown. */
+  const isRefusal = (detail: string) => /^[a-z][a-z0-9_]*(: |$)/.test(detail.trim());
+
+  /**
+   * Turns the preview on or off, then asks discovery again so the entry points
+   * appear or disappear without a restart. A refusal keeps its reason; an
+   * unknown result re-asks nothing, because the screen must not move on a guess.
+   */
+  async function preview(on: boolean): Promise<PreviewOutcome> {
+    try {
+      await transport.preview(on);
+      await recheck();
+      return { outcome: "done" };
+    } catch (error) {
+      const detail = errorText(error);
+      return isRefusal(detail) ? { outcome: "failed", detail } : { outcome: "uncertain", detail };
+    }
+  }
+
   async function project(path: string): Promise<TeamProjectFacts> {
     const reply = (await transport.project(path)) as { git?: boolean; head?: string; branch?: string; state?: string };
     const git = reply.git ?? reply.state === "ok";
@@ -460,7 +489,7 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
   return {
     list, listPages, listNext, team, failure, available, off, followed, visible, catalog, catalogError, newTeamOpen, confirmation, unresolved, uncertain, busy,
     waitingView, waitingCount, apply, probe, recheck, hidden, openTeam, closeTeam, tasksChanged, page, openWaiting, pageWaiting, decide, revisionOf,
-    teamOfSession, sessionTeams, leadTeamFor, unresolvedOf, failureFor, openNewTeam, closeNewTeam, saveTemplate, project, run, runAgain, confirm, cancelConfirmation, check, dismiss, clearFailure,
+    teamOfSession, sessionTeams, leadTeamFor, unresolvedOf, failureFor, preview, openNewTeam, closeNewTeam, saveTemplate, project, run, runAgain, confirm, cancelConfirmation, check, dismiss, clearFailure,
   };
 }
 

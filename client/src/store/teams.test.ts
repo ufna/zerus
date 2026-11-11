@@ -35,7 +35,7 @@ function fake() {
     async dismiss(call: TeamCall) { calls.dismissed.push(call); },
     async catalog() { return { ok: true, catalog }; },
     async saveTemplate() {},
-    async project() { return { state: "ok", head: "0123456789abcdef0123456789abcdef01234567", branch: "main" }; },
+    async project() { return { state: "ok", head: "0123456789abcdef0123456789abcdef01234567", branch: "main" }; }, async preview() { return {}; },
   };
   return { transport, calls, outcomes };
 }

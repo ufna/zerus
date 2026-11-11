@@ -258,6 +258,35 @@ pub async fn teams_project(path: String) -> Result<Value, String> {
     Ok(reply)
 }
 
+/// Turns the person's Teams preview on or off: `hgs team preview on|off` with
+/// a fixed word, no renderer-supplied text. The answer must name the state that
+/// was asked for.
+#[tauri::command]
+pub async fn teams_preview(on: bool) -> Result<Value, String> {
+    let reply = read_team_json(preview_args(on), None).await?;
+    preview_shape(&reply, on)
+}
+
+/// The fixed words of the preview command, never a renderer's.
+fn preview_args(on: bool) -> &'static [&'static str] {
+    if on {
+        &["team", "preview", "on"]
+    } else {
+        &["team", "preview", "off"]
+    }
+}
+
+/// `{ok:true, preview:"on"|"off"}`; the state must be the one asked for.
+fn preview_shape(reply: &Value, on: bool) -> Result<Value, String> {
+    let wanted = if on { "on" } else { "off" };
+    if reply.get("ok").and_then(Value::as_bool) != Some(true)
+        || reply.get("preview").and_then(Value::as_str) != Some(wanted)
+    {
+        return Err(format!("The preview answer did not name {wanted}."));
+    }
+    Ok(reply.clone())
+}
+
 /// The catalog's own shape: a success with the three arrays the form reads.
 fn catalog_shape(reply: &Value) -> Result<Value, String> {
     if reply.get("ok").and_then(Value::as_bool) != Some(true) {
@@ -394,6 +423,21 @@ mod tests {
             b""
         )
         .is_ok());
+    }
+
+    #[test]
+    fn the_preview_command_takes_only_its_own_fixed_words() {
+        assert_eq!(preview_args(true), ["team", "preview", "on"]);
+        assert_eq!(preview_args(false), ["team", "preview", "off"]);
+    }
+
+    #[test]
+    fn the_preview_answer_must_name_the_state_that_was_asked_for() {
+        assert!(preview_shape(&json!({"ok": true, "preview": "on"}), true).is_ok());
+        assert!(preview_shape(&json!({"ok": true, "preview": "off"}), false).is_ok());
+        assert!(preview_shape(&json!({"ok": true, "preview": "off"}), true).is_err());
+        assert!(preview_shape(&json!({"ok": true}), false).is_err());
+        assert!(preview_shape(&json!({}), true).is_err());
     }
 
     #[test]

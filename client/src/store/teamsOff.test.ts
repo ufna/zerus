@@ -17,7 +17,7 @@ function fake() {
     async page(key, cursor) { calls.pages.push([key, cursor]); },
     async act(call) { return { outcome: "done", receipt: {}, request_id: call.request_id }; },
     async actAgain(call) { return { outcome: "done", receipt: {}, request_id: call.request_id }; },
-    async dismiss() {}, async catalog() { return {}; }, async saveTemplate() {}, async project() { return {}; },
+    async dismiss() {}, async catalog() { return {}; }, async saveTemplate() {}, async project() { return {}; }, async preview() { return {}; },
   };
   return { transport, calls };
 }
@@ -79,5 +79,43 @@ describe("discovery and visibility", () => {
     await store.recheck();
     expect(store.listPages()).toHaveLength(0);
     expect(store.listNext()).toBeNull();
+  });
+});
+
+describe("the preview switch", () => {
+  it("asks the command once with the chosen state and rechecks after success", async () => {
+    const { transport, calls } = fake();
+    const preview = vi.fn(async () => ({}));
+    transport.preview = preview;
+    const store = createTeams(transport);
+    await store.probe();
+    calls.follow.length = 0;
+    expect(await store.preview(true)).toEqual({ outcome: "done" });
+    expect(preview).toHaveBeenCalledTimes(1);
+    expect(preview).toHaveBeenCalledWith(true);
+    expect(calls.follow.at(-1)).toEqual({ list: true, waiting: true, team: null });
+  });
+
+  it("a refusal keeps its reason and asks discovery nothing", async () => {
+    const { transport, calls } = fake();
+    transport.preview = async () => { throw "not_allowed: Only a person turns the Teams preview on or off."; };
+    const store = createTeams(transport);
+    await store.probe();
+    calls.follow.length = 0;
+    const outcome = await store.preview(false);
+    expect(outcome.outcome).toBe("failed");
+    expect(outcome).toMatchObject({ detail: expect.stringContaining("Only a person") });
+    expect(calls.follow).toHaveLength(0);
+  });
+
+  it("an unknown result changes nothing and asks discovery nothing", async () => {
+    const { transport, calls } = fake();
+    transport.preview = async () => { throw new Error("reply channel disconnected"); };
+    const store = createTeams(transport);
+    await store.probe();
+    calls.follow.length = 0;
+    const outcome = await store.preview(true);
+    expect(outcome.outcome).toBe("uncertain");
+    expect(calls.follow).toHaveLength(0);
   });
 });
