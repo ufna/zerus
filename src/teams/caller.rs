@@ -11,7 +11,15 @@
 //! no path fallback. A command in a sandbox with its own user namespace is
 //! therefore refused for both marked and unmarked callers, so a lead or a
 //! member whose shell runs in such a sandbox cannot use `hgs team`; those
-//! team commands must run outside it.
+//! team commands must run outside it. macOS has no namespaces and therefore
+//! no admission. It withholds the environment of its own binaries, the shells
+//! among them, and nothing at all after the arguments is read as withheld,
+//! never as empty. On macOS a person's command therefore passes from the
+//! Zerus window and from a login terminal and is refused from tmux, ssh and a
+//! terminal inside another application; a marked command reads no ancestor's
+//! environment and is not affected. `context` states what macOS withholds,
+//! the shapes that pass, the limit at the top and what a macOS sandbox can
+//! change. Other platforms refuse both callers.
 //!
 //! This is not verified Person authority. A command whose ancestry does not
 //! pass through readable same-user processes to its agent is outside this
@@ -124,6 +132,14 @@ fn unreadable() -> Problem {
 fn marked_unreadable() -> Problem {
     Problem::new(code::INVALID_STATE,
         "Cannot read or verify the claimed agent's process ownership, birth or ancestry, saved binding or computer identity. Run session commands from the agent's own shell after its saved session state is available.")
+}
+
+/// A withheld environment below the top: a macOS shell or `ssh` stands
+/// between the person's command and the top of the user's tree. Distinct from
+/// the marked path's sandbox sentence.
+fn withheld_below_top() -> Problem {
+    Problem::new(code::NOT_ALLOWED,
+        "On macOS, run a person's team commands from the Zerus window or a login terminal, not from tmux, ssh or a terminal inside another application.")
 }
 
 fn binding_unreadable() -> Problem {
@@ -273,9 +289,7 @@ fn environment(pid: u32) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// The same read on macOS, through `KERN_PROCARGS2`, whose answer holds the
-/// argument count, then the executable, the arguments and finally the
-/// environment.
+/// The same read on macOS, through `KERN_PROCARGS2`.
 #[cfg(target_os = "macos")]
 fn environment(pid: u32) -> std::io::Result<Vec<u8>> {
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as i32];
@@ -292,32 +306,69 @@ fn environment(pid: u32) -> std::io::Result<Vec<u8>> {
             0,
         )
     };
-    let invalid = || std::io::Error::other("environment is unavailable");
-    if code != 0 || !(4..=bytes.len()).contains(&size) {
-        return Err(invalid());
+    if code != 0 || size > bytes.len() {
+        return Err(std::io::Error::other("environment is unavailable"));
     }
     bytes.truncate(size);
-    let argc = i32::from_ne_bytes(bytes[..4].try_into().map_err(|_| invalid())?);
+    procargs_environment(&bytes)
+}
+
+/// The environment part of a `KERN_PROCARGS2` answer, which holds the
+/// argument count, the executable and its padding, the arguments and then
+/// the environment. macOS withholds the environment of its own binaries
+/// (the shells, `ssh`) and of library-validated ones from a reader of the
+/// same user by ending the answer right after the arguments, without an
+/// error. A process whose environment is really empty still leaves the
+/// kernel's own strings after its arguments. So nothing at all after the
+/// arguments is a withheld read, never an empty environment.
+#[cfg(any(target_os = "macos", test))]
+fn procargs_environment(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
+    let invalid = || std::io::Error::other("environment is unavailable");
+    let count = bytes.get(..4).ok_or_else(invalid)?;
+    let argc = i32::from_ne_bytes(count.try_into().map_err(|_| invalid())?);
     if !(1..=4096).contains(&argc) {
         return Err(invalid());
     }
+    let after = |rest: &[u8]| -> std::io::Result<usize> {
+        Ok(rest
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or_else(invalid)?
+            + 1)
+    };
     let mut rest = &bytes[4..];
-    rest = &rest[rest
-        .iter()
-        .position(|byte| *byte == 0)
-        .ok_or_else(invalid)?
-        + 1..];
+    rest = &rest[after(rest)?..];
     while rest.first() == Some(&0) {
         rest = &rest[1..];
     }
     for _ in 0..argc {
-        rest = &rest[rest
-            .iter()
-            .position(|byte| *byte == 0)
-            .ok_or_else(invalid)?
-            + 1..];
+        rest = &rest[after(rest)?..];
+    }
+    if rest.is_empty() {
+        return Err(withheld());
     }
     Ok(rest.to_vec())
+}
+
+/// The system answered for a process but left its environment out.
+#[derive(Debug)]
+struct Withheld;
+
+impl std::fmt::Display for Withheld {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("the system withholds this process's environment")
+    }
+}
+
+impl std::error::Error for Withheld {}
+
+#[cfg(any(target_os = "macos", test))]
+fn withheld() -> std::io::Error {
+    std::io::Error::other(Withheld)
+}
+
+fn is_withheld(error: &std::io::Error) -> bool {
+    error.get_ref().is_some_and(|inner| inner.is::<Withheld>())
 }
 
 /// Unsupported platforms refuse before this read is reachable. This fallback

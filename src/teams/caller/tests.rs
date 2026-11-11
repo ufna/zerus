@@ -48,6 +48,8 @@ fn probe() {
     if std::env::var("HGS_TEAMS_CALLER_PROBE").as_deref() != Ok("1") {
         return;
     }
+    #[cfg(unix)]
+    println!("PARENT {}", std::os::unix::process::parent_id());
     let config = crate::config::Config::load().expect("the probe's configuration");
     if let Ok(words) = std::env::var("HGS_TEAMS_DISPATCH_PROBE") {
         let args = words
@@ -80,6 +82,9 @@ fn probe() {
         assert_eq!(before, std::env::vars_os().collect());
         println!("PANIC_ENV_UNCHANGED");
     }
+    if std::env::var_os("HGS_TEAMS_BIRTH_PROBE").is_some() {
+        birth_probe();
+    }
     if let Ok(chain) = ancestors() {
         for row in chain {
             println!(
@@ -110,7 +115,70 @@ fn probe() {
     }
 }
 
-#[cfg(target_os = "linux")]
+/// The record check against the birth the walk read from each claimed
+/// ancestor, then against that birth one unit later. The live agent must
+/// match only the birth the walk itself read, through the same interface.
+fn birth_probe() {
+    let chain = ancestors().expect("the walk reaches the claimed agent");
+    for row in chain {
+        let (Some(claim), Some(birth)) = (&row.claim, &row.identity.birth) else {
+            continue;
+        };
+        let answer = |birth: &str| match crate::state::session_graph::caller_agent_for(
+            &claim.name,
+            &claim.run,
+            claim.session.as_deref(),
+            row.pid,
+            birth,
+        ) {
+            Ok(Some(_)) => "agent",
+            Ok(None) => "none",
+            Err(_) => "refused",
+        };
+        println!(
+            "BIRTH pid={} birth={birth} walk={} later={}",
+            row.pid,
+            answer(birth),
+            answer(&later_birth(birth))
+        );
+    }
+}
+
+/// The same birth one unit later: a clock tick on Linux, a microsecond on
+/// macOS.
+fn later_birth(birth: &str) -> String {
+    let (head, unit) = birth.rsplit_once(':').unwrap_or(("", birth));
+    let unit = unit.parse::<u64>().expect("a numeric birth") + 1;
+    if head.is_empty() {
+        unit.to_string()
+    } else {
+        format!("{head}:{unit}")
+    }
+}
+
+/// What `KERN_PROCARGS2` answers on macOS: nothing at all after the arguments
+/// is a withheld environment, and any byte after them, even only the
+/// kernel's own strings of a really empty environment, is a readable one.
+#[test]
+fn a_withheld_environment_is_nothing_at_all_after_the_arguments() {
+    let answer = |tail: &[u8]| {
+        let mut bytes = 2i32.to_ne_bytes().to_vec();
+        bytes.extend_from_slice(b"/bin/sh\0\0\0\0sh\0-c\0");
+        bytes.extend_from_slice(tail);
+        procargs_environment(&bytes)
+    };
+    assert!(answer(b"").is_err_and(|error| is_withheld(&error)));
+    assert_eq!(answer(b"\0").unwrap(), b"\0");
+    let empty = answer(b"executable_path=/bin/sh\0ptr_munge=\0").unwrap();
+    assert_eq!(claim(&empty).unwrap(), None);
+    let marked = answer(b"HGS_SESSION=claude/example/one\0HGS_RUN_ID=run-1\0").unwrap();
+    assert!(claim(&marked).unwrap().is_some());
+    let mut short = 3i32.to_ne_bytes().to_vec();
+    short.extend_from_slice(b"/bin/sh\0sh\0-c\0");
+    assert!(procargs_environment(&short).is_err_and(|error| !is_withheld(&error)));
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn catalog(config: &std::path::Path) {
     std::fs::create_dir_all(config.join("swarm")).unwrap();
     let value = json!({"node_id":"00000000-0000-4000-8000-0000000000a1",
@@ -118,12 +186,14 @@ fn catalog(config: &std::path::Path) {
     std::fs::write(config.join("swarm/catalog.json"), value.to_string()).unwrap();
 }
 
-// The unqualified macOS context is checked below. Keep the shared process
-// fixture sources for a Mac qualification candidate before lifting its gate.
-#[cfg(target_os = "linux")]
+// The real-process suites run on Linux and macOS. Cases that need Linux
+// facilities stay Linux-only inside them: user, PID and mount namespaces, a
+// nondumpable process, and an environment over the 1 MiB cap, which macOS
+// cannot start because its argument and environment limit is 1 MiB.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod regressions;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod process {
     use super::*;
     use sha2::{Digest, Sha256};
@@ -133,6 +203,27 @@ mod process {
 
     const NAME: &str = "claude/example/probe";
     const RUN: &str = "run-probe";
+
+    /// The live process that carries the markers.
+    enum Agent {
+        /// Python, whose environment every supported platform shows.
+        Visible,
+        /// `/bin/sh`, whose environment macOS withholds.
+        Shell,
+    }
+
+    /// A visible agent: writes its process ID, waits for the flag, then runs
+    /// the probe below it, with or without the markers.
+    const VISIBLE: &str = "import os,sys,time,subprocess
+pid,flag,out,strip,exe=sys.argv[1:6]
+open(pid,'w').write(str(os.getpid()))
+while not os.path.exists(flag): time.sleep(.01)
+env=dict(os.environ)
+if strip=='1':
+    for key in ('HGS_SESSION','HGS_RUN_ID','HGS_SESSION_ID'): env.pop(key,None)
+with open(out,'w') as sink:
+    subprocess.run([exe,'--exact','teams::caller::tests::probe','--nocapture'],env=env,stdout=sink,stderr=subprocess.STDOUT)
+";
 
     /// One detached command tree: its state directory, the live process that
     /// carries the markers, and the output of the `hgs team`-side proof below
@@ -149,7 +240,7 @@ mod process {
     impl Probe {
         /// Starts the detached tree with the markers its own environment holds,
         /// and strips them from the command below it unless `markers_kept`.
-        fn start(markers_kept: bool) -> Self {
+        fn start(markers_kept: bool, agent: Agent) -> Self {
             let temp = tempfile::tempdir().expect("a temporary folder");
             let state = temp.path().join("state");
             let config = temp.path().join("config");
@@ -167,17 +258,30 @@ mod process {
                 "env -u HGS_SESSION -u HGS_RUN_ID -u HGS_SESSION_ID "
             };
             let exe = std::env::current_exe().expect("this test binary");
-            let inner = format!(
-                "sh -c 'echo $$ > {}; while [ ! -f {} ]; do sleep 0.01; done; {}{} --exact teams::caller::tests::probe --nocapture > {} 2>&1'",
-                pid_file.display(),
-                flag.display(),
-                strip,
-                exe.display(),
-                output.display()
-            );
-            let status = Command::new("sh")
-                .arg("-c")
-                .arg(format!("{inner} & exit 0"))
+            let mut command = Command::new("sh");
+            match agent {
+                Agent::Shell => {
+                    let inner = format!(
+                        "sh -c 'echo $$ > {}; while [ ! -f {} ]; do sleep 0.01; done; {}{} --exact teams::caller::tests::probe --nocapture > {} 2>&1'",
+                        pid_file.display(),
+                        flag.display(),
+                        strip,
+                        exe.display(),
+                        output.display()
+                    );
+                    command.arg("-c").arg(format!("{inner} & exit 0"));
+                }
+                Agent::Visible => {
+                    command
+                        .args(["-c", "\"$@\" & exit 0", "fixture", "python3", "-c", VISIBLE])
+                        .arg(&pid_file)
+                        .arg(&flag)
+                        .arg(&output)
+                        .arg(if markers_kept { "0" } else { "1" })
+                        .arg(&exe);
+                }
+            }
+            let status = command
                 .env("HGS_SESSION", NAME)
                 .env("HGS_RUN_ID", RUN)
                 .env("HGS_TEAMS_CALLER_PROBE", "1")
@@ -253,6 +357,11 @@ mod process {
             }
             panic!("the probe printed no answer: {text}");
         }
+
+        /// Everything the probe printed, after [`Probe::answer`].
+        fn text(&self) -> String {
+            std::fs::read_to_string(&self.output).unwrap_or_default()
+        }
     }
 
     fn wait_for(path: &Path, limit: Duration) -> Option<()> {
@@ -293,7 +402,7 @@ mod process {
 
     #[test]
     fn an_unmarked_command_under_a_live_session_agent_is_refused() {
-        let probe = Probe::start(false);
+        let probe = Probe::start(false, Agent::Visible);
         assert!(!probe.markers_kept);
         probe.record(&probe.born());
         assert_eq!(probe.answer(), "refused:not_allowed");
@@ -301,7 +410,7 @@ mod process {
 
     #[test]
     fn an_unmarked_command_with_an_established_stale_agent_is_the_person() {
-        let probe = Probe::start(false);
+        let probe = Probe::start(false, Agent::Visible);
         probe.record("stale-birth");
         let mut sibling = sibling_record(probe.state());
         // The sibling is recorded and live, so a lookup by "any live record"
@@ -313,14 +422,14 @@ mod process {
 
     #[test]
     fn a_stale_record_does_not_match_the_reused_process_id() {
-        let probe = Probe::start(false);
+        let probe = Probe::start(false, Agent::Visible);
         probe.record("0");
         assert_eq!(probe.answer(), "person");
     }
 
     #[test]
     fn a_marked_command_with_a_live_record_is_that_session() {
-        let probe = Probe::start(true);
+        let probe = Probe::start(true, Agent::Visible);
         probe.record(&probe.born());
         assert_eq!(
             probe.answer(),
@@ -330,50 +439,39 @@ mod process {
 
     #[test]
     fn a_marked_command_with_no_live_record_is_refused() {
-        let probe = Probe::start(true);
+        let probe = Probe::start(true, Agent::Visible);
         assert_eq!(probe.answer(), "refused:invalid_state");
+    }
+
+    /// The stated macOS limit: an agent whose own environment the system
+    /// withholds (here `/bin/sh`) and which is itself the top of the user's
+    /// tree is not detected, like an agent started without markers. Where
+    /// its environment is readable, the command below it is refused.
+    #[test]
+    fn a_withheld_agent_at_the_top_is_the_stated_macos_limit() {
+        let probe = Probe::start(false, Agent::Shell);
+        probe.record(&probe.born());
+        let answer = probe.answer();
+        let text = probe.text();
+        assert!(text.contains(&format!("PARENT {}", probe.pid)), "{text}");
+        if cfg!(target_os = "macos") {
+            assert_eq!(answer, "person", "{text}");
+            let top = format!(
+                "ANCESTOR pid={} parent=1 top=true environment_readable=false",
+                probe.pid
+            );
+            assert!(text.contains(&top), "{text}");
+        } else {
+            assert_eq!(answer, "refused:not_allowed", "{text}");
+        }
     }
 }
 
+/// The lifted gate: macOS is available to both callers and, having no
+/// namespaces, has no admission. The real-process suites decide the rest.
 #[cfg(target_os = "macos")]
 #[test]
-fn macos_refuses_both_callers_and_preview_mutations_until_qualified() {
-    for marked in [false, true] {
-        for action in ["on", "off"] {
-            let temp = tempfile::tempdir().unwrap();
-            let state = temp.path().join("state");
-            let config = temp.path().join("config");
-            std::fs::create_dir(&state).unwrap();
-            std::fs::create_dir(&config).unwrap();
-            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
-            command
-                .args(["--exact", "teams::caller::tests::probe", "--nocapture"])
-                .env_clear()
-                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-                .env("HOME", temp.path())
-                .env("HGS_STATE_DIR", &state)
-                .env("HGS_CONFIG_DIR", &config)
-                .env("HGS_TEAMS_CALLER_PROBE", "1")
-                .env("HGS_TEAMS_PREVIEW_PROBE", action);
-            if marked {
-                command
-                    .env("HGS_SESSION", "claude/example/unavailable")
-                    .env("HGS_RUN_ID", "run-unavailable");
-            }
-            let output = command.output().unwrap();
-            let text = String::from_utf8_lossy(&output.stdout);
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            assert!(
-                text.contains("PROBE refused:not_allowed")
-                    && text.contains("not available on this platform")
-                    && text.contains("PREVIEW 1"),
-                "{text}"
-            );
-            assert!(!crate::teams::enabled(&state));
-        }
-    }
+fn macos_admits_both_callers_to_the_real_process_proof() {
+    assert_eq!(context::available(), Ok(()));
+    assert_eq!(context::admission(), Ok(()));
 }

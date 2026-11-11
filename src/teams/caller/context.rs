@@ -19,16 +19,49 @@
 //!
 //! Any failure refuses, including `ENOSYS` from a kernel without `openat2` or
 //! `EPERM` from a sandbox; there is no fallback to the path, `/proc/1` or
-//! `uid_map`. Other platforms keep their present behaviour.
+//! `uid_map`.
+//!
+//! macOS was qualified by the real-process caller suites on a Mac. It has no
+//! user, mount or PID namespaces, so it has no admission: the walk reads the
+//! kernel's one process table through `proc_pidinfo` and `sysctl`, which no
+//! mount can replace, and the Linux forgery has no counterpart there. The walk
+//! and the record check read a process's birth through the same call,
+//! `platform::process_identity` (`PROC_PIDTBSDINFO`, start seconds and
+//! microseconds).
+//!
+//! macOS withholds the environment of its own binaries (every program with a
+//! platform identifier, the shells and `ssh` among them) and of some signed
+//! programs, mostly those signed for library validation, from a reader of the
+//! same user. `KERN_PROCARGS2` still answers, but its answer ends right after
+//! the arguments. A process whose environment is really empty still leaves
+//! the kernel's own strings after its arguments, so nothing at all after them
+//! is a withheld read and never an empty environment. A withheld environment
+//! is unreadable, and the rule for an unreadable ancestor applies: tolerated
+//! at the verified top, refused below it.
+//!
+//! Three shapes pass. The Zerus window runs `hgs` as its own child with no
+//! shell between, and the window is the top of the user's tree. A login
+//! terminal's shell sits directly below the root-owned `login` and is itself
+//! the top. A lead's or a member's marked command reads only its own
+//! environment and proves its descent through `proc_pidinfo`, so a shell
+//! between it and its agent does not matter. A person's command from tmux,
+//! ssh or a terminal inside another application has a withheld shell below
+//! the top and is refused, with a sentence that names where it runs instead.
+//! The limit is at the top: an agent whose own environment is withheld and
+//! which is itself the top of the user's tree (started or adopted by
+//! launchd) is not detected, like an agent started without markers.
+//!
+//! A macOS sandbox (Seatbelt, the App Sandbox) cannot give a process its own
+//! process table, owner, parent or birth; it can only deny these reads, which
+//! the same rule treats as unreadable. A command adopted by launchd after its
+//! parent exited starts a tree of its own: a marked one is refused, since it
+//! no longer descends from its agent, and an unmarked one is outside this
+//! rule like any reparented command. Other platforms stay unavailable.
 use zerus_team_plan::problem::code;
 use zerus_team_plan::Problem;
 
-// Lift only after the real-process caller suite has passed on a Mac, including
-// matching walk/record births through platform::process_identity.
-const MACOS_ANCESTRY_QUALIFIED: bool = false;
-
 pub(super) fn available() -> Result<(), Problem> {
-    if !(cfg!(target_os = "linux") || cfg!(target_os = "macos") && MACOS_ANCESTRY_QUALIFIED) {
+    if !cfg!(any(target_os = "linux", target_os = "macos")) {
         return Err(Problem::new(code::NOT_ALLOWED,
             "The Teams preview is not available on this platform yet: its real-process ancestry proof has not been qualified."));
     }

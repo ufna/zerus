@@ -1,7 +1,9 @@
 //! Bounded process-table walk. An unreadable environment is tolerated only at
 //! the verified top of this user's tree, whose parent is foreign. Parent zero
-//! refuses, including a same-user process at a PID namespace boundary.
-use super::{claim, environment, unreadable};
+//! refuses, including a same-user process at a PID namespace boundary. An
+//! environment that macOS withholds is unreadable; below the top its refusal
+//! tells the person where their commands run.
+use super::{claim, environment, is_withheld, unreadable, withheld_below_top};
 use zerus_team_plan::Problem;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,6 +57,7 @@ pub(super) fn walk(
                 claim(&bytes)?
             }
             Err(_) if top => None,
+            Err(error) if is_withheld(&error) => return Err(withheld_below_top()),
             Err(_) => return Err(unreadable()),
         };
         if !top && identity.birth.is_none() {
