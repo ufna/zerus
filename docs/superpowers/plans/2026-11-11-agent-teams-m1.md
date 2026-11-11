@@ -806,6 +806,15 @@ failed write blocks nothing and makes no card, and the lead's authority over
 members comes from the team store. A source of its own for team links needs
 the aligned client change and waits for M3.
 
+**Integration facts (package 3).** `RecordIntegration` and
+`RecordIntegrationConflict` name the accept decision they belong to. The
+permit is that exact decision: an accept of that node, Ready or settled with
+preserved authority, with no fact yet; there is no fallback to the pending or
+the latest decision. The fact changes the node only when the decision's
+generation is the node's current one. The service reads the authorized
+accepts that have no fact as a bounded page and names the decision it acted
+on.
+
 **Task key (package 6).** Everything under `crates/replica` is one commit of
 its own with its compatibility tests, merged after the repository owner
 confirms the replica change. Sending a task to a team and the three refusals
