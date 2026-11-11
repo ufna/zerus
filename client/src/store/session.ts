@@ -6,6 +6,7 @@ import { composer, draftKey } from "./composer";
 import { sessionModels, bindModelNotice } from "./sessionModels";
 import { bindForkSession } from "./sessionForks";
 import { tasks } from "./tasks";
+import { teams } from "./teams";
 import { terminal } from "./terminal";
 import { flag, num } from "./settings";
 import { bindActivity, bindSelection, followedFor, notify, updating } from "./actions";
@@ -72,6 +73,9 @@ export function receive(b: Batch) {
   observeMarks(b);
   if (b.activity.length) activity.applyActivity(b.activity);
   if (b.tasks?.length) tasks.apply(b.tasks);
+  if (b.teams?.length) teams.apply(b.teams);
+  // A task change is what the team's queue view is read again for.
+  if (b.tasks?.length) void teams.tasksChanged().catch(() => {});
   if (b.processes_view) processes.apply(b.processes_view);
   if (b.composer) composer.receive(b.composer);
   if (b.draft_keys) setDraftKeys(b.draft_keys);
@@ -111,7 +115,7 @@ createRoot(() => {
   // The detail tab that shows: behind Terminal a failed read waits Qt's
   // background interval (Settings > Processes), which Rust reads when told.
   createEffect(on(() => [detailTab(), num("processes/backgroundSeconds"), num("processes/activeSeconds")] as const, ([tab]) => {
-    void composerTab(tab === "taskview" ? "native" : tab).catch(() => {});
+    void composerTab(tab === "taskview" ? "native" : tab === "team" ? "activity" : tab).catch(() => {});
   }));
 });
 

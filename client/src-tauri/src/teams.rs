@@ -18,7 +18,10 @@
 //! `team_action_again`.
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use serde_json::Value;
 use tauri::State;
+use zerus_client_core::actions::{Exit, Invocation};
+use zerus_client_core::run_limited;
 use zerus_client_core::teams::action::{
     run_action, Admission, Intents, Pending, TeamCall, TeamOutcome,
 };
@@ -194,4 +197,79 @@ pub fn team_intent_dismiss(teams: State<'_, Teams>, call: TeamCall) -> Result<()
     } else {
         Err("Only an uncertain action can be dismissed.".into())
     }
+}
+
+/// The person's Teams catalog: `hgs team catalog show --json` answers
+/// `{"ok": true, "catalog": {...}}` (roles, pipelines, templates and the
+/// lead's planning rules).
+#[tauri::command]
+pub async fn teams_catalog() -> Result<Value, String> {
+    read_team_json(&["team", "catalog", "show", "--json"], None).await
+}
+
+/// Saves one template to the person's own catalog: `hgs team template save`
+/// reads the template on standard input.
+#[tauri::command]
+pub async fn teams_template_save(template: Value) -> Result<Value, String> {
+    read_team_json(&["team", "template", "save", "--json"], Some(template)).await
+}
+
+/// A project folder's checkout facts (`hgs git-status --path PATH --json`):
+/// its branch and head commit, or the reason it is not a repository. The New
+/// team form uses it to verify the folder and to name the base commit.
+#[tauri::command]
+pub async fn teams_project(path: String) -> Result<Value, String> {
+    read_team_json(&["git-status", "--path", &path, "--json"], None).await
+}
+
+/// One person-only `hgs` read through the client's bounded runner. These
+/// commands start nothing: a refusal keeps its code and words.
+async fn read_team_json(args: &[&str], stdin: Option<Value>) -> Result<Value, String> {
+    let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+    let stdin = stdin.map(|value| value.to_string().into_bytes());
+    let invocation = Invocation {
+        args,
+        stdin,
+        timeout: std::time::Duration::from_secs(15),
+        request_id: None,
+    };
+    let hgs = zerus_client_core::default_hgs();
+    let exit = tauri::async_runtime::spawn_blocking(move || {
+        run_limited(&hgs, &invocation, &[], zerus_client_core::reads::READ_LIMIT)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|too_large| format!("hgs answer passed {} bytes", too_large.cap))?;
+    let Exit::Code {
+        code: 0,
+        stdout,
+        stderr,
+    } = exit
+    else {
+        return Err(match exit {
+            Exit::Code { stderr, .. } | Exit::Abnormal { stderr } => {
+                let text = stderr.trim();
+                if text.is_empty() {
+                    "hgs refused the read".into()
+                } else {
+                    text.to_owned()
+                }
+            }
+            Exit::TimedOut => "hgs did not answer in time".into(),
+            Exit::StartFailed(message) => format!("hgs did not start: {message}"),
+            Exit::WriteFailed => "hgs did not take the request".into(),
+        });
+    };
+    let reply: Value = serde_json::from_slice(&stdout).map_err(|error| error.to_string())?;
+    if reply.get("ok").and_then(Value::as_bool) == Some(false) {
+        let code = reply["error"]["code"].as_str().unwrap_or_default();
+        let message = reply["error"]["message"].as_str().unwrap_or_default();
+        return Err(if message.is_empty() {
+            format!("hgs refused: {code}")
+        } else {
+            format!("{code}: {message}")
+        });
+    }
+    let _ = stderr;
+    Ok(reply)
 }
