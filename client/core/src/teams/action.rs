@@ -26,8 +26,9 @@ use std::path::Path;
 use std::time::Duration;
 use zerus_team_plan::model::{Dep, NodeId, Settings};
 
-/// The longest reason, comment or reply text an action sends.
-pub const TEXT_CHARS: usize = 20_000;
+/// The longest reason, comment or reply text an action sends: the store's own
+/// limit for every one of them.
+pub const TEXT_CHARS: usize = 16_384;
 /// The longest name an action sends.
 pub const NAME_CHARS: usize = 200;
 /// The longest stderr a failure keeps.
@@ -50,15 +51,18 @@ pub struct Confirmation {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TeamAction {
-    /// Creates a team from a catalog template; the CLI resolves the bundle.
+    /// Creates a team from a catalog template; the CLI resolves the bundle,
+    /// and `team` is the new team's id.
     Create {
-        project: String,
         template: String,
+        project: String,
         name: String,
         #[serde(default)]
         goal: String,
-        #[serde(default)]
-        settings: Option<Settings>,
+        /// The computer the lead runs on (its UUID).
+        home: String,
+        integration_branch: String,
+        base_commit: String,
     },
     /// Pauses a team: it hands nothing out until resumed.
     Pause,
@@ -233,6 +237,16 @@ fn plain(text: &str, what: &str, chars: usize) -> Result<(), String> {
     Ok(())
 }
 
+/// The store's rule for a reason, comment, reply or question: text within its
+/// bound, and not blank.
+fn reason(text: &str, what: &str) -> Result<(), String> {
+    plain(text, what, TEXT_CHARS)?;
+    if text.trim().is_empty() {
+        return Err(format!("{what} is required."));
+    }
+    Ok(())
+}
+
 fn word(text: &str, what: &str) -> Result<(), String> {
     if text.is_empty()
         || text.len() > 128
@@ -298,15 +312,18 @@ impl TeamAction {
                 project,
                 name,
                 goal,
-                settings,
+                home,
+                integration_branch,
+                base_commit,
                 ..
-            } => {
-                let mut input = json!({"project": project, "name": name, "goal": goal});
-                if let Some(settings) = settings {
-                    input["settings"] = json!(settings);
-                }
-                input
-            }
+            } => json!({
+                "project": project,
+                "name": name,
+                "goal": goal,
+                "home": home,
+                "integration_branch": integration_branch,
+                "base_commit": base_commit,
+            }),
             Self::Pause | Self::Resume | Self::Stop | Self::Archive => json!({}),
             Self::PauseMember { member }
             | Self::ResumeMember { member }
@@ -355,19 +372,28 @@ impl TeamAction {
     pub fn check(&self) -> Result<(), String> {
         match self {
             Self::Create {
-                project,
                 template,
+                project,
                 name,
                 goal,
-                ..
+                home,
+                integration_branch,
+                base_commit,
             } => {
-                word(project, "project")?;
                 word(template, "template")?;
-                plain(name, "A team name", NAME_CHARS)?;
+                plain(project, "A project", 256)?;
+                if project.trim().is_empty() {
+                    return Err("Name the project.".into());
+                }
                 if name.trim().is_empty() {
                     return Err("Name the team.".into());
                 }
-                plain(goal, "A goal", TEXT_CHARS)
+                plain(name, "A team name", NAME_CHARS)?;
+                plain(goal, "A goal", TEXT_CHARS)?;
+                word(home, "computer id")?;
+                word(integration_branch, "branch")?;
+                word(base_commit, "commit")?;
+                Ok(())
             }
             Self::Pause | Self::Resume | Self::Stop | Self::Archive => Ok(()),
             Self::PauseMember { member }
@@ -377,7 +403,7 @@ impl TeamAction {
             Self::Settings { .. } => Ok(()),
             Self::Decide { card: id, decision } => {
                 card(*id)?;
-                word(decision, "decision")
+                reason(decision, "A decision")
             }
             Self::Admit { node: id } => node(*id),
             Self::Route {
@@ -394,55 +420,58 @@ impl TeamAction {
                 if let Some(assignee) = assignee {
                     word(assignee, "member")?;
                 }
+                if writes.len() > 200 {
+                    return Err("Too many write paths.".into());
+                }
                 for path in writes {
-                    if path.starts_with('/') {
-                        return Err("A write set is relative to the repository.".into());
+                    plain(path, "A write path", 4096)?;
+                    let normalized = path.replace('\\', "/");
+                    let bytes = normalized.as_bytes();
+                    if normalized.starts_with('/')
+                        || (bytes.len() > 1 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+                    {
+                        return Err("A write path is relative to the repository.".into());
                     }
-                    plain(path, "A write set", 1024)?;
                 }
                 Ok(())
             }
             Self::Accept { node: id } | Self::Hold { node: id } | Self::Release { node: id } => {
                 node(*id)
             }
-            Self::Return { node: id, reason } => {
+            Self::Return {
+                node: id,
+                reason: why,
+            } => {
                 node(*id)?;
-                if reason.trim().is_empty() {
-                    return Err("A return needs a reason.".into());
-                }
-                plain(reason, "A reason", TEXT_CHARS)
+                reason(why, "A return's reason")
             }
             Self::Reassign {
                 node: id,
                 member,
-                reason,
+                reason: why,
             } => {
                 node(*id)?;
                 word(member, "member")?;
-                plain(reason, "A reason", TEXT_CHARS)
+                reason(why, "A reason")
             }
-            Self::Cancel { node: id, reason } => {
+            Self::Cancel {
+                node: id,
+                reason: why,
+            } => {
                 node(*id)?;
-                plain(reason, "A reason", TEXT_CHARS)
+                reason(why, "A reason")
             }
             Self::Reply { item, text } => {
                 card(*item)?;
-                if text.trim().is_empty() {
-                    return Err("A reply needs text.".into());
-                }
-                plain(text, "A reply", TEXT_CHARS)
+                reason(text, "A reply")
             }
             Self::Ask {
                 node: id,
-                generation,
+                generation: _,
                 text,
             } => {
                 node(*id)?;
-                let _ = generation;
-                if text.trim().is_empty() {
-                    return Err("A question needs text.".into());
-                }
-                plain(text, "A question", TEXT_CHARS)
+                reason(text, "A question")
             }
         }
     }
@@ -526,7 +555,9 @@ pub fn prepare(call: &TeamCall) -> Result<(Invocation, String), TeamOutcome> {
     if !canonical_uuid(&request_id) {
         return Err(outcome_failed("Not a request id.", &request_id));
     }
-    if call.action.names_team() && !crate::teams::read::valid_team(&call.team) {
+    // A create names the team it makes; every other call names the team it
+    // changes.
+    if !crate::teams::read::valid_team(&call.team) {
         return Err(outcome_failed("Not a team id.", &request_id));
     }
     if let Err(detail) = call.action.check() {
@@ -537,20 +568,23 @@ pub fn prepare(call: &TeamCall) -> Result<(Invocation, String), TeamOutcome> {
             return Err(TeamOutcome::Confirm { confirmation });
         }
     }
-    if call.action.names_team() && call.expected_revision.is_none() {
-        return Err(outcome_failed(
-            "The team's revision is not known; read the team first.",
-            &request_id,
-        ));
-    }
+    let revision = if matches!(call.action, TeamAction::Create { .. }) {
+        // A new team has no revision to compare: the store checks zero.
+        0
+    } else {
+        match call.expected_revision {
+            Some(revision) => revision,
+            None => {
+                return Err(outcome_failed(
+                    "The team's revision is not known; read the team first.",
+                    &request_id,
+                ))
+            }
+        }
+    };
     let mut input = call.action.input();
-    if call.action.names_team() {
-        input.insert("team".into(), json!(call.team));
-        input.insert(
-            "expected_revision".into(),
-            json!(call.expected_revision.unwrap_or_default()),
-        );
-    }
+    input.insert("team".into(), json!(call.team));
+    input.insert("expected_revision".into(), json!(revision));
     input.insert("request_id".into(), json!(request_id));
     let mut args = vec!["team".to_owned(), call.action.op().to_owned()];
     if let TeamAction::Create { template, .. } = &call.action {
@@ -692,11 +726,13 @@ mod tests {
         let cases: Vec<(TeamAction, &str)> = vec![
             (
                 TeamAction::Create {
-                    project: "p".into(),
                     template: "bugfix".into(),
+                    project: "p".into(),
                     name: "Fixes".into(),
                     goal: String::new(),
-                    settings: None,
+                    home: "00000000-0000-4000-8000-0000000000aa".into(),
+                    integration_branch: "zerus/team/fixes".into(),
+                    base_commit: "0123456789abcdef0123456789abcdef01234567".into(),
                 },
                 "create",
             ),
@@ -765,7 +801,7 @@ mod tests {
                 TeamAction::Reassign {
                     node: 2,
                     member: "m2".into(),
-                    reason: String::new(),
+                    reason: "M2 has the context".into(),
                 },
                 "reassign",
             ),
@@ -774,7 +810,7 @@ mod tests {
             (
                 TeamAction::Cancel {
                     node: 2,
-                    reason: String::new(),
+                    reason: "No longer needed".into(),
                 },
                 "cancel",
             ),
@@ -794,8 +830,34 @@ mod tests {
                 "ask",
             ),
         ];
+        // `src/teams/cli/commands.rs` at package 5's fa46dcc08, plus the four
+        // member commands its fix round adds.
+        const COMMANDS: [&str; 21] = [
+            "settings",
+            "pause",
+            "resume",
+            "stop",
+            "archive",
+            "decide",
+            "admit",
+            "route",
+            "accept",
+            "return",
+            "reassign",
+            "hold",
+            "release",
+            "cancel",
+            "reply",
+            "ask",
+            "create",
+            "pause-member",
+            "resume-member",
+            "stop-member",
+            "archive-member",
+        ];
         for (action, op) in cases {
             assert_eq!(action.op(), op);
+            assert!(COMMANDS.contains(&op), "{op} has no hgs team command");
             assert!(action.check().is_ok(), "{op}: {:?}", action.check());
         }
         assert!(
@@ -804,11 +866,13 @@ mod tests {
         );
         assert!(
             !TeamAction::Create {
-                project: "p".into(),
                 template: "bugfix".into(),
+                project: "p".into(),
                 name: "Fixes".into(),
                 goal: String::new(),
-                settings: None,
+                home: "00000000-0000-4000-8000-0000000000aa".into(),
+                integration_branch: "zerus/team/fixes".into(),
+                base_commit: "0123456789abcdef0123456789abcdef01234567".into(),
             }
             .names_team(),
             "a new team has no id yet"
@@ -859,7 +923,7 @@ mod tests {
             },
             TeamAction::Cancel {
                 node: 3,
-                reason: String::new(),
+                reason: "Not needed".into(),
             },
         ] {
             let asked = prepare(&a_call(TEAM, 42, action.clone())).unwrap_err();
@@ -883,16 +947,19 @@ mod tests {
         call.expected_revision = None;
         let refused = prepare(&call).unwrap_err();
         assert!(matches!(refused, TeamOutcome::Failed { .. }));
-        // A new team has no revision to check.
+        // A new team names its own id and compares revision zero.
+        let new_team = "00000000-0000-4000-8000-00000000cafe";
         let create = TeamCall {
-            team: String::new(),
+            team: new_team.into(),
             team_name: String::new(),
             action: TeamAction::Create {
-                project: "p".into(),
                 template: "bugfix".into(),
+                project: "p".into(),
                 name: "Fixes".into(),
                 goal: "Ship it".into(),
-                settings: None,
+                home: "00000000-0000-4000-8000-0000000000aa".into(),
+                integration_branch: "zerus/team/fixes".into(),
+                base_commit: "0123456789abcdef0123456789abcdef01234567".into(),
             },
             expected_revision: None,
             confirmed: false,
@@ -904,11 +971,66 @@ mod tests {
             ["team", "create", "--template", "bugfix", "--json"]
         );
         let stdin = stdin_of(&invocation);
+        assert_eq!(stdin["team"], new_team);
+        assert_eq!(stdin["expected_revision"], 0);
         assert_eq!(stdin["project"], "p");
         assert_eq!(stdin["name"], "Fixes");
         assert_eq!(stdin["goal"], "Ship it");
-        assert!(stdin.get("team").is_none());
-        assert!(stdin.get("expected_revision").is_none());
+        assert_eq!(stdin["home"], "00000000-0000-4000-8000-0000000000aa");
+        assert_eq!(stdin["integration_branch"], "zerus/team/fixes");
+        assert_eq!(
+            stdin["base_commit"],
+            "0123456789abcdef0123456789abcdef01234567"
+        );
+    }
+
+    #[test]
+    fn a_reason_or_a_reply_must_say_something() {
+        // The store refuses blank text for every one of these.
+        for action in [
+            TeamAction::Return {
+                node: 1,
+                reason: "   ".into(),
+            },
+            TeamAction::Cancel {
+                node: 1,
+                reason: String::new(),
+            },
+            TeamAction::Reassign {
+                node: 1,
+                member: "m1".into(),
+                reason: String::new(),
+            },
+            TeamAction::Reply {
+                item: 1,
+                text: "\n".into(),
+            },
+            TeamAction::Ask {
+                node: 1,
+                generation: 1,
+                text: "  ".into(),
+            },
+            TeamAction::Decide {
+                card: 1,
+                decision: String::new(),
+            },
+        ] {
+            assert!(action.check().is_err(), "{action:?} must say something");
+        }
+        // The store's own text bound.
+        let long = "x".repeat(TEXT_CHARS + 1);
+        assert!(TeamAction::Reply {
+            item: 1,
+            text: long
+        }
+        .check()
+        .is_err());
+        assert!(TeamAction::Reply {
+            item: 1,
+            text: "x".repeat(TEXT_CHARS)
+        }
+        .check()
+        .is_ok());
     }
 
     #[test]

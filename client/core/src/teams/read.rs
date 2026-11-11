@@ -1,20 +1,25 @@
-//! One `hgs team <op> --json` read: the request on standard input, the output
-//! bounded, and the shape the projection relies on checked before a view sees
-//! it.
+//! One `hgs team <op> --json` read of package 5's CLI: flags name the team,
+//! the page size and the cursor; the reply is one bounded page. The output is
+//! size-bounded and the shape the projection relies on is checked before a
+//! view sees it.
 //!
-//! The desktop follows the teams of this computer only, one at a time (M1);
-//! the reads are the store's pages and never a whole team.
+//! The desktop follows the teams of this computer only, one at a time (M1).
+//! The reads are the store's pages and never a whole team. A request that only
+//! the person can answer inside a team session is not part of these reads: it
+//! arrives in the desktop's session attention data.
 use crate::actions::{Exit, Invocation};
 use crate::reads::READ_LIMIT;
 use crate::run::{run_limited, TooLarge};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::path::Path;
 use std::time::Duration;
 
-/// Rows one read asks for: the store's own page bound.
+/// Rows one read asks for: the store's own page bound and `--limit` maximum.
 pub const PAGE: u64 = 200;
 /// The longest team id a read names.
 pub const TEAM_ID_BYTES: usize = 64;
+/// The longest cursor token the CLI gives back (`t1.` and its page).
+pub const CURSOR_BYTES: usize = 2048;
 /// How long a read waits for `hgs` (it is this computer's hgs).
 const TIMEOUT: Duration = Duration::from_secs(15);
 /// How much of a failure or refusal is kept for the view.
@@ -24,20 +29,22 @@ const MESSAGE_CHARS: usize = 2000;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TeamRead {
     /// `team list`: the teams of this computer, newest first.
-    List,
-    /// `team status`: one team, its members and its counts, without a bundle.
+    List { after: Option<String> },
+    /// `team status --team ID`: one team, its members and its counts, without
+    /// its bundle.
     Status { team: String },
-    /// `team queue`: one page of the team's queue and plan nodes, by rank.
-    Queue { team: String, cursor: Option<Value> },
-    /// `team waiting`: one page of what waits for the person, across teams.
-    Waiting { before: Option<Value> },
+    /// `team queue --team ID`: one page of the team's queue and plan nodes.
+    Queue { team: String, after: Option<String> },
+    /// `team waiting`: one page of the open owner cards of every team of this
+    /// computer, oldest first.
+    Waiting { after: Option<String> },
 }
 
 impl TeamRead {
     /// The operation's word: `hgs team <op> --json`.
     pub fn op(&self) -> &'static str {
         match self {
-            Self::List => "list",
+            Self::List { .. } => "list",
             Self::Status { .. } => "status",
             Self::Queue { .. } => "queue",
             Self::Waiting { .. } => "waiting",
@@ -48,50 +55,72 @@ impl TeamRead {
     pub fn team(&self) -> Option<&str> {
         match self {
             Self::Status { team } | Self::Queue { team, .. } => Some(team),
-            Self::List | Self::Waiting { .. } => None,
+            Self::List { .. } | Self::Waiting { .. } => None,
         }
     }
 
-    /// The JSON object the read sends on standard input.
-    pub fn request(&self) -> Value {
+    /// The command's words: the operation, its flags, and the output flag.
+    /// Every read names this computer's hgs; a page is at most [`PAGE`] rows.
+    pub fn args(&self) -> Result<Vec<String>, TeamError> {
+        let mut args = vec!["team".to_owned(), self.op().to_owned()];
         match self {
-            Self::List => json!({"limit": PAGE}),
-            Self::Status { team } => json!({"team": team}),
-            Self::Queue { team, cursor } => {
-                let mut request = json!({"team": team, "limit": PAGE});
-                if let Some(cursor) = cursor {
-                    request["cursor"] = cursor.clone();
-                }
-                request
+            Self::List { after } => {
+                args.extend(["--limit".to_owned(), PAGE.to_string()]);
+                push_after(&mut args, after.as_deref())?;
             }
-            Self::Waiting { before } => {
-                let mut request = json!({"limit": PAGE});
-                if let Some(before) = before {
-                    request["before"] = before.clone();
+            Self::Status { team } => {
+                if !valid_team(team) {
+                    return Err(TeamError::Failed {
+                        message: "Not a team id.".into(),
+                    });
                 }
-                request
+                args.extend(["--team".to_owned(), team.clone()]);
+            }
+            Self::Queue { team, after } => {
+                if !valid_team(team) {
+                    return Err(TeamError::Failed {
+                        message: "Not a team id.".into(),
+                    });
+                }
+                args.extend(["--team".to_owned(), team.clone()]);
+                args.extend(["--limit".to_owned(), PAGE.to_string()]);
+                push_after(&mut args, after.as_deref())?;
+            }
+            Self::Waiting { after } => {
+                args.extend(["--limit".to_owned(), PAGE.to_string()]);
+                push_after(&mut args, after.as_deref())?;
             }
         }
-    }
-
-    /// The top-level keys the reply must carry, with whether each is an array.
-    /// A `list` or `status` reply about one team is accepted too (a read that
-    /// is about one team only), which is the shape of the shared fixture.
-    fn required(&self) -> &'static [(&'static str, bool)] {
-        match self {
-            Self::Status { .. } => &[("team", false), ("members", true)],
-            _ => &[],
-        }
+        args.push("--json".to_owned());
+        Ok(args)
     }
 }
 
-/// A team id as a read sends it: nonempty, short, no option and no control or
-/// space characters.
+fn push_after(args: &mut Vec<String>, after: Option<&str>) -> Result<(), TeamError> {
+    let Some(after) = after else {
+        return Ok(());
+    };
+    if after.is_empty()
+        || after.len() > CURSOR_BYTES
+        || after.starts_with('-')
+        || after.chars().any(|c| c.is_control() || c.is_whitespace())
+    {
+        return Err(TeamError::Failed {
+            message: "Not a page cursor.".into(),
+        });
+    }
+    args.extend(["--after".to_owned(), after.to_owned()]);
+    Ok(())
+}
+
+/// A team id as the CLI takes it: its option takes a lowercase canonical UUID.
 pub fn valid_team(id: &str) -> bool {
-    !id.is_empty()
+    id.len() == 36
+        && id.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte),
+        })
         && id.len() <= TEAM_ID_BYTES
-        && !id.starts_with('-')
-        && !id.chars().any(|c| c.is_control() || c.is_whitespace())
 }
 
 /// Why a read gave no view.
@@ -197,32 +226,43 @@ fn output(exit: Exit) -> Result<Vec<u8>, TeamError> {
     }
 }
 
-/// The command of a read: `hgs team <op> --json` with the request on standard
-/// input.
+/// The command of a read: `hgs team <op> --json` with its flags.
 pub fn invocation(read: &TeamRead) -> Result<Invocation, TeamError> {
-    if read.team().is_some_and(|team| !valid_team(team)) {
-        return Err(TeamError::Failed {
-            message: "Not a team id.".into(),
-        });
-    }
     Ok(Invocation {
-        args: vec!["team".to_owned(), read.op().to_owned(), "--json".to_owned()],
-        stdin: Some(read.request().to_string().into_bytes()),
+        args: read.args()?,
+        stdin: None,
         timeout: TIMEOUT,
         request_id: None,
     })
 }
 
+fn invalid(message: impl Into<String>) -> TeamError {
+    TeamError::Invalid {
+        message: message.into(),
+    }
+}
+
+/// Every read's reply carries the actor it was read for.
+fn actor(value: &Value) -> bool {
+    value.get("actor").is_some_and(Value::is_object)
+}
+
+/// The rows of a page reply, as [`TeamRead`] documents them.
+fn rows<'a>(value: &'a Value, read: &TeamRead) -> Result<&'a [Value], TeamError> {
+    value
+        .get("rows")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .ok_or_else(|| invalid(format!("team {} gives no rows", read.op())))
+}
+
 /// Checks a reply: its exit, then the shape the read relies on.
 pub fn decode(read: &TeamRead, exit: Exit) -> Result<Value, TeamError> {
     let stdout = output(exit)?;
-    let value: Value = serde_json::from_slice(&stdout).map_err(|error| TeamError::Invalid {
-        message: error.to_string(),
-    })?;
+    let value: Value =
+        serde_json::from_slice(&stdout).map_err(|error| invalid(error.to_string()))?;
     if !value.is_object() {
-        return Err(TeamError::Invalid {
-            message: "not a JSON object".into(),
-        });
+        return Err(invalid("not a JSON object"));
     }
     // Every reply says whether the store took the read.
     if value.get("ok").and_then(Value::as_bool) == Some(false) {
@@ -234,58 +274,41 @@ pub fn decode(read: &TeamRead, exit: Exit) -> Result<Value, TeamError> {
         });
         return Err(TeamError::Refused { code, message });
     }
-    for (key, array) in read.required() {
-        let fits = match value.get(key) {
-            Some(found) if *array => found.is_array(),
-            Some(found) => found.is_object(),
-            None => false,
-        };
-        if !fits {
-            return Err(TeamError::Invalid {
-                message: format!("team {} gives no {key}", read.op()),
-            });
-        }
+    if !actor(&value) {
+        return Err(invalid("team reply gives no actor"));
     }
     match read {
         TeamRead::Status { team } => {
-            let found = &value["team"];
-            if found.get("id").and_then(Value::as_str) != Some(team) {
-                return Err(TeamError::Invalid {
-                    message: "team status gives another team".into(),
-                });
-            }
-        }
-        TeamRead::Queue { .. } => {
-            let rows = value.get("nodes").and_then(Value::as_array).or_else(|| {
-                value
-                    .get("page")
-                    .and_then(|page| page.get("rows"))
-                    .and_then(Value::as_array)
-            });
-            if rows.is_none() {
-                return Err(TeamError::Invalid {
-                    message: "team queue gives no rows".into(),
-                });
-            }
-        }
-        TeamRead::List => {
-            let listed = value.get("items").and_then(Value::as_array).is_some();
-            let single = value
+            let fits = value
                 .get("team")
-                .and_then(|team| team.get("id"))
-                .and_then(Value::as_str)
-                .is_some();
-            if !listed && !single {
-                return Err(TeamError::Invalid {
-                    message: "team list gives no teams".into(),
+                .filter(|found| found.is_object())
+                .is_some_and(|found| {
+                    found.get("id").and_then(Value::as_str) == Some(team.as_str())
                 });
+            if !fits {
+                return Err(invalid("team status gives another team"));
+            }
+            if value.get("members").and_then(Value::as_array).is_none() {
+                return Err(invalid("team status gives no members"));
+            }
+            if value.get("counts").and_then(Value::as_object).is_none() {
+                return Err(invalid("team status gives no counts"));
             }
         }
-        TeamRead::Waiting { .. } => {
-            if value.get("items").and_then(Value::as_array).is_none() {
-                return Err(TeamError::Invalid {
-                    message: "team waiting gives no items".into(),
-                });
+        TeamRead::Queue { team, .. } => {
+            if value.get("team").and_then(Value::as_str) != Some(team.as_str()) {
+                return Err(invalid("team queue gives another team"));
+            }
+            rows(&value, read)?;
+        }
+        TeamRead::List { .. } | TeamRead::Waiting { .. } => {
+            let rows = rows(&value, read)?;
+            if matches!(read, TeamRead::List { .. })
+                && rows
+                    .iter()
+                    .any(|row| row.get("id").and_then(Value::as_str).is_none())
+            {
+                return Err(invalid("team list gives a team without an id"));
             }
         }
     }
@@ -305,130 +328,207 @@ pub fn read(hgs: &Path, read: &TeamRead) -> Result<Value, TeamError> {
 mod tests {
     use super::*;
 
-    fn fixture() -> Value {
-        serde_json::from_str(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../crates/team-plan/fixtures/team-queue.json"
-        )))
-        .expect("the shared team fixture parses")
+    /// The pinned CLI replies of package 5, copied beside this module so the
+    /// branch's tests run before package 5 merges; they are the same bytes as
+    /// `crates/team-plan/fixtures/cli-*.json` at its `fa46dcc08`.
+    fn fixture(name: &str) -> Value {
+        let text = match name {
+            "status" => include_str!("fixtures/cli-status.json"),
+            "queue" => include_str!("fixtures/cli-queue.json"),
+            "cards" => include_str!("fixtures/cli-cards.json"),
+            other => panic!("no fixture {other}"),
+        };
+        serde_json::from_str(text).expect("a pinned CLI fixture parses")
+    }
+
+    const TEAM: &str = "00000000-0000-4000-8000-00000000beef";
+
+    fn ok(stdout: Value) -> Exit {
+        Exit::Code {
+            code: 0,
+            stdout: serde_json::to_vec(&stdout).unwrap(),
+            stderr: String::new(),
+        }
     }
 
     #[test]
-    fn every_read_asks_for_one_page() {
-        let list = TeamRead::List.request();
-        assert_eq!(list["limit"], PAGE);
-        let waiting = TeamRead::Waiting { before: None }.request();
-        assert_eq!(waiting["limit"], PAGE);
-        let queue = TeamRead::Queue {
-            team: "t".into(),
-            cursor: None,
-        }
-        .request();
-        assert_eq!(queue["limit"], PAGE);
-        assert_eq!(queue["team"], "t");
-        let older = TeamRead::Queue {
-            team: "t".into(),
-            cursor: Some(serde_json::json!({"scope": "queue", "after": 20})),
-        }
-        .request();
-        assert_eq!(older["cursor"]["after"], 20);
+    fn each_read_names_its_flags_and_one_page() {
         assert_eq!(
-            TeamRead::Waiting { before: None }.request().get("after"),
-            None
+            TeamRead::Status { team: TEAM.into() }.args().unwrap(),
+            ["team", "status", "--team", TEAM, "--json"]
+        );
+        assert_eq!(
+            TeamRead::Queue {
+                team: TEAM.into(),
+                after: None
+            }
+            .args()
+            .unwrap(),
+            ["team", "queue", "--team", TEAM, "--limit", "200", "--json"]
+        );
+        assert_eq!(
+            TeamRead::Queue {
+                team: TEAM.into(),
+                after: Some("t1.abc".into())
+            }
+            .args()
+            .unwrap(),
+            ["team", "queue", "--team", TEAM, "--limit", "200", "--after", "t1.abc", "--json"]
+        );
+        assert_eq!(
+            TeamRead::List { after: None }.args().unwrap(),
+            ["team", "list", "--limit", "200", "--json"]
+        );
+        assert_eq!(
+            TeamRead::Waiting { after: None }.args().unwrap(),
+            ["team", "waiting", "--limit", "200", "--json"]
         );
     }
 
     #[test]
-    fn a_read_names_its_operation_and_no_host() {
-        let invocation = invocation(&TeamRead::Status {
-            team: "00000000-0000-4000-8000-00000000beef".into(),
-        })
-        .unwrap();
-        assert_eq!(invocation.args, ["team", "status", "--json"]);
-        assert_eq!(
-            invocation.stdin,
-            Some(br#"{"team":"00000000-0000-4000-8000-00000000beef"}"#.to_vec())
-        );
+    fn a_read_sends_no_request_and_waits_fifteen_seconds() {
+        let invocation = invocation(&TeamRead::Status { team: TEAM.into() }).unwrap();
+        assert_eq!(invocation.stdin, None);
         assert_eq!(invocation.timeout, TIMEOUT);
         assert_eq!(invocation.request_id, None);
     }
 
     #[test]
-    fn an_unknown_team_id_is_refused() {
-        for team in ["", "has space", "-option", "with\nnewline", &"x".repeat(65)] {
+    fn an_unknown_team_id_or_cursor_is_refused() {
+        for team in [
+            "",
+            "example",
+            "00000000-0000-4000-8000-00000000BEEF",
+            "00000000-0000-4000-8000-00000000beefX",
+        ] {
             assert!(!valid_team(team), "{team:?}");
-            assert!(invocation(&TeamRead::Status {
-                team: team.to_owned()
-            })
-            .is_err());
+            assert!(
+                TeamRead::Status {
+                    team: team.to_owned()
+                }
+                .args()
+                .is_err(),
+                "{team:?}"
+            );
         }
-        assert!(valid_team("00000000-0000-4000-8000-00000000beef"));
+        assert!(valid_team(TEAM));
+        for cursor in ["", "has space", "-option", "with\nnewline"] {
+            assert!(
+                TeamRead::List {
+                    after: Some(cursor.into())
+                }
+                .args()
+                .is_err(),
+                "{cursor:?}"
+            );
+        }
     }
 
     #[test]
-    fn the_shapes_the_views_rely_on_are_checked() {
-        let ok = |stdout: Value| Exit::Code {
-            code: 0,
-            stdout: serde_json::to_vec(&stdout).unwrap(),
-            stderr: String::new(),
-        };
-        let team = "00000000-0000-4000-8000-00000000beef";
-        let status = TeamRead::Status { team: team.into() };
-        let reply = ok(serde_json::json!({
-            "ok": true, "revision": 1,
-            "team": {"id": team, "name": "Fixes"},
-            "members": [],
-        }));
-        assert!(decode(&status, reply.clone()).is_ok());
-        // The fixture is a status reply about one team.
-        assert!(decode(&status, ok(fixture())).is_ok());
-        // Another team, or no members, is not this read's reply.
-        let other = ok(serde_json::json!({
-            "ok": true, "team": {"id": "other"}, "members": [],
-        }));
+    fn the_pinned_status_reply_is_the_expected_shape() {
+        let reply = decode(
+            &TeamRead::Status { team: TEAM.into() },
+            ok(fixture("status")),
+        );
+        assert!(reply.is_ok(), "{:?}", reply.err());
         assert!(matches!(
-            decode(&status, other),
+            decode(
+                &TeamRead::Status { team: TEAM.into() },
+                ok(
+                    serde_json::json!({"ok": true, "team": {"id": "other"}, "members": [], "counts": {}})
+                )
+            ),
             Err(TeamError::Invalid { .. })
         ));
-        let no_members = ok(serde_json::json!({"ok": true, "team": {"id": team}}));
+        for reply in [
+            serde_json::json!({"ok": true, "team": {"id": TEAM}, "counts": {}}),
+            serde_json::json!({"ok": true, "team": {"id": TEAM}, "members": []}),
+            serde_json::json!({"ok": true, "team": {"id": TEAM}, "members": [], "counts": {}, "actor": 3}),
+        ] {
+            assert!(
+                matches!(
+                    decode(&TeamRead::Status { team: TEAM.into() }, ok(reply)),
+                    Err(TeamError::Invalid { .. })
+                ),
+                "a status reply missing a part is refused"
+            );
+        }
+    }
+
+    #[test]
+    fn the_pinned_page_replies_are_the_expected_shape() {
+        for read in [
+            TeamRead::Queue {
+                team: TEAM.into(),
+                after: None,
+            },
+            TeamRead::List { after: None },
+            TeamRead::Waiting { after: None },
+        ] {
+            let reply = if matches!(read, TeamRead::Queue { .. }) {
+                fixture("queue")
+            } else if matches!(read, TeamRead::List { .. }) {
+                serde_json::json!({"ok": true, "actor": {"kind": "person"}, "rows": [], "next": null})
+            } else {
+                fixture("cards")
+            };
+            assert!(decode(&read, ok(reply)).is_ok(), "{read:?}");
+        }
+        // A queue page of another team, a page without rows, and a list row
+        // without an id are refused.
         assert!(matches!(
-            decode(&status, no_members),
+            decode(
+                &TeamRead::Queue {
+                    team: "00000000-0000-4000-8000-00000000ffff".into(),
+                    after: None
+                },
+                ok(fixture("queue"))
+            ),
             Err(TeamError::Invalid { .. })
         ));
-
-        let queue = TeamRead::Queue {
-            team: team.into(),
-            cursor: None,
-        };
-        assert!(decode(
-            &queue,
-            ok(serde_json::json!({"ok": true, "page": {"rows": [], "next": null}}))
-        )
-        .is_ok());
-        assert!(decode(&queue, ok(serde_json::json!({"ok": true}))).is_err());
-
-        assert!(decode(&TeamRead::List, ok(fixture())).is_ok());
-        assert!(decode(&TeamRead::List, ok(serde_json::json!({"ok": true}))).is_err());
-        assert!(decode(
-            &TeamRead::Waiting { before: None },
-            ok(serde_json::json!({"ok": true, "items": []}))
-        )
-        .is_ok());
-        assert!(decode(&TeamRead::Waiting { before: None }, ok(fixture())).is_err());
+        assert!(matches!(
+            decode(
+                &TeamRead::Queue {
+                    team: TEAM.into(),
+                    after: None
+                },
+                ok(serde_json::json!({"ok": true, "actor": {"kind": "person"}, "team": TEAM}))
+            ),
+            Err(TeamError::Invalid { .. })
+        ));
+        assert!(matches!(
+            decode(
+                &TeamRead::List { after: None },
+                ok(
+                    serde_json::json!({"ok": true, "actor": {"kind": "person"}, "rows": [{"name": "x"}]})
+                )
+            ),
+            Err(TeamError::Invalid { .. })
+        ));
+        assert!(matches!(
+            decode(
+                &TeamRead::Waiting { after: None },
+                ok(serde_json::json!({"ok": true, "rows": []}))
+            ),
+            Err(TeamError::Invalid { .. })
+        ));
     }
 
     #[test]
     fn a_refusal_keeps_its_code() {
-        let refused = json!({
+        let refused = serde_json::json!({
             "ok": false,
             "error": {"code": "teams_inactive", "message": "Teams are off."},
         });
-        let exit = Exit::Code {
-            code: 1,
-            stdout: serde_json::to_vec(&refused).unwrap(),
-            stderr: String::new(),
-        };
-        let error = decode(&TeamRead::List, exit).unwrap_err();
+        let error = decode(
+            &TeamRead::List { after: None },
+            Exit::Code {
+                code: 1,
+                stdout: serde_json::to_vec(&refused).unwrap(),
+                stderr: String::new(),
+            },
+        )
+        .unwrap_err();
         assert_eq!(error.code(), "teams_inactive");
         assert_eq!(error.message(), "Teams are off.");
     }
@@ -436,7 +536,7 @@ mod tests {
     #[test]
     fn a_failure_or_a_bad_reply_is_worded() {
         let failed = decode(
-            &TeamRead::List,
+            &TeamRead::List { after: None },
             Exit::Code {
                 code: 2,
                 stdout: Vec::new(),
@@ -446,11 +546,11 @@ mod tests {
         .unwrap_err();
         assert_eq!(failed.code(), "failed");
         assert_eq!(failed.message(), "hgs is not installed");
-        let timed_out = decode(&TeamRead::List, Exit::TimedOut).unwrap_err();
+        let timed_out = decode(&TeamRead::List { after: None }, Exit::TimedOut).unwrap_err();
         assert_eq!(timed_out.code(), "failed");
         assert!(timed_out.message().contains("in time"));
         let invalid = decode(
-            &TeamRead::List,
+            &TeamRead::List { after: None },
             Exit::Code {
                 code: 0,
                 stdout: b"not json".to_vec(),

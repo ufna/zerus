@@ -161,12 +161,22 @@ mod tests {
     use std::sync::mpsc::{channel, RecvTimeoutError};
     use std::time::Duration;
 
-    fn fixture() -> Value {
-        serde_json::from_str(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../crates/team-plan/fixtures/team-queue.json"
-        )))
-        .expect("the shared team fixture parses")
+    /// A `hgs team list` reply of one team, as package 5 shapes it.
+    fn list_reply() -> Value {
+        serde_json::json!({
+            "ok": true,
+            "actor": {"kind": "person", "person": "local"},
+            "rows": [{
+                "id": "00000000-0000-4000-8000-00000000beef",
+                "project": "example-project",
+                "name": "Fixes",
+                "status": "running",
+                "lead": "lead",
+                "home": "00000000-0000-4000-8000-0000000000aa",
+                "revision": 16,
+            }],
+            "next": null,
+        })
     }
 
     fn change_key(change: &Change) -> Option<&str> {
@@ -180,7 +190,7 @@ mod tests {
     fn a_followed_view_arrives_as_a_batch_change() {
         let (sender, receiver) = channel();
         let poller = TeamsPoller::spawn_with(
-            Box::new(|_read| Ok(fixture())),
+            Box::new(|_read| Ok(list_reply())),
             Box::new(move |change| {
                 let _ = sender.send(change);
             }),
@@ -214,7 +224,7 @@ mod tests {
         let poller = TeamsPoller::spawn_with(
             Box::new(move |_read| {
                 *counted.lock().unwrap() += 1;
-                Ok(fixture())
+                Ok(list_reply())
             }),
             Box::new(move |change| {
                 let _ = sender.send(change);

@@ -15,9 +15,18 @@
 //!   request identities; an uncertain outcome is surfaced, never sent again.
 //!
 //! The views are bounded: at most [`view::PAGE`] rows per list and the caps of
-//! [`view`]. Teams are inactive unless the person turned the preview on; with
-//! it off every read and action answers `teams_inactive` and the desktop shows
-//! no entry point.
+//! [`view`]. The reads are package 5's CLI: `hgs team list|status|queue|waiting`
+//! with flags (`--team`, `--limit`, `--after`), a page reply of
+//! `{ok, actor, team?, rows, next}` and a status of
+//! `{ok, actor, team, members, counts}`.
+//!
+//! A request that only the person can answer inside a team *session* is not
+//! part of [`read::TeamRead::Waiting`]: it arrives in the desktop's session
+//! attention data. [`view::WaitingView`] carries the open owner cards only.
+//!
+//! Teams are inactive unless the person turned the preview on; with it off
+//! every read and action answers `teams_inactive` and the desktop shows no
+//! entry point.
 pub mod action;
 pub mod model;
 pub mod poller;

@@ -242,14 +242,14 @@ impl TeamsModel {
             .min_by_key(|(slot, due)| (slot.rank(), **due))
             .map(|(slot, _)| *slot)?;
         let read = match slot {
-            Slot::List => TeamRead::List,
-            Slot::Waiting => TeamRead::Waiting { before: None },
+            Slot::List => TeamRead::List { after: None },
+            Slot::Waiting => TeamRead::Waiting { after: None },
             Slot::Status => TeamRead::Status {
                 team: watched.clone()?,
             },
             Slot::Queue => TeamRead::Queue {
                 team: watched?,
-                cursor: None,
+                after: None,
             },
         };
         self.in_flight.insert(slot);
@@ -316,14 +316,14 @@ impl TeamsModel {
     ) -> Vec<(String, TeamsUpdate)> {
         let mut out = Vec::new();
         let slot = match read {
-            TeamRead::List => Slot::List,
+            TeamRead::List { .. } => Slot::List,
             TeamRead::Waiting { .. } => Slot::Waiting,
             TeamRead::Status { .. } => Slot::Status,
             TeamRead::Queue { .. } => Slot::Queue,
         };
         self.in_flight.remove(&slot);
         match read {
-            TeamRead::List => {
+            TeamRead::List { .. } => {
                 self.due.insert(slot, now + POLL);
                 let update = match reply {
                     Ok(reply) => TeamsUpdate::List(Arc::new(view::list(&reply))),
@@ -493,13 +493,13 @@ mod tests {
             due(model, now),
             Some(TeamRead::Queue {
                 team: team.to_owned(),
-                cursor: None,
+                after: None,
             })
         );
         out.extend(model.apply(
             &TeamRead::Queue {
                 team: team.to_owned(),
-                cursor: None,
+                after: None,
             },
             Ok(queue()),
             now,
@@ -555,24 +555,24 @@ mod tests {
             due(&mut model, now),
             Some(TeamRead::Queue {
                 team: TEAM_A.to_owned(),
-                cursor: None,
+                after: None,
             })
         );
         model.apply(
             &TeamRead::Queue {
                 team: TEAM_A.to_owned(),
-                cursor: None,
+                after: None,
             },
             Ok(queue()),
             now,
         );
-        assert_eq!(due(&mut model, now), Some(TeamRead::List));
-        model.apply(&TeamRead::List, Ok(fixture()), now);
+        assert_eq!(due(&mut model, now), Some(TeamRead::List { after: None }));
+        model.apply(&TeamRead::List { after: None }, Ok(fixture()), now);
         assert_eq!(
             due(&mut model, now),
-            Some(TeamRead::Waiting { before: None })
+            Some(TeamRead::Waiting { after: None })
         );
-        model.apply(&TeamRead::Waiting { before: None }, Ok(fixture()), now);
+        model.apply(&TeamRead::Waiting { after: None }, Ok(fixture()), now);
         assert_eq!(due(&mut model, now), None, "one read per view per poll");
         assert_eq!(model.wait(now), POLL);
         assert_eq!(
@@ -610,13 +610,13 @@ mod tests {
         let mut model = TeamsModel::default();
         model.follow(follow_all(TEAM_A), now);
         watched(&mut model, now, TEAM_A);
-        assert_eq!(due(&mut model, now), Some(TeamRead::List));
-        model.apply(&TeamRead::List, Ok(fixture()), now);
+        assert_eq!(due(&mut model, now), Some(TeamRead::List { after: None }));
+        model.apply(&TeamRead::List { after: None }, Ok(fixture()), now);
         assert_eq!(
             due(&mut model, now),
-            Some(TeamRead::Waiting { before: None })
+            Some(TeamRead::Waiting { after: None })
         );
-        model.apply(&TeamRead::Waiting { before: None }, Ok(fixture()), now);
+        model.apply(&TeamRead::Waiting { after: None }, Ok(fixture()), now);
         assert_eq!(due(&mut model, now), None, "all read, the poll is next");
         model.refresh(now);
         assert_eq!(
@@ -634,8 +634,8 @@ mod tests {
         let mut model = TeamsModel::default();
         model.follow(follow_all(TEAM_A), now);
         watched(&mut model, now, TEAM_A);
-        model.apply(&TeamRead::List, Ok(fixture()), now);
-        model.apply(&TeamRead::Waiting { before: None }, Ok(fixture()), now);
+        model.apply(&TeamRead::List { after: None }, Ok(fixture()), now);
+        model.apply(&TeamRead::Waiting { after: None }, Ok(fixture()), now);
         assert_eq!(due(&mut model, now), None);
         model.tasks_changed(now);
         assert_eq!(
@@ -648,7 +648,7 @@ mod tests {
             due(&mut model, now),
             Some(TeamRead::Queue {
                 team: TEAM_A.to_owned(),
-                cursor: None,
+                after: None,
             })
         );
         assert_eq!(
@@ -673,7 +673,7 @@ mod tests {
         assert!(again.is_empty(), "the same reply shows nothing new");
         let read = TeamRead::Queue {
             team: TEAM_A.to_owned(),
-            cursor: None,
+            after: None,
         };
         let again = model.apply(&read, Ok(queue()), now);
         assert!(again.is_empty());
@@ -786,8 +786,8 @@ mod tests {
         let mut model = TeamsModel::default();
         model.follow(follow_all(TEAM_A), now);
         watched(&mut model, now, TEAM_A);
-        model.apply(&TeamRead::List, Ok(fixture()), now);
-        model.apply(&TeamRead::Waiting { before: None }, Ok(fixture()), now);
+        model.apply(&TeamRead::List { after: None }, Ok(fixture()), now);
+        model.apply(&TeamRead::Waiting { after: None }, Ok(fixture()), now);
         assert_eq!(model.wait(now), POLL);
         assert_eq!(model.wait(now + POLL / 2), POLL / 2);
     }
