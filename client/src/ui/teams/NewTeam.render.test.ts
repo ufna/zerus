@@ -19,7 +19,7 @@ function setup(overrides: Partial<Parameters<typeof NewTeam>[0]> = {}) {
     catalog, busy: false, machineId: "00000000-0000-4000-8000-0000000000aa",
     defaultProject: "example-project", defaultFolder: "/workspace/example",
     onCheckFolder: async () => ({ git: true, head: "0123456789abcdef0123456789abcdef01234567", branch: "main", reason: "" }),
-    onCreate: (input) => created.push(input), onSaveTemplate: async () => {}, onClose: () => {}, ...overrides,
+    onCreate: async (input) => { created.push(input); return { outcome: "done", receipt: {}, request_id: input.request_id }; }, onSaveTemplate: async () => {}, onClose: () => {}, ...overrides,
   }), host);
   return { host, created };
 }
@@ -96,4 +96,28 @@ it("saves the changed template", async () => {
   find(host, "Save as template").click();
   await vi.waitFor(() => expect(saved).toHaveLength(1));
   expect(saved[0]).toMatchObject({ id: "bugfix-bugfix", name: "Bugfix" });
+});
+
+it("drops a late folder check for a folder that is no longer shown", async () => {
+  let resolveFirst!: (value: { git: boolean; head: string; branch: string; reason: string }) => void;
+  const { host } = setup({
+    onCheckFolder: (path) => path === "/workspace/a"
+      ? new Promise((resolve) => { resolveFirst = resolve; })
+      : Promise.resolve({ git: true, head: "0123456789abcdef0123456789abcdef01234567", branch: "main", reason: "" }),
+  });
+  const name = host.querySelector<HTMLInputElement>('input[placeholder="Fixes"]')!;
+  name.value = "Fixes"; name.dispatchEvent(new Event("input", { bubbles: true }));
+  const folder = host.querySelector<HTMLInputElement>('input[aria-label="Project folder"]')!;
+  folder.value = "/workspace/a"; folder.dispatchEvent(new Event("input", { bubbles: true }));
+  find(host, "Check folder").click();
+  // The person edits the folder while the check is in flight.
+  folder.value = "/workspace/not-checked"; folder.dispatchEvent(new Event("input", { bubbles: true }));
+  resolveFirst({ git: true, head: "0123456789abcdef0123456789abcdef01234567", branch: "main", reason: "" });
+  await vi.waitFor(() => expect(find(host, "Check folder").disabled).toBe(false));
+  expect(host.querySelector("[data-folder-ok]")).toBeNull();
+  expect(find(host, "Create team").disabled).toBe(true);
+  // The current folder's own check is what Create reads.
+  find(host, "Check folder").click();
+  await vi.waitFor(() => expect(host.querySelector("[data-folder-ok]")).not.toBeNull());
+  expect(find(host, "Create team").disabled).toBe(false);
 });

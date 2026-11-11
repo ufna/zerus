@@ -201,26 +201,94 @@ pub fn team_intent_dismiss(teams: State<'_, Teams>, call: TeamCall) -> Result<()
 
 /// The person's Teams catalog: `hgs team catalog show --json` answers
 /// `{"ok": true, "catalog": {...}}` (roles, pipelines, templates and the
-/// lead's planning rules).
+/// lead's planning rules). The form indexes the catalog's arrays, so the
+/// boundary refuses a success that does not carry them.
 #[tauri::command]
 pub async fn teams_catalog() -> Result<Value, String> {
-    read_team_json(&["team", "catalog", "show", "--json"], None).await
+    let reply = read_team_json(&["team", "catalog", "show", "--json"], None).await?;
+    catalog_shape(&reply)
 }
 
 /// Saves one template to the person's own catalog: `hgs team template save`
-/// reads the template on standard input.
+/// reads the template on standard input. The request is bounded before it is
+/// serialized into a child's stdin.
 #[tauri::command]
 pub async fn teams_template_save(template: Value) -> Result<Value, String> {
-    read_team_json(&["team", "template", "save", "--json"], Some(template)).await
+    let size = serde_json::to_vec(&template)
+        .map_err(|error| error.to_string())?
+        .len();
+    if size > TEMPLATE_INPUT_MAX {
+        return Err(format!(
+            "The template is {size} bytes; the limit is {TEMPLATE_INPUT_MAX}."
+        ));
+    }
+    let reply = read_team_json(&["team", "template", "save", "--json"], Some(template)).await?;
+    let saved = reply
+        .get("saved")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if reply.get("ok").and_then(Value::as_bool) != Some(true) || saved.is_empty() {
+        return Err("The template was not saved: the answer named no template.".into());
+    }
+    Ok(reply)
 }
 
 /// A project folder's checkout facts (`hgs git-status --path PATH --json`):
-/// its branch and head commit, or the reason it is not a repository. The New
-/// team form uses it to verify the folder and to name the base commit.
+/// its branch and head commit, or the reason it is not a repository. This
+/// reply has no `ok` field of its own, so only its object shape is checked.
 #[tauri::command]
 pub async fn teams_project(path: String) -> Result<Value, String> {
-    read_team_json(&["git-status", "--path", &path, "--json"], None).await
+    if path.len() > PATH_INPUT_MAX {
+        return Err(format!(
+            "The folder path is {} bytes; the limit is {PATH_INPUT_MAX}.",
+            path.len()
+        ));
+    }
+    let reply = read_team_json(&["git-status", "--path", &path, "--json"], None).await?;
+    if !reply.is_object() {
+        return Err("The folder check's answer is not an object.".into());
+    }
+    for key in ["state", "head", "branch"] {
+        if let Some(value) = reply.get(key) {
+            if !value.is_string() {
+                return Err(format!("The folder check's {key} is not a string."));
+            }
+        }
+    }
+    Ok(reply)
 }
+
+/// The catalog's own shape: a success with the three arrays the form reads.
+fn catalog_shape(reply: &Value) -> Result<Value, String> {
+    if reply.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err("The catalog answer is not a success.".into());
+    }
+    let catalog = reply
+        .get("catalog")
+        .filter(|catalog| catalog.is_object())
+        .ok_or("The catalog answer has no catalog.")?;
+    for key in ["roles", "pipelines", "templates"] {
+        if catalog.get(key).and_then(Value::as_array).is_none() {
+            return Err(format!("The catalog answer has no {key} array."));
+        }
+    }
+    let templates = catalog["templates"].as_array().ok_or("no templates")?;
+    if templates.iter().any(|template| {
+        !template.is_object()
+            || template
+                .get("id")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+    }) {
+        return Err("The catalog has a template without an id.".into());
+    }
+    Ok(reply.clone())
+}
+
+/// The CLI's own request bound for one write (262,144 bytes).
+const TEMPLATE_INPUT_MAX: usize = 262_144;
+/// The longest folder path accepted before any child runs (4 KiB).
+const PATH_INPUT_MAX: usize = 4_096;
 
 /// One person-only `hgs` read through the client's bounded runner. These
 /// commands start nothing: a refusal keeps its code and words.
@@ -240,36 +308,102 @@ async fn read_team_json(args: &[&str], stdin: Option<Value>) -> Result<Value, St
     .await
     .map_err(|error| error.to_string())?
     .map_err(|too_large| format!("hgs answer passed {} bytes", too_large.cap))?;
-    let Exit::Code {
-        code: 0,
-        stdout,
-        stderr,
-    } = exit
-    else {
-        return Err(match exit {
-            Exit::Code { stderr, .. } | Exit::Abnormal { stderr } => {
-                let text = stderr.trim();
-                if text.is_empty() {
-                    "hgs refused the read".into()
-                } else {
-                    text.to_owned()
-                }
-            }
-            Exit::TimedOut => "hgs did not answer in time".into(),
-            Exit::StartFailed(message) => format!("hgs did not start: {message}"),
-            Exit::WriteFailed => "hgs did not take the request".into(),
-        });
+    let (code, stdout, stderr) = match exit {
+        Exit::Code {
+            code,
+            stdout,
+            stderr,
+        } => (code, stdout, stderr),
+        Exit::Abnormal { stderr } => (1, Vec::new(), stderr),
+        Exit::TimedOut => return Err("hgs did not answer in time".into()),
+        Exit::StartFailed(message) => return Err(format!("hgs did not start: {message}")),
+        Exit::WriteFailed => return Err("hgs did not take the request".into()),
     };
-    let reply: Value = serde_json::from_slice(&stdout).map_err(|error| error.to_string())?;
-    if reply.get("ok").and_then(Value::as_bool) == Some(false) {
-        let code = reply["error"]["code"].as_str().unwrap_or_default();
-        let message = reply["error"]["message"].as_str().unwrap_or_default();
-        return Err(if message.is_empty() {
-            format!("hgs refused: {code}")
+    decode_team_reply(code, &stdout, stderr.as_bytes())
+}
+
+/// Decode one helper's answer: a structured refusal on stdout is read even on a
+/// nonzero exit, so its reason reaches the person; otherwise a nonzero exit
+/// falls back to stderr, and a success is the JSON object it answered.
+fn decode_team_reply(code: i32, stdout: &[u8], stderr: &[u8]) -> Result<Value, String> {
+    if let Ok(reply) = serde_json::from_slice::<Value>(stdout) {
+        if reply.get("ok").and_then(Value::as_bool) == Some(false) {
+            let refusal = reply["error"]["code"].as_str().unwrap_or_default();
+            let message = reply["error"]["message"].as_str().unwrap_or_default();
+            return Err(if message.is_empty() {
+                format!("hgs refused: {refusal}")
+            } else {
+                format!("{refusal}: {message}")
+            });
+        }
+    }
+    if code != 0 {
+        let text = String::from_utf8_lossy(stderr);
+        let text = text.trim();
+        return Err(if text.is_empty() {
+            "hgs refused the read".into()
         } else {
-            format!("{code}: {message}")
+            text.to_owned()
         });
     }
-    let _ = stderr;
-    Ok(reply)
+    serde_json::from_slice(stdout).map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_structured_refusal_is_decoded_on_a_nonzero_exit() {
+        let refusal = json!({"ok": false, "error": {"code": "permission_denied", "message": "Only the person may save a template."}});
+        let error = decode_team_reply(1, refusal.to_string().as_bytes(), b"").unwrap_err();
+        assert!(
+            error.contains("Only the person may save a template."),
+            "{error}"
+        );
+        assert!(error.contains("permission_denied"), "{error}");
+    }
+
+    #[test]
+    fn a_nonzero_exit_without_a_reply_keeps_stderr_or_a_generic_reason() {
+        assert_eq!(
+            decode_team_reply(1, b"", b"hgs: the catalog is unreadable\n").unwrap_err(),
+            "hgs: the catalog is unreadable"
+        );
+        assert_eq!(
+            decode_team_reply(1, b"", b"").unwrap_err(),
+            "hgs refused the read"
+        );
+    }
+
+    #[test]
+    fn a_malformed_success_is_refused_by_the_catalog_shape() {
+        assert!(catalog_shape(&json!({})).is_err());
+        assert!(catalog_shape(&json!({"ok": true, "catalog": {}})).is_err());
+        assert!(catalog_shape(&json!({"ok": true, "catalog": {"roles": [], "pipelines": [], "templates": [{"name": "No id"}]}})).is_err());
+        let catalog = json!({"ok": true, "catalog": {"roles": [], "pipelines": [], "templates": [{"id": "bugfix", "name": "Bugfix"}]}});
+        assert!(catalog_shape(&catalog).is_ok());
+    }
+
+    #[test]
+    fn a_folder_check_object_needs_no_ok_field() {
+        assert!(decode_team_reply(
+            0,
+            br#"{"state":"ok","head":"0123456789abcdef0123456789abcdef01234567","branch":"main"}"#,
+            b""
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn the_input_bounds_refuse_before_a_child_runs() {
+        assert!(TEMPLATE_INPUT_MAX == 262_144 && PATH_INPUT_MAX == 4_096);
+        assert!(
+            serde_json::to_vec(&json!({"x": "a".repeat(TEMPLATE_INPUT_MAX)}))
+                .unwrap()
+                .len()
+                > TEMPLATE_INPUT_MAX
+        );
+    }
 }

@@ -46,16 +46,29 @@ export function rosterLines(catalog: TeamCatalog, template: TeamCatalogTemplate)
   });
 }
 
+/** The pipelines the template resolves to (its default and its seats' roles'
+ * defaults) in the catalog's order, its default marked. */
 export function pipelineLines(catalog: TeamCatalog, template: TeamCatalogTemplate): string[] {
-  return catalog.pipelines.map((pipeline) => {
-    const stages = pipeline.stages.map((stage) => `${tr(stage.kind)}: ${stage.role}`).join(" → ");
-    return `${pipeline.name || pipeline.id}${stages ? ` — ${stages}` : ""}${pipeline.id === template.default_pipeline ? "" : ""}`;
-  });
+  const used = new Set<string>();
+  if (template.default_pipeline) used.add(template.default_pipeline);
+  for (const seat of template.roster) {
+    if (seat.count === 0) continue;
+    const role = catalog.roles.find((candidate) => candidate.id === seat.role);
+    if (role?.pipeline) used.add(role.pipeline);
+  }
+  return catalog.pipelines
+    .filter((pipeline) => used.has(pipeline.id))
+    .map((pipeline) => {
+      const stages = pipeline.stages.map((stage) => `${tr(stage.kind)}: ${stage.role}`).join(" → ");
+      const mark = pipeline.id === template.default_pipeline ? ` (${tr("default")})` : "";
+      return `${pipeline.name || pipeline.id}${mark}${stages ? ` — ${stages}` : ""}`;
+    });
 }
 
 export interface NewTeamInput {
-  /** The new team's id, made here once. */
+  /** The new team's id and the create intent's request id, made here once. */
   team: string;
+  request_id: string;
   template: string;
   project: string;
   name: string;
@@ -74,7 +87,7 @@ export interface NewTeamProps {
   defaultProject: string;
   defaultFolder: string;
   onCheckFolder: (path: string) => Promise<TeamProjectFacts>;
-  onCreate: (input: NewTeamInput) => void;
+  onCreate: (input: NewTeamInput) => Promise<import("../../store/teams").TeamOutcome>;
   onSaveTemplate: (template: TeamCatalogTemplate) => Promise<void>;
   onClose: () => void;
 }
@@ -88,9 +101,28 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
   const [project, setProject] = createSignal(props.defaultProject);
   const [folder, setFolder] = createSignal(props.defaultFolder);
   const [branch, setBranch] = createSignal("");
-  const [facts, setFacts] = createSignal<TeamProjectFacts>();
+  const [facts, setFacts] = createSignal<{ path: string; generation: number; facts: TeamProjectFacts }>();
   const [checking, setChecking] = createSignal(false);
   const [error, setError] = createSignal("");
+  const [creating, setCreating] = createSignal(false);
+  /** The one create intent: its team id and request id stay until it ends. */
+  const [intent, setIntent] = createSignal<{ team: string; request_id: string } | null>(null);
+  let checkGeneration = 0;
+  /** The unresolved call of this form's create intent, when it has one. */
+  const intentCall = () => {
+    const current = intent();
+    return current ? teams.unresolved().find((entry) => entry.call.request_id === current.request_id) : undefined;
+  };
+  const locked = () => props.busy || creating() || !!intentCall();
+  const checkedFolder = () => {
+    const checked = facts();
+    return checked && checked.path === folder().trim() ? checked.facts : undefined;
+  };
+  onMount(() => {
+    // A create left unresolved keeps its ids across the dialog closing.
+    const open = teams.unresolved().find((entry) => entry.call.action.kind === "create");
+    if (open) setIntent({ team: open.call.team, request_id: open.call.request_id });
+  });
   const [saving, setSaving] = createSignal(false);
   const [saved, setSaved] = createSignal("");
   const [howto, setHowto] = createSignal(false);
@@ -100,25 +132,61 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
     if (!template()) return tr("Choose a template.");
     if (!name().trim()) return tr("Name the team.");
     if (!project().trim()) return tr("Name the project.");
-    if (!facts()?.git) return tr("Check the project folder: it must be a Git folder.");
-    if (props.busy) return tr("Wait for the team to be created.");
+    if (!checkedFolder()?.git) return tr("Check the project folder: it must be a Git folder.");
+    if (locked()) return tr("Wait for the team to be created.");
     return "";
   });
 
+  // A check belongs to the exact path it asked for: an answer for another path
+  // (or an older generation) never writes the facts Create reads.
   const check = async () => {
+    const path = folder().trim();
+    const generation = ++checkGeneration;
     setChecking(true); setError("");
-    try { setFacts(await props.onCheckFolder(folder())); }
-    catch (failure) { setFacts(undefined); setError(String(failure)); }
-    finally { setChecking(false); }
+    try {
+      const answer = await props.onCheckFolder(path);
+      if (generation !== checkGeneration || folder().trim() !== path) return;
+      setFacts({ path, generation, facts: answer });
+    } catch (failure) {
+      if (generation !== checkGeneration || folder().trim() !== path) return;
+      setFacts(undefined); setError(String(failure));
+    } finally {
+      if (generation === checkGeneration) setChecking(false);
+    }
   };
-  const create = () => {
+  const create = async () => {
     const chosen = template();
-    const checked = facts();
-    if (!chosen || !checked?.git || createWhy()) return;
-    props.onCreate({
-      team: newRequestId(), template: chosen.id, project: project().trim(), name: name().trim(), goal: goal().trim(),
-      home: props.machineId, integration_branch: proposed(), base_commit: checked.head, integration: chosen.settings.integration,
-    });
+    const checked = checkedFolder();
+    if (!chosen || !checked?.git || createWhy() || intentCall() || creating()) return;
+    const current = intent() ?? { team: newRequestId(), request_id: newRequestId() };
+    setIntent(current);
+    setCreating(true);
+    setError("");
+    try {
+      const outcome = await props.onCreate({
+        team: current.team, request_id: current.request_id, template: chosen.id, project: project().trim(), name: name().trim(), goal: goal().trim(),
+        home: props.machineId, integration_branch: proposed(), base_commit: checked.head, integration: chosen.settings.integration,
+      });
+      if (outcome.outcome === "done") setIntent(null);
+      else if (outcome.outcome === "failed") { setError(outcome.detail); setIntent(null); }
+      // uncertain and pending keep the intent; the store's unresolved entry
+      // offers Check and Dismiss until it ends.
+    } catch (failure) {
+      // A lost reply is the store's uncertain call, not a refusal.
+      setError(String(failure));
+    } finally { setCreating(false); }
+  };
+  const checkCreate = async () => {
+    const entry = intentCall();
+    if (!entry) return;
+    const outcome = await teams.runAgain(entry.call);
+    if (outcome.outcome === "done") setIntent(null);
+    else if (outcome.outcome === "failed") { setError(outcome.detail); setIntent(null); }
+  };
+  const dismissCreate = async () => {
+    const entry = intentCall();
+    if (entry) await teams.dismiss(entry);
+    setIntent(null);
   };
   const save = async () => {
     const chosen = template();
@@ -140,7 +208,7 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
           <For each={props.catalog?.templates ?? []}>
             {(candidate) => (
               <label class="nt-template-row" classList={{ on: templateId() === candidate.id }} data-template={candidate.id}>
-                <input type="radio" name={templateGroup} value={candidate.id} checked={templateId() === candidate.id} onChange={() => setTemplateId(candidate.id)} />
+                <input type="radio" name={templateGroup} value={candidate.id} checked={templateId() === candidate.id} disabled={locked()} onChange={() => { if (!locked()) setTemplateId(candidate.id); }} />
                 <span class="nt-template-copy"><span class="nt-template-name">{tr(candidate.name || candidate.id)}</span><span class="nt-hint">{tr(candidate.description)}</span></span>
               </label>
             )}
@@ -151,14 +219,14 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
         <h2>{tr("Team")}</h2>
         <div class="nt-pair">
           <label class="nt-field">{tr("Team name")}
-            <TextInput class="field" value={name()} onInput={(event) => setName(event.currentTarget.value)} placeholder={tr("Fixes")} historyKey="team-name" />
+            <TextInput class="field" value={name()} disabled={locked()} onInput={(event) => setName(event.currentTarget.value)} placeholder={tr("Fixes")} historyKey="team-name" />
           </label>
           <label class="nt-field">{tr("Goal")}
-            <TextInput class="field" value={goal()} onInput={(event) => setGoal(event.currentTarget.value)} placeholder={tr("What should the team work on?")} historyKey="team-goal" />
+            <TextInput class="field" value={goal()} disabled={locked()} onInput={(event) => setGoal(event.currentTarget.value)} placeholder={tr("What should the team work on?")} historyKey="team-goal" />
           </label>
         </div>
         <label class="nt-field">{tr("Project")}
-          <TextInput class="field" value={project()} onInput={(event) => setProject(event.currentTarget.value)} historyKey="team-project" />
+          <TextInput class="field" value={project()} disabled={locked()} onInput={(event) => setProject(event.currentTarget.value)} historyKey="team-project" />
         </label>
       </section>
       <Show when={template()}>
@@ -184,27 +252,39 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
       <section class="nt-section" aria-label={tr("Project folder")}>
         <h2>{tr("Project folder")}</h2>
         <div class="nt-inline">
-          <TextInput class="field mono" aria-label={tr("Project folder")} value={folder()} onInput={(event) => { setFolder(event.currentTarget.value); setFacts(undefined); }} historyKey="team-folder" />
-          <button type="button" class="btn" data-check-folder disabled={checking() || !folder().trim()} onClick={() => void check()}>{tr("Check folder")}</button>
+          <TextInput class="field mono" aria-label={tr("Project folder")} value={folder()} disabled={locked()} onInput={(event) => { setFolder(event.currentTarget.value); setFacts(undefined); }} historyKey="team-folder" />
+          <button type="button" class="btn" data-check-folder disabled={checking() || locked() || !folder().trim()} onClick={() => void check()}>{tr("Check folder")}</button>
         </div>
-        <Show when={facts()}>
+        <Show when={checkedFolder()}>
           {(checked) => checked().git
             ? <span class="nt-ok" role="status" data-folder-ok>{tr("A Git folder at %1, base commit %2.", checked().branch || tr("detached"), checked().head.slice(0, 12))}</span>
             : <span class="nt-foot-bad" role="status" data-folder-bad>{tr("Not a Git folder: %1", checked().reason)}</span>}
         </Show>
         <label class="nt-field">{tr("Integration branch")}
           <TextInput class="field mono" value={proposed()} onInput={(event) => setBranch(event.currentTarget.value)}
-            disabled={template()?.settings.integration !== "branch"} historyKey="team-branch" />
+            disabled={locked() || template()?.settings.integration !== "branch"} historyKey="team-branch" />
         </label>
       </section>
       <Show when={error()}><div class="notice danger nt-error" role="alert" data-new-team-error><Icon name="triangle-alert" size={16} /><span>{error()}</span></div></Show>
+      <Show when={intentCall()}>
+        {(entry) => (
+          <div class="notice danger nt-error" role="alert" data-create-uncertain>
+            <Icon name="triangle-alert" size={16} />
+            <span>{entry().state === "pending" ? tr("The team is being created and waits for the core.") : tr("The create's result is unknown. Check it with the same request, or dismiss it.")}</span>
+            <span class="nt-inline">
+              <button type="button" class="btn small" disabled={creating()} onClick={() => void checkCreate()}>{tr("Check")}</button>
+              <button type="button" class="btn small" disabled={creating()} onClick={() => void dismissCreate()}>{tr("Dismiss")}</button>
+            </span>
+          </div>
+        )}
+      </Show>
       <Show when={saved()}><div class="notice nt-note" role="status"><Icon name="check" size={16} /><span>{saved()}</span></div></Show>
       <section class="nt-section">
         <NewTeamIntroSteps />
         <NewTeamHowTo open={howto()} onToggle={setHowto} />
       </section>
-      <NewTeamFooter busy={props.busy} createWhy={createWhy()} error={error()} canSave={!!template()} saving={saving()}
-        onSaveTemplate={() => void save()} onCancel={props.onClose} onCreate={create} />
+      <NewTeamFooter busy={props.busy || creating()} createWhy={createWhy()} error={error()} canSave={!!template() && !locked()}
+        saving={saving()} showCreate={!intentCall()} onSaveTemplate={() => void save()} onCancel={props.onClose} onCreate={() => void create()} />
     </div>
   );
 }
@@ -235,16 +315,18 @@ export function NewTeamDialog() {
             defaultProject={selected()?.project ?? ""}
             defaultFolder={selected()?.gitRoot || selected()?.cwdPath || ""}
             onCheckFolder={(path) => teams.project(path)}
-            onCreate={(input) => {
+            onCreate={async (input) => {
               const call: TeamCall = {
-                team: input.team, team_name: input.name, request_id: newRequestId(),
+                team: input.team, team_name: input.name, request_id: input.request_id,
                 action: {
                   kind: "create", template: input.template, project: input.project, name: input.name, goal: input.goal,
                   home: input.home, integration_branch: input.integration_branch, base_commit: input.base_commit,
                   integration: input.integration,
                 },
               };
-              void teams.run(call).then((outcome) => { if (outcome.outcome === "done") close(); });
+              const outcome = await teams.run(call, "new-team");
+              if (outcome.outcome === "done") close();
+              return outcome;
             }}
             onSaveTemplate={(template) => teams.saveTemplate(template)}
             onClose={close}

@@ -7,7 +7,7 @@ import type { TeamFailure, TeamOfSession, TeamView, UnresolvedCall } from "../..
 
 const f = vi.hoisted(() => ({
   selected: (() => undefined) as () => { key: string; computer: string; launchId: string; sessionId: string; runId: string } | undefined,
-  choose: (_row: unknown) => {}, lookup: vi.fn(), close: vi.fn(), open: vi.fn(), run: vi.fn(), check: vi.fn(), dismiss: vi.fn(), clear: vi.fn(),
+  choose: (_row: unknown) => {}, lookup: vi.fn(), close: vi.fn(), open: vi.fn(), run: vi.fn(), check: vi.fn(), dismiss: vi.fn(), clear: vi.fn(), probe: vi.fn(), hidden: vi.fn(),
   setBinding: (_value: TeamOfSession) => {}, setTeam: (_value: TeamView | undefined) => {}, setFailure: (_value: TeamFailure | null) => {}, setUnresolved: (_value: UnresolvedCall[]) => {},
 }));
 vi.mock("../../store/ui", async () => {
@@ -23,7 +23,7 @@ vi.mock("../../store/teams", async () => {
   const [team, setTeam] = createSignal<TeamView>(); const [failure, setFailure] = createSignal<TeamFailure | null>(null); const [unresolved, setUnresolved] = createSignal<UnresolvedCall[]>([]);
   Object.assign(f, { setBinding, setTeam, setFailure, setUnresolved });
   return { newRequestId: () => "request-1", teams: {
-    probe: vi.fn(), hidden: vi.fn(), teamOfSession: (identity: unknown) => { f.lookup(identity); return binding(); },
+    probe: f.probe, hidden: f.hidden, teamOfSession: (identity: unknown) => { f.lookup(identity); return binding(); },
     team, failure, failureFor: (source: string) => failure()?.source === source ? failure() : null, unresolved,
     closeTeam: async () => { f.close(); setTeam(undefined); }, openTeam: async (id: string) => { f.open(id); },
     run: f.run, check: f.check, dismiss: f.dismiss, clearFailure: f.clear, busy: () => false, page: vi.fn(), confirmation: () => null, cancelConfirmation: vi.fn(),
@@ -35,6 +35,12 @@ let dispose: (() => void) | undefined;
 afterEach(() => { dispose?.(); dispose = undefined; f.choose(undefined); f.setBinding({ state: "unknown" }); f.setTeam(undefined); f.setFailure(null); f.setUnresolved([]); document.body.replaceChildren(); vi.clearAllMocks(); });
 const select = (id: string) => f.choose({ key: id, computer: "workstation", launchId: `launch-${id}`, sessionId: "not-a-launch-id", runId: `run-${id}` });
 function setup() { const host = document.createElement("div"); document.body.append(host); dispose = render(() => createComponent(TeamTab, {}), host); return host; }
+
+it("leaves discovery and document visibility to the application", () => {
+  select("a"); setup(); select("b");
+  document.dispatchEvent(new Event("visibilitychange"));
+  expect(f.probe).not.toHaveBeenCalled(); expect(f.hidden).not.toHaveBeenCalled();
+});
 
 it("reacts to selection and list changes using machine/launch identity, retiring old actions (review 4)", async () => {
   select("a"); const host = setup();

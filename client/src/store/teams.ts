@@ -233,8 +233,10 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
       if (entry.key.startsWith("team:")) {
         if (entry.kind === "team") {
           const view = entry.payload as TeamView;
-          if (view.bar.id === followed() || !followed()) batch(() => { setTeam(view); setAvailable(true); });
           const resolve = pendingViews.get(view.bar.id);
+          // A view is shown only for the followed team, or to the one decision
+          // that asked for its revision; a late view after unfollow is dropped.
+          if (view.bar.id === followed() || resolve) batch(() => { setTeam(view); setAvailable(true); });
           if (resolve) { pendingViews.delete(view.bar.id); resolve(view); }
         } else if (entry.kind === "failed") {
           const payload = entry.payload as { code: string; message: string };
@@ -265,14 +267,18 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
   /** The application asks once at start (App's mount); it never polls by itself. */
   async function probe() { await recheck(); }
 
-  /** Window visibility belongs to the application, not to a mounted tab. */
+  /** Window visibility belongs to the application, not to a mounted tab. A
+   * platform that cannot take the call leaves the availability answer to say
+   * whether Teams exist, and never raises from a visibility change. */
   async function hidden(hiddenNow: boolean) {
     setVisible(!hiddenNow);
-    if (hiddenNow) { hiddenAt = Date.now(); await transport.hidden(true); return; }
-    const was = hiddenAt;
-    hiddenAt = undefined;
-    await transport.hidden(false);
-    if (was !== undefined && Date.now() - was >= HIDDEN_RECHECK_MS) await recheck();
+    try {
+      if (hiddenNow) { hiddenAt = Date.now(); await transport.hidden(true); return; }
+      const was = hiddenAt;
+      hiddenAt = undefined;
+      await transport.hidden(false);
+      if (was !== undefined && Date.now() - was >= HIDDEN_RECHECK_MS) await recheck();
+    } catch { /* a synthetic or failed helper: the reads stay as they are */ }
   }
 
   async function openTeam(id: string) {

@@ -1,7 +1,6 @@
-import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, on, onCleanup } from "solid-js";
 import { tr } from "../../i18n";
-import { detailTab, page, selected, setPage } from "../../store/ui";
-import { pageHidden } from "../../store/visibility";
+import { selected, setPage } from "../../store/ui";
 import { machineCards } from "../../store/machines";
 import { newRequestId, teams, type TeamCall, type UnresolvedCall } from "../../store/teams";
 import { teamCall, type TaskButton } from "./actions";
@@ -195,7 +194,6 @@ export function TeamUnresolvedList(props: { entries: readonly UnresolvedCall[]; 
 
 /** Selection and list changes rebind the tab; old reads settle before new ones. */
 export function TeamTab() {
-  onMount(() => { void teams.probe(); });
   const binding = createMemo(selectedLeadBinding);
   const target = createMemo(() => {
     const row = selected(), found = binding();
@@ -210,7 +208,6 @@ export function TeamTab() {
       if (teams.confirmation()?.call.team === previous.team) teams.cancelConfirmation();
     }
   }));
-  createEffect(() => { void teams.hidden(pageHidden() || page() !== "sessions" || detailTab() !== "team"); });
   onCleanup(() => { teams.clearFailure(source()); });
   const view = createMemo(() => {
     const current = target(), ready = scope.ready(), shown = teams.team();

@@ -11,6 +11,8 @@ export interface NewTeamFooterProps {
   error?: string;
   canSave: boolean;
   saving: boolean;
+  /** False while the one create intent waits for its Check or Dismiss. */
+  showCreate?: boolean;
   onSaveTemplate: () => void;
   onCancel: () => void;
   onCreate: () => void;
@@ -33,8 +35,10 @@ export function NewTeamFooter(props: NewTeamFooterProps) {
         <span class="nt-hint grow">{tr("Nothing is created until you press Create team.")}</span>
         <button type="button" class="btn nt-save" disabled={!props.canSave || props.saving || props.busy}
           onClick={props.onSaveTemplate}>{tr("Save as template")}</button>
-        <button type="button" class="btn primary nt-create" disabled={!!props.createWhy || props.busy}
-          title={props.createWhy} onClick={props.onCreate}>{tr("Create team")}</button>
+        <Show when={props.showCreate !== false}>
+          <button type="button" class="btn primary nt-create" disabled={!!props.createWhy || props.busy}
+            title={props.createWhy} onClick={props.onCreate}>{tr("Create team")}</button>
+        </Show>
         <button type="button" class="btn" disabled={props.busy} onClick={props.onCancel}>{tr("Cancel")}</button>
       </div>
     </footer>
