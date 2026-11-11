@@ -13,9 +13,25 @@ pub(super) fn accept(ctx: &mut Context<'_>) -> Result<()> {
     if n.state != NodeState::Reported {
         return Err(invalid("Only a reported task can be accepted."));
     }
-    let owner = needs_merge(ctx, &n) && !ctx.team.settings.delegations.merge_accepted;
+    pipeline::before_decision(ctx, *node)?;
+    let decider = if is_person(ctx.actor) {
+        Decider::Person
+    } else {
+        Decider::Lead
+    };
+    accept_result(ctx, &n, decider, false)
+}
+pub(super) fn accept_result(
+    ctx: &mut Context<'_>,
+    n: &Node,
+    decider: Decider,
+    owner_approved: bool,
+) -> Result<()> {
+    let node = n.id;
+    let owner =
+        !owner_approved && needs_merge(ctx, n) && !ctx.team.settings.delegations.merge_accepted;
     let seq = ctx.decision(
-        *node,
+        node,
         "accept",
         "",
         if owner {
@@ -24,11 +40,6 @@ pub(super) fn accept(ctx: &mut Context<'_>) -> Result<()> {
             DecisionState::Ready
         },
     )?;
-    let decider = if is_person(ctx.actor) {
-        Decider::Person
-    } else {
-        Decider::Lead
-    };
     ctx.db
         .execute(
             "UPDATE nodes SET decided_by=?3 WHERE team=?1 AND id=?2",
@@ -40,7 +51,7 @@ pub(super) fn accept(ctx: &mut Context<'_>) -> Result<()> {
             ctx,
             "integration",
             "Approve integration of the accepted result.",
-            Some(*node),
+            Some(node),
             Some(seq),
         )?);
     }
@@ -59,6 +70,7 @@ pub(super) fn return_task(ctx: &mut Context<'_>) -> Result<()> {
             "Only a reported task with a holder can be returned.",
         ));
     }
+    pipeline::override_task(ctx, *node)?;
     ctx.decision(*node, "return", why, DecisionState::Pending)?;
     Ok(())
 }
@@ -84,6 +96,7 @@ pub(super) fn reassign(ctx: &mut Context<'_>) -> Result<()> {
     {
         return Err(invalid("Replacement member cannot take this task."));
     }
+    pipeline::override_task(ctx, *node)?;
     n.assignee = Some(member.clone());
     ctx.db
         .execute(
@@ -107,6 +120,7 @@ pub(super) fn cancel(ctx: &mut Context<'_>) -> Result<()> {
     ctx.undecided(*node)?;
     ctx.live_node(*node)?;
     reason(why)?;
+    pipeline::override_task(ctx, *node)?;
     ctx.decision(*node, "cancel", why, DecisionState::Pending)?;
     Ok(())
 }

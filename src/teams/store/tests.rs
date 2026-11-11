@@ -1,5 +1,6 @@
 use super::*;
 mod cross;
+mod stage;
 
 #[test]
 fn missing_store_is_lazy_and_preview_is_required() {

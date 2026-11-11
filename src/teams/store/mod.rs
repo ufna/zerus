@@ -10,6 +10,7 @@ pub use decision_state::DecisionState;
 mod pages;
 mod records;
 pub(crate) mod rows;
+mod stage;
 pub use records::*;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
@@ -268,6 +269,8 @@ fn initialize(db: &mut Connection) -> Result<()> {
 // Add empty companion storage and missing read indexes on first creation
 // and when a version-2 store from before these seams is opened.
 fn schema_extensions(db: &Connection) -> Result<()> {
+    db.execute_batch(include_str!("pipeline-schema.sql"))
+        .map_err(storage)?;
     db.execute_batch(include_str!("observation-schema.sql"))
         .map_err(storage)?;
     db.execute_batch(include_str!("read-indexes.sql"))

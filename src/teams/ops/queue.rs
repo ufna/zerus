@@ -307,17 +307,20 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
     let mut n = ctx.node(*node)?;
     let table = ctx.node_table(*node)?;
     let (stage, was_terminal) = validate_observation(ctx, *node, o)?;
-    let released = rows::released(ctx.db, &ctx.team.id, *node)?;
+    let released =
+        rows::released(ctx.db, &ctx.team.id, *node)? || pipeline::released_stage(ctx, &n)?;
     let left = o.key != KeyState::Ours;
     if left || released {
         let release = left && !released && table == "nodes";
-        rows::record_observation(ctx.db, &ctx.team.id, *node, o, release)?;
+        rows::record_observation(ctx.db, &ctx.team.id, *node, o, release || released)?;
         if release {
+            pipeline::observe_override(ctx, &n)?;
             leave_team(ctx, *node)?;
         }
         return Ok(());
     }
     let active = matches!(ctx.team.status, TeamStatus::Running | TeamStatus::Paused);
+    pipeline::before_observation(ctx, &mut n, o, table == "nodes" && !was_terminal)?;
     if !active && table == "nodes" {
         archive_inactive(ctx, *node)?;
     }
