@@ -137,6 +137,11 @@ impl Row {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[path = "launch/checkout.rs"]
+mod checkout;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) use checkout::Checkout;
 pub(super) struct Ledger(Connection);
 impl Ledger {
     pub fn open(state: &Path) -> Result<Self> {
@@ -219,10 +224,21 @@ impl Ledger {
                 .map_err(storage)?;
             tx.execute_batch("PRAGMA user_version=4").map_err(storage)?;
         }
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS launch_checkout_objects (
+            team TEXT NOT NULL, member TEXT NOT NULL, launch TEXT NOT NULL,
+            data TEXT NOT NULL CHECK(length(CAST(data AS BLOB))<=16384), PRIMARY KEY(team,member,launch));").map_err(storage)?;
         tx.commit().map_err(storage)?;
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
             .map_err(storage)?;
         Ok(Self(db))
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub fn record_checkout(&mut self, plan: &Plan, tree: &Worktree) -> Result<bool> {
+        checkout::record(&mut self.0, plan, tree)
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub fn checkout(&self, team: &str, member: &str, launch: &str) -> Result<Option<Checkout>> {
+        checkout::lookup(&self.0, team, member, launch)
     }
     pub fn write_health(&mut self, code: Option<i64>, now: i64) -> Result<()> {
         let at = code.map(|_| now.max(0));
