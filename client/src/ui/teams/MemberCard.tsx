@@ -19,10 +19,14 @@ export function MemberCard(props: { member: MemberView; cards?: readonly TaskVie
   const queue = () => work().filter((item) => item.stage && ["pending", "waiting"].includes(item.stage.state));
   const activity = (item: MemberWork) => {
     if (item.stage) {
-      if (item.stage.state === "in_progress") return item.stage.kind === "review" ? tr("Reviewing #%1", item.card.node)
-        : item.stage.kind === "test" ? tr("Testing #%1", item.card.node)
-        : item.stage.kind === "land" ? tr("Landing #%1", item.card.node) : tr("Stage work on #%1", item.card.node);
-      return item.stage.state === "reported" ? tr("Stage reported for #%1", item.card.node) : tr("Queued for #%1", item.card.node);
+      // The task a stage checks: the card it is folded into, or an orphan
+      // stage's own target; an orphan without one names its own node only.
+      const target = item.card.kind === "stage" ? item.stage.target : item.card.node;
+      if (target === undefined || target === null) return tr("Stage #%1", item.stage.node);
+      if (item.stage.state === "in_progress") return item.stage.kind === "review" ? tr("Reviewing #%1", target)
+        : item.stage.kind === "test" ? tr("Testing #%1", target)
+        : item.stage.kind === "land" ? tr("Landing #%1", target) : tr("Stage work on #%1", target);
+      return item.stage.state === "reported" ? tr("Stage reported for #%1", target) : tr("Queued for #%1", target);
     }
     if (item.card.held) return tr("Task #%1 is held", item.card.node);
     return item.card.state === "in_progress" ? tr("Working on #%1", item.card.node) : item.card.state === "reported" ? tr("Reported #%1", item.card.node) : tr("Assigned to #%1", item.card.node);

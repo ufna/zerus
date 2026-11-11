@@ -2,7 +2,7 @@ import { For, Show } from "solid-js";
 import { tr } from "../../i18n";
 import { Icon } from "../lib/icons";
 import { RoleChip, StageChip, TeamAgent, stageIcon } from "./TeamChips";
-import { cardWorker, currentStage, orderedStages, orphanStage } from "./pipeline-view";
+import { cardWorker, currentStage, orderedStages, orphanStage, workerOf } from "./pipeline-view";
 import type { MemberView, TaskView } from "./types";
 
 export function TeamTaskCard(props: { task: TaskView; members: readonly MemberView[]; selected: boolean; onSelect: () => void }) {
@@ -24,11 +24,12 @@ export function TeamTaskCard(props: { task: TaskView; members: readonly MemberVi
     <span class="team-task-meta">
       <Show when={props.task.role}><RoleChip role={props.task.role} /></Show>
       <Show when={worker()}>{(member) => <TeamAgent agent={member().agent} />}</Show>
-      <Show when={(props.task.implementer || props.task.assignee) && (props.task.implementer || props.task.assignee) !== props.task.role}><span class="team-task-worker">{props.task.implementer || props.task.assignee}</span></Show>
+      <Show when={workerOf(props.task) && workerOf(props.task) !== props.task.role}><span class="team-task-worker">{workerOf(props.task)}</span></Show>
+      <Show when={props.task.kind === "stage" && props.task.implementer}><span class="team-task-worker dim" data-checks>{tr("checks the work of %1", props.task.implementer)}</span></Show>
       <Show when={props.task.state === "accepted" && props.task.decided_by} fallback={<Show when={props.task.round > 0}><span class="team-task-round">{tr("Attempt %1", props.task.round)}</span></Show>}><span class="team-task-decision">{tr("Accepted by %1", props.task.decided_by)}</span></Show>
     </span>
     <span class="team-task-stages">
-      <For each={stages()}>{(stage) => <StageChip stage={stage} rounds={props.task.rounds} />}</For>
+      <For each={stages()}>{(stage) => <StageChip stage={stage} rounds={props.task.rounds} on={props.task} />}</For>
       <Show when={decision()}><span class="team-stage-chip team-decision-chip"><Icon name="crown" size={11} />{tr("Decision needed")}</span></Show>
       <Show when={props.task.held}><span class="team-stage-chip team-held-chip"><Icon name="lock" size={11} />{tr("held")}</span></Show>
       <Show when={props.task.integrated}><span class="team-stage-chip"><Icon name="git-merge" size={11} />{tr("merged")}</span></Show>

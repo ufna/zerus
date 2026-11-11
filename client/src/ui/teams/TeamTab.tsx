@@ -3,6 +3,7 @@ import { tr } from "../../i18n";
 import { selected, setPage } from "../../store/ui";
 import { machineCards } from "../../store/machines";
 import { newRequestId, teams, type TeamCall, type UnresolvedCall } from "../../store/teams";
+import { rowIdentity } from "./session-binding";
 import { teamCall, type TaskButton } from "./actions";
 import { MemberCard } from "./MemberCard";
 import { TeamBar } from "./team-bar";
@@ -12,7 +13,7 @@ import { stageLine } from "./task-line";
 import { TextInput } from "../lib/TextField";
 import { Icon } from "../lib/icons";
 import type { TeamView } from "./types";
-import { boardColumns, type BoardColumn } from "./pipeline-view";
+import { boardColumns, stageAgrees, type BoardColumn } from "./pipeline-view";
 import { followTeamScope, type TeamScope } from "./team-tab-scope";
 import { TeamTaskCard } from "./TeamTaskCard";
 import { openTeamNode, setOpenTeamNode } from "./openNode";
@@ -39,6 +40,9 @@ function columnLabel(column: BoardColumn): string {
   }
 }
 
+/** Board pages read to find the node Open task names before a notice says so. */
+export const OPEN_NODE_PAGES = 4;
+
 /** The workspace, from a view the store has already projected. */
 export function TeamWorkspace(props: {
   view: TeamView;
@@ -46,25 +50,55 @@ export function TeamWorkspace(props: {
   failure: { code: string; message: string } | null;
   actionFailure?: string | null;
   onAction: (kind: string, fields?: Record<string, unknown>) => void;
-  onPage: (cursor: string) => void;
+  /** A queue page by its cursor; null is the first page. */
+  onPage: (cursor: string | null) => void;
   onAddTask: () => void;
 }) {
   const [selectedNode, setSelectedNode] = createSignal<number | null>(null);
+  /** The stage Open task named, shown in its parent card's detail. */
+  const [focusStage, setFocusStage] = createSignal<number | null>(null);
+  const [openNotice, setOpenNotice] = createSignal("");
   const [asking, setAsking] = createSignal<TaskButton | null>(null);
   const [reason, setReason] = createSignal("");
-  createEffect(on(() => props.view.bar.id, () => { setSelectedNode(null); setAsking(null); setReason(""); }, { defer: true }));
-  // Waiting for you's Open task: the node it names is selected once.
-  createEffect(() => {
-    const wanted = openTeamNode();
-    if (wanted && wanted.team === props.view.bar.id) { setSelectedNode(wanted.node); setOpenTeamNode(null); }
-  });
+  let lookups = 0;
+  // Only another team resets the selection: a refreshed view of the same team
+  // keeps the open card and a reason being typed.
+  const teamId = createMemo(() => props.view.bar.id);
+  createEffect(on(teamId, () => { setSelectedNode(null); setFocusStage(null); setOpenNotice(""); setAsking(null); setReason(""); lookups = 0; }, { defer: true }));
   const groups = createMemo(() => boardColumns(props.view));
   const all = createMemo(() => props.view.groups.flatMap((group) => group.cards));
+  // Waiting for you's Open task: the node it names, or the card a stage of that
+  // number is folded into, is selected once. A node not on this page is looked
+  // for from the first page through at most OPEN_NODE_PAGES pages; then a
+  // notice says it was not found. The link is never dropped silently.
+  createEffect(() => {
+    const wanted = openTeamNode();
+    if (!wanted || wanted.team !== props.view.bar.id) return;
+    const cards = all();
+    const own = cards.find((candidate) => candidate.node === wanted.node);
+    const parent = own ? undefined : cards.find((candidate) => candidate.stages.some((stage) => stage.node === wanted.node));
+    if (own || parent) {
+      setSelectedNode((own ?? parent)!.node); setFocusStage(parent ? wanted.node : null);
+      setOpenNotice(""); setOpenTeamNode(null); lookups = 0;
+      return;
+    }
+    const cursor = lookups === 0 && props.view.after ? null : lookups < OPEN_NODE_PAGES ? props.view.next : null;
+    if (cursor !== null || (lookups === 0 && props.view.after)) {
+      lookups++;
+      setOpenNotice(tr("Looking for task #%1 on the board's pages…", wanted.node));
+      props.onPage(cursor);
+      return;
+    }
+    setOpenNotice(tr("Task #%1 is not on the board's pages that were read.", wanted.node));
+    setOpenTeamNode(null); lookups = 0;
+  });
+  const select = (node: number) => { setSelectedNode(node); setFocusStage(null); setOpenNotice(""); };
   const card = createMemo(() => all().find((candidate) => candidate.node === selectedNode()) ?? null);
   const send = (kind: string, fields: Record<string, unknown> = {}) => { props.onAction(kind, fields); setAsking(null); setReason(""); };
   return (
     <div class="team-tab" data-team-tab>
       <TeamBar view={props.view} busy={props.busy} onAction={(kind) => send(kind)} />
+      <Show when={openNotice()}>{(text) => <div class="notice team-notice" role="status" data-team-open-notice><Icon name="info" size={16} /><span>{text()}</span></div>}</Show>
       <Show when={props.actionFailure}>{(reason) => <div class="notice danger team-notice" role="alert" data-team-action-failure><Icon name="triangle-alert" size={16} /><span>{reason()}</span></div>}</Show>
       <Show when={props.failure}>
         {(failure) => (
@@ -88,7 +122,7 @@ export function TeamWorkspace(props: {
                       <h3><Show when={group.kind}><Icon name={group.kind === "review" ? "search-check" : group.kind === "test" ? "flask-conical" : "git-merge"} size={12} /></Show><span>{columnLabel(group)}</span><span class="count">{group.cards.length}</span></h3>
                       <div class="team-column-cards">
                         <Show when={!group.cards.length}><p class="team-column-empty">—</p></Show>
-                        <For each={group.cards}>{(task) => <TeamTaskCard task={task} members={props.view.members} selected={selectedNode() === task.node} onSelect={() => setSelectedNode(task.node)} />}</For>
+                        <For each={group.cards}>{(task) => <TeamTaskCard task={task} members={props.view.members} selected={selectedNode() === task.node} onSelect={() => select(task.node)} />}</For>
                       </div>
                     </section>
                   )}
@@ -108,7 +142,9 @@ export function TeamWorkspace(props: {
                     <dt>{tr("Role")}</dt><dd>{tr(shown().role || "unknown")}</dd>
                     <dt>{tr("Pipeline")}</dt><dd>{shown().pipeline || tr("none")}</dd>
                     <dt>{tr("Assigned to")}</dt><dd>{shown().assignee || tr("free")}</dd>
-                    <dt>{tr("Implemented by")}</dt><dd>{shown().implementer || tr("nobody yet")}</dd>
+                    <Show when={shown().kind === "stage"} fallback={<><dt>{tr("Implemented by")}</dt><dd>{shown().implementer || tr("nobody yet")}</dd></>}>
+                      <dt>{tr("Checks the work of")}</dt><dd>{shown().implementer || tr("nobody yet")}</dd>
+                    </Show>
                     <dt>{tr("Round")}</dt><dd>{shown().round}</dd>
                     <Show when={shown().decided_by}><dt>{tr("Decided by")}</dt><dd>{tr(shown().decided_by)}</dd></Show>
                   </dl>
@@ -116,8 +152,9 @@ export function TeamWorkspace(props: {
                     <dl class="team-facts">
                       <For each={shown().stages}>{(stage) => (
                         <>
-                          <dt>{tr("Stage %1", stage.index + 1)}</dt>
-                          <dd><span class="team-block">{tr(stage.state)}</span><span class="team-block">{stageLine(stage)}</span></dd>
+                          <dt aria-current={focusStage() === stage.node ? "true" : undefined} data-stage-focus={focusStage() === stage.node ? "" : undefined}>{tr("Stage %1", stage.index + 1)}</dt>
+                          <dd data-stage-node={stage.node}><span class="team-block">{tr(stage.state)}</span><span class="team-block">{stageLine(stage)}</span>
+                            <Show when={!stageAgrees(shown(), stage)}><span class="team-block" data-stage-inconsistent>{tr("Its facts disagree with this task.")}</span></Show></dd>
                         </>
                       )}</For>
                     </dl>
@@ -143,6 +180,7 @@ export function TeamWorkspace(props: {
           <div class="team-toolbar">
             <Show when={props.view.truncated}><span class="team-note">{tr("Some cards are not shown.")}</span></Show>
             <span class="grow" />
+            <Show when={props.view.after}><button type="button" class="btn small" data-team-first-page onClick={() => props.onPage(null)}>{tr("First page")}</button></Show>
             <Show when={props.view.next}>
               {(cursor) => <button type="button" class="btn small" onClick={() => props.onPage(cursor())}>{tr("More…")}</button>}
             </Show>
@@ -151,7 +189,7 @@ export function TeamWorkspace(props: {
         <aside class="team-members" data-team-members aria-label={tr("Members")}>
           <header class="team-section-head"><Icon name="users" size={14} /><h3>{tr("Members")}</h3><span class="count">{props.view.members.length}</span></header>
           <For each={props.view.members}>
-            {(member) => <MemberCard member={member} cards={all()} busy={props.busy} onSelect={setSelectedNode}
+            {(member) => <MemberCard member={member} cards={all()} busy={props.busy} onSelect={select}
               onAction={(kind, id) => send(kind, { member: id })} />}
           </For>
         </aside>
@@ -178,9 +216,9 @@ export function TeamUncertain(props: { detail: string; busy: boolean; onCheck: (
 function selectedLeadBinding() {
   const row = selected();
   if (!row) return { state: "none" as const };
-  const machine = machineCards[row.computer]?.machine_id;
-  if (!machine) return { state: "unknown" as const };
-  return teams.teamOfSession({ machine, launchId: row.launchId, runId: row.runId });
+  const identity = rowIdentity(row);
+  // Without the computer's machine UUID no binding can be verified: no lookup.
+  return identity.machine ? teams.teamOfSession(identity) : { state: "unknown" as const };
 }
 const actionReason = (source: string) => teams.failureFor(source)?.message;
 
@@ -213,10 +251,7 @@ export function TeamTab() {
     const current = target(), ready = scope.ready(), shown = teams.team();
     return ready?.key === current.key && ready.team === current.team && shown?.bar.id === current.team ? shown : undefined;
   });
-  const readFailure = () => {
-    const failure = teams.failure();
-    return failure?.key === `team:${target().team}` ? failure : null;
-  };
+  const readFailure = () => target().team ? teams.readFailureFor(`team:${target().team}`) : null;
   const act = (kind: string, fields: Record<string, unknown> = {}) => {
     const current = view();
     if (!current) return;

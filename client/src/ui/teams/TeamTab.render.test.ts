@@ -16,7 +16,7 @@ function setup(overrides: Partial<Parameters<typeof TeamWorkspace>[0]> = {}) {
   const host = document.createElement("div");
   document.body.append(host);
   const actions: [string, Record<string, unknown> | undefined][] = [];
-  const pages: string[] = [];
+  const pages: (string | null)[] = [];
   dispose = render(() => createComponent(TeamWorkspace, {
     view: teamView, busy: false, failure: null,
     onAction: (kind, fields) => actions.push([kind, fields]), onPage: (cursor) => pages.push(cursor), onAddTask: () => {}, ...overrides,

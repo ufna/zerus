@@ -24,7 +24,7 @@ vi.mock("../../store/teams", async () => {
   Object.assign(f, { setBinding, setTeam, setFailure, setUnresolved });
   return { newRequestId: () => "request-1", teams: {
     probe: f.probe, hidden: f.hidden, teamOfSession: (identity: unknown) => { f.lookup(identity); return binding(); },
-    team, failure, failureFor: (source: string) => failure()?.source === source ? failure() : null, unresolved,
+    team, failure, failureFor: (source: string) => failure()?.source === source ? failure() : null, readFailureFor: (key: string) => failure()?.key === key ? failure() : null, unresolved,
     closeTeam: async () => { f.close(); setTeam(undefined); }, openTeam: async (id: string) => { f.open(id); },
     run: f.run, check: f.check, dismiss: f.dismiss, clearFailure: f.clear, busy: () => false, page: vi.fn(), confirmation: () => null, cancelConfirmation: vi.fn(),
   } };

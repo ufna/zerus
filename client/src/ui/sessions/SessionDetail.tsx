@@ -16,6 +16,7 @@ import { KeepWarmChip } from "./KeepWarmChip";
 import { AgentBadge, MachineBadge, captionText, statusOf, folderOf } from "./SessionCard";
 import { detailTab, page, selected, setDetailTab, setMenu, subagentOpen, type MenuEntry } from "../../store/ui";
 import { teams } from "../../store/teams";
+import { rowIdentity } from "../teams/session-binding";
 import { activity, subagentActivity } from "../../store/session";
 import { activityReadOnly, type ActivitySource } from "../../store/activitySource";
 import { archiveActivity } from "../../store/archiveActivity";
@@ -219,10 +220,15 @@ createRoot(() => {
   createEffect(on(page, (p) => { if (p !== "sessions") void terminal.leavePage(); }, { defer: true }));
 });
 
-/** The Team tab is offered where a team of this project can be the session's. */
+/** The Team tab is offered on a team's lead session, through the same lead
+ * lookup the tab uses: it pages the list and shows the tab while the scanned
+ * list cannot answer, never on a session a complete list says leads no team.
+ * A row whose computer's machine UUID is not known yet waits for it. */
 const teamTabShown = () => {
   const row = selected();
-  return !!row && teams.available() === true && !!teams.list()?.teams.some((summary) => summary.project === row.project);
+  if (!row || teams.available() !== true) return false;
+  const identity = rowIdentity(row);
+  return !!identity.machine && teams.teamOfSession(identity).state !== "none";
 };
 
 const tabs = () => {

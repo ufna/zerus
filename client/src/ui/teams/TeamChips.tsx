@@ -5,8 +5,9 @@ import { AgentTile } from "../sessions/SessionCard";
 import { agentKind } from "../../store/catalog";
 import { roleStyle } from "./roles";
 import { stageLine } from "./task-line";
+import { roundDisagrees, targetDisagrees } from "./pipeline-view";
 import "../styles/team-chips.css";
-import type { StageView } from "./types";
+import type { StageView, TaskView } from "./types";
 
 export function roleIcon(role: string, lead = false): string {
   if (lead) return "crown";
@@ -27,13 +28,24 @@ export function RoleChip(props: { role: string; lead?: boolean }) {
 export function TeamAgent(props: { agent: string }) {
   return <span class="team-agent" aria-label={props.agent}><AgentTile agent={agentKind(props.agent)} size={20} /></span>;
 }
-export function StageChip(props: { stage: StageView; rounds?: number | null }) {
+/** Why a stage's facts contradict each other or the card it is shown on, or "". */
+export function stageDisagreement(stage: StageView, rounds?: number | null, on?: Pick<TaskView, "node" | "kind">): string {
+  if (on && targetDisagrees(on, stage)) return tr("This stage names task #%1, not this one.", stage.target!);
+  if (roundDisagrees(stage, rounds)) return tr("This stage names round %1; the pipeline has %2.", stage.round!, rounds!);
+  return "";
+}
+/** A stage's chip; `on` is the card it is shown on, when it is nested in one. */
+export function StageChip(props: { stage: StageView; rounds?: number | null; on?: Pick<TaskView, "node" | "kind"> }) {
   const round = () => props.stage.round;
-  const roundText = () => props.stage.kind && round() && round()! > 0 ? props.rounds && props.rounds > 0
-    ? tr("r%1/%2", round()!, props.rounds) : tr("Round %1", round()!) : "";
+  const disagreement = () => stageDisagreement(props.stage, props.rounds, props.on);
+  // A round the pipeline does not have is shown as unknown, never as rN/M.
+  const roundText = () => !props.stage.kind || !round() || round()! <= 0 ? ""
+    : roundDisagrees(props.stage, props.rounds) ? tr("r?/%1", props.rounds!)
+    : props.rounds && props.rounds > 0 ? tr("r%1/%2", round()!, props.rounds) : tr("Round %1", round()!);
   return <span class="team-stage-chip" data-stage={props.stage.node} data-kind={props.stage.kind || "role"} data-state={props.stage.state}
-    style={roleStyle(props.stage.role)} title={stageLine(props.stage)}>
-    <Icon name={stageIcon(props.stage)} size={11} /><span>{stageLabel(props.stage)}</span>
+    data-inconsistent={disagreement() ? "true" : undefined} style={roleStyle(props.stage.role)}
+    title={disagreement() ? `${stageLine(props.stage)}\n${disagreement()}` : stageLine(props.stage)}>
+    <Icon name={disagreement() ? "triangle-alert" : stageIcon(props.stage)} size={11} /><span>{stageLabel(props.stage)}</span>
     <Show when={props.stage.state === "accepted"} fallback={<Show when={roundText()}><span>{roundText()}</span></Show>}><Icon name="check" size={11} /></Show>
     <Show when={props.stage.state === "pending" || props.stage.state === "waiting"}><Icon name="clock" size={10} /></Show>
   </span>;
