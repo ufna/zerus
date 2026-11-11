@@ -1067,6 +1067,32 @@ member row carries `model` when its role names one. The client core passes
 them through as optional values; a view shows a stage by its kind when the
 kind is present and by its role's own name otherwise.
 
+**An effect is admitted at the moment it starts (packages 8 and 17, after
+their reviews).** The linearization point of an automatic effect is its
+start, not the read before it. For an effect that is a child process (a
+hand-out, a reopen, `team-done`, an answer, a resume) the stored facts that
+allow it are read and the child is spawned inside one immediate transaction
+on the team store, released as soon as the spawn has returned; the shared
+runner lets an admission hold a value across the spawn for this. For a
+merge the point is the update of the integration ref: the admission is read
+again inside such a transaction held only across that update, not across
+the tree merge before it. A pause, a stop or a switched-off delegation
+committed before the lock prevents the effect; one that waits behind it is
+ordered after. Facts outside the team store are read last in the same
+section, and the remaining window is the spawn call itself.
+
+**Merges (package 8, after its review).** A member reports from the branch
+of its task, which its agent creates; the reported commit is the HEAD of
+the member's owned worktree whatever its branch, and only the ownership
+record is checked. A conflict fact carries at most 199 paths within the
+ledger row's bound and then one entry that counts the rest. A merge whose
+result is unknown blocks only its own decision; it is settled by reading,
+and once a new worker epoch has started and the Git deadline has passed, a
+negative ancestry read is a certain non-write and a new original may
+start. An integration fact's commit is the commit of the integration
+branch that was verified to contain the work: the new merge commit, or the
+tip that already contained it; never the member's commit.
+
 **Known limit.** A stage excludes the implementer of the target's current
 round. After a reassignment an earlier implementer could hold a stage of
 the same target where the stage's role equals the implementer's role; the
