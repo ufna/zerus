@@ -50,3 +50,16 @@ describe("the not-queued recovery", () => {
     expect(recovery.row()).toBeUndefined();
   });
 });
+
+describe("a title in a notification", () => {
+  it("is kept whole when short and cut on a character with an ellipsis when long", async () => {
+    const { boundedTitle, TITLE_CHARS } = await import("./task-recovery");
+    expect(boundedTitle("  Fix the login  ")).toBe("Fix the login");
+    const family = "👨‍👩‍👧";
+    const cut = boundedTitle(family.repeat(TITLE_CHARS + 5));
+    expect(cut.endsWith("…")).toBe(true);
+    // Every kept family is whole: the cut never splits a grapheme.
+    expect(cut.slice(0, -1)).toBe(family.repeat(TITLE_CHARS - 1));
+    expect(boundedTitle("x".repeat(TITLE_CHARS))).toBe("x".repeat(TITLE_CHARS));
+  });
+});

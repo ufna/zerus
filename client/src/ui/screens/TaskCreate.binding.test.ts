@@ -135,7 +135,7 @@ it("a card created but not queued says so with the team's reason and offers Send
   expect(notice.textContent).toContain("The task was created, but Fixes did not queue it: The team is stopped.");
   expect(f.create).toHaveBeenCalledTimes(1);
   ([...notice.querySelectorAll("button")].find((button) => button.textContent === "Send to team") as HTMLButtonElement).click();
-  await vi.waitFor(() => expect(f.send).toHaveBeenCalledWith("example-project", { uuid: created }, TEAM, "Fixes", expect.objectContaining({ uuid: created })));
+  await vi.waitFor(() => expect(f.send).toHaveBeenCalledWith("example-project", { uuid: created }, TEAM, "Fixes", { read: expect.objectContaining({ uuid: created }), quiet: true }));
   await vi.waitFor(() => expect(host.querySelector("[data-not-queued]")).toBeNull());
   expect(f.create, "no second card").toHaveBeenCalledTimes(1);
 });

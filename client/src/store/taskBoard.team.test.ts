@@ -60,19 +60,19 @@ describe("Send to team without the board's row", () => {
   it("says the task is not read yet and sends nothing", async () => {
     f.find.mockReturnValue(undefined);
     const outcome = await sendToTeam(f.project, { uuid: TASK }, TEAM, "Fixes");
-    expect(outcome).toEqual({ sent: false, reason: "The task is not read yet. Nothing was sent." });
+    expect(outcome).toMatchObject({ sent: false, reason: "The task is not read yet. Nothing was sent." });
     expect(f.action).not.toHaveBeenCalled();
     expect(f.notify.mock.calls.flat().join(" ")).not.toContain("changed");
   });
 
   it("goes through the same checks with a row read exactly, and prefers the board's", async () => {
     f.find.mockReturnValue(undefined);
-    expect(await sendToTeam(f.project, { uuid: TASK }, TEAM, "Fixes", task({ stage: "active" }))).toMatchObject({ sent: false, reason: expect.stringContaining("The task changed") });
-    expect(await sendToTeam(f.project, { uuid: TASK }, TEAM, "Fixes", task({ uuid: "22222222-2222-4222-8222-222222222222" }))).toMatchObject({ sent: false, reason: "The task is not read yet. Nothing was sent." });
-    expect(await sendToTeam(f.project, { uuid: TASK }, TEAM, "Fixes", task({ stage: "backlog" }))).toEqual({ sent: true });
+    expect(await sendToTeam(f.project, { uuid: TASK }, TEAM, "Fixes", { read: task({ stage: "active" }) })).toMatchObject({ sent: false, reason: expect.stringContaining("The task changed") });
+    expect(await sendToTeam(f.project, { uuid: TASK }, TEAM, "Fixes", { read: task({ uuid: "22222222-2222-4222-8222-222222222222" }) })).toMatchObject({ sent: false, reason: "The task is not read yet. Nothing was sent." });
+    expect(await sendToTeam(f.project, { uuid: TASK }, TEAM, "Fixes", { read: task({ stage: "backlog" }) })).toMatchObject({ sent: true });
     expect(f.action).toHaveBeenLastCalledWith(f.project, TASK, "backlog", { kind: "send_to_team", team: TEAM });
     f.find.mockReturnValue(task({ stage: "todo" }));
-    await sendToTeam(f.project, { uuid: TASK }, TEAM, "Fixes", task({ stage: "backlog" }));
+    await sendToTeam(f.project, { uuid: TASK }, TEAM, "Fixes", { read: task({ stage: "backlog" }) });
     expect(f.action).toHaveBeenLastCalledWith(f.project, TASK, "todo", { kind: "send_to_team", team: TEAM });
   });
 });

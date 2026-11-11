@@ -3,8 +3,8 @@
 // 2 and 3): Send waits for the created task, read exactly by its identity or
 // held by the board, and never calls an unread task changed; a reply settles
 // only the notice it was started for; one Send at a time. The real Send to
-// team runs here; the native board action, the exact read and the board's
-// cache are fakes.
+// team and the real notification bus run here, with the toasts rendered; the
+// native board action, the exact read and the board's cache are fakes.
 import { afterEach, expect, it, vi } from "vitest";
 import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
@@ -31,7 +31,6 @@ vi.mock("../../store/tasks", async () => {
   f.setCached = setCached;
   return { tasks: { project: () => "example-project", find: (uuid: string) => (cached() as { uuid?: string } | undefined)?.uuid === uuid ? cached() : undefined } };
 });
-vi.mock("../../store/actions", async (original) => ({ ...(await original() as object), notify: f.notify }));
 vi.mock("../../store/taskNavigation", () => ({ requestTaskDescription: vi.fn() }));
 vi.mock("../../store/teams", async () => {
   const { createSignal } = await import("solid-js");
@@ -40,13 +39,31 @@ vi.mock("../../store/teams", async () => {
   return { teams: { available: () => true, list } };
 });
 import TaskCreate from "./TaskCreate";
+import { Toasts } from "../components/Overlays";
+import { bus, notices } from "../../store/notices";
+import { sendToTeam } from "../../store/taskBoard";
 
 let dispose: (() => void) | undefined;
-afterEach(() => { dispose?.(); dispose = undefined; document.body.replaceChildren(); vi.clearAllMocks(); f.reads = []; f.setCached(undefined); });
+let disposeToasts: (() => void) | undefined;
+afterEach(() => {
+  disposeToasts?.(); disposeToasts = undefined;
+  for (const note of notices()) bus.dismiss(note.id);
+  dispose?.(); dispose = undefined; document.body.replaceChildren(); vi.clearAllMocks(); f.reads = []; f.setCached(undefined);
+});
+/** The rendered toasts' texts, as the person reads them. */
+function toasts() {
+  if (!disposeToasts) {
+    const host = document.createElement("div");
+    host.dataset.toasts = "";
+    document.body.append(host);
+    disposeToasts = render(() => createComponent(Toasts, {}), host);
+  }
+  return () => [...document.querySelectorAll<HTMLElement>("[data-toasts] .toast")].map((toast) => toast.textContent ?? "");
+}
 
 const fixes = { id: TEAM, project: "example-project", name: "Fixes" };
 const card = (over: Record<string, unknown> = {}) => ({ project: "example-project", text: "Task title", handle: 1, blocked: false, read_only: false, recovery: false, error: "", ...over });
-const row = (uuid: string, over: Record<string, unknown> = {}) => ({ uuid, stage: "todo", writable: true, ...over });
+const row = (uuid: string, over: Record<string, unknown> = {}) => ({ uuid, stage: "todo", writable: true, title: uuid === FIRST ? "First task" : "Second task", ...over });
 const settle = async () => { for (let n = 0; n < 10; n++) await Promise.resolve(); };
 function setup() {
   f.setList({ teams: [fixes], truncated: false, next: null });
@@ -76,9 +93,10 @@ it("waits for the created task, never calls it changed, then sends with the row 
   expect(send.disabled).toBe(true);
   expect(send.getAttribute("aria-busy")).toBe("true");
   expect(host.querySelector("[data-recovery-reading]")?.textContent).toBe("Reading the task…");
+  const shown = toasts();
   send.click(); await settle();
   expect(f.board).not.toHaveBeenCalled();
-  expect(f.notify.mock.calls.flat().join(" ")).not.toContain("changed");
+  expect(shown().join(" ")).not.toContain("changed");
   f.reads[0].resolve(row(FIRST)); await settle();
   expect(send.disabled).toBe(false);
   send.click(); await settle();
@@ -152,4 +170,92 @@ it("an earlier Send's refusal is not shown on a later notice", async () => {
   refuse("invalid_state: The first team is stopped."); await settle();
   expect(host.querySelector("[data-recovery-refusal]")).toBeNull();
   expect(host.querySelector("[data-not-queued]")?.textContent).toContain("Second not queued");
+});
+
+// Fourth confirmation: the result of a recovery's Send is always told and
+// always names its task. A reply for a notice that was dismissed or replaced
+// touches no notice and shows one notification naming the task by its title
+// and the team; a reply for the current notice is presented as before.
+async function staleSend(host: HTMLElement, settleWith: (finish: () => void, refuse: (error: unknown) => void) => void) {
+  await createNotQueued(host, FIRST, "First not queued");
+  f.reads[0].resolve(row(FIRST)); await settle();
+  let finish!: () => void, refuse!: (error: unknown) => void;
+  f.board.mockImplementationOnce(() => new Promise<void>((resolve, reject) => { finish = resolve; refuse = reject; }));
+  button(host, "Send to team")!.click(); await settle();
+  button(host, "Dismiss")!.click();
+  await createNotQueued(host, SECOND, "Second not queued");
+  const before = host.querySelector("[data-not-queued]")!.textContent;
+  settleWith(finish, refuse); await settle();
+  return before;
+}
+
+it("a stale success shows one notification naming task A, and B's notice is unchanged", async () => {
+  const host = setup();
+  const shown = toasts();
+  const before = await staleSend(host, (finish) => finish());
+  expect(shown()).toEqual(["“First task” was sent to Fixes."]);
+  expect(shown().join(" ")).not.toContain("Second");
+  expect(host.querySelector("[data-not-queued]")!.textContent).toBe(before);
+  expect(host.querySelector("[data-recovery-refusal]")).toBeNull();
+});
+
+it("a stale refusal shows one notification naming task A with its reason, and B's notice is unchanged", async () => {
+  const host = setup();
+  const shown = toasts();
+  const before = await staleSend(host, (_finish, refuse) => refuse("invalid_state: The team is stopped."));
+  expect(shown()).toEqual(["“First task” was not sent to Fixes: invalid_state: The team is stopped."]);
+  expect(shown().join(" ")).not.toContain("Second");
+  expect(host.querySelector("[data-not-queued]")!.textContent).toBe(before);
+  expect(host.querySelector("[data-recovery-refusal]")).toBeNull();
+});
+
+it("a stale reply names a long title cut on a character", async () => {
+  const host = setup();
+  const shown = toasts();
+  await createNotQueued(host, FIRST, "First not queued");
+  f.reads[0].resolve(row(FIRST, { title: `${"Ünïcode ".repeat(20)}🧑‍💻 tail` })); await settle();
+  let finish!: () => void;
+  f.board.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+  button(host, "Send to team")!.click(); await settle();
+  button(host, "Dismiss")!.click();
+  finish(); await settle();
+  const [text] = shown();
+  const title = text.slice(1, text.indexOf("”"));
+  expect([...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(title)].length).toBeLessThanOrEqual(60);
+  expect(title.startsWith("Ünïcode Ünïcode")).toBe(true);
+  expect(title.endsWith("…")).toBe(true);
+  expect(text).toMatch(/” was sent to Fixes\.$/u);
+});
+
+it("a current success clears the notice and says Sent to the team, as before", async () => {
+  const host = setup();
+  const shown = toasts();
+  await createNotQueued(host, FIRST, "First not queued");
+  f.reads[0].resolve(row(FIRST)); await settle();
+  button(host, "Send to team")!.click(); await settle();
+  expect(host.querySelector("[data-not-queued]")).toBeNull();
+  expect(shown()).toEqual(["Sent to Fixes"]);
+});
+
+it("a current refusal stays on the notice and shows the team's reason, as before", async () => {
+  const host = setup();
+  const shown = toasts();
+  await createNotQueued(host, FIRST, "First not queued");
+  f.reads[0].resolve(row(FIRST)); await settle();
+  f.board.mockRejectedValueOnce("invalid_state: The team is stopped.");
+  button(host, "Send to team")!.click(); await settle();
+  expect(host.querySelector("[data-recovery-refusal]")?.textContent).toBe("invalid_state: The team is stopped.");
+  expect(shown()).toEqual(["invalid_state: The team is stopped."]);
+});
+
+it("a board card's Send keeps its own notification", async () => {
+  const shown = toasts();
+  f.setCached(row(FIRST));
+  expect(await sendToTeam("example-project", { uuid: FIRST }, TEAM, "Fixes")).toMatchObject({ sent: true });
+  await settle();
+  expect(shown()).toEqual(["Sent to Fixes"]);
+  f.board.mockRejectedValueOnce("The queue is full.");
+  await sendToTeam("example-project", { uuid: FIRST }, TEAM, "Fixes");
+  await settle();
+  expect(shown()).toEqual(["Sent to Fixes", "The queue is full."]);
 });
