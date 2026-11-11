@@ -88,3 +88,18 @@ it("keeps lead Pause/Stop and disables Remove with its reason (review 5)", () =>
   buttons[2].click(); expect(onAction).not.toHaveBeenCalled();
   buttons[1].click(); expect(onAction).toHaveBeenCalledWith("stop-member", "m1");
 });
+
+// Second confirmation: a member who is not active shows its state chip alone;
+// no line under the name repeats it.
+it.each(["paused", "not_created", "removed"])("a %s member shows its state chip alone", (state) => {
+  const { host } = setup(member({ state }));
+  const chip = host.querySelector(".tm-state-badge")!;
+  expect(chip).not.toBeNull();
+  expect(host.querySelector(".team-member-idle")).toBeNull();
+  expect(host.textContent!.split(chip.textContent!).length - 1, "the state word appears once").toBe(1);
+});
+
+it("an active member without work on the page still says so", () => {
+  const { host } = setup(member());
+  expect(host.querySelector(".team-member-idle")?.textContent).toBe("No current assignment on this page.");
+});

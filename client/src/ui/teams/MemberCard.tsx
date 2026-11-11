@@ -41,7 +41,9 @@ export function MemberCard(props: { member: MemberView; cards?: readonly TaskVie
         <Show when={props.member.state !== "active"}><span class="team-member-state tm-state-badge" data-tone={status().tone}>{status().label}</span></Show>
         <MemberActions member={props.member} busy={props.busy} onAction={props.onAction} detailsOpen={detailsOpen()} onDetails={() => setDetailsOpen(!detailsOpen())} />
       </div>
-      <Show when={props.member.state === "active" ? current() : undefined} fallback={<p class="team-member-idle">{props.member.state === "active" ? tr("No current assignment on this page.") : status().label}</p>}>
+      {/* A member who is not active shows its state chip alone; a line under
+          the name that repeated the chip said nothing more. */}
+      <Show when={props.member.state === "active" ? current() : undefined} fallback={<Show when={props.member.state === "active"}><p class="team-member-idle">{tr("No current assignment on this page.")}</p></Show>}>
         {(item) => <div class="team-member-activity">
           <Show when={props.onSelect} fallback={<span>{activity(item()!)}</span>}><button type="button" onClick={() => props.onSelect?.(item()!.card.node)}>{activity(item()!)}<span class="ell">{item()!.card.title}</span></button></Show>
           <Show when={item()!.stage} fallback={<Show when={item()!.card.round > 0}><span class="dim">{tr("Round %1", item()!.card.round)}</span></Show>}>{(stage) => <StageChip stage={stage()} rounds={item()!.card.rounds} />}</Show>
