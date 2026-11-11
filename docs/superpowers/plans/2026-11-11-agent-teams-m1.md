@@ -931,6 +931,18 @@ commands do not observe for the team. Intake records the first observation;
 after that the service observes through one function that reads the document
 and records under the project lock.
 
+**A task that leaves the team (packages 3 and 6, after the second review).**
+The observation starts from the store's node, not from the key, and records
+the key's state: ours, absent, or another team's. A live node whose key is
+absent or another's is released as a person's override: its slot and its
+task binding are freed and a ready accept keeps its authority. On the home
+computer a person's retarget clears the key and releases the node in the
+same command. A key cleared or replaced on another computer is released at
+the home service's next observation. Also refused for agents on a team's
+task: `cancel`, `cancel-execution`, `move`, `edit` and `rename`. With the
+preview off, a key that names this computer does not guard, and a key that
+names another computer still refuses agents.
+
 ## Order
 
 | Wave | Packages | Starts when |
