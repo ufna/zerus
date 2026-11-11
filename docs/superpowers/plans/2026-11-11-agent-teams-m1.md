@@ -946,6 +946,9 @@ binding decisions, base commit, branch, write set). It answers
 `{state: submitted|refused|uncertain|cutting_over}` in the form of
 `start-deliver`, and the same ID never sends twice. `--recover-only` reads
 the receipt and sends nothing.
+Like `start-deliver`, its reply carries `error` only when there is one;
+a reader takes a missing `error` for `submitted` alone. The four commands
+below always carry the field.
 
 Two more commands of the same kind, each run by the service and each taking
 its authority from a stored effect or decision, never from the caller:
