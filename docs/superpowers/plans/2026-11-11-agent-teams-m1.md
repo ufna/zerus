@@ -1122,17 +1122,25 @@ leads, and a parent link proves nothing. A row of `hgs team list` for a
 team that is planning, running or paused carries, besides `lead_session`,
 an additive `member_sessions`: the bound sessions of its members as
 `{member, machine, session_id}`, at most the roster's size, absent when
-none is bound. The client core passes it through, and the frontend takes
+none is bound. A removed member's session is not the team's session and is
+left out, although its binding is kept. A roster over its bound, which a
+well-formed store cannot hold, answers without the field and does not
+refuse the page. The client core passes it through, and the frontend takes
 membership and the team's status from the same row.
 
 **Switching off the merge delegation takes back what has not merged
 (packages 3 and 8).** The authority to merge lives in the decision, and the
 actor checks only that the exact accept is still Ready at the moment the
-ref is updated. So the store keeps that state true: when a settings change
-switches `merge_accepted` off, every Ready accept that no person decided or
-approved and that has no integration fact yet goes back to awaiting the
-owner in the same transaction, with its integration card. An accept the
-person made, or approved on its card, stays Ready whatever the setting.
+ref is updated. So the store keeps that state true: whenever a settings
+change leaves the team with a branch to integrate into and without the
+delegation, every Ready accept that no person decided or approved and that
+has no integration fact yet goes back to awaiting the owner in the same
+transaction, with its integration card. The rule is about the state a
+change leaves, not about the switch itself: an accept made while the team
+integrated nothing is Ready because it needed no merge, and a later change
+of the integration setting must not turn it into an authority to merge. An
+accept the person made, or approved on its card, stays Ready whatever the
+setting.
 The actor releases the store right after the ref update, so the switch can
 fall between a merge and its fact, as a restart can. A refusal cannot undo
 a merge: the fact of a merge for an accept that awaits the owner is
