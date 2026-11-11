@@ -1,0 +1,728 @@
+use super::intents::{Admission, IntentState, Intents};
+use super::types::*;
+use super::wire::{classify, prepare, run_action};
+use crate::actions::{Exit, Invocation};
+use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
+use zerus_team_plan::model::Integration;
+
+fn a_call(team: &str, revision: u64, action: TeamAction) -> TeamCall {
+    TeamCall {
+        team: team.to_owned(),
+        team_name: "Fixes".into(),
+        action,
+        expected_revision: Some(revision),
+        confirmed: false,
+        request_id: "11111111-2222-4333-8444-555555555555".into(),
+    }
+}
+
+fn create(revision: Option<u64>, integration: Integration) -> TeamCall {
+    TeamCall {
+        team: "00000000-0000-4000-8000-00000000cafe".into(),
+        team_name: String::new(),
+        action: TeamAction::Create {
+            template: "bugfix".into(),
+            project: "p".into(),
+            name: "Fixes".into(),
+            goal: "Ship it".into(),
+            home: "00000000-0000-4000-8000-0000000000aa".into(),
+            integration_branch: if integration == Integration::Branch {
+                "zerus/team/fixes".into()
+            } else {
+                String::new()
+            },
+            base_commit: if integration == Integration::Branch {
+                "0123456789abcdef0123456789abcdef01234567".into()
+            } else {
+                String::new()
+            },
+            integration,
+        },
+        expected_revision: revision,
+        confirmed: false,
+        request_id: "11111111-2222-4333-8444-555555555555".into(),
+    }
+}
+
+fn stdin_of(invocation: &Invocation) -> Value {
+    serde_json::from_slice(invocation.stdin.as_deref().unwrap()).unwrap()
+}
+
+const TEAM: &str = "00000000-0000-4000-8000-00000000beef";
+const ID: &str = "11111111-2222-4333-8444-555555555555";
+
+fn receipt() -> Value {
+    json!({"ok": true, "revision": 17, "actor": {"kind": "person"}, "team": TEAM})
+}
+
+#[test]
+fn every_action_names_its_operation() {
+    let cases: Vec<(TeamAction, &str)> = vec![
+        (
+            TeamAction::Create {
+                template: "bugfix".into(),
+                project: "p".into(),
+                name: "Fixes".into(),
+                goal: String::new(),
+                home: "00000000-0000-4000-8000-0000000000aa".into(),
+                integration_branch: "zerus/team/fixes".into(),
+                base_commit: "0123456789abcdef0123456789abcdef01234567".into(),
+                integration: Integration::Branch,
+            },
+            "create",
+        ),
+        (TeamAction::Pause, "pause"),
+        (TeamAction::Resume, "resume"),
+        (TeamAction::Stop, "stop"),
+        (TeamAction::Archive, "archive"),
+        (
+            TeamAction::PauseMember {
+                member: "m1".into(),
+            },
+            "pause-member",
+        ),
+        (
+            TeamAction::ResumeMember {
+                member: "m1".into(),
+            },
+            "resume-member",
+        ),
+        (
+            TeamAction::StopMember {
+                member: "m1".into(),
+            },
+            "stop-member",
+        ),
+        (
+            TeamAction::ArchiveMember {
+                member: "m1".into(),
+            },
+            "archive-member",
+        ),
+        (
+            TeamAction::Settings {
+                settings: zerus_team_plan::model::Settings::default(),
+            },
+            "settings",
+        ),
+        (
+            TeamAction::Decide {
+                card: 3,
+                decision: "accept".into(),
+            },
+            "decide",
+        ),
+        (TeamAction::Admit { node: 2 }, "admit"),
+        (
+            TeamAction::Route {
+                node: 2,
+                role: "developer".into(),
+                pipeline: "reviewed".into(),
+                deps: Vec::new(),
+                writes: Vec::new(),
+                assignee: None,
+            },
+            "route",
+        ),
+        (TeamAction::Accept { node: 2 }, "accept"),
+        (
+            TeamAction::Return {
+                node: 2,
+                reason: "Missing a test".into(),
+            },
+            "return",
+        ),
+        (
+            TeamAction::Reassign {
+                node: 2,
+                member: "m2".into(),
+                reason: "M2 has the context".into(),
+            },
+            "reassign",
+        ),
+        (TeamAction::Hold { node: 2 }, "hold"),
+        (TeamAction::Release { node: 2 }, "release"),
+        (
+            TeamAction::Cancel {
+                node: 2,
+                reason: "No longer needed".into(),
+            },
+            "cancel",
+        ),
+        (
+            TeamAction::Reply {
+                item: 4,
+                text: "Go ahead".into(),
+            },
+            "reply",
+        ),
+        (
+            TeamAction::Ask {
+                node: 2,
+                generation: 1,
+                text: "Which branch?".into(),
+            },
+            "ask",
+        ),
+    ];
+    // `src/teams/cli/commands.rs` at package 5's fa46dcc08, plus the four
+    // member commands its fix round adds.
+    const COMMANDS: [&str; 21] = [
+        "settings",
+        "pause",
+        "resume",
+        "stop",
+        "archive",
+        "decide",
+        "admit",
+        "route",
+        "accept",
+        "return",
+        "reassign",
+        "hold",
+        "release",
+        "cancel",
+        "reply",
+        "ask",
+        "create",
+        "pause-member",
+        "resume-member",
+        "stop-member",
+        "archive-member",
+    ];
+    for (action, op) in cases {
+        assert_eq!(action.op(), op);
+        assert!(COMMANDS.contains(&op), "{op} has no hgs team command");
+        assert!(action.check().is_ok(), "{op}: {:?}", action.check());
+    }
+    assert!(
+        TeamAction::Pause.names_team(),
+        "a team action names its team"
+    );
+    assert!(
+        !TeamAction::Create {
+            template: "bugfix".into(),
+            project: "p".into(),
+            name: "Fixes".into(),
+            goal: String::new(),
+            home: "00000000-0000-4000-8000-0000000000aa".into(),
+            integration_branch: String::new(),
+            base_commit: String::new(),
+            integration: Integration::None,
+        }
+        .names_team(),
+        "a create names the team it makes, not one it changes"
+    );
+}
+
+#[test]
+fn a_call_carries_its_identity_and_revision() {
+    let call = a_call(TEAM, 42, TeamAction::Accept { node: 7 });
+    let (invocation, request_id) = prepare(&call).unwrap();
+    assert_eq!(request_id, ID);
+    assert_eq!(invocation.args, ["team", "accept", "--json"]);
+    assert_eq!(invocation.request_id.as_deref(), Some(request_id.as_str()));
+    let stdin = stdin_of(&invocation);
+    assert_eq!(stdin["request_id"], request_id);
+    assert_eq!(stdin["team"], TEAM);
+    assert_eq!(stdin["expected_revision"], 42);
+    assert_eq!(stdin["node"], 7);
+    assert!(
+        stdin.get("by").is_none(),
+        "the request never names its actor"
+    );
+}
+
+#[test]
+fn one_intent_keeps_its_request_id() {
+    // The id is the call's, made once by the person's action: preparing the
+    // same call again never changes it.
+    let call = a_call(TEAM, 42, TeamAction::Hold { node: 1 });
+    let (_, first) = prepare(&call).unwrap();
+    let (_, second) = prepare(&call).unwrap();
+    assert_eq!(first, ID);
+    assert_eq!(second, first, "the core never replaces a request id");
+    // A call without one cannot run; the wire shape requires it.
+    let mut missing = call.clone();
+    missing.request_id = String::new();
+    assert!(matches!(prepare(&missing), Err(TeamOutcome::Failed { .. })));
+    let json = serde_json::to_value(&call).unwrap();
+    let mut without = json.clone();
+    without.as_object_mut().unwrap().remove("request_id");
+    assert!(
+        serde_json::from_value::<TeamCall>(without).is_err(),
+        "a call must name its intent"
+    );
+    missing.request_id = "not-a-uuid".into();
+    assert!(matches!(prepare(&missing), Err(TeamOutcome::Failed { .. })));
+}
+
+#[test]
+fn a_person_confirms_a_destructive_action_first() {
+    for action in [
+        TeamAction::Stop,
+        TeamAction::Archive,
+        TeamAction::StopMember {
+            member: "m1".into(),
+        },
+        TeamAction::ArchiveMember {
+            member: "m1".into(),
+        },
+        TeamAction::Cancel {
+            node: 3,
+            reason: "Not needed".into(),
+        },
+    ] {
+        let asked = prepare(&a_call(TEAM, 42, action.clone())).unwrap_err();
+        let TeamOutcome::Confirm { confirmation } = asked else {
+            panic!("{action:?} asks first");
+        };
+        assert!(!confirmation.text.is_empty());
+        assert!(!confirmation.action.is_empty());
+        assert!(confirmation.text.contains("Fixes"));
+        let mut confirmed = a_call(TEAM, 42, action.clone());
+        confirmed.confirmed = true;
+        assert!(prepare(&confirmed).is_ok(), "{action:?} runs confirmed");
+    }
+    assert!(prepare(&a_call(TEAM, 42, TeamAction::Pause)).is_ok());
+}
+
+#[test]
+fn a_change_needs_the_revision_it_was_read_at() {
+    let mut call = a_call(TEAM, 42, TeamAction::Accept { node: 7 });
+    call.expected_revision = None;
+    let refused = prepare(&call).unwrap_err();
+    assert!(matches!(refused, TeamOutcome::Failed { .. }));
+    // A new team names its own id and compares revision zero.
+    let call = create(None, Integration::Branch);
+    let (invocation, _) = prepare(&call).unwrap();
+    assert_eq!(
+        invocation.args,
+        ["team", "create", "--template", "bugfix", "--json"]
+    );
+    let stdin = stdin_of(&invocation);
+    assert_eq!(stdin["team"], "00000000-0000-4000-8000-00000000cafe");
+    assert_eq!(stdin["expected_revision"], 0);
+    assert_eq!(stdin["project"], "p");
+    assert_eq!(stdin["name"], "Fixes");
+    assert_eq!(stdin["goal"], "Ship it");
+    assert_eq!(stdin["home"], "00000000-0000-4000-8000-0000000000aa");
+    assert_eq!(stdin["integration_branch"], "zerus/team/fixes");
+    assert_eq!(
+        stdin["base_commit"],
+        "0123456789abcdef0123456789abcdef01234567"
+    );
+    assert!(
+        stdin.get("integration").is_none(),
+        "the template's mode is the client's check, not the store's field"
+    );
+}
+
+#[test]
+fn create_checks_the_branch_only_for_a_branch_template() {
+    // A no-integration template needs neither a branch nor a base commit.
+    assert!(prepare(&create(None, Integration::None)).is_ok());
+    let mut none = create(None, Integration::None);
+    if let TeamAction::Create {
+        integration_branch, ..
+    } = &mut none.action
+    {
+        *integration_branch = "still/a/branch".into();
+    }
+    assert!(prepare(&none).is_ok(), "a named branch is still checked");
+    // A branch template needs both.
+    let mut branch = create(None, Integration::Branch);
+    if let TeamAction::Create {
+        integration_branch, ..
+    } = &mut branch.action
+    {
+        integration_branch.clear();
+    }
+    assert!(matches!(prepare(&branch), Err(TeamOutcome::Failed { .. })));
+    let mut commit = create(None, Integration::Branch);
+    if let TeamAction::Create { base_commit, .. } = &mut commit.action {
+        base_commit.clear();
+    }
+    assert!(matches!(prepare(&commit), Err(TeamOutcome::Failed { .. })));
+}
+
+#[test]
+fn a_reason_or_a_reply_must_say_something() {
+    for action in [
+        TeamAction::Return {
+            node: 1,
+            reason: "   ".into(),
+        },
+        TeamAction::Cancel {
+            node: 1,
+            reason: String::new(),
+        },
+        TeamAction::Reassign {
+            node: 1,
+            member: "m1".into(),
+            reason: String::new(),
+        },
+        TeamAction::Reply {
+            item: 1,
+            text: "\n".into(),
+        },
+        TeamAction::Ask {
+            node: 1,
+            generation: 1,
+            text: "  ".into(),
+        },
+        TeamAction::Decide {
+            card: 1,
+            decision: String::new(),
+        },
+    ] {
+        assert!(action.check().is_err(), "{action:?} must say something");
+    }
+    let long = "x".repeat(TEXT_CHARS + 1);
+    assert!(TeamAction::Reply {
+        item: 1,
+        text: long
+    }
+    .check()
+    .is_err());
+    assert!(TeamAction::Reply {
+        item: 1,
+        text: "x".repeat(TEXT_CHARS)
+    }
+    .check()
+    .is_ok());
+}
+
+#[test]
+fn a_request_that_cannot_be_made_never_runs() {
+    let mut call = a_call(TEAM, 42, TeamAction::Accept { node: 0 });
+    assert!(matches!(prepare(&call), Err(TeamOutcome::Failed { .. })));
+    call.action = TeamAction::Accept { node: 1 };
+    call.team = "has space".into();
+    assert!(matches!(prepare(&call), Err(TeamOutcome::Failed { .. })));
+    call = a_call(
+        TEAM,
+        42,
+        TeamAction::Return {
+            node: 1,
+            reason: "   ".into(),
+        },
+    );
+    assert!(matches!(prepare(&call), Err(TeamOutcome::Failed { .. })));
+    call = a_call(
+        TEAM,
+        42,
+        TeamAction::Route {
+            node: 1,
+            role: "developer".into(),
+            pipeline: "reviewed".into(),
+            deps: Vec::new(),
+            writes: vec!["/absolute/path".into()],
+            assignee: None,
+        },
+    );
+    assert!(
+        matches!(prepare(&call), Err(TeamOutcome::Failed { .. })),
+        "a write set is relative to the repository"
+    );
+}
+
+#[test]
+fn an_outcome_of_each_kind() {
+    let call = a_call(TEAM, 42, TeamAction::Accept { node: 7 });
+    let done = classify(
+        &call,
+        Exit::Code {
+            code: 0,
+            stdout: serde_json::to_vec(&receipt()).unwrap(),
+            stderr: String::new(),
+        },
+    );
+    assert_eq!(
+        done,
+        TeamOutcome::Done {
+            receipt: receipt(),
+            request_id: ID.into(),
+        }
+    );
+    assert_eq!(done.request_id(), Some(ID));
+
+    let failed = classify(
+        &call,
+        Exit::Code {
+            code: 1,
+            stdout:
+                br#"{"ok":false,"error":{"code":"stale_revision","message":"The team moved."}}"#
+                    .to_vec(),
+            stderr: String::new(),
+        },
+    );
+    assert_eq!(
+        failed,
+        TeamOutcome::Failed {
+            detail: "The team moved.".into(),
+            code: "stale_revision".into(),
+            request_id: ID.into(),
+        }
+    );
+    assert!(failed.repeatable_by_desktop());
+
+    let uncertain = classify(&call, Exit::TimedOut);
+    assert!(matches!(uncertain, TeamOutcome::Uncertain { .. }));
+    assert!(!uncertain.repeatable_by_desktop());
+    assert!(matches!(
+        classify(
+            &call,
+            Exit::Abnormal {
+                stderr: "boom".into()
+            }
+        ),
+        TeamOutcome::Uncertain { .. }
+    ));
+    assert!(matches!(
+        classify(
+            &call,
+            Exit::Code {
+                code: 0,
+                stdout: b"{}".to_vec(),
+                stderr: String::new()
+            }
+        ),
+        TeamOutcome::Uncertain { .. }
+    ));
+    let start_failed = classify(&call, Exit::StartFailed("no hgs".into()));
+    assert!(matches!(start_failed, TeamOutcome::Failed { .. }));
+    assert!(start_failed.repeatable_by_desktop());
+
+    let confirmed = prepare(&a_call(TEAM, 42, TeamAction::Stop)).unwrap_err();
+    assert!(matches!(confirmed, TeamOutcome::Confirm { .. }));
+    assert_eq!(confirmed.request_id(), None);
+    assert!(confirmed.repeatable_by_desktop());
+}
+
+#[test]
+fn a_success_needs_a_complete_receipt() {
+    let call = a_call(TEAM, 42, TeamAction::Accept { node: 7 });
+    // `{"ok": true}` alone proves nothing about what was written.
+    for incomplete in [
+        json!({"ok": true}),
+        json!({"ok": true, "revision": 17, "actor": {"kind": "person"}}),
+        json!({"ok": true, "revision": 17, "actor": {"kind": "person"}, "team": "other"}),
+        json!({"ok": true, "revision": "17", "actor": {"kind": "person"}, "team": TEAM}),
+    ] {
+        let outcome = classify(
+            &call,
+            Exit::Code {
+                code: 0,
+                stdout: serde_json::to_vec(&incomplete).unwrap(),
+                stderr: String::new(),
+            },
+        );
+        assert!(
+            matches!(outcome, TeamOutcome::Uncertain { .. }),
+            "{incomplete} is not a complete receipt"
+        );
+        assert!(!outcome.repeatable_by_desktop());
+    }
+}
+
+#[test]
+fn an_unreadable_nonzero_exit_is_uncertain() {
+    // A started command can write and then fail to deliver its receipt; the
+    // exit code alone never proves that nothing was applied.
+    let call = a_call(
+        TEAM,
+        42,
+        TeamAction::Reply {
+            item: 1,
+            text: "Go ahead".into(),
+        },
+    );
+    for exit in [
+        Exit::Code {
+            code: 1,
+            stdout: b"truncated receipt".to_vec(),
+            stderr: "write failed after commit".into(),
+        },
+        Exit::Code {
+            code: 1,
+            stdout: Vec::new(),
+            stderr: String::new(),
+        },
+        Exit::Code {
+            code: 2,
+            stdout: b"{}".to_vec(),
+            stderr: "hgs is not installed".into(),
+        },
+    ] {
+        let outcome = classify(&call, exit);
+        assert!(matches!(outcome, TeamOutcome::Uncertain { .. }));
+        assert!(
+            !outcome.repeatable_by_desktop(),
+            "an unreadable failure may have applied the change"
+        );
+    }
+}
+
+#[test]
+fn an_uncertain_call_is_never_repeated_by_the_desktop() {
+    let call = a_call(TEAM, 42, TeamAction::Hold { node: 1 });
+    for exit in [
+        Exit::TimedOut,
+        Exit::WriteFailed,
+        Exit::Abnormal {
+            stderr: String::new(),
+        },
+        Exit::Code {
+            code: 0,
+            stdout: b"not json".to_vec(),
+            stderr: String::new(),
+        },
+    ] {
+        let outcome = classify(&call, exit);
+        assert!(matches!(outcome, TeamOutcome::Uncertain { .. }));
+        assert!(!outcome.repeatable_by_desktop());
+        assert_eq!(outcome.request_id(), Some(ID));
+    }
+}
+
+#[test]
+fn a_pending_intent_reports_pending() {
+    let mut intents = Intents::default();
+    assert_eq!(
+        intents.admit(&a_call(TEAM, 42, TeamAction::Pause)),
+        Admission::Send
+    );
+    let again = intents.attempt(
+        Path::new("/nonexistent"),
+        &a_call(TEAM, 42, TeamAction::Pause),
+    );
+    assert_eq!(
+        again,
+        TeamOutcome::Pending {
+            request_id: ID.into()
+        }
+    );
+    assert!(!again.repeatable_by_desktop());
+    assert_eq!(intents.state(ID), Some(IntentState::Pending));
+}
+
+#[test]
+fn a_call_is_deserialized_without_naming_its_actor() {
+    let parsed: TeamCall = serde_json::from_value(json!({
+        "team": TEAM,
+        "team_name": "Fixes",
+        "expected_revision": 42,
+        "confirmed": false,
+        "request_id": ID,
+        "action": {"kind": "return", "node": 2, "reason": "Add a test"},
+    }))
+    .unwrap();
+    assert_eq!(
+        parsed.action,
+        TeamAction::Return {
+            node: 2,
+            reason: "Add a test".into()
+        }
+    );
+    assert_eq!(parsed.expected_revision, Some(42));
+    let mut other = serde_json::to_value(&parsed).unwrap();
+    other["actor"] = json!({"kind": "service"});
+    assert!(serde_json::from_value::<TeamCall>(other).is_err());
+}
+
+/// A helper `hgs` script that records every request it is given.
+#[cfg(unix)]
+struct Helper {
+    dir: PathBuf,
+    script: PathBuf,
+    effects: PathBuf,
+}
+
+#[cfg(unix)]
+impl Helper {
+    /// `receipt` prints a complete success receipt; otherwise the script ends
+    /// nonzero without one, after recording the request.
+    fn new(name: &str, success: bool) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("zerus-teams-action-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let effects = dir.join("effects.jsonl");
+        let script = dir.join("hgs");
+        let body = if success {
+            format!(
+                "printf '%s' '{}'\n",
+                serde_json::to_string(&receipt()).unwrap()
+            )
+        } else {
+            "printf '%s' 'receipt transport failed after commit' >&2\nexit 1\n".to_owned()
+        };
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\n{{ cat; echo; }} >> '{}'\n{body}",
+                effects.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        Self {
+            dir,
+            script,
+            effects,
+        }
+    }
+
+    fn effects(&self) -> usize {
+        std::fs::read_to_string(&self.effects)
+            .map(|text| text.lines().filter(|line| !line.is_empty()).count())
+            .unwrap_or(0)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Helper {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn an_action_runs_once_through_the_real_runner() {
+    let helper = Helper::new("once", true);
+    let call = a_call(TEAM, 42, TeamAction::Accept { node: 7 });
+    let outcome = run_action(&helper.script, &call);
+    assert!(matches!(outcome, TeamOutcome::Done { .. }), "{outcome:?}");
+    assert_eq!(helper.effects(), 1, "one call is one request");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_effect_then_an_unreadable_exit_is_uncertain_and_sent_once() {
+    let helper = Helper::new("effect", false);
+    let call = a_call(TEAM, 42, TeamAction::Accept { node: 7 });
+    let mut intents = Intents::default();
+    let first = intents.attempt(&helper.script, &call);
+    assert!(matches!(first, TeamOutcome::Uncertain { .. }), "{first:?}");
+    let second = intents.attempt(&helper.script, &call);
+    assert_eq!(second, first, "an uncertain intent returns its record");
+    assert_eq!(helper.effects(), 1, "the desktop never resends by itself");
+    assert_eq!(intents.state(ID), Some(IntentState::Uncertain));
+    // The person asks to check it: the same id and content go again.
+    let checked = intents.check_again(&helper.script, &call);
+    assert!(matches!(checked, TeamOutcome::Uncertain { .. }));
+    assert_eq!(helper.effects(), 2, "only the person's check resends it");
+    let stdin: Value = serde_json::from_str(
+        std::fs::read_to_string(&helper.effects)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(stdin["request_id"], ID, "the same intent keeps its id");
+}
