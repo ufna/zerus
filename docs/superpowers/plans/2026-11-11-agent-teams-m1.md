@@ -1157,7 +1157,10 @@ board change that settles the accept keeps the mark, so that the fact of a
 merge written before the revocation is still taken afterwards. The mark is
 also what tells an accept that once had the authority from one that never
 did: an accept made while the delegation was off, and never approved, takes
-no merge fact in any state.
+no merge fact in any state. A development store written by the heads of
+this branch before the mark existed holds taken-back accepts without it;
+their late merge facts are refused like those of an accept that never had
+the authority.
 
 **What the review of the service task commands settled (package 6b).** A
 team that is stopped or archived retires its nodes by that status:
