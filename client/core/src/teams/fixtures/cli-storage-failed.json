@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "storage_failed",
+    "message": "The result is not known; repeat the same request with the same request ID."
+  },
+  "ok": false
+}

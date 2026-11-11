@@ -726,3 +726,154 @@ fn an_effect_then_an_unreadable_exit_is_uncertain_and_sent_once() {
     .unwrap();
     assert_eq!(stdin["request_id"], ID, "the same intent keeps its id");
 }
+
+/// The store's storage failure, as `hgs team` prints it: the two JSON files are
+/// copies of `crates/team-plan/fixtures/cli-storage-failed.json` and
+/// `problem-storage-failed.json` from commit 8583e5254 ("Distinguish Teams
+/// storage failures from saved refusals"), kept here by content.
+const CLI_STORAGE_FAILED: &str = include_str!("../fixtures/cli-storage-failed.json");
+const PROBLEM_STORAGE_FAILED: &str = include_str!("../fixtures/problem-storage-failed.json");
+const STORAGE_SENTENCE: &str =
+    "The result is not known; repeat the same request with the same request ID.";
+
+#[test]
+fn the_storage_fixtures_are_one_problem() {
+    let cli: Value = serde_json::from_str(CLI_STORAGE_FAILED).unwrap();
+    let problem: Value = serde_json::from_str(PROBLEM_STORAGE_FAILED).unwrap();
+    assert_eq!(cli["ok"], false);
+    assert_eq!(cli["error"], problem);
+    assert_eq!(problem["code"], super::wire::STORAGE_FAILED);
+    assert_eq!(problem["message"], STORAGE_SENTENCE);
+}
+
+/// Owner decision of 2026-11-12 (zerus-63rru.19): a storage failure is not a
+/// refusal. Its result is not known, so the call is uncertain with its own
+/// request id and the store's sentence, and only Check (the same id) or
+/// Dismiss leave it; a real refusal still fails definitely.
+#[test]
+fn a_storage_failure_is_uncertain_with_the_same_request_id() {
+    for action in [
+        TeamAction::Accept { node: 7 },
+        TeamAction::Decide {
+            card: 3,
+            decision: "approve".into(),
+        },
+    ] {
+        let call = a_call(TEAM, 42, action);
+        for code in [1, 0] {
+            let outcome = classify(
+                &call,
+                Exit::Code {
+                    code,
+                    stdout: CLI_STORAGE_FAILED.as_bytes().to_vec(),
+                    stderr: String::new(),
+                },
+            );
+            assert_eq!(
+                outcome,
+                TeamOutcome::Uncertain {
+                    detail: STORAGE_SENTENCE.into(),
+                    request_id: ID.into(),
+                },
+                "exit {code}"
+            );
+            assert!(!outcome.repeatable_by_desktop());
+        }
+    }
+    let create = create(None, Integration::None);
+    let outcome = classify(
+        &create,
+        Exit::Code {
+            code: 1,
+            stdout: CLI_STORAGE_FAILED.as_bytes().to_vec(),
+            stderr: String::new(),
+        },
+    );
+    assert_eq!(outcome.request_id(), Some(ID));
+    assert!(
+        matches!(outcome, TeamOutcome::Uncertain { .. }),
+        "a New team create too"
+    );
+    // A storage failure without a sentence still says what to do.
+    let bare = classify(
+        &a_call(TEAM, 42, TeamAction::Pause),
+        Exit::Code {
+            code: 1,
+            stdout: br#"{"ok":false,"error":{"code":"storage_failed"}}"#.to_vec(),
+            stderr: String::new(),
+        },
+    );
+    assert!(matches!(&bare, TeamOutcome::Uncertain { detail, .. } if !detail.is_empty()));
+    // A rule's refusal is still a definite one.
+    let refused = classify(
+        &a_call(TEAM, 42, TeamAction::Accept { node: 7 }),
+        Exit::Code {
+            code: 1,
+            stdout: br#"{"ok":false,"error":{"code":"invalid_state","message":"The node is not reported."}}"#.to_vec(),
+            stderr: String::new(),
+        },
+    );
+    assert_eq!(
+        refused,
+        TeamOutcome::Failed {
+            detail: "The node is not reported.".into(),
+            code: "invalid_state".into(),
+            request_id: ID.into(),
+        }
+    );
+    assert!(refused.repeatable_by_desktop());
+}
+
+#[test]
+fn check_after_a_storage_failure_sends_the_same_request_id() {
+    let call = a_call(TEAM, 42, TeamAction::Accept { node: 7 });
+    let mut intents = Intents::default();
+    assert_eq!(intents.admit(&call), Admission::Send);
+    let outcome = intents.settle(
+        &call,
+        classify(
+            &call,
+            Exit::Code {
+                code: 1,
+                stdout: CLI_STORAGE_FAILED.as_bytes().to_vec(),
+                stderr: String::new(),
+            },
+        ),
+    );
+    assert_eq!(outcome.request_id(), Some(ID));
+    assert_eq!(intents.state(ID), Some(IntentState::Uncertain));
+    // The same call again is not a fresh send: it answers its recorded outcome.
+    assert!(matches!(
+        intents.admit(&call),
+        Admission::Recorded(TeamOutcome::Uncertain { .. })
+    ));
+    // Check sends the same request id and content once more.
+    assert_eq!(intents.admit_again(&call), Admission::Send);
+    assert_eq!(intents.state(ID), Some(IntentState::Pending));
+    let (invocation, request_id) = prepare(&call).unwrap();
+    assert_eq!(request_id, ID);
+    assert_eq!(invocation.request_id.as_deref(), Some(ID));
+    assert_eq!(stdin_of(&invocation)["request_id"], ID);
+    // A refusal settles and is never checked again.
+    let refused_call = TeamCall {
+        request_id: "22222222-2222-4333-8444-555555555555".into(),
+        ..a_call(TEAM, 42, TeamAction::Accept { node: 8 })
+    };
+    assert_eq!(intents.admit(&refused_call), Admission::Send);
+    intents.settle(
+        &refused_call,
+        classify(
+            &refused_call,
+            Exit::Code {
+                code: 1,
+                stdout: br#"{"ok":false,"error":{"code":"invalid_state","message":"No."}}"#
+                    .to_vec(),
+                stderr: String::new(),
+            },
+        ),
+    );
+    assert_ne!(
+        intents.state("22222222-2222-4333-8444-555555555555"),
+        Some(IntentState::Uncertain)
+    );
+}

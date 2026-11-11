@@ -295,6 +295,37 @@ mod team_tests {
             assert_eq!(calls, 1);
         }
     }
+    /// zerus-63rru.19: a storage failure of the team store reaches `task
+    /// target REF team TEAM` as `ok: true`, `team.queued: false` and the
+    /// store's problem in `team.error`. Send to team gives the store's sentence
+    /// as it came; it adds no words of its own that the task was not queued.
+    #[test]
+    fn a_storage_failure_of_the_team_store_gives_the_stores_sentence() {
+        let problem: Value =
+            serde_json::from_str(include_str!("teams/fixtures/problem-storage-failed.json"))
+                .unwrap();
+        let mut calls = 0;
+        let error = apply(
+            "example",
+            TASK,
+            "backlog",
+            &Action::SendToTeam { team: TEAM.into() },
+            |_| {
+                calls += 1;
+                Ok(if calls == 1 {
+                    card("backlog")
+                } else {
+                    queue(false, 0, Some(problem.clone()))
+                })
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "The result is not known; repeat the same request with the same request ID."
+        );
+        assert_eq!(calls, 2);
+    }
     #[test]
     fn a_team_refusal_keeps_the_teams_reason_and_sends_nothing_more() {
         let mut calls = vec![];
