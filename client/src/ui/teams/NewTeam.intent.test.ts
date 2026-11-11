@@ -127,6 +127,27 @@ it("a dialog reopened before the reply adopts the create once it becomes unknown
   expect(store.createIntent()?.request_id).toBe(f.acts[0].request_id);
 });
 
+it("a form whose busy flag says nothing still locks while its create is in flight", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  f.act = async (call) => { await gate; return { outcome: "uncertain", detail: "reply lost", request_id: call.request_id }; };
+  const first = open();
+  await fill(first);
+  button(first, "Create team")!.click();
+  await settle();
+  disposers.shift()!(); first.remove();
+  const host = document.createElement("div");
+  document.body.append(host);
+  disposers.push(render(() => createComponent(NewTeam, {
+    catalog, busy: false, machineId: "00000000-0000-4000-8000-0000000000aa", defaultProject: "example-project", defaultFolder: "/workspace/example",
+    onCheckFolder: (path) => store.project(path), onCreate: async () => { throw new Error("no second create"); }, onSaveTemplate: async () => {}, onClose: () => {},
+  }), host));
+  expect((host.querySelector("[data-check-folder]") as HTMLButtonElement).disabled).toBe(true);
+  expect((host.querySelector('input[placeholder="Fixes"]') as HTMLInputElement).disabled).toBe(true);
+  release();
+  await vi.waitFor(() => expect(host.querySelector("[data-create-uncertain]")).not.toBeNull());
+});
+
 it("only a Dismiss the core took lets a new intent with new ids start", async () => {
   const host = open();
   await fill(host);

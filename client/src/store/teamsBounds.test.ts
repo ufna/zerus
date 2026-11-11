@@ -105,6 +105,19 @@ describe("the list is kept as bounded pages (finding 3)", () => {
     expect(store.listPages().length).toBeLessThanOrEqual(LIST_PAGES_MAX);
   });
 
+  it("forgets a page that left the chain, so it is read again when it comes back", () => {
+    const { store, transport } = fake();
+    store.apply([listPage([summary(1)], "c1")]);
+    store.apply([listPage([summary(2, lead)], null, "c1")]);
+    expect(store.teamOfSession(identity)).toEqual({ state: "lead", team: summary(2).id });
+    store.apply([listPage([summary(1)], null)]);
+    expect(store.teamOfSession(identity)).toEqual({ state: "none" });
+    transport.page.mockClear();
+    store.apply([listPage([summary(1)], "c1")]);
+    expect(store.teamOfSession(identity), "the old second page is not reused").toEqual({ state: "unknown" });
+    expect(transport.page).toHaveBeenCalledWith("list", "c1");
+  });
+
   it("drops a page nobody asked for and a page after a changed first page", () => {
     const { store } = fake();
     store.apply([listPage([summary(9)], null, "stray")]);
