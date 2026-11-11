@@ -24,6 +24,10 @@ struct Fake {
     timer_teams: Vec<String>,
     terminals: usize,
     fail_timers: bool,
+    release: Option<(std::path::PathBuf, u32)>,
+    clear_reply: Option<TaskReply>,
+    stage_reply: Option<TaskReply>,
+    lose_clear: bool,
 }
 impl Ports for Fake {
     #[cfg(unix)]
@@ -91,10 +95,29 @@ impl Ports for Fake {
     ) -> Result<TaskReply> {
         self.calls.push(e.request_id.clone());
         self.documents.insert(e.request_id.clone());
+        if let Some((state, target)) = self.release.take() {
+            let mut store = Store::open(&state).unwrap();
+            let revision = store.team(&e.team).unwrap().unwrap().revision;
+            crate::teams::ops::apply(
+                &mut store,
+                &person(),
+                &crate::teams::ops::Request {
+                    request_id: uuid::Uuid::new_v4().to_string(),
+                    team: e.team.clone(),
+                    expected_revision: revision,
+                    operation: crate::teams::ops::Operation::Return {
+                        node: target,
+                        reason: "Revise during task creation".into(),
+                    },
+                },
+                101,
+            )
+            .unwrap();
+        }
         if std::mem::take(&mut self.lose_first) {
             return Err(super::super::problem("child ended after saving its task"));
         }
-        Ok(TaskReply::Created)
+        Ok(self.stage_reply.clone().unwrap_or(TaskReply::Created))
     }
     fn clear_stage(
         &mut self,
@@ -103,7 +126,10 @@ impl Ports for Fake {
         _: &str,
     ) -> Result<TaskReply> {
         self.clears.push(keyed.node);
-        Ok(TaskReply::Cleared)
+        if std::mem::take(&mut self.lose_clear) {
+            return Err(super::super::problem("Clear child has no answer"));
+        }
+        Ok(self.clear_reply.clone().unwrap_or(TaskReply::Cleared))
     }
 }
 fn tick(h: &mut Harness, a: &mut super::super::Runtime, p: &mut Fake, now: i64) {
@@ -264,4 +290,111 @@ fn timer_entry_faults_back_off_as_rows_and_do_not_set_sweep_health() {
     assert_eq!(p.terminals, 2);
     assert!(a.ledger.terminal_retry().unwrap().is_none());
     assert!(crate::desktop::teams::health(h.temp.path()).is_none());
+}
+
+#[test]
+fn a_stage_released_during_creation_records_provenance_then_clears_its_task() {
+    let (mut h, target, stage) = wanted();
+    let machine = h.store.team(TEAM).unwrap().unwrap().home;
+    let mut a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
+    let mut p = Fake {
+        release: Some((h.temp.path().into(), target)),
+        ..Default::default()
+    };
+    tick(&mut h, &mut a, &mut p, 100);
+    assert_eq!(p.calls.len(), 1);
+    assert_eq!(p.clears, vec![stage]);
+    assert!(h.store.released_stages(TEAM, 16, 0).unwrap().is_empty());
+    tick(&mut h, &mut a, &mut p, 102);
+    assert_eq!(p.calls.len(), 1);
+    assert_eq!(p.clears, vec![stage]);
+}
+
+#[test]
+fn clearing_restarts_before_and_after_each_effect_keep_the_final_receipt() {
+    for point in ["reserved", "effect", "outcome", "recorded"] {
+        let (mut h, target, stage) = wanted();
+        let machine = h.store.team(TEAM).unwrap().unwrap().home;
+        let mut a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
+        let mut p = Fake::default();
+        tick(&mut h, &mut a, &mut p, 100);
+        h.run(
+            &person(),
+            crate::teams::ops::Operation::Return {
+                node: target,
+                reason: "Revise".into(),
+            },
+        )
+        .unwrap();
+        super::super::tasks::CRASH.with(|s| s.set(Some(point)));
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tick(
+                &mut h, &mut a, &mut p, 101
+            )))
+            .is_err(),
+            "{point}"
+        );
+        drop(a);
+        let mut a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
+        tick(&mut h, &mut a, &mut p, 102);
+        assert!(
+            h.store.released_stages(TEAM, 16, 0).unwrap().is_empty(),
+            "{point}"
+        );
+        let expected = if point == "effect" { 2 } else { 1 };
+        assert_eq!(p.clears, vec![stage; expected], "{point}");
+    }
+}
+
+#[test]
+fn clearing_no_answer_backs_off_and_a_refusal_is_final() {
+    let (mut h, target, stage) = wanted();
+    let machine = h.store.team(TEAM).unwrap().unwrap().home;
+    let mut a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
+    let mut p = Fake {
+        lose_clear: true,
+        clear_reply: Some(TaskReply::Refused {
+            reason: "Task no longer belongs to this stage".into(),
+        }),
+        ..Default::default()
+    };
+    tick(&mut h, &mut a, &mut p, 100);
+    h.run(
+        &person(),
+        crate::teams::ops::Operation::Return {
+            node: target,
+            reason: "Revise".into(),
+        },
+    )
+    .unwrap();
+    tick(&mut h, &mut a, &mut p, 101);
+    tick(&mut h, &mut a, &mut p, 102);
+    assert_eq!(p.clears, vec![stage]);
+    tick(&mut h, &mut a, &mut p, 60_101);
+    assert_eq!(p.clears, vec![stage, stage]);
+    assert!(h.store.released_stages(TEAM, 16, 0).unwrap().is_empty());
+    tick(&mut h, &mut a, &mut p, 120_101);
+    assert_eq!(p.clears.len(), 2);
+}
+
+#[test]
+fn a_stage_cutting_over_retries_the_same_task_after_backoff() {
+    let (mut h, _, stage) = wanted();
+    let machine = h.store.team(TEAM).unwrap().unwrap().home;
+    let mut a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
+    let mut p = Fake {
+        stage_reply: Some(TaskReply::CuttingOver {
+            reason: "Project is cutting over".into(),
+        }),
+        ..Default::default()
+    };
+    tick(&mut h, &mut a, &mut p, 100);
+    assert!(h.node(stage).task.is_none());
+    tick(&mut h, &mut a, &mut p, 101);
+    assert_eq!(p.calls.len(), 1);
+    p.stage_reply = None;
+    tick(&mut h, &mut a, &mut p, 60_100);
+    assert_eq!(p.calls.len(), 2);
+    assert_eq!(p.calls[0], p.calls[1]);
+    assert_eq!(h.node(stage).task.unwrap().uuid, p.calls[0]);
 }
