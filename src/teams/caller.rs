@@ -11,7 +11,16 @@
 //! no path fallback. A command in a sandbox with its own user namespace is
 //! therefore refused for both marked and unmarked callers, so a lead or a
 //! member whose shell runs in such a sandbox cannot use `hgs team`; those
-//! team commands must run outside it.
+//! team commands must run outside it. macOS has no namespaces and therefore
+//! no admission. It withholds the environment of some programs, the system
+//! shells among them; a tail with no byte other than NUL after the arguments
+//! is read as withheld, never as empty, and the caller's own markers come
+//! from the process itself. A person's command below a program that hides its
+//! environment is refused with a sentence that names the Zerus window; a
+//! marked command reads no ancestor's environment and is not affected.
+//! `context` states what macOS withholds, which shapes pass, the limit at the
+//! top and what a macOS sandbox can change. Other platforms refuse both
+//! callers.
 //!
 //! This is not verified Person authority. A command whose ancestry does not
 //! pass through readable same-user processes to its agent is outside this
@@ -126,6 +135,16 @@ fn marked_unreadable() -> Problem {
         "Cannot read or verify the claimed agent's process ownership, birth or ancestry, saved binding or computer identity. Run session commands from the agent's own shell after its saved session state is available.")
 }
 
+/// A withheld environment below the top: a program whose environment macOS
+/// hides, usually a system shell, stands between the person's command and the
+/// top of the user's tree. It names the cause and the one way out that is
+/// known to pass, and promises no terminal. Distinct from the marked path's
+/// sandbox sentence.
+fn withheld_below_top() -> Problem {
+    Problem::new(code::NOT_ALLOWED,
+        "On macOS a person's team command cannot be checked below a program that hides its environment, usually a system shell; run it from the Zerus window.")
+}
+
 fn binding_unreadable() -> Problem {
     Problem::new(code::INVALID_STATE,
         "Cannot verify an ancestor's saved session binding; this interim check cannot establish a person as caller.")
@@ -229,16 +248,29 @@ struct Claim {
     session: Option<String>,
 }
 
+/// The three session markers, each as it begins an environment entry.
+const MARKERS: [&[u8]; 3] = [b"HGS_SESSION=", b"HGS_RUN_ID=", b"HGS_SESSION_ID="];
+
+/// A marker named twice in one environment is unreadable on every platform:
+/// the agent's own `getenv` takes the first entry and a reader of the block
+/// could take another, so neither is trusted.
+fn duplicated(bytes: &[u8]) -> bool {
+    MARKERS.iter().any(|prefix| {
+        bytes
+            .split(|byte| *byte == 0)
+            .filter(|entry| entry.starts_with(prefix))
+            .nth(1)
+            .is_some()
+    })
+}
+
 fn claim(bytes: &[u8]) -> Result<Option<Claim>, Problem> {
-    let has_marker = bytes.split(|byte| *byte == 0).any(|entry| {
-        [
-            b"HGS_SESSION=".as_slice(),
-            b"HGS_RUN_ID=",
-            b"HGS_SESSION_ID=",
-        ]
-        .iter()
-        .any(|prefix| entry.starts_with(prefix))
-    });
+    if duplicated(bytes) {
+        return Err(unreadable());
+    }
+    let has_marker = bytes
+        .split(|byte| *byte == 0)
+        .any(|entry| MARKERS.iter().any(|prefix| entry.starts_with(prefix)));
     match markers(bytes) {
         Some((name, run)) => {
             let session = bytes
@@ -273,13 +305,29 @@ fn environment(pid: u32) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// The same read on macOS, through `KERN_PROCARGS2`, whose answer holds the
-/// argument count, then the executable, the arguments and finally the
-/// environment.
+/// This process's own environment, from the process itself. The walk takes
+/// the caller's markers from here and never from the system's read of the
+/// caller, which macOS may withhold for a signed release build of `hgs`.
+fn own_environment() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for (key, value) in std::env::vars_os() {
+        bytes.extend_from_slice(key.as_encoded_bytes());
+        bytes.push(b'=');
+        bytes.extend_from_slice(value.as_encoded_bytes());
+        bytes.push(0);
+    }
+    bytes
+}
+
+/// What the macOS read passes to `KERN_PROCARGS2`, as the Linux read's bound.
+#[cfg(any(target_os = "macos", test))]
+const PROCARGS_BUFFER: usize = 1 << 20;
+
+/// The same read on macOS, through `KERN_PROCARGS2`.
 #[cfg(target_os = "macos")]
 fn environment(pid: u32) -> std::io::Result<Vec<u8>> {
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as i32];
-    let mut bytes = vec![0u8; 1 << 20];
+    let mut bytes = vec![0u8; PROCARGS_BUFFER];
     let mut size = bytes.len();
     // SAFETY: the buffer and the size are valid for the call.
     let code = unsafe {
@@ -292,32 +340,81 @@ fn environment(pid: u32) -> std::io::Result<Vec<u8>> {
             0,
         )
     };
-    let invalid = || std::io::Error::other("environment is unavailable");
-    if code != 0 || !(4..=bytes.len()).contains(&size) {
-        return Err(invalid());
+    if code != 0 {
+        return Err(std::io::Error::other("environment is unavailable"));
     }
     bytes.truncate(size);
-    let argc = i32::from_ne_bytes(bytes[..4].try_into().map_err(|_| invalid())?);
+    procargs_environment(&bytes, PROCARGS_BUFFER)
+}
+
+/// The environment part of a `KERN_PROCARGS2` answer, which holds the
+/// argument count, the executable and its padding, the arguments and then
+/// the environment, read into a buffer of `capacity` bytes.
+///
+/// macOS withholds the environment of some programs from a reader of the
+/// same user by ending the answer right after the arguments, without an
+/// error. A process whose environment is really empty still leaves the
+/// kernel's own `key=value` strings there. So a tail with no byte other than
+/// NUL is a withheld read, never an empty environment. Three other shapes are
+/// unreadable: an answer that fills the buffer, which may be cut; fewer
+/// arguments than the count; and an argument that begins with a marker name,
+/// which means the count has run into the environment (an empty first
+/// argument, or arguments the process rewrote with fewer separators).
+#[cfg(any(target_os = "macos", test))]
+fn procargs_environment(bytes: &[u8], capacity: usize) -> std::io::Result<Vec<u8>> {
+    let invalid = || std::io::Error::other("environment is unavailable");
+    if bytes.len() >= capacity {
+        return Err(invalid());
+    }
+    let count = bytes.get(..4).ok_or_else(invalid)?;
+    let argc = i32::from_ne_bytes(count.try_into().map_err(|_| invalid())?);
     if !(1..=4096).contains(&argc) {
         return Err(invalid());
     }
+    let after = |rest: &[u8]| -> std::io::Result<usize> {
+        Ok(rest
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or_else(invalid)?
+            + 1)
+    };
     let mut rest = &bytes[4..];
-    rest = &rest[rest
-        .iter()
-        .position(|byte| *byte == 0)
-        .ok_or_else(invalid)?
-        + 1..];
+    rest = &rest[after(rest)?..];
     while rest.first() == Some(&0) {
         rest = &rest[1..];
     }
     for _ in 0..argc {
-        rest = &rest[rest
-            .iter()
-            .position(|byte| *byte == 0)
-            .ok_or_else(invalid)?
-            + 1..];
+        let end = after(rest)?;
+        if MARKERS.iter().any(|prefix| rest[..end].starts_with(prefix)) {
+            return Err(invalid());
+        }
+        rest = &rest[end..];
+    }
+    if rest.iter().all(|byte| *byte == 0) {
+        return Err(withheld());
     }
     Ok(rest.to_vec())
+}
+
+/// The system answered for a process but left its environment out.
+#[derive(Debug)]
+struct Withheld;
+
+impl std::fmt::Display for Withheld {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("the system withholds this process's environment")
+    }
+}
+
+impl std::error::Error for Withheld {}
+
+#[cfg(any(target_os = "macos", test))]
+fn withheld() -> std::io::Error {
+    std::io::Error::other(Withheld)
+}
+
+fn is_withheld(error: &std::io::Error) -> bool {
+    error.get_ref().is_some_and(|inner| inner.is::<Withheld>())
 }
 
 /// Unsupported platforms refuse before this read is reachable. This fallback
