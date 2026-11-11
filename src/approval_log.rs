@@ -16,7 +16,9 @@ use std::{
     time::Duration,
 };
 
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 mod team;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use team::{begin_team, TeamKind};
 
 const MAX_INPUT: u64 = 128 * 1024;

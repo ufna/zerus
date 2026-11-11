@@ -1,0 +1,255 @@
+use super::*;
+use crate::desktop::{
+    original_child::{self, Codes, Ended, Input, Output, Spec, Stdin},
+    original_store::{self, Roots},
+};
+use std::{
+    fs::{File, OpenOptions},
+    io::Write,
+    os::unix::fs::MetadataExt,
+    path::PathBuf,
+};
+use zerus_client_core::run::custody::InheritedLock;
+const CUSTODY: &str = "HGS_TEAMS_CUSTODY_FD";
+const CODES: Codes = Codes {
+    unobserved: "team_confirmation_unobserved",
+    unreadable: "team_confirmation_unreadable",
+    signalled: "team_confirmation_signalled",
+    timed_out: "team_confirmation_timed_out",
+    retained: "team_confirmation_retained",
+};
+impl Native<'_> {
+    pub fn deliver(&mut self, row: &Record) -> Outcome {
+        let Some((snapshot, raw)) = self.capture.clone() else {
+            return Outcome::NotStarted("No exact native observation is held".into());
+        };
+        let Ok(program) = crate::self_exec::current() else {
+            return Outcome::NotStarted("The own CLI image is unavailable".into());
+        };
+        let Ok((args, input, folder)) = super::receipt::invocation(row) else {
+            return Outcome::NotStarted("The fixed confirmation request is invalid".into());
+        };
+        let Ok(roots) = Roots::open(&self.config.state, folder) else {
+            return Outcome::NotStarted("The original receipt store is unavailable".into());
+        };
+        let Some((held, path, id)) = custody(self.config, &row.original) else {
+            return Outcome::NotStarted("Original confirmation custody is unavailable".into());
+        };
+        let mut scoped = vec!["--expect-machine".into(), self.machine.into()];
+        scoped.extend(args);
+        let spec = Spec {
+            custody_env: CUSTODY,
+            input: Input::Frozen {
+                stdin: Stdin::Bytes(&input),
+                unwritten: "team_confirmation_unwritten",
+            },
+            output: Output::Stdout {
+                bytes: 64 << 10,
+                too_large: "team_confirmation_output_large",
+            },
+            codes: CODES,
+            retain: None,
+        };
+        let ended = original_child::run(
+            &program,
+            &scoped,
+            spec,
+            &held,
+            Instant::now() + Duration::from_secs(45),
+            |cmd| {
+                self.final_admit(row, &roots, &snapshot, &raw)
+                    .map_err(|_| std::io::Error::from(std::io::ErrorKind::PermissionDenied))?;
+                configure(cmd, self.config);
+                Ok(())
+            },
+        );
+        if !matches!(ended, Ended::Unknown(_)) {
+            remove(&path, id);
+        }
+        match ended {
+            Ended::NotStarted => Outcome::NotStarted(
+                "Final standing-confirmation admission refused; nothing started".into(),
+            ),
+            Ended::Unknown(reason) => Outcome::Unknown(reason.into()),
+            Ended::Exited { .. } => super::receipt::observe(&roots, row, &input),
+        }
+    }
+    fn final_admit(
+        &self,
+        row: &Record,
+        roots: &Roots,
+        snapshot: &Snapshot,
+        raw: &Value,
+    ) -> Result<()> {
+        let plan = &row.plan;
+        let b = &plan.binding;
+        let facts = self.fresh_facts(b)?;
+        super::super::policy::stored(b, &facts)?;
+        let delegated = if plan.kind == Kind::Trust {
+            facts.team.settings.delegations.confirm_trust
+        } else {
+            facts.team.settings.delegations.resume_exited
+        };
+        if !delegated
+            || !roots.root_current()
+            || self.pins.is_empty()
+            || !self.pins.iter().all(super::ownership::Pin::current)
+        {
+            return Err("Delegation, root or ownership changed before spawn".into());
+        }
+        if crate::state::lifecycle_receipt_machine(self.config)? != self.machine {
+            return Err("The local computer changed".into());
+        }
+        let current = held_current(roots, snapshot)?;
+        unchanged_record(&current, raw)?;
+        if super::observation::paused(&current)
+            || current.get("pausing").is_some()
+            || self.stop.load(Ordering::Acquire)
+        {
+            return Err("The member was paused, stopped or replaced".into());
+        }
+        if plan.kind == Kind::Resume
+            && !super::observation::self_exit(&current, snapshot.archive.is_some())
+        {
+            return Err("Exit evidence changed before spawn".into());
+        }
+        Ok(())
+    }
+}
+fn unchanged_record(current: &Value, raw: &Value) -> Result<()> {
+    for key in [
+        "name",
+        "run_id",
+        "conversation_id",
+        "session_id",
+        "launch_id",
+        "agent",
+        "account_id",
+        "cwd",
+        "worktree_owner",
+        "completion_source",
+        "completion_reason",
+        "exited_at",
+        "exit_code",
+        "termination_signal",
+        "archive_id",
+    ] {
+        if current[key] != raw[key] {
+            return Err(format!("Native {key} changed before spawn"));
+        }
+    }
+    Ok(())
+}
+fn held_current(roots: &Roots, snapshot: &Snapshot) -> Result<Value> {
+    Ok(if let Some(id) = &snapshot.archive {
+        let file = roots
+            .open_file(&["archives", &format!("{id}.json")])
+            .map_err(|e| e.to_string())?;
+        let mut bytes = Vec::new();
+        use std::io::Read;
+        file.take((1 << 20) + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() > 1 << 20 {
+            return Err("Archive exceeds its bound".into());
+        }
+        serde_json::from_slice::<Value>(&bytes).map_err(|e| e.to_string())?
+    } else {
+        original_store::session_record(roots, &snapshot.name, &snapshot.run, &snapshot.conversation)
+            .ok_or("The exact native record changed")?
+    })
+}
+fn configure(cmd: &mut std::process::Command, config: &Config) {
+    for var in [
+        "HGS_SESSION",
+        "HGS_SESSION_ID",
+        "HGS_RUN_ID",
+        "HGS_CONVERSATION_ID",
+        "HGS_LAUNCH_ID",
+        "HGS_LAUNCH_SESSION_ID",
+        "HGS_ACCOUNT_ID",
+        "HGS_PARENT",
+        "TMUX",
+        "TMUX_PANE",
+    ] {
+        cmd.env_remove(var);
+    }
+    cmd.env("HGS_CONFIG_DIR", &config.dir)
+        .env("HGS_STATE_DIR", &config.state);
+}
+fn custody(config: &Config, id: &str) -> Option<(Arc<InheritedLock>, PathBuf, (u64, u64))> {
+    if !uuid::Uuid::parse_str(id).is_ok_and(|u| !u.is_nil() && u.to_string() == id) {
+        return None;
+    }
+    let dir = config.state.join("teams/custody");
+    crate::platform::private_dir(&dir).ok()?;
+    if !crate::platform::verify_private(&dir, crate::platform::Private::Directory).ok()? {
+        return None;
+    }
+    let path = dir.join(format!("{id}.lock"));
+    let mut file = crate::platform::no_follow(crate::platform::private_open(
+        OpenOptions::new().create_new(true).read(true).write(true),
+    ))
+    .open(&path)
+    .ok()?;
+    if !crate::platform::verify_private_file(&file).ok()? {
+        return None;
+    }
+    let marker =
+        json!({"kind":"teams_original","id":id,"configuration":config.dir,"state":config.state});
+    file.write_all(marker.to_string().as_bytes()).ok()?;
+    file.sync_all().ok()?;
+    File::open(&dir).ok()?.sync_all().ok()?;
+    let m = file.metadata().ok()?;
+    Some((
+        InheritedLock::try_lock(file).ok()?,
+        path,
+        (m.dev(), m.ino()),
+    ))
+}
+fn remove(path: &std::path::Path, id: (u64, u64)) {
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && (m.dev(), m.ino()) == id) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn a_final_record_read_does_not_follow_any_replaced_native_identity_or_exit() {
+        let raw = json!({"name":"claude/example/member","run_id":"run-1","conversation_id":"conversation-1","session_id":"session-1","launch_id":"launch-1","agent":"claude","account_id":"account-1","cwd":"/workspace/member","worktree_owner":{"id":"nonce-1"},"completion_source":"supervisor","completion_reason":"clean_exit","exited_at":1000,"exit_code":0,"termination_signal":null,"archive_id":"archive-1"});
+        unchanged_record(&raw, &raw).unwrap();
+        for key in raw.as_object().unwrap().keys() {
+            let mut current = raw.clone();
+            current[key] = json!("changed");
+            assert!(unchanged_record(&current, &raw).is_err(), "{key}");
+        }
+    }
+    #[test]
+    fn original_custody_is_private_unique_and_not_reconstructed() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = Config {
+            home: String::new(),
+            dir: temp.path().join("config"),
+            state: temp.path().join("state"),
+            selves: vec![],
+            peers: vec![],
+            base_peers: vec![],
+            peers_from_environment: false,
+            machines: Default::default(),
+            tab: false,
+            tab_colors: String::new(),
+        };
+        let id = uuid::Uuid::new_v4().to_string();
+        let (held, path, identity) = custody(&config, &id).unwrap();
+        assert!(crate::platform::verify_private(&path, crate::platform::Private::File).unwrap());
+        assert!(custody(&config, &id).is_none());
+        super::super::super::super::child::prune_custody(&config);
+        assert!(path.exists());
+        drop(held);
+        super::super::super::super::child::prune_custody(&config);
+        assert!(!path.exists());
+        remove(&path, identity);
+    }
+}

@@ -150,6 +150,7 @@ fn run(
     super::child::prune_custody(&config);
     let mut cursor = None;
     let mut cycle_fault = false;
+    let mut confirm_cursor = Default::default();
     while !stop.load(Ordering::Acquire) && crate::teams::enabled(&config.state) {
         if let Err(error) = pass(
             &mut actor,
@@ -160,6 +161,16 @@ fn run(
             &stop,
         ) {
             eprintln!("hgs: Teams worker fault: {}", error.code);
+        }
+        if let Err(error) = super::confirm::step(
+            &config,
+            &epoch,
+            &native.machine,
+            &mut store,
+            &stop,
+            &mut confirm_cursor,
+        ) {
+            eprintln!("hgs: Teams standing confirmation fault: {error}");
         }
         if receive.recv_timeout(Duration::from_secs(60))
             == Err(mpsc::RecvTimeoutError::Disconnected)
